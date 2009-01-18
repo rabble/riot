@@ -27,7 +27,10 @@ Rails::Initializer.run do |config|
   # config.gem "hpricot", :version => '0.6', :source => "http://code.whytheluckystiff.net"
   # config.gem "sqlite3-ruby", :lib => "sqlite3"
   # config.gem "aws-s3", :lib => "aws/s3"
-
+  
+  config.gem "jeremymcanally-context", :lib => "context", :source => "http://gems.github.com";
+  config.gem "jeremymcanally-matchy", :lib => "matchy", :source => 'http://gems.github.com' 
+  
   # Only load the plugins named here, in the order given. By default, all plugins 
   # in vendor/plugins are loaded in alphabetical order.
   # :all can be used as a placeholder for all plugins not explicitly named
@@ -56,7 +59,7 @@ Rails::Initializer.run do |config|
   # no regular words or you'll be exposed to dictionary attacks.
   config.action_controller.session = {
     :session_key => '_riot_session',
-    :secret      => 'a1b44e48bc0ff3560a5c0c9bd0b9f0c73b4a329ccf7860c48901d84fe104540f0a66f51ca18128b3190ed0fee09c444abf07cac451ba865e2aac774a50e5cc14'
+    :secret      => 'af7fbc2996cb28ebff4a14f82216bfd0edc555cda5f2d4ef7f6b05e5ec70d284e8e00a4416a4f7fc5b4fd8b8dedefcc0c2b94206386f636be2037c722e2457b3'
   }
 
   # Use the database for sessions instead of the cookie-based default,
