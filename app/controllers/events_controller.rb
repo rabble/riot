@@ -25,14 +25,25 @@ class EventsController < ApplicationController
   # GET /events/new.xml
   def new
     @event = Event.new
-    @bookmarklet = bookmarklet_params(params)
 
     respond_to do |format|
       format.html # new.html.erb
       format.xml  { render :xml => @event }
     end
   end
-
+  
+  # GET /events/newbookmarklet
+  
+  def newbookmark
+    @bookmarklet = bookmarklet_params(params)
+    @event = Event.new
+    
+    respond_to do |format|
+      format.html # newbookmark.html.erb
+      format.xml  { render :xml => @event }
+    end
+  end
+  
   # GET /events/1/edit
   def edit
     @event = Event.find(params[:id])

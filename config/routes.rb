@@ -1,6 +1,8 @@
 ActionController::Routing::Routes.draw do |map|
   map.resources :events
-
+  
+  map.connect 'bm', :controller => 'events', :action => 'newbookmark'
+  
   # The priority is based upon order of creation: first created -> highest priority.
 
   # Sample of regular route:

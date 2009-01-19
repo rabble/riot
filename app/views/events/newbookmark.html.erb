@@ -1,0 +1,21 @@
+<h1>Add a new event</h1>
+
+<pre>
+
+<%= @bookmarklet[:string] %>
+
+</pre>
+
+<% form_for(@event) do |f| %>
+  <%= f.error_messages %>
+  <%= f.text_group "Title", :title %>
+  <%= f.text_group "Venue Name (Location)", :location_name %>
+  <%= f.text_group "Address", :address %>
+  <%= f.text_area_group "Description", :description, {:rows => 6 } %>
+
+  <p>
+    <%= f.submit "Create" %>
+  </p>
+<% end %>
+
+<%= link_to 'events', events_path %>
