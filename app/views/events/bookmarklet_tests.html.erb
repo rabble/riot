@@ -1,0 +1,50 @@
+javascript:var d=document,
+w=window,
+e=w.getSelection,
+k=d.getSelection,
+x=d.selection,
+s=( e ? e() : (k) ? k() : ( x ? x.createRange().text : 0)),
+f='http://localhost:3000/bm',
+l=d.location,
+e=encodeURIComponent,
+p='?v=3&u='+e(l.href) +'&t='+e(d.title) +'&s='+e(s),u=f+p;
+try{
+	if(!/^(.*\.)?localhost[^.]*$/.test(l.host))throw(0);
+	tstbklt();
+}catch(z){
+	a =function(){
+		if(!w.open(u,'t','toolbar=0,resizable=0,status=1,width=450,height=430')) l.href=u;
+	};
+	if(/Firefox/.test(navigator.userAgent)) setTimeout(a,0);
+	else a();
+}void(0)
+
+
+
+# bookmarklet for inserting jquery in to the file
+javascript:(function(){document.body.appendChild(document.createElement('script')).src='http://jquery.com/src/jquery-latest.js';})();
+
+javascript: var s=document.createElement('script'); s.setAttribute('src','http://jquery.com/src/jquery-latest.js'); document.getElementsByTagName('body')[0].appendChild(s);
+
+
+XML.serialize = function(node) {
+	if (typeof XHMLSerializer != "undefined")
+		return (new XMLSerializer()).serializeToString(node);
+	else if (node.xml) return node.xml;
+	else throw "XML.serialize not supported or failed: " + node;
+};
+
+var d=document,
+w=window,
+e=w.getSelection,
+k=d.getSelection,
+x=d.selection,
+s=( e ? e() : (k) ? k() : ( x ? x.createRange() : 0)),
+range = document.createRange();
+range.setStart(s.anchorNode,s.anchorOffset);
+range.setEnd(s.focusNode,s.focusOffset);
+
+
+console.dir(new XMLSerializer()).serializeToString(range.cloneContents())	
+#console.dir(XML.serialize(range.cloneContents()))
+

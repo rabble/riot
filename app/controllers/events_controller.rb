@@ -1,4 +1,8 @@
 class EventsController < ApplicationController
+  
+  def bookmarklet
+    render :action => "bookmarklet", :layout => false
+  end
   # GET /events
   # GET /events.xml
   def index

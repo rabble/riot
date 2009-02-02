@@ -1,7 +1,10 @@
 ActionController::Routing::Routes.draw do |map|
   map.resources :events
   
-  map.connect 'bm', :controller => 'events', :action => 'newbookmark'
+  map.connect 'bookmarklet.js', :controller => 'events', :action => 'bookmarklet'
+  map.connect 'examples', :controller => 'events', :action => 'examples'
+  
+  map.connect '', :controller => 'events', :action => 'index'
   
   # The priority is based upon order of creation: first created -> highest priority.
 

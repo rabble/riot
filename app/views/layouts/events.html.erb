@@ -4,10 +4,16 @@
 <html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en" lang="en">
 <head>
   <meta http-equiv="content-type" content="text/html;charset=UTF-8" />
-  <title>Events: <%= controller.action_name %></title>
+  <title>Riot: <%= controller.action_name %></title>
   <%= stylesheet_link_tag 'scaffold' %>
 </head>
 <body>
+
+<div class="navbar">
+	<ul>
+		<li><%= link_to "bookmarklet", "javascript:void(function(){var%20s=document.createElement('script');s.src='http://localhost:3000/bookmarklet.js';document.getElementsByTagName('head')[0].appendChild(s);}())" %></li>
+	</ul>
+</div>
 
 <p style="color: green"><%= flash[:notice] %></p>
 
