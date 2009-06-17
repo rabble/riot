@@ -1,41 +1,65 @@
 ENV["RAILS_ENV"] = "test"
 require File.expand_path(File.dirname(__FILE__) + "/../config/environment")
+require 'test/unit'
 require 'test_help'
-require File.expand_path(File.dirname(__FILE__) + "/blueprints")
+require 'context'
+require 'matchy'
+require 'action_controller/test_process'
+require 'action_controller/integration'
+require 'context_on_crack'
+require 'rr'
+require 'matchy'
+require 'pending'
+require 'faker'
 
-class Test::Unit::TestCase
-  # Transactional fixtures accelerate your tests by wrapping each test method
-  # in a transaction that's rolled back on completion.  This ensures that the
-  # test database remains unchanged so your fixtures don't have to be reloaded
-  # between every test method.  Fewer database queries means faster tests.
-  #
-  # Read Mike Clark's excellent walkthrough at
-  #   http://clarkware.com/cgi/blosxom/2005/10/24#Rails10FastTesting
-  #
-  # Every Active Record database supports transactions except MyISAM tables
-  # in MySQL.  Turn off transactional fixtures in this case; however, if you
-  # don't care one way or the other, switching from MyISAM to InnoDB tables
-  # is recommended.
-  #
-  # The only drawback to using transactional fixtures is when you actually 
-  # need to test transactions.  Since your test is bracketed by a transaction,
-  # any transactions started in your code will be automatically rolled back.
-  self.use_transactional_fixtures = true
+require "test/blueprints"
 
-  # Instantiated fixtures are slow, but give you @david where otherwise you
-  # would need people(:david).  If you don't want to migrate your existing
-  # test cases which use the @david style and don't mind the speed hit (each
-  # instantiated fixtures translates to a database query per test method),
-  # then set this back to true.
-  self.use_instantiated_fixtures  = false
+class ActiveSupport::TestCase
+  include RR::Adapters::RRMethods
+  #include AuthenticatedTestHelper
 
-  # Setup all fixtures in test/fixtures/*.(yml|csv) for all tests in alphabetical order.
-  #
-  # Note: You'll currently still have to declare fixtures explicitly in integration tests
-  # -- they do not yet inherit this setting
-  #fixtures :all
-  setup { Sham.reset }
-  
-  
-  # Add more helper methods to be used by all tests here...
+  class << self
+    attr_accessor :suite_context
+  end
+
+  setup do
+    RR.reset
+  end
+
+  teardown do
+    RR.verify
+  end
+
+  def self.transaction(&block)
+    ActiveRecord::Base.transaction &block
+  end
+
+  def transaction(&block)
+    ActiveRecord::Base.transaction &block
+  end
+
+  def self.cleanup(*klasses)
+    before :all do
+      transaction { klasses.each { |k| k.delete_all } }
+      ActiveRecord::Base.context_cache = {}
+      self.class.suite_context = nil
+    end
+  end
 end
+
+class ActionController::TestCase
+  setup do
+    RR.reset
+  end
+  
+  def admin_user
+    @admin_user ||= User.find_by_email("admin@studioanywhere.digisynd.com") || User.make(:admin)
+  end
+end
+
+#class Test::Unit::TestCase
+#  self.use_transactional_fixtures = true
+#  self.use_instantiated_fixtures  = false
+#  setup { Sham.reset }
+#end
+#

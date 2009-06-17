@@ -1,20 +1,23 @@
 class CreateEvents < ActiveRecord::Migration
   def self.up
     create_table :events do |t|
-      t.string   "start"
-      t.datetime "start_date"
-      t.string   "start_time"
-      t.string   "end"
-      t.datetime "end_date"
-      t.string   "end_time"
+      t.integer  "start_epoch"
+      t.integer  "end_epoch"
+      t.string   "timezone"
       t.string   "title"
       t.text     "description"
-      t.string   "location_name"
-      t.string   "address"
-      t.string   "latitude"
-      t.string   "longitude"
+      t.integer  "location_id"
+      t.float    "latitude"
+      t.float    "longitude"
       t.string   "url"
       t.string   "referring_link"
+      t.integer  "recurrence_id"
+      t.boolean  "is_all_day"
+      t.boolean  "is_tenative"
+      t.boolean  "is_cancelled"
+      t.boolean  "is_accessible"
+      t.integer  "parent_id"
+      t.string   "privacy"
       t.timestamps
     end
   end
