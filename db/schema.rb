@@ -12,9 +12,10 @@
 ActiveRecord::Schema.define(:version => 20090118184922) do
 
   create_table "events", :force => true do |t|
-    t.integer  "start_epoch"
-    t.integer  "end_epoch"
+    t.datetime "starts_at"
+    t.datetime "ends_at"
     t.string   "timezone"
+    t.integer  "utc_offset"
     t.string   "title"
     t.text     "description"
     t.integer  "location_id"

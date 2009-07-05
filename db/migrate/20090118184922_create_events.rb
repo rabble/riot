@@ -1,9 +1,10 @@
 class CreateEvents < ActiveRecord::Migration
   def self.up
     create_table :events do |t|
-      t.integer  "start_epoch"
-      t.integer  "end_epoch"
+      t.timestamp  "starts_at", :with_time_zone => true
+      t.timestamp  "ends_at", :with_time_zone => true
       t.string   "timezone"
+      t.integer  "utc_offset"
       t.string   "title"
       t.text     "description"
       t.integer  "location_id"
