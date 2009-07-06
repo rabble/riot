@@ -1,4 +1,3 @@
-
 class Event < ActiveRecord::Base
   belongs_to :calendar
   belongs_to :location
@@ -50,7 +49,6 @@ class Event < ActiveRecord::Base
     tz_parsed = JSON.parse(tz_json)
     
     return logger.warn( tz_parsed ) if tz_parsed['status']
-    
     return set_timezone_from_tzinfo( tz_parsed['timezoneId'] ) if tz_parsed['timezoneId']
     
     set_timezone_from_offsets(tz_parsed['rawOffset'])
