@@ -3,7 +3,13 @@ class Event < ActiveRecord::Base
   belongs_to :location
   before_save :check_timezone
   
+  named_scope :on_day, lambda { |day|
+    { :conditions => [ "starts_at >= ? and starts_at <= ?", day, day + 1.day ] }  }  
   
+  named_scope :in_month, lambda { |month|
+    { :conditions => [ "starts_at >= ? and starts_at <= ?", month, month + 1.month ] }  }  
+
+
   def starts_at=(starts_at_time)
     write_attribute(:starts_at, starts_at_time)
   end
@@ -68,8 +74,9 @@ class Event < ActiveRecord::Base
   end
   
   def set_timezone_from_calendar
-    write_attribute(:timezone, calendar.timezone)
-    write_attribute(:utc_offset, utc_offset.timezone)
+    return nil unless calendar && calendar.timezone && calendar.utc_offset
+    write_attribute(:timezone, calendar.timezone) 
+    write_attribute(:utc_offset, calendar.utc_offset) 
   end
   
   def gen_apikey

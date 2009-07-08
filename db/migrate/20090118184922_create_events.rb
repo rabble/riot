@@ -19,7 +19,7 @@ class CreateEvents < ActiveRecord::Migration
       t.boolean  "is_accessible"
       t.integer  "parent_id"
       t.string   "privacy"
-      t.integer  "event_id"
+      t.integer  "calendar_id"
       t.timestamps
     end
   end

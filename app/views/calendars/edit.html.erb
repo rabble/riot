@@ -1,0 +1,12 @@
+<h1>Editing calendar</h1>
+
+<% form_for(@calendar) do |f| %>
+  <%= f.error_messages %>
+	<%= render :partial => "form_fields", :locals => {:f => f} %>
+  <p>
+    <%= f.submit "Update" %>
+  </p>
+<% end %>
+
+<%= link_to 'Show', @calendar %> |
+<%= link_to 'Back', calendars_path %>

@@ -33,4 +33,18 @@ class EventTest < ActiveSupport::TestCase
     end
     
   end
+  
+  context "event scopes" do
+    
+    test "events_on_day" do
+      event_on_day = Event.make(:starts_at => Time.parse( 'Thu Jan 01 00:00:01 UTC 1970'), :ends_at => Time.parse('Thu Jan 01 00:01:00 UTC 1970'))
+      event_later = Event.make(:starts_at => Time.parse( 'Thu Jan 02 00:00:01 UTC 1970'), :ends_at => Time.parse('Thu Jan 02 00:01:00 UTC 1970'))
+      
+      events = Event.on_day(Date.civil(1970,1,1))
+      
+      events.should include(event_on_day)
+      
+    end
+  end
+  
 end

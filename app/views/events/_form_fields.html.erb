@@ -2,28 +2,16 @@
 
 
 <div class="addevents">
-  <dl class="form times-form">
-    <dt class="title-label"><label for="sample_title">Title</label></dt>
-    <dd class="title-field">
-			<%= f.text_group "Title", :title, :required => true  %>
-    </dd>
-    <dt class="starts_at-label"><label for="sample_starts_at">Starting</label></dt>
-    <dd class="starts_at-field">
-			<%= f.calendar_date_select :starts_at, :embedded => false %>
-    </dd>
-    <dt class="ends_at-label"><label for="sample_ends_at">Ending</label></dt>
-    <dd class="ends_at-field">
-			<%= f.calendar_date_select :ends_at, :embedded => false %>
-    </dd>
-    <dt class="location-label"><label for="sample_location">Location</label></dt>
-    <dd class="location-field">
-			<%= f.text_group "Location", :location %>
-    </dd>
-    <dt class="description-label"><label for="sample_description">Description</label></dt>
-    <dd class="description-field">
-			<%= f.text_area_group "Description", :description, {:rows => 6 } %>
-			
-    </dd>
-  </dl>
+<%= f.text_group "Title", :title, :required => true  %>
+<p>
+<label for="sample_starts_at">Starting</label>
+<%= f.calendar_date_select :starts_at, :embedded => false %>
+</p>
+<p>
+<label for="sample_ends_at">Ending</label>
+<%= f.calendar_date_select :ends_at, :embedded => false %>
+</p>
+<%= f.text_group "Location", :location %>
+<%= f.text_area_group "Description", :description, {:rows => 6 } %>
 </div>
 

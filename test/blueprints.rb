@@ -13,3 +13,9 @@ Event.blueprint do
   ends_at { (Time.now + 1.week + 1.hour).to_i }
   url {Sham.url}
 end
+
+Calendar.blueprint do
+  title { Sham.title }
+  description { Sham.body }
+  url {Sham.url}
+end

@@ -1,0 +1,18 @@
+<h1>Listing calendars</h1>
+
+<table>
+  <tr>
+  </tr>
+
+<% for calendar in @calendars %>
+  <tr>
+    <td><%= link_to 'Show', calendar %></td>
+    <td><%= link_to 'Edit', edit_calendar_path(calendar) %></td>
+    <td><%= link_to 'Destroy', calendar, :confirm => 'Are you sure?', :method => :delete %></td>
+  </tr>
+<% end %>
+</table>
+
+<br />
+
+<%= link_to 'New calendar', new_calendar_path %>

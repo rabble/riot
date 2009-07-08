@@ -9,7 +9,7 @@
 #
 # It's strongly recommended to check this file into your version control system.
 
-ActiveRecord::Schema.define(:version => 20090706203600) do
+ActiveRecord::Schema.define(:version => 20090706215932) do
 
   create_table "calendars", :force => true do |t|
     t.string   "timezone"
@@ -43,7 +43,12 @@ ActiveRecord::Schema.define(:version => 20090706203600) do
     t.boolean  "is_accessible"
     t.integer  "parent_id"
     t.string   "privacy"
-    t.integer  "event_id"
+    t.integer  "calendar_id"
+    t.datetime "created_at"
+    t.datetime "updated_at"
+  end
+
+  create_table "locations", :force => true do |t|
     t.datetime "created_at"
     t.datetime "updated_at"
   end
