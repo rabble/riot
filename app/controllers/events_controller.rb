@@ -1,4 +1,5 @@
 class EventsController < ApplicationController
+  before_filter :load_calendar
   
   def bookmarklet
     render :action => "bookmarklet", :layout => false
@@ -29,7 +30,7 @@ class EventsController < ApplicationController
   # GET /events/new
   # GET /events/new.xml
   def new
-    @event = Event.new
+    @event = @calendar.events.build
 
     respond_to do |format|
       format.html # new.html.erb
@@ -41,8 +42,8 @@ class EventsController < ApplicationController
   
   def newbookmark
     @bookmarklet = bookmarklet_params(params)
-    @event = Event.new
-    
+    @event = @calendar.events.build
+        
     respond_to do |format|
       format.html # newbookmark.html.erb
       format.xml  { render :xml => @event }
@@ -57,12 +58,12 @@ class EventsController < ApplicationController
   # POST /events
   # POST /events.xml
   def create
-    @event = Event.new(params[:event])
+    @event = @calendar.events.build(params[:event])
 
     respond_to do |format|
       if @event.save
         flash[:notice] = 'Event was successfully created.'
-        format.html { redirect_to(@event) }
+        format.html { redirect_to([@calendar,@event]) }
         format.xml  { render :xml => @event, :status => :created, :location => @event }
       else
         format.html { render :action => "new" }
@@ -79,7 +80,7 @@ class EventsController < ApplicationController
     respond_to do |format|
       if @event.update_attributes(params[:event])
         flash[:notice] = 'Event was successfully updated.'
-        format.html { redirect_to(@event) }
+        format.html { redirect_to([@calendar,@event]) }
         format.xml  { head :ok }
       else
         format.html { render :action => "edit" }
@@ -95,7 +96,7 @@ class EventsController < ApplicationController
     @event.destroy
 
     respond_to do |format|
-      format.html { redirect_to(events_url) }
+      format.html { redirect_to(@calendar) }
       format.xml  { head :ok }
     end
   end
@@ -110,4 +111,11 @@ class EventsController < ApplicationController
     bm[:page_url]   = params[:u]
     return bm
   end
+  
+  def load_calendar
+    @calendar = Calendar.find(params[:calendar][:id]) if params[:calendar] && params[:calendar][:id]
+    @calendar = Calendar.find(params[:calendar_id]) if params[:calendar_id]
+    return redirect_to(home_path) if @calendar.nil?
+  end
+  
 end

@@ -1,5 +1,5 @@
 
-
+<%= hidden_calendar_id %>
 
 <div class="addevents">
 <%= f.text_group "Title", :title, :required => true  %>
@@ -11,7 +11,6 @@
 <label for="sample_ends_at">Ending</label>
 <%= f.calendar_date_select :ends_at, :embedded => false %>
 </p>
-<%= f.text_group "Location", :location %>
 <%= f.text_area_group "Description", :description, {:rows => 6 } %>
 </div>
 

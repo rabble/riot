@@ -1,13 +1,22 @@
 ActionController::Routing::Routes.draw do |map|
-  map.resources :events
+  #map.resources :calendars, :has_many => :events, :shallow => true
+  #map.resources :events
+  
   map.resources :calendars do |calendar|
-     calendar.resource :events
+    calendar.resources :events
   end
+  
+  #map.resource :calendar do |calendar|
+  #  calendar.resource :event
+  #end
+  
+  map.calendar_for_day '/calendar/:id/:year/:month/:day', :controller => 'calendar', :action => 'day'
   
   map.connect 'bookmarklet.js', :controller => 'events', :action => 'bookmarklet'
   map.connect 'examples', :controller => 'events', :action => 'examples'
   
   map.connect '', :controller => 'calendar', :action => 'index'
+  map.home '', :controller => 'calendar', :action => 'index'
   
   # The priority is based upon order of creation: first created -> highest priority.
 

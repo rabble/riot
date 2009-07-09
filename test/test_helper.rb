@@ -11,6 +11,7 @@ require 'rr'
 require 'matchy'
 require 'pending'
 require 'faker'
+require 'ruby-debug'
 
 require "test/blueprints"
 

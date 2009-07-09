@@ -1,6 +1,6 @@
 <h1>Editing event</h1>
 
-<% form_for(@event) do |f| %>
+<% form_for([@calendar, @event]) do |f| %>
   <%= f.error_messages %>
 	<%= render :partial => "form_fields", :locals => {:f => f} %>
   <p>
@@ -8,5 +8,5 @@
   </p>
 <% end %>
 
-<%= link_to 'Show', @event %> |
-<%= link_to 'Back', events_path %>
+<%= link_to 'Show', [@calendar, @event] %> |
+<%= link_to 'Back', calendar_path(@calendar) %>

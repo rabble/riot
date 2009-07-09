@@ -1,6 +1,20 @@
 
+<div id="small_calendar">
+	<%= calendar_html(@year, @month, @calendar, {:next_and_previous_month => true})  %>
+</div>
 
-<%= calendar_for(@year, @month, &calendar_events_proc(@calendar)) %>
+<div id="event_list">
+	<ul>
+	<% @calendar.events_in_month(@month).each do |event| %>
+		<li><%= event.title %></li>
+		
+	<% end %>
+	</ul>
+</div>
+
+
+<%= link_to 'Add Event', new_calendar_event_path(@calendar) %> |
+
 
 <%= link_to 'Edit', edit_calendar_path(@calendar) %> |
 <%= link_to 'Back', calendars_path %>

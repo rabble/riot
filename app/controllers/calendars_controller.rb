@@ -23,6 +23,15 @@ class CalendarsController < ApplicationController
       format.xml  { render :xml => @calendar }
     end
   end
+  
+  def day
+    @calendar = Calendar.find(params[:id])
+
+    respond_to do |format|
+      format.html # show.html.erb
+      format.xml  { render :xml => @calendar }
+    end
+  end
 
   # GET /calendars/new
   # GET /calendars/new.xml
@@ -103,6 +112,9 @@ class CalendarsController < ApplicationController
   def load_current_time
     @year = params[:year] || Time.now.year
     @month = params[:month] || Time.now.month
-    @day_of_month = params[:day_of_month] || Time.now.day
+    @day = params[:day_of_month] || Time.now.day
+    
+    @display_date = Date.civil(@year,@month,@day)
+    
   end
 end
