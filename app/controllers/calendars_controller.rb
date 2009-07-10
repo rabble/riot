@@ -25,7 +25,7 @@ class CalendarsController < ApplicationController
   end
   
   def day
-    @calendar = Calendar.find(params[:id] | params[:calendar_id])
+    @calendar = Calendar.find(params[:id] || params[:calendar_id])
     @events = @calendar.events_on_day(@date)
 
     respond_to do |format|
@@ -111,13 +111,18 @@ class CalendarsController < ApplicationController
   private
   
   def load_current_time
-    @year = params[:year].to_i || Time.now.year
-    @month = params[:month].to_i || Time.now.month
-    @day = params[:day].to_i || Time.now.day
+    if params[:year] && params[:month]
     
-    
-#    debugger if params[:year] == '2009'
-    @date = Date.civil(@year,@month,@day)
-#    return true
+      @year = params[:year].to_i || Time.now.year
+      @month = params[:month].to_i || Time.now.month
+      @day = params[:day].to_i || Time.now.day
+      @date = Date.civil(@year, @month, @day)
+    else
+      @year = Time.now.year
+      @month = Time.now.month
+      @day = Time.now.day
+      
+      @date = Time.now.to_date
+    end
   end
 end
