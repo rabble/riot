@@ -4,10 +4,10 @@ class Event < ActiveRecord::Base
   before_save :check_timezone
   
   named_scope :on_day, lambda { |day|
-    { :conditions => [ "starts_at >= ? and starts_at <= ?", day, day + 1.day ] }  }  
+    { :conditions => [ "starts_at >= ? and starts_at <= ?", day, day + 1.day ], :order => 'starts_at' } }  
   
   named_scope :in_month, lambda { |month|
-    { :conditions => [ "starts_at >= ? and starts_at <= ?", month, month + 1.month ] }  }  
+    { :conditions => [ "starts_at >= ? and starts_at <= ?", month, month + 1.month ] , :order => 'starts_at'} }  
 
 
   def starts_at=(starts_at_time)

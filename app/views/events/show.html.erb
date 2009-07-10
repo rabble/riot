@@ -1,4 +1,14 @@
 
+<h2><%=h @event.title %></h2>
+
+<br>Starts: <%= @event.starts_at_local %>
+<br>Ends: <%= @event.ends_at_local %>
+
+<div class="event description">
+	<%=h @event.description %>
+</div>
 
 <%= link_to 'Edit', edit_calendar_event_path(@calendar, @event) %> |
 <%= link_to 'Back', calendar_path(@calendar) %>
+
+<%= render :partial => "calendars/small_calendar", :locals => { :year => @event.starts_at_local.year, :month =>  @event.ends_at_local.month, :calendar => @calendar } %>

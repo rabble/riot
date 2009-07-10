@@ -1,14 +1,19 @@
 
-<div id="small_calendar">
-	<%= calendar_html(@year, @month, @calendar, {:next_and_previous_month => true})  %>
-</div>
+<%= render :partial => "small_calendar", :locals => { :year => @year, :month => @month, :calendar => @calendar } %>
 
 <div id="event_list">
 	<ul>
-	<% @calendar.events_in_month(@month).each do |event| %>
-		<li><%= event.title %></li>
-		
+	<% current_day = 0 %>
+	<% @calendar.events_in_month(@date).each do |event| %>
+		<% if event.starts_at_local.mday != current_day %>
+			<% current_day = event.starts_at_local.mday %>
+			</ul>
+			<li><%= event.starts_at_local %></li>
+			<ul class="day_list" id="day_<%= current_day %>">
+		<% end %>
+		<li><%= link_to event.title, url_for([@calendar, event]), {:class => "event_title_link"} %></li>
 	<% end %>
+	</ul>
 	</ul>
 </div>
 

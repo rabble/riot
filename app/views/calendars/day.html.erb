@@ -1,0 +1,18 @@
+
+<h1><%= @date %></h1>
+
+<div id="event_list">
+	<ul class="day_list" >
+	<% @events.each do |event| %>
+		<li><h2><%= link_to event.title, url_for([@calendar, event]), {:class => "event_title_link"} %></h2>
+			<%= event.starts_at_local %> -  <%= event.ends_at_local %> <br />
+				<%=h event.description %>
+			</li>
+	<% end %>
+	</ul>
+	</ul>
+</div>
+
+
+
+<%= render :partial => "calendars/small_calendar", :locals => { :year => @date.year, :month =>  @date.month, :calendar => @calendar } %>
