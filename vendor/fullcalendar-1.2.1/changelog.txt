@@ -1,0 +1,58 @@
+
+version 1.2.1 (6/29/09)
+	- bugfixes
+		- allows and corrects invalid end dates for events
+		- doesn't throw an error in IE while rendering when display:none
+		- fixed 'loading' callback when used w/ multiple addEventSource calls
+		- gcal className can now be an array
+
+version 1.2 (5/31/09)
+	- expanded API
+		- 'className' CalEvent attribute
+		- 'source' CalEvent attribute
+		- dynamically get/add/remove/update events of current month
+		- locale improvements: change month/day name text
+		- better date formatting ($.fullCalendar.formatDate)
+		- multiple 'event sources' allowed
+			- dynamically add/remove event sources
+	- options for prevYear and nextYear buttons
+	- docs have been reworked (include addition of Google Calendar docs)
+	- changed behavior of parseDate for number strings
+	  (now interpets as unix timestamp, not MS times)
+	- bugfixes
+		- rightToLeft month start bug
+		- off-by-one errors with month formatting commands
+		- events from previous months sticking when clicking prev/next quickly
+	- Google Calendar API changed to work w/ multiple event sources
+		- can also provide 'className' and 'draggable' options
+	- date utilties moved from $ to $.fullCalendar
+	- more documentation in source code
+	- minified version of fullcalendar.js
+	- test suit (available from svn)
+	- top buttons now use <button> w/ an inner <span> for better css cusomization
+		- thus CSS has changed. IF UPGRADING FROM PREVIOUS VERSIONS,
+		  UPGRADE YOUR FULLCALENDAR.CSS FILE!!!
+
+version 1.1 (5/10/09)
+	- Added the following options:
+		- weekStart
+		- rightToLeft
+		- titleFormat
+		- timeFormat
+		- cacheParam
+		- resize
+	- Fixed rendering bugs
+		- Opera 9.25 (events placement & window resizing)
+		- IE6 (window resizing)
+	- Optimized window resizing for ALL browsers
+	- Events on same day now sorted by start time (but first by timespan)
+	- Correct z-index when dragging
+	- Dragging contained in overflow DIV for IE6
+	- Modified fullcalendar.css
+		- for right-to-left support
+		- for variable start-of-week
+		- for IE6 resizing bug
+		- for THEAD and TBODY (in 1.0, just used TBODY, restructured in 1.1)
+		- IF UPGRADING FROM FULLCALENDAR 1.0, YOU MUST UPGRADE FULLCALENDAR.CSS
+		  !!!!!!!!!!!
+		  
