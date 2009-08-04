@@ -18,6 +18,30 @@
 </div>
 
 
+<% content_for :header do %>
+<%= javascript_include_tag 'jquery' %>
+<%= javascript_include_tag 'ui.core' %>
+<%= javascript_include_tag 'ui.draggable' %>
+<link rel='stylesheet' type='text/css' href='/stylesheets/fullcalendar.css' />
+<%= javascript_include_tag 'fullcalendar/fullcalendar.min' %>
+	
+	<script>
+	$(document).ready(function() {
+	
+		$('#full-js-calendar').fullCalendar({
+			events: "/calendars/1.json"
+		
+
+		})
+	});
+	
+	</script>
+<% end %>
+
+<div id="full-js-calendar">
+	
+</div>
+
 <%= link_to 'Add Event', new_calendar_event_path(@calendar) %> |
 
 

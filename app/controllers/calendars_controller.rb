@@ -1,5 +1,7 @@
 class CalendarsController < ApplicationController
+  require 'json/pure' 
   before_filter :load_current_time
+  ActiveRecord::Base.include_root_in_json = false
   
   # GET /calendars
   # GET /calendars.xml
@@ -21,6 +23,7 @@ class CalendarsController < ApplicationController
     respond_to do |format|
       format.html # show.html.erb
       format.xml  { render :xml => @calendar }
+      format.json { render :json => @calendar.events_in_json }
     end
   end
   

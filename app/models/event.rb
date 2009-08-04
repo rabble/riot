@@ -30,6 +30,18 @@ class Event < ActiveRecord::Base
     set_timezone_from_location if geocoded?
   end
   
+  def start
+    starts_at_local
+  end
+  
+  def end
+    ends_at_local
+  end
+  
+  
+  def to_public_json
+    self.to_json(:methods => [:start, :end, :starts_at_local, :ends_at_local])
+  end
   
   #check to see if an event has been geocoded
   def geocoded?
