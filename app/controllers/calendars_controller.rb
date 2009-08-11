@@ -23,7 +23,17 @@ class CalendarsController < ApplicationController
     respond_to do |format|
       format.html # show.html.erb
       format.xml  { render :xml => @calendar }
-      format.json { render :json => @calendar.events_in_json }
+      format.json { render :json => @calendar.events_in_json(:start => params[:start], :end => params[:end]) }
+    end
+  end
+  
+  def feed
+    @calendar = Calendar.find(params[:id])
+    
+    #at some point we need to distinguish between 
+    respond_to do |format|
+      format.xml  { render :xml => @calendar }
+      format.json { render :json => @calendar.events_in_json(:start => params[:start], :end => params[:end]) }
     end
   end
   

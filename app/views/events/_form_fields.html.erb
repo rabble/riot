@@ -1,7 +1,9 @@
 
 
 <% content_for :header do %>
+<%= javascript_include_tag 'prototype' %>
 	<%= calendar_date_select_includes  %>
+  
 <% end %>
 
 <%= hidden_calendar_id %>
