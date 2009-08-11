@@ -17,7 +17,7 @@ class Calendar < ActiveRecord::Base
     
     events = case
       when options[:date]; events_in_span(options[:date], options[:span])
-      when options[:start] && options[:end]; events_between(options[:start], options[:end])
+      when options[:start] && options[:end]; self.events.between(options[:start], options[:end])
       else events = self.events
     end
       

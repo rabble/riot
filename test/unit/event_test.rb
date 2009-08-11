@@ -86,6 +86,20 @@ class EventTest < ActiveSupport::TestCase
       events.should include(event_ending_early)
       events.should_not include(event_afterwards)
     end
+    
+    test "events in between two timestamps" do
+      
+      event_on_day   = Event.make(:starts_at => Time.parse( 'Thu Jan 01 00:00:01 UTC 1980'), :ends_at => Time.parse('Thu Jan 01 00:01:00 UTC 1980'))
+      event_multiday = Event.make(:starts_at => Time.parse( 'Thu Jan 02 00:00:01 UTC 1979'), :ends_at => Time.parse('Thu Mar 02 00:01:00 UTC 1980'))
+      event_ending_early = Event.make(:starts_at => Time.parse( 'Thu Jan 02 00:00:01 UTC 1979'), :ends_at => Time.parse('Thu Feb 01 00:01:01 UTC 1980'))
+      event_afterwards = Event.make(:starts_at => Time.parse( 'Thu Jun 02 00:00:01 UTC 1980'), :ends_at => Time.parse('Thu Jun 03 00:01:01 UTC 1980'))
+      
+      events = Event.between( Time.parse( 'Thu Feb 01 00:00:01 UTC 1980'),  Time.parse( 'Thu Feb 01 00:00:01 UTC 1980'))
+      events.should_not include(event_on_day)
+      events.should include(event_multiday)
+      events.should include(event_ending_early)
+      events.should_not include(event_afterwards)
+    end
 
   end
   
