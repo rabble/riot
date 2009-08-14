@@ -31,6 +31,7 @@ ActiveRecord::Schema.define(:version => 20090706215932) do
     t.integer  "utc_offset"
     t.string   "title"
     t.text     "description"
+    t.string   "place"
     t.integer  "location_id"
     t.float    "latitude"
     t.float    "longitude"

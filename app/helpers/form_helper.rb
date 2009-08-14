@@ -38,9 +38,9 @@ module FormHelper
   end
 
   def check_box_group(text, method, options = {}, checked_value = "1", unchecked_value = "0")
-        label = @template.label(@object_name, method, text, options.merge(:object => @object))
-        field = @template.check_box(@object_name, method, options.merge(:object => @object, :class => "checkbox"), checked_value, unchecked_value)
-        field_wrap(label, field)
+    label = @template.label(@object_name, method, text, options.merge(:object => @object))
+    field = @template.check_box(@object_name, method, options.merge(:object => @object, :class => "checkbox"), checked_value, unchecked_value)
+    field_wrap(label, field)
   end
 
   def file_group(text, method, options = {})
@@ -81,6 +81,12 @@ module FormHelper
     
     field << '<input type="text" class="textfield datepicker" update_field="' + @object_name.to_s + '_' + method.to_s + '" update_text="' + text_id + '" />'
     field << '<p class="jsdate" id="' + text_id + '">N/A</p>'
+    field_wrap(label, field)
+  end
+  
+  def calendar_date_select_group(text, method, options ={})
+    label = @template.label(@object_name, method, text, options.merge(:object => @object))
+    field = @template.calendar_date_select(@object_name, method, options.merge(:object => @object))
     field_wrap(label, field)
   end
   

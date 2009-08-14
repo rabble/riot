@@ -12,7 +12,7 @@ Event.blueprint do
   starts_at { Time.now + 1.week }
   ends_at { Time.now + 1.week + 1.hour }
   url {Sham.url}
-  calendar (Calendar.make)
+  calendar {Calendar.make}
 end
 
 Calendar.blueprint do

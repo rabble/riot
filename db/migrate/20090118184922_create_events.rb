@@ -7,6 +7,7 @@ class CreateEvents < ActiveRecord::Migration
       t.integer  "utc_offset"
       t.string   "title"
       t.text     "description"
+      t.string   "place"
       t.integer  "location_id"
       t.float    "latitude"
       t.float    "longitude"

@@ -1,6 +1,7 @@
 class Event < ActiveRecord::Base
   belongs_to :calendar
   belongs_to :location
+  before_save :geocode!
   before_save :check_timezone
   
   #need to add catches for events which end within the span but dont' start, or which
@@ -70,14 +71,11 @@ class Event < ActiveRecord::Base
   end
   
   def geocode!
-    #TODO
-    # extract this in do a delayed job
-    places = RestClient.post('http://wherein.yahooapis.com/v1/document', {:documentContent => description, :documentTitle => title, :apikey => gen_apikey, :documentType => 'text/plain',:outputType => 'xml', :autoDisambiguate => 'true'});
-    h = Hpricot.XML(places)
-    write_attribute(:location, (h/:place/:name).inner_text ) if location.nil?
-    write_attribute(:latitude, (h/:place/:centroid/:latitude).inner_text ) 
-    write_attribute(:longitude, (h/:place/:centroid/:longitude).inner_text )
+    #self.attributes= GeoRiot::geocode_with_placemaker(self.attributes)
+    self.attributes= GeoRiot::geocode_with_geonames(self.attributes)
   end
+  
+  
   
   def set_timezone_from_location
     #RestClient.log = '/tmp/restclient.log'
@@ -110,10 +108,6 @@ class Event < ActiveRecord::Base
     return nil unless calendar && calendar.timezone && calendar.utc_offset
     write_attribute(:timezone, calendar.timezone) 
     write_attribute(:utc_offset, calendar.utc_offset) 
-  end
-  
-  def gen_apikey
-    'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
   end
   
 end

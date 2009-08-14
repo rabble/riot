@@ -1,23 +1,22 @@
 
 
 <% content_for :header do %>
-<%= javascript_include_tag 'prototype' %>
+	<%= javascript_include_tag 'prototype' %>
 	<%= calendar_date_select_includes  %>
-  
 <% end %>
 
 <%= hidden_calendar_id %>
 
 <div class="addevents">
-<%= f.text_group "Title", :title, :required => true  %>
-<p>
-<label for="sample_starts_at">Starting</label>
-<%= f.calendar_date_select :starts_at, :embedded => false %>
-</p>
-<p>
-<label for="sample_ends_at">Ending</label>
-<%= f.calendar_date_select :ends_at, :embedded => false %>
-</p>
-<%= f.text_area_group "Description", :description, {:rows => 6 } %>
+	<%= f.text_group "Title", :title, :required => true  %>
+	<%= f.calendar_date_select_group 'Starting', :starts_at, :embedded => false %>
+	<%= f.calendar_date_select_group 'Ending', :ends_at, :embedded => false %>
+	<%= f.text_group "Where?", :place %>
+	<%= f.text_group "Website / More Information", :url  %>
+	<%= f.check_box_group "Wheel Chair Accessible?", :is_accessible  %>
+	<%= f.check_box_group "Tentative", :is_tenative  %>
+	<%= f.check_box_group "All Day Event", :is_all_day  %>
+	
+	<%= f.text_area_group "Description", :description, {:rows => 6 } %>
 </div>
 
