@@ -27,7 +27,6 @@ Rails::Initializer.run do |config|
   config.gem 'rest-client', :lib => "rest_client"
   config.gem 'hpricot'
   config.gem "calendar_date_select"
-  #another gem goes here
   
   # Only load the plugins named here, in the order given (default is alphabetical).
   # :all can be used as a placeholder for all plugins not explicitly named
