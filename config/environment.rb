@@ -6,6 +6,8 @@ RAILS_GEM_VERSION = '2.3.2' unless defined? RAILS_GEM_VERSION
 # Bootstrap the Rails environment, frameworks, and default configuration
 require File.join(File.dirname(__FILE__), 'boot')
 
+Rails::VendorGemSourceIndex.silence_spec_warnings = true
+
 Rails::Initializer.run do |config|
   # Settings in config/environments/* take precedence over those specified here.
   # Application configuration should go into files in config/initializers
@@ -25,6 +27,7 @@ Rails::Initializer.run do |config|
   config.gem 'rest-client', :lib => "rest_client"
   config.gem 'hpricot'
   config.gem "calendar_date_select"
+  #another gem goes here
   
   # Only load the plugins named here, in the order given (default is alphabetical).
   # :all can be used as a placeholder for all plugins not explicitly named
