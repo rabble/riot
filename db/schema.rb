@@ -50,6 +50,18 @@ ActiveRecord::Schema.define(:version => 20090706215932) do
   end
 
   create_table "locations", :force => true do |t|
+    t.integer  "geoname_id"
+    t.string   "fcodeName"
+    t.string   "adminCode1"
+    t.string   "fcl"
+    t.string   "admin_name"
+    t.float    "longitude"
+    t.float    "latitude"
+    t.string   "country_name"
+    t.integer  "population"
+    t.string   "country_code"
+    t.string   "fcode"
+    t.string   "fclName"
     t.datetime "created_at"
     t.datetime "updated_at"
   end
