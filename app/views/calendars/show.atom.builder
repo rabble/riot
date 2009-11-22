@@ -1,13 +1,16 @@
-xml.instruct! :xml, :version=>"1.0", :encoding=>"UTF-8"
-xml.feed("xml:lang" => "en-US", 
-         "xmlns" => 'http://www.w3.org/2005/Atom',
+xml.instruct!
+xml.feed("xmlns" => 'http://www.w3.org/2005/Atom',
          "xmlns:ev" => "http://purl.org/rss/1.0/modules/event/") do
   xml.title @calendar.title
   xml.id "tag:protest.net,2009:pnet,cal/#{@calendar.id}"
   xml.link "rel" => "self", "type" => "application/atom+xml", "href" => url_for(:only_path => false)
   
   #xml.updated @items.first.updated_at.xmlschema unless @items.empty?
-  
+  #xml.author do 
+  #  xml.name @calendar.creator
+  #  xml.uri @calendar.creator.link
+  #end
+
   @calendar.events.each do |event|
     xml.entry do
       xml.id "tag:protest.net,#{event.starts_at.strftime('%Y-%m-%d')}:event:#{event.id}"
