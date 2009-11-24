@@ -12,7 +12,7 @@ ActionController::Routing::Routes.draw do |map|
   
   map.calendar_for_day '/calendar/:calendar_id/:year/:month/:day', :controller => 'calendars', :action => 'day'
   
-  map.connect 'bookmarklet.js', :controller => 'events', :action => 'bookmarklet'
+  map.connect '/bookmarklet.js', :controller => 'events', :action => 'bookmarklet'
   map.connect 'examples', :controller => 'events', :action => 'examples'
   
   map.connect '', :controller => 'calendars', :action => 'index'

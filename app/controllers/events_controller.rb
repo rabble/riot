@@ -115,7 +115,10 @@ class EventsController < ApplicationController
   def load_calendar
     @calendar = Calendar.find(params[:calendar][:id]) if params[:calendar] && params[:calendar][:id]
     @calendar = Calendar.find(params[:calendar_id]) if params[:calendar_id]
+    #uh yeah
+    @calendar = Calendar.find(:first)
     return redirect_to(home_path) if @calendar.nil?
   end
   
 end
+
