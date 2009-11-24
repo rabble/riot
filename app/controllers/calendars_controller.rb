@@ -22,6 +22,7 @@ class CalendarsController < ApplicationController
 
     respond_to do |format|
       format.html # show.html.erb
+      format.atom
       format.xml  { render :xml => @calendar }
       format.json { render :json => @calendar.events_in_json(:start => Time.at(params[:start].to_i), :end => Time.at(params[:end].to_i)) }
     end
