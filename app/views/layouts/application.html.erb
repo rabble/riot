@@ -15,7 +15,7 @@
 
 <div class="navbar">
 	<ul>
-		<li><%= link_to "bookmarklet", "javascript:void(function(){var%20s=document.createElement('script');s.src='http://localhost:3000/bookmarklet.js';document.getElementsByTagName('head')[0].appendChild(s);}())" %></li>
+		<li><%= link_to "bookmarklet", "javascript:function loadScript(scriptURL) { var scriptElem = document.createElement('SCRIPT'); scriptElem.setAttribute('type', 'text/javascript'); scriptElem.setAttribute('src', scriptURL); document.body.appendChild(scriptElem);}loadScript('#{bookmarklet_url}');" %></li>
 	</ul>
 </div>
 

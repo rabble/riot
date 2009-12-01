@@ -2,7 +2,9 @@ class EventsController < ApplicationController
   before_filter :load_calendar
   
   def bookmarklet
-    render :action => "bookmarklet", :layout => false
+    respond_to do |format|
+      format.js # bookmarklet.js.erb
+    end
   end
   
   # GET /events
