@@ -27,7 +27,7 @@ for (var k in p) {
     var fld = document.createElement("input") ;
     fld.setAttribute("name", k) ;
     fld.setAttribute("value", p[k]);
-    fld.appendChild(eventform) ;
+    eventform.appendChild(fld) ;
 }
 document.body.appendChild(eventform) ;
 eventform.submit() ;
