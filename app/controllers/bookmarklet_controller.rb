@@ -1,0 +1,2 @@
+class BookmarkletController < ApplicationController
+end
