@@ -2,7 +2,7 @@
 
 <% form_for([@calendar, @event]) do |f| %>
   <%= f.error_messages %>
-	<%= render :partial => "form_fields", :locals => {:f => f} %>
+	<%= render :partial => "events/form_fields", :locals => {:f => f} %>
 
   <p>
     <%= f.submit "Create" %>

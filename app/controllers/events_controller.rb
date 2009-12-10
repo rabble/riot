@@ -1,11 +1,6 @@
 class EventsController < ApplicationController
   before_filter :load_calendar
   
-  def bookmarklet
-    respond_to do |format|
-      format.js # bookmarklet.js.erb
-    end
-  end
   
   # GET /events
   # GET /events.xml
@@ -40,17 +35,6 @@ class EventsController < ApplicationController
     end
   end
   
-  # GET /events/newbookmarklet
-  
-  def newbookmark
-    @bookmarklet = bookmarklet_params(params)
-    @event = @calendar.events.build
-        
-    respond_to do |format|
-      format.html # newbookmark.html.erb
-      format.xml  { render :xml => @event }
-    end
-  end
   
   # GET /events/1/edit
   def edit
@@ -105,15 +89,7 @@ class EventsController < ApplicationController
   
   protected
   
-  def bookmarklet_params(params)
-    bm = {}
-    bm[:version]    = params[:v]
-    bm[:string]     = params[:s]
-    bm[:page_title] = params[:t]
-    bm[:page_url]   = params[:u]
-    return bm
-  end
-  
+
   def load_calendar
     @calendar = Calendar.find(params[:calendar][:id]) if params[:calendar] && params[:calendar][:id]
     @calendar = Calendar.find(params[:calendar_id]) if params[:calendar_id]

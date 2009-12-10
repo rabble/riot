@@ -7,7 +7,7 @@ var d=document,
     serialized = "";
 
 for (var i=0; i<s.rangeCount; i++) {
-  serialized += (new XMLSerializer().serializeToString(s.getRangeAt(i).cloneContents()));
+    serialized += XMLSerializer().serializeToString(s.getRangeAt(i).cloneContents());
 }
 
 //console.log("rangeCount: "+s.rangeCount);
