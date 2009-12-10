@@ -24,6 +24,7 @@ xml.feed("xmlns" => 'http://www.w3.org/2005/Atom',
       #xml.summary safe_format(event.description), 'type' => 'html'
 
       xml.link :rel => 'alternate', :type => 'text/html', :href => calendar_event_url(event)
+      xml.link :rel => 'related', :type => 'text/html', :href => event.url
       #xml.author{ xml.name item.created_by.name }
 
       xml.ev :startdate, event.starts_at.xmlschema 
