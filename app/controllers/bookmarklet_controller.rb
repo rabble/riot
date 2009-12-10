@@ -12,7 +12,7 @@ class BookmarkletController < ApplicationController
     @calendar = Calendar.find(:first)
     
     respond_to do |format|
-      format.html render 'events/new'
+      format.html { render 'events/new' }
       format.xml  { render :xml => @event }
     end
   end
