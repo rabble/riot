@@ -144,12 +144,28 @@
       ],
       "source": "docs/decisions/phase0a-wu2a-report.md",
       "note": "Order-independent join via willow25 prune predicate; 8 tests incl. 24-permutation MemoryStore differential oracle. 0.6h from the 4.0h WU2 reserve."
+    },
+    {
+      "work_unit": "WU2B core (Task 5 \u2014 session/transaction core)",
+      "status": "partial",
+      "reported_actual_hours": 1.1,
+      "charged_hours": 1.1,
+      "commits": [
+        "see wu2b commit"
+      ],
+      "evidence_paths": [
+        "crates/riot-core/src/session.rs",
+        "crates/riot-core/tests/core_import_transaction.rs",
+        "docs/decisions/phase0a-wu2b-report.md"
+      ],
+      "source": "docs/decisions/phase0a-wu2b-report.md",
+      "note": "Arbiter + copy-on-write transaction + receipts + provenance; 13 core tests. G2 CORE only \u2014 lifecycle races, tombstone/charge accounting, hostile corpus, per-entry selection outstanding."
     }
   ],
   "totals": {
-    "charged_hours": 6.35,
+    "charged_hours": 7.45,
     "reserved_g0_g1_repair_hours": 0.0,
-    "reserved_wu2_hours": 3.4,
+    "reserved_wu2_hours": 2.3,
     "reserved_wu3_hours": 4.0,
     "reserved_contingency_hours": 0.25,
     "reserved_wu4_hours": 2.0
