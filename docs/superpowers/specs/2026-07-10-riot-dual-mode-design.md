@@ -15,6 +15,7 @@ Two addenda are authoritative where they refine this document:
 
 - `docs/research/2026-07-10-mutual-aid-coordination-research.md` grounds coordination workflows, roles, paper interoperability, governance, and runbooks in historical practice.
 - `docs/research/2026-07-10-dual-mode-research-addendum.md` checks the design against current Willow, Meadowcap, MLS, platform APIs, and emergency-data standards.
+- `docs/research/2026-07-10-willow-implementation-audit.md` supersedes earlier implementation-status assumptions for Phase 0A dependency pins, canonical encodings, timestamp/path mapping, and store-join semantics.
 
 Phase 0 is a sequence of separately designed and reviewed evidence sprints. The executable Phase 0A public-kernel contract is `docs/superpowers/specs/2026-07-10-riot-evidence-sprint-design.md`; private groups and the bridge require their own Phase 0B and 0C contracts.
 
@@ -69,7 +70,7 @@ Entries are typed objects (see Shared Kernel) plus static-site paths per Sneaker
 
 ### Exchange
 
-Willow Drop Format files remain the target format for exporting a whole space, a selection, or changes since a timestamp. Import is always preview-first (manifest, signers, entry counts, size shown before ingest). Until Riot has an implementation and authoritative vectors for the current Candidate format, Phase 0 uses a visibly non-interoperable development codec behind `DropCodec`. WTP and live transports remain later work. File drops are the permanent fallback.
+Willow Drop Format files remain the target format for exporting a whole space, a selection, or changes since a timestamp. Import is always preview-first (manifest, signers, entry counts, size shown before ingest). An alpha upstream implementation now exists, but current payload-import limitations, test posture, and vector coverage do not satisfy Riot's conformance bar. Phase 0 therefore uses a visibly non-interoperable development codec behind `DropCodec`. WTP and live transports remain later work. File drops are the permanent fallback.
 
 ### Directory
 
@@ -153,7 +154,7 @@ Constraints:
 - Rendezvous format and its content, size, timing, publisher, and traffic leakage, plus directory abuse controls.
 - Production private-drop envelope construction and padding policy after the evidence format is reviewed.
 - Whether `.snk` compatibility with SneakerWeb is a hard goal or a convention to follow loosely.
-- Current Willow Drop Format implementation/vector availability and whether Riot should contribute the missing conformance work.
+- The stabilization path for Willow Drop Format, authoritative cross-implementation vectors, and whether Riot should contribute missing import/conformance work.
 - Membership vetting and infiltration defense practices in real activist groups (research coverage hole; directly relevant to invite design).
 
 ## Addendum: Research-Grounded Revisions (2026-07-10)

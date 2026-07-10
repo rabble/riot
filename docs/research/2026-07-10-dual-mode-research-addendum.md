@@ -11,7 +11,7 @@ The dual-mode product decision remains sound: Riot should keep open publishing a
 
 ## Executive Findings
 
-1. **Willow is a family of specifications at different maturity levels.** Meadowcap is Final. The current Drop Format is Candidate. Willow'25 and Confidential Sync are Proposals. WTP is a Sketch. The official Rust implementation currently documents Data Model and Meadowcap support; persistent storage and the current Drop Format are still forthcoming.
+1. **Willow is a family of specifications and implementations at different maturity levels.** Meadowcap and the Data Model are Final. The current Drop Format is Candidate. Willow'25 and Confidential Sync are Proposals. WTP is a Sketch. The Rust website lags the repository: stable `willow25` 0.5.0 contains storage, and 0.6.0 alpha contains Drop Format, but current upstream issues still cover Drop imports, storage efficiency, and missing CI. The focused implementation audit is authoritative for Phase 0A pins and join behavior.
 2. **Encrypted Willow is not a complete private-group construction.** It does not hide namespace IDs, subspace IDs, timestamps, ciphertext lengths, path-prefix equality, or Meadowcap authorization tokens. Group membership epochs, key rotation, invitations, storage encryption, padding, and traffic-analysis claims remain application responsibilities.
 3. **A communal namespace cannot have a creator-controlled root curation path.** In Meadowcap, each communal author controls their own subspace. Curation therefore needs one or more owned companion namespaces.
 4. **A globally writable directory cannot be guaranteed tiny.** Per-record size caps do not bound record count or Sybil writers. Discovery should use plural signed directory feeds, expiry, and local budgets instead of one canonical global store.
@@ -26,11 +26,11 @@ The dual-mode product decision remains sound: Riot should keep open publishing a
 | --- | --- | --- |
 | Willow Data Model | Main specification | Use through the current Rust `willow25` crate and verify merge laws locally. |
 | Meadowcap | Final (2025-11-21) | Use for communal/owned authority experiments and write-capability delegation. |
-| Drop Format | Candidate (per the Willow change log) | Keep a `DropCodec` boundary. Do not claim current-format interoperability until Riot has authoritative vectors or a current implementation. |
-| Willow'25 | Proposal | Pin exact crate/spec versions and retain fixtures across upgrades. |
+| Drop Format | Candidate (per the Willow change log) | Alpha Rust implementation exists, but payload-import limitations remain open. Keep a `DropCodec` boundary and do not claim interoperability without authoritative vectors and a separate conformance gate. |
+| Willow'25 | Proposal | Pin `willow25 0.6.0-alpha.3` plus corrected `bab_rs 0.8.1`; stable 0.5.0 computes obsolete WILLIAM3 digests. Retain fixtures across every upgrade. |
 | Confidential Sync | Proposal (2025-11-21) | Defer. It is not required for file-based evidence or member-only local merge. |
 | WTP | Sketch (2026-01-29) | Defer live WTP. Exercise exchange over files and in-memory ordered byte streams first. |
-| Rust implementation | Data Model + Meadowcap documented | Treat persistent storage and current Drop Format as explicit dependencies, not already-solved library calls. |
+| Rust implementation | Data Model, Meadowcap, storage; alpha Drop Format | Use canonical entry/capability encoders, but keep Riot's bounded transactional store and evidence codec. Treat upstream storage/Drop as conformance inputs, not production-ready solved dependencies. |
 
 Sources:
 
@@ -43,6 +43,9 @@ Sources:
 - [Willow changes and implementation status](https://willowprotocol.org/more/changes/)
 - [Willow in Rust](https://willowprotocol.org/rust/)
 - [`willow25` Rust documentation](https://docs.rs/willow25/latest/willow25/)
+- [`willow_rs` canonical repository](https://codeberg.org/worm-blossom/willow_rs)
+- [`bab_rs` changelog](https://codeberg.org/worm-blossom/bab_rs/src/branch/main/CHANGELOG.md)
+- `docs/research/2026-07-10-willow-implementation-audit.md`
 
 ## Open-Plane Corrections
 

@@ -8,11 +8,19 @@ members = [
 resolver = "2"
 
 [workspace.dependencies]
-willow25 = "=0.5.0"
+# Alpha pin is evidence-specific: stable 0.5.0 resolves a bab_rs that
+# computes incorrect WILLIAM3 digests (see docs/research/2026-07-10-willow-
+# implementation-audit.md). Drop Format stays disabled.
+willow25 = { version = "=0.6.0-alpha.3", default-features = false, features = ["std"] }
+bab_rs = { version = "=0.8.1", default-features = false, features = ["william3"] }
 uniffi = "=0.32.0"
-minicbor = "=2.2.2"
+minicbor = { version = "=2.2.2", features = ["std"] }
 cddl-cat = "=0.7.1"
 sha2 = "=0.10.9"
+# Already in the willow25 transitive graph; direct pins so riot-core can
+# drive the async codec traits synchronously. Recorded in the WU0R report.
+pollster = "=0.4.0"
+ufotofu = { version = "=0.12.4", features = ["std"] }
 ed25519-dalek = { version = "=2.2.0", default-features = false, features = ["std", "fast", "zeroize", "rand_core"] }
 rand_core = { version = "=0.6.4", features = ["getrandom"] }
 

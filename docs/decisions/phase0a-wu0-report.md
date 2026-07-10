@@ -1,6 +1,6 @@
 # Phase 0A — WU0 Report: Preflight, Contracts, Pins
 
-- **Status:** PASS
+- **Status:** PASS (WU0R dependency revision completed 2026-07-10 — see "WU0R completion" below)
 - **Owning work unit:** WU0
 - **Date:** 2026-07-10
 - **Elapsed agent-hours:** ~1.0 of 2.0 budgeted
@@ -13,6 +13,12 @@
 4. **Empty `riot-ffi` compiles in release for all four runtime targets**: `aarch64-apple-ios`, `aarch64-apple-ios-sim`, `aarch64-linux-android`, `x86_64-linux-android` (NDK linkers wired in `.cargo/config.toml`).
 5. **The full pinned dependency graph resolves and compiles**: 230 packages locked; `willow25 =0.5.0`, `uniffi =0.32.0`, `minicbor =2.2.2`, `cddl-cat =0.7.1`, `sha2 =0.10.9`, `ed25519-dalek =2.2.0` (restricted features), `rand_core =0.6.4`. `Cargo.lock` committed, sha256 in the manifest.
 6. **Contract validator follows TDD**: RED run enumerated the absent contracts (`schemas/alert.cddl`, `fixtures/manifest.json`); GREEN run passes with all pins, ceilings, fixture-ownership, and report-field requirements present. Command: `cargo xtask validate-contracts`.
+
+## Post-gate Willow correction
+
+The platform/toolchain evidence above remains valid. The dependency claim does not: follow-up inspection of the archived GitHub repository, canonical Codeberg repository, crates, and changelogs found that `willow25 =0.5.0` resolves `bab_rs 0.6.x`, while upstream states that every `bab_rs` version before 0.7 computes incorrect WILLIAM3 digests and that 0.8 is the corrected construction.
+
+Before Willow implementation, WU0R must pin `willow25 =0.6.0-alpha.3` with default features disabled and `std` enabled, force `bab_rs =0.8.1`, regenerate the lock/hash, add corrected WILLIAM3 vectors, and rerun the five-target compile/feature checks. See `docs/research/2026-07-10-willow-implementation-audit.md` and Revision 5 of the evidence-sprint design.
 
 ## Exact commands (as run)
 
@@ -44,6 +50,18 @@ gradle wrapper --gradle-version 9.1.0
 - Gradle dependency locking is deferred to WU3 with the real Android host app, as recorded in the manifest (`gradle_locks_sha256: pending`).
 - Deterministic-provider and forbidden-feature closure scans run in WU4 as designed; nothing in the current graph includes OpenMLS or group code.
 
+## WU0R completion (2026-07-10)
+
+All five audit-mandated steps executed:
+
+1. Workspace pins updated: `willow25 = "=0.6.0-alpha.3"` (default-features off, `std` only, `drop_format` excluded — verified feature-gated in upstream Cargo.toml) and direct `bab_rs = "=0.8.1"` (default-features off, `william3`). Stable 0.5.0 rejected because it resolves `bab_rs 0.6.x`, which upstream's changelog documents as computing incorrect WILLIAM3 digests.
+2. `Cargo.lock` regenerated; new sha256 `8513394ad473c639030d58a85f7dd88571700ba8b38adfae7bc3a5b0061e822d` recorded in the manifest. Verified in-graph: `willow25 0.6.0-alpha.3`, `bab_rs 0.8.1`.
+3. Corrected WILLIAM3 golden vectors frozen at `fixtures/willow/william3-vectors.txt` (empty, short 4-byte, 700-byte partial-block, 5000-byte multi-block), guarded by `public_william3_golden_vectors`.
+4. Five-target compile probe rerun (host dev + 4 release cross-targets, all pass). `cargo tree -p riot-ffi -e features` recorded at `fixtures/feature-closure.txt`; contains no `openmls` and no `willow25/drop_format`.
+5. This report updated with the 0.5.0 rejection rationale (step 1 above).
+
+Deviation recorded: `pollster =0.4.0` and `ufotofu =0.12.4` added as direct workspace pins. Both were already in the locked transitive graph via willow25; the direct pins let riot-core drive the async ufotofu codec traits synchronously and change no resolved versions.
+
 ## Next action
 
-WU1 — deterministic alert/bundle codec, one ephemeral communal-author path, one cross-subspace denial (`cargo test -p riot-core public_`), starting from its named failing tests.
+Continue WU1: evidence-bundle codec against the corrected pins (alert codec and Willow authority/canonical-bytes evidence already GREEN — 16 `public_` tests passing).

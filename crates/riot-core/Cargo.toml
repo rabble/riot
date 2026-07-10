@@ -6,7 +6,10 @@ publish = false
 
 [dependencies]
 willow25 = { workspace = true }
+bab_rs = { workspace = true }
 minicbor = { workspace = true }
+pollster = { workspace = true }
+ufotofu = { workspace = true }
 sha2 = { workspace = true }
 ed25519-dalek = { workspace = true }
 rand_core = { workspace = true }

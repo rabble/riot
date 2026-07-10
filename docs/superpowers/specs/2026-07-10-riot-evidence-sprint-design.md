@@ -1,7 +1,7 @@
 # Riot Phase 0A Public Kernel Evidence Sprint Design
 
 Date: 2026-07-10
-Status: Revision 4; five-role design-review PASS; product-owner confirmed 2026-07-10 — run as specified. Platform pivot (shared Rust core, native iOS + Android shells) also confirmed. A non-gating gateway/reader demo track runs in parallel (see the dual-mode spec's build phasing).
+Status: Revision 5; Willow implementation audit amendments applied after product-owner confirmation; WU0 dependency gate reopened and design-review rerun required before Willow implementation continues. Platform pivot (shared Rust core, native iOS + Android shells) remains confirmed. A non-gating gateway/reader demo track runs in parallel (see the dual-mode spec's build phasing).
 
 ## Purpose
 
@@ -13,7 +13,7 @@ The decisive proof is a two-way runtime artifact handoff. An iOS Simulator test 
 
 This is Phase 0A, not the whole Phase 0 research program. Private groups and declassification have separate threat models and dependency closures. They become Phase 0B and Phase 0C only after separately budgeted designs pass their own review gates.
 
-Research basis: `docs/research/2026-07-10-dual-mode-research-addendum.md`.
+Research basis: `docs/research/2026-07-10-dual-mode-research-addendum.md` and `docs/research/2026-07-10-willow-implementation-audit.md`.
 
 ## Evidence Boundary
 
@@ -59,7 +59,8 @@ WU0 records the actual versions and lock hashes in `fixtures/manifest.json`. A s
 | Dependency | Exact policy |
 | --- | --- |
 | Rust | `1.95.0` in `rust-toolchain.toml` |
-| `willow25` | `=0.5.0`; `dev` feature only in tests |
+| `willow25` | `=0.6.0-alpha.3`; `default-features = false`, `std` only; Drop Format disabled |
+| `bab_rs` | `=0.8.1`; corrected WILLIAM3; direct pin forces the fixed patch in the unified graph |
 | `uniffi` | `=0.32.0`; proc-macro scaffolding and generated Swift/Kotlin bindings |
 | `minicbor` | `=2.2.2`; fixed-key, definite-length encoder |
 | `cddl-cat` | `=0.7.1`; test/dev validation only |
@@ -67,7 +68,7 @@ WU0 records the actual versions and lock hashes in `fixtures/manifest.json`. A s
 | `ed25519-dalek` | `=2.2.0`; evidence public-author signatures |
 | `rand_core` | `=0.6.4` with `getrandom`; OS-backed ephemeral evidence keys |
 
-All workspace dependencies use exact versions and a committed `Cargo.lock`. Gradle dependency locking is enabled and the Android SDK/NDK package revisions are recorded. The stable dependency graph must not contain OpenMLS, group-lab code, deterministic production randomness, or cryptographic debug features.
+All workspace dependencies use exact versions and a committed `Cargo.lock`. Gradle dependency locking is enabled and the Android SDK/NDK package revisions are recorded. The release-shaped graph must not enable `willow25/drop_format` or contain OpenMLS, group-lab code, deterministic production randomness, or cryptographic debug features. The alpha pin is evidence-specific: stable 0.5.0 resolves a `bab_rs` version that upstream documents as computing incorrect WILLIAM3 digests.
 
 ### Apple
 
@@ -89,7 +90,7 @@ All workspace dependencies use exact versions and a committed `Cargo.lock`. Grad
 
 Android tool pins were checked against the official [Android Studio downloads](https://developer.android.com/studio), [Emulator release notes](https://developer.android.com/studio/releases/emulator), and [Platform-Tools release notes](https://developer.android.com/tools/releases/platform-tools) on 2026-07-10.
 
-The current host does not have the Android SDK configured. WU0 installs or verifies the frozen SDK within its budget. If it cannot, Android-dependent gates are INCONCLUSIVE; the sprint does not silently substitute a JVM-only test or a different SDK.
+WU0 verified the installed Android environment: API 36 Google APIs arm64 image revision 7, Emulator 36.6.11, Platform-Tools 37.0.0, Build-Tools 36.0.0, and NDK 28.2.13676358. Any missing or substituted component makes Android-dependent gates INCONCLUSIVE; the sprint never substitutes a JVM-only test.
 
 ### Release-shaped graph
 
@@ -152,7 +153,9 @@ CBOR uses definite lengths, integer field keys in ascending order, shortest inte
 
 ### Authority fixture
 
-The core Willow fixture contains one ephemeral communal author. `RiotSession.open` generates its signing key, communal namespace, author subspace, and author-owned write capability; `AuthorIdentity` exposes only the complete public namespace/subspace IDs and public-key ID. The runtime chooses the alert path and timestamp, while the private key never crosses FFI. One denial fixture proves that the capability cannot authorize a different subspace.
+The core Willow fixture contains one ephemeral communal author. `RiotSession.open` generates a communal namespace ID, discards the privilege-less communal namespace secret, generates the author subspace keypair, and creates the zero-delegation communal write capability. `AuthorIdentity` exposes the complete 32-byte namespace ID, 32-byte subspace ID, `Communal` namespace kind, and a signing-key ID equal to the public subspace ID. The author subspace secret never crosses FFI.
+
+One `ClockSnapshot` supplies two deliberately distinct values: Willow's `Timestamp` in microseconds TAI since J2000 for join recency, and UTC Unix seconds for the signed alert's product-facing time fields. The Phase 0A alert path is `[b"objects", b"alert", object_id_16_bytes, revision_id_16_bytes]`; binary IDs are never truncated. One denial fixture proves that the capability cannot authorize a different subspace.
 
 Owned publication namespaces, delegated curation, feature/correction annotations, and lens behavior remain approved product architecture but are stretch evidence outside G1–G3.
 
@@ -161,18 +164,20 @@ Owned publication namespaces, delegated curation, feature/correction annotations
 `RiotEvidenceBundleV1` is a deliberately non-interoperable development codec:
 
 - visible magic `RIOTE1` and version 1;
-- deterministic CBOR containing complete Willow entries, authorization material, and payload bytes;
+- deterministic CBOR containing, per item, canonical Willow `Entry` bytes, canonical Meadowcap `WriteCapability` bytes, the exact 64-byte subspace signature, and payload bytes;
 - codec ID `org.riot.evidence-bundle/1` and extension `.riot-evidence`;
 - no compression;
 - at most 64 entries and 8 MiB total bytes.
 
 It is not `.snk`, the current Willow Drop Format, or a WTP stream. No later plan may imply compatibility without authoritative vectors and a separate conformance gate.
 
+The outer CBOR never redefines Willow or Meadowcap fields. Decoding requires `Entry::decode_canonic` and `WriteCapability::decode_canonic` with no trailing bytes, reconstructs `AuthorisationToken::new`, verifies exact payload length and corrected WILLIAM3 digest, and only then checks Meadowcap authorisation and the Riot schema.
+
 The digest vocabulary is fixed:
 
 - `bundle_digest`: SHA-256 of the complete `.riot-evidence` bytes;
-- `entry_digest`: SHA-256 of one encoded Willow entry plus its included authorization material;
-- `payload_digest`: digest committed by the Willow entry over the signed alert bytes;
+- `entry_digest`: SHA-256 of domain `riot/entry-digest/v1`, length-delimited canonical entry bytes, length-delimited canonical capability bytes, and signature bytes;
+- `payload_digest`: corrected WILLIAM3 committed by the Willow entry over the signed alert bytes;
 - `object_digest`: SHA-256 of the deterministic alert payload bytes.
 
 ## Stable FFI and Ownership Model
@@ -226,7 +231,7 @@ Rules:
 
 ### In-memory evidence store
 
-`EvidenceStore` proves logical atomicity, not crash durability. It contains a random store ID, monotonic generation, entries, content-deduplication index, and immutable import receipts.
+`EvidenceStore` proves logical atomicity, not crash durability. It is a bounded Riot container, not one Willow store: it contains a random store ID, monotonic generation, a map from namespace ID to namespace-local Willow join state, a seen-entry index, and immutable import receipts. Each namespace-local live view contains only authorised entries for that namespace and obeys Willow prefix pruning and recency.
 
 Inspection retains immutable input bytes and binds the preview to:
 
@@ -236,9 +241,11 @@ Inspection retains immutable input bytes and binds the preview to:
 - fixed ceilings;
 - per-entry preview ID, original bytes/digests, status, eligibility, and warnings.
 
-Commit builds one bounded copy-on-write next snapshot under the session arbiter. One pointer swap installs selected new entries, deduplication/index records, the insertion-receipt references, one generation change when at least one entry is new, and the receipt. The old snapshot remains authoritative until that swap; a fault or `STORE_FULL` before it leaves all observable state unchanged.
+Commit builds one bounded copy-on-write next snapshot under the session arbiter. For each previously unseen selected entry, it computes the Willow join within that entry's namespace: newer prefixes prune older descendants; equal subspace/path/timestamp ties retain the greatest WILLIAM3 digest, then greatest payload length. One pointer swap installs the resulting live namespace views, seen-entry records, first-receipt references, one generation change when at least one entry is new, and the receipt. The old snapshot remains authoritative until that swap; a fault or `STORE_FULL` before it leaves all observable state unchanged.
 
-A preview whose store generation changed returns `STALE_PREVIEW` before duplicate detection. Deduplication uses `entry_digest`, with preview entries kept in original bundle order. `ImportCommitResult` is `Committed(ImportReceipt) | NoChanges(DuplicateResult)`. `DuplicateResult` contains bundle digest, store ID, unchanged generation, and ordered `(preview_entry_id, entry_digest, existing_entry_id, first_seen_time, insertion_receipt_id)` rows. The index permanently points each entry to its first insertion receipt. A duplicate-only reinspection and commit returns `NoChanges` and creates no state; calling commit twice on the same consumed preview instead returns `PREVIEW_CONSUMED`. A mixed new/duplicate import returns `Committed`, increments generation once, and records both dispositions.
+A preview whose store generation changed returns `STALE_PREVIEW` before duplicate detection. Deduplication uses `entry_digest`, with preview entries kept in original bundle order. `ImportCommitResult` is `Committed(ImportReceipt) | NoChanges(DuplicateResult)`. `DuplicateResult` contains bundle digest, store ID, unchanged generation, and ordered `(preview_entry_id, entry_digest, existing_entry_id, first_seen_time, insertion_receipt_id)` rows. The index permanently points each accepted entry, including an immediately dominated entry, to its first receipt. A duplicate-only reinspection and commit returns `NoChanges` and creates no state; calling commit twice on the same consumed preview instead returns `PREVIEW_CONSUMED`. A mixed new/duplicate import returns `Committed`, increments generation once, and records every disposition.
+
+`willow25::storage::MemoryStore` 0.6.0-alpha.3 is a test-only conformance oracle for live-view permutations. It is not the FFI store because it is `Rc`-based, lacks Riot's hard ceilings and receipt model, and is not the session arbiter's transactional state.
 
 ### Preview policy
 
@@ -260,10 +267,14 @@ Selection must be non-empty, contain no duplicates, and reference only eligible 
 preview_entry_id
 entry_digest
 object_digest
-disposition = Inserted | AlreadyPresent
-entry_id
+disposition =
+  Applied { entry_id, pruned_entry_digests[] }
+  | Dominated { dominating_entry_digests[] }
+  | AlreadyPresent { entry_id, insertion_receipt_id }
 first_seen_time
 ```
+
+`Applied` means the entry is present in the resulting live Willow view. `Dominated` means the valid entry was accepted into local seen/receipt history but is absent from the resulting live view. `AlreadyPresent` means this exact entry digest was previously accepted. A newly accepted `Dominated` entry changes store history and therefore increments the generation; a duplicate-only retry does not.
 
 Receipts do not contain mutable trust or presentation state.
 
@@ -301,7 +312,9 @@ Callers may lower but never raise `CoreConfig` ceilings.
 | expansion ratio | 1:1; compression forbidden |
 | store entries / index records | 1,024 each |
 | store encoded-entry bytes | 8 MiB |
+| namespace-local live views | 64 |
 | durable receipts | 256 |
+| pruned/dominating digest references per commit | 1,024 |
 | open stores / previews per session | 1 / 1 |
 | retained preview input / output | 8 MiB / 2 MiB |
 | next transaction snapshot | 8 MiB, in addition to the bounded current store and retained input |
@@ -313,12 +326,17 @@ All length/count arithmetic is checked before allocation. Swift and Kotlin use c
 
 | Fixture | Preview/action expectation | Commit/store expectation |
 | --- | --- | --- |
-| valid known alert | eligible | inserted with per-entry receipt |
-| unknown signer, valid signature/capability | eligible; `UnknownTrust` | inserted; trust remains unknown |
+| valid known alert | eligible | `Applied` with per-entry receipt |
+| unknown signer, valid signature/capability | eligible; `UnknownTrust` | `Applied`; trust remains unknown |
 | invalid signature | hard-ineligible, distinct code | unchanged |
 | invalid capability | hard-ineligible, distinct code | unchanged |
 | malformed/oversized/limit edge | rejected before preview or exact boundary accepted | unchanged on reject |
 | duplicate-only | already present | `NoChanges`; no generation or new durable receipt |
+| newer prefix / older descendants | eligible | prefix `Applied`; descendants pruned and named in receipt |
+| candidate dominated by newer prefix | eligible | `Dominated`; live view unchanged, seen index and receipt committed |
+| equal coordinate tie | eligible | greatest WILLIAM3 digest, then greatest payload length wins |
+| distinct namespace/subspace | eligible | no cross-namespace or cross-subspace pruning |
+| join permutations | eligible | commutative, associative, idempotent live view matching alpha.3 `MemoryStore` |
 | store-full / injected pre-swap failure | stable failure code | exact before-state retained |
 | commit versus reject race | one terminal winner | at most one swap/receipt |
 | close versus commit race | one terminal winner | state matches winning action |
@@ -343,7 +361,7 @@ If and only if all core gates pass with budget remaining, agents may add: empty/
 7. Run `RiotEvidenceTests/IOSImportsAndroidBundle`, then copy its consumer facts from the resolved container.
 8. Compare fact JSON and write `build/evidence/g3-runtime-handoff.json`. The shell may parse fact JSON but never the `.riot-evidence` bytes.
 
-For each leg, the producer facts include runtime/tool versions, complete author/namespace/subspace IDs, payload fields, bundle/entry/object digests, and artifact byte count. The consumer must assert byte-identical bundle digest, valid signature, valid capability, matching public IDs and payload fields, `UnknownTrust`, and `Inserted`. The two legs must have distinct author, object, entry, and bundle IDs/digests.
+For each leg, the producer facts include runtime/tool versions, complete author/namespace/subspace IDs, payload fields, Willow timestamp, corrected WILLIAM3 payload digest, bundle/entry/object digests, and artifact byte count. The consumer must assert byte-identical bundle digest, canonical component decoding, matching WILLIAM3, valid signature, valid capability, matching public IDs and payload fields, `UnknownTrust`, and `Applied`. The two legs must have distinct author, object, entry, and bundle IDs/digests.
 
 The script resolves one simulator UDID and one emulator serial, fails on ambiguity, and runs these concrete test entrypoints:
 
@@ -365,9 +383,9 @@ Each work unit begins with its named failing test, confirms the intended failure
 
 | WU | First RED evidence | GREEN command |
 | --- | --- | --- |
-| WU0 | contract validator lists absent pins, ceilings, fixture ownership, and report fields | `cargo xtask validate-contracts` |
-| WU1 | alert golden vectors and Willow authority denial fail because codec/adapter are absent | `cargo test -p riot-core public_` |
-| WU2 | core transaction, disposition, bounds, rollback, log-safety, panic, and three lifecycle-concurrency tests fail because types are absent | `cargo test -p riot-core -p riot-conformance core_import_` |
+| WU0R | dependency validator rejects `willow25 0.5.0`, old lock hash, missing corrected WILLIAM3 vectors, or enabled Drop Format | `cargo xtask validate-contracts` and `cargo test -p riot-conformance william3_` |
+| WU1 | alert golden vectors, canonical Willow component bytes, corrected payload digests, and authority denial fail because codec/adapter are absent | `cargo test -p riot-core public_` |
+| WU2 | join laws/permutations, dispositions, transaction, bounds, rollback, log-safety, panic, and three lifecycle-concurrency tests fail because types are absent | `cargo test -p riot-core -p riot-conformance core_import_` |
 | WU3 | native tests fail because generated bindings/libraries and runtime handoff are absent | `scripts/phase0a/cross-runtime-handoff.sh` |
 | WU4 | adversarial manifest fails on missing hostile-corpus mutations, closure scan, hashes, and gate decisions | `scripts/phase0a/verify.sh` |
 
@@ -379,6 +397,7 @@ cargo xtask generate-bindings
 cargo xtask package-ios
 cargo xtask package-android
 cargo test --workspace --all-targets
+cargo test -p riot-conformance william3_
 cargo test -p riot-conformance core_import_
 cargo test -p riot-conformance hostile_bundle_
 cargo test -p riot-conformance hostile_alert_
@@ -391,7 +410,7 @@ cargo tree -p riot-ffi -e features
 scripts/phase0a/cross-runtime-handoff.sh
 ```
 
-The verification script additionally checks release XCTest/APK artifacts for forbidden group/OpenMLS libraries, deterministic providers or seeds, forbidden Ed25519 features (`serde`, `hazmat`, `pem`, `pkcs8`), debug features, plaintext fixture secrets, and secret-bearing symbol/log strings. Feature-tree policy is authoritative; symbol scanning is defense in depth. The report records commands, environment, exit status, artifact paths, and hashes rather than interpreting a skipped command as PASS.
+The verification script additionally rejects `willow25/drop_format`, `bab_rs <0.8.1`, forbidden group/OpenMLS libraries, deterministic providers or seeds, forbidden Ed25519 features (`serde`, `hazmat`, `pem`, `pkcs8`), debug features, plaintext fixture secrets, and secret-bearing symbol/log strings in release XCTest/APK artifacts. Feature-tree policy is authoritative; symbol scanning is defense in depth. The report records commands, environment, exit status, artifact paths, and hashes rather than interpreting a skipped command as PASS.
 
 ## Work Units and Hard Budget
 
@@ -399,11 +418,12 @@ The budget is 16 aggregate agent-hours. Parallel agents charge their wall time i
 
 | Work unit | Budget | Deliverable and stop rule |
 | --- | ---: | --- |
-| WU0 — preflight, contracts, pins | 2h | first 30 minutes verify/download the pinned Android tools, boot the arm64 AVD, run a blank instrumentation test, and compile empty Rust libraries for both runtime targets; any failure stops the sprint as INCONCLUSIVE before feature work. Remaining time freezes locks, limits, manifest, and report format |
+| WU0 — completed platform preflight | 1h spent | arm64 AVD, blank instrumentation, four native Rust targets, contracts, manifest, and original locks verified; platform evidence remains PASS |
+| WU0R — corrected Willow dependency | 0.5h | replace 0.5.0 with 0.6.0-alpha.3, pin `bab_rs 0.8.1`, disable Drop Format, regenerate lock/hash, add corrected WILLIAM3 vectors, rerun five-target compile and feature-tree checks; Willow work stops until PASS |
 | WU1 — alert and communal authority | 2.5h | deterministic alert/bundle codec, one ephemeral communal-author path, and one cross-subspace denial; G1 FAIL stops downstream work |
-| WU2 — core import and provenance facts | 3h | synchronous preview, bounded snapshot transaction, receipt/duplicate result, essential hostile cases, and arbiter concurrency tests; G2 FAIL stops native work |
+| WU2 — Willow join, import, and provenance facts | 4h | namespace-local join laws and oracle permutations, bounded snapshot transaction, three dispositions, essential hostile cases, and arbiter concurrency tests; G2 FAIL stops native work |
 | WU3 — FFI and native handoff | 4.5h | generated Swift/Kotlin bindings, XCTest/instrumentation hosts, container-aware two-way runtime handoff; no UI or JVM substitute |
-| Integration contingency | 2h | reserved only for binding, packaging, simulator/emulator, or handoff repair; unused time is not converted to stretch scope |
+| Integration contingency | 1.5h | reserved only for dependency, binding, packaging, simulator/emulator, or handoff repair; unused time is not converted to stretch scope |
 | WU4 — adversarial verification and report | 2h | bounded hostile corpus, closure/bundle scan, hashes, gate report, GO/REVISE decision |
 
 WU4 always begins at aggregate hour 14 and is not available for feature rescue. If core work plus contingency has not completed by then, unfinished gates are INCONCLUSIVE and WU4 records the evidence that exists.
@@ -412,9 +432,10 @@ WU4 always begins at aggregate hour 14 and is not available for feature rescue. 
 
 | Gate | PASS evidence | FAIL / INCONCLUSIVE action |
 | --- | --- | --- |
-| G1 Public model and authority | required operational-alert fields, deterministic alert/bundle vectors, one communal-author success, one cross-subspace denial, and hostile decoder bounds pass | revise object/authority mapping; do not expand schemas |
-| G2 Core import and provenance | every core fixture row, hard store/preview bounds, logical rollback, exact duplicate result, per-entry disposition, provenance facts, log/panic safety, and arbiter-concurrency assertion passes | block public import expansion |
-| G3 Native runtime handoff | a distinct iOS-generated signed alert imports as `Inserted` on Android and a distinct Android-generated alert imports as `Inserted` on iOS through packaged generated bindings; all per-leg fact assertions pass | revise ABI/toolchain; do not claim cross-platform core |
+| G0 Correct Willow basis | corrected WILLIAM3 vectors, alpha.3/fixed Bab pins, disabled Drop Format, five-target compile, lock hash, and feature closure pass | stop Willow implementation and revise dependency strategy |
+| G1 Public model and authority | required operational-alert fields, deterministic Riot/Willow component vectors, one communal-author success, one cross-subspace denial, and hostile decoder bounds pass | revise object/authority mapping; do not expand schemas |
+| G2 Willow join, import, and provenance | every core fixture row, join laws/oracle permutations, three dispositions, hard store/preview bounds, logical rollback, duplicate result, provenance facts, log/panic safety, and arbiter-concurrency assertion passes | block public import expansion |
+| G3 Native runtime handoff | a distinct iOS-generated signed alert imports as `Applied` on Android and a distinct Android-generated alert imports as `Applied` on iOS through packaged generated bindings; corrected WILLIAM3 and all per-leg fact assertions pass | revise ABI/toolchain; do not claim cross-platform core |
 
 Every report contains status, owning work unit, exact commands, frozen environment, evidence paths, hashes, elapsed agent-hours, and next action.
 
