@@ -16,8 +16,8 @@ use minicbor::{Decoder, Encoder};
 use sha2::{Digest, Sha256};
 
 use crate::willow::{
-    decode_capability_canonic, decode_entry_canonic, encode_capability, encode_entry,
-    verify_entry, william3_digest, AuthorisationToken, Entry,
+    decode_capability_canonic, decode_entry_canonic, encode_capability, encode_entry, verify_entry,
+    william3_digest, AuthorisationToken, Entry,
 };
 use willow25::authorisation::AuthorisedEntry;
 use willow25::entry::{Entrylike, SubspaceSignature};
@@ -128,8 +128,8 @@ impl BundleItem {
             return Err(BundleError::AuthorizationTooLarge);
         }
         let entry = decode_entry_canonic(&self.entry_bytes).map_err(|_| BundleError::Malformed)?;
-        let capability =
-            decode_capability_canonic(&self.capability_bytes).map_err(|_| BundleError::Malformed)?;
+        let capability = decode_capability_canonic(&self.capability_bytes)
+            .map_err(|_| BundleError::Malformed)?;
         let sig_array: [u8; SIGNATURE_BYTES] = self
             .signature_bytes
             .as_slice()
@@ -292,7 +292,11 @@ pub fn bundle_digest(bundle_bytes: &[u8]) -> [u8; 32] {
 
 /// Domain-separated SHA-256 binding entry, capability, and signature bytes
 /// so concatenation is unambiguous.
-pub fn entry_digest(entry_bytes: &[u8], capability_bytes: &[u8], signature_bytes: &[u8]) -> [u8; 32] {
+pub fn entry_digest(
+    entry_bytes: &[u8],
+    capability_bytes: &[u8],
+    signature_bytes: &[u8],
+) -> [u8; 32] {
     let mut hasher = Sha256::new();
     hasher.update(b"riot/entry-digest/v1");
     hasher.update((entry_bytes.len() as u32).to_be_bytes());

@@ -4,8 +4,8 @@
 use riot_core::model::encode_alert;
 use riot_core::willow::{
     alert_path, authorise_entry, build_alert_entry, decode_capability_canonic,
-    decode_entry_canonic, encode_capability, encode_entry, generate_communal_author,
-    verify_entry, william3_digest, EntryFacts, WillowError,
+    decode_entry_canonic, encode_capability, encode_entry, generate_communal_author, verify_entry,
+    william3_digest, EntryFacts, WillowError,
 };
 use willow25::entry::Entrylike;
 use willow25::groupings::{Coordinatelike, Keylike};
@@ -75,9 +75,16 @@ fn public_communal_author_authorises_own_subspace() {
     );
 
     let payload = canonical_payload();
-    let entry = build_alert_entry(&author, &OBJECT_ID, &REVISION_ID, WILLOW_TS_MICROS, &payload)
-        .expect("entry builds");
-    let authorised = authorise_entry(&author, entry.clone()).expect("own-subspace write authorises");
+    let entry = build_alert_entry(
+        &author,
+        &OBJECT_ID,
+        &REVISION_ID,
+        WILLOW_TS_MICROS,
+        &payload,
+    )
+    .expect("entry builds");
+    let authorised =
+        authorise_entry(&author, entry.clone()).expect("own-subspace write authorises");
 
     assert!(verify_entry(&entry, authorised.authorisation_token()));
 }
@@ -88,17 +95,28 @@ fn public_cross_subspace_denial() {
     let intruder = generate_communal_author();
     let payload = canonical_payload();
 
-    let own_entry =
-        build_alert_entry(&author, &OBJECT_ID, &REVISION_ID, WILLOW_TS_MICROS, &payload)
-            .expect("entry builds");
+    let own_entry = build_alert_entry(
+        &author,
+        &OBJECT_ID,
+        &REVISION_ID,
+        WILLOW_TS_MICROS,
+        &payload,
+    )
+    .expect("entry builds");
     let own_token = authorise_entry(&author, own_entry.clone())
         .expect("own write authorises")
         .authorisation_token()
         .clone();
 
     // The intruder writes into the author's subspace of the same namespace.
-    let forged = build_alert_entry(&author, &OBJECT_ID, &REVISION_ID, WILLOW_TS_MICROS, &payload)
-        .expect("entry builds");
+    let forged = build_alert_entry(
+        &author,
+        &OBJECT_ID,
+        &REVISION_ID,
+        WILLOW_TS_MICROS,
+        &payload,
+    )
+    .expect("entry builds");
     assert!(
         matches!(
             authorise_entry(&intruder, forged),
@@ -126,8 +144,14 @@ fn public_cross_subspace_denial() {
 fn public_alert_entry_binds_path_and_payload() {
     let author = generate_communal_author();
     let payload = canonical_payload();
-    let entry = build_alert_entry(&author, &OBJECT_ID, &REVISION_ID, WILLOW_TS_MICROS, &payload)
-        .expect("entry builds");
+    let entry = build_alert_entry(
+        &author,
+        &OBJECT_ID,
+        &REVISION_ID,
+        WILLOW_TS_MICROS,
+        &payload,
+    )
+    .expect("entry builds");
 
     let expected = alert_path(&OBJECT_ID, &REVISION_ID).expect("path builds");
     assert_eq!(entry.path(), &expected);
@@ -146,8 +170,14 @@ fn public_alert_entry_binds_path_and_payload() {
 fn public_entry_and_capability_canonical_bytes_roundtrip() {
     let author = generate_communal_author();
     let payload = canonical_payload();
-    let entry = build_alert_entry(&author, &OBJECT_ID, &REVISION_ID, WILLOW_TS_MICROS, &payload)
-        .expect("entry builds");
+    let entry = build_alert_entry(
+        &author,
+        &OBJECT_ID,
+        &REVISION_ID,
+        WILLOW_TS_MICROS,
+        &payload,
+    )
+    .expect("entry builds");
 
     let entry_bytes = encode_entry(&entry);
     let decoded = decode_entry_canonic(&entry_bytes).expect("canonical entry decodes");

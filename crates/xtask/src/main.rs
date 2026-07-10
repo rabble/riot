@@ -125,7 +125,9 @@ fn check_dep(
     failures: &mut Vec<String>,
 ) {
     let Some(dep) = deps.get(name) else {
-        failures.push(format!("Cargo.toml: workspace dependency `{name}` absent (must be {pin})"));
+        failures.push(format!(
+            "Cargo.toml: workspace dependency `{name}` absent (must be {pin})"
+        ));
         return;
     };
     let version = match dep {
@@ -160,7 +162,9 @@ fn check_dep(
             .unwrap_or_default();
         for feature in required {
             if !features.iter().any(|f| f == feature) {
-                failures.push(format!("Cargo.toml: `{name}` must enable feature `{feature}`"));
+                failures.push(format!(
+                    "Cargo.toml: `{name}` must enable feature `{feature}`"
+                ));
             }
         }
         for feature in forbidden {
@@ -193,7 +197,11 @@ fn check_lockfile(root: &Path, failures: &mut Vec<String>) {
         packages
             .iter()
             .filter(|p| p.get("name").and_then(|n| n.as_str()) == Some(name))
-            .filter_map(|p| p.get("version").and_then(|v| v.as_str()).map(str::to_string))
+            .filter_map(|p| {
+                p.get("version")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string)
+            })
             .collect()
     };
 
@@ -239,7 +247,9 @@ fn check_fixture_manifest(root: &Path, failures: &mut Vec<String>) {
                 ));
             }
         }
-        _ => failures.push("fixtures/manifest.json: cargo_lock_sha256 missing or Cargo.lock unreadable".into()),
+        _ => failures.push(
+            "fixtures/manifest.json: cargo_lock_sha256 missing or Cargo.lock unreadable".into(),
+        ),
     }
 
     // The WILLIAM3 vector fixture must be frozen by hash.
@@ -305,7 +315,9 @@ fn check_fixture_manifest(root: &Path, failures: &mut Vec<String>) {
 
     for key in ["objects", "willow", "imports"] {
         if doc["fixture_ownership"].get(key).is_none() {
-            failures.push(format!("fixtures/manifest.json: fixture_ownership.{key} absent"));
+            failures.push(format!(
+                "fixtures/manifest.json: fixture_ownership.{key} absent"
+            ));
         }
     }
 
@@ -329,7 +341,9 @@ fn check_fixture_manifest(root: &Path, failures: &mut Vec<String>) {
         .unwrap_or_default();
     for field in REPORT_FIELDS {
         if !report_fields.iter().any(|f| f == field) {
-            failures.push(format!("fixtures/manifest.json: report_fields missing `{field}`"));
+            failures.push(format!(
+                "fixtures/manifest.json: report_fields missing `{field}`"
+            ));
         }
     }
 }
@@ -357,7 +371,11 @@ mod tests {
             b"{\"vectors\":[]}",
         )
         .unwrap();
-        std::fs::write(dir.join("schemas/alert.cddl"), "alert = \"org.riot.alert/1\"").unwrap();
+        std::fs::write(
+            dir.join("schemas/alert.cddl"),
+            "alert = \"org.riot.alert/1\"",
+        )
+        .unwrap();
     }
 
     fn good_workspace_toml() -> String {
@@ -386,18 +404,39 @@ version = "0.8.1"
 
     fn manifest_with(lock_hash: &str, vectors_hash: &str) -> String {
         let ceilings: String = [
-            "artifact_bytes", "entries_per_bundle", "payload_bytes", "cbor_nesting",
-            "map_entries", "decoded_cbor_nodes", "string_bytes", "path_components",
-            "path_component_bytes", "path_total_bytes", "authorization_chain_depth",
-            "authorization_bytes_per_entry", "authorization_bytes_per_bundle",
-            "warning_records", "store_entries", "store_index_records",
-            "store_encoded_entry_bytes", "durable_receipts", "open_stores_per_session",
-            "open_previews_per_session", "retained_preview_input_bytes",
-            "retained_preview_output_bytes", "transaction_snapshot_bytes",
-            "inspection_target_seconds", "retained_store_budget_bytes", "namespace_views",
-            "store_charge_entry_bytes", "store_charge_namespace_bytes",
-            "store_charge_receipt_bytes", "store_charge_digest_reference_bytes",
-            "entry_reference_cap", "plan_tombstone_bytes", "plans_per_preview",
+            "artifact_bytes",
+            "entries_per_bundle",
+            "payload_bytes",
+            "cbor_nesting",
+            "map_entries",
+            "decoded_cbor_nodes",
+            "string_bytes",
+            "path_components",
+            "path_component_bytes",
+            "path_total_bytes",
+            "authorization_chain_depth",
+            "authorization_bytes_per_entry",
+            "authorization_bytes_per_bundle",
+            "warning_records",
+            "store_entries",
+            "store_index_records",
+            "store_encoded_entry_bytes",
+            "durable_receipts",
+            "open_stores_per_session",
+            "open_previews_per_session",
+            "retained_preview_input_bytes",
+            "retained_preview_output_bytes",
+            "transaction_snapshot_bytes",
+            "inspection_target_seconds",
+            "retained_store_budget_bytes",
+            "namespace_views",
+            "store_charge_entry_bytes",
+            "store_charge_namespace_bytes",
+            "store_charge_receipt_bytes",
+            "store_charge_digest_reference_bytes",
+            "entry_reference_cap",
+            "plan_tombstone_bytes",
+            "plans_per_preview",
         ]
         .iter()
         .map(|k| format!("\"{k}\": 1"))
@@ -450,7 +489,9 @@ version = "0.8.1"
         .unwrap();
         let failures = validate_contents(&dir);
         assert!(
-            failures.iter().any(|f| f.contains("willow25") && f.contains(WILLOW25_PIN)),
+            failures
+                .iter()
+                .any(|f| f.contains("willow25") && f.contains(WILLOW25_PIN)),
             "must name the willow25 pin violation: {failures:?}"
         );
     }
@@ -472,7 +513,9 @@ version = "0.8.1"
         .unwrap();
         let failures = validate_contents(&dir);
         assert!(
-            failures.iter().any(|f| f.contains("bab_rs") && f.contains("incorrect WILLIAM3")),
+            failures
+                .iter()
+                .any(|f| f.contains("bab_rs") && f.contains("incorrect WILLIAM3")),
             "must name the bab_rs basis violation: {failures:?}"
         );
     }
@@ -488,7 +531,9 @@ version = "0.8.1"
         .unwrap();
         let failures = validate_contents(&dir);
         assert!(
-            failures.iter().any(|f| f.contains("cargo_lock_sha256 mismatch")),
+            failures
+                .iter()
+                .any(|f| f.contains("cargo_lock_sha256 mismatch")),
             "must name the lock hash mismatch: {failures:?}"
         );
     }
@@ -504,7 +549,9 @@ version = "0.8.1"
         .unwrap();
         let failures = validate_contents(&dir);
         assert!(
-            failures.iter().any(|f| f.contains("panic") && f.contains("unwind")),
+            failures
+                .iter()
+                .any(|f| f.contains("panic") && f.contains("unwind")),
             "must name the panic strategy violation: {failures:?}"
         );
     }
@@ -543,8 +590,12 @@ version = "0.8.1"
         )
         .unwrap();
         let failures = validate_contents(&dir);
-        assert!(failures.iter().any(|f| f.contains("william3_vectors_sha256")));
-        assert!(failures.iter().any(|f| f.contains("retained_store_budget_bytes")));
+        assert!(failures
+            .iter()
+            .any(|f| f.contains("william3_vectors_sha256")));
+        assert!(failures
+            .iter()
+            .any(|f| f.contains("retained_store_budget_bytes")));
         assert!(failures.iter().any(|f| f.contains("plans_per_preview")));
         assert!(failures.iter().any(|f| f.contains("report_fields missing")));
     }

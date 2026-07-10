@@ -117,7 +117,12 @@ fn validate(alert: &AlertPayload) -> Result<(), AlertError> {
     if alert.expires_at <= alert.created_at {
         return Err(AlertError::ExpiryNotAfterCreated);
     }
-    check_text("language", &alert.language, MIN_LANGUAGE_BYTES, MAX_LANGUAGE_BYTES)?;
+    check_text(
+        "language",
+        &alert.language,
+        MIN_LANGUAGE_BYTES,
+        MAX_LANGUAGE_BYTES,
+    )?;
     check_text("headline", &alert.headline, 1, MAX_HEADLINE_BYTES)?;
     check_text("description", &alert.description, 1, MAX_DESCRIPTION_BYTES)?;
     if let Some(area) = &alert.affected_area_claim {
@@ -140,12 +145,7 @@ fn validate(alert: &AlertPayload) -> Result<(), AlertError> {
     Ok(())
 }
 
-fn check_text(
-    name: &'static str,
-    value: &str,
-    min: usize,
-    max: usize,
-) -> Result<(), AlertError> {
+fn check_text(name: &'static str, value: &str, min: usize, max: usize) -> Result<(), AlertError> {
     if value.trim().is_empty() || value.len() < min {
         return Err(AlertError::FieldEmpty(name));
     }
@@ -259,8 +259,7 @@ pub fn decode_alert(input: &[u8]) -> Result<AlertPayload, AlertError> {
             }
             8 => {
                 let raw = d.u8().map_err(|_| AlertError::Malformed)?;
-                severity =
-                    Some(Severity::from_u8(raw).ok_or(AlertError::InvalidEnum("severity"))?);
+                severity = Some(Severity::from_u8(raw).ok_or(AlertError::InvalidEnum("severity"))?);
             }
             9 => {
                 let raw = d.u8().map_err(|_| AlertError::Malformed)?;
@@ -268,9 +267,7 @@ pub fn decode_alert(input: &[u8]) -> Result<AlertPayload, AlertError> {
                     Some(Certainty::from_u8(raw).ok_or(AlertError::InvalidEnum("certainty"))?);
             }
             10 => headline = Some(decode_text(&mut d, "headline", MAX_HEADLINE_BYTES)?),
-            11 => {
-                description = Some(decode_text(&mut d, "description", MAX_DESCRIPTION_BYTES)?)
-            }
+            11 => description = Some(decode_text(&mut d, "description", MAX_DESCRIPTION_BYTES)?),
             12 => {
                 affected_area_claim =
                     Some(decode_text(&mut d, "affected_area_claim", MAX_AREA_BYTES)?)
@@ -337,11 +334,7 @@ fn decode_id(d: &mut Decoder<'_>) -> Result<[u8; 16], AlertError> {
     <[u8; 16]>::try_from(bytes).map_err(|_| AlertError::Malformed)
 }
 
-fn decode_text(
-    d: &mut Decoder<'_>,
-    name: &'static str,
-    max: usize,
-) -> Result<String, AlertError> {
+fn decode_text(d: &mut Decoder<'_>, name: &'static str, max: usize) -> Result<String, AlertError> {
     if d.datatype().map_err(|_| AlertError::Malformed)? != Type::String {
         return Err(AlertError::Malformed);
     }

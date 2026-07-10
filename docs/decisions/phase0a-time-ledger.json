@@ -59,10 +59,25 @@
       ],
       "source": "docs/decisions/phase0a-wu0-report.md",
       "note": "Structural validator + independently cross-checked WILLIAM3 vectors (willow-go 9d848ee raw patch), hifitime pin, panic=unwind, locked five-target probe. One fabricated hex from a summarized fetch was caught by the executable check and replaced with raw-patch values."
+    },
+    {
+      "work_unit": "G1 repair Task 1 (alert adoption)",
+      "status": "completed",
+      "reported_actual_hours": 0.15,
+      "charged_hours": 0.15,
+      "commits": [
+        "pending"
+      ],
+      "evidence_paths": [
+        "crates/riot-core/tests/public_alert.rs",
+        "fixtures/objects/alert-golden-1.json"
+      ],
+      "source": "cargo test -p riot-core --test public_alert (13 passed)",
+      "note": "Added duplicate-key, non-shortest-integer, and JSON-projection tests; JSON is diagnostic only."
     }
   ],
   "totals": {
-    "charged_hours": 3.6,
+    "charged_hours": 3.75,
     "reserved_g0_g1_repair_hours": 1.5,
     "reserved_wu2_hours": 4.0,
     "reserved_wu3_hours": 4.0,

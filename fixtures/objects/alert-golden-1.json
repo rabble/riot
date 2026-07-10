@@ -1,0 +1,19 @@
+{
+  "comment": "Readable projection of alert-golden-1.cbor for fixture-drift diagnosis only. CBOR is the signed, authoritative form.",
+  "cbor_sha256": "03cbe69826a66e4bff7e84985306dc337cd86c51e701e11ad62c202391dfbaeb",
+  "schema": "org.riot.alert/1",
+  "object_id_ascii": "riot-obj-0000001",
+  "revision_id_ascii": "riot-rev-0000001",
+  "created_at": 1783000000,
+  "valid_from": 1783000100,
+  "expires_at": 1783086400,
+  "language": "en",
+  "urgency": "immediate (0)",
+  "severity": "severe (1)",
+  "certainty": "observed (0)",
+  "headline": "Bridge at 4th St closed",
+  "description": "Use the north route via Alder. Medics staging at the school gym.",
+  "affected_area_claim": "Downtown between 3rd and 5th",
+  "source_claims": ["Confirmed by two field observers at 14:20"],
+  "ai_assisted": false
+}

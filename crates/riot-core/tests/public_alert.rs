@@ -17,8 +17,7 @@ fn canonical_alert() -> AlertPayload {
         severity: Severity::Severe,
         certainty: Certainty::Observed,
         headline: "Bridge at 4th St closed".to_string(),
-        description: "Use the north route via Alder. Medics staging at the school gym."
-            .to_string(),
+        description: "Use the north route via Alder. Medics staging at the school gym.".to_string(),
         affected_area_claim: Some("Downtown between 3rd and 5th".to_string()),
         source_claims: vec!["Confirmed by two field observers at 14:20".to_string()],
         ai_assisted: false,
@@ -48,9 +47,8 @@ fn public_alert_golden_vector_matches_frozen_bytes() {
         std::fs::write(path, &encoded).expect("bless golden vector");
     }
 
-    let frozen = std::fs::read(path).expect(
-        "golden vector missing — run once with RIOT_BLESS=1 to freeze it, then commit",
-    );
+    let frozen = std::fs::read(path)
+        .expect("golden vector missing — run once with RIOT_BLESS=1 to freeze it, then commit");
     assert_eq!(
         encoded, frozen,
         "canonical alert bytes diverged from the frozen golden vector"
@@ -145,6 +143,61 @@ fn public_alert_decode_rejects_oversized_input() {
         decode_alert(&oversized),
         Err(AlertError::InputTooLarge)
     ));
+}
+
+#[test]
+fn public_alert_decode_rejects_duplicate_key() {
+    // Duplicate the final pair (key 14): same key twice violates ascending
+    // order and must produce the distinct misordered/duplicate code.
+    let valid = encode_alert(&canonical_alert()).expect("encode");
+    let mut tampered = valid.clone();
+    assert_eq!(tampered[0] & 0xe0, 0xa0);
+    tampered[0] += 1;
+    tampered.extend_from_slice(&[0x0e, 0xf4]); // key 14 again, value false
+    assert!(matches!(
+        decode_alert(&tampered),
+        Err(AlertError::DuplicateOrMisorderedKey(14))
+    ));
+}
+
+#[test]
+fn public_alert_decode_rejects_non_shortest_integer_encoding() {
+    // Re-encode key 0 (0x00) as the two-byte form 0x18 0x00. The strict
+    // canonicality proof must reject the widened-but-equal document.
+    let valid = encode_alert(&canonical_alert()).expect("encode");
+    assert_eq!(valid[1], 0x00, "first key is 0");
+    let mut widened = Vec::with_capacity(valid.len() + 1);
+    widened.push(valid[0]);
+    widened.extend_from_slice(&[0x18, 0x00]);
+    widened.extend_from_slice(&valid[2..]);
+    assert!(decode_alert(&widened).is_err());
+}
+
+#[test]
+fn public_alert_golden_json_projection_matches_cbor() {
+    // The JSON projection is diagnostic only; CBOR remains the signed form.
+    // It must agree with the frozen CBOR fixture's hash.
+    let json_path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../fixtures/objects/alert-golden-1.json"
+    );
+    let cbor_path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../fixtures/objects/alert-golden-1.cbor"
+    );
+    let doc: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(json_path).expect("json projection"))
+            .expect("valid json");
+    let cbor = std::fs::read(cbor_path).expect("cbor fixture");
+
+    use sha2::Digest;
+    let actual_hash: String = sha2::Sha256::digest(&cbor)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    assert_eq!(doc["cbor_sha256"].as_str(), Some(actual_hash.as_str()));
+    assert_eq!(doc["headline"].as_str(), Some("Bridge at 4th St closed"));
+    assert_eq!(doc["schema"].as_str(), Some("org.riot.alert/1"));
 }
 
 #[test]
