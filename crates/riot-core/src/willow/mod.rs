@@ -7,6 +7,11 @@
 //! author's own subspace; verification always goes through the checked
 //! `PossiblyAuthorisedEntry` conversion.
 
+pub mod clock;
+pub mod digest;
+pub mod entry;
+pub mod identity;
+
 use ufotofu::codec_prelude::{DecodableCanonic, EncodableExt};
 use ufotofu::producer::clone_from_slice;
 use willow25::authorisation::{AuthorisedEntry, PossiblyAuthorisedEntry, WriteCapability};
@@ -15,6 +20,17 @@ use willow25::prelude::*;
 pub use willow25::authorisation::AuthorisationToken;
 pub use willow25::entry::{Entry, NamespaceId, SubspaceId};
 pub use willow25::paths::Path;
+
+pub use clock::{snapshot_from_unix_seconds, ClockSnapshot, ClockSource, SystemClock};
+pub use digest::{
+    bundle_digest, entry_id, evidence_digest, object_digest, william3_digest, BundleDigest,
+    EntryId, EvidenceDigest, ObjectDigest,
+};
+pub use entry::{create_signed_alert, AlertDraft, SignedAlert, SignedWillowEntry};
+pub use identity::{
+    generate_communal_author, AuthorIdentity, EntropySource, EvidenceAuthor, NamespaceKind,
+    OsEntropy,
+};
 
 /// Evidence path layout: `objects / alert / object_id / revision_id`.
 /// Binary 16-byte ID components keep immutable revisions unrelated by
@@ -28,6 +44,12 @@ pub enum WillowError {
     DoesNotAuthorise,
     DecodeFailed,
     TrailingBytes,
+    /// `ENTROPY_UNAVAILABLE`: OS randomness failed; no author or ID was constructed.
+    EntropyUnavailable,
+    /// `CLOCK_UNAVAILABLE`: system/pre-epoch/range/conversion failure; no partial entry exists.
+    ClockUnavailable,
+    /// The draft failed alert validation against the snapshot-derived times.
+    InvalidAlert(crate::model::AlertError),
 }
 
 impl std::fmt::Display for WillowError {
@@ -37,43 +59,6 @@ impl std::fmt::Display for WillowError {
 }
 
 impl std::error::Error for WillowError {}
-
-/// An ephemeral communal evidence author: a communal namespace public key
-/// plus the author's subspace signing secret. The namespace secret is
-/// discarded at generation — in a communal namespace it grants nothing.
-pub struct EvidenceAuthor {
-    namespace_id: NamespaceId,
-    subspace_secret: SubspaceSecret,
-}
-
-impl EvidenceAuthor {
-    pub fn namespace_id(&self) -> &NamespaceId {
-        &self.namespace_id
-    }
-
-    pub fn subspace_id(&self) -> SubspaceId {
-        self.subspace_secret.corresponding_subspace_id()
-    }
-
-    /// Zero-delegation communal write capability for the author's own subspace.
-    pub fn write_capability(&self) -> WriteCapability {
-        WriteCapability::new_communal(self.namespace_id.clone(), self.subspace_id())
-    }
-}
-
-/// Generates a fresh communal namespace and author subspace from OS
-/// randomness. The private key stays inside this struct until drop.
-pub fn generate_communal_author() -> EvidenceAuthor {
-    let mut rng = rand_core::OsRng;
-    let (namespace_id, _discarded_namespace_secret) =
-        randomly_generate_communal_namespace(&mut rng);
-    debug_assert!(namespace_id.is_communal());
-    let (_subspace_id, subspace_secret) = randomly_generate_subspace(&mut rng);
-    EvidenceAuthor {
-        namespace_id,
-        subspace_secret,
-    }
-}
 
 pub fn alert_path(object_id: &[u8; 16], revision_id: &[u8; 16]) -> Result<Path, WillowError> {
     Path::from_slices(&[OBJECTS_COMPONENT, ALERT_COMPONENT, object_id, revision_id])
@@ -91,7 +76,7 @@ pub fn build_alert_entry(
 ) -> Result<Entry, WillowError> {
     let path = alert_path(object_id, revision_id)?;
     Ok(Entry::builder()
-        .namespace_id(author.namespace_id.clone())
+        .namespace_id(author.namespace_id().clone())
         .subspace_id(author.subspace_id())
         .path(path)
         .timestamp(willow_timestamp_micros)
@@ -108,7 +93,7 @@ pub fn authorise_entry(
 ) -> Result<AuthorisedEntry, WillowError> {
     let capability = author.write_capability();
     entry
-        .into_authorised_entry(&capability, &author.subspace_secret)
+        .into_authorised_entry(&capability, author.subspace_secret())
         .map_err(|_| WillowError::DoesNotAuthorise)
 }
 
@@ -119,11 +104,6 @@ pub fn verify_entry(entry: &Entry, token: &AuthorisationToken) -> bool {
     PossiblyAuthorisedEntry::new(entry.clone(), token.clone())
         .into_authorised_entry()
         .is_ok()
-}
-
-/// Corrected WILLIAM3 digest of a payload (the Willow'25 payload digest).
-pub fn william3_digest(payload: &[u8]) -> [u8; 32] {
-    *PayloadDigest::from_payload(payload).as_bytes()
 }
 
 pub fn encode_entry(entry: &Entry) -> Vec<u8> {

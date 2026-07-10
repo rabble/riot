@@ -1414,6 +1414,7 @@ version = "0.1.0"
 dependencies = [
  "bab_rs",
  "ed25519-dalek",
+ "hifitime",
  "minicbor",
  "pollster",
  "rand_core",

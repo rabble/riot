@@ -13,6 +13,7 @@ ufotofu = { workspace = true }
 sha2 = { workspace = true }
 ed25519-dalek = { workspace = true }
 rand_core = { workspace = true }
+hifitime = { workspace = true }
 
 [dev-dependencies]
 willow25 = { workspace = true, features = ["dev"] }
