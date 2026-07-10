@@ -110,16 +110,35 @@
       ],
       "source": "independent adversarial rerun and isolated regression probes",
       "note": "Mandatory commands were green. G0 reopened because exact ceilings and resolved drop_format closure are not enforced. G1 reopened because injectable test factories are public in release and bundle precedence, full-result Debug sanitization, exact Entry limits, and hostile boundary coverage are incomplete. Review time is charged from integration contingency."
+    },
+    {
+      "work_unit": "G0/G1 second-review repair",
+      "status": "completed",
+      "reported_actual_hours": 0.75,
+      "charged_hours": 0.75,
+      "commits": [
+        "see fix commit"
+      ],
+      "evidence_paths": [
+        "crates/xtask/src/main.rs",
+        "crates/riot-core/src/willow/",
+        "crates/riot-core/src/import/bundle.rs",
+        "crates/riot-core/tests/release_surface.rs",
+        "docs/decisions/phase0a-wu0-report.md",
+        "docs/decisions/phase0a-wu1-report.md"
+      ],
+      "source": "second-review repair sections of the WU0/WU1 reports",
+      "note": "Exact ceilings + resolved-feature-graph validator; conformance-feature factory containment + zeroize + release_surface test; bundle precedence fix, Debug redaction, 4 KiB entry ceiling, added corpus. 59 tests green. Charged from contingency."
     }
   ],
   "totals": {
-    "charged_hours": 5.0,
+    "charged_hours": 5.75,
     "reserved_g0_g1_repair_hours": 0.0,
     "reserved_wu2_hours": 4.0,
     "reserved_wu3_hours": 4.0,
-    "reserved_contingency_hours": 1.0,
+    "reserved_contingency_hours": 0.25,
     "reserved_wu4_hours": 2.0,
-    "hours_until_wu4_boundary": 9.0,
-    "hours_until_hard_stop": 11.0
+    "hours_until_wu4_boundary": 8.25,
+    "hours_until_hard_stop": 10.25
   }
 }

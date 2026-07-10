@@ -10,6 +10,10 @@
 
 ---
 
+> **STATUS 2026-07-10:** Tasks 0–3 COMPLETE and PASS. Two independent review rounds reopened G0/G1; all findings closed (see the second-review-repair sections of `docs/decisions/phase0a-wu0-report.md` and `phase0a-wu1-report.md`). Gate state: **G0 PASS, G1 PASS**. Next executable task is **Task 4 (WU2A — namespace-local Willow join)**. Test commands now require the conformance feature: `cargo test -p riot-core --features conformance public_`.
+
+---
+
 ## Read First
 
 - Design: `docs/superpowers/specs/2026-07-10-riot-evidence-sprint-design.md`

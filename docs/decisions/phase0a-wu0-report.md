@@ -1,6 +1,6 @@
 # Phase 0A — WU0 Report: Preflight, Contracts, Pins
 
-- **Status:** PLATFORM PASS / G0 REOPENED — independent review on 2026-07-10 found accepted validator regressions; WU2 is blocked
+- **Status:** PASS — G0 review findings closed 2026-07-10 (see "Second-review repair" at end); validator now enforces exact ceiling values and inspects the resolved feature graph
 - **Owning work unit:** WU0
 - **Date:** 2026-07-10
 - **Elapsed agent-hours:** ~1.0 charged for WU0; combined WU0R+WU1 time is accounted separately in the ledger
@@ -102,3 +102,16 @@ Exact repair required before WU2:
 ## Next action
 
 Keep platform preflight PASS, repair G0, and do not start Task 4/WU2 until an independent rerun records G0 PASS.
+
+## Second-review repair (2026-07-10) — G0 findings closed
+
+The independent review demonstrated two accepted regressions; both are now closed and guarded by tests.
+
+1. **Exact ceiling values, not presence.** `EXPECTED_CEILINGS` in `crates/xtask/src/main.rs` pins all 34 ceilings to their exact Revision 5 values; a mutated value (the review's `artifact_bytes: 8 MiB → 1`) now fails with `must be exactly 8388608`. Regression test: `rejects_mutated_ceiling_value`. The manifest gained the three missing frozen ceilings: `entry_bytes` 4096, `signature_bytes` 64, and `transaction_snapshot_bytes` corrected to 16 MiB.
+2. **Resolved feature-graph inspection.** `check_resolved_feature_graph` runs `cargo tree -p riot-ffi -e features --locked` and rejects `willow25 feature "drop_format"`, `openmls`, `riot-core feature "conformance"`, or any `bab_rs v0.x != 0.8.1` in the release closure — catching the review's "enable drop_format + refresh lock hash" regression that structural manifest checks alone missed. `check_crate_manifests` additionally scans every crate manifest for a crate-level `drop_format` enablement or a version override that escapes the workspace pin. Regression tests: `rejects_crate_level_drop_format_enablement`, `rejects_crate_level_version_override`. Verified the guard has teeth: the current riot-ffi closure shows only `riot-core feature "default"`, and a conformance leak renders as the exact guarded string.
+
+Validator suite is now 10/10; `cargo xtask validate-contracts` prints "PASS (structural + resolved feature graph)". Lock hash refreshed after the `zeroize` and `conformance`-feature additions.
+
+Note carried forward (PASS-WITH-NOTES from review, non-blocking): WILLIAM3 provenance is recognized by a string prefix rather than by re-validating the source commit; the frozen file is genuine (cross-checked against the raw willow-go patch), so this does not reopen G0.
+
+Corrected next action: G0 PASS. Tasks 1–3 complete (see WU1 report); WU2/Task 4 may begin.

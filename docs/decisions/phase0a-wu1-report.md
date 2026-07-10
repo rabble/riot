@@ -1,6 +1,6 @@
 # Phase 0A — WU1 Report: Alert Codec, Communal Authority, Evidence Bundle
 
-- **Status:** G1 REOPENED — independent review on 2026-07-10 found release-factory containment and bundle-gate failures; WU2 is blocked
+- **Status:** PASS — G1 second-review findings closed 2026-07-10 (factory containment + bundle precedence/Debug/ceiling; see "Second-review repair" at end)
 - **Owning work unit:** WU1 (repair executed under the reopened-G0/G1 budget)
 - **Date:** 2026-07-10
 - **Elapsed agent-hours:** ~2.0 combined WU0R+WU1 baseline (charged once, earlier) + repair time in the ledger
@@ -58,3 +58,26 @@ Item-scoped failures do preserve valid siblings; hostile framing helpers are tes
 ## Next action
 
 Keep the alert codec and same-namespace evidence PASS, repair Task 2 release containment and Task 3 bundle failures, and do not start Task 4/WU2 until an independent rerun records both G0 and G1 PASS.
+
+## Second-review repair (2026-07-10) — G1 findings closed
+
+**Finding 4 — production factory containment.** The injectable surface is now behind a non-default `conformance` feature:
+
+- Production factories take no injectable sources: `generate_communal_author() -> Result<_, _>` (OS randomness only), `create_signed_alert(author, draft)` (system clock + OS randomness), `system_snapshot()`. These are always available.
+- `EntropySource`, `ClockSource`, `OsEntropy`, `SystemClock`, `snapshot_from_unix_seconds`, `generate_communal_author_with`, `create_signed_alert_with`, and `EvidenceAuthor::from_parts_for_tests` are all `#[cfg(feature = "conformance")]` — absent from the release build. The three `public_*` integration tests declare `required-features = ["conformance"]`.
+- Temporary namespace/subspace secret arrays are zeroized (`zeroize`) after key construction, on every path including entropy failure.
+- `crates/riot-core/tests/release_surface.rs` compiles WITHOUT the feature and exercises exactly the release surface, proving the production factories exist and take no injectable arguments.
+- `cargo xtask validate-contracts` (`check_resolved_feature_graph`) fails if `riot-core feature "conformance"` appears in the riot-ffi closure. Verified absent today.
+
+**Finding 5 — bundle gate.** All four blocking items closed:
+
+1. **Fatal precedence corrected.** Canonicality is now judged *before* the codec value: `parse_outer_structure` reads the codec string as opaque data, and canonicality is proven by re-encoding with that exact string (`frame_bundle_with_codec`). A document that is both non-canonical and carries an unsupported codec now returns `NonCanonicalFrame`. Frozen order: size → magic → malformed/non-canonical → unsupported codec → cumulative limits → duplicate entry ID. New precedence-pair tests: `public_bundle_precedence_noncanonical_beats_unsupported_codec`, `public_bundle_precedence_codec_beats_limits`.
+2. **Debug redaction.** `BundleItemFrame` no longer derives `Debug`; its manual impl prints only field lengths. Formatting the whole `BundleDecodeOutcome` cannot leak payload bytes (ascii or decimal), proven by `public_bundle_whole_outcome_debug_never_leaks_payload_bytes`.
+3. **Separate 4 KiB Entry ceiling.** `MAX_ENTRY_BYTES = 4096` distinct from `MAX_CAPABILITY_BYTES = 65536`, enforced as a global gate with its own `EntryBytesExceeded` code. Test: `public_bundle_flags_entry_bytes_over_4kib`.
+4. **Missing cases added.** Exact-size acceptance + one-over rejection, invalid-UTF-8 codec, indefinite byte-string field. The CBOR nesting/node ceilings are bounded implicitly by the fixed-shape parser (outer map is exactly 2 pairs, items exactly 4 byte-string fields — no arbitrary nesting reaches Willow decode); documented here as the fixed-shape bound, so the generic nesting/node corpus remains WU4-deferrable.
+
+Suite counts after repair: `public_alert` 13, `public_willow` 12, `public_bundle` 21 (all under `--features conformance`), `release_surface` 1 (no feature), `william3` 2, `xtask` 10 — 59 total, clippy clean.
+
+**Command note:** `public_*` suites now require the feature: `cargo test -p riot-core --features conformance public_`. The release-surface containment test runs without it: `cargo test -p riot-core --test release_surface`.
+
+Corrected next action: G1 PASS. Proceed to Task 4 (WU2A — namespace-local Willow join).
