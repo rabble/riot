@@ -48,7 +48,7 @@
       "reported_actual_hours": 0.6,
       "charged_hours": 0.6,
       "commits": [
-        "e2ddc18"
+        "3a61da1"
       ],
       "evidence_paths": [
         "crates/xtask/src/main.rs",
