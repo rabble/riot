@@ -16,3 +16,4 @@ rand_core = { workspace = true }
 
 [dev-dependencies]
 willow25 = { workspace = true, features = ["dev"] }
+serde_json = { workspace = true }

@@ -15,8 +15,14 @@
       "status": "completed",
       "reported_actual_hours": 1.0,
       "charged_hours": 1.0,
-      "commits": ["f5beacd", "69ea94f"],
-      "evidence_paths": ["docs/decisions/phase0a-wu0-report.md", "fixtures/manifest.json"],
+      "commits": [
+        "f5beacd",
+        "69ea94f"
+      ],
+      "evidence_paths": [
+        "docs/decisions/phase0a-wu0-report.md",
+        "fixtures/manifest.json"
+      ],
       "source": "docs/decisions/phase0a-wu0-report.md",
       "note": "Platform preflight remains PASS."
     },
@@ -25,14 +31,38 @@
       "status": "reopened",
       "reported_actual_hours": 2.0,
       "charged_hours": 2.0,
-      "commits": ["50083bb", "b484ce8"],
-      "evidence_paths": ["docs/decisions/phase0a-wu0-report.md", "docs/decisions/phase0a-wu1-report.md"],
+      "commits": [
+        "50083bb",
+        "b484ce8"
+      ],
+      "evidence_paths": [
+        "docs/decisions/phase0a-wu0-report.md",
+        "docs/decisions/phase0a-wu1-report.md"
+      ],
       "source": "docs/decisions/phase0a-wu1-report.md",
       "note": "One combined reported duration, charged once. Future G0/G1 repair time is charged separately."
+    },
+    {
+      "work_unit": "G0 repair (Task 0)",
+      "status": "completed",
+      "reported_actual_hours": 0.6,
+      "charged_hours": 0.6,
+      "commits": [
+        "e2ddc18"
+      ],
+      "evidence_paths": [
+        "crates/xtask/src/main.rs",
+        "fixtures/willow/william3-vectors.json",
+        "crates/riot-conformance/tests/william3_vectors.rs",
+        "build/evidence/wu0r-feature-tree.txt",
+        "docs/decisions/phase0a-wu0-report.md"
+      ],
+      "source": "docs/decisions/phase0a-wu0-report.md",
+      "note": "Structural validator + independently cross-checked WILLIAM3 vectors (willow-go 9d848ee raw patch), hifitime pin, panic=unwind, locked five-target probe. One fabricated hex from a summarized fetch was caught by the executable check and replaced with raw-patch values."
     }
   ],
   "totals": {
-    "charged_hours": 3.0,
+    "charged_hours": 3.6,
     "reserved_g0_g1_repair_hours": 1.5,
     "reserved_wu2_hours": 4.0,
     "reserved_wu3_hours": 4.0,

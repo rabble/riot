@@ -1,6 +1,6 @@
 # Phase 0A — WU0 Report: Preflight, Contracts, Pins
 
-- **Status:** PLATFORM PASS / G0 REVISE (the 2026-07-10 WU0R implementation resolved the graph but did not close the executable evidence gate)
+- **Status:** PASS — platform PASS and G0 (corrected executable basis) PASS via Task 0 of the public-kernel plan, 2026-07-10; see "Task 0 closure" below
 - **Owning work unit:** WU0
 - **Date:** 2026-07-10
 - **Elapsed agent-hours:** ~1.0 charged for WU0; combined WU0R+WU1 time is accounted separately in the ledger
@@ -72,6 +72,18 @@ The Revision 5 review invalidated the G0 PASS claim without discarding the usefu
 
 G0 remains REVISE until Task 0 of `docs/superpowers/plans/2026-07-10-riot-phase0a-public-kernel.md` passes. WU2 must not continue on the strength of this report.
 
+## Task 0 closure (2026-07-10)
+
+Every reopening finding is individually closed:
+
+1. **Validator now rejects the obsolete graph structurally.** `crates/xtask/src/main.rs` gained `validate_contents(root)` which parses TOML/JSON (no substring trust): requires `willow25 =0.6.0-alpha.3` (default-features off, `std` only, `drop_format` forbidden), `bab_rs =0.8.1` (default-features off, `william3`), direct `hifitime =4.3.0`, `panic = "unwind"`, the lockfile resolving exactly one willow25/bab_rs version with no `openmls`, the manifest's `cargo_lock_sha256` matching the actual lockfile bytes, a non-empty matching `william3_vectors_sha256`, the full ceilings table including the new store-charge/namespace/plan limits, fixture ownership, and report fields. Seven unit tests feed regressions independently (old willow pin, old bab_rs lock, stale lock hash, `panic = "abort"`, `drop_format` feature, missing vector hash/ceilings) and assert each specific failure line. `cargo test -p xtask`: 7/7. `cargo xtask validate-contracts` on the repo: PASS.
+2. **Vectors now carry independent provenance.** `fixtures/willow/william3-vectors.json` (replacing the self-attested `.txt`) records input recipes, digests, bab_rs version, and per-vector provenance. Five vectors are cross-checked verbatim against the independently implemented `Deln0r/willow-go` corrected-WILLIAM3 commit `9d848ee` (fetched raw patch, not a summarizer transcription): `empty`, `single_byte_zero`, `hello world`, `exactly_1023_bytes`, `exactly_1025_bytes_two_chunks` — plus `nonzero_pattern_5000_bytes`, whose input (`00..fa` repeating) is byte-identical to Riot's `multi-block` recipe (`i mod 251`) and whose digest matches Riot's independently generated value exactly. Chunk-boundary coverage sits at 1023/1024±1 both sides. `crates/riot-conformance/tests/william3_vectors.rs` computes every digest through `bab_rs` directly (declared dev-dependency) and requires ≥1 cross-checked vector, sub-chunk and multi-chunk inputs, and byte-identity of the alert-golden payload with the codec fixture. A sixth willow25-path test (`public_william3_matches_frozen_vector_fixture`) proves willow25's `PayloadDigest` agrees with the same frozen vectors, closing the loop between the digest dependency and entry construction. One summarizer-fabricated hex value was caught by this process and discarded — the test disagreeing with a fake vector while agreeing with all real ones is itself evidence the executable check works.
+3. **Corrected pins finished.** Direct `hifitime = "=4.3.0"` (matches the already-resolved transitive version). `panic = "unwind"` in the release profile (abort made the FFI catch/quarantine contract impossible). Lock regenerated; `cargo_lock_sha256` `8bb2eb1b112fcbdc83d6db046ce44d5e0e8476cd3477d9a35050ec605c367791`; `william3_vectors_sha256` `980192eb0ace7bea5e0fbebfe7351cd661aec4498a449e13d18780afb2ec88d2`. New xtask-only parser pins `toml =0.9.8`, `serde_json =1.0.145` (dev/validator layer, not the riot-core release graph).
+4. **Five-target proof rerun with `--locked`**: workspace all-targets check plus `riot-core` on `aarch64-apple-ios-sim`, `aarch64-apple-ios`, `aarch64-linux-android`, `x86_64-linux-android` — all pass. Feature closure recorded at `build/evidence/wu0r-feature-tree.txt` (sha256 `0139028399715954cfdf0ce759c0557320df75638750bb5e310534408896fb2b`); negative search for `willow25 feature "drop_format"` and `bab_rs v0.[0-7].` finds nothing.
+5. **This report** now separates platform PASS from corrected-dependency PASS and records the 0.5.0 rejection rationale above.
+
+New ceilings frozen in the manifest: `retained_store_budget_bytes` 16 MiB, `namespace_views` 64, `store_charge_entry_bytes` 512, `store_charge_namespace_bytes` 256, `store_charge_receipt_bytes` 256, `store_charge_digest_reference_bytes` 32, `entry_reference_cap` 1024, `plan_tombstone_bytes` 256, `plans_per_preview` 64.
+
 ## Next action
 
-Repair and rerun G0, then repair and rerun G1. Preserve the currently green fixtures as implementation evidence, but do not claim GO or continue WU2 until both reopened gates PASS.
+G0 PASS. Proceed to Tasks 1–3 (alert codec adoption, communal-author/clock repair, bundle completion) before any WU2 work.

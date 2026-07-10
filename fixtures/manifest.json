@@ -29,11 +29,12 @@
     "commandlinetools_zip_sha256": "ed304c5ede3718541e4f978e4ae870a4d853db74af6c16d920588d48523b9dee",
     "platform_tools": "37.0.0-14910828",
     "emulator": "36.6.11.0 (build 15507667)",
-    "cargo_lock_sha256": "8513394ad473c639030d58a85f7dd88571700ba8b38adfae7bc3a5b0061e822d",
-    "gradle_locks_sha256": "pending — created with the Android host app in WU3, recorded before G3 runs"
+    "cargo_lock_sha256": "8bb2eb1b112fcbdc83d6db046ce44d5e0e8476cd3477d9a35050ec605c367791",
+    "gradle_locks_sha256": "pending \u2014 created with the Android host app in WU3, recorded before G3 runs",
+    "william3_vectors_sha256": "980192eb0ace7bea5e0fbebfe7351cd661aec4498a449e13d18780afb2ec88d2"
   },
   "dependencies": {
-    "willow25": "=0.6.0-alpha.3 (default-features off, std only; drop_format excluded — stable 0.5.0 resolves bab_rs with incorrect WILLIAM3 digests, see the implementation audit)",
+    "willow25": "=0.6.0-alpha.3 (default-features off, std only; drop_format excluded \u2014 stable 0.5.0 resolves bab_rs with incorrect WILLIAM3 digests, see the implementation audit)",
     "bab_rs": "=0.8.1 (default-features off, william3 only; direct pin forces the corrected digest patch)",
     "uniffi": "=0.32.0",
     "minicbor": "=2.2.2 (std)",
@@ -44,7 +45,7 @@
     "pollster": "=0.4.0 (already transitive via willow25; direct pin to drive async codec traits synchronously)",
     "ufotofu": "=0.12.4 (std; already transitive via willow25; direct pin for producer/codec traits)"
   },
-  "feature_closure": "fixtures/feature-closure.txt — cargo tree -p riot-ffi -e features; contains no openmls, no willow25/drop_format",
+  "feature_closure": "fixtures/feature-closure.txt \u2014 cargo tree -p riot-ffi -e features; contains no openmls, no willow25/drop_format",
   "ceilings": {
     "artifact_bytes": 8388608,
     "entries_per_bundle": 64,
@@ -69,13 +70,22 @@
     "retained_preview_input_bytes": 8388608,
     "retained_preview_output_bytes": 2097152,
     "transaction_snapshot_bytes": 8388608,
-    "expansion_ratio": "1:1 — compression forbidden",
-    "inspection_target_seconds": 2
+    "expansion_ratio": "1:1 \u2014 compression forbidden",
+    "inspection_target_seconds": 2,
+    "retained_store_budget_bytes": 16777216,
+    "namespace_views": 64,
+    "store_charge_entry_bytes": 512,
+    "store_charge_namespace_bytes": 256,
+    "store_charge_receipt_bytes": 256,
+    "store_charge_digest_reference_bytes": 32,
+    "entry_reference_cap": 1024,
+    "plan_tombstone_bytes": 256,
+    "plans_per_preview": 64
   },
   "fixture_ownership": {
-    "objects": "WU1 — deterministic alert payload golden vectors",
-    "willow": "WU1 — communal author success and cross-subspace denial",
-    "imports": "WU2 — core gate fixture matrix and hostile corpus"
+    "objects": "WU1 \u2014 deterministic alert payload golden vectors",
+    "willow": "WU1 \u2014 communal author success and cross-subspace denial",
+    "imports": "WU2 \u2014 core gate fixture matrix and hostile corpus"
   },
   "report_fields": [
     "status",

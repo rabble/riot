@@ -24,36 +24,46 @@ fn canonical_payload() -> Vec<u8> {
 }
 
 #[test]
-fn public_william3_golden_vectors() {
-    // empty / short / partial-block / multi-block, per the implementation audit.
-    let cases: [(&str, Vec<u8>); 4] = [
-        ("empty", Vec::new()),
-        ("short", b"riot".to_vec()),
-        ("partial-block", vec![0xAB; 700]),
-        ("multi-block", (0..5000u32).map(|i| (i % 251) as u8).collect()),
-    ];
-
+fn public_william3_matches_frozen_vector_fixture() {
+    // The conformance suite proves these vectors through bab_rs directly
+    // (with independent willow-go provenance). This test proves willow25's
+    // PayloadDigest path produces the same digests, closing the loop
+    // between the digest dependency and the entry construction path.
     let fixture = concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../fixtures/willow/william3-vectors.txt"
+        "/../../fixtures/willow/william3-vectors.json"
     );
+    let raw = std::fs::read_to_string(fixture).expect("vectors fixture present");
+    let doc: serde_json::Value = serde_json::from_str(&raw).expect("valid JSON");
 
-    let mut lines = String::new();
-    for (name, input) in &cases {
-        let digest = william3_digest(input);
-        lines.push_str(&format!("{name}:{}\n", hex(&digest)));
+    for vector in doc["vectors"].as_array().expect("vectors") {
+        let name = vector["name"].as_str().expect("name");
+        let input = vector["input"].clone();
+        let bytes: Vec<u8> = match input["kind"].as_str().expect("kind") {
+            "empty" => Vec::new(),
+            "ascii" => input["value"].as_str().unwrap().as_bytes().to_vec(),
+            "repeat" => vec![
+                input["byte"].as_u64().unwrap() as u8;
+                input["count"].as_u64().unwrap() as usize
+            ],
+            "pattern-mod-251" => (0..input["count"].as_u64().unwrap() as u32)
+                .map(|i| (i % 251) as u8)
+                .collect(),
+            "file" => std::fs::read(format!(
+                "{}/../../{}",
+                env!("CARGO_MANIFEST_DIR"),
+                input["path"].as_str().unwrap()
+            ))
+            .expect("fixture file"),
+            other => panic!("unknown kind {other}"),
+        };
+        let expected = vector["digest_hex"].as_str().expect("digest");
+        assert_eq!(
+            hex(&william3_digest(&bytes)),
+            expected,
+            "willow25 digest path diverged from frozen vector `{name}`"
+        );
     }
-
-    if std::env::var("RIOT_BLESS").as_deref() == Ok("1") {
-        std::fs::write(fixture, &lines).expect("bless william3 vectors");
-    }
-
-    let frozen = std::fs::read_to_string(fixture)
-        .expect("william3 vectors missing — run once with RIOT_BLESS=1, then commit");
-    assert_eq!(
-        lines, frozen,
-        "WILLIAM3 digests diverged from frozen vectors — dependency drift?"
-    );
 }
 
 #[test]

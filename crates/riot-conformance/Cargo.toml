@@ -9,3 +9,6 @@ riot-core = { path = "../riot-core" }
 
 [dev-dependencies]
 cddl-cat = { workspace = true }
+bab_rs = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }

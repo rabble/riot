@@ -21,8 +21,14 @@ sha2 = "=0.10.9"
 # drive the async codec traits synchronously. Recorded in the WU0R report.
 pollster = "=0.4.0"
 ufotofu = { version = "=0.12.4", features = ["std"] }
+hifitime = "=4.3.0"
+# xtask structural contract parsing only.
+toml = "=0.9.8"
+serde_json = "=1.0.145"
 ed25519-dalek = { version = "=2.2.0", default-features = false, features = ["std", "fast", "zeroize", "rand_core"] }
 rand_core = { version = "=0.6.4", features = ["getrandom"] }
 
+# Evidence profile must unwind: the FFI boundary catches panics and
+# quarantines the session; abort would make that contract impossible.
 [profile.release]
-panic = "abort"
+panic = "unwind"
