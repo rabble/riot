@@ -10,7 +10,7 @@
 
 ---
 
-> **STATUS 2026-07-10:** Tasks 0–4 COMPLETE and PASS. Gate state: **G0 PASS, G1 PASS**; **WU2A (Task 4) join** done and pending independent review (`docs/decisions/phase0a-wu2a-report.md`). Next executable task is **Task 5 (WU2B — arbiter, transaction, preview/plan/commit, receipts, provenance)**, which reaches gate **G2**. Test commands require the conformance feature: `cargo test -p riot-core --features conformance` (release-surface containment test runs without it). 67 tests green across the workspace.
+> **STATUS 2026-07-10:** Tasks 0–3 are independently PASS. **WU2A (Task 4) join** is implemented but awaits its independent review (`docs/decisions/phase0a-wu2a-report.md`). Task 5 planning may proceed, but Task 5 implementation starts only after that review records WU2A PASS. Task 5 reaches gate **G2**. Test commands require the conformance feature: `cargo test -p riot-core --features conformance` (release-surface containment test runs without it). 67 tests green across the workspace.
 
 ---
 
@@ -25,11 +25,11 @@ Do not execute the superseded Swift/JSON prototype plan. Do not add Drop Format,
 
 ## Shared-Worktree Boundary
 
-Implementation continued while this plan was being reviewed. Current code baseline commits are `50083bb` (claimed WU0R plus alert/authority) and `b484ce8` (claimed G1 bundle codec); the existing bundle implementation is committed under `crates/riot-core/src/import/mod.rs`. Review reopened both claims: the executable dependency validator still accepts the obsolete basis, vectors lack independent provenance, the cross-subspace test actually creates a second namespace, signer generation is infallible, bundle coverage is incomplete, and the release profile uses `panic = "abort"` despite a catch-and-quarantine requirement.
+Implementation continued while this plan was being reviewed. The original claims at `50083bb` and `b484ce8` were independently reopened, repaired in `3560114`, and independently reclosed in `5b29de3`. Preserve the repair evidence; do not silently reintroduce an obsolete dependency basis, public deterministic factory, or unbounded/unsanitized bundle path.
 
 Before every task, run `git status --short`, record HEAD, and preserve any newly appearing concurrent edits. Never replace, revert, or re-bless fixtures without explaining byte changes. Stage only files named by that task plus the globally owned time ledger. A green test from the current baseline is evidence of implemented behavior, not proof that a reopened gate is complete.
 
-Every task additionally owns one append/update to `docs/decisions/phase0a-time-ledger.json`, even when omitted from its file list. Record newly charged active time, commits, and evidence before starting the next task. Stop at the 1.5-hour G0/G1 repair checkpoint and hour-14 WU4 boundary.
+Every task additionally owns one append/update to `docs/decisions/phase0a-time-ledger.json`, even when omitted from its file list. Record active time, commits, and evidence before starting the next task. The ledger is audit bookkeeping only: elapsed time never opens, closes, defers, or blocks a technical gate.
 
 ## Fixed Public Contracts
 
@@ -276,7 +276,7 @@ Cover newer-prefix pruning, a candidate immediately dominated by a newer prefix,
 
 For each permutation compare Riot's live-entry set with `willow25::storage::MemoryStore` alpha.3. Assert commutativity, associativity, and idempotence of the live view.
 
-Run `cargo test -p riot-core --test core_import_join`. Expected RED: join types are absent.
+Run `cargo test -p riot-core --features conformance --test core_import_join`. Expected RED: join types are absent.
 
 - [ ] **Step 2: Implement namespace-local state**
 
@@ -295,8 +295,8 @@ For `Winner`, name only directly dominated entries removed from the pre-commit l
 - [ ] **Step 3: Verify and commit**
 
 ```bash
-cargo test -p riot-core --test core_import_join
-cargo test -p riot-core core_import_
+cargo test -p riot-core --features conformance --test core_import_join
+cargo test -p riot-core --features conformance core_import_
 ```
 
 Commit with `feat: implement namespace-local Willow join`.
@@ -307,65 +307,201 @@ Commit with `feat: implement namespace-local Willow join`.
 
 - Create: `crates/riot-core/src/import/{error,store,preview,receipt,provenance}.rs`
 - Create: `crates/riot-core/src/session.rs`
+- Modify: `crates/riot-core/Cargo.toml`, `crates/riot-conformance/Cargo.toml`
 - Modify: `crates/riot-core/src/import/mod.rs`, `crates/riot-core/src/lib.rs`
 - Create: `crates/riot-core/tests/core_import_transaction.rs`
 - Create: `crates/riot-core/tests/core_import_lifecycle.rs`
 - Create: `crates/riot-conformance/tests/core_import_hostile.rs`
 
-- [ ] **Step 1: Write transactional RED tests**
+### Task 5 implementation boundaries
 
-Cover `RiotSession.open` entropy failure with no handle; `CLOCK_UNAVAILABLE` during session encode with no partial entry; `CLOCK_UNAVAILABLE` during inspection before input/preview retention or store mutation; mapping pure `BundleDecodeOutcome::Rejected` to typed `InspectBundleResult::Rejected`; valid unknown-signer preview; hard-ineligible signature/capability/schema; rejection of repeated canonical entry IDs in one artifact; generation-bound planned effects; one live opaque plan, supersession, and the 64/65 issuance boundary; all-or-nothing selection; mixed new/duplicate; duplicate-only `NoChanges`; new dominated entry increments generation and gets a stable entry ID/first receipt; later pruning preserves historical provenance; stale preview precedes duplicate detection; host plan construction impossible; foreign plan/IDs; store full; injected pre-swap failure; rollback byte-for-byte equality; provenance separation of cryptographic facts from trust; and exact/one-over retained-store charges.
+`error.rs` owns stable core error codes and contains only trusted static detail. `store.rs` owns the cloneable, bounded `StoreSnapshot` and its conservative charge calculation. `preview.rs` owns retained preview/plan state and opaque handles. `receipt.rs` owns immutable commit facts. `provenance.rs` derives presentational facts from immutable history plus the current live view. `session.rs` is the only module that owns the `Arc<Mutex<SessionState>>`; no child type gets another lock or mutable state.
 
-Run `cargo test -p riot-core core_import_`. Expected RED: store/session types are absent.
+The release-facing constructor `RiotSession::open()` must use the production-only `generate_communal_author()` and `system_snapshot()` paths; `encode_alert` must use the production-only `create_signed_alert(author, draft)` path. The `conformance` feature may add `open_with_for_conformance` plus deterministic/failing sources for these tests; it must remain absent from `riot-ffi`'s feature closure. Do not widen the production Willow exports to make tests convenient.
 
-- [ ] **Step 2: Implement one arbiter and copy-on-write swap**
+- [ ] **Step 1: Write RED session/admission tests**
 
-All session, store, preview, signer, generation, index, and receipt state lives behind one `Arc<Mutex<SessionState>>`. Child handles contain only IDs and the arbiter. Build a bounded next snapshot, then perform one pointer swap. No observable state changes before that swap.
+In `core_import_lifecycle.rs`, write these focused tests before creating session code:
 
 ```rust
+#[test]
+fn core_open_fails_closed_when_entropy_is_unavailable() {
+    assert_eq!(
+        RiotSession::open_with_for_conformance(FailingEntropy, FixedClock::valid()),
+        Err(CoreError::EntropyUnavailable),
+    );
+}
+
+#[test]
+fn core_foreign_store_is_rejected_without_locking_its_session() {
+    let owner = session_with_fixture_clock();
+    let foreign = session_with_fixture_clock().create_evidence_store().unwrap();
+    assert_eq!(
+        owner.inspect_bundle(&foreign, &fixture_valid_bundle(), ImportContext::unknown()),
+        Err(CoreError::WrongSession),
+    );
+}
+
+#[test]
+fn core_close_is_idempotent_and_parent_close_wins_child_admission() {
+    let session = session_with_fixture_clock();
+    let store = session.create_evidence_store().unwrap();
+    assert_eq!(session.close(), CloseResult::Closed);
+    assert_eq!(session.close(), CloseResult::AlreadyClosed);
+    assert_eq!(
+        session.inspect_bundle(&store, &fixture_valid_bundle(), ImportContext::unknown()),
+        Err(CoreError::ObjectClosed),
+    );
+}
+
+#[test]
+fn core_encode_alert_clock_failure_leaves_no_signed_entry_or_session_mutation() {
+    let session = RiotSession::open_with_for_conformance(CountingEntropy::new(), FailingClock)
+        .expect("session opens before encode");
+    assert_eq!(session.encode_alert(fixture_draft()), Err(CoreError::ClockUnavailable));
+    assert_eq!(session.debug_signed_entry_count_for_conformance(), 0);
+}
+```
+
+Add one `#[cfg(feature = "conformance")]` fixture module with `session_with_fixture_clock`, `fixture_valid_bundle`, fixed author, and failing-source builders. It must be the only place external integration tests name injected providers. Add `[[test]]` entries with `required-features = ["conformance"]` for the new core test targets in `crates/riot-core/Cargo.toml`; set `riot-core = { path = "../riot-core", features = ["conformance"] }` in `crates/riot-conformance/Cargo.toml` so the hostile conformance target has the same explicitly non-release surface.
+
+Run: `cargo test -p riot-core --features conformance --test core_import_lifecycle`
+Expected: RED because `RiotSession`, `EvidenceStore`, and `CoreError` do not exist.
+
+- [ ] **Step 2: Write RED preview and opaque-plan tests**
+
+In `core_import_transaction.rs`, cover the pure-codec mapping and preview retention first:
+
+```rust
+let preview = session.inspect_bundle(&store, &valid_bundle, ImportContext::unknown())?;
+assert!(preview.entries()[0].eligible);
+assert_eq!(preview.entries()[0].signer_trust, SignerTrust::Unknown);
+
+let first = preview.plan(ImportSelection::all())?;
+let second = preview.plan(ImportSelection::all())?;
+assert_eq!(first.commit(), Err(CoreError::PlanSuperseded));
+assert_eq!(second.effects()?[0].entry_id(), expected_entry_id);
+```
+
+Also assert: fatal `BundleDecodeOutcome::Rejected` becomes `InspectBundleResult::Rejected` without a preview; non-empty unique eligible selection is required; one open store and one open preview are enforced before retaining bytes; plan issue 65 is `SESSION_LIMIT`; explicit plan close permits one replacement; normal `preview.reject()` returns non-durable `RejectionResult { preview_id, Rejected }` with no receipt; store/session close propagates `OBJECT_CLOSED`; superseded, committed, parent-consumed, and explicitly closed plans return their frozen terminal codes; a host cannot construct an `ImportPlan`; and an input repeated canonical `entry_id` never reaches preview selection.
+
+Run: `cargo test -p riot-core --features conformance --test core_import_transaction`
+Expected: RED because preview and plan types do not exist.
+
+- [ ] **Step 3: Write RED atomic-commit, receipt, and provenance tests**
+
+Use the completed Task 4 join fixture for the selected valid entries. Require one whole-batch computation from one pre-state and assert the exact commit result:
+
+```rust
+match plan.commit()? {
+    ImportCommitResult::Committed(receipt) => {
+        assert_eq!(receipt.before_generation(), 0);
+        assert_eq!(receipt.after_generation(), 1);
+        assert!(matches!(
+            receipt.rows()[0].disposition(),
+            EntryDisposition::AppliedAtCommit { .. }
+        ));
+    }
+    ImportCommitResult::NoChanges(_) => panic!("first import must commit"),
+}
+```
+
+Cover mixed new/duplicate, duplicate-only `NoChanges` with no second receipt, newly seen dominated entries incrementing generation, later pruning while preserving first receipt, stale-preview-before-duplicate precedence, and injected pre-swap failure with byte-for-byte unchanged snapshot after every pre-swap error. Add exact/one-over fixtures for 1,024 entries/index records, 256 durable receipts, 64 namespace views, 1,024 digest references, 8 MiB retained preview input, 2 MiB preview output, 16 MiB retained store, and 16 MiB next snapshot. `CoreConfig::new` must accept lower ceilings and reject every raised ceiling before session creation; `TrustContext::new` must accept 64 full signer IDs and reject 65. Add provenance assertions for `Live`, `DominatedOnArrival`, `PrunedLater`, full IDs, immutable receipt facts, preview `NotCommitted` facts, captured preview trust, and post-import trust changing only when the explicit `TrustContext` changes.
+
+Run: `cargo test -p riot-core --features conformance --test core_import_transaction`
+Expected: RED because snapshot/receipt/provenance types do not exist.
+
+- [ ] **Step 4: Implement stable errors, state ownership, and admission precedence**
+
+Create the core boundary in `error.rs`, `store.rs`, `preview.rs`, and `session.rs` before adding commit mutation:
+
+```rust
+pub enum CoreError {
+    EntropyUnavailable, ClockUnavailable, WrongSession, ObjectClosed,
+    SessionFailed, PreviewConsumed, PlanSuperseded, PlanConsumed,
+    StalePreview, SessionLimit, StoreFull, InvalidConfig, InternalError,
+}
+
+pub struct RiotSession {
+    session_id: [u8; 16],
+    state: Arc<Mutex<SessionState>>,
+}
+pub struct EvidenceStore { owner: [u8; 16], id: [u8; 16], state: Arc<Mutex<SessionState>> }
+pub struct ImportPreview { owner: [u8; 16], id: u64, state: Arc<Mutex<SessionState>> }
+pub struct ImportPlan { owner: [u8; 16], id: u64, state: Arc<Mutex<SessionState>> }
+
 pub enum PlannedEffect {
     WouldApply { entry_id: EntryId, pruned_entry_ids: Vec<EntryId> },
     WouldBeDominated { entry_id: EntryId, dominating_entry_ids: Vec<EntryId> },
     AlreadyPresent { entry_id: EntryId, insertion_receipt_id: u64 },
 }
-
 pub enum EntryDisposition {
     AppliedAtCommit { entry_id: EntryId, pruned_entry_ids: Vec<EntryId> },
     DominatedAtCommit { entry_id: EntryId, dominating_entry_ids: Vec<EntryId> },
     AlreadyPresent { entry_id: EntryId, insertion_receipt_id: u64 },
 }
-
 pub enum ImportCommitResult {
     Committed(ImportReceipt),
     NoChanges(DuplicateResult),
 }
 ```
 
-`ImportPreview.plan(selection)` retains the full plan in the arbiter and returns an opaque `ImportPlan` handle. One plan may be live and at most 64 may be issued per preview; each terminal plan leaves a fixed 256-byte-charged tombstone until preview close, bounding exact terminal reasons to 16 KiB. A new plan supersedes the prior handle. `ImportPlan.commit()` reads retained state only and must reproduce the exact effects or return `STALE_PREVIEW`; host code cannot construct or substitute plan fields. The seen index retains bounded immutable bytes/facts and the first receipt for every accepted entry, including dominated/pruned history. Provenance separates immutable receipt disposition from current `Live | NotLive { DominatedOnArrival | PrunedLater }` status.
+`SessionState` owns session phase, signer, one store, one preview, issued-plan tombstones, and a `StoreSnapshot`. Every non-close method acquires this same mutex and applies the frozen precedence: failed session, closed owner, foreign owner ID, local closure, plan/preview terminal state, stale generation, then validation. `close()` is idempotent and remains usable after failure. No error `Display` implementation may interpolate input bytes.
 
-Charge a hard 16 MiB retained-store budget across buffer capacities and fixed conservative charges: 512 bytes per entry/index record, 256 per namespace, 256 per receipt and row, and 32 per digest reference. Check the full next-snapshot charge before allocation or mutation; freeze the 64-namespace and 1,024-reference ceilings in `fixtures/manifest.json`.
+Implement `ImportPreview::reject() -> RejectionResult`, store/preview close propagation, and the exact terminal matrix in this slice. Under `cfg(feature = "conformance")`, expose only a test probe that proves the signer was zeroized after close/failure; integration tests must use this feature-gated probe, never `cfg(test)`-only code.
 
-- [ ] **Step 3: Prove lifecycle linearization**
+Run: `cargo test -p riot-core --features conformance --test core_import_lifecycle`
+Expected: PASS for entropy, ownership, closure, and admission cases.
 
-Race commit/reject, close/commit, plan supersession/commit, and session-close/child-action. Assert one terminal winner, no deadlock within two seconds, and no second receipt/swap. Test exact admission: owning-session failed, owning-session closed, immutable foreign owner ID (`WRONG_SESSION` without locking its arbiter), local child closed, superseded/committed plan, consumed preview, stale preview, validation. Constructor panic returns `INTERNAL_ERROR` without a handle; normal parent close yields `OBJECT_CLOSED`; close remains idempotently available after session failure.
+- [ ] **Step 5: Implement bounded snapshot, inspection, and retained plans**
 
-Freeze this plan matrix: superseded handle → `PLAN_SUPERSEDED`; repeated winning commit → `PLAN_CONSUMED`; active plan after preview rejection → `PREVIEW_CONSUMED`; explicit plan close → `OBJECT_CLOSED` and the preview may create a replacement; store/session close → `OBJECT_CLOSED`; session panic → `SESSION_FAILED` before child terminal state.
+Implement immutable `StoreSnapshot` cloning in `store.rs`; it holds namespace-local Task 4 views, seen records, receipt records, and exact capacity charges. Its admission function computes the full next charge before cloning/retaining and rejects `STORE_FULL` before mutation. Freeze charges: 512 bytes per entry/index record, 256 per namespace, 256 per receipt/row, 32 per digest reference, 64 namespace views, 1,024 references, 16 MiB retained store, and 16 MiB next snapshot.
 
-- [ ] **Step 4: Prove hostile-input and log safety**
+`inspect_bundle` takes its receipt clock before retaining bytes; a clock failure returns `CLOCK_UNAVAILABLE` with no preview or state change. It retains the original bundle order, decoded immutable facts, fixed `ImportContext`, base generation, and bounded bytes. `plan` retains only selection IDs, base generation, and effects; superseding a plan changes its tombstone state in the same mutex section. Every issued plan charges exactly 256 tombstone bytes until preview close.
 
-Mutate every truncation boundary, bad lengths, nesting, strings/arrays, unknown/duplicate keys, invalid UTF-8, malformed Willow components, signatures, and payload digests. Add panic injection under `cfg(test)`. Capture logs and assert no hostile marker or key material appears. A panic returns `INTERNAL_ERROR` and quarantines the session.
+Run: `cargo test -p riot-core --features conformance --test core_import_transaction`
+Expected: PASS for rejected-vs-preview mapping, selection validation, plan supersession, and 64/65 issuance.
 
-- [ ] **Step 5: Verify and commit G2 core**
+- [ ] **Step 6: Implement one copy-on-write commit and receipt/provenance derivation**
+
+`ImportPlan::commit` must read the retained plan only. Under the arbiter, first compare the retained base generation; return `STALE_PREVIEW` before duplicate work if it differs. For a current plan, partition unseen selected entries by namespace, call Task 4's pure whole-batch join once per namespace, build the complete next snapshot, calculate its charge, then swap `StoreSnapshot` exactly once.
+
+Map Task 4 effects without recomputation:
+
+```rust
+JoinEffect::Winner { pruned_entry_ids } =>
+    EntryDisposition::AppliedAtCommit { entry_id, pruned_entry_ids },
+JoinEffect::NotLive { dominating_entry_ids } =>
+    EntryDisposition::DominatedAtCommit { entry_id, dominating_entry_ids },
+```
+
+Keep the first receipt/index record for every newly seen entry, including a dominated-on-arrival one. A duplicate-only plan returns `NoChanges` and leaves generation/receipts untouched. `derive_provenance` looks up historical seen facts, then derives current status from the present Task 4 live view; it never mutates a receipt or embeds a mutable trust label in it.
+
+Run: `cargo test -p riot-core --features conformance --test core_import_transaction`
+Expected: PASS for atomicity, dispositions, duplicate/no-change behavior, provenance, and exact boundaries.
+
+- [ ] **Step 7: Prove lifecycle races and hostile safety**
+
+In `core_import_lifecycle.rs`, use `Barrier` plus two scoped threads for commit/reject, close/commit, supersede/commit, and session-close/child-action. Each race must finish within two seconds, have one terminal winner, and produce no second receipt or snapshot swap. In `riot-conformance/tests/core_import_hostile.rs`, mutate every input truncation/length/string/nesting/signature/payload boundary through `inspect_bundle`, assert a typed rejection/error with no panic, and assert formatting of every returned public value lacks the hostile marker and fixed secret marker. Build one exact-8-MiB hostile fixture and measure `Instant::elapsed() <= Duration::from_secs(2)`; a miss records test failure rather than a security pass. Put panic injection and signer-zeroization probes behind `cfg(feature = "conformance")`; it must quarantine the owning session and return `INTERNAL_ERROR` without a handle on open.
+
+Run:
 
 ```bash
-cargo test -p riot-core core_import_
+cargo test -p riot-core --features conformance --test core_import_lifecycle
+cargo test -p riot-conformance core_import_hostile
+```
+
+Expected: PASS with no deadlock and no hostile marker/key material in returned diagnostics.
+
+- [ ] **Step 8: Verify and commit G2 core**
+
+```bash
+cargo test -p riot-core --features conformance core_import_
 cargo test -p riot-conformance core_import_
-cargo test -p riot-conformance hostile_bundle_
-cargo test -p riot-conformance hostile_alert_
 cargo clippy --workspace --all-targets -- -D warnings
 ```
 
-Commit with `feat: add atomic preview-first evidence import`. G2 must be GREEN before native binding work.
+Also run `cargo xtask validate-contracts` to prove `riot-core/conformance` remains absent from the release `riot-ffi` closure. Commit with `feat: add atomic preview-first evidence import`. G2 must be GREEN before native binding work.
 
 ## Task 6: WU3A — Stable UniFFI Boundary
 
@@ -516,7 +652,7 @@ The reopened G0/G1 repair tasks run sequentially so each task can atomically upd
 
 Do not parallelize edits to `Cargo.toml`, `Cargo.lock`, `fixtures/manifest.json`, `crates/riot-core/src/lib.rs`, or module indexes without explicit ownership. Never commit another worker's unstaged changes.
 
-## Rebaselined Remaining Hours
+## Audit Ledger (Non-Blocking)
 
 | Charge | Hours |
 | --- | ---: |
@@ -529,7 +665,7 @@ Do not parallelize edits to `Cargo.toml`, `Cargo.lock`, `fixtures/manifest.json`
 | WU4 reserved | 2.0 |
 | total | 16.0 |
 
-The combined baseline duration is charged once. Repair workers record new active time separately in `docs/decisions/phase0a-time-ledger.json`; the prior charge does not prepay repairs. WU4 still starts at total hour 14.
+The combined baseline duration is charged once. Repair workers record new active time separately in `docs/decisions/phase0a-time-ledger.json`; the prior charge does not prepay repairs. These figures are historical accounting, not a delivery schedule: WU4 begins when its technical dependencies are ready, and no elapsed-hour threshold blocks work.
 
 ## Compatibility and Rollback
 
@@ -540,5 +676,4 @@ Phase 0A has no production users or persisted store migration. Preserve committe
 - G0 failure stops all Willow implementation.
 - G1 failure stops WU2.
 - G2 failure stops native expansion.
-- WU4 begins at aggregate hour 14 even if earlier work is incomplete.
-- At 16 aggregate agent-hours, unfinished required evidence is INCONCLUSIVE, never stretch scope.
+- WU4 begins after G0–G3 technical evidence is ready for independent verification.

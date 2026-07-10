@@ -6,8 +6,7 @@
     "parallel_workers": "sum overlapping worker wall time",
     "combined_reported_time": "charge a reported combined duration once; do not split or double-count it",
     "unknown_completed_time": "charge the full work-unit budget only when no individual or combined duration exists",
-    "wu4_starts_at_total_hours": 14.0,
-    "hard_stop_total_hours": 16.0
+    "schedule_policy": "audit-only; elapsed aggregate hours never open, close, defer, or block a technical gate"
   },
   "entries": [
     {
@@ -153,8 +152,6 @@
     "reserved_wu2_hours": 3.4,
     "reserved_wu3_hours": 4.0,
     "reserved_contingency_hours": 0.25,
-    "reserved_wu4_hours": 2.0,
-    "hours_until_wu4_boundary": 7.65,
-    "hours_until_hard_stop": 9.65
+    "reserved_wu4_hours": 2.0
   }
 }

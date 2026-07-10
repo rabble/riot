@@ -64,11 +64,117 @@ pub enum JoinEffect {
 /// Live join state for a single namespace's worth of entries. (Distinct
 /// namespaces and subspaces never prune one another; this holds one merged
 /// live view and relies on the prune predicate's namespace/subspace guard.)
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct JoinState {
     live: Vec<Stored>,
     /// Every canonical entry id ever accepted, for AlreadyPresent detection.
     seen: Vec<EntryId>,
+}
+
+/// The result of planning a batch join without mutating the pre-state: the
+/// next live state (installed by one pointer swap on commit) plus per-item
+/// effects keyed by canonical entry id, in batch order. This is the
+/// copy-on-write unit the transaction store commits atomically.
+pub struct JoinPlan {
+    pub next: JoinState,
+    pub effects: Vec<(EntryId, JoinEffect)>,
+}
+
+impl JoinState {
+    /// Was this entry id already accepted (present in the seen index)?
+    pub fn has_seen(&self, id: &EntryId) -> bool {
+        self.seen.contains(id)
+    }
+
+    /// Is this entry id currently in the live view?
+    pub fn is_live_id(&self, id: &EntryId) -> bool {
+        self.live.iter().any(|s| &s.id == id)
+    }
+
+    /// The ids of every live entry.
+    pub fn live_ids(&self) -> Vec<EntryId> {
+        self.live.iter().map(|s| s.id).collect()
+    }
+}
+
+/// Computes the join of `pre` with `batch` without mutating `pre`. Effects
+/// are derived from `(pre ∪ batch)` as one set — order-independent.
+pub fn plan_join(pre: &JoinState, batch: Vec<AuthorisedEntry>) -> JoinPlan {
+    let batch: Vec<Stored> = batch.into_iter().map(Stored::new).collect();
+    let pre_live: Vec<EntryId> = pre.live.iter().map(|s| s.id).collect();
+
+    let mut union: Vec<Stored> = pre.live.clone();
+    for candidate in &batch {
+        if !union.iter().any(|s| s.id == candidate.id) {
+            union.push(candidate.clone());
+        }
+    }
+
+    let final_live: Vec<Stored> = union
+        .iter()
+        .filter(|e| {
+            !union
+                .iter()
+                .any(|other| other.id != e.id && other.prunes(e))
+        })
+        .cloned()
+        .collect();
+    assert!(
+        final_live.len() <= MAX_STORE_ENTRIES,
+        "join exceeded store ceiling"
+    );
+    let final_ids: Vec<EntryId> = final_live.iter().map(|s| s.id).collect();
+
+    let effects = batch
+        .iter()
+        .map(|item| {
+            let effect = if pre.seen.contains(&item.id) {
+                JoinEffect::AlreadyPresent
+            } else if final_ids.contains(&item.id) {
+                let mut pruned: Vec<EntryId> = pre_live
+                    .iter()
+                    .copied()
+                    .filter(|pid| {
+                        union
+                            .iter()
+                            .find(|s| &s.id == pid)
+                            .map(|victim| item.prunes(victim))
+                            .unwrap_or(false)
+                    })
+                    .collect();
+                pruned.truncate(MAX_REFERENCES);
+                JoinEffect::Winner {
+                    pruned_entry_ids: pruned,
+                }
+            } else {
+                let mut dominators: Vec<EntryId> = final_live
+                    .iter()
+                    .filter(|live| live.prunes(item))
+                    .map(|live| live.id)
+                    .collect();
+                dominators.truncate(MAX_REFERENCES);
+                JoinEffect::NotLive {
+                    dominating_entry_ids: dominators,
+                }
+            };
+            (item.id, effect)
+        })
+        .collect();
+
+    let mut next_seen = pre.seen.clone();
+    for item in &batch {
+        if !next_seen.contains(&item.id) {
+            next_seen.push(item.id);
+        }
+    }
+
+    JoinPlan {
+        next: JoinState {
+            live: final_live,
+            seen: next_seen,
+        },
+        effects,
+    }
 }
 
 impl JoinState {
@@ -90,88 +196,9 @@ impl JoinState {
 /// batch order. Panics only on gross ceiling violations (bounded well above
 /// any Phase 0A fixture).
 pub fn join_batch(state: &mut JoinState, batch: Vec<AuthorisedEntry>) -> Vec<JoinEffect> {
-    let batch: Vec<Stored> = batch.into_iter().map(Stored::new).collect();
-
-    // Pre-state live ids, captured before any mutation, so Winner effects can
-    // name only entries that were live *before* this batch.
-    let pre_live: Vec<EntryId> = state.live.iter().map(|s| s.id).collect();
-
-    // Union of pre-state live entries and the batch, de-duplicated by id
-    // (an id already live or repeated in the batch contributes once).
-    let mut union: Vec<Stored> = state.live.clone();
-    for candidate in &batch {
-        if !union.iter().any(|s| s.id == candidate.id) {
-            union.push(candidate.clone());
-        }
-    }
-
-    // Final live set = maximal antichain: keep an entry iff no other entry in
-    // the union prunes it.
-    let final_live: Vec<Stored> = union
-        .iter()
-        .filter(|e| {
-            !union
-                .iter()
-                .any(|other| other.id != e.id && other.prunes(e))
-        })
-        .cloned()
-        .collect();
-    assert!(
-        final_live.len() <= MAX_STORE_ENTRIES,
-        "join exceeded store ceiling"
-    );
-
-    let final_ids: Vec<EntryId> = final_live.iter().map(|s| s.id).collect();
-
-    // Derive per-batch-item effects from pre-state and final-state only.
-    let effects = batch
-        .iter()
-        .map(|item| {
-            if state.seen.contains(&item.id) {
-                return JoinEffect::AlreadyPresent;
-            }
-            if final_ids.contains(&item.id) {
-                // Winner: the pre-state-live entries this item pruned.
-                let mut pruned: Vec<EntryId> = pre_live
-                    .iter()
-                    .copied()
-                    .filter(|pid| {
-                        // find the pre-state entry and test item.prunes(it)
-                        union
-                            .iter()
-                            .find(|s| &s.id == pid)
-                            .map(|victim| item.prunes(victim))
-                            .unwrap_or(false)
-                    })
-                    .collect();
-                pruned.truncate(MAX_REFERENCES);
-                JoinEffect::Winner {
-                    pruned_entry_ids: pruned,
-                }
-            } else {
-                // NotLive: the live entries that dominate (prune) this item.
-                let mut dominators: Vec<EntryId> = final_live
-                    .iter()
-                    .filter(|live| live.prunes(item))
-                    .map(|live| live.id)
-                    .collect();
-                dominators.truncate(MAX_REFERENCES);
-                JoinEffect::NotLive {
-                    dominating_entry_ids: dominators,
-                }
-            }
-        })
-        .collect();
-
-    // Commit: record every batch id as seen, then install the final live set.
-    for item in &batch {
-        if !state.seen.contains(&item.id) {
-            state.seen.push(item.id);
-        }
-    }
-    state.live = final_live;
-
-    effects
+    let plan = plan_join(state, batch);
+    *state = plan.next;
+    plan.effects.into_iter().map(|(_, effect)| effect).collect()
 }
 
 impl JoinState {
