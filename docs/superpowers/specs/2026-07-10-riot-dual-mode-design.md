@@ -1,7 +1,7 @@
 # Riot Dual-Mode Design: Open Newswire + Private Groups
 
 Date: 2026-07-10
-Status: Approved in brainstorming; object vocabulary pending research addendum.
+Status: Approved in brainstorming; object vocabulary revised per research addendum (see end of doc).
 
 ## Purpose
 
@@ -101,7 +101,7 @@ A hosted, stateless renderer for newswire content: any open or publication space
 The only code both modules and the gateway share. Defined first, test-heavy, frozen early — it is where parallel tracks would otherwise drift.
 
 - **Identity & signing:** keypair generation, unlinked personas, signing/verification, Meadowcap capability handling.
-- **Object vocabulary (baseline — research addendum pending):** `alert`, `event`, `need`, `offer`, `resource_location`, `route_status`, `checklist`, `announcement`, `correction`, `field_report`, `translation`. Common envelope: stable id, author subspace, created time, expiry (required for operational types), language, confidence, source note, affected area, supersedes/corrects references, AI-assisted flag. Mutual-aid research is expected to add dispatch/task and check-in shapes; findings land as an addendum to this spec.
+- **Object vocabulary (revised per research addendum):** `alert`, `event`, `need`, `offer`, `task`, `verification`, `moderation_action`, `resource_location`, `route_status`, `checklist`, `announcement`, `correction`, `field_report`, `translation`. Common envelope: stable id, author subspace, created time, expiry (required for operational types), language, confidence, source note, affected area, supersedes/corrects references, AI-assisted flag. `need`/`offer`/`task` carry a claim/fulfillment lifecycle. See the addendum for grounding.
 - **Renderer:** sandboxed web view + native object views. No external network requests, no native bridges, local/offline status visible, signer and freshness shown outside the web content. Identical rendering in groups, newswire, and gateway.
 - **Provenance display:** one consistent presentation of who signed what, when, where it was imported from, and how it crossed the bridge.
 
@@ -143,7 +143,29 @@ Constraints:
 - Blinded rendezvous record format and what "indistinguishable from noise" requires concretely.
 - Drop encryption envelope for group drops (the Drop Format spec recommends encrypting drops; pick the construction).
 - Whether `.snk` compatibility with SneakerWeb is a hard goal or a convention to follow loosely.
-- Object vocabulary revisions from the mutual-aid research (addendum pending).
+- Membership vetting and infiltration defense practices in real activist groups (research coverage hole; directly relevant to invite design).
+
+## Addendum: Research-Grounded Revisions (2026-07-10)
+
+Source: `docs/research/2026-07-10-mutual-aid-coordination-research.md` — an adversarially verified study of how mutual aid and grassroots networks coordinate (Occupy Sandy, Verificado 19S, TXTMob, Indymedia, NYC COVID mutual aid). Changes it drives:
+
+**Object vocabulary additions.**
+
+- `task` — a dispatch ticket with an open → claimed → done lifecycle and explicit handoff. This is the verified core coordination object across contexts: Occupy Sandy's spreadsheet-row-plus-index-card dispatch, COVID mutual aid's intake/dispatch pipeline (the one group that formalized it avoided the burnout everyone else hit).
+- `verification` — a signed attestation attached to another object, recording method (eyewitness, N independent sources). Grounded in Verificado 19S's two-source rule and the NYC Comms Collective's trusted-broadcast layer.
+- `moderation_action` — hide-with-reason, publicly inspectable, never a delete. Grounded in IMC UK's hide-not-delete practice with the "View all posts" transparency page.
+- `need`/`offer` gain claim/fulfillment status so a space functions as the shared editable ledger the research found at the center of every operation.
+
+**Structural confirmations and additions.**
+
+- The TXTMob 2×2 matrix (public/private × moderated/unmoderated) independently validates the dual-mode architecture: open space = unmoderated public; `/features/` = moderated public; publication space = moderated public (writer-gated); private group = unmoderated private; path-restricted group capabilities = moderated private (the medic-dispatch shape).
+- **Roles as capability templates**: intake, dispatcher, field verifier, moderator/curator become named Meadowcap capability bundles.
+- **Governance meta-channel**: each space gets a governance path separate from content, mirroring Indymedia's rule that moderation disputes stay off the newswire.
+- **Paper interop is a requirement**: printable forms and QR round-trips for intake and distribution; flyer/zine export in multiple languages. Analog channels are how networks reach their most vulnerable members and how data moves when power is out.
+- **Runbooks as first-class content**: seedable, user-editable "how this hub works" documents (the checklist type extended), addressing the verified tacit-knowledge failure mode.
+- **Onboarding assumes existing groups**: import-your-crew flows take priority over stranger discovery — networks bootstrap from pre-existing channels, never cold.
+
+**Failure modes Riot's architecture already answers** (worth stating for reviewers): carrier/platform chokepoints (T-Mobile blocked TXTMob at the 2004 RNC; COVID groups depended wholly on Slack/Airtable/Venmo) and identifiable-operator arrest (why radio comms gave way to SMS). No carrier, no canonical server, pseudonymous keys.
 
 ## Relationship to Existing Docs
 

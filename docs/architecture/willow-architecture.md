@@ -79,11 +79,16 @@ The first product version should avoid arbitrary page generation and use typed u
 - `route_status`
 - `need`
 - `offer`
+- `task`
+- `verification`
+- `moderation_action`
 - `checklist`
 - `announcement`
 - `translation`
 - `correction`
 - `field_report`
+
+`need`, `offer`, and `task` carry a claim/fulfillment lifecycle (open, claimed, done) so a space can serve as a shared dispatch ledger. `verification` and `moderation_action` attach to other objects by reference. Grounding for these types is in `docs/research/2026-07-10-mutual-aid-coordination-research.md`.
 
 Every object should include:
 
