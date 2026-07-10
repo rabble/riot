@@ -1,0 +1,44 @@
+{
+  "contract": "riot-phase0a-agent-hours/1",
+  "updated_at": "2026-07-10",
+  "policy": {
+    "unit": "aggregate active agent-hours",
+    "parallel_workers": "sum overlapping worker wall time",
+    "combined_reported_time": "charge a reported combined duration once; do not split or double-count it",
+    "unknown_completed_time": "charge the full work-unit budget only when no individual or combined duration exists",
+    "wu4_starts_at_total_hours": 14.0,
+    "hard_stop_total_hours": 16.0
+  },
+  "entries": [
+    {
+      "work_unit": "WU0",
+      "status": "completed",
+      "reported_actual_hours": 1.0,
+      "charged_hours": 1.0,
+      "commits": ["f5beacd", "69ea94f"],
+      "evidence_paths": ["docs/decisions/phase0a-wu0-report.md", "fixtures/manifest.json"],
+      "source": "docs/decisions/phase0a-wu0-report.md",
+      "note": "Platform preflight remains PASS."
+    },
+    {
+      "work_unit": "WU0R+WU1 baseline",
+      "status": "reopened",
+      "reported_actual_hours": 2.0,
+      "charged_hours": 2.0,
+      "commits": ["50083bb", "b484ce8"],
+      "evidence_paths": ["docs/decisions/phase0a-wu0-report.md", "docs/decisions/phase0a-wu1-report.md"],
+      "source": "docs/decisions/phase0a-wu1-report.md",
+      "note": "One combined reported duration, charged once. Future G0/G1 repair time is charged separately."
+    }
+  ],
+  "totals": {
+    "charged_hours": 3.0,
+    "reserved_g0_g1_repair_hours": 1.5,
+    "reserved_wu2_hours": 4.0,
+    "reserved_wu3_hours": 4.0,
+    "reserved_contingency_hours": 1.5,
+    "reserved_wu4_hours": 2.0,
+    "hours_until_wu4_boundary": 11.0,
+    "hours_until_hard_stop": 13.0
+  }
+}

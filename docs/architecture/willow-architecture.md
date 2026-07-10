@@ -2,14 +2,15 @@
 
 ## Priority
 
-Use Willow in this order:
+Use Willow in this order after the 2026-07-10 implementation audit:
 
 1. Data Model
-2. Drop Format
-3. Meadowcap
-4. Encrypted Willow (critical path for the groups module — see the dual-mode spec)
-5. Willow Transfer Protocol
-6. Confidential Sync
+2. Meadowcap
+3. Riot's visibly non-interoperable Phase 0A evidence bundle around canonical Willow components
+4. Re-evaluated Willow Drop Format after upstream payload-import and CI gaps close
+5. Encrypted Willow (critical path for the groups module — see the dual-mode spec)
+6. Willow Transfer Protocol
+7. Confidential Sync
 
 The dual-mode design (`docs/superpowers/specs/2026-07-10-riot-dual-mode-design.md`) splits Riot into a plaintext newswire module and an encrypted groups module built in parallel; Encrypted Willow moves ahead of WTP because the groups module cannot ship without it, while both modules can ship on drops alone before live sync exists.
 
@@ -124,9 +125,13 @@ The web renderer should:
 
 ## Exchange
 
+### Phase 0A: Evidence bundle
+
+Use `.riot-evidence` only to prove canonical Willow entry/capability bytes, corrected WILLIAM3, Meadowcap authority, bounded import, and native handoff. It is not `.snk`, Drop Format, or a WTP stream.
+
 ### Phase 1: Drops
 
-Use Willow Drop Format as the initial exchange artifact.
+Re-evaluate Willow Drop Format as the first interoperable exchange artifact only after canonical upstream issue #51 (payload imports) and issue #54 (hosted CI) improve and Riot has authoritative cross-implementation vectors. Do not infer Drop compatibility from Phase 0A.
 
 Operations:
 

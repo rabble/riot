@@ -1,13 +1,24 @@
 # Phase 0A — WU1 Report: Alert Codec and Communal Willow Authority
 
-- **Status:** PASS (G1)
+- **Status:** REVISE (the implementation is a useful first slice, but Revision 5 review invalidated the G1 PASS claim)
 - **Owning work unit:** WU1
 - **Date:** 2026-07-10
-- **Elapsed agent-hours:** ~2.0 of 2.5 budgeted (includes the WU0R dependency revision executed mid-unit when the Willow implementation audit landed)
+- **Elapsed agent-hours:** ~2.0 combined WU0R+WU1 baseline, charged once in the authoritative ledger; future repair time is separate
 
-## G1 PASS evidence
+## Provisional G1 evidence
 
 All 23 `public_` tests pass under the corrected pins (`willow25 =0.6.0-alpha.3`, `bab_rs =0.8.1`). Command: `cargo test -p riot-core public_`.
+
+These green tests prove implemented behavior, not the complete revised gate. G1 remains REVISE because:
+
+- the cross-subspace denial creates two different communal namespaces instead of two subspaces within one namespace;
+- author generation is infallible and cannot return the specified `ENTROPY_UNAVAILABLE` result;
+- `ClockSnapshot` and separately labelled UTC/TAI conversion evidence are absent;
+- the bundle suite lacks the complete canonical-CBOR, exact-boundary, cumulative-limit, sibling-isolation, and structured-diagnostic matrix;
+- hostile raw constructors are public release APIs rather than conformance/test-only helpers;
+- the release profile aborts on panic, contradicting the catch/quarantine contract.
+
+Task 2 and Task 3 of `docs/superpowers/plans/2026-07-10-riot-phase0a-public-kernel.md` define the repair. WU2 is blocked until the repaired suite and report PASS.
 
 **Deterministic alert codec** (`tests/public_alert.rs`, 10 tests):
 
@@ -29,14 +40,14 @@ All 23 `public_` tests pass under the corrected pins (`willow25 =0.6.0-alpha.3`,
 - `RIOTE1` visible magic + deterministic CBOR framing of `{entry_bytes, capability_bytes, signature_bytes[64], payload_bytes}` per item; roundtrip byte-identical on re-encode;
 - ceilings enforced on both sides: 64 entries, 8 MiB artifact, 1 MiB payload, 64 KiB/entry and 2 MiB/bundle authorization budgets;
 - decode order per audit: bounded outer CBOR → canonical entry → canonical capability → fixed signature → payload length/digest → Meadowcap authorisation; tampered signature and payload-digest mismatch rejected with distinct codes; wrong magic and trailing bytes rejected;
-- digest vocabulary implemented: `bundle_digest` (SHA-256 of artifact), domain-separated `entry_digest` (`riot/entry-digest/v1` with length framing — reordering inputs changes the digest), `object_digest` (SHA-256 of payload).
+- baseline digest vocabulary implemented `bundle_digest`, proof-bound `entry_digest`, and `object_digest`; the repair replaces proof-bound `entry_digest` with canonical `entry_id` plus separate `evidence_digest` so Willow value identity is not conflated with its authorization proof.
 
 ## Deviations and notes
 
 - WU0R (dependency revision) executed inside this unit's wall time when Revision 5 landed; see the WU0 report's completion section.
-- `encode_bundle_raw` is deliberately public and unvalidated so WU4's hostile corpus can frame structurally-valid-but-cryptographically-invalid bundles; `encode_bundle` always re-verifies before export.
+- `encode_bundle_raw` and `BundleItem::from_raw_parts` are currently public/unvalidated. Review requires moving hostile framing to `riot-conformance` or `cfg(test)` so release callers cannot bypass encode-side validation.
 - Owned publication namespaces, delegated curation, and annotation objects remain stretch evidence, untouched.
 
 ## Next action
 
-WU2 — core import: synchronous preview, bounded copy-on-write snapshot transaction, `Applied`/`Dominated`/`AlreadyPresent` dispositions with Willow join semantics (prefix pruning, digest/length tie-breaks), receipts, duplicate handling, hostile cases, and arbiter concurrency tests. The alpha.3 `MemoryStore` serves as the conformance oracle for join permutations.
+Execute the reopened G0/G1 repair tasks and rerun their reports. WU2 remains blocked until both gates PASS.

@@ -1,7 +1,7 @@
 # Riot Phase 0A Public Kernel Evidence Sprint Design
 
 Date: 2026-07-10
-Status: Revision 5; Willow implementation audit amendments applied after product-owner confirmation; WU0 dependency gate reopened and design-review rerun required before Willow implementation continues. Platform pivot (shared Rust core, native iOS + Android shells) remains confirmed. A non-gating gateway/reader demo track runs in parallel (see the dual-mode spec's build phasing).
+Status: Revision 5, REVISE. Platform preflight is PASS; G0 and G1 claims from commits `50083bb`/`b484ce8` are provisional and invalidated until the reviewed repair plan passes. WU2 is blocked. The platform pivot (shared Rust core, native iOS + Android shells) remains confirmed. A non-gating gateway/reader demo track runs in parallel (see the dual-mode spec's build phasing).
 
 ## Purpose
 
@@ -17,10 +17,11 @@ Research basis: `docs/research/2026-07-10-dual-mode-research-addendum.md` and `d
 
 ## Evidence Boundary
 
-Phase 0A proves structural prerequisites for two user outcomes:
+Phase 0A proves structural prerequisites for three user outcomes:
 
 1. A public carrier can inspect signer, namespace, size, freshness, object count, validity, and trust status before importing an artifact.
 2. A field publisher can create a signed alert on one native runtime and have the other native runtime verify and import the exact bytes without a server.
+3. A field recipient can tell whether an historically accepted alert is currently live or has been pruned, while seeing that valid authorship/capability is neither a trust label nor a truth claim.
 
 The sprint implements one durable object kind, `alert`. The ten-kind product vocabulary, coordination flow, private groups, bridge, live transport, trust directories, polished UI, durable storage, and physical-device usability are deferred. A passing signature is not a truth or trust claim; an unknown signer remains visibly unknown.
 
@@ -31,6 +32,8 @@ Each gate ends in exactly one status:
 - **INCONCLUSIVE:** the evidence could not run or finish because of the time cap, toolchain, dependency, or environment.
 
 Only PASS permits downstream GO. FAIL and INCONCLUSIVE require a revised design or another explicitly budgeted sprint.
+
+The user risk controlled by each gate is explicit: G0 prevents incompatible hashes and untestable runtime behavior; G1 proves portable canonical authorship/authority; G2 prevents partial, order-dependent, or misleading imports and provenance; G3 proves those facts survive generated bindings and real native runtimes.
 
 ## Non-Goals
 
@@ -62,13 +65,17 @@ WU0 records the actual versions and lock hashes in `fixtures/manifest.json`. A s
 | `willow25` | `=0.6.0-alpha.3`; `default-features = false`, `std` only; Drop Format disabled |
 | `bab_rs` | `=0.8.1`; corrected WILLIAM3; direct pin forces the fixed patch in the unified graph |
 | `uniffi` | `=0.32.0`; proc-macro scaffolding and generated Swift/Kotlin bindings |
+| `camino` | `=1.2.4`; xtask binding-generation paths only; excluded from the release runtime graph |
 | `minicbor` | `=2.2.2`; fixed-key, definite-length encoder |
 | `cddl-cat` | `=0.7.1`; test/dev validation only |
-| `sha2` | `=0.10.9`; artifact and entry digests |
+| `sha2` | `=0.10.9`; bundle/object digests, canonical entry IDs, and proof-bound evidence digests |
+| `hifitime` | `=4.3.0`; UTC/TAI conversion from one captured system instant; already in the Willow graph but directly pinned for the clock adapter |
 | `ed25519-dalek` | `=2.2.0`; evidence public-author signatures |
 | `rand_core` | `=0.6.4` with `getrandom`; OS-backed ephemeral evidence keys |
 
 All workspace dependencies use exact versions and a committed `Cargo.lock`. Gradle dependency locking is enabled and the Android SDK/NDK package revisions are recorded. The release-shaped graph must not enable `willow25/drop_format` or contain OpenMLS, group-lab code, deterministic production randomness, or cryptographic debug features. The alpha pin is evidence-specific: stable 0.5.0 resolves a `bab_rs` version that upstream documents as computing incorrect WILLIAM3 digests.
+
+The evidence `riot-ffi` release artifacts use `panic = "unwind"` so every exported entrypoint can catch a panic, quarantine the session, and return `INTERNAL_ERROR`; `panic = "abort"` is forbidden in the packaged Phase 0A library because it would make that gate untestable. No unwind may cross UniFFI. A future production profile may choose abort only after narrowing the recovery claim and defining host-level process recovery.
 
 ### Apple
 
@@ -155,7 +162,7 @@ CBOR uses definite lengths, integer field keys in ascending order, shortest inte
 
 The core Willow fixture contains one ephemeral communal author. `RiotSession.open` generates a communal namespace ID, discards the privilege-less communal namespace secret, generates the author subspace keypair, and creates the zero-delegation communal write capability. `AuthorIdentity` exposes the complete 32-byte namespace ID, 32-byte subspace ID, `Communal` namespace kind, and a signing-key ID equal to the public subspace ID. The author subspace secret never crosses FFI.
 
-One `ClockSnapshot` supplies two deliberately distinct values: Willow's `Timestamp` in microseconds TAI since J2000 for join recency, and UTC Unix seconds for the signed alert's product-facing time fields. The Phase 0A alert path is `[b"objects", b"alert", object_id_16_bytes, revision_id_16_bytes]`; binary IDs are never truncated. One denial fixture proves that the capability cannot authorize a different subspace.
+One session-owned `ClockSource` read produces a `ClockSnapshot` with Willow's `Timestamp` in microseconds TAI since J2000 for join recency and UTC Unix seconds for signed `created_at`; the draft's validity times are checked against that instant. The Phase 0A alert path is `[b"objects", b"alert", object_id_16_bytes, revision_id_16_bytes]`; binary IDs are never truncated. One denial fixture creates a second subspace inside the same communal namespace and proves the first subspace's capability cannot authorize it; creating a second namespace does not satisfy this test.
 
 Owned publication namespaces, delegated curation, feature/correction annotations, and lens behavior remain approved product architecture but are stretch evidence outside G1–G3.
 
@@ -176,9 +183,12 @@ The outer CBOR never redefines Willow or Meadowcap fields. Decoding requires `En
 The digest vocabulary is fixed:
 
 - `bundle_digest`: SHA-256 of the complete `.riot-evidence` bytes;
-- `entry_digest`: SHA-256 of domain `riot/entry-digest/v1`, length-delimited canonical entry bytes, length-delimited canonical capability bytes, and signature bytes;
+- `entry_id`: SHA-256 of domain `riot/willow-entry-id/v1`, length-delimited canonical Entry bytes; this identifies the Willow value independent of its proof;
+- `evidence_digest`: SHA-256 of domain `riot/evidence-digest/v1`, length-delimited canonical entry bytes, length-delimited canonical capability bytes, and signature bytes; this identifies the authenticated proof carried by this bundle;
 - `payload_digest`: corrected WILLIAM3 committed by the Willow entry over the signed alert bytes;
 - `object_digest`: SHA-256 of the deterministic alert payload bytes.
+
+Phase 0A accepts only a communal namespace, a zero-delegation communal write capability whose namespace matches the entry and whose receiver/subspace is the entry author, plus a valid receiver signature. Valid owned, delegated, or otherwise alternate capability proofs are `UNSUPPORTED_CAPABILITY` and ineligible even if generic Meadowcap verification succeeds; those policies remain stretch scope. This narrow predicate makes one supported proof shape per canonical Entry while `entry_id` and `evidence_digest` preserve the architectural distinction.
 
 ## Stable FFI and Ownership Model
 
@@ -190,15 +200,16 @@ RiotSession.authorIdentity() -> AuthorIdentity
 RiotSession.createEvidenceStore() -> EvidenceStore
 RiotSession.encodeAlert(AlertDraft) -> SignedWillowEntry
 RiotSession.createBundle([SignedWillowEntry]) -> EncodedBundle
-RiotSession.inspectBundle(EvidenceStore, bytes, ImportContext) -> ImportPreview
+RiotSession.inspectBundle(EvidenceStore, bytes, ImportContext) -> InspectBundleResult
 RiotSession.deriveProvenance(EvidenceStore, EntryId, TrustContext) -> ProvenanceDisplay
-ImportPreview.plan(ImportSelection) -> PlannedImport
-ImportPreview.commit(PlannedImport) -> ImportCommitResult
+ImportPreview.plan(ImportSelection) -> ImportPlan
+ImportPlan.effects() -> PlannedImport
+ImportPlan.commit() -> ImportCommitResult
 ImportPreview.reject() -> RejectionResult
-close() -> CloseResult on RiotSession, EvidenceStore, and ImportPreview
+close() -> CloseResult on RiotSession, EvidenceStore, ImportPreview, and ImportPlan
 ```
 
-`RiotSession.open` generates one ephemeral Ed25519 evidence author from OS randomness and keeps the private key inside Rust for the session lifetime. Entropy failure returns `ENTROPY_UNAVAILABLE` and exposes no partial session. `encodeAlert` creates the payload, Willow entry, and required author capability under that identity. Key persistence and recovery are deliberately absent.
+`RiotSession.open` generates one ephemeral Ed25519 evidence author from OS randomness and keeps the private key inside Rust for the session lifetime. Entropy failure returns `ENTROPY_UNAVAILABLE` and exposes no partial session. The session also owns a `ClockSource`. Production uses a fallible system source plus pinned `hifitime`; conformance and `cfg(test)` may inject a deterministic/failing source that is unreachable from release FFI. One `ClockSource::snapshot()` captures one system instant and returns UTC Unix seconds, TAI/J2000 microseconds, and uncertainty derived from it. System-read failure, pre-epoch/range failure, or UTC/TAI conversion failure maps to stable `CLOCK_UNAVAILABLE`. `encodeAlert` calls it before allocating/signing, sets signed `created_at` and Willow timestamp from that snapshot, and validates the draft's absolute `valid_from`/`expires_at`; no partial entry or signer mutation remains on failure. Inspection captures its receipt clock before retaining bytes and leaves no preview/state on failure. Callers cannot supply an independent Willow time. `ImportContext` therefore carries route and trust context, not a caller-authored clock. Key persistence and recovery are deliberately absent.
 
 `ed25519-dalek` uses `default-features = false` with only `std`, `fast`, `zeroize`, and `rand_core`. The signing key is not serializable, printable, cloneable through FFI, or returned by any API; it is zeroized on explicit close and drop. Deterministic clock, ID, and signer implementations live only in `riot-conformance` or `cfg(test)` and cannot be selected by `riot-ffi` release features.
 
@@ -208,25 +219,28 @@ close() -> CloseResult on RiotSession, EvidenceStore, and ImportPreview
 | --- | --- | --- |
 | `RiotSession` | `Open`, `Failed`, `Closed` | `open → Open`; boundary panic: `Open → Failed`; `close: Open|Failed → Closed`; repeated close returns `AlreadyClosed` |
 | `EvidenceStore` | `Open`, `Closed` | created by one open session; `close: Open → Closed`; parent close closes it; repeated close returns `AlreadyClosed` |
-| `ImportPreview` | `Open`, `Committed`, `Rejected`, `Closed` | `commit: Open → Committed`; `reject: Open → Rejected`; `close: Open → Closed`; terminal close returns `AlreadyClosed` |
+| `ImportPreview` | `Open`, `Committed`, `Rejected`, `Closed` | plan commit: `Open → Committed`; `reject: Open → Rejected`; `close: Open → Closed`; terminal close returns `AlreadyClosed` |
+| `ImportPlan` | `Open`, `Committed`, `Superseded`, `ParentConsumed`, `Closed` | created by one preview; a new plan supersedes the prior plan; `commit: Open → Committed`; preview reject/other-plan commit → `ParentConsumed`; explicit/parent close → `Closed` |
 
 Rules:
 
 - every object carries an unguessable session ID and is valid only with its creating session;
 - one session-owned `Mutex<SessionState>` contains session, store, preview, generation, index, receipt, and signer state; child objects contain only their IDs plus an `Arc` to this arbiter and have no independent state locks;
-- every FFI call acquires that one arbiter before admission checks or mutation, so close/commit/reject have one lock order and one linearization point; the first terminal preview action wins and every competing or later action returns `PREVIEW_CONSUMED`;
-- error precedence under the arbiter is `OBJECT_CLOSED`, `WRONG_SESSION`, `PREVIEW_CONSUMED`, `STALE_PREVIEW`, validation/limit error;
+- every FFI call acquires that one arbiter before admission checks or mutation, so close/commit/reject have one lock order and one linearization point; the first terminal preview action wins, with the exact plan/preview terminal code determined by the precedence and lifecycle matrix below;
+- non-close admission is exact: owning session `Failed` → `SESSION_FAILED`; owning session closed → `OBJECT_CLOSED`; immutable owner ID on a passed store/preview/plan differs → `WRONG_SESSION` without locking the foreign arbiter; locally owned store/handle explicitly or parent-closed → `OBJECT_CLOSED`; superseded plan → `PLAN_SUPERSEDED`; already committed plan → `PLAN_CONSUMED`; rejected/committed preview reached through any other child → `PREVIEW_CONSUMED`; changed store generation → `STALE_PREVIEW`; then validation/limit error. Close remains available on a failed session and returns only `Closed | AlreadyClosed`;
 - closing a store marks its preview closed in the same critical section; closing a session marks previews and stores closed before zeroizing its signer;
 - any non-close call on a closed parent returns `OBJECT_CLOSED`;
 - process restart invalidates all objects;
 - `CloseResult` is `Closed | AlreadyClosed` and carries no sensitive detail;
 - `RejectionResult` is non-durable and contains only preview ID and `Rejected`; it creates no store receipt;
 - FFI failures use stable codes and sanitized developer detail containing no payload, author private data, key material, or untrusted bytes;
-- every exported FFI entrypoint catches Rust panic at the boundary, quarantines the session as `Failed`, closes child objects, zeroizes its signer, returns sanitized `INTERNAL_ERROR`, and allows no unwind across UniFFI; later non-close calls return `SESSION_FAILED`.
+- every exported FFI entrypoint catches Rust panic at the boundary, quarantines the session as `Failed`, closes child objects, zeroizes its signer, returns sanitized `INTERNAL_ERROR`, and allows no unwind across UniFFI; later non-close calls return `SESSION_FAILED` despite child terminal flags because that code has precedence. A panic during `open` returns `INTERNAL_ERROR` with no handle; a normal parent close produces `OBJECT_CLOSED` on child non-close calls.
 
-`ImportSelection` contains the preview ID and unique selected preview-entry IDs. The preview ID and every entry ID must belong to the open preview. `plan` evaluates the complete selection, including interactions among selected entries in original bundle order, against the preview's bound store generation. It returns an immutable value containing an unguessable plan ID, selection, base generation, and ordered prospective effects: `WouldApply { entry_id, pruned_entry_digests[] }`, `WouldBeDominated { entry_id, dominating_entry_digests[] }`, or `AlreadyPresent { entry_id, insertion_receipt_id }`. `commit` accepts only a plan issued by this open preview. Under the arbiter it either reproduces those exact effects and swaps state, or returns `STALE_PREVIEW` before duplicate detection; it never silently commits a different effect. Phase 0A permits one open store and one open preview per session; attempts beyond either bound return `SESSION_LIMIT` before retaining bytes.
+`ImportSelection` contains the preview ID and unique selected preview-entry IDs; their canonical Willow `entry_id` values must also be unique. The preview ID and every selected ID must belong to the open preview. `plan` evaluates the complete selection against the preview's bound store generation and retains the full selection, base generation, and ordered effects under the arbiter. It returns an opaque `ImportPlan` handle, not a host-constructible value; `effects()` returns a copy of `WouldApply { entry_id, pruned_entry_ids[] }`, `WouldBeDominated { entry_id, dominating_entry_ids[] }`, or `AlreadyPresent { entry_id, insertion_receipt_id }`. One plan may be live per preview and at most 64 may be issued over its lifetime; the 65th returns `SESSION_LIMIT`. A new plan atomically supersedes the old one. The arbiter retains a fixed 256-byte-charged tombstone for each issued plan until preview close, preserving exact terminal reasons within a bounded 16 KiB maximum. `commit` reads only the retained issued plan. Under the arbiter it either reproduces those exact effects and swaps state, or returns `STALE_PREVIEW` before duplicate detection; it never trusts substituted host fields or silently commits a different effect. Plan state, tombstones, and returned effect bytes count against the preview-output ceiling. Phase 0A permits one open store and one open preview per session; attempts beyond either bound return `SESSION_LIMIT` before retaining bytes.
 
-`TrustContext` is a value containing at most 64 complete trusted public signer IDs. `ImportContext` contains the local route, clock snapshot, and one `TrustContext`. Trust cannot weaken signature, capability, schema, or size policy. A signer absent from the exact set is `UnknownTrust`.
+Explicit `ImportPlan.close` leaves the preview open and permits a replacement plan; later `effects`/`commit` on that handle return `OBJECT_CLOSED`. A superseded plan returns `PLAN_SUPERSEDED`. Repeating commit on the winning plan returns `PLAN_CONSUMED`. A plan observed after its preview was rejected returns `PREVIEW_CONSUMED`; parent store/session close returns `OBJECT_CLOSED`. These cases are fixtures in core, Swift, and Kotlin.
+
+`TrustContext` is a value containing at most 64 complete trusted public signer IDs. `ImportContext` contains the local route and one `TrustContext`; receipt time comes from the session clock. Trust cannot weaken signature, capability, schema, or size policy. A signer absent from the exact set is `UnknownTrust`.
 
 ## Import Transaction, Receipt, and Provenance
 
@@ -242,9 +256,9 @@ Inspection retains immutable input bytes and binds the preview to:
 - fixed ceilings;
 - per-entry preview ID, original bytes/digests, status, eligibility, warnings, and structured diagnostics.
 
-Commit builds one bounded copy-on-write next snapshot under the session arbiter. It validates the whole selection, partitions unseen entries by namespace, and computes one order-independent final join of each namespace's pre-commit live view with its complete selected batch: newer prefixes prune older descendants; equal subspace/path/timestamp ties retain the greatest WILLIAM3 digest, then greatest payload length. It then derives dispositions by entry digest from the pre-state and final state. A final-live new entry is `AppliedAtCommit`; its `pruned_entry_digests` contains only entries removed from the pre-commit live view that this winner directly dominates, never same-batch candidates that were not previously committed. A new entry absent from the final live view is `DominatedAtCommit`; its dominators are named from the final live view. Stable `EntryId` is the full `entry_digest`, so identity and dispositions do not depend on bundle order; receipt rows retain original bundle order for presentation. One pointer swap installs the final live views, seen records, first-receipt references, one generation change when at least one entry is new, and the receipt. The old snapshot remains authoritative until that swap; a fault or `STORE_FULL` before it leaves all observable state unchanged.
+Commit builds one bounded copy-on-write next snapshot under the session arbiter. It validates the whole selection, partitions unseen entries by namespace, and computes one order-independent final join of each namespace's pre-commit live view with its complete selected batch: newer prefixes prune older descendants; equal subspace/path/timestamp ties retain the greatest WILLIAM3 digest, then greatest payload length. It then derives dispositions by `entry_id` from the pre-state and final state. A final-live new entry is `AppliedAtCommit`; its `pruned_entry_ids` contains only entries removed from the pre-commit live view that this winner directly dominates, never same-batch candidates that were not previously committed. A new entry absent from the final live view is `DominatedAtCommit`; its dominators are named from the final live view. Stable `EntryId` is the domain-separated hash of canonical Entry bytes, so identity and dispositions do not depend on proof or bundle order; receipt rows retain original bundle order for presentation. One pointer swap installs the final live views, seen records, first-receipt references, one generation change when at least one entry is new, and the receipt. The old snapshot remains authoritative until that swap; a fault or `STORE_FULL` before it leaves all observable state unchanged.
 
-A preview whose store generation changed returns `STALE_PREVIEW` before duplicate detection. Deduplication uses `entry_digest`, with preview entries kept in original bundle order. `ImportCommitResult` is `Committed(ImportReceipt) | NoChanges(DuplicateResult)`. `DuplicateResult` contains bundle digest, store ID, unchanged generation, and ordered `(preview_entry_id, entry_digest, existing_entry_id, first_seen_time, insertion_receipt_id)` rows. Every newly accepted entry receives a stable `entry_id` whether it is live or dominated on arrival, and the index permanently points it to its first receipt. A duplicate-only reinspection, plan, and commit returns `NoChanges` and creates no state; calling commit twice on the same consumed preview instead returns `PREVIEW_CONSUMED`. A mixed new/duplicate import returns `Committed`, increments generation once, and records every disposition.
+A preview whose store generation changed returns `STALE_PREVIEW` before duplicate detection. Deduplication uses `entry_id`, with preview entries kept in original bundle order. If a bundle repeats an `entry_id`, inspection rejects the artifact with bundle-scoped `DUPLICATE_ENTRY_ID`; multiplicity never reaches selection or receipt construction. `ImportCommitResult` is `Committed(ImportReceipt) | NoChanges(DuplicateResult)`. `DuplicateResult` contains bundle digest, store ID, unchanged generation, and ordered `(preview_entry_id, entry_id, evidence_digest, first_seen_time, insertion_receipt_id)` rows. Every newly accepted entry has that stable `entry_id` whether it is live or dominated on arrival, and the index permanently points it to its first receipt. A duplicate-only reinspection, plan, and commit returns `NoChanges` and creates no state; calling commit twice on the same consumed plan instead returns `PLAN_CONSUMED`. A mixed new/duplicate import returns `Committed`, increments generation once, and records every disposition.
 
 `willow25::storage::MemoryStore` 0.6.0-alpha.3 is a test-only conformance oracle for live-view permutations. It is not the FFI store because it is `Rc`-based, lacks Riot's hard ceilings and receipt model, and is not the session arbiter's transactional state.
 
@@ -252,7 +266,9 @@ A preview whose store generation changed returns `STALE_PREVIEW` before duplicat
 
 Each preview entry exposes schema status, full author and namespace IDs, signature status, capability status, signer trust status, encoded size, digests, eligibility, duplicate state, and structured non-sensitive diagnostics. Join effect is selection-dependent and is therefore exposed by `plan`, not guessed independently per entry.
 
-`BundleDiagnostic` has a stable `code`, `scope = Bundle | Item(item_index)`, and `component = OuterFrame | Entry | Capability | Signature | Payload | Authorization | Schema`; optional developer detail is fixed trusted text. Outer magic/version/codec failure, non-canonical or trailing outer CBOR, cumulative bound failure, or an item frame that cannot be isolated rejects the whole inspection with one bundle-scoped diagnostic and creates no preview. Once a bounded canonical outer item is isolated, non-canonical/trailing Entry or capability bytes, wrong signature length, payload length or WILLIAM3 mismatch, authorization failure, and schema failure produce an ineligible item with the exact component/code; they do not hide valid sibling items. Authorization uses Willow's checked possibly-authorised-to-authorised conversion; unchecked conversion is forbidden. No diagnostic includes payload text, untrusted bytes, secret data, or attacker-controlled formatting.
+`InspectBundleResult = Preview(ImportPreview) | Rejected(BundleRejection)` is ordinary typed inspection data across UniFFI, not a generic exception. `BundleRejection` contains exactly one structured diagnostic for a fatal artifact rejection. `BundleDiagnostic` has a stable `code`, `scope = Bundle | Item(item_index)`, and `component = OuterFrame | Entry | Capability | Signature | Payload | Authorization | Schema`; optional developer detail is fixed trusted text. Outer magic/version/codec failure, non-canonical or trailing outer CBOR, cumulative bound failure, duplicate entry ID, or an item frame that cannot be isolated returns `Rejected` and creates no preview. Operational/session failures still use typed FFI errors. Once a bounded canonical outer item is isolated, non-canonical/trailing Entry or capability bytes, wrong signature length, payload length or WILLIAM3 mismatch, authorization failure, and schema failure produce an ineligible item with the exact component/code; they do not hide valid sibling items. Authorization uses Willow's checked possibly-authorised-to-authorised conversion; unchecked conversion is forbidden. No diagnostic includes payload text, untrusted bytes, secret data, or attacker-controlled formatting.
+
+If one artifact violates several fatal outer rules, the single rejection code is deterministic: `ARTIFACT_TOO_LARGE`, `BAD_MAGIC`, `OUTER_MALFORMED_OR_NONCANONICAL` (including trailing bytes), `UNSUPPORTED_VERSION_OR_CODEC`, cumulative `LIMIT_EXCEEDED` in decode encounter order, then `DUPLICATE_ENTRY_ID`. Tests combine violations to freeze this precedence.
 
 - invalid signature or invalid capability: hard-ineligible;
 - unknown capability: hard-ineligible in Phase 0A;
@@ -268,16 +284,17 @@ Selection must be non-empty, contain no duplicates, and reference only eligible 
 
 ```text
 preview_entry_id
-entry_digest
+entry_id
+evidence_digest
 object_digest
 disposition =
-  AppliedAtCommit { entry_id, pruned_entry_digests[] }
-  | DominatedAtCommit { entry_id, dominating_entry_digests[] }
+  AppliedAtCommit { entry_id, pruned_entry_ids[] }
+  | DominatedAtCommit { entry_id, dominating_entry_ids[] }
   | AlreadyPresent { entry_id, insertion_receipt_id }
 first_seen_time
 ```
 
-`AppliedAtCommit` means the entry was present in the live Willow view produced by that commit. `DominatedAtCommit` means the valid entry was accepted into local seen/receipt history but absent from that resulting live view. `AlreadyPresent` means this exact entry digest was previously accepted. A newly accepted dominated entry changes store history and therefore increments the generation; a duplicate-only retry does not. Receipt wording is deliberately temporal: an entry applied in an earlier receipt can be pruned by a later commit.
+`AppliedAtCommit` means the entry was present in the live Willow view produced by that commit. `DominatedAtCommit` means the valid entry was accepted into local seen/receipt history but absent from that resulting live view. `AlreadyPresent` means this exact entry ID was previously accepted. A newly accepted dominated entry changes store history and therefore increments the generation; a duplicate-only retry does not. Receipt wording is deliberately temporal: an entry applied in an earlier receipt can be pruned by a later commit.
 
 Receipts do not contain mutable trust or presentation state.
 
@@ -289,7 +306,7 @@ Receipts do not contain mutable trust or presentation state.
 2. cryptography: payload digest, signature status, capability status, with no truth claim;
 3. author claims: source and affected-area claims explicitly labelled as author claims;
 4. local receipt: bundle digest, route, first-seen and receipt times, immutable receipt disposition;
-5. current Willow status: `Live | Pruned { dominating_entry_digests[] }`, derived from the present namespace view for every historically accepted entry;
+5. current Willow status: `Live | NotLive { reason = DominatedOnArrival | PrunedLater, dominating_entry_ids[] }`, derived from the present namespace view and first receipt for every historically accepted entry;
 6. reader state: signer trust and expiry.
 
 `deriveProvenance` supports every historically accepted stable entry ID, including entries dominated on arrival or pruned later. The seen record retains the bounded immutable entry/authentication facts needed to derive it. For preview-only entries, `PreviewEntry.provenance` uses the inspection-time trust snapshot and the same labelled structure, but local receipt fields are `NotCommitted` and current Willow status is supplied only by the selection's `PlannedImport`. Receipts remain trust-free. Core and native assertions prove that preview trust stays at its captured value while a post-import derivation changes only when its explicit `TrustContext` changes. Curation, corrections/disputes, clock uncertainty, and broader mutable lens snapshots are stretch evidence. Native tests compare the core preview, planned effect, receipt, current-status, and provenance fact records.
@@ -302,11 +319,14 @@ Callers may lower but never raise `CoreConfig` ceilings.
 | --- | --- |
 | artifact bytes | 8 MiB |
 | entries per bundle / preview | 64 |
-| encoded payload bytes | 1 MiB |
+| canonical Entry bytes per item | 4 KiB |
+| canonical capability bytes per item | 64 KiB; also charged to the 2 MiB bundle authorization total |
+| signature bytes per item | exactly 64 |
+| encoded payload bytes per item | 1 MiB |
 | CBOR nesting | 16 |
 | map entries | 128 |
 | total decoded CBOR nodes | 16,384 |
-| text/byte string | 64 KiB except bounded description payload |
+| other text/byte string | 64 KiB; payload uses its dedicated 1 MiB limit |
 | path components | 64 |
 | path component bytes | 256 |
 | total path bytes | 2,048 |
@@ -315,32 +335,33 @@ Callers may lower but never raise `CoreConfig` ceilings.
 | warning/status records | 64; one per preview entry |
 | expansion ratio | 1:1; compression forbidden |
 | store entries / index records | 1,024 each |
-| store encoded-entry bytes | 8 MiB |
+| total retained-store charge | 16 MiB across entry, payload, capability, signature, index, receipt, digest-reference, namespace-map, and collection allocations |
 | namespace-local live views | 64 |
 | durable receipts | 256 |
-| pruned/dominating digest references per commit | 1,024 |
+| pruned/dominating entry-ID references per commit | 1,024 |
 | open stores / previews per session | 1 / 1 |
+| plans issued per preview | 64 total; one live; 256 charged bytes per retained tombstone |
 | retained preview input / output | 8 MiB / 2 MiB |
-| next transaction snapshot | 8 MiB, in addition to the bounded current store and retained input |
+| next transaction snapshot charge | 16 MiB, in addition to the bounded current store and retained input |
 | local inspection target | 2 seconds for the 8 MiB hostile fixture; a miss is measured FAIL/INCONCLUSIVE, never a security pass |
 
-All length/count arithmetic is checked before allocation. Swift and Kotlin use capped reads of at most 8 MiB + 1 byte rather than trusting pre-read file metadata; Rust independently rechecks the byte ceiling. Every exact-boundary and one-over fixture must return its expected stable result without partial allocation or store mutation. `STORE_FULL` is decided while staging and before the pointer swap.
+The retained-store charge counts every owned byte-buffer capacity plus conservative fixed charges of 512 bytes per accepted entry/index record, 256 bytes per namespace view, 256 bytes per receipt and receipt row, and 32 bytes per digest reference. Store collections allocate only after their count and byte charges fit; implementations may be more conservative but never undercharge these categories. All length/count/charge arithmetic is checked before allocation. Swift and Kotlin use capped reads of at most 8 MiB + 1 byte rather than trusting pre-read file metadata; Rust independently rechecks the byte ceiling. Every exact-boundary and one-over fixture, including namespace-view and digest-reference limits, must return its expected stable result without partial allocation or store mutation. `STORE_FULL` is decided while staging and before the pointer swap.
 
 ### Core gate fixtures
 
 | Fixture | Preview/action expectation | Commit/store expectation |
 | --- | --- | --- |
-| valid known alert | eligible | `Applied` with per-entry receipt |
-| unknown signer, valid signature/capability | eligible; `UnknownTrust` | `Applied`; trust remains unknown |
+| valid known alert | eligible; planned `WouldApply` | `AppliedAtCommit` with per-entry receipt |
+| unknown signer, valid signature/capability | eligible; `UnknownTrust`; planned `WouldApply` | `AppliedAtCommit`; trust remains unknown |
 | invalid signature | hard-ineligible, distinct code | unchanged |
 | invalid capability | hard-ineligible, distinct code | unchanged |
 | malformed/oversized/limit edge | rejected before preview or exact boundary accepted | unchanged on reject |
 | duplicate-only | planned `AlreadyPresent` | `NoChanges`; no generation or new durable receipt |
-| newer prefix / older descendants | planned `WouldApply`; pruned digests visible before commit | `AppliedAtCommit`; descendants pruned and named in receipt |
+| newer prefix / older descendants | planned `WouldApply`; pruned entry IDs visible before commit | `AppliedAtCommit`; descendants pruned and named in receipt |
 | candidate dominated by newer prefix | planned `WouldBeDominated`; dominators visible before commit | `DominatedAtCommit`; stable entry ID, seen index, and receipt committed; live view unchanged |
 | equal coordinate tie | eligible | greatest WILLIAM3 digest, then greatest payload length wins |
 | distinct namespace/subspace | eligible | no cross-namespace or cross-subspace pruning |
-| join permutations | eligible | commutative, associative, idempotent live view matching alpha.3 `MemoryStore` |
+| batch/join permutations | same planned effects keyed by entry ID; rows may preserve input order | commutative, associative, idempotent live view and disposition facts matching alpha.3 `MemoryStore`; pruned lists name pre-state entries only |
 | store-full / injected pre-swap failure | stable failure code | exact before-state retained |
 | commit versus reject race | one terminal winner | at most one swap/receipt |
 | close versus commit race | one terminal winner | state matches winning action |
@@ -365,17 +386,19 @@ If and only if all core gates pass with budget remaining, agents may add: empty/
 7. Run `RiotEvidenceTests/IOSImportsAndroidBundle`, then copy its consumer facts from the resolved container.
 8. Compare fact JSON and write `build/evidence/g3-runtime-handoff.json`. The shell may parse fact JSON but never the `.riot-evidence` bytes.
 
-For each leg, the versioned producer/consumer facts divide `preview`, `plan`, `commit`, and `post_commit_provenance` sections. Producer facts include runtime/tool versions, complete author/namespace/subspace IDs, payload fields, Willow timestamp, corrected WILLIAM3 payload digest, bundle/entry/object digests, and artifact byte count. The consumer must assert byte-identical bundle digest, canonical component decoding, matching WILLIAM3, valid signature, valid capability, matching public IDs and payload fields, `UnknownTrust`, planned `WouldApply`, committed `AppliedAtCommit`, and current status `Live`. The two legs must have distinct author, object, entry, and bundle IDs/digests.
+For each leg, facts use schema `org.riot.handoff-facts/1` and divide `preview`, `plan`, `commit`, and `post_commit_provenance` sections. Producer facts include runtime/tool versions, complete author/namespace/subspace IDs, payload fields, Willow timestamp, corrected WILLIAM3 payload digest, canonical `entry_id`, proof-bound `evidence_digest`, bundle/object digests, and artifact byte count. The consumer must assert byte-identical bundle digest, canonical component decoding, matching WILLIAM3, valid signature, valid capability, matching public IDs and payload fields, `UnknownTrust`, planned `WouldApply`, committed `AppliedAtCommit`, and current status `Live`. The two legs must have distinct author, object, entry, evidence, and bundle IDs/digests.
 
-Before the cross-runtime legs, both the XCTest bundle and the Android instrumentation bundle run a generated-binding semantic contract fixture. It exercises and asserts lossless decoding of `WouldApply`/`AppliedAtCommit`, `WouldBeDominated`/`DominatedAtCommit`, `AlreadyPresent`/`NoChanges`, a later transition from receipt `AppliedAtCommit` to current status `Pruned`, and one item-scoped canonical diagnostic. These native assertions prove the full core result vocabulary survives Swift and Kotlin code generation; only the two fresh `WouldApply`/`AppliedAtCommit` artifacts cross runtimes.
+Before the cross-runtime legs, both the XCTest bundle and the Android instrumentation bundle run a generated-binding semantic contract fixture and emit `ios_binding_semantics` and `android_binding_semantics` evidence sections. They assert lossless decoding of `WouldApply`/`AppliedAtCommit`, `WouldBeDominated`/`DominatedAtCommit`, `AlreadyPresent`/`NoChanges`, a later transition from receipt `AppliedAtCommit` to current status `NotLive { PrunedLater }`, one item-scoped canonical diagnostic, and whole-bundle `InspectBundleResult::Rejected`. These native assertions prove both inspection-result variants and the full core vocabulary survive Swift and Kotlin code generation; only the two fresh `WouldApply`/`AppliedAtCommit` artifacts cross runtimes.
 
 The script resolves one simulator UDID and one emulator serial, fails on ambiguity, and runs these concrete test entrypoints:
 
 ```text
+xcodebuild test -project apps/ios/RiotEvidence/RiotEvidence.xcodeproj -scheme RiotEvidence -destination id=$IOS_UDID -only-testing:RiotEvidenceTests/BindingSemantics
 xcodebuild test -project apps/ios/RiotEvidence/RiotEvidence.xcodeproj -scheme RiotEvidence -destination id=$IOS_UDID -only-testing:RiotEvidenceTests/IOSCreatesBundle
 xcrun simctl get_app_container $IOS_UDID org.riot.evidence data
 adb -s $ANDROID_SERIAL push build/handoff/ios-generated.riot-evidence /data/local/tmp/ios-generated.riot-evidence
 adb -s $ANDROID_SERIAL shell run-as org.riot.evidence cp /data/local/tmp/ios-generated.riot-evidence files/ios-generated.riot-evidence
+ANDROID_SERIAL=$ANDROID_SERIAL ./gradlew :app:connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=org.riot.evidence.BindingSemanticsTest
 ANDROID_SERIAL=$ANDROID_SERIAL ./gradlew :app:connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=org.riot.evidence.CrossRuntimeHandoffTest
 adb -s $ANDROID_SERIAL exec-out run-as org.riot.evidence cat files/android-generated.riot-evidence
 xcodebuild test -project apps/ios/RiotEvidence/RiotEvidence.xcodeproj -scheme RiotEvidence -destination id=$IOS_UDID -only-testing:RiotEvidenceTests/IOSImportsAndroidBundle
@@ -389,9 +412,9 @@ Each work unit begins with its named failing test, confirms the intended failure
 
 | WU | First RED evidence | GREEN command |
 | --- | --- | --- |
-| WU0R | dependency validator rejects `willow25 0.5.0`, old lock hash, missing corrected WILLIAM3 vectors, or enabled Drop Format | `cargo xtask validate-contracts` and `cargo test -p riot-conformance william3_` |
-| WU1 | alert golden vectors, canonical Willow component bytes, corrected payload digests, and authority denial fail because codec/adapter are absent | `cargo test -p riot-core public_` |
-| WU2 | join laws/permutations, dispositions, transaction, bounds, rollback, log-safety, panic, and three lifecycle-concurrency tests fail because types are absent | `cargo test -p riot-core -p riot-conformance core_import_` |
+| WU0R | dependency validator rejects `willow25 0.5.0`, old lock hash, missing corrected WILLIAM3 vectors/independent provenance, `panic=abort`, or enabled Drop Format | `cargo xtask validate-contracts` and `cargo test -p riot-conformance william3_` |
+| WU1 | alert vectors, one-instant UTC/TAI clock conversion and `CLOCK_UNAVAILABLE` encode failure, canonical Willow component bytes, corrected payload digests, and same-namespace authority denial fail because adapters/policies are incomplete | `cargo test -p riot-core public_` |
+| WU2 | inspection `CLOCK_UNAVAILABLE` no-retention failure, join laws/permutations, dispositions, transaction, bounds, rollback, Rust log-safety, panic, and three lifecycle-concurrency tests fail because types are absent | `cargo test -p riot-core -p riot-conformance core_import_` |
 | WU3 | native tests fail because generated bindings/libraries, semantic-contract fixtures, and runtime handoff are absent | `scripts/phase0a/cross-runtime-handoff.sh` |
 | WU4 | adversarial manifest fails on missing hostile-corpus mutations, closure scan, hashes, and gate decisions | `scripts/phase0a/verify.sh` |
 
@@ -422,30 +445,34 @@ The verification script additionally rejects `willow25/drop_format`, `bab_rs <0.
 
 The budget is 16 aggregate agent-hours. Parallel agents charge their wall time independently. Work stops at a checkpoint instead of borrowing scope.
 
+`docs/decisions/phase0a-time-ledger.json` is the authoritative accounting record. Each worker records work unit, start/end timestamps or an explicitly reported combined active duration, commits, and evidence paths; overlapping independent workers are summed, not collapsed to elapsed clock time. The gate report reconciles the ledger before starting another work unit. The existing WU0R+WU1 report supplies one combined approximately 2.0-hour duration, which is charged once rather than split or double-counted. Future repair work is charged separately and is not prepaid by that baseline.
+
 | Work unit | Budget | Deliverable and stop rule |
 | --- | ---: | --- |
 | WU0 — completed platform preflight | 1h spent | arm64 AVD, blank instrumentation, four native Rust targets, contracts, manifest, and original locks verified; platform evidence remains PASS |
-| WU0R — corrected Willow dependency | 0.5h | replace 0.5.0 with 0.6.0-alpha.3, pin `bab_rs 0.8.1`, disable Drop Format, regenerate lock/hash, add corrected WILLIAM3 vectors, rerun five-target compile and feature-tree checks; Willow work stops until PASS |
-| WU1 — alert and communal authority | 2.5h | deterministic alert/bundle codec, one ephemeral communal-author path, and one cross-subspace denial; G1 FAIL stops downstream work |
+| WU0R+WU1 — implemented baseline | 2h spent | corrected resolved graph plus provisional alert/authority/bundle code; G0/G1 PASS claims reopened by review |
+| G0/G1 repair | 1.5h | executable validator/profile/vector repairs, fallible entropy/clock, same-namespace denial, value/proof identity, narrow capability policy, structured bounded decoder matrix; WU2 stops until PASS |
 | WU2 — Willow join, import, and provenance facts | 4h | namespace-local join laws and oracle permutations, bounded snapshot transaction, three dispositions, essential hostile cases, and arbiter concurrency tests; G2 FAIL stops native work |
-| WU3 — FFI and native handoff | 4.5h | generated Swift/Kotlin bindings, native full-vocabulary contract fixtures, XCTest/instrumentation hosts, container-aware two-way runtime handoff; no UI or JVM substitute |
+| WU3 — FFI and native handoff | 4h | generated Swift/Kotlin bindings, native full-vocabulary contract fixtures, XCTest/instrumentation hosts, container-aware two-way runtime handoff; no UI or JVM substitute |
 | Integration contingency | 1.5h | reserved only for dependency, binding, packaging, simulator/emulator, or handoff repair; unused time is not converted to stretch scope |
 | WU4 — adversarial verification and report | 2h | bounded hostile corpus, closure/bundle scan, hashes, gate report, GO/REVISE decision |
 
 WU4 always begins at aggregate hour 14 and is not available for feature rescue. If core work plus contingency has not completed by then, unfinished gates are INCONCLUSIVE and WU4 records the evidence that exists.
 
+The reopened G0/G1 repair checkpoint is equally hard: at 1.5 newly charged repair hours, record PASS or INCONCLUSIVE before charging any WU2 time. Repair overrun may use contingency only if explicitly recorded; it never silently consumes WU2/WU3/WU4 reservations.
+
 ## Gates
 
 | Gate | PASS evidence | FAIL / INCONCLUSIVE action |
 | --- | --- | --- |
-| G0 Correct Willow basis | corrected WILLIAM3 vectors, alpha.3/fixed Bab pins, disabled Drop Format, five-target compile, lock hash, and feature closure pass | stop Willow implementation and revise dependency strategy |
-| G1 Public model and authority | required operational-alert fields, deterministic Riot/Willow component vectors, one communal-author success, one cross-subspace denial, and hostile decoder bounds pass | revise object/authority mapping; do not expand schemas |
-| G2 Willow join, import, and provenance | every core fixture row, generation-bound planned effects matching commit, join laws/oracle permutations, three receipt dispositions, stable historical IDs/current status, structured diagnostics, hard store/preview bounds, logical rollback, duplicate result, provenance facts, log/panic safety, and arbiter-concurrency assertion passes | block public import expansion |
-| G3 Native runtime handoff | Swift and Kotlin preserve the full planned/receipt/current-status/diagnostic vocabulary; a distinct iOS-generated signed alert imports as `AppliedAtCommit` on Android and a distinct Android-generated alert imports as `AppliedAtCommit` on iOS through packaged generated bindings; corrected WILLIAM3 and all per-leg fact assertions pass | revise ABI/toolchain; do not claim cross-platform core |
+| G0 Correct Willow basis | corrected WILLIAM3 vectors with independent provenance, alpha.3/fixed Bab pins, disabled Drop Format, unwind-capable FFI evidence profile, five-target compile, lock hash, and feature closure pass | stop Willow implementation and revise dependency strategy |
+| G1 Public model and authority | required operational-alert fields, deterministic Riot/Willow component vectors, one-instant UTC/TAI conversion plus no-partial-entry encode clock failure, one communal-author success, one same-namespace cross-subspace denial, and hostile decoder bounds pass | revise object/authority mapping; do not expand schemas |
+| G2 Willow join, import, and provenance | every core fixture row, no-retention inspection clock failure, generation-bound planned effects matching commit, join laws/oracle permutations, three receipt dispositions, stable historical IDs/current status, structured diagnostics, hard store/preview bounds, logical rollback, duplicate result, provenance facts, Rust log/panic safety, and arbiter-concurrency assertion passes | block public import expansion |
+| G3 Native runtime handoff | Swift and Kotlin enforce capped reads, preserve the full planned/receipt/current-status/diagnostic vocabulary, and leak no hostile marker in captured native/instrumentation logs; a distinct iOS-generated signed alert imports as `AppliedAtCommit` on Android and a distinct Android-generated alert imports as `AppliedAtCommit` on iOS through packaged generated bindings; corrected WILLIAM3 and all per-leg fact assertions pass | revise ABI/toolchain; do not claim cross-platform core |
 
 Every report contains status, owning work unit, exact commands, frozen environment, evidence paths, hashes, elapsed agent-hours, and next action.
 
-GO on all three gates authorizes an implementation plan for the public newswire/file loop and additional public object schemas. It does not authorize private groups, the bridge, live transport, or production security claims.
+GO requires PASS on all four gates, G0 through G3, and authorizes an implementation plan for the public newswire/file loop and additional public object schemas. It does not authorize private groups, the bridge, live transport, or production security claims.
 
 ## Separately Gated Follow-On Evidence
 
@@ -470,3 +497,5 @@ Phase 0C also needs its own reviewed design and budget. It must choose a coheren
 ## External Release Gates
 
 Local transport cannot be called field-ready until tested on physical iOS and Android devices. Object vocabulary and provenance UI cannot be frozen until organizers and mutual-aid practitioners exercise realistic alert and coordination flows under time, power, connectivity, and seizure constraints. Private groups cannot be called production-safe without an independent review of the exact construction, code revision, lockfiles, vectors, platforms, persistence design, and artifact hashes.
+
+The alpha Willow/fjall closure is evidence-only. Before any production release, Riot must re-evaluate a stable corrected Willow release or obtain a smaller upstream feature boundary and rerun dependency, canonical-byte, digest, mobile-build, and independent security gates.
