@@ -1,6 +1,6 @@
 # Phase 0A — WU0 Report: Preflight, Contracts, Pins
 
-- **Status:** PASS — platform PASS and G0 (corrected executable basis) PASS via Task 0 of the public-kernel plan, 2026-07-10; see "Task 0 closure" below
+- **Status:** PLATFORM PASS / G0 REOPENED — independent review on 2026-07-10 found accepted validator regressions; WU2 is blocked
 - **Owning work unit:** WU0
 - **Date:** 2026-07-10
 - **Elapsed agent-hours:** ~1.0 charged for WU0; combined WU0R+WU1 time is accounted separately in the ledger
@@ -84,6 +84,21 @@ Every reopening finding is individually closed:
 
 New ceilings frozen in the manifest: `retained_store_budget_bytes` 16 MiB, `namespace_views` 64, `store_charge_entry_bytes` 512, `store_charge_namespace_bytes` 256, `store_charge_receipt_bytes` 256, `store_charge_digest_reference_bytes` 32, `entry_reference_cap` 1024, `plan_tombstone_bytes` 256, `plans_per_preview` 64.
 
+## Independent gate review (2026-07-10)
+
+The required commands were rerun from `main` at reviewed HEAD `deb847a5741d6fbbeb598e6a10e8e99c67f1daa6`: `cargo xtask validate-contracts` PASS; `cargo test -p xtask` 7/7; `cargo test -p riot-conformance william3_` 2/2; `cargo test -p riot-core public_` 39/39; workspace clippy PASS with warnings denied.
+
+G0 is nevertheless **REOPENED** because the validator is not regression-proof:
+
+1. In an isolated worktree, changing `ceilings.artifact_bytes` from 8 MiB to 1 byte still produced `validate-contracts: PASS`. The validator checks ceiling presence/type, not the exact Revision 5 values. The real manifest also records `transaction_snapshot_bytes = 8 MiB` and omits the dedicated 4 KiB Entry / 64-byte signature ceilings while the design requires a 16 MiB next-snapshot charge and those component limits.
+2. In the same isolated worktree, enabling `willow25/drop_format` in the `riot-core` dependency, regenerating `Cargo.lock`, and refreshing its recorded hash still produced `validate-contracts: PASS --locked`. The validator checks only the root workspace declaration, not the resolved workspace feature graph. The current real feature graph is clean, but the claimed regression gate does not preserve that fact.
+
+Exact repair required before WU2:
+
+- validate every frozen ceiling against its exact numeric/string value, including the missing component ceilings and 16 MiB transaction snapshot charge;
+- inspect the resolved `cargo metadata`/feature graph (or an equivalent locked structural source) and reject `willow25/drop_format` regardless of which workspace member enables it;
+- add regression tests for both accepted mutations above, then rerun the five mandatory commands and refresh the report/lock hashes if any frozen file changes.
+
 ## Next action
 
-G0 PASS. Proceed to Tasks 1–3 (alert codec adoption, communal-author/clock repair, bundle completion) before any WU2 work.
+Keep platform preflight PASS, repair G0, and do not start Task 4/WU2 until an independent rerun records G0 PASS.

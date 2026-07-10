@@ -48,7 +48,9 @@
       "reported_actual_hours": 0.6,
       "charged_hours": 0.6,
       "commits": [
-        "3a61da1"
+        "3a61da1",
+        "911ca2b",
+        "deb847a"
       ],
       "evidence_paths": [
         "crates/xtask/src/main.rs",
@@ -66,7 +68,7 @@
       "reported_actual_hours": 0.15,
       "charged_hours": 0.15,
       "commits": [
-        "pending"
+        "b6ab18d"
       ],
       "evidence_paths": [
         "crates/riot-core/tests/public_alert.rs",
@@ -81,7 +83,8 @@
       "reported_actual_hours": 0.75,
       "charged_hours": 0.75,
       "commits": [
-        "see task commits"
+        "1e480b2",
+        "b32f277"
       ],
       "evidence_paths": [
         "crates/riot-core/src/willow/",
@@ -91,17 +94,32 @@
         "docs/decisions/phase0a-wu1-report.md"
       ],
       "source": "docs/decisions/phase0a-wu1-report.md",
-      "note": "39 public_ tests, clippy clean; hostile framing removed from release API; deterministic golden bundle frozen."
+      "note": "39 public_ tests and clippy were green, but the independent gate review subsequently reopened release-factory containment and bundle completeness."
+    },
+    {
+      "work_unit": "independent G0/G1 repair gate review",
+      "status": "completed-review-reopened",
+      "reported_actual_hours": 0.5,
+      "charged_hours": 0.5,
+      "commits": [],
+      "reviewed_head": "deb847a5741d6fbbeb598e6a10e8e99c67f1daa6",
+      "evidence_paths": [
+        "docs/decisions/phase0a-wu0-report.md",
+        "docs/decisions/phase0a-wu1-report.md",
+        "docs/superpowers/plans/2026-07-10-riot-phase0a-public-kernel.md"
+      ],
+      "source": "independent adversarial rerun and isolated regression probes",
+      "note": "Mandatory commands were green. G0 reopened because exact ceilings and resolved drop_format closure are not enforced. G1 reopened because injectable test factories are public in release and bundle precedence, full-result Debug sanitization, exact Entry limits, and hostile boundary coverage are incomplete. Review time is charged from integration contingency."
     }
   ],
   "totals": {
-    "charged_hours": 4.5,
-    "reserved_g0_g1_repair_hours": 1.5,
+    "charged_hours": 5.0,
+    "reserved_g0_g1_repair_hours": 0.0,
     "reserved_wu2_hours": 4.0,
     "reserved_wu3_hours": 4.0,
-    "reserved_contingency_hours": 1.5,
+    "reserved_contingency_hours": 1.0,
     "reserved_wu4_hours": 2.0,
-    "hours_until_wu4_boundary": 11.0,
-    "hours_until_hard_stop": 13.0
+    "hours_until_wu4_boundary": 9.0,
+    "hours_until_hard_stop": 11.0
   }
 }

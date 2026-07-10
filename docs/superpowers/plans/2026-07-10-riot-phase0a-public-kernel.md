@@ -61,11 +61,13 @@ The alert path is exactly `[b"objects", b"alert", object_id_16_raw_bytes, revisi
 
 - [ ] **Step 1: Make the contract validator reject the obsolete graph**
 
+Independent review reopening: validation is structural TOML/JSON parsing, but exact ceiling values and the resolved feature graph are not enforced. In isolated worktrees, `artifact_bytes = 1` passed, and enabling `willow25/drop_format` in `riot-core`, regenerating the lock, and refreshing its hash also passed. Enforce the exact frozen ceiling table (including 4 KiB Entry, exact 64-byte signature, and 16 MiB next-snapshot charge), inspect locked resolved features, and add both mutations as regression tests.
+
 Add a unit-testable `validate_contents(root) -> Vec<String>` helper. Structurally parse TOML/JSON rather than substring matching. Require `willow25 =0.6.0-alpha.3`, `bab_rs =0.8.1`, direct `hifitime =4.3.0`, a non-empty `william3_vectors_sha256`, disabled `drop_format`, the manifest's actual `Cargo.lock` hash, the new namespace/reference/plan/store-charge ceilings, and `panic = "unwind"`. Its tests feed the old manifest/lock/profile independently and assert a specific failure for each regression.
 
 Run `cargo test -p xtask`. Expected RED: the dependency-specific checks do not exist.
 
-- [ ] **Step 2: Freeze corrected WILLIAM3 vectors**
+- [x] **Step 2: Freeze corrected WILLIAM3 vectors**
 
 The fixture JSON contains input recipe/hex, expected 32-byte digest hex, `bab_rs` version, source URL/commit, and provenance for empty bytes, ASCII `riot`, the committed alert golden bytes, 700 bytes of `0xAB` (partial block), and `(0..5000).map(i % 251)` (multi-block). At least one expected value must be copied from or cross-checked against the independently implemented `Deln0r/willow-go` corrected-WILLIAM3 commit `9d848ee`; values blessed only by the Rust dependency under test do not close G0. The test computes each digest through `bab_rs`, exercises input shorter and longer than the 1,024-byte WILLIAM3 chunk, and asserts the alert payload is byte-identical to `fixtures/objects/alert-golden-1.cbor`.
 
@@ -73,7 +75,7 @@ Add `bab_rs = { workspace = true }` to `riot-conformance` dev-dependencies; test
 
 Run `cargo test -p riot-conformance william3_`. Expected RED before fixture/test implementation, then GREEN with all vectors equal.
 
-- [ ] **Step 3: Finish corrected pins and frozen hashes**
+- [x] **Step 3: Finish corrected pins and frozen hashes**
 
 ```toml
 willow25 = { version = "=0.6.0-alpha.3", default-features = false, features = ["std"] }
@@ -85,7 +87,7 @@ Regenerate `Cargo.lock`, update `cargo_lock_sha256`, record the vector-file hash
 
 Change the Phase 0A evidence release profile to `panic = "unwind"`; `panic = "abort"` makes the required FFI catch/quarantine result impossible. Record actual WU0R and WU1 active wall time in the ledger. Overlapping agents are summed; unreconstructable completed work is charged its full work-unit budget.
 
-- [ ] **Step 4: Prove all five Rust targets and feature closure**
+- [x] **Step 4: Prove all five Rust targets and feature closure**
 
 ```bash
 cargo xtask validate-contracts
@@ -103,7 +105,7 @@ rg 'panic = "unwind"' Cargo.toml
 
 Expected: every command exits 0 and the negative search finds nothing. Record output and SHA-256 hashes in the WU0 report.
 
-- [ ] **Step 5: Commit only WU0R**
+- [x] **Step 5: Commit only WU0R**
 
 ```bash
 git add Cargo.toml Cargo.lock crates/riot-core/Cargo.toml crates/riot-conformance/Cargo.toml crates/xtask/src/main.rs fixtures/manifest.json fixtures/willow crates/riot-conformance/tests/william3_vectors.rs docs/decisions/phase0a-wu0-report.md docs/decisions/phase0a-time-ledger.json
@@ -121,21 +123,21 @@ Stop condition: no Willow entry, capability, bundle, or join code proceeds until
 - Modify: `fixtures/objects/alert-golden-1.cbor`
 - Create: `fixtures/objects/alert-golden-1.json`
 
-- [ ] **Step 1: Adopt the existing public test suite**
+- [x] **Step 1: Adopt the existing public test suite**
 
 Do not recreate the already-started test file. Ensure it covers deterministic round-trip, golden bytes, absent optionals, expiry order, required source claims, maximum lengths/counts, unknown and duplicate keys, non-shortest integers, indefinite containers, trailing bytes, truncation, and the 1 MiB ceiling.
 
 Run `cargo test -p riot-core --test public_alert`. Expected RED: list the exact missing rejection behavior; do not loosen a test to obtain GREEN.
 
-- [ ] **Step 2: Complete strict canonical encoding and decoding**
+- [x] **Step 2: Complete strict canonical encoding and decoding**
 
 `encode_alert` validates first and emits a definite map with ascending integer keys. `decode_alert` rejects over-limit input before allocation, parses known keys once, validates the object, re-encodes it, and requires byte-for-byte equality plus EOF. Keep author, namespace, trust, route, and receipt facts out of `AlertPayload`.
 
-- [ ] **Step 3: Freeze a readable projection without making it authoritative**
+- [x] **Step 3: Freeze a readable projection without making it authoritative**
 
 Create `alert-golden-1.json` containing the same field values and the CBOR SHA-256. Tests may use JSON only to diagnose fixture drift; CBOR remains the signed form.
 
-- [ ] **Step 4: Verify and commit**
+- [x] **Step 4: Verify and commit**
 
 ```bash
 cargo fmt --check
@@ -154,13 +156,15 @@ git commit -m "feat: add deterministic alert payload codec"
 - Create: `crates/riot-core/tests/public_willow.rs`
 - Create: `fixtures/willow/communal-author.json`, `fixtures/willow/communal-entry.bin`
 
-- [ ] **Step 1: Write public authority tests**
+- [x] **Step 1: Write public authority tests**
 
 Prove full 32-byte communal namespace/subspace IDs; separate UTC Unix seconds and Willow TAI/J2000 microseconds from one clock snapshot; the exact four-component path; canonical entry and capability decode with no trailing bytes; author-subspace success and different-subspace denial; payload length/WILLIAM3 checks before schema decode; and no debug, serialization, or public accessor for the signing key.
 
 Adopt the committed `public_willow` suite, then add the missing tests first. The denial fixture must create a second subspace under the same communal namespace; two independently generated communal authors are two namespaces and do not prove the area restriction. At this layer, test the fallible author factory directly: entropy failure returns `ENTROPY_UNAVAILABLE` and constructs no author. Test the clock/entry factory directly: `CLOCK_UNAVAILABLE` constructs no signed/allocated partial entry and covers pre-epoch and UTC/TAI range failure. Session/open and inspection retention assertions belong to Task 5 after those types exist. Run `cargo test -p riot-core --test public_willow`. Expected RED: current authority construction is infallible, no clock adapter exists, and the current denial fixture uses a different namespace.
 
 - [ ] **Step 2: Implement Riot-owned wrappers**
+
+Independent review reopening: production wrappers are not yet production-only. The injectable `EntropySource`/`ClockSource` APIs and `from_parts_for_tests` are present in the normal release Rust API. Gate them behind test/conformance-only compilation unavailable to `riot-ffi`, add non-injectable OS-entropy/system-clock production factories, zeroize temporary secret byte arrays, and add a release-feature/API regression check before marking this step complete.
 
 ```rust
 pub struct ClockSnapshot {
@@ -186,7 +190,7 @@ pub struct SignedWillowEntry {
 
 Keep concrete Willow generics private. The signer owns zeroizing secret material and is neither `Clone` nor `Debug`. The author factory is fallible and accepts only an OS-randomness provider in production; deterministic/failing providers are `cfg(test)` or conformance-only. The clock/entry factory accepts a fallible production `ClockSource`; one system read plus pinned `hifitime` produces UTC and TAI/J2000 values. System/pre-epoch/range/conversion failure maps to `CLOCK_UNAVAILABLE`. It sets `created_at` and entry time from that snapshot and validates draft validity fields. Task 5 moves these factories behind `RiotSession` without changing the tested semantics. Discard the privilege-less communal namespace secret and create a zero-delegation capability for the author subspace.
 
-- [ ] **Step 3: Implement digest domains exactly**
+- [x] **Step 3: Implement digest domains exactly**
 
 Use corrected WILLIAM3 for `payload_digest`, SHA-256 over alert bytes for `object_digest`, and separate value/proof identities:
 
@@ -198,7 +202,7 @@ evidence_digest = SHA256(
 )
 ```
 
-- [ ] **Step 4: Verify and commit**
+- [x] **Step 4: Verify and commit**
 
 ```bash
 cargo fmt --check
@@ -221,11 +225,15 @@ Commit task files with `feat: add communal Willow authority`.
 
 - [ ] **Step 1: Write RED codec tests**
 
+Independent review reopening: the suite still lacks a valid canonical bundle at exactly 8 MiB, invalid UTF-8 in the codec string, direct indefinite byte/text strings, and combined fatal-precedence cases. Add these as blocking tests. Nesting/node and exact authorization-boundary cases may move to WU4 only with a documented fixed-shape-parser unreachability proof; otherwise add them here.
+
 Cover deterministic one-item bytes, 64-entry success, 65-entry rejection, 8 MiB rejection before decode, bad magic/version/codec, duplicate/unknown keys, indefinite containers, trailing bytes, non-64-byte signature, non-canonical entry/capability, payload length/digest mismatch, and invalid authorization. Signer trust/eligibility belongs to Task 5's store-backed preview.
 
 Adopt the committed suite without overwriting concurrent changes. Run `cargo test -p riot-core --test public_bundle`; then add the missing cases before implementation. Expected RED must enumerate at least 64/65 entries, exact/one-over 8 MiB, canonical outer key order and shortest integers, duplicate/unknown keys, indefinite maps/arrays/strings, nesting/nodes, signature length 63/65, auth per-item/aggregate limits, non-canonical/trailing Entry and capability bytes, mixed valid/invalid sibling items, and sanitized structured diagnostics. The existing seven green tests alone do not close G1.
 
 - [ ] **Step 2: Implement a two-stage bounded decoder**
+
+Independent review reopening: canonical outer framing must be established before unsupported-codec and cumulative-limit decisions; all byte-bearing result types must remove or redact `Debug`; and the 4 KiB Entry, capability, and exact 64-byte signature ceilings must be separate and structurally frozen. The current 64 KiB shared Entry/auth limit does not satisfy the contract.
 
 Enforce artifact size, outer counts, field lengths, authorization totals, and nesting/node limits before Willow decoding. Validate in this order:
 
@@ -239,7 +247,7 @@ At this pure codec layer return `BundleDecodeOutcome = Decoded(DecodedBundle) | 
 
 Move `BundleItem::from_raw_parts` and `encode_bundle_raw` out of the release API. Hostile framing belongs in `riot-conformance` or `cfg(test)` so production callers cannot bypass encode-side validation.
 
-- [ ] **Step 3: Verify and commit**
+- [x] **Step 3: Verify and commit**
 
 ```bash
 cargo test -p riot-core --test public_bundle

@@ -1,6 +1,6 @@
 # Phase 0A — WU1 Report: Alert Codec, Communal Authority, Evidence Bundle
 
-- **Status:** PASS (G1) — reopened findings individually repaired via Tasks 1–3 of the public-kernel plan, 2026-07-10
+- **Status:** G1 REOPENED — independent review on 2026-07-10 found release-factory containment and bundle-gate failures; WU2 is blocked
 - **Owning work unit:** WU1 (repair executed under the reopened-G0/G1 budget)
 - **Date:** 2026-07-10
 - **Elapsed agent-hours:** ~2.0 combined WU0R+WU1 baseline (charged once, earlier) + repair time in the ledger
@@ -38,6 +38,23 @@ cargo xtask validate-contracts
 - The Willow module split (`clock`, `identity`, `entry`, `digest`) keeps concrete Willow generics private; the signer type is neither `Clone` nor `Debug` and exposes no key accessor. `EvidenceAuthor::from_parts_for_tests` remains available for fixtures and is excluded from the FFI surface in Task 6.
 - Owned publication namespaces, delegated curation, and annotation objects remain stretch evidence, untouched.
 
+## Independent gate review (2026-07-10)
+
+The required commands were rerun from `main` at reviewed HEAD `deb847a5741d6fbbeb598e6a10e8e99c67f1daa6`: `cargo xtask validate-contracts` PASS; `cargo test -p xtask` 7/7; `cargo test -p riot-conformance william3_` 2/2; `cargo test -p riot-core public_` 39/39; workspace clippy PASS with warnings denied. Those green commands do not prove all reopened claims.
+
+The same-namespace denial evidence is **PASS**: both authors share Alice's namespace, the second fixed subspace secret differs from the first author and produces a distinct subspace ID, and the first authorization assertion fails if the area check is removed.
+
+The fallible-factory claim is **REOPENED**. `EntropySource`, `ClockSource`, `generate_communal_author`, `create_signed_alert`, `snapshot_from_unix_seconds`, and `EvidenceAuthor::from_parts_for_tests` are public in the normal `riot-core` release build. Any Rust caller can therefore supply deterministic entropy/clock sources despite the report's claim that those sources are test/conformance-only. `riot-ffi` is currently empty, so no secret/testing constructor crosses FFI today, but Task 6 must expose only production wrappers backed by `OsEntropy` and `SystemClock` and must prove that injected/test constructors are absent from the release feature closure. Repair by moving injection traits/functions and `from_parts_for_tests` behind `cfg(test)` or a non-default conformance feature unavailable to `riot-ffi`, adding non-injectable production factories, adding a release-API regression check, and explicitly zeroizing temporary namespace/subspace secret byte arrays after construction.
+
+The bundle claim is **REOPENED**:
+
+1. Fatal precedence is wrong. A hand-framed bundle with both a non-shortest outer key and an unsupported codec returns `UnsupportedCodec`; the frozen order requires malformed/noncanonical outer framing to win. Repair with a bounded canonical-frame validation pass before semantic codec/limit decisions and combined-violation tests for every adjacent precedence pair.
+2. Diagnostics are not sanitized as a whole. `BundleItemFrame`, `DecodedItem`, `DecodedBundle`, and `BundleDecodeOutcome` derive `Debug` while retaining untrusted bytes. Formatting a decoded outcome exposes the hostile marker as its exact decimal byte sequence. Remove or redact `Debug` for all byte-bearing public result/frame types and test formatting of the entire outcome, not only `ItemStatus`.
+3. The decoder uses a 64 KiB limit for canonical Entry bytes, while Revision 5 freezes a 4 KiB Entry ceiling. Add and enforce separate exact Entry, capability, and signature ceilings rather than reusing `MAX_AUTH_BYTES_PER_ENTRY` for Entry bytes.
+4. Blocking Task 3 cases remain absent: a valid canonical bundle at exactly 8 MiB, invalid UTF-8 in the codec string, combined fatal-precedence violations, and direct indefinite byte/text-string cases. Add exact/one-over tests and make each rejection deterministic. Nesting/node-ceiling and exact authorization-boundary corpus cases may be completed with WU4 only if the implementation first documents why the fixed-shape parser makes them unreachable; otherwise add them before re-closing G1.
+
+Item-scoped failures do preserve valid siblings; hostile framing helpers are test-private; the `entry_id` and `evidence_digest` byte domains match the plan; and the current capability/signature/payload diagnostic variants themselves contain no hostile strings. Those passing subclaims do not offset the fatal gate failures above.
+
 ## Next action
 
-G1 PASS. Proceed to Task 4 (WU2A — namespace-local Willow join with the alpha.3 `MemoryStore` differential oracle).
+Keep the alert codec and same-namespace evidence PASS, repair Task 2 release containment and Task 3 bundle failures, and do not start Task 4/WU2 until an independent rerun records both G0 and G1 PASS.
