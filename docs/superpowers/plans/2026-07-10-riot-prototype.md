@@ -1,5 +1,7 @@
 # Riot Prototype Implementation Plan
 
+> **SUPERSEDED (2026-07-10):** Do not execute this plan. The product owner confirmed the platform pivot to a shared Rust core with native iOS and Android shells; Phase 0 is now the evidence-sprint sequence in `docs/superpowers/specs/2026-07-10-riot-evidence-sprint-design.md`. This document is retained only as historical product-flow scaffolding (packet concepts, authoring validation ideas, renderer escaping rules).
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Build a first native prototype that can create a packet, author a structured alert, render it locally, export/import a portable archive, and preserve signer/provenance metadata.

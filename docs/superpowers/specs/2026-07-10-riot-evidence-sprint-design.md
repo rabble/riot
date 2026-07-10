@@ -1,7 +1,7 @@
 # Riot Phase 0A Public Kernel Evidence Sprint Design
 
 Date: 2026-07-10
-Status: Revision 4; five-role design-review PASS; awaiting product-owner confirmation
+Status: Revision 4; five-role design-review PASS; product-owner confirmed 2026-07-10 — run as specified. Platform pivot (shared Rust core, native iOS + Android shells) also confirmed. A non-gating gateway/reader demo track runs in parallel (see the dual-mode spec's build phasing).
 
 ## Purpose
 
