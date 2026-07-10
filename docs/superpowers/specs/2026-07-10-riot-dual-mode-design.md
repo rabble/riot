@@ -1,7 +1,7 @@
 # Riot Dual-Mode Design: Open Newswire + Private Groups
 
 Date: 2026-07-10
-Status: Approved in brainstorming; object vocabulary revised per research addendum (see end of doc).
+Status: Approved in brainstorming; amended by both research addenda and the evidence-sprint design.
 
 ## Purpose
 
@@ -9,13 +9,22 @@ Riot is an offline-first activist app for creating, publishing, and sharing info
 
 Lineage: indymedia.org (open publishing + editorial curation), protest.net (structured activist events), TxtMob (broadcast alerts during actions), Odeo/divine.video (syndicated media). The through-line is publishing infrastructure, not chat. Exact usage is deliberately open-ended; the design favors a general runtime over baked-in use cases.
 
+## Research Amendments
+
+Two addenda are authoritative where they refine this document:
+
+- `docs/research/2026-07-10-mutual-aid-coordination-research.md` grounds coordination workflows, roles, paper interoperability, governance, and runbooks in historical practice.
+- `docs/research/2026-07-10-dual-mode-research-addendum.md` checks the design against current Willow, Meadowcap, MLS, platform APIs, and emergency-data standards.
+
+The executable Phase 0 contract is `docs/superpowers/specs/2026-07-10-riot-evidence-sprint-design.md`.
+
 ## Decisions Made
 
 1. **Architecture: two parallel subsystems** (newswire module, groups module) with separate stores and exchange paths, plus a small shared kernel. Chosen over a unified "space" abstraction. Rationale: the separation is a safety property — newswire code cannot leak group data it never touches — and each module ships independently.
-2. **Privacy bar for groups: unlinkable + encrypted.** Group data is encrypted at rest and in drops; group membership is not provable from anything a non-member intercepts. Encrypted-Willow-style techniques are on the critical path, not deferred.
+2. **Privacy bar for groups: encrypted with an explicit leakage boundary.** Group data is encrypted at rest and complete group drops are opaque and padded. The design targets confidentiality for group identifiers, membership material, Willow metadata, and content inside a drop; it does not claim to hide artifact existence, timing, channel, or padded size. MLS is the candidate membership control plane.
 3. **Bridge: two-way, always deliberate.** Content crosses between modules only as explicit, signed user acts. Never automatic.
 4. **Joining groups: both doors at launch.** In-person QR/NFC verification and portable encrypted invite artifacts.
-5. **Open side organization: per-incident/community spaces + a global directory.** Anyone can create a space; a tiny well-known directory namespace carries only pointers and opaque rendezvous records.
+5. **Open side organization: per-incident/community spaces + plural directory feeds.** Anyone can create a space or signed directory feed. Readers apply expiry, byte/count budgets, and feed trust locally; there is no canonical globally writable directory store.
 6. **Build order: both modules in parallel**, after the shared kernel is frozen.
 7. **Public web gateway** for discovery and onboarding, serving newswire content only.
 
@@ -24,8 +33,8 @@ Lineage: indymedia.org (open publishing + editorial curation), protest.net (stru
 ```
 +---------------------+          +---------------------+
 |  Newswire module    |  bridge  |  Groups module      |
-|  (open, plaintext,  |<-------->|  (owned, encrypted, |
-|   communal + owned  | explicit |   unlinkable        |
+|  (open, plaintext,  |<-------->|  (MLS membership +  |
+|   communal + owned  | explicit |   opaque drops)     |
 |   public namespaces)|  signed  |   namespaces)       |
 +---------------------+   acts   +---------------------+
           |                                |
@@ -39,7 +48,7 @@ Lineage: indymedia.org (open publishing + editorial curation), protest.net (stru
           +---------------------+
 ```
 
-All state is Willow: namespaces, subspaces, paths, timestamped signed entries, mergeable stores. Exchange starts with Willow Drop Format files (sneakernet-first); Willow Transfer Protocol adds live local sync later.
+Application content is Willow: namespaces, subspaces, paths, timestamped signed entries, and mergeable stores. Private-group membership epochs are separate MLS control state. Exchange starts with files through a codec boundary; current Willow Drop Format compatibility and live WTP sync activate only after their conformance gates pass.
 
 ## Newswire Module
 
@@ -48,11 +57,11 @@ Open emergency publishing and durable movement media.
 ### Space profiles
 
 - **Open space** (communal Willow namespace): anyone holding the namespace ID can read everything and publish under their own subspace (keypair identity, no accounts). The classic open newswire: publishing is frictionless.
-- **Publication space** (owned Willow namespace, plaintext, publicly readable): only Meadowcap capability-holders write. The publisher is a pseudonymous collective identity — a signing key, not a server or named people. Example target: an indymedia.de-style collective facing a state ban publishes a news space; subscribers' devices are the distribution network; there is nothing to raid. A collective can run both, linked: an open space for submissions, a publication space for edited output.
+- **Publication space** (owned Willow namespace, plaintext, publicly readable): only Meadowcap capability-holders write. The namespace key is the pseudonymous collective identity; delegated purpose-specific subspace keys remain visible as the actual signers. Example target: an indymedia.de-style collective facing a state ban publishes a news space; subscribers' devices are the distribution network; there is no canonical publishing server to raid. A collective can run both, linked: an open space for submissions and a publication space for edited output.
 
 ### Curation, not gatekeeping
 
-Every open space has a `/features/` path writable only by curation-capability holders. The space creator holds the root capability and can delegate or hand off, so spaces outlive founders. Readers get two lenses on the same data: raw newswire (everything, newest first, signer visible) and curated view. Curation never deletes: `correction` objects flag entries and clients down-rank them. Blocking is reader-side (local subspace mutes). Trust is a lens applied at read time, not a gate at write time.
+An open communal namespace has no creator-controlled root authority: each author controls only their own subspace. Curation therefore lives in one or more linked owned namespaces whose capability-holders publish signed feature, verification, correction, moderation, and governance annotations targeting open entries. Readers can use the raw newswire or choose one or more curation lenses. Curation never deletes; blocking remains reader-side through local subspace mutes. Trust is applied at read time, not as a gate at write time.
 
 ### Objects, pages, media
 
@@ -60,32 +69,32 @@ Entries are typed objects (see Shared Kernel) plus static-site paths per Sneaker
 
 ### Exchange
 
-Willow Drop Format files: export whole space, selection, or changes-since-timestamp. Import is always preview-first (manifest, signers, entry counts, size shown before ingest). Subscribing to a space = holding its namespace ID and accepting newer entries from any peer or drop that carries them. WTP over local transports (Bonjour, MultipeerConnectivity, future BLE) in a later phase; drops remain the permanent fallback.
+Willow Drop Format files remain the target format for exporting a whole space, a selection, or changes since a timestamp. Import is always preview-first (manifest, signers, entry counts, size shown before ingest). Until Riot has an implementation and authoritative vectors for the current Candidate format, Phase 0 uses a visibly non-interoperable development codec behind `DropCodec`. WTP and live transports remain later work. File drops are the permanent fallback.
 
 ### Directory
 
-One well-known namespace, hardcoded in the app. Carries only two record types, both size-capped: space pointers (namespace ID + manifest digest + optional region tag) and opaque group rendezvous records. Tiny, so it syncs aggressively on every peer contact.
+Riot standardizes directory record schemas, not one global namespace. Directory feeds are ordinary owned public namespaces; the app may ship removable seed feeds, and users may add or share alternatives. Devices retain records under expiry, byte/count, region, and feed-trust budgets. Group rendezvous is a separate privacy/abuse research track and is not assumed to be invisible merely because its content is pseudorandom.
 
 ## Groups Module
 
 Private encrypted sharing for affinity groups, coops, crews, collectives.
 
 - **Identity:** keypairs generated locally; multiple unlinked personas per device (newswire persona and group membership never need to share a key).
-- **Group = owned encrypted namespace:** entries and payloads encrypted, paths obfuscated. An intercepted drop or a non-member's seized device reveals nothing — not topic, not membership, not size. Group state merges like any Willow store; members who meet rarely still converge.
+- **Group = MLS control plane + Willow data plane:** MLS orders membership epochs. Complete Willow group drops are encrypted and padded as opaque artifacts; members decrypt before validating and merging ordinary Willow entries locally. Non-members may carry opaque blobs but cannot inspect or partially merge them.
 - **Joining (both at launch):**
-  - *In-person:* QR/NFC exchange with a member holding invite capability; mutual key verification face-to-face; zero internet required.
-  - *Invite artifact:* an encrypted single-use file transportable over any channel, redeemable at next contact with a member; revocable until redeemed.
-- **Roles via Meadowcap:** admins delegate read/write/invite capabilities, restrictable by path (medics write `/medical/`, all read) and by expiry (natural offboarding).
-- **Rendezvous:** a group may publish a blinded record to the public directory — indistinguishable from noise without the invite secret — so invite-holders can locate current group sync material offline. Groups can opt out and stay fully dark.
+  - *In-person:* QR/NFC exchanges a one-time MLS KeyPackage, commits the add, and returns the Welcome while participants verify keys face-to-face.
+  - *Invite artifact:* an expiring voucher and invitee-bound redemption request transportable over any channel. One canonical MLS commit redeems it; copied files are not assumed to disappear, and concurrent redemption is an explicit conflict.
+- **Roles via Meadowcap:** all members in one MLS group may read the decrypted data plane; Meadowcap restricts write authority by path and expiry. Workflows requiring different read sets use separate groups until a reviewed subgroup construction exists.
+- **Rendezvous:** deferred to a separate design. Any future record must specify content, size, timing, publisher, and traffic leakage rather than claiming blanket indistinguishability.
 - **Panic:** per-group wipe and full-device wipe; keys destroyed before data.
 
 ## Bridge
 
-The only integration points between modules. All are explicit, user-initiated, signed acts. Implementation is deliberately dumb: copy-with-re-signing between two stores. No shared storage, no live cross-boundary references — a "link" from group content to a public entry is a copy, so group reading behavior never leaks.
+The only integration points between modules. All are explicit, user-initiated, signed acts. The implementation is a typed declassification boundary, not a storage-copy API. No shared storage and no live cross-boundary references exist.
 
-1. **Group → newswire (publish out):** a member drafts from group content; the group's *publishing identity* (a keypair distinct from any member's personal key, held via capability by authorized members) signs it into a public space. The published entry carries no group metadata beyond that public identity.
-2. **Newswire → group (clip in):** copy a public entry into the group with original signature and source-space provenance intact, so the group can privately assess public claims.
-3. **Group → directory (rendezvous):** the blinded record described above.
+1. **Group → newswire (publish out):** the group module produces an allowlisted draft that excludes all group identifiers, private signers, capabilities, receipts, and private relations while preserving the AI-assistance taint. After human review, a purpose-specific delegated public signer creates a new object in the collective's publication namespace.
+2. **Newswire → group (clip in):** the complete original public entry, payload, signature, capability, and source namespace remain intact. The clipping member adds a private signed annotation.
+3. **Group → directory (rendezvous):** deferred until the separate rendezvous leakage and abuse design is approved.
 
 ## Web Gateway
 
@@ -93,7 +102,7 @@ A hosted, stateless renderer for newswire content: any open or publication space
 
 - **Ban-resistance preserved:** a gateway holds no canonical state; it mirrors signed data whose authority is the publisher's key, not the domain. Anyone can run a gateway from any synced copy (the indymedia mirror tradition, formalized). Seizing a gateway seizes a cache; the space keeps propagating peer-to-peer and any subscriber can stand up a new mirror.
 - **On-ramp:** every page carries "open in Riot" plus the space's namespace ID as a QR code, converting web readers into offline carriers. Gateways also serve drop files over HTTP, doubling as sync sources whenever internet is available.
-- **Hard boundary:** gateways serve newswire content only. Private groups never render through a gateway; at most the public directory (including opaque rendezvous records) syncs through it as bytes.
+- **Hard boundary:** gateways serve newswire content and selected public directory feeds only. Private groups and private rendezvous material never render through a gateway.
 - **Scope:** a small third deliverable — static renderer + Willow store as a boring web service. Cheapest first demo.
 
 ## Shared Kernel
@@ -101,7 +110,7 @@ A hosted, stateless renderer for newswire content: any open or publication space
 The only code both modules and the gateway share. Defined first, test-heavy, frozen early — it is where parallel tracks would otherwise drift.
 
 - **Identity & signing:** keypair generation, unlinked personas, signing/verification, Meadowcap capability handling.
-- **Object vocabulary (revised per research addendum):** `alert`, `event`, `need`, `offer`, `task`, `verification`, `moderation_action`, `resource_location`, `route_status`, `checklist`, `announcement`, `correction`, `field_report`, `translation`. Common envelope: stable id, author subspace, created time, expiry (required for operational types), language, confidence, source note, affected area, supersedes/corrects references, AI-assisted flag. `need`/`offer`/`task` carry a claim/fulfillment lifecycle. See the addendum for grounding.
+- **Object vocabulary (reconciled across both research addenda):** ten durable wire kinds: `alert`, `observation`, `event`, `resource`, `request`, `offer`, `commitment`, `task`, `document`, and `annotation`. Product terms map to profiles: `need` labels a request; route status and field report are observations; checklist, announcement, and runbook are documents; verification, moderation action, correction, translation, feature, fulfillment, and task state are annotations. The signed content envelope carries schema/object/revision IDs, created and validity times, language, typed body, relations, source claims, and the AI-assisted flag. Willow carries author/capability/digest data; local receipts carry import and trust provenance.
 - **Renderer:** sandboxed web view + native object views. No external network requests, no native bridges, local/offline status visible, signer and freshness shown outside the web content. Identical rendering in groups, newswire, and gateway.
 - **Provenance display:** one consistent presentation of who signed what, when, where it was imported from, and how it crossed the bridge.
 
@@ -121,15 +130,15 @@ Constraints:
 | --- | --- |
 | Server seizure / domain ban | No canonical servers. Gateways are disposable mirrors; publisher identity is a key, not infrastructure. |
 | Internet shutdown | Everything works from local store + drops; sneakernet is a first-class transport. |
-| Traffic interception | Group drops encrypted and unlinkable. Newswire drops are signed plaintext by design (they are publications). |
-| Device seizure (non-member) | Reveals nothing about groups the holder isn't in; rendezvous records look like noise. |
+| Traffic interception | Group-drop contents and inner identifiers are encrypted and padded; artifact existence, timing, channel, and padded size remain visible. Newswire drops are signed plaintext by design. |
+| Device seizure (non-member carrier) | Reveals opaque artifact count and padded sizes but no plaintext group identifiers or content, subject to correct envelope and key handling. |
 | Device seizure (member) | **Residual risk, stated honestly:** exposes that group. Mitigated by per-group panic wipe, capability expiry, unlinked personas, small-group practice. |
 | Flooding / disinformation | Curation lens, corrections, reader-side mutes; per-space blast radius, no global feed to poison. |
 | Malicious packet content | Sandboxed renderer, no network, no native bridge, preview-before-import, byte/count/path limits. |
 
 ## Build Phasing
 
-- **Phase 0 — Shared kernel.** Identity, object vocabulary, renderer, provenance. The existing prototype plan (`docs/superpowers/plans/2026-07-10-riot-prototype.md`) maps onto this almost 1:1 and remains the first execution target, with the JSON store still mirroring the Willow mapping.
+- **Phase 0 — Evidence sprint.** Execute `docs/superpowers/specs/2026-07-10-riot-evidence-sprint-design.md`. It proves the shared Rust core, Swift/Kotlin bindings, object and Willow authority mapping, public file loop, MLS viability, private envelope, invite state, and adversarial gates. The earlier Swift prototype remains historical product-flow scaffolding, not the execution plan.
 - **Phase 1 — Parallel tracks.**
   - Track A: newswire module — spaces, authoring, drops, directory.
   - Track B: groups module — encrypted store, QR + invite joins, group sync via drops.
@@ -139,28 +148,29 @@ Constraints:
 
 ## Open Questions
 
-- Exact Encrypted Willow construction for groups (path obfuscation scheme, key rotation on member removal) — needs a dedicated crypto design doc before Track B implementation.
-- Blinded rendezvous record format and what "indistinguishable from noise" requires concretely.
-- Drop encryption envelope for group drops (the Drop Format spec recommends encrypting drops; pick the construction).
+- MLS/mobile viability, canonical concurrent-commit handling, long-offline recovery, and independent cryptographic review before Track B release.
+- Rendezvous format and its content, size, timing, publisher, and traffic leakage, plus directory abuse controls.
+- Production private-drop envelope construction and padding policy after the evidence format is reviewed.
 - Whether `.snk` compatibility with SneakerWeb is a hard goal or a convention to follow loosely.
+- Current Willow Drop Format implementation/vector availability and whether Riot should contribute the missing conformance work.
 - Membership vetting and infiltration defense practices in real activist groups (research coverage hole; directly relevant to invite design).
 
 ## Addendum: Research-Grounded Revisions (2026-07-10)
 
 Source: `docs/research/2026-07-10-mutual-aid-coordination-research.md` — an adversarially verified study of how mutual aid and grassroots networks coordinate (Occupy Sandy, Verificado 19S, TXTMob, Indymedia, NYC COVID mutual aid). Changes it drives:
 
-**Object vocabulary additions.**
+**Workflow findings and their reconciled wire mappings.**
 
-- `task` — a dispatch ticket with an open → claimed → done lifecycle and explicit handoff. This is the verified core coordination object across contexts: Occupy Sandy's spreadsheet-row-plus-index-card dispatch, COVID mutual aid's intake/dispatch pipeline (the one group that formalized it avoided the burnout everyone else hit).
-- `verification` — a signed attestation attached to another object, recording method (eyewitness, N independent sources). Grounded in Verificado 19S's two-source rule and the NYC Comms Collective's trusted-broadcast layer.
-- `moderation_action` — hide-with-reason, publicly inspectable, never a delete. Grounded in IMC UK's hide-not-delete practice with the "View all posts" transparency page.
-- `need`/`offer` gain claim/fulfillment status so a space functions as the shared editable ledger the research found at the center of every operation.
+- `task` remains a core dispatch object; signed annotations carry claim, handoff, state, and completion so offline conflicts remain visible.
+- `verification` is an annotation profile recording its method (eyewitness, N independent sources), grounded in Verificado 19S's two-source rule and the NYC Comms Collective's trusted-broadcast layer.
+- `moderation_action` is an annotation profile for inspectable hide-with-reason decisions, grounded in IMC UK's hide-not-delete practice.
+- `need` remains the user-facing label for `request`; `commitment` plus fulfillment annotations form the shared editable ledger linking requests and offers.
 
 **Structural confirmations and additions.**
 
-- The TXTMob 2×2 matrix (public/private × moderated/unmoderated) independently validates the dual-mode architecture: open space = unmoderated public; `/features/` = moderated public; publication space = moderated public (writer-gated); private group = unmoderated private; path-restricted group capabilities = moderated private (the medic-dispatch shape).
+- The TXTMob 2×2 matrix (public/private × moderated/unmoderated) independently validates the dual-mode architecture: communal submissions are unmoderated public; owned curation lenses and publication spaces are moderated public; private groups are encrypted; path-restricted write capabilities provide role-specific private workflows.
 - **Roles as capability templates**: intake, dispatcher, field verifier, moderator/curator become named Meadowcap capability bundles.
-- **Governance meta-channel**: each space gets a governance path separate from content, mirroring Indymedia's rule that moderation disputes stay off the newswire.
+- **Governance meta-channel**: each curation/publication namespace gets governance paths separate from content, mirroring Indymedia's rule that moderation disputes stay off the newswire. A communal submission namespace does not gain a creator root through this convention.
 - **Paper interop is a requirement**: printable forms and QR round-trips for intake and distribution; flyer/zine export in multiple languages. Analog channels are how networks reach their most vulnerable members and how data moves when power is out.
 - **Runbooks as first-class content**: seedable, user-editable "how this hub works" documents (the checklist type extended), addressing the verified tacit-knowledge failure mode.
 - **Onboarding assumes existing groups**: import-your-crew flows take priority over stranger discovery — networks bootstrap from pre-existing channels, never cold.
@@ -170,5 +180,5 @@ Source: `docs/research/2026-07-10-mutual-aid-coordination-research.md` — an ad
 ## Relationship to Existing Docs
 
 - Extends `docs/product/product-brief.md`: adds the dual-mode shape, publication spaces, gateway, and softens trust-as-gate to trust-as-curation for non-operational content. Operational object types keep required expiry and source notes.
-- Extends `docs/architecture/willow-architecture.md`: same Willow priority order, with Encrypted Willow pulled earlier (Track B critical path) and `event` added to object types.
-- The prototype plan remains valid as Phase 0.
+- Extends `docs/architecture/willow-architecture.md`: Willow remains the canonical data model. Opaque whole-drop encryption now precedes property-preserving Encrypted Willow; the latter is deferred until untrusted relays need entry-level partial sync.
+- The Swift-only prototype plan is retained as historical product-flow scaffolding. The cross-platform evidence sprint supersedes it as Phase 0.
