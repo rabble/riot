@@ -1,7 +1,7 @@
 # Riot Dual-Mode Research Addendum
 
 Date: 2026-07-10
-Status: Accepted research basis for the evidence sprint
+Status: Accepted research basis for the Phase 0 evidence-sprint sequence
 
 ## Purpose
 
@@ -18,7 +18,7 @@ The dual-mode product decision remains sound: Riot should keep open publishing a
 5. **Meadowcap delegates authority; it does not merge several people into one signer.** A publication namespace can be the stable collective identity while delegated, purpose-specific member keys remain visible as the actual signers.
 6. **The private plane should use an ordered membership control plane and a mergeable data plane.** MLS is the production candidate for group membership epochs. Willow remains the group content model. Private drops should encrypt and pad a complete Willow drop as an opaque blob before carriage.
 7. **The original Swift-only prototype plan no longer fits the selected platform goal.** Riot will target iOS and Android together with native SwiftUI and Jetpack Compose shells around a shared Rust core exposed through UniFFI.
-8. **The next milestone is a 16 agent-hour evidence sprint.** It must produce executable cross-platform and cryptographic traces, not production-security claims or polished product UI.
+8. **The next milestone is a 16 agent-hour public-kernel evidence sprint.** It must produce an executable two-way native-runtime artifact handoff, not production-security claims or polished product UI. Private-group cryptography and the bridge follow only as separately reviewed, separately budgeted evidence sprints.
 
 ## Willow Maturity Matrix
 
@@ -101,7 +101,7 @@ Therefore, Encrypted Willow alone does not justify the original claim that an in
 
 The first private design uses two layers:
 
-1. **MLS control plane.** Ordered epochs manage member add, remove, update, and recovery. The evidence sprint evaluates OpenMLS, including concurrent commits and offline catch-up.
+1. **MLS control plane.** Ordered epochs manage member add, remove, update, and recovery. A separately designed Phase 0B evidence sprint will evaluate OpenMLS, including concurrent commits and offline catch-up; the 16 agent-hour Phase 0A public-kernel sprint does not implement or validate this layer.
 2. **Willow data plane.** Signed group objects remain normal Willow entries. A member decrypts a complete private-drop envelope, validates it, and merges the inner entries locally.
 
 The private-drop envelope hides all inner Willow metadata from non-member carriers:
@@ -270,9 +270,11 @@ Sources:
 
 ## Revised Build Order
 
-### Evidence sprint
+### Phase 0 evidence-sprint sequence
 
-Prove the shared Rust boundary, cross-platform bindings, object encoding, Willow authority mapping, public file loop, MLS viability, opaque envelope, invite state, and adversarial gates.
+- **Phase 0A — public kernel:** prove one operational alert, a communal Willow authority path and denial, bounded preview-first atomic import, generated Swift/Kotlin bindings, and two-way iOS Simulator↔Android emulator artifact handoff.
+- **Phase 0B — private groups:** under a separately reviewed threat model and budget, evaluate MLS authorization/transitions, the opaque private envelope, invite state, persistence limits, and adversarial traces.
+- **Phase 0C — declassification:** under a separately reviewed information-flow contract and budget, prove the deliberate bridge and differential noninterference.
 
 ### First implementation slice
 
@@ -300,4 +302,4 @@ The following cannot be honestly completed by agentic coding alone:
 - usability exercises under time pressure, low battery, intermittent contact, and device seizure scenarios;
 - coordination with Willow maintainers on current Drop Format vectors and implementation timing.
 
-These are release gates, not reasons to delay the evidence sprint.
+These are release gates, not reasons to delay the relevant separately scoped evidence sprint.

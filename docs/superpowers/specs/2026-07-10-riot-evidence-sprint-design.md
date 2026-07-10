@@ -1,548 +1,445 @@
-# Riot Evidence Sprint Design
+# Riot Phase 0A Public Kernel Evidence Sprint Design
 
 Date: 2026-07-10
-Status: Revision 2; approved by product owner and awaiting design-review rerun
+Status: Revision 4; five-role design-review PASS; awaiting product-owner confirmation
 
 ## Purpose
 
-Run a hard-capped 16 agent-hour evidence sprint that turns Riot's highest-risk architectural claims into executable proofs. The sprint establishes whether one stable Rust core can serve native iOS and Android clients, whether the revised Willow authority model works, whether a public signed object survives an offline exchange loop, and whether MLS plus an opaque private envelope is a credible research basis for groups.
+Run a hard-capped 16 aggregate agent-hour sprint that answers one decision:
 
-This is not a product alpha. Its outputs are code, fixtures, traces, limits, and PASS/FAIL/INCONCLUSIVE decisions. A dependency or toolchain problem is INCONCLUSIVE, not evidence that an architecture is impossible.
+> Can a small, release-shaped Rust public-data kernel encode, authorize, inspect, and atomically import a signed Riot alert through generated bindings on native iOS and Android runtimes?
+
+The decisive proof is a two-way runtime artifact handoff. An iOS Simulator test creates a `.riot-evidence` bundle through the Rust FFI and an Android emulator imports it; the Android emulator then creates a different bundle and an iOS Simulator test imports it. The shell only carries bytes between runtimes. It does not decode or rewrite them.
+
+This is Phase 0A, not the whole Phase 0 research program. Private groups and declassification have separate threat models and dependency closures. They become Phase 0B and Phase 0C only after separately budgeted designs pass their own review gates.
 
 Research basis: `docs/research/2026-07-10-dual-mode-research-addendum.md`.
 
-## Product Hypotheses and Evidence Boundary
+## Evidence Boundary
 
-Riot ultimately serves five user outcomes:
+Phase 0A proves structural prerequisites for two user outcomes:
 
-1. A public carrier can inspect signer, source, size, freshness, and counts before import.
-2. A field publisher can sign an update, move it through another device, and verify it without a server.
-3. A private member can carry group state over an untrusted channel without exposing inner group identifiers or content.
-4. A collective editor can deliberately declassify selected private content without leaking private metadata.
-5. A pressured reader can distinguish authorship, cryptographic validity, source claims, import provenance, curation, correction, freshness, and expiry.
+1. A public carrier can inspect signer, namespace, size, freshness, object count, validity, and trust status before importing an artifact.
+2. A field publisher can create a signed alert on one native runtime and have the other native runtime verify and import the exact bytes without a server.
 
-Phase 0 proves structural prerequisites, not usability under pressure.
+The sprint implements one durable object kind, `alert`. The ten-kind product vocabulary, coordination flow, private groups, bridge, live transport, trust directories, polished UI, durable storage, and physical-device usability are deferred. A passing signature is not a truth or trust claim; an unknown signer remains visibly unknown.
 
-| Outcome | Phase 0 evidence | Gate | Deferred validation |
-| --- | --- | --- | --- |
-| Public carrier | Import fixtures produce a platform-independent preview model with explicit eligibility and provenance fields | G3 | Full SwiftUI/Compose flow and practitioner exercise |
-| Field publisher | Both native harnesses call the same Rust encoder/verifier and display the same fixture digest/status | G1, G3 | Real authoring and file transfer on physical devices |
-| Private member | Rust lab executes authorized MLS transitions and opaque-envelope tests; mobile targets compile the lab dependency closure | G4, G5 | External crypto review and physical-device exchange |
-| Collective editor | Group-side allowlist projection and public-side finalization pass differential noninterference tests | G6 | Human review UX on both platforms |
-| Pressured reader | `ProvenanceDisplay` fixtures separate claims, signatures, receipts, lenses, freshness, and expiry | G3 | Comprehension and action testing with organizers |
+Each gate ends in exactly one status:
 
-Trust bootstrap is deliberately not solved by a valid signature. Unknown signers remain labelled unknown. Directory feeds, trusted introductions, and curation-lens selection are later designs.
+- **PASS:** every required command ran in the frozen environment and produced the specified artifacts and assertions;
+- **FAIL:** a reproducible assertion disproved the claim;
+- **INCONCLUSIVE:** the evidence could not run or finish because of the time cap, toolchain, dependency, or environment.
 
-The representative coordination fixture covers:
-
-```text
-request
-  → verification annotation
-  → task claim and handoff annotations
-  → offer
-  → commitment
-  → fulfillment annotation
-```
-
-## Success Questions
-
-- Can Rust emit stable deterministic object bytes and transport them correctly through Swift and Kotlin bindings?
-- Can current `willow25` and Meadowcap express a communal author plus owned curation authority?
-- Can a public object complete inspect → preview → select → atomic logical commit → receipt?
-- Can OpenMLS build for selected mobile targets and enforce Riot's membership authorization around add/remove/update operations?
-- Can Riot detect and safely freeze conflicting MLS commits, advance offline members through bounded transitions, and exclude removed members?
-- Can an opaque private envelope meet the frozen evidence profile and leakage tests?
-- Can the bridge prove that public output depends only on allowlisted draft fields?
-
-Each question ends in:
-
-- **PASS:** the pinned environment produces the specified artifact and assertions;
-- **FAIL:** a reproducible fixture or trace disproves the claim;
-- **INCONCLUSIVE:** the evidence did not run or finish because of time, toolchain, dependency, or environment constraints.
-
-Only PASS permits downstream GO. INCONCLUSIVE means REVISE/reschedule; it never defaults to GO.
+Only PASS permits downstream GO. FAIL and INCONCLUSIVE require a revised design or another explicitly budgeted sprint.
 
 ## Non-Goals
 
-The sprint does not deliver production-safe groups, polished import/declassification UI, durable crash-safe storage, current Willow Drop Format interoperability, live WTP, local radio transport, directory/rendezvous, gateway, media, local LLM, accounts, servers, arbitrary HTML, or field usability validation.
+Phase 0A does not deliver or claim:
 
-## Frozen Environment and Dependency Ledger
+- production-safe private groups, OpenMLS integration, private envelopes, invitations, or panic wipe;
+- declassification or public-to-private clipping;
+- crash-safe persistence, streaming import, current Willow Drop Format compatibility, or WTP;
+- radio, local-network, gateway, rendezvous, or server transport;
+- production Keychain/Keystore key persistence;
+- more than the `alert` schema;
+- polished SwiftUI/Compose import UX, accessibility validation, or field usability.
 
-WU0 verifies and records the following pins before implementation. `Cargo.lock`, Gradle dependency locks, and the Xcode resolved-package state are evidence artifacts. Any substitution changes the evidence identity and is recorded.
+## Phase 0A Threat Model
 
-### Rust and protocol dependencies
+Protected assets are author-key secrecy during the process lifetime, signed-byte integrity, capability enforcement, import-store integrity, bounded availability under hostile input, and the separation of cryptographic facts from trust/truth claims. Adversaries include an untrusted carrier that mutates, duplicates, reorders, truncates, or withholds artifacts; a malicious artifact author; malformed-input resource-exhaustion attempts; and accidental leakage through FFI errors, logs, fixtures, or packaged debug providers.
 
-| Dependency | Pin / feature policy |
+The evidence trusts the pinned Rust dependencies, OS randomness, generated UniFFI bindings, and uncompromised simulator/emulator processes. Public bundle metadata and content are intentionally plaintext. A valid authorized author may still lie, previously exported bytes cannot be revoked, and process/device compromise is outside this sprint. These are explicit residual risks, not PASS claims.
+
+## Frozen Environment and Dependency Closure
+
+WU0 records the actual versions and lock hashes in `fixtures/manifest.json`. A substitution changes the evidence identity and must be reported.
+
+### Rust
+
+| Dependency | Exact policy |
 | --- | --- |
-| Rust | `1.95.0`; workspace `rust-toolchain.toml` |
-| `willow25` | `=0.5.0`; default `std`, `dev` only in tests |
-| `openmls` | `=0.8.1`; `openmls_rust_crypto` and `fork-resolution`; forbid `crypto-debug`, `content-debug`, `test-utils` outside tests |
-| `openmls_rust_crypto` | `=0.5.1` |
-| `uniffi` | `=0.32.0`; proc-macro scaffolding, Swift and Kotlin bindings |
-| `minicbor` | `=2.2.2`; hand-written fixed-key encoders; no floating point or indefinite lengths |
-| `cddl-cat` | `=0.7.1`; test/dev schema validation only |
-| `aes-gcm-siv` | `=0.11.1`; evidence private-envelope AEAD, RFC 8452 |
-| `sha2` | `=0.10.9`; fixture and replay digests |
-| `hmac` | `=0.12.1`; route-tag HMAC-SHA-256 |
+| Rust | `1.95.0` in `rust-toolchain.toml` |
+| `willow25` | `=0.5.0`; `dev` feature only in tests |
+| `uniffi` | `=0.32.0`; proc-macro scaffolding and generated Swift/Kotlin bindings |
+| `minicbor` | `=2.2.2`; fixed-key, definite-length encoder |
+| `cddl-cat` | `=0.7.1`; test/dev validation only |
+| `sha2` | `=0.10.9`; artifact and entry digests |
+| `ed25519-dalek` | `=2.2.0`; evidence public-author signatures |
+| `rand_core` | `=0.6.4` with `getrandom`; OS-backed ephemeral evidence keys |
 
-All workspace dependencies use exact versions. The lockfile digest is included in `fixtures/manifest.json`.
+All workspace dependencies use exact versions and a committed `Cargo.lock`. Gradle dependency locking is enabled and the Android SDK/NDK package revisions are recorded. The stable dependency graph must not contain OpenMLS, group-lab code, deterministic production randomness, or cryptographic debug features.
 
-### Apple target
+### Apple
 
-- Xcode 26.2, Swift 6.2.3.
-- Deployment floor: iOS 17.0.
-- Rust triples: `aarch64-apple-ios` and `aarch64-apple-ios-sim`.
-- Gate build: arm64 iOS Simulator; device triple must compile even when no signing device is present.
-- Evidence shell: one SwiftUI screen showing fixture digest and structured status; no import UX claim.
+- Xcode 26.2 and Swift 6.2.3.
+- iOS deployment floor 17.0.
+- Rust triples `aarch64-apple-ios` and `aarch64-apple-ios-sim`.
+- Runtime gate on an arm64 iOS Simulator; unsigned device triple must compile.
+- Native XCTest host only; no SwiftUI screen in Phase 0A.
 
-### Android target
+### Android
 
-- Android Gradle Plugin 9.0.1, Gradle 9.1.0, JDK 17.
-- Android SDK/Build Tools 36.0.0, NDK 28.2.13676358.
+- Android Gradle Plugin 9.0.1, its built-in Kotlin 2.2.10, Gradle 9.1.0, and JDK 17.
+- Android SDK/Build Tools 36.0.0 and NDK 28.2.13676358.
 - `minSdk 26`, `compileSdk 36`, `targetSdk 36`.
-- ABIs: `arm64-v8a` and `x86_64`.
-- Kotlin 2.2.20; Compose BOM 2026.06.00.
-- Gate build: x86_64 JVM/emulator unit target plus arm64 native-library compile.
-- Evidence shell: one Compose screen showing fixture digest and structured status; no import UX claim.
+- Rust/native ABIs `arm64-v8a` and `x86_64`.
+- Command-line tools archive `commandlinetools-mac-14742923_latest.zip`; Android Emulator 36.6.11; Platform-Tools 37.0.0.
+- Runtime gate on the API 36 `system-images;android-36;google_apis;arm64-v8a` image on this Apple Silicon host, using the `aarch64-linux-android` Rust library. WU0 records the installed image revision and `source.properties` hash before work proceeds. The x86_64 library is compile-only evidence.
+- Native Android instrumentation host only; no Compose screen in Phase 0A.
 
-The current host has no Android SDK configured. WU0 installs/verifies the pinned SDK or marks Android-dependent gates INCONCLUSIVE with the exact missing component. It does not silently change targets.
+Android tool pins were checked against the official [Android Studio downloads](https://developer.android.com/studio), [Emulator release notes](https://developer.android.com/studio/releases/emulator), and [Platform-Tools release notes](https://developer.android.com/tools/releases/platform-tools) on 2026-07-10.
 
-## Architecture and Dependency Closures
+The current host does not have the Android SDK configured. WU0 installs or verifies the frozen SDK within its budget. If it cannot, Android-dependent gates are INCONCLUSIVE; the sprint does not silently substitute a JVM-only test or a different SDK.
+
+### Release-shaped graph
 
 ```text
-riot-model ───────────────┐
-riot-willow ──────────────┼─> riot-stable ─> riot-stable-ffi ─> SwiftUI / Compose harnesses
-riot-import ──────────────┤
-riot-bridge-public ───────┘
-
-riot-model ───────────────┐
-riot-willow ──────────────┼─> riot-group-lab ─> riot-group-lab-ffi (evidence only)
-OpenMLS / crypto provider ┘
-
-riot-conformance depends on both closures for tests and traces.
-The stable closure never depends on riot-group-lab or OpenMLS.
+riot-core ──> riot-ffi ──> XCTest / Android instrumentation
+     └─────> riot-conformance fixtures and reports
 ```
 
-The release-shaped stable FFI graph is mechanically checked with `cargo tree -p riot-stable-ffi`. It must not contain `riot-group-lab`, `openmls`, deterministic key sources, or crypto-debug features. The group-lab FFI is a separate evidence target and cannot be linked by the stable native harnesses.
-
-### Planned source structure
+Planned source structure:
 
 ```text
 Cargo.toml
+.cargo/config.toml  # `xtask = "run --package xtask --"`
 rust-toolchain.toml
 crates/
-  riot-model/src/
-  riot-willow/src/
-  riot-import/src/
-  riot-bridge-public/src/
-  riot-stable/src/
-  riot-stable-ffi/src/
-  riot-group-lab/src/
-  riot-group-lab-ffi/src/
+  riot-core/src/{model,willow,import}/
+  riot-ffi/src/
   riot-conformance/src/
-schemas/
-  riot-envelope.cddl
-  alert.cddl
-  request.cddl
-  offer.cddl
-  commitment.cddl
-  task.cddl
-  annotation.cddl
-fixtures/
-  manifest.json
-  objects/
-  willow/
-  imports/
-  groups/
+  xtask/src/
+schemas/alert.cddl
+fixtures/manifest.json
+fixtures/objects/
+fixtures/willow/
+fixtures/imports/
 apps/ios/RiotEvidence/
 apps/android/
+scripts/phase0a/
 docs/decisions/
 ```
 
-Phase 0 implements the common envelope and six kinds needed by the alert and coordination fixtures. `observation`, `event`, `resource`, and `document` remain approved vocabulary but their executable schemas belong to the first implementation plan after the evidence sprint.
+## Signed Alert and Willow Authority
 
-## Test Seams
+### Alert payload
 
-Production-facing logic receives explicit providers:
-
-- `Clock` for signed time, local receipt time, and clock uncertainty;
-- `IdSource` for object, revision, operation, store, voucher, and receipt IDs;
-- `RandomSource` for production OS randomness and deterministic test vectors;
-- `SignerProvider` for purpose-specific signing without exposing private keys through FFI;
-- `KeyWrapper` interface, with a fake in Phase 0 and native Keychain/Keystore implementations deferred;
-- `EvidenceStore`, with copy-on-write logical transactions, generation numbers, deduplication index, and receipts;
-- `FaultInjector`, enabled only in tests, with named failures before validation, after staging, during entry application, before receipt, and before commit swap.
-
-`fixtures/manifest.json` records fixture version, complete identifiers, deterministic test seeds, expected encoded SHA-256, expected decoded values, dependency-lock digest, generating command, and negative mutations. Deterministic providers cannot compile into stable release profiles.
-
-## Stable API and Handle Lifecycle
-
-UniFFI exposes typed records and thread-safe objects rather than naked integer handles.
+The deterministic signed payload contains:
 
 ```text
-RiotSession.open(CoreConfig) -> RiotSession
-RiotSession.createEvidenceStore() -> EvidenceStoreHandle
-RiotSession.encodeObject(ObjectDraft) -> EncodedObject
-RiotSession.decodeObject(bytes, DecodeLimits) -> DecodedObject
-RiotSession.beginInspection(store, bytes, ImportContext) -> InspectionOperation
-InspectionOperation.progress() -> InspectionProgress
-InspectionOperation.cancel() -> CancelResult
-InspectionOperation.takePreview() -> ImportPreview
-ImportPreview.commit(selection) -> ImportReceipt
-ImportPreview.reject() -> RejectReceipt
-close() on session, store, operation, and preview objects
-```
-
-Rules:
-
-- objects are owned by the creating session and are safe to call from one operation at a time;
-- `close` is idempotent; every later call returns `STALE_HANDLE`;
-- process restart invalidates all objects;
-- closing a session cancels operations and closes previews before stores;
-- caller limits may lower but never raise `CoreConfig` policy ceilings;
-- cancellation is cooperative during reading, parsing, validation, and signature checks and leaves the store unchanged;
-- progress reports phase, bytes consumed/total, objects inspected, and whether cancellation is accepted;
-- FFI errors use stable non-sensitive codes plus developer detail that contains no payload, key, hidden group, or invitation data;
-- native layers localize user-facing messages separately.
-
-Phase 0 uses deterministic in-memory test signers behind `SignerProvider`. Production Keychain/Keystore signing and MLS secret persistence are release-gated work, not claimed here.
-
-## Object, Receipt, and Provenance Models
-
-### Signed content envelope
-
-```text
-schema
+schema = "org.riot.alert/1"
 object_id
 revision_id
 created_at
 valid_from?
-expires_at?
+expires_at
 language
-kind
-body
-relations[]
-source_claims[]
+urgency
+severity
+certainty
+headline
+description
+affected_area_claim?
+source_claims[1..]
 ai_assisted
 ```
 
-Signer, namespace, capability, Willow timestamp, and payload digest belong to the Willow entry. Local import facts never enter the author's signed payload.
+`expires_at` must be later than `created_at`; `valid_from` remains optional. Urgency, severity, and certainty are closed enums. Phase 0A fixtures require at least one non-empty source claim. These operational constraints are validated before signing and again after decoding.
 
-Deterministic CBOR uses definite lengths, integer field keys in fixed order, shortest integer encodings, no floats, no duplicate keys, and strict rejection of unknown envelope keys. JSON is a lossless debugging projection, not the signed form.
+Signer, namespace, capability, Willow timestamp, and payload digest belong to the Willow entry. Import route, first-seen time, signer-trust label, and receipt time are local facts and never enter the author payload.
 
-### `ProvenanceDisplay`
+CBOR uses definite lengths, integer field keys in ascending order, shortest integer encodings, no floating point, no duplicate keys, and strict rejection of unknown envelope keys. A lossless JSON projection exists only for fixture debugging.
 
-The core returns a platform-independent model with five labelled layers:
+### Authority fixture
 
-1. **Authorship:** complete author subspace, collective namespace if applicable, delegated-signer status, signed creation time.
-2. **Cryptographic status:** payload digest, signature valid/invalid, capability valid/invalid/unknown. It never says the content is true.
-3. **Author claims:** source notes and affected area, explicitly labelled "Claimed by author."
-4. **Local receipt:** artifact digest, import route, first-seen time, local receipt time, duplicate status.
-5. **Reader lens:** selected curation feed, corrections/disputes, expiry/freshness, and clock uncertainty.
+The core Willow fixture contains one ephemeral communal author. `RiotSession.open` generates its signing key, communal namespace, author subspace, and author-owned write capability; `AuthorIdentity` exposes only the complete public namespace/subspace IDs and public-key ID. The runtime chooses the alert path and timestamp, while the private key never crosses FFI. One denial fixture proves that the capability cannot authorize a different subspace.
 
-Preview and post-commit receipt use the same labels. The post-commit screen/type is called `ImportReceipt`, not "verification receipt."
+Owned publication namespaces, delegated curation, feature/correction annotations, and lens behavior remain approved product architecture but are stretch evidence outside G1–G3.
 
-## Willow Authority Fixture
+## Evidence Bundle Codec
 
-The fixture includes two communal authors, an owned curation namespace with delegated curators, feature and correction annotations, and an owned publication copy.
+`RiotEvidenceBundleV1` is a deliberately non-interoperable development codec:
 
-Tests prove one communal author cannot write another's subspace, no communal creator root exists, owned curators can receive path/time restrictions, publication namespace and signer remain distinguishable, and raw entries remain available regardless of lenses.
+- visible magic `RIOTE1` and version 1;
+- deterministic CBOR containing complete Willow entries, authorization material, and payload bytes;
+- codec ID `org.riot.evidence-bundle/1` and extension `.riot-evidence`;
+- no compression;
+- at most 64 entries and 8 MiB total bytes.
 
-## Import Contract
+It is not `.snk`, the current Willow Drop Format, or a WTP stream. No later plan may imply compatibility without authoritative vectors and a separate conformance gate.
 
-### Evidence bundle codec
+The digest vocabulary is fixed:
 
-Phase 0 uses `RiotEvidenceBundleV1`: visible magic `RIOTE1`, version 1, followed by deterministic CBOR containing complete Willow entries, authorization material, and payloads. It forbids compression and carries at most 512 entries within the 8 MiB artifact ceiling. Its codec ID is `org.riot.evidence-bundle/1`; its extension is `.riot-evidence`.
+- `bundle_digest`: SHA-256 of the complete `.riot-evidence` bytes;
+- `entry_digest`: SHA-256 of one encoded Willow entry plus its included authorization material;
+- `payload_digest`: digest committed by the Willow entry over the signed alert bytes;
+- `object_digest`: SHA-256 of the deterministic alert payload bytes.
 
-This format exists only to exercise import. It is intentionally incompatible with `.snk` and the current Willow Drop Format, and no production plan may rename it into apparent compatibility.
+## Stable FFI and Ownership Model
 
-### Evidence store and transaction boundary
+Phase 0A uses synchronous inspection because the maximum input is 8 MiB. It makes no cancellation or progress-reporting claim.
 
-`EvidenceStore` is an in-memory copy-on-write store selected to prove logical atomicity, not crash durability. It has a random store ID, monotonic generation, content-digest index, entries, and receipts.
+```text
+RiotSession.open(CoreConfig) -> RiotSession
+RiotSession.authorIdentity() -> AuthorIdentity
+RiotSession.createEvidenceStore() -> EvidenceStore
+RiotSession.encodeAlert(AlertDraft) -> SignedWillowEntry
+RiotSession.createBundle([SignedWillowEntry]) -> EncodedBundle
+RiotSession.inspectBundle(EvidenceStore, bytes, ImportContext) -> ImportPreview
+RiotSession.deriveProvenance(EvidenceStore, EntryId, TrustContext) -> ProvenanceDisplay
+ImportPreview.commit(ImportSelection) -> ImportCommitResult
+ImportPreview.reject() -> RejectionResult
+close() -> CloseResult on RiotSession, EvidenceStore, and ImportPreview
+```
 
-An inspection operation retains immutable input bytes and binds:
+`RiotSession.open` generates one ephemeral Ed25519 evidence author from OS randomness and keeps the private key inside Rust for the session lifetime. Entropy failure returns `ENTROPY_UNAVAILABLE` and exposes no partial session. `encodeAlert` creates the payload, Willow entry, and required author capability under that identity. Key persistence and recovery are deliberately absent.
 
-- codec ID and version;
-- bundle digest;
+`ed25519-dalek` uses `default-features = false` with only `std`, `fast`, `zeroize`, and `rand_core`. The signing key is not serializable, printable, cloneable through FFI, or returned by any API; it is zeroized on explicit close and drop. Deterministic clock, ID, and signer implementations live only in `riot-conformance` or `cfg(test)` and cannot be selected by `riot-ffi` release features.
+
+### States and transitions
+
+| Object | States | Legal transitions |
+| --- | --- | --- |
+| `RiotSession` | `Open`, `Failed`, `Closed` | `open → Open`; boundary panic: `Open → Failed`; `close: Open|Failed → Closed`; repeated close returns `AlreadyClosed` |
+| `EvidenceStore` | `Open`, `Closed` | created by one open session; `close: Open → Closed`; parent close closes it; repeated close returns `AlreadyClosed` |
+| `ImportPreview` | `Open`, `Committed`, `Rejected`, `Closed` | `commit: Open → Committed`; `reject: Open → Rejected`; `close: Open → Closed`; terminal close returns `AlreadyClosed` |
+
+Rules:
+
+- every object carries an unguessable session ID and is valid only with its creating session;
+- one session-owned `Mutex<SessionState>` contains session, store, preview, generation, index, receipt, and signer state; child objects contain only their IDs plus an `Arc` to this arbiter and have no independent state locks;
+- every FFI call acquires that one arbiter before admission checks or mutation, so close/commit/reject have one lock order and one linearization point; the first terminal preview action wins and every competing or later action returns `PREVIEW_CONSUMED`;
+- error precedence under the arbiter is `OBJECT_CLOSED`, `WRONG_SESSION`, `PREVIEW_CONSUMED`, `STALE_PREVIEW`, validation/limit error;
+- closing a store marks its preview closed in the same critical section; closing a session marks previews and stores closed before zeroizing its signer;
+- any non-close call on a closed parent returns `OBJECT_CLOSED`;
+- process restart invalidates all objects;
+- `CloseResult` is `Closed | AlreadyClosed` and carries no sensitive detail;
+- `RejectionResult` is non-durable and contains only preview ID and `Rejected`; it creates no store receipt;
+- FFI failures use stable codes and sanitized developer detail containing no payload, author private data, key material, or untrusted bytes;
+- every exported FFI entrypoint catches Rust panic at the boundary, quarantines the session as `Failed`, closes child objects, zeroizes its signer, returns sanitized `INTERNAL_ERROR`, and allows no unwind across UniFFI; later non-close calls return `SESSION_FAILED`.
+
+`ImportSelection` contains the preview ID and unique selected preview-entry IDs. The preview ID and every entry ID must belong to the open preview. Phase 0A permits one open store and one open preview per session; attempts beyond either bound return `SESSION_LIMIT` before retaining bytes.
+
+`TrustContext` is a value containing at most 64 complete trusted public signer IDs. `ImportContext` contains the local route, clock snapshot, and one `TrustContext`. Trust cannot weaken signature, capability, schema, or size policy. A signer absent from the exact set is `UnknownTrust`.
+
+## Import Transaction, Receipt, and Provenance
+
+### In-memory evidence store
+
+`EvidenceStore` proves logical atomicity, not crash durability. It contains a random store ID, monotonic generation, entries, content-deduplication index, and immutable import receipts.
+
+Inspection retains immutable input bytes and binds the preview to:
+
+- codec ID/version and `bundle_digest`;
 - destination store ID and base generation;
 - import route and local clock snapshot;
-- fixed policy ceilings;
-- per-entry stable preview ID, original entry digest, status, and eligibility.
+- fixed ceilings;
+- per-entry preview ID, original bytes/digests, status, eligibility, and warnings.
 
-`ImportPreview.commit` rejects a different store generation as `STALE_PREVIEW`. One copy-on-write swap commits selected entries, deduplication indexes, generation increment, and receipt together. Fault injection before the swap leaves the observable logical state unchanged. Byte-stable persistence and crash recovery are not claimed.
+Commit builds one bounded copy-on-write next snapshot under the session arbiter. One pointer swap installs selected new entries, deduplication/index records, the insertion-receipt references, one generation change when at least one entry is new, and the receipt. The old snapshot remains authoritative until that swap; a fault or `STORE_FULL` before it leaves all observable state unchanged.
 
-### Preview and receipt
+A preview whose store generation changed returns `STALE_PREVIEW` before duplicate detection. Deduplication uses `entry_digest`, with preview entries kept in original bundle order. `ImportCommitResult` is `Committed(ImportReceipt) | NoChanges(DuplicateResult)`. `DuplicateResult` contains bundle digest, store ID, unchanged generation, and ordered `(preview_entry_id, entry_digest, existing_entry_id, first_seen_time, insertion_receipt_id)` rows. The index permanently points each entry to its first insertion receipt. A duplicate-only reinspection and commit returns `NoChanges` and creates no state; calling commit twice on the same consumed preview instead returns `PREVIEW_CONSUMED`. A mixed new/duplicate import returns `Committed`, increments generation once, and records both dispositions.
 
-Each preview entry contains:
+### Preview policy
 
-- preview entry ID and original digest;
-- object kind/schema or opaque status;
-- author and namespace;
-- cryptographic/capability status;
-- freshness/expiry and clock uncertainty;
-- encoded bytes;
-- `eligible`, `already_present`, and `requires_opaque_consent` flags;
-- an ineligibility reason when applicable.
+Each preview entry exposes schema status, full author and namespace IDs, signature status, capability status, signer trust status, encoded size, digests, eligibility, duplicate state, and a non-sensitive reason code.
 
-Invalid signatures/capabilities are never eligible. Unknown verified schemas require explicit opaque consent and remain non-renderable. Selection must be non-empty, reference only this open preview, contain no duplicates, and include consent for every unknown. Reject/cancel closes the preview. Retrying a committed bundle is idempotent and produces an already-present receipt.
+- invalid signature or invalid capability: hard-ineligible;
+- unknown capability: hard-ineligible in Phase 0A;
+- unknown signer with valid signature and capability: eligible but labelled `UnknownTrust`;
+- any schema other than `org.riot.alert/1`: ineligible as `UNSUPPORTED_SCHEMA` in core evidence;
+- expiry remains visible, but expired/not-yet-valid/uncertain-clock policy variants are stretch evidence and do not determine G2.
 
-`ImportReceipt` contains codec/version, bundle digest, store ID, before/after generation, selected entry digests, inserted/already-present counts, receipt ID, import route, and local receipt time.
+Selection must be non-empty, contain no duplicates, and reference only eligible entries in this preview.
 
-### Import limits
+### Immutable receipt facts
 
-Evidence ceilings are fixed in `CoreConfig`; callers may only lower them.
+`ImportReceipt` contains codec/version, bundle digest, store ID, before/after generation, receipt ID, route, local receipt time, and one immutable `ImportEntryDisposition` per selected preview entry:
+
+```text
+preview_entry_id
+entry_digest
+object_digest
+disposition = Inserted | AlreadyPresent
+entry_id
+first_seen_time
+```
+
+Receipts do not contain mutable trust or presentation state.
+
+### Derived provenance display
+
+`deriveProvenance(store, entryId, trustContext)` returns the Phase 0A presentation model from immutable entry and receipt facts plus the caller's current bounded signer-trust set:
+
+1. authorship: complete author subspace, collective namespace, delegated-signer status, signed creation time;
+2. cryptography: payload digest, signature status, capability status, with no truth claim;
+3. author claims: source and affected-area claims explicitly labelled as author claims;
+4. local receipt: bundle digest, route, first-seen and receipt times, duplicate disposition;
+5. reader state: signer trust and expiry.
+
+For preview-only entries, `PreviewEntry.provenance` uses the inspection-time trust snapshot and the same labelled structure, but local receipt fields are `NotCommitted`. Receipts remain trust-free. Core and native assertions prove that preview trust stays at its captured value while a post-import derivation changes only when its explicit `TrustContext` changes. Curation, corrections/disputes, clock uncertainty, and broader mutable lens snapshots are stretch evidence. Native tests compare the core preview, receipt, and provenance fact records.
+
+## Limits and Fixture Matrix
+
+Callers may lower but never raise `CoreConfig` ceilings.
 
 | Resource | Ceiling |
 | --- | --- |
 | artifact bytes | 8 MiB |
-| objects | 512 |
-| encoded object bytes | 1 MiB |
+| entries per bundle / preview | 64 |
+| encoded payload bytes | 1 MiB |
 | CBOR nesting | 16 |
 | map entries | 128 |
-| text/byte string | 64 KiB except the bounded object body |
+| total decoded CBOR nodes | 16,384 |
+| text/byte string | 64 KiB except bounded description payload |
 | path components | 64 |
 | path component bytes | 256 |
 | total path bytes | 2,048 |
-| expansion ratio | 1:1; Phase 0 formats forbid compression |
-| temporary logical store growth | artifact size + 8 MiB |
-| inspection wall target | 2 seconds for an 8 MiB local fixture; exceeding reports measured FAIL/INCONCLUSIVE, never a security pass |
-| cancellation poll interval | at most 64 KiB or 32 objects |
-| MLS generation gap | 128 |
-| retained prior epochs | 4 |
-| simultaneous forks | 2; additional forks freeze and reject |
-| envelope key trials | 32, executed in constant-shape loop |
+| authorization chain depth | 16 |
+| authorization bytes | 64 KiB per entry; 2 MiB per bundle |
+| warning/status records | 64; one per preview entry |
+| expansion ratio | 1:1; compression forbidden |
+| store entries / index records | 1,024 each |
+| store encoded-entry bytes | 8 MiB |
+| durable receipts | 256 |
+| open stores / previews per session | 1 / 1 |
+| retained preview input / output | 8 MiB / 2 MiB |
+| next transaction snapshot | 8 MiB, in addition to the bounded current store and retained input |
+| local inspection target | 2 seconds for the 8 MiB hostile fixture; a miss is measured FAIL/INCONCLUSIVE, never a security pass |
 
-Integer arithmetic is checked before allocation. Native front doors reject files larger than 8 MiB before materializing bytes for the evidence FFI. Streaming import is a later implementation requirement.
+All length/count arithmetic is checked before allocation. Swift and Kotlin use capped reads of at most 8 MiB + 1 byte rather than trusting pre-read file metadata; Rust independently rechecks the byte ceiling. Every exact-boundary and one-over fixture must return its expected stable result without partial allocation or store mutation. `STORE_FULL` is decided while staging and before the pointer swap.
 
-### Fixture-to-state matrix
+### Core gate fixtures
 
-| Fixture | Visible state | Enabled actions | Store effect |
-| --- | --- | --- | --- |
-| empty drop | Empty | Reject | None |
-| valid known object | Eligible; provenance shown | Select, commit, reject | Selected insert + receipt |
-| unknown but verified schema | Opaque; consent required | Consent+select, reject | Opaque bytes only if selected |
-| invalid signature/capability | Invalid; reason shown | Reject | None |
-| oversized/malformed | Rejected before preview | Close | None |
-| duplicate | Already present | Commit receipt or reject | No duplicate entry |
-| expired object | Eligible but expired label | Select, commit, reject | Selected insert; remains expired |
-| mixed/partial selection | Per-entry eligibility | Eligible subset, reject | Only selected entries |
-| empty selection | Selection error | Select or reject | None |
-| stale preview | Stale | Reinspect or close | None |
-| cancelled inspection | Cancelled | Close/retry | None |
-| injected commit failure | Commit failed | Retry/close | Before-state retained |
-
-Swift and Kotlin state-model tests consume the same serialized preview fixtures. Phase 0 does not claim polished UI parity.
-
-## Private Group Laboratory
-
-### Key separation and authorization
-
-Each evidence persona has distinct Ed25519 keys for:
-
-- public/newswire signing;
-- Willow group subspace signing;
-- MLS leaf signatures;
-- group-control authorization.
-
-A `GroupPolicyV1`, signed by the group policy key, binds group context, accepted credential type, current members, and roles. A valid MLS message is insufficient by itself.
-
-- members may update their own MLS leaf;
-- `membership_admin` may add, remove, and approve recovery;
-- `invite_sponsor` may issue vouchers but cannot commit an add unless also an admin;
-- every add/remove/recovery commit carries a `RiotControlAuthorization` binding parent epoch, parent confirmed-transcript hash, MLS commit digest, action, target credential, and voucher ID when applicable;
-- unauthorized but cryptographically valid commits are rejected and tested.
-
-The evidence credential is an OpenMLS BasicCredential containing a random Riot group-persona ID and purpose. Public persona material is forbidden.
-
-### MLS transition contract
-
-Application data for epoch N+1 cannot be created until the N→N+1 control transition is durably accepted in the evidence store.
-
-- A control envelope is encrypted with epoch N exporter keys and contains the authorized MLS Commit for N→N+1.
-- Existing members, including a member being removed, may open the transition; only members in N+1 derive the next data key.
-- New members receive the MLS Welcome through the invite response and then accept N+1 data.
-- Data envelopes for N+1 are never bundled ahead of the accepted control transition.
-- Offline members advance one retained control envelope at a time. More than four missed epochs requires rejoin.
-
-### Fork and rollback evidence policy
-
-Riot does not invent an automatic cryptographic winner in Phase 0.
-
-- only commits with valid `RiotControlAuthorization` are candidates;
-- accepting one commit records parent transcript hash, accepted commit digest, new epoch, and a monotonic local high-water mark;
-- two authorized commits for the same parent enter `FrozenFork`; no new private publication, membership transition, or envelope creation is permitted;
-- all candidate states remain bounded at two and their secrets are held only for the lab trace;
-- explicit abort deletes losing candidate secrets;
-- rejoin/successor-group recovery is recorded as required product work;
-- a fully restored old device snapshot cannot be detected without an external or cross-device anchor. This is an expected G4 limitation and blocks production claims even if fork detection passes.
-
-The malicious-carrier trace withholds, reorders, duplicates, and later releases commits. PASS requires uniform freeze and no new-epoch data emission. It does not claim availability or rollback resistance.
-
-### Frozen evidence envelope profile
-
-The private-envelope experiment uses this exact profile:
-
-- ciphersuite: AES-256-GCM-SIV (`aes-gcm-siv` 0.11.1, RFC 8452);
-- AEAD key: 32-byte MLS exporter output using label `riot/drop/aead/v1` and context `role || parent_epoch`;
-- route key: separate 32-byte exporter output using label `riot/drop/route/v1` and the same context;
-- nonce: 96 random bits from `RandomSource`; a per-epoch nonce ledger rejects reuse; duplicate-nonce tests are mandatory;
-- route tag: first 16 bytes of HMAC-SHA-256(route key, nonce || role);
-- visible header/AAD: ASCII `RIOTP1`, version 1, role, nonce, route tag, and bucket size;
-- plaintext: 32-bit inner length, inner bytes, then random padding to the selected bucket before encryption;
-- buckets: 4 KiB, 16 KiB, 64 KiB, 256 KiB, 1 MiB, 4 MiB, 8 MiB;
-- overflow above 8 MiB: reject;
-- padding validation: ciphertext must exactly match the declared bucket; inner length must fit; all header fields are authenticated;
-- replay identity: SHA-256 of header plus ciphertext, stored in the receipt index;
-- key selection: compute tags against exactly 32 slots (real active/retained epoch keys plus dummy keys), then attempt AEAD only for a unique match; zero or multiple matches return the same generic cannot-open error;
-- wrong key, wrong AAD, malformed padding, unknown version, replay, and tamper use non-oracular error codes at the user boundary.
-
-The visible header reveals that this is a Riot private artifact, its role, and its padded size. It does not claim traffic unlinkability. Route tags vary per nonce and are tested for non-repetition.
-
-### Invite voucher invariant
-
-`InviteVoucherV1` is signed by an `invite_sponsor` key over:
-
-- domain `riot/invite/v1`;
-- random 256-bit voucher ID and commitment to a 256-bit secret;
-- group-policy digest and issued parent epoch;
-- maximum acceptable parent epoch;
-- optional wall-clock expiry;
-- allowed initial role;
-- sponsor credential ID.
-
-The invitee redemption request signs the voucher ID, group-policy digest, one-time MLS KeyPackage hash, and secret proof with the invitee MLS signature key. Redemption requires current sponsor authorization, a parent epoch within the bound, an unconsumed voucher, and unused KeyPackage. Clock rollback or uncertainty disables unattended expiry acceptance and requires an online-with-the-group admin decision; epoch bounds remain mandatory.
-
-Voucher consumption, accepted add-commit digest, and KeyPackage deletion occur in one logical control transaction. Replay, cross-group substitution, KeyPackage substitution/reuse, revoked sponsor, expired epoch, losing fork, and double redemption are negative fixtures.
-
-### Group laboratory limits and gates
-
-G4 splits into:
-
-- **G4a membership authorization:** mobile target compilation, create/add/remove/update/Welcome, and unauthorized-valid commit rejection;
-- **G4b transition safety:** bounded offline advance, removed-member exclusion, replay behavior, malicious-carrier fork freeze, and documented snapshot-rollback limitation.
-
-G5 covers the frozen envelope profile, known-answer vectors, nonce/AAD/tamper/replay/key-trial/padding tests, and byte-level disclosure search.
-
-Any FAIL or INCONCLUSIVE result keeps groups research-only. Passing G4/G5 still requires external cryptographic review.
-
-## Bridge Boundary
-
-### Group side
-
-Only `riot-group-lab` can read a private object. It emits a value-only `DeclassificationCandidate` containing closed, per-kind allowlisted fields plus `ai_assisted`. It contains no private handle, ID, relation, receipt, ordering key, source/location default, extension map, or unknown nested field.
-
-Cancelling or abandoning projection invalidates the candidate, clears transient buffers, leaves both stores unchanged, and creates no public receipt.
-
-### Public side
-
-`riot-bridge-public` accepts only `DeclassificationCandidate` values. A review operation requires explicit destination namespace, public signer, source claims, location claims, and confirmation booleans. Finalization requires a reviewed-draft object and generates public object/revision IDs solely from the public `IdSource` after review.
-
-Public-to-private clipping belongs to the group closure: it verifies and retains the original public bytes unchanged, then creates a distinct private annotation.
-
-### Differential noninterference
-
-G6 uses pairs of private fixtures whose allowlisted fields are identical while every prohibited field varies, including values, lengths, order, nested extensions, relations, receipts, paths, signers, group IDs, capabilities, source defaults, and error-triggering mutations.
-
-With fixed public test providers, group-side candidates and pre-signing public projections must be byte-identical across each pair. Unknown fields reject rather than disappear. Additional tests cover encoded, hashed, normalized, and length-only canaries. Literal substring scanning remains a supplemental check, not the oracle.
-
-## Sensitive-State Inventory and Panic Scope
-
-Phase 0 does not implement or claim platform panic wipe. WU0 records the required inventory:
-
-| Material | Intended persistence | Panic action / release requirement |
+| Fixture | Preview/action expectation | Commit/store expectation |
 | --- | --- | --- |
-| Willow persona signing keys | wrapped under per-persona key | destroy wrapper; clear in-memory signer |
-| MLS leaf/signature secrets | wrapped group control store | destroy before file cleanup |
-| MLS epoch/ratchet/fork secrets | wrapped group control store; bounded epochs/forks | destroy all current, retained, and candidate state |
-| KeyPackage private keys / Welcome | wrapped invite/control store | consume/delete on join; destroy on panic |
-| voucher secrets and redemption requests | wrapped invite store | delete and invalidate handles |
-| per-group storage key | wrapped by platform key | delete first persistent root |
-| decrypted entries and previews | memory / protected temporary storage only | invalidate, zero where supported, remove previews/caches |
-| DB journals, thumbnails, share-sheet files, crash snapshots, clipboard, notifications | platform-specific | exclude or sanitize; each needs a later platform test |
+| valid known alert | eligible | inserted with per-entry receipt |
+| unknown signer, valid signature/capability | eligible; `UnknownTrust` | inserted; trust remains unknown |
+| invalid signature | hard-ineligible, distinct code | unchanged |
+| invalid capability | hard-ineligible, distinct code | unchanged |
+| malformed/oversized/limit edge | rejected before preview or exact boundary accepted | unchanged on reject |
+| duplicate-only | already present | `NoChanges`; no generation or new durable receipt |
+| store-full / injected pre-swap failure | stable failure code | exact before-state retained |
+| commit versus reject race | one terminal winner | at most one swap/receipt |
+| close versus commit race | one terminal winner | state matches winning action |
+| session close versus store/preview action | exact error precedence; finishes within 2 seconds | no deadlock; state matches winning action |
 
-Production requires device-only backup exclusions, locked-file protection, native Keychain/Keystore wrappers, background/snapshot redaction, and post-restart/post-filesystem-restore tests. Secure erasure of exported copies or every flash block is never claimed.
+The malformed-input tests capture Rust, Swift, Kotlin, and instrumentation logs and assert that no untrusted substring, payload, key, or private signer state appears. A panic fixture must return `INTERNAL_ERROR`; an unwind, process abort, or poisoned usable session fails G2.
 
-## TDD and Verification Matrix
+### Stretch evidence, excluded from G1–G3
 
-Each work unit starts with its named RED test, confirms failure for the intended missing behavior, implements the smallest GREEN behavior, then refactors without changing fixtures.
+If and only if all core gates pass with budget remaining, agents may add: empty/mixed bundles, unknown schema and explicit opaque consent, unknown capability, expired/not-yet-valid/uncertain-clock states, stale or foreign selections, additional lifecycle races, owned publication and curation authority, feature/correction annotations, and mutable provenance lenses. Missing or failing stretch evidence cannot change a core PASS to FAIL and cannot be cited as implemented product behavior.
 
-| WU | First RED test and expected failure | GREEN command and expected result |
+## Runtime Handoff Protocol
+
+`scripts/phase0a/cross-runtime-handoff.sh` is the sole G3 orchestrator and performs these steps:
+
+1. Build/package the Rust library for `aarch64-apple-ios-sim` and `aarch64-linux-android`, generate bindings, install the XCTest host on the pinned simulator, and install the test APKs on the pinned arm64 emulator.
+2. Run `RiotEvidenceTests/IOSCreatesBundle`. It calls the Swift binding and writes the bundle plus a producer-facts JSON file inside the app's `Documents` directory.
+3. Resolve that directory with `xcrun simctl get_app_container "$IOS_UDID" org.riot.evidence data`, copy both files to `build/handoff`, and hash the bundle.
+4. Use binary-safe ingress: `adb push build/handoff/ios-generated.riot-evidence /data/local/tmp/ios-generated.riot-evidence`, then `adb shell run-as org.riot.evidence cp /data/local/tmp/ios-generated.riot-evidence files/ios-generated.riot-evidence`.
+5. Run one ordered instrumentation scenario: `./gradlew :app:connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=org.riot.evidence.CrossRuntimeHandoffTest`. It imports and commits the iOS artifact, then creates a distinct Android-signed artifact and producer/consumer fact files in the target app's private files directory.
+6. Pull the Android artifact and fact files using binary-safe `adb exec-out run-as org.riot.evidence cat files/FILE > build/handoff/FILE`; hash the artifact and copy it into the iOS app's `Documents` container.
+7. Run `RiotEvidenceTests/IOSImportsAndroidBundle`, then copy its consumer facts from the resolved container.
+8. Compare fact JSON and write `build/evidence/g3-runtime-handoff.json`. The shell may parse fact JSON but never the `.riot-evidence` bytes.
+
+For each leg, the producer facts include runtime/tool versions, complete author/namespace/subspace IDs, payload fields, bundle/entry/object digests, and artifact byte count. The consumer must assert byte-identical bundle digest, valid signature, valid capability, matching public IDs and payload fields, `UnknownTrust`, and `Inserted`. The two legs must have distinct author, object, entry, and bundle IDs/digests.
+
+The script resolves one simulator UDID and one emulator serial, fails on ambiguity, and runs these concrete test entrypoints:
+
+```text
+xcodebuild test -project apps/ios/RiotEvidence/RiotEvidence.xcodeproj -scheme RiotEvidence -destination id=$IOS_UDID -only-testing:RiotEvidenceTests/IOSCreatesBundle
+xcrun simctl get_app_container $IOS_UDID org.riot.evidence data
+adb -s $ANDROID_SERIAL push build/handoff/ios-generated.riot-evidence /data/local/tmp/ios-generated.riot-evidence
+adb -s $ANDROID_SERIAL shell run-as org.riot.evidence cp /data/local/tmp/ios-generated.riot-evidence files/ios-generated.riot-evidence
+ANDROID_SERIAL=$ANDROID_SERIAL ./gradlew :app:connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=org.riot.evidence.CrossRuntimeHandoffTest
+adb -s $ANDROID_SERIAL exec-out run-as org.riot.evidence cat files/android-generated.riot-evidence
+xcodebuild test -project apps/ios/RiotEvidence/RiotEvidence.xcodeproj -scheme RiotEvidence -destination id=$IOS_UDID -only-testing:RiotEvidenceTests/IOSImportsAndroidBundle
+```
+
+The script fails if either file is missing, empty, rewritten, decoded by the shell, changes digest in transit, does not load the packaged native library, or produces divergent facts. This proves codec/ABI/runtime interoperability on emulator and simulator, not radio transport or physical-device readiness.
+
+## TDD and Verification
+
+Each work unit begins with its named failing test, confirms the intended failure, implements the smallest passing behavior, and preserves the fixtures during refactoring.
+
+| WU | First RED evidence | GREEN command |
 | --- | --- | --- |
-| WU0 | Docs/fixture validator rejects absent pins, limits, hashes, and requirement ownership | `cargo xtask validate-contracts`; PASS with zero missing fields |
-| WU1 | `riot-model` fixture test fails because deterministic encoder and six schemas do not exist; Willow test fails because adapter is absent | `cargo test -p riot-model -p riot-willow`; all golden/authority tests PASS |
-| WU2 | Swift/Kotlin tests fail because generated stable bindings and native libraries are absent | `xcodebuild test -project apps/ios/RiotEvidence/RiotEvidence.xcodeproj -scheme RiotEvidence -destination 'platform=iOS Simulator,name=iPhone 17 Pro,OS=26.2'` and `./gradlew :app:testDebugUnitTest`; both report the WU0 fixture digest/status |
-| WU3 | import tests fail at absent preview/transaction types; each fault point initially mutates or cannot compile | `cargo test -p riot-import`; full fixture-state matrix PASS and before-state equals after-state on every injected failure |
-| WU4 | membership tests fail at missing authorization; envelope known-answer and tamper tests fail at absent codec | `cargo test -p riot-group-lab`; G4a/G4b/G5 matrix emits PASS/FAIL/INCONCLUSIVE JSON |
-| WU5 | bridge paired fixtures differ or APIs do not enforce reviewed state | `cargo test -p riot-bridge-public -p riot-conformance`; G6 differential matrix PASS and report generated |
+| WU0 | contract validator lists absent pins, ceilings, fixture ownership, and report fields | `cargo xtask validate-contracts` |
+| WU1 | alert golden vectors and Willow authority denial fail because codec/adapter are absent | `cargo test -p riot-core public_` |
+| WU2 | core transaction, disposition, bounds, rollback, log-safety, panic, and three lifecycle-concurrency tests fail because types are absent | `cargo test -p riot-core -p riot-conformance core_import_` |
+| WU3 | native tests fail because generated bindings/libraries and runtime handoff are absent | `scripts/phase0a/cross-runtime-handoff.sh` |
+| WU4 | adversarial manifest fails on missing hostile-corpus mutations, closure scan, hashes, and gate decisions | `scripts/phase0a/verify.sh` |
 
-Additional verification:
+`scripts/phase0a/verify.sh` runs, without omitted command placeholders:
 
-- `cargo test --workspace --all-targets`;
-- `cargo build -p riot-group-lab-ffi --target aarch64-apple-ios` and `cargo build -p riot-group-lab-ffi --target aarch64-linux-android`;
-- property tests for Willow join commutativity, associativity, and idempotence;
-- bounded fuzz smoke for CBOR, development bundle, import state, invite, and private envelope;
-- `cargo tree -p riot-stable-ffi` release-closure assertion;
-- scan Rust, FFI, Swift, Kotlin logs/errors and release symbols for deterministic seeds, debug features, plaintext canaries, and secret-bearing names;
-- exact dependency versions and artifact hashes recorded in the report.
+```text
+cargo xtask validate-contracts
+cargo xtask generate-bindings
+cargo xtask package-ios
+cargo xtask package-android
+cargo test --workspace --all-targets
+cargo test -p riot-conformance core_import_
+cargo test -p riot-conformance hostile_bundle_
+cargo test -p riot-conformance hostile_alert_
+cargo build -p riot-ffi --release --target aarch64-apple-ios
+cargo build -p riot-ffi --release --target aarch64-apple-ios-sim
+cargo build -p riot-ffi --release --target aarch64-linux-android
+cargo build -p riot-ffi --release --target x86_64-linux-android
+cargo tree -p riot-ffi --edges normal,build
+cargo tree -p riot-ffi -e features
+scripts/phase0a/cross-runtime-handoff.sh
+```
+
+The verification script additionally checks release XCTest/APK artifacts for forbidden group/OpenMLS libraries, deterministic providers or seeds, forbidden Ed25519 features (`serde`, `hazmat`, `pem`, `pkcs8`), debug features, plaintext fixture secrets, and secret-bearing symbol/log strings. Feature-tree policy is authoritative; symbol scanning is defense in depth. The report records commands, environment, exit status, artifact paths, and hashes rather than interpreting a skipped command as PASS.
 
 ## Work Units and Hard Budget
 
-The 16 hours are aggregate agent-hours. The sprint is two checkpointed slices; work stops at each gate rather than borrowing scope silently.
+The budget is 16 aggregate agent-hours. Parallel agents charge their wall time independently. Work stops at a checkpoint instead of borrowing scope.
 
-### Slice A — Stable public evidence (hours 0–8)
+| Work unit | Budget | Deliverable and stop rule |
+| --- | ---: | --- |
+| WU0 — preflight, contracts, pins | 2h | first 30 minutes verify/download the pinned Android tools, boot the arm64 AVD, run a blank instrumentation test, and compile empty Rust libraries for both runtime targets; any failure stops the sprint as INCONCLUSIVE before feature work. Remaining time freezes locks, limits, manifest, and report format |
+| WU1 — alert and communal authority | 2.5h | deterministic alert/bundle codec, one ephemeral communal-author path, and one cross-subspace denial; G1 FAIL stops downstream work |
+| WU2 — core import and provenance facts | 3h | synchronous preview, bounded snapshot transaction, receipt/duplicate result, essential hostile cases, and arbiter concurrency tests; G2 FAIL stops native work |
+| WU3 — FFI and native handoff | 4.5h | generated Swift/Kotlin bindings, XCTest/instrumentation hosts, container-aware two-way runtime handoff; no UI or JVM substitute |
+| Integration contingency | 2h | reserved only for binding, packaging, simulator/emulator, or handoff repair; unused time is not converted to stretch scope |
+| WU4 — adversarial verification and report | 2h | bounded hostile corpus, closure/bundle scan, hashes, gate report, GO/REVISE decision |
 
-#### WU0 — Contracts and pins (hours 0–2)
-
-Freeze toolchains, dependencies, limits, schema subset, fixture manifest, outcome/test ownership, secret inventory, and PASS/FAIL/INCONCLUSIVE report format. If the Android toolchain cannot be installed/verified inside this budget, Android gates become INCONCLUSIVE.
-
-#### WU1 — Model and Willow authority (hours 2–5)
-
-Create the stable crates, deterministic codec, six executable schemas, coordination fixture, Willow/Meadowcap authority fixture, and conformance CLI.
-
-#### WU2 — Stable FFI and native harnesses (hours 5–8)
-
-Generate stable Swift/Kotlin bindings and compile the one-screen native harnesses. G1 proves ABI transport of Rust-produced bytes and status; it does not claim independent Swift/Kotlin CBOR implementations.
-
-Checkpoint: if G1 or G2 is FAIL, stop downstream implementation. If a platform is INCONCLUSIVE, continue host-side research but do not mark cross-platform GO.
-
-### Slice B — Import, group, and bridge evidence (hours 8–16)
-
-#### WU3 — Import transaction model (hours 8–10.5)
-
-Implement in-memory logical transactions, preview/receipt models, cancellation, fixed limits, and the fixture-state matrix. No multi-screen UI.
-
-#### WU4 — Private group lab (hours 10.5–14)
-
-Implement OpenMLS authorization/transition traces, fork freeze, invite invariant, and the frozen envelope profile. Remove the earlier custom-HPKE comparison from scope: MLS failure blocks groups rather than triggering weaker custom group crypto.
-
-#### WU5 — Bridge and decision report (hours 14–16)
-
-Implement group-side allowlist projection, reviewed public finalization state, public-to-private clip fixture, differential noninterference, dependency/logging checks, bounded fuzz smoke, and the per-gate report.
+WU4 always begins at aggregate hour 14 and is not available for feature rescue. If core work plus contingency has not completed by then, unfinished gates are INCONCLUSIVE and WU4 records the evidence that exists.
 
 ## Gates
 
 | Gate | PASS evidence | FAIL / INCONCLUSIVE action |
 | --- | --- | --- |
-| G1 Stable cross-platform core | Rust fixture digest/status traverses pinned Swift and Kotlin bindings; both target closures compile | Stop native expansion / revise environment or ABI |
-| G2 Willow authority and schema subset | communal/owned fixtures and six schemas pass; coordination flow round-trips | Revise authority/object mapping |
-| G3 Import/provenance | every fixture-state row, limits, cancellation, stale preview, rollback, idempotence, and receipt assertion passes | Block newswire import expansion |
-| G4a Membership authorization | pinned mobile compile plus authorized lifecycle and unauthorized-valid negative tests | Groups remain research-only |
-| G4b Transition safety | retained offline chain, removal exclusion, replay, malicious-carrier fork freeze, and rollback limitation report | Groups remain research-only |
-| G5 Envelope profile | known-answer, nonce/AAD/tamper/replay/key-trial/padding/limit/disclosure tests pass | No private-drop demo |
-| G6 Bridge isolation | closed schemas, reviewed-state enforcement, public-to-private preservation, and differential noninterference pass | Block publish-out |
+| G1 Public model and authority | required operational-alert fields, deterministic alert/bundle vectors, one communal-author success, one cross-subspace denial, and hostile decoder bounds pass | revise object/authority mapping; do not expand schemas |
+| G2 Core import and provenance | every core fixture row, hard store/preview bounds, logical rollback, exact duplicate result, per-entry disposition, provenance facts, log/panic safety, and arbiter-concurrency assertion passes | block public import expansion |
+| G3 Native runtime handoff | a distinct iOS-generated signed alert imports as `Inserted` on Android and a distinct Android-generated alert imports as `Inserted` on iOS through packaged generated bindings; all per-leg fact assertions pass | revise ABI/toolchain; do not claim cross-platform core |
 
-Every gate report contains status, owning work unit, commands, environment, evidence paths, artifact hashes, and next action.
+Every report contains status, owning work unit, exact commands, frozen environment, evidence paths, hashes, elapsed agent-hours, and next action.
 
-## Likely Decisions
+GO on all three gates authorizes an implementation plan for the public newswire/file loop and additional public object schemas. It does not authorize private groups, the bridge, live transport, or production security claims.
 
-- GO on G1–G3: shared model/provenance kernel, native binding architecture, newswire file-loop implementation plan.
-- Conditional on G4a/G4b/G5 plus independent review: private groups.
-- Separate research: directory/rendezvous and trust bootstrap.
-- Dependency/conformance project: current Willow Drop Format.
-- Deferred: production storage/panic, full UI, live WTP, local transport, gateway, media, paper round trips, and local LLM.
+## Separately Gated Follow-On Evidence
+
+### Phase 0B — Private Group Cryptography
+
+Phase 0B needs its own design review, threat model, dependency closure, and agent-hour budget before code. Its requirements ledger includes:
+
+- canonical signed application-authorization sidecars bound to full parsed MLS commit deltas and policy versions;
+- staged/accepted/frozen transition semantics and an explicit pre-detection fork-emission residual risk;
+- exact group-control store transactions and policy/key rotation;
+- bounded member, proposal, credential, extension, KeyPackage, voucher, transition, group, nonce-ledger, and replay-index state;
+- fixed-shape route-key selection with one real-or-dummy AEAD operation, defined keyring scope, overflow behavior, and timing evidence;
+- exact invite commitment/proof, outer privacy boundary, sponsor revocation, and offline double-redemption fork/freeze behavior;
+- complete sensitive-state inventory, wrapping/backup/panic order, restore tests, native-bundle exclusion checks, and independent cryptographic review.
+
+None of these requirements is considered satisfied by Phase 0A.
+
+### Phase 0C — Declassification Bridge
+
+Phase 0C also needs its own reviewed design and budget. It must choose a coherent immutable-value or session-bound candidate lifecycle, cryptographically bind finalization to the exact reviewed fields/destination/signer, define mutation and abandonment behavior, preserve public originals on clipping, and pass differential noninterference pairs including error and unknown-field behavior.
 
 ## External Release Gates
 
-Private groups cannot be called production-safe until an independent reviewer approves the exact construction, commit, lockfile, vectors, platforms, and artifact hashes. Any cryptographic-construction or dependency change invalidates that approval.
-
-Local transport cannot be called field-ready until tested on physical iOS and Android devices. Object vocabulary and provenance UI cannot be frozen until organizers and mutual-aid practitioners exercise the request → verification → dispatch → handoff → fulfillment flow under realistic time, power, connectivity, and seizure constraints.
+Local transport cannot be called field-ready until tested on physical iOS and Android devices. Object vocabulary and provenance UI cannot be frozen until organizers and mutual-aid practitioners exercise realistic alert and coordination flows under time, power, connectivity, and seizure constraints. Private groups cannot be called production-safe without an independent review of the exact construction, code revision, lockfiles, vectors, platforms, persistence design, and artifact hashes.

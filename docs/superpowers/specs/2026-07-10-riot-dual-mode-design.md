@@ -16,7 +16,7 @@ Two addenda are authoritative where they refine this document:
 - `docs/research/2026-07-10-mutual-aid-coordination-research.md` grounds coordination workflows, roles, paper interoperability, governance, and runbooks in historical practice.
 - `docs/research/2026-07-10-dual-mode-research-addendum.md` checks the design against current Willow, Meadowcap, MLS, platform APIs, and emergency-data standards.
 
-The executable Phase 0 contract is `docs/superpowers/specs/2026-07-10-riot-evidence-sprint-design.md`.
+Phase 0 is a sequence of separately designed and reviewed evidence sprints. The executable Phase 0A public-kernel contract is `docs/superpowers/specs/2026-07-10-riot-evidence-sprint-design.md`; private groups and the bridge require their own Phase 0B and 0C contracts.
 
 ## Decisions Made
 
@@ -138,7 +138,7 @@ Constraints:
 
 ## Build Phasing
 
-- **Phase 0 — Evidence sprint.** Execute `docs/superpowers/specs/2026-07-10-riot-evidence-sprint-design.md`. It proves the shared Rust core, Swift/Kotlin bindings, object and Willow authority mapping, public file loop, MLS viability, private envelope, invite state, and adversarial gates. The earlier Swift prototype remains historical product-flow scaffolding, not the execution plan.
+- **Phase 0 — Separately gated evidence sprints.** Phase 0A executes `docs/superpowers/specs/2026-07-10-riot-evidence-sprint-design.md` and proves one public alert through the shared Rust core, Willow authority, preview-first atomic import, generated Swift/Kotlin bindings, and a two-way iOS Simulator↔Android emulator artifact handoff. Phase 0B will test MLS/private-envelope/invite claims under its own reviewed threat model and agent-hour budget. Phase 0C will test the declassification bridge under its own reviewed information-flow contract and budget. The earlier Swift prototype remains historical product-flow scaffolding, not the execution plan.
 - **Phase 1 — Parallel tracks.**
   - Track A: newswire module — spaces, authoring, drops, directory.
   - Track B: groups module — encrypted store, QR + invite joins, group sync via drops.
@@ -181,4 +181,4 @@ Source: `docs/research/2026-07-10-mutual-aid-coordination-research.md` — an ad
 
 - Extends `docs/product/product-brief.md`: adds the dual-mode shape, publication spaces, gateway, and softens trust-as-gate to trust-as-curation for non-operational content. Operational object types keep required expiry and source notes.
 - Extends `docs/architecture/willow-architecture.md`: Willow remains the canonical data model. Opaque whole-drop encryption now precedes property-preserving Encrypted Willow; the latter is deferred until untrusted relays need entry-level partial sync.
-- The Swift-only prototype plan is retained as historical product-flow scaffolding. The cross-platform evidence sprint supersedes it as Phase 0.
+- The Swift-only prototype plan is retained as historical product-flow scaffolding. The cross-platform evidence-sprint sequence supersedes it as Phase 0.
