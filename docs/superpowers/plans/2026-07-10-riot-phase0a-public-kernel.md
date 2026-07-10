@@ -10,7 +10,7 @@
 
 ---
 
-> **STATUS 2026-07-10:** Tasks 0–3 are independently PASS. **WU2A (Task 4) join** is implemented but awaits its independent review (`docs/decisions/phase0a-wu2a-report.md`). Task 5 planning may proceed, but Task 5 implementation starts only after that review records WU2A PASS. Task 5 reaches gate **G2**. Test commands require the conformance feature: `cargo test -p riot-core --features conformance` (release-surface containment test runs without it). 67 tests green across the workspace.
+> **STATUS 2026-07-10:** Gate state **G0 PASS, G1 PASS**. WU2A (Task 4) join implemented, awaiting independent review (`docs/decisions/phase0a-wu2a-report.md`). **WU2B (Task 5) implemented to G2-CORE only**, at the product owner's explicit "keep going" (ahead of the WU2A review the prior banner asked to wait for): arbiter, copy-on-write transaction, receipts, and provenance — 13 core tests. The exhaustive lifecycle-race, plan-tombstone/16 MiB-charge, hostile-corpus, and per-entry-selection matrix is **not yet done**; see `docs/decisions/phase0a-wu2b-report.md`. **Full G2 is not claimed; WU3 must not start until the WU2A review PASSes and full G2 is met.** 80 tests green. Test commands require `--features conformance` (release-surface test runs without it).
 
 ---
 
@@ -317,7 +317,7 @@ Commit with `feat: implement namespace-local Willow join`.
 
 `error.rs` owns stable core error codes and contains only trusted static detail. `store.rs` owns the cloneable, bounded `StoreSnapshot` and its conservative charge calculation. `preview.rs` owns retained preview/plan state and opaque handles. `receipt.rs` owns immutable commit facts. `provenance.rs` derives presentational facts from immutable history plus the current live view. `session.rs` is the only module that owns the `Arc<Mutex<SessionState>>`; no child type gets another lock or mutable state.
 
-The release-facing constructor `RiotSession::open()` must use the production-only `generate_communal_author()` and `system_snapshot()` paths; `encode_alert` must use the production-only `create_signed_alert(author, draft)` path. The `conformance` feature may add `open_with_for_conformance` plus deterministic/failing sources for these tests; it must remain absent from `riot-ffi`'s feature closure. Do not widen the production Willow exports to make tests convenient.
+The release-facing constructor `RiotSession::open(config: CoreConfig)` must use the production-only `generate_communal_author()` and `system_snapshot()` paths; `encode_alert` must use the production-only `create_signed_alert(author, draft)` path. `CoreConfig::new` permits callers to lower but never raise a frozen ceiling, and `RiotSession::open` rejects an invalid config before constructing a handle. The `conformance` feature may add `open_with_for_conformance(config, entropy, clock)` plus deterministic/failing sources for these tests; it must remain absent from `riot-ffi`'s feature closure. Do not widen the production Willow exports to make tests convenient.
 
 - [ ] **Step 1: Write RED session/admission tests**
 
@@ -327,7 +327,7 @@ In `core_import_lifecycle.rs`, write these focused tests before creating session
 #[test]
 fn core_open_fails_closed_when_entropy_is_unavailable() {
     assert_eq!(
-        RiotSession::open_with_for_conformance(FailingEntropy, FixedClock::valid()),
+        RiotSession::open_with_for_conformance(CoreConfig::frozen(), FailingEntropy, FixedClock::valid()),
         Err(CoreError::EntropyUnavailable),
     );
 }
@@ -356,14 +356,16 @@ fn core_close_is_idempotent_and_parent_close_wins_child_admission() {
 
 #[test]
 fn core_encode_alert_clock_failure_leaves_no_signed_entry_or_session_mutation() {
-    let session = RiotSession::open_with_for_conformance(CountingEntropy::new(), FailingClock)
+    let session = RiotSession::open_with_for_conformance(
+        CoreConfig::frozen(), CountingEntropy::new(), FailingClock,
+    )
         .expect("session opens before encode");
     assert_eq!(session.encode_alert(fixture_draft()), Err(CoreError::ClockUnavailable));
     assert_eq!(session.debug_signed_entry_count_for_conformance(), 0);
 }
 ```
 
-Add one `#[cfg(feature = "conformance")]` fixture module with `session_with_fixture_clock`, `fixture_valid_bundle`, fixed author, and failing-source builders. It must be the only place external integration tests name injected providers. Add `[[test]]` entries with `required-features = ["conformance"]` for the new core test targets in `crates/riot-core/Cargo.toml`; set `riot-core = { path = "../riot-core", features = ["conformance"] }` in `crates/riot-conformance/Cargo.toml` so the hostile conformance target has the same explicitly non-release surface.
+Add one `#[cfg(feature = "conformance")]` fixture module with `session_with_fixture_clock`, `fixture_valid_bundle`, fixed author, and failing-source builders. It must be the only place external integration tests name injected providers. Add constructor tests that lower each `CoreConfig` ceiling successfully and independently reject every raised ceiling with `InvalidConfig` before a session ID/signer exists. Add `[[test]]` entries with `required-features = ["conformance"]` for the new core test targets in `crates/riot-core/Cargo.toml`; set `riot-core = { path = "../riot-core", features = ["conformance"] }` in `crates/riot-conformance/Cargo.toml` so the hostile conformance target has the same explicitly non-release surface.
 
 Run: `cargo test -p riot-core --features conformance --test core_import_lifecycle`
 Expected: RED because `RiotSession`, `EvidenceStore`, and `CoreError` do not exist.
@@ -390,7 +392,7 @@ Expected: RED because preview and plan types do not exist.
 
 - [ ] **Step 3: Write RED atomic-commit, receipt, and provenance tests**
 
-Use the completed Task 4 join fixture for the selected valid entries. Require one whole-batch computation from one pre-state and assert the exact commit result:
+Build a small local set of fixed, authorised entries with the conformance fixture builders; do not depend on a private Task 4 test helper or a fixture that Task 4 did not publish. Require one whole-batch computation from one pre-state through Task 4's public `JoinPlan` API and assert the exact commit result:
 
 ```rust
 match plan.commit()? {
@@ -426,6 +428,15 @@ pub struct RiotSession {
     session_id: [u8; 16],
     state: Arc<Mutex<SessionState>>,
 }
+pub struct CoreConfig {
+    max_retained_store_bytes: usize,
+    max_next_snapshot_bytes: usize,
+    max_namespace_views: u16,
+    max_entry_references: u16,
+    max_durable_receipts: u16,
+    max_preview_input_bytes: usize,
+    max_preview_output_bytes: usize,
+}
 pub struct EvidenceStore { owner: [u8; 16], id: [u8; 16], state: Arc<Mutex<SessionState>> }
 pub struct ImportPreview { owner: [u8; 16], id: u64, state: Arc<Mutex<SessionState>> }
 pub struct ImportPlan { owner: [u8; 16], id: u64, state: Arc<Mutex<SessionState>> }
@@ -457,14 +468,14 @@ Expected: PASS for entropy, ownership, closure, and admission cases.
 
 Implement immutable `StoreSnapshot` cloning in `store.rs`; it holds namespace-local Task 4 views, seen records, receipt records, and exact capacity charges. Its admission function computes the full next charge before cloning/retaining and rejects `STORE_FULL` before mutation. Freeze charges: 512 bytes per entry/index record, 256 per namespace, 256 per receipt/row, 32 per digest reference, 64 namespace views, 1,024 references, 16 MiB retained store, and 16 MiB next snapshot.
 
-`inspect_bundle` takes its receipt clock before retaining bytes; a clock failure returns `CLOCK_UNAVAILABLE` with no preview or state change. It retains the original bundle order, decoded immutable facts, fixed `ImportContext`, base generation, and bounded bytes. `plan` retains only selection IDs, base generation, and effects; superseding a plan changes its tombstone state in the same mutex section. Every issued plan charges exactly 256 tombstone bytes until preview close.
+`inspect_bundle` takes its receipt clock before retaining bytes; a clock failure returns `CLOCK_UNAVAILABLE` with no preview or state change. It retains the original bundle order, decoded immutable facts, fixed `ImportContext`, base generation, and bounded bytes. `plan` computes and retains the complete Task 4 `JoinPlan { next, effects }` together with selection IDs and base generation; `effects()` is a copy of that retained plan, never a host-supplied value. Superseding a plan changes its tombstone state in the same mutex section. The retained join plan, returned effect bytes, and every issued 256-byte tombstone count against the 2 MiB preview-output ceiling.
 
 Run: `cargo test -p riot-core --features conformance --test core_import_transaction`
 Expected: PASS for rejected-vs-preview mapping, selection validation, plan supersession, and 64/65 issuance.
 
 - [ ] **Step 6: Implement one copy-on-write commit and receipt/provenance derivation**
 
-`ImportPlan::commit` must read the retained plan only. Under the arbiter, first compare the retained base generation; return `STALE_PREVIEW` before duplicate work if it differs. For a current plan, partition unseen selected entries by namespace, call Task 4's pure whole-batch join once per namespace, build the complete next snapshot, calculate its charge, then swap `StoreSnapshot` exactly once.
+`ImportPlan::commit` must read the retained plan only. Under the arbiter, first compare the retained base generation; return `STALE_PREVIEW` before duplicate work if it differs. For a current plan, use its retained Task 4 `JoinPlan.next` and `JoinPlan.effects` without recalculating the join, build the complete next snapshot, calculate its charge, then swap `StoreSnapshot` exactly once.
 
 Map Task 4 effects without recomputation:
 
@@ -475,14 +486,14 @@ JoinEffect::NotLive { dominating_entry_ids } =>
     EntryDisposition::DominatedAtCommit { entry_id, dominating_entry_ids },
 ```
 
-Keep the first receipt/index record for every newly seen entry, including a dominated-on-arrival one. A duplicate-only plan returns `NoChanges` and leaves generation/receipts untouched. `derive_provenance` looks up historical seen facts, then derives current status from the present Task 4 live view; it never mutates a receipt or embeds a mutable trust label in it.
+Keep the first receipt/index record for every newly seen entry, including a dominated-on-arrival one. A duplicate-only plan returns `NoChanges` and leaves generation/receipts untouched. `ImportReceipt` tests must assert codec/version, bundle/store/receipt IDs, route, receipt time, before/after generation, and ordered complete disposition rows. `derive_provenance` tests must assert authorship (full subspace/namespace/delegation/created time), cryptography (payload digest/signature/capability), labelled author claims, immutable local receipt, current live/not-live status, and reader trust/expiry. Preview provenance must expose `NotCommitted`, use its captured trust, and never mutate a receipt or embed mutable trust in one.
 
 Run: `cargo test -p riot-core --features conformance --test core_import_transaction`
 Expected: PASS for atomicity, dispositions, duplicate/no-change behavior, provenance, and exact boundaries.
 
 - [ ] **Step 7: Prove lifecycle races and hostile safety**
 
-In `core_import_lifecycle.rs`, use `Barrier` plus two scoped threads for commit/reject, close/commit, supersede/commit, and session-close/child-action. Each race must finish within two seconds, have one terminal winner, and produce no second receipt or snapshot swap. In `riot-conformance/tests/core_import_hostile.rs`, mutate every input truncation/length/string/nesting/signature/payload boundary through `inspect_bundle`, assert a typed rejection/error with no panic, and assert formatting of every returned public value lacks the hostile marker and fixed secret marker. Build one exact-8-MiB hostile fixture and measure `Instant::elapsed() <= Duration::from_secs(2)`; a miss records test failure rather than a security pass. Put panic injection and signer-zeroization probes behind `cfg(feature = "conformance")`; it must quarantine the owning session and return `INTERNAL_ERROR` without a handle on open.
+In `core_import_lifecycle.rs`, use `Barrier` plus two scoped threads for commit/reject, close/commit, supersede/commit, and session-close/child-action. Each race must finish within two seconds, have one terminal winner, and produce no second receipt or snapshot swap. In `riot-conformance/tests/core_import_hostile.rs`, mutate every input truncation/length/string/nesting/signature/payload boundary through `inspect_bundle`, assert a typed rejection/error with no panic, and assert formatting of every returned public value lacks the hostile marker and fixed secret marker. Build one exact-8-MiB hostile fixture and measure `Instant::elapsed() <= Duration::from_secs(2)`; a miss records test failure rather than a security pass. Put panic injection and signer-zeroization probes behind `cfg(feature = "conformance")`; it must quarantine the owning session and return `INTERNAL_ERROR` without a handle on open. After an injected post-open panic, assert every later non-close child action returns `SESSION_FAILED` before child-terminal codes; close still returns `Closed | AlreadyClosed`.
 
 Run:
 
