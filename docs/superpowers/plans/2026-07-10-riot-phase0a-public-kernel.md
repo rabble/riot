@@ -10,7 +10,7 @@
 
 ---
 
-> **STATUS 2026-07-10:** Tasks 0–3 COMPLETE and PASS. Two independent review rounds reopened G0/G1; all findings closed (see the second-review-repair sections of `docs/decisions/phase0a-wu0-report.md` and `phase0a-wu1-report.md`). Gate state: **G0 PASS, G1 PASS**. Next executable task is **Task 4 (WU2A — namespace-local Willow join)**. Test commands now require the conformance feature: `cargo test -p riot-core --features conformance public_`.
+> **STATUS 2026-07-10:** Tasks 0–4 COMPLETE and PASS. Gate state: **G0 PASS, G1 PASS**; **WU2A (Task 4) join** done and pending independent review (`docs/decisions/phase0a-wu2a-report.md`). Next executable task is **Task 5 (WU2B — arbiter, transaction, preview/plan/commit, receipts, provenance)**, which reaches gate **G2**. Test commands require the conformance feature: `cargo test -p riot-core --features conformance` (release-surface containment test runs without it). 67 tests green across the workspace.
 
 ---
 
