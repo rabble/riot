@@ -129,16 +129,32 @@
       ],
       "source": "second-review repair sections of the WU0/WU1 reports",
       "note": "Exact ceilings + resolved-feature-graph validator; conformance-feature factory containment + zeroize + release_surface test; bundle precedence fix, Debug redaction, 4 KiB entry ceiling, added corpus. 59 tests green. Charged from contingency."
+    },
+    {
+      "work_unit": "WU2A (Task 4 \u2014 namespace-local join)",
+      "status": "completed",
+      "reported_actual_hours": 0.6,
+      "charged_hours": 0.6,
+      "commits": [
+        "see wu2a commit"
+      ],
+      "evidence_paths": [
+        "crates/riot-core/src/import/join.rs",
+        "crates/riot-core/tests/core_import_join.rs",
+        "docs/decisions/phase0a-wu2a-report.md"
+      ],
+      "source": "docs/decisions/phase0a-wu2a-report.md",
+      "note": "Order-independent join via willow25 prune predicate; 8 tests incl. 24-permutation MemoryStore differential oracle. 0.6h from the 4.0h WU2 reserve."
     }
   ],
   "totals": {
-    "charged_hours": 5.75,
+    "charged_hours": 6.35,
     "reserved_g0_g1_repair_hours": 0.0,
-    "reserved_wu2_hours": 4.0,
+    "reserved_wu2_hours": 3.4,
     "reserved_wu3_hours": 4.0,
     "reserved_contingency_hours": 0.25,
     "reserved_wu4_hours": 2.0,
-    "hours_until_wu4_boundary": 8.25,
-    "hours_until_hard_stop": 10.25
+    "hours_until_wu4_boundary": 7.65,
+    "hours_until_hard_stop": 9.65
   }
 }

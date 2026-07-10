@@ -2,6 +2,7 @@
 //! preview-first atomic import store.
 
 pub mod bundle;
+pub mod join;
 
 pub use bundle::{
     decode_bundle, encode_bundle, BundleDecodeOutcome, BundleDiagnostic, BundleEncodeError,
