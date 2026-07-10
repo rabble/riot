@@ -7,9 +7,11 @@ Use Willow in this order:
 1. Data Model
 2. Drop Format
 3. Meadowcap
-4. Willow Transfer Protocol
-5. Encrypted Willow
+4. Encrypted Willow (critical path for the groups module — see the dual-mode spec)
+5. Willow Transfer Protocol
 6. Confidential Sync
+
+The dual-mode design (`docs/superpowers/specs/2026-07-10-riot-dual-mode-design.md`) splits Riot into a plaintext newswire module and an encrypted groups module built in parallel; Encrypted Willow moves ahead of WTP because the groups module cannot ship without it, while both modules can ship on drops alone before live sync exists.
 
 ## Core Mapping
 
@@ -72,6 +74,7 @@ In Willow, these become entries such as:
 The first product version should avoid arbitrary page generation and use typed update objects:
 
 - `alert`
+- `event`
 - `resource_location`
 - `route_status`
 - `need`

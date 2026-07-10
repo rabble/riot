@@ -6,6 +6,15 @@ When internet access is degraded, shut down, surveilled, or unreliable, people n
 
 Riot is a native offline packet runtime for that job.
 
+## Two Modes
+
+Riot has two sides, built as separate subsystems joined only by an explicit bridge (see `docs/superpowers/specs/2026-07-10-riot-dual-mode-design.md`):
+
+- **Open newswire:** per-incident open spaces anyone can publish to, and publication spaces where a pseudonymous collective is the publisher. Curation is a reading lens applied by editors, not a gate on publishing. Subscribers' devices are the distribution network, so a banned publication has no server to seize.
+- **Private groups:** encrypted, unlinkable spaces for affinity groups, coops, and crews. Joined in person via QR or by portable encrypted invite files.
+
+A public web gateway mirrors newswire content at normal URLs for discovery and onboarding; private groups never touch it.
+
 ## What Riot Is
 
 Riot lets people preload and exchange packets. A packet is a small offline app/site with:
@@ -114,6 +123,7 @@ The LLM must not decide what is true. It must not publish directly. Users sign f
 - No automatic import of arbitrary packet data.
 - Preview before ingest.
 - Explicit signer and provenance display.
+- Trust as a lens, not a gate: open publishing stays frictionless; verification and curation happen at read time. Strict rules (required source, expiry) apply to operational object types, not to publishing in general.
 - Required expiry for operational updates.
 - Panic wipe.
 - No network beacons from rendered packet content.
