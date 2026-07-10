@@ -74,10 +74,28 @@
       ],
       "source": "cargo test -p riot-core --test public_alert (13 passed)",
       "note": "Added duplicate-key, non-shortest-integer, and JSON-projection tests; JSON is diagnostic only."
+    },
+    {
+      "work_unit": "G1 repair Tasks 2+3 (authority/clock + bundle)",
+      "status": "completed",
+      "reported_actual_hours": 0.75,
+      "charged_hours": 0.75,
+      "commits": [
+        "see task commits"
+      ],
+      "evidence_paths": [
+        "crates/riot-core/src/willow/",
+        "crates/riot-core/src/import/bundle.rs",
+        "crates/riot-core/tests/public_willow.rs",
+        "crates/riot-core/tests/public_bundle.rs",
+        "docs/decisions/phase0a-wu1-report.md"
+      ],
+      "source": "docs/decisions/phase0a-wu1-report.md",
+      "note": "39 public_ tests, clippy clean; hostile framing removed from release API; deterministic golden bundle frozen."
     }
   ],
   "totals": {
-    "charged_hours": 3.75,
+    "charged_hours": 4.5,
     "reserved_g0_g1_repair_hours": 1.5,
     "reserved_wu2_hours": 4.0,
     "reserved_wu3_hours": 4.0,

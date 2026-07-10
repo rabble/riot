@@ -215,7 +215,7 @@ pub fn decode_alert(input: &[u8]) -> Result<AlertPayload, AlertError> {
         .ok_or(AlertError::NonCanonical)?;
     // `map_entries` ceiling; precise unknown-key rejection happens per key
     // below so hostile extra keys get their distinct error code.
-    if pairs < 13 || pairs > 128 {
+    if !(13..=128).contains(&pairs) {
         return Err(AlertError::Malformed);
     }
 

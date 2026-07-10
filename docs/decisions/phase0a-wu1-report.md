@@ -1,53 +1,43 @@
-# Phase 0A — WU1 Report: Alert Codec and Communal Willow Authority
+# Phase 0A — WU1 Report: Alert Codec, Communal Authority, Evidence Bundle
 
-- **Status:** REVISE (the implementation is a useful first slice, but Revision 5 review invalidated the G1 PASS claim)
-- **Owning work unit:** WU1
+- **Status:** PASS (G1) — reopened findings individually repaired via Tasks 1–3 of the public-kernel plan, 2026-07-10
+- **Owning work unit:** WU1 (repair executed under the reopened-G0/G1 budget)
 - **Date:** 2026-07-10
-- **Elapsed agent-hours:** ~2.0 combined WU0R+WU1 baseline, charged once in the authoritative ledger; future repair time is separate
+- **Elapsed agent-hours:** ~2.0 combined WU0R+WU1 baseline (charged once, earlier) + repair time in the ledger
 
-## Provisional G1 evidence
+## G1 PASS evidence
 
-All 23 `public_` tests pass under the corrected pins (`willow25 =0.6.0-alpha.3`, `bab_rs =0.8.1`). Command: `cargo test -p riot-core public_`.
+39 `public_` tests pass; workspace clippy is clean with zero warnings. Commands:
 
-These green tests prove implemented behavior, not the complete revised gate. G1 remains REVISE because:
+```
+cargo test -p riot-core public_        # 13 alert + 12 willow + 14 bundle
+cargo test -p riot-conformance william3_
+cargo clippy --workspace --all-targets -- -D warnings
+cargo xtask validate-contracts
+```
 
-- the cross-subspace denial creates two different communal namespaces instead of two subspaces within one namespace;
-- author generation is infallible and cannot return the specified `ENTROPY_UNAVAILABLE` result;
-- `ClockSnapshot` and separately labelled UTC/TAI conversion evidence are absent;
-- the bundle suite lacks the complete canonical-CBOR, exact-boundary, cumulative-limit, sibling-isolation, and structured-diagnostic matrix;
-- hostile raw constructors are public release APIs rather than conformance/test-only helpers;
-- the release profile aborts on panic, contradicting the catch/quarantine contract.
+### Each reopened finding, closed
 
-Task 2 and Task 3 of `docs/superpowers/plans/2026-07-10-riot-phase0a-public-kernel.md` define the repair. WU2 is blocked until the repaired suite and report PASS.
+1. **Same-namespace cross-subspace denial.** `public_cross_subspace_denial_within_one_namespace` builds two subspaces under one communal namespace (deterministic second secret) and proves both directions: the second secret cannot mint a token for the first subspace, and the first author's token does not verify an entry in the second subspace. Two independently generated namespaces are no longer used for this claim.
+2. **Fallible author factory.** `generate_communal_author(&mut dyn EntropySource)` draws every byte from a fallible source; failure returns `ENTROPY_UNAVAILABLE` and constructs no author (`public_author_generation_fails_closed_without_entropy`). Production uses `OsEntropy` (`rand_core::OsRng::try_fill_bytes`); failing/deterministic sources exist only in tests.
+3. **ClockSnapshot with labelled views.** One snapshot carries `unix_seconds` (UTC, signed alert), `tai_j2000_micros` (Willow join recency via pinned willow25+hifitime conversion), and `uncertainty_seconds`. `create_signed_alert` uses one snapshot for both views (`public_signed_alert_uses_one_snapshot_for_both_time_views`); pre-Unix-epoch, pre-J2000, and conversion-range failures return `CLOCK_UNAVAILABLE` with no partial entry (`public_clock_rejects_pre_epoch_and_out_of_range`, `public_signed_alert_fails_closed_on_clock_and_entropy`).
+4. **Complete bundle matrix.** The pure codec returns `BundleDecodeOutcome::Decoded|Rejected` with frozen fatal precedence (size → magic → malformed/non-canonical outer → unsupported codec → cumulative limits in encounter order → duplicate `entry_id`). Covered: 64-entry success / 65 rejection (encode and hand-framed decode); 8 MiB+1 rejected before parsing with exact-8 MiB proving precedence; wrong magic; unknown codec version; unknown/duplicate outer keys; indefinite containers; trailing bytes; non-shortest outer integers (re-framing canonicality proof); signature length 63 and 65; non-canonical entry and capability bytes; payload length and digest mismatches; forged-signature authorization failure; cumulative authorization budget crossing at parse time; duplicate canonical entry IDs rejecting globally; **mixed valid/invalid siblings with the valid item unaffected**; and sanitized `BundleDiagnostic {code, component}` values proven to never embed hostile payload bytes.
+5. **Hostile framing removed from the release API.** `BundleItem::from_raw_parts` and `encode_bundle_raw` no longer exist; `encode_bundle` always re-verifies before export, and hostile frames are hand-built inside the test suite with minicbor.
+6. **Value vs proof identity.** `entry_id` (`riot/willow-entry-id/v1` over canonical entry bytes) is separate from `evidence_digest` (`riot/evidence-digest/v1` over entry‖capability‖signature); `public_entry_id_is_value_identity_not_proof_identity` proves a signature change moves the evidence digest but not the entry ID. Duplicate detection and join identity use `entry_id`.
+7. **Release profile unwinds.** `panic = "unwind"` landed in Task 0 and is enforced structurally by `cargo xtask validate-contracts`.
+8. **Capability profile enforcement.** The bundle layer accepts only a communal namespace with a zero-delegation communal capability (`is_owned()` false, `delegations()` empty); anything else is `UNSUPPORTED_CAPABILITY` on the Authorization component.
 
-**Deterministic alert codec** (`tests/public_alert.rs`, 10 tests):
+### Deterministic fixtures
 
-- canonical CBOR with integer keys ascending, definite lengths; identical bytes on repeat encode; decode inverts encode exactly;
-- golden vector frozen at `fixtures/objects/alert-golden-1.cbor` (bless-once, compare-forever);
-- operational constraints enforced pre-sign and post-decode: expiry strictly after created, ≥1 non-empty source claim, closed CAP-style enums, per-field byte bounds;
-- hostile decoder bounds: oversized input (`payload_bytes`+1), truncated bytes, smuggled unknown key (distinct `UnknownKey` code), indefinite-length map rejected, re-encode canonicality proof rejects every non-canonical encoding.
+- `fixtures/objects/alert-golden-1.cbor` + diagnostic JSON projection (hash-linked, `public_alert_golden_json_projection_matches_cbor`).
+- `fixtures/willow/bundle-golden-1.riot-evidence` — a deterministic one-item bundle (fixed namespace/subspace secrets, counting entropy, fixed clock) frozen and decoded Valid on every run.
+- `fixtures/willow/william3-vectors.json` — independently cross-checked digest basis (see WU0 report).
 
-**Communal Willow authority** (`tests/public_willow.rs`, 6 tests):
+## Notes
 
-- WILLIAM3 golden vectors (empty/short/partial-block/multi-block) frozen at `fixtures/willow/william3-vectors.txt` — dependency-drift tripwire for the corrected `bab_rs 0.8.1` digests;
-- communal namespace generated with even-LSB check (`is_communal`), namespace secret discarded at generation; zero-delegation communal write capability authorises the author's own subspace; checked `PossiblyAuthorisedEntry` verification only;
-- cross-subspace denial both directions: an intruder secret cannot mint a token for another subspace (`DoesNotAuthorise`), and a valid token does not verify an entry in a different subspace (area check fails before signature);
-- fixed evidence path `objects/alert/<object_id:16>/<revision_id:16>` (4 binary components, prefix-unrelated revisions); entry binds exact payload length and corrected WILLIAM3 digest; Willow timestamp (TAI µs) distinct from alert UTC fields;
-- canonical `Entry` and `WriteCapability` byte roundtrips via upstream codecs (`new_vec_storing_encoding` / `decode_canonic`), trailing bytes rejected.
-
-**Evidence bundle codec** (`tests/public_bundle.rs`, 7 tests):
-
-- `RIOTE1` visible magic + deterministic CBOR framing of `{entry_bytes, capability_bytes, signature_bytes[64], payload_bytes}` per item; roundtrip byte-identical on re-encode;
-- ceilings enforced on both sides: 64 entries, 8 MiB artifact, 1 MiB payload, 64 KiB/entry and 2 MiB/bundle authorization budgets;
-- decode order per audit: bounded outer CBOR → canonical entry → canonical capability → fixed signature → payload length/digest → Meadowcap authorisation; tampered signature and payload-digest mismatch rejected with distinct codes; wrong magic and trailing bytes rejected;
-- baseline digest vocabulary implemented `bundle_digest`, proof-bound `entry_digest`, and `object_digest`; the repair replaces proof-bound `entry_digest` with canonical `entry_id` plus separate `evidence_digest` so Willow value identity is not conflated with its authorization proof.
-
-## Deviations and notes
-
-- WU0R (dependency revision) executed inside this unit's wall time when Revision 5 landed; see the WU0 report's completion section.
-- `encode_bundle_raw` and `BundleItem::from_raw_parts` are currently public/unvalidated. Review requires moving hostile framing to `riot-conformance` or `cfg(test)` so release callers cannot bypass encode-side validation.
+- The Willow module split (`clock`, `identity`, `entry`, `digest`) keeps concrete Willow generics private; the signer type is neither `Clone` nor `Debug` and exposes no key accessor. `EvidenceAuthor::from_parts_for_tests` remains available for fixtures and is excluded from the FFI surface in Task 6.
 - Owned publication namespaces, delegated curation, and annotation objects remain stretch evidence, untouched.
 
 ## Next action
 
-Execute the reopened G0/G1 repair tasks and rerun their reports. WU2 remains blocked until both gates PASS.
+G1 PASS. Proceed to Task 4 (WU2A — namespace-local Willow join with the alpha.3 `MemoryStore` differential oracle).

@@ -1,0 +1,447 @@
+//! `RiotEvidenceBundleV1` — the deliberately non-interoperable development
+//! codec. Visible magic `RIOTE1`, then one deterministic CBOR document
+//! framing canonical Willow component bytes. This is a pure codec layer:
+//! no store, session, trust, or preview types appear here.
+//!
+//! Validation order (frozen): artifact size → magic → malformed/non-canonical
+//! outer frame → unsupported version/codec → cumulative limits in encounter
+//! order → duplicate canonical entry ID. Those reject globally. Once a
+//! bounded canonical item frame is isolated, component-level failures stay
+//! on that item's record and never hide valid siblings.
+
+use minicbor::{Decoder, Encoder};
+
+use crate::willow::{
+    decode_capability_canonic, decode_entry_canonic, entry_id, evidence_digest, object_digest,
+    verify_entry, william3_digest, AuthorisationToken, Entry, EntryId, SignedWillowEntry,
+};
+use willow25::entry::{Entrylike, SubspaceSignature};
+use willow25::groupings::Namespaced;
+
+pub const BUNDLE_MAGIC: &[u8; 6] = b"RIOTE1";
+pub const BUNDLE_CODEC_ID: &str = "org.riot.evidence-bundle/1";
+
+/// Ceilings from fixtures/manifest.json.
+pub const MAX_BUNDLE_BYTES: usize = 8_388_608;
+pub const MAX_BUNDLE_ENTRIES: usize = 64;
+pub const MAX_ITEM_PAYLOAD_BYTES: usize = 1_048_576;
+pub const MAX_AUTH_BYTES_PER_ENTRY: usize = 65_536;
+pub const MAX_AUTH_BYTES_PER_BUNDLE: usize = 2_097_152;
+const SIGNATURE_BYTES: usize = 64;
+
+/// Global rejection: the artifact as a whole is refused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RejectionCode {
+    TooLarge,
+    WrongMagic,
+    MalformedFrame,
+    NonCanonicalFrame,
+    UnsupportedCodec,
+    TooManyEntries,
+    AuthorizationBudgetExceeded,
+    DuplicateEntryId,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BundleRejection {
+    pub code: RejectionCode,
+    /// Sanitized static description. Never contains input bytes or payload text.
+    pub detail: &'static str,
+}
+
+/// Which component of an item a diagnostic is anchored to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ItemComponent {
+    Entry,
+    Capability,
+    Signature,
+    Payload,
+    Authorization,
+    Schema,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DiagnosticCode {
+    NonCanonicalEntry,
+    NonCanonicalCapability,
+    BadSignatureLength,
+    PayloadLengthMismatch,
+    PayloadDigestMismatch,
+    DoesNotAuthorise,
+    UnsupportedCapability,
+    UnsupportedSchema,
+}
+
+/// Sanitized, item-scoped diagnostic: code + component only.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BundleDiagnostic {
+    pub code: DiagnosticCode,
+    pub component: ItemComponent,
+}
+
+/// Raw component bytes of one framed item.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BundleItemFrame {
+    entry_bytes: Vec<u8>,
+    capability_bytes: Vec<u8>,
+    signature_bytes: Vec<u8>,
+    payload_bytes: Vec<u8>,
+}
+
+impl BundleItemFrame {
+    pub fn entry_bytes(&self) -> &[u8] {
+        &self.entry_bytes
+    }
+    pub fn capability_bytes(&self) -> &[u8] {
+        &self.capability_bytes
+    }
+    pub fn signature_bytes(&self) -> &[u8] {
+        &self.signature_bytes
+    }
+    pub fn payload_bytes(&self) -> &[u8] {
+        &self.payload_bytes
+    }
+}
+
+/// A fully verified item: canonical entry plus its digest identities.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ValidItem {
+    pub entry: Entry,
+    pub entry_id: EntryId,
+    pub evidence_digest: [u8; 32],
+    pub object_digest: [u8; 32],
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ItemStatus {
+    Valid(Box<ValidItem>),
+    Invalid(BundleDiagnostic),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DecodedItem {
+    pub frame: BundleItemFrame,
+    pub status: ItemStatus,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DecodedBundle {
+    pub items: Vec<DecodedItem>,
+    pub bundle_digest: [u8; 32],
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(clippy::large_enum_variant)]
+pub enum BundleDecodeOutcome {
+    Decoded(DecodedBundle),
+    Rejected(BundleRejection),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BundleEncodeError {
+    TooManyEntries,
+    BundleTooLarge,
+    AuthorizationBudgetExceeded,
+    InvalidItem(BundleDiagnostic),
+}
+
+/// Validating export: every item is re-verified so Riot never exports bytes
+/// it would itself reject.
+pub fn encode_bundle(items: &[SignedWillowEntry]) -> Result<Vec<u8>, BundleEncodeError> {
+    if items.len() > MAX_BUNDLE_ENTRIES {
+        return Err(BundleEncodeError::TooManyEntries);
+    }
+    let mut auth_total = 0usize;
+    for item in items {
+        auth_total += item.capability_bytes.len() + item.signature.len();
+        if auth_total > MAX_AUTH_BYTES_PER_BUNDLE {
+            return Err(BundleEncodeError::AuthorizationBudgetExceeded);
+        }
+        let frame = BundleItemFrame {
+            entry_bytes: item.entry_bytes.clone(),
+            capability_bytes: item.capability_bytes.clone(),
+            signature_bytes: item.signature.to_vec(),
+            payload_bytes: item.payload_bytes.clone(),
+        };
+        if let Err(diagnostic) = verify_frame(&frame) {
+            return Err(BundleEncodeError::InvalidItem(diagnostic));
+        }
+    }
+    let frames: Vec<BundleItemFrame> = items
+        .iter()
+        .map(|item| BundleItemFrame {
+            entry_bytes: item.entry_bytes.clone(),
+            capability_bytes: item.capability_bytes.clone(),
+            signature_bytes: item.signature.to_vec(),
+            payload_bytes: item.payload_bytes.clone(),
+        })
+        .collect();
+    let bytes = frame_bundle(&frames);
+    if bytes.len() > MAX_BUNDLE_BYTES {
+        return Err(BundleEncodeError::BundleTooLarge);
+    }
+    Ok(bytes)
+}
+
+/// Deterministic outer framing of already-validated frames.
+fn frame_bundle(frames: &[BundleItemFrame]) -> Vec<u8> {
+    let mut buffer: Vec<u8> = Vec::new();
+    buffer.extend_from_slice(BUNDLE_MAGIC);
+    let mut e = Encoder::new(&mut buffer);
+    let r: Result<_, minicbor::encode::Error<core::convert::Infallible>> = (|| {
+        e.map(2)?;
+        e.u8(0)?.str(BUNDLE_CODEC_ID)?;
+        e.u8(1)?.array(frames.len() as u64)?;
+        for frame in frames {
+            e.map(4)?;
+            e.u8(0)?.bytes(&frame.entry_bytes)?;
+            e.u8(1)?.bytes(&frame.capability_bytes)?;
+            e.u8(2)?.bytes(&frame.signature_bytes)?;
+            e.u8(3)?.bytes(&frame.payload_bytes)?;
+        }
+        Ok(())
+    })();
+    debug_assert!(r.is_ok());
+    buffer
+}
+
+fn reject(code: RejectionCode, detail: &'static str) -> BundleDecodeOutcome {
+    BundleDecodeOutcome::Rejected(BundleRejection { code, detail })
+}
+
+/// Strict two-stage bounded decode. Stage one enforces size, magic, outer
+/// canonical CBOR, codec, cumulative limits, and entry-ID uniqueness. Stage
+/// two verifies each isolated item independently.
+pub fn decode_bundle(input: &[u8]) -> BundleDecodeOutcome {
+    // 1. Size, before any parsing.
+    if input.len() > MAX_BUNDLE_BYTES {
+        return reject(RejectionCode::TooLarge, "artifact exceeds 8 MiB ceiling");
+    }
+    // 2. Magic.
+    if input.len() < BUNDLE_MAGIC.len() || &input[..BUNDLE_MAGIC.len()] != BUNDLE_MAGIC {
+        return reject(RejectionCode::WrongMagic, "missing RIOTE1 magic");
+    }
+    let body = &input[BUNDLE_MAGIC.len()..];
+
+    // 3. Outer frame: parse strictly, then prove canonicality by re-framing.
+    let frames = match parse_outer_frame(body) {
+        Ok(frames) => frames,
+        Err(outcome) => return outcome,
+    };
+    let reframed = frame_bundle(&frames);
+    if reframed[BUNDLE_MAGIC.len()..] != *body {
+        return reject(
+            RejectionCode::NonCanonicalFrame,
+            "outer frame is not the canonical encoding",
+        );
+    }
+
+    // 6. Duplicate canonical entry IDs reject globally (computable from raw
+    // entry bytes without Willow decoding).
+    let mut seen: Vec<EntryId> = Vec::with_capacity(frames.len());
+    for frame in &frames {
+        let id = entry_id(&frame.entry_bytes);
+        if seen.contains(&id) {
+            return reject(
+                RejectionCode::DuplicateEntryId,
+                "artifact repeats a canonical entry",
+            );
+        }
+        seen.push(id);
+    }
+
+    // Stage two: independent item verification; siblings stay isolated.
+    let items = frames
+        .into_iter()
+        .map(|frame| {
+            let status = match verify_frame(&frame) {
+                Ok(valid) => ItemStatus::Valid(Box::new(valid)),
+                Err(diagnostic) => ItemStatus::Invalid(diagnostic),
+            };
+            DecodedItem { frame, status }
+        })
+        .collect();
+
+    BundleDecodeOutcome::Decoded(DecodedBundle {
+        items,
+        bundle_digest: crate::willow::bundle_digest(input),
+    })
+}
+
+/// Bounded strict parse of the outer CBOR document into raw frames.
+/// Enforces field caps and cumulative authorization budgets in encounter
+/// order. Canonicality is proven by the caller's re-framing comparison.
+fn parse_outer_frame(body: &[u8]) -> Result<Vec<BundleItemFrame>, BundleDecodeOutcome> {
+    let mut d = Decoder::new(body);
+    let malformed = |detail: &'static str| {
+        Err::<Vec<BundleItemFrame>, _>(reject(RejectionCode::MalformedFrame, detail))
+    };
+
+    let Ok(Some(pairs)) = d.map() else {
+        return malformed("outer document is not a definite map");
+    };
+    if pairs != 2 {
+        return malformed("outer map must have exactly two pairs");
+    }
+    if d.u8().ok() != Some(0) {
+        return malformed("first outer key must be 0");
+    }
+    let Ok(codec) = d.str() else {
+        return malformed("codec id must be a text string");
+    };
+    if codec != BUNDLE_CODEC_ID {
+        return Err(reject(
+            RejectionCode::UnsupportedCodec,
+            "unknown codec id or version",
+        ));
+    }
+    if d.u8().ok() != Some(1) {
+        return malformed("second outer key must be 1");
+    }
+    let Ok(Some(count)) = d.array() else {
+        return malformed("items must be a definite array");
+    };
+    // 5. Cumulative limits in encounter order: entry count first.
+    if count as usize > MAX_BUNDLE_ENTRIES {
+        return Err(reject(
+            RejectionCode::TooManyEntries,
+            "more than 64 entries",
+        ));
+    }
+
+    let mut auth_total = 0usize;
+    let mut frames = Vec::with_capacity(count as usize);
+    for _ in 0..count {
+        let Ok(Some(inner)) = d.map() else {
+            return malformed("item must be a definite map");
+        };
+        if inner != 4 {
+            return malformed("item map must have exactly four pairs");
+        }
+        let entry_bytes = read_bytes_field(&mut d, 0, MAX_AUTH_BYTES_PER_ENTRY)?;
+        let capability_bytes = read_bytes_field(&mut d, 1, MAX_AUTH_BYTES_PER_ENTRY)?;
+        let signature_bytes = read_bytes_field(&mut d, 2, SIGNATURE_BYTES + 1)?;
+        let payload_bytes = read_bytes_field(&mut d, 3, MAX_ITEM_PAYLOAD_BYTES)?;
+
+        auth_total += capability_bytes.len() + signature_bytes.len();
+        if auth_total > MAX_AUTH_BYTES_PER_BUNDLE {
+            return Err(reject(
+                RejectionCode::AuthorizationBudgetExceeded,
+                "cumulative authorization bytes exceed the bundle budget",
+            ));
+        }
+        frames.push(BundleItemFrame {
+            entry_bytes,
+            capability_bytes,
+            signature_bytes,
+            payload_bytes,
+        });
+    }
+
+    if d.position() != body.len() {
+        return malformed("trailing bytes after the outer document");
+    }
+    Ok(frames)
+}
+
+fn read_bytes_field(
+    d: &mut Decoder<'_>,
+    expected_key: u8,
+    max: usize,
+) -> Result<Vec<u8>, BundleDecodeOutcome> {
+    if d.u8().ok() != Some(expected_key) {
+        return Err(reject(
+            RejectionCode::MalformedFrame,
+            "item keys must be 0..=3 in order",
+        ));
+    }
+    let Ok(bytes) = d.bytes() else {
+        return Err(reject(
+            RejectionCode::MalformedFrame,
+            "item field must be a definite byte string",
+        ));
+    };
+    if bytes.len() > max {
+        return Err(reject(
+            RejectionCode::MalformedFrame,
+            "item field exceeds its byte ceiling",
+        ));
+    }
+    Ok(bytes.to_vec())
+}
+
+/// Full component verification of one isolated frame, in the frozen order:
+/// canonical Entry → canonical WriteCapability → 64-byte signature →
+/// payload length/corrected WILLIAM3 → Meadowcap authorization (communal,
+/// zero-delegation only) → Riot alert schema.
+fn verify_frame(frame: &BundleItemFrame) -> Result<ValidItem, BundleDiagnostic> {
+    let entry = decode_entry_canonic(&frame.entry_bytes).map_err(|_| BundleDiagnostic {
+        code: DiagnosticCode::NonCanonicalEntry,
+        component: ItemComponent::Entry,
+    })?;
+    let capability =
+        decode_capability_canonic(&frame.capability_bytes).map_err(|_| BundleDiagnostic {
+            code: DiagnosticCode::NonCanonicalCapability,
+            component: ItemComponent::Capability,
+        })?;
+    let signature_array: [u8; SIGNATURE_BYTES] = frame
+        .signature_bytes
+        .as_slice()
+        .try_into()
+        .map_err(|_| BundleDiagnostic {
+            code: DiagnosticCode::BadSignatureLength,
+            component: ItemComponent::Signature,
+        })?;
+
+    if entry.payload_length() != frame.payload_bytes.len() as u64 {
+        return Err(BundleDiagnostic {
+            code: DiagnosticCode::PayloadLengthMismatch,
+            component: ItemComponent::Payload,
+        });
+    }
+    if *entry.payload_digest().as_bytes() != william3_digest(&frame.payload_bytes) {
+        return Err(BundleDiagnostic {
+            code: DiagnosticCode::PayloadDigestMismatch,
+            component: ItemComponent::Payload,
+        });
+    }
+
+    // Phase 0A accepts only a communal namespace with a zero-delegation
+    // communal capability for the entry's own subspace.
+    if capability.is_owned()
+        || !capability.delegations().is_empty()
+        || !entry.namespace_id().is_communal()
+    {
+        return Err(BundleDiagnostic {
+            code: DiagnosticCode::UnsupportedCapability,
+            component: ItemComponent::Authorization,
+        });
+    }
+
+    let token = AuthorisationToken::new(capability, SubspaceSignature::from(signature_array));
+    if !verify_entry(&entry, &token) {
+        return Err(BundleDiagnostic {
+            code: DiagnosticCode::DoesNotAuthorise,
+            component: ItemComponent::Authorization,
+        });
+    }
+
+    // Schema: the payload must be exactly one canonical Riot alert.
+    if crate::model::decode_alert(&frame.payload_bytes).is_err() {
+        return Err(BundleDiagnostic {
+            code: DiagnosticCode::UnsupportedSchema,
+            component: ItemComponent::Schema,
+        });
+    }
+
+    Ok(ValidItem {
+        entry_id: entry_id(&frame.entry_bytes),
+        evidence_digest: evidence_digest(
+            &frame.entry_bytes,
+            &frame.capability_bytes,
+            &signature_array,
+        ),
+        object_digest: object_digest(&frame.payload_bytes),
+        entry,
+    })
+}
