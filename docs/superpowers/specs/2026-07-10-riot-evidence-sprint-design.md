@@ -1,159 +1,213 @@
 # Riot Evidence Sprint Design
 
 Date: 2026-07-10
-Status: Approved by product owner; pending metaswarm design review
+Status: Revision 2; approved by product owner and awaiting design-review rerun
 
 ## Purpose
 
-Run a 16 agent-hour evidence sprint that turns Riot's highest-risk architectural claims into executable proofs. The sprint must establish whether one Rust protocol core can serve native iOS and Android clients, whether the revised Willow authority model works, whether a public signed object survives the complete offline exchange loop, and whether MLS plus an opaque private envelope is a credible basis for private groups.
+Run a hard-capped 16 agent-hour evidence sprint that turns Riot's highest-risk architectural claims into executable proofs. The sprint establishes whether one stable Rust core can serve native iOS and Android clients, whether the revised Willow authority model works, whether a public signed object survives an offline exchange loop, and whether MLS plus an opaque private envelope is a credible research basis for groups.
 
-This is not a product alpha. Its output is code, fixtures, traces, and binary go/revise/stop decisions.
+This is not a product alpha. Its outputs are code, fixtures, traces, limits, and PASS/FAIL/INCONCLUSIVE decisions. A dependency or toolchain problem is INCONCLUSIVE, not evidence that an architecture is impossible.
 
 Research basis: `docs/research/2026-07-10-dual-mode-research-addendum.md`.
 
-## Product Outcomes
+## Product Hypotheses and Evidence Boundary
 
-The evidence supports four user outcomes:
+Riot ultimately serves five user outcomes:
 
-1. **Public carrier:** A person holding a Riot file wants to inspect signer, source, size, freshness, and object counts before import so that hostile or irrelevant data never silently enters their library.
-2. **Field publisher:** A person offline wants to create and sign a typed update, move it through another device, and verify it there so that public information does not depend on a reachable server.
-3. **Private group member:** A group member wants to carry encrypted group state over an untrusted channel so that a non-member carrier cannot inspect group identifiers, paths, capabilities, or content.
-4. **Collective editor:** An authorized editor wants to publish selected private material publicly through a visible review boundary so that private identifiers and provenance cannot cross accidentally.
-5. **Reader under pressure:** A reader wants signer, freshness, expiry, correction, and local-import provenance presented consistently so that they can decide what to act on without confusing curation with truth.
+1. A public carrier can inspect signer, source, size, freshness, and counts before import.
+2. A field publisher can sign an update, move it through another device, and verify it without a server.
+3. A private member can carry group state over an untrusted channel without exposing inner group identifiers or content.
+4. A collective editor can deliberately declassify selected private content without leaking private metadata.
+5. A pressured reader can distinguish authorship, cryptographic validity, source claims, import provenance, curation, correction, freshness, and expiry.
 
-## Success Definition
+Phase 0 proves structural prerequisites, not usability under pressure.
 
-The sprint succeeds only if its evidence answers each question:
+| Outcome | Phase 0 evidence | Gate | Deferred validation |
+| --- | --- | --- | --- |
+| Public carrier | Import fixtures produce a platform-independent preview model with explicit eligibility and provenance fields | G3 | Full SwiftUI/Compose flow and practitioner exercise |
+| Field publisher | Both native harnesses call the same Rust encoder/verifier and display the same fixture digest/status | G1, G3 | Real authoring and file transfer on physical devices |
+| Private member | Rust lab executes authorized MLS transitions and opaque-envelope tests; mobile targets compile the lab dependency closure | G4, G5 | External crypto review and physical-device exchange |
+| Collective editor | Group-side allowlist projection and public-side finalization pass differential noninterference tests | G6 | Human review UX on both platforms |
+| Pressured reader | `ProvenanceDisplay` fixtures separate claims, signatures, receipts, lenses, freshness, and expiry | G3 | Comprehension and action testing with organizers |
 
-- Can Rust produce the same deterministic signed object bytes on both native platforms?
-- Can current `willow25` and Meadowcap express a communal author plus an owned curation authority as designed?
-- Can a public object complete sign → export → preview → import → verify with atomic store behavior?
-- Can OpenMLS compile for the selected mobile targets and execute add, remove, update, Welcome, and concurrent-commit traces?
-- Can an opaque private envelope hide every prohibited inner field and enforce documented size buckets?
-- Can the bridge projection prove that no private identifier reaches public bytes?
+Trust bootstrap is deliberately not solved by a valid signature. Unknown signers remain labelled unknown. Directory feeds, trusted introductions, and curation-lens selection are later designs.
 
-A negative answer is a valid sprint outcome when backed by a reproducible fixture or trace.
+The representative coordination fixture covers:
+
+```text
+request
+  → verification annotation
+  → task claim and handoff annotations
+  → offer
+  → commitment
+  → fulfillment annotation
+```
+
+## Success Questions
+
+- Can Rust emit stable deterministic object bytes and transport them correctly through Swift and Kotlin bindings?
+- Can current `willow25` and Meadowcap express a communal author plus owned curation authority?
+- Can a public object complete inspect → preview → select → atomic logical commit → receipt?
+- Can OpenMLS build for selected mobile targets and enforce Riot's membership authorization around add/remove/update operations?
+- Can Riot detect and safely freeze conflicting MLS commits, advance offline members through bounded transitions, and exclude removed members?
+- Can an opaque private envelope meet the frozen evidence profile and leakage tests?
+- Can the bridge prove that public output depends only on allowlisted draft fields?
+
+Each question ends in:
+
+- **PASS:** the pinned environment produces the specified artifact and assertions;
+- **FAIL:** a reproducible fixture or trace disproves the claim;
+- **INCONCLUSIVE:** the evidence did not run or finish because of time, toolchain, dependency, or environment constraints.
+
+Only PASS permits downstream GO. INCONCLUSIVE means REVISE/reschedule; it never defaults to GO.
 
 ## Non-Goals
 
-The sprint does not deliver:
+The sprint does not deliver production-safe groups, polished import/declassification UI, durable crash-safe storage, current Willow Drop Format interoperability, live WTP, local radio transport, directory/rendezvous, gateway, media, local LLM, accounts, servers, arbitrary HTML, or field usability validation.
 
-- production-safe private groups;
-- a polished application UI;
-- current Willow Drop Format interoperability without authoritative fixtures;
-- live WTP, BLE, Wi-Fi Aware, or relay transport;
-- a global directory or private rendezvous service;
-- a public web gateway;
-- media transfer;
-- a local LLM;
-- user accounts or servers;
-- arbitrary HTML rendering.
+## Frozen Environment and Dependency Ledger
 
-## Architecture
+WU0 verifies and records the following pins before implementation. `Cargo.lock`, Gradle dependency locks, and the Xcode resolved-package state are evidence artifacts. Any substitution changes the evidence identity and is recorded.
+
+### Rust and protocol dependencies
+
+| Dependency | Pin / feature policy |
+| --- | --- |
+| Rust | `1.95.0`; workspace `rust-toolchain.toml` |
+| `willow25` | `=0.5.0`; default `std`, `dev` only in tests |
+| `openmls` | `=0.8.1`; `openmls_rust_crypto` and `fork-resolution`; forbid `crypto-debug`, `content-debug`, `test-utils` outside tests |
+| `openmls_rust_crypto` | `=0.5.1` |
+| `uniffi` | `=0.32.0`; proc-macro scaffolding, Swift and Kotlin bindings |
+| `minicbor` | `=2.2.2`; hand-written fixed-key encoders; no floating point or indefinite lengths |
+| `cddl-cat` | `=0.7.1`; test/dev schema validation only |
+| `aes-gcm-siv` | `=0.11.1`; evidence private-envelope AEAD, RFC 8452 |
+| `sha2` | `=0.10.9`; fixture and replay digests |
+| `hmac` | `=0.12.1`; route-tag HMAC-SHA-256 |
+
+All workspace dependencies use exact versions. The lockfile digest is included in `fixtures/manifest.json`.
+
+### Apple target
+
+- Xcode 26.2, Swift 6.2.3.
+- Deployment floor: iOS 17.0.
+- Rust triples: `aarch64-apple-ios` and `aarch64-apple-ios-sim`.
+- Gate build: arm64 iOS Simulator; device triple must compile even when no signing device is present.
+- Evidence shell: one SwiftUI screen showing fixture digest and structured status; no import UX claim.
+
+### Android target
+
+- Android Gradle Plugin 9.0.1, Gradle 9.1.0, JDK 17.
+- Android SDK/Build Tools 36.0.0, NDK 28.2.13676358.
+- `minSdk 26`, `compileSdk 36`, `targetSdk 36`.
+- ABIs: `arm64-v8a` and `x86_64`.
+- Kotlin 2.2.20; Compose BOM 2026.06.00.
+- Gate build: x86_64 JVM/emulator unit target plus arm64 native-library compile.
+- Evidence shell: one Compose screen showing fixture digest and structured status; no import UX claim.
+
+The current host has no Android SDK configured. WU0 installs/verifies the pinned SDK or marks Android-dependent gates INCONCLUSIVE with the exact missing component. It does not silently change targets.
+
+## Architecture and Dependency Closures
 
 ```text
-┌─────────────────────┐       ┌─────────────────────┐
-│ SwiftUI evidence app│       │ Compose evidence app│
-│ iOS platform adapter│       │ Android adapter     │
-└──────────┬──────────┘       └──────────┬──────────┘
-           │ generated Swift/Kotlin bindings
-           └──────────────┬─────────────┘
-                          ▼
-              ┌──────────────────────┐
-              │ Rust protocol core   │
-              │ objects / Willow     │
-              │ signatures / import │
-              │ bridge / lab crypto │
-              └──────────┬───────────┘
-                         ▼
-              ┌──────────────────────┐
-              │ Conformance CLI      │
-              │ vectors / traces     │
-              │ fuzz and leak corpus │
-              └──────────────────────┘
+riot-model ───────────────┐
+riot-willow ──────────────┼─> riot-stable ─> riot-stable-ffi ─> SwiftUI / Compose harnesses
+riot-import ──────────────┤
+riot-bridge-public ───────┘
+
+riot-model ───────────────┐
+riot-willow ──────────────┼─> riot-group-lab ─> riot-group-lab-ffi (evidence only)
+OpenMLS / crypto provider ┘
+
+riot-conformance depends on both closures for tests and traces.
+The stable closure never depends on riot-group-lab or OpenMLS.
 ```
 
-### Dependency direction
-
-- Native shells depend on generated bindings and platform adapters.
-- The FFI crate depends on stable Rust core interfaces.
-- The core depends on object, Willow, import, bridge, and laboratory-crypto modules.
-- Platform APIs never enter the core.
-- The conformance CLI calls the same public core interfaces as the bindings.
-- No module imports either native application.
+The release-shaped stable FFI graph is mechanically checked with `cargo tree -p riot-stable-ffi`. It must not contain `riot-group-lab`, `openmls`, deterministic key sources, or crypto-debug features. The group-lab FFI is a separate evidence target and cannot be linked by the stable native harnesses.
 
 ### Planned source structure
 
 ```text
 Cargo.toml
+rust-toolchain.toml
 crates/
-  riot-core/
-    src/object/
-    src/provenance/
-    src/import/
-    src/bridge/
-  riot-willow/
-    src/authority.rs
-    src/store.rs
-    src/drop_codec.rs
-  riot-group-lab/
-    src/mls.rs
-    src/envelope.rs
-    src/invite.rs
-  riot-ffi/
-    src/lib.rs
-  riot-conformance/
-    src/main.rs
+  riot-model/src/
+  riot-willow/src/
+  riot-import/src/
+  riot-bridge-public/src/
+  riot-stable/src/
+  riot-stable-ffi/src/
+  riot-group-lab/src/
+  riot-group-lab-ffi/src/
+  riot-conformance/src/
 schemas/
-  riot-object.cddl
+  riot-envelope.cddl
   alert.cddl
-  observation.cddl
-  event.cddl
-  resource.cddl
   request.cddl
   offer.cddl
   commitment.cddl
   task.cddl
-  document.cddl
   annotation.cddl
 fixtures/
+  manifest.json
   objects/
   willow/
   imports/
   groups/
-apps/
-  ios/RiotEvidence/
-  android/app/
+apps/ios/RiotEvidence/
+apps/android/
 docs/decisions/
 ```
 
-Each source unit has one responsibility. `riot-group-lab` is visibly experimental and cannot be imported by a release target without a later design decision.
+Phase 0 implements the common envelope and six kinds needed by the alert and coordination fixtures. `observation`, `event`, `resource`, and `document` remain approved vocabulary but their executable schemas belong to the first implementation plan after the evidence sprint.
 
-## Shared Core Contracts
+## Test Seams
 
-The FFI boundary exposes data-oriented operations, not storage internals or raw secret-key access.
+Production-facing logic receives explicit providers:
+
+- `Clock` for signed time, local receipt time, and clock uncertainty;
+- `IdSource` for object, revision, operation, store, voucher, and receipt IDs;
+- `RandomSource` for production OS randomness and deterministic test vectors;
+- `SignerProvider` for purpose-specific signing without exposing private keys through FFI;
+- `KeyWrapper` interface, with a fake in Phase 0 and native Keychain/Keystore implementations deferred;
+- `EvidenceStore`, with copy-on-write logical transactions, generation numbers, deduplication index, and receipts;
+- `FaultInjector`, enabled only in tests, with named failures before validation, after staging, during entry application, before receipt, and before commit swap.
+
+`fixtures/manifest.json` records fixture version, complete identifiers, deterministic test seeds, expected encoded SHA-256, expected decoded values, dependency-lock digest, generating command, and negative mutations. Deterministic providers cannot compile into stable release profiles.
+
+## Stable API and Handle Lifecycle
+
+UniFFI exposes typed records and thread-safe objects rather than naked integer handles.
 
 ```text
-encodeObject(draft) -> EncodedObject
-decodeObject(bytes) -> DecodedObject
-signPublicObject(encoded, signerHandle, destination) -> SignedEntry
-inspectDrop(bytes, importContext) -> ImportPreview
-commitImport(previewHandle, selection) -> ImportReceipt
-preparePublicDraft(privateObjectHandle) -> DeclassificationDraft
-finalizePublicDraft(draft, signerHandle, destination) -> SignedEntry
+RiotSession.open(CoreConfig) -> RiotSession
+RiotSession.createEvidenceStore() -> EvidenceStoreHandle
+RiotSession.encodeObject(ObjectDraft) -> EncodedObject
+RiotSession.decodeObject(bytes, DecodeLimits) -> DecodedObject
+RiotSession.beginInspection(store, bytes, ImportContext) -> InspectionOperation
+InspectionOperation.progress() -> InspectionProgress
+InspectionOperation.cancel() -> CancelResult
+InspectionOperation.takePreview() -> ImportPreview
+ImportPreview.commit(selection) -> ImportReceipt
+ImportPreview.reject() -> RejectReceipt
+close() on session, store, operation, and preview objects
 ```
 
-Properties:
+Rules:
 
-- handles are process-local, opaque, and invalid after explicit close;
-- byte and object limits are required inputs to parsing operations;
-- errors are typed and contain no key material, plaintext private content, or hidden group identifiers;
-- the core never logs full payloads, secrets, invitation proofs, or decrypted group envelopes;
-- all identifiers shown in diagnostics are complete test identifiers, never truncated lookalikes.
+- objects are owned by the creating session and are safe to call from one operation at a time;
+- `close` is idempotent; every later call returns `STALE_HANDLE`;
+- process restart invalidates all objects;
+- closing a session cancels operations and closes previews before stores;
+- caller limits may lower but never raise `CoreConfig` policy ceilings;
+- cancellation is cooperative during reading, parsing, validation, and signature checks and leaves the store unchanged;
+- progress reports phase, bytes consumed/total, objects inspected, and whether cancellation is accepted;
+- FFI errors use stable non-sensitive codes plus developer detail that contains no payload, key, hidden group, or invitation data;
+- native layers localize user-facing messages separately.
 
-The evidence sprint may adjust names while implementing tests, but the boundary must retain the same responsibilities and dependency direction.
+Phase 0 uses deterministic in-memory test signers behind `SignerProvider`. Production Keychain/Keystore signing and MLS secret persistence are release-gated work, not claimed here.
 
-## Object Model
+## Object, Receipt, and Provenance Models
 
 ### Signed content envelope
 
@@ -172,307 +226,323 @@ source_claims[]
 ai_assisted
 ```
 
-Signer, namespace, capability, Willow timestamp, and payload digest remain in the Willow entry. Import route, first-seen time, verification result, local trust, and bridge events remain in a separate receipt.
+Signer, namespace, capability, Willow timestamp, and payload digest belong to the Willow entry. Local import facts never enter the author's signed payload.
 
-Payload encoding is deterministic CBOR validated by CDDL. The evidence sprint defines a lossless JSON projection but does not build a gateway.
+Deterministic CBOR uses definite lengths, integer field keys in fixed order, shortest integer encodings, no floats, no duplicate keys, and strict rejection of unknown envelope keys. JSON is a lossless debugging projection, not the signed form.
 
-### Core kinds
+### `ProvenanceDisplay`
 
-The sprint defines schemas for:
+The core returns a platform-independent model with five labelled layers:
 
-- `alert`
-- `observation`
-- `event`
-- `resource`
-- `request`
-- `offer`
-- `commitment`
-- `task`
-- `document`
-- `annotation`
+1. **Authorship:** complete author subspace, collective namespace if applicable, delegated-signer status, signed creation time.
+2. **Cryptographic status:** payload digest, signature valid/invalid, capability valid/invalid/unknown. It never says the content is true.
+3. **Author claims:** source notes and affected area, explicitly labelled "Claimed by author."
+4. **Local receipt:** artifact digest, import route, first-seen time, local receipt time, duplicate status.
+5. **Reader lens:** selected curation feed, corrections/disputes, expiry/freshness, and clock uncertainty.
 
-Corrections, translations, curation, disputes, fulfillment, and task-state updates are signed annotations. They do not overwrite the target revision. Concurrent annotations remain visible.
+Preview and post-commit receipt use the same labels. The post-commit screen/type is called `ImportReceipt`, not "verification receipt."
 
-## Open Authority Model
+## Willow Authority Fixture
 
-The Willow evidence fixtures contain:
+The fixture includes two communal authors, an owned curation namespace with delegated curators, feature and correction annotations, and an owned publication copy.
 
-1. a communal namespace with two authors writing only their own subspaces;
-2. an owned curation namespace with two delegated curators;
-3. a feature annotation targeting one communal entry;
-4. a correction from a different authority;
-5. a standalone owned publication containing a copied and re-signed object.
+Tests prove one communal author cannot write another's subspace, no communal creator root exists, owned curators can receive path/time restrictions, publication namespace and signer remain distinguishable, and raw entries remain available regardless of lenses.
 
-The test proves:
+## Import Contract
 
-- one communal author cannot write another's subspace;
-- no communal-space creator root is assumed;
-- an owned curator can delegate a path- and time-restricted write capability;
-- publication namespace and delegated signer remain distinguishable;
-- the raw communal entry remains available regardless of a curation decision.
+### Evidence bundle codec
 
-## Exchange and Import
+Phase 0 uses `RiotEvidenceBundleV1`: visible magic `RIOTE1`, version 1, followed by deterministic CBOR containing complete Willow entries, authorization material, and payloads. It forbids compression and carries at most 512 entries within the 8 MiB artifact ceiling. Its codec ID is `org.riot.evidence-bundle/1`; its extension is `.riot-evidence`.
 
-### Codec boundary
+This format exists only to exercise import. It is intentionally incompatible with `.snk` and the current Willow Drop Format, and no production plan may rename it into apparent compatibility.
 
-`DropCodec` is an interface with explicit format identity and version. If no conformant current Willow Drop Format implementation or authoritative vector is available during the sprint, Riot uses a development-only deterministic bundle format with a non-Willow magic/version and a file extension that cannot be confused with `.snk` or a conformant Willow drop.
+### Evidence store and transaction boundary
 
-The development codec exists only to prove the application state machine. It is not an interoperability claim.
+`EvidenceStore` is an in-memory copy-on-write store selected to prove logical atomicity, not crash durability. It has a random store ID, monotonic generation, content-digest index, entries, and receipts.
 
-### Import states
+An inspection operation retains immutable input bytes and binds:
 
-```text
-received
-  → bounded
-  → parsed
-  → cryptographically_verified
-  → schema_classified
-  → previewed
-  → committed
-```
+- codec ID and version;
+- bundle digest;
+- destination store ID and base generation;
+- import route and local clock snapshot;
+- fixed policy ceilings;
+- per-entry stable preview ID, original entry digest, status, and eligibility.
 
-Rules:
+`ImportPreview.commit` rejects a different store generation as `STALE_PREVIEW`. One copy-on-write swap commits selected entries, deduplication indexes, generation increment, and receipt together. Fault injection before the swap leaves the observable logical state unchanged. Byte-stable persistence and crash recovery are not claimed.
 
-- parsing occurs outside the destination store;
-- byte, nesting, path, object-count, and expansion limits apply before allocation where possible;
-- unknown schemas may be retained as opaque signed bytes but are never rendered;
-- duplicate verified content is idempotent;
-- the user sees signer, namespace, counts, bytes, expiry/freshness, unknown schemas, and verification failures before commit;
-- selected entries commit atomically;
-- any failure before commit leaves the store unchanged;
-- wrong-key private import returns a generic not-openable result without a group hint.
+### Preview and receipt
 
-### Evidence UI states
+Each preview entry contains:
 
-Both native shells need only four screens:
+- preview entry ID and original digest;
+- object kind/schema or opaque status;
+- author and namespace;
+- cryptographic/capability status;
+- freshness/expiry and clock uncertainty;
+- encoded bytes;
+- `eligible`, `already_present`, and `requires_opaque_consent` flags;
+- an ineligibility reason when applicable.
 
-1. load fixture/file;
-2. show import preview;
-3. approve or reject;
-4. show verification receipt.
+Invalid signatures/capabilities are never eligible. Unknown verified schemas require explicit opaque consent and remain non-renderable. Selection must be non-empty, reference only this open preview, contain no duplicates, and include consent for every unknown. Reject/cancel closes the preview. Retrying a committed bundle is idempotent and produces an already-present receipt.
 
-Empty, unknown, invalid, oversized, duplicate, expired, and partially selected imports each have an explicit state. No spinner is allowed without cancellable progress and a byte/object count.
+`ImportReceipt` contains codec/version, bundle digest, store ID, before/after generation, selected entry digests, inserted/already-present counts, receipt ID, import route, and local receipt time.
+
+### Import limits
+
+Evidence ceilings are fixed in `CoreConfig`; callers may only lower them.
+
+| Resource | Ceiling |
+| --- | --- |
+| artifact bytes | 8 MiB |
+| objects | 512 |
+| encoded object bytes | 1 MiB |
+| CBOR nesting | 16 |
+| map entries | 128 |
+| text/byte string | 64 KiB except the bounded object body |
+| path components | 64 |
+| path component bytes | 256 |
+| total path bytes | 2,048 |
+| expansion ratio | 1:1; Phase 0 formats forbid compression |
+| temporary logical store growth | artifact size + 8 MiB |
+| inspection wall target | 2 seconds for an 8 MiB local fixture; exceeding reports measured FAIL/INCONCLUSIVE, never a security pass |
+| cancellation poll interval | at most 64 KiB or 32 objects |
+| MLS generation gap | 128 |
+| retained prior epochs | 4 |
+| simultaneous forks | 2; additional forks freeze and reject |
+| envelope key trials | 32, executed in constant-shape loop |
+
+Integer arithmetic is checked before allocation. Native front doors reject files larger than 8 MiB before materializing bytes for the evidence FFI. Streaming import is a later implementation requirement.
+
+### Fixture-to-state matrix
+
+| Fixture | Visible state | Enabled actions | Store effect |
+| --- | --- | --- | --- |
+| empty drop | Empty | Reject | None |
+| valid known object | Eligible; provenance shown | Select, commit, reject | Selected insert + receipt |
+| unknown but verified schema | Opaque; consent required | Consent+select, reject | Opaque bytes only if selected |
+| invalid signature/capability | Invalid; reason shown | Reject | None |
+| oversized/malformed | Rejected before preview | Close | None |
+| duplicate | Already present | Commit receipt or reject | No duplicate entry |
+| expired object | Eligible but expired label | Select, commit, reject | Selected insert; remains expired |
+| mixed/partial selection | Per-entry eligibility | Eligible subset, reject | Only selected entries |
+| empty selection | Selection error | Select or reject | None |
+| stale preview | Stale | Reinspect or close | None |
+| cancelled inspection | Cancelled | Close/retry | None |
+| injected commit failure | Commit failed | Retry/close | Before-state retained |
+
+Swift and Kotlin state-model tests consume the same serialized preview fixtures. Phase 0 does not claim polished UI parity.
 
 ## Private Group Laboratory
 
-### Control and data planes
+### Key separation and authorization
 
-- OpenMLS manages ordered membership epochs.
-- Willow manages signed application data after decryption.
-- The private envelope carries MLS control messages and Willow application bytes together.
-- A recipient resolves and applies the MLS epoch before importing application entries that require it.
+Each evidence persona has distinct Ed25519 keys for:
 
-### Required MLS traces
+- public/newswire signing;
+- Willow group subspace signing;
+- MLS leaf signatures;
+- group-control authorization.
 
-1. create a three-member group;
-2. send and open a private application envelope;
-3. add a member with a one-time KeyPackage and Welcome;
-4. remove a member and prove the removed member cannot open the next epoch;
-5. update a member key and exercise recovery behavior;
-6. generate two valid commits for one epoch and exercise the selected fork-resolution rule;
-7. hold one member offline across multiple epochs and document catch-up or rejoin behavior.
+A `GroupPolicyV1`, signed by the group policy key, binds group context, accepted credential type, current members, and roles. A valid MLS message is insufficient by itself.
 
-If the mobile targets do not build, the concurrent-commit rule is not deterministic, or offline recovery requires an unavailable centralized service, Gate G4 fails and private groups remain research-only.
+- members may update their own MLS leaf;
+- `membership_admin` may add, remove, and approve recovery;
+- `invite_sponsor` may issue vouchers but cannot commit an add unless also an admin;
+- every add/remove/recovery commit carries a `RiotControlAuthorization` binding parent epoch, parent confirmed-transcript hash, MLS commit digest, action, target credential, and voucher ID when applicable;
+- unauthorized but cryptographically valid commits are rejected and tested.
 
-### Opaque envelope
+The evidence credential is an OpenMLS BasicCredential containing a random Riot group-persona ID and purpose. Public persona material is forbidden.
 
-A private artifact exposes only the minimum framing necessary to reject unsupported versions and enforce a maximum size. Group ID, epoch, membership, namespace, subspace, path, timestamp, capabilities, inner counts, and payloads are authenticated ciphertext.
+### MLS transition contract
 
-The evidence format uses standard library primitives and documented padding buckets. It must never be described as audited or production-ready.
+Application data for epoch N+1 cannot be created until the N→N+1 control transition is durably accepted in the evidence store.
 
-Inspection tests search raw artifacts for:
+- A control envelope is encrypted with epoch N exporter keys and contains the authorized MLS Commit for N→N+1.
+- Existing members, including a member being removed, may open the transition; only members in N+1 derive the next data key.
+- New members receive the MLS Welcome through the invite response and then accept N+1 data.
+- Data envelopes for N+1 are never bundled ahead of the accepted control transition.
+- Offline members advance one retained control envelope at a time. More than four missed epochs requires rejoin.
 
-- every known group and namespace identifier;
-- every member public key;
-- path components;
-- capability bytes;
-- object titles and bodies;
-- unpadded inner lengths and counts.
+### Fork and rollback evidence policy
 
-The only accepted disclosure is artifact framing plus its documented padded bucket.
+Riot does not invent an automatic cryptographic winner in Phase 0.
 
-### Invite states
+- only commits with valid `RiotControlAuthorization` are candidates;
+- accepting one commit records parent transcript hash, accepted commit digest, new epoch, and a monotonic local high-water mark;
+- two authorized commits for the same parent enter `FrozenFork`; no new private publication, membership transition, or envelope creation is permitted;
+- all candidate states remain bounded at two and their secrets are held only for the lab trace;
+- explicit abort deletes losing candidate secrets;
+- rejoin/successor-group recovery is recorded as required product work;
+- a fully restored old device snapshot cannot be detected without an external or cross-device anchor. This is an expected G4 limitation and blocks production claims even if fork detection passes.
 
-```text
-issued → presented → redemption_requested → committed → welcomed
-   └──────────────→ revoked
-```
+The malicious-carrier trace withholds, reorders, duplicates, and later releases commits. PASS requires uniform freeze and no new-epoch data emission. It does not claim availability or rollback resistance.
 
-The lab models expiry, revocation, replay, double redemption, member offline state, and a losing concurrent commit. "Single use" means one canonical committed redemption, not that a copied file disappears.
+### Frozen evidence envelope profile
 
-## Bridge
+The private-envelope experiment uses this exact profile:
 
-### Private to public
+- ciphersuite: AES-256-GCM-SIV (`aes-gcm-siv` 0.11.1, RFC 8452);
+- AEAD key: 32-byte MLS exporter output using label `riot/drop/aead/v1` and context `role || parent_epoch`;
+- route key: separate 32-byte exporter output using label `riot/drop/route/v1` and the same context;
+- nonce: 96 random bits from `RandomSource`; a per-epoch nonce ledger rejects reuse; duplicate-nonce tests are mandatory;
+- route tag: first 16 bytes of HMAC-SHA-256(route key, nonce || role);
+- visible header/AAD: ASCII `RIOTP1`, version 1, role, nonce, route tag, and bucket size;
+- plaintext: 32-bit inner length, inner bytes, then random padding to the selected bucket before encryption;
+- buckets: 4 KiB, 16 KiB, 64 KiB, 256 KiB, 1 MiB, 4 MiB, 8 MiB;
+- overflow above 8 MiB: reject;
+- padding validation: ciphertext must exactly match the declared bucket; inner length must fit; all header fields are authenticated;
+- replay identity: SHA-256 of header plus ciphertext, stored in the receipt index;
+- key selection: compute tags against exactly 32 slots (real active/retained epoch keys plus dummy keys), then attempt AEAD only for a unique match; zero or multiple matches return the same generic cannot-open error;
+- wrong key, wrong AAD, malformed padding, unknown version, replay, and tamper use non-oracular error codes at the user boundary.
 
-`preparePublicDraft` performs an allowlist projection. It includes typed body fields and the AI-assistance taint. It excludes group, membership, capability, private signer, receipt, import-channel, private relation, and storage identifiers.
+The visible header reveals that this is a Riot private artifact, its role, and its padded size. It does not claim traffic unlinkability. Route tags vary per nonce and are tested for non-repetition.
 
-The public object receives a new object ID, revision ID, destination namespace, and purpose-specific public signer. Source and location claims require explicit user confirmation.
+### Invite voucher invariant
 
-### Public to private
+`InviteVoucherV1` is signed by an `invite_sponsor` key over:
 
-The complete original public entry, payload, signature, capability, and namespace provenance remain intact. The clipping member adds a private annotation. No public bytes are rewritten to make them look locally authored.
+- domain `riot/invite/v1`;
+- random 256-bit voucher ID and commitment to a 256-bit secret;
+- group-policy digest and issued parent epoch;
+- maximum acceptable parent epoch;
+- optional wall-clock expiry;
+- allowed initial role;
+- sponsor credential ID.
 
-### Noninterference gate
+The invitee redemption request signs the voucher ID, group-policy digest, one-time MLS KeyPackage hash, and secret proof with the invitee MLS signature key. Redemption requires current sponsor authorization, a parent epoch within the bound, an unconsumed voucher, and unused KeyPackage. Clock rollback or uncertainty disables unattended expiry acceptance and requires an online-with-the-group admin decision; epoch bounds remain mandatory.
 
-A corpus of private drafts containing canary values for every prohibited field passes through the bridge. Gate G6 passes only if none of those values appear in the public deterministic CBOR or JSON projection.
+Voucher consumption, accepted add-commit digest, and KeyPackage deletion occur in one logical control transaction. Replay, cross-group substitution, KeyPackage substitution/reuse, revoked sponsor, expired epoch, losing fork, and double redemption are negative fixtures.
 
-## Key Storage and Panic Behavior
+### Group laboratory limits and gates
 
-The native evidence apps expose a platform key-wrapper interface:
+G4 splits into:
 
-- iOS Keychain with device-only, passcode-bound accessibility where available;
-- Android Keystore with non-exportable hardware backing where available.
+- **G4a membership authorization:** mobile target compilation, create/add/remove/update/Welcome, and unauthorized-valid commit rejection;
+- **G4b transition safety:** bounded offline advance, removed-member exclusion, replay behavior, malicious-carrier fork freeze, and documented snapshot-rollback limitation.
 
-The group lab stores a random per-group storage key wrapped by that platform key. Panic wipe order is:
+G5 covers the frozen envelope profile, known-answer vectors, nonce/AAD/tamper/replay/key-trial/padding tests, and byte-level disclosure search.
 
-1. invalidate in-memory handles;
-2. delete the wrapped group key;
-3. zero transient secret buffers where supported;
-4. schedule encrypted file and cache removal;
-5. record only a non-sensitive local completion state.
+Any FAIL or INCONCLUSIVE result keeps groups research-only. Passing G4/G5 still requires external cryptographic review.
 
-The design does not claim secure erasure of every flash block or of content already exported to another device.
+## Bridge Boundary
 
-## Error and Conflict Handling
+### Group side
 
-| Condition | Required behavior |
-| --- | --- |
-| Malformed or oversized input | Reject in quarantine; destination store remains unchanged. |
-| Unknown schema | Preserve only as opaque verified bytes if the user chooses; never render. |
-| Invalid signature or capability | Show invalid status; never offer normal ingest. |
-| Duplicate object | Treat import as idempotent and report already present. |
-| Expired operational object | Show prominently; importing does not make it current. |
-| Local clock uncertainty | Show signed time and local receipt time separately; do not silently upgrade freshness. |
-| Concurrent object revisions | Preserve both and show the conflict or applicable signed relations. |
-| Concurrent task claims | Preserve both claims; no accidental last-writer-wins assignment. |
-| Ambiguous MLS epoch/fork | Freeze private publication and envelope creation until deterministic resolution. |
-| Removed member imports old data | Permit verification of authorized old epochs; never grant access to later epochs. |
-| Wrong private key | Return a generic cannot-open result without group identity. |
-| Interrupted commit | Roll back atomically; a later retry remains idempotent. |
+Only `riot-group-lab` can read a private object. It emits a value-only `DeclassificationCandidate` containing closed, per-kind allowlisted fields plus `ai_assisted`. It contains no private handle, ID, relation, receipt, ordering key, source/location default, extension map, or unknown nested field.
 
-## Verification Strategy
+Cancelling or abandoning projection invalidates the candidate, clears transient buffers, leaves both stores unchanged, and creates no public receipt.
 
-### Deterministic and algebraic tests
+### Public side
 
-- Rust, Swift, and Kotlin produce or consume the same golden CBOR fixtures.
-- Willow join fixtures exercise commutativity, associativity, and idempotence.
-- Object relation resolution preserves concurrent revisions and annotations.
-- Encoding is stable across repeated runs and map insertion order.
+`riot-bridge-public` accepts only `DeclassificationCandidate` values. A review operation requires explicit destination namespace, public signer, source claims, location claims, and confirmation booleans. Finalization requires a reviewed-draft object and generates public object/revision IDs solely from the public `IdSource` after review.
 
-### Parser and import tests
+Public-to-private clipping belongs to the group closure: it verifies and retains the original public bytes unchanged, then creates a distinct private annotation.
 
-- property tests generate bounded valid and invalid envelopes;
-- fuzz targets cover CBOR, CDDL validation boundaries, capabilities, drop codec, private envelope, and invite transitions;
-- adversarial fixtures include huge declared lengths, excessive nesting, path-limit edges, duplicate IDs, truncated ciphertext, and decompression/expansion bombs;
-- every pre-commit failure asserts a byte-for-byte unchanged destination store.
+### Differential noninterference
 
-### Cryptographic trace tests
+G6 uses pairs of private fixtures whose allowlisted fields are identical while every prohibited field varies, including values, lengths, order, nested extensions, relations, receipts, paths, signers, group IDs, capabilities, source defaults, and error-triggering mutations.
 
-- deterministic test-only keys reproduce MLS and envelope traces;
-- release code cannot enable deterministic key generation or crypto-debug features;
-- removed-member, wrong-key, replay, stale-epoch, and concurrent-commit cases are mandatory;
-- raw artifact disclosure snapshots are checked in as fixtures.
+With fixed public test providers, group-side candidates and pre-signing public projections must be byte-identical across each pair. Unknown fields reject rather than disappear. Additional tests cover encoded, hashed, normalized, and length-only canaries. Literal substring scanning remains a supplemental check, not the oracle.
 
-### Platform tests
+## Sensitive-State Inventory and Panic Scope
 
-- both native projects compile against generated bindings;
-- both open the same public fixture and display the same verification result;
-- key wrappers reject use under their configured locked/unauthorized conditions where testable;
-- panic removes the wrapped group key before filesystem cleanup;
-- no test or diagnostic truncates cryptographic identifiers.
+Phase 0 does not implement or claim platform panic wipe. WU0 records the required inventory:
 
-## Work Units
-
-### WU0 — Contracts and research (hours 0–2)
-
-Artifacts:
-
-- accepted research addendum;
-- architecture and threat-model decisions;
-- CDDL envelope and ten kind schemas;
-- fixture manifest and disclosure-canary inventory.
-
-Exit gate: every later test names the contract or fixture it proves.
-
-### WU1 — Rust core and Willow proof (hours 2–5)
-
-Artifacts:
-
-- Rust workspace;
-- deterministic object codec;
-- current `willow25` adapter;
-- communal/owned authority fixtures;
-- conformance CLI and golden vectors.
-
-Exit gate G2: Willow authority fixtures pass without assuming communal root authority.
-
-### WU2 — Native bindings (hours 5–8)
-
-Artifacts:
-
-- UniFFI interface;
-- Swift package/Xcode evidence target;
-- Android Gradle/Compose evidence target;
-- cross-language fixture tests.
-
-Exit gate G1: Rust, Swift, and Kotlin agree on fixture bytes and verification results.
-
-### WU3 — Public offline loop (hours 8–11)
-
-Artifacts:
-
-- explicit development `DropCodec` if required;
-- quarantine parser and preview;
-- atomic import receipt;
-- four-screen evidence UI on both clients.
-
-Exit gate G3: one signed public object round-trips between platform fixtures and verifies identically.
-
-### WU4 — Private crypto laboratory (hours 11–14)
-
-Artifacts:
-
-- required OpenMLS traces;
-- comparison HPKE epoch trace;
-- padded opaque envelope fixture;
-- invite lifecycle model;
-- leakage matrix.
-
-Exit gates G4 and G5: membership/fork behavior is reproducible and prohibited inner data is absent from the artifact.
-
-### WU5 — Adversarial validation and decision (hours 14–16)
-
-Artifacts:
-
-- fuzz/property smoke results;
-- bridge canary result;
-- cross-platform build result;
-- protocol maturity/dependency ledger;
-- go/revise/stop report for kernel, newswire, groups, directory, and live sync.
-
-Exit gate G6: private canaries do not occur in public output.
-
-## Binary Gates
-
-| Gate | Pass condition | Failure action |
+| Material | Intended persistence | Panic action / release requirement |
 | --- | --- | --- |
-| G1 Shared core | Golden vectors and verification results match in Rust, Swift, Kotlin | Stop native feature work and repair ABI/core boundary. |
-| G2 Willow authority | Communal author and owned curation tests pass | Revise namespace model. |
-| G3 Public loop | Signed object completes atomic cross-platform round trip | Block newswire shell expansion. |
-| G4 Group control | MLS lifecycle, fork, and offline trace reproduce | Keep groups research-only. |
-| G5 Envelope privacy | Prohibited inner fields are absent and padding matches policy | Redesign envelope; do not demo private drops. |
-| G6 Bridge isolation | No private canary reaches public output | Block publish-out. |
+| Willow persona signing keys | wrapped under per-persona key | destroy wrapper; clear in-memory signer |
+| MLS leaf/signature secrets | wrapped group control store | destroy before file cleanup |
+| MLS epoch/ratchet/fork secrets | wrapped group control store; bounded epochs/forks | destroy all current, retained, and candidate state |
+| KeyPackage private keys / Welcome | wrapped invite/control store | consume/delete on join; destroy on panic |
+| voucher secrets and redemption requests | wrapped invite store | delete and invalidate handles |
+| per-group storage key | wrapped by platform key | delete first persistent root |
+| decrypted entries and previews | memory / protected temporary storage only | invalidate, zero where supported, remove previews/caches |
+| DB journals, thumbnails, share-sheet files, crash snapshots, clipboard, notifications | platform-specific | exclude or sanitize; each needs a later platform test |
 
-## Likely Post-Sprint Decisions
+Production requires device-only backup exclusions, locked-file protection, native Keychain/Keystore wrappers, background/snapshot redaction, and post-restart/post-filesystem-restore tests. Secure erasure of exported copies or every flash block is never claimed.
 
-- **Go if G1–G3 pass:** shared object/provenance kernel, native bindings, newswire file loop.
-- **Conditional on G4–G5 and external review:** private groups.
-- **Separate evidence spike:** directory feeds and rendezvous.
-- **Dependency/conformance project:** current Willow Drop Format.
-- **Deferred:** live WTP, BLE, gateway, media, and local LLM.
+## TDD and Verification Matrix
+
+Each work unit starts with its named RED test, confirms failure for the intended missing behavior, implements the smallest GREEN behavior, then refactors without changing fixtures.
+
+| WU | First RED test and expected failure | GREEN command and expected result |
+| --- | --- | --- |
+| WU0 | Docs/fixture validator rejects absent pins, limits, hashes, and requirement ownership | `cargo xtask validate-contracts`; PASS with zero missing fields |
+| WU1 | `riot-model` fixture test fails because deterministic encoder and six schemas do not exist; Willow test fails because adapter is absent | `cargo test -p riot-model -p riot-willow`; all golden/authority tests PASS |
+| WU2 | Swift/Kotlin tests fail because generated stable bindings and native libraries are absent | `xcodebuild test -project apps/ios/RiotEvidence/RiotEvidence.xcodeproj -scheme RiotEvidence -destination 'platform=iOS Simulator,name=iPhone 17 Pro,OS=26.2'` and `./gradlew :app:testDebugUnitTest`; both report the WU0 fixture digest/status |
+| WU3 | import tests fail at absent preview/transaction types; each fault point initially mutates or cannot compile | `cargo test -p riot-import`; full fixture-state matrix PASS and before-state equals after-state on every injected failure |
+| WU4 | membership tests fail at missing authorization; envelope known-answer and tamper tests fail at absent codec | `cargo test -p riot-group-lab`; G4a/G4b/G5 matrix emits PASS/FAIL/INCONCLUSIVE JSON |
+| WU5 | bridge paired fixtures differ or APIs do not enforce reviewed state | `cargo test -p riot-bridge-public -p riot-conformance`; G6 differential matrix PASS and report generated |
+
+Additional verification:
+
+- `cargo test --workspace --all-targets`;
+- `cargo build -p riot-group-lab-ffi --target aarch64-apple-ios` and `cargo build -p riot-group-lab-ffi --target aarch64-linux-android`;
+- property tests for Willow join commutativity, associativity, and idempotence;
+- bounded fuzz smoke for CBOR, development bundle, import state, invite, and private envelope;
+- `cargo tree -p riot-stable-ffi` release-closure assertion;
+- scan Rust, FFI, Swift, Kotlin logs/errors and release symbols for deterministic seeds, debug features, plaintext canaries, and secret-bearing names;
+- exact dependency versions and artifact hashes recorded in the report.
+
+## Work Units and Hard Budget
+
+The 16 hours are aggregate agent-hours. The sprint is two checkpointed slices; work stops at each gate rather than borrowing scope silently.
+
+### Slice A — Stable public evidence (hours 0–8)
+
+#### WU0 — Contracts and pins (hours 0–2)
+
+Freeze toolchains, dependencies, limits, schema subset, fixture manifest, outcome/test ownership, secret inventory, and PASS/FAIL/INCONCLUSIVE report format. If the Android toolchain cannot be installed/verified inside this budget, Android gates become INCONCLUSIVE.
+
+#### WU1 — Model and Willow authority (hours 2–5)
+
+Create the stable crates, deterministic codec, six executable schemas, coordination fixture, Willow/Meadowcap authority fixture, and conformance CLI.
+
+#### WU2 — Stable FFI and native harnesses (hours 5–8)
+
+Generate stable Swift/Kotlin bindings and compile the one-screen native harnesses. G1 proves ABI transport of Rust-produced bytes and status; it does not claim independent Swift/Kotlin CBOR implementations.
+
+Checkpoint: if G1 or G2 is FAIL, stop downstream implementation. If a platform is INCONCLUSIVE, continue host-side research but do not mark cross-platform GO.
+
+### Slice B — Import, group, and bridge evidence (hours 8–16)
+
+#### WU3 — Import transaction model (hours 8–10.5)
+
+Implement in-memory logical transactions, preview/receipt models, cancellation, fixed limits, and the fixture-state matrix. No multi-screen UI.
+
+#### WU4 — Private group lab (hours 10.5–14)
+
+Implement OpenMLS authorization/transition traces, fork freeze, invite invariant, and the frozen envelope profile. Remove the earlier custom-HPKE comparison from scope: MLS failure blocks groups rather than triggering weaker custom group crypto.
+
+#### WU5 — Bridge and decision report (hours 14–16)
+
+Implement group-side allowlist projection, reviewed public finalization state, public-to-private clip fixture, differential noninterference, dependency/logging checks, bounded fuzz smoke, and the per-gate report.
+
+## Gates
+
+| Gate | PASS evidence | FAIL / INCONCLUSIVE action |
+| --- | --- | --- |
+| G1 Stable cross-platform core | Rust fixture digest/status traverses pinned Swift and Kotlin bindings; both target closures compile | Stop native expansion / revise environment or ABI |
+| G2 Willow authority and schema subset | communal/owned fixtures and six schemas pass; coordination flow round-trips | Revise authority/object mapping |
+| G3 Import/provenance | every fixture-state row, limits, cancellation, stale preview, rollback, idempotence, and receipt assertion passes | Block newswire import expansion |
+| G4a Membership authorization | pinned mobile compile plus authorized lifecycle and unauthorized-valid negative tests | Groups remain research-only |
+| G4b Transition safety | retained offline chain, removal exclusion, replay, malicious-carrier fork freeze, and rollback limitation report | Groups remain research-only |
+| G5 Envelope profile | known-answer, nonce/AAD/tamper/replay/key-trial/padding/limit/disclosure tests pass | No private-drop demo |
+| G6 Bridge isolation | closed schemas, reviewed-state enforcement, public-to-private preservation, and differential noninterference pass | Block publish-out |
+
+Every gate report contains status, owning work unit, commands, environment, evidence paths, artifact hashes, and next action.
+
+## Likely Decisions
+
+- GO on G1–G3: shared model/provenance kernel, native binding architecture, newswire file-loop implementation plan.
+- Conditional on G4a/G4b/G5 plus independent review: private groups.
+- Separate research: directory/rendezvous and trust bootstrap.
+- Dependency/conformance project: current Willow Drop Format.
+- Deferred: production storage/panic, full UI, live WTP, local transport, gateway, media, paper round trips, and local LLM.
 
 ## External Release Gates
 
-Private groups cannot be called production-safe until an independent cryptographic reviewer approves the construction and implementation. Local transport cannot be called field-ready until tested on physical iOS and Android devices across the supported OS/hardware matrix. Object vocabulary cannot be frozen until organizer and mutual-aid practitioners exercise it in realistic scenarios.
+Private groups cannot be called production-safe until an independent reviewer approves the exact construction, commit, lockfile, vectors, platforms, and artifact hashes. Any cryptographic-construction or dependency change invalidates that approval.
 
-These gates do not block the evidence sprint; they block later release claims.
+Local transport cannot be called field-ready until tested on physical iOS and Android devices. Object vocabulary and provenance UI cannot be frozen until organizers and mutual-aid practitioners exercise the request → verification → dispatch → handoff → fulfillment flow under realistic time, power, connectivity, and seizure constraints.
