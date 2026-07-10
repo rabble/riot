@@ -192,7 +192,8 @@ RiotSession.encodeAlert(AlertDraft) -> SignedWillowEntry
 RiotSession.createBundle([SignedWillowEntry]) -> EncodedBundle
 RiotSession.inspectBundle(EvidenceStore, bytes, ImportContext) -> ImportPreview
 RiotSession.deriveProvenance(EvidenceStore, EntryId, TrustContext) -> ProvenanceDisplay
-ImportPreview.commit(ImportSelection) -> ImportCommitResult
+ImportPreview.plan(ImportSelection) -> PlannedImport
+ImportPreview.commit(PlannedImport) -> ImportCommitResult
 ImportPreview.reject() -> RejectionResult
 close() -> CloseResult on RiotSession, EvidenceStore, and ImportPreview
 ```
@@ -223,7 +224,7 @@ Rules:
 - FFI failures use stable codes and sanitized developer detail containing no payload, author private data, key material, or untrusted bytes;
 - every exported FFI entrypoint catches Rust panic at the boundary, quarantines the session as `Failed`, closes child objects, zeroizes its signer, returns sanitized `INTERNAL_ERROR`, and allows no unwind across UniFFI; later non-close calls return `SESSION_FAILED`.
 
-`ImportSelection` contains the preview ID and unique selected preview-entry IDs. The preview ID and every entry ID must belong to the open preview. Phase 0A permits one open store and one open preview per session; attempts beyond either bound return `SESSION_LIMIT` before retaining bytes.
+`ImportSelection` contains the preview ID and unique selected preview-entry IDs. The preview ID and every entry ID must belong to the open preview. `plan` evaluates the complete selection, including interactions among selected entries in original bundle order, against the preview's bound store generation. It returns an immutable value containing an unguessable plan ID, selection, base generation, and ordered prospective effects: `WouldApply { entry_id, pruned_entry_digests[] }`, `WouldBeDominated { entry_id, dominating_entry_digests[] }`, or `AlreadyPresent { entry_id, insertion_receipt_id }`. `commit` accepts only a plan issued by this open preview. Under the arbiter it either reproduces those exact effects and swaps state, or returns `STALE_PREVIEW` before duplicate detection; it never silently commits a different effect. Phase 0A permits one open store and one open preview per session; attempts beyond either bound return `SESSION_LIMIT` before retaining bytes.
 
 `TrustContext` is a value containing at most 64 complete trusted public signer IDs. `ImportContext` contains the local route, clock snapshot, and one `TrustContext`. Trust cannot weaken signature, capability, schema, or size policy. A signer absent from the exact set is `UnknownTrust`.
 
@@ -239,17 +240,19 @@ Inspection retains immutable input bytes and binds the preview to:
 - destination store ID and base generation;
 - import route and local clock snapshot;
 - fixed ceilings;
-- per-entry preview ID, original bytes/digests, status, eligibility, and warnings.
+- per-entry preview ID, original bytes/digests, status, eligibility, warnings, and structured diagnostics.
 
-Commit builds one bounded copy-on-write next snapshot under the session arbiter. For each previously unseen selected entry, it computes the Willow join within that entry's namespace: newer prefixes prune older descendants; equal subspace/path/timestamp ties retain the greatest WILLIAM3 digest, then greatest payload length. One pointer swap installs the resulting live namespace views, seen-entry records, first-receipt references, one generation change when at least one entry is new, and the receipt. The old snapshot remains authoritative until that swap; a fault or `STORE_FULL` before it leaves all observable state unchanged.
+Commit builds one bounded copy-on-write next snapshot under the session arbiter. It validates the whole selection, partitions unseen entries by namespace, and computes one order-independent final join of each namespace's pre-commit live view with its complete selected batch: newer prefixes prune older descendants; equal subspace/path/timestamp ties retain the greatest WILLIAM3 digest, then greatest payload length. It then derives dispositions by entry digest from the pre-state and final state. A final-live new entry is `AppliedAtCommit`; its `pruned_entry_digests` contains only entries removed from the pre-commit live view that this winner directly dominates, never same-batch candidates that were not previously committed. A new entry absent from the final live view is `DominatedAtCommit`; its dominators are named from the final live view. Stable `EntryId` is the full `entry_digest`, so identity and dispositions do not depend on bundle order; receipt rows retain original bundle order for presentation. One pointer swap installs the final live views, seen records, first-receipt references, one generation change when at least one entry is new, and the receipt. The old snapshot remains authoritative until that swap; a fault or `STORE_FULL` before it leaves all observable state unchanged.
 
-A preview whose store generation changed returns `STALE_PREVIEW` before duplicate detection. Deduplication uses `entry_digest`, with preview entries kept in original bundle order. `ImportCommitResult` is `Committed(ImportReceipt) | NoChanges(DuplicateResult)`. `DuplicateResult` contains bundle digest, store ID, unchanged generation, and ordered `(preview_entry_id, entry_digest, existing_entry_id, first_seen_time, insertion_receipt_id)` rows. The index permanently points each accepted entry, including an immediately dominated entry, to its first receipt. A duplicate-only reinspection and commit returns `NoChanges` and creates no state; calling commit twice on the same consumed preview instead returns `PREVIEW_CONSUMED`. A mixed new/duplicate import returns `Committed`, increments generation once, and records every disposition.
+A preview whose store generation changed returns `STALE_PREVIEW` before duplicate detection. Deduplication uses `entry_digest`, with preview entries kept in original bundle order. `ImportCommitResult` is `Committed(ImportReceipt) | NoChanges(DuplicateResult)`. `DuplicateResult` contains bundle digest, store ID, unchanged generation, and ordered `(preview_entry_id, entry_digest, existing_entry_id, first_seen_time, insertion_receipt_id)` rows. Every newly accepted entry receives a stable `entry_id` whether it is live or dominated on arrival, and the index permanently points it to its first receipt. A duplicate-only reinspection, plan, and commit returns `NoChanges` and creates no state; calling commit twice on the same consumed preview instead returns `PREVIEW_CONSUMED`. A mixed new/duplicate import returns `Committed`, increments generation once, and records every disposition.
 
 `willow25::storage::MemoryStore` 0.6.0-alpha.3 is a test-only conformance oracle for live-view permutations. It is not the FFI store because it is `Rc`-based, lacks Riot's hard ceilings and receipt model, and is not the session arbiter's transactional state.
 
 ### Preview policy
 
-Each preview entry exposes schema status, full author and namespace IDs, signature status, capability status, signer trust status, encoded size, digests, eligibility, duplicate state, and a non-sensitive reason code.
+Each preview entry exposes schema status, full author and namespace IDs, signature status, capability status, signer trust status, encoded size, digests, eligibility, duplicate state, and structured non-sensitive diagnostics. Join effect is selection-dependent and is therefore exposed by `plan`, not guessed independently per entry.
+
+`BundleDiagnostic` has a stable `code`, `scope = Bundle | Item(item_index)`, and `component = OuterFrame | Entry | Capability | Signature | Payload | Authorization | Schema`; optional developer detail is fixed trusted text. Outer magic/version/codec failure, non-canonical or trailing outer CBOR, cumulative bound failure, or an item frame that cannot be isolated rejects the whole inspection with one bundle-scoped diagnostic and creates no preview. Once a bounded canonical outer item is isolated, non-canonical/trailing Entry or capability bytes, wrong signature length, payload length or WILLIAM3 mismatch, authorization failure, and schema failure produce an ineligible item with the exact component/code; they do not hide valid sibling items. Authorization uses Willow's checked possibly-authorised-to-authorised conversion; unchecked conversion is forbidden. No diagnostic includes payload text, untrusted bytes, secret data, or attacker-controlled formatting.
 
 - invalid signature or invalid capability: hard-ineligible;
 - unknown capability: hard-ineligible in Phase 0A;
@@ -268,13 +271,13 @@ preview_entry_id
 entry_digest
 object_digest
 disposition =
-  Applied { entry_id, pruned_entry_digests[] }
-  | Dominated { dominating_entry_digests[] }
+  AppliedAtCommit { entry_id, pruned_entry_digests[] }
+  | DominatedAtCommit { entry_id, dominating_entry_digests[] }
   | AlreadyPresent { entry_id, insertion_receipt_id }
 first_seen_time
 ```
 
-`Applied` means the entry is present in the resulting live Willow view. `Dominated` means the valid entry was accepted into local seen/receipt history but is absent from the resulting live view. `AlreadyPresent` means this exact entry digest was previously accepted. A newly accepted `Dominated` entry changes store history and therefore increments the generation; a duplicate-only retry does not.
+`AppliedAtCommit` means the entry was present in the live Willow view produced by that commit. `DominatedAtCommit` means the valid entry was accepted into local seen/receipt history but absent from that resulting live view. `AlreadyPresent` means this exact entry digest was previously accepted. A newly accepted dominated entry changes store history and therefore increments the generation; a duplicate-only retry does not. Receipt wording is deliberately temporal: an entry applied in an earlier receipt can be pruned by a later commit.
 
 Receipts do not contain mutable trust or presentation state.
 
@@ -285,10 +288,11 @@ Receipts do not contain mutable trust or presentation state.
 1. authorship: complete author subspace, collective namespace, delegated-signer status, signed creation time;
 2. cryptography: payload digest, signature status, capability status, with no truth claim;
 3. author claims: source and affected-area claims explicitly labelled as author claims;
-4. local receipt: bundle digest, route, first-seen and receipt times, duplicate disposition;
-5. reader state: signer trust and expiry.
+4. local receipt: bundle digest, route, first-seen and receipt times, immutable receipt disposition;
+5. current Willow status: `Live | Pruned { dominating_entry_digests[] }`, derived from the present namespace view for every historically accepted entry;
+6. reader state: signer trust and expiry.
 
-For preview-only entries, `PreviewEntry.provenance` uses the inspection-time trust snapshot and the same labelled structure, but local receipt fields are `NotCommitted`. Receipts remain trust-free. Core and native assertions prove that preview trust stays at its captured value while a post-import derivation changes only when its explicit `TrustContext` changes. Curation, corrections/disputes, clock uncertainty, and broader mutable lens snapshots are stretch evidence. Native tests compare the core preview, receipt, and provenance fact records.
+`deriveProvenance` supports every historically accepted stable entry ID, including entries dominated on arrival or pruned later. The seen record retains the bounded immutable entry/authentication facts needed to derive it. For preview-only entries, `PreviewEntry.provenance` uses the inspection-time trust snapshot and the same labelled structure, but local receipt fields are `NotCommitted` and current Willow status is supplied only by the selection's `PlannedImport`. Receipts remain trust-free. Core and native assertions prove that preview trust stays at its captured value while a post-import derivation changes only when its explicit `TrustContext` changes. Curation, corrections/disputes, clock uncertainty, and broader mutable lens snapshots are stretch evidence. Native tests compare the core preview, planned effect, receipt, current-status, and provenance fact records.
 
 ## Limits and Fixture Matrix
 
@@ -331,9 +335,9 @@ All length/count arithmetic is checked before allocation. Swift and Kotlin use c
 | invalid signature | hard-ineligible, distinct code | unchanged |
 | invalid capability | hard-ineligible, distinct code | unchanged |
 | malformed/oversized/limit edge | rejected before preview or exact boundary accepted | unchanged on reject |
-| duplicate-only | already present | `NoChanges`; no generation or new durable receipt |
-| newer prefix / older descendants | eligible | prefix `Applied`; descendants pruned and named in receipt |
-| candidate dominated by newer prefix | eligible | `Dominated`; live view unchanged, seen index and receipt committed |
+| duplicate-only | planned `AlreadyPresent` | `NoChanges`; no generation or new durable receipt |
+| newer prefix / older descendants | planned `WouldApply`; pruned digests visible before commit | `AppliedAtCommit`; descendants pruned and named in receipt |
+| candidate dominated by newer prefix | planned `WouldBeDominated`; dominators visible before commit | `DominatedAtCommit`; stable entry ID, seen index, and receipt committed; live view unchanged |
 | equal coordinate tie | eligible | greatest WILLIAM3 digest, then greatest payload length wins |
 | distinct namespace/subspace | eligible | no cross-namespace or cross-subspace pruning |
 | join permutations | eligible | commutative, associative, idempotent live view matching alpha.3 `MemoryStore` |
@@ -361,7 +365,9 @@ If and only if all core gates pass with budget remaining, agents may add: empty/
 7. Run `RiotEvidenceTests/IOSImportsAndroidBundle`, then copy its consumer facts from the resolved container.
 8. Compare fact JSON and write `build/evidence/g3-runtime-handoff.json`. The shell may parse fact JSON but never the `.riot-evidence` bytes.
 
-For each leg, the producer facts include runtime/tool versions, complete author/namespace/subspace IDs, payload fields, Willow timestamp, corrected WILLIAM3 payload digest, bundle/entry/object digests, and artifact byte count. The consumer must assert byte-identical bundle digest, canonical component decoding, matching WILLIAM3, valid signature, valid capability, matching public IDs and payload fields, `UnknownTrust`, and `Applied`. The two legs must have distinct author, object, entry, and bundle IDs/digests.
+For each leg, the versioned producer/consumer facts divide `preview`, `plan`, `commit`, and `post_commit_provenance` sections. Producer facts include runtime/tool versions, complete author/namespace/subspace IDs, payload fields, Willow timestamp, corrected WILLIAM3 payload digest, bundle/entry/object digests, and artifact byte count. The consumer must assert byte-identical bundle digest, canonical component decoding, matching WILLIAM3, valid signature, valid capability, matching public IDs and payload fields, `UnknownTrust`, planned `WouldApply`, committed `AppliedAtCommit`, and current status `Live`. The two legs must have distinct author, object, entry, and bundle IDs/digests.
+
+Before the cross-runtime legs, both the XCTest bundle and the Android instrumentation bundle run a generated-binding semantic contract fixture. It exercises and asserts lossless decoding of `WouldApply`/`AppliedAtCommit`, `WouldBeDominated`/`DominatedAtCommit`, `AlreadyPresent`/`NoChanges`, a later transition from receipt `AppliedAtCommit` to current status `Pruned`, and one item-scoped canonical diagnostic. These native assertions prove the full core result vocabulary survives Swift and Kotlin code generation; only the two fresh `WouldApply`/`AppliedAtCommit` artifacts cross runtimes.
 
 The script resolves one simulator UDID and one emulator serial, fails on ambiguity, and runs these concrete test entrypoints:
 
@@ -386,7 +392,7 @@ Each work unit begins with its named failing test, confirms the intended failure
 | WU0R | dependency validator rejects `willow25 0.5.0`, old lock hash, missing corrected WILLIAM3 vectors, or enabled Drop Format | `cargo xtask validate-contracts` and `cargo test -p riot-conformance william3_` |
 | WU1 | alert golden vectors, canonical Willow component bytes, corrected payload digests, and authority denial fail because codec/adapter are absent | `cargo test -p riot-core public_` |
 | WU2 | join laws/permutations, dispositions, transaction, bounds, rollback, log-safety, panic, and three lifecycle-concurrency tests fail because types are absent | `cargo test -p riot-core -p riot-conformance core_import_` |
-| WU3 | native tests fail because generated bindings/libraries and runtime handoff are absent | `scripts/phase0a/cross-runtime-handoff.sh` |
+| WU3 | native tests fail because generated bindings/libraries, semantic-contract fixtures, and runtime handoff are absent | `scripts/phase0a/cross-runtime-handoff.sh` |
 | WU4 | adversarial manifest fails on missing hostile-corpus mutations, closure scan, hashes, and gate decisions | `scripts/phase0a/verify.sh` |
 
 `scripts/phase0a/verify.sh` runs, without omitted command placeholders:
@@ -422,7 +428,7 @@ The budget is 16 aggregate agent-hours. Parallel agents charge their wall time i
 | WU0R — corrected Willow dependency | 0.5h | replace 0.5.0 with 0.6.0-alpha.3, pin `bab_rs 0.8.1`, disable Drop Format, regenerate lock/hash, add corrected WILLIAM3 vectors, rerun five-target compile and feature-tree checks; Willow work stops until PASS |
 | WU1 — alert and communal authority | 2.5h | deterministic alert/bundle codec, one ephemeral communal-author path, and one cross-subspace denial; G1 FAIL stops downstream work |
 | WU2 — Willow join, import, and provenance facts | 4h | namespace-local join laws and oracle permutations, bounded snapshot transaction, three dispositions, essential hostile cases, and arbiter concurrency tests; G2 FAIL stops native work |
-| WU3 — FFI and native handoff | 4.5h | generated Swift/Kotlin bindings, XCTest/instrumentation hosts, container-aware two-way runtime handoff; no UI or JVM substitute |
+| WU3 — FFI and native handoff | 4.5h | generated Swift/Kotlin bindings, native full-vocabulary contract fixtures, XCTest/instrumentation hosts, container-aware two-way runtime handoff; no UI or JVM substitute |
 | Integration contingency | 1.5h | reserved only for dependency, binding, packaging, simulator/emulator, or handoff repair; unused time is not converted to stretch scope |
 | WU4 — adversarial verification and report | 2h | bounded hostile corpus, closure/bundle scan, hashes, gate report, GO/REVISE decision |
 
@@ -434,8 +440,8 @@ WU4 always begins at aggregate hour 14 and is not available for feature rescue. 
 | --- | --- | --- |
 | G0 Correct Willow basis | corrected WILLIAM3 vectors, alpha.3/fixed Bab pins, disabled Drop Format, five-target compile, lock hash, and feature closure pass | stop Willow implementation and revise dependency strategy |
 | G1 Public model and authority | required operational-alert fields, deterministic Riot/Willow component vectors, one communal-author success, one cross-subspace denial, and hostile decoder bounds pass | revise object/authority mapping; do not expand schemas |
-| G2 Willow join, import, and provenance | every core fixture row, join laws/oracle permutations, three dispositions, hard store/preview bounds, logical rollback, duplicate result, provenance facts, log/panic safety, and arbiter-concurrency assertion passes | block public import expansion |
-| G3 Native runtime handoff | a distinct iOS-generated signed alert imports as `Applied` on Android and a distinct Android-generated alert imports as `Applied` on iOS through packaged generated bindings; corrected WILLIAM3 and all per-leg fact assertions pass | revise ABI/toolchain; do not claim cross-platform core |
+| G2 Willow join, import, and provenance | every core fixture row, generation-bound planned effects matching commit, join laws/oracle permutations, three receipt dispositions, stable historical IDs/current status, structured diagnostics, hard store/preview bounds, logical rollback, duplicate result, provenance facts, log/panic safety, and arbiter-concurrency assertion passes | block public import expansion |
+| G3 Native runtime handoff | Swift and Kotlin preserve the full planned/receipt/current-status/diagnostic vocabulary; a distinct iOS-generated signed alert imports as `AppliedAtCommit` on Android and a distinct Android-generated alert imports as `AppliedAtCommit` on iOS through packaged generated bindings; corrected WILLIAM3 and all per-leg fact assertions pass | revise ABI/toolchain; do not claim cross-platform core |
 
 Every report contains status, owning work unit, exact commands, frozen environment, evidence paths, hashes, elapsed agent-hours, and next action.
 
