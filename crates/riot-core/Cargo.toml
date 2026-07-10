@@ -1,0 +1,15 @@
+[package]
+name = "riot-core"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+willow25 = { workspace = true }
+minicbor = { workspace = true }
+sha2 = { workspace = true }
+ed25519-dalek = { workspace = true }
+rand_core = { workspace = true }
+
+[dev-dependencies]
+willow25 = { workspace = true, features = ["dev"] }

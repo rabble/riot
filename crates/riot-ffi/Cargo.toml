@@ -1,0 +1,12 @@
+[package]
+name = "riot-ffi"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["lib", "staticlib", "cdylib"]
+
+[dependencies]
+riot-core = { path = "../riot-core" }
+uniffi = { workspace = true }

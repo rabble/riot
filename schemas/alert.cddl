@@ -1,0 +1,48 @@
+; Riot Phase 0A signed alert payload — schema "org.riot.alert/1".
+;
+; Deterministic CBOR encoding rules (enforced by the codec, asserted here):
+; definite lengths only, integer map keys in ascending order, shortest
+; integer encodings, no floating point, no duplicate keys, unknown keys
+; rejected. `expires_at` must be strictly later than `created_at`.
+; Signer, namespace, capability, Willow timestamp, and payload digest live
+; on the Willow entry, never inside this payload. Local receipt facts
+; (route, first-seen, trust) never enter the author payload.
+
+alert = {
+  0: "org.riot.alert/1",       ; schema identifier and version
+  1: bstr .size 16,            ; object_id — stable random
+  2: bstr .size 16,            ; revision_id — unique per revision
+  3: uint,                     ; created_at — unix seconds
+  ? 4: uint,                   ; valid_from — optional validity start
+  5: uint,                     ; expires_at — required, > created_at
+  6: tstr .size (2..35),       ; language — BCP 47 tag
+  7: urgency,
+  8: severity,
+  9: certainty,
+  10: tstr .size (1..512),     ; headline
+  11: tstr .size (1..65536),   ; description (bounded payload exception)
+  ? 12: tstr .size (1..2048),  ; affected_area_claim — author claim only
+  13: [1*16 source_claim],     ; at least one non-empty source claim
+  14: bool,                    ; ai_assisted — required disclosure
+}
+
+; Closed enums following OASIS CAP 1.2 value sets.
+urgency = 0    ; immediate
+        / 1    ; expected
+        / 2    ; future
+        / 3    ; past
+        / 4    ; unknown
+
+severity = 0   ; extreme
+         / 1   ; severe
+         / 2   ; moderate
+         / 3   ; minor
+         / 4   ; unknown
+
+certainty = 0  ; observed
+          / 1  ; likely
+          / 2  ; possible
+          / 3  ; unlikely
+          / 4  ; unknown
+
+source_claim = tstr .size (1..1024)

@@ -1,0 +1,20 @@
+[workspace]
+members = [
+    "crates/riot-core",
+    "crates/riot-ffi",
+    "crates/riot-conformance",
+    "crates/xtask",
+]
+resolver = "2"
+
+[workspace.dependencies]
+willow25 = "=0.5.0"
+uniffi = "=0.32.0"
+minicbor = "=2.2.2"
+cddl-cat = "=0.7.1"
+sha2 = "=0.10.9"
+ed25519-dalek = { version = "=2.2.0", default-features = false, features = ["std", "fast", "zeroize", "rand_core"] }
+rand_core = { version = "=0.6.4", features = ["getrandom"] }
+
+[profile.release]
+panic = "abort"

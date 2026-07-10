@@ -1,0 +1,11 @@
+[package]
+name = "riot-conformance"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+riot-core = { path = "../riot-core" }
+
+[dev-dependencies]
+cddl-cat = { workspace = true }

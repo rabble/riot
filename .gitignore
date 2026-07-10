@@ -1,1 +1,7 @@
 .superpowers/
+target/
+build/
+.gradle/
+local.properties
+*.xcresult
+Vine Is Back*
