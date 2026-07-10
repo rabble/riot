@@ -2,11 +2,14 @@
 //! `created_at` (UTC) and the Willow entry timestamp (TAI/J2000 µs); fresh
 //! entropy mints the object/revision IDs; the author's subspace secret signs
 //! the canonical entry encoding. Any failure constructs no partial entry.
+//!
+//! The production factory `create_signed_alert` uses OS randomness and the
+//! system clock. The injectable variant is behind `conformance`.
 
 use crate::model::{encode_alert, AlertPayload, Certainty, Severity, Urgency};
 
-use super::clock::{ClockSnapshot, ClockSource};
-use super::identity::{EntropySource, EvidenceAuthor};
+use super::clock::ClockSnapshot;
+use super::identity::EvidenceAuthor;
 use super::{alert_path, WillowError};
 
 /// Everything the author chooses; times and IDs are factory-assigned.
@@ -25,8 +28,7 @@ pub struct AlertDraft {
     pub ai_assisted: bool,
 }
 
-/// Canonical component bytes of one signed, authorised Willow entry — the
-/// exact shape a bundle item carries.
+/// Canonical component bytes of one signed, authorised Willow entry.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SignedWillowEntry {
     pub entry_bytes: Vec<u8>,
@@ -44,21 +46,22 @@ pub struct SignedAlert {
     pub revision_id: [u8; 16],
 }
 
-/// Builds, signs, and authorises one alert entry. Order matters: entropy
-/// first (IDs), clock second, validation before signing — a failure at any
-/// stage returns before any signature or allocation-heavy work.
-pub fn create_signed_alert(
+/// Shared core. `fill` supplies fresh ID bytes; `snapshot` supplies one
+/// clock reading. Order: entropy first (IDs), clock second, validation
+/// before signing — a failure at any stage returns before signing.
+fn build<F>(
     author: &EvidenceAuthor,
-    entropy: &mut dyn EntropySource,
-    clock: &dyn ClockSource,
+    mut fill: F,
+    snapshot: ClockSnapshot,
     draft: AlertDraft,
-) -> Result<SignedAlert, WillowError> {
+) -> Result<SignedAlert, WillowError>
+where
+    F: FnMut(&mut [u8]) -> Result<(), WillowError>,
+{
     let mut object_id = [0u8; 16];
-    entropy.fill(&mut object_id)?;
+    fill(&mut object_id)?;
     let mut revision_id = [0u8; 16];
-    entropy.fill(&mut revision_id)?;
-
-    let snapshot = clock.snapshot()?;
+    fill(&mut revision_id)?;
 
     let payload = AlertPayload {
         object_id,
@@ -76,7 +79,6 @@ pub fn create_signed_alert(
         source_claims: draft.source_claims,
         ai_assisted: draft.ai_assisted,
     };
-    // Validity fields are checked against the snapshot-derived created_at.
     let payload_bytes = encode_alert(&payload).map_err(WillowError::InvalidAlert)?;
 
     let entry = super::build_alert_entry(
@@ -87,7 +89,6 @@ pub fn create_signed_alert(
         &payload_bytes,
     )?;
     let authorised = super::authorise_entry(author, entry)?;
-
     let token = authorised.authorisation_token();
     let signature: ed25519_dalek::Signature = token.signature().clone().into();
 
@@ -105,8 +106,35 @@ pub fn create_signed_alert(
     })
 }
 
-/// Path binding sanity used by tests: the factory always writes to the
-/// fixed four-component alert path.
+fn os_fill(buf: &mut [u8]) -> Result<(), WillowError> {
+    use rand_core::RngCore;
+    rand_core::OsRng
+        .try_fill_bytes(buf)
+        .map_err(|_| WillowError::EntropyUnavailable)
+}
+
+/// Production factory: OS randomness for IDs, system clock for time.
+pub fn create_signed_alert(
+    author: &EvidenceAuthor,
+    draft: AlertDraft,
+) -> Result<SignedAlert, WillowError> {
+    let snapshot = super::clock::system_snapshot()?;
+    build(author, os_fill, snapshot, draft)
+}
+
+/// Injectable variant for deterministic/failing entropy and clocks in tests.
+#[cfg(feature = "conformance")]
+pub fn create_signed_alert_with(
+    author: &EvidenceAuthor,
+    entropy: &mut dyn super::identity::EntropySource,
+    clock: &dyn super::clock::ClockSource,
+    draft: AlertDraft,
+) -> Result<SignedAlert, WillowError> {
+    let snapshot = clock.snapshot()?;
+    build(author, |buf| entropy.fill(buf), snapshot, draft)
+}
+
+/// Path binding sanity used by tests.
 pub fn expected_alert_path(
     object_id: &[u8; 16],
     revision_id: &[u8; 16],

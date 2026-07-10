@@ -21,11 +21,14 @@ use willow25::groupings::Namespaced;
 pub const BUNDLE_MAGIC: &[u8; 6] = b"RIOTE1";
 pub const BUNDLE_CODEC_ID: &str = "org.riot.evidence-bundle/1";
 
-/// Ceilings from fixtures/manifest.json.
+/// Ceilings from fixtures/manifest.json (Revision 5 limits table).
 pub const MAX_BUNDLE_BYTES: usize = 8_388_608;
 pub const MAX_BUNDLE_ENTRIES: usize = 64;
 pub const MAX_ITEM_PAYLOAD_BYTES: usize = 1_048_576;
-pub const MAX_AUTH_BYTES_PER_ENTRY: usize = 65_536;
+/// Canonical Entry bytes per item: 4 KiB (distinct from the capability limit).
+pub const MAX_ENTRY_BYTES: usize = 4_096;
+/// Canonical capability bytes per item; also charged to the bundle total.
+pub const MAX_CAPABILITY_BYTES: usize = 65_536;
 pub const MAX_AUTH_BYTES_PER_BUNDLE: usize = 2_097_152;
 const SIGNATURE_BYTES: usize = 64;
 
@@ -38,6 +41,9 @@ pub enum RejectionCode {
     NonCanonicalFrame,
     UnsupportedCodec,
     TooManyEntries,
+    EntryBytesExceeded,
+    CapabilityBytesExceeded,
+    PayloadBytesExceeded,
     AuthorizationBudgetExceeded,
     DuplicateEntryId,
 }
@@ -80,12 +86,27 @@ pub struct BundleDiagnostic {
 }
 
 /// Raw component bytes of one framed item.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// `Debug` is redacted: it prints only field lengths, never the bytes, so
+/// formatting a decoded outcome cannot leak attacker-controlled payload bytes
+/// into logs. Every container that holds a frame inherits this redaction.
+#[derive(Clone, PartialEq, Eq)]
 pub struct BundleItemFrame {
     entry_bytes: Vec<u8>,
     capability_bytes: Vec<u8>,
     signature_bytes: Vec<u8>,
     payload_bytes: Vec<u8>,
+}
+
+impl std::fmt::Debug for BundleItemFrame {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BundleItemFrame")
+            .field("entry_bytes.len", &self.entry_bytes.len())
+            .field("capability_bytes.len", &self.capability_bytes.len())
+            .field("signature_bytes.len", &self.signature_bytes.len())
+            .field("payload_bytes.len", &self.payload_bytes.len())
+            .finish()
+    }
 }
 
 impl BundleItemFrame {
@@ -183,14 +204,24 @@ pub fn encode_bundle(items: &[SignedWillowEntry]) -> Result<Vec<u8>, BundleEncod
     Ok(bytes)
 }
 
-/// Deterministic outer framing of already-validated frames.
+/// Deterministic outer framing of already-validated frames (production
+/// codec id).
 fn frame_bundle(frames: &[BundleItemFrame]) -> Vec<u8> {
+    frame_bundle_with_codec(BUNDLE_CODEC_ID, frames)
+}
+
+/// Frames with an arbitrary codec string. Used both for production framing
+/// and to prove input canonicality *independent of the codec value* — we
+/// re-encode with exactly the codec string the input carried, so a canonical
+/// document with a wrong codec re-encodes identically and is judged
+/// non-canonical only when its bytes truly differ.
+fn frame_bundle_with_codec(codec: &str, frames: &[BundleItemFrame]) -> Vec<u8> {
     let mut buffer: Vec<u8> = Vec::new();
     buffer.extend_from_slice(BUNDLE_MAGIC);
     let mut e = Encoder::new(&mut buffer);
     let r: Result<_, minicbor::encode::Error<core::convert::Infallible>> = (|| {
         e.map(2)?;
-        e.u8(0)?.str(BUNDLE_CODEC_ID)?;
+        e.u8(0)?.str(codec)?;
         e.u8(1)?.array(frames.len() as u64)?;
         for frame in frames {
             e.map(4)?;
@@ -209,11 +240,19 @@ fn reject(code: RejectionCode, detail: &'static str) -> BundleDecodeOutcome {
     BundleDecodeOutcome::Rejected(BundleRejection { code, detail })
 }
 
-/// Strict two-stage bounded decode. Stage one enforces size, magic, outer
-/// canonical CBOR, codec, cumulative limits, and entry-ID uniqueness. Stage
-/// two verifies each isolated item independently.
+/// A structurally parsed outer document, before any semantic judgement.
+struct RawOuter {
+    codec: String,
+    frames: Vec<BundleItemFrame>,
+}
+
+/// Strict bounded decode. Frozen fatal precedence, each winning over the
+/// next: size → magic → malformed/non-canonical outer frame → unsupported
+/// codec → cumulative limits (entry count, per-field ceilings, authorization
+/// budget) in encounter order → duplicate entry ID. Only after all global
+/// gates pass are items verified independently, with siblings isolated.
 pub fn decode_bundle(input: &[u8]) -> BundleDecodeOutcome {
-    // 1. Size, before any parsing.
+    // 1. Size, before any parsing (bounds all later reads to <= 8 MiB).
     if input.len() > MAX_BUNDLE_BYTES {
         return reject(RejectionCode::TooLarge, "artifact exceeds 8 MiB ceiling");
     }
@@ -223,12 +262,14 @@ pub fn decode_bundle(input: &[u8]) -> BundleDecodeOutcome {
     }
     let body = &input[BUNDLE_MAGIC.len()..];
 
-    // 3. Outer frame: parse strictly, then prove canonicality by re-framing.
-    let frames = match parse_outer_frame(body) {
-        Ok(frames) => frames,
+    // 3. Structural parse, reading the codec string as opaque data.
+    let raw = match parse_outer_structure(body) {
+        Ok(raw) => raw,
         Err(outcome) => return outcome,
     };
-    let reframed = frame_bundle(&frames);
+    // 3b. Canonicality, judged independent of the codec value: re-encode with
+    // the exact codec string the input carried.
+    let reframed = frame_bundle_with_codec(&raw.codec, &raw.frames);
     if reframed[BUNDLE_MAGIC.len()..] != *body {
         return reject(
             RejectionCode::NonCanonicalFrame,
@@ -236,10 +277,50 @@ pub fn decode_bundle(input: &[u8]) -> BundleDecodeOutcome {
         );
     }
 
-    // 6. Duplicate canonical entry IDs reject globally (computable from raw
-    // entry bytes without Willow decoding).
-    let mut seen: Vec<EntryId> = Vec::with_capacity(frames.len());
-    for frame in &frames {
+    // 4. Codec value.
+    if raw.codec != BUNDLE_CODEC_ID {
+        return reject(
+            RejectionCode::UnsupportedCodec,
+            "unknown codec id or version",
+        );
+    }
+
+    // 5. Cumulative limits in encounter order.
+    if raw.frames.len() > MAX_BUNDLE_ENTRIES {
+        return reject(RejectionCode::TooManyEntries, "more than 64 entries");
+    }
+    let mut auth_total = 0usize;
+    for frame in &raw.frames {
+        if frame.entry_bytes.len() > MAX_ENTRY_BYTES {
+            return reject(
+                RejectionCode::EntryBytesExceeded,
+                "canonical entry bytes exceed the 4 KiB ceiling",
+            );
+        }
+        if frame.capability_bytes.len() > MAX_CAPABILITY_BYTES {
+            return reject(
+                RejectionCode::CapabilityBytesExceeded,
+                "capability bytes exceed the 64 KiB ceiling",
+            );
+        }
+        if frame.payload_bytes.len() > MAX_ITEM_PAYLOAD_BYTES {
+            return reject(
+                RejectionCode::PayloadBytesExceeded,
+                "payload bytes exceed the 1 MiB ceiling",
+            );
+        }
+        auth_total += frame.capability_bytes.len() + frame.signature_bytes.len();
+        if auth_total > MAX_AUTH_BYTES_PER_BUNDLE {
+            return reject(
+                RejectionCode::AuthorizationBudgetExceeded,
+                "cumulative authorization bytes exceed the bundle budget",
+            );
+        }
+    }
+
+    // 6. Duplicate canonical entry IDs reject globally.
+    let mut seen: Vec<EntryId> = Vec::with_capacity(raw.frames.len());
+    for frame in &raw.frames {
         let id = entry_id(&frame.entry_bytes);
         if seen.contains(&id) {
             return reject(
@@ -251,7 +332,8 @@ pub fn decode_bundle(input: &[u8]) -> BundleDecodeOutcome {
     }
 
     // Stage two: independent item verification; siblings stay isolated.
-    let items = frames
+    let items = raw
+        .frames
         .into_iter()
         .map(|frame| {
             let status = match verify_frame(&frame) {
@@ -268,14 +350,14 @@ pub fn decode_bundle(input: &[u8]) -> BundleDecodeOutcome {
     })
 }
 
-/// Bounded strict parse of the outer CBOR document into raw frames.
-/// Enforces field caps and cumulative authorization budgets in encounter
-/// order. Canonicality is proven by the caller's re-framing comparison.
-fn parse_outer_frame(body: &[u8]) -> Result<Vec<BundleItemFrame>, BundleDecodeOutcome> {
+/// Structural CBOR parse into raw frames. Enforces well-formedness (definite
+/// lengths, expected keys in order, no trailing bytes) but makes no semantic
+/// codec/limit judgement; those are the caller's ordered gates. Reads are
+/// bounded by the <= 8 MiB artifact size checked before this runs.
+fn parse_outer_structure(body: &[u8]) -> Result<RawOuter, BundleDecodeOutcome> {
     let mut d = Decoder::new(body);
-    let malformed = |detail: &'static str| {
-        Err::<Vec<BundleItemFrame>, _>(reject(RejectionCode::MalformedFrame, detail))
-    };
+    let malformed =
+        |detail: &'static str| Err::<RawOuter, _>(reject(RejectionCode::MalformedFrame, detail));
 
     let Ok(Some(pairs)) = d.map() else {
         return malformed("outer document is not a definite map");
@@ -287,30 +369,22 @@ fn parse_outer_frame(body: &[u8]) -> Result<Vec<BundleItemFrame>, BundleDecodeOu
         return malformed("first outer key must be 0");
     }
     let Ok(codec) = d.str() else {
-        return malformed("codec id must be a text string");
+        return malformed("codec id must be a definite text string");
     };
-    if codec != BUNDLE_CODEC_ID {
-        return Err(reject(
-            RejectionCode::UnsupportedCodec,
-            "unknown codec id or version",
-        ));
-    }
+    let codec = codec.to_string();
     if d.u8().ok() != Some(1) {
         return malformed("second outer key must be 1");
     }
     let Ok(Some(count)) = d.array() else {
         return malformed("items must be a definite array");
     };
-    // 5. Cumulative limits in encounter order: entry count first.
-    if count as usize > MAX_BUNDLE_ENTRIES {
-        return Err(reject(
-            RejectionCode::TooManyEntries,
-            "more than 64 entries",
-        ));
+    // Structural sanity only: a count beyond the artifact's own byte budget
+    // cannot be honestly framed. The exact 64-entry limit is a later gate.
+    if count > MAX_BUNDLE_BYTES as u64 {
+        return malformed("item count exceeds the artifact byte budget");
     }
 
-    let mut auth_total = 0usize;
-    let mut frames = Vec::with_capacity(count as usize);
+    let mut frames = Vec::with_capacity((count as usize).min(MAX_BUNDLE_ENTRIES + 1));
     for _ in 0..count {
         let Ok(Some(inner)) = d.map() else {
             return malformed("item must be a definite map");
@@ -318,18 +392,10 @@ fn parse_outer_frame(body: &[u8]) -> Result<Vec<BundleItemFrame>, BundleDecodeOu
         if inner != 4 {
             return malformed("item map must have exactly four pairs");
         }
-        let entry_bytes = read_bytes_field(&mut d, 0, MAX_AUTH_BYTES_PER_ENTRY)?;
-        let capability_bytes = read_bytes_field(&mut d, 1, MAX_AUTH_BYTES_PER_ENTRY)?;
-        let signature_bytes = read_bytes_field(&mut d, 2, SIGNATURE_BYTES + 1)?;
-        let payload_bytes = read_bytes_field(&mut d, 3, MAX_ITEM_PAYLOAD_BYTES)?;
-
-        auth_total += capability_bytes.len() + signature_bytes.len();
-        if auth_total > MAX_AUTH_BYTES_PER_BUNDLE {
-            return Err(reject(
-                RejectionCode::AuthorizationBudgetExceeded,
-                "cumulative authorization bytes exceed the bundle budget",
-            ));
-        }
+        let entry_bytes = read_bytes_field(&mut d, 0)?;
+        let capability_bytes = read_bytes_field(&mut d, 1)?;
+        let signature_bytes = read_bytes_field(&mut d, 2)?;
+        let payload_bytes = read_bytes_field(&mut d, 3)?;
         frames.push(BundleItemFrame {
             entry_bytes,
             capability_bytes,
@@ -341,32 +407,24 @@ fn parse_outer_frame(body: &[u8]) -> Result<Vec<BundleItemFrame>, BundleDecodeOu
     if d.position() != body.len() {
         return malformed("trailing bytes after the outer document");
     }
-    Ok(frames)
+    Ok(RawOuter { codec, frames })
 }
 
-fn read_bytes_field(
-    d: &mut Decoder<'_>,
-    expected_key: u8,
-    max: usize,
-) -> Result<Vec<u8>, BundleDecodeOutcome> {
+fn read_bytes_field(d: &mut Decoder<'_>, expected_key: u8) -> Result<Vec<u8>, BundleDecodeOutcome> {
     if d.u8().ok() != Some(expected_key) {
         return Err(reject(
             RejectionCode::MalformedFrame,
             "item keys must be 0..=3 in order",
         ));
     }
+    // `bytes()` requires a definite-length byte string; indefinite/chunked
+    // strings and wrong major types are malformed.
     let Ok(bytes) = d.bytes() else {
         return Err(reject(
             RejectionCode::MalformedFrame,
             "item field must be a definite byte string",
         ));
     };
-    if bytes.len() > max {
-        return Err(reject(
-            RejectionCode::MalformedFrame,
-            "item field exceeds its byte ceiling",
-        ));
-    }
     Ok(bytes.to_vec())
 }
 

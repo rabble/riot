@@ -1,33 +1,19 @@
-//! Fallible communal-author generation and the public identity view.
+//! Communal-author generation and the public identity view.
 //!
-//! The signer owns zeroizing secret material (ed25519-dalek's `zeroize`
-//! feature), is neither `Clone` nor `Debug`, and exposes no accessor for the
-//! signing key. The privilege-less communal namespace secret is discarded at
-//! generation. Entropy failure returns `ENTROPY_UNAVAILABLE` and constructs
-//! no author.
+//! The signer owns zeroizing secret material, is neither `Clone` nor
+//! `Debug`, and exposes no accessor for the signing key. The privilege-less
+//! communal namespace secret is discarded (zeroized) at generation.
+//!
+//! The **production** factory `generate_communal_author` takes no injectable
+//! sources: it always draws from OS randomness. Injectable entropy and the
+//! raw-secret constructor live behind the `conformance` feature, which the
+//! release `riot-ffi` graph never enables.
 
 use willow25::authorisation::WriteCapability;
 use willow25::prelude::*;
+use zeroize::Zeroize;
 
 use super::WillowError;
-
-/// A fallible randomness source. Production code uses [`OsEntropy`];
-/// deterministic or failing sources live only in tests and conformance.
-pub trait EntropySource {
-    fn fill(&mut self, buf: &mut [u8]) -> Result<(), WillowError>;
-}
-
-/// OS-backed entropy via `rand_core::OsRng::try_fill_bytes`.
-pub struct OsEntropy;
-
-impl EntropySource for OsEntropy {
-    fn fill(&mut self, buf: &mut [u8]) -> Result<(), WillowError> {
-        use rand_core::RngCore;
-        rand_core::OsRng
-            .try_fill_bytes(buf)
-            .map_err(|_| WillowError::EntropyUnavailable)
-    }
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NamespaceKind {
@@ -79,8 +65,42 @@ impl EvidenceAuthor {
         &self.subspace_secret
     }
 
-    /// Test/conformance constructor from raw secret bytes. Never part of the
-    /// release FFI surface.
+    /// Shared constructor core. `fill` writes fresh random bytes; each temp
+    /// secret array is zeroized before returning, whatever the outcome.
+    fn generate<F>(mut fill: F) -> Result<Self, WillowError>
+    where
+        F: FnMut(&mut [u8]) -> Result<(), WillowError>,
+    {
+        // Draw namespace candidates until the public key is communal (even
+        // last byte). Each draw consumes fresh entropy; the namespace secret
+        // is discarded — it confers no privilege in a communal namespace.
+        let mut namespace_id = None;
+        for _ in 0..128 {
+            let mut secret_bytes = [0u8; 32];
+            let result = fill(&mut secret_bytes);
+            let candidate = result
+                .map(|()| NamespaceSecret::from_bytes(&secret_bytes).corresponding_namespace_id());
+            secret_bytes.zeroize();
+            let candidate = candidate?;
+            if candidate.is_communal() {
+                namespace_id = Some(candidate);
+                break;
+            }
+        }
+        let namespace_id = namespace_id.ok_or(WillowError::EntropyUnavailable)?;
+
+        let mut subspace_secret_bytes = [0u8; 32];
+        let result = fill(&mut subspace_secret_bytes);
+        let subspace_secret = result.map(|()| SubspaceSecret::from_bytes(&subspace_secret_bytes));
+        subspace_secret_bytes.zeroize();
+
+        Ok(Self {
+            namespace_id,
+            subspace_secret: subspace_secret?,
+        })
+    }
+
+    #[cfg(feature = "conformance")]
     pub fn from_parts_for_tests(
         namespace_id: NamespaceId,
         subspace_secret_bytes: &[u8; 32],
@@ -92,32 +112,45 @@ impl EvidenceAuthor {
     }
 }
 
-/// Generates a fresh communal namespace and author subspace. Every random
-/// byte comes from the provided fallible source; failure constructs nothing.
-pub fn generate_communal_author(
+/// Fills `buf` from OS randomness; `ENTROPY_UNAVAILABLE` on failure.
+fn os_fill(buf: &mut [u8]) -> Result<(), WillowError> {
+    use rand_core::RngCore;
+    rand_core::OsRng
+        .try_fill_bytes(buf)
+        .map_err(|_| WillowError::EntropyUnavailable)
+}
+
+/// Production factory: a fresh communal author from OS randomness only. No
+/// injection point exists in the release build.
+pub fn generate_communal_author() -> Result<EvidenceAuthor, WillowError> {
+    EvidenceAuthor::generate(os_fill)
+}
+
+// ---------------------------------------------------------------------------
+// Conformance-only injection surface (feature-gated; absent from release).
+// ---------------------------------------------------------------------------
+
+/// A fallible randomness source. Test/conformance only.
+#[cfg(feature = "conformance")]
+pub trait EntropySource {
+    fn fill(&mut self, buf: &mut [u8]) -> Result<(), WillowError>;
+}
+
+/// OS-backed entropy for tests that want the real source explicitly.
+#[cfg(feature = "conformance")]
+pub struct OsEntropy;
+
+#[cfg(feature = "conformance")]
+impl EntropySource for OsEntropy {
+    fn fill(&mut self, buf: &mut [u8]) -> Result<(), WillowError> {
+        os_fill(buf)
+    }
+}
+
+/// Injectable generation for deterministic/failing entropy in tests.
+#[cfg(feature = "conformance")]
+pub fn generate_communal_author_with(
     entropy: &mut dyn EntropySource,
 ) -> Result<EvidenceAuthor, WillowError> {
-    // Draw namespace candidates until the public key is communal (even last
-    // byte). Each draw consumes fresh entropy; the secret is discarded — it
-    // confers no privilege in a communal namespace.
-    let mut namespace_id = None;
-    for _ in 0..128 {
-        let mut secret_bytes = [0u8; 32];
-        entropy.fill(&mut secret_bytes)?;
-        let candidate = NamespaceSecret::from_bytes(&secret_bytes).corresponding_namespace_id();
-        if candidate.is_communal() {
-            namespace_id = Some(candidate);
-            break;
-        }
-    }
-    let namespace_id = namespace_id.ok_or(WillowError::EntropyUnavailable)?;
-
-    let mut subspace_secret_bytes = [0u8; 32];
-    entropy.fill(&mut subspace_secret_bytes)?;
-    let subspace_secret = SubspaceSecret::from_bytes(&subspace_secret_bytes);
-
-    Ok(EvidenceAuthor {
-        namespace_id,
-        subspace_secret,
-    })
+    EvidenceAuthor::generate(|buf| entropy.fill(buf))
 }

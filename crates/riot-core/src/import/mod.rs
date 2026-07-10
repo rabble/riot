@@ -7,7 +7,8 @@ pub use bundle::{
     decode_bundle, encode_bundle, BundleDecodeOutcome, BundleDiagnostic, BundleEncodeError,
     BundleItemFrame, BundleRejection, DecodedBundle, DecodedItem, DiagnosticCode, ItemComponent,
     ItemStatus, RejectionCode, ValidItem, BUNDLE_CODEC_ID, BUNDLE_MAGIC, MAX_AUTH_BYTES_PER_BUNDLE,
-    MAX_AUTH_BYTES_PER_ENTRY, MAX_BUNDLE_BYTES, MAX_BUNDLE_ENTRIES, MAX_ITEM_PAYLOAD_BYTES,
+    MAX_BUNDLE_BYTES, MAX_BUNDLE_ENTRIES, MAX_CAPABILITY_BYTES, MAX_ENTRY_BYTES,
+    MAX_ITEM_PAYLOAD_BYTES,
 };
 
 // Digest vocabulary lives in `crate::willow::digest`; re-exported here for

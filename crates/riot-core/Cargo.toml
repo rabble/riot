@@ -4,6 +4,13 @@ version = "0.1.0"
 edition = "2021"
 publish = false
 
+[features]
+# Injectable entropy/clock sources and raw-secret constructors used only by
+# tests and conformance fixtures. MUST NOT be enabled in the release graph;
+# riot-ffi never enables it, and `cargo xtask validate-contracts` fails if it
+# appears in the riot-ffi feature closure.
+conformance = []
+
 [dependencies]
 willow25 = { workspace = true }
 bab_rs = { workspace = true }
@@ -14,7 +21,22 @@ sha2 = { workspace = true }
 ed25519-dalek = { workspace = true }
 rand_core = { workspace = true }
 hifitime = { workspace = true }
+zeroize = { workspace = true }
 
 [dev-dependencies]
 willow25 = { workspace = true, features = ["dev"] }
 serde_json = { workspace = true }
+
+# Integration tests exercise the injectable factories, so they need the
+# conformance surface. This does not affect the release riot-ffi graph.
+[[test]]
+name = "public_alert"
+required-features = ["conformance"]
+
+[[test]]
+name = "public_willow"
+required-features = ["conformance"]
+
+[[test]]
+name = "public_bundle"
+required-features = ["conformance"]

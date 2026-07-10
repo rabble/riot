@@ -9,9 +9,9 @@ use riot_core::import::{
 };
 use riot_core::model::{Certainty, Severity, Urgency};
 use riot_core::willow::{
-    create_signed_alert, generate_communal_author, snapshot_from_unix_seconds, AlertDraft,
-    ClockSnapshot, ClockSource, EntropySource, EvidenceAuthor, OsEntropy, SignedWillowEntry,
-    WillowError,
+    create_signed_alert_with, generate_communal_author_with, snapshot_from_unix_seconds,
+    AlertDraft, ClockSnapshot, ClockSource, EntropySource, EvidenceAuthor, OsEntropy,
+    SignedWillowEntry, WillowError,
 };
 
 // ---------- helpers ----------
@@ -72,8 +72,8 @@ fn deterministic_author() -> EvidenceAuthor {
 }
 
 fn random_signed_alert(headline: &str) -> SignedWillowEntry {
-    let author = generate_communal_author(&mut OsEntropy).expect("entropy");
-    create_signed_alert(
+    let author = generate_communal_author_with(&mut OsEntropy).expect("entropy");
+    create_signed_alert_with(
         &author,
         &mut OsEntropy,
         &FixedClock(snapshot()),
@@ -153,7 +153,7 @@ fn expect_item_diagnostic(
 #[test]
 fn public_bundle_golden_one_item_bytes_are_frozen() {
     let author = deterministic_author();
-    let signed = create_signed_alert(
+    let signed = create_signed_alert_with(
         &author,
         &mut CountingEntropy(0),
         &FixedClock(snapshot()),
@@ -464,11 +464,156 @@ fn public_bundle_flags_invalid_authorization_and_isolates_siblings() {
 }
 
 #[test]
+fn public_bundle_precedence_noncanonical_beats_unsupported_codec() {
+    // A document that is BOTH non-canonical (non-shortest outer key 0) AND
+    // carries an unsupported codec must report NonCanonicalFrame — canonical
+    // framing is judged before the codec value.
+    let one = random_signed_alert("solo");
+    let (entry, cap, sig, payload) = parts(&one);
+
+    let mut buffer: Vec<u8> = Vec::new();
+    buffer.extend_from_slice(BUNDLE_MAGIC);
+    buffer.push(0xa2); // map(2)
+    buffer.extend_from_slice(&[0x18, 0x00]); // non-shortest key 0
+    {
+        let mut e = Encoder::new(&mut buffer);
+        e.str("org.riot.evidence-bundle/9").unwrap(); // unsupported codec
+    }
+    buffer.push(0x01);
+    buffer.push(0x81); // array(1)
+    {
+        let mut e = Encoder::new(&mut buffer);
+        e.map(4).unwrap();
+        e.u8(0).unwrap().bytes(entry).unwrap();
+        e.u8(1).unwrap().bytes(cap).unwrap();
+        e.u8(2).unwrap().bytes(sig).unwrap();
+        e.u8(3).unwrap().bytes(payload).unwrap();
+    }
+    expect_rejected(&buffer, RejectionCode::NonCanonicalFrame);
+}
+
+#[test]
+fn public_bundle_precedence_codec_beats_limits() {
+    // Canonical framing, unsupported codec, AND 65 entries: codec wins over
+    // the entry-count limit.
+    let one = random_signed_alert("solo");
+    let (entry, cap, sig, payload) = parts(&one);
+    let mut buffer: Vec<u8> = Vec::new();
+    buffer.extend_from_slice(BUNDLE_MAGIC);
+    let mut e = Encoder::new(&mut buffer);
+    e.map(2).unwrap();
+    e.u8(0).unwrap().str("org.riot.evidence-bundle/9").unwrap();
+    e.u8(1).unwrap().array(65).unwrap();
+    for _ in 0..65 {
+        e.map(4).unwrap();
+        e.u8(0).unwrap().bytes(entry).unwrap();
+        e.u8(1).unwrap().bytes(cap).unwrap();
+        e.u8(2).unwrap().bytes(sig).unwrap();
+        e.u8(3).unwrap().bytes(payload).unwrap();
+    }
+    expect_rejected(&buffer, RejectionCode::UnsupportedCodec);
+}
+
+#[test]
+fn public_bundle_rejects_invalid_utf8_codec() {
+    // Invalid UTF-8 where the codec text should be is a malformed outer
+    // frame (minicbor's str() rejects non-UTF-8).
+    let mut buffer: Vec<u8> = Vec::new();
+    buffer.extend_from_slice(BUNDLE_MAGIC);
+    buffer.push(0xa2); // map(2)
+    buffer.push(0x00); // key 0
+    buffer.push(0x62); // text string len 2
+    buffer.push(0xff);
+    buffer.push(0xfe); // invalid UTF-8
+    buffer.push(0x01);
+    buffer.push(0x80); // array(0)
+    expect_rejected(&buffer, RejectionCode::MalformedFrame);
+}
+
+#[test]
+fn public_bundle_rejects_indefinite_byte_string_field() {
+    // An item field encoded as an indefinite/chunked byte string is malformed.
+    let one = random_signed_alert("solo");
+    let (entry, cap, sig, _payload) = parts(&one);
+    let mut buffer: Vec<u8> = Vec::new();
+    buffer.extend_from_slice(BUNDLE_MAGIC);
+    {
+        let mut e = Encoder::new(&mut buffer);
+        e.map(2).unwrap();
+        e.u8(0).unwrap().str(BUNDLE_CODEC_ID).unwrap();
+        e.u8(1).unwrap().array(1).unwrap();
+        e.map(4).unwrap();
+        e.u8(0).unwrap().bytes(entry).unwrap();
+        e.u8(1).unwrap().bytes(cap).unwrap();
+        e.u8(2).unwrap().bytes(sig).unwrap();
+        e.u8(3).unwrap(); // key 3; value written raw below
+    }
+    buffer.push(0x5f); // indefinite byte string
+    buffer.push(0x41);
+    buffer.push(0x00);
+    buffer.push(0xff); // break
+    expect_rejected(&buffer, RejectionCode::MalformedFrame);
+}
+
+#[test]
+fn public_bundle_flags_entry_bytes_over_4kib() {
+    // Entry bytes above the frozen 4 KiB Entry ceiling reject globally,
+    // distinct from the 64 KiB capability limit.
+    let one = random_signed_alert("solo");
+    let (_entry, cap, sig, payload) = parts(&one);
+    let oversized_entry = vec![0u8; 4097];
+    let bytes = frame_raw(&[(&oversized_entry, cap, sig, payload)]);
+    expect_rejected(&bytes, RejectionCode::EntryBytesExceeded);
+}
+
+#[test]
+fn public_bundle_accepts_valid_within_size_and_rejects_one_over() {
+    let one = random_signed_alert("solo");
+    let encoded = encode_bundle(std::slice::from_ref(&one)).expect("encodes");
+    assert!(encoded.len() <= 8 * 1024 * 1024);
+    let BundleDecodeOutcome::Decoded(_) = decode_bundle(&encoded) else {
+        panic!("valid bundle within size limit rejected");
+    };
+    let mut oversized = encoded.clone();
+    oversized.resize(8 * 1024 * 1024 + 1, 0);
+    expect_rejected(&oversized, RejectionCode::TooLarge);
+}
+
+#[test]
+fn public_bundle_whole_outcome_debug_never_leaks_payload_bytes() {
+    // Formatting the ENTIRE decoded outcome (not just ItemStatus) must not
+    // expose payload bytes, ascii or decimal.
+    use riot_core::willow::{authorise_entry, build_alert_entry, encode_capability, encode_entry};
+    let author = generate_communal_author_with(&mut OsEntropy).expect("entropy");
+    let marker: &[u8] = b"HOSTILE-MARKER-PAYLOAD-BYTES-0102030405";
+    let entry = build_alert_entry(&author, &[1u8; 16], &[2u8; 16], 836_179_200_000_000, marker)
+        .expect("builds");
+    let authorised = authorise_entry(&author, entry).expect("authorises");
+    let token = authorised.authorisation_token();
+    let signature: ed25519_dalek::Signature = token.signature().clone().into();
+    let bytes = frame_raw(&[(
+        &encode_entry(authorised.entry()),
+        &encode_capability(token.capability()),
+        &signature.to_bytes(),
+        marker,
+    )]);
+
+    let rendered = format!("{:?}", decode_bundle(&bytes));
+    assert!(!rendered.contains("HOSTILE-MARKER"), "ascii marker leaked");
+    let decimal: String = marker
+        .iter()
+        .map(|b| b.to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    assert!(!rendered.contains(&decimal), "decimal byte sequence leaked");
+}
+
+#[test]
 fn public_bundle_flags_unsupported_schema() {
     // A real authorised entry over a payload that is not a Riot alert:
     // crypto verifies, schema fails.
     use riot_core::willow::{authorise_entry, build_alert_entry, encode_capability, encode_entry};
-    let author = generate_communal_author(&mut OsEntropy).expect("entropy");
+    let author = generate_communal_author_with(&mut OsEntropy).expect("entropy");
     let payload = b"HOSTILE-MARKER-not-an-alert".to_vec();
     let entry = build_alert_entry(
         &author,

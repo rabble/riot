@@ -21,16 +21,21 @@ pub use willow25::authorisation::AuthorisationToken;
 pub use willow25::entry::{Entry, NamespaceId, SubspaceId};
 pub use willow25::paths::Path;
 
-pub use clock::{snapshot_from_unix_seconds, ClockSnapshot, ClockSource, SystemClock};
+pub use clock::{system_snapshot, ClockSnapshot};
 pub use digest::{
     bundle_digest, entry_id, evidence_digest, object_digest, william3_digest, BundleDigest,
     EntryId, EvidenceDigest, ObjectDigest,
 };
 pub use entry::{create_signed_alert, AlertDraft, SignedAlert, SignedWillowEntry};
-pub use identity::{
-    generate_communal_author, AuthorIdentity, EntropySource, EvidenceAuthor, NamespaceKind,
-    OsEntropy,
-};
+pub use identity::{generate_communal_author, AuthorIdentity, EvidenceAuthor, NamespaceKind};
+
+// Conformance-only injection surface: absent from the release riot-ffi graph.
+#[cfg(feature = "conformance")]
+pub use clock::{snapshot_from_unix_seconds, ClockSource, SystemClock};
+#[cfg(feature = "conformance")]
+pub use entry::create_signed_alert_with;
+#[cfg(feature = "conformance")]
+pub use identity::{generate_communal_author_with, EntropySource, OsEntropy};
 
 /// Evidence path layout: `objects / alert / object_id / revision_id`.
 /// Binary 16-byte ID components keep immutable revisions unrelated by

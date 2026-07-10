@@ -1,6 +1,10 @@
 //! One clock snapshot yields both time views: UTC Unix seconds for the
 //! signed alert payload and TAI/J2000 microseconds for the Willow entry.
 //! They are separately labelled and never interchangeable.
+//!
+//! The production reading is `system_snapshot`, which takes no injectable
+//! source. Injectable clocks and the deterministic-instant helper live
+//! behind the `conformance` feature.
 
 use super::WillowError;
 
@@ -14,16 +18,11 @@ pub struct ClockSnapshot {
     pub uncertainty_seconds: u32,
 }
 
-/// A fallible clock. Production code uses [`SystemClock`]; deterministic or
-/// failing sources live only in tests and conformance fixtures.
-pub trait ClockSource {
-    fn snapshot(&self) -> Result<ClockSnapshot, WillowError>;
-}
-
 /// Converts one UTC Unix reading into a full snapshot via pinned hifitime.
 /// System failure, pre-J2000 readings, and out-of-range conversions all map
-/// to `CLOCK_UNAVAILABLE` — no partial snapshot escapes.
-pub fn snapshot_from_unix_seconds(
+/// to `CLOCK_UNAVAILABLE` — no partial snapshot escapes. Internal to the
+/// production path; also the deterministic helper behind `conformance`.
+pub(crate) fn snapshot_from_unix_seconds_internal(
     unix_seconds: i64,
     uncertainty_seconds: u32,
 ) -> Result<ClockSnapshot, WillowError> {
@@ -40,27 +39,41 @@ pub fn snapshot_from_unix_seconds(
     })
 }
 
-/// Production clock: one `SystemTime` read per snapshot.
-pub struct SystemClock {
-    /// Recorded into every snapshot; the system gives no NTP error bound, so
-    /// callers choose a conservative assumption.
-    pub assumed_uncertainty_seconds: u32,
+/// Production reading: one `SystemTime` read, conservative uncertainty.
+pub fn system_snapshot() -> Result<ClockSnapshot, WillowError> {
+    let unix = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|_| WillowError::ClockUnavailable)?;
+    let seconds = i64::try_from(unix.as_secs()).map_err(|_| WillowError::ClockUnavailable)?;
+    snapshot_from_unix_seconds_internal(seconds, 60)
 }
 
-impl Default for SystemClock {
-    fn default() -> Self {
-        Self {
-            assumed_uncertainty_seconds: 60,
-        }
-    }
+// ---------------------------------------------------------------------------
+// Conformance-only injection surface (feature-gated; absent from release).
+// ---------------------------------------------------------------------------
+
+/// A fallible clock. Test/conformance only.
+#[cfg(feature = "conformance")]
+pub trait ClockSource {
+    fn snapshot(&self) -> Result<ClockSnapshot, WillowError>;
 }
 
+/// Deterministic-instant helper for tests.
+#[cfg(feature = "conformance")]
+pub fn snapshot_from_unix_seconds(
+    unix_seconds: i64,
+    uncertainty_seconds: u32,
+) -> Result<ClockSnapshot, WillowError> {
+    snapshot_from_unix_seconds_internal(unix_seconds, uncertainty_seconds)
+}
+
+/// The production system clock, exposed as an injectable source for tests.
+#[cfg(feature = "conformance")]
+pub struct SystemClock;
+
+#[cfg(feature = "conformance")]
 impl ClockSource for SystemClock {
     fn snapshot(&self) -> Result<ClockSnapshot, WillowError> {
-        let unix = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_err(|_| WillowError::ClockUnavailable)?;
-        let seconds = i64::try_from(unix.as_secs()).map_err(|_| WillowError::ClockUnavailable)?;
-        snapshot_from_unix_seconds(seconds, self.assumed_uncertainty_seconds)
+        system_snapshot()
     }
 }

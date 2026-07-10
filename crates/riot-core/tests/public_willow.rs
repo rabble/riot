@@ -4,11 +4,11 @@
 
 use riot_core::model::{encode_alert, Certainty, Severity, Urgency};
 use riot_core::willow::{
-    alert_path, authorise_entry, build_alert_entry, create_signed_alert, decode_capability_canonic,
-    decode_entry_canonic, encode_capability, encode_entry, entry_id, evidence_digest,
-    generate_communal_author, snapshot_from_unix_seconds, verify_entry, william3_digest,
-    AlertDraft, ClockSnapshot, ClockSource, EntropySource, EntryFacts, EvidenceAuthor,
-    NamespaceKind, OsEntropy, WillowError,
+    alert_path, authorise_entry, build_alert_entry, create_signed_alert_with,
+    decode_capability_canonic, decode_entry_canonic, encode_capability, encode_entry, entry_id,
+    evidence_digest, generate_communal_author_with, snapshot_from_unix_seconds, verify_entry,
+    william3_digest, AlertDraft, ClockSnapshot, ClockSource, EntropySource, EntryFacts,
+    EvidenceAuthor, NamespaceKind, OsEntropy, WillowError,
 };
 use willow25::entry::Entrylike;
 use willow25::groupings::{Coordinatelike, Keylike};
@@ -18,7 +18,7 @@ const REVISION_ID: [u8; 16] = *b"riot-rev-0000001";
 const WILLOW_TS_MICROS: u64 = 836_179_200_000_000;
 
 fn author() -> EvidenceAuthor {
-    generate_communal_author(&mut OsEntropy).expect("os entropy available")
+    generate_communal_author_with(&mut OsEntropy).expect("os entropy available")
 }
 
 fn canonical_payload() -> Vec<u8> {
@@ -103,7 +103,7 @@ fn public_author_identity_exposes_full_ids_and_communal_kind() {
 
 #[test]
 fn public_author_generation_fails_closed_without_entropy() {
-    let result = generate_communal_author(&mut FailingEntropy { works_for: 0 });
+    let result = generate_communal_author_with(&mut FailingEntropy { works_for: 0 });
     assert!(
         matches!(result, Err(WillowError::EntropyUnavailable)),
         "entropy failure must return ENTROPY_UNAVAILABLE and construct no author"
@@ -156,7 +156,7 @@ fn public_clock_rejects_pre_epoch_and_out_of_range() {
 fn public_signed_alert_uses_one_snapshot_for_both_time_views() {
     let author = author();
     let snapshot = snapshot_from_unix_seconds(1_783_000_000, 60).expect("valid instant");
-    let signed = create_signed_alert(&author, &mut OsEntropy, &FixedClock(snapshot), draft())
+    let signed = create_signed_alert_with(&author, &mut OsEntropy, &FixedClock(snapshot), draft())
         .expect("factory succeeds");
 
     assert_eq!(signed.payload.created_at, snapshot.unix_seconds);
@@ -185,11 +185,11 @@ fn public_signed_alert_uses_one_snapshot_for_both_time_views() {
 fn public_signed_alert_fails_closed_on_clock_and_entropy() {
     let author = author();
     assert!(matches!(
-        create_signed_alert(&author, &mut OsEntropy, &BrokenClock, draft()),
+        create_signed_alert_with(&author, &mut OsEntropy, &BrokenClock, draft()),
         Err(WillowError::ClockUnavailable)
     ));
     assert!(matches!(
-        create_signed_alert(
+        create_signed_alert_with(
             &author,
             &mut FailingEntropy { works_for: 1 },
             &BrokenClock,
@@ -203,7 +203,7 @@ fn public_signed_alert_fails_closed_on_clock_and_entropy() {
     let mut bad = draft();
     bad.expires_at = 1_000; // long before created_at
     assert!(matches!(
-        create_signed_alert(&author, &mut OsEntropy, &FixedClock(snapshot), bad),
+        create_signed_alert_with(&author, &mut OsEntropy, &FixedClock(snapshot), bad),
         Err(WillowError::InvalidAlert(_))
     ));
 }

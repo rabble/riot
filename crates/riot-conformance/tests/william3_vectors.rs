@@ -25,7 +25,11 @@ fn william3(input: &[u8]) -> String {
 fn materialize(input: &serde_json::Value) -> Vec<u8> {
     match input["kind"].as_str().expect("input kind") {
         "empty" => Vec::new(),
-        "ascii" => input["value"].as_str().expect("ascii value").as_bytes().to_vec(),
+        "ascii" => input["value"]
+            .as_str()
+            .expect("ascii value")
+            .as_bytes()
+            .to_vec(),
         "repeat" => {
             let byte = input["byte"].as_u64().expect("byte") as u8;
             let count = input["count"].as_u64().expect("count") as usize;
@@ -96,8 +100,14 @@ fn william3_vectors_match_frozen_and_cross_checked_digests() {
         cross_checked >= 1,
         "G0 requires at least one independently cross-checked vector"
     );
-    assert!(saw_sub_chunk, "must exercise input shorter than one 1024-byte chunk");
-    assert!(saw_multi_chunk, "must exercise input longer than one 1024-byte chunk");
+    assert!(
+        saw_sub_chunk,
+        "must exercise input shorter than one 1024-byte chunk"
+    );
+    assert!(
+        saw_multi_chunk,
+        "must exercise input longer than one 1024-byte chunk"
+    );
 }
 
 #[test]

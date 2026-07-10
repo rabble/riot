@@ -13,13 +13,55 @@ const WILLOW25_PIN: &str = "=0.6.0-alpha.3";
 const BAB_RS_PIN: &str = "=0.8.1";
 const HIFITIME_PIN: &str = "=4.3.0";
 
+/// Exact frozen ceiling values from the Revision 5 limits table. Presence
+/// checks alone let a mutated ceiling slip through review.
+const EXPECTED_CEILINGS: &[(&str, u64)] = &[
+    ("artifact_bytes", 8_388_608),
+    ("entries_per_bundle", 64),
+    ("entry_bytes", 4_096),
+    ("signature_bytes", 64),
+    ("payload_bytes", 1_048_576),
+    ("cbor_nesting", 16),
+    ("map_entries", 128),
+    ("decoded_cbor_nodes", 16_384),
+    ("string_bytes", 65_536),
+    ("path_components", 64),
+    ("path_component_bytes", 256),
+    ("path_total_bytes", 2_048),
+    ("authorization_chain_depth", 16),
+    ("authorization_bytes_per_entry", 65_536),
+    ("authorization_bytes_per_bundle", 2_097_152),
+    ("warning_records", 64),
+    ("store_entries", 1_024),
+    ("store_index_records", 1_024),
+    ("store_encoded_entry_bytes", 8_388_608),
+    ("durable_receipts", 256),
+    ("open_stores_per_session", 1),
+    ("open_previews_per_session", 1),
+    ("retained_preview_input_bytes", 8_388_608),
+    ("retained_preview_output_bytes", 2_097_152),
+    ("transaction_snapshot_bytes", 16_777_216),
+    ("inspection_target_seconds", 2),
+    ("retained_store_budget_bytes", 16_777_216),
+    ("namespace_views", 64),
+    ("store_charge_entry_bytes", 512),
+    ("store_charge_namespace_bytes", 256),
+    ("store_charge_receipt_bytes", 256),
+    ("store_charge_digest_reference_bytes", 32),
+    ("entry_reference_cap", 1_024),
+    ("plan_tombstone_bytes", 256),
+    ("plans_per_preview", 64),
+];
+
 fn main() -> ExitCode {
     let mut args = std::env::args().skip(1);
     match args.next().as_deref() {
         Some("validate-contracts") => {
-            let failures = validate_contents(&workspace_root());
+            let root = workspace_root();
+            let mut failures = validate_contents(&root);
+            failures.extend(check_resolved_feature_graph(&root));
             if failures.is_empty() {
-                println!("validate-contracts: PASS");
+                println!("validate-contracts: PASS (structural + resolved feature graph)");
                 ExitCode::SUCCESS
             } else {
                 eprintln!("validate-contracts: FAIL");
@@ -62,9 +104,105 @@ fn sha256_hex(bytes: &[u8]) -> String {
 pub fn validate_contents(root: &Path) -> Vec<String> {
     let mut failures = Vec::new();
     check_workspace_manifest(root, &mut failures);
+    check_crate_manifests(root, &mut failures);
     check_lockfile(root, &mut failures);
     check_fixture_manifest(root, &mut failures);
     check_schema(root, &mut failures);
+    failures
+}
+
+/// Scans every crate manifest for dependency declarations that would widen
+/// the frozen feature surface past the workspace pins — e.g. a crate-level
+/// `willow25 = { ..., features = ["drop_format"] }` that the workspace-level
+/// check alone would never see.
+fn check_crate_manifests(root: &Path, failures: &mut Vec<String>) {
+    let crates_dir = root.join("crates");
+    let Ok(entries) = std::fs::read_dir(&crates_dir) else {
+        return; // scaffolds without a crates/ tree are validated elsewhere
+    };
+    for entry in entries.flatten() {
+        let manifest = entry.path().join("Cargo.toml");
+        let Ok(raw) = std::fs::read_to_string(&manifest) else {
+            continue;
+        };
+        let Ok(doc) = raw.parse::<toml::Table>() else {
+            failures.push(format!("{}: not valid TOML", manifest.display()));
+            continue;
+        };
+        let crate_name = entry.file_name().to_string_lossy().to_string();
+        for section in ["dependencies", "dev-dependencies", "build-dependencies"] {
+            let Some(deps) = doc.get(section).and_then(|d| d.as_table()) else {
+                continue;
+            };
+            for (dep_name, spec) in deps {
+                let features: Vec<&str> = spec
+                    .as_table()
+                    .and_then(|t| t.get("features"))
+                    .and_then(|f| f.as_array())
+                    .map(|a| a.iter().filter_map(|v| v.as_str()).collect())
+                    .unwrap_or_default();
+                if dep_name == "willow25" && features.contains(&"drop_format") {
+                    failures.push(format!(
+                        "crates/{crate_name}/Cargo.toml: {section}.willow25 enables forbidden feature `drop_format`"
+                    ));
+                }
+                if dep_name == "willow25" || dep_name == "bab_rs" {
+                    // Crate-level version overrides escape the workspace pin.
+                    if spec
+                        .as_table()
+                        .map(|t| t.contains_key("version"))
+                        .unwrap_or(spec.is_str())
+                    {
+                        failures.push(format!(
+                            "crates/{crate_name}/Cargo.toml: {section}.{dep_name} must use workspace = true, not a crate-level version"
+                        ));
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Inspects the RESOLVED feature graph of the release crate — the layer the
+/// structural manifest checks cannot see. Runs `cargo tree` with the locked
+/// graph and rejects forbidden features/crates in the riot-ffi closure.
+pub fn check_resolved_feature_graph(root: &Path) -> Vec<String> {
+    let mut failures = Vec::new();
+    let output = std::process::Command::new("cargo")
+        .args(["tree", "-p", "riot-ffi", "-e", "features", "--locked"])
+        .current_dir(root)
+        .output();
+    let Ok(output) = output else {
+        failures.push("feature graph: cargo tree could not run".into());
+        return failures;
+    };
+    if !output.status.success() {
+        failures.push("feature graph: cargo tree --locked failed (lock drift?)".into());
+        return failures;
+    }
+    let tree = String::from_utf8_lossy(&output.stdout);
+    for (needle, why) in [
+        (
+            "willow25 feature \"drop_format\"",
+            "drop_format is disabled in Phase 0A",
+        ),
+        ("openmls", "no group code in the Phase 0A graph"),
+        (
+            "riot-core feature \"conformance\"",
+            "test/conformance injection APIs must not reach the release closure",
+        ),
+    ] {
+        if tree.contains(needle) {
+            failures.push(format!("feature graph: found `{needle}` — {why}"));
+        }
+    }
+    for line in tree.lines() {
+        if line.contains("bab_rs v0.") && !line.contains("bab_rs v0.8.1") {
+            failures.push(format!(
+                "feature graph: wrong bab_rs version in closure: {line}"
+            ));
+        }
+    }
     failures
 }
 
@@ -270,47 +408,26 @@ fn check_fixture_manifest(root: &Path, failures: &mut Vec<String>) {
         ),
     }
 
+    // Ceilings are exact frozen values from the Revision 5 limits table.
+    // Presence alone is not enough: a mutated value is a contract violation.
     let ceilings = &doc["ceilings"];
-    const REQUIRED_CEILINGS: &[&str] = &[
-        "artifact_bytes",
-        "entries_per_bundle",
-        "payload_bytes",
-        "cbor_nesting",
-        "map_entries",
-        "decoded_cbor_nodes",
-        "string_bytes",
-        "path_components",
-        "path_component_bytes",
-        "path_total_bytes",
-        "authorization_chain_depth",
-        "authorization_bytes_per_entry",
-        "authorization_bytes_per_bundle",
-        "warning_records",
-        "store_entries",
-        "store_index_records",
-        "store_encoded_entry_bytes",
-        "durable_receipts",
-        "open_stores_per_session",
-        "open_previews_per_session",
-        "retained_preview_input_bytes",
-        "retained_preview_output_bytes",
-        "transaction_snapshot_bytes",
-        "inspection_target_seconds",
-        // Reopened-review additions: store charge model and plan limits.
-        "retained_store_budget_bytes",
-        "namespace_views",
-        "store_charge_entry_bytes",
-        "store_charge_namespace_bytes",
-        "store_charge_receipt_bytes",
-        "store_charge_digest_reference_bytes",
-        "entry_reference_cap",
-        "plan_tombstone_bytes",
-        "plans_per_preview",
-    ];
-    for key in REQUIRED_CEILINGS {
-        if ceilings.get(*key).map(|v| v.is_u64() || v.is_string()) != Some(true) {
-            failures.push(format!("fixtures/manifest.json: ceilings.{key} absent"));
+    for (key, expected) in EXPECTED_CEILINGS {
+        match ceilings.get(*key).and_then(|v| v.as_u64()) {
+            Some(actual) if actual == *expected => {}
+            Some(actual) => failures.push(format!(
+                "fixtures/manifest.json: ceilings.{key} must be exactly {expected} (found {actual})"
+            )),
+            None => failures.push(format!(
+                "fixtures/manifest.json: ceilings.{key} absent or not an integer (must be {expected})"
+            )),
         }
+    }
+    if ceilings
+        .get("expansion_ratio")
+        .and_then(|v| v.as_str())
+        .is_none_or(|s| !s.starts_with("1:1"))
+    {
+        failures.push("fixtures/manifest.json: ceilings.expansion_ratio must state 1:1".into());
     }
 
     for key in ["objects", "willow", "imports"] {
@@ -403,45 +520,12 @@ version = "0.8.1"
     }
 
     fn manifest_with(lock_hash: &str, vectors_hash: &str) -> String {
-        let ceilings: String = [
-            "artifact_bytes",
-            "entries_per_bundle",
-            "payload_bytes",
-            "cbor_nesting",
-            "map_entries",
-            "decoded_cbor_nodes",
-            "string_bytes",
-            "path_components",
-            "path_component_bytes",
-            "path_total_bytes",
-            "authorization_chain_depth",
-            "authorization_bytes_per_entry",
-            "authorization_bytes_per_bundle",
-            "warning_records",
-            "store_entries",
-            "store_index_records",
-            "store_encoded_entry_bytes",
-            "durable_receipts",
-            "open_stores_per_session",
-            "open_previews_per_session",
-            "retained_preview_input_bytes",
-            "retained_preview_output_bytes",
-            "transaction_snapshot_bytes",
-            "inspection_target_seconds",
-            "retained_store_budget_bytes",
-            "namespace_views",
-            "store_charge_entry_bytes",
-            "store_charge_namespace_bytes",
-            "store_charge_receipt_bytes",
-            "store_charge_digest_reference_bytes",
-            "entry_reference_cap",
-            "plan_tombstone_bytes",
-            "plans_per_preview",
-        ]
-        .iter()
-        .map(|k| format!("\"{k}\": 1"))
-        .collect::<Vec<_>>()
-        .join(",");
+        let mut ceilings: String = EXPECTED_CEILINGS
+            .iter()
+            .map(|(k, v)| format!("\"{k}\": {v}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        ceilings.push_str(",\"expansion_ratio\": \"1:1 - compression forbidden\"");
         format!(
             r#"{{
   "environment": {{ "cargo_lock_sha256": "{lock_hash}", "william3_vectors_sha256": "{vectors_hash}" }},
@@ -569,6 +653,74 @@ version = "0.8.1"
         assert!(
             failures.iter().any(|f| f.contains("drop_format")),
             "must name the drop_format violation: {failures:?}"
+        );
+    }
+
+    #[test]
+    fn rejects_mutated_ceiling_value() {
+        // The exact regression the independent review demonstrated:
+        // artifact_bytes changed from 8 MiB to 1 must fail, not pass.
+        let dir = temp_dir("mutated-ceiling");
+        good_scaffold(&dir);
+        let lock_hash = sha256_hex(good_lock().as_bytes());
+        let vectors_hash = sha256_hex(b"{\"vectors\":[]}");
+        let mutated = manifest_with(&lock_hash, &vectors_hash)
+            .replace("\"artifact_bytes\": 8388608", "\"artifact_bytes\": 1");
+        std::fs::write(dir.join("fixtures/manifest.json"), mutated).unwrap();
+        let failures = validate_contents(&dir);
+        assert!(
+            failures
+                .iter()
+                .any(|f| f.contains("artifact_bytes") && f.contains("exactly 8388608")),
+            "mutated ceiling must be named exactly: {failures:?}"
+        );
+    }
+
+    #[test]
+    fn rejects_crate_level_drop_format_enablement() {
+        // The second accepted regression: a crate-level dependency
+        // declaration enabling drop_format that the workspace check misses.
+        let dir = temp_dir("crate-dropfmt");
+        good_scaffold(&dir);
+        std::fs::create_dir_all(dir.join("crates/riot-core")).unwrap();
+        std::fs::write(
+            dir.join("crates/riot-core/Cargo.toml"),
+            r#"[package]
+name = "riot-core"
+version = "0.1.0"
+[dependencies]
+willow25 = { workspace = true, features = ["drop_format"] }
+"#,
+        )
+        .unwrap();
+        let failures = validate_contents(&dir);
+        assert!(
+            failures
+                .iter()
+                .any(|f| f.contains("riot-core") && f.contains("drop_format")),
+            "crate-level drop_format must be named: {failures:?}"
+        );
+    }
+
+    #[test]
+    fn rejects_crate_level_version_override() {
+        let dir = temp_dir("crate-version-override");
+        good_scaffold(&dir);
+        std::fs::create_dir_all(dir.join("crates/riot-core")).unwrap();
+        std::fs::write(
+            dir.join("crates/riot-core/Cargo.toml"),
+            r#"[package]
+name = "riot-core"
+version = "0.1.0"
+[dependencies]
+willow25 = { version = "=0.5.0" }
+"#,
+        )
+        .unwrap();
+        let failures = validate_contents(&dir);
+        assert!(
+            failures.iter().any(|f| f.contains("workspace = true")),
+            "crate-level version override must be named: {failures:?}"
         );
     }
 
