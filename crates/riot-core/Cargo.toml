@@ -52,3 +52,7 @@ required-features = ["conformance"]
 [[test]]
 name = "core_import_lifecycle"
 required-features = ["conformance"]
+
+[[test]]
+name = "core_import_concurrency"
+required-features = ["conformance"]
