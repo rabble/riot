@@ -278,14 +278,29 @@
       ],
       "source": "cargo test --workspace --all-features (98 tests, all green); cargo clippy --workspace --all-features --all-targets -- -D warnings",
       "note": "A background debt-audit research pass found alert_entry_path_matches_payload (added in 58b50cd) was only called from the FFI's inspectable_alert_entries listing helper, never from EvidenceStore::inspect() -- the actual commit-capable import path. A validly signed entry whose Willow path didn't match its own payload's object_id/revision_id was importable and committable through the core session API. Fixed by wiring the check into inspect(); a mismatch makes the item ineligible, same silent-exclusion pattern as cryptographically invalid items. This exposed a pervasive pre-existing test-fixture bug (core_import_transaction.rs/core_import_lifecycle.rs hardcoded a fixed payload object/revision id independent of the path params, so nearly every existing test entry was already mismatched) -- repaired both helpers. Not part of WU2's original Task 5 matrix (a general import-correctness/security finding, not session-arbiter scope); charged from contingency. This overdraws the nominal 0.25h contingency reserve by 0.25h -- flagged honestly per the ledger's audit-only policy (hours never gate a technical decision) rather than adjusted to fit."
+    },
+    {
+      "work_unit": "Debt-audit security repair (path size ceilings unenforced)",
+      "status": "completed",
+      "reported_actual_hours": 0.35,
+      "charged_hours": 0.35,
+      "commits": [
+        "b65a60f"
+      ],
+      "evidence_paths": [
+        "crates/riot-core/src/import/bundle.rs",
+        "crates/riot-core/tests/core_import_path_size_ceilings.rs"
+      ],
+      "source": "cargo test --workspace --all-features (all green, no collateral breakage); cargo clippy --workspace --all-features --all-targets -- -D warnings; cargo xtask validate-contracts",
+      "note": "The same 13-ceiling debt-audit research pass that found the path/payload binding bypass also found path_components=64/path_component_bytes=256/path_total_bytes=2048 were never checked at runtime -- willow25's own Entry/Path bounds (MCL=MCC=MPL=4096, hardcoded in the crate) are far looser, and since object_id/revision_id only consume ~96 bytes of the 4096-byte MAX_ENTRY_BYTES envelope, a validly signed entry could carry an oversized/malformed path with nothing rejecting it. Fixed by checking component count, each component's byte length, and total path length in verify_frame right after entry decode (new DiagnosticCode::PathBoundsExceeded), same per-item isolation as every other check there. Four new tests each isolate exactly one ceiling by constructing a path that violates only it while staying under willow25's own looser bounds. All actionable findings from the 13-ceiling audit are now closed; only four low-severity, currently-unreachable gaps remain (cbor_nesting, decoded_cbor_nodes, store_encoded_entry_bytes, transaction_snapshot_bytes), logged in COLLABORATION.md, unclaimed. Charged from contingency, same as the prior entry -- contingency is now overdrawn by 0.6h total, flagged honestly rather than adjusted to fit."
     }
   ],
   "totals": {
-    "charged_hours": 10.00,
+    "charged_hours": 10.35,
     "reserved_g0_g1_repair_hours": 0.0,
     "reserved_wu2_hours": 0.25,
     "reserved_wu3_hours": 4.0,
-    "reserved_contingency_hours": -0.25,
+    "reserved_contingency_hours": -0.6,
     "reserved_wu4_hours": 2.0
   }
 }
