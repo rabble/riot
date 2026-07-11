@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "crates/riot-app-cli",
     "crates/riot-core",
     "crates/riot-ffi",
     "crates/riot-conformance",

@@ -1,0 +1,7 @@
+{
+  "name": "Hello Riot",
+  "description": "A tiny test app",
+  "version": "1.0.0",
+  "entry_point": "index.html",
+  "permissions": ["app-data"]
+}
