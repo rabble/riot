@@ -70,15 +70,25 @@ re-derives the bytes and compares, so drift between source and embedded
 pack fails CI rather than shipping stale). The future `riot-app pack` CLI
 wraps this same function.
 
-Starter-catalog signing uses a committed dev-only keypair, clearly named
-as fixture material (`fixtures/apps/dev-author-*`). This is deliberate
-and is not covered by the "no signing material in commits" collaboration
-rule, because the key protects nothing: it is test-fixture material (like
-checked-in test keys throughout the codebase), an app it signs still
-cannot run anywhere until a space's organizer approves it, and the
-committed key is what lets the drift test re-derive the embedded pack
-byte-for-byte in CI. The directory round replaces it with a real project
-signing identity whose private half never enters the repo.
+**Correction (2026-07-11, planning-time ground truth):** an earlier draft
+of this section had the starter pack signed with a committed dev-only
+keypair. Investigation while writing the implementation plan found there
+is no manifest/bundle signature mechanism anywhere in the codebase to
+reuse: app integrity is *content-addressed* — strict canonical CBOR
+decoding plus the content-derived `app_id` (`manifest.rs::app_id_for`) —
+and entry-level Willow signatures only exist where entries cross devices,
+where the app-directory design already assigns signing to the *carrier*
+at share time, not the author at pack time. So the starter catalog
+commits no key material at all: the embedded manifest+bundle bytes are
+verified through the standard `decode_manifest`/`decode_app_bundle`
+canonical path with the `app_id` re-derived on load, the manifest's
+`author` field carries a fixed committed *public* identity (the
+conference fixture's fixed-public-author precedent; placeholder values
+pinned in the implementation plan, replaced by a real project identity in
+the directory round), and tampering with embedded bytes fails decode or
+changes the `app_id` — either way the tampered app is silently excluded
+or arrives untrusted. Launch authorization remains entirely with the
+space organizer's trust marker.
 
 ## Organizer approval flow
 
