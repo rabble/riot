@@ -153,3 +153,9 @@ clippy/fmt/`xtask validate-contracts` clean; `xcodebuild test` (RiotKit)
 19/19 passed; `./gradlew testDebugUnitTest` 39/39 passed, both debug APKs
 assemble. Physical two-device BLE verification remains deferred per the
 design doc — not achievable in this environment.
+
+## Active claim: reflect today's research into living design specs (2026-07-11, new)
+
+| Owner | Scope | Files | State | Evidence / handoff |
+| --- | --- | --- | --- | --- |
+| Claude (this session) | Fold this session's 5 research docs' design implications into the actual specs (not just leaving them as standalone research docs) | `docs/superpowers/specs/2026-07-10-riot-dual-mode-design.md`, `docs/architecture/willow-architecture.md` | **Done, released** | Committed `d3f9535`, pushed to `origin/main`. Added a 2026-07-11 addendum to the dual-mode spec (matching the existing addendum format) and two grounded notes to willow-architecture.md (Object Types: media authenticity via `verification`; Phase 2 WTP: Arti/data-mule transport candidates). Docs-only, no code touched. Both files are free. |
