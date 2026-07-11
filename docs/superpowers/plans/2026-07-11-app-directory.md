@@ -1409,6 +1409,98 @@ git commit -m "feat(apps): add starter-catalog verification"
 - [ ] **Step 4:** `cargo test -p riot-ffi --all-features` green; `cargo test --workspace --all-features` green; clippy clean; `cargo xtask validate-contracts` PASS.
 - [ ] **Step 5:** Commit `feat(ffi): carry app entries over the sync surface`. Update the COLLABORATION.md claim row files list if `sync/ffi_bridge.rs` was touched (it's currently claimed-free but listed under a Codex "Done, released" row — post a note).
 
+#### 5b-2 findings (receive-side investigation, 2026-07-12)
+
+Read-only investigation. All line numbers pinned to commit `53427c5` so they survive the in-flight
+Task 5b edits. Produced by an investigation session while the code half of 5b was being implemented
+concurrently under the Codex claim (COLLABORATION.md:194) — this is Step 1's written answer, filed
+here rather than in a code commit because the files were not free.
+
+**(a) Where an incoming non-alert entry is rejected today.**
+
+`inspectable_alert_entries` — `crates/riot-ffi/src/mobile_state.rs:804-863`. Every rejection is
+*wholesale* (`return Err(MobileError::ImportRejected)` aborts the entire bundle; it does not skip the
+item):
+
+- `:817-818` — `decode_alert(item.frame.payload_bytes())` runs on **every** valid item. An app-data
+  payload is opaque bytes, not a CBOR alert, so `decode_alert` fails and
+  `.map_err(|_| MobileError::ImportRejected)` rejects the whole incoming bundle. **This is the gate.**
+- `:819-827` — `alert_entry_path_matches_payload`: even a payload that did decode must bind to an
+  alert path.
+- `:859-861` — `if entries.is_empty() { return Err(ImportRejected) }`: a bundle of *only* app entries
+  is rejected even if the per-item decode above were relaxed to `continue`.
+
+Called from `inspect_bytes` (`:387`) and the accept path (`:631`).
+
+There is a **second, independent gate**: the eligible-count equality
+`preview.eligible_count()? != sync_entries.len()` at `:409` (also `:669`, `:1451`). Core counts what
+*it* deems eligible (`session.rs:692`, `let eligible = verified.len()`; ineligible items are silently
+not carried into the preview — `session.rs:675`). Core admission was already widened to accept
+`apps/` (`b4abd93`) and `app-index/` (`bac5558`/`e37d4a2`) paths, so **core will count app entries as
+eligible.** Therefore relaxing `inspectable_alert_entries` to merely skip app entries is *not*
+sufficient — the FFI's alert-only vector would be shorter than core's eligible count and this
+equality would reject the bundle instead. Both gates must move together.
+
+**(b) Does the receive side require core `sync/` PROTOCOL changes? — No.**
+
+It is achievable **entirely in the riot-ffi review/accept layer**. `crates/riot-core/src/sync/` is
+payload-agnostic: `git grep -niE 'alert|decode_alert|app_data|apps::' -- crates/riot-core/src/sync/`
+returns no semantic hits, and the sole `payload_bytes` occurrence (`sync/state.rs:291`) merely
+re-assembles a `SignedWillowEntry`. The protocol keys purely on `EntryId` + opaque signed entries:
+
+- `ByteSyncSession::new(namespace_id, inventory: Vec<SignedWillowEntry>)` — `sync/ffi_bridge.rs:27-36`
+- `ReconcileSession::new(namespace_id, entries: Vec<SignedWillowEntry>)` — `sync/state.rs:49`;
+  inventory is `Vec<(EntryId, SignedWillowEntry)>` (`:43`); `select()` resolves by id (`:235-239`)
+- `SyncAction::ImportBundle(Vec<u8>)` — `sync/ffi_bridge.rs:89`, `sync/state.rs:129` — hands the FFI
+  raw bundle bytes to review
+
+Nothing in `sync/` inspects a path or a payload type. Both halves (send: put app entries in the
+inventory vec; receive: admit them at review) are pure riot-ffi changes. **No coordination with the
+`sync/` owner is required** — Task 5b's `sync/ffi_bridge.rs` escape hatch and the plan's "STOP if core
+sync changes are needed" trigger do not fire.
+
+**(c) The invariant the receive side must maintain.**
+
+> `sync_inventory` contains **exactly** the signed bytes of the live store entries that *participate*
+> in sync — keyed by `entry_id`, sorted, capped at `MAX_SYNC_IDS` — where "participates" is **one**
+> predicate applied identically at all three touch-points:
+> 1. build/remember — `remember_sync_entries` (`mobile_state.rs:888-911`)
+> 2. exclusion filter — `ensure_complete_sync_inventory` (`:913-942`)
+> 3. completeness equality — `if inventory_ids != live_ids { return Err(Internal) }` (`:947-953`)
+
+**Today these three DISAGREE, and only the receive-side gate hides it:**
+
+- `remember_sync_entries` (`:892-901`) pushes **every** incoming `SignedWillowEntry` into
+  `sync_inventory` with *no app/alert filter at all* — it filters only on liveness (`:902-905`,
+  retain by `live_entry_ids()`).
+- `ensure_complete_sync_inventory` (`:938-940`) computes `live_ids` **excluding** app-data
+  (`is_app_data_entry`) and app-index entries.
+
+So if an app entry ever arrives from a peer and commits, it lands in `sync_inventory` (rule 1) but is
+absent from `live_ids` (rule 2) → `inventory_ids != live_ids` → `MobileError::Internal` → **the next
+`open_sync_session()` bricks permanently.** The only thing preventing this today is that
+`inspectable_alert_entries` rejects app entries before they can commit. That gate is **load-bearing
+for the completeness invariant**, not merely a policy choice — anyone relaxing it must land rule 2/3
+in the same change.
+
+Consequences for whoever lands 5b:
+
+- **Send-side remember and the exclusion filter must be atomic.** Adding app entries to
+  `sync_inventory` at write time *without* simultaneously dropping the app-exclusion in
+  `ensure_complete_sync_inventory` produces the same mismatch (inventory ⊃ `live_ids`) and bricks
+  `open_sync_session` **on the writer's own device**. These cannot be split across commits.
+- Once the exclusion is dropped, the simplest sound predicate is "**every live entry participates**",
+  which also makes `remember_sync_entries`' existing unfiltered behavior correct as-is — the receive
+  side then needs no change at touch-point 1.
+- **Do not unify `list_current_entries`** (`:313-341`) with the sync predicate. It is a UI listing,
+  not a sync touch-point, and must stay alert-only (that is the `9e0dabc` reopen-bug regression;
+  test at `:1736`).
+- **Cap interaction:** `live_ids.len() > MAX_SYNC_IDS` → `SessionLimit` (`:944-946`). Once app
+  entries participate they consume the same `MAX_SYNC_IDS` budget as alerts, so a prolific app can
+  exhaust it and turn a previously-working `open_sync_session` into `SessionLimit`. This needs an
+  explicit decision (separate cap, or an eviction policy) — it is not addressed by simply dropping
+  the filter.
+
 ---
 
 ### Task 6: FFI surface — directory listings, share, endorse
