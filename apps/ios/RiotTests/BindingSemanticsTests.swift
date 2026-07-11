@@ -84,6 +84,26 @@ final class BindingSemanticsTests: XCTestCase {
         XCTAssertEqual(second.signerID, first.signerID)
         XCTAssertEqual(try secondProcess.currentEntries().count, 2)
     }
+
+    func testLegacySnapshotWithoutSealedIdentityMigratesWithoutLosingSignedContent() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let snapshotURL = directory.appendingPathComponent("profile.json")
+        let storage = try ProtectedProfileStorage(fileURL: snapshotURL)
+        let keys = TestWrappingKeyStore()
+        let original = try RiotProfileRepository.open(storage: storage, keyStore: keys)
+        let space = try original.createPublicSpace(title: "Legacy public space")
+        let signed = try original.signAlert(
+            in: space,
+            draft: restartDraft(headline: "Legacy signed content")
+        )
+        try removeSealedIdentity(from: snapshotURL)
+
+        let migrated = try RiotProfileRepository.open(storage: storage, keyStore: keys)
+
+        XCTAssertEqual(try migrated.currentEntries().map(\.entryID), [signed.entryID])
+        XCTAssertEqual(try sealedIdentityBytes(in: snapshotURL).count, 112)
+    }
 }
 
 private final class TestWrappingKeyStore: WrappingKeyStore {
@@ -113,4 +133,12 @@ private func sealedIdentityBytes(in snapshotURL: URL) throws -> Data {
     )
     let encoded = try XCTUnwrap(object["sealedIdentity"] as? String)
     return try XCTUnwrap(Data(base64Encoded: encoded))
+}
+
+private func removeSealedIdentity(from snapshotURL: URL) throws {
+    var object = try XCTUnwrap(
+        JSONSerialization.jsonObject(with: Data(contentsOf: snapshotURL)) as? [String: Any]
+    )
+    object.removeValue(forKey: "sealedIdentity")
+    try JSONSerialization.data(withJSONObject: object).write(to: snapshotURL, options: .atomic)
 }

@@ -1,4 +1,5 @@
 import Foundation
+import OSLog
 import Security
 
 public protocol WrappingKeyStore {
@@ -6,11 +7,12 @@ public protocol WrappingKeyStore {
 }
 
 public final class KeychainWrappingKeyStore: WrappingKeyStore {
+    private static let logger = Logger(subsystem: "net.protest.riot", category: "identity-keychain")
     private let service: String
     private let account: String
 
     public init(
-        service: String = "net.protest.riot.identity-wrapping",
+        service: String = "net.protest.riot.identity-wrapping.v2",
         account: String = "local-profile"
     ) {
         self.service = service
@@ -32,7 +34,7 @@ public final class KeychainWrappingKeyStore: WrappingKeyStore {
     private func read() -> (OSStatus, Data?) {
         var result: CFTypeRef?
         let status = SecItemCopyMatching(
-            baseQuery(returnData: true) as CFDictionary,
+            lookupQuery() as CFDictionary,
             &result
         )
         guard status == errSecSuccess else { return (status, nil) }
@@ -52,10 +54,11 @@ public final class KeychainWrappingKeyStore: WrappingKeyStore {
         var key = Data(bytes)
         defer { key.resetBytes(in: key.startIndex..<key.endIndex) }
 
-        var item = baseQuery(returnData: false)
+        var item = identityAttributes()
         item[kSecValueData as String] = key
         item[kSecAttrAccessible as String] = kSecAttrAccessibleWhenPasscodeSetThisDeviceOnly
         var status = SecItemAdd(item as CFDictionary, nil)
+        var usedFallback = false
 
         // Simulators and devices without a configured passcode cannot use the
         // strongest passcode-gated class. Keep the key device-only and unlocked
@@ -63,6 +66,7 @@ public final class KeychainWrappingKeyStore: WrappingKeyStore {
         if status == errSecParam || status == errSecNotAvailable || status == errSecAuthFailed {
             item[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
             status = SecItemAdd(item as CFDictionary, nil)
+            usedFallback = true
         }
         if status == errSecDuplicateItem {
             let (readStatus, existing) = read()
@@ -72,18 +76,28 @@ public final class KeychainWrappingKeyStore: WrappingKeyStore {
             return existing
         }
         guard status == errSecSuccess else { throw KeychainWrappingKeyError.status(status) }
-        return Data(bytes)
+        if usedFallback {
+            Self.logger.warning("Wrapping key stored with when-unlocked-this-device-only simulator fallback")
+        } else {
+            Self.logger.notice("Wrapping key stored with when-passcode-set-this-device-only accessibility")
+        }
+        return key
     }
 
-    private func baseQuery(returnData: Bool) -> [String: Any] {
+    private func identityAttributes() -> [String: Any] {
         [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: account,
             kSecAttrSynchronizable as String: false,
-            kSecReturnData as String: returnData,
-            kSecMatchLimit as String: kSecMatchLimitOne,
         ]
+    }
+
+    private func lookupQuery() -> [String: Any] {
+        var query = identityAttributes()
+        query[kSecReturnData as String] = true
+        query[kSecMatchLimit as String] = kSecMatchLimitOne
+        return query
     }
 }
 
