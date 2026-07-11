@@ -92,13 +92,38 @@ pub fn resolve_display_names(
 /// mistake this tag for either of them, and do not build an authorization
 /// decision on top of it.
 pub fn render_display_name(name: Option<&str>, subspace_id: &[u8; SUBSPACE_ID_BYTES]) -> String {
+    let tag = key_tag(subspace_id);
+    let name = name.unwrap_or(FALLBACK_DISPLAY_NAME);
+    format!("{name} · {tag}")
+}
+
+/// What a person with no profile card is called. Rendering the nameless in the
+/// same `<name> · <tag>` shape as everyone else is deliberate — no surface
+/// needs a second layout for them, and nobody is singled out for not having
+/// picked a name.
+///
+/// Exposed so the FFI's `WhoAmI`, which carries `display_name` and `tag` as
+/// separate fields for a renderer that reassembles them, uses the same word
+/// [`render_display_name`] would have. A hardcoded copy could drift.
+pub const FALLBACK_DISPLAY_NAME: &str = "member";
+
+/// The key-derived tag alone: the first [`KEY_TAG_BYTES`] bytes of the
+/// subspace id as lowercase hex. This is the SAME derivation
+/// [`render_display_name`] appends, factored out for the one caller that needs
+/// the parts separately — the FFI's `WhoAmI`, which hands `{display_name, tag}`
+/// to a native/JS renderer that reassembles them.
+///
+/// It exists so the tag is derived in exactly one place. A second
+/// implementation could drift from the rendered form and quietly show a person
+/// a tag that does not match the one in their own name.
+///
+/// The caveats on [`render_display_name`] apply verbatim: the tag is not a
+/// signature, is cheap to grind, and must not carry an authorization decision.
+pub fn key_tag(subspace_id: &[u8; SUBSPACE_ID_BYTES]) -> String {
     let mut tag = String::with_capacity(KEY_TAG_BYTES * 2);
     for byte in &subspace_id[..KEY_TAG_BYTES] {
         // Writing to a String is infallible.
         let _ = write!(tag, "{byte:02x}");
     }
-    match name {
-        Some(name) => format!("{name} · {tag}"),
-        None => format!("member · {tag}"),
-    }
+    tag
 }

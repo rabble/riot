@@ -10,6 +10,12 @@ use riot_core::import::{
     decode_bundle, encode_bundle, BundleDecodeOutcome, ItemStatus, MAX_BUNDLE_BYTES,
 };
 use riot_core::model::{decode_alert, encode_alert, AlertPayload, Certainty, Severity, Urgency};
+use riot_core::profile::card::{encode_profile_card, ProfileCard};
+use riot_core::profile::path::{is_profile_prefixed, profile_card_path, SUBSPACE_ID_BYTES};
+use riot_core::profile::resolver::{
+    key_tag, render_display_name, resolve_display_names, FALLBACK_DISPLAY_NAME,
+};
+use riot_core::profile::ProfileError;
 use riot_core::session::{
     public_entry_identity, CommitOutcome, EvidenceStore, ImportContext, ImportPlan, ImportPreview,
     ImportSelection, InspectOutcome, RiotSession,
@@ -325,12 +331,13 @@ pub(crate) fn list_current_entries(
             .as_ref()
             .ok_or(MobileError::InvalidInput)?
             .namespace_id;
-        // Alerts only. App-data (`apps/<app_id>/...`) and app-index
-        // (`app-index/<app_id>/...`) entries share this store but are not
-        // alerts, so exclude them the same way `ensure_complete_sync_inventory`
-        // does — otherwise a single local `app_data_put`, or its replay on the
-        // next open, leaves a live non-alert entry with no match in
-        // `profile.entries` and bricks this listing with `Internal`.
+        // Alerts only. App-data (`apps/<app_id>/...`), app-index
+        // (`app-index/<app_id>/...`), and profile (`profile/<subspace>/card`)
+        // entries share this store but are not alerts, so exclude them the same
+        // way `ensure_complete_sync_inventory` does — otherwise a single local
+        // `app_data_put` or `set_display_name`, or its replay on the next open,
+        // leaves a live non-alert entry with no match in `profile.entries` and
+        // bricks this listing with `Internal`.
         let app_index_prefix =
             riot_core::willow::Path::from_slices(&[riot_core::apps::index::APP_INDEX_COMPONENT])
                 .map_err(|_| MobileError::Internal)?;
@@ -349,7 +356,9 @@ pub(crate) fn list_current_entries(
             .map_err(map_core_error)?
             .into_iter()
             .filter(|(id, entry, _)| {
-                !riot_core::apps::entry::is_app_data_entry(entry) && !app_index_ids.contains(id)
+                !riot_core::apps::entry::is_app_data_entry(entry)
+                    && !app_index_ids.contains(id)
+                    && !is_profile_prefixed(entry.path())
             })
             .map(|(id, _, _)| id)
             .collect();
@@ -855,9 +864,18 @@ fn inspectable_entries(
         if namespace_id != expected_namespace_id {
             return Err(MobileError::ImportRejected);
         }
-        let is_app = riot_core::apps::entry::is_app_data_entry(&decoded_entry)
-            || riot_core::apps::index::classify_app_index_path(decoded_entry.path()).is_some();
-        let current = if is_app {
+        // App and profile entries sync and commit like any other, but they are
+        // not alerts and carry no alert row. Anything else must decode AS an
+        // alert — so a payload that is not one is rejected outright.
+        //
+        // Profile cards must be listed here explicitly. Without it a synced card
+        // falls into the alert branch below, `decode_alert` fails on a
+        // profile-card payload, and the ENTIRE import is rejected — which would
+        // mean a display name could never reach another device at all.
+        let is_non_alert = riot_core::apps::entry::is_app_data_entry(&decoded_entry)
+            || riot_core::apps::index::classify_app_index_path(decoded_entry.path()).is_some()
+            || is_profile_prefixed(decoded_entry.path());
+        let current = if is_non_alert {
             None
         } else {
             let alert = decode_alert(item.frame.payload_bytes())
@@ -1007,9 +1025,16 @@ fn advance_app_write_floor(
     for signed in entries {
         let entry = riot_core::willow::decode_entry_canonic(&signed.entry_bytes)
             .map_err(|_| MobileError::Internal)?;
-        let is_app = riot_core::apps::entry::is_app_data_entry(&entry)
-            || riot_core::apps::index::classify_app_index_path(entry.path()).is_some();
-        if is_app {
+        // Profile cards ride this floor too. They are last-write-wins on ONE
+        // coordinate, so a rename must land at a strictly later timestamp than
+        // the name it replaces. Without this, two `set_display_name` calls in
+        // the same wall-clock second both get `now * 1e6`, the second is an
+        // equal-timestamp write, and Willow keeps the OLD name — a rename that
+        // silently does nothing.
+        let is_local_write = riot_core::apps::entry::is_app_data_entry(&entry)
+            || riot_core::apps::index::classify_app_index_path(entry.path()).is_some()
+            || is_profile_prefixed(entry.path());
+        if is_local_write {
             let timestamp = riot_core::willow::entry_timestamp_micros(&signed.entry_bytes)
                 .map_err(|_| MobileError::Internal)?;
             profile.app_data_timestamp_floor_micros =
@@ -1218,19 +1243,25 @@ pub(crate) fn install_from_directory(
     })
 }
 
-/// The stored bundle bytes a native host needs to *serve* a held app's pages.
-/// `install_from_directory` admits a carried app into the runtime, but the
-/// WebView still has to render it, and a carried app has no local file to read
-/// — the store holds the only copy. Same `None`-means-unopenable reasoning.
-pub(crate) fn app_bundle_bytes(
+/// The stored manifest and bundle bytes a native host needs to *serve* a held
+/// app's pages and re-admit it after a relaunch. `install_from_directory` admits
+/// a carried app into the runtime, but the WebView still has to render it, and a
+/// carried app has no local file to read — the store holds the only copy. Same
+/// `None`-means-unopenable reasoning.
+///
+/// Both halves come from ONE verified read, so they can never disagree.
+pub(crate) fn app_pair_bytes(
     inner: &Arc<Mutex<ProfileState>>,
     app_id: Vec<u8>,
-) -> Result<Vec<u8>, MobileError> {
+) -> Result<crate::apps_ffi::AppPairBytes, MobileError> {
     let app_id = exact_app_id(&app_id)?;
     with_active(inner, |profile| {
         riot_core::apps::index::app_pair_bytes(&profile.store, &app_id)
             .map_err(map_apps_error)?
-            .map(|pair| pair.bundle_bytes)
+            .map(|pair| crate::apps_ffi::AppPairBytes {
+                manifest_bytes: pair.manifest_bytes,
+                bundle_bytes: pair.bundle_bytes,
+            })
             .ok_or(MobileError::AppRejected)
     })
 }
@@ -1443,14 +1474,146 @@ pub(crate) fn replay_app_data_bundle(
     })
 }
 
-/// A short, stable, non-identifying label an app can show for the current
-/// person: `"member-"` + the first 8 lowercase hex chars of the profile's
-/// subspace id. Never exposes full key material.
+/// The label an app shows for the current person, RENDERED: `"Ana · a3f91122"`,
+/// or `"member · a3f91122"` before they have claimed a name.
+///
+/// This is what `riot.whoami()` reads. It used to be `"member-<hex>"` — a label
+/// with nowhere for a real name to go. Identical to `my_display_name`; the two
+/// names exist because the app runtime and the profile surface are separate
+/// FFI objects, not because the answer differs.
 pub(crate) fn app_display_name(inner: &Arc<Mutex<ProfileState>>) -> Result<String, MobileError> {
+    my_display_name(inner)
+}
+
+// ─── Profiles ────────────────────────────────────────────────────────────────
+//
+// A profile card is an ordinary signed entry, so it is written through the SAME
+// local-write pipeline as an app write (`sign_local_app_entry` +
+// `commit_local_app_entries`) — NOT through `riot_core::profile::resolver::
+// write_profile_card`.
+//
+// That is not a style preference. `write_profile_card` takes only an
+// `&EvidenceStore`, so an entry it commits lands in the store while staying
+// invisible to this profile's `sync_inventory`. Two things break at once:
+// `ensure_complete_sync_inventory` requires the inventory to equal the store's
+// live ids exactly, so every later `open_sync_session` would fail with
+// `Internal` — permanently — and the name would never reach a peer anyway,
+// because the inventory IS what sync offers. `commit_local_app_entries` keeps
+// the inventory whole, and still commits through inspect → plan → commit, so
+// there is no privileged write path here either. The core function remains the
+// right API for core-level callers, which carry no such bookkeeping.
+
+fn own_subspace_id(profile: &LocalProfile) -> [u8; SUBSPACE_ID_BYTES] {
+    *profile.author.subspace_id().as_bytes()
+}
+
+/// A raw 32-byte subspace id as the profile FFI surface carries it.
+fn exact_subspace_id(value: &[u8]) -> Result<[u8; SUBSPACE_ID_BYTES], MobileError> {
+    value.try_into().map_err(|_| MobileError::InvalidInput)
+}
+
+/// The one place a resolved (or missing) name becomes a `WhoAmI`. An id with no
+/// card resolves to the `member` fallback rather than an error — see
+/// `ProfileSession::profile_for`.
+fn who_am_i(
+    names: &std::collections::BTreeMap<[u8; SUBSPACE_ID_BYTES], String>,
+    subspace_id: [u8; SUBSPACE_ID_BYTES],
+) -> crate::profile_ffi::WhoAmI {
+    crate::profile_ffi::WhoAmI {
+        id: subspace_id.to_vec(),
+        display_name: names
+            .get(&subspace_id)
+            .cloned()
+            .unwrap_or_else(|| FALLBACK_DISPLAY_NAME.to_string()),
+        tag: key_tag(&subspace_id),
+    }
+}
+
+pub(crate) fn set_display_name(
+    inner: &Arc<Mutex<ProfileState>>,
+    name: String,
+) -> Result<(), MobileError> {
     with_active(inner, |profile| {
-        let subspace_id = *profile.author.subspace_id().as_bytes();
-        Ok(format!("member-{}", hex(&subspace_id[..4])))
+        // Same guard as app_data_put/endorse_app: the commit runs through
+        // store.inspect, which replaces the session-wide preview slot and would
+        // clobber an in-flight sync review.
+        if sync_session_is_active(profile) {
+            return Err(MobileError::InvalidInput);
+        }
+        let card = ProfileCard { display_name: name };
+        // The codec is the SINGLE enforcement point for the name's bounds —
+        // empty and oversized both come back as FieldInvalid from here. Nothing
+        // is pre-validated above it, so there is exactly one rule to change.
+        let payload = encode_profile_card(&card).map_err(map_profile_error)?;
+        let path = profile_card_path(&own_subspace_id(profile)).map_err(map_profile_error)?;
+        let timestamp = next_app_write_timestamp(profile)?;
+        let signed = sign_local_app_entry(profile, path, &payload, timestamp)?;
+        commit_local_app_entries(profile, vec![signed])?;
+        Ok(())
     })
+}
+
+pub(crate) fn my_display_name(inner: &Arc<Mutex<ProfileState>>) -> Result<String, MobileError> {
+    with_active(inner, |profile| {
+        let subspace_id = own_subspace_id(profile);
+        let names = resolve_display_names(&profile.store).map_err(map_profile_error)?;
+        // Rendered, never bare — the raw name never leaves this function.
+        Ok(render_display_name(
+            names.get(&subspace_id).map(String::as_str),
+            &subspace_id,
+        ))
+    })
+}
+
+pub(crate) fn whoami(
+    inner: &Arc<Mutex<ProfileState>>,
+) -> Result<crate::profile_ffi::WhoAmI, MobileError> {
+    with_active(inner, |profile| {
+        let subspace_id = own_subspace_id(profile);
+        let names = resolve_display_names(&profile.store).map_err(map_profile_error)?;
+        Ok(who_am_i(&names, subspace_id))
+    })
+}
+
+pub(crate) fn profile_for(
+    inner: &Arc<Mutex<ProfileState>>,
+    id: Vec<u8>,
+) -> Result<crate::profile_ffi::WhoAmI, MobileError> {
+    // A wrong-length id is a caller bug and IS an error. An unknown but
+    // well-formed id is not — it is simply someone whose card has not synced
+    // here yet, and an app must still be able to draw their row.
+    let subspace_id = exact_subspace_id(&id)?;
+    with_active(inner, |profile| {
+        let names = resolve_display_names(&profile.store).map_err(map_profile_error)?;
+        Ok(who_am_i(&names, subspace_id))
+    })
+}
+
+pub(crate) fn display_names(
+    inner: &Arc<Mutex<ProfileState>>,
+) -> Result<Vec<crate::profile_ffi::DisplayNameRecord>, MobileError> {
+    with_active(inner, |profile| {
+        let names = resolve_display_names(&profile.store).map_err(map_profile_error)?;
+        Ok(names
+            .into_iter()
+            .map(|(subspace_id, name)| crate::profile_ffi::DisplayNameRecord {
+                subspace_id: subspace_id.to_vec(),
+                // Every name crossing the boundary is rendered. `resolve_display_names`
+                // hands back the raw claim; this is where it stops being raw.
+                rendered: render_display_name(Some(&name), &subspace_id),
+            })
+            .collect())
+    })
+}
+
+fn map_profile_error(error: ProfileError) -> MobileError {
+    match error {
+        // An empty or oversized display name — the codec's bounds check, which
+        // is the only place the name's length is enforced.
+        ProfileError::FieldInvalid => MobileError::InvalidInput,
+        ProfileError::StoreRejected => MobileError::StoreFull,
+        ProfileError::PathInvalid | ProfileError::Willow(_) => MobileError::Internal,
+    }
 }
 
 pub(crate) fn app_data_get(

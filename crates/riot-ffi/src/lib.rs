@@ -7,8 +7,10 @@
 mod apps_ffi;
 mod mobile_api;
 mod mobile_state;
+mod profile_ffi;
 
 pub use apps_ffi::*;
 pub use mobile_api::*;
+pub use profile_ffi::*;
 
 uniffi::setup_scaffolding!();
