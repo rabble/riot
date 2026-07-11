@@ -6,6 +6,7 @@
 
 mod hex_codec;
 mod sign_conference_fixture;
+mod verify_conference_export;
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -91,6 +92,13 @@ fn main() -> ExitCode {
             Ok(()) => ExitCode::SUCCESS,
             Err(error) => {
                 eprintln!("sign-conference-fixture: FAIL: {error}");
+                ExitCode::FAILURE
+            }
+        },
+        Some("verify-conference-export") => match verify_conference_export::run(&workspace_root()) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("verify-conference-export: FAIL: {error}");
                 ExitCode::FAILURE
             }
         },
