@@ -100,34 +100,41 @@ private struct SpacesView: View {
 
 private struct IncidentBoardView: View {
     @ObservedObject var model: RiotAppModel
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
         Group {
             if model.entries.isEmpty {
-                ContentUnavailableView(
-                    "No alerts yet",
-                    systemImage: "exclamationmark.bubble",
-                    description: Text("Create and review an alert on this device. It stays local until you explicitly sync it.")
+                RiotEmptyState(
+                    title: "No alerts yet",
+                    message: "Create and review an alert on this device. It stays local until you explicitly sync it."
                 )
             } else {
-                List(model.entries) { entry in
-                    VStack(alignment: .leading, spacing: 10) {
-                        Text(entry.headline).font(.headline)
-                        if entry.aiAssisted {
-                            Label("AI-assisted draft · human reviewed and signed", systemImage: "person.crop.circle.badge.checkmark")
-                                .font(.caption.weight(.semibold))
+                ScrollView {
+                    VStack(spacing: 12) {
+                        ForEach(model.entries) { entry in
+                            RiotCard {
+                                VStack(alignment: .leading, spacing: 10) {
+                                    Text(entry.headline)
+                                        .font(.riot(.body, size: 17, relativeTo: .headline))
+                                        .foregroundStyle(RiotTheme.ink(for: colorScheme))
+                                    if entry.aiAssisted {
+                                        RiotBadge("AI-assisted · human reviewed and signed")
+                                    }
+                                    Text("Created \(Date(timeIntervalSince1970: TimeInterval(entry.createdAt)), style: .relative)")
+                                        .font(.riot(.mono, size: 11, relativeTo: .caption2))
+                                        .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
+                                    IdentifierRow(label: "Entry", value: entry.entryID)
+                                    IdentifierRow(label: "Signer", value: entry.signerID)
+                                }
+                            }
                         }
-                        Text("Created \(Date(timeIntervalSince1970: TimeInterval(entry.createdAt)), style: .relative)")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        IdentifierRow(label: "Entry", value: entry.entryID)
-                        IdentifierRow(label: "Signer", value: entry.signerID)
                     }
-                    .padding(.vertical, 6)
+                    .padding(20)
                 }
             }
         }
-        .navigationTitle(model.space?.title ?? "Incident board")
+        .riotHeader(eyebrow: "Public incident space", model.space?.title ?? "Incident board")
     }
 }
 
