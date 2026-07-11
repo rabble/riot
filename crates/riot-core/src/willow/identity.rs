@@ -214,6 +214,47 @@ pub fn generate_communal_author() -> Result<EvidenceAuthor, WillowError> {
     EvidenceAuthor::generate(os_fill)
 }
 
+/// Production factory for the author who **creates** a space: the namespace ID
+/// is the creator's own subspace ID (the same 32-byte public key reused as the
+/// space's identifier).
+///
+/// This is what makes a space's organizer knowable. Trust markers are only
+/// honored from a recognized organizer, and a member who joins a space knows
+/// nothing but its namespace ID — so unless the organizer is *derivable from
+/// the space itself*, an organizer's approval can never reach anyone else.
+/// Binding them makes `organizer_subspace_id == namespace_id`, so every member
+/// derives it with no extra plumbing, no record field, and no key exchange.
+/// It is the "fixed, known organizer subspace per space" the signed-JS-apps
+/// design called for, and it mirrors the conference fixture, which already
+/// reuses one public value as both namespace and author subspace.
+///
+/// Safe by Willow's own rules: in a communal namespace the namespace secret
+/// confers no privilege (all authority flows from subspace keys), which is why
+/// `generate` discards it. Reusing the subspace key as the namespace ID
+/// therefore grants the creator nothing beyond their own subspace.
+///
+/// Namespace IDs must be communal (even final byte), while subspace keys are
+/// unconstrained — so this redraws until the subspace public key happens to be
+/// communal-shaped (~2 draws on average).
+pub fn generate_space_organizer_author() -> Result<EvidenceAuthor, WillowError> {
+    for _ in 0..128 {
+        let mut subspace_secret_bytes = [0u8; 32];
+        let result = os_fill(&mut subspace_secret_bytes);
+        let subspace_secret = result.map(|()| SubspaceSecret::from_bytes(&subspace_secret_bytes));
+        subspace_secret_bytes.zeroize();
+        let subspace_secret = subspace_secret?;
+
+        let namespace_id = NamespaceId::from_bytes(subspace_secret.corresponding_subspace_id().as_bytes());
+        if namespace_id.is_communal() {
+            return Ok(EvidenceAuthor {
+                namespace_id,
+                subspace_secret,
+            });
+        }
+    }
+    Err(WillowError::EntropyUnavailable)
+}
+
 /// Generates a fresh author subspace inside an existing communal namespace.
 /// The caller supplies only the complete public namespace ID; fresh signing
 /// material comes exclusively from OS entropy and never crosses this API.

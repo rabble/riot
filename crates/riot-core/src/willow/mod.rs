@@ -28,7 +28,7 @@ pub use digest::{
 };
 pub use entry::{create_signed_alert, AlertDraft, SignedAlert, SignedWillowEntry};
 pub use identity::{
-    generate_communal_author, generate_communal_author_for_namespace, AuthorIdentity,
+    generate_communal_author, generate_communal_author_for_namespace, generate_space_organizer_author, AuthorIdentity,
     EvidenceAuthor, NamespaceKind, SEALED_IDENTITY_BYTES,
 };
 
