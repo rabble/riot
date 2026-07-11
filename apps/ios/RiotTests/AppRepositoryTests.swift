@@ -193,6 +193,30 @@ final class AppRepositoryTests: XCTestCase {
         XCTAssertEqual(try second.appDataGet(appID: appID, key: "note"), "\"hello\"")
     }
 
+    func testBridgePutPersistsAcrossReopen() throws {
+        let storage = try makeStorage("bridge-reopen")
+        let keyStore = TestWrappingKeyStore()
+        let packs = try starterPacks()
+
+        let first = try RiotProfileRepository.open(
+            storage: storage, keyStore: keyStore, starterPacks: packs
+        )
+        _ = try first.createPublicSpace(title: "Berlin Mutual Aid")
+        let appID = try first.spaceApps()[0].appIDHex
+        try first.trustApp(appID: appID)
+
+        // Write through the WebView-facing bridge (its `onPut` closure routes to
+        // the repository's persisting path), not the repository directly — this
+        // is the wiring the app actually uses.
+        let bridge = try XCTUnwrap(first.appDataBridge(appID: appID))
+        try bridge.put(key: "note", valueJSON: "\"from-bridge\"")
+
+        let second = try RiotProfileRepository.open(
+            storage: storage, keyStore: keyStore, starterPacks: packs
+        )
+        XCTAssertEqual(try second.appDataGet(appID: appID, key: "note"), "\"from-bridge\"")
+    }
+
     func testOpensSnapshotWrittenBeforeAppDataBundlesField() throws {
         let snapshotURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("app-repo-legacy-appdata-\(UUID().uuidString).json")
