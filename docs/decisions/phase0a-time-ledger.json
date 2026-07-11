@@ -261,14 +261,31 @@
       ],
       "source": "cargo test -p riot-core -p riot-conformance --all-features (all green)",
       "note": "Implements the preview half of G2's 'hard store/preview bounds' requirement: retained_preview_output_bytes (2 MiB), bounding a live preview's and its active plan's own retained bytes independent of ever committing. Enforced at inspect() and plan(), both reject with no mutation before the budget would be exceeded. Two new adversarial tests: an oversized route rejected at inspect(), and a route that only exceeds budget once doubled by the plan's own separate retained copy, proving plan() checks independently. G2's store/preview byte-budget requirement is now fully covered (store: 933ea14, preview: 816366e). Hours are an estimate, not a tracked duration. 0.3h from the WU2 reserve."
+    },
+    {
+      "work_unit": "Debt-audit security repair (path/payload binding bypass)",
+      "status": "completed",
+      "reported_actual_hours": 0.5,
+      "charged_hours": 0.5,
+      "commits": [
+        "0c8d276"
+      ],
+      "evidence_paths": [
+        "crates/riot-core/src/session.rs",
+        "crates/riot-core/tests/core_import_path_binding.rs",
+        "crates/riot-core/tests/core_import_transaction.rs",
+        "crates/riot-core/tests/core_import_lifecycle.rs"
+      ],
+      "source": "cargo test --workspace --all-features (98 tests, all green); cargo clippy --workspace --all-features --all-targets -- -D warnings",
+      "note": "A background debt-audit research pass found alert_entry_path_matches_payload (added in 58b50cd) was only called from the FFI's inspectable_alert_entries listing helper, never from EvidenceStore::inspect() -- the actual commit-capable import path. A validly signed entry whose Willow path didn't match its own payload's object_id/revision_id was importable and committable through the core session API. Fixed by wiring the check into inspect(); a mismatch makes the item ineligible, same silent-exclusion pattern as cryptographically invalid items. This exposed a pervasive pre-existing test-fixture bug (core_import_transaction.rs/core_import_lifecycle.rs hardcoded a fixed payload object/revision id independent of the path params, so nearly every existing test entry was already mismatched) -- repaired both helpers. Not part of WU2's original Task 5 matrix (a general import-correctness/security finding, not session-arbiter scope); charged from contingency. This overdraws the nominal 0.25h contingency reserve by 0.25h -- flagged honestly per the ledger's audit-only policy (hours never gate a technical decision) rather than adjusted to fit."
     }
   ],
   "totals": {
-    "charged_hours": 9.50,
+    "charged_hours": 10.00,
     "reserved_g0_g1_repair_hours": 0.0,
     "reserved_wu2_hours": 0.25,
     "reserved_wu3_hours": 4.0,
-    "reserved_contingency_hours": 0.25,
+    "reserved_contingency_hours": -0.25,
     "reserved_wu4_hours": 2.0
   }
 }
