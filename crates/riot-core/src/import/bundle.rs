@@ -16,7 +16,7 @@ use crate::willow::{
     verify_entry, william3_digest, AuthorisationToken, Entry, EntryId, SignedWillowEntry,
 };
 use willow25::entry::{Entrylike, SubspaceSignature};
-use willow25::groupings::Namespaced;
+use willow25::groupings::{Keylike, Namespaced};
 
 pub const BUNDLE_MAGIC: &[u8; 6] = b"RIOTE1";
 pub const BUNDLE_CODEC_ID: &str = "org.riot.evidence-bundle/1";
@@ -31,6 +31,13 @@ pub const MAX_ENTRY_BYTES: usize = 4_096;
 pub const MAX_CAPABILITY_BYTES: usize = 65_536;
 pub const MAX_AUTH_BYTES_PER_BUNDLE: usize = 2_097_152;
 const SIGNATURE_BYTES: usize = 64;
+/// `willow25`'s own `Entry`/`Path` bounds (MCL=MCC=MPL=4096, hardcoded in
+/// the crate) are far looser than these; nothing else in the import
+/// pipeline checks path shape, so an oversized/malformed path would
+/// otherwise be accepted from any validly signed entry.
+pub const MAX_PATH_COMPONENTS: usize = 64;
+pub const MAX_PATH_COMPONENT_BYTES: usize = 256;
+pub const MAX_PATH_TOTAL_BYTES: usize = 2_048;
 
 /// Global rejection: the artifact as a whole is refused.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -76,6 +83,7 @@ pub enum DiagnosticCode {
     DoesNotAuthorise,
     UnsupportedCapability,
     UnsupportedSchema,
+    PathBoundsExceeded,
 }
 
 /// Sanitized, item-scoped diagnostic: code + component only.
@@ -437,6 +445,23 @@ fn verify_frame(frame: &BundleItemFrame) -> Result<ValidItem, BundleDiagnostic> 
         code: DiagnosticCode::NonCanonicalEntry,
         component: ItemComponent::Entry,
     })?;
+
+    // willow25's own Path bounds (MCL=MCC=MPL=4096) are far looser than
+    // riot-core's; check shape explicitly rather than trust the library's
+    // wider defaults.
+    let path = entry.path();
+    let path_bounds_ok = path.component_count() <= MAX_PATH_COMPONENTS
+        && path.total_length() <= MAX_PATH_TOTAL_BYTES
+        && path
+            .components()
+            .all(|component| component.len() <= MAX_PATH_COMPONENT_BYTES);
+    if !path_bounds_ok {
+        return Err(BundleDiagnostic {
+            code: DiagnosticCode::PathBoundsExceeded,
+            component: ItemComponent::Entry,
+        });
+    }
+
     let capability =
         decode_capability_canonic(&frame.capability_bytes).map_err(|_| BundleDiagnostic {
             code: DiagnosticCode::NonCanonicalCapability,
