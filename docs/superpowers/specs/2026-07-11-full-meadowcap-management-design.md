@@ -386,6 +386,7 @@ and independently issuing or attenuating a covering read capability.
 | Directory curator | Exact manifest and bundle slots below `app-index/<app_id>/` plus `governance/v1/directory/withdrawals/**`; never endorsement slots | `app-index/**`; `governance/v1/directory/**` |
 | App endorser | Exact `app-index/<app_id>/endorsements-v2/<endorser_space_id>` path for each app | Exact `app-index/<app_id>/**` |
 | App approver | `governance/v1/apps/approvals/**` and `governance/v1/apps/revocations/**` | `app-index/**`; `governance/v1/apps/**` |
+| App data issuer | `governance/v1/apps/provisioning/**` plus explicitly listed covering `apps/**` or per-app `apps/<app_id>/**` parent capabilities | `app-index/**`; `governance/v1/apps/**`; only app-data areas required for provisioning |
 | Governance proposer | `governance/v1/proposals/<actor_id>/**`; no decision authority | The same proposal prefix plus public governance decisions |
 | Delegating administrator | Governance paths for `actors/**`, `roles/**`, `members/**`, `invitations/**`, `activations/**`, `capabilities/**`, and scoped `revocations/**`, plus explicit covering parent capabilities for each grantable role | The governance prefixes plus reads explicitly required by each grantable role |
 | Root custodian | Full owned area, used only for genesis, initial delegation, recovery declarations, and migration | Full owned area |
@@ -405,6 +406,14 @@ fingerprints of covering parent capabilities for those templates. The UI shows
 only roles actually derivable from that set and states that the administrator
 also holds those powers. A governance clerk without covering capabilities may
 record proposals but cannot issue roles.
+
+The App data issuer is the corresponding day-to-day provisioning role. Its
+preview lists every app ID, receiver, data prefix, mode, and parent fingerprint
+that will be delegated and explicitly warns that the issuer can exercise every
+covering parent it holds. A narrowly configured issuer receives per-app parents;
+a broad `apps/**` issuer is an exceptional high-power role shown as such. An
+App approver without this separate role can approve policy but cannot provision
+data authority.
 
 Every privileged role bundle also contains the exact
 `governance/v1/actions/<actor_id>/**` prefix needed for its action receipts;
@@ -785,17 +794,20 @@ caller-selected identity parameters:
 All durable operations have a random 128-bit `operation_id` stored in the
 authority repository. `MobileProfile.reopen_management_operation(operation_id)`
 reconstructs a typed `ManagementOperation`; specialized factories reopen
-invite, recovery, and migration operations after validating the recorded kind.
+Space creation, invite, recovery, and migration operations after validating the
+recorded kind. The explicit factories are `reopen_space_creation(id)`,
+`reopen_invite(id)`, `reopen_recovery(id)`, and `reopen_migration(id)`; passing
+the wrong operation kind fails without state change.
 Dropping or closing a UniFFI object releases only the process handle and never
 cancels durable work.
 
 | Object | Create/inspect | Read | Mutate | Terminal behavior |
 | --- | --- | --- | --- | --- |
 | `SpaceCreationSession` | `start_space_creation(input)` | `preview()`, `status()` | `commit(token)`, `cancel()` | Idempotent `close()`; reopen by operation ID |
-| `SpaceManagementSession` | `open_space_management(space_id)` | Paged people/roles/apps/audit queries | Mutations return durable `ManagementOperation` values | Process-local query handle; dropping does not mutate |
+| `SpaceManagementSession` | `open_space_management(space_id)` | Paged people/roles/apps/audit queries | Grant/revoke/approve/provision plus `issue_invite`, `cancel_invite`, `redeliver_invite`, and `repair_invite` return durable `ManagementOperation` values | Process-local query handle; dropping does not mutate |
 | `InviteAcceptanceSession` | `inspect_invite(bytes)` or `reopen_invite(id)` | `preview()`, `status()` | `accept(token)`, `reject()`, `cancel_before_activation()`, `retry()` | Resumable until active or terminal |
 | `ManagementOperation` | Returned by previewed grant/revoke/approve/provision operations or reopened | `preview()`, `status()`, `progress()` | `commit(token)`, `retry()`, `cancel_before_commit()` | Signed/committed operations cannot cancel |
-| `RecoverySession` | `inspect_recovery(envelope)` or `reopen_recovery(id)` | `preview()`, `status()` | `unlock(recovery_key_handle)`, `restore(token)`, `cancel()` | Key handle is vault-owned; no raw key bytes |
+| `RecoverySession` | `inspect_recovery(envelope)` or `reopen_recovery(id)` | `preview()`, `status()` | `attach_recovery_key(handle_id)`, `unlock()`, `restore(token)`, `cancel()` | Handle is native-vault-owned, process-local, and destroyed on terminal state |
 | `MigrationSession` | `start/inspect/reopen_migration` | Candidate/fingerprint/impact preview and status | `confirm(token)`, `retry()`, `cancel_before_new_genesis()` | Old/new commit boundaries are explicit |
 | `AppExecutionSession` | Native-host launch only | Permitted bridge reads | Permitted bridge writes | Process-local and non-resumable; closes on navigation, policy change, or process death |
 
@@ -807,6 +819,18 @@ expiry; commit fails stale if any of those change. Operations report
 idempotent retry, cancellation before the signing/commit boundary, and resume
 after process restart. List APIs are deterministically sorted and use opaque
 snapshot-bound pagination tokens.
+
+Recovery-key entry stays entirely in the native secure UI. Scanned QR bytes or
+checksummed words are parsed and checksum-validated by the platform
+`SecureVault.begin_recovery_key_import()` flow, which places the 256-bit value
+in locked process memory and returns a random non-secret `RecoveryKeyHandleId`.
+Only that ID crosses UniFFI. The vault adapter resolves it when `unlock()` asks
+for decryption, counts failures against the durable recovery operation, and
+zeroizes/destroys the key after successful unlock, five failures, cancel,
+timeout, background policy requiring re-entry, or process death. Handles are
+never persisted, backed up, logged, or reusable by another recovery operation;
+after restart the durable operation reopens but the person must rescan or
+re-enter the key.
 
 The native host implements a `SecureSigner`/`SecureVault` adapter with opaque
 key handles. `riot-core` requests domain-separated signatures through that
@@ -1017,7 +1041,7 @@ have received`; they never say globally complete. Partial private invitations
 and migrations expose repair/resume actions. Permission risk is communicated
 with text and accessibility labels, never color or icons alone. Custom
 attenuation is shown as a named role plus readable exceptions, for example
-`Moderator, except app approvals; renewal due August 1`. UX tests require
+`Moderator, except appeal resolutions; renewal due August 1`. UX tests require
 people to distinguish renewal reminders, Meadowcap entry-coordinate bounds,
 and propagated revocation.
 
@@ -1171,6 +1195,8 @@ tests; platform integration tests exercise the real storage adapters.
   origin/navigation changes, stale policy snapshots, and destroyed WebViews.
 - App approval/provisioning states, exact per-device app capabilities, future
   invite provisioning, unavailable Tools rows, and per-app subtree revocation.
+- App data issuer role previews, per-app versus broad parent disclosure, and
+  rejection when an approver lacks provisioning authority.
 - ProtectedDrop exporter-signature, actor/encryption-key binding, export-area
   authority, per-recipient covering read authority, and crash-atomic replay
   consumption.
@@ -1182,6 +1208,9 @@ tests; platform integration tests exercise the real storage adapters.
   cancel without further output.
 - Exact current legacy paths and managed V1 paths are pinned in codec/schema
   dispatch tests.
+- Space-creation reopen kind safety and native RecoveryKeyHandle creation,
+  checksum failure, cross-operation misuse, timeout, cancellation, process
+  death, five-attempt destruction, and zeroization.
 
 ### Compatibility
 
