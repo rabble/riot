@@ -108,6 +108,76 @@ pub fn publish_app_index(
     Ok(app_id)
 }
 
+/// The exact stored payload bytes behind one app-index listing. Named rather
+/// than a `(Vec<u8>, Vec<u8>)` pair because the install path takes the two
+/// side by side and they are trivially swappable at a call site.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AppPairBytes {
+    pub manifest_bytes: Vec<u8>,
+    pub bundle_bytes: Vec<u8>,
+}
+
+/// Reads back the exact stored manifest and bundle payload bytes for `app_id`
+/// — the bytes behind a directory listing, ready to feed straight into the
+/// install path. This is what makes an app that *arrived* over sync openable
+/// rather than merely visible.
+///
+/// Carriers are considered in the order `scan_app_index` ranks them (ascending
+/// Willow `(namespace_id, subspace_id)`), so these are the bytes behind the
+/// listing the caller was shown. A carrier whose pair does not re-derive
+/// `app_id` is skipped, not fatal: any peer may write an
+/// `app-index/<app_id>/bundle` entry, so one hostile carrier must not be able
+/// to block installing an app an honest carrier also holds. `Ok(None)`
+/// therefore means exactly what `bundle_present: false` means — no carrier
+/// holds a complete verified pair (unknown app, still-arriving bundle, or
+/// nothing but unverifiable copies).
+///
+/// The pair leaves through `verify_app_pair`, the same invariant publish and
+/// scan enforce, so bytes that do not derive the requested `app_id` are never
+/// returned.
+pub fn app_pair_bytes(
+    store: &EvidenceStore,
+    app_id: &AppId,
+) -> Result<Option<AppPairBytes>, AppsError> {
+    let prefix = app_index_prefix_for(app_id)?;
+    let entries = store
+        .entries_with_prefix(&prefix)
+        .map_err(|_| AppsError::StoreRejected)?;
+    type Carrier = ([u8; 32], [u8; 32]);
+    let mut manifests: BTreeMap<Carrier, Vec<u8>> = BTreeMap::new();
+    let mut bundles: BTreeMap<Carrier, Vec<u8>> = BTreeMap::new();
+
+    for (_, entry, payload) in entries {
+        let Some(payload) = payload else { continue };
+        let carrier = (
+            *entry.namespace_id().as_bytes(),
+            *entry.subspace_id().as_bytes(),
+        );
+        match classify_app_index_path(entry.path()) {
+            Some(AppIndexSlot::Manifest { app_id: slot }) if slot == *app_id => {
+                manifests.insert(carrier, payload);
+            }
+            Some(AppIndexSlot::Bundle { app_id: slot }) if slot == *app_id => {
+                bundles.insert(carrier, payload);
+            }
+            _ => {}
+        }
+    }
+
+    for (carrier, manifest_bytes) in manifests {
+        let Some(bundle_bytes) = bundles.get(&carrier) else {
+            continue;
+        };
+        if verify_app_pair(&manifest_bytes, bundle_bytes).ok() == Some(*app_id) {
+            return Ok(Some(AppPairBytes {
+                manifest_bytes,
+                bundle_bytes: bundle_bytes.clone(),
+            }));
+        }
+    }
+    Ok(None)
+}
+
 #[derive(Clone)]
 struct ManifestCandidate {
     manifest: AppManifest,

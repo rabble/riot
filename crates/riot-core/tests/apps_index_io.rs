@@ -3,7 +3,8 @@ use riot_core::apps::directory::AppProvenance;
 use riot_core::apps::endorse::{encode_endorsement, write_endorsement, EndorsementMarker};
 use riot_core::apps::index::{
     app_bundle_digest, app_index_bundle_path, app_index_endorsement_path, app_index_manifest_path,
-    publish_app_index, scan_app_index, MAX_SCANNED_ENDORSEMENTS_PER_APP,
+    app_pair_bytes, publish_app_index, scan_app_index, verify_app_pair,
+    MAX_SCANNED_ENDORSEMENTS_PER_APP,
 };
 use riot_core::apps::manifest::{app_id_for, encode_manifest, AppManifest};
 use riot_core::apps::trust::{write_trust_marker, TrustMarkerKind};
@@ -583,6 +584,168 @@ fn equal_timestamp_retraction_wins_in_both_import_orders() {
         assert_eq!(scanned.endorsements.len(), 1);
         assert!(scanned.endorsements[0].retracted);
     }
+}
+
+#[test]
+fn app_pair_bytes_round_trips_a_published_pair() {
+    let session = RiotSession::open().expect("session");
+    let store = session.create_store().expect("store");
+    let carrier = generate_communal_author().expect("carrier");
+    let developer = generate_communal_author().expect("developer");
+    let (manifest, bundle, app_id) = sample_pair(&developer);
+    publish_app_index(&store, &carrier, &manifest, &bundle, 100).expect("publish");
+
+    let pair = app_pair_bytes(&store, &app_id)
+        .expect("read")
+        .expect("a published app is installable");
+    assert_eq!(pair.manifest_bytes, manifest);
+    assert_eq!(pair.bundle_bytes, bundle);
+    // The bytes handed back are exactly the bytes the install path re-derives
+    // the content identity from.
+    assert_eq!(
+        verify_app_pair(&pair.manifest_bytes, &pair.bundle_bytes),
+        Ok(app_id)
+    );
+}
+
+#[test]
+fn app_pair_bytes_is_none_for_an_unknown_app() {
+    let session = RiotSession::open().expect("session");
+    let store = session.create_store().expect("store");
+    assert_eq!(app_pair_bytes(&store, &[0xcd; 32]).expect("read"), None);
+}
+
+#[test]
+fn app_pair_bytes_is_none_while_the_bundle_is_still_arriving() {
+    let session = RiotSession::open().expect("session");
+    let store = session.create_store().expect("store");
+    let carrier = generate_communal_author().expect("carrier");
+    let developer = generate_communal_author().expect("developer");
+    let (manifest, _, app_id) = sample_pair(&developer);
+    import_signed(
+        &store,
+        &[signed_at(
+            &carrier,
+            app_index_manifest_path(&app_id).expect("path"),
+            &manifest,
+            100,
+        )],
+    );
+
+    // A partial arrival has no installable bytes, and the directory agrees:
+    // it is pending, not listed as present.
+    assert_eq!(app_pair_bytes(&store, &app_id).expect("read"), None);
+    let scanned = scan_app_index(&store).expect("scan");
+    assert!(scanned.apps.is_empty());
+    assert_eq!(scanned.pending_manifests.len(), 1);
+}
+
+#[test]
+fn app_pair_bytes_refuses_a_pair_that_does_not_re_derive_the_requested_id() {
+    let session = RiotSession::open().expect("session");
+    let store = session.create_store().expect("store");
+    let carrier = generate_communal_author().expect("carrier");
+    let developer = generate_communal_author().expect("developer");
+    let (manifest, _, app_id) = sample_pair(&developer);
+    // Same entry point as the manifest, so only the content identity check can
+    // catch it: these bytes are not the bundle `app_id` was derived from.
+    let tampered = encode_app_bundle(&AppBundle {
+        entry_point: "index.html".into(),
+        resources: vec![AppResource {
+            path: "index.html".into(),
+            content_type: "text/html".into(),
+            bytes: b"<html>malware</html>".to_vec(),
+        }],
+    })
+    .expect("bundle");
+    import_signed(
+        &store,
+        &[
+            signed_at(
+                &carrier,
+                app_index_manifest_path(&app_id).expect("path"),
+                &manifest,
+                100,
+            ),
+            signed_at(
+                &carrier,
+                app_index_bundle_path(&app_id).expect("path"),
+                &tampered,
+                100,
+            ),
+        ],
+    );
+
+    assert_eq!(app_pair_bytes(&store, &app_id).expect("read"), None);
+    assert!(scan_app_index(&store).expect("scan").apps.is_empty());
+}
+
+#[cfg(feature = "conformance")]
+#[test]
+fn a_hostile_carrier_cannot_block_installing_an_app_a_good_carrier_holds() {
+    let session = RiotSession::open().expect("session");
+    let store = session.create_store().expect("store");
+    let namespace = generate_communal_author().expect("namespace");
+    let first = EvidenceAuthor::from_parts_for_tests(namespace.namespace_id().clone(), &[1; 32]);
+    let second = EvidenceAuthor::from_parts_for_tests(namespace.namespace_id().clone(), &[2; 32]);
+    // The attacker takes the carrier coordinate that is considered first, so
+    // the honest pair can only be found if an unverifiable carrier is skipped
+    // rather than fatal.
+    let (attacker, honest) = if first.subspace_id().as_bytes() < second.subspace_id().as_bytes() {
+        (first, second)
+    } else {
+        (second, first)
+    };
+    let developer = generate_communal_author().expect("developer");
+    let (manifest, bundle, app_id) = sample_pair(&developer);
+    let tampered = encode_app_bundle(&AppBundle {
+        entry_point: "index.html".into(),
+        resources: vec![AppResource {
+            path: "index.html".into(),
+            content_type: "text/html".into(),
+            bytes: b"<html>malware</html>".to_vec(),
+        }],
+    })
+    .expect("bundle");
+    // The honest app is published locally first; the hostile copy then arrives
+    // over the wire, the way a synced app-index entry from a peer would.
+    // (A local publish after an imported review would be refused as StoreBusy —
+    // `commit_at` will not run while a review preview is installed.)
+    publish_app_index(&store, &honest, &manifest, &bundle, 100).expect("publish");
+    import_signed(
+        &store,
+        &[
+            signed_at(
+                &attacker,
+                app_index_manifest_path(&app_id).expect("path"),
+                &manifest,
+                100,
+            ),
+            signed_at(
+                &attacker,
+                app_index_bundle_path(&app_id).expect("path"),
+                &tampered,
+                100,
+            ),
+        ],
+    );
+
+    // Both bundle payloads really are live at the same app-index slot, so the
+    // choice below is a real one — admission does not filter the hostile copy.
+    let live_bundles = store
+        .entries_with_prefix(&app_index_bundle_path(&app_id).expect("path"))
+        .expect("live bundles");
+    assert_eq!(live_bundles.len(), 2);
+
+    let pair = app_pair_bytes(&store, &app_id)
+        .expect("read")
+        .expect("the honest carrier's pair is still installable");
+    assert_eq!(pair.bundle_bytes, bundle);
+    assert_ne!(pair.bundle_bytes, tampered);
+    assert_eq!(
+        verify_app_pair(&pair.manifest_bytes, &pair.bundle_bytes),
+        Ok(app_id)
+    );
 }
 
 #[cfg(feature = "conformance")]
