@@ -39,6 +39,27 @@ public struct RiotEntry: Codable, Equatable, Identifiable, Sendable {
     public let aiAssisted: Bool
 }
 
+/// One installed space app as shown in the Tools list: the person-facing
+/// manifest fields plus this profile's trust decision. `appIDHex` is the
+/// content-derived id (lowercased hex) used to address the app's resources
+/// and data.
+public struct RiotSpaceApp: Equatable, Sendable, Identifiable {
+    public let appIDHex: String
+    public let name: String
+    public let description: String
+    public let version: String
+    public let permissions: [String]
+    public let trusted: Bool
+
+    public var id: String { appIDHex }
+}
+
+/// One served in-bundle resource: its declared content type and raw bytes.
+public struct RiotAppResource: Equatable, Sendable {
+    public let contentType: String
+    public let bytes: Data
+}
+
 private struct PersistedAlert: Codable {
     let bundle: Data
 }
@@ -47,8 +68,27 @@ private struct PersistedProfile: Codable {
     var space: RiotSpace?
     var alerts: [PersistedAlert]
     var sealedIdentity: Data?
+    var trustedAppIDs: [String]
 
-    static let empty = PersistedProfile(space: nil, alerts: [], sealedIdentity: nil)
+    static let empty = PersistedProfile(space: nil, alerts: [], sealedIdentity: nil, trustedAppIDs: [])
+
+    init(space: RiotSpace?, alerts: [PersistedAlert], sealedIdentity: Data?, trustedAppIDs: [String]) {
+        self.space = space
+        self.alerts = alerts
+        self.sealedIdentity = sealedIdentity
+        self.trustedAppIDs = trustedAppIDs
+    }
+
+    // Custom decode so snapshots written before `trustedAppIDs` existed decode
+    // to an empty list rather than failing (synthesized Codable would throw on
+    // the missing key). Encoding stays synthesized.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        space = try container.decodeIfPresent(RiotSpace.self, forKey: .space)
+        alerts = try container.decodeIfPresent([PersistedAlert].self, forKey: .alerts) ?? []
+        sealedIdentity = try container.decodeIfPresent(Data.self, forKey: .sealedIdentity)
+        trustedAppIDs = try container.decodeIfPresent([String].self, forKey: .trustedAppIDs) ?? []
+    }
 }
 
 public final class ProtectedProfileStorage {
@@ -78,10 +118,24 @@ public final class ProtectedProfileStorage {
     }
 }
 
+/// An installed app: Rust's verified display record plus the client-side
+/// resolver that serves its decoded bundle. Mirrors Android's `InstalledApp`
+/// — retained in memory because serving comes from the decoded bundle, while
+/// Rust remains the integrity oracle (it accepts the bytes before we decode).
+private struct InstalledApp {
+    let record: InstalledAppRecord
+    let resolver: AppResourceResolver
+}
+
 public final class RiotProfileRepository {
     private let profile: MobileProfile
     private let storage: ProtectedProfileStorage
     private let keyStore: WrappingKeyStore
+    private let appRuntime: AppRuntimeSession
+    /// Insertion-ordered registry of installed apps (like Android's
+    /// LinkedHashMap-backed `InstalledAppsStore`), keyed for lookup by
+    /// lowercased hex app id.
+    private let installedApps: [InstalledApp]
     private var persisted: PersistedProfile
 
     public var currentSpace: RiotSpace? { persisted.space }
@@ -90,17 +144,22 @@ public final class RiotProfileRepository {
         profile: MobileProfile,
         storage: ProtectedProfileStorage,
         keyStore: WrappingKeyStore,
+        appRuntime: AppRuntimeSession,
+        installedApps: [InstalledApp],
         persisted: PersistedProfile
     ) {
         self.profile = profile
         self.storage = storage
         self.keyStore = keyStore
+        self.appRuntime = appRuntime
+        self.installedApps = installedApps
         self.persisted = persisted
     }
 
     public static func open(
         storage: ProtectedProfileStorage,
-        keyStore: WrappingKeyStore = KeychainWrappingKeyStore()
+        keyStore: WrappingKeyStore = KeychainWrappingKeyStore(),
+        starterPacks: [(manifest: Data, bundle: Data)] = []
     ) throws -> RiotProfileRepository {
         var persisted = try storage.load()
         let profile: MobileProfile
@@ -126,10 +185,34 @@ public final class RiotProfileRepository {
                 _ = try preview.createPlan(selectedEntryIds: entryIDs).accept()
             }
         }
+
+        // Install the starter catalog. Rust's `installApp` is the integrity
+        // oracle; a pair that fails to install, decode, or match its declared
+        // entry point is silently excluded (spec's silent-exclusion rule).
+        let appRuntime = profile.appRuntime()
+        var installedApps: [InstalledApp] = []
+        for pack in starterPacks {
+            guard let installed = try? installPack(
+                appRuntime: appRuntime,
+                manifest: pack.manifest,
+                bundle: pack.bundle
+            ) else { continue }
+            installedApps.append(installed)
+        }
+
+        // Trust is profile-local in-memory in Rust and does not survive process
+        // restart, so re-apply the persisted trust decisions. Individual
+        // failures (e.g. an app that no longer installs) are ignored.
+        for appID in persisted.trustedAppIDs {
+            try? appRuntime.trustApp(appId: appID)
+        }
+
         let repository = RiotProfileRepository(
             profile: profile,
             storage: storage,
             keyStore: keyStore,
+            appRuntime: appRuntime,
+            installedApps: installedApps,
             persisted: persisted
         )
         if persisted.sealedIdentity == nil {
@@ -176,6 +259,81 @@ public final class RiotProfileRepository {
         return try profile.listCurrentEntries().map(RiotEntry.init)
     }
 
+    /// The installed space apps and this profile's trust decision for each.
+    /// Empty until a space is joined, matching `currentEntries()`.
+    public func spaceApps() throws -> [RiotSpaceApp] {
+        guard currentSpace != nil else { return [] }
+        return try installedApps.map { installed in
+            RiotSpaceApp(
+                appIDHex: installed.record.appId,
+                name: installed.record.name,
+                description: installed.record.description,
+                version: installed.record.version,
+                permissions: installed.record.permissions,
+                trusted: try appRuntime.isAppTrusted(appId: installed.record.appId)
+            )
+        }
+    }
+
+    /// Marks an app trusted in Rust and persists the decision so it survives a
+    /// process restart (Rust's trust state is in-memory and re-applied on
+    /// `open`).
+    public func trustApp(appID: String) throws {
+        try appRuntime.trustApp(appId: appID)
+        if !persisted.trustedAppIDs.contains(appID) {
+            persisted.trustedAppIDs.append(appID)
+            try storage.save(persisted)
+        }
+    }
+
+    /// Serves one of an installed app's resources by exact path. Unknown app id
+    /// or path throws — the resolver does no path interpretation, so "../x"
+    /// simply matches nothing.
+    public func appResource(appID: String, path: String) throws -> RiotAppResource {
+        guard let installed = installedApp(appID: appID) else {
+            throw RepositoryError.unknownApp
+        }
+        guard let resource = installed.resolver.resolve(path: path) else {
+            throw RepositoryError.unknownAppResource
+        }
+        return RiotAppResource(contentType: resource.contentType, bytes: resource.bytes)
+    }
+
+    /// The app-data bridge for a TRUSTED installed app, or nil otherwise.
+    ///
+    /// This is the host-side trust gate the platform depends on: Rust
+    /// deliberately does NOT trust-gate `app_data_put/get/list` (see the HARD
+    /// CONTRACT on `AppBridgeController`), so a bridge is only ever handed out
+    /// for an app that is trusted in the current profile.
+    public func appDataBridge(appID: String) -> AppDataBridging? {
+        guard installedApp(appID: appID) != nil else { return nil }
+        guard (try? appRuntime.isAppTrusted(appId: appID)) == true else { return nil }
+        return AppRuntimeDataBridge(session: appRuntime, appIDHex: appID)
+    }
+
+    private func installedApp(appID: String) -> InstalledApp? {
+        let target = appID.lowercased()
+        return installedApps.first { $0.record.appId.lowercased() == target }
+    }
+
+    /// Installs one starter pair: Rust verifies the bytes, then we decode the
+    /// bundle for serving and confirm its entry point matches Rust's record
+    /// before retaining a resolver. Any failure throws so the caller can skip
+    /// the pair.
+    private static func installPack(
+        appRuntime: AppRuntimeSession,
+        manifest: Data,
+        bundle: Data
+    ) throws -> InstalledApp {
+        let record = try appRuntime.installApp(manifestBytes: manifest, bundleBytes: bundle)
+        let decoded = try AppBundleCodec.decode(bundle)
+        guard decoded.entryPoint == record.entryPoint else {
+            throw RepositoryError.appBundleMismatch
+        }
+        let resolver = AppResourceResolver(appIDHex: record.appId, bundle: decoded)
+        return InstalledApp(record: record, resolver: resolver)
+    }
+
     public func openSyncBoundary() throws -> MobileSyncSessionBoundary {
         let backend = try profile.openSyncSession()
         return GeneratedSyncSessionAdapter(backend: backend) { [weak self] bundle in
@@ -211,6 +369,9 @@ public enum RepositoryError: Error {
     case invalidSealedIdentity
     case invalidWrappingKey
     case profileClosed
+    case unknownApp
+    case unknownAppResource
+    case appBundleMismatch
 }
 
 private extension RiotEntry {
