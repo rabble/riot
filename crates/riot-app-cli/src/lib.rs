@@ -1068,15 +1068,15 @@ enum KeygenStage {
     AfterWrapKey,
     BeforePublish,
     BeforeParentSync,
+    CleanupParentSync,
 }
 
 fn keygen_inner<F>(out: &Path, mut checkpoint: F) -> Result<KeygenOutput, KeyError>
 where
     F: FnMut(KeygenStage) -> Result<(), KeyError>,
 {
-    if out.file_name().is_none() {
-        return Err(KeyError::InvalidOutputDirectory);
-    }
+    let final_name = out.file_name().ok_or(KeyError::InvalidOutputDirectory)?;
+    CString::new(final_name.as_bytes()).map_err(|_| KeyError::InvalidOutputDirectory)?;
     let parent = match out.parent() {
         Some(parent) if !parent.as_os_str().is_empty() => parent,
         _ => Path::new("."),
@@ -1124,30 +1124,26 @@ where
             source,
         })?;
         checkpoint(KeygenStage::BeforePublish)?;
-        rename_file_noreplace_at(
-            &parent_dir,
-            &stage_name,
-            &parent_dir,
-            out.file_name().expect("checked above"),
-        )
-        .map_err(|source| {
-            if source.kind() == io::ErrorKind::AlreadyExists
-                || matches!(
-                    source.raw_os_error(),
-                    Some(libc::EEXIST) | Some(libc::ENOTEMPTY)
-                )
-            {
-                KeyError::AlreadyExists {
-                    path: out.to_path_buf(),
+        rename_file_noreplace_at(&parent_dir, &stage_name, &parent_dir, final_name).map_err(
+            |source| {
+                if source.kind() == io::ErrorKind::AlreadyExists
+                    || matches!(
+                        source.raw_os_error(),
+                        Some(libc::EEXIST) | Some(libc::ENOTEMPTY)
+                    )
+                {
+                    KeyError::AlreadyExists {
+                        path: out.to_path_buf(),
+                    }
+                } else {
+                    KeyError::Io {
+                        operation: "publish key directory",
+                        path: out.to_path_buf(),
+                        source,
+                    }
                 }
-            } else {
-                KeyError::Io {
-                    operation: "publish key directory",
-                    path: out.to_path_buf(),
-                    source,
-                }
-            }
-        })?;
+            },
+        )?;
         published = true;
         let sync_result = checkpoint(KeygenStage::BeforeParentSync).and_then(|()| {
             parent_dir.0.sync_all().map_err(|source| KeyError::Io {
@@ -1176,7 +1172,7 @@ where
             })?;
             unlinkat_checked(
                 &parent_dir,
-                out.file_name().expect("checked"),
+                final_name,
                 libc::AT_REMOVEDIR,
                 "rollback published key directory",
             )?;
@@ -1217,6 +1213,8 @@ where
             )
         });
         cleanup?;
+        checkpoint(KeygenStage::CleanupParentSync)?;
+        sync_cleanup_parent(&parent_dir, parent, "sync key parent after staging cleanup")?;
     }
     result
 }
@@ -1269,6 +1267,11 @@ fn open_stage_or_cleanup(
                 libc::AT_REMOVEDIR,
                 "clean unopened staging directory",
             )?;
+            sync_cleanup_parent(
+                parent,
+                Path::new("<staging-parent>"),
+                "sync parent after unopened staging cleanup",
+            )?;
             Err(KeyError::Io {
                 operation,
                 path: PathBuf::from(name),
@@ -1305,6 +1308,7 @@ enum OutputStage {
     Publish,
     ParentSync,
     StageCleanup,
+    CleanupParentSync,
 }
 
 fn write_new_atomic_inner<F>(
@@ -1315,11 +1319,12 @@ fn write_new_atomic_inner<F>(
 where
     F: FnMut(OutputStage) -> Result<(), KeyError>,
 {
+    let final_name = path.file_name().ok_or(KeyError::InvalidOutputDirectory)?;
+    CString::new(final_name.as_bytes()).map_err(|_| KeyError::InvalidOutputDirectory)?;
     let parent = path
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
         .unwrap_or(Path::new("."));
-    let final_name = path.file_name().ok_or(KeyError::InvalidOutputDirectory)?;
     let parent = PinnedDir::open_path(parent).map_err(|source| KeyError::Io {
         operation: "open output parent without following links",
         path: parent.to_path_buf(),
@@ -1346,6 +1351,12 @@ where
             libc::AT_REMOVEDIR,
             "clean artifact staging after injected create failure",
         )?;
+        before_publish(OutputStage::CleanupParentSync)?;
+        sync_cleanup_parent(
+            &parent,
+            Path::new("<output-parent>"),
+            "sync output parent after create cleanup",
+        )?;
         return Err(error);
     }
     let mut file = match createat_file(
@@ -1362,6 +1373,12 @@ where
                 &stage_name,
                 libc::AT_REMOVEDIR,
                 "clean artifact staging after create failure",
+            )?;
+            before_publish(OutputStage::CleanupParentSync)?;
+            sync_cleanup_parent(
+                &parent,
+                Path::new("<output-parent>"),
+                "sync output parent after create cleanup",
             )?;
             return Err(KeyError::Io {
                 operation: "create staged output",
@@ -1428,7 +1445,18 @@ where
             "clean artifact staging directory",
         )
     });
-    let cleanup_error = injected_cleanup.or_else(|| cleanup.err());
+    let mut cleanup_error = injected_cleanup.or_else(|| cleanup.err());
+    if cleanup_error.is_none() {
+        cleanup_error = before_publish(OutputStage::CleanupParentSync)
+            .and_then(|()| {
+                sync_cleanup_parent(
+                    &parent,
+                    Path::new("<output-parent>"),
+                    "sync output parent after staging cleanup",
+                )
+            })
+            .err();
+    }
     if let Some(error) = cleanup_error {
         if final_present {
             unlinkat_checked(
@@ -1448,6 +1476,18 @@ where
     result
 }
 
+fn sync_cleanup_parent(
+    directory: &PinnedDir,
+    path: &Path,
+    operation: &'static str,
+) -> Result<(), KeyError> {
+    directory.0.sync_all().map_err(|source| KeyError::Io {
+        operation,
+        path: path.to_path_buf(),
+        source,
+    })
+}
+
 #[cfg(target_os = "macos")]
 fn rename_file_noreplace_at(
     from_dir: &PinnedDir,
@@ -1455,8 +1495,8 @@ fn rename_file_noreplace_at(
     to_dir: &PinnedDir,
     to: &OsStr,
 ) -> io::Result<()> {
-    let from = CString::new(from.as_bytes()).unwrap();
-    let to = CString::new(to.as_bytes()).unwrap();
+    let from = rename_component(from)?;
+    let to = rename_component(to)?;
     let result = unsafe {
         libc::renameatx_np(
             from_dir.0.as_raw_fd(),
@@ -1480,8 +1520,8 @@ fn rename_file_noreplace_at(
     to_dir: &PinnedDir,
     to: &OsStr,
 ) -> io::Result<()> {
-    let from = CString::new(from.as_bytes()).unwrap();
-    let to = CString::new(to.as_bytes()).unwrap();
+    let from = rename_component(from)?;
+    let to = rename_component(to)?;
     let result = unsafe {
         libc::syscall(
             libc::SYS_renameat2,
@@ -1497,6 +1537,11 @@ fn rename_file_noreplace_at(
     } else {
         Err(io::Error::last_os_error())
     }
+}
+
+fn rename_component(name: &OsStr) -> io::Result<CString> {
+    CString::new(name.as_bytes())
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "NUL in rename component"))
 }
 
 fn random_hex_16() -> Result<String, KeyError> {
@@ -1620,6 +1665,7 @@ fn hex_lower_bytes(bytes: &[u8]) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::{keygen_inner, KeyError, KeygenStage};
+    use std::os::unix::ffi::OsStringExt;
 
     fn tempdir() -> tempfile::TempDir {
         tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).unwrap()
@@ -1631,7 +1677,9 @@ mod tests {
         let output = parent.path().join("keys");
         let error = keygen_inner(&output, |stage| match stage {
             KeygenStage::AfterWrapKey => Err(KeyError::InvalidOutputDirectory),
-            KeygenStage::BeforePublish | KeygenStage::BeforeParentSync => Ok(()),
+            KeygenStage::BeforePublish
+            | KeygenStage::BeforeParentSync
+            | KeygenStage::CleanupParentSync => Ok(()),
         });
         assert!(error.is_err());
         assert!(!output.exists());
@@ -1641,6 +1689,47 @@ mod tests {
                 .count(),
             0
         );
+    }
+
+    #[test]
+    fn keygen_cleanup_parent_sync_failure_is_surfaced_after_removal() {
+        let parent = tempdir();
+        let output = parent.path().join("keys");
+        let cleanup_error_path = parent.path().join("cleanup-sync");
+        let error = keygen_inner(&output, |stage| match stage {
+            KeygenStage::AfterWrapKey => Err(KeyError::InvalidOutputDirectory),
+            KeygenStage::CleanupParentSync => Err(KeyError::AlreadyExists {
+                path: cleanup_error_path.clone(),
+            }),
+            KeygenStage::BeforePublish | KeygenStage::BeforeParentSync => Ok(()),
+        });
+        assert!(matches!(
+            error,
+            Err(KeyError::AlreadyExists { path }) if path == cleanup_error_path
+        ));
+        assert!(!output.exists());
+        assert_eq!(std::fs::read_dir(parent.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn embedded_nul_output_names_do_not_panic_or_leave_staging() {
+        let parent = tempdir();
+        let hostile = parent.path().join(std::ffi::OsString::from_vec(
+            b"hostile\0bundle.riot".to_vec(),
+        ));
+
+        let output_result = std::panic::catch_unwind(|| super::write_new_atomic(&hostile, b"ours"));
+        assert!(matches!(
+            output_result,
+            Ok(Err(KeyError::InvalidOutputDirectory))
+        ));
+
+        let key_result = std::panic::catch_unwind(|| super::keygen(&hostile));
+        assert!(matches!(
+            key_result,
+            Ok(Err(KeyError::InvalidOutputDirectory))
+        ));
+        assert_eq!(std::fs::read_dir(parent.path()).unwrap().count(), 0);
     }
 
     #[test]
@@ -1718,6 +1807,26 @@ mod tests {
             Ok(())
         });
         assert!(error.is_err());
+        assert!(!output.exists());
+        assert_eq!(std::fs::read_dir(parent.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn output_cleanup_parent_sync_failure_is_surfaced_after_removal() {
+        let parent = tempdir();
+        let output = parent.path().join("bundle.riot");
+        let cleanup_error_path = parent.path().join("cleanup-sync");
+        let error = super::write_new_atomic_inner(&output, b"ours", |stage| match stage {
+            super::OutputStage::Publish => Err(KeyError::InvalidOutputDirectory),
+            super::OutputStage::CleanupParentSync => Err(KeyError::AlreadyExists {
+                path: cleanup_error_path.clone(),
+            }),
+            _ => Ok(()),
+        });
+        assert!(matches!(
+            error,
+            Err(KeyError::AlreadyExists { path }) if path == cleanup_error_path
+        ));
         assert!(!output.exists());
         assert_eq!(std::fs::read_dir(parent.path()).unwrap().count(), 0);
     }
