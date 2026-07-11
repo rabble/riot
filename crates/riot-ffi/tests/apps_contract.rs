@@ -1179,24 +1179,33 @@ fn replay_rejects_a_non_app_data_bundle() {
 }
 
 #[test]
-fn app_display_name_is_short_stable_and_non_identifying() {
+fn app_display_name_is_the_rendered_name_and_never_full_key_material() {
     let profile = open_local_profile().expect("profile");
     let runtime = profile.app_runtime();
 
+    // Before anyone claims a name: the fallback, in the SAME `<name> · <tag>`
+    // shape a claimed name takes. This used to be a bare `member-<hex>` label
+    // with nowhere for a real name to go.
     let name = runtime.app_display_name().expect("display name");
-    assert!(name.starts_with("member-"));
-    assert!(!name.is_empty());
-    assert!(name.len() < 24);
-    assert_ne!(name.len(), 64, "must not be full 64-hex key material");
-
-    let suffix = name.strip_prefix("member-").expect("member- prefix");
-    assert_eq!(suffix.len(), 8, "8 hex chars = first 4 subspace bytes");
-    assert!(suffix
+    let tag = name.strip_prefix("member · ").expect("member · <tag>");
+    assert_eq!(tag.len(), 8, "8 hex chars = first 4 subspace bytes");
+    assert!(tag
         .chars()
         .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
+    assert_ne!(name.len(), 64, "must not be full 64-hex key material");
 
     // Stable across calls within a profile.
     assert_eq!(runtime.app_display_name().expect("name again"), name);
+
+    // Once a name is claimed, this is what `riot.whoami()` shows — the claimed
+    // name, still carrying the key tag that makes it comparable.
+    profile
+        .profile()
+        .set_display_name("Ana".into())
+        .expect("set name");
+    let named = runtime.app_display_name().expect("named");
+    assert_eq!(named, format!("Ana · {tag}"));
+    assert_ne!(named.len(), 64, "must not be full 64-hex key material");
 }
 
 // ---------------------------------------------------------------------------
@@ -1259,10 +1268,18 @@ fn a_carried_app_installs_from_the_store_exactly_as_a_direct_install_would() {
 
     // Admitting the app is not enough: the host still has to serve its pages,
     // and for a carried app the store holds the only copy of them.
-    let bundle_bytes = receiver_runtime
-        .app_bundle_bytes(direct.app_id_bytes.clone())
-        .expect("bundle bytes for serving");
-    let served = riot_core::apps::bundle::decode_app_bundle(&bundle_bytes).expect("decodes");
+    let pair = receiver_runtime
+        .app_pair_bytes(direct.app_id_bytes.clone())
+        .expect("pair bytes for serving and persisting");
+    let served = riot_core::apps::bundle::decode_app_bundle(&pair.bundle_bytes).expect("decodes");
+    // The manifest half is what a host re-admits the app with after a relaunch;
+    // from one verified read the two halves cannot disagree about the app.
+    assert_eq!(
+        riot_core::apps::index::verify_app_pair(&pair.manifest_bytes, &pair.bundle_bytes)
+            .expect("the pair re-verifies")
+            .to_vec(),
+        direct.app_id_bytes,
+    );
     assert_eq!(served.entry_point, carried.entry_point);
     assert!(
         served
@@ -1274,10 +1291,10 @@ fn a_carried_app_installs_from_the_store_exactly_as_a_direct_install_would() {
 }
 
 #[test]
-fn app_bundle_bytes_refuses_an_app_this_profile_has_never_seen() {
+fn app_pair_bytes_refuses_an_app_this_profile_has_never_seen() {
     let profile = open_local_profile().expect("profile");
     assert!(matches!(
-        profile.app_runtime().app_bundle_bytes(vec![0x9a; 32]),
+        profile.app_runtime().app_pair_bytes(vec![0x9a; 32]),
         Err(MobileError::AppRejected)
     ));
 }

@@ -9,6 +9,15 @@ use std::sync::Arc;
 
 use crate::mobile_api::{MobileError, MobileProfile, PublicSpace};
 
+/// The canonical bytes of an app the profile holds, as one verified read.
+/// A host needs both halves — the bundle to serve the app's pages, the
+/// manifest to re-admit it after a relaunch.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct AppPairBytes {
+    pub manifest_bytes: Vec<u8>,
+    pub bundle_bytes: Vec<u8>,
+}
+
 /// One `(relative key, value)` pair of an app's own data.
 #[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
 pub struct AppDataItem {
@@ -105,16 +114,21 @@ impl AppRuntimeSession {
         crate::mobile_state::install_from_directory(&self.inner, app_id)
     }
 
-    /// The stored bundle bytes for an app this profile holds. `install_from_directory`
-    /// admits a carried app into the runtime, but the native host still has to
-    /// *serve* its pages to the WebView, and for a carried app there is no local
-    /// file to read them from — the only copy is the one in the store. Returns
-    /// the same canonical bytes the pair invariant verified, so a host decoding
-    /// them re-derives this exact `app_id`.
+    /// The stored manifest+bundle bytes for an app this profile holds.
+    /// `install_from_directory` admits a carried app into the runtime, but the
+    /// native host needs the bytes themselves for two things the store cannot do
+    /// for it: *serve* the app's pages to the WebView, and *persist* the app so
+    /// it survives a relaunch (the store is in-memory; a host re-admits its apps
+    /// on open exactly the way it admits the starter catalog). A carried app has
+    /// no local file to read either half from — the store holds the only copy.
+    ///
+    /// Both halves come from one verified read, so they can never disagree: they
+    /// are the same canonical bytes the pair invariant checked, and a host that
+    /// decodes them re-derives this exact `app_id`.
     ///
     /// `AppRejected` on the same conditions as `install_from_directory`.
-    pub fn app_bundle_bytes(&self, app_id: Vec<u8>) -> Result<Vec<u8>, MobileError> {
-        crate::mobile_state::app_bundle_bytes(&self.inner, app_id)
+    pub fn app_pair_bytes(&self, app_id: Vec<u8>) -> Result<AppPairBytes, MobileError> {
+        crate::mobile_state::app_pair_bytes(&self.inner, app_id)
     }
 
     pub fn trust_app(&self, app_id: String) -> Result<(), MobileError> {
