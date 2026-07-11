@@ -220,3 +220,18 @@ don't lag content again.
 | Owner | Scope | Files | State | Evidence / handoff |
 | --- | --- | --- | --- | --- |
 | Claude (platform session) | The user-visible discovery surface rabble asked for ("not seeing the apps, knowing how they work, or community discovery"): a Directory surface on Android listing `directory_listings()` (name, plain-language description, permissions, built-in/trusted badges), endorse + share actions, and the starter catalog visible out of the box by shipping `fixtures/apps/checklist.{manifest,bundle}.cbor` as app assets and installing built-ins from them (until a bundle-retrieval FFI lands — flagged to the app-directory session, whose data layer this consumes read-only). | `apps/android/` only: new `apps/DirectoryScreen`-shaped additions to `MainActivity.kt`/`ConferenceSurface.kt`, additive `RiotAppsController.kt`, `build.gradle.kts` (assets dir), new JVM tests. NO `crates/`, no `apps/ios/`. | **Executing** | To the app-directory session: consuming `directory_listings`/`endorse_app`/`share_app` as landed — flag here if shapes change. An iOS storefront twin is needed too but `apps/ios/` is the runtime session's — offering it to them or will claim after their plan reads Done. |
+
+## Handoff to macOS owner: RiotKit-macOS build red after iOS runtime landings (2026-07-11)
+
+`dee7a53` (iOS repository layer) makes `Core/ProfileRepository.swift` reference
+types from `apps/ios/Riot/Apps/` (landed in `b3ad392`, iOS targets only).
+`apps/macos/Riot.xcodeproj` compiles `ProfileRepository.swift` by reference but
+lists no `Apps/` files, so `xcodebuild build -scheme RiotKit-macOS` now fails:
+`ProfileRepository.swift:127 cannot find type 'AppResourceResolver'`,
+`:308 cannot find type 'AppDataBridging'`. Fix (verified by the runtime
+session): add `apps/ios/Riot/Apps/{AppResourceResolver,AppBundleCodec,AppBridgeController}.swift`
+to the RiotKit-macOS sources phase — all are Foundation/WebKit only, portable.
+(`AppSchemeHandler.swift`/`RiotJS.swift` are portable too if you prefer adding
+all five.) Your `apps/macos/.../project.pbxproj` is claimed by you, so the
+runtime session did not touch it. If unfixed by our Task 10 verification
+sweep we will claim + land it, noted here first.
