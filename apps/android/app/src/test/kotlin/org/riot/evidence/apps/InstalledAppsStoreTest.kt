@@ -6,9 +6,13 @@ import uniffi.riot_ffi.InstalledAppRecord
 
 class InstalledAppsStoreTest {
     private fun record(id: String) = InstalledAppRecord(
-        appId = id, name = "Checklist", description = "d", version = "1.0.0",
+        appId = id, appIdBytes = hexToBytes(id), name = "Checklist", description = "d", version = "1.0.0",
         entryPoint = "index.html", permissions = listOf("Keep its own notes in this space"),
     )
+
+    private fun hexToBytes(hex: String) = ByteArray(hex.length / 2) {
+        hex.substring(it * 2, it * 2 + 2).toInt(16).toByte()
+    }
     private fun bundle() = DecodedAppBundle(
         "index.html", listOf(AppResource("index.html", "text/html", ByteArray(1))),
     )

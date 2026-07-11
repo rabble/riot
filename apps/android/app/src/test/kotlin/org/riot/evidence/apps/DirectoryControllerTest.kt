@@ -15,6 +15,7 @@ private fun listing(
     trustedInSpaces: List<ByteArray> = emptyList(),
     bundlePresent: Boolean = true,
     builtIn: Boolean = false,
+    installed: Boolean = false,
     endorsingMet: List<ByteArray> = emptyList(),
     endorsingUnmet: UInt = 0u,
 ) = DirectoryListing(
@@ -26,6 +27,7 @@ private fun listing(
     permissions = listOf("Keep its own notes in this space"),
     bundlePresent = bundlePresent,
     builtIn = builtIn,
+    installed = installed,
     carrierSubspaceId = null,
     trustedInSpaces = trustedInSpaces,
     endorsingMetSubspaces = endorsingMet,
@@ -35,11 +37,16 @@ private fun listing(
 
 private fun sampleApp(idHex: String) = InstalledApp(
     InstalledAppRecord(
-        appId = idHex, name = "Checklist", description = "d", version = "1.0.0",
-        entryPoint = "index.html", permissions = listOf("Keep its own notes in this space"),
+        appId = idHex, appIdBytes = hexToBytes(idHex), name = "Checklist", description = "d",
+        version = "1.0.0", entryPoint = "index.html",
+        permissions = listOf("Keep its own notes in this space"),
     ),
     DecodedAppBundle("index.html", listOf(AppResource("index.html", "text/html", ByteArray(1)))),
 )
+
+private fun hexToBytes(hex: String) = ByteArray(hex.length / 2) {
+    hex.substring(it * 2, it * 2 + 2).toInt(16).toByte()
+}
 
 private class FakePort(private val rows: List<DirectoryListing> = emptyList()) : DirectoryPort {
     val endorsed = mutableListOf<Triple<ByteArray, String, Boolean>>()

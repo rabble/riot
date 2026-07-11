@@ -52,9 +52,12 @@ internal fun recordAppData(
     bundleBytes: ByteArray,
 ): PersistedProfile {
     val entry = PersistedAppData(appId, key, bundleBytes.copyOf())
-    return profile.copy(
-        appData = profile.appData.filterNot { it.appId == appId && it.key == key } + entry,
-    )
+    val others = profile.appData.filterNot { it.appId == appId && it.key == key }
+    // Bound the set at record time so a put never grows the profile past the
+    // codec ceiling (which would make persist throw): evict oldest first.
+    val room = PersistedProfileCodec.MAX_APP_DATA_ENTRIES - 1
+    val bounded = if (others.size > room) others.takeLast(room) else others
+    return profile.copy(appData = bounded + entry)
 }
 
 /**

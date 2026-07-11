@@ -70,6 +70,21 @@ class AppPersistenceTest {
     }
 
     @Test
+    fun recordAppDataStaysBoundedByEvictingOldest() {
+        val max = PersistedProfileCodec.MAX_APP_DATA_ENTRIES
+        var profile = base()
+        // One more distinct key than the ceiling allows.
+        for (i in 0..max) {
+            profile = recordAppData(profile, appA, "key$i", byteArrayOf(i.toByte()))
+        }
+
+        assertEquals(max, profile.appData.size)
+        // Oldest ("key0") evicted; newest retained.
+        assertFalse(profile.appData.any { it.key == "key0" })
+        assertTrue(profile.appData.any { it.key == "key$max" })
+    }
+
+    @Test
     fun restoreInstallsTrustsAndReplaysInOrderWithoutReputting() {
         val profile = base(
             installedApps = listOf(

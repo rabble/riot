@@ -23,9 +23,10 @@ class RiotController(filesDir: File) : AutoCloseable {
         File(filesDir, "conference-profile.bin"),
     )
     private val profile: MobileProfile
-    // Written under `persistLock` from the WebView bridge thread (app-data
-    // puts) as well as the UI/sync threads, and read from all of them; volatile
-    // so a persisted mutation on one thread is visible to the next reader.
+    // Mutated only through `mutatePersisted`/`mutatePersistedIfPresent`, which
+    // serialize the read-modify-persist on `persistLock` so writes from the
+    // WebView bridge thread (app-data puts) can't drop a concurrent UI/sync
+    // write. Volatile so a reader on another thread sees the latest reference.
     @Volatile private var persisted: PersistedProfile? = null
     private val persistLock = Any()
     private var pendingPreview: MobileImportPreview? = null
@@ -68,32 +69,20 @@ class RiotController(filesDir: File) : AutoCloseable {
      * bundle bytes are what `restore()` re-`install_app`s. No-op before a space
      * exists (apps require one). Called on the UI thread from the storefront.
      */
-    fun onAppInstalled(appId: String, manifestBytes: ByteArray, bundleBytes: ByteArray) {
-        synchronized(persistLock) {
-            val snapshot = persisted ?: return
-            persist(recordInstalledApp(snapshot, appId, manifestBytes, bundleBytes))
-        }
-    }
+    fun onAppInstalled(appId: String, manifestBytes: ByteArray, bundleBytes: ByteArray) =
+        mutatePersistedIfPresent { recordInstalledApp(it, appId, manifestBytes, bundleBytes) }
 
     /** Records a trust decision so `restore()` can re-apply it via `trust_app`. */
-    fun onAppTrusted(appId: String) {
-        synchronized(persistLock) {
-            val snapshot = persisted ?: return
-            persist(recordAppTrust(snapshot, appId))
-        }
-    }
+    fun onAppTrusted(appId: String) =
+        mutatePersistedIfPresent { recordAppTrust(it, appId) }
 
     /**
      * Records the committed app-data bundle bytes so `restore()` can re-admit
      * them via `replay_app_data_bundle`. Runs on the WebView bridge thread, so
-     * the whole read-modify-persist is under `persistLock`.
+     * the read-modify-persist is serialized against UI/sync writers.
      */
-    fun onAppDataCommitted(appId: String, key: String, bundleBytes: ByteArray) {
-        synchronized(persistLock) {
-            val snapshot = persisted ?: return
-            persist(recordAppData(snapshot, appId, key, bundleBytes))
-        }
-    }
+    fun onAppDataCommitted(appId: String, key: String, bundleBytes: ByteArray) =
+        mutatePersistedIfPresent { recordAppData(it, appId, key, bundleBytes) }
 
     /** Placeholder until real display names land; never exposes the full id. */
     fun displayName(): String = "member-" + identity().signingKeyId.take(8)
@@ -124,9 +113,7 @@ class RiotController(filesDir: File) : AutoCloseable {
             ),
         )
         val signed = profile.signDraft(draft.draftId)
-        val snapshot = checkNotNull(persisted)
-        persisted = snapshot.copy(alerts = snapshot.alerts + signed.entry.toPersisted(signed.bundleBytes))
-        persist(persisted!!)
+        mutatePersisted { it.copy(alerts = it.alerts + signed.entry.toPersisted(signed.bundleBytes)) }
         return signed.entry
     }
 
@@ -143,20 +130,22 @@ class RiotController(filesDir: File) : AutoCloseable {
         val preview = checkNotNull(pendingPreview) { "Select and preview a signed bundle first" }
         val bundle = checkNotNull(pendingImportBytes) { "Selected bundle is no longer available" }
         val entries = preview.eligibleEntries()
-        val snapshot = checkNotNull(persisted) { "Create or join a public space first" }
-        val existingIds = snapshot.alerts.mapTo(mutableSetOf()) { it.entryId }
-        val prospective = snapshot.copy(
-            alerts = snapshot.alerts + entries
-                .filterNot { it.entryId in existingIds }
-                .map { it.toPersisted(bundle) },
-        )
-        TemporaryKey.useOwned(PersistedProfileCodec.encode(prospective)) { Unit }
-        preview.createPlan(entries.map { it.entryId }).use { it.accept() }
+        // Hold the lock across the store commit and the persist so no other
+        // writer can interleave between admitting the entries and saving them.
+        mutatePersisted { snapshot ->
+            val existingIds = snapshot.alerts.mapTo(mutableSetOf()) { it.entryId }
+            val prospective = snapshot.copy(
+                alerts = snapshot.alerts + entries
+                    .filterNot { it.entryId in existingIds }
+                    .map { it.toPersisted(bundle) },
+            )
+            TemporaryKey.useOwned(PersistedProfileCodec.encode(prospective)) { Unit }
+            preview.createPlan(entries.map { it.entryId }).use { it.accept() }
+            prospective
+        }
         preview.close()
         pendingPreview = null
         pendingImportBytes = null
-        persisted = prospective
-        persist(prospective)
         return entries
     }
 
@@ -184,19 +173,23 @@ class RiotController(filesDir: File) : AutoCloseable {
         // owns the in-memory serving store; app data lives in the willow store
         // and is independent of whether the app is installed yet.
         val runtime = profile.appRuntime()
-        snapshot.appData.forEach { data -> runtime.replayAppDataBundle(data.bundleBytes) }
+        // Best-effort: a single unreplayable bundle (corruption, a rejected
+        // path) must not crash-loop launch — skip it and keep the rest.
+        snapshot.appData.forEach { data ->
+            runCatching { runtime.replayAppDataBundle(data.bundleBytes) }
+        }
         persisted = snapshot.copy(identityState = null)
         if (snapshot.identityState == null) {
             persist(persisted!!)
         }
     }
 
-    private fun persistAcceptedSync(bundle: ByteArray, entries: List<CurrentEntry>) {
-        val snapshot = checkNotNull(persisted) { "Create or join a public space first" }
-        val prospective = mergeAcceptedSync(snapshot, bundle, entries)
-        TemporaryKey.useOwned(PersistedProfileCodec.encode(prospective)) { Unit }
-        persist(prospective)
-    }
+    private fun persistAcceptedSync(bundle: ByteArray, entries: List<CurrentEntry>) =
+        mutatePersisted { snapshot ->
+            val prospective = mergeAcceptedSync(snapshot, bundle, entries)
+            TemporaryKey.useOwned(PersistedProfileCodec.encode(prospective)) { Unit }
+            prospective
+        }
 
     private fun openProfile(snapshot: PersistedProfile?): MobileProfile {
         val state = snapshot?.identityState ?: return openLocalProfile()
@@ -206,6 +199,26 @@ class RiotController(filesDir: File) : AutoCloseable {
             }
         } finally {
             state.wrappingKey.fill(0)
+        }
+    }
+
+    /**
+     * Serializes a persisted-profile read-modify-write against every other
+     * writer — UI, sync, and the WebView bridge thread. [persist] re-enters the
+     * same lock (reentrant). Throws if no space exists yet.
+     */
+    private inline fun mutatePersisted(transform: (PersistedProfile) -> PersistedProfile) {
+        synchronized(persistLock) {
+            val snapshot = checkNotNull(persisted) { "Create or join a public space first" }
+            persist(transform(snapshot))
+        }
+    }
+
+    /** As [mutatePersisted], but a no-op before a space exists (the app hooks). */
+    private inline fun mutatePersistedIfPresent(transform: (PersistedProfile) -> PersistedProfile) {
+        synchronized(persistLock) {
+            val snapshot = persisted ?: return
+            persist(transform(snapshot))
         }
     }
 
