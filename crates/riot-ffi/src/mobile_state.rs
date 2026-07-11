@@ -881,7 +881,8 @@ fn ensure_complete_sync_inventory(profile: &LocalProfile) -> Result<(), MobileEr
     // app-directory follow-up owns syncing app data. The completeness
     // invariant therefore compares against live non-app entries only —
     // otherwise one local app_data_put would brick open_sync_session.
-    let all_prefix = riot_core::willow::Path::from_slices(&[]).map_err(|_| MobileError::Internal)?;
+    let all_prefix =
+        riot_core::willow::Path::from_slices(&[]).map_err(|_| MobileError::Internal)?;
     let mut live_ids: Vec<_> = profile
         .store
         .entries_with_prefix(&all_prefix)

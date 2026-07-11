@@ -93,7 +93,10 @@ pub fn assemble_directory(inputs: &DirectoryInputs) -> Vec<AppListing> {
     // timestamp wins; every other member points at it.
     let mut newest: BTreeMap<([u8; 32], String), (AppId, u64)> = BTreeMap::new();
     for app in by_id.values() {
-        let key = (app.manifest.author.signing_key_id, app.manifest.name.clone());
+        let key = (
+            app.manifest.author.signing_key_id,
+            app.manifest.name.clone(),
+        );
         let candidate = (app.app_id, app.manifest_timestamp_micros);
         match newest.get(&key) {
             Some((_, ts)) if *ts >= candidate.1 => {}
@@ -108,7 +111,10 @@ pub fn assemble_directory(inputs: &DirectoryInputs) -> Vec<AppListing> {
     let mut listings: Vec<AppListing> = by_id
         .values()
         .map(|app| {
-            let key = (app.manifest.author.signing_key_id, app.manifest.name.clone());
+            let key = (
+                app.manifest.author.signing_key_id,
+                app.manifest.name.clone(),
+            );
             let superseded_by = match newest.get(&key) {
                 Some((winner, _)) if *winner != app.app_id => Some(*winner),
                 _ => None,

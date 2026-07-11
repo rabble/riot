@@ -1,6 +1,6 @@
 use riot_core::apps::index::{
-    app_bundle_digest, app_index_bundle_path, app_index_endorsement_path,
-    app_index_manifest_path, app_index_prefix_for, APP_INDEX_COMPONENT,
+    app_bundle_digest, app_index_bundle_path, app_index_endorsement_path, app_index_manifest_path,
+    app_index_prefix_for, APP_INDEX_COMPONENT,
 };
 use riot_core::willow::Path;
 
@@ -37,9 +37,7 @@ fn per_app_prefix_is_a_prefix_of_all_three() {
     let prefix = app_index_prefix_for(&app_id).expect("prefix");
     assert!(prefix.is_prefix_of(&app_index_manifest_path(&app_id).expect("p")));
     assert!(prefix.is_prefix_of(&app_index_bundle_path(&app_id).expect("p")));
-    assert!(prefix.is_prefix_of(
-        &app_index_endorsement_path(&app_id, &[9u8; 32]).expect("p")
-    ));
+    assert!(prefix.is_prefix_of(&app_index_endorsement_path(&app_id, &[9u8; 32]).expect("p")));
 }
 
 #[test]

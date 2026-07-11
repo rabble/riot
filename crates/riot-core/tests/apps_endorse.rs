@@ -21,14 +21,20 @@ fn endorsement_round_trips() {
 
 #[test]
 fn empty_note_is_allowed() {
-    let marker = EndorsementMarker { note: String::new(), ..sample() };
+    let marker = EndorsementMarker {
+        note: String::new(),
+        ..sample()
+    };
     let bytes = encode_endorsement(&marker).expect("encode");
     assert_eq!(decode_endorsement(&bytes).expect("decode"), marker);
 }
 
 #[test]
 fn retracted_round_trips() {
-    let marker = EndorsementMarker { retracted: true, ..sample() };
+    let marker = EndorsementMarker {
+        retracted: true,
+        ..sample()
+    };
     let bytes = encode_endorsement(&marker).expect("encode");
     assert!(decode_endorsement(&bytes).expect("decode").retracted);
 }
@@ -83,7 +89,10 @@ fn malformed_app_id_is_rejected() {
         e.map(3).unwrap();
         e.u8(0).unwrap();
         write_app_id(&mut e);
-        e.u8(1).unwrap().str("we ran jail support with this").unwrap();
+        e.u8(1)
+            .unwrap()
+            .str("we ran jail support with this")
+            .unwrap();
         e.u8(2).unwrap().u8(0).unwrap();
         buffer
     }

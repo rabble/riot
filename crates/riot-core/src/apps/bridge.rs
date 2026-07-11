@@ -41,8 +41,8 @@ impl AppDataBridge {
             signature: signature.to_bytes(),
             payload_bytes: value.to_vec(),
         };
-        let bundle_bytes = encode_bundle(std::slice::from_ref(&signed))
-            .map_err(|_| AppsError::StoreRejected)?;
+        let bundle_bytes =
+            encode_bundle(std::slice::from_ref(&signed)).map_err(|_| AppsError::StoreRejected)?;
 
         let preview = match store
             .inspect(&bundle_bytes, ImportContext::new("app-write"))

@@ -269,10 +269,7 @@ impl JoinState {
     pub(crate) fn live_entry_bytes(&self) -> u64 {
         self.live
             .iter()
-            .map(|s| {
-                s.entry_bytes.len() as u64
-                    + s.payload.as_ref().map_or(0, |p| p.len()) as u64
-            })
+            .map(|s| s.entry_bytes.len() as u64 + s.payload.as_ref().map_or(0, |p| p.len()) as u64)
             .sum()
     }
 

@@ -50,8 +50,8 @@ fn app_data_entry_is_admitted_committed_and_live() {
     let store = session.create_store().expect("store");
     let author = generate_communal_author().expect("author");
 
-    let entry =
-        build_app_data_entry(&author, &[7u8; 32], "items/a", 1, b"{\"done\":false}").expect("entry");
+    let entry = build_app_data_entry(&author, &[7u8; 32], "items/a", 1, b"{\"done\":false}")
+        .expect("entry");
     let authorised = authorise_entry(&author, entry).expect("authorise");
     let token = authorised.authorisation_token();
     let signature: ed25519_dalek::Signature = token.signature().clone().into();
@@ -89,8 +89,8 @@ fn opaque_payload_outside_apps_prefix_is_still_rejected() {
 fn apps_path_with_wrong_app_id_length_is_rejected() {
     let author = generate_communal_author().expect("author");
     let short_id = [7u8; 16];
-    let path = Path::from_slices(&[b"apps".as_slice(), &short_id, b"items".as_slice()])
-        .expect("path");
+    let path =
+        Path::from_slices(&[b"apps".as_slice(), &short_id, b"items".as_slice()]).expect("path");
     expect_unsupported_schema(signed_at_path(&author, path, b"{}"));
 }
 
@@ -106,8 +106,8 @@ fn apps_path_without_key_segments_is_rejected() {
 fn apps_path_with_invalid_key_segment_is_rejected() {
     let author = generate_communal_author().expect("author");
     let app_id = [7u8; 32];
-    let path = Path::from_slices(&[b"apps".as_slice(), &app_id, b"Items".as_slice()])
-        .expect("path");
+    let path =
+        Path::from_slices(&[b"apps".as_slice(), &app_id, b"Items".as_slice()]).expect("path");
     expect_unsupported_schema(signed_at_path(&author, path, b"{}"));
 }
 

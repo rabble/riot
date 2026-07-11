@@ -128,7 +128,10 @@ fn decode_id32(d: &mut Decoder<'_>) -> Result<[u8; 32], AppsError> {
 }
 
 fn decode_text(d: &mut Decoder<'_>, max: usize) -> Result<String, AppsError> {
-    if d.datatype().map_err(|_| AppsError::EndorsementFieldInvalid)? != Type::String {
+    if d.datatype()
+        .map_err(|_| AppsError::EndorsementFieldInvalid)?
+        != Type::String
+    {
         return Err(AppsError::EndorsementFieldInvalid);
     }
     let text = d.str().map_err(|_| AppsError::EndorsementFieldInvalid)?;

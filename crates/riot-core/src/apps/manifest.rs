@@ -71,7 +71,8 @@ pub fn encode_manifest(manifest: &AppManifest) -> Result<Vec<u8>, AppsError> {
         e.u8(2)?.str(&manifest.version)?;
         e.u8(3)?.bytes(&manifest.author.namespace_id)?;
         e.u8(4)?.bytes(&manifest.author.subspace_id)?;
-        e.u8(5)?.u8(namespace_kind_to_u8(manifest.author.namespace_kind))?;
+        e.u8(5)?
+            .u8(namespace_kind_to_u8(manifest.author.namespace_kind))?;
         e.u8(6)?.bytes(&manifest.author.signing_key_id)?;
         e.u8(7)?.array(manifest.permissions.len() as u64)?;
         for permission in &manifest.permissions {
