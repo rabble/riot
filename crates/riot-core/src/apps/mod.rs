@@ -2,7 +2,9 @@
 //! namespace-scoped data bridge apps use to read/write their own Willow
 //! entries. Kept separate from `import/` (evidence-only).
 
+pub mod bundle;
 pub mod entry;
+pub mod manifest;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AppsError {
@@ -13,6 +15,9 @@ pub enum AppsError {
     PathTooLong,
     PathInvalid,
     Willow(crate::willow::WillowError),
+    ManifestFieldInvalid,
+    BundleFieldInvalid,
+    BundleTooLarge,
 }
 
 impl std::fmt::Display for AppsError {
