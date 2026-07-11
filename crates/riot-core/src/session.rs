@@ -11,7 +11,9 @@
 use std::sync::{Arc, Mutex};
 
 use crate::import::bundle::{decode_bundle, BundleDecodeOutcome, BundleRejection, ItemStatus};
-use crate::import::join::{plan_join, JoinEffect, JoinState, STORE_CHARGE_ENTRY_BYTES};
+use crate::import::join::{
+    plan_join_with_payloads, JoinEffect, JoinState, STORE_CHARGE_ENTRY_BYTES,
+};
 use crate::model::decode_alert;
 use crate::willow::{
     alert_entry_path_matches_payload, decode_capability_canonic, decode_entry_canonic,
@@ -56,7 +58,11 @@ const PLAN_TOMBSTONE_BYTES: u64 = 256;
 fn preview_output_entries_charge_bytes(entries: &[VerifiedEntry], route_len: usize) -> u64 {
     entries
         .iter()
-        .map(|v| STORE_CHARGE_ENTRY_BYTES + v.entry_bytes_len as u64)
+        .map(|v| {
+            STORE_CHARGE_ENTRY_BYTES
+                + v.entry_bytes_len as u64
+                + v.payload.as_ref().map_or(0, |p| p.len()) as u64
+        })
         .sum::<u64>()
         + route_len as u64
 }
@@ -243,6 +249,10 @@ struct VerifiedEntry {
     /// Canonical entry byte length, captured once at verification time so
     /// preview-output charging never needs to re-encode.
     entry_bytes_len: usize,
+    /// Payload bytes carried through to live retention — populated only for
+    /// app-data entries (see `Stored::payload`); `None` for alerts. Charged
+    /// into the preview-output budget alongside the entry bytes.
+    payload: Option<Vec<u8>>,
 }
 
 struct PreviewState {
@@ -418,12 +428,13 @@ impl EvidenceStore {
     }
 
     /// Live entries whose path is prefixed by `prefix`, with their canonical
-    /// ids. Same typed boundary as `live_entry_ids`; the returned `Entry`
-    /// carries the payload digest/length, never signer or capability state.
+    /// ids and retained payload bytes (`Some` only for app-data entries).
+    /// Same typed boundary as `live_entry_ids`; the returned `Entry` carries
+    /// the payload digest/length, never signer or capability state.
     pub fn entries_with_prefix(
         &self,
         prefix: &crate::willow::Path,
-    ) -> Result<Vec<(EntryId, crate::willow::Entry)>, SessionError> {
+    ) -> Result<Vec<crate::import::join::PrefixedEntry>, SessionError> {
         let st = self.inner.lock().map_err(|_| SessionError::Internal)?;
         st.require_store(self.store_id)?;
         Ok(st
@@ -521,9 +532,10 @@ impl EvidenceStore {
                 // from the alert binding: their payload is opaque and embeds
                 // no identity a path could contradict — the path itself
                 // (already shape-checked in `verify_frame`) is the identity.
-                let path_matches = if crate::apps::entry::is_app_data_path(
+                let is_app_data = crate::apps::entry::is_app_data_path(
                     willow25::groupings::Keylike::path(authorised.entry()),
-                ) {
+                );
+                let path_matches = if is_app_data {
                     true
                 } else {
                     decode_alert(item.frame.payload_bytes())
@@ -543,6 +555,7 @@ impl EvidenceStore {
                         authorised,
                         entry_id: valid.entry_id,
                         entry_bytes_len: item.frame.entry_bytes().len(),
+                        payload: is_app_data.then(|| item.frame.payload_bytes().to_vec()),
                     });
                 }
             }
@@ -814,8 +827,12 @@ impl ImportPlan {
         let before_generation = store.generation;
         let pre_join = store.join.clone();
 
-        let batch = entries.iter().map(|v| v.authorised.clone()).collect();
-        let join_plan = plan_join(&pre_join, batch).map_err(|_| SessionError::StoreFull)?;
+        let batch = entries
+            .iter()
+            .map(|v| (v.authorised.clone(), v.payload.clone()))
+            .collect();
+        let join_plan =
+            plan_join_with_payloads(&pre_join, batch).map_err(|_| SessionError::StoreFull)?;
 
         // Any entry whose id was not previously seen makes this a real change.
         let any_new = join_plan

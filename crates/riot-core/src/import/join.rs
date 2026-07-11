@@ -51,10 +51,16 @@ struct Stored {
     entry: Entry,
     entry_bytes: Vec<u8>,
     id: EntryId,
+    /// Payload bytes, retained only for app-data entries (`apps/<app_id>/...`)
+    /// — apps must be able to read their values back, whereas alert payloads
+    /// are served from the FFI layer's own retained bundles. Charged into
+    /// `live_entry_bytes` (live-only, freed on prune), never into the
+    /// permanent seen-index charge.
+    payload: Option<Vec<u8>>,
 }
 
 impl Stored {
-    fn new(authorised: AuthorisedEntry) -> Self {
+    fn new(authorised: AuthorisedEntry, payload: Option<Vec<u8>>) -> Self {
         let entry = authorised.entry().clone();
         let entry_bytes = encode_entry(&entry);
         let id = entry_id(&entry_bytes);
@@ -62,6 +68,7 @@ impl Stored {
             entry,
             entry_bytes,
             id,
+            payload,
         }
     }
 
@@ -70,6 +77,10 @@ impl Stored {
         self.entry.prunes(&other.entry)
     }
 }
+
+/// A live entry matched by a path-prefix query: canonical id, the entry,
+/// and its retained payload bytes (`Some` only for app-data entries).
+pub type PrefixedEntry = (EntryId, Entry, Option<Vec<u8>>);
 
 /// The per-entry outcome of a batch join, keyed by canonical entry id.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -119,15 +130,14 @@ impl JoinState {
         self.live.iter().map(|s| s.id).collect()
     }
 
-    /// Live entries whose path is prefixed by `prefix`.
-    pub fn live_entries_with_prefix(
-        &self,
-        prefix: &crate::willow::Path,
-    ) -> Vec<(EntryId, crate::willow::Entry)> {
+    /// Live entries whose path is prefixed by `prefix`, with their retained
+    /// payload bytes (`None` for entries whose payload is not retained,
+    /// i.e. anything other than app data).
+    pub fn live_entries_with_prefix(&self, prefix: &crate::willow::Path) -> Vec<PrefixedEntry> {
         self.live
             .iter()
             .filter(|s| prefix.is_prefix_of(s.entry.path()))
-            .map(|s| (s.id, s.entry.clone()))
+            .map(|s| (s.id, s.entry.clone(), s.payload.clone()))
             .collect()
     }
 }
@@ -135,7 +145,19 @@ impl JoinState {
 /// Computes the join of `pre` with `batch` without mutating `pre`. Effects
 /// are derived from `(pre ∪ batch)` as one set — order-independent.
 pub fn plan_join(pre: &JoinState, batch: Vec<AuthorisedEntry>) -> Result<JoinPlan, JoinLimitError> {
-    let batch: Vec<Stored> = batch.into_iter().map(Stored::new).collect();
+    plan_join_with_payloads(pre, batch.into_iter().map(|a| (a, None)).collect())
+}
+
+/// `plan_join`, but each batch item may carry payload bytes to retain with
+/// the live entry (used for app-data entries; see `Stored::payload`).
+pub fn plan_join_with_payloads(
+    pre: &JoinState,
+    batch: Vec<(AuthorisedEntry, Option<Vec<u8>>)>,
+) -> Result<JoinPlan, JoinLimitError> {
+    let batch: Vec<Stored> = batch
+        .into_iter()
+        .map(|(authorised, payload)| Stored::new(authorised, payload))
+        .collect();
     let pre_live: Vec<EntryId> = pre.live.iter().map(|s| s.id).collect();
 
     let mut next_seen = pre.seen.clone();
@@ -239,12 +261,18 @@ impl JoinState {
         self.seen.len() as u64 * STORE_CHARGE_ENTRY_BYTES
     }
 
-    /// Sum of currently live entries' own canonical byte length. Unlike the
-    /// seen-index charge, this genuinely drops when an entry is pruned: its
-    /// `Stored` value (and thus its `entry_bytes` allocation) leaves `live`
-    /// and is freed.
+    /// Sum of currently live entries' own canonical byte length plus any
+    /// retained payload bytes. Unlike the seen-index charge, this genuinely
+    /// drops when an entry is pruned: its `Stored` value (and thus its
+    /// `entry_bytes`/`payload` allocations) leaves `live` and is freed.
     pub(crate) fn live_entry_bytes(&self) -> u64 {
-        self.live.iter().map(|s| s.entry_bytes.len() as u64).sum()
+        self.live
+            .iter()
+            .map(|s| {
+                s.entry_bytes.len() as u64
+                    + s.payload.as_ref().map_or(0, |p| p.len()) as u64
+            })
+            .sum()
     }
 
     /// Canonical entry bytes of every live entry.

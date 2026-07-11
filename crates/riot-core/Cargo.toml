@@ -77,3 +77,7 @@ required-features = ["conformance"]
 [[test]]
 name = "core_import_app_entries"
 required-features = ["conformance"]
+
+[[test]]
+name = "apps_bridge"
+required-features = ["conformance"]

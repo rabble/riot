@@ -2,6 +2,7 @@
 //! namespace-scoped data bridge apps use to read/write their own Willow
 //! entries. Kept separate from `import/` (evidence-only).
 
+pub mod bridge;
 pub mod bundle;
 pub mod entry;
 pub mod manifest;
@@ -19,6 +20,8 @@ pub enum AppsError {
     ManifestFieldInvalid,
     BundleFieldInvalid,
     BundleTooLarge,
+    /// The store refused the write (session/budget/admission failure).
+    StoreRejected,
 }
 
 impl std::fmt::Display for AppsError {
