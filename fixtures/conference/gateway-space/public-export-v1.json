@@ -1,0 +1,34 @@
+{
+  "schema": "riot-public-gateway-export/1",
+  "export_revision": "conference-gateway-export-v1",
+  "renderer_profile": "incident-board/1",
+  "verification_status": "fixture_unverified",
+  "source_fixture": "fixtures/conference/incident-space-v1.json",
+  "source_fixture_sha256": "b91350ff9b7cf05acbb895de5e7bf4b9aba26a63acaed075ec29f5b72bccbd64",
+  "source_manifest": "fixtures/conference/package-manifest-v1.json",
+  "source_manifest_sha256": "2863f1676ced91a2c90eb003662a532b0eefa38a0aabe747c3084b3e873d1fab",
+  "namespace": "3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c",
+  "visibility": "public",
+  "title": "Harbor District Evacuation",
+  "generated_at": "2026-07-11T09:40:00Z",
+  "entries": [
+    {
+      "kind": "alert",
+      "entry_id": "f2d9e48a1c5b7390e6f1a8427c9d305ebb617ef44a98c206d1b5398fae74018b",
+      "signer": "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+      "title": "Ferry terminal access restricted",
+      "body": "Use the north entrance; the south pier is closed for inspection.",
+      "freshness": "2026-07-11T09:30:00Z",
+      "ai_assisted": true
+    },
+    {
+      "kind": "observation",
+      "entry_id": "7ab36491e2c0548ff361bca20d7e4968c5439ad01172fe8b406d95a73ce1206f",
+      "signer": "3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c",
+      "title": "Shelter check-in point open",
+      "body": "Community center staff are receiving arrivals at the west hall.",
+      "freshness": "2026-07-11T09:34:00Z",
+      "ai_assisted": false
+    }
+  ]
+}
