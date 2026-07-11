@@ -266,7 +266,16 @@ class MainActivity : Activity() {
                     content.addView(action("Open ${listing.name}") { openApp(installed) })
                 installed != null ->
                     content.addView(action("Review ${listing.name}") { showAppReview(installed) })
-                trusted && !listing.bundlePresent ->
+                // An app a neighbour carried in. Taking it up is the last hop
+                // of discovery: it lands untrusted like any other, so it goes
+                // to review rather than straight to opening.
+                directory.canGet(listing) ->
+                    content.addView(action("Get ${listing.name}") {
+                        runAction("You have ${listing.name}") {
+                            showAppReview(directory.get(listing))
+                        }
+                    })
+                else ->
                     content.addView(body("Still arriving from your group…"))
             }
 

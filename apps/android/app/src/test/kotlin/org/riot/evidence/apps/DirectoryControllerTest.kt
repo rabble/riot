@@ -64,12 +64,24 @@ private class FakeInstalledApps : InstalledAppsAccess {
     var installCount = 0
     val installedBytes = mutableListOf<Pair<ByteArray, ByteArray>>()
     val byHex = mutableMapOf<String, InstalledApp>()
+
+    /** Ids passed to [getFromDirectory], in order. */
+    val gotFromDirectory = mutableListOf<ByteArray>()
+
+    /** When set, [getFromDirectory] fails the way a rejecting Rust side would. */
+    var directoryFailure: Exception? = null
+
     override fun install(manifestBytes: ByteArray, bundleBytes: ByteArray): InstalledApp {
         installCount++
         installedBytes += manifestBytes to bundleBytes
         return sampleApp("00".repeat(32))
     }
     override fun find(appIdHex: String): InstalledApp? = byHex[appIdHex]
+    override fun getFromDirectory(appIdBytes: ByteArray): InstalledApp {
+        gotFromDirectory += appIdBytes
+        directoryFailure?.let { throw it }
+        return sampleApp(DirectoryController.hex(appIdBytes))
+    }
 }
 
 private class FakeStarter(private val bytes: Pair<ByteArray, ByteArray>?) : StarterCatalog {
@@ -115,6 +127,63 @@ class DirectoryControllerTest {
         val match = controller.installedFor(listing(byteArrayOf(0xAB.toByte(), 0xCD.toByte())))
         assertSame(app, match)
         assertNull(controller.installedFor(listing(byteArrayOf(0x00, 0x01))))
+    }
+
+    @Test
+    fun aCarriedAppWhosePagesHaveArrivedCanBeTakenUpAndThenOpened() {
+        val installed = FakeInstalledApps()
+        val controller = DirectoryController(FakePort(), installed, FakeStarter(null))
+        val id = ByteArray(32) { 0x5A }
+        val row = listing(id, bundlePresent = true)
+
+        // Not held yet, but all here: the row offers a way in.
+        assertTrue(controller.canGet(row))
+
+        val app = controller.get(row)
+
+        // Rust was asked for this exact app by its raw id, and what came back
+        // is a real installed tool with a bundle to serve — the app is now
+        // openable once an organizer reviews it.
+        assertTrue(installed.gotFromDirectory.single().contentEquals(id))
+        assertEquals("5a".repeat(32), app.record.appId)
+        assertEquals("index.html", app.bundle.entryPoint)
+    }
+
+    @Test
+    fun anAppStillInFlightOffersNoWayIn() {
+        val installed = FakeInstalledApps()
+        val controller = DirectoryController(FakePort(), installed, FakeStarter(null))
+
+        // The listing has arrived but its pages have not.
+        assertFalse(controller.canGet(listing(ByteArray(32), bundlePresent = false)))
+        // Nor is there anything to take up for an app already held.
+        installed.byHex["ab".repeat(32)] = sampleApp("ab".repeat(32))
+        assertFalse(controller.canGet(listing(ByteArray(32) { 0xAB.toByte() })))
+        assertTrue(installed.gotFromDirectory.isEmpty())
+    }
+
+    @Test
+    fun aRejectedGetSurfacesInPlainLanguage() {
+        val installed = FakeInstalledApps()
+        installed.directoryFailure = IllegalStateException("AppRejected")
+        val controller = DirectoryController(FakePort(), installed, FakeStarter(null))
+
+        val error = try {
+            controller.get(listing(ByteArray(32), bundlePresent = true))
+            null
+        } catch (failure: IllegalStateException) {
+            failure
+        }
+
+        val message = requireNotNull(error).message.orEmpty()
+        assertEquals(
+            "Checklist hasn't finished arriving from your group. " +
+                "Try again the next time you're together.",
+            message,
+        )
+        // No jargon leaks out of the FFI, and the cause is kept for the log.
+        assertFalse(message.contains("AppRejected"))
+        assertEquals("AppRejected", error.cause?.message)
     }
 
     @Test

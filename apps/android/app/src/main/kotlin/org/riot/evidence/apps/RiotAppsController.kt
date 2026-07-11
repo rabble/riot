@@ -1,6 +1,7 @@
 package org.riot.evidence.apps
 
 import uniffi.riot_ffi.AppRuntimeSession
+import uniffi.riot_ffi.InstalledAppRecord
 
 /** Install/trust/launch decisions for signed JS apps in this profile. */
 class RiotAppsController(
@@ -21,6 +22,25 @@ class RiotAppsController(
     override fun install(manifestBytes: ByteArray, bundleBytes: ByteArray): InstalledApp {
         val app = admit(manifestBytes, bundleBytes)
         onInstalled(app.record.appId, manifestBytes, bundleBytes)
+        return app
+    }
+
+    /**
+     * Takes up an app that arrived from a neighbour. A carried app has no file
+     * on this side to install from — the store holds the only copy — so Rust
+     * admits it from its own verified bytes and hands both halves back in one
+     * read: the bundle to serve its pages from, the manifest to re-admit it on
+     * the next launch. That is why this fires the same persistence hook a
+     * hand-picked install does; without it the app would be gone by morning.
+     *
+     * Getting an app trusts nothing. It lands untrusted like any other and
+     * still has to pass review before it can open.
+     */
+    override fun getFromDirectory(appIdBytes: ByteArray): InstalledApp {
+        val record = session.installFromDirectory(appIdBytes)
+        val pair = session.appPairBytes(appIdBytes)
+        val app = register(record, pair.bundleBytes)
+        onInstalled(app.record.appId, pair.manifestBytes, pair.bundleBytes)
         return app
     }
 
@@ -50,8 +70,16 @@ class RiotAppsController(
         }
     }
 
-    private fun admit(manifestBytes: ByteArray, bundleBytes: ByteArray): InstalledApp {
-        val record = session.installApp(manifestBytes, bundleBytes)
+    private fun admit(manifestBytes: ByteArray, bundleBytes: ByteArray): InstalledApp =
+        register(session.installApp(manifestBytes, bundleBytes), bundleBytes)
+
+    /**
+     * The serving-decode, shared by every way an app gets here: Rust has
+     * already accepted the bytes as an app (it is the integrity oracle), so
+     * all that is left is to decode the bundle this side will serve from and
+     * check it agrees with Rust about the entry point.
+     */
+    private fun register(record: InstalledAppRecord, bundleBytes: ByteArray): InstalledApp {
         val bundle = AppBundleCodec.decode(bundleBytes)
         check(bundle.entryPoint == record.entryPoint) { "That file isn't a Riot tool" }
         return store.register(record, bundle)

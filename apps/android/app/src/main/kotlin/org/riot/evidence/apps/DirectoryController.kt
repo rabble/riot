@@ -18,6 +18,9 @@ interface DirectoryPort {
 interface InstalledAppsAccess {
     fun install(manifestBytes: ByteArray, bundleBytes: ByteArray): InstalledApp
     fun find(appIdHex: String): InstalledApp?
+
+    /** Takes up an app this profile already holds, from the store's own bytes. */
+    fun getFromDirectory(appIdBytes: ByteArray): InstalledApp
 }
 
 /** Bytes of a built-in app shipped with the binary. */
@@ -65,6 +68,33 @@ class DirectoryController(
      */
     fun installedFor(listing: DirectoryListing): InstalledApp? =
         installed.find(hex(listing.appId))
+
+    /**
+     * Whether this row can be taken up: an app someone in your community is
+     * carrying, whose pages have finished arriving, that this profile does not
+     * hold yet. While the bundle is still in flight there is nothing to open,
+     * so the row offers no action and says so instead.
+     */
+    fun canGet(listing: DirectoryListing): Boolean =
+        installedFor(listing) == null && listing.bundlePresent
+
+    /**
+     * Takes up a carried app so it can be reviewed and opened. Rust re-derives
+     * the app id from its own stored bytes and refuses anything that does not
+     * match, so the failure here is not a user error to explain in detail —
+     * whatever went wrong, the honest answer is that the app is not all here
+     * yet. Callers surface the message as-is.
+     */
+    fun get(listing: DirectoryListing): InstalledApp =
+        try {
+            installed.getFromDirectory(listing.appId)
+        } catch (error: Exception) {
+            throw IllegalStateException(
+                "${listing.name} hasn't finished arriving from your group. " +
+                    "Try again the next time you're together.",
+                error,
+            )
+        }
 
     /**
      * True when a recognized organizer of the current space trusts this app —
