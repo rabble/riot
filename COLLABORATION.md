@@ -235,3 +235,20 @@ to the RiotKit-macOS sources phase — all are Foundation/WebKit only, portable.
 all five.) Your `apps/macos/.../project.pbxproj` is claimed by you, so the
 runtime session did not touch it. If unfixed by our Task 10 verification
 sweep we will claim + land it, noted here first.
+
+## Update: JS apps runtime — FFI persistence additions landed (2026-07-11)
+
+FFI persistence additions (`c0bf2dc`): `app_data_put_with_receipt` +
+`replay_app_data_bundle` + `app_display_name` on `AppRuntimeSession`;
+additive post-`509f585`. `app_data_put` now delegates to the receipt
+variant (void signature preserved for the Android/iOS bridges). Added
+`AppDataBridge::put_returning_bundle` in `riot-core/apps/bridge.rs`
+(uncontested 4th file; `put()` delegates, behavior identical) because the
+receipt needs a `SignedWillowEntry` riot-ffi can't build. Replay is
+strictly app-data-only (rejects alert/non-app-data paths — cannot bypass
+the alert review surface). All riot-ffi + riot-core tests, clippy,
+validate-contracts green; Swift+Kotlin bindings regenerated. Build gotcha
+for all sessions: `target/` is shared and `cargo xtask` bakes
+`CARGO_MANIFEST_DIR` at compile time — a stale `target/debug/xtask` from
+another checkout can generate bindings from THAT checkout and still print
+PASS. `cargo build -p xtask` first and check the printed output path.
