@@ -2,6 +2,7 @@ package org.riot.evidence.apps
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertThrows
 import org.junit.Test
 
 class AppResourceResolverTest {
@@ -32,5 +33,31 @@ class AppResourceResolverTest {
         assertNull(resolver.resolve(resolver.originHost, "/../index.html"))
         assertNull(resolver.resolve(resolver.originHost, "/..%2Findex.html"))
         assertNull(resolver.resolve(resolver.originHost, "//index.html"))
+    }
+
+    @Test
+    fun uppercaseHexIdResolvesViaLowercasedOrigin() {
+        val upper = AppResourceResolver(
+            "AB".repeat(32),
+            DecodedAppBundle("index.html", listOf(AppResource("index.html", "text/html", ByteArray(1)))),
+        )
+        // Origin is lowercased; a browser-lowercased host still matches.
+        assertEquals(resolver.originHost, upper.originHost)
+        assertEquals("text/html", upper.resolve(upper.originHost, "/index.html")!!.contentType)
+    }
+
+    @Test
+    fun caseInsensitiveHostStillResolves() {
+        assertEquals(
+            "text/html",
+            resolver.resolve(resolver.originHost.uppercase(), "/index.html")!!.contentType,
+        )
+    }
+
+    @Test
+    fun rejectsAppIdsThatAreNotSixtyFourHexChars() {
+        val bundle = DecodedAppBundle("index.html", listOf(AppResource("index.html", "text/html", ByteArray(1))))
+        assertThrows(IllegalArgumentException::class.java) { AppResourceResolver("a".repeat(63), bundle) }
+        assertThrows(IllegalArgumentException::class.java) { AppResourceResolver("a".repeat(65), bundle) }
     }
 }

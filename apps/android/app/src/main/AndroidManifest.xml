@@ -15,6 +15,10 @@
         android:allowBackup="false"
         android:label="Riot"
         android:theme="@android:style/Theme.Material.Light.NoActionBar">
+        <!-- App-host WebViews must not report navigations to Safe Browsing. -->
+        <meta-data
+            android:name="android.webkit.WebView.EnableSafeBrowsing"
+            android:value="false" />
         <activity
             android:name=".MainActivity"
             android:exported="true">

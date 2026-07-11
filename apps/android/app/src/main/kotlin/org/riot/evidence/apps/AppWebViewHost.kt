@@ -7,6 +7,10 @@ import android.webkit.WebResourceResponse
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import androidx.webkit.ServiceWorkerClientCompat
+import androidx.webkit.ServiceWorkerControllerCompat
+import androidx.webkit.WebSettingsCompat
+import androidx.webkit.WebViewFeature
 import java.io.ByteArrayInputStream
 
 /**
@@ -38,6 +42,33 @@ class AppWebViewHost(context: Context, private val resolver: AppResourceResolver
             setSupportMultipleWindows(false)
             cacheMode = WebSettings.LOAD_NO_CACHE
             mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
+            setGeolocationEnabled(false)
+            allowUniversalAccessFromFileURLs = false
+            allowFileAccessFromFileURLs = false
+        }
+        // Safe Browsing can send navigated URLs to Google out-of-band, a
+        // channel blockNetworkLoads does not clearly cover. Disable it (the
+        // manifest meta-data does the same, belt and suspenders).
+        if (WebViewFeature.isFeatureSupported(WebViewFeature.SAFE_BROWSING_ENABLE)) {
+            WebSettingsCompat.setSafeBrowsingEnabled(webView.settings, false)
+        }
+        // Defense-in-depth: deny every service-worker fetch. Interception +
+        // blockNetworkLoads already contain workers, but this closes the
+        // channel outright where the feature is available.
+        if (WebViewFeature.isFeatureSupported(WebViewFeature.SERVICE_WORKER_BASIC_USAGE) &&
+            WebViewFeature.isFeatureSupported(WebViewFeature.SERVICE_WORKER_SHOULD_INTERCEPT_REQUEST)
+        ) {
+            ServiceWorkerControllerCompat.getInstance().setServiceWorkerClient(
+                object : ServiceWorkerClientCompat() {
+                    override fun shouldInterceptRequest(
+                        request: WebResourceRequest,
+                    ): WebResourceResponse = WebResourceResponse(
+                        "text/plain", null, 404, "Not Found",
+                        mapOf("Content-Security-Policy" to CSP),
+                        ByteArrayInputStream(ByteArray(0)),
+                    )
+                },
+            )
         }
         webView.webViewClient = AppWebViewClient()
     }
@@ -64,7 +95,12 @@ class AppWebViewHost(context: Context, private val resolver: AppResourceResolver
         override fun shouldOverrideUrlLoading(
             view: WebView,
             request: WebResourceRequest,
-        ): Boolean = request.url.scheme != "https" || request.url.host != resolver.originHost
+        ): Boolean {
+            val uri = request.url
+            return uri.scheme != "https" ||
+                uri.host != resolver.originHost ||
+                uri.port != -1
+        }
     }
 
     fun load() = webView.loadUrl(resolver.entryUrl)
