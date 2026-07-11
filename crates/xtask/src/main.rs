@@ -5,6 +5,7 @@
 //! for anything a TOML/JSON parser can check.
 
 mod hex_codec;
+mod sign_conference_fixture;
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -86,6 +87,13 @@ fn main() -> ExitCode {
                 ExitCode::FAILURE
             }
         },
+        Some("sign-conference-fixture") => match sign_conference_fixture::run(&workspace_root()) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("sign-conference-fixture: FAIL: {error}");
+                ExitCode::FAILURE
+            }
+        },
         Some(other) => {
             eprintln!("unknown xtask command: {other}");
             eprintln!("available: {}", available_commands().join(", "));
@@ -100,7 +108,12 @@ fn main() -> ExitCode {
 }
 
 fn available_commands() -> &'static [&'static str] {
-    &["validate-contracts", "generate-bindings"]
+    &[
+        "validate-contracts",
+        "generate-bindings",
+        "sign-conference-fixture",
+        "verify-conference-export",
+    ]
 }
 
 fn generate_mobile_bindings(root: &Path) -> Result<PathBuf, String> {
