@@ -495,6 +495,11 @@ Because the revocation's parent frontier and cutoff map are immutable, every
 arrival order computes the same result. This is the deliberate safety tradeoff
 when removal races disconnection. The entry and receipt are inspected and
 committed as one atomic selected unit; either missing half is ineligible.
+`ActionReceiptV1` entries are authorization sidecars and are explicitly exempt
+from generating another receipt, which is the recursion base case. Their own
+entry signature, Meadowcap receipt-prefix capability, actor binding, canonical
+path/body binding, action-entry hash, and previous-action hash are still fully
+verified. A receipt cannot name itself or another receipt as its action.
 
 Entry timestamps more than ten minutes ahead of a reliable local wall clock
 are quarantined. An unavailable or rolled-back clock blocks issuance, renewal,
@@ -1048,6 +1053,8 @@ tests; platform integration tests exercise the real storage adapters.
 - Record-type authorization, no self-authorization, causal DAG ordering,
   checkpoint compaction, actor/action hash chains, transitive descendant
   revocation, cutoff classification, and concurrent restrictive reducers.
+- Action-receipt base-case, missing-pair, self-reference, receipt-of-receipt,
+  swapped-action, and tampered-action-hash rejection.
 - Repository crash points between every journal/index/checkpoint write,
   deterministic rebuild, restored-backup rollback detection, and fail-closed
   startup.
