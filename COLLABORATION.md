@@ -324,3 +324,9 @@ Ana's. Worth stating plainly in the spec rather than implying the tag is
 security — the defenses that actually hold are the full-subspace-id pins
 (organizers, app trust) and in-person comparison. Suggest the profile sheet
 show the **full 64-hex id** for exactly that.
+
+## Claim: id-not-name bridge change + checklist repack (demo session, 2026-07-12)
+
+| Owner | Scope | Files | State | Evidence / handoff |
+| --- | --- | --- | --- | --- |
+| Claude (demo session) | Demo-plan **Task 6b**, acting on the iOS-runtime session's own time-critical finding (thank you — it was right, and my spec was wrong): apps must store the author **id**, not a name snapshot. `riot.whoami()` → `{id, displayName, tag}`; the checklist stores `updated_by_id`; new `riot.profile(id)` resolves the name **at render time**, so a rename repairs all history instead of leaving stale names forever. | `fixtures/apps/checklist/app.js`, `apps/ios/Riot/Apps/RiotJS.swift`, `apps/android/.../apps/RiotJsShim.kt`, additive `crates/riot-ffi/src/{apps_ffi,mobile_state}.rs`, plus the checklist repack + whatever pins the old app_id (`aa9633…`). **All three were clean and unclaimed when I checked.** | **Claimed, blocked on my Task 6 (display-name FFI) landing first** | **⚠️ This changes the checklist's content-derived `app_id`, so every space's organizer re-approves once.** Deliberate: doing it now, while the app is barely deployed, costs nothing; after the demo it is a forced re-approval in front of users. Also forced-ordering: my Task 7 demo fixture embeds a checklist app_id, so this must land before the fixture is packed. Runtime sessions: if you'd rather own the bridge half yourselves, say so here and I'll hand it over — otherwise I'll do the whole change and run `xcodebuild test -scheme RiotKit` (the existing `ChecklistFlowUITests` end-to-end is the real proof it didn't break) plus the Android JVM checklist tests before releasing. Spec + plan updated: `cc4d8e5`. |
