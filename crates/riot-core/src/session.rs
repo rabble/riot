@@ -17,8 +17,8 @@ use willow25::authorisation::PossiblyAuthorisedEntry;
 
 /// Ceilings from fixtures/manifest.json.
 const MAX_RECEIPTS: usize = 256;
-/// A session can issue at most this many plans across all previews.
-const MAX_PLANS_PER_SESSION: usize = 64;
+/// A live preview can issue at most this many plans.
+const MAX_PLANS_PER_PREVIEW: usize = 64;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SessionError {
@@ -140,10 +140,12 @@ struct PreviewState {
     base_generation: u64,
     entries: Vec<VerifiedEntry>,
     route: String,
+    issued_plans: usize,
 }
 
 struct PlanState {
     plan_id: u64,
+    preview_id: u64,
     entries: Vec<VerifiedEntry>,
     route: String,
 }
@@ -167,9 +169,8 @@ struct SessionState {
     store_closed: bool,
     preview: Option<PreviewState>,
     plan: Option<PlanState>,
-    /// Session-wide issuance makes durable terminal records permanently
-    /// bounded by `MAX_PLANS_PER_SESSION`.
-    session_issued_plans: usize,
+    /// Terminal records belong only to the live preview, whose issuance
+    /// budget bounds this vector at `MAX_PLANS_PER_PREVIEW`.
     plan_tombstones: Vec<PlanTombstone>,
     next_id: u64,
 }
@@ -226,7 +227,6 @@ impl RiotSession {
                 store_closed: false,
                 preview: None,
                 plan: None,
-                session_issued_plans: 0,
                 plan_tombstones: Vec::new(),
                 next_id: 0,
             })),
@@ -302,6 +302,14 @@ impl EvidenceStore {
         Ok(st.store.as_ref().unwrap().receipts.len())
     }
 
+    #[cfg(feature = "conformance")]
+    #[doc(hidden)]
+    pub fn retained_plan_tombstone_count_for_conformance(&self) -> Result<usize, SessionError> {
+        let st = self.inner.lock().map_err(|_| SessionError::Internal)?;
+        st.require_store(self.store_id)?;
+        Ok(st.plan_tombstones.len())
+    }
+
     pub fn close(&self) -> Result<(), SessionError> {
         let mut st = self.inner.lock().map_err(|_| SessionError::Internal)?;
         if st.closed {
@@ -365,14 +373,18 @@ impl EvidenceStore {
         let base_generation = store.generation;
         let preview_id = st.alloc_id();
         let eligible = verified.len();
+        // Replacing a preview consumes every child plan. Drop the active
+        // plan and all outgoing terminal records together; old plan handles
+        // detect that their parent preview is no longer live.
+        st.plan = None;
+        st.plan_tombstones.clear();
         st.preview = Some(PreviewState {
             preview_id,
             base_generation,
             entries: verified,
             route: context.route.clone(),
+            issued_plans: 0,
         });
-        // A new inspection supersedes any prior plan.
-        supersede_active_plan(&mut st);
 
         Ok(InspectOutcome::Preview(ImportPreview {
             inner: Arc::clone(&self.inner),
@@ -467,13 +479,13 @@ impl ImportPreview {
     pub fn plan(&self, selection: ImportSelection) -> Result<ImportPlan, SessionError> {
         let mut st = self.inner.lock().map_err(|_| SessionError::Internal)?;
         st.require_open_store()?;
-        // Generation guard first: any commit since inspection makes us stale.
-        if st.store.as_ref().unwrap().generation != self.base_generation {
-            return Err(SessionError::StalePreview);
-        }
         match &st.preview {
             Some(p) if p.preview_id == self.preview_id => {}
-            _ => return Err(SessionError::StalePreview),
+            _ => return Err(SessionError::PreviewConsumed),
+        }
+        // Any commit since inspection makes a live preview stale.
+        if st.store.as_ref().unwrap().generation != self.base_generation {
+            return Err(SessionError::StalePreview);
         }
         let (entries, route, base_generation) = {
             let p = st.preview.as_ref().unwrap();
@@ -507,22 +519,24 @@ impl ImportPreview {
                     entries
                 }
             };
-            if st.session_issued_plans >= MAX_PLANS_PER_SESSION {
+            if p.issued_plans >= MAX_PLANS_PER_PREVIEW {
                 return Err(SessionError::SessionLimit);
             }
             (entries, p.route.clone(), p.base_generation)
         };
         let plan_id = st.alloc_id();
-        st.session_issued_plans += 1;
+        st.preview.as_mut().unwrap().issued_plans += 1;
         supersede_active_plan(&mut st);
         st.plan = Some(PlanState {
             plan_id,
+            preview_id: self.preview_id,
             entries,
             route,
         });
         Ok(ImportPlan {
             inner: Arc::clone(&self.inner),
             plan_id,
+            preview_id: self.preview_id,
             base_generation,
         })
     }
@@ -537,6 +551,7 @@ impl ImportPreview {
 pub struct ImportPlan {
     inner: Arc<Mutex<SessionState>>,
     plan_id: u64,
+    preview_id: u64,
     base_generation: u64,
 }
 
@@ -546,8 +561,11 @@ impl ImportPlan {
     pub fn close(&self) -> Result<(), SessionError> {
         let mut st = self.inner.lock().map_err(|_| SessionError::Internal)?;
         st.require_open_store()?;
+        if !plan_parent_is_live(&st, self.preview_id) {
+            return Err(SessionError::PreviewConsumed);
+        }
         match &st.plan {
-            Some(p) if p.plan_id == self.plan_id => {
+            Some(p) if p.plan_id == self.plan_id && p.preview_id == self.preview_id => {
                 terminate_plan(&mut st, self.plan_id, PlanTerminal::Closed);
                 Ok(())
             }
@@ -570,8 +588,11 @@ impl ImportPlan {
         st.require_open_store()?;
 
         // Admission: plan must be current and unconsumed.
+        if !plan_parent_is_live(&st, self.preview_id) {
+            return Err(SessionError::PreviewConsumed);
+        }
         match &st.plan {
-            Some(p) if p.plan_id == self.plan_id => {}
+            Some(p) if p.plan_id == self.plan_id && p.preview_id == self.preview_id => {}
             _ => return Err(plan_terminal_error(&st, self.plan_id)),
         }
         if st.store.as_ref().unwrap().generation != self.base_generation {
@@ -688,6 +709,10 @@ fn supersede_active_plan(st: &mut SessionState) {
     }
 }
 
+fn plan_parent_is_live(st: &SessionState, preview_id: u64) -> bool {
+    matches!(st.preview.as_ref(), Some(preview) if preview.preview_id == preview_id)
+}
+
 fn terminate_plan(st: &mut SessionState, plan_id: u64, terminal: PlanTerminal) {
     if matches!(st.plan.as_ref(), Some(plan) if plan.plan_id == plan_id) {
         st.plan = None;
@@ -696,8 +721,9 @@ fn terminate_plan(st: &mut SessionState, plan_id: u64, terminal: PlanTerminal) {
 }
 
 fn record_plan_terminal(st: &mut SessionState, plan_id: u64, terminal: PlanTerminal) {
-    // Terminal errors are durable. Session-wide issuance bounds this vector
-    // permanently at `MAX_PLANS_PER_SESSION`; entries are never evicted.
+    // Terminal errors remain durable for the current preview. Its issuance
+    // budget bounds this vector at `MAX_PLANS_PER_PREVIEW`; replacement
+    // clears the old preview's records atomically with its active plan.
     st.plan_tombstones.push(PlanTombstone { plan_id, terminal });
 }
 

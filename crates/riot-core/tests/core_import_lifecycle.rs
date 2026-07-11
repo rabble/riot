@@ -88,8 +88,9 @@ fn core_import_lifecycle_preserves_plan_terminal_reasons() {
 }
 
 #[test]
-fn core_import_lifecycle_allows_64_session_wide_plan_issues_but_rejects_the_65th() {
-    let (_store, preview) = preview();
+fn core_import_lifecycle_allows_64_plan_issues_per_preview_and_gives_later_preview_a_fresh_budget()
+{
+    let (store, preview) = preview();
     for _ in 0..64 {
         preview.plan_all().unwrap();
     }
@@ -97,6 +98,19 @@ fn core_import_lifecycle_allows_64_session_wide_plan_issues_but_rejects_the_65th
         preview.plan_all(),
         Err(SessionError::SessionLimit)
     ));
+
+    let bytes = encode_bundle(&[signed(&author(), 2)]).unwrap();
+    let later_preview = store.inspect(&bytes, ctx()).unwrap().expect_preview();
+    let mut active = None;
+    for _ in 0..64 {
+        active = Some(later_preview.plan_all().unwrap());
+    }
+    assert!(matches!(
+        later_preview.plan_all(),
+        Err(SessionError::SessionLimit)
+    ));
+    active.unwrap().commit().unwrap();
+    assert_eq!(store.generation().unwrap(), 1);
 }
 
 #[test]
@@ -117,35 +131,63 @@ fn core_import_lifecycle_close_allows_replacement_without_store_mutation() {
 }
 
 #[test]
-fn core_import_lifecycle_plan_budget_is_session_wide_and_preserves_terminal_reasons() {
+fn core_import_lifecycle_replacing_preview_consumes_every_old_plan_handle() {
     let (store, preview) = preview();
+
+    let committed = preview.plan_all().unwrap();
+    committed.commit().unwrap();
+
+    let bytes = encode_bundle(&[signed(&author(), 2)]).unwrap();
+    let preview = store.inspect(&bytes, ctx()).unwrap().expect_preview();
     let closed = preview.plan_all().unwrap();
     closed.close().unwrap();
     let superseded = preview.plan_all().unwrap();
-    let replacement = preview.plan_all().unwrap();
+    let active = preview.plan_all().unwrap();
     assert_eq!(superseded.commit(), Err(SessionError::PlanSuperseded));
-    replacement.close().unwrap();
 
-    // Complete the session-wide issuance budget with terminal plans.
-    for _ in 0..60 {
-        preview.plan_all().unwrap();
-    }
-    let final_plan = preview.plan_all().unwrap();
-    final_plan.close().unwrap();
+    let bytes = encode_bundle(&[signed(&author(), 3)]).unwrap();
+    let later_preview = store.inspect(&bytes, ctx()).unwrap().expect_preview();
 
-    // A later preview may still be inspected, but it cannot issue a 65th
-    // plan. The original handles keep their durable, distinct terminal
-    // reason after all 64 plan tombstones have been retained.
-    let bytes = encode_bundle(&[signed(&author(), 2)]).unwrap();
-    let later_preview = match store.inspect(&bytes, ctx()).unwrap() {
-        InspectOutcome::Preview(preview) => preview,
-        InspectOutcome::Rejected(rejection) => panic!("unexpected rejection: {rejection:?}"),
-    };
+    assert_eq!(committed.close(), Err(SessionError::PreviewConsumed));
+    assert_eq!(closed.close(), Err(SessionError::PreviewConsumed));
+    assert_eq!(superseded.close(), Err(SessionError::PreviewConsumed));
+    assert_eq!(active.close(), Err(SessionError::PreviewConsumed));
+    assert_eq!(committed.commit(), Err(SessionError::PreviewConsumed));
+    assert_eq!(closed.commit(), Err(SessionError::PreviewConsumed));
+    assert_eq!(superseded.commit(), Err(SessionError::PreviewConsumed));
+    assert_eq!(active.commit(), Err(SessionError::PreviewConsumed));
     assert!(matches!(
-        later_preview.plan_all(),
-        Err(SessionError::SessionLimit)
+        preview.plan_all(),
+        Err(SessionError::PreviewConsumed)
     ));
 
-    assert_eq!(closed.commit(), Err(SessionError::PlanClosed));
-    assert_eq!(superseded.commit(), Err(SessionError::PlanSuperseded));
+    later_preview.plan_all().unwrap().commit().unwrap();
+    assert_eq!(store.generation().unwrap(), 2);
+}
+
+#[test]
+fn core_import_lifecycle_preview_replacement_releases_terminal_tombstones() {
+    let (store, mut preview) = preview();
+
+    for tag in 2..=5 {
+        for _ in 0..64 {
+            let plan = preview.plan_all().unwrap();
+            plan.close().unwrap();
+        }
+        assert_eq!(
+            store
+                .retained_plan_tombstone_count_for_conformance()
+                .unwrap(),
+            64
+        );
+
+        let bytes = encode_bundle(&[signed(&author(), tag)]).unwrap();
+        preview = store.inspect(&bytes, ctx()).unwrap().expect_preview();
+        assert_eq!(
+            store
+                .retained_plan_tombstone_count_for_conformance()
+                .unwrap(),
+            0
+        );
+    }
 }

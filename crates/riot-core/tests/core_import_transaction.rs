@@ -175,7 +175,7 @@ fn core_import_transaction_invalid_selection_is_rejected_without_state_change() 
         Ok(CommitOutcome::Committed(_))
     ));
 
-    // Invalid requests also leave the session-wide issuance budget untouched.
+    // Invalid requests also leave the preview issuance budget untouched.
     let (_budget_store, budget_preview) = {
         let session = RiotSession::open().unwrap();
         let store = session.create_store().unwrap();
@@ -297,7 +297,7 @@ fn core_import_transaction_dominated_entry_increments_generation_once() {
 }
 
 #[test]
-fn core_import_transaction_stale_preview_after_generation_change() {
+fn core_import_transaction_replaced_preview_is_consumed_after_generation_change() {
     let a = author();
     let session = RiotSession::open().unwrap();
     let store = session.create_store().unwrap();
@@ -315,8 +315,9 @@ fn core_import_transaction_stale_preview_after_generation_change() {
         .unwrap()
         .commit()
         .unwrap();
-    // p1 is now stale: planning/committing it must fail with StalePreview.
-    assert!(matches!(p1.plan_all(), Err(SessionError::StalePreview)));
+    // p1 was replaced by the later inspection, so its parent-consumed result
+    // takes precedence over the generation change made by that replacement.
+    assert!(matches!(p1.plan_all(), Err(SessionError::PreviewConsumed)));
 }
 
 #[test]
