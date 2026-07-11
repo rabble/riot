@@ -8,6 +8,9 @@
 use minicbor::data::Type;
 use minicbor::{Decoder, Encoder};
 
+use crate::session::{commit_at, EvidenceStore};
+use crate::willow::identity::EvidenceAuthor;
+
 use super::manifest::AppId;
 use super::AppsError;
 
@@ -26,6 +29,22 @@ pub struct EndorsementMarker {
     /// this"); empty string means no note.
     pub note: String,
     pub retracted: bool,
+}
+
+/// Writes a marker at the endorser's own Willow coordinate. Rewriting the
+/// same coordinate relies on Willow recency in `commit_at`.
+pub fn write_endorsement(
+    store: &EvidenceStore,
+    endorser: &EvidenceAuthor,
+    marker: &EndorsementMarker,
+    willow_timestamp_micros: u64,
+) -> Result<(), AppsError> {
+    let payload = encode_endorsement(marker)?;
+    let path = super::index::app_index_endorsement_path(
+        &marker.app_id,
+        endorser.subspace_id().as_bytes(),
+    )?;
+    commit_at(store, endorser, &path, &payload, willow_timestamp_micros)
 }
 
 fn validate(marker: &EndorsementMarker) -> Result<(), AppsError> {
