@@ -23,7 +23,11 @@ class RiotController(filesDir: File) : AutoCloseable {
         File(filesDir, "conference-profile.bin"),
     )
     private val profile: MobileProfile
-    private var persisted: PersistedProfile? = null
+    // Written under `persistLock` from the WebView bridge thread (app-data
+    // puts) as well as the UI/sync threads, and read from all of them; volatile
+    // so a persisted mutation on one thread is visible to the next reader.
+    @Volatile private var persisted: PersistedProfile? = null
+    private val persistLock = Any()
     private var pendingPreview: MobileImportPreview? = null
     private var pendingImportBytes: ByteArray? = null
 
@@ -55,6 +59,41 @@ class RiotController(filesDir: File) : AutoCloseable {
     fun identity(): PublicIdentity = profile.identity()
 
     fun openAppRuntime(): AppRuntimeSession = profile.appRuntime()
+
+    /** The persisted apps to re-admit into a fresh [RiotAppsController] on open. */
+    fun installedAppsSnapshot(): List<PersistedApp> = persisted?.installedApps ?: emptyList()
+
+    /**
+     * Records a live app install so it survives a relaunch: the manifest and
+     * bundle bytes are what `restore()` re-`install_app`s. No-op before a space
+     * exists (apps require one). Called on the UI thread from the storefront.
+     */
+    fun onAppInstalled(appId: String, manifestBytes: ByteArray, bundleBytes: ByteArray) {
+        synchronized(persistLock) {
+            val snapshot = persisted ?: return
+            persist(recordInstalledApp(snapshot, appId, manifestBytes, bundleBytes))
+        }
+    }
+
+    /** Records a trust decision so `restore()` can re-apply it via `trust_app`. */
+    fun onAppTrusted(appId: String) {
+        synchronized(persistLock) {
+            val snapshot = persisted ?: return
+            persist(recordAppTrust(snapshot, appId))
+        }
+    }
+
+    /**
+     * Records the committed app-data bundle bytes so `restore()` can re-admit
+     * them via `replay_app_data_bundle`. Runs on the WebView bridge thread, so
+     * the whole read-modify-persist is under `persistLock`.
+     */
+    fun onAppDataCommitted(appId: String, key: String, bundleBytes: ByteArray) {
+        synchronized(persistLock) {
+            val snapshot = persisted ?: return
+            persist(recordAppData(snapshot, appId, key, bundleBytes))
+        }
+    }
 
     /** Placeholder until real display names land; never exposes the full id. */
     fun displayName(): String = "member-" + identity().signingKeyId.take(8)
@@ -139,6 +178,13 @@ class RiotController(filesDir: File) : AutoCloseable {
             }
             restoredBundles += alert.bundleBytes
         }
+        // Re-admit persisted app data from its committed signed bundle bytes —
+        // never re-`put`, which would mint fresh entries. Installed apps and
+        // trust are rebuilt separately by RiotAppsController.restore(), which
+        // owns the in-memory serving store; app data lives in the willow store
+        // and is independent of whether the app is installed yet.
+        val runtime = profile.appRuntime()
+        snapshot.appData.forEach { data -> runtime.replayAppDataBundle(data.bundleBytes) }
         persisted = snapshot.copy(identityState = null)
         if (snapshot.identityState == null) {
             persist(persisted!!)
@@ -164,13 +210,17 @@ class RiotController(filesDir: File) : AutoCloseable {
     }
 
     private fun persist(content: PersistedProfile) {
-        val storedState = store.load()?.identityState
-        val state = storedState ?: createIdentityState()
-        try {
-            store.save(content.copy(identityState = state))
-            persisted = content.copy(identityState = null)
-        } finally {
-            state.wrappingKey.fill(0)
+        // Serializes concurrent saves — app-data puts arrive on the WebView
+        // bridge thread while alerts/sync/trust persist from UI/sync threads.
+        synchronized(persistLock) {
+            val storedState = store.load()?.identityState
+            val state = storedState ?: createIdentityState()
+            try {
+                store.save(content.copy(identityState = state))
+                persisted = content.copy(identityState = null)
+            } finally {
+                state.wrappingKey.fill(0)
+            }
         }
     }
 

@@ -47,7 +47,15 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         controller = RiotController(filesDir)
-        apps = RiotAppsController(controller.openAppRuntime())
+        apps = RiotAppsController(
+            controller.openAppRuntime(),
+            onInstalled = controller::onAppInstalled,
+            onTrusted = controller::onAppTrusted,
+        )
+        // Re-admit apps persisted across a relaunch (install + serving-decode +
+        // trust) before anything reads the installed list. App data was already
+        // replayed into the store by RiotController's restore.
+        apps.restore(controller.installedAppsSnapshot())
         directory = DirectoryController(
             UniffiDirectoryPort(controller.openAppRuntime()),
             apps,
@@ -310,7 +318,13 @@ class MainActivity : Activity() {
             val gated = apps.requireTrusted(app)
             val resolver = AppResourceResolver(gated.record.appId, gated.bundle)
             val bridge = RiotJsBridge(
-                UniffiAppDataPort(controller.openAppRuntime(), gated.record.appId),
+                UniffiAppDataPort(
+                    controller.openAppRuntime(),
+                    gated.record.appId,
+                    onCommitted = { key, bundle ->
+                        controller.onAppDataCommitted(gated.record.appId, key, bundle)
+                    },
+                ),
                 controller.displayName(),
             )
             val host = AppWebViewHost(this, resolver, bridge)

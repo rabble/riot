@@ -51,6 +51,94 @@ class PersistedProfileCodecTest {
     }
 
     @Test
+    fun roundTripPreservesInstalledAppsAndAppData() {
+        val appId = "ab".repeat(32)
+        val profile = PersistedProfile(
+            space = PersistedSpace("02".repeat(32), "Berlin Mutual Aid"),
+            alerts = emptyList(),
+            identityState = null,
+            installedApps = listOf(
+                PersistedApp(
+                    appId = appId,
+                    manifestBytes = byteArrayOf(0x10, 0x11, 0x12),
+                    bundleBytes = byteArrayOf(0x20, 0x21, 0x7f),
+                    trusted = true,
+                ),
+                PersistedApp(
+                    appId = "cd".repeat(32),
+                    manifestBytes = byteArrayOf(0x30),
+                    bundleBytes = byteArrayOf(0x40, 0x41),
+                    trusted = false,
+                ),
+            ),
+            appData = listOf(
+                PersistedAppData(appId, "items", byteArrayOf(0x50, 0x51, 0x00, 0x7f)),
+                PersistedAppData(appId, "done", byteArrayOf(0x60)),
+            ),
+        )
+
+        val restored = PersistedProfileCodec.decode(PersistedProfileCodec.encode(profile))
+
+        assertEquals(2, restored.installedApps.size)
+        assertEquals(appId, restored.installedApps.first().appId)
+        assertArrayEquals(byteArrayOf(0x10, 0x11, 0x12), restored.installedApps.first().manifestBytes)
+        assertArrayEquals(byteArrayOf(0x20, 0x21, 0x7f), restored.installedApps.first().bundleBytes)
+        assertTrue(restored.installedApps.first().trusted)
+        assertFalse(restored.installedApps[1].trusted)
+        assertEquals(listOf("items", "done"), restored.appData.map { it.key })
+        assertArrayEquals(byteArrayOf(0x50, 0x51, 0x00, 0x7f), restored.appData.first().bundleBytes)
+        assertEquals(PersistedProfileCodec.encodedSizeForTest(profile), PersistedProfileCodec.encode(profile).size)
+    }
+
+    @Test
+    fun versionTwoProfileDecodesWithEmptyAppFields() {
+        // A v2 snapshot (identity, no app sections) written before Task 5.
+        val v2 = ByteArrayOutputStream().use { bytes ->
+            DataOutputStream(bytes).use { output ->
+                output.writeInt(0x52494f54)
+                output.writeInt(2)
+                output.writeInt(64)
+                output.write("02".repeat(32).toByteArray())
+                output.writeInt(11)
+                output.write("Aid v2 space".take(11).toByteArray())
+                output.writeInt(0)
+                output.writeBoolean(true)
+                output.write(ByteArray(32) { 7 })
+                output.write(ByteArray(112) { 9 })
+            }
+            bytes.toByteArray()
+        }
+
+        val migrated = PersistedProfileCodec.decode(v2)
+
+        assertTrue(migrated.alerts.isEmpty())
+        assertTrue(migrated.installedApps.isEmpty())
+        assertTrue(migrated.appData.isEmpty())
+        assertArrayEquals(ByteArray(32) { 7 }, migrated.identityState!!.wrappingKey)
+        migrated.identityState!!.wrappingKey.fill(0)
+    }
+
+    @Test
+    fun tooManyInstalledAppsIsRejectedBeforeStreamAllocation() {
+        val profile = PersistedProfile(
+            space = PersistedSpace("02".repeat(32), "Bounded"),
+            alerts = emptyList(),
+            installedApps = List(PersistedProfileCodec.MAX_INSTALLED_APPS + 1) { index ->
+                PersistedApp("%02x".format(index).repeat(32), byteArrayOf(1), byteArrayOf(2), false)
+            },
+        )
+
+        var streamAllocated = false
+        assertThrows(IllegalArgumentException::class.java) {
+            PersistedProfileCodec.encodeWithHooksForTest(
+                profile,
+                onStreamAllocated = { streamAllocated = true },
+            )
+        }
+        assertFalse("oversize app list must reject before stream allocation", streamAllocated)
+    }
+
+    @Test
     fun legacyVersionOneProfileMigratesWithoutIdentityState() {
         val legacy = ByteArrayOutputStream().use { bytes ->
             DataOutputStream(bytes).use { output ->

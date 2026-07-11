@@ -22,10 +22,39 @@ data class PersistedAlert(
     val bundleBytes: ByteArray,
 )
 
+/**
+ * A signed JS app held by this profile: the exact manifest and bundle bytes
+ * Rust admitted, so `restore()` can re-`install_app` them into a fresh
+ * session, plus the profile-local trust decision (re-applied via `trust_app`,
+ * which is in-memory in Rust and mints no signed entry — see the iOS
+ * `trustedAppIDs` precedent).
+ */
+data class PersistedApp(
+    val appId: String,
+    val manifestBytes: ByteArray,
+    val bundleBytes: ByteArray,
+    val trusted: Boolean,
+)
+
+/**
+ * A committed app-data write kept as the canonical signed bundle bytes that
+ * `app_data_put_with_receipt` returned. `restore()` re-admits these via
+ * `replay_app_data_bundle` — never by re-`put`-ing, which would mint fresh
+ * signed entries and diverge across synced devices. Latest bundle per
+ * `(appId, key)` supersedes, bounding growth to the number of live keys.
+ */
+data class PersistedAppData(
+    val appId: String,
+    val key: String,
+    val bundleBytes: ByteArray,
+)
+
 data class PersistedProfile(
     val space: PersistedSpace,
     val alerts: List<PersistedAlert>,
     val identityState: PersistedIdentityState? = null,
+    val installedApps: List<PersistedApp> = emptyList(),
+    val appData: List<PersistedAppData> = emptyList(),
 )
 
 data class PersistedIdentityState(
@@ -36,13 +65,20 @@ data class PersistedIdentityState(
 object PersistedProfileCodec {
     const val MAX_ENCODED_BYTES = 4 * 1024 * 1024 - 64
     private const val MAGIC = 0x52494f54
-    private const val VERSION = 2
-    private const val LEGACY_VERSION = 1
+    private const val VERSION = 3
+    private const val VERSION_WITH_IDENTITY = 2
+    private const val VERSION_WITH_APPS = 3
+    private const val MIN_VERSION = 1
     const val WRAPPING_KEY_BYTES = 32
     const val SEALED_IDENTITY_BYTES = 112
     private const val MAX_ALERTS = 256
     private const val MAX_STRING_BYTES = 16 * 1024
     private const val MAX_BUNDLE_BYTES = 2 * 1024 * 1024
+    const val MAX_INSTALLED_APPS = 32
+    const val MAX_APP_DATA_ENTRIES = 512
+    private const val MAX_APP_MANIFEST_BYTES = 4 * 1024
+    private const val MAX_APP_BUNDLE_BYTES = 1 * 1024 * 1024
+    private const val MAX_APP_DATA_BUNDLE_BYTES = MAX_BUNDLE_BYTES
 
     fun encode(profile: PersistedProfile): ByteArray = encodeInternal(profile, {}, {})
 
@@ -88,6 +124,19 @@ object PersistedProfileCodec {
                     output.write(identity.wrappingKey)
                     output.write(identity.sealedIdentity)
                 }
+                output.writeInt(profile.installedApps.size)
+                profile.installedApps.forEach { app ->
+                    output.writeString(app.appId)
+                    output.writeBytes(app.manifestBytes)
+                    output.writeBytes(app.bundleBytes)
+                    output.writeBoolean(app.trusted)
+                }
+                output.writeInt(profile.appData.size)
+                profile.appData.forEach { data ->
+                    output.writeString(data.appId)
+                    output.writeString(data.key)
+                    output.writeBytes(data.bundleBytes)
+                }
                 output.flush()
                 bytes.toByteArray()
             }
@@ -117,7 +166,7 @@ object PersistedProfileCodec {
             return DataInputStream(ByteArrayInputStream(bytes)).use { input ->
                 require(input.readInt() == MAGIC) { "invalid profile header" }
                 val version = input.readInt()
-                require(version == LEGACY_VERSION || version == VERSION) { "unsupported profile version" }
+                require(version in MIN_VERSION..VERSION) { "unsupported profile version" }
                 val space = PersistedSpace(input.readString(), input.readString())
                 val count = input.readInt()
                 require(count in 0..MAX_ALERTS) { "invalid persisted alert count" }
@@ -146,7 +195,7 @@ object PersistedProfileCodec {
                         bundle,
                     )
                 }
-                val identityState = if (version == VERSION && input.readBoolean()) {
+                val identityState = if (version >= VERSION_WITH_IDENTITY && input.readBoolean()) {
                     val wrappingKey = ByteArray(WRAPPING_KEY_BYTES)
                     pendingIdentityKey = wrappingKey
                     input.readFully(wrappingKey)
@@ -155,8 +204,33 @@ object PersistedProfileCodec {
                 } else {
                     null
                 }
+                val installedApps = if (version >= VERSION_WITH_APPS) {
+                    val appCount = input.readInt()
+                    require(appCount in 0..MAX_INSTALLED_APPS) { "invalid persisted app count" }
+                    List(appCount) {
+                        val appId = input.readString()
+                        val manifest = input.readBytes(MAX_APP_MANIFEST_BYTES)
+                        val bundle = input.readBytes(MAX_APP_BUNDLE_BYTES)
+                        val trusted = input.readBoolean()
+                        PersistedApp(appId, manifest, bundle, trusted)
+                    }
+                } else {
+                    emptyList()
+                }
+                val appData = if (version >= VERSION_WITH_APPS) {
+                    val dataCount = input.readInt()
+                    require(dataCount in 0..MAX_APP_DATA_ENTRIES) { "invalid persisted app-data count" }
+                    List(dataCount) {
+                        val appId = input.readString()
+                        val key = input.readString()
+                        val bundle = input.readBytes(MAX_APP_DATA_BUNDLE_BYTES)
+                        PersistedAppData(appId, key, bundle)
+                    }
+                } else {
+                    emptyList()
+                }
                 require(input.available() == 0) { "trailing persisted profile bytes" }
-                val result = PersistedProfile(space, alerts, identityState)
+                val result = PersistedProfile(space, alerts, identityState, installedApps, appData)
                 pendingIdentityKey = null
                 result
             }
@@ -172,6 +246,8 @@ object PersistedProfileCodec {
 
     private fun encodedSize(profile: PersistedProfile): Int {
         require(profile.alerts.size <= MAX_ALERTS) { "too many persisted alerts" }
+        require(profile.installedApps.size <= MAX_INSTALLED_APPS) { "too many persisted apps" }
+        require(profile.appData.size <= MAX_APP_DATA_ENTRIES) { "too many persisted app-data entries" }
         profile.identityState?.let { identity ->
             require(identity.wrappingKey.size == WRAPPING_KEY_BYTES) {
                 "invalid identity wrapping key length"
@@ -190,6 +266,11 @@ object PersistedProfileCodec {
             require(size <= MAX_STRING_BYTES) { "persisted string is too large" }
             add(Int.SIZE_BYTES)
             add(size)
+        }
+        fun addBytes(value: ByteArray, max: Int) {
+            require(value.size <= max) { "persisted byte field is too large" }
+            add(Int.SIZE_BYTES)
+            add(value.size)
         }
 
         add(Int.SIZE_BYTES * 2)
@@ -212,6 +293,19 @@ object PersistedProfileCodec {
         }
         add(1)
         if (profile.identityState != null) add(WRAPPING_KEY_BYTES + SEALED_IDENTITY_BYTES)
+        add(Int.SIZE_BYTES)
+        profile.installedApps.forEach { app ->
+            addString(app.appId)
+            addBytes(app.manifestBytes, MAX_APP_MANIFEST_BYTES)
+            addBytes(app.bundleBytes, MAX_APP_BUNDLE_BYTES)
+            add(1)
+        }
+        add(Int.SIZE_BYTES)
+        profile.appData.forEach { data ->
+            addString(data.appId)
+            addString(data.key)
+            addBytes(data.bundleBytes, MAX_APP_DATA_BUNDLE_BYTES)
+        }
         return total.toInt()
     }
 
@@ -222,11 +316,24 @@ object PersistedProfileCodec {
         write(encoded)
     }
 
+    private fun DataOutputStream.writeBytes(value: ByteArray) {
+        writeInt(value.size)
+        write(value)
+    }
+
     private fun DataInputStream.readString(): String {
         val length = readInt()
         require(length in 0..MAX_STRING_BYTES) { "invalid persisted string length" }
         val encoded = ByteArray(length)
         readFully(encoded)
         return encoded.toString(Charsets.UTF_8)
+    }
+
+    private fun DataInputStream.readBytes(max: Int): ByteArray {
+        val length = readInt()
+        require(length in 0..max) { "invalid persisted byte-field length" }
+        val bytes = ByteArray(length)
+        readFully(bytes)
+        return bytes
     }
 }
