@@ -191,6 +191,8 @@ don't lag content again.
 
 | Codex (continuation) | App-directory Task 7: `riot-app` keygen/pack/inspect publishing CLI | New `crates/riot-app-cli/`, root `Cargo.toml`/`Cargo.lock`, required `fixtures/manifest.json` lock hash | **Done, released — independently approved** | Landed `e938592` + hardening `b7c1938`, `c4a8c29`, `71db3af`, `8ccf49b`, `d95c030`, `bfebc30`. The macOS/Linux CLI strictly packs canonical signed RIOTE1 app-index pairs, inspects full verified author/app identities, and atomically manages sealed 0600 author keys. Security review drove bounded fd-relative/no-follow traversal, no-replace publication, rollback/durability checks, errno-aware directory enumeration, CLOEXEC fd ownership, and crash-durable staging cleanup. Clean archive: 297 workspace tests, 0 failed; final focused suite 29/29; strict CLI Clippy, scoped fmt, and `cargo xtask validate-contracts` PASS. Final review: Ready, no remaining findings. Files are free. |
 
+| Codex (continuation) | App-directory Task 5b: carry app-data and app-index entries over nearby sync | `crates/riot-ffi/src/mobile_state.rs`, `crates/riot-ffi/tests/apps_contract.rs`; `crates/riot-core/src/sync/ffi_bridge.rs` only if investigation proves unavoidable and the claim is expanded first | **Executing — investigation then TDD/two-stage review** | Highest-risk remaining directory task. Current code explicitly excludes app entries from inventory and gates receive-side review through `inspectable_alert_entries`; investigation must prove whether FFI-only inclusion is sound before implementation. |
+
 ## Active claim: JS apps runtime — iOS (2026-07-11, new)
 
 | Owner | Scope | Files | State | Evidence / handoff |
