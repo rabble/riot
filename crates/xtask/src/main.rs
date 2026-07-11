@@ -4,6 +4,8 @@
 //! catch/quarantine contract depends on. Substring matching is not trusted
 //! for anything a TOML/JSON parser can check.
 
+mod hex_codec;
+
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 

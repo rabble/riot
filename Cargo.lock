@@ -2305,10 +2305,12 @@ name = "xtask"
 version = "0.1.0"
 dependencies = [
  "camino",
+ "riot-core",
  "serde_json",
  "sha2",
  "toml 0.9.8",
  "uniffi",
+ "willow25",
 ]
 
 [[package]]
