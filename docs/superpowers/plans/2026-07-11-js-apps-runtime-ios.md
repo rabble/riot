@@ -1003,6 +1003,8 @@ git commit -m "feat(ios): app WebView plumbing — scheme handler, riot.js bridg
 
 ### Task 8: `AppRuntimeView` + change notifications
 
+**Hard contract (platform review, deferred item 3):** Rust deliberately does NOT trust-gate `app_data_put/get/list` — the WebView host is the enforcement point. On iOS that means: an `AppRuntimeView`/`AppBridgeController` may only ever be constructed for an app that is trusted in the current space, checked at open time (the Tools row already only offers "Open" for trusted apps; additionally `guard` on the trust state in the launch action so a stale UI can't open a just-revoked app). The Android runtime plan states the same gate (`is_app_trusted` host-side) — keep the two hosts consistent.
+
 **Files:**
 - Create: `apps/ios/Riot/Apps/AppRuntimeView.swift` (RiotKit target)
 - Modify: `apps/ios/Riot/Apps/AppBridgeController.swift` (only if a hook is missing)
