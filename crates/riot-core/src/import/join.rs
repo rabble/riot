@@ -22,6 +22,10 @@ use crate::willow::{encode_entry, entry_id, EntryId};
 /// Ceilings from fixtures/manifest.json.
 const MAX_STORE_ENTRIES: usize = 1_024;
 const MAX_REFERENCES: usize = 1_024;
+/// Fixed per-live-entry accounting charge toward `retained_store_budget_bytes`
+/// (see `session::RETAINED_STORE_BUDGET_BYTES`), on top of the entry's own
+/// canonical byte length.
+const STORE_CHARGE_ENTRY_BYTES: u64 = 512;
 
 /// A bounded join could not represent the complete result without exceeding
 /// one of its fixed ceilings. No partial plan is produced for this condition.
@@ -203,6 +207,18 @@ impl JoinState {
 
     pub fn live_count(&self) -> usize {
         self.live.len()
+    }
+
+    /// Sum of the store's byte-charge for currently live entries: a fixed
+    /// per-entry accounting overhead plus each entry's actual canonical
+    /// size. Only live entries are charged here — pruned entries stop
+    /// contributing once they leave the live set, even though their
+    /// receipt/reference history remains charged permanently.
+    pub(crate) fn live_entry_charge_bytes(&self) -> u64 {
+        self.live
+            .iter()
+            .map(|s| STORE_CHARGE_ENTRY_BYTES + s.entry_bytes.len() as u64)
+            .sum()
     }
 
     /// Canonical entry bytes of every live entry.

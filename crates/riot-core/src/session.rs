@@ -20,6 +20,35 @@ const MAX_RECEIPTS: usize = 256;
 /// A live preview can issue at most this many plans.
 const MAX_PLANS_PER_PREVIEW: usize = 64;
 
+/// Fixed accounting charges and the hard retained-store budget from
+/// fixtures/manifest.json. These bound the store's *total* retained byte
+/// footprint (live entries plus permanent receipt/reference history), which
+/// no single count-based ceiling above composes to guarantee on its own.
+const STORE_CHARGE_NAMESPACE_BYTES: u64 = 256;
+const STORE_CHARGE_RECEIPT_BYTES: u64 = 256;
+const STORE_CHARGE_DIGEST_REFERENCE_BYTES: u64 = 32;
+const RETAINED_STORE_BUDGET_BYTES: u64 = 16_777_216;
+
+/// Would committing a receipt that charges `receipt_charge_delta` bytes,
+/// against a store already carrying `retained_receipt_charge_bytes` of
+/// permanent receipt/reference history and `live_entry_charge_bytes` of
+/// current live-entry charge, push the store over its frozen retained-byte
+/// budget? Pure arithmetic: exactly testable at the boundary without
+/// needing to legitimately construct 16 MiB of retained state, which the
+/// tighter per-unit ceilings already prevent under the current
+/// fixed-length path scheme (see the core_import_charge_budget integration
+/// tests).
+fn store_charge_exceeds_budget(
+    retained_receipt_charge_bytes: u64,
+    receipt_charge_delta: u64,
+    live_entry_charge_bytes: u64,
+) -> bool {
+    retained_receipt_charge_bytes
+        .saturating_add(receipt_charge_delta)
+        .saturating_add(live_entry_charge_bytes)
+        > RETAINED_STORE_BUDGET_BYTES
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SessionError {
     SessionLimit,
@@ -124,6 +153,11 @@ struct StoreState {
     /// entry id -> first receipt that accepted it, and its arrival disposition.
     first_receipt: Vec<(EntryId, u64, bool)>, // (id, receipt_id, dominated_on_arrival)
     next_receipt_id: u64,
+    /// Permanent charge from the namespace (once) plus every committed
+    /// receipt's fixed overhead and digest references. Monotonic — unlike
+    /// live-entry charge, receipt history is never pruned. Live-entry
+    /// charge is added on top at read time via `join.live_entry_charge_bytes()`.
+    retained_receipt_charge_bytes: u64,
 }
 
 /// A verified, ready-to-commit entry captured at inspection time. Only
@@ -249,6 +283,7 @@ impl RiotSession {
             receipts: Vec::new(),
             first_receipt: Vec::new(),
             next_receipt_id: 1,
+            retained_receipt_charge_bytes: STORE_CHARGE_NAMESPACE_BYTES,
         });
         st.store_closed = false;
         Ok(EvidenceStore {
@@ -308,6 +343,17 @@ impl EvidenceStore {
         let st = self.inner.lock().map_err(|_| SessionError::Internal)?;
         st.require_store(self.store_id)?;
         Ok(st.plan_tombstones.len())
+    }
+
+    /// Total retained byte-charge: permanent receipt/reference history plus
+    /// currently live entries. See `store_charge_exceeds_budget`.
+    #[cfg(feature = "conformance")]
+    #[doc(hidden)]
+    pub fn retained_store_charge_bytes_for_conformance(&self) -> Result<u64, SessionError> {
+        let st = self.inner.lock().map_err(|_| SessionError::Internal)?;
+        st.require_store(self.store_id)?;
+        let store = st.store.as_ref().unwrap();
+        Ok(store.retained_receipt_charge_bytes + store.join.live_entry_charge_bytes())
     }
 
     pub fn close(&self) -> Result<(), SessionError> {
@@ -688,8 +734,32 @@ impl ImportPlan {
             terminate_plan(&mut st, self.plan_id, PlanTerminal::Consumed);
             return Err(SessionError::StoreFull);
         }
+        let reference_count: u64 = receipt
+            .dispositions
+            .iter()
+            .map(|row| match &row.disposition {
+                EntryDisposition::AppliedAtCommit { pruned_entry_ids } => {
+                    pruned_entry_ids.len() as u64
+                }
+                EntryDisposition::DominatedAtCommit {
+                    dominating_entry_ids,
+                } => dominating_entry_ids.len() as u64,
+                EntryDisposition::AlreadyPresent { .. } => 0,
+            })
+            .sum();
+        let receipt_charge_delta =
+            STORE_CHARGE_RECEIPT_BYTES + reference_count * STORE_CHARGE_DIGEST_REFERENCE_BYTES;
+        if store_charge_exceeds_budget(
+            store.retained_receipt_charge_bytes,
+            receipt_charge_delta,
+            join_plan.next.live_entry_charge_bytes(),
+        ) {
+            terminate_plan(&mut st, self.plan_id, PlanTerminal::Consumed);
+            return Err(SessionError::StoreFull);
+        }
         store.join = join_plan.next;
         store.generation = after_generation;
+        store.retained_receipt_charge_bytes += receipt_charge_delta;
         for rec in newly_first {
             if !store.first_receipt.iter().any(|(id, _, _)| *id == rec.0) {
                 store.first_receipt.push(rec);
@@ -738,5 +808,32 @@ fn plan_terminal_error(st: &SessionState, plan_id: u64) -> SessionError {
         Some(PlanTerminal::Superseded) => SessionError::PlanSuperseded,
         Some(PlanTerminal::Closed) => SessionError::PlanClosed,
         Some(PlanTerminal::Consumed) | None => SessionError::PlanConsumed,
+    }
+}
+
+#[cfg(test)]
+mod charge_budget_tests {
+    use super::{store_charge_exceeds_budget, RETAINED_STORE_BUDGET_BYTES};
+
+    #[test]
+    fn store_charge_exceeds_budget_holds_the_exact_ceiling_and_rejects_one_byte_over() {
+        // Exactly at the ceiling: not exceeded.
+        assert!(!store_charge_exceeds_budget(
+            RETAINED_STORE_BUDGET_BYTES - 100,
+            60,
+            40
+        ));
+        // One byte over the ceiling: exceeded.
+        assert!(store_charge_exceeds_budget(
+            RETAINED_STORE_BUDGET_BYTES - 100,
+            60,
+            41
+        ));
+    }
+
+    #[test]
+    fn store_charge_exceeds_budget_sums_all_three_components_without_overflow_panics() {
+        assert!(store_charge_exceeds_budget(u64::MAX, u64::MAX, u64::MAX));
+        assert!(!store_charge_exceeds_budget(0, 0, 0));
     }
 }

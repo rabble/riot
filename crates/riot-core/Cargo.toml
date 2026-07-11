@@ -56,3 +56,7 @@ required-features = ["conformance"]
 [[test]]
 name = "core_import_concurrency"
 required-features = ["conformance"]
+
+[[test]]
+name = "core_import_charge_budget"
+required-features = ["conformance"]
