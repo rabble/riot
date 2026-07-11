@@ -229,12 +229,44 @@
       ],
       "source": "cargo test -p riot-core --test core_import_charge_budget (3 passed)",
       "note": "Wires the 16 MiB retained_store_budget_bytes charge from fixtures/manifest.json into commit; pure-arithmetic boundary unit test plus 3 integration tests. Not a clean G2 pass: a subsequent codex review found the formula undercounts (charges only entry_bytes.len, not retained capability/token bytes), never charges the unbounded route string, drops charge on entry pruning, and never tracks or enforces the namespace_views=64 ceiling. Follow-up fix queued (blocked on session.rs). Hours are an estimate, not a tracked duration. 0.3h from the WU2 reserve."
+    },
+    {
+      "work_unit": "WU2 G2 (retained_store_budget_bytes charge accounting — P1/P2 repair)",
+      "status": "completed",
+      "reported_actual_hours": 0.4,
+      "charged_hours": 0.4,
+      "commits": [
+        "933ea14"
+      ],
+      "evidence_paths": [
+        "crates/riot-core/src/session.rs",
+        "crates/riot-core/src/import/join.rs",
+        "crates/riot-core/tests/core_import_charge_budget.rs"
+      ],
+      "source": "cargo test -p riot-core -p riot-conformance --all-features (all green); codex review --base 75776cb",
+      "note": "Repairs the four gaps a codex review found in d4edb77: stops retaining the authorising capability/token past inspect-time verification (was uncharged and unbounded, up to 64 KiB/entry); splits entry charge into a permanent per-seen-entry index charge plus a live-only bytes charge (previously dropped entirely on prune); charges store_charge_receipt_bytes once per retained DispositionRow instead of once per receipt; charges and enforces ImportContext::route's actual byte length (previously unbounded); tracks and caps namespace_views=64 (previously untracked). Two new adversarial tests (oversized route, 65th namespace) trip real StoreFull through the public API. Hours are an estimate, not a tracked duration. 0.4h from the WU2 reserve."
+    },
+    {
+      "work_unit": "WU2 G2 (retained_preview_output_bytes budget)",
+      "status": "completed",
+      "reported_actual_hours": 0.3,
+      "charged_hours": 0.3,
+      "commits": [
+        "816366e"
+      ],
+      "evidence_paths": [
+        "crates/riot-core/src/session.rs",
+        "crates/riot-core/src/import/join.rs",
+        "crates/riot-core/tests/core_import_charge_budget.rs"
+      ],
+      "source": "cargo test -p riot-core -p riot-conformance --all-features (all green)",
+      "note": "Implements the preview half of G2's 'hard store/preview bounds' requirement: retained_preview_output_bytes (2 MiB), bounding a live preview's and its active plan's own retained bytes independent of ever committing. Enforced at inspect() and plan(), both reject with no mutation before the budget would be exceeded. Two new adversarial tests: an oversized route rejected at inspect(), and a route that only exceeds budget once doubled by the plan's own separate retained copy, proving plan() checks independently. G2's store/preview byte-budget requirement is now fully covered (store: 933ea14, preview: 816366e). Hours are an estimate, not a tracked duration. 0.3h from the WU2 reserve."
     }
   ],
   "totals": {
-    "charged_hours": 8.80,
+    "charged_hours": 9.50,
     "reserved_g0_g1_repair_hours": 0.0,
-    "reserved_wu2_hours": 0.95,
+    "reserved_wu2_hours": 0.25,
     "reserved_wu3_hours": 4.0,
     "reserved_contingency_hours": 0.25,
     "reserved_wu4_hours": 2.0
