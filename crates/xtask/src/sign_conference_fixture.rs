@@ -12,8 +12,8 @@ use std::path::Path;
 
 use riot_core::model::{Certainty, Severity, Urgency};
 use riot_core::willow::{
-    create_signed_alert, entry_id, generate_communal_author, generate_communal_author_for_namespace,
-    AlertDraft,
+    create_signed_alert, entry_id, generate_communal_author,
+    generate_communal_author_for_namespace, AlertDraft,
 };
 use serde_json::{json, Value};
 
@@ -34,12 +34,11 @@ pub fn run(root: &Path) -> Result<(), String> {
     let mut doc: Value = serde_json::from_str(&raw)
         .map_err(|error| format!("parse {}: {error}", fixture_path.display()))?;
 
-    let founder = generate_communal_author()
-        .map_err(|error| format!("generate founding author: {error}"))?;
+    let founder =
+        generate_communal_author().map_err(|error| format!("generate founding author: {error}"))?;
     let namespace_bytes = *founder.namespace_id().as_bytes();
-    let second =
-        generate_communal_author_for_namespace(namespace_bytes)
-            .map_err(|error| format!("generate second author: {error}"))?;
+    let second = generate_communal_author_for_namespace(namespace_bytes)
+        .map_err(|error| format!("generate second author: {error}"))?;
 
     let authors = doc["authors"]
         .as_array()
