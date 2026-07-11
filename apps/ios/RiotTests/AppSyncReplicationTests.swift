@@ -65,7 +65,15 @@ final class AppSyncReplicationTests: XCTestCase {
         return (alice, bob)
     }
 
-    private func openPeer(name: String, joining space: RiotSpace?) throws -> Peer {
+    /// Opens one phone. `approvingTheApp` is the organizer's decision to turn
+    /// the checklist on: the replication tests give it to both peers because
+    /// they are about data movement, but the trust tests below withhold it from
+    /// the member, which is the whole point of an organizer approving once.
+    private func openPeer(
+        name: String,
+        joining space: RiotSpace?,
+        approvingTheApp: Bool = true
+    ) throws -> Peer {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("app-sync-\(name)-\(UUID().uuidString).json")
         if let space { try seedSpace(space, at: url) }
@@ -77,9 +85,7 @@ final class AppSyncReplicationTests: XCTestCase {
         )
         if space == nil { _ = try repository.createPublicSpace(title: "Berlin Mutual Aid") }
         let appID = try XCTUnwrap(repository.spaceApps().first).appIDHex
-        // Trust is host-side and per profile: without it this profile hands out
-        // no bridge, so each peer must make its own decision.
-        try repository.trustApp(appID: appID)
+        if approvingTheApp { try repository.trustApp(appID: appID) }
         return Peer(name: name, repository: repository, appID: appID, storageURL: url, keyStore: keyStore)
     }
 
@@ -282,6 +288,95 @@ final class AppSyncReplicationTests: XCTestCase {
         XCTAssertEqual(onAlice, onBob, "the two phones disagree about the same item")
         XCTAssertEqual(onBob, bobEdit, "the later edit did not win")
         XCTAssertNotEqual(onAlice, aliceEdit, "Alice kept her own stale edit")
+    }
+
+    // MARK: - Organizer trust
+
+    /// The community property the whole app-trust model exists to deliver: the
+    /// organizer approves the checklist ONCE, and everyone in the space gets it
+    /// — including someone who joins afterwards. No per-person install step, no
+    /// "do you trust this app?" for every member.
+    ///
+    /// Alice creates the space, so Alice is the organizer, and she approves the
+    /// checklist. Bob joins later and approves NOTHING. After they sync, Bob
+    /// holds Alice's approval marker — and it must count for him.
+    ///
+    /// CURRENTLY FAILS, and the failure is the point. A profile recognizes
+    /// exactly one organizer: itself. `mobile_state.rs:1768` fills every space's
+    /// `organizer_subspace_ids` with `vec![own_subspace_id]` (and `is_app_trusted`
+    /// evaluates against the same single id), while the scan that reads real
+    /// markers out of the store leaves the list empty (`apps/index.rs:376`).
+    /// `PublicSpace` carries no organizer, and a namespace id is an independent
+    /// keypair rather than the creator's subspace, so a joiner has no way to
+    /// learn who the organizer even is. Alice's marker therefore reaches Bob and
+    /// is ignored: he sees the app as untrusted and gets no bridge, so he cannot
+    /// open the checklist at all.
+    func testOrganizerApprovalCoversAMemberWhoJoinsLater() async throws {
+        let alice = try openPeer(name: "Alice", joining: nil)              // organizer: approves
+        let space = try XCTUnwrap(alice.repository.currentSpace)
+        let bob = try openPeer(name: "Bob", joining: space, approvingTheApp: false) // member: approves nothing
+
+        let key = newItemKey()
+        let added = try item(text: "Bring water to the corner", done: false, by: "Alice", at: 1)
+        try XCTUnwrap(alice.repository.appDataBridge(appID: alice.appID)).put(key: key, valueJSON: added)
+
+        try await sync(initiator: bob, responder: alice)
+
+        // Replication is not what breaks here: the item is already sitting in
+        // Bob's store, and so is Alice's approval marker. Everything below is
+        // the trust gate refusing to let him at it.
+        XCTAssertEqual(
+            try bob.repository.appDataGet(appID: bob.appID, key: key), added,
+            "the item itself replicated to Bob — only trust is in question"
+        )
+
+        XCTExpectFailure(
+            "KNOWN DEFECT: organizer approval does not propagate — see mobile_state.rs:1768 "
+            + "(organizer_subspace_ids = [own subspace]) and apps/index.rs:376 (scan leaves it empty)"
+        )
+
+        let app = try XCTUnwrap(try bob.repository.spaceApps().first)
+        XCTAssertTrue(
+            app.trusted,
+            "Bob must inherit the organizer's approval instead of being asked to approve it himself"
+        )
+        let bridge = bob.repository.appDataBridge(appID: bob.appID)
+        XCTAssertNotNil(bridge, "Bob cannot open the checklist the organizer turned on")
+        XCTAssertEqual(
+            try bridge?.get(key: key) ?? nil, added,
+            "Bob cannot read the item the organizer's app wrote"
+        )
+    }
+
+    /// The mirror, and the reason the property above has teeth: a member is NOT
+    /// an organizer. Bob approving the app for himself must not turn it on —
+    /// otherwise "the organizer decides what runs in this space" means nothing,
+    /// and any member can opt themselves into any app that reaches them.
+    ///
+    /// CURRENTLY FAILS: because each profile treats its own subspace as the
+    /// space's organizer (`mobile_state.rs:1768`), Bob's self-approval is
+    /// indistinguishable from an organizer's and hands him a working bridge.
+    func testMemberCannotSelfApproveAnApp() async throws {
+        let alice = try openPeer(name: "Alice", joining: nil)
+        let space = try XCTUnwrap(alice.repository.currentSpace)
+        let bob = try openPeer(name: "Bob", joining: space, approvingTheApp: false)
+        try await sync(initiator: bob, responder: alice)
+
+        // Bob is a member of Alice's space. He is not the organizer.
+        try bob.repository.trustApp(appID: bob.appID)
+
+        XCTExpectFailure(
+            "KNOWN DEFECT: a member can self-approve — every profile recognizes its own subspace "
+            + "as the space's organizer (mobile_state.rs:1768), so nothing distinguishes Bob's "
+            + "marker from Alice's"
+        )
+
+        let app = try XCTUnwrap(try bob.repository.spaceApps().first)
+        XCTAssertFalse(app.trusted, "a member's own approval must not turn an app on")
+        XCTAssertNil(
+            bob.repository.appDataBridge(appID: bob.appID),
+            "a member's own approval must not hand out a bridge"
+        )
     }
 
     // MARK: - Sync over a real socket
