@@ -1188,38 +1188,73 @@ pub(crate) fn install_app(
     manifest_bytes: Vec<u8>,
     bundle_bytes: Vec<u8>,
 ) -> Result<crate::apps_ffi::InstalledAppRecord, MobileError> {
+    with_active(inner, |profile| {
+        install_pair(profile, manifest_bytes, bundle_bytes)
+    })
+}
+
+/// Install an app this profile already holds in its store — one that arrived
+/// over nearby sync, or was published here. The manifest and bundle bytes are
+/// read back out of the store's own app-index rather than passed in, which is
+/// what lets a neighbour's app be *opened* and not merely listed.
+///
+/// It goes through the same `install_pair` as a direct `install_app`, so a
+/// carried app can never enter the runtime on weaker terms than one installed
+/// from bytes the caller supplied.
+pub(crate) fn install_from_directory(
+    inner: &Arc<Mutex<ProfileState>>,
+    app_id: Vec<u8>,
+) -> Result<crate::apps_ffi::InstalledAppRecord, MobileError> {
+    let app_id = exact_app_id(&app_id)?;
+    with_active(inner, |profile| {
+        // `None` covers every way an app can be un-openable from here: never
+        // arrived, bundle still in flight, or nothing in the store but copies
+        // that fail to re-derive this id. None of them is a distinct outcome
+        // to the caller — the app simply cannot be opened yet.
+        let pair = riot_core::apps::index::app_pair_bytes(&profile.store, &app_id)
+            .map_err(map_apps_error)?
+            .ok_or(MobileError::AppRejected)?;
+        install_pair(profile, pair.manifest_bytes, pair.bundle_bytes)
+    })
+}
+
+/// The one install path into the runtime. Verifies the canonical pair
+/// invariant, then records the app against this profile under the install cap.
+fn install_pair(
+    profile: &mut LocalProfile,
+    manifest_bytes: Vec<u8>,
+    bundle_bytes: Vec<u8>,
+) -> Result<crate::apps_ffi::InstalledAppRecord, MobileError> {
     use riot_core::apps::index::verify_app_pair;
     use riot_core::apps::manifest::decode_manifest;
 
-    with_active(inner, |profile| {
-        // The single canonical pair invariant; the manifest re-decode below
-        // only extracts display fields from bytes verify_app_pair accepted.
-        let app_id = verify_app_pair(&manifest_bytes, &bundle_bytes).map_err(map_apps_error)?;
-        let manifest = decode_manifest(&manifest_bytes).map_err(map_apps_error)?;
+    // The single canonical pair invariant; the manifest re-decode below
+    // only extracts display fields from bytes verify_app_pair accepted.
+    let app_id = verify_app_pair(&manifest_bytes, &bundle_bytes).map_err(map_apps_error)?;
+    let manifest = decode_manifest(&manifest_bytes).map_err(map_apps_error)?;
 
-        if !profile
-            .installed_apps
-            .iter()
-            .any(|app| app.app_id == app_id)
-        {
-            if profile.installed_apps.len() >= MAX_INSTALLED_APPS {
-                return Err(MobileError::SessionLimit);
-            }
-            profile.installed_apps.push(StoredInstalledApp {
-                app_id,
-                manifest_bytes,
-                bundle_bytes,
-            });
+    if !profile
+        .installed_apps
+        .iter()
+        .any(|app| app.app_id == app_id)
+    {
+        if profile.installed_apps.len() >= MAX_INSTALLED_APPS {
+            return Err(MobileError::SessionLimit);
         }
-        Ok(crate::apps_ffi::InstalledAppRecord {
-            app_id: hex(&app_id),
-            app_id_bytes: app_id.to_vec(),
-            name: manifest.name,
-            description: manifest.description,
-            version: manifest.version,
-            entry_point: manifest.entry_point,
-            permissions: manifest.permissions,
-        })
+        profile.installed_apps.push(StoredInstalledApp {
+            app_id,
+            manifest_bytes,
+            bundle_bytes,
+        });
+    }
+    Ok(crate::apps_ffi::InstalledAppRecord {
+        app_id: hex(&app_id),
+        app_id_bytes: app_id.to_vec(),
+        name: manifest.name,
+        description: manifest.description,
+        version: manifest.version,
+        entry_point: manifest.entry_point,
+        permissions: manifest.permissions,
     })
 }
 

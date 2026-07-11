@@ -1198,3 +1198,126 @@ fn app_display_name_is_short_stable_and_non_identifying() {
     // Stable across calls within a profile.
     assert_eq!(runtime.app_display_name().expect("name again"), name);
 }
+
+// ---------------------------------------------------------------------------
+// Opening a carried app: the last hop of community discovery. An app that
+// arrived over nearby sync could be listed but never run — install_app was the
+// only way into the runtime, and it needs bytes the receiver never had. These
+// pin that a carried app installs from the store's own bytes, on exactly the
+// same terms as a direct install.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_carried_app_installs_from_the_store_exactly_as_a_direct_install_would() {
+    let sender = open_local_profile().expect("sender");
+    let space = sender
+        .create_public_space("Carried apps".into())
+        .expect("space");
+    let sender_runtime = sender.app_runtime();
+    let (manifest_bytes, bundle_bytes) = manifest_and_bundle();
+    let direct = sender_runtime
+        .install_app(manifest_bytes, bundle_bytes)
+        .expect("direct install");
+    sender_runtime
+        .share_app(direct.app_id_bytes.clone(), space.clone())
+        .expect("share app");
+
+    // The app arrives at a neighbour who has never held its manifest or bundle.
+    let receiver = open_local_profile().expect("receiver");
+    receiver.join_public_space(space).expect("join");
+    let (initiator, responder, review) = sync_to_review(&receiver, &sender);
+    assert_eq!(review.kind, SyncOutcomeKind::ReviewImport);
+    accept_and_finish(&initiator, &responder);
+
+    let receiver_runtime = receiver.app_runtime();
+    let listing = receiver_runtime
+        .directory_listings()
+        .expect("directory")
+        .into_iter()
+        .find(|listing| listing.app_id == direct.app_id_bytes)
+        .expect("the carried app is listed");
+    assert!(listing.bundle_present);
+    assert!(!listing.installed, "seen, but not yet opened");
+
+    // Opening it passes no bytes at all — they come from the store — and lands
+    // the identical record a direct install of the same pair produces.
+    let carried = receiver_runtime
+        .install_from_directory(direct.app_id_bytes.clone())
+        .expect("install from directory");
+    assert_eq!(carried, direct);
+
+    assert!(
+        receiver_runtime
+            .directory_listings()
+            .expect("directory")
+            .into_iter()
+            .find(|listing| listing.app_id == direct.app_id_bytes)
+            .expect("still listed")
+            .installed,
+        "the carried app is now installed on this profile"
+    );
+}
+
+#[test]
+fn install_from_directory_refuses_an_app_this_profile_has_never_seen() {
+    let profile = open_local_profile().expect("profile");
+    assert!(matches!(
+        profile.app_runtime().install_from_directory(vec![0x9a; 32]),
+        Err(MobileError::AppRejected)
+    ));
+}
+
+#[test]
+fn install_from_directory_refuses_an_app_id_that_is_not_32_bytes() {
+    let profile = open_local_profile().expect("profile");
+    assert!(matches!(
+        profile.app_runtime().install_from_directory(vec![0x01; 31]),
+        Err(MobileError::InvalidInput)
+    ));
+}
+
+#[test]
+fn install_from_directory_refuses_a_bundle_that_is_still_arriving() {
+    use riot_core::apps::index::{app_index_manifest_path, verify_app_pair};
+
+    let receiver = open_local_profile().expect("receiver");
+    receiver.create_public_space("Partial arrival".into()).unwrap();
+    let (manifest_bytes, bundle_bytes) = manifest_and_bundle();
+    let app_id = verify_app_pair(&manifest_bytes, &bundle_bytes).expect("pair");
+
+    // Only the manifest lands; the bundle is still in flight.
+    let identity = receiver.identity().expect("identity");
+    let author = riot_core::willow::generate_communal_author_for_namespace(
+        unhex(&identity.namespace_id).try_into().unwrap(),
+    )
+    .expect("author");
+    let manifest_only = signed_bundle_at(
+        &author,
+        app_index_manifest_path(&app_id).expect("path"),
+        &manifest_bytes,
+    );
+    let preview = receiver
+        .inspect_bytes(manifest_only, "nearby".into())
+        .expect("inspect");
+    preview
+        .create_plan(Vec::new())
+        .expect("plan")
+        .accept()
+        .expect("accept");
+
+    // A half-arrived app is not installable, and the directory does not claim
+    // otherwise.
+    let runtime = receiver.app_runtime();
+    assert!(matches!(
+        runtime.install_from_directory(app_id.to_vec()),
+        Err(MobileError::AppRejected)
+    ));
+    assert!(
+        !runtime
+            .directory_listings()
+            .expect("directory")
+            .iter()
+            .any(|listing| listing.app_id == app_id.to_vec() && listing.bundle_present),
+        "a manifest without its bundle is never listed as present"
+    );
+}

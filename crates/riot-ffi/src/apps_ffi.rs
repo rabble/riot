@@ -90,6 +90,21 @@ impl AppRuntimeSession {
         crate::mobile_state::install_app(&self.inner, manifest_bytes, bundle_bytes)
     }
 
+    /// Install an app this profile already holds — one that arrived over
+    /// nearby sync, or was published here — from the store's own bytes. This
+    /// is how a `DirectoryListing` with `bundle_present` is opened; the caller
+    /// never has to hold the manifest or bundle itself. Takes the raw 32-byte
+    /// `DirectoryListing.app_id`.
+    ///
+    /// `AppRejected` when the app cannot be opened from here: never arrived,
+    /// bundle still in flight, or no stored copy re-derives this id.
+    pub fn install_from_directory(
+        &self,
+        app_id: Vec<u8>,
+    ) -> Result<InstalledAppRecord, MobileError> {
+        crate::mobile_state::install_from_directory(&self.inner, app_id)
+    }
+
     pub fn trust_app(&self, app_id: String) -> Result<(), MobileError> {
         crate::mobile_state::set_app_trust(&self.inner, app_id, true)
     }
