@@ -15,9 +15,10 @@ Normative external references:
 - [Willow Transfer Protocol](https://willowprotocol.org/specs/wtp/index.html)
 
 The Meadowcap specification is final as of 2025-11-21. WTP remains a sketch;
-Riot therefore defines a transport-independent authorization contract and
-does not make WTP interoperability claims until its separate conformance gate
-passes.
+the read-confidentiality/Confidential Sync work is also an upstream proposal,
+not made final merely because Meadowcap is final. Riot therefore defines a
+transport-independent authorization contract and makes no WTP or Confidential
+Sync interoperability claim until each separate conformance gate passes.
 
 ## Purpose
 
@@ -178,6 +179,12 @@ Every policy decision consumes an immutable `PolicySnapshot` identified by its
 governance-frontier hash. Local writes, import inspection, commit, sync, and
 app calls either use that exact snapshot or fail stale; none may silently
 re-evaluate against a different frontier halfway through an operation.
+Mutation previews fail stale and must be regenerated. Protected-sync and app
+execution sessions close on *any* frontier-hash change before the next response
+or bridge result, even when an optimization believes the change is unrelated;
+clients reauthenticate and bind a new snapshot. The repository generation is
+checked atomically immediately before encrypting/sending a protected record, so
+a known revocation cannot continue on an old session.
 
 Protocol support accepts arbitrary valid Meadowcap delegation chains. A Riot
 Space profile may impose narrower operational limits without claiming that a
@@ -254,16 +261,22 @@ private-overlap -> capability-bound -> reconciling -> closed`:
    encodings and are disclosed only under the PIO overlap rules. Awkward
    overlaps require a valid receiver-bound enumeration capability.
 6. A bound reconciliation range must lie inside both peers' relevant granted
-   areas. Current revocation/policy state is checked when binding a range and
-   again before every entry or payload response.
+   areas. The pinned policy snapshot is checked when binding; immediately
+   before every entry or payload response the repository generation must still
+   equal that snapshot or the session closes and rebinds from a new handshake.
 
-Namespace IDs, subspace IDs, paths, capability material, inventories, entry
-IDs, counts, rejection distinctions, and payload sizes remain behind the
-authenticated private-overlap gate. The zero-disclosure goal protects both
-peers from a malicious sync partner, including guessed interests, not merely
-payload access from an honest server. Frame count, ciphertext length, timing,
-and disconnect shape are padded or bucketed where the Confidential Sync
-profile specifies them and covered by traffic-shape tests.
+Riot adopts PIO's documented confidentiality levels rather than claiming
+impossible zero leakage. Unauthorized peers receive no entries or payloads,
+and namespace/path/capability material is protected according to the PIO
+private-interest and overlap rules. A malicious online peer that already
+guesses a PrivateInterest may confirm limited overlap/existence information
+and, in protocol cases documented by PIO, limited count information. Sensitive
+namespace and path components therefore use random high-entropy identifiers;
+human labels never become secret path components. The threat model and tests
+pin the specification's L0/L1/L2 disclosures for normal, guessed, nested, and
+awkward interests. Frame count, ciphertext length, timing, and disconnect shape
+are padded or bucketed where the Confidential Sync profile specifies them and
+covered by traffic-shape tests.
 
 This transport-independent state machine is implemented for nearby sync
 before protected sync is exposed. Future WTP and Confidential Sync adapters
@@ -344,7 +357,9 @@ record type and target; no app bridge call scans the unbounded journal.
 `**` below means a Meadowcap path-prefix area; angle-bracketed values are one
 exact binary path component. A named role is a bundle of separate read/write
 capabilities where a row contains disjoint prefixes. Custom roles may only
-remove rows, narrow prefixes, shorten timestamp areas, or change write to read.
+remove rows, narrow prefixes, or shorten timestamp areas. Meadowcap access mode
+is immutable: replacing write with read means dropping the write capability
+and independently issuing or attenuating a covering read capability.
 
 | Role | Write-capability areas | Default protected read areas |
 | --- | --- | --- |
@@ -358,14 +373,24 @@ remove rows, narrow prefixes, shorten timestamp areas, or change write to read.
 | App endorser | Exact `app-index/<app_id>/endorsements/<endorser_space_id>` path for each app | Exact `app-index/<app_id>/**` |
 | App approver | `governance/v1/apps/approvals/**` and `governance/v1/apps/revocations/**` | `app-index/**`; `governance/v1/apps/**` |
 | Governance proposer | `governance/v1/proposals/<actor_id>/**`; no decision authority | The same proposal prefix plus public governance decisions |
-| Role manager | `governance/v1/roles/**`, `members/**`, `invitations/**`, and scoped `revocations/**` | Those same governance prefixes |
+| Delegating administrator | Governance paths for `roles/**`, `members/**`, `invitations/**`, and scoped `revocations/**`, plus explicit covering parent capabilities for each grantable role | The governance prefixes plus reads explicitly required by each grantable role |
 | Root custodian | Full owned area, used only for genesis, initial delegation, recovery declarations, and migration | Full owned area |
 
-Runtime app data retains `apps/<app_id>/<space_id>/**`; app-index distribution
-retains its existing strict paths. Existing open alert entries retain
-`alerts/<object_id>/<revision_id>`. Managed Spaces use the versioned
+Runtime app data retains the implemented `apps/<app_id>/<relative_key...>`
+layout; the Willow namespace is the Space boundary and is never duplicated in
+the path. App-index distribution retains its existing strict paths. Existing
+open alert entries retain the implemented
+`objects/alert/<object_id>/<revision_id>` layout. Managed Spaces use the versioned
 `content/v1/` profile; translating an alert for managed publication produces a
 new signed managed entry rather than rewriting a legacy one.
+
+Meadowcap has no delegate-only access mode. A delegating administrator can
+exercise every covering parent capability they can delegate. Its
+`DelegatingAdminProfileV1` therefore lists exact `grantable_role_ids` and the
+fingerprints of covering parent capabilities for those templates. The UI shows
+only roles actually derivable from that set and states that the administrator
+also holds those powers. A governance clerk without covering capabilities may
+record proposals but cannot issue roles.
 
 Every privileged role bundle also contains the exact
 `governance/v1/actions/<actor_id>/**` prefix needed for its action receipts;
@@ -374,7 +399,8 @@ independently.
 
 Public areas need no read capability. For protected data, the table's read
 areas are separate Meadowcap read capabilities and are attenuated independently
-from writes. Baseline managed membership grants only the explicitly selected areas;
+from writes. Baseline managed membership grants only the explicitly selected
+areas;
 there is no implicit full-namespace read. Private membership normally grants
 the MLS-protected Space data areas selected by the inviter.
 
@@ -400,8 +426,10 @@ canonical bytes already bind capability type, access mode, namespace,
 receiver, area, and every delegation signature. Fingerprints from another
 codec or domain are never interchangeable.
 
-The genesis record is root-signed and has no parents. Every later record names
-an already accepted parent frontier; missing parents leave it pending. Records
+The genesis record is an ordinary receiver-signed Willow entry authorized by a
+root-issued owned write capability and has no parents. The namespace signature
+anchors that owned capability; it is not used as the entry signature. Every
+later record names an already accepted parent frontier; missing parents leave it pending. Records
 form a hash DAG and are reduced topologically. Display timestamps never order
 governance. A canonical checkpoint record merges a frontier that approaches
 the 16-parent limit; only the root or a receiver with the exact
@@ -412,9 +440,9 @@ frontier, before the new record can affect policy:
 
 - Proposals require only the actor's proposal area and grant no authority.
 - Actor/device bindings, membership, invitations, and role decisions require
-  a role-manager capability.
+  the delegating administrator's relevant governance capability.
 - A role issuance or renewal receipt is valid only when it references an
-  actually valid child capability delegated from the manager's presented
+  actually valid child capability delegated from the administrator's presented
   capability. Meadowcap attenuation proves the child is no broader; a record
   cannot manufacture or expand cryptographic authority.
 - App approvals and revocations require the exact app-approver area.
@@ -446,13 +474,27 @@ but security removal uses governance revocation and an action-chain cutoff.
 
 Every managed privileged write has a canonical `ActionReceiptV1` linking the
 entry ID, capability fingerprint, actor/receiver, actor sequence, previous
-action hash, and policy-frontier hash. A revocation records the last accepted
-action head for each affected actor/device. After reconciliation, only actions
-on an ancestry ending at that cutoff remain active; unknown concurrent offline
-actions are retained as partition-era audit evidence but do not affect current
-views. This is the deliberate safety tradeoff when removal races disconnection.
-The entry and receipt are inspected and committed as one atomic selected unit;
-either missing half is ineligible.
+action hash, and policy-frontier hash. A revocation body pins its parent
+frontier and a cutoff map from each known `(actor_id, receiver_id)` in the
+target subtree to that frontier's accepted action-head hash.
+
+The post-revocation predicate is exact. Let `D` be every capability whose
+canonical delegation chain contains the revoked fingerprint. An action using a
+capability in `D` remains active only when its exact actor/receiver has a cutoff
+head and its action hash is equal to or an ancestor of that head by repeated
+`previous_action_hash` links. No cutoff entry means no active action for that
+actor/receiver. A descendant discovered later is still in `D`; absent a cutoff
+it is audit-only. Missing cutoff ancestors keep the dependent action pending;
+a late ancestor may become active only by proving its chain to the pinned head.
+Post-cutoff descendants and concurrent branches not ancestral to the head are
+partition-era audit evidence and do not affect current views. Capabilities
+outside `D` are unchanged. Read capabilities in `D` have no historical
+grandfathering and close immediately when the revocation frontier is learned.
+
+Because the revocation's parent frontier and cutoff map are immutable, every
+arrival order computes the same result. This is the deliberate safety tradeoff
+when removal races disconnection. The entry and receipt are inspected and
+committed as one atomic selected unit; either missing half is ineligible.
 
 Entry timestamps more than ten minutes ahead of a reliable local wall clock
 are quarantined. An unavailable or rolled-back clock blocks issuance, renewal,
@@ -517,6 +559,24 @@ permissions.
 Changing any app content changes `app_id` and requires a new approval. Sharing
 or carrying an app never enables it.
 
+Approval and data authority are two explicit phases. `AppProvisioningV1`
+derives an exact per-app capability root for `apps/<app_id>/**` from the root or
+from an app administrator that visibly holds a covering `apps/**` parent, then
+delegates only the approved read/write subareas to each eligible current device
+receiver. Future invitations include the selected approved-app children.
+Meadowcap has no delegate-only power, so an app administrator with the broad
+parent can exercise it; a policy-only app approver without that parent produces
+`approved_waiting_authority` and cannot provision members.
+
+An app is `available` on a device only after its exact capabilities and active
+approval are both present. Other states are `shared_unapproved`, `approved_waiting_authority`,
+`provisioning`, `available`, and `revoked`. Offline members remain provisioning
+until capability delivery; the Tools row says access is still arriving rather
+than launching a predictably failing app. Revoking the per-app root invalidates
+all provisioned descendants. In a communal Open Space, own-subspace app data
+uses each person's communal authority; shared app data requires corresponding
+per-device authority from the linked owned governance Space.
+
 ### Runtime enforcement
 
 - The native host retains receiver keys and capabilities.
@@ -525,12 +585,21 @@ or carrying an app never enables it.
 - Writes remain attributed to the person using the app.
 - Network and remote script loading remain denied unless explicitly requested
   and approved.
+- Approved network requests are host-proxied without ambient cookies,
+  credentials, platform proxy inheritance, or unrestricted redirects. Every
+  request and redirect re-normalizes the origin, resolves DNS at connection
+  time, rejects mixed public/private answers and loopback/link-local/private
+  destinations, and pins the validated public address for that connection to
+  prevent rebinding.
 - Permission state is checked for every operation, not cached for the lifetime
   of an app process.
 - Revocation closes the active session and removes the app from the Space's
   Tools row without deleting previously synchronized app data.
 - Audit records retain both the human actor and mediated app ID so direct and
   app-initiated actions remain distinguishable.
+- Each app/profile uses an isolated WebView data store/process where supported,
+  a restrictive CSP with remote scripts disabled by default, and bridge
+  suspension before navigation begins.
 
 ### Plural directories
 
@@ -570,6 +639,16 @@ or acceptance after expiry fails closed. Delivery and acceptance receipts make
 retry idempotent; cancellation before activation publishes a cancellation
 record, while cancellation after activation runs normal offboarding.
 
+Every issued child fingerprint is recorded in `InviteLineageV1` under the
+invite ID. Riot policy rejects use of that capability and every descendant at
+every admission/read gate unless the evaluated frontier contains the matching
+active activation record. Cryptographic Meadowcap validity alone is
+insufficient. Cancellation, expiry, rejection, failed MLS completion, or
+abandoned repair atomically consumes the invite nonce and transitively revokes
+all pre-issued roots. Invite nonce consumption and the activation/revocation
+transition commit in the same authority-repository transaction, so a crash
+cannot reopen the invite.
+
 Private managed invites use a recoverable two-phase flow:
 
 1. Exchange receiver key and MLS KeyPackage; create and validate the attenuated
@@ -586,6 +665,18 @@ Meadowcap revocation; the UI says access setup needs repair and never claims an
 atomic rollback. Removing a private member always combines capability-tree
 revocation with an MLS remove/rekey. It stops future reads/writes after peers
 learn the new state but cannot erase data already synchronized or decrypted.
+
+Voluntary leave self-revokes the member's capability subtree, closes local
+sessions, and publishes a leave request. A public managed Space needs no
+further cryptographic step. A private Space becomes fully offboarded only when
+a manager also commits the MLS removal/rekey; until then the UI distinguishes
+`left on this device` from `removed from future private epochs`. Previously
+synchronized data cannot be recalled.
+
+Routine device replacement creates fresh receiver and encryption keys, binds
+them to the same stable actor through the normal recipient-bound invitation,
+activates the new device, and then revokes the retired receiver subtree. Secret
+receiver keys are never copied between devices.
 
 An open Space may have many competing governance lenses. Any participant may
 create or share one; each client explicitly follows, unfollows, or selects its
@@ -613,6 +704,23 @@ caller-selected identity parameters:
 - `RecoverySession`
 - `MigrationSession`
 - `AppExecutionSession`
+
+All durable operations have a random 128-bit `operation_id` stored in the
+authority repository. `MobileProfile.reopen_management_operation(operation_id)`
+reconstructs a typed `ManagementOperation`; specialized factories reopen
+invite, recovery, and migration operations after validating the recorded kind.
+Dropping or closing a UniFFI object releases only the process handle and never
+cancels durable work.
+
+| Object | Create/inspect | Read | Mutate | Terminal behavior |
+| --- | --- | --- | --- | --- |
+| `SpaceCreationSession` | `start_space_creation(input)` | `preview()`, `status()` | `commit(token)`, `cancel()` | Idempotent `close()`; reopen by operation ID |
+| `SpaceManagementSession` | `open_space_management(space_id)` | Paged people/roles/apps/audit queries | Mutations return durable `ManagementOperation` values | Process-local query handle; dropping does not mutate |
+| `InviteAcceptanceSession` | `inspect_invite(bytes)` or `reopen_invite(id)` | `preview()`, `status()` | `accept(token)`, `reject()`, `cancel_before_activation()`, `retry()` | Resumable until active or terminal |
+| `ManagementOperation` | Returned by previewed grant/revoke/approve/provision operations or reopened | `preview()`, `status()`, `progress()` | `commit(token)`, `retry()`, `cancel_before_commit()` | Signed/committed operations cannot cancel |
+| `RecoverySession` | `inspect_recovery(envelope)` or `reopen_recovery(id)` | `preview()`, `status()` | `unlock(recovery_key_handle)`, `restore(token)`, `cancel()` | Key handle is vault-owned; no raw key bytes |
+| `MigrationSession` | `start/inspect/reopen_migration` | Candidate/fingerprint/impact preview and status | `confirm(token)`, `retry()`, `cancel_before_new_genesis()` | Old/new commit boundaries are explicit |
+| `AppExecutionSession` | Native-host launch only | Permitted bridge reads | Permitted bridge writes | Process-local and non-resumable; closes on navigation, policy change, or process death |
 
 Every mutation follows inspect/preview/commit. The preview contains a one-use
 digest bound to operation inputs, authority delta, policy-snapshot hash, and
@@ -666,9 +774,24 @@ explicitly declined, every management screen shows a persistent
 `ROOT NOT BACKED UP` state and Riot prevents deleting the final root-bearing
 device without another explicit irreversible-loss confirmation.
 
+A portable recovery artifact proves integrity only through its exported
+checkpoint; on a fresh device it cannot prove that no later revocation exists.
+Restore therefore enters `freshness_unknown` quarantine. The device may inspect
+and re-export recovered material but may not issue capabilities, admit
+privileged writes, serve protected reads, export protected data, invite members,
+or approve apps. Freshness is established by synchronizing a governance journal
+whose checkpoint descends from the artifact with a previously trusted device
+or by importing an equivalently authenticated governance drop. With no such
+source, the only safe offline override creates a visibly forked replacement
+namespace through the manual fingerprint ceremony; it never resumes privileged
+writes in the old namespace. The UI does not describe a stale artifact as a
+current backup.
+
 Healthy-root migration is authorized by the old root, previews every role,
 app grant, governance lens, and private-membership change, and requires user
-confirmation. If the root is unavailable or suspected compromised, its
+confirmation. Its signed record binds full old/new namespace fingerprints,
+migration-manifest digest, selected old policy frontier, and new MLS group
+identity when private. If the root is unavailable or suspected compromised, its
 signature is not a trustworthy discriminator: Riot never auto-selects a
 successor. Candidate Spaces are shown as a fork with full fingerprints and
 manager/member attestations; every member chooses through an in-person QR or
@@ -742,12 +865,17 @@ IDs, optional MLS group/epoch, payload digest/length, and anti-replay envelope
 ID. A random 256-bit content key encrypts the drop with XChaCha20-Poly1305; each
 recipient gets an HPKE X25519/HKDF-SHA-256/ChaCha20-Poly1305 wrap bound to the
 header as AAD. Device records carry encryption keys separately from Meadowcap
-signature receivers. Private-group exports instead bind to the current MLS
+signature receivers; an actor-binding record signs the receiver and encryption
+key together. The active exporter receiver signs
+`"riot/protected-drop-signature/v1" || canonical_header || ciphertext_digest`.
+Import verifies that signature, the actor/device binding, and covering export
+read authority at the named policy frontier before unwrapping content. Private-group exports instead bind to the current MLS
 group and epoch and include only current members; an old epoch or removed
 member cannot receive a newly created export. Import rejects recipient,
 namespace, epoch, digest, replay, version, and downgrade mismatches before
 inspecting inner entries, then applies item-local inspection and atomic commit
-of the selected eligible set.
+of the selected eligible set. The envelope ID is consumed in that same
+transaction, so a crash cannot replay a committed drop.
 
 ### Remove authority
 
@@ -788,7 +916,9 @@ Space creation presents the power model, not protocol vocabulary:
 Managed Space settings provide people and roles, invitations, expiring
 access, moderation and appeals, apps and permissions, renewals and
 revocations, governance history, recovery, and migration. Primary UI uses
-plain language such as "Can moderate reports until August 1." An advanced
+plain language such as `Moderator · renewal due August 1`; it never says that
+calendar time alone removes offline authority. Removal status reads `Removed
+on this device` or `Removal shared with known peers` until reconciliation. An advanced
 inspector may display full namespace IDs, receiver IDs, paths, expiry,
 delegation chains, signatures, and revocation state. IDs are never truncated.
 
@@ -800,7 +930,9 @@ have received`; they never say globally complete. Partial private invitations
 and migrations expose repair/resume actions. Permission risk is communicated
 with text and accessibility labels, never color or icons alone. Custom
 attenuation is shown as a named role plus readable exceptions, for example
-`Moderator, except app approvals; coordinate expiry August 1`.
+`Moderator, except app approvals; renewal due August 1`. UX tests require
+people to distinguish renewal reminders, Meadowcap entry-coordinate bounds,
+and propagated revocation.
 
 ## Error handling
 
@@ -893,8 +1025,8 @@ tests; platform integration tests exercise the real storage adapters.
   eligible set is atomic.
 - Fresh-challenge proof, challenge replay, receiver mismatch, stolen read
   capability, and cross-session reuse.
-- No namespace, subspace, path, entry, count, or payload disclosure before
-  authorization.
+- No unauthorized entry or payload disclosure and no metadata disclosure
+  beyond the pinned PIO L0/L1/L2 threat-model allowance.
 - Public visibility policy does not accidentally expose protected areas.
 - Protected portable exports require encryption.
 - Full protected-sync state transitions, transcript mutation, downgrade,
@@ -905,10 +1037,11 @@ tests; platform integration tests exercise the real storage adapters.
 
 ### Governance and partitions
 
-- Lease renewal and expiry boundaries.
+- Coordinate-bound renewal, future-clock quarantine, and action-cutoff
+  boundaries.
 - Revocation before, during, and after disconnected operation.
 - Different arrival orders produce the same effective policy.
-- Restrictive exact-timestamp tie-breaks.
+- Restrictive causal conflict reducers with display timestamps ignored.
 - Root recovery success/failure, compromise, and namespace migration.
 - Audit history retains rejected and superseded decisions without activating
   them.
@@ -931,12 +1064,26 @@ tests; platform integration tests exercise the real storage adapters.
 - Recovery-envelope golden and corruption vectors, wrong-key behavior,
   zeroization instrumentation, secure-vault rollback, and cloned-container
   restore.
+- Stale recovery artifacts remain freshness-quarantined on fresh installs and
+  cannot perform any forbidden privileged operation.
 - Every invitation state and retry/cancel/expiry/replay transition, including
   private MLS partial failure and repair.
+- Pre-activation invite capabilities fail every local/import/read path;
+  activation and nonce consumption are crash-atomic; cancellation revokes all
+  descendants.
 - Manifest V1/V2 decoding, V1 sandbox restrictions, canonical V2 permission
   subset algebra, network redirect/origin checks, and mandatory reapproval.
 - Opaque app-session confused-deputy tests for caller-selected app/Space IDs,
   origin/navigation changes, stale policy snapshots, and destroyed WebViews.
+- App approval/provisioning states, exact per-device app capabilities, future
+  invite provisioning, unavailable Tools rows, and per-app subtree revocation.
+- ProtectedDrop exporter-signature, actor/encryption-key binding, export-area
+  authority, and crash-atomic replay consumption.
+- Any governance-frontier change closes protected-sync and app sessions before
+  their next output; cutoff-map predicates cover late ancestors, absent
+  descendants, and concurrent branches.
+- Exact current legacy paths and managed V1 paths are pinned in codec/schema
+  dispatch tests.
 
 ### Compatibility
 
@@ -975,9 +1122,9 @@ validation and adversarial review before commit.
    without using the root key for daily writes.
 5. An open Space can link an optional owned governance namespace without
    granting it write authority over communal participant subspaces.
-6. Protected replication discloses no namespace, interest, path, inventory,
-   count, entry, or payload information before receiver proof and valid private
-   overlap/capability exchange.
+6. Protected replication discloses no unauthorized entries or payloads and no
+   metadata beyond PIO's explicitly pinned L0/L1/L2 allowance after receiver
+   proof and valid private-overlap/capability exchange.
 7. Protected areas cannot be exported as plaintext portable drops.
 8. A Space can approve an exact app version with a permission subset; the app
    cannot exceed that subset or obtain raw authority material.
@@ -988,8 +1135,9 @@ validation and adversarial review before commit.
     encrypted recovery flow, and replaceable only by Space migration.
 12. Managed invitations and device additions are recipient-bound, replay-safe,
     resumable, and active only after all required Meadowcap and MLS steps.
-13. Governance state survives restart and backup restore without reviving a
-    revoked capability; rollback or missing parents fail closed.
+13. Governance state survives restart without reviving a revoked capability;
+    backup/recovery restore remains quarantined until freshness is proven, and
+    rollback or missing parents fail closed.
 14. Revoking a capability invalidates every descendant and produces the same
     active action cutoff on every message ordering.
 15. V2 app permissions are canonical, structurally comparable, destination
@@ -1002,13 +1150,14 @@ validation and adversarial review before commit.
 
 The feature is successful when every acceptance criterion has executable
 coverage, cross-device tests demonstrate role grant and removal without a
-server, protected sync tests show zero unauthorized disclosure, and an app
+server, protected sync tests show zero unauthorized entry/payload disclosure
+and only the pinned PIO metadata allowance, and an app
 cannot exceed any independently varied component of its effective grant.
 
 Before release, automated conformance must accept 100% of maintained valid
 golden fixtures and reject 100% of maintained invalid fixtures; protected-sync
-tests must observe zero identifier, path, count, entry, or payload disclosures
-across every unauthorized case; all generated attenuation tests must show zero
+tests must observe zero unauthorized entry/payload disclosure and exactly the
+pinned PIO metadata leakage profile; all generated attenuation tests must show zero
 authority expansions; and cross-device scenarios must converge to one
 effective role/app policy for every tested message ordering. A field exercise
 with at least three disconnected devices must complete Space creation, role
