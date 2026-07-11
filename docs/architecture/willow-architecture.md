@@ -91,6 +91,8 @@ The first product version should avoid arbitrary page generation and use typed u
 
 `need`, `offer`, and `task` carry a claim/fulfillment lifecycle (open, claimed, done) so a space can serve as a shared dispatch ledger. `verification` and `moderation_action` attach to other objects by reference. Grounding for these types is in `docs/research/2026-07-10-mutual-aid-coordination-research.md`.
 
+`verification` also covers **optional media authenticity** (ProofMode capture proofs, C2PA manifests) as a detachable annotation on a media payload, never embedded in the payload itself. The default publish path redacts GPS and device-identifying assertions before a `verification` annotation crosses the Group → newswire bridge; full unredacted provenance may be kept privately. The annotation records what was redacted and by whom, not just a pass/fail validator result — a C2PA-conformant "valid" check does not cover data that was excluded from the signature. Grounding: `docs/research/2026-07-11-proofmode-c2pa-media-authenticity-research.md`.
+
 Every object should include:
 
 - stable id,
@@ -154,7 +156,10 @@ Candidate transports:
 - nearby desktop companion,
 - future BLE transport,
 - future bitchat bridge,
-- future relay transport when internet is available.
+- future relay transport when internet is available — research now grounds this as an *opportunistic backhaul*, not a special-cased path: the same reconciliation logic that runs over local transports should run over the relay, following Briar's and Secure Scuttlebutt's proven pattern of one merge function that never special-cases which transport delivered an entry. Candidate relay mechanism: Arti (Tor Project's Rust Tor reimplementation) embedded in-process for outbound onion-service hosting; inbound relay/bridge hosting is not yet viable on Arti, and the mobile FFI boundary — not Arti's core protocol — is the highest-risk surface in any such integration, per audit evidence. Grounding: `docs/research/2026-07-11-hybrid-gossip-backhaul-research.md`, `docs/research/2026-07-11-arti-tor-backhaul-research.md`.
+- physical data-mule / courier sync — a periodically-refreshed Drop Format package carried by a scheduled courier, transit route, or sneakernet, in the pattern of Cuba's El Paquete Semanal and DakNet's vehicle-mounted relays — as a first-class transport, not a fallback. It is the strongest deployed evidence found for any offline distribution mechanism researched so far. Grounding: `docs/research/2026-07-11-shutdown-resistant-distribution-research.md`.
+
+WTP's own request/response model already leans toward the demand-driven retrieval pattern recent research argues is more resilient than the blind flood/epidemic routing used by most deployed mesh-messaging apps; keep it that way rather than adding broadcast relay by default.
 
 ### Phase 3: Confidential Sync
 
