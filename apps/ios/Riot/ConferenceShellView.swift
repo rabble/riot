@@ -64,25 +64,37 @@ struct ConferenceShellView: View {
 
 private struct SpacesView: View {
     @ObservedObject var model: RiotAppModel
+    @Environment(\.colorScheme) private var colorScheme
     @State private var title = "Berlin Mutual Aid"
 
     var body: some View {
-        Form {
-            Section("Public incident space") {
-                if let space = model.space {
-                    LabeledContent("Title", value: space.title)
-                    IdentifierRow(label: "Namespace", value: space.namespaceID)
-                    Text("Public content · fixed incident-board/1 renderer")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                } else {
-                    TextField("Space title", text: $title)
-                    Button("Create public space") { model.createSpace(title: title) }
-                        .buttonStyle(.borderedProminent)
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                RiotCard {
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("Public incident space")
+                            .font(.riot(.mono, size: 12, relativeTo: .caption))
+                            .textCase(.uppercase)
+                            .tracking(1)
+                            .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
+                        if let space = model.space {
+                            LabeledContent("Title", value: space.title)
+                            IdentifierRow(label: "Namespace", value: space.namespaceID)
+                            Text("Public content · fixed incident-board/1 renderer")
+                                .font(.riot(.body, size: 13, relativeTo: .caption))
+                                .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
+                        } else {
+                            TextField("Space title", text: $title)
+                                .font(.riot(.body, size: 17, relativeTo: .body))
+                            Button("Create public space") { model.createSpace(title: title) }
+                                .buttonStyle(.riotPrimary)
+                        }
+                    }
                 }
             }
+            .padding(20)
         }
-        .navigationTitle("Spaces")
+        .riotHeader(eyebrow: "Riot", "Spaces")
     }
 }
 
@@ -224,14 +236,20 @@ private struct ConnectionStatusView: View {
 }
 
 private struct IdentifierRow: View {
+    @Environment(\.colorScheme) private var colorScheme
     let label: String
     let value: String
 
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
-            Text(label).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+            Text(label)
+                .font(.riot(.mono, size: 11, relativeTo: .caption2))
+                .textCase(.uppercase)
+                .tracking(0.5)
+                .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
             Text(value)
-                .font(.caption.monospaced())
+                .font(.riot(.mono, size: 13, relativeTo: .footnote))
+                .foregroundStyle(RiotTheme.ink(for: colorScheme))
                 .textSelection(.enabled)
         }
     }
