@@ -876,7 +876,20 @@ fn remember_sync_entries(
 }
 
 fn ensure_complete_sync_inventory(profile: &LocalProfile) -> Result<(), MobileError> {
-    let mut live_ids = profile.store.live_entry_ids().map_err(map_core_error)?;
+    // App-data entries (`apps/<app_id>/...`) are deliberately outside the
+    // alert sync inventory: this sync review surface is alert-only, and the
+    // app-directory follow-up owns syncing app data. The completeness
+    // invariant therefore compares against live non-app entries only —
+    // otherwise one local app_data_put would brick open_sync_session.
+    let all_prefix = riot_core::willow::Path::from_slices(&[]).map_err(|_| MobileError::Internal)?;
+    let mut live_ids: Vec<_> = profile
+        .store
+        .entries_with_prefix(&all_prefix)
+        .map_err(map_core_error)?
+        .into_iter()
+        .filter(|(_, entry, _)| !riot_core::apps::entry::is_app_data_entry(entry))
+        .map(|(id, _, _)| id)
+        .collect();
     live_ids.sort_unstable();
     if live_ids.len() > MAX_SYNC_IDS {
         return Err(MobileError::SessionLimit);
@@ -1078,6 +1091,10 @@ pub(crate) fn set_app_trust(
 
     with_active(inner, |profile| {
         let app_id = parse_entry_id(&app_id)?;
+        // Only the latest marker per app matters for evaluation; compact so
+        // repeated trust/untrust toggles never exhaust the cap (which then
+        // bounds *distinct* apps, not lifetime toggles).
+        profile.app_trust_markers.retain(|m| m.app_id != app_id);
         if profile.app_trust_markers.len() >= MAX_APP_TRUST_MARKERS {
             return Err(MobileError::SessionLimit);
         }
@@ -1118,6 +1135,12 @@ pub(crate) fn app_data_put(
     value: Vec<u8>,
 ) -> Result<(), MobileError> {
     with_active(inner, |profile| {
+        // Same guard as sign_draft/inspect_bytes: store.inspect replaces the
+        // session-wide preview slot, which would clobber an in-flight sync
+        // review.
+        if sync_session_is_active(profile) {
+            return Err(MobileError::InvalidInput);
+        }
         let app_id = parse_entry_id(&app_id)?;
         let now_micros = system_snapshot()
             .map_err(map_author_error)?

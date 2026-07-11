@@ -80,3 +80,23 @@ fn older_revoke_does_not_override_newer_trust() {
     ];
     assert!(is_trusted(&app_id, &markers, &[subspace_of(&organizer)]));
 }
+
+#[test]
+fn revoke_wins_an_equal_timestamp_tie_in_either_order() {
+    let organizer = riot_core::willow::generate_communal_author().expect("author");
+    let app_id = [1u8; 32];
+    let trust = TrustMarker {
+        app_id,
+        author_subspace_id: subspace_of(&organizer),
+        kind: TrustMarkerKind::Trust,
+        timestamp_micros: 10,
+    };
+    let revoke = TrustMarker {
+        app_id,
+        author_subspace_id: subspace_of(&organizer),
+        kind: TrustMarkerKind::Revoke,
+        timestamp_micros: 10,
+    };
+    assert!(!is_trusted(&app_id, &[trust, revoke], &[subspace_of(&organizer)]));
+    assert!(!is_trusted(&app_id, &[revoke, trust], &[subspace_of(&organizer)]));
+}

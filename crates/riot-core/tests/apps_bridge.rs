@@ -101,3 +101,31 @@ fn newer_put_to_the_same_key_wins() {
     assert_eq!(listed.len(), 1);
     assert_eq!(listed[0].1, b"new");
 }
+
+#[test]
+fn get_and_list_resolve_one_lww_winner_across_subspaces() {
+    // Two members of the same namespace (distinct subspaces) write the same
+    // key. Willow pruning never crosses subspaces, so both entries stay
+    // live — the bridge must still surface exactly one winner, by Willow's
+    // own recency order, regardless of commit order.
+    use riot_core::willow::generate_communal_author_for_namespace;
+
+    let session = RiotSession::open().expect("session");
+    let store = session.create_store().expect("store");
+    let alice = generate_communal_author().expect("alice");
+    let mallory =
+        generate_communal_author_for_namespace(*alice.namespace_id().as_bytes()).expect("mallory");
+    let app_id = [7u8; 32];
+
+    // Newer write committed FIRST, older second — insertion order must not
+    // leak into reads.
+    AppDataBridge::put(&store, &mallory, &app_id, "items/a", 200, b"newer").expect("put newer");
+    AppDataBridge::put(&store, &alice, &app_id, "items/a", 100, b"older").expect("put older");
+
+    let value = AppDataBridge::get(&store, &app_id, "items/a").expect("get");
+    assert_eq!(value, Some(b"newer".to_vec()));
+
+    let listed = AppDataBridge::list(&store, &app_id, "items").expect("list");
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].1, b"newer");
+}

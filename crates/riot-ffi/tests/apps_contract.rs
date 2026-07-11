@@ -140,3 +140,55 @@ fn hostile_inputs_are_rejected_without_state_damage() {
         .expect("list");
     assert!(listed.is_empty());
 }
+
+#[test]
+fn app_data_put_does_not_break_sync_sessions() {
+    // Regression (review C1): a put must neither brick a later
+    // open_sync_session (sync-inventory completeness is alert-only) nor be
+    // allowed while a sync session is active (store.inspect would clobber
+    // the in-flight sync review).
+    let profile = open_local_profile().expect("profile");
+    profile
+        .create_public_space("Sync fixture".into())
+        .expect("space");
+    let runtime = profile.app_runtime();
+    let (manifest_bytes, bundle_bytes) = manifest_and_bundle();
+    let app = runtime
+        .install_app(manifest_bytes, bundle_bytes)
+        .expect("install");
+    runtime.trust_app(app.app_id.clone()).expect("trust");
+
+    runtime
+        .app_data_put(app.app_id.clone(), "items/a".to_string(), b"x".to_vec())
+        .expect("put");
+
+    let sync = profile.open_sync_session().expect("sync opens after a put");
+    assert!(matches!(
+        runtime.app_data_put(app.app_id.clone(), "items/b".to_string(), b"y".to_vec()),
+        Err(MobileError::InvalidInput)
+    ));
+    sync.cancel().expect("cancel");
+
+    runtime
+        .app_data_put(app.app_id, "items/b".to_string(), b"y".to_vec())
+        .expect("put works again after cancel");
+}
+
+#[test]
+fn trust_toggles_never_exhaust_the_marker_cap() {
+    // Regression (review M2): markers compact to latest-per-app, so the cap
+    // bounds distinct apps, not lifetime toggles.
+    let profile = open_local_profile().expect("profile");
+    let runtime = profile.app_runtime();
+    let (manifest_bytes, bundle_bytes) = manifest_and_bundle();
+    let app = runtime
+        .install_app(manifest_bytes, bundle_bytes)
+        .expect("install");
+
+    for _ in 0..300 {
+        runtime.trust_app(app.app_id.clone()).expect("trust");
+        runtime.untrust_app(app.app_id.clone()).expect("untrust");
+    }
+    runtime.trust_app(app.app_id.clone()).expect("final trust");
+    assert!(runtime.is_app_trusted(app.app_id).expect("check"));
+}

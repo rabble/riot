@@ -8,6 +8,7 @@
 //! entries (`import::join::Stored::payload`).
 
 use ed25519_dalek::Signature;
+use willow25::entry::EntrylikeExt;
 use willow25::groupings::Keylike;
 
 use crate::import::bundle::encode_bundle;
@@ -63,9 +64,13 @@ impl AppDataBridge {
     ) -> Result<Option<Vec<u8>>, AppsError> {
         let path = app_data_path(app_id, key)?;
         let matches = store.entries_with_prefix(&path).map_err(session_err)?;
+        // Same-key entries from different subspaces never prune each other
+        // (Willow pruning is per-subspace), so several may be live at once;
+        // surface exactly one winner by Willow's own recency order.
         Ok(matches
             .into_iter()
-            .find(|(_, entry, _)| entry.path() == &path)
+            .filter(|(_, entry, _)| entry.path() == &path)
+            .max_by(|(_, a, _), (_, b, _)| a.cmp_recency(b))
             .and_then(|(_, _, payload)| payload))
     }
 
@@ -78,15 +83,29 @@ impl AppDataBridge {
     ) -> Result<Vec<(String, Vec<u8>)>, AppsError> {
         let path = app_data_path(app_id, prefix)?;
         let matches = store.entries_with_prefix(&path).map_err(session_err)?;
-        let mut items = Vec::with_capacity(matches.len());
+        // One winner per key across subspaces, same recency order as `get`.
+        let mut winners: Vec<(String, Entry, Vec<u8>)> = Vec::new();
         for (_, entry, payload) in matches {
             // Entries under an app prefix always retain their payload; a
             // `None` here would mean a non-app entry somehow matched, which
             // the admission shape check makes impossible — skip defensively
             // rather than panic.
             let Some(payload) = payload else { continue };
-            items.push((relative_key(&entry)?, payload));
+            let key = relative_key(&entry)?;
+            match winners.iter_mut().find(|(existing, _, _)| *existing == key) {
+                Some((_, best, best_payload)) => {
+                    if entry.cmp_recency(best) == std::cmp::Ordering::Greater {
+                        *best = entry;
+                        *best_payload = payload;
+                    }
+                }
+                None => winners.push((key, entry, payload)),
+            }
         }
+        let mut items: Vec<(String, Vec<u8>)> = winners
+            .into_iter()
+            .map(|(key, _, payload)| (key, payload))
+            .collect();
         items.sort_unstable_by(|left, right| left.0.cmp(&right.0));
         Ok(items)
     }

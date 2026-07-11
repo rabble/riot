@@ -98,6 +98,13 @@ pub fn app_data_path(app_id: &[u8; APP_ID_BYTES], key: &str) -> Result<Path, App
     Path::from_slices(&raw_segments).map_err(|_| AppsError::PathInvalid)
 }
 
+/// `is_app_data_path`, taking the entry directly — for callers (riot-ffi)
+/// that don't import willow25's accessor traits.
+pub fn is_app_data_entry(entry: &Entry) -> bool {
+    use willow25::groupings::Keylike;
+    is_app_data_path(entry.path())
+}
+
 pub fn build_app_data_entry(
     author: &EvidenceAuthor,
     app_id: &[u8; APP_ID_BYTES],
