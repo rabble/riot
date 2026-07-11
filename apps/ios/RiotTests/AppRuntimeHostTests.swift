@@ -233,4 +233,150 @@ final class AppRuntimeHostTests: XCTestCase {
             "value": String(repeating: "a", count: 300_000),
         ])) // oversized
     }
+
+    // MARK: - AppRuntimeView host: navigation lock
+
+    /// A `WKNavigationAction` with no public initializer, subclassed so the
+    /// navigation-policy delegate can be driven with an arbitrary URL. Only the
+    /// `request` the delegate inspects is overridden.
+    private final class StubNavigationAction: WKNavigationAction {
+        private let stubbedRequest: URLRequest
+        init(url: URL) {
+            self.stubbedRequest = URLRequest(url: url)
+            super.init()
+        }
+        override var request: URLRequest { stubbedRequest }
+    }
+
+    private final class SpyDataBridge: AppDataBridging {
+        func put(key: String, valueJSON: String) throws {}
+        func get(key: String) throws -> String? { nil }
+        func list(prefix: String) throws -> [(key: String, valueJSON: String)] { [] }
+        func displayName() -> String { "spy" }
+    }
+
+    private func navigationDecision(
+        _ coordinator: AppRuntimeCoordinator,
+        for urlString: String
+    ) -> WKNavigationActionPolicy {
+        var decision: WKNavigationActionPolicy?
+        coordinator.webView(
+            WKWebView(),
+            decidePolicyFor: StubNavigationAction(url: URL(string: urlString)!)
+        ) { decision = $0 }
+        return decision ?? .cancel
+    }
+
+    func testNavigationLockAllowsOnlyRiotAppScheme() {
+        let appID = String(repeating: "a", count: 64)
+        let coordinator = AppRuntimeCoordinator(
+            bridge: AppBridgeController(bridge: SpyDataBridge()),
+            appIDHex: appID,
+            entryPoint: "index.html"
+        )
+
+        XCTAssertEqual(navigationDecision(coordinator, for: "riot-app://\(appID)/index.html"), .allow)
+        for hostile in ["https://example.com", "http://example.com", "about:blank", "javascript:alert(1)"] {
+            XCTAssertEqual(
+                navigationDecision(coordinator, for: hostile), .cancel,
+                "navigation lock must cancel \(hostile)"
+            )
+        }
+    }
+
+    // MARK: - AppRuntimeView host: trust gate
+
+    /// Repo root derived from this file at `apps/ios/RiotTests/…` (four levels
+    /// up), matching `AppRepositoryTests`, so the frozen starter artifacts load.
+    private func repoRoot() -> URL {
+        URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent() // RiotTests
+            .deletingLastPathComponent() // ios
+            .deletingLastPathComponent() // apps
+            .deletingLastPathComponent() // repo root
+    }
+
+    private func starterPacks() throws -> [(manifest: Data, bundle: Data)] {
+        let apps = repoRoot().appendingPathComponent("fixtures/apps")
+        return [(
+            manifest: try Data(contentsOf: apps.appendingPathComponent("checklist.manifest.cbor")),
+            bundle: try Data(contentsOf: apps.appendingPathComponent("checklist.bundle.cbor"))
+        )]
+    }
+
+    private final class FixedWrappingKeyStore: WrappingKeyStore {
+        private var key: Data?
+        func loadOrCreateWrappingKey() throws -> Data {
+            if let key { return key }
+            let created = Data(repeating: 0x5a, count: 32)
+            key = created
+            return created
+        }
+    }
+
+    private func trustedRepository() throws -> (RiotProfileRepository, String) {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("app-runtime-view-\(UUID().uuidString).json")
+        let repository = try RiotProfileRepository.open(
+            storage: try ProtectedProfileStorage(fileURL: url),
+            keyStore: FixedWrappingKeyStore(),
+            starterPacks: try starterPacks()
+        )
+        _ = try repository.createPublicSpace(title: "Berlin Mutual Aid")
+        return (repository, try repository.spaceApps()[0].appIDHex)
+    }
+
+    /// The launch decision — the host-side trust gate the platform depends on —
+    /// refuses to produce mount inputs for an untrusted (or unknown) app and
+    /// only succeeds once the app is trusted. `AppRuntimeView` renders no
+    /// WebView and calls `onClose` in the nil case.
+    func testAppRuntimeLaunchIsGatedOnTrust() throws {
+        let (repository, appID) = try trustedRepository()
+
+        XCTAssertNil(
+            AppRuntimeLaunch(repository: repository, appIDHex: appID),
+            "untrusted app must not produce launch inputs"
+        )
+        XCTAssertNil(
+            AppRuntimeLaunch(repository: repository, appIDHex: String(repeating: "e", count: 64)),
+            "unknown app id must not produce launch inputs"
+        )
+
+        try repository.trustApp(appID: appID)
+        let launch = try XCTUnwrap(AppRuntimeLaunch(repository: repository, appIDHex: appID))
+        XCTAssertEqual(launch.appIDHex, appID.lowercased())
+        XCTAssertEqual(launch.entryPoint, "index.html")
+    }
+
+    // MARK: - AppRuntimeView host: change notification plumbing
+
+    /// Posting `AppRuntimeView.dataChangedNotification` drives the coordinator's
+    /// observer, which calls `bridge.notifyDataChanged()` — observed here by
+    /// replacing the page's `__riotDataChanged` with a counter and reading it
+    /// back through the bridge's own JS round-trip. (Timer polls don't fire
+    /// under XCTWaiter; `callAsyncJavaScript` awaits, so each poll yields the
+    /// main thread for the `.main`-queued observer and the JS to run.)
+    func testDataChangedNotificationRerunsPageWatchers() async throws {
+        let appID = String(repeating: "a", count: 64)
+        let bridge = AppBridgeController(bridge: SpyDataBridge())
+        let (webView, probe) = makeWebView(resolver: try checklistResolver(appID: appID), bridge: bridge)
+        await loadEntryPoint(webView, probe, appID: appID)
+
+        _ = try await callAsync(webView, """
+            window.__dc = 0;
+            window.__riotDataChanged = function () { window.__dc += 1; };
+            return 'ok';
+        """)
+
+        let coordinator = AppRuntimeCoordinator(bridge: bridge, appIDHex: appID, entryPoint: "index.html")
+        coordinator.observeDataChanges()
+        NotificationCenter.default.post(name: AppRuntimeView.dataChangedNotification, object: nil)
+
+        var observed = 0
+        for _ in 0..<50 {
+            observed = (try await callAsync(webView, "return window.__dc || 0;")) as? Int ?? 0
+            if observed >= 1 { break }
+        }
+        XCTAssertGreaterThanOrEqual(observed, 1, "notification did not re-run page watchers")
+    }
 }

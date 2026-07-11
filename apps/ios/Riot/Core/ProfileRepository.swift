@@ -311,6 +311,19 @@ public final class RiotProfileRepository {
         return AppRuntimeDataBridge(session: appRuntime, appIDHex: appID)
     }
 
+    /// The resource resolver for a TRUSTED installed app, or nil otherwise.
+    ///
+    /// Mirrors `appDataBridge(appID:)`'s host-side trust gate: the scheme
+    /// handler serving an app's bytes is only ever handed out for an app that is
+    /// trusted in the current profile, so the runtime host cannot even mount an
+    /// untrusted app's WebView. The returned resolver also carries the verified
+    /// `entryPoint` the host loads first.
+    public func appResolver(appID: String) -> AppResourceResolver? {
+        guard let installed = installedApp(appID: appID) else { return nil }
+        guard (try? appRuntime.isAppTrusted(appId: appID)) == true else { return nil }
+        return installed.resolver
+    }
+
     private func installedApp(appID: String) -> InstalledApp? {
         let target = appID.lowercased()
         return installedApps.first { $0.record.appId.lowercased() == target }
