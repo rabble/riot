@@ -12,6 +12,9 @@ use super::AppsError;
 pub const APPS_COMPONENT: &[u8] = b"apps";
 pub const APP_ID_BYTES: usize = 32;
 
+// An app ID must always fit within a single path component.
+const _: () = assert!(APP_ID_BYTES <= MAX_PATH_COMPONENT_BYTES);
+
 /// A key segment is a non-empty sequence of lowercase ASCII letters,
 /// digits, or hyphens — the same safe-path-segment rule already used for
 /// conference-fixture routes. `crypto.randomUUID()` output (lowercase hex
@@ -41,9 +44,6 @@ pub fn app_data_path(app_id: &[u8; APP_ID_BYTES], key: &str) -> Result<Path, App
     let component_count = 2 + segments.len();
     if component_count > MAX_PATH_COMPONENTS {
         return Err(AppsError::TooManyPathComponents);
-    }
-    if app_id.len() > MAX_PATH_COMPONENT_BYTES {
-        return Err(AppsError::PathComponentTooLong);
     }
     let mut total_bytes = APPS_COMPONENT.len() + app_id.len();
     for segment in &segments {

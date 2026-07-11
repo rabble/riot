@@ -51,6 +51,38 @@ fn oversized_key_component_is_rejected() {
 }
 
 #[test]
+fn key_component_at_exactly_the_limit_is_accepted() {
+    let app_id = [1u8; 32];
+    // MAX_PATH_COMPONENT_BYTES = 256: exactly at the limit is fine.
+    let at_limit = "a".repeat(256);
+    let path = app_data_path(&app_id, &at_limit).expect("256-byte segment is accepted");
+    let expected =
+        Path::from_slices(&[APPS_COMPONENT, &app_id, at_limit.as_bytes()]).expect("path");
+    assert_eq!(path, expected);
+}
+
+#[test]
+fn too_many_key_segments_are_rejected() {
+    let app_id = [1u8; 32];
+    // 2 fixed components (apps, app_id) + 63 segments = 65 > MAX_PATH_COMPONENTS = 64.
+    let key = ["a"; 63].join("/");
+    assert_eq!(
+        app_data_path(&app_id, &key),
+        Err(AppsError::TooManyPathComponents)
+    );
+}
+
+#[test]
+fn total_path_bytes_over_the_limit_are_rejected() {
+    let app_id = [1u8; 32];
+    // Ten 250-byte segments: each under MAX_PATH_COMPONENT_BYTES and only 12
+    // components, but 4 + 32 + 2500 = 2536 > MAX_PATH_TOTAL_BYTES = 2048.
+    let segment = "a".repeat(250);
+    let key = [segment.as_str(); 10].join("/");
+    assert_eq!(app_data_path(&app_id, &key), Err(AppsError::PathTooLong));
+}
+
+#[test]
 fn build_app_data_entry_signs_under_authors_own_namespace_and_subspace() {
     let author = generate_communal_author().expect("author");
     let app_id = [9u8; 32];
