@@ -277,7 +277,9 @@ mod tests {
         let sealed = author.seal_identity(&key).unwrap();
 
         assert_eq!(sealed.len(), SEALED_IDENTITY_BYTES);
-        assert_ne!(&sealed[32..64], author.subspace_secret.as_bytes());
+        assert!(sealed
+            .windows(32)
+            .all(|window| window != author.subspace_secret.as_bytes()));
         assert_eq!(
             EvidenceAuthor::open_sealed_identity(&key, &sealed)
                 .unwrap()

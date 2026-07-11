@@ -377,7 +377,7 @@ fn exported_mobile_surface_does_not_publish_key_material_or_willow_generics() {
 
 #[test]
 fn sealed_identity_restores_the_same_signer_and_keeps_it_when_reattaching_its_space() {
-    let profile = profile_with_space();
+    let profile = open_local_profile().unwrap();
     let space = profile
         .create_public_space("Durable identity".into())
         .unwrap();
@@ -417,9 +417,19 @@ fn sealed_identity_rejects_wrong_keys_tampering_truncation_and_invalid_key_lengt
         open_profile_from_sealed_identity(vec![0x11; 32], sealed[..sealed.len() - 1].to_vec()),
         Err(MobileError::InvalidInput)
     ));
+    let mut oversized = sealed.clone();
+    oversized.push(0);
+    assert!(matches!(
+        open_profile_from_sealed_identity(vec![0x11; 32], oversized),
+        Err(MobileError::InvalidInput)
+    ));
     for invalid_key in [vec![], vec![0; 31], vec![0; 33]] {
         assert!(matches!(
-            profile.seal_identity(invalid_key),
+            profile.seal_identity(invalid_key.clone()),
+            Err(MobileError::InvalidInput)
+        ));
+        assert!(matches!(
+            open_profile_from_sealed_identity(invalid_key, sealed.clone()),
             Err(MobileError::InvalidInput)
         ));
     }
