@@ -11,7 +11,7 @@
 use std::sync::{Arc, Mutex};
 
 use crate::import::bundle::{decode_bundle, BundleDecodeOutcome, BundleRejection, ItemStatus};
-use crate::import::join::{plan_join, JoinEffect, JoinState};
+use crate::import::join::{plan_join, JoinEffect, JoinState, STORE_CHARGE_ENTRY_BYTES};
 use crate::willow::{decode_capability_canonic, decode_entry_canonic, AuthorisationToken, EntryId};
 use willow25::authorisation::PossiblyAuthorisedEntry;
 
@@ -36,6 +36,34 @@ const RETAINED_STORE_BUDGET_BYTES: u64 = 16_777_216;
 /// `namespace_views` from fixtures/manifest.json: the most distinct Willow
 /// namespaces one store may ever observe.
 const MAX_NAMESPACE_VIEWS: usize = 64;
+/// `retained_preview_output_bytes` from fixtures/manifest.json: bounds a
+/// live preview and its active plan's own retained bytes for their
+/// lifetime — a *separate* budget from the store's permanent one, since a
+/// caller can `inspect()`/`plan()` without ever committing.
+const PREVIEW_OUTPUT_BUDGET_BYTES: u64 = 2_097_152;
+/// `plan_tombstone_bytes` from fixtures/manifest.json: charged once per
+/// retained terminal record in `plan_tombstones`.
+const PLAN_TOMBSTONE_BYTES: u64 = 256;
+
+/// Retained bytes for one set of preview/plan entries plus their route: the
+/// same per-entry index charge used by the store (there is no separate
+/// manifest constant for preview entries), on top of each entry's actual
+/// canonical size, plus the route string's own bytes.
+fn preview_output_entries_charge_bytes(entries: &[VerifiedEntry], route_len: usize) -> u64 {
+    entries
+        .iter()
+        .map(|v| STORE_CHARGE_ENTRY_BYTES + v.entry_bytes_len as u64)
+        .sum::<u64>()
+        + route_len as u64
+}
+
+/// Would a preview/plan pair with this much combined retained-entry/route
+/// charge, plus `plan_tombstones.len() * PLAN_TOMBSTONE_BYTES`, exceed the
+/// 2 MiB preview-output budget? Pure arithmetic, exactly testable at the
+/// boundary — same pattern as `store_charge_exceeds_budget`.
+fn preview_output_exceeds_budget(charge_bytes: u64) -> bool {
+    charge_bytes > PREVIEW_OUTPUT_BUDGET_BYTES
+}
 
 /// Would committing a receipt that charges `receipt_charge_delta` bytes
 /// (per-row overhead, digest references, and the receipt's own route bytes),
@@ -208,6 +236,9 @@ struct StoreState {
 struct VerifiedEntry {
     authorised: willow25::authorisation::AuthorisedEntry,
     entry_id: EntryId,
+    /// Canonical entry byte length, captured once at verification time so
+    /// preview-output charging never needs to re-encode.
+    entry_bytes_len: usize,
 }
 
 struct PreviewState {
@@ -464,9 +495,21 @@ impl EvidenceStore {
                 verified.push(VerifiedEntry {
                     authorised,
                     entry_id: valid.entry_id,
+                    entry_bytes_len: item.frame.entry_bytes().len(),
                 });
             }
             // Ineligible items are simply not carried into the preview.
+        }
+
+        // A live preview retains its verified entries and route for its
+        // whole lifetime, independent of whether it is ever committed; that
+        // retained cost must be bounded on its own, separately from the
+        // store's permanent budget.
+        if preview_output_exceeds_budget(preview_output_entries_charge_bytes(
+            &verified,
+            context.route.len(),
+        )) {
+            return Err(SessionError::StoreFull);
         }
 
         let store = st.store.as_ref().unwrap();
@@ -624,6 +667,21 @@ impl ImportPreview {
             }
             (entries, p.route.clone(), p.base_generation)
         };
+        // The new plan retains its own copy of the selected entries plus a
+        // route, on top of the still-live preview's own retained copy;
+        // superseding the current plan (if any) adds one more tombstone.
+        // All of it counts against the same preview-output budget.
+        let prospective_tombstones = st.plan_tombstones.len() + usize::from(st.plan.is_some());
+        let preview_charge = {
+            let p = st.preview.as_ref().unwrap();
+            preview_output_entries_charge_bytes(&p.entries, p.route.len())
+        };
+        let plan_charge = preview_output_entries_charge_bytes(&entries, route.len());
+        if preview_output_exceeds_budget(
+            preview_charge + plan_charge + prospective_tombstones as u64 * PLAN_TOMBSTONE_BYTES,
+        ) {
+            return Err(SessionError::StoreFull);
+        }
         let plan_id = st.alloc_id();
         st.preview.as_mut().unwrap().issued_plans += 1;
         supersede_active_plan(&mut st);
@@ -899,7 +957,18 @@ fn plan_terminal_error(st: &SessionState, plan_id: u64) -> SessionError {
 
 #[cfg(test)]
 mod charge_budget_tests {
-    use super::{store_charge_exceeds_budget, RETAINED_STORE_BUDGET_BYTES};
+    use super::{
+        preview_output_exceeds_budget, store_charge_exceeds_budget, PREVIEW_OUTPUT_BUDGET_BYTES,
+        RETAINED_STORE_BUDGET_BYTES,
+    };
+
+    #[test]
+    fn preview_output_exceeds_budget_holds_the_exact_ceiling_and_rejects_one_byte_over() {
+        assert!(!preview_output_exceeds_budget(PREVIEW_OUTPUT_BUDGET_BYTES));
+        assert!(preview_output_exceeds_budget(
+            PREVIEW_OUTPUT_BUDGET_BYTES + 1
+        ));
+    }
 
     #[test]
     fn store_charge_exceeds_budget_holds_the_exact_ceiling_and_rejects_one_byte_over() {

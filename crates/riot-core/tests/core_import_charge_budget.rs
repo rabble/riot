@@ -204,29 +204,61 @@ fn core_import_charge_budget_pruning_keeps_seen_index_charge_but_drops_live_entr
 }
 
 #[test]
-fn core_import_charge_budget_oversized_route_trips_the_budget() {
+fn core_import_charge_budget_oversized_route_is_rejected_at_inspect_by_the_preview_output_budget() {
     let a = author();
     let session = RiotSession::open().unwrap();
     let store = session.create_store().unwrap();
-    let huge_route = "x".repeat(17 * 1024 * 1024); // 17 MiB, over the 16 MiB budget alone
-    let plan = store
-        .inspect(
-            &bundle(&[signed(&a, 3, 1, 100)]),
-            ImportContext::new(&huge_route),
-        )
-        .unwrap()
-        .expect_preview()
-        .plan_all()
-        .unwrap();
+    // Over the 2 MiB preview-output budget alone (and thus also over the 16
+    // MiB store budget, but the smaller preview-output budget is the one
+    // that actually binds here, since inspect() checks before any preview
+    // or plan is ever created).
+    let huge_route = "x".repeat(3 * 1024 * 1024);
 
-    assert_eq!(plan.commit(), Err(SessionError::StoreFull));
+    let result = store.inspect(
+        &bundle(&[signed(&a, 3, 1, 100)]),
+        ImportContext::new(&huge_route),
+    );
+
+    assert_eq!(result.err(), Some(SessionError::StoreFull));
     assert_eq!(
         store.retained_store_charge_bytes_for_conformance().unwrap(),
         0,
-        "a rejected commit must not retain any partial charge"
+        "a rejected inspect must not retain any preview, plan, or store charge"
     );
     assert_eq!(store.generation().unwrap(), 0);
     assert_eq!(store.live_count().unwrap(), 0);
+}
+
+#[test]
+fn core_import_charge_budget_plan_is_rejected_when_its_own_retained_copy_would_exceed_the_budget() {
+    let a = author();
+    let session = RiotSession::open().unwrap();
+    let store = session.create_store().unwrap();
+    // A route just over half the 2 MiB preview-output budget: the preview
+    // alone (one retained copy of the route) stays comfortably under
+    // budget, so inspect() succeeds. But plan() retains its own *second*
+    // copy of the same route (PlanState.route is a separate clone from
+    // PreviewState.route), so the combined preview+plan charge exceeds the
+    // budget even though neither copy alone would. This proves plan()
+    // checks the budget itself rather than only trusting inspect()'s
+    // earlier, narrower check.
+    let route = "x".repeat(1_200_000);
+    let preview = store
+        .inspect(
+            &bundle(&[signed(&a, 4, 1, 100)]),
+            ImportContext::new(&route),
+        )
+        .unwrap()
+        .expect_preview();
+
+    let result = preview.plan_all();
+
+    assert_eq!(result.err(), Some(SessionError::StoreFull));
+    assert_eq!(
+        store.retained_store_charge_bytes_for_conformance().unwrap(),
+        0,
+        "a rejected plan must not retain any store charge (nothing was committed)"
+    );
 }
 
 #[test]

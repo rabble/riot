@@ -27,7 +27,7 @@ const MAX_REFERENCES: usize = 1_024;
 /// entry is accepted (mirrors the permanent `seen`/`first_receipt` index
 /// growth), separately from the entry's own canonical bytes, which are only
 /// retained — and only charged — while the entry is live.
-const STORE_CHARGE_ENTRY_BYTES: u64 = 512;
+pub(crate) const STORE_CHARGE_ENTRY_BYTES: u64 = 512;
 
 /// A bounded join could not represent the complete result without exceeding
 /// one of its fixed ceilings. No partial plan is produced for this condition.
