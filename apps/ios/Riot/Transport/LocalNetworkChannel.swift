@@ -32,7 +32,11 @@ public struct LocalEndpoint: Equatable, Sendable {
 }
 
 public final class LocalTCPFrameChannel: FrameChannel, @unchecked Sendable {
-    public var onReceive: ((Data) -> Void)?
+    public var onReceive: ((Data) -> Void)? {
+        get { inbox.onReceive }
+        set { inbox.onReceive = newValue }
+    }
+    private let inbox = BoundedFrameInbox()
     private let connection: NWConnection
     private let queue = DispatchQueue(label: "net.protest.riot.local-tcp")
     private var decoder = FrameDecoder()
@@ -43,7 +47,7 @@ public final class LocalTCPFrameChannel: FrameChannel, @unchecked Sendable {
     }
 
     public func send(_ frame: Data) throws {
-        connection.send(content: FrameDecoder.encode(frame), completion: .contentProcessed { _ in })
+        connection.send(content: try FrameDecoder.encode(frame), completion: .contentProcessed { _ in })
     }
 
     public func disconnect() {
@@ -55,7 +59,10 @@ public final class LocalTCPFrameChannel: FrameChannel, @unchecked Sendable {
             guard let self else { return }
             if let data {
                 if let frames = try? self.decoder.append(data) {
-                    frames.forEach { self.onReceive?($0) }
+                    for frame in frames where !self.inbox.receive(frame) {
+                        self.disconnect()
+                        return
+                    }
                 }
             }
             if error == nil && !complete { self.receiveNext() }
@@ -86,8 +93,7 @@ public final class LocalTCPFrameChannel: FrameChannel, @unchecked Sendable {
         }
         connection.start(queue: queue)
         queue.asyncAfter(deadline: .now() + timeout) {
-            finish.call(nil)
-            connection.cancel()
+            if finish.call(nil) { connection.cancel() }
         }
     }
 }
@@ -96,6 +102,8 @@ public final class LocalNetworkListener: @unchecked Sendable {
     public var onAccepted: ((LocalTCPFrameChannel) -> Void)?
     private let queue = DispatchQueue(label: "net.protest.riot.local-listener")
     private var listener: NWListener?
+    private let admissionLock = NSLock()
+    private var accepted = false
 
     public init() {}
 
@@ -108,8 +116,14 @@ public final class LocalNetworkListener: @unchecked Sendable {
             self.listener = listener
             listener.newConnectionHandler = { [weak self] connection in
                 guard let self else { return }
+                self.admissionLock.lock()
+                let shouldAccept = !self.accepted
+                self.accepted = true
+                self.admissionLock.unlock()
+                guard shouldAccept else { connection.cancel(); return }
                 connection.start(queue: self.queue)
                 self.onAccepted?(LocalTCPFrameChannel(connection: connection))
+                listener.cancel()
             }
             listener.stateUpdateHandler = { state in
                 if case .ready = state, let port = listener.port, let host = Self.localIPv4Address() {
@@ -155,11 +169,13 @@ private final class OneShotCompletion: @unchecked Sendable {
         self.completion = completion
     }
 
-    func call(_ channel: LocalTCPFrameChannel?) {
+    @discardableResult
+    func call(_ channel: LocalTCPFrameChannel?) -> Bool {
         lock.lock()
         let callback = completion
         completion = nil
         lock.unlock()
         callback?(channel)
+        return callback != nil
     }
 }

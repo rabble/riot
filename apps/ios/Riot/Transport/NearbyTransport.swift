@@ -1,5 +1,10 @@
 import Foundation
 
+enum NearbyLimits {
+    static let maxFrameBytes = (8 * 1024 * 1024) + 128
+    static let maxPendingFrames = 64
+}
+
 public enum NearbyRoute: CaseIterable, Hashable, Sendable {
     case localNetwork
     case bluetooth
@@ -26,6 +31,54 @@ public protocol FrameChannel: AnyObject {
     var onReceive: ((Data) -> Void)? { get set }
     func send(_ frame: Data) throws
     func disconnect()
+}
+
+final class BoundedFrameInbox {
+    private let lock = NSLock()
+    private var receiver: ((Data) -> Void)?
+    private var pending: [Data] = []
+    private var pendingBytes = 0
+    private var failed = false
+
+    var onReceive: ((Data) -> Void)? {
+        get {
+            lock.lock()
+            let value = receiver
+            lock.unlock()
+            return value
+        }
+        set {
+            lock.lock()
+            receiver = newValue
+            let queued = newValue != nil && !failed ? pending : []
+            if !queued.isEmpty { pending.removeAll(); pendingBytes = 0 }
+            lock.unlock()
+            if let newValue { queued.forEach(newValue) }
+        }
+    }
+
+    @discardableResult
+    func receive(_ frame: Data) -> Bool {
+        lock.lock()
+        guard !failed else { lock.unlock(); return false }
+        if let receiver {
+            lock.unlock()
+            receiver(frame)
+            return true
+        }
+        guard pending.count < NearbyLimits.maxPendingFrames,
+              pendingBytes + frame.count <= NearbyLimits.maxFrameBytes else {
+            failed = true
+            pending.removeAll()
+            pendingBytes = 0
+            lock.unlock()
+            return false
+        }
+        pending.append(frame)
+        pendingBytes += frame.count
+        lock.unlock()
+        return true
+    }
 }
 
 public final class NearbyConnection {
@@ -84,7 +137,11 @@ public final class NearbyConnection {
 }
 
 public final class LoopbackFrameChannel: FrameChannel {
-    public var onReceive: ((Data) -> Void)?
+    public var onReceive: ((Data) -> Void)? {
+        get { inbox.onReceive }
+        set { inbox.onReceive = newValue }
+    }
+    private let inbox = BoundedFrameInbox()
     private weak var other: LoopbackFrameChannel?
     private var connected = true
 
@@ -98,7 +155,10 @@ public final class LoopbackFrameChannel: FrameChannel {
 
     public func send(_ frame: Data) throws {
         guard connected, let other, other.connected else { throw NearbyTransportError.disconnected }
-        other.onReceive?(frame)
+        guard other.inbox.receive(frame) else {
+            other.connected = false
+            throw NearbyTransportError.disconnected
+        }
     }
 
     public func disconnect() {

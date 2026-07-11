@@ -88,7 +88,7 @@ final class TransportContractTests: XCTestCase {
 
     func testManyMTUChunksReassembleOneLargeFrameWithoutReordering() throws {
         let payload = Data((0..<8_192).map { UInt8($0 % 251) })
-        let encoded = FrameDecoder.encode(payload)
+        let encoded = try FrameDecoder.encode(payload)
         var decoder = FrameDecoder()
         var decoded: [Data] = []
 
@@ -156,6 +156,42 @@ final class TransportContractTests: XCTestCase {
 
         XCTAssertThrowsError(try adapter.acceptImport())
         XCTAssertFalse(backend.didAccept)
+    }
+
+    func testFramesArrivingBeforeReceiverRegistrationDeliverExactlyOnceInOrder() throws {
+        let channels = LoopbackFrameChannel.pair()
+        let expected = [Data([1]), Data([2]), Data([3])]
+        for frame in expected { try channels.first.send(frame) }
+        var received: [Data] = []
+
+        channels.second.onReceive = { received.append($0) }
+
+        XCTAssertEqual(received, expected)
+    }
+
+    func testPreRegistrationInboxOverflowFailsClosed() throws {
+        let channels = LoopbackFrameChannel.pair()
+        for value in 0..<64 { try channels.first.send(Data([UInt8(value)])) }
+
+        XCTAssertThrowsError(try channels.first.send(Data([255])))
+        var received: [Data] = []
+        channels.second.onReceive = { received.append($0) }
+        XCTAssertTrue(received.isEmpty)
+    }
+
+    func testLargeBLEWriteUsesOneStreamingCursorInsteadOfExpandedChunkQueue() {
+        let encoded = Data(repeating: 7, count: NearbyLimits.maxFrameBytes)
+        var cursor = BLEWriteCursor(data: encoded)
+
+        XCTAssertEqual(cursor.remainingCount, encoded.count)
+        XCTAssertEqual(cursor.nextChunk(limit: 20), Data(repeating: 7, count: 20))
+        XCTAssertEqual(cursor.remainingCount, encoded.count - 20)
+        XCTAssertFalse(cursor.isComplete)
+    }
+
+    func testFrameEncoderRejectsAnythingBeyondCoreProtocolLimit() throws {
+        XCTAssertNoThrow(try FrameDecoder.encode(Data(count: NearbyLimits.maxFrameBytes)))
+        XCTAssertThrowsError(try FrameDecoder.encode(Data(count: NearbyLimits.maxFrameBytes + 1)))
     }
 }
 

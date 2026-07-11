@@ -133,6 +133,7 @@ public final class NearbyTransportController: ObservableObject {
 
     private func finishRouteSelection(bluetooth: FrameChannel, local: FrameChannel?) {
         guard nearbyConnection == nil else { return }
+        listener?.stop()
         let connection = NearbyConnection(bluetooth: bluetooth) { local }
         connection.confirmPairing()
         do {
