@@ -1,8 +1,9 @@
 # Willow Visual Documentation System
 
 Date: 2026-07-11
-Status: Approved in brainstorming; design review blocked after round 3 pending
-security/governance decision
+Status: Approved for implementation by human override on 2026-07-12 after
+three design-review rounds (Product, Architecture, Documentation UX, and CTO
+approved; remaining security governance requirements retained as known risks)
 
 ## Purpose
 
@@ -153,6 +154,36 @@ The README and all other primers link to that document using a stable
 - Encrypted Willow techniques and Riot's separate private-group design;
 - the distinction between final protocol foundations and provisional sync
   specifications.
+
+## Marketing Site Companion
+
+The public static marketing site receives the same Authority → Movement →
+Convergence explanation in audience-facing language. It is not subject to the
+repeated technical-document primer grammar, but it uses the same three official
+Willow illustrations, locally vendored assets, direct protocol links, maturity
+labels, alt text, and attribution.
+
+The section appears immediately before the existing “For the technically
+curious” material so the visual story introduces the deeper protocol copy. Its
+three cards use the approved clean white treatment with hard ink borders inside
+Riot's existing poster/zine design; no tan card fill is added. On narrow screens
+the cards stack in Authority, Movement, Convergence order without horizontal
+scrolling.
+
+`marketing/index.html` and `marketing/public/index.html` remain byte-identical.
+Only `marketing/public/` is deployed by Wrangler, so the three primer images and
+license/attribution notice are copied under
+`marketing/public/assets/willow/`; the same exact files live in the source-side
+`marketing/assets/willow/`. Validation requires matching SHA-256 values across
+the documentation and both marketing copies.
+
+The site remains static and makes no Willow network requests. Updating checked-
+in source does not update the existing deployment automatically. After local
+tests and visual review, publish with the existing Wrangler worker configuration
+to `riot-protest-net-marketing.protestnet.workers.dev`, record the returned
+version, and verify the live HTML and asset hashes. Publishing to the custom
+`riot.protest.net` hostname remains outside this design until the gateway
+runbook's DNS/TLS and edge-policy prerequisites are satisfied.
 
 ## Repeated Visual Prologue
 
