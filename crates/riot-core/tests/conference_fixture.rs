@@ -75,6 +75,22 @@ fn decode_hex(value: &str, expected_len: usize, label: &str) -> Vec<u8> {
         .collect()
 }
 
+fn decode_hex_any_length(value: &str, label: &str) -> Vec<u8> {
+    assert_eq!(
+        value.len() % 2,
+        0,
+        "{label} must be an even-length hexadecimal string"
+    );
+    assert!(
+        value.bytes().all(|byte| byte.is_ascii_hexdigit()),
+        "{label} must be hexadecimal"
+    );
+    (0..value.len())
+        .step_by(2)
+        .map(|index| u8::from_str_radix(&value[index..index + 2], 16).expect("validated hex"))
+        .collect()
+}
+
 fn is_normalized_site_route(route: &str) -> bool {
     let Some(path) = route.strip_prefix("/site/") else {
         return false;
@@ -161,7 +177,7 @@ fn canonical_fixture_bytes(fixture: &Value) -> Vec<u8> {
         encoder.u8(4)?.array(entries.len() as u64)?;
         for entry in entries {
             let entry = object(entry, "entry");
-            encoder.map(8)?;
+            encoder.map(10)?;
             encoder.u8(0)?.str(string(entry, "kind"))?;
             encoder.u8(1)?.bytes(&decode_hex(
                 string(entry, "willow_entry_id"),
@@ -180,9 +196,17 @@ fn canonical_fixture_bytes(fixture: &Value) -> Vec<u8> {
                 .u8(6)?
                 .bool(bool_value(entry, "ai_assisted_draft"))?;
             encoder.u8(7)?.bytes(&decode_hex(
-                string(entry, "opaque_package_shape_placeholder_not_a_signature"),
+                string(entry, "signature"),
                 64,
-                "entry.opaque_package_shape_placeholder_not_a_signature",
+                "entry.signature",
+            ))?;
+            encoder.u8(8)?.bytes(&decode_hex_any_length(
+                string(entry, "willow_entry_bytes"),
+                "entry.willow_entry_bytes",
+            ))?;
+            encoder.u8(9)?.bytes(&decode_hex_any_length(
+                string(entry, "willow_capability_bytes"),
+                "entry.willow_capability_bytes",
             ))?;
         }
         encoder.u8(5)?.array(routes.len() as u64)?;
@@ -278,7 +302,9 @@ fn conference_fixture_freezes_a_public_deterministic_incident_package() {
                 "body",
                 "created_at",
                 "ai_assisted_draft",
-                "opaque_package_shape_placeholder_not_a_signature",
+                "signature",
+                "willow_entry_bytes",
+                "willow_capability_bytes",
             ],
             "entry",
         );
@@ -297,10 +323,11 @@ fn conference_fixture_freezes_a_public_deterministic_incident_package() {
             author_ids.contains(&author),
             "entry author must be one of the two fixture authors"
         );
-        decode_hex(
-            string(entry, "opaque_package_shape_placeholder_not_a_signature"),
-            64,
-            "entry.opaque_package_shape_placeholder_not_a_signature",
+        decode_hex(string(entry, "signature"), 64, "entry.signature");
+        decode_hex_any_length(string(entry, "willow_entry_bytes"), "entry.willow_entry_bytes");
+        decode_hex_any_length(
+            string(entry, "willow_capability_bytes"),
+            "entry.willow_capability_bytes",
         );
         ai_assisted_drafts += usize::from(bool_value(entry, "ai_assisted_draft"));
     }
