@@ -3,6 +3,7 @@ import SwiftUI
 
 public enum RiotDestination: String, CaseIterable, Identifiable, Sendable {
     case spaces
+    case directory
     case board
     case compose
     case importPreview
@@ -15,6 +16,7 @@ public enum RiotDestination: String, CaseIterable, Identifiable, Sendable {
     public var title: String {
         switch self {
         case .spaces: "Spaces"
+        case .directory: "App directory"
         case .board: "Incident board"
         case .compose: "Compose & sign"
         case .importPreview: "Import preview"
@@ -25,6 +27,7 @@ public enum RiotDestination: String, CaseIterable, Identifiable, Sendable {
     public var tabTitle: String {
         switch self {
         case .spaces: "Spaces"
+        case .directory: "Apps"
         case .board: "Board"
         case .compose: "Compose"
         case .importPreview: "Import"
@@ -35,6 +38,7 @@ public enum RiotDestination: String, CaseIterable, Identifiable, Sendable {
     public var systemImage: String {
         switch self {
         case .spaces: "square.stack.3d.up"
+        case .directory: "square.grid.2x2"
         case .board: "exclamationmark.bubble"
         case .compose: "square.and.pencil"
         case .importPreview: "tray.and.arrow.down"

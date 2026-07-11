@@ -10,7 +10,7 @@ final class RiotTabNavigationUITests: XCTestCase {
             alert.buttons.firstMatch.tap()
         }
 
-        let tabs = ["Spaces", "Board", "Compose", "Import", "Connect"]
+        let tabs = ["Spaces", "Apps", "Board", "Compose", "Import", "Connect"]
         for tab in tabs {
             let button = app.buttons[tab]
             XCTAssertTrue(button.waitForExistence(timeout: 5), "\(tab) tab button should exist")

@@ -2,14 +2,21 @@ import XCTest
 @testable import RiotKit
 
 final class ShellNavigationTests: XCTestCase {
-    func testConferenceShellExposesOnlyTheFivePlannedSurfaces() {
+    func testConferenceShellExposesOnlyTheSixPlannedSurfaces() {
         XCTAssertEqual(
             RiotDestination.phoneTabs.map(\.title),
-            ["Spaces", "Incident board", "Compose & sign", "Import preview", "Connection"]
+            [
+                "Spaces",
+                "App directory",
+                "Incident board",
+                "Compose & sign",
+                "Import preview",
+                "Connection",
+            ]
         )
         XCTAssertEqual(
             RiotDestination.phoneTabs.map(\.tabTitle),
-            ["Spaces", "Board", "Compose", "Import", "Connect"]
+            ["Spaces", "Apps", "Board", "Compose", "Import", "Connect"]
         )
     }
 

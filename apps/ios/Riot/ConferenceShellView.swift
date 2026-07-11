@@ -45,6 +45,7 @@ struct ConferenceShellView: View {
     private func destinationView(_ destination: RiotDestination) -> some View {
         switch destination {
         case .spaces: SpacesView(model: model)
+        case .directory: AppDirectoryTab(model: model)
         case .board: IncidentBoardView(model: model)
         case .compose: ComposeReviewSignView(model: model)
         case .importPreview: ImportPreviewView(model: model)
@@ -159,48 +160,28 @@ private struct SpacesView: View {
     }
 }
 
-/// The organizer's trust-decision moment for one app, in plain language — never
-/// the words bundle, signature, namespace, or sync. Approving trusts the app for
-/// everyone in the space.
-private struct AppReviewSheet: View {
-    @Environment(\.colorScheme) private var colorScheme
-    let app: RiotSpaceApp
-    let onApprove: () -> Void
-    let onCancel: () -> Void
+/// Hosts the app directory and, on top of it, the runtime for an app opened from
+/// there. `AppRuntimeView` re-checks trust as it mounts, so an "Open" the
+/// directory offered a moment ago still cannot run an app whose trust was
+/// withdrawn in between.
+private struct AppDirectoryTab: View {
+    @ObservedObject var model: RiotAppModel
+    @State private var running: RiotSpaceApp?
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
-                Text(app.name)
-                    .font(.riot(.poster, size: 32, relativeTo: .largeTitle))
-                    .foregroundStyle(RiotTheme.ink(for: colorScheme))
-                Text(app.description)
-                    .font(.riot(.body, size: 17, relativeTo: .body))
-                    .foregroundStyle(RiotTheme.ink(for: colorScheme))
-                RiotCard {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("This app can")
-                            .font(.riot(.mono, size: 12, relativeTo: .caption))
-                            .textCase(.uppercase)
-                            .tracking(1)
-                            .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
-                        ForEach(app.permissions, id: \.self) { permission in
-                            Text(permission)
-                                .font(.riot(.body, size: 15, relativeTo: .body))
-                                .foregroundStyle(RiotTheme.ink(for: colorScheme))
-                        }
-                    }
+        DirectoryView(model: model, onOpen: { running = $0 })
+            .fullScreenCover(item: $running) { app in
+                if let repository = model.profileRepository {
+                    AppRuntimeView(
+                        repository: repository,
+                        appIDHex: app.appIDHex,
+                        appName: app.name,
+                        onClose: { running = nil }
+                    )
+                } else {
+                    Color.clear.onAppear { running = nil }
                 }
-                Button("Let everyone in this space use this") { onApprove() }
-                    .buttonStyle(.riotPrimary)
-                    .accessibilityIdentifier("approve-app")
-                Button("Not now") { onCancel() }
-                    .buttonStyle(.riotSecondary)
             }
-            .padding(20)
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
-        .background(RiotTheme.paper(for: colorScheme).ignoresSafeArea())
     }
 }
 

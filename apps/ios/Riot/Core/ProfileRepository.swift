@@ -149,7 +149,7 @@ public final class RiotProfileRepository {
     /// Insertion-ordered registry of installed apps (like Android's
     /// LinkedHashMap-backed `InstalledAppsStore`), keyed for lookup by
     /// lowercased hex app id.
-    private let installedApps: [InstalledApp]
+    private let installed: [InstalledApp]
     private var persisted: PersistedProfile
 
     public var currentSpace: RiotSpace? { persisted.space }
@@ -159,14 +159,14 @@ public final class RiotProfileRepository {
         storage: ProtectedProfileStorage,
         keyStore: WrappingKeyStore,
         appRuntime: AppRuntimeSession,
-        installedApps: [InstalledApp],
+        installed: [InstalledApp],
         persisted: PersistedProfile
     ) {
         self.profile = profile
         self.storage = storage
         self.keyStore = keyStore
         self.appRuntime = appRuntime
-        self.installedApps = installedApps
+        self.installed = installed
         self.persisted = persisted
     }
 
@@ -233,7 +233,7 @@ public final class RiotProfileRepository {
             storage: storage,
             keyStore: keyStore,
             appRuntime: appRuntime,
-            installedApps: installedApps,
+            installed: installedApps,
             persisted: persisted
         )
         if persisted.sealedIdentity == nil {
@@ -284,14 +284,24 @@ public final class RiotProfileRepository {
     /// Empty until a space is joined, matching `currentEntries()`.
     public func spaceApps() throws -> [RiotSpaceApp] {
         guard currentSpace != nil else { return [] }
-        return try installedApps.map { installed in
+        return try installedApps()
+    }
+
+    /// Every app whose bytes this profile actually holds, with its trust
+    /// decision — the directory's answer to "can I open this one?".
+    ///
+    /// Unlike `spaceApps()` this is deliberately not gated on a space existing:
+    /// the directory lists the built-ins before anyone has created one, and a
+    /// row must still be able to offer Review there.
+    public func installedApps() throws -> [RiotSpaceApp] {
+        try installed.map { app in
             RiotSpaceApp(
-                appIDHex: installed.record.appId,
-                name: installed.record.name,
-                description: installed.record.description,
-                version: installed.record.version,
-                permissions: installed.record.permissions,
-                trusted: try appRuntime.isAppTrusted(appId: installed.record.appId)
+                appIDHex: app.record.appId,
+                name: app.record.name,
+                description: app.record.description,
+                version: app.record.version,
+                permissions: app.record.permissions,
+                trusted: try appRuntime.isAppTrusted(appId: app.record.appId)
             )
         }
     }
@@ -370,7 +380,7 @@ public final class RiotProfileRepository {
 
     private func installedApp(appID: String) -> InstalledApp? {
         let target = appID.lowercased()
-        return installedApps.first { $0.record.appId.lowercased() == target }
+        return installed.first { $0.record.appId.lowercased() == target }
     }
 
     /// Installs one starter pair: Rust verifies the bytes, then we decode the
@@ -429,6 +439,42 @@ public enum RepositoryError: Error {
     case unknownApp
     case unknownAppResource
     case appBundleMismatch
+    case noCurrentSpace
+}
+
+// MARK: - App directory
+
+/// The repository is the storefront's port onto Rust. It only forwards: the
+/// directory is computed in the core on every call and never stored here, so a
+/// row that appears is a row Rust has verified.
+extension RiotProfileRepository: DirectoryPorting {
+    /// The computed directory: the starter catalog plus every verified app in
+    /// the live app-index, with trust and endorsement summaries.
+    public func directoryListings() throws -> [DirectoryListing] {
+        try appRuntime.directoryListings()
+    }
+
+    /// Writes (or withdraws) this profile's recommendation of an app. Endorsing
+    /// an app whose bytes have not arrived yet is allowed by design — the marker
+    /// composes with the app's later arrival.
+    public func endorseApp(appID: Data, note: String, retract: Bool) throws {
+        try appRuntime.endorseApp(appId: appID, note: note, retract: retract)
+    }
+
+    /// Passes an app on to the current space with this profile as carrier.
+    /// Sharing never turns the app on for anyone: the organizer on the other
+    /// side still makes their own decision.
+    public func shareApp(appID: Data) throws {
+        guard let space = persisted.space else { throw RepositoryError.noCurrentSpace }
+        try appRuntime.shareApp(
+            appId: appID,
+            space: PublicSpace(
+                namespaceId: space.namespaceID,
+                title: space.title,
+                isPublic: true
+            )
+        )
+    }
 }
 
 private extension RiotEntry {
