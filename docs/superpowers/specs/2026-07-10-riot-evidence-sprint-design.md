@@ -345,6 +345,8 @@ Callers may lower but never raise `CoreConfig` ceilings.
 | next transaction snapshot charge | 16 MiB, in addition to the bounded current store and retained input |
 | local inspection target | 2 seconds for the 8 MiB hostile fixture; a miss is measured FAIL/INCONCLUSIVE, never a security pass |
 
+Normatively, a live preview may issue at most 64 plans and each later preview starts a fresh 64-plan budget; while the parent remains live, superseded, closed, and committed child plans retain their exact terminal results, but replacing the preview consumes it and every child so all later old-handle actions return `PREVIEW_CONSUMED` ahead of any child terminal code, then releases that preview's tombstones, bounding retained records at 64 and imposing no session-wide plan cap.
+
 The retained-store charge counts every owned byte-buffer capacity plus conservative fixed charges of 512 bytes per accepted entry/index record, 256 bytes per namespace view, 256 bytes per receipt and receipt row, and 32 bytes per digest reference. Store collections allocate only after their count and byte charges fit; implementations may be more conservative but never undercharge these categories. All length/count/charge arithmetic is checked before allocation. Swift and Kotlin use capped reads of at most 8 MiB + 1 byte rather than trusting pre-read file metadata; Rust independently rechecks the byte ceiling. Every exact-boundary and one-over fixture, including namespace-view and digest-reference limits, must return its expected stable result without partial allocation or store mutation. `STORE_FULL` is decided while staging and before the pointer swap.
 
 ### Core gate fixtures

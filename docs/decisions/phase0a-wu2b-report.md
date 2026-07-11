@@ -3,7 +3,7 @@
 - **Status:** G2 CORE PASS / G2 FULL INCOMPLETE — transaction, explicit selection, and bounded plan-lifecycle semantics are proven; the remaining lifecycle-race, hostile-corpus, and conservative charge-admission matrix from Task 5 is not yet implemented. **Do not claim full G2 or start WU3 on this report alone.**
 - **Owning work unit:** WU2 (Task 5)
 - **Date:** 2026-07-10
-- **Elapsed agent-hours:** ~1.7 charged from WU2; ~1.7 remaining
+- **Elapsed agent-hours:** ~1.95 charged from WU2; ~1.45 remaining
 
 ## What is proven (transaction core)
 
@@ -32,13 +32,13 @@ Design details honoring the plan:
 
 ## WU2B continuation: selection and plan lifecycle
 
-Commit `3e790ee` (`feat: add bounded import plan lifecycle`) adds an explicit `ImportSelection`: a selection must be nonempty, unique, and eligible; invalid selections return typed errors without state change. A selected-only plan commits only its chosen entries. Plan issuance is capped at 64 for the whole session.
+Commit `3e790ee` (`feat: add bounded import plan lifecycle`) adds an explicit `ImportSelection`: a selection must be nonempty, unique, and eligible; invalid selections return typed errors without state change. A selected-only plan commits only its chosen entries. The canonical policy is a 64-plan budget for each live preview, not a session-wide plan cap; a later preview starts a fresh budget.
 
-The same single mutex arbiter records durable terminals: replacement produces `PlanSuperseded`, explicit close produces `PlanClosed`, and commit produces `PlanConsumed`. Those terminal codes remain observable after later replacement or preview activity. Closing a plan and creating a replacement plan make neither a receipt nor a store mutation. The inspection vector clone was removed.
+While a parent preview remains live, the same single mutex arbiter records durable child terminals: replacement by another plan produces `PlanSuperseded`, explicit close produces `PlanClosed`, and commit produces `PlanConsumed`, each retaining its exact result. Replacing the preview consumes it and every child plan; all later actions on old preview/plan handles return `PreviewConsumed`, which takes precedence over any child terminal code. That replacement releases the preview's tombstones, bounding retained records at 64. Closing a plan and creating a replacement plan make neither a receipt nor a store mutation. The inspection vector clone was removed.
 
 `2ab47a4` (`test: gate transaction suite on conformance`) is the prerequisite registration fix: the default workspace test run now correctly skips the conformance-only transaction integration target. Fresh independent evidence before `3e790ee`: `cargo test -p riot-core --features conformance` passed 74 tests; `cargo fmt --check`, `cargo check --workspace --all-targets --locked`, `cargo clippy --workspace --all-targets -- -D warnings`, and `git diff --check` all passed. The earlier generic workspace command is now green because of `2ab47a4`.
 
-Review/repair loop: the initial spec review failed on tombstone eviction and missing state-preservation coverage; a RED regression and repair preceded a passing fresh spec review. The initial quality review found unbounded terminal storage; the repair changed the cap to session-wide 64 and removed the inspection vector clone, then fresh quality re-review approved.
+Commit `3b719b3` (`fix: scope import plans to previews`) repairs a specification ambiguity: it replaces the session-wide interpretation with the canonical per-preview policy, parent-consumption precedence, and replacement-time tombstone release. The repair followed TDD and fresh independent spec and quality approval; `cargo test -p riot-core --features conformance` passed 75 tests. This repairs policy clarity and bounded retention only; it does not satisfy the remaining full-G2 blockers below.
 
 ## What is NOT yet done (remaining Task 5 obligations before full G2)
 

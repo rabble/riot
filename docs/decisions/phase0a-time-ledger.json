@@ -178,12 +178,31 @@
       ],
       "source": "fresh conformance and locked workspace verification before 3e790ee",
       "note": "Aggregate swarm implementation/review time. The initial spec review found tombstone eviction and missing state-preservation coverage; a RED regression and repair passed fresh spec review. Initial quality review found unbounded terminal storage; the repair imposed the session-wide 64-plan cap and removed the inspection vector clone, then fresh quality re-review approved. Full G2 remains blocked by lifecycle races, JoinPlan/conservative charge admission with exact bounds, and hostile corpus/panic quarantine."
+    },
+    {
+      "work_unit": "WU2B partial policy repair (per-preview plans)",
+      "status": "partial",
+      "reported_actual_hours": 0.25,
+      "charged_hours": 0.25,
+      "commits": [
+        "3b719b3"
+      ],
+      "evidence_paths": [
+        "crates/riot-core/src/session.rs",
+        "crates/riot-core/tests/core_import_lifecycle.rs",
+        "crates/riot-core/tests/core_import_transaction.rs",
+        "docs/superpowers/specs/2026-07-10-riot-evidence-sprint-design.md",
+        "docs/superpowers/plans/2026-07-10-riot-phase0a-public-kernel.md",
+        "docs/decisions/phase0a-wu2b-report.md"
+      ],
+      "source": "commit 3b719b3 and fresh independent spec/quality approval",
+      "note": "Spec-ambiguity repair: 64 plans per live preview, parent-consumption precedence, and replacement-time tombstone release; TDD and 75 conformance tests. Full G2 remains blocked by the recorded Task 5 matrix."
     }
   ],
   "totals": {
-    "charged_hours": 8.05,
+    "charged_hours": 8.30,
     "reserved_g0_g1_repair_hours": 0.0,
-    "reserved_wu2_hours": 1.7,
+    "reserved_wu2_hours": 1.45,
     "reserved_wu3_hours": 4.0,
     "reserved_contingency_hours": 0.25,
     "reserved_wu4_hours": 2.0
