@@ -15,18 +15,22 @@
 ## Before you start
 
 1. Run `git status --short` and read `COLLABORATION.md`. This checkout is shared with other active agents. Claim the files of the task you are starting in `COLLABORATION.md` before editing.
-2. **Dependency gate:** Tasks 1–4 are independent and can start now. Tasks 5–10 require the core platform plan (`docs/superpowers/plans/2026-07-11-signed-js-apps-core-platform.md`) Tasks 5–6 (`AppDataBridge`, `apps_ffi.rs`) to be **committed**. Check `git log --oneline` for `feat(apps): add AppDataBridge` and `feat(ffi): expose signed JS apps bridge` (titles may vary — look for `crates/riot-core/src/apps/bridge.rs` and `crates/riot-ffi/src/apps_ffi.rs` existing). If they haven't landed, do Tasks 1–4, then stop and hand off rather than duplicating the other agent's claimed work.
-3. iOS tasks (6–10) need the native prerequisites from `apps/ios/README.md`: run `scripts/conference/build-native-core.sh` from the repo root after any FFI change, before building the Xcode project.
+2. **Reconciliation (2026-07-11, after the app-directory plan started executing):** the core platform plan is fully landed (all 6 tasks, through `cfc888d`), and the app-directory plan (`docs/superpowers/plans/2026-07-11-app-directory.md`) is executing concurrently in this same checkout. Three of its tasks deliberately interlock with this plan — **do not duplicate them**:
+   - Directory **Task 5** creates `crates/riot-core/src/apps/starter.rs` (`verify_starter_catalog`, `STARTER_CATALOG` — empty). This plan's Task 3 *fills* that catalog; it does not create the module.
+   - Directory **Task 7** creates the `riot-app` CLI whose `pack` walks an app dir, validates content types, and emits canonical manifest+bundle bytes. This plan's Task 2 *uses* that CLI; the earlier draft's own `pack_app`/xtask packer is superseded (Task 4 below is a tombstone).
+   - Directory **Task 6** adds `directory_listings` to `apps_ffi.rs`. This plan's Task 5 re-checks that surface first and adds only what's missing.
+3. **Dependency gates:** Task 1 is unblocked now. Task 2 gates on directory Task 7; Task 3 on directory Task 5 + our Task 2; Task 5 on directory Task 6. iOS tasks 6–10 follow Task 5. If a gate hasn't landed, stop and hand off (or wait) rather than editing files the directory session has claimed (`apps/starter.rs`, `apps_ffi.rs`, `mobile_state.rs`, `riot-app-cli/`).
+4. iOS tasks (6–10) need the native prerequisites from `apps/ios/README.md`: run `scripts/conference/build-native-core.sh` from the repo root after any FFI change, before building the Xcode project.
 
 ## File Structure
 
 Rust:
-- `fixtures/apps/checklist/` — Task 1: `index.html`, `app.js`, `style.css`, `riot-app.json` (checklist app source, no build step)
-- `crates/riot-core/src/apps/pack.rs` — Task 2: `pack_app` (resources+fields → canonical manifest/bundle bytes + `app_id`), `content_type_for`
-- `crates/xtask/src/main.rs` — Task 3: `pack-starter-apps` subcommand
-- `fixtures/apps/checklist.manifest.cbor`, `fixtures/apps/checklist.bundle.cbor` — Task 3: committed packed artifacts (generated, then frozen)
-- `crates/riot-core/src/apps/starter.rs` — Task 4: `include_bytes!` catalog, `decode_starter_app`, `starter_apps()`
-- `crates/riot-ffi/src/apps_ffi.rs` + `mobile_state.rs` — Task 5: `AppListing` record, `list_space_apps`, `app_resource`, `app_display_name`, persistence-bundle returns
+- `fixtures/apps/checklist/` — Task 1: `index.html`, `app.js`, `style.css`, `riot-app.json` (checklist app source, no build step; `riot-app.json` uses the `riot-app` CLI's schema — no author field, identity comes from the pack-time key)
+- `fixtures/apps/checklist.manifest.cbor`, `fixtures/apps/checklist.bundle.cbor` — Task 2: artifacts packed once via `riot-app pack` with an ephemeral key (never committed), then frozen
+- `scripts/apps/repack-starter.sh` — Task 2: documented repack procedure
+- `crates/riot-core/src/apps/starter.rs` — Task 3: fill `STARTER_CATALOG` with `include_bytes!` pairs (module and `verify_starter_catalog` come from directory Task 5)
+- `crates/riot-core/tests/apps_starter.rs` — Task 3: add drift-guard tests to the directory plan's file
+- `crates/riot-ffi/src/apps_ffi.rs` + `mobile_state.rs` — Task 5: `app_resource`, `app_display_name`, replay-persistence returns, plus whatever listing gap remains after directory Task 6's `directory_listings`
 
 iOS (all new reusable code in the **RiotKit** static-lib target; screens in the app target):
 - `apps/ios/Riot/Core/ProfileRepository.swift` — Task 6: app methods + replay persistence
@@ -162,21 +166,17 @@ riot.watch("items", render);
 
 - [ ] **Step 4: Write `riot-app.json`**
 
-The pack-time manifest source. The author identity is a fixed committed **public** identity (conference-fixture precedent; placeholder values, replaced by a real project identity in the directory round). `signing_key_id` is always taken equal to `subspace_id` at pack time (matching `identity.rs`'s invariant); `namespace_kind` is always communal.
+The pack-time manifest source, in the `riot-app` CLI's exact schema (directory plan Task 7): no author field — the author identity comes from the pack-time key, never from the JSON. Note the permission string must stay ≤ 64 bytes (`MAX_APP_PERMISSION_BYTES`); the plain-language "nothing else" framing lives in the description, which allows 500.
 
 ```json
 {
   "name": "Checklist",
-  "description": "A shared checklist for this space. Anyone here can add items and check them off.",
+  "description": "A shared checklist for this space. Anyone here can add items and check them off. It keeps its notes in this space and nothing else — no internet, no photos.",
   "version": "1.0.0",
   "entry_point": "index.html",
   "permissions": [
-    "Keep its own notes in this space. Nothing else — no internet, no photos."
-  ],
-  "author": {
-    "namespace_id_hex": "27cd7747ceecf672b65a998f1606162fc1e39793dd61a442a0af65ba4f92951e",
-    "subspace_id_hex": "99069a7b075d21e0dc7e4b7c7daf311f8e1d308001763d9d78ef60e9b9857157"
-  }
+    "Keep its own notes in this space"
+  ]
 }
 ```
 
@@ -189,497 +189,94 @@ git commit -m "feat(apps): add checklist app source fixture"
 
 ---
 
-### Task 2: `pack_app` in riot-core
+### Task 2: Pack and commit the starter artifacts (gated on directory Task 7)
 
 **Files:**
-- Create: `crates/riot-core/src/apps/pack.rs`
-- Modify: `crates/riot-core/src/apps/mod.rs` — add `pub mod pack;`
-- Test: `crates/riot-core/tests/apps_pack.rs`
+- Create: `scripts/apps/repack-starter.sh`
+- Create (generated, then committed frozen): `fixtures/apps/checklist.manifest.cbor`, `fixtures/apps/checklist.bundle.cbor`
 
-Pure function: resources + manifest fields in, canonical `(manifest_bytes, bundle_bytes, app_id)` out. No filesystem access in riot-core — directory walking lives in xtask (Task 3); the drift test (Task 4) re-derives the same bytes from `std::fs` reads at test time. Resource ordering is pinned (sort by path) so packing is deterministic regardless of input order.
+**Gate:** the `riot-app` CLI (directory plan Task 7) must be landed — check for `crates/riot-app-cli/` with a working `pack`. Re-read its actual command-line surface first (`riot-app pack` argument names below are from the directory plan and may have shifted in landing).
 
-- [ ] **Step 1: Write the failing tests**
+**Key handling:** pack with an **ephemeral** author key — generate, pack, discard. No key material is committed (spec correction `afae443`): the committed manifest carries only the derived *public* identity, integrity is content-addressing, and a repack under a fresh key changes the `app_id`, which is correct behavior (new bytes = new trust decision). The drift guard (Task 3) re-derives the *bundle* bytes (key-free) and compares manifest fields to `riot-app.json`, so it never needs the key.
 
-```rust
-// crates/riot-core/tests/apps_pack.rs
-use riot_core::apps::bundle::AppResource;
-use riot_core::apps::pack::{content_type_for, pack_app, AppPackInput};
-use riot_core::willow::identity::{AuthorIdentity, NamespaceKind};
-
-fn author() -> AuthorIdentity {
-    AuthorIdentity {
-        namespace_id: [0x11; 32],
-        subspace_id: [0x22; 32],
-        namespace_kind: NamespaceKind::Communal,
-        signing_key_id: [0x22; 32],
-    }
-}
-
-fn input() -> AppPackInput {
-    AppPackInput {
-        name: "Checklist".into(),
-        description: "A shared checklist.".into(),
-        version: "1.0.0".into(),
-        author: author(),
-        permissions: vec!["Keep its own notes in this space".into()],
-        entry_point: "index.html".into(),
-        resources: vec![
-            AppResource {
-                path: "index.html".into(),
-                content_type: "text/html".into(),
-                bytes: b"<!doctype html>".to_vec(),
-            },
-            AppResource {
-                path: "app.js".into(),
-                content_type: "text/javascript".into(),
-                bytes: b"console.log(1)".to_vec(),
-            },
-        ],
-    }
-}
-
-#[test]
-fn pack_is_deterministic_and_order_independent() {
-    let a = pack_app(input()).expect("pack");
-    let mut reversed = input();
-    reversed.resources.reverse();
-    let b = pack_app(reversed).expect("pack");
-    assert_eq!(a.manifest_bytes, b.manifest_bytes);
-    assert_eq!(a.bundle_bytes, b.bundle_bytes);
-    assert_eq!(a.app_id, b.app_id);
-}
-
-#[test]
-fn packed_bytes_round_trip_through_the_standard_decoders() {
-    let packed = pack_app(input()).expect("pack");
-    let manifest = riot_core::apps::manifest::decode_manifest(&packed.manifest_bytes).expect("manifest");
-    let bundle = riot_core::apps::bundle::decode_app_bundle(&packed.bundle_bytes).expect("bundle");
-    assert_eq!(manifest.name, "Checklist");
-    assert_eq!(bundle.entry_point, "index.html");
-    assert_eq!(bundle.resources.len(), 2);
-}
-
-#[test]
-fn changing_a_resource_changes_the_app_id() {
-    let a = pack_app(input()).expect("pack");
-    let mut changed = input();
-    changed.resources[1].bytes = b"console.log(2)".to_vec();
-    let b = pack_app(changed).expect("pack");
-    assert_ne!(a.app_id, b.app_id);
-}
-
-#[test]
-fn missing_entry_point_is_rejected() {
-    let mut bad = input();
-    bad.entry_point = "missing.html".into();
-    assert!(pack_app(bad).is_err());
-}
-
-#[test]
-fn content_types_are_inferred_for_known_extensions_only() {
-    assert_eq!(content_type_for("index.html"), Some("text/html"));
-    assert_eq!(content_type_for("app.js"), Some("text/javascript"));
-    assert_eq!(content_type_for("style.css"), Some("text/css"));
-    assert_eq!(content_type_for("logo.svg"), Some("image/svg+xml"));
-    assert_eq!(content_type_for("photo.png"), Some("image/png"));
-    assert_eq!(content_type_for("evil.wasm"), None);
-    assert_eq!(content_type_for("noextension"), None);
-}
-```
-
-- [ ] **Step 2: Run to verify failure**
-
-Run: `cargo test -p riot-core --test apps_pack`
-Expected: compile failure — `riot_core::apps::pack` does not exist.
-
-- [ ] **Step 3: Implement `pack.rs`**
-
-```rust
-// crates/riot-core/src/apps/pack.rs
-//! Pack an app's resources + manifest fields into the canonical committed
-//! byte artifacts. Pure — no filesystem access; callers (xtask, tests)
-//! read files themselves. Determinism matters: `decode_app_bundle`
-//! enforces canonicality, and the starter-catalog drift test re-derives
-//! these bytes in CI, so resources are always sorted by path before
-//! encoding.
-
-use sha2::{Digest, Sha256};
-
-use crate::willow::identity::AuthorIdentity;
-
-use super::bundle::{encode_app_bundle, AppBundle, AppResource};
-use super::manifest::{app_id_for, encode_manifest, AppId, AppManifest};
-use super::AppsError;
-
-#[derive(Debug, Clone)]
-pub struct AppPackInput {
-    pub name: String,
-    pub description: String,
-    pub version: String,
-    pub author: AuthorIdentity,
-    pub permissions: Vec<String>,
-    pub entry_point: String,
-    pub resources: Vec<AppResource>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PackedApp {
-    pub manifest_bytes: Vec<u8>,
-    pub bundle_bytes: Vec<u8>,
-    pub app_id: AppId,
-}
-
-pub fn pack_app(input: AppPackInput) -> Result<PackedApp, AppsError> {
-    let mut resources = input.resources;
-    resources.sort_by(|a, b| a.path.cmp(&b.path));
-
-    let bundle = AppBundle {
-        entry_point: input.entry_point.clone(),
-        resources,
-    };
-    let bundle_bytes = encode_app_bundle(&bundle)?;
-    let bundle_digest: [u8; 32] = Sha256::digest(&bundle_bytes).into();
-
-    let manifest = AppManifest {
-        name: input.name,
-        description: input.description,
-        version: input.version,
-        author: input.author,
-        permissions: input.permissions,
-        entry_point: input.entry_point,
-    };
-    let manifest_bytes = encode_manifest(&manifest)?;
-    let app_id = app_id_for(&manifest, &bundle_digest)?;
-
-    Ok(PackedApp {
-        manifest_bytes,
-        bundle_bytes,
-        app_id,
-    })
-}
-
-/// Known-safe web resource types only; anything else is refused at pack
-/// time rather than guessed.
-pub fn content_type_for(path: &str) -> Option<&'static str> {
-    let extension = path.rsplit_once('.')?.1;
-    match extension {
-        "html" => Some("text/html"),
-        "js" => Some("text/javascript"),
-        "css" => Some("text/css"),
-        "svg" => Some("image/svg+xml"),
-        "png" => Some("image/png"),
-        _ => None,
-    }
-}
-```
-
-Add to `crates/riot-core/src/apps/mod.rs` alongside the existing module list: `pub mod pack;`
-
-Note: `encode_app_bundle`'s own validation already rejects a missing entry point (`entry_point_found` check in `bundle.rs`), so `pack_app` needs no duplicate check — the test passes through that path.
-
-- [ ] **Step 4: Run tests to verify they pass**
-
-Run: `cargo test -p riot-core --test apps_pack`
-Expected: 5 passed.
-
-- [ ] **Step 5: Full check and commit**
-
-Run: `cargo test -p riot-core --all-features` and `cargo clippy -p riot-core --all-features --all-targets -- -D warnings`
-Expected: all green, clean.
+- [ ] **Step 1: Write `scripts/apps/repack-starter.sh`**
 
 ```bash
-git add crates/riot-core/src/apps/pack.rs crates/riot-core/src/apps/mod.rs crates/riot-core/tests/apps_pack.rs
-git commit -m "feat(apps): add deterministic app packing"
+#!/bin/sh
+# Repack the starter checklist app into the committed catalog artifacts.
+# Run from the repo root after editing fixtures/apps/checklist/.
+#
+# Uses a fresh ephemeral key each time (nothing is committed but the two
+# artifact files): repacking therefore changes the app_id, and every space
+# organizer re-approves the new version — that is the trust model working,
+# not a bug. See docs/superpowers/specs/2026-07-11-js-apps-runtime-ios-design.md.
+set -eu
+
+workdir="$(mktemp -d)"
+trap 'rm -rf "$workdir"' EXIT
+
+cargo run -p riot-app-cli --bin riot-app -- keygen --out-dir "$workdir"
+cargo run -p riot-app-cli --bin riot-app -- pack fixtures/apps/checklist \
+  --key-dir "$workdir" \
+  --out-manifest fixtures/apps/checklist.manifest.cbor \
+  --out-bundle fixtures/apps/checklist.bundle.cbor
+
+echo "Packed. Commit the two fixtures/apps/checklist.*.cbor files."
+```
+
+Adjust the flag names to the CLI's real surface (read `crates/riot-app-cli/src/main.rs` — the directory plan sketches `keygen`/`pack`/`inspect` but the landed argument spelling wins). If the landed `pack` emits only a combined import bundle and not the two raw artifact files, add `--out-manifest`/`--out-bundle` style outputs to the CLI as a small additive change — coordinate via `COLLABORATION.md` since `riot-app-cli/` is the directory session's file (it may already be released by then; check the claim table).
+
+`chmod +x scripts/apps/repack-starter.sh`.
+
+- [ ] **Step 2: Run it and sanity-check the artifacts**
+
+Run: `sh scripts/apps/repack-starter.sh`
+Expected: both `.cbor` files exist and are non-empty. Sanity-check: `cargo run -p riot-app-cli --bin riot-app -- inspect fixtures/apps/checklist.manifest.cbor` (or whatever the landed inspect takes) shows name "Checklist".
+
+- [ ] **Step 3: Commit (artifacts are frozen inputs from here on)**
+
+```bash
+git add scripts/apps/repack-starter.sh fixtures/apps/checklist.manifest.cbor fixtures/apps/checklist.bundle.cbor
+git commit -m "feat(apps): pack starter checklist into committed catalog artifacts"
 ```
 
 ---
 
-### Task 3: `cargo xtask pack-starter-apps` + committed artifacts
+### Task 3: Fill the starter catalog + drift guard (gated on directory Task 5 and our Task 2)
 
 **Files:**
-- Modify: `crates/xtask/Cargo.toml` — add `riot-core = { path = "../riot-core" }`
-- Modify: `crates/xtask/src/main.rs` — new subcommand
-- Create (generated, then committed): `fixtures/apps/checklist.manifest.cbor`, `fixtures/apps/checklist.bundle.cbor`
+- Modify: `crates/riot-core/src/apps/starter.rs` (created by directory Task 5 — `verify_starter_catalog` + empty `STARTER_CATALOG`)
+- Modify: `crates/riot-core/tests/apps_starter.rs` (same task's test file — add tests, keep theirs)
 
-- [ ] **Step 1: Add the riot-core dependency**
+**Gate:** directory Task 5 landed (module exists) and Task 2 above committed the artifacts. `apps/starter.rs` belongs to the directory session's claim until their plan's row reads Done/released for that task — check `COLLABORATION.md` and coordinate there before editing; this change is the one their Task 5 doc comment explicitly expects ("the checklist app's pair arrives with that follow-up").
 
-In `crates/xtask/Cargo.toml` under `[dependencies]`: `riot-core = { path = "../riot-core" }`. Then run `cargo xtask validate-contracts` — expected PASS (the validator checks riot-core's *release* feature graph; a default-features path dep from xtask must not enable riot-core's test-only feature — if validate-contracts fails on the feature graph, use `riot-core = { path = "../riot-core", default-features = false }` and re-check).
-
-- [ ] **Step 2: Write the failing xtask test**
-
-In `crates/xtask/src/main.rs`'s existing `#[cfg(test)] mod tests`, following the `temp_dir(name)` scaffold pattern already there:
+- [ ] **Step 1: Write the failing tests (added to the existing `apps_starter.rs`)**
 
 ```rust
 #[test]
-fn pack_starter_app_dir_produces_decodable_artifacts() {
-    let dir = temp_dir("pack-starter");
-    fs::create_dir_all(&dir).expect("mkdir");
-    fs::write(dir.join("index.html"), b"<!doctype html>").expect("write html");
-    fs::write(dir.join("app.js"), b"console.log(1)").expect("write js");
-    fs::write(
-        dir.join("riot-app.json"),
-        br#"{
-  "name": "Sample",
-  "description": "A sample app.",
-  "version": "1.0.0",
-  "entry_point": "index.html",
-  "permissions": ["Keep its own notes in this space"],
-  "author": {
-    "namespace_id_hex": "1111111111111111111111111111111111111111111111111111111111111111",
-    "subspace_id_hex": "2222222222222222222222222222222222222222222222222222222222222222"
-  }
-}"#,
-    )
-    .expect("write manifest source");
-
-    let packed = pack_starter_app_dir(&dir).expect("pack");
-    riot_core::apps::manifest::decode_manifest(&packed.manifest_bytes).expect("manifest decodes");
-    riot_core::apps::bundle::decode_app_bundle(&packed.bundle_bytes).expect("bundle decodes");
-
-    fs::remove_dir_all(&dir).ok();
-}
-
-#[test]
-fn pack_starter_app_dir_rejects_unknown_resource_types() {
-    let dir = temp_dir("pack-starter-bad");
-    fs::create_dir_all(&dir).expect("mkdir");
-    fs::write(dir.join("index.html"), b"<!doctype html>").expect("write html");
-    fs::write(dir.join("evil.wasm"), b"\0asm").expect("write wasm");
-    fs::write(
-        dir.join("riot-app.json"),
-        br#"{
-  "name": "Sample",
-  "description": "A sample app.",
-  "version": "1.0.0",
-  "entry_point": "index.html",
-  "permissions": ["Keep its own notes in this space"],
-  "author": {
-    "namespace_id_hex": "1111111111111111111111111111111111111111111111111111111111111111",
-    "subspace_id_hex": "2222222222222222222222222222222222222222222222222222222222222222"
-  }
-}"#,
-    )
-    .expect("write manifest source");
-
-    let result = pack_starter_app_dir(&dir);
-    assert!(result.is_err(), "unknown resource types must fail packing, got {result:?}");
-
-    fs::remove_dir_all(&dir).ok();
-}
-```
-
-Run: `cargo test -p xtask`
-Expected: compile failure — `pack_starter_app_dir` does not exist.
-
-- [ ] **Step 3: Implement the subcommand**
-
-Add to `crates/xtask/src/main.rs` (module level, near the other command fns):
-
-```rust
-struct PackedStarterApp {
-    manifest_bytes: Vec<u8>,
-    bundle_bytes: Vec<u8>,
-    app_id_hex: String,
-}
-
-fn hex32(value: &serde_json::Value, key: &str) -> Result<[u8; 32], String> {
-    let text = value
-        .get(key)
-        .and_then(|v| v.as_str())
-        .ok_or_else(|| format!("riot-app.json: missing author.{key}"))?;
-    if text.len() != 64 || !text.bytes().all(|b| b.is_ascii_hexdigit()) {
-        return Err(format!("riot-app.json: author.{key} must be 64 hex chars"));
-    }
-    let mut out = [0u8; 32];
-    for (i, chunk) in text.as_bytes().chunks(2).enumerate() {
-        let hi = (chunk[0] as char).to_digit(16).unwrap() as u8;
-        let lo = (chunk[1] as char).to_digit(16).unwrap() as u8;
-        out[i] = hi << 4 | lo;
-    }
-    Ok(out)
-}
-
-fn pack_starter_app_dir(dir: &std::path::Path) -> Result<PackedStarterApp, String> {
-    use riot_core::apps::bundle::AppResource;
-    use riot_core::apps::pack::{content_type_for, pack_app, AppPackInput};
-    use riot_core::willow::identity::{AuthorIdentity, NamespaceKind};
-
-    let source = std::fs::read_to_string(dir.join("riot-app.json"))
-        .map_err(|e| format!("read riot-app.json: {e}"))?;
-    let json: serde_json::Value =
-        serde_json::from_str(&source).map_err(|e| format!("parse riot-app.json: {e}"))?;
-    let text = |key: &str| -> Result<String, String> {
-        json.get(key)
-            .and_then(|v| v.as_str())
-            .map(str::to_owned)
-            .ok_or_else(|| format!("riot-app.json: missing {key}"))
-    };
-    let author_json = json
-        .get("author")
-        .ok_or("riot-app.json: missing author")?;
-    let subspace_id = hex32(author_json, "subspace_id_hex")?;
-    let author = AuthorIdentity {
-        namespace_id: hex32(author_json, "namespace_id_hex")?,
-        subspace_id,
-        namespace_kind: NamespaceKind::Communal,
-        signing_key_id: subspace_id,
-    };
-    let permissions = json
-        .get("permissions")
-        .and_then(|v| v.as_array())
-        .ok_or("riot-app.json: missing permissions")?
-        .iter()
-        .map(|p| p.as_str().map(str::to_owned).ok_or("riot-app.json: permission must be a string".to_string()))
-        .collect::<Result<Vec<_>, _>>()?;
-
-    let mut resources = Vec::new();
-    for entry in std::fs::read_dir(dir).map_err(|e| format!("read dir: {e}"))? {
-        let entry = entry.map_err(|e| format!("read dir entry: {e}"))?;
-        let name = entry.file_name().to_string_lossy().into_owned();
-        if name == "riot-app.json" {
-            continue;
-        }
-        if !entry.file_type().map_err(|e| e.to_string())?.is_file() {
-            return Err(format!("unexpected non-file in app dir: {name}"));
-        }
-        let content_type = content_type_for(&name)
-            .ok_or_else(|| format!("unsupported resource type: {name}"))?;
-        resources.push(AppResource {
-            path: name.clone(),
-            content_type: content_type.to_string(),
-            bytes: std::fs::read(entry.path()).map_err(|e| format!("read {name}: {e}"))?,
-        });
-    }
-
-    let packed = pack_app(AppPackInput {
-        name: text("name")?,
-        description: text("description")?,
-        version: text("version")?,
-        author,
-        permissions,
-        entry_point: text("entry_point")?,
-        resources,
-    })
-    .map_err(|e| format!("pack: {e}"))?;
-
-    Ok(PackedStarterApp {
-        app_id_hex: packed.app_id.iter().map(|b| format!("{b:02x}")).collect(),
-        manifest_bytes: packed.manifest_bytes,
-        bundle_bytes: packed.bundle_bytes,
-    })
-}
-
-fn run_pack_starter_apps() -> Result<String, String> {
-    let root = workspace_root()?;
-    let dir = root.join("fixtures/apps/checklist");
-    let packed = pack_starter_app_dir(&dir)?;
-    std::fs::write(root.join("fixtures/apps/checklist.manifest.cbor"), &packed.manifest_bytes)
-        .map_err(|e| format!("write manifest artifact: {e}"))?;
-    std::fs::write(root.join("fixtures/apps/checklist.bundle.cbor"), &packed.bundle_bytes)
-        .map_err(|e| format!("write bundle artifact: {e}"))?;
-    Ok(format!("packed checklist app_id={}", packed.app_id_hex))
-}
-```
-
-Register it: add a `Some("pack-starter-apps")` arm to `main`'s command `match` mapping `run_pack_starter_apps()` to PASS/FAIL prints + `ExitCode` exactly like `generate-bindings`, and append `"pack-starter-apps"` to `available_commands()`. Adjust the snippets above to the actual signatures in the file (e.g. `workspace_root()`'s return type) — read the surrounding code first and match it; the exact error-string plumbing there wins over this sketch.
-
-- [ ] **Step 4: Run tests, then generate the artifacts**
-
-Run: `cargo test -p xtask`
-Expected: all pass (existing + 2 new).
-
-Run: `cargo xtask pack-starter-apps`
-Expected: PASS line with the checklist `app_id` hex. `fixtures/apps/checklist.manifest.cbor` and `fixtures/apps/checklist.bundle.cbor` now exist.
-
-- [ ] **Step 5: Commit (including generated artifacts — they are frozen inputs from here on)**
-
-```bash
-git add crates/xtask/ fixtures/apps/checklist.manifest.cbor fixtures/apps/checklist.bundle.cbor Cargo.lock
-git commit -m "feat(xtask): pack starter apps into committed canonical artifacts"
-```
-
----
-
-### Task 4: Starter catalog in riot-core
-
-**Files:**
-- Create: `crates/riot-core/src/apps/starter.rs`
-- Modify: `crates/riot-core/src/apps/mod.rs` — add `pub mod starter;`
-- Test: `crates/riot-core/tests/apps_starter.rs`
-
-`include_bytes!` is a first in this workspace — the committed `.cbor` artifacts compile into the library so the mobile binary carries them. Everything is verified at load through the standard canonical decoders; a corrupted embed is silently excluded (never a panic). The drift test re-packs from `fixtures/apps/checklist/` at test time and must produce byte-identical artifacts, so editing app source without re-running `cargo xtask pack-starter-apps` fails CI.
-
-- [ ] **Step 1: Write the failing tests**
-
-```rust
-// crates/riot-core/tests/apps_starter.rs
-use riot_core::apps::starter::{decode_starter_app, starter_apps};
-
-#[test]
-fn starter_catalog_contains_the_checklist() {
-    let apps = starter_apps();
+fn shipped_catalog_contains_the_checklist() {
+    let apps = riot_core::apps::starter::verify_starter_catalog(
+        riot_core::apps::starter::STARTER_CATALOG,
+    );
     assert_eq!(apps.len(), 1);
     assert_eq!(apps[0].manifest.name, "Checklist");
-    assert_eq!(apps[0].bundle.entry_point, "index.html");
-    assert!(apps[0]
-        .bundle
-        .resources
-        .iter()
-        .any(|r| r.path == "app.js" && r.content_type == "text/javascript"));
+    assert_eq!(apps[0].manifest.entry_point, "index.html");
 }
 
+/// Drift guard, key-free: the committed bundle artifact must equal a fresh
+/// canonical encode of the committed source files, and the committed
+/// manifest's fields must equal riot-app.json. Editing
+/// fixtures/apps/checklist/* without re-running
+/// scripts/apps/repack-starter.sh fails here.
 #[test]
-fn corrupted_manifest_bytes_are_silently_excluded() {
-    let apps = starter_apps();
-    let manifest_bytes = riot_core::apps::manifest::encode_manifest(&apps[0].manifest).expect("encode");
-    let bundle_bytes = riot_core::apps::bundle::encode_app_bundle(&apps[0].bundle).expect("encode");
-
-    let mut tampered = manifest_bytes.clone();
-    let last = tampered.len() - 1;
-    tampered[last] ^= 0xff;
-    assert!(decode_starter_app(&tampered, &bundle_bytes).is_none());
-
-    let mut tampered_bundle = bundle_bytes.clone();
-    let last = tampered_bundle.len() - 1;
-    tampered_bundle[last] ^= 0xff;
-    assert!(decode_starter_app(&manifest_bytes, &tampered_bundle).is_none());
-}
-
-#[test]
-fn entry_point_mismatch_between_manifest_and_bundle_is_excluded() {
-    let apps = starter_apps();
-    let mut manifest = apps[0].manifest.clone();
-    manifest.entry_point = "style.css".into(); // valid resource, but not the bundle's entry point
-    let manifest_bytes = riot_core::apps::manifest::encode_manifest(&manifest).expect("encode");
-    let bundle_bytes = riot_core::apps::bundle::encode_app_bundle(&apps[0].bundle).expect("encode");
-    assert!(decode_starter_app(&manifest_bytes, &bundle_bytes).is_none());
-}
-
-/// Drift guard: the committed artifacts must equal a fresh pack of the
-/// committed source directory. Editing fixtures/apps/checklist/* without
-/// re-running `cargo xtask pack-starter-apps` fails here.
-#[test]
-fn embedded_artifacts_match_a_fresh_pack_of_the_source_directory() {
-    use riot_core::apps::bundle::AppResource;
-    use riot_core::apps::pack::{content_type_for, pack_app, AppPackInput};
+fn committed_artifacts_match_the_committed_source() {
+    use riot_core::apps::bundle::{encode_app_bundle, AppBundle, AppResource};
+    use riot_core::apps::manifest::decode_manifest;
 
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/apps");
     let dir = root.join("checklist");
 
-    let source: serde_json::Value = serde_json::from_str(
-        &std::fs::read_to_string(dir.join("riot-app.json")).expect("read riot-app.json"),
-    )
-    .expect("parse riot-app.json");
-
-    let apps = starter_apps();
-    let manifest = &apps[0].manifest;
-    // riot-app.json is the source of truth the xtask packed from; the
-    // decoded embedded manifest must agree with it field-for-field.
-    assert_eq!(manifest.name, source["name"].as_str().unwrap());
-    assert_eq!(manifest.description, source["description"].as_str().unwrap());
-    assert_eq!(manifest.version, source["version"].as_str().unwrap());
-    assert_eq!(manifest.entry_point, source["entry_point"].as_str().unwrap());
-
+    // Bundle: pure function of the source files, no key involved.
     let mut resources = Vec::new();
     for entry in std::fs::read_dir(&dir).expect("read dir") {
         let entry = entry.expect("entry");
@@ -687,110 +284,92 @@ fn embedded_artifacts_match_a_fresh_pack_of_the_source_directory() {
         if name == "riot-app.json" {
             continue;
         }
+        let content_type = match name.rsplit_once('.').map(|(_, e)| e) {
+            Some("html") => "text/html",
+            Some("js") => "text/javascript",
+            Some("css") => "text/css",
+            Some("svg") => "image/svg+xml",
+            Some("png") => "image/png",
+            other => panic!("unsupported starter resource type: {name} ({other:?})"),
+        };
         resources.push(AppResource {
-            path: name.clone(),
-            content_type: content_type_for(&name).expect("known type").to_string(),
+            path: name,
+            content_type: content_type.to_string(),
             bytes: std::fs::read(entry.path()).expect("read resource"),
         });
     }
+    resources.sort_by(|a, b| a.path.cmp(&b.path));
 
-    let packed = pack_app(AppPackInput {
-        name: manifest.name.clone(),
-        description: manifest.description.clone(),
-        version: manifest.version.clone(),
-        author: manifest.author.clone(),
-        permissions: manifest.permissions.clone(),
-        entry_point: manifest.entry_point.clone(),
+    let source: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(dir.join("riot-app.json")).expect("read riot-app.json"),
+    )
+    .expect("parse riot-app.json");
+
+    let rebuilt = encode_app_bundle(&AppBundle {
+        entry_point: source["entry_point"].as_str().unwrap().to_string(),
         resources,
     })
-    .expect("re-pack");
+    .expect("re-encode bundle");
+    let committed_bundle = std::fs::read(root.join("checklist.bundle.cbor")).expect("artifact");
+    assert_eq!(rebuilt, committed_bundle, "bundle drift — re-run scripts/apps/repack-starter.sh");
 
-    let embedded_manifest = std::fs::read(root.join("checklist.manifest.cbor")).expect("artifact");
-    let embedded_bundle = std::fs::read(root.join("checklist.bundle.cbor")).expect("artifact");
-    assert_eq!(packed.manifest_bytes, embedded_manifest, "manifest drift — re-run cargo xtask pack-starter-apps");
-    assert_eq!(packed.bundle_bytes, embedded_bundle, "bundle drift — re-run cargo xtask pack-starter-apps");
-    assert_eq!(packed.app_id, apps[0].app_id);
+    // Manifest: field-for-field against riot-app.json (author is pack-time
+    // ephemeral and deliberately not re-derivable — not compared).
+    let committed_manifest = std::fs::read(root.join("checklist.manifest.cbor")).expect("artifact");
+    let manifest = decode_manifest(&committed_manifest).expect("decode manifest");
+    assert_eq!(manifest.name, source["name"].as_str().unwrap());
+    assert_eq!(manifest.description, source["description"].as_str().unwrap());
+    assert_eq!(manifest.version, source["version"].as_str().unwrap());
+    assert_eq!(manifest.entry_point, source["entry_point"].as_str().unwrap());
+    let permissions: Vec<&str> = source["permissions"].as_array().unwrap().iter().map(|p| p.as_str().unwrap()).collect();
+    assert_eq!(manifest.permissions, permissions);
 }
 ```
 
-If `AuthorIdentity` is not `Clone`, take its fields individually (it's a plain struct of arrays — construct a new one). If `serde_json` is not already a riot-core dev-dependency, add it under `[dev-dependencies]` (it is already a workspace dependency).
+Match the landed `verify_starter_catalog` return shape (the directory plan's `IndexedApp` exposes `manifest`; adjust field access if the landed struct differs). The resource ordering + content-type mapping in the drift test must mirror the landed CLI `pack` behavior — read `riot-app-cli`'s pack implementation and copy its exact ordering rule (the directory plan sorts by path; verify).
 
-- [ ] **Step 2: Run to verify failure**
+If `serde_json` is not already a riot-core dev-dependency, add it under `[dev-dependencies]` (already a workspace pin).
 
-Run: `cargo test -p riot-core --test apps_starter`
-Expected: compile failure — `riot_core::apps::starter` does not exist.
+Run: `cargo test -p riot-core --test apps_starter` — the two new tests fail (empty catalog / missing artifacts read).
 
-- [ ] **Step 3: Implement `starter.rs`**
+- [ ] **Step 2: Fill `STARTER_CATALOG`**
+
+In `crates/riot-core/src/apps/starter.rs`, replace the empty slice (and stale "empty until the WebView runtime lands" comment) with:
 
 ```rust
-// crates/riot-core/src/apps/starter.rs
-//! Built-in starter apps, embedded at compile time and verified through
-//! the exact same canonical decoders as any synced app — "Built into
-//! Riot" is a provenance label, not a trust shortcut. No key material:
-//! integrity is canonical decoding plus the content-derived app_id; a
-//! tampered embed fails decode (or changes identity) and is silently
-//! excluded, matching the import path's treatment of invalid items.
-//! Launch still requires the space organizer's trust marker.
+const CHECKLIST_MANIFEST: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../fixtures/apps/checklist.manifest.cbor"
+));
+const CHECKLIST_BUNDLE: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../fixtures/apps/checklist.bundle.cbor"
+));
 
-use sha2::{Digest, Sha256};
-
-use super::bundle::{decode_app_bundle, AppBundle};
-use super::manifest::{app_id_for, decode_manifest, AppId, AppManifest};
-
-const CHECKLIST_MANIFEST: &[u8] =
-    include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../fixtures/apps/checklist.manifest.cbor"));
-const CHECKLIST_BUNDLE: &[u8] =
-    include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../fixtures/apps/checklist.bundle.cbor"));
-
-#[derive(Debug, Clone)]
-pub struct StarterApp {
-    pub app_id: AppId,
-    pub manifest: AppManifest,
-    pub bundle: AppBundle,
-}
-
-/// Standard decode path for a manifest+bundle pair. Returns `None` for
-/// anything invalid — non-canonical bytes, entry-point mismatch, size
-/// violations — with no distinction callers could turn into UI errors.
-pub fn decode_starter_app(manifest_bytes: &[u8], bundle_bytes: &[u8]) -> Option<StarterApp> {
-    let manifest = decode_manifest(manifest_bytes).ok()?;
-    let bundle = decode_app_bundle(bundle_bytes).ok()?;
-    if manifest.entry_point != bundle.entry_point {
-        return None;
-    }
-    let bundle_digest: [u8; 32] = Sha256::digest(bundle_bytes).into();
-    let app_id = app_id_for(&manifest, &bundle_digest).ok()?;
-    Some(StarterApp {
-        app_id,
-        manifest,
-        bundle,
-    })
-}
-
-pub fn starter_apps() -> Vec<StarterApp> {
-    [(CHECKLIST_MANIFEST, CHECKLIST_BUNDLE)]
-        .into_iter()
-        .filter_map(|(m, b)| decode_starter_app(m, b))
-        .collect()
-}
+/// (manifest_bytes, bundle_bytes) pairs embedded at compile time.
+pub const STARTER_CATALOG: &[(&[u8], &[u8])] = &[(CHECKLIST_MANIFEST, CHECKLIST_BUNDLE)];
 ```
 
-Add `pub mod starter;` to `apps/mod.rs`.
-
-- [ ] **Step 4: Run tests to verify they pass**
+- [ ] **Step 3: Run tests to verify they pass**
 
 Run: `cargo test -p riot-core --test apps_starter`
-Expected: 4 passed.
+Expected: all pass — the directory plan's original three (including `the_shipped_catalog_verifies_completely`, which now verifies a 1-entry catalog) plus the two new ones.
 
-- [ ] **Step 5: Full check and commit**
+- [ ] **Step 4: Full check and commit**
 
 Run: `cargo test -p riot-core --all-features`, `cargo clippy -p riot-core --all-features --all-targets -- -D warnings`, `cargo xtask validate-contracts`
-Expected: all green/clean/PASS.
+Expected: green/clean/PASS.
 
 ```bash
-git add crates/riot-core/src/apps/starter.rs crates/riot-core/src/apps/mod.rs crates/riot-core/tests/apps_starter.rs crates/riot-core/Cargo.toml
-git commit -m "feat(apps): embed content-addressed starter catalog with drift guard"
+git add crates/riot-core/src/apps/starter.rs crates/riot-core/tests/apps_starter.rs crates/riot-core/Cargo.toml
+git commit -m "feat(apps): embed checklist in the starter catalog with drift guard"
 ```
+
+---
+
+### Task 4: (superseded)
+
+The earlier draft's `pack_app`-in-riot-core + `cargo xtask pack-starter-apps` tasks are superseded by the app-directory plan's `riot-app` CLI (its Task 7) — packing logic lives in one place. See Tasks 2–3 above; nothing to do here.
 
 ---
 
@@ -801,7 +380,7 @@ git commit -m "feat(apps): embed content-addressed starter catalog with drift gu
 - Modify: `crates/riot-ffi/src/mobile_state.rs`
 - Test: `crates/riot-ffi/tests/mobile_contract.rs` (or the apps contract test file Task 6 created — match it)
 
-**Gate:** requires core plan Tasks 5–6 committed (`apps/bridge.rs` + `apps_ffi.rs`). **Step 1 is mandatory re-reading**, exactly as the core plan itself prescribes for Task 6: the other agent's landed surface is authoritative over every snippet below. Adapt names/shapes to what exists; do not create a parallel surface.
+**Gate:** the core platform plan is fully landed (all 6 tasks); additionally wait for directory plan Task 6 (`directory_listings`/`share_app`/`endorse_app` in `apps_ffi.rs`) so this task doesn't collide with the directory session's claim on the same files — check `COLLABORATION.md`. **Step 1 is mandatory re-reading**: the landed surface is authoritative over every snippet below. In particular, if the landed `directory_listings` already returns name/description/permissions/per-space trust state (it is designed to), **do not add a parallel `list_space_apps`** — reuse it from iOS and add only what's genuinely missing (`app_resource`, `app_display_name`, replay-persistence byte returns). Adapt the test/impl snippets below accordingly; never create a parallel surface.
 
 - [ ] **Step 1: Re-read the landed app FFI surface**
 
