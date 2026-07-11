@@ -1,7 +1,7 @@
 package org.riot.evidence.transport
 
 sealed interface SyncBridgeOutcome {
-    data object SendMore : SyncBridgeOutcome
+    data class SendMore(val terminal: Boolean) : SyncBridgeOutcome
     data class ReadyToPreview(val count: Int) : SyncBridgeOutcome
     data object Done : SyncBridgeOutcome
     data object Failed : SyncBridgeOutcome
@@ -25,6 +25,7 @@ class SyncCoordinator(
 ) : AutoCloseable {
     var state: NearbyUiState = NearbyUiState.Connecting
         private set
+    private var acceptedImport = false
 
     init {
         connection.onReceive(::receive)
@@ -37,13 +38,15 @@ class SyncCoordinator(
 
     fun acceptImport() {
         safely {
-            handle(bridge.acceptImport(), accepted = true)
+            acceptedImport = true
+            update(NearbyUiState.GettingLatest(friendlyName))
+            handle(bridge.acceptImport(), terminalState = NearbyUiState.CaughtUp)
         }
     }
 
     fun rejectImport() {
         safely {
-            handle(bridge.rejectImport())
+            handle(bridge.rejectImport(), terminalState = NearbyUiState.Idle)
         }
     }
 
@@ -58,15 +61,25 @@ class SyncCoordinator(
         }
     }
 
-    private fun handle(outcome: SyncBridgeOutcome, accepted: Boolean = false) {
+    private fun handle(outcome: SyncBridgeOutcome, terminalState: NearbyUiState? = null) {
         when (outcome) {
-            SyncBridgeOutcome.SendMore -> drainOutbound()
+            is SyncBridgeOutcome.SendMore -> {
+                drainOutbound()
+                if (outcome.terminal) {
+                    runCatching(bridge::close)
+                    update(terminalState ?: if (acceptedImport) {
+                        NearbyUiState.CaughtUp
+                    } else {
+                        NearbyUiState.AlreadyCurrent
+                    })
+                }
+            }
             is SyncBridgeOutcome.ReadyToPreview -> {
                 require(outcome.count >= 0) { "negative update count" }
                 update(NearbyUiState.UpdatesReady(outcome.count, friendlyName))
             }
             SyncBridgeOutcome.Done -> {
-                update(if (accepted) NearbyUiState.CaughtUp else NearbyUiState.AlreadyCurrent)
+                update(if (acceptedImport) NearbyUiState.CaughtUp else NearbyUiState.AlreadyCurrent)
                 runCatching(bridge::close)
                 connection.disconnect()
             }

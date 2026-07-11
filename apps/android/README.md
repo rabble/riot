@@ -98,6 +98,11 @@ confirmation or exposing an identifier in the UI. The first completed
 connection wins, closes any loser, and closes the unused local listener so a
 late socket cannot become a second transport.
 
+Terminal protocol frames are drained before generated-session disposal. An
+accepted import remains in “Getting the latest…” until the other phone confirms
+completion; a rejected import sends its final rejection frame and returns to
+idle without tearing down an asynchronous Bluetooth write early.
+
 ## Reproduce the checks
 
 The proven environment uses JDK 17 and the API 36 SDK:

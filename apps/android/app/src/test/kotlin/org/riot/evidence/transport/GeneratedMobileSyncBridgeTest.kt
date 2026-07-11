@@ -3,6 +3,7 @@ package org.riot.evidence.transport
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import uniffi.riot_ffi.SyncOutcome
@@ -25,11 +26,16 @@ class GeneratedMobileSyncBridgeTest {
 
         assertEquals(SyncBridgeOutcome.ReadyToPreview(0), bridge.receive(byteArrayOf(1)))
         assertFalse(handle.accepted)
-        assertEquals(SyncBridgeOutcome.Done, bridge.acceptImport())
+        assertEquals(SyncBridgeOutcome.SendMore(terminal = false), bridge.acceptImport())
 
         assertTrue(handle.accepted)
         assertArrayEquals(bundle, persisted)
-        assertEquals(listOf("persist", "accept", "close"), events)
+        assertArrayEquals(byteArrayOf(10), bridge.nextOutbound())
+        assertNull(bridge.nextOutbound())
+        assertTrue(handle.lifecycle.isEmpty())
+
+        assertEquals(SyncBridgeOutcome.Done, bridge.receive(byteArrayOf(11)))
+        assertEquals(listOf("persist", "accept", "take", "take", "close"), events)
     }
 
     @Test
@@ -54,10 +60,13 @@ class GeneratedMobileSyncBridgeTest {
         val bridge = GeneratedMobileSyncBridge(handle) { _, _ -> persisted = true }
 
         bridge.receive(byteArrayOf(1))
-        assertEquals(SyncBridgeOutcome.Done, bridge.rejectImport())
+        assertEquals(SyncBridgeOutcome.SendMore(terminal = true), bridge.rejectImport())
+        assertArrayEquals(byteArrayOf(12), bridge.nextOutbound())
+        assertNull(bridge.nextOutbound())
 
         assertTrue(handle.rejected)
         assertFalse(persisted)
+        assertEquals(listOf("close"), handle.lifecycle)
     }
 
     @Test
@@ -94,25 +103,38 @@ private class RecordingGeneratedSyncHandle(
     val lifecycle = mutableListOf<String>()
 
     override fun begin(): SyncOutcome = beginOutcome
-    override fun takeOutboundFrame(): ByteArray? = null
-    override fun receiveFrame(frame: ByteArray): SyncOutcome = receiveOutcome
+    private val outbound = ArrayDeque<ByteArray>()
+    private var acceptedAwaitingComplete = false
+    override fun takeOutboundFrame(): ByteArray? {
+        events += "take"
+        return outbound.removeFirstOrNull()
+    }
+    override fun receiveFrame(frame: ByteArray): SyncOutcome =
+        if (acceptedAwaitingComplete) outcome(SyncOutcomeKind.COMPLETE) else receiveOutcome
     override fun acceptImport(): SyncOutcome {
         events += "accept"
         accepted = true
-        return outcome(SyncOutcomeKind.COMPLETE)
+        acceptedAwaitingComplete = true
+        outbound += byteArrayOf(10)
+        return outcome(SyncOutcomeKind.FRAME_READY, terminal = false)
     }
     override fun rejectImport(code: UByte): SyncOutcome {
         rejected = true
-        return outcome(SyncOutcomeKind.COMPLETE)
+        outbound += byteArrayOf(12)
+        return outcome(SyncOutcomeKind.FRAME_READY, terminal = true)
     }
     override fun cancel() { lifecycle += "cancel" }
     override fun close() { lifecycle += "close"; events += "close" }
 }
 
-private fun outcome(kind: SyncOutcomeKind, bundle: ByteArray? = null) = SyncOutcome(
+private fun outcome(
+    kind: SyncOutcomeKind,
+    bundle: ByteArray? = null,
+    terminal: Boolean = kind == SyncOutcomeKind.COMPLETE || kind == SyncOutcomeKind.REJECTED,
+) = SyncOutcome(
     kind = kind,
     entries = emptyList(),
     rejectionCode = null,
-    terminal = kind == SyncOutcomeKind.COMPLETE || kind == SyncOutcomeKind.REJECTED,
+    terminal = terminal,
     importBundleBytes = bundle,
 )

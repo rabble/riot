@@ -35,10 +35,15 @@ class GeneratedMobileSyncBridge internal constructor(
 
     private var pending: PendingImport? = null
     private var closed = false
+    private var terminalAfterDrain = false
 
     override fun begin(): SyncBridgeOutcome = map(handle.begin())
 
-    override fun nextOutbound(): ByteArray? = handle.takeOutboundFrame()?.copyOf()
+    override fun nextOutbound(): ByteArray? {
+        val frame = handle.takeOutboundFrame()?.copyOf()
+        if (frame == null && terminalAfterDrain) disposeTerminal()
+        return frame
+    }
 
     override fun receive(frame: ByteArray): SyncBridgeOutcome = map(handle.receiveFrame(frame.copyOf()))
 
@@ -61,6 +66,7 @@ class GeneratedMobileSyncBridge internal constructor(
         if (closed) return
         closed = true
         pending = null
+        terminalAfterDrain = false
         try {
             handle.cancel()
         } finally {
@@ -69,7 +75,10 @@ class GeneratedMobileSyncBridge internal constructor(
     }
 
     private fun map(outcome: SyncOutcome): SyncBridgeOutcome = when (outcome.kind) {
-        SyncOutcomeKind.FRAME_READY -> SyncBridgeOutcome.SendMore
+        SyncOutcomeKind.FRAME_READY -> {
+            terminalAfterDrain = outcome.terminal
+            SyncBridgeOutcome.SendMore(terminal = outcome.terminal)
+        }
         SyncOutcomeKind.REVIEW_IMPORT -> {
             val bundle = checkNotNull(outcome.importBundleBytes) { "Reviewed update bundle is missing" }
             pending = PendingImport(bundle.copyOf(), outcome.entries.toList())
@@ -88,6 +97,7 @@ class GeneratedMobileSyncBridge internal constructor(
     private fun disposeTerminal() {
         if (closed) return
         closed = true
+        terminalAfterDrain = false
         pending = null
         runCatching(handle::close)
     }
