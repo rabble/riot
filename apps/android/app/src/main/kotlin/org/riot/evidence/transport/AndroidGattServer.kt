@@ -12,9 +12,10 @@ import android.bluetooth.BluetoothManager
 import android.content.Context
 import android.os.Build
 import java.io.IOException
-import java.util.ArrayDeque
 import java.util.UUID
 
+// AndroidNearbyController constructs this boundary only after all version-specific runtime grants succeed.
+@SuppressLint("MissingPermission")
 class AndroidGattServer(
     context: Context,
     private val endpoint: LocalEndpoint?,
@@ -23,7 +24,7 @@ class AndroidGattServer(
     private val manager = context.getSystemService(BluetoothManager::class.java)
         ?: throw IllegalStateException("Nearby Bluetooth is unavailable")
     private val channels = mutableMapOf<String, GattServerFrameChannel>()
-    private val names = mutableMapOf<String, String>()
+    private val discoveredPhones = mutableMapOf<String, DiscoveredPhone>()
     private val requested = mutableSetOf<String>()
     private val callback = object : BluetoothGattServerCallback() {
         override fun onConnectionStateChange(device: BluetoothDevice, status: Int, newState: Int) {
@@ -134,7 +135,7 @@ class AndroidGattServer(
     }
 
     fun phoneDiscovered(phone: DiscoveredPhone) {
-        names[phone.handle.value] = phone.friendlyName
+        discoveredPhones[phone.handle.value] = phone
         requestIfIdentified(phone.handle.value)
     }
 
@@ -157,11 +158,11 @@ class AndroidGattServer(
     }
 
     private fun requestIfIdentified(address: String) {
-        val name = names[address] ?: return
+        val phone = discoveredPhones[address] ?: return
         val channel = channels[address] ?: return
         if (!requested.add(address)) return
         onPairingRequested(
-            DiscoveredPhone(name, PeerHandle(address)),
+            phone,
             PairedBleLink(channel, null),
         )
     }
@@ -175,9 +176,9 @@ private class GattServerFrameChannel(
     private val server: BluetoothGattServer,
     private val device: BluetoothDevice,
 ) : FrameChannel {
-    private val pending = ArrayDeque<ByteArray>()
+    private val pending = BleOutboundQueue()
     private val decoder = BleFrameCodec.Decoder()
-    private var receiver: (ByteArray) -> Unit = {}
+    private val deferredReceiver = DeferredFrameReceiver()
     private var notifying = false
     private var open = true
     var confirmed = false
@@ -187,20 +188,25 @@ private class GattServerFrameChannel(
     override fun send(frame: ByteArray) {
         if (!open || !confirmed) throw IOException("nearby connection not confirmed")
         if (!subscribed) throw IOException("nearby notifications unavailable")
-        BleFrameCodec.chunk(frame).forEach(pending::addLast)
+        try {
+            pending.add(frame)
+        } catch (error: IOException) {
+            close()
+            throw error
+        }
         if (!notifying) notifyNext()
     }
 
     @Synchronized
     override fun onReceive(receiver: (ByteArray) -> Unit) {
-        this.receiver = receiver
+        deferredReceiver.register(receiver)
     }
 
     @Synchronized
     fun receiveChunk(chunk: ByteArray): Boolean = try {
-        decoder.receive(chunk)?.let(receiver)
+        decoder.receive(chunk)?.let(deferredReceiver::deliver)
         true
-    } catch (_: IllegalArgumentException) {
+    } catch (_: Exception) {
         close()
         false
     }
@@ -217,7 +223,8 @@ private class GattServerFrameChannel(
 
     fun remoteDisconnected() {
         open = false
-        pending.clear()
+        pending.close()
+        deferredReceiver.close()
     }
 
     @SuppressLint("MissingPermission")
@@ -225,13 +232,14 @@ private class GattServerFrameChannel(
     override fun close() {
         if (!open) return
         open = false
-        pending.clear()
+        pending.close()
+        deferredReceiver.close()
         server.cancelConnection(device)
     }
 
     @SuppressLint("MissingPermission")
     private fun notifyNext() {
-        val chunk = pending.pollFirst() ?: return
+        val chunk = pending.pollChunk() ?: return
         val service = server.getService(AndroidBleDiscovery.SERVICE_UUID)
         val characteristic = service?.getCharacteristic(AndroidBleDiscovery.DATA_UUID)
             ?: throw IOException("nearby data characteristic unavailable")

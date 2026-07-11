@@ -15,7 +15,6 @@ import java.io.IOException
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.nio.charset.StandardCharsets
-import java.util.ArrayDeque
 import java.util.UUID
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
@@ -193,29 +192,34 @@ private class GattClientFrameChannel(
     private val gatt: BluetoothGatt,
     private val characteristic: BluetoothGattCharacteristic,
 ) : FrameChannel {
-    private val pending = ArrayDeque<ByteArray>()
+    private val pending = BleOutboundQueue()
     private val decoder = BleFrameCodec.Decoder()
-    private var receiver: (ByteArray) -> Unit = {}
+    private val deferredReceiver = DeferredFrameReceiver()
     private var writing = false
     private var open = true
 
     @Synchronized
     override fun send(frame: ByteArray) {
         if (!open) throw IOException("disconnected")
-        BleFrameCodec.chunk(frame).forEach(pending::addLast)
+        try {
+            pending.add(frame)
+        } catch (error: IOException) {
+            close()
+            throw error
+        }
         if (!writing) writeNext()
     }
 
     @Synchronized
     override fun onReceive(receiver: (ByteArray) -> Unit) {
-        this.receiver = receiver
+        deferredReceiver.register(receiver)
     }
 
     @Synchronized
     fun receiveChunk(chunk: ByteArray) {
         try {
-            decoder.receive(chunk)?.let(receiver)
-        } catch (_: IllegalArgumentException) {
+            decoder.receive(chunk)?.let(deferredReceiver::deliver)
+        } catch (_: Exception) {
             close()
         }
     }
@@ -237,14 +241,15 @@ private class GattClientFrameChannel(
     override fun close() {
         if (!open) return
         open = false
-        pending.clear()
+        pending.close()
+        deferredReceiver.close()
         gatt.disconnect()
         gatt.close()
     }
 
     @SuppressLint("MissingPermission")
     private fun writeNext() {
-        val chunk = pending.pollFirst() ?: return
+        val chunk = pending.pollChunk() ?: return
         writing = true
         val result = if (Build.VERSION.SDK_INT >= 33) {
             gatt.writeCharacteristic(

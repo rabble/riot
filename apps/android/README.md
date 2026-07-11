@@ -87,6 +87,17 @@ suite proves manifest and Android-version permission wiring. Real discovery,
 pairing, and transfer between two physical phones remains the documented
 hardware rehearsal gate because Android emulators cannot validate the radios.
 
+The radio adapters are defensive around callback timing. Completed inbound
+frames wait in a small byte-and-count-bounded queue until the coordinator
+registers its receiver; overflow closes the connection instead of growing
+memory. Bluetooth uses the unnegotiated 20-byte GATT payload and streams one
+chunk at a time from a bounded frame cursor, so an allowed large frame does not
+create a million queued objects. A short advertised tie-break token resolves
+the case where both people initiate simultaneously without replacing explicit
+confirmation or exposing an identifier in the UI. The first completed
+connection wins, closes any loser, and closes the unused local listener so a
+late socket cannot become a second transport.
+
 ## Reproduce the checks
 
 The proven environment uses JDK 17 and the API 36 SDK:

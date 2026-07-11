@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  UniFFI checks for java.lang.ref.Cleaner by reflection and falls back to the
+  pinned JNA cleaner on Android versions where that class is unavailable.
+  Keep this baseline limited to those generated availability-shim calls.
+-->
+<issues format="6" by="lint 9.0.1" type="baseline" client="gradle" dependencies="false" name="AGP (9.0.1)" variant="all" version="9.0.1">
+    <issue
+        id="NewApi"
+        message="Call requires API level 33 (current min is 26): `java.lang.ref.Cleaner#create`"
+        errorLine1="    val cleaner = java.lang.ref.Cleaner.create()"
+        errorLine2="                                        ~~~~~~">
+        <location
+            file="${:app*debug*MAIN*sourceProvider*0*javaDir*3}/riot_ffi/riot_ffi.kt"
+            line="1114"
+            column="41"/>
+    </issue>
+    <issue
+        id="NewApi"
+        message="Call requires API level 33 (current min is 26): `java.lang.ref.Cleaner#register`"
+        errorLine1="        JavaLangRefCleanable(cleaner.register(value, cleanUpTask))"
+        errorLine2="                                     ~~~~~~~~">
+        <location
+            file="${:app*debug*MAIN*sourceProvider*0*javaDir*3}/riot_ffi/riot_ffi.kt"
+            line="1117"
+            column="38"/>
+    </issue>
+    <issue
+        id="NewApi"
+        message="Call requires API level 33 (current min is 26): `java.lang.ref.Cleaner.Cleanable#clean`"
+        errorLine1="    override fun clean() = cleanable.clean()"
+        errorLine2="                                     ~~~~~">
+        <location
+            file="${:app*debug*MAIN*sourceProvider*0*javaDir*3}/riot_ffi/riot_ffi.kt"
+            line="1123"
+            column="38"/>
+    </issue>
+</issues>

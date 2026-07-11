@@ -10,6 +10,34 @@ import org.junit.Test
 
 class NearbyTransportContractTest {
     @Test
+    fun simultaneousConfirmationSelectsOneInitiatorAndOneWaiter() {
+        assertEquals(PairingRole.INITIATE, PairingRoleSelector.choose(false, localToken = 20, remoteToken = 10))
+        assertEquals(PairingRole.INITIATE, PairingRoleSelector.choose(true, localToken = 10, remoteToken = 20))
+        assertEquals(PairingRole.ACCEPT_INCOMING, PairingRoleSelector.choose(true, localToken = 20, remoteToken = 10))
+    }
+
+    @Test
+    fun tieBreakTokenNeverTransfersConsentToADifferentPhone() {
+        val confirmed = DiscoveredPhone("Blue Kite", PeerHandle("phone-a"), pairingToken = 42)
+        val differentPhone = DiscoveredPhone("Quiet River", PeerHandle("phone-b"), pairingToken = 42)
+
+        assertFalse(PairingRoleSelector.matchesConfirmedPhone(confirmed, differentPhone))
+        assertTrue(PairingRoleSelector.matchesConfirmedPhone(confirmed, confirmed.copy()))
+    }
+
+    @Test
+    fun terminalVisibleStateAlwaysOffersAnotherNearbySession() {
+        listOf(
+            NearbyUiState.Idle,
+            NearbyUiState.Failed,
+            NearbyUiState.CaughtUp,
+            NearbyUiState.AlreadyCurrent,
+        ).forEach { assertTrue(NearbyUiActions.canFindAgain(it)) }
+        assertFalse(NearbyUiActions.canFindAgain(NearbyUiState.Connecting))
+        assertFalse(NearbyUiActions.canFindAgain(NearbyUiState.UpdatesReady(1, "Blue Kite")))
+    }
+
+    @Test
     fun discoveryUsesFriendlyEphemeralNamesNotTechnicalIdentifiers() {
         val first = FriendlyNameGenerator.generate(SequenceWordPicker(0, 0))
         val second = FriendlyNameGenerator.generate(SequenceWordPicker(1, 1))
@@ -18,6 +46,19 @@ class NearbyTransportContractTest {
         assertEquals("Quiet River", second)
         assertFalse(first.contains(":"))
         assertFalse(first.any(Char::isDigit))
+    }
+
+    @Test
+    fun everyFriendlyNameAndTieBreakTokenFitsAdvertisementBudget() {
+        FriendlyNameGenerator.candidates().forEachIndexed { index, name ->
+            val token = index * 101
+            val encoded = FriendlyNameAdvertisement.encode(name, token)
+            val decoded = FriendlyNameAdvertisement.decode(encoded)!!
+
+            assertTrue(encoded.size <= 13)
+            assertEquals(name, decoded.friendlyName)
+            assertEquals(token, decoded.pairingToken)
+        }
     }
 
     @Test
@@ -95,6 +136,43 @@ class NearbyTransportContractTest {
     }
 
     @Test
+    fun firstCompletedConnectionWinsAndLaterCandidateIsClosed() {
+        val winner = NearbyConnectionWinner()
+        val firstChannel = RecordingFrameChannel()
+        val secondChannel = RecordingFrameChannel()
+
+        assertTrue(winner.claim(NearbyConnection(firstChannel, TransportKind.BLE)))
+        assertTrue(winner.hasWinner)
+        assertFalse(winner.claim(NearbyConnection(secondChannel, TransportKind.LOCAL_IP)))
+
+        assertFalse(firstChannel.closed)
+        assertTrue(secondChannel.closed)
+        winner.close()
+        assertTrue(firstChannel.closed)
+    }
+
+    @Test
+    fun losingOutgoingFailureCannotOverrideActiveCollisionReplacement() {
+        val attempts = PairingAttemptArbiter()
+        val outgoing = attempts.begin()
+        val replacement = attempts.begin()
+
+        assertFalse(attempts.failed(outgoing))
+        attempts.succeeded(replacement)
+        assertFalse(attempts.failed(replacement))
+    }
+
+    @Test
+    fun finalFailedAttemptSurfacesFailureWhenNoReplacementWins() {
+        val attempts = PairingAttemptArbiter()
+        val outgoing = attempts.begin()
+        val replacement = attempts.begin()
+
+        assertFalse(attempts.failed(outgoing))
+        assertTrue(attempts.failed(replacement))
+    }
+
+    @Test
     fun localIpIsAttemptedOnceThenBleFallbackIsFixedForSession() {
         val ble = RecordingFrameChannel()
         val local = RecordingLocalIpConnector(result = null)
@@ -129,7 +207,7 @@ class NearbyTransportContractTest {
     @Test
     fun productionSocketConnectorRejectsPublicInternetAddressesBeforeDialing() {
         val connector = SocketLocalIpConnector()
-        listOf("8.8.8.8", "example.com", "2001:4860:4860::8888").forEach { host ->
+        listOf("127.0.0.1", "::1", "8.8.8.8", "example.com", "2001:4860:4860::8888").forEach { host ->
             assertThrows("must reject $host", IOException::class.java) {
                 connector.connect(LocalEndpoint(host, 443))
             }

@@ -14,7 +14,12 @@ import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.TimeUnit
 import kotlin.concurrent.thread
 
-class SocketLocalIpConnector(private val timeoutMillis: Int = 1_500) : LocalIpConnector {
+class SocketLocalIpConnector private constructor(
+    private val timeoutMillis: Int,
+    private val allowLoopback: Boolean,
+) : LocalIpConnector {
+    constructor(timeoutMillis: Int = 1_500) : this(timeoutMillis, false)
+
     override fun connect(endpoint: LocalEndpoint): FrameChannel {
         val address = numericLocalAddress(endpoint.host)
         val socket = Socket()
@@ -39,7 +44,7 @@ class SocketLocalIpConnector(private val timeoutMillis: Int = 1_500) : LocalIpCo
             ':' in host && IPV6.matches(host) -> InetAddress.getByName(host)
             else -> throw IOException("local endpoint must be a numeric IP address")
         }
-        val allowed = address.isLoopbackAddress || address.isLinkLocalAddress || when (address) {
+        val allowed = (allowLoopback && address.isLoopbackAddress) || address.isLinkLocalAddress || when (address) {
             is Inet4Address -> address.isSiteLocalAddress
             is Inet6Address -> (address.address.first().toInt() and 0xfe) == 0xfc
             else -> false
@@ -48,7 +53,10 @@ class SocketLocalIpConnector(private val timeoutMillis: Int = 1_500) : LocalIpCo
         return address
     }
 
-    private companion object {
+    companion object {
+        internal fun loopbackForTest(timeoutMillis: Int = 1_500) =
+            SocketLocalIpConnector(timeoutMillis, true)
+
         val IPV4 = Regex("[0-9]{1,3}(\\.[0-9]{1,3}){3}")
         val IPV6 = Regex("[0-9a-fA-F:]+")
     }
@@ -62,7 +70,7 @@ class LocalIpListener(host: String) : AutoCloseable {
     init {
         thread(name = "riot-local-accept", isDaemon = true) {
             try {
-                accepted.offer(SocketFrameChannel(server.accept()))
+                offerAccepted(SocketFrameChannel(server.accept()))
             } catch (_: IOException) {
                 // Closing the listener is the normal cancellation path.
             } finally {
@@ -74,9 +82,19 @@ class LocalIpListener(host: String) : AutoCloseable {
     fun awaitAccepted(timeoutMillis: Long): FrameChannel? =
         accepted.poll(timeoutMillis, TimeUnit.MILLISECONDS)
 
+    @Synchronized
     override fun close() {
+        closed = true
         runCatching(server::close)
         accepted.poll()?.close()
+    }
+
+    @Volatile
+    private var closed = false
+
+    @Synchronized
+    private fun offerAccepted(channel: FrameChannel) {
+        if (closed || !accepted.offer(channel)) channel.close()
     }
 
     companion object {
@@ -96,7 +114,7 @@ class LocalIpListener(host: String) : AutoCloseable {
 internal class SocketFrameChannel(private val socket: Socket) : FrameChannel {
     private val input = DataInputStream(socket.getInputStream())
     private val output = DataOutputStream(socket.getOutputStream())
-    @Volatile private var receiver: (ByteArray) -> Unit = {}
+    private val deferredReceiver = DeferredFrameReceiver()
     @Volatile private var open = true
 
     init {
@@ -107,7 +125,7 @@ internal class SocketFrameChannel(private val socket: Socket) : FrameChannel {
                     if (length !in 0..MAX_SYNC_FRAME_BYTES) throw IOException("invalid local frame length")
                     val frame = ByteArray(length)
                     input.readFully(frame)
-                    receiver(frame)
+                    deferredReceiver.deliver(frame)
                 }
             } catch (_: IOException) {
                 close()
@@ -125,13 +143,14 @@ internal class SocketFrameChannel(private val socket: Socket) : FrameChannel {
     }
 
     override fun onReceive(receiver: (ByteArray) -> Unit) {
-        this.receiver = receiver
+        deferredReceiver.register(receiver)
     }
 
     @Synchronized
     override fun close() {
         if (!open) return
         open = false
+        deferredReceiver.close()
         runCatching(socket::close)
     }
 }

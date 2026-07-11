@@ -12,12 +12,18 @@ import android.bluetooth.le.ScanSettings
 import android.content.Context
 import android.os.ParcelUuid
 import java.nio.charset.StandardCharsets
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
+import java.security.SecureRandom
 import java.util.UUID
 
 class AndroidBleDiscovery(
     context: Context,
     val friendlyName: String = FriendlyNameGenerator.generate(),
 ) : AutoCloseable {
+    private val secureRandom = SecureRandom()
+    var pairingToken: Int = secureRandom.nextInt(65_536)
+        private set
     private val adapter = context.getSystemService(BluetoothManager::class.java)?.adapter
         ?: throw IllegalStateException("Nearby Bluetooth is unavailable")
     private val service = ParcelUuid(SERVICE_UUID)
@@ -28,6 +34,7 @@ class AndroidBleDiscovery(
     @SuppressLint("MissingPermission")
     fun start(onPhoneFound: (DiscoveredPhone) -> Unit, onFailure: () -> Unit) {
         close()
+        pairingToken = secureRandom.nextInt(65_536)
         if (!adapter.isEnabled) throw IllegalStateException("Nearby Bluetooth is turned off")
         val advertiser = adapter.bluetoothLeAdvertiser
             ?: throw IllegalStateException("Nearby advertising is unavailable")
@@ -44,19 +51,26 @@ class AndroidBleDiscovery(
                     .build(),
                 AdvertiseData.Builder()
                     .addServiceUuid(service)
-                    .addServiceData(service, FriendlyNameAdvertisement.encode(friendlyName))
                     .setIncludeDeviceName(false)
+                    .build(),
+                AdvertiseData.Builder()
+                    .addServiceData(
+                        service,
+                        FriendlyNameAdvertisement.encode(friendlyName, pairingToken),
+                    )
                     .build(),
                 callback,
             )
         }
         scanCallback = object : ScanCallback() {
             override fun onScanResult(callbackType: Int, result: ScanResult) {
-                val name = result.scanRecord?.getServiceData(service)
+                val advertised = result.scanRecord?.getServiceData(service)
                     ?.let(FriendlyNameAdvertisement::decode) ?: return
                 val handle = result.device.address
                 if (seenHandles.add(handle)) {
-                    onPhoneFound(DiscoveredPhone(name, PeerHandle(handle)))
+                    onPhoneFound(
+                        DiscoveredPhone(advertised.friendlyName, PeerHandle(handle), advertised.pairingToken),
+                    )
                 }
             }
 
@@ -89,19 +103,29 @@ class AndroidBleDiscovery(
 }
 
 object FriendlyNameAdvertisement {
-    private const val MAX_NAME_BYTES = 24
+    private const val MAX_NAME_BYTES = 11
     private val SAFE_NAME = Regex("[A-Z][a-z]+ [A-Z][a-z]+")
 
-    fun encode(name: String): ByteArray {
+    fun encode(name: String, pairingToken: Int): ByteArray {
         require(SAFE_NAME.matches(name)) { "invalid friendly name" }
-        return name.toByteArray(StandardCharsets.UTF_8).also {
-            require(it.size <= MAX_NAME_BYTES) { "friendly name is too long" }
-        }
+        require(pairingToken in 0..65_535) { "invalid pairing token" }
+        val encodedName = name.toByteArray(StandardCharsets.UTF_8)
+        require(encodedName.size <= MAX_NAME_BYTES) { "friendly name is too long" }
+        return ByteBuffer.allocate(2 + encodedName.size)
+            .order(ByteOrder.BIG_ENDIAN)
+            .putShort(pairingToken.toShort())
+            .put(encodedName)
+            .array()
     }
 
-    fun decode(bytes: ByteArray): String? {
-        if (bytes.size !in 1..MAX_NAME_BYTES) return null
-        val name = bytes.toString(StandardCharsets.UTF_8)
-        return name.takeIf(SAFE_NAME::matches)
+    fun decode(bytes: ByteArray): AdvertisedPhone? {
+        if (bytes.size !in 3..(MAX_NAME_BYTES + 2)) return null
+        val buffer = ByteBuffer.wrap(bytes).order(ByteOrder.BIG_ENDIAN)
+        val token = buffer.short.toInt() and 0xffff
+        val encodedName = ByteArray(buffer.remaining()).also(buffer::get)
+        val name = encodedName.toString(StandardCharsets.UTF_8)
+        return name.takeIf(SAFE_NAME::matches)?.let { AdvertisedPhone(it, token) }
     }
 }
+
+data class AdvertisedPhone(val friendlyName: String, val pairingToken: Int)

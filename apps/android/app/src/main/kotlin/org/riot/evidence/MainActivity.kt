@@ -16,6 +16,7 @@ import android.widget.TextView
 import uniffi.riot_ffi.CurrentEntry
 import org.riot.evidence.transport.AndroidNearbyController
 import org.riot.evidence.transport.NearbyUiState
+import org.riot.evidence.transport.NearbyUiActions
 import org.riot.evidence.transport.SyncCoordinator
 
 class MainActivity : Activity() {
@@ -247,7 +248,7 @@ class MainActivity : Activity() {
             content.addView(action("Add them") { syncCoordinator?.acceptImport() })
             content.addView(action("Not now") { syncCoordinator?.rejectImport() })
         }
-        if (nearby.state is NearbyUiState.Idle || nearby.state is NearbyUiState.Failed) {
+        if (NearbyUiActions.canFindAgain(visibleState)) {
             content.addView(action("Find nearby") {
                 syncCoordinator?.close()
                 syncCoordinator = null

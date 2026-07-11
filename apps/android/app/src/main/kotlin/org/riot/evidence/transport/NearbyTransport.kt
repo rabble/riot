@@ -8,7 +8,11 @@ const val MAX_SYNC_FRAME_BYTES = 8_388_608 + 128
 @JvmInline
 value class PeerHandle internal constructor(internal val value: String)
 
-data class DiscoveredPhone(val friendlyName: String, val handle: PeerHandle)
+data class DiscoveredPhone(
+    val friendlyName: String,
+    val handle: PeerHandle,
+    val pairingToken: Int = 0,
+)
 data class LocalEndpoint(val host: String, val port: Int) {
     init {
         require(host.isNotBlank()) { "local endpoint host is empty" }
@@ -17,6 +21,46 @@ data class LocalEndpoint(val host: String, val port: Int) {
 }
 
 enum class TransportKind { LOCAL_IP, BLE }
+
+enum class PairingRole { INITIATE, ACCEPT_INCOMING }
+
+object PairingRoleSelector {
+    fun matchesConfirmedPhone(confirmed: DiscoveredPhone, incoming: DiscoveredPhone): Boolean =
+        confirmed.handle == incoming.handle && confirmed.pairingToken == incoming.pairingToken
+
+    fun choose(concurrentIncoming: Boolean, localToken: Int, remoteToken: Int): PairingRole {
+        require(localToken in 0..65_535 && remoteToken in 0..65_535)
+        if (!concurrentIncoming) return PairingRole.INITIATE
+        require(localToken != remoteToken) { "Nearby pairing tokens collided; find nearby again" }
+        return if (localToken < remoteToken) PairingRole.INITIATE else PairingRole.ACCEPT_INCOMING
+    }
+}
+
+class PairingAttemptArbiter {
+    private val active = mutableSetOf<Long>()
+    private var nextId = 0L
+    private var settled = false
+
+    @Synchronized
+    fun begin(): Long = (++nextId).also(active::add)
+
+    @Synchronized
+    fun succeeded(attempt: Long) {
+        if (active.remove(attempt)) settled = true
+    }
+
+    @Synchronized
+    fun failed(attempt: Long): Boolean {
+        if (!active.remove(attempt)) return false
+        return active.isEmpty() && !settled
+    }
+
+    @Synchronized
+    fun reset() {
+        active.clear()
+        settled = false
+    }
+}
 
 enum class ConfirmationDecision { RETRY, READY, FAILED }
 
@@ -94,6 +138,27 @@ class NearbyConnection internal constructor(
     override fun close() = disconnect()
 }
 
+class NearbyConnectionWinner : AutoCloseable {
+    private var winner: NearbyConnection? = null
+    val hasWinner: Boolean @Synchronized get() = winner != null
+
+    @Synchronized
+    fun claim(candidate: NearbyConnection): Boolean {
+        if (winner != null) {
+            candidate.disconnect()
+            return false
+        }
+        winner = candidate
+        return true
+    }
+
+    @Synchronized
+    override fun close() {
+        winner?.disconnect()
+        winner = null
+    }
+}
+
 class SessionTransportSelector(private val localIpConnector: LocalIpConnector) {
     fun select(ble: PairedBleLink): NearbyConnection {
         val local = ble.localEndpoint?.let { endpoint ->
@@ -133,6 +198,12 @@ sealed interface NearbyUiState {
     data class OutOfRange(val name: String) : NearbyUiState {
         override val message = "$name went out of range"
     }
+}
+
+object NearbyUiActions {
+    fun canFindAgain(state: NearbyUiState): Boolean = state is NearbyUiState.Idle ||
+        state is NearbyUiState.Failed || state is NearbyUiState.CaughtUp ||
+        state is NearbyUiState.AlreadyCurrent
 }
 
 class PairingController(private val bleConnector: BleConnector) {
@@ -199,11 +270,15 @@ interface WordPicker {
 }
 
 object FriendlyNameGenerator {
-    private val adjectives = listOf("Blue", "Quiet", "Bright", "Gentle", "Swift", "Warm")
+    private val adjectives = listOf("Blue", "Quiet", "Bold", "Kind", "Swift", "Warm")
     private val nouns = listOf("Kite", "River", "Fox", "Cedar", "Robin", "Cloud")
 
     fun generate(picker: WordPicker = SecureWordPicker()): String =
         "${adjectives[picker.pick(adjectives.size)]} ${nouns[picker.pick(nouns.size)]}"
+
+    internal fun candidates(): List<String> = adjectives.flatMap { adjective ->
+        nouns.map { noun -> "$adjective $noun" }
+    }
 
     private class SecureWordPicker : WordPicker {
         private val random = SecureRandom()

@@ -18,6 +18,11 @@ android {
         }
     }
 
+    lint {
+        // UniFFI reflectively selects java.lang.ref.Cleaner only when present and otherwise uses pinned JNA.
+        baseline = file("lint-baseline.xml")
+    }
+
     sourceSets {
         getByName("main") {
             kotlin.directories.add(rootProject.file("../../build/generated/riot-ffi/uniffi").path)
