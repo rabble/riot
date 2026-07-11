@@ -17,8 +17,11 @@ import uniffi.riot_ffi.CurrentEntry
 import org.riot.evidence.apps.AppBundleCodec
 import org.riot.evidence.apps.AppResourceResolver
 import org.riot.evidence.apps.AppWebViewHost
+import org.riot.evidence.apps.AssetStarterCatalog
+import org.riot.evidence.apps.DirectoryController
 import org.riot.evidence.apps.InstalledApp
 import org.riot.evidence.apps.RiotAppsController
+import org.riot.evidence.apps.UniffiDirectoryPort
 import org.riot.evidence.apps.RiotJsBridge
 import org.riot.evidence.apps.UniffiAppDataPort
 import org.riot.evidence.transport.AndroidNearbyController
@@ -37,6 +40,7 @@ class MainActivity : Activity() {
     private var syncCoordinator: SyncCoordinator? = null
     private var syncState: NearbyUiState? = null
     private lateinit var apps: RiotAppsController
+    private lateinit var directory: DirectoryController
     private var runningApp: Pair<InstalledApp, AppWebViewHost>? = null
     private var pendingAppManifest: ByteArray? = null
 
@@ -44,6 +48,11 @@ class MainActivity : Activity() {
         super.onCreate(savedInstanceState)
         controller = RiotController(filesDir)
         apps = RiotAppsController(controller.openAppRuntime())
+        directory = DirectoryController(
+            UniffiDirectoryPort(controller.openAppRuntime()),
+            apps,
+            AssetStarterCatalog(assets),
+        )
         nearby = AndroidNearbyController(
             this,
             onChanged = {
@@ -73,6 +82,14 @@ class MainActivity : Activity() {
             },
         )
         setContentView(buildShell())
+        // Bring the built-in tools in before the first render so the checklist
+        // is openable under Tools and in the directory out of the box. If its
+        // shipped bytes are unreadable the directory still lists it (the core
+        // compiles it in) — it just can't be opened, so a silent skip is fine.
+        try {
+            directory.ensureStarterInstalled()
+        } catch (_: Exception) {
+        }
         show(ConferenceSurface.SPACES)
     }
 
@@ -143,6 +160,7 @@ class MainActivity : Activity() {
         content.addView(heading(surface.label))
         when (surface) {
             ConferenceSurface.SPACES -> showSpaces()
+            ConferenceSurface.APP_DIRECTORY -> showDirectory()
             ConferenceSurface.INCIDENT_BOARD -> showBoard()
             ConferenceSurface.COMPOSE_AND_SIGN -> showCompose()
             ConferenceSurface.IMPORT_PREVIEW -> showImportPreview()
@@ -186,6 +204,82 @@ class MainActivity : Activity() {
         content.addView(action("Add a tool (choose manifest, then bundle)") {
             startActivityForResult(openDocumentIntent(), PICK_APP_MANIFEST)
         })
+    }
+
+    /**
+     * The discovery surface: every app this profile can see — built-in,
+     * shared into a space, or carried in by sync — with what it does, who
+     * recommends it, and the actions to review, recommend, or pass it on.
+     * Plain language only; the word "install" never appears.
+     */
+    private fun showDirectory() {
+        val space = controller.currentSpace
+        content.addView(body(
+            "Every tool your communities carry shows up here. Nothing runs until " +
+                "an organizer turns it on for a space.",
+        ))
+        val listings = directory.listings()
+        if (listings.isEmpty()) {
+            content.addView(body("No tools yet."))
+            return
+        }
+        listings.forEach { listing ->
+            val trusted = directory.trustedInCurrentSpace(listing, space)
+            content.addView(heading("${listing.name} · ${listing.version}"))
+            content.addView(body(listing.description))
+
+            val badges = buildList {
+                if (listing.builtIn) add("Built in")
+                if (trusted) add("On in this space")
+                if (!listing.bundlePresent) add("Still arriving from your group")
+            }
+            if (badges.isNotEmpty()) content.addView(body(badges.joinToString("  ·  ")))
+
+            content.addView(body("This app can:"))
+            listing.permissions.forEach { content.addView(body("• $it")) }
+
+            val met = listing.endorsingMetSubspaces.size
+            val unmet = listing.endorsingUnmetCount.toInt()
+            if (met + unmet > 0) {
+                val parts = buildList {
+                    if (met > 0) {
+                        add(if (met == 1) "1 group you've met" else "$met groups you've met")
+                    }
+                    if (unmet > 0) add("$unmet you haven't met")
+                }
+                content.addView(body("Recommended by ${parts.joinToString(", ")}"))
+            }
+
+            val installed = directory.installedFor(listing)
+            when {
+                installed != null && trusted ->
+                    content.addView(action("Open ${listing.name}") { openApp(installed) })
+                installed != null ->
+                    content.addView(action("Review ${listing.name}") { showAppReview(installed) })
+                trusted && !listing.bundlePresent ->
+                    content.addView(body("Still arriving from your group…"))
+            }
+
+            val note = EditText(this).apply {
+                hint = "Why you recommend it (optional)"
+            }
+            content.addView(note)
+            content.addView(action("Recommend") {
+                runAction("Recommended ${listing.name}") {
+                    directory.recommend(listing, note.text.toString())
+                    show(ConferenceSurface.APP_DIRECTORY)
+                }
+            })
+
+            if (space != null) {
+                content.addView(action("Share to this space") {
+                    runAction("Shared ${listing.name} to ${space.title}") {
+                        directory.share(listing, space)
+                        show(ConferenceSurface.APP_DIRECTORY)
+                    }
+                })
+            }
+        }
     }
 
     /** The trust-decision moment: plain language only, mirroring iOS. */

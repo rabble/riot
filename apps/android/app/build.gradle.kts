@@ -27,6 +27,10 @@ android {
         getByName("main") {
             kotlin.directories.add(rootProject.file("../../build/generated/riot-ffi/uniffi").path)
             jniLibs.directories.add(rootProject.file("../../build/native/android/jniLibs").path)
+            // Ships the built-in starter apps (checklist manifest+bundle) so the
+            // directory can open them out of the box. Same packed .cbor files the
+            // core embeds; referenced, never copied.
+            assets.directories.add(rootProject.file("../../fixtures/apps").path)
         }
         getByName("androidTest") {
             assets.directories.add(rootProject.file("../../fixtures/apps").path)

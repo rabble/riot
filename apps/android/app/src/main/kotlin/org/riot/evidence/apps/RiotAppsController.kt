@@ -3,7 +3,7 @@ package org.riot.evidence.apps
 import uniffi.riot_ffi.AppRuntimeSession
 
 /** Install/trust/launch decisions for signed JS apps in this profile. */
-class RiotAppsController(private val session: AppRuntimeSession) {
+class RiotAppsController(private val session: AppRuntimeSession) : InstalledAppsAccess {
     private val store = InstalledAppsStore()
 
     /**
@@ -11,7 +11,7 @@ class RiotAppsController(private val session: AppRuntimeSession) {
      * before the Kotlin serving-decode ever runs. In-memory retention is
      * the documented stopgap until `app_resource` lands (spec, gated).
      */
-    fun install(manifestBytes: ByteArray, bundleBytes: ByteArray): InstalledApp {
+    override fun install(manifestBytes: ByteArray, bundleBytes: ByteArray): InstalledApp {
         val record = session.installApp(manifestBytes, bundleBytes)
         val bundle = AppBundleCodec.decode(bundleBytes)
         check(bundle.entryPoint == record.entryPoint) { "That file isn't a Riot tool" }
@@ -19,6 +19,9 @@ class RiotAppsController(private val session: AppRuntimeSession) {
     }
 
     fun apps(): List<InstalledApp> = store.all()
+
+    /** The installed tool for a content-derived app id (hex), or null. */
+    override fun find(appIdHex: String): InstalledApp? = store.find(appIdHex)
 
     fun isTrusted(app: InstalledApp): Boolean = session.isAppTrusted(app.record.appId)
 

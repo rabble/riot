@@ -5,9 +5,16 @@ import org.junit.Test
 
 class ConferenceSurfaceTest {
     @Test
-    fun shellHasExactlyTheFiveConferenceSurfaces() {
+    fun shellHasExactlyTheConferenceSurfaces() {
         assertEquals(
-            listOf("Spaces", "Incident board", "Compose & sign", "Import preview", "Connection"),
+            listOf(
+                "Spaces",
+                "App directory",
+                "Incident board",
+                "Compose & sign",
+                "Import preview",
+                "Connection",
+            ),
             ConferenceSurface.entries.map { it.label },
         )
     }
