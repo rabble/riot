@@ -196,6 +196,10 @@ pub struct ImportReceipt {
 pub struct DuplicateResult {
     pub unchanged_generation: u64,
     pub entry_ids: Vec<EntryId>,
+    /// Captured under the commit arbiter lock. Local exact-write helpers use
+    /// this to distinguish a live idempotent duplicate from a historical
+    /// entry that remains only in the seen index.
+    pub(crate) all_entry_ids_live: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -537,6 +541,11 @@ impl EvidenceStore {
     /// concurrently, leave that newer review untouched.
     fn finish_local_write(&self, preview_id: u64) -> Result<(), SessionError> {
         let mut st = self.inner.lock().map_err(|_| SessionError::Internal)?;
+        // Closing a store/session already clears preview and plan state, so
+        // cleanup after a successful commit is complete rather than failed.
+        if st.closed || st.store_closed || st.store.is_none() {
+            return Ok(());
+        }
         st.require_store(self.store_id)?;
         if st
             .preview
@@ -787,8 +796,10 @@ pub(crate) fn commit_at(
         .map_err(|_| crate::apps::AppsError::StoreRejected)?;
     match outcome.map_err(|_| crate::apps::AppsError::StoreRejected)? {
         // With one submitted entry, duplicate-only `NoChanges` proves the
-        // exact canonical entry id was already present: safe idempotence.
-        CommitOutcome::NoChanges(_) => Ok(()),
+        // exact canonical entry id was seen; it is idempotent only when the
+        // locked commit snapshot also recorded that id as currently live.
+        CommitOutcome::NoChanges(duplicate) if duplicate.all_entry_ids_live => Ok(()),
+        CommitOutcome::NoChanges(_) => Err(crate::apps::AppsError::StaleWrite),
         CommitOutcome::Committed(receipt) => match receipt.dispositions.as_slice() {
             [DispositionRow {
                 disposition: EntryDisposition::AppliedAtCommit { .. },
@@ -1016,11 +1027,16 @@ impl ImportPlan {
 
         if !any_new {
             // Duplicate-only: no swap, no generation change, no receipt. The
-            // plan is consumed regardless.
+            // plan is consumed regardless. Capture current liveness while the
+            // arbiter lock is still held; a later lookup would race a newer
+            // write at the same coordinate.
+            let entry_ids: Vec<EntryId> = join_plan.effects.iter().map(|(id, _)| *id).collect();
+            let all_entry_ids_live = entry_ids.iter().all(|id| pre_join.is_live_id(id));
             terminate_plan(&mut st, self.plan_id, PlanTerminal::Consumed);
             return Ok(CommitOutcome::NoChanges(DuplicateResult {
                 unchanged_generation: before_generation,
-                entry_ids: join_plan.effects.iter().map(|(id, _)| *id).collect(),
+                entry_ids,
+                all_entry_ids_live,
             }));
         }
 
@@ -1239,5 +1255,66 @@ mod charge_budget_tests {
             u64::MAX
         ));
         assert!(!store_charge_exceeds_budget(0, 0, 0, 0, 0));
+    }
+}
+
+#[cfg(test)]
+mod local_write_tests {
+    use super::{commit_at, ImportContext, InspectOutcome, RiotSession};
+    use crate::apps::index::app_index_trust_path;
+    use crate::apps::trust::{
+        encode_trust_marker, trust_markers_for, TrustMarker, TrustMarkerKind,
+    };
+    use crate::apps::AppsError;
+    use crate::import::encode_bundle;
+    use crate::willow::generate_communal_author;
+
+    fn trust_payload(app_id: [u8; 32], kind: TrustMarkerKind) -> Vec<u8> {
+        encode_trust_marker(&TrustMarker {
+            app_id,
+            author_subspace_id: [0; 32],
+            kind,
+            timestamp_micros: 0,
+        })
+        .expect("payload")
+    }
+
+    #[test]
+    fn historical_exact_duplicate_is_stale_not_idempotent() {
+        let session = RiotSession::open().expect("session");
+        let store = session.create_store().expect("store");
+        let organizer = generate_communal_author().expect("organizer");
+        let app_id = [13u8; 32];
+        let path = app_index_trust_path(&app_id, organizer.subspace_id().as_bytes()).expect("path");
+        let trust = trust_payload(app_id, TrustMarkerKind::Trust);
+        let revoke = trust_payload(app_id, TrustMarkerKind::Revoke);
+
+        commit_at(&store, &organizer, &path, &trust, 100).expect("trust 100");
+        commit_at(&store, &organizer, &path, &revoke, 200).expect("revoke 200");
+        assert_eq!(
+            commit_at(&store, &organizer, &path, &trust, 100),
+            Err(AppsError::StaleWrite)
+        );
+
+        let markers =
+            trust_markers_for(&store, organizer.namespace_id().as_bytes(), &app_id).expect("scan");
+        assert_eq!(markers.len(), 1);
+        assert_eq!(markers[0].kind, TrustMarkerKind::Revoke);
+        assert_eq!(markers[0].timestamp_micros, 200);
+    }
+
+    #[test]
+    fn closing_store_makes_local_preview_cleanup_a_successful_noop() {
+        let session = RiotSession::open().expect("session");
+        let store = session.create_store().expect("store");
+        let bundle = encode_bundle(&[]).expect("bundle");
+        let preview = match store.inspect_local_write(&bundle, ImportContext::new("local-test")) {
+            Ok(InspectOutcome::Preview(preview)) => preview,
+            Ok(InspectOutcome::Rejected(rejection)) => panic!("rejected: {rejection:?}"),
+            Err(_) => panic!("inspect failed"),
+        };
+
+        store.close().expect("close");
+        assert_eq!(store.finish_local_write(preview.preview_id), Ok(()));
     }
 }
