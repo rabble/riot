@@ -70,9 +70,29 @@ by itself.
 
 ## Space-scoped trust
 
+**Planning-time correction (2026-07-11):** the paragraph below originally said
+trust-list writes use "the space's existing admin `WriteCapability`
+(Meadowcap delegation)." Ground-truth investigation while writing the
+implementation plan found riot-core never actually uses capability
+delegation anywhere — `willow25::WriteCapability::delegate` exists in the
+underlying library, but every `EvidenceAuthor` in this codebase only ever
+mints a zero-delegation, own-subspace-only communal capability
+(`identity.rs::write_capability`). There is no "space admin" capability
+concept today. Adding real delegation would be a separate, larger change
+(subspace-signature delegation semantics, a new capability-minting/verifying
+path) out of scope for a checklist-first MVP. Instead: trust-list authority
+uses a **fixed, known organizer subspace_id per space** — the same precedent
+already used for the conference fixture's fixed public author identifiers
+(`docs/superpowers/specs/2026-07-11-riot-conference-native-demo-design.md`).
+A client only honors a trust-list entry if it was authored under a
+subspace_id on that space's known-organizer list; entries from any other
+subspace at the trust-list path are ignored. This keeps the *intent* of the
+original paragraph (reuse an existing authority mechanism, invent no new
+permission system) while naming the mechanism that actually exists.
+
 Each space (namespace) has a trust list: a small Willow-stored set of
-`app_id`s, written using that space's existing admin `WriteCapability`
-(Meadowcap delegation — no new permission system). An app is launchable in a
+`app_id`s, written by a recognized organizer subspace (see correction above).
+An app is launchable in a
 space only once its `app_id` is on that space's trust list. Adding an app to
 the list is the one moment a human reads its plain-language `description` and
 confirms; after that, it's available to everyone in the space automatically
