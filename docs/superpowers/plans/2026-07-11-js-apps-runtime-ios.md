@@ -21,6 +21,11 @@
    - Directory **Task 6** adds `directory_listings` to `apps_ffi.rs`. This plan's Task 5 re-checks that surface first and adds only what's missing.
 3. **Dependency gates:** Task 1 is unblocked now. Task 2 gates on directory Task 7; Task 3 on directory Task 5 + our Task 2; Task 5 on directory Task 6. iOS tasks 6–10 follow Task 5. If a gate hasn't landed, stop and hand off (or wait) rather than editing files the directory session has claimed (`apps/starter.rs`, `apps_ffi.rs`, `mobile_state.rs`, `riot-app-cli/`).
 4. iOS tasks (6–10) need the native prerequisites from `apps/ios/README.md`: run `scripts/conference/build-native-core.sh` from the repo root after any FFI change, before building the Xcode project.
+5. **Reconciliation №2 (execution-time, "don't wait" directive):** the landed platform FFI (`apps_ffi.rs`: `install_app → InstalledAppRecord`, trust calls, `app_data_*`) plus the Android twin's landed precedent (client-side `AppBundleCodec` decoding bundle bytes only after Rust's `install_app` accepted them — `apps/android/.../apps/AppBundleCodec.kt`) unblock most of this plan without waiting on the directory session:
+   - **Task 2** runs now via `crates/riot-core/examples/pack_checklist.rs` (deterministic, key-free, fixed committed public author identity) instead of the CLI; `scripts/apps/repack-starter.sh` switches to `riot-app pack` when that lands.
+   - **Task 7** is decoupled from the repository layer: new `AppBundleCodec.swift` + `AppResourceResolver.swift` (Swift mirrors of the Android pair), `AppSchemeHandler` backed by a resolver, `AppBridgeController` backed by an `AppDataBridging` protocol whose concrete adapter wraps the generated `AppRuntimeSession` directly. Zero Rust/FFI edits.
+   - **Task 6** (repository) shrinks to: install-from-starter-catalog on open, trust persistence (persist trusted app ids + installed pairs in the profile JSON; re-install + re-trust on open — the landed FFI trust state is profile-local in-memory), resolver construction, and listing from remembered `InstalledAppRecord`s.
+   - **Task 5** (FFI additions) narrows to app-data replay-persistence returns + display name, and stays gated on the directory session releasing `apps_ffi.rs`/`mobile_state.rs`; item-persistence across relaunch (part of Task 10's definition of done) depends on it.
 
 ## File Structure
 
