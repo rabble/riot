@@ -28,6 +28,9 @@ android {
             kotlin.directories.add(rootProject.file("../../build/generated/riot-ffi/uniffi").path)
             jniLibs.directories.add(rootProject.file("../../build/native/android/jniLibs").path)
         }
+        getByName("androidTest") {
+            assets.directories.add(rootProject.file("../../fixtures/apps").path)
+        }
     }
 }
 
