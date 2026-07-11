@@ -117,6 +117,139 @@ final class DirectoryRepositoryTests: XCTestCase {
         XCTAssertEqual(model.confirmation, "Shared Checklist to Berlin Mutual Aid")
     }
 
+    // MARK: - Getting an app this profile carries but has not taken up
+
+    /// A profile that holds an app's bytes in its store without having taken the
+    /// app up — exactly the state a neighbour's app arrives in over sync. It is
+    /// reached here without a second device: the repository is opened with no
+    /// starter packs (so nothing is held), and `shareApp` writes the pair into
+    /// the store from Rust's own starter catalog.
+    private func repositoryCarryingChecklist(
+        storage: ProtectedProfileStorage? = nil,
+        keyStore: WrappingKeyStore = TestWrappingKeyStore()
+    ) throws -> (RiotProfileRepository, DirectoryListing) {
+        let storage = try storage ?? {
+            let directory = FileManager.default.temporaryDirectory
+                .appendingPathComponent("carried-\(UUID().uuidString)", isDirectory: true)
+            return try ProtectedProfileStorage(fileURL: directory.appendingPathComponent("profile.json"))
+        }()
+        let repository = try RiotProfileRepository.open(
+            storage: storage,
+            keyStore: keyStore,
+            starterPacks: []
+        )
+        _ = try repository.createPublicSpace(title: "Berlin Mutual Aid")
+        let listing = try XCTUnwrap(
+            repository.directoryListings().first { $0.name == "Checklist" }
+        )
+        XCTAssertTrue(try repository.installedApps().isEmpty)
+        try repository.shareApp(appID: listing.appId)
+        return (repository, listing)
+    }
+
+    /// The dead end this closes: an app present in the store but not held offers
+    /// to be got, and getting it flips the row to Review — untrusted, so nothing
+    /// runs until this person approves it.
+    func testGettingACarriedAppMakesItHeldAndReviewable() throws {
+        let (repository, listing) = try repositoryCarryingChecklist()
+        let model = RiotDirectoryModel(port: repository)
+
+        model.refresh()
+        let before = try XCTUnwrap(model.rows.first { $0.name == "Checklist" })
+        XCTAssertEqual(before.availability, .get)
+
+        model.get(before)
+
+        XCTAssertNil(model.errorMessage)
+        XCTAssertEqual(model.confirmation, "Got Checklist — review it before it runs")
+        let after = try XCTUnwrap(model.rows.first { $0.name == "Checklist" })
+        guard case let .review(app) = after.availability else {
+            return XCTFail("expected a carried app to be reviewable once got, got \(after.availability)")
+        }
+        XCTAssertEqual(app.appIDHex, RiotDirectoryRow.hex(listing.appId))
+        XCTAssertFalse(app.trusted)
+    }
+
+    /// The other half of the hop: once approved, the app a neighbour carried is
+    /// served to the WebView from the store's own bytes — a carried app has no
+    /// file on this device, so this is the only copy there is.
+    func testACarriedAppIsServedFromTheStoresBytesOnceApproved() throws {
+        let (repository, listing) = try repositoryCarryingChecklist()
+        let app = try repository.getCarriedApp(appID: listing.appId)
+
+        // Untrusted, the host will not even hand out a resolver.
+        XCTAssertNil(repository.appResolver(appID: app.appIDHex))
+
+        try repository.trustApp(appID: app.appIDHex)
+
+        let resolver = try XCTUnwrap(repository.appResolver(appID: app.appIDHex))
+        let entry = try repository.appResource(appID: app.appIDHex, path: resolver.entryPoint)
+        XCTAssertFalse(entry.bytes.isEmpty)
+        XCTAssertTrue(entry.contentType.contains("html"))
+    }
+
+    /// A carried app you got and turned on is still yours after a relaunch. The
+    /// store it arrived in is in-memory, so the profile keeps its own copy of the
+    /// verified bytes and re-installs the app on open — and it is still trusted,
+    /// still served, and still on the surface that offered it.
+    func testACarriedAppSurvivesARelaunch() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("relaunch-\(UUID().uuidString)", isDirectory: true)
+        let file = directory.appendingPathComponent("profile.json")
+        let keyStore = TestWrappingKeyStore()
+
+        let appIDHex: String
+        do {
+            let (repository, listing) = try repositoryCarryingChecklist(
+                storage: try ProtectedProfileStorage(fileURL: file),
+                keyStore: keyStore
+            )
+            let app = try repository.getCarriedApp(appID: listing.appId)
+            try repository.trustApp(appID: app.appIDHex)
+            appIDHex = app.appIDHex
+        }
+
+        // A new process: a new profile over the same protected snapshot. Nothing
+        // is in the store — no sync has happened — so the app can only come back
+        // from the bytes the snapshot kept.
+        let reopened = try RiotProfileRepository.open(
+            storage: try ProtectedProfileStorage(fileURL: file),
+            keyStore: keyStore,
+            starterPacks: []
+        )
+
+        let held = try XCTUnwrap(reopened.installedApps().first { $0.appIDHex == appIDHex })
+        XCTAssertEqual(held.name, "Checklist")
+        XCTAssertTrue(held.trusted)
+
+        // Still served: the WebView can still load its pages.
+        let resolver = try XCTUnwrap(reopened.appResolver(appID: appIDHex))
+        XCTAssertFalse(try reopened.appResource(appID: appIDHex, path: resolver.entryPoint).bytes.isEmpty)
+
+        // Still on the Apps surface, ready to open.
+        let model = RiotDirectoryModel(port: reopened)
+        model.refresh()
+        let row = try XCTUnwrap(model.rows.first { $0.appIDHex == appIDHex })
+        guard case .open = row.availability else {
+            return XCTFail("expected a kept, trusted app to still open after relaunch, got \(row.availability)")
+        }
+    }
+
+    /// Honest failure: an app whose bytes never arrived cannot be got, and the
+    /// storefront says so in plain language rather than silently doing nothing.
+    func testGettingAnAppThatNeverArrivedIsRefused() throws {
+        let (repository, _) = try repositoryCarryingChecklist()
+        let absent = Data(repeating: 0x11, count: 32)
+
+        XCTAssertThrowsError(try repository.getCarriedApp(appID: absent)) { error in
+            XCTAssertEqual(error as? MobileError, .AppRejected)
+        }
+        XCTAssertEqual(
+            RiotDirectoryModel.getFailureMessage(name: "Checklist", error: MobileError.AppRejected),
+            "Checklist isn’t all here yet. Sync with the group carrying it, then try again."
+        )
+    }
+
     /// Passing an app on requires somewhere to pass it to.
     func testSharingWithoutASpaceIsRefusedByTheRepository() throws {
         let repository = try openRepository()

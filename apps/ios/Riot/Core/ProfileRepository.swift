@@ -64,6 +64,17 @@ private struct PersistedAlert: Codable {
     let bundle: Data
 }
 
+/// An app this profile took up from a neighbour, kept as the exact pair of bytes
+/// Rust verified. The store it arrived in is in-memory and does not survive a
+/// process restart, so without this copy a carried app would vanish on relaunch;
+/// with it, `open` re-installs the app through the same `installApp` the starter
+/// catalog uses, and Rust re-verifies the pair before it is held again.
+private struct PersistedAppPack: Codable {
+    let appIDHex: String
+    let manifest: Data
+    let bundle: Data
+}
+
 private struct PersistedProfile: Codable {
     var space: RiotSpace?
     var alerts: [PersistedAlert]
@@ -73,9 +84,16 @@ private struct PersistedProfile: Codable {
     // `appDataPutWithReceipt`), replayed in order on open so app data survives a
     // process restart (Rust's app-data store is in-memory per session).
     var appDataBundles: [Data]
+    // Apps carried here by other people, kept as bytes so they survive a restart.
+    var carriedApps: [PersistedAppPack]
 
     static let empty = PersistedProfile(
-        space: nil, alerts: [], sealedIdentity: nil, trustedAppIDs: [], appDataBundles: []
+        space: nil,
+        alerts: [],
+        sealedIdentity: nil,
+        trustedAppIDs: [],
+        appDataBundles: [],
+        carriedApps: []
     )
 
     init(
@@ -83,18 +101,21 @@ private struct PersistedProfile: Codable {
         alerts: [PersistedAlert],
         sealedIdentity: Data?,
         trustedAppIDs: [String],
-        appDataBundles: [Data]
+        appDataBundles: [Data],
+        carriedApps: [PersistedAppPack]
     ) {
         self.space = space
         self.alerts = alerts
         self.sealedIdentity = sealedIdentity
         self.trustedAppIDs = trustedAppIDs
         self.appDataBundles = appDataBundles
+        self.carriedApps = carriedApps
     }
 
-    // Custom decode so snapshots written before `trustedAppIDs`/`appDataBundles`
-    // existed decode to empty lists rather than failing (synthesized Codable
-    // would throw on the missing key). Encoding stays synthesized.
+    // Custom decode so snapshots written before `trustedAppIDs`/`appDataBundles`/
+    // `carriedApps` existed decode to empty lists rather than failing
+    // (synthesized Codable would throw on the missing key). Encoding stays
+    // synthesized.
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         space = try container.decodeIfPresent(RiotSpace.self, forKey: .space)
@@ -102,6 +123,7 @@ private struct PersistedProfile: Codable {
         sealedIdentity = try container.decodeIfPresent(Data.self, forKey: .sealedIdentity)
         trustedAppIDs = try container.decodeIfPresent([String].self, forKey: .trustedAppIDs) ?? []
         appDataBundles = try container.decodeIfPresent([Data].self, forKey: .appDataBundles) ?? []
+        carriedApps = try container.decodeIfPresent([PersistedAppPack].self, forKey: .carriedApps) ?? []
     }
 }
 
@@ -148,8 +170,9 @@ public final class RiotProfileRepository {
     private let appRuntime: AppRuntimeSession
     /// Insertion-ordered registry of installed apps (like Android's
     /// LinkedHashMap-backed `InstalledAppsStore`), keyed for lookup by
-    /// lowercased hex app id.
-    private let installed: [InstalledApp]
+    /// lowercased hex app id. It grows after open: an app carried in by a
+    /// neighbour joins it the moment the person gets it.
+    private var installed: [InstalledApp]
     private var persisted: PersistedProfile
 
     public var currentSpace: RiotSpace? { persisted.space }
@@ -206,6 +229,18 @@ public final class RiotProfileRepository {
         let appRuntime = profile.appRuntime()
         var installedApps: [InstalledApp] = []
         for pack in starterPacks {
+            guard let installed = try? installPack(
+                appRuntime: appRuntime,
+                manifest: pack.manifest,
+                bundle: pack.bundle
+            ) else { continue }
+            installedApps.append(installed)
+        }
+
+        // Then the apps other people carried here. They go back in through the
+        // same install as the starter catalog — Rust re-verifies the pair, so a
+        // snapshot that was tampered with on disk is refused, not trusted.
+        for pack in persisted.carriedApps {
             guard let installed = try? installPack(
                 appRuntime: appRuntime,
                 manifest: pack.manifest,
@@ -294,16 +329,18 @@ public final class RiotProfileRepository {
     /// the directory lists the built-ins before anyone has created one, and a
     /// row must still be able to offer Review there.
     public func installedApps() throws -> [RiotSpaceApp] {
-        try installed.map { app in
-            RiotSpaceApp(
-                appIDHex: app.record.appId,
-                name: app.record.name,
-                description: app.record.description,
-                version: app.record.version,
-                permissions: app.record.permissions,
-                trusted: try appRuntime.isAppTrusted(appId: app.record.appId)
-            )
-        }
+        try installed.map(spaceApp)
+    }
+
+    private func spaceApp(_ app: InstalledApp) throws -> RiotSpaceApp {
+        RiotSpaceApp(
+            appIDHex: app.record.appId,
+            name: app.record.name,
+            description: app.record.description,
+            version: app.record.version,
+            permissions: app.record.permissions,
+            trusted: try appRuntime.isAppTrusted(appId: app.record.appId)
+        )
     }
 
     /// Marks an app trusted in Rust and persists the decision so it survives a
@@ -393,12 +430,22 @@ public final class RiotProfileRepository {
         bundle: Data
     ) throws -> InstalledApp {
         let record = try appRuntime.installApp(manifestBytes: manifest, bundleBytes: bundle)
+        return try retain(record: record, bundle: bundle)
+    }
+
+    /// Decodes the bytes Rust just accepted and keeps a resolver for them. The
+    /// entry-point check is the one thing the host verifies for itself: Rust's
+    /// record names the page to load first, and a bundle whose own entry point
+    /// disagrees is never served.
+    private static func retain(record: InstalledAppRecord, bundle: Data) throws -> InstalledApp {
         let decoded = try AppBundleCodec.decode(bundle)
         guard decoded.entryPoint == record.entryPoint else {
             throw RepositoryError.appBundleMismatch
         }
-        let resolver = AppResourceResolver(appIDHex: record.appId, bundle: decoded)
-        return InstalledApp(record: record, resolver: resolver)
+        return InstalledApp(
+            record: record,
+            resolver: AppResourceResolver(appIDHex: record.appId, bundle: decoded)
+        )
     }
 
     public func openSyncBoundary() throws -> MobileSyncSessionBoundary {
@@ -459,6 +506,41 @@ extension RiotProfileRepository: DirectoryPorting {
     /// composes with the app's later arrival.
     public func endorseApp(appID: Data, note: String, retract: Bool) throws {
         try appRuntime.endorseApp(appId: appID, note: note, retract: retract)
+    }
+
+    /// Takes up an app this profile carries but has not run: Rust admits it from
+    /// the store's own copy (the same pair invariant as any other install), and
+    /// the host then serves its pages from those same stored bytes — a carried
+    /// app has no file on this device, so the store holds the only copy. That
+    /// copy is written to the profile snapshot as well, because the store itself
+    /// is in-memory: without it the app would be gone on the next launch.
+    ///
+    /// Getting an app turns nothing on. It joins the held apps as UNTRUSTED, so
+    /// the review sheet still stands between a neighbour's app and a WebView.
+    public func getCarriedApp(appID: Data) throws -> RiotSpaceApp {
+        // Admission first: an app Rust refuses is never written to disk.
+        let record = try appRuntime.installFromDirectory(appId: appID)
+        let pair = try appRuntime.appPairBytes(appId: appID)
+        let app = try Self.retain(record: record, bundle: pair.bundleBytes)
+
+        if let existing = installed.firstIndex(where: {
+            $0.record.appId.lowercased() == record.appId.lowercased()
+        }) {
+            installed[existing] = app
+        } else {
+            installed.append(app)
+        }
+
+        let pack = PersistedAppPack(
+            appIDHex: record.appId.lowercased(),
+            manifest: pair.manifestBytes,
+            bundle: pair.bundleBytes
+        )
+        persisted.carriedApps.removeAll { $0.appIDHex == pack.appIDHex }
+        persisted.carriedApps.append(pack)
+        try storage.save(persisted)
+
+        return try spaceApp(app)
     }
 
     /// Passes an app on to the current space with this profile as carrier.

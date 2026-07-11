@@ -32,9 +32,10 @@ final class DirectoryStorefrontTests: XCTestCase {
         XCTAssertEqual(model.rows[0].availability, .review(port.installed[0]))
     }
 
-    /// Rust hands the directory raw bytes and the installed store hex text; a
-    /// row whose bytes name an app we do not hold cannot be opened or reviewed.
-    func testListingWeDoNotHoldIsListedOnly() {
+    /// Rust hands the directory raw bytes and the installed store hex text; an
+    /// app we do not hold cannot be opened or reviewed — but if its bytes are
+    /// here in full, the row offers to get it rather than dead-ending.
+    func testListingWeDoNotHoldButCarryIsOfferedToGet() {
         let model = RiotDirectoryModel(
             port: FakeDirectoryPort(
                 listings: [listing(appID: appID, name: "Checklist")],
@@ -44,7 +45,110 @@ final class DirectoryStorefrontTests: XCTestCase {
 
         model.refresh()
 
-        XCTAssertEqual(model.rows[0].availability, .listedOnly)
+        XCTAssertEqual(model.rows[0].availability, .get)
+    }
+
+    /// An app this device holds that the directory does not list — what a carried
+    /// app becomes after a relaunch, once the in-memory index it arrived in is
+    /// gone. It keeps its row and stays openable rather than disappearing.
+    func testHeldAppWithNoListingKeepsItsRow() {
+        let port = FakeDirectoryPort(
+            listings: [listing(appID: appID, name: "Checklist")],
+            installed: [heldApp(appID: otherID, name: "Legal support", trusted: true)],
+            space: space
+        )
+        let model = RiotDirectoryModel(port: port)
+
+        model.refresh()
+
+        let carried = try? XCTUnwrap(model.rows.first { $0.name == "Legal support" })
+        XCTAssertEqual(carried?.appID, otherID)
+        XCTAssertEqual(carried?.availability, .open(port.installed[0]))
+        XCTAssertTrue(carried?.canShare == true)
+        // No index means no endorsements to show for it — the row says nothing
+        // rather than inventing a number.
+        XCTAssertNil(carried?.endorsement)
+    }
+
+    func testHexIDsRoundTripToTheRawBytesTheActionsTake() {
+        XCTAssertEqual(RiotDirectoryRow.bytes(hex: "000fa0ff"), Data([0x00, 0x0f, 0xa0, 0xff]))
+        XCTAssertNil(RiotDirectoryRow.bytes(hex: "abc"))
+        XCTAssertNil(RiotDirectoryRow.bytes(hex: "zz"))
+    }
+
+    // MARK: - Getting an app someone carried to you
+
+    /// The last hop of community discovery. Getting the app does not turn it on:
+    /// it joins the held apps untrusted, so the row flips to Review — the sheet
+    /// still stands between a neighbour's app and a running WebView.
+    func testGettingACarriedAppMakesItReviewableAndConfirmsIt() {
+        let port = FakeDirectoryPort(listings: [listing(appID: appID, name: "Checklist")])
+        let model = RiotDirectoryModel(port: port)
+        model.refresh()
+        XCTAssertEqual(model.rows[0].availability, .get)
+
+        model.get(model.rows[0])
+
+        XCTAssertEqual(port.gotten, [appID])
+        XCTAssertNil(model.errorMessage)
+        XCTAssertEqual(model.confirmation, "Got Checklist — review it before it runs")
+        // Held now, and untrusted: Review, not Open.
+        guard case let .review(app) = model.rows[0].availability else {
+            return XCTFail("expected a gotten app to be reviewable, got \(model.rows[0].availability)")
+        }
+        XCTAssertFalse(app.trusted)
+        XCTAssertEqual(app.appIDHex, RiotDirectoryRow.hex(appID))
+    }
+
+    /// Once an organizer turns it on, the app this profile got from a neighbour
+    /// opens like any other — the whole point of getting it.
+    func testAGottenAppOpensOnceThisSpaceTurnsItOn() {
+        let port = FakeDirectoryPort(
+            listings: [listing(appID: appID, name: "Checklist", trustedInSpaces: [spaceID])],
+            space: space
+        )
+        let model = RiotDirectoryModel(port: port)
+        model.refresh()
+
+        model.get(model.rows[0])
+
+        guard case let .open(app) = model.rows[0].availability else {
+            return XCTFail("expected a gotten app in a space that trusts it to open")
+        }
+        XCTAssertEqual(app.appIDHex, RiotDirectoryRow.hex(appID))
+    }
+
+    /// The refusal the core actually makes: the bytes are not all here. The
+    /// person is told so in their own language, the row keeps offering to get
+    /// the app, and nothing pretends to have happened.
+    func testGettingAnAppWhoseBytesAreStillArrivingSaysSo() {
+        let port = FakeDirectoryPort(listings: [listing(appID: appID, name: "Checklist")])
+        port.getFailure = MobileError.AppRejected
+        let model = RiotDirectoryModel(port: port)
+        model.refresh()
+
+        model.get(model.rows[0])
+
+        XCTAssertEqual(
+            model.errorMessage,
+            "Checklist isn’t all here yet. Sync with the group carrying it, then try again."
+        )
+        XCTAssertNil(model.confirmation)
+        XCTAssertEqual(model.rows[0].availability, .get)
+    }
+
+    /// An app whose bytes have not arrived is not something to get at all —
+    /// there is nothing here to take up yet, trusted or not.
+    func testAnAppWhoseBytesHaveNotArrivedOffersNothingToGet() {
+        let model = RiotDirectoryModel(
+            port: FakeDirectoryPort(
+                listings: [listing(appID: appID, name: "Checklist", bundlePresent: false)]
+            )
+        )
+
+        model.refresh()
+
+        XCTAssertEqual(model.rows[0].availability, .arriving)
     }
 
     // MARK: - Trust in the current space
@@ -340,12 +444,16 @@ private enum FakeDirectoryError: Error {
 /// so the tests can assert on the calls rather than on a profile's state.
 private final class FakeDirectoryPort: DirectoryPorting {
     let listings: [DirectoryListing]
-    let installed: [RiotSpaceApp]
+    private(set) var installed: [RiotSpaceApp]
     let currentSpace: RiotSpace?
     var failure: Error?
+    /// What the core refuses `getCarriedApp` with — in production, an app whose
+    /// bytes have not all arrived.
+    var getFailure: Error?
 
     private(set) var endorsed: [(appID: Data, note: String, retract: Bool)] = []
     private(set) var shared: [Data] = []
+    private(set) var gotten: [Data] = []
 
     init(
         listings: [DirectoryListing] = [],
@@ -355,6 +463,26 @@ private final class FakeDirectoryPort: DirectoryPorting {
         self.listings = listings
         self.installed = installed
         self.currentSpace = space
+    }
+
+    /// Mirrors the repository: the app joins the held apps UNTRUSTED, built from
+    /// the listing the directory already showed.
+    func getCarriedApp(appID: Data) throws -> RiotSpaceApp {
+        if let getFailure { throw getFailure }
+        guard let listing = listings.first(where: { $0.appId == appID }) else {
+            throw MobileError.AppRejected
+        }
+        gotten.append(appID)
+        let app = RiotSpaceApp(
+            appIDHex: RiotDirectoryRow.hex(appID),
+            name: listing.name,
+            description: listing.description,
+            version: listing.version,
+            permissions: listing.permissions,
+            trusted: false
+        )
+        installed.append(app)
+        return app
     }
 
     func directoryListings() throws -> [DirectoryListing] {

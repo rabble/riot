@@ -160,12 +160,17 @@ public struct DirectoryView: View {
             Button("Review \(row.name)") { reviewing = app }
                 .buttonStyle(.riotSecondary)
                 .accessibilityIdentifier("directory-review-\(row.name)")
+        case .get:
+            // The app is here in full, carried by someone this person synced
+            // with; taking it up turns nothing on — Review still stands between
+            // it and running.
+            Button("Get \(row.name)") { directory.get(row) }
+                .buttonStyle(.riotPrimary)
+                .accessibilityIdentifier("directory-get-\(row.name)")
         case .arriving:
             Text("Still arriving from your group…")
                 .font(.riot(.body, size: 13, relativeTo: .caption))
                 .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
-        case .listedOnly:
-            EmptyView()
         }
 
         // Recommending speaks for a space that already trusts the app (design

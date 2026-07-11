@@ -11,6 +11,11 @@ public protocol DirectoryPorting: AnyObject {
     func installedApps() throws -> [RiotSpaceApp]
     func endorseApp(appID: Data, note: String, retract: Bool) throws
     func shareApp(appID: Data) throws
+    /// Takes an app this profile already carries — one that arrived from a
+    /// neighbour — and admits it to this device's runtime, so it can be reviewed
+    /// and then opened. Throws when its bytes have not all arrived, which is the
+    /// only reason the person is ever told no.
+    func getCarriedApp(appID: Data) throws -> RiotSpaceApp
 }
 
 /// One app as the directory shows it: what it is, what it can do, who vouches
@@ -25,10 +30,11 @@ public struct RiotDirectoryRow: Identifiable, Equatable, Sendable {
         case open(RiotSpaceApp)
         /// Held on this device, but no organizer has turned it on here yet.
         case review(RiotSpaceApp)
-        /// Turned on here, but its bytes have not finished arriving.
+        /// Carried in whole by someone you synced with, but this device has not
+        /// taken it up yet — the person can, in one tap.
+        case get
+        /// Its bytes have not finished arriving, so there is nothing to take yet.
         case arriving
-        /// Listed only: this profile cannot open it yet.
-        case listedOnly
     }
 
     public let appID: Data
@@ -54,6 +60,22 @@ public extension RiotDirectoryRow {
     /// on hex text, so this is the one seam between them.
     static func hex(_ bytes: Data) -> String {
         bytes.map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// The reverse: the raw id the directory's actions take, from the hex text
+    /// the held-app store keys on. Anything that is not a whole number of hex
+    /// bytes is not an id at all.
+    static func bytes(hex: String) -> Data? {
+        guard hex.count.isMultiple(of: 2) else { return nil }
+        var bytes = Data(capacity: hex.count / 2)
+        var index = hex.startIndex
+        while index < hex.endIndex {
+            let next = hex.index(index, offsetBy: 2)
+            guard let byte = UInt8(hex[index..<next], radix: 16) else { return nil }
+            bytes.append(byte)
+            index = next
+        }
+        return bytes
     }
 
     /// True when a recognized organizer of the current space trusts this app —
@@ -87,8 +109,9 @@ public extension RiotDirectoryRow {
     }
 
     /// Builds the row for one listing. `installed` is the locally held app with
-    /// the same id, or nil when its bytes have not arrived yet — a carried app
-    /// this profile can list but not open until sync brings them.
+    /// the same id, or nil when this device has not taken the app up yet: either
+    /// it is here in full and one tap away (`.get`), or its bytes are still
+    /// crossing from the group that carries it (`.arriving`).
     static func make(
         listing: DirectoryListing,
         installed: RiotSpaceApp?,
@@ -101,12 +124,15 @@ public extension RiotDirectoryRow {
         if trusted { badges.append("On in this space") }
         if !listing.bundlePresent { badges.append("Still arriving from your group") }
 
+        // A listing whose bytes this profile carries but has not taken up is the
+        // whole point of the directory: it is a neighbour's app, present in full,
+        // and the row must offer to get it rather than dead-end on a badge.
         let availability: Availability
         switch (installed, trusted, listing.bundlePresent) {
         case let (.some(app), true, _): availability = .open(app)
         case let (.some(app), false, _): availability = .review(app)
-        case (.none, true, false): availability = .arriving
-        default: availability = .listedOnly
+        case (.none, _, true): availability = .get
+        case (.none, _, false): availability = .arriving
         }
 
         return RiotDirectoryRow(
@@ -123,6 +149,32 @@ public extension RiotDirectoryRow {
             ),
             availability: availability,
             canRecommend: canRecommend(listing: listing, space: space),
+            canShare: space != nil
+        )
+    }
+
+    /// The row for an app this device holds that the directory does not list.
+    ///
+    /// The directory is assembled from the built-in catalog and the live app
+    /// index, and the index lives in a store that does not survive a relaunch. An
+    /// app someone carried here and this person kept is re-installed on open from
+    /// the profile's own copy of its bytes — so it is genuinely held and openable
+    /// while no listing speaks for it. Without this row it would silently
+    /// disappear from the surface that offered it in the first place.
+    static func held(_ app: RiotSpaceApp, space: RiotSpace?) -> RiotDirectoryRow {
+        RiotDirectoryRow(
+            appID: bytes(hex: app.appIDHex) ?? Data(),
+            appIDHex: app.appIDHex.lowercased(),
+            name: app.name,
+            version: app.version,
+            description: app.description,
+            permissions: app.permissions,
+            badges: app.trusted ? ["On in this space"] : [],
+            // Nobody's recommendation reaches this row: the endorsements that
+            // would speak for it live in the same index that is gone.
+            endorsement: nil,
+            availability: app.trusted ? .open(app) : .review(app),
+            canRecommend: app.trusted && space != nil,
             canShare: space != nil
         )
     }
@@ -164,7 +216,7 @@ public final class RiotDirectoryModel: ObservableObject {
         do {
             let installed = try port.installedApps()
             let space = port.currentSpace
-            rows = try port.directoryListings().map { listing in
+            let listed = try port.directoryListings().map { listing in
                 let hex = RiotDirectoryRow.hex(listing.appId)
                 return RiotDirectoryRow.make(
                     listing: listing,
@@ -172,10 +224,44 @@ public final class RiotDirectoryModel: ObservableObject {
                     space: space
                 )
             }
+            // Apps this device holds that no listing speaks for — see
+            // `RiotDirectoryRow.held`. They keep their place on this surface
+            // instead of vanishing at the next launch.
+            let listedIDs = Set(listed.map(\.appIDHex))
+            let unlisted = installed
+                .filter { !listedIDs.contains($0.appIDHex.lowercased()) }
+                .map { RiotDirectoryRow.held($0, space: space) }
+            rows = listed + unlisted
             errorMessage = nil
         } catch {
             errorMessage = String(describing: error)
         }
+    }
+
+    /// Takes up an app a neighbour carried to this device. It is not turned on by
+    /// getting it: the row flips to Review, and the app still runs nothing until
+    /// this person approves it.
+    public func get(_ row: RiotDirectoryRow) {
+        guard let port else { return }
+        do {
+            _ = try port.getCarriedApp(appID: row.appID)
+            confirmation = "Got \(row.name) — review it before it runs"
+            errorMessage = nil
+            refresh()
+        } catch {
+            confirmation = nil
+            errorMessage = Self.getFailureMessage(name: row.name, error: error)
+        }
+    }
+
+    /// The only refusal the core makes here is "not all of it is here" — an app
+    /// that never arrived, or whose bytes are still crossing. Say that, rather
+    /// than an error code, and never pretend the app was taken up.
+    static func getFailureMessage(name: String, error: Error) -> String {
+        if (error as? MobileError) == .AppRejected {
+            return "\(name) isn’t all here yet. Sync with the group carrying it, then try again."
+        }
+        return "Couldn’t get \(name): \(String(describing: error))"
     }
 
     public func recommend(_ row: RiotDirectoryRow, note: String) {
