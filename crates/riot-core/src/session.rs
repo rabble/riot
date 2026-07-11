@@ -17,6 +17,8 @@ use willow25::authorisation::PossiblyAuthorisedEntry;
 
 /// Ceilings from fixtures/manifest.json.
 const MAX_RECEIPTS: usize = 256;
+/// A session can issue at most this many plans across all previews.
+const MAX_PLANS_PER_SESSION: usize = 64;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SessionError {
@@ -24,9 +26,14 @@ pub enum SessionError {
     ObjectClosed,
     WrongSession,
     StalePreview,
+    PlanSuperseded,
     PlanConsumed,
+    PlanClosed,
     PreviewConsumed,
     NoEligibleEntries,
+    EmptySelection,
+    DuplicateSelection,
+    UnknownSelection,
     StoreFull,
     /// Test-only injected pre-swap failure (proves rollback).
     Injected,
@@ -125,6 +132,7 @@ struct StoreState {
 #[derive(Clone)]
 struct VerifiedEntry {
     authorised: willow25::authorisation::AuthorisedEntry,
+    entry_id: EntryId,
 }
 
 struct PreviewState {
@@ -138,7 +146,18 @@ struct PlanState {
     plan_id: u64,
     entries: Vec<VerifiedEntry>,
     route: String,
-    consumed: bool,
+}
+
+#[derive(Clone, Copy)]
+enum PlanTerminal {
+    Superseded,
+    Consumed,
+    Closed,
+}
+
+struct PlanTombstone {
+    plan_id: u64,
+    terminal: PlanTerminal,
 }
 
 struct SessionState {
@@ -148,6 +167,10 @@ struct SessionState {
     store_closed: bool,
     preview: Option<PreviewState>,
     plan: Option<PlanState>,
+    /// Session-wide issuance makes durable terminal records permanently
+    /// bounded by `MAX_PLANS_PER_SESSION`.
+    session_issued_plans: usize,
+    plan_tombstones: Vec<PlanTombstone>,
     next_id: u64,
 }
 
@@ -203,6 +226,8 @@ impl RiotSession {
                 store_closed: false,
                 preview: None,
                 plan: None,
+                session_issued_plans: 0,
+                plan_tombstones: Vec::new(),
                 next_id: 0,
             })),
         })
@@ -328,8 +353,10 @@ impl EvidenceStore {
                 let authorised = PossiblyAuthorisedEntry::new(entry, token)
                     .into_authorised_entry()
                     .map_err(|_| SessionError::Internal)?;
-                let _ = valid.entry_id; // verified id available; join recomputes it
-                verified.push(VerifiedEntry { authorised });
+                verified.push(VerifiedEntry {
+                    authorised,
+                    entry_id: valid.entry_id,
+                });
             }
             // Ineligible items are simply not carried into the preview.
         }
@@ -337,21 +364,22 @@ impl EvidenceStore {
         let store = st.store.as_ref().unwrap();
         let base_generation = store.generation;
         let preview_id = st.alloc_id();
+        let eligible = verified.len();
         st.preview = Some(PreviewState {
             preview_id,
             base_generation,
-            entries: verified.clone(),
+            entries: verified,
             route: context.route.clone(),
         });
         // A new inspection supersedes any prior plan.
-        st.plan = None;
+        supersede_active_plan(&mut st);
 
         Ok(InspectOutcome::Preview(ImportPreview {
             inner: Arc::clone(&self.inner),
             preview_id,
             session_id: st.session_id,
             base_generation,
-            eligible: verified.len(),
+            eligible,
         }))
     }
 
@@ -399,6 +427,25 @@ pub struct ImportPreview {
     eligible: usize,
 }
 
+/// Explicitly names the eligible canonical entry IDs a plan may retain.
+/// `all` is provided only for `plan_all`; callers selecting entries use
+/// `new` and receive a typed error for empty, duplicate, or unknown IDs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ImportSelection {
+    All,
+    Entries(Vec<EntryId>),
+}
+
+impl ImportSelection {
+    pub fn all() -> Self {
+        Self::All
+    }
+
+    pub fn new(entry_ids: Vec<EntryId>) -> Self {
+        Self::Entries(entry_ids)
+    }
+}
+
 impl ImportPreview {
     pub fn session_id(&self) -> u64 {
         self.session_id
@@ -414,9 +461,10 @@ impl ImportPreview {
         Ok(true)
     }
 
-    /// Plan to apply every eligible entry. Fails StalePreview if the store
-    /// generation advanced, or if this preview was superseded.
-    pub fn plan_all(&self) -> Result<ImportPlan, SessionError> {
+    /// Plans exactly the selected eligible entries. Selection validation has
+    /// no state effect, while issuing a valid replacement supersedes the
+    /// previously active plan for this preview.
+    pub fn plan(&self, selection: ImportSelection) -> Result<ImportPlan, SessionError> {
         let mut st = self.inner.lock().map_err(|_| SessionError::Internal)?;
         st.require_open_store()?;
         // Generation guard first: any commit since inspection makes us stale.
@@ -427,26 +475,62 @@ impl ImportPreview {
             Some(p) if p.preview_id == self.preview_id => {}
             _ => return Err(SessionError::StalePreview),
         }
-        if self.eligible == 0 {
-            return Err(SessionError::NoEligibleEntries);
-        }
         let (entries, route, base_generation) = {
             let p = st.preview.as_ref().unwrap();
-            (p.entries.clone(), p.route.clone(), p.base_generation)
+            let entries = match selection {
+                ImportSelection::All => {
+                    if p.entries.is_empty() {
+                        return Err(SessionError::NoEligibleEntries);
+                    }
+                    p.entries.clone()
+                }
+                ImportSelection::Entries(entry_ids) => {
+                    if entry_ids.is_empty() {
+                        return Err(SessionError::EmptySelection);
+                    }
+                    if entry_ids
+                        .iter()
+                        .enumerate()
+                        .any(|(index, id)| entry_ids[..index].contains(id))
+                    {
+                        return Err(SessionError::DuplicateSelection);
+                    }
+                    let mut entries = Vec::with_capacity(entry_ids.len());
+                    for entry_id in entry_ids {
+                        let entry = p
+                            .entries
+                            .iter()
+                            .find(|entry| entry.entry_id == entry_id)
+                            .ok_or(SessionError::UnknownSelection)?;
+                        entries.push(entry.clone());
+                    }
+                    entries
+                }
+            };
+            if st.session_issued_plans >= MAX_PLANS_PER_SESSION {
+                return Err(SessionError::SessionLimit);
+            }
+            (entries, p.route.clone(), p.base_generation)
         };
         let plan_id = st.alloc_id();
-        let _ = base_generation;
+        st.session_issued_plans += 1;
+        supersede_active_plan(&mut st);
         st.plan = Some(PlanState {
             plan_id,
             entries,
             route,
-            consumed: false,
         });
         Ok(ImportPlan {
             inner: Arc::clone(&self.inner),
             plan_id,
             base_generation,
         })
+    }
+
+    /// Plan every eligible entry through the same selection path used by
+    /// explicit callers.
+    pub fn plan_all(&self) -> Result<ImportPlan, SessionError> {
+        self.plan(ImportSelection::all())
     }
 }
 
@@ -457,6 +541,20 @@ pub struct ImportPlan {
 }
 
 impl ImportPlan {
+    /// Explicitly terminates the current, unconsumed plan without mutating
+    /// the store or creating a receipt. The preview may issue a replacement.
+    pub fn close(&self) -> Result<(), SessionError> {
+        let mut st = self.inner.lock().map_err(|_| SessionError::Internal)?;
+        st.require_open_store()?;
+        match &st.plan {
+            Some(p) if p.plan_id == self.plan_id => {
+                terminate_plan(&mut st, self.plan_id, PlanTerminal::Closed);
+                Ok(())
+            }
+            _ => Err(plan_terminal_error(&st, self.plan_id)),
+        }
+    }
+
     pub fn commit(&self) -> Result<CommitOutcome, SessionError> {
         self.commit_inner(false)
     }
@@ -473,12 +571,8 @@ impl ImportPlan {
 
         // Admission: plan must be current and unconsumed.
         match &st.plan {
-            Some(p) if p.plan_id == self.plan_id => {
-                if p.consumed {
-                    return Err(SessionError::PlanConsumed);
-                }
-            }
-            _ => return Err(SessionError::PlanConsumed),
+            Some(p) if p.plan_id == self.plan_id => {}
+            _ => return Err(plan_terminal_error(&st, self.plan_id)),
         }
         if st.store.as_ref().unwrap().generation != self.base_generation {
             return Err(SessionError::StalePreview);
@@ -505,7 +599,7 @@ impl ImportPlan {
         if !any_new {
             // Duplicate-only: no swap, no generation change, no receipt. The
             // plan is consumed regardless.
-            mark_plan_consumed(&mut st, self.plan_id);
+            terminate_plan(&mut st, self.plan_id, PlanTerminal::Consumed);
             return Ok(CommitOutcome::NoChanges(DuplicateResult {
                 unchanged_generation: before_generation,
                 entry_ids: join_plan.effects.iter().map(|(id, _)| *id).collect(),
@@ -562,7 +656,7 @@ impl ImportPlan {
         // Injected failure: everything above was on the clone; return before
         // touching store state.
         if inject_failure {
-            mark_plan_consumed(&mut st, self.plan_id);
+            terminate_plan(&mut st, self.plan_id, PlanTerminal::Consumed);
             return Err(SessionError::Injected);
         }
 
@@ -570,7 +664,7 @@ impl ImportPlan {
         // receipt, and first-receipt records.
         let store = st.store.as_mut().unwrap();
         if store.receipts.len() >= MAX_RECEIPTS {
-            mark_plan_consumed(&mut st, self.plan_id);
+            terminate_plan(&mut st, self.plan_id, PlanTerminal::Consumed);
             return Err(SessionError::StoreFull);
         }
         store.join = join_plan.next;
@@ -583,15 +677,40 @@ impl ImportPlan {
         store.receipts.push(receipt.clone());
         store.next_receipt_id += 1;
 
-        mark_plan_consumed(&mut st, self.plan_id);
+        terminate_plan(&mut st, self.plan_id, PlanTerminal::Consumed);
         Ok(CommitOutcome::Committed(receipt))
     }
 }
 
-fn mark_plan_consumed(st: &mut SessionState, plan_id: u64) {
-    if let Some(p) = st.plan.as_mut() {
-        if p.plan_id == plan_id {
-            p.consumed = true;
-        }
+fn supersede_active_plan(st: &mut SessionState) {
+    if let Some(plan) = st.plan.take() {
+        record_plan_terminal(st, plan.plan_id, PlanTerminal::Superseded);
+    }
+}
+
+fn terminate_plan(st: &mut SessionState, plan_id: u64, terminal: PlanTerminal) {
+    if matches!(st.plan.as_ref(), Some(plan) if plan.plan_id == plan_id) {
+        st.plan = None;
+        record_plan_terminal(st, plan_id, terminal);
+    }
+}
+
+fn record_plan_terminal(st: &mut SessionState, plan_id: u64, terminal: PlanTerminal) {
+    // Terminal errors are durable. Session-wide issuance bounds this vector
+    // permanently at `MAX_PLANS_PER_SESSION`; entries are never evicted.
+    st.plan_tombstones.push(PlanTombstone { plan_id, terminal });
+}
+
+fn plan_terminal_error(st: &SessionState, plan_id: u64) -> SessionError {
+    match st
+        .plan_tombstones
+        .iter()
+        .rev()
+        .find(|tombstone| tombstone.plan_id == plan_id)
+        .map(|tombstone| tombstone.terminal)
+    {
+        Some(PlanTerminal::Superseded) => SessionError::PlanSuperseded,
+        Some(PlanTerminal::Closed) => SessionError::PlanClosed,
+        Some(PlanTerminal::Consumed) | None => SessionError::PlanConsumed,
     }
 }

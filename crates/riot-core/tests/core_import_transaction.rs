@@ -4,8 +4,8 @@
 use riot_core::import::encode_bundle;
 use riot_core::model::{AlertPayload, Certainty, Severity, Urgency};
 use riot_core::session::{
-    CommitOutcome, EntryDisposition, ImportContext, InspectOutcome, LiveStatus, RiotSession,
-    SessionError,
+    CommitOutcome, EntryDisposition, ImportContext, ImportSelection, InspectOutcome, LiveStatus,
+    RiotSession, SessionError,
 };
 use riot_core::willow::{
     authorise_entry, build_alert_entry, encode_capability, encode_entry, EvidenceAuthor,
@@ -110,6 +110,100 @@ fn core_import_transaction_valid_alert_imports_and_receipts() {
     ));
     assert_eq!(store.generation().unwrap(), 1);
     assert_eq!(store.live_count().unwrap(), 1);
+}
+
+#[test]
+fn core_import_transaction_selection_commits_only_the_selected_entries() {
+    let a = author();
+    let session = RiotSession::open().unwrap();
+    let store = session.create_store().unwrap();
+    let first = signed(&a, 41, 1, 100, 1);
+    let second = signed(&a, 42, 1, 100, 2);
+    let selected_id = riot_core::willow::entry_id(&second.entry_bytes);
+
+    let receipt = match store
+        .inspect(&bundle(&[first, second]), ctx())
+        .unwrap()
+        .expect_preview()
+        .plan(ImportSelection::new(vec![selected_id]))
+        .unwrap()
+        .commit()
+        .unwrap()
+    {
+        CommitOutcome::Committed(receipt) => receipt,
+        CommitOutcome::NoChanges(_) => panic!("selected entry should commit"),
+    };
+
+    assert_eq!(receipt.dispositions.len(), 1);
+    assert_eq!(receipt.dispositions[0].entry_id, selected_id);
+    assert_eq!(store.live_count().unwrap(), 1);
+}
+
+#[test]
+fn core_import_transaction_invalid_selection_is_rejected_without_state_change() {
+    let a = author();
+    let session = RiotSession::open().unwrap();
+    let store = session.create_store().unwrap();
+    let first = signed(&a, 43, 1, 100, 1);
+    let second = signed(&a, 44, 1, 100, 2);
+    let first_id = riot_core::willow::entry_id(&first.entry_bytes);
+    let preview = store
+        .inspect(&bundle(&[first, second]), ctx())
+        .unwrap()
+        .expect_preview();
+    let original_plan = preview.plan_all().unwrap();
+    let generation = store.generation().unwrap();
+    let receipts = store.receipt_count().unwrap();
+
+    assert!(matches!(
+        preview.plan(ImportSelection::new(vec![])),
+        Err(SessionError::EmptySelection)
+    ));
+    assert!(matches!(
+        preview.plan(ImportSelection::new(vec![first_id, first_id])),
+        Err(SessionError::DuplicateSelection)
+    ));
+    assert!(matches!(
+        preview.plan(ImportSelection::new(vec![[0xFF; 32]])),
+        Err(SessionError::UnknownSelection)
+    ));
+    assert_eq!(store.generation().unwrap(), generation);
+    assert_eq!(store.receipt_count().unwrap(), receipts);
+    assert_eq!(store.live_count().unwrap(), 0);
+    assert!(matches!(
+        original_plan.commit(),
+        Ok(CommitOutcome::Committed(_))
+    ));
+
+    // Invalid requests also leave the session-wide issuance budget untouched.
+    let (_budget_store, budget_preview) = {
+        let session = RiotSession::open().unwrap();
+        let store = session.create_store().unwrap();
+        let preview = store
+            .inspect(&bundle(&[signed(&a, 45, 1, 100, 3)]), ctx())
+            .unwrap()
+            .expect_preview();
+        (store, preview)
+    };
+    assert!(matches!(
+        budget_preview.plan(ImportSelection::new(vec![])),
+        Err(SessionError::EmptySelection)
+    ));
+    assert!(matches!(
+        budget_preview.plan(ImportSelection::new(vec![[0xEE; 32], [0xEE; 32]])),
+        Err(SessionError::DuplicateSelection)
+    ));
+    assert!(matches!(
+        budget_preview.plan(ImportSelection::new(vec![[0xEE; 32]])),
+        Err(SessionError::UnknownSelection)
+    ));
+    for _ in 0..64 {
+        budget_preview.plan_all().unwrap();
+    }
+    assert!(matches!(
+        budget_preview.plan_all(),
+        Err(SessionError::SessionLimit)
+    ));
 }
 
 #[test]
