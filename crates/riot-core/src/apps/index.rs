@@ -238,34 +238,34 @@ pub fn scan_app_index(store: &EvidenceStore) -> Result<ScannedIndex, AppsError> 
     let mut candidates: Vec<([u8; 32], [u8; 32], IndexedApp)> = Vec::new();
     let mut pending_manifests = Vec::new();
     for ((app_id, namespace_id, subspace_id), candidate) in manifests {
-        let bundle = bundles.get(&(app_id, namespace_id, subspace_id));
-        let is_verified = bundle.is_some_and(|bundle| {
-            candidate.manifest.entry_point == bundle.entry_point
-                && app_id_for(&candidate.manifest, &app_bundle_digest(&bundle.bytes)).ok()
-                    == Some(app_id)
-        });
-        if is_verified {
-            candidates.push((
-                namespace_id,
-                subspace_id,
-                IndexedApp {
-                    app_id,
-                    manifest: candidate.manifest,
-                    bundle_present: true,
-                    provenance: AppProvenance::Carried {
-                        carrier_subspace_id: subspace_id,
-                    },
-                    manifest_timestamp_micros: candidate.timestamp_micros,
-                },
-            ));
-        } else {
-            pending_manifests.push(PendingManifest {
+        match bundles.get(&(app_id, namespace_id, subspace_id)) {
+            None => pending_manifests.push(PendingManifest {
                 claimed_app_id: app_id,
                 manifest: candidate.manifest,
                 carrier_namespace_id: namespace_id,
                 carrier_subspace_id: subspace_id,
                 manifest_timestamp_micros: candidate.timestamp_micros,
-            });
+            }),
+            Some(bundle)
+                if candidate.manifest.entry_point == bundle.entry_point
+                    && app_id_for(&candidate.manifest, &app_bundle_digest(&bundle.bytes)).ok()
+                        == Some(app_id) =>
+            {
+                candidates.push((
+                    namespace_id,
+                    subspace_id,
+                    IndexedApp {
+                        app_id,
+                        manifest: candidate.manifest,
+                        bundle_present: true,
+                        provenance: AppProvenance::Carried {
+                            carrier_subspace_id: subspace_id,
+                        },
+                        manifest_timestamp_micros: candidate.timestamp_micros,
+                    },
+                ));
+            }
+            Some(_) => {}
         }
     }
     candidates.sort_by(|a, b| {

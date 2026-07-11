@@ -328,7 +328,48 @@ fn wrong_app_id_pair_is_skipped() {
             ),
         ],
     );
-    assert!(scan_app_index(&store).expect("scan").apps.is_empty());
+    let scanned = scan_app_index(&store).expect("scan");
+    assert!(scanned.apps.is_empty());
+    assert!(scanned.pending_manifests.is_empty());
+}
+
+#[test]
+fn same_coordinate_entry_point_mismatch_is_skipped_not_pending() {
+    let session = RiotSession::open().expect("session");
+    let store = session.create_store().expect("store");
+    let carrier = generate_communal_author().expect("carrier");
+    let developer = generate_communal_author().expect("developer");
+    let (manifest, _, app_id) = sample_pair(&developer);
+    let mismatched_bundle = encode_app_bundle(&AppBundle {
+        entry_point: "main.html".into(),
+        resources: vec![AppResource {
+            path: "main.html".into(),
+            content_type: "text/html".into(),
+            bytes: b"<html>other</html>".to_vec(),
+        }],
+    })
+    .expect("bundle");
+    import_signed(
+        &store,
+        &[
+            signed_at(
+                &carrier,
+                app_index_manifest_path(&app_id).expect("path"),
+                &manifest,
+                100,
+            ),
+            signed_at(
+                &carrier,
+                app_index_bundle_path(&app_id).expect("path"),
+                &mismatched_bundle,
+                100,
+            ),
+        ],
+    );
+
+    let scanned = scan_app_index(&store).expect("scan");
+    assert!(scanned.apps.is_empty());
+    assert!(scanned.pending_manifests.is_empty());
 }
 
 #[test]
