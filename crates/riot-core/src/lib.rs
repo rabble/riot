@@ -4,4 +4,5 @@
 pub mod import;
 pub mod model;
 pub mod session;
+pub mod sync;
 pub mod willow;
