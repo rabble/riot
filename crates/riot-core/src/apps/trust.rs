@@ -111,18 +111,15 @@ pub fn write_trust_marker(
     kind: TrustMarkerKind,
     willow_timestamp_micros: u64,
 ) -> Result<(), AppsError> {
-    // Local semantic updates at this one-slot coordinate are monotonic by
-    // timestamp. Willow's payload-digest recency tie-break remains the
-    // deterministic rule for directly imported entries, but local callers
-    // must advance time to change Trust <-> Revoke so storage order cannot
-    // override the intended semantic order.
+    // Lower timestamps are stale. At an equal timestamp, do not layer a
+    // semantic Trust/Revoke rule over this one Willow coordinate: the normal
+    // payload-digest recency tie-break selects the live entry, and commit_at
+    // reports Ok for that native winner or StaleWrite for the loser.
     if let Some(current) = trust_markers_for(store, organizer.namespace_id().as_bytes(), app_id)?
         .into_iter()
         .find(|marker| marker.author_subspace_id == *organizer.subspace_id().as_bytes())
     {
-        if willow_timestamp_micros < current.timestamp_micros
-            || (willow_timestamp_micros == current.timestamp_micros && kind != current.kind)
-        {
+        if willow_timestamp_micros < current.timestamp_micros {
             return Err(AppsError::StaleWrite);
         }
     }
@@ -184,8 +181,9 @@ pub fn is_trusted(
     markers: &[TrustMarker],
     organizer_subspace_ids: &[[u8; 32]],
 ) -> bool {
-    // At an exact timestamp tie, Revoke outranks Trust (fail closed) so the
-    // outcome never depends on marker slice order.
+    // This tie-break is reader policy across different recognized organizer
+    // coordinates. Same-coordinate Trust/Revoke ties never reach this slice:
+    // Willow first selects one live entry by native payload-digest recency.
     let latest = markers
         .iter()
         .filter(|m| &m.app_id == app_id)

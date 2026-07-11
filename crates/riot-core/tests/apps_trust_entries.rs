@@ -1,11 +1,16 @@
+use riot_core::apps::index::app_index_trust_path;
 use riot_core::apps::trust::{
     decode_trust_marker, encode_trust_marker, trust_markers_for, write_trust_marker, TrustMarker,
     TrustMarkerKind,
 };
 use riot_core::apps::AppsError;
 use riot_core::import::encode_bundle;
-use riot_core::session::{ImportContext, RiotSession, SessionError};
-use riot_core::willow::{generate_communal_author, EvidenceAuthor};
+use riot_core::session::{CommitOutcome, EvidenceStore, ImportContext, RiotSession, SessionError};
+use riot_core::willow::{
+    authorise_entry, encode_capability, encode_entry, generate_communal_author, Entry,
+    EvidenceAuthor, SignedWillowEntry,
+};
+use willow25::entry::EntrylikeExt;
 
 fn payload_marker(app_id: [u8; 32], kind: TrustMarkerKind) -> TrustMarker {
     TrustMarker {
@@ -13,6 +18,55 @@ fn payload_marker(app_id: [u8; 32], kind: TrustMarkerKind) -> TrustMarker {
         author_subspace_id: [0u8; 32],
         kind,
         timestamp_micros: 0,
+    }
+}
+
+fn signed_trust_marker(
+    author: &EvidenceAuthor,
+    app_id: [u8; 32],
+    kind: TrustMarkerKind,
+    timestamp: u64,
+) -> (SignedWillowEntry, Entry) {
+    let payload = encode_trust_marker(&payload_marker(app_id, kind)).expect("payload");
+    let path = app_index_trust_path(&app_id, author.subspace_id().as_bytes()).expect("path");
+    let entry = Entry::builder()
+        .namespace_id(author.namespace_id().clone())
+        .subspace_id(author.subspace_id())
+        .path(path)
+        .timestamp(timestamp)
+        .payload(&payload)
+        .build();
+    let authorised = authorise_entry(author, entry.clone()).expect("authorise");
+    let token = authorised.authorisation_token();
+    let signature: ed25519_dalek::Signature = token.signature().clone().into();
+    (
+        SignedWillowEntry {
+            entry_bytes: encode_entry(authorised.entry()),
+            capability_bytes: encode_capability(token.capability()),
+            signature: signature.to_bytes(),
+            payload_bytes: payload,
+        },
+        entry,
+    )
+}
+
+fn import_signed(store: &EvidenceStore, signed: &SignedWillowEntry) {
+    let bundle = encode_bundle(std::slice::from_ref(signed)).expect("bundle");
+    let preview = store
+        .inspect(&bundle, ImportContext::new("equal-timestamp-test"))
+        .expect("inspect")
+        .expect_preview();
+    let plan = preview.plan_all().expect("plan");
+    match plan.commit().expect("commit") {
+        CommitOutcome::Committed(_) | CommitOutcome::NoChanges(_) => {}
+    }
+}
+
+fn native_winner(trust_entry: &Entry, revoke_entry: &Entry) -> (TrustMarkerKind, TrustMarkerKind) {
+    if trust_entry.cmp_recency(revoke_entry).is_gt() {
+        (TrustMarkerKind::Trust, TrustMarkerKind::Revoke)
+    } else {
+        (TrustMarkerKind::Revoke, TrustMarkerKind::Trust)
     }
 }
 
@@ -148,26 +202,63 @@ fn lower_timestamp_revoke_errors_and_leaves_newer_trust_live() {
 }
 
 #[test]
-fn equal_timestamp_semantic_change_errors_independent_of_write_order() {
-    for (first, conflicting) in [
-        (TrustMarkerKind::Trust, TrustMarkerKind::Revoke),
-        (TrustMarkerKind::Revoke, TrustMarkerKind::Trust),
+fn equal_timestamp_signed_entries_converge_by_willow_recency_in_both_import_orders() {
+    let organizer = generate_communal_author().expect("organizer");
+    let app_id = [10u8; 32];
+    let (trust_signed, trust_entry) =
+        signed_trust_marker(&organizer, app_id, TrustMarkerKind::Trust, 300);
+    let (revoke_signed, revoke_entry) =
+        signed_trust_marker(&organizer, app_id, TrustMarkerKind::Revoke, 300);
+    let (winner, _) = native_winner(&trust_entry, &revoke_entry);
+
+    for order in [
+        [&trust_signed, &revoke_signed],
+        [&revoke_signed, &trust_signed],
     ] {
         let session = RiotSession::open().expect("session");
         let store = session.create_store().expect("store");
-        let organizer = generate_communal_author().expect("organizer");
-        let app_id = [10u8; 32];
+        import_signed(&store, order[0]);
+        import_signed(&store, order[1]);
 
-        write_trust_marker(&store, &organizer, &app_id, first, 300).expect("first write");
-        assert_eq!(
-            write_trust_marker(&store, &organizer, &app_id, conflicting, 300),
-            Err(AppsError::StaleWrite)
-        );
+        assert_eq!(store.live_count().expect("live count"), 1);
         let markers =
             trust_markers_for(&store, organizer.namespace_id().as_bytes(), &app_id).expect("scan");
         assert_eq!(markers.len(), 1);
-        assert_eq!(markers[0].kind, first);
+        assert_eq!(markers[0].kind, winner);
         assert_eq!(markers[0].timestamp_micros, 300);
+    }
+}
+
+#[test]
+fn equal_timestamp_local_writes_report_the_native_winner_and_loser() {
+    let organizer = generate_communal_author().expect("organizer");
+    let app_id = [14u8; 32];
+    let (_, trust_entry) = signed_trust_marker(&organizer, app_id, TrustMarkerKind::Trust, 300);
+    let (_, revoke_entry) = signed_trust_marker(&organizer, app_id, TrustMarkerKind::Revoke, 300);
+    let (winner, loser) = native_winner(&trust_entry, &revoke_entry);
+
+    let loser_first_session = RiotSession::open().expect("session");
+    let loser_first_store = loser_first_session.create_store().expect("store");
+    write_trust_marker(&loser_first_store, &organizer, &app_id, loser, 300)
+        .expect("loser is initially live");
+    write_trust_marker(&loser_first_store, &organizer, &app_id, winner, 300)
+        .expect("native winner replaces loser");
+
+    let winner_first_session = RiotSession::open().expect("session");
+    let winner_first_store = winner_first_session.create_store().expect("store");
+    write_trust_marker(&winner_first_store, &organizer, &app_id, winner, 300)
+        .expect("winner is live");
+    assert_eq!(
+        write_trust_marker(&winner_first_store, &organizer, &app_id, loser, 300),
+        Err(AppsError::StaleWrite)
+    );
+
+    for store in [&loser_first_store, &winner_first_store] {
+        assert_eq!(store.live_count().expect("live count"), 1);
+        let markers =
+            trust_markers_for(store, organizer.namespace_id().as_bytes(), &app_id).expect("scan");
+        assert_eq!(markers.len(), 1);
+        assert_eq!(markers[0].kind, winner);
     }
 }
 
