@@ -255,11 +255,8 @@ impl ReconcileSession {
                 return Err(SyncError::DuplicateEntryId);
             }
         }
-        self.inventory.extend(
-            pending_ids
-                .into_iter()
-                .zip(self.pending_entries.drain(..)),
-        );
+        self.inventory
+            .extend(pending_ids.into_iter().zip(self.pending_entries.drain(..)));
         self.inventory.sort_by_key(|(id, _)| *id);
         Ok(())
     }
