@@ -14,10 +14,12 @@ path = "src/main.rs"
 [dependencies]
 riot-core = { path = "../riot-core" }
 serde_json.workspace = true
-serde = "=1.0.228"
+serde.workspace = true
+libc.workspace = true
+willow25.workspace = true
 rand_core.workspace = true
 ed25519-dalek.workspace = true
 zeroize.workspace = true
 
 [dev-dependencies]
-tempfile = "=3.27.0"
+tempfile.workspace = true

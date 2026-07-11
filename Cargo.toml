@@ -27,6 +27,9 @@ hifitime = "=4.3.0"
 # xtask structural contract parsing only.
 toml = "=0.9.8"
 serde_json = "=1.0.145"
+serde = "=1.0.228"
+libc = "=0.2.186"
+tempfile = "=3.27.0"
 ed25519-dalek = { version = "=2.2.0", default-features = false, features = ["std", "fast", "zeroize", "rand_core"] }
 rand_core = { version = "=0.6.4", features = ["getrandom"] }
 zeroize = "=1.9.0"

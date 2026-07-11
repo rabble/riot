@@ -2,15 +2,26 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 
+use ed25519_dalek::Signature;
 use riot_app_cli::{
     inspect, keygen, load_author, pack, InspectError, KeyError, PackError, PackInput,
 };
-use riot_core::apps::bundle::{decode_app_bundle, MAX_BUNDLE_TOTAL_BYTES};
-use riot_core::apps::index::scan_app_index;
-use riot_core::apps::manifest::decode_manifest;
+use riot_core::apps::bundle::{
+    decode_app_bundle, AppBundle, AppResource, MAX_BUNDLE_RESOURCES, MAX_BUNDLE_TOTAL_BYTES,
+};
+use riot_core::apps::index::{
+    app_bundle_digest, app_index_bundle_path, app_index_manifest_path, scan_app_index,
+};
+use riot_core::apps::manifest::{
+    app_id_for, decode_manifest, encode_manifest, AppManifest, MAX_APP_PERMISSIONS,
+    MAX_MANIFEST_BYTES,
+};
 use riot_core::import::{decode_bundle, encode_bundle, BundleDecodeOutcome, BUNDLE_MAGIC};
 use riot_core::session::{CommitOutcome, ImportContext, RiotSession};
-use riot_core::willow::{generate_communal_author, SignedWillowEntry};
+use riot_core::willow::{
+    authorise_entry, encode_capability, encode_entry, generate_communal_author, Entry,
+    EvidenceAuthor, NamespaceKind, Path as WillowPath, SignedWillowEntry,
+};
 
 fn fixture() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/hello-app")
@@ -150,6 +161,48 @@ fn validates_manifest_shape_and_resources() {
 }
 
 #[test]
+fn bounds_manifest_and_permissions_before_materializing_untrusted_input() {
+    let tmp = copy_fixture();
+    fs::write(
+        tmp.path().join("riot-app.json"),
+        vec![b' '; MAX_MANIFEST_BYTES + 1],
+    )
+    .unwrap();
+    let author = generate_communal_author().unwrap();
+    assert!(
+        matches!(pack(PackInput { app_dir: tmp.path(), author: &author, timestamp_micros: 1 }), Err(PackError::TooLarge { actual, limit }) if actual == MAX_MANIFEST_BYTES + 1 && limit == MAX_MANIFEST_BYTES)
+    );
+
+    let tmp = copy_fixture();
+    let permissions = (0..=MAX_APP_PERMISSIONS)
+        .map(|_| "\"x\"")
+        .collect::<Vec<_>>()
+        .join(",");
+    fs::write(tmp.path().join("riot-app.json"), format!(r#"{{"name":"x","description":"d","version":"1","entry_point":"index.html","permissions":[{permissions}]}}"#)).unwrap();
+    let author = generate_communal_author().unwrap();
+    assert!(matches!(
+        pack(PackInput {
+            app_dir: tmp.path(),
+            author: &author,
+            timestamp_micros: 1
+        }),
+        Err(PackError::ManifestJsonInvalid { .. })
+    ));
+}
+
+#[test]
+fn enforces_resource_count_during_traversal() {
+    let tmp = copy_fixture();
+    for index in 0..MAX_BUNDLE_RESOURCES {
+        fs::write(tmp.path().join(format!("extra-{index}.js")), b"x").unwrap();
+    }
+    let author = generate_communal_author().unwrap();
+    assert!(
+        matches!(pack(PackInput { app_dir: tmp.path(), author: &author, timestamp_micros: 1 }), Err(PackError::TooManyResources { actual, limit }) if actual == MAX_BUNDLE_RESOURCES + 1 && limit == MAX_BUNDLE_RESOURCES)
+    );
+}
+
+#[test]
 fn rejects_duplicate_manifest_keys_without_last_wins_parsing() {
     let cases = [
         (
@@ -220,7 +273,7 @@ fn nested_paths_are_normalized_sorted_and_size_is_precise() {
     let author = generate_communal_author().unwrap();
     assert!(matches!(
         pack(PackInput { app_dir: tmp.path(), author: &author, timestamp_micros: 1 }),
-        Err(PackError::TooLarge { actual: got, limit }) if got == actual + fs::metadata(tmp.path().join("app.js")).unwrap().len() as usize + fs::metadata(tmp.path().join("index.html")).unwrap().len() as usize && limit == MAX_BUNDLE_TOTAL_BYTES
+        Err(PackError::TooLarge { actual: got, limit }) if got == actual + fs::metadata(tmp.path().join("app.js")).unwrap().len() as usize && limit == MAX_BUNDLE_TOTAL_BYTES
     ));
 }
 
@@ -275,6 +328,51 @@ fn rejects_non_utf8_and_non_portable_resource_paths() {
     ));
 }
 
+#[cfg(unix)]
+#[test]
+fn rejects_hidden_control_and_overdeep_paths() {
+    let tmp = copy_fixture();
+    fs::write(tmp.path().join(".hidden.js"), b"bad").unwrap();
+    let author = generate_communal_author().unwrap();
+    assert!(matches!(
+        pack(PackInput {
+            app_dir: tmp.path(),
+            author: &author,
+            timestamp_micros: 1
+        }),
+        Err(PackError::InvalidResourcePath { .. })
+    ));
+
+    let tmp = copy_fixture();
+    fs::write(tmp.path().join("bad\nname.js"), b"bad").unwrap();
+    let author = generate_communal_author().unwrap();
+    assert!(matches!(
+        pack(PackInput {
+            app_dir: tmp.path(),
+            author: &author,
+            timestamp_micros: 1
+        }),
+        Err(PackError::InvalidResourcePath { .. })
+    ));
+
+    let tmp = copy_fixture();
+    let mut directory = tmp.path().to_path_buf();
+    for _ in 0..64 {
+        directory.push("d");
+        fs::create_dir(&directory).unwrap();
+    }
+    fs::write(directory.join("over.js"), b"bad").unwrap();
+    let author = generate_communal_author().unwrap();
+    assert!(matches!(
+        pack(PackInput {
+            app_dir: tmp.path(),
+            author: &author,
+            timestamp_micros: 1
+        }),
+        Err(PackError::InvalidResourcePath { .. })
+    ));
+}
+
 #[test]
 fn inspect_rejects_partial_and_tampered_artifacts() {
     let output = pack_fixture(7);
@@ -316,6 +414,104 @@ fn inspect_rejects_partial_and_tampered_artifacts() {
         inspect(&mismatched),
         Err(InspectError::IncoherentPair { .. })
     ));
+}
+
+#[test]
+fn inspect_rejects_spoofed_full_author_identity_and_mixed_timestamps() {
+    let attacker = generate_communal_author().unwrap();
+    let victim = generate_communal_author().unwrap();
+    let bundle = AppBundle {
+        entry_point: "index.html".into(),
+        resources: vec![AppResource {
+            path: "index.html".into(),
+            content_type: "text/html".into(),
+            bytes: b"ok".to_vec(),
+        }],
+    };
+    let bundle_bytes = riot_core::apps::bundle::encode_app_bundle(&bundle).unwrap();
+    let mut author = attacker.identity();
+    author.namespace_id = victim.identity().namespace_id;
+    author.signing_key_id = victim.identity().signing_key_id;
+    author.namespace_kind = NamespaceKind::Communal;
+    let manifest = AppManifest {
+        name: "spoof".into(),
+        description: "spoof".into(),
+        version: "1".into(),
+        author,
+        permissions: vec![],
+        entry_point: "index.html".into(),
+    };
+    let manifest_bytes = encode_manifest(&manifest).unwrap();
+    let app_id = app_id_for(&manifest, &app_bundle_digest(&bundle_bytes)).unwrap();
+    let spoofed = encode_bundle(&[
+        signed_at(
+            &attacker,
+            app_index_manifest_path(&app_id).unwrap(),
+            &manifest_bytes,
+            7,
+        ),
+        signed_at(
+            &attacker,
+            app_index_bundle_path(&app_id).unwrap(),
+            &bundle_bytes,
+            7,
+        ),
+    ])
+    .unwrap();
+    assert!(matches!(
+        inspect(&spoofed),
+        Err(InspectError::IncoherentPair { .. })
+    ));
+
+    let legitimate = AppManifest {
+        author: attacker.identity(),
+        ..manifest
+    };
+    let manifest_bytes = encode_manifest(&legitimate).unwrap();
+    let app_id = app_id_for(&legitimate, &app_bundle_digest(&bundle_bytes)).unwrap();
+    let mixed_time = encode_bundle(&[
+        signed_at(
+            &attacker,
+            app_index_manifest_path(&app_id).unwrap(),
+            &manifest_bytes,
+            7,
+        ),
+        signed_at(
+            &attacker,
+            app_index_bundle_path(&app_id).unwrap(),
+            &bundle_bytes,
+            8,
+        ),
+    ])
+    .unwrap();
+    assert!(matches!(
+        inspect(&mixed_time),
+        Err(InspectError::IncoherentPair { .. })
+    ));
+}
+
+fn signed_at(
+    author: &EvidenceAuthor,
+    path: WillowPath,
+    payload: &[u8],
+    timestamp: u64,
+) -> SignedWillowEntry {
+    let entry = Entry::builder()
+        .namespace_id(author.namespace_id().clone())
+        .subspace_id(author.subspace_id())
+        .path(path)
+        .timestamp(timestamp)
+        .payload(payload)
+        .build();
+    let authorised = authorise_entry(author, entry).unwrap();
+    let token = authorised.authorisation_token();
+    let signature: Signature = token.signature().clone().into();
+    SignedWillowEntry {
+        entry_bytes: encode_entry(authorised.entry()),
+        capability_bytes: encode_capability(token.capability()),
+        signature: signature.to_bytes(),
+        payload_bytes: payload.to_vec(),
+    }
 }
 
 fn signed_items(bytes: &[u8]) -> Vec<SignedWillowEntry> {
@@ -408,6 +604,29 @@ fn key_files_round_trip_are_private_and_fail_closed() {
         load_author(&coherent_dir),
         Err(KeyError::InvalidSealedIdentity)
     ));
+}
+
+#[cfg(unix)]
+#[test]
+fn load_author_rejects_symlinks_unsafe_modes_and_oversized_files() {
+    use std::os::unix::fs::{symlink, PermissionsExt};
+
+    let parent = tempfile::tempdir().unwrap();
+    let keys = parent.path().join("keys");
+    keygen(&keys).unwrap();
+    let wrap = keys.join("author.wrapkey");
+    fs::set_permissions(&wrap, fs::Permissions::from_mode(0o644)).unwrap();
+    assert!(matches!(load_author(&keys), Err(KeyError::InvalidWrapKey)));
+    fs::set_permissions(&wrap, fs::Permissions::from_mode(0o600)).unwrap();
+    fs::write(&wrap, vec![b'0'; 65]).unwrap();
+    assert!(matches!(load_author(&keys), Err(KeyError::InvalidWrapKey)));
+
+    fs::remove_file(&wrap).unwrap();
+    let target = parent.path().join("target");
+    fs::write(&target, vec![b'0'; 64]).unwrap();
+    fs::set_permissions(&target, fs::Permissions::from_mode(0o600)).unwrap();
+    symlink(&target, &wrap).unwrap();
+    assert!(load_author(&keys).is_err());
 }
 
 #[test]

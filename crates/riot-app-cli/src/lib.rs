@@ -1,28 +1,36 @@
 use std::collections::BTreeSet;
 use std::fs::{self, DirBuilder, File, OpenOptions};
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::path::{Component, Path, PathBuf};
 
 use ed25519_dalek::Signature;
 use rand_core::{OsRng, RngCore};
 use riot_core::apps::bundle::{
     app_bundle_digest, decode_app_bundle, encode_app_bundle, AppBundle, AppResource,
-    MAX_BUNDLE_TOTAL_BYTES,
+    MAX_BUNDLE_RESOURCES, MAX_BUNDLE_TOTAL_BYTES, MAX_RESOURCE_PATH_BYTES,
 };
 use riot_core::apps::directory::AppProvenance;
 use riot_core::apps::index::{app_index_bundle_path, app_index_manifest_path, scan_app_index};
-use riot_core::apps::manifest::{app_id_for, decode_manifest, encode_manifest, AppId, AppManifest};
-use riot_core::import::{decode_bundle, encode_bundle, BundleDecodeOutcome, ItemStatus};
+use riot_core::apps::manifest::{
+    app_id_for, decode_manifest, encode_manifest, AppId, AppManifest, MAX_APP_DESCRIPTION_BYTES,
+    MAX_APP_ENTRY_POINT_BYTES, MAX_APP_NAME_BYTES, MAX_APP_PERMISSIONS, MAX_APP_PERMISSION_BYTES,
+    MAX_APP_VERSION_BYTES, MAX_MANIFEST_BYTES,
+};
+use riot_core::import::{
+    decode_bundle, encode_bundle, BundleDecodeOutcome, ItemStatus, MAX_BUNDLE_BYTES,
+};
 use riot_core::session::{ImportContext, InspectOutcome, RiotSession};
 use riot_core::willow::{
     authorise_entry, encode_capability, encode_entry, generate_communal_author, AuthorIdentity,
     Entry, EvidenceAuthor, Path as WillowPath, SignedWillowEntry,
 };
-use serde::de::{self, Deserializer, MapAccess, Visitor};
+use serde::de::{self, DeserializeSeed, Deserializer, MapAccess, SeqAccess, Visitor};
+use willow25::groupings::{Coordinatelike, Keylike, Namespaced};
 use zeroize::Zeroizing;
 
 pub const KEY_WARNING: &str =
     "Protect both author.wrapkey and author.sealed; anyone with both files can publish as this author.";
+const MAX_RESOURCE_PATH_COMPONENTS: usize = 64;
 
 pub struct PackInput<'a> {
     pub app_dir: &'a Path,
@@ -67,6 +75,13 @@ pub enum PackError {
         actual: usize,
         limit: usize,
     },
+    TooManyResources {
+        actual: usize,
+        limit: usize,
+    },
+    EncodedTooLarge {
+        limit: usize,
+    },
     Core {
         operation: &'static str,
     },
@@ -80,7 +95,11 @@ impl std::fmt::Display for PackError {
                 path,
                 source,
             } => {
-                write!(f, "{operation} '{}': {source}", path.display())
+                write!(
+                    f,
+                    "{operation} '{}': {source}",
+                    path.to_string_lossy().escape_default()
+                )
             }
             Self::ManifestJsonInvalid { reason } => write!(f, "riot-app.json: {reason}"),
             Self::InvalidResourcePath { path } => write!(f, "invalid resource path '{path}'"),
@@ -99,6 +118,13 @@ impl std::fmt::Display for PackError {
                     f,
                     "app bundle is too large: {actual} bytes (limit {limit} bytes)"
                 )
+            }
+            Self::TooManyResources { actual, limit } => write!(
+                f,
+                "app has too many resources: {actual} files (limit {limit} files)"
+            ),
+            Self::EncodedTooLarge { limit } => {
+                write!(f, "encoded app bundle exceeds its {limit}-byte limit")
             }
             Self::Core { operation } => {
                 write!(f, "Riot rejected the app while trying to {operation}")
@@ -166,11 +192,15 @@ impl std::fmt::Display for KeyError {
                 operation,
                 path,
                 source,
-            } => write!(f, "{operation} '{}': {source}", path.display()),
+            } => write!(
+                f,
+                "{operation} '{}': {source}",
+                path.to_string_lossy().escape_default()
+            ),
             Self::AlreadyExists { path } => write!(
                 f,
                 "refusing to overwrite existing '{}': move or remove it first",
-                path.display()
+                path.to_string_lossy().escape_default()
             ),
             Self::InvalidWrapKey => write!(
                 f,
@@ -214,15 +244,24 @@ struct ManifestInput {
 }
 
 pub fn pack(input: PackInput<'_>) -> Result<PackOutput, PackError> {
-    let source = input.app_dir.join("riot-app.json");
-    let raw = fs::read(&source).map_err(|source_error| PackError::Io {
-        operation: "read",
-        path: source,
-        source: source_error,
+    let root_metadata = fs::symlink_metadata(input.app_dir).map_err(|source| PackError::Io {
+        operation: "inspect app directory",
+        path: input.app_dir.to_path_buf(),
+        source,
     })?;
+    if root_metadata.file_type().is_symlink() || !root_metadata.is_dir() {
+        return Err(PackError::NonRegularFile { path: ".".into() });
+    }
+    let canonical_root = fs::canonicalize(input.app_dir).map_err(|source| PackError::Io {
+        operation: "canonicalize app directory",
+        path: input.app_dir.to_path_buf(),
+        source,
+    })?;
+    let source = input.app_dir.join("riot-app.json");
+    let raw = secure_read_bounded(&canonical_root, input.app_dir, &source, MAX_MANIFEST_BYTES)?;
     let meta = parse_manifest_input(&raw)?;
     let mut resources = Vec::new();
-    collect_resources(input.app_dir, input.app_dir, &mut resources)?;
+    collect_resources(&canonical_root, input.app_dir, &mut resources)?;
     resources.sort_by(|a, b| a.path.as_bytes().cmp(b.path.as_bytes()));
 
     let actual = resources
@@ -254,8 +293,7 @@ pub fn pack(input: PackInput<'_>) -> Result<PackOutput, PackError> {
         resources,
     };
     let bundle_bytes = encode_app_bundle(&app_bundle).map_err(|error| match error {
-        riot_core::apps::AppsError::BundleTooLarge => PackError::TooLarge {
-            actual,
+        riot_core::apps::AppsError::BundleTooLarge => PackError::EncodedTooLarge {
             limit: MAX_BUNDLE_TOTAL_BYTES,
         },
         _ => PackError::Core {
@@ -347,55 +385,51 @@ impl<'de> Visitor<'de> for ManifestInputVisitor {
                     if name.is_some() {
                         return Err(de::Error::custom("duplicate field 'name'"));
                     }
-                    name = Some(
+                    name = Some(bounded_json_string(
                         map.next_value::<String>()
                             .map_err(|_| de::Error::custom("'name' must be a string"))?,
-                    );
+                        "name",
+                        MAX_APP_NAME_BYTES,
+                    )?);
                 }
                 "description" => {
                     if description.is_some() {
                         return Err(de::Error::custom("duplicate field 'description'"));
                     }
-                    description = Some(
+                    description = Some(bounded_json_string(
                         map.next_value::<String>()
                             .map_err(|_| de::Error::custom("'description' must be a string"))?,
-                    );
+                        "description",
+                        MAX_APP_DESCRIPTION_BYTES,
+                    )?);
                 }
                 "version" => {
                     if version.is_some() {
                         return Err(de::Error::custom("duplicate field 'version'"));
                     }
-                    version = Some(
+                    version = Some(bounded_json_string(
                         map.next_value::<String>()
                             .map_err(|_| de::Error::custom("'version' must be a string"))?,
-                    );
+                        "version",
+                        MAX_APP_VERSION_BYTES,
+                    )?);
                 }
                 "entry_point" => {
                     if entry_point.is_some() {
                         return Err(de::Error::custom("duplicate field 'entry_point'"));
                     }
-                    entry_point = Some(
+                    entry_point = Some(bounded_json_string(
                         map.next_value::<String>()
                             .map_err(|_| de::Error::custom("'entry_point' must be a string"))?,
-                    );
+                        "entry_point",
+                        MAX_APP_ENTRY_POINT_BYTES,
+                    )?);
                 }
                 "permissions" => {
                     if permissions.is_some() {
                         return Err(de::Error::custom("duplicate field 'permissions'"));
                     }
-                    let raw = map.next_value::<serde_json::Value>()?;
-                    let values = raw
-                        .as_array()
-                        .ok_or_else(|| de::Error::custom("'permissions' must be an array"))?;
-                    let mut parsed = Vec::with_capacity(values.len());
-                    for (index, value) in values.iter().enumerate() {
-                        parsed.push(value.as_str().map(str::to_owned).ok_or_else(|| {
-                            de::Error::custom(format!(
-                                "permission at index {index} must be a string"
-                            ))
-                        })?);
-                    }
-                    permissions = Some(parsed);
+                    permissions = Some(map.next_value_seed(PermissionsSeed)?);
                 }
                 _ => {
                     return Err(de::Error::custom(format!("unknown field '{key}'")));
@@ -412,51 +446,172 @@ impl<'de> Visitor<'de> for ManifestInputVisitor {
     }
 }
 
+fn bounded_json_string<E>(value: String, field: &str, limit: usize) -> Result<String, E>
+where
+    E: de::Error,
+{
+    if value.is_empty() || value.len() > limit || value.chars().any(char::is_control) {
+        return Err(E::custom(format!(
+            "'{field}' is empty, too long, or contains control characters"
+        )));
+    }
+    Ok(value)
+}
+
+struct PermissionsSeed;
+
+impl<'de> DeserializeSeed<'de> for PermissionsSeed {
+    type Value = Vec<String>;
+
+    fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_seq(PermissionsVisitor)
+    }
+}
+
+struct PermissionsVisitor;
+
+impl<'de> Visitor<'de> for PermissionsVisitor {
+    type Value = Vec<String>;
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("'permissions' must be an array")
+    }
+
+    fn visit_seq<A>(self, mut sequence: A) -> Result<Self::Value, A::Error>
+    where
+        A: SeqAccess<'de>,
+    {
+        let mut permissions = Vec::with_capacity(MAX_APP_PERMISSIONS);
+        while let Some(value) = sequence.next_element_seed(PermissionSeed(permissions.len()))? {
+            if permissions.len() == MAX_APP_PERMISSIONS {
+                return Err(de::Error::custom("too many permissions"));
+            }
+            permissions.push(value);
+        }
+        Ok(permissions)
+    }
+}
+
+struct PermissionSeed(usize);
+
+impl<'de> DeserializeSeed<'de> for PermissionSeed {
+    type Value = String;
+
+    fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_string(PermissionVisitor(self.0))
+    }
+}
+
+struct PermissionVisitor(usize);
+
+impl Visitor<'_> for PermissionVisitor {
+    type Value = String;
+    fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "permission at index {} must be a string", self.0)
+    }
+    fn visit_string<E>(self, value: String) -> Result<String, E>
+    where
+        E: de::Error,
+    {
+        bounded_json_string(
+            value,
+            &format!("permission at index {}", self.0),
+            MAX_APP_PERMISSION_BYTES,
+        )
+    }
+    fn visit_str<E>(self, value: &str) -> Result<String, E>
+    where
+        E: de::Error,
+    {
+        self.visit_string(value.to_owned())
+    }
+}
+
 fn collect_resources(
-    root: &Path,
-    directory: &Path,
+    canonical_root: &Path,
+    source_root: &Path,
     out: &mut Vec<AppResource>,
 ) -> Result<(), PackError> {
-    let entries = fs::read_dir(directory).map_err(|source| PackError::Io {
-        operation: "read directory",
-        path: directory.to_path_buf(),
-        source,
-    })?;
-    for result in entries {
-        let entry = result.map_err(|source| PackError::Io {
-            operation: "read directory entry",
-            path: directory.to_path_buf(),
+    let mut stack = vec![source_root.to_path_buf()];
+    let mut total = 0usize;
+    while let Some(directory) = stack.pop() {
+        let canonical = fs::canonicalize(&directory).map_err(|source| PackError::Io {
+            operation: "canonicalize resource directory",
+            path: directory.clone(),
             source,
         })?;
-        let path = entry.path();
-        let relative = normalized_relative(root, &path)?;
-        let file_type = entry.file_type().map_err(|source| PackError::Io {
-            operation: "inspect",
-            path: path.clone(),
-            source,
-        })?;
-        if file_type.is_symlink() {
-            return Err(PackError::Symlink { path: relative });
+        if !canonical.starts_with(canonical_root) {
+            return Err(PackError::InvalidResourcePath {
+                path: "<outside-root>".into(),
+            });
         }
-        if file_type.is_dir() {
-            collect_resources(root, &path, out)?;
-        } else if file_type.is_file() {
-            if relative == "riot-app.json" {
-                continue;
-            }
-            let content_type = content_type_for(&relative)?;
-            let bytes = fs::read(&path).map_err(|source| PackError::Io {
-                operation: "read resource",
+        let entries = fs::read_dir(&directory).map_err(|source| PackError::Io {
+            operation: "read directory",
+            path: directory.clone(),
+            source,
+        })?;
+        let mut entries =
+            entries
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|source| PackError::Io {
+                    operation: "read directory entry",
+                    path: directory.clone(),
+                    source,
+                })?;
+        entries.sort_by_key(|entry| entry.file_name());
+        for entry in entries {
+            let path = entry.path();
+            let relative = normalized_relative(source_root, &path)?;
+            let file_type = entry.file_type().map_err(|source| PackError::Io {
+                operation: "inspect",
                 path: path.clone(),
                 source,
             })?;
-            out.push(AppResource {
-                path: relative,
-                content_type: content_type.into(),
-                bytes,
-            });
-        } else {
-            return Err(PackError::NonRegularFile { path: relative });
+            if file_type.is_symlink() {
+                return Err(PackError::Symlink { path: relative });
+            }
+            if file_type.is_dir() {
+                stack.push(path);
+            } else if file_type.is_file() {
+                if relative == "riot-app.json" {
+                    continue;
+                }
+                if out.len() == MAX_BUNDLE_RESOURCES {
+                    return Err(PackError::TooManyResources {
+                        actual: out.len() + 1,
+                        limit: MAX_BUNDLE_RESOURCES,
+                    });
+                }
+                let content_type = content_type_for(&relative)?;
+                let remaining = MAX_BUNDLE_TOTAL_BYTES.saturating_sub(total);
+                let bytes = match secure_read_bounded(canonical_root, source_root, &path, remaining)
+                {
+                    Err(PackError::TooLarge { actual, .. }) => {
+                        return Err(PackError::TooLarge {
+                            actual: total.saturating_add(actual),
+                            limit: MAX_BUNDLE_TOTAL_BYTES,
+                        })
+                    }
+                    other => other?,
+                };
+                total = total.checked_add(bytes.len()).ok_or(PackError::TooLarge {
+                    actual: usize::MAX,
+                    limit: MAX_BUNDLE_TOTAL_BYTES,
+                })?;
+                out.push(AppResource {
+                    path: relative,
+                    content_type: content_type.into(),
+                    bytes,
+                });
+            } else {
+                return Err(PackError::NonRegularFile { path: relative });
+            }
         }
     }
     Ok(())
@@ -487,17 +642,143 @@ fn normalized_relative(root: &Path, path: &Path) -> Result<String, PackError> {
             }
         }
     }
+    if parts.len() > MAX_RESOURCE_PATH_COMPONENTS {
+        return Err(PackError::InvalidResourcePath {
+            path: "<too-deep>".into(),
+        });
+    }
     let normalized = parts.join("/");
     if normalized.is_empty()
+        || normalized.len() > MAX_RESOURCE_PATH_BYTES
         || normalized.starts_with('/')
         || normalized.contains('\\')
-        || normalized
-            .split('/')
-            .any(|part| part.is_empty() || part == "." || part == "..")
+        || normalized.split('/').any(|part| {
+            part.is_empty()
+                || part == "."
+                || part == ".."
+                || part.starts_with('.')
+                || part.chars().any(char::is_control)
+        })
     {
         return Err(PackError::InvalidResourcePath { path: normalized });
     }
     Ok(normalized)
+}
+
+#[cfg(unix)]
+fn secure_read_bounded(
+    canonical_root: &Path,
+    source_root: &Path,
+    path: &Path,
+    limit: usize,
+) -> Result<Vec<u8>, PackError> {
+    use std::ffi::CString;
+    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::fs::OpenOptionsExt;
+
+    let relative = normalized_relative(source_root, path)?;
+    let relative_path =
+        path.strip_prefix(source_root)
+            .map_err(|_| PackError::InvalidResourcePath {
+                path: relative.clone(),
+            })?;
+    let root = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(canonical_root)
+        .map_err(|source| PackError::Io {
+            operation: "open canonical app root",
+            path: canonical_root.to_path_buf(),
+            source,
+        })?;
+    let mut parent_fd = root.as_raw_fd();
+    let mut directories: Vec<OwnedFd> = Vec::new();
+    let components = relative_path.components().collect::<Vec<_>>();
+    let mut final_fd = None;
+    for (index, component) in components.iter().enumerate() {
+        let Component::Normal(name) = component else {
+            return Err(PackError::InvalidResourcePath {
+                path: relative.clone(),
+            });
+        };
+        let name = CString::new(name.as_bytes()).map_err(|_| PackError::InvalidResourcePath {
+            path: relative.clone(),
+        })?;
+        let final_component = index + 1 == components.len();
+        let flags = libc::O_RDONLY
+            | libc::O_CLOEXEC
+            | libc::O_NOFOLLOW
+            | if final_component {
+                0
+            } else {
+                libc::O_DIRECTORY
+            };
+        let raw_fd = unsafe { libc::openat(parent_fd, name.as_ptr(), flags) };
+        if raw_fd < 0 {
+            return Err(PackError::Io {
+                operation: "open resource beneath app root",
+                path: path.to_path_buf(),
+                source: io::Error::last_os_error(),
+            });
+        }
+        let owned = unsafe { OwnedFd::from_raw_fd(raw_fd) };
+        if final_component {
+            final_fd = Some(owned);
+        } else {
+            directories.push(owned);
+            parent_fd = directories
+                .last()
+                .expect("directory fd was just pushed")
+                .as_raw_fd();
+        }
+    }
+    let mut file = File::from(final_fd.ok_or_else(|| PackError::InvalidResourcePath {
+        path: relative.clone(),
+    })?);
+    let opened = file.metadata().map_err(|source| PackError::Io {
+        operation: "inspect opened resource",
+        path: path.to_path_buf(),
+        source,
+    })?;
+    if !opened.is_file() {
+        return Err(PackError::NonRegularFile { path: relative });
+    }
+    let metadata_len = usize::try_from(opened.len()).unwrap_or(usize::MAX);
+    if metadata_len > limit {
+        return Err(PackError::TooLarge {
+            actual: metadata_len,
+            limit,
+        });
+    }
+    let mut bytes = Vec::with_capacity(metadata_len.min(limit));
+    Read::by_ref(&mut file)
+        .take((limit as u64).saturating_add(1))
+        .read_to_end(&mut bytes)
+        .map_err(|source| PackError::Io {
+            operation: "read resource",
+            path: path.to_path_buf(),
+            source,
+        })?;
+    if bytes.len() > limit {
+        return Err(PackError::TooLarge {
+            actual: bytes.len(),
+            limit,
+        });
+    }
+    Ok(bytes)
+}
+
+#[cfg(not(unix))]
+fn secure_read_bounded(
+    _canonical_root: &Path,
+    _source_root: &Path,
+    _path: &Path,
+    _limit: usize,
+) -> Result<Vec<u8>, PackError> {
+    Err(PackError::Core {
+        operation: "provide no-follow resource reads on this platform",
+    })
 }
 
 fn content_type_for(path: &str) -> Result<&'static str, PackError> {
@@ -541,6 +822,11 @@ fn sign_at(
 }
 
 pub fn inspect(bytes: &[u8]) -> Result<InspectReport, InspectError> {
+    if bytes.len() > MAX_BUNDLE_BYTES {
+        return Err(InspectError::InvalidImportBundle {
+            reason: "artifact exceeds the import size limit",
+        });
+    }
     let decoded = match decode_bundle(bytes) {
         BundleDecodeOutcome::Decoded(decoded) => decoded,
         BundleDecodeOutcome::Rejected(_) => {
@@ -557,15 +843,25 @@ pub fn inspect(bytes: &[u8]) -> Result<InspectReport, InspectError> {
     let mut manifest = None;
     let mut bundle = None;
     for item in &decoded.items {
-        if !matches!(item.status, ItemStatus::Valid(_)) {
-            return Err(InspectError::InvalidImportBundle {
-                reason: "an entry failed signature or schema verification",
-            });
-        }
+        let valid = match &item.status {
+            ItemStatus::Valid(valid) => valid,
+            ItemStatus::Invalid(_) => {
+                return Err(InspectError::InvalidImportBundle {
+                    reason: "an entry failed signature or schema verification",
+                })
+            }
+        };
+        let carrier = Carrier {
+            namespace_id: *valid.entry.namespace_id().as_bytes(),
+            subspace_id: *valid.entry.subspace_id().as_bytes(),
+            timestamp_micros: u64::from(valid.entry.timestamp()),
+        };
         let payload = item.frame.payload_bytes();
         match (decode_manifest(payload), decode_app_bundle(payload)) {
-            (Ok(value), Err(_)) if manifest.is_none() => manifest = Some(value),
-            (Err(_), Ok(value)) if bundle.is_none() => bundle = Some((value, payload.to_vec())),
+            (Ok(value), Err(_)) if manifest.is_none() => manifest = Some((value, carrier)),
+            (Err(_), Ok(value)) if bundle.is_none() => {
+                bundle = Some((value, payload.to_vec(), carrier))
+            }
             _ => {
                 return Err(InspectError::IncoherentPair {
                     reason: "entries are not one manifest and one resource bundle",
@@ -573,12 +869,22 @@ pub fn inspect(bytes: &[u8]) -> Result<InspectReport, InspectError> {
             }
         }
     }
-    let manifest = manifest.ok_or(InspectError::IncoherentPair {
+    let (manifest, manifest_carrier) = manifest.ok_or(InspectError::IncoherentPair {
         reason: "manifest is missing",
     })?;
-    let (bundle, bundle_bytes) = bundle.ok_or(InspectError::IncoherentPair {
+    let (bundle, bundle_bytes, bundle_carrier) = bundle.ok_or(InspectError::IncoherentPair {
         reason: "resource bundle is missing",
     })?;
+    if manifest_carrier != bundle_carrier
+        || manifest.author.namespace_id != manifest_carrier.namespace_id
+        || manifest.author.subspace_id != manifest_carrier.subspace_id
+        || manifest.author.signing_key_id != manifest_carrier.subspace_id
+        || manifest.author.namespace_kind != riot_core::willow::NamespaceKind::Communal
+    {
+        return Err(InspectError::IncoherentPair {
+            reason: "manifest author, entry carrier, or timestamps do not agree",
+        });
+    }
     if manifest.entry_point != bundle.entry_point {
         return Err(InspectError::IncoherentPair {
             reason: "manifest and bundle entry points differ",
@@ -659,6 +965,13 @@ pub fn inspect(bytes: &[u8]) -> Result<InspectReport, InspectError> {
     })
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct Carrier {
+    namespace_id: [u8; 32],
+    subspace_id: [u8; 32],
+    timestamp_micros: u64,
+}
+
 pub fn keygen(out: &Path) -> Result<KeygenOutput, KeyError> {
     keygen_inner(out, |_| Ok(()))
 }
@@ -666,6 +979,7 @@ pub fn keygen(out: &Path) -> Result<KeygenOutput, KeyError> {
 #[derive(Clone, Copy)]
 enum KeygenStage {
     AfterWrapKey,
+    BeforePublish,
 }
 
 fn keygen_inner<F>(out: &Path, mut checkpoint: F) -> Result<KeygenOutput, KeyError>
@@ -702,11 +1016,19 @@ where
         write_private_temp(&temp.join("author.sealed"), &sealed)?;
         sync_directory(&temp)?;
         sync_directory(parent)?;
-        ensure_absent(out)?;
-        fs::rename(&temp, out).map_err(|source| KeyError::Io {
-            operation: "publish key directory",
-            path: out.to_path_buf(),
-            source,
+        checkpoint(KeygenStage::BeforePublish)?;
+        rename_directory_noreplace(&temp, out).map_err(|source| {
+            if source.kind() == io::ErrorKind::AlreadyExists {
+                KeyError::AlreadyExists {
+                    path: out.to_path_buf(),
+                }
+            } else {
+                KeyError::Io {
+                    operation: "publish key directory",
+                    path: out.to_path_buf(),
+                    source,
+                }
+            }
         })?;
         published = true;
         if let Err(error) = sync_directory(parent) {
@@ -740,13 +1062,8 @@ fn ensure_absent(path: &Path) -> Result<(), KeyError> {
 }
 
 fn create_key_temp_directory(parent: &Path) -> Result<PathBuf, KeyError> {
-    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     for _ in 0..128 {
-        let sequence = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let path = parent.join(format!(
-            ".riot-app-keygen-{}-{sequence}",
-            std::process::id()
-        ));
+        let path = parent.join(format!(".riot-app-keygen-{}", random_hex_16()?));
         let mut builder = DirBuilder::new();
         #[cfg(unix)]
         {
@@ -772,6 +1089,60 @@ fn create_key_temp_directory(parent: &Path) -> Result<PathBuf, KeyError> {
     })
 }
 
+#[cfg(target_os = "macos")]
+fn rename_directory_noreplace(from: &Path, to: &Path) -> io::Result<()> {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+    let from = CString::new(from.as_os_str().as_bytes())
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "NUL in path"))?;
+    let to = CString::new(to.as_os_str().as_bytes())
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "NUL in path"))?;
+    let result = unsafe { libc::renamex_np(from.as_ptr(), to.as_ptr(), libc::RENAME_EXCL) };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn rename_directory_noreplace(from: &Path, to: &Path) -> io::Result<()> {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+    let from = CString::new(from.as_os_str().as_bytes())
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "NUL in path"))?;
+    let to = CString::new(to.as_os_str().as_bytes())
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "NUL in path"))?;
+    let result = unsafe {
+        libc::syscall(
+            libc::SYS_renameat2,
+            libc::AT_FDCWD,
+            from.as_ptr(),
+            libc::AT_FDCWD,
+            to.as_ptr(),
+            libc::RENAME_NOREPLACE,
+        )
+    };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
+#[cfg(windows)]
+fn rename_directory_noreplace(from: &Path, to: &Path) -> io::Result<()> {
+    fs::rename(from, to)
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
+fn rename_directory_noreplace(_from: &Path, _to: &Path) -> io::Result<()> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "atomic no-replace directory rename unavailable",
+    ))
+}
+
 #[cfg(unix)]
 fn sync_directory(path: &Path) -> Result<(), KeyError> {
     File::open(path)
@@ -791,30 +1162,40 @@ fn sync_directory(_path: &Path) -> Result<(), KeyError> {
 pub fn load_author(key_dir: &Path) -> Result<EvidenceAuthor, KeyError> {
     let key_path = key_dir.join("author.wrapkey");
     let sealed_path = key_dir.join("author.sealed");
-    let encoded = Zeroizing::new(fs::read(&key_path).map_err(|source| KeyError::Io {
-        operation: "read",
-        path: key_path,
-        source,
-    })?);
+    let encoded = read_private_exact(&key_path, 64)?;
     let wrapping_key = decode_lower_hex_key(&encoded)?;
-    let sealed = fs::read(&sealed_path).map_err(|source| KeyError::Io {
-        operation: "read",
-        path: sealed_path,
-        source,
-    })?;
+    let sealed = read_private_exact(&sealed_path, riot_core::willow::SEALED_IDENTITY_BYTES)?;
     EvidenceAuthor::open_sealed_identity(&wrapping_key, &sealed)
         .map_err(|_| KeyError::InvalidSealedIdentity)
 }
 
 pub fn write_new_atomic(path: &Path, bytes: &[u8]) -> Result<(), KeyError> {
-    if path.exists() {
-        return Err(KeyError::AlreadyExists {
-            path: path.to_path_buf(),
-        });
-    }
-    let temp = temp_path(path);
+    write_new_atomic_inner(path, bytes, || Ok(()))
+}
+
+fn write_new_atomic_inner<F>(
+    path: &Path,
+    bytes: &[u8],
+    mut before_publish: F,
+) -> Result<(), KeyError>
+where
+    F: FnMut() -> Result<(), KeyError>,
+{
+    ensure_absent(path)?;
+    let parent = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    let (temp, mut file) = create_random_temp_file(path)?;
     let result = (|| {
-        write_private_temp(&temp, bytes)?;
+        file.write_all(bytes)
+            .and_then(|()| file.sync_all())
+            .map_err(|source| KeyError::Io {
+                operation: "write temporary file",
+                path: temp.clone(),
+                source,
+            })?;
+        before_publish()?;
         fs::hard_link(&temp, path).map_err(|source| {
             if source.kind() == io::ErrorKind::AlreadyExists {
                 KeyError::AlreadyExists {
@@ -828,18 +1209,46 @@ pub fn write_new_atomic(path: &Path, bytes: &[u8]) -> Result<(), KeyError> {
                 }
             }
         })?;
+        sync_directory(parent)?;
         Ok(())
     })();
     let _ = fs::remove_file(&temp);
     result
 }
 
-fn temp_path(path: &Path) -> PathBuf {
-    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let sequence = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let mut value = path.as_os_str().to_owned();
-    value.push(format!(".tmp-{}-{sequence}", std::process::id()));
-    PathBuf::from(value)
+fn create_random_temp_file(path: &Path) -> Result<(PathBuf, File), KeyError> {
+    for _ in 0..128 {
+        let mut value = path.as_os_str().to_owned();
+        value.push(format!(".tmp-{}", random_hex_16()?));
+        let temp = PathBuf::from(value);
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        match options.open(&temp) {
+            Ok(file) => return Ok((temp, file)),
+            Err(source) if source.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(source) => {
+                return Err(KeyError::Io {
+                    operation: "create temporary file",
+                    path: temp,
+                    source,
+                })
+            }
+        }
+    }
+    Err(KeyError::EntropyUnavailable)
+}
+
+fn random_hex_16() -> Result<String, KeyError> {
+    let mut bytes = Zeroizing::new([0u8; 16]);
+    OsRng
+        .try_fill_bytes(&mut bytes[..])
+        .map_err(|_| KeyError::EntropyUnavailable)?;
+    Ok(hex_lower(&bytes[..]))
 }
 
 fn write_private_temp(path: &Path, bytes: &[u8]) -> Result<(), KeyError> {
@@ -862,6 +1271,61 @@ fn write_private_temp(path: &Path, bytes: &[u8]) -> Result<(), KeyError> {
             path: path.to_path_buf(),
             source,
         })
+}
+
+#[cfg(unix)]
+fn read_private_exact(path: &Path, expected: usize) -> Result<Zeroizing<Vec<u8>>, KeyError> {
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+    let mut file = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(path)
+        .map_err(|source| KeyError::Io {
+            operation: "open private key file without following links",
+            path: path.to_path_buf(),
+            source,
+        })?;
+    let metadata = file.metadata().map_err(|source| KeyError::Io {
+        operation: "inspect private key file",
+        path: path.to_path_buf(),
+        source,
+    })?;
+    if !metadata.is_file()
+        || metadata.permissions().mode() & 0o077 != 0
+        || usize::try_from(metadata.len()).ok() != Some(expected)
+    {
+        return Err(if expected == 64 {
+            KeyError::InvalidWrapKey
+        } else {
+            KeyError::InvalidSealedIdentity
+        });
+    }
+    let mut bytes = Zeroizing::new(Vec::with_capacity(expected));
+    Read::by_ref(&mut file)
+        .take((expected as u64) + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|source| KeyError::Io {
+            operation: "read private key file",
+            path: path.to_path_buf(),
+            source,
+        })?;
+    if bytes.len() != expected {
+        return Err(if expected == 64 {
+            KeyError::InvalidWrapKey
+        } else {
+            KeyError::InvalidSealedIdentity
+        });
+    }
+    Ok(bytes)
+}
+
+#[cfg(not(unix))]
+fn read_private_exact(_path: &Path, expected: usize) -> Result<Zeroizing<Vec<u8>>, KeyError> {
+    Err(if expected == 64 {
+        KeyError::InvalidWrapKey
+    } else {
+        KeyError::InvalidSealedIdentity
+    })
 }
 
 fn decode_lower_hex_key(input: &[u8]) -> Result<Zeroizing<[u8; 32]>, KeyError> {
@@ -917,6 +1381,7 @@ mod tests {
         let output = parent.path().join("keys");
         let error = keygen_inner(&output, |stage| match stage {
             KeygenStage::AfterWrapKey => Err(KeyError::InvalidOutputDirectory),
+            KeygenStage::BeforePublish => Ok(()),
         });
         assert!(error.is_err());
         assert!(!output.exists());
@@ -926,5 +1391,53 @@ mod tests {
                 .count(),
             0
         );
+    }
+
+    #[test]
+    fn keygen_competing_destination_is_preserved_and_temp_is_cleaned() {
+        let parent = tempfile::tempdir().expect("temp parent");
+        let output = parent.path().join("keys");
+        let error = keygen_inner(&output, |stage| {
+            if matches!(stage, KeygenStage::BeforePublish) {
+                std::fs::create_dir(&output).expect("attacker directory");
+                std::fs::write(output.join("marker"), b"attacker").expect("marker");
+            }
+            Ok(())
+        });
+        assert!(matches!(error, Err(KeyError::AlreadyExists { .. })));
+        assert_eq!(std::fs::read(output.join("marker")).unwrap(), b"attacker");
+        assert_eq!(std::fs::read_dir(parent.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn output_competing_destination_is_preserved_and_temp_is_cleaned() {
+        let parent = tempfile::tempdir().expect("temp parent");
+        let output = parent.path().join("bundle.riot");
+        let error = super::write_new_atomic_inner(&output, b"ours", || {
+            std::fs::write(&output, b"attacker").unwrap();
+            Ok(())
+        });
+        assert!(matches!(error, Err(KeyError::AlreadyExists { .. })));
+        assert_eq!(std::fs::read(&output).unwrap(), b"attacker");
+        assert_eq!(std::fs::read_dir(parent.path()).unwrap().count(), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn descriptor_relative_read_rejects_ancestor_swapped_to_outside_symlink() {
+        use std::os::unix::fs::symlink;
+        let parent = tempfile::tempdir().unwrap();
+        let root = parent.path().join("root");
+        let outside = parent.path().join("outside");
+        std::fs::create_dir_all(root.join("nested")).unwrap();
+        std::fs::create_dir(&outside).unwrap();
+        std::fs::write(root.join("nested/file.js"), b"inside").unwrap();
+        std::fs::write(outside.join("file.js"), b"outside-secret").unwrap();
+        let discovered = root.join("nested/file.js");
+        std::fs::rename(root.join("nested"), root.join("moved")).unwrap();
+        symlink(&outside, root.join("nested")).unwrap();
+        let canonical_root = std::fs::canonicalize(&root).unwrap();
+        let result = super::secure_read_bounded(&canonical_root, &root, &discovered, 1024);
+        assert!(result.is_err());
     }
 }

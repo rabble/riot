@@ -1,13 +1,26 @@
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use riot_app_cli::{hex_lower, inspect, keygen, load_author, pack, write_new_atomic, PackInput};
 
 fn main() {
-    if let Err(error) = run(std::env::args().skip(1).collect()) {
+    if let Err(error) = run_os() {
         eprintln!("riot-app: {error}");
         std::process::exit(1);
     }
+}
+
+fn run_os() -> Result<(), String> {
+    let args = std::env::args_os()
+        .skip(1)
+        .map(|value| {
+            value
+                .into_string()
+                .map_err(|_| "arguments must be valid UTF-8".to_string())
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    run(args)
 }
 
 fn run(args: Vec<String>) -> Result<(), String> {
@@ -41,7 +54,7 @@ fn run_pack(args: &[String]) -> Result<(), String> {
         let flag = &options[index];
         let value = options
             .get(index + 1)
-            .ok_or_else(|| format!("missing value for {flag}"))?;
+            .ok_or_else(|| format!("missing value for {}", escaped(flag)))?;
         match flag.as_str() {
             "--key-dir" if key_dir.is_none() => key_dir = Some(PathBuf::from(value)),
             "--out" if out.is_none() => out = Some(PathBuf::from(value)),
@@ -52,7 +65,8 @@ fn run_pack(args: &[String]) -> Result<(), String> {
             }
             _ => {
                 return Err(format!(
-                    "unexpected or repeated argument '{flag}'\n{}",
+                    "unexpected or repeated argument '{}'\n{}",
+                    escaped(flag),
                     usage()
                 ))
             }
@@ -74,7 +88,7 @@ fn run_pack(args: &[String]) -> Result<(), String> {
     .map_err(|error| error.to_string())?;
     write_new_atomic(&out, &output.import_bundle_bytes).map_err(|error| error.to_string())?;
     println!("app id: {}", hex_lower(&output.app_id));
-    println!("wrote: {}", out.display());
+    println!("wrote: {}", escaped(&out.to_string_lossy()));
     Ok(())
 }
 
@@ -83,8 +97,27 @@ fn run_inspect(args: &[String]) -> Result<(), String> {
         return Err("inspect requires exactly one bundle file".into());
     }
     let path = Path::new(&args[0]);
-    let bytes =
-        std::fs::read(path).map_err(|error| format!("read '{}': {error}", path.display()))?;
+    let metadata =
+        std::fs::metadata(path).map_err(|error| format!("read input metadata: {error}"))?;
+    let limit = riot_core::import::MAX_BUNDLE_BYTES;
+    if metadata.len() > limit as u64 {
+        return Err(format!(
+            "input is too large: {} bytes (limit {limit} bytes)",
+            metadata.len()
+        ));
+    }
+    let mut file = std::fs::File::open(path).map_err(|error| format!("open input: {error}"))?;
+    let mut bytes = Vec::with_capacity(metadata.len() as usize);
+    file.by_ref()
+        .take((limit as u64) + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| format!("read input: {error}"))?;
+    if bytes.len() > limit {
+        return Err(format!(
+            "input is too large: {} bytes (limit {limit} bytes)",
+            bytes.len()
+        ));
+    }
     let report = inspect(&bytes).map_err(|error| error.to_string())?;
     println!("name: {}", report.name);
     println!("version: {}", report.version);
@@ -118,4 +151,8 @@ fn current_unix_micros() -> Result<u64, String> {
 
 fn usage() -> String {
     "usage:\n  riot-app keygen --out <dir>\n  riot-app pack <app-dir> --key-dir <dir> --out <file> [--timestamp-micros <u64>]\n  riot-app inspect <file>".into()
+}
+
+fn escaped(value: &str) -> String {
+    value.chars().flat_map(char::escape_default).collect()
 }
