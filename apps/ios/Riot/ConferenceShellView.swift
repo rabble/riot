@@ -66,6 +66,8 @@ private struct SpacesView: View {
     @ObservedObject var model: RiotAppModel
     @Environment(\.colorScheme) private var colorScheme
     @State private var title = "Berlin Mutual Aid"
+    @State private var reviewing: RiotSpaceApp?
+    @State private var running: RiotSpaceApp?
 
     var body: some View {
         ScrollView {
@@ -91,10 +93,114 @@ private struct SpacesView: View {
                         }
                     }
                 }
+                if model.space != nil {
+                    toolsCard
+                }
             }
             .padding(20)
         }
         .riotHeader(eyebrow: "Riot", "Spaces")
+        .sheet(item: $reviewing) { app in
+            AppReviewSheet(
+                app: app,
+                onApprove: {
+                    model.trustApp(appID: app.appIDHex)
+                    reviewing = nil
+                },
+                onCancel: { reviewing = nil }
+            )
+        }
+        .fullScreenCover(item: $running) { app in
+            if let repository = model.profileRepository {
+                AppRuntimeView(
+                    repository: repository,
+                    appIDHex: app.appIDHex,
+                    appName: app.name,
+                    onClose: { running = nil }
+                )
+            } else {
+                Color.clear.onAppear { running = nil }
+            }
+        }
+    }
+
+    private var toolsCard: some View {
+        RiotCard {
+            VStack(alignment: .leading, spacing: 12) {
+                Text("Tools")
+                    .font(.riot(.mono, size: 12, relativeTo: .caption))
+                    .textCase(.uppercase)
+                    .tracking(1)
+                    .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
+                if model.apps.isEmpty {
+                    Text("No tools yet.")
+                        .font(.riot(.body, size: 13, relativeTo: .caption))
+                        .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
+                }
+                ForEach(model.apps) { app in
+                    HStack {
+                        Text(app.name)
+                            .font(.riot(.body, size: 17, relativeTo: .body))
+                        Spacer()
+                        if app.trusted {
+                            Button("Open") { running = app }
+                                .buttonStyle(.riotPrimary)
+                                .accessibilityIdentifier("open-\(app.name)")
+                        } else {
+                            RiotBadge("New")
+                            Button("Review") { reviewing = app }
+                                .buttonStyle(.riotSecondary)
+                                .accessibilityIdentifier("review-\(app.name)")
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// The organizer's trust-decision moment for one app, in plain language — never
+/// the words bundle, signature, namespace, or sync. Approving trusts the app for
+/// everyone in the space.
+private struct AppReviewSheet: View {
+    @Environment(\.colorScheme) private var colorScheme
+    let app: RiotSpaceApp
+    let onApprove: () -> Void
+    let onCancel: () -> Void
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                Text(app.name)
+                    .font(.riot(.poster, size: 32, relativeTo: .largeTitle))
+                    .foregroundStyle(RiotTheme.ink(for: colorScheme))
+                Text(app.description)
+                    .font(.riot(.body, size: 17, relativeTo: .body))
+                    .foregroundStyle(RiotTheme.ink(for: colorScheme))
+                RiotCard {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("This app can")
+                            .font(.riot(.mono, size: 12, relativeTo: .caption))
+                            .textCase(.uppercase)
+                            .tracking(1)
+                            .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
+                        ForEach(app.permissions, id: \.self) { permission in
+                            Text(permission)
+                                .font(.riot(.body, size: 15, relativeTo: .body))
+                                .foregroundStyle(RiotTheme.ink(for: colorScheme))
+                        }
+                    }
+                }
+                Button("Let everyone in this space use this") { onApprove() }
+                    .buttonStyle(.riotPrimary)
+                    .accessibilityIdentifier("approve-app")
+                Button("Not now") { onCancel() }
+                    .buttonStyle(.riotSecondary)
+            }
+            .padding(20)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .background(RiotTheme.paper(for: colorScheme).ignoresSafeArea())
     }
 }
 
