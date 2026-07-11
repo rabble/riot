@@ -1,0 +1,196 @@
+import SwiftUI
+import RiotKit
+
+struct ConferenceShellView: View {
+    @ObservedObject var model: RiotAppModel
+
+    var body: some View {
+        TabView(selection: $model.destination) {
+            ForEach(RiotDestination.phoneTabs) { destination in
+                NavigationStack {
+                    destinationView(destination)
+                        .safeAreaInset(edge: .bottom) {
+                            Text(model.connectionDisclosure)
+                                .font(.caption.weight(.semibold))
+                                .frame(maxWidth: .infinity)
+                                .padding(10)
+                                .background(.thinMaterial)
+                        }
+                }
+                .tabItem {
+                    Label(destination.tabTitle, systemImage: destination.systemImage)
+                }
+                .tag(destination)
+            }
+        }
+        .alert("Riot couldn’t finish that", isPresented: errorBinding) {
+            Button("OK") { model.dismissError() }
+        } message: {
+            Text(model.errorMessage ?? "Unknown local error")
+        }
+    }
+
+    @ViewBuilder
+    private func destinationView(_ destination: RiotDestination) -> some View {
+        switch destination {
+        case .spaces: SpacesView(model: model)
+        case .board: IncidentBoardView(model: model)
+        case .compose: ComposeReviewSignView(model: model)
+        case .importPreview: ImportPreviewView(model: model)
+        case .connection: ConnectionStatusView(model: model)
+        }
+    }
+
+    private var errorBinding: Binding<Bool> {
+        Binding(
+            get: { model.errorMessage != nil },
+            set: { isPresented in
+                if !isPresented { model.dismissError() }
+            }
+        )
+    }
+}
+
+private struct SpacesView: View {
+    @ObservedObject var model: RiotAppModel
+    @State private var title = "Berlin Mutual Aid"
+
+    var body: some View {
+        Form {
+            Section("Public incident space") {
+                if let space = model.space {
+                    LabeledContent("Title", value: space.title)
+                    IdentifierRow(label: "Namespace", value: space.namespaceID)
+                    Text("Public content · fixed incident-board/1 renderer")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    TextField("Space title", text: $title)
+                    Button("Create public space") { model.createSpace(title: title) }
+                        .buttonStyle(.borderedProminent)
+                }
+            }
+        }
+        .navigationTitle("Spaces")
+    }
+}
+
+private struct IncidentBoardView: View {
+    @ObservedObject var model: RiotAppModel
+
+    var body: some View {
+        Group {
+            if model.entries.isEmpty {
+                ContentUnavailableView(
+                    "No alerts yet",
+                    systemImage: "exclamationmark.bubble",
+                    description: Text("Create and review an alert on this device. It stays local until you explicitly sync it.")
+                )
+            } else {
+                List(model.entries) { entry in
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text(entry.headline).font(.headline)
+                        if entry.aiAssisted {
+                            Label("AI-assisted draft · human reviewed and signed", systemImage: "person.crop.circle.badge.checkmark")
+                                .font(.caption.weight(.semibold))
+                        }
+                        Text("Created \(Date(timeIntervalSince1970: TimeInterval(entry.createdAt)), style: .relative)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        IdentifierRow(label: "Entry", value: entry.entryID)
+                        IdentifierRow(label: "Signer", value: entry.signerID)
+                    }
+                    .padding(.vertical, 6)
+                }
+            }
+        }
+        .navigationTitle(model.space?.title ?? "Incident board")
+    }
+}
+
+private struct ComposeReviewSignView: View {
+    @ObservedObject var model: RiotAppModel
+    @State private var headline = "Water available at the east entrance"
+    @State private var details = "Bring a bottle. Volunteers are refilling the tank."
+    @State private var aiAssisted = true
+
+    var body: some View {
+        Form {
+            Section("Draft") {
+                TextField("Headline", text: $headline, axis: .vertical)
+                TextField("What people need to know", text: $details, axis: .vertical)
+                    .lineLimit(4...8)
+                Toggle("Started with model assistance", isOn: $aiAssisted)
+            }
+            Section("Review before signing") {
+                Text("Signing publishes this alert into your local public space. A model cannot press this button or sync for you.")
+                    .font(.callout)
+                Button("Review complete — sign locally") {
+                    model.sign(headline: headline, description: details, aiAssisted: aiAssisted)
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(model.space == nil || headline.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+        }
+        .navigationTitle("Compose & sign")
+    }
+}
+
+private struct ImportPreviewView: View {
+    @ObservedObject var model: RiotAppModel
+
+    var body: some View {
+        List {
+            Section("Preview first") {
+                Label("Nothing is accepted automatically", systemImage: "checkmark.shield")
+                Text("Nearby and file transports will place signed public entries here. You choose what enters this local space.")
+                    .foregroundStyle(.secondary)
+            }
+            if model.importEntries.isEmpty {
+                ContentUnavailableView("No pending import", systemImage: "tray")
+            } else {
+                ForEach(model.importEntries) { entry in
+                    VStack(alignment: .leading) {
+                        Text(entry.headline).font(.headline)
+                        IdentifierRow(label: "Signer", value: entry.signerID)
+                    }
+                }
+            }
+        }
+        .navigationTitle("Import preview")
+    }
+}
+
+private struct ConnectionStatusView: View {
+    @ObservedObject var model: RiotAppModel
+
+    var body: some View {
+        List {
+            Section("Current path") {
+                Label(model.connectionDisclosure, systemImage: "iphone.slash")
+                    .font(.headline)
+                Text("Internet fallback is off. Nearby pairing and bounded local sync are added as an explicit next transport layer.")
+                    .foregroundStyle(.secondary)
+            }
+            Section("On this device") {
+                LabeledContent("Signed alerts", value: "\(model.entries.count)")
+                LabeledContent("Renderer", value: "incident-board/1")
+            }
+        }
+        .navigationTitle("Connection")
+    }
+}
+
+private struct IdentifierRow: View {
+    let label: String
+    let value: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(label).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+            Text(value)
+                .font(.caption.monospaced())
+                .textSelection(.enabled)
+        }
+    }
+}
