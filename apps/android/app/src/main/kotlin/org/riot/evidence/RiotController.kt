@@ -4,6 +4,7 @@ import java.io.File
 import java.security.SecureRandom
 import uniffi.riot_ffi.AlertCertainty
 import uniffi.riot_ffi.AlertDraftInput
+import uniffi.riot_ffi.AppRuntimeSession
 import uniffi.riot_ffi.AlertSeverity
 import uniffi.riot_ffi.AlertUrgency
 import uniffi.riot_ffi.CurrentEntry
@@ -52,6 +53,11 @@ class RiotController(filesDir: File) : AutoCloseable {
     }
 
     fun identity(): PublicIdentity = profile.identity()
+
+    fun openAppRuntime(): AppRuntimeSession = profile.appRuntime()
+
+    /** Placeholder until real display names land; never exposes the full id. */
+    fun displayName(): String = "member-" + identity().signingKeyId.take(8)
 
     fun entries(): List<CurrentEntry> = profile.listCurrentEntries()
 

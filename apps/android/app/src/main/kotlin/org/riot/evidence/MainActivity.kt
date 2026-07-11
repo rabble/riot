@@ -14,6 +14,13 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import uniffi.riot_ffi.CurrentEntry
+import org.riot.evidence.apps.AppBundleCodec
+import org.riot.evidence.apps.AppResourceResolver
+import org.riot.evidence.apps.AppWebViewHost
+import org.riot.evidence.apps.InstalledApp
+import org.riot.evidence.apps.RiotAppsController
+import org.riot.evidence.apps.RiotJsBridge
+import org.riot.evidence.apps.UniffiAppDataPort
 import org.riot.evidence.transport.AndroidNearbyController
 import org.riot.evidence.transport.NearbyUiState
 import org.riot.evidence.transport.NearbyUiActions
@@ -29,10 +36,14 @@ class MainActivity : Activity() {
     private var currentSurface = ConferenceSurface.SPACES
     private var syncCoordinator: SyncCoordinator? = null
     private var syncState: NearbyUiState? = null
+    private lateinit var apps: RiotAppsController
+    private var runningApp: Pair<InstalledApp, AppWebViewHost>? = null
+    private var pendingAppManifest: ByteArray? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         controller = RiotController(filesDir)
+        apps = RiotAppsController(controller.openAppRuntime())
         nearby = AndroidNearbyController(
             this,
             onChanged = {
@@ -66,10 +77,18 @@ class MainActivity : Activity() {
     }
 
     override fun onDestroy() {
+        runningApp?.second?.destroy()
+        runningApp = null
         syncCoordinator?.close()
         nearby.close()
         controller.close()
         super.onDestroy()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // Foreground `watch` trigger (spec): re-fire app watchers on return.
+        runningApp?.second?.notifyDataChanged()
     }
 
     @Suppress("DEPRECATION")
@@ -115,6 +134,10 @@ class MainActivity : Activity() {
     }
 
     private fun show(surface: ConferenceSurface) {
+        if (runningApp != null) {
+            runningApp?.second?.destroy()
+            runningApp = null
+        }
         currentSurface = surface
         content.removeAllViews()
         content.addView(heading(surface.label))
@@ -143,6 +166,70 @@ class MainActivity : Activity() {
                 show(ConferenceSurface.SPACES)
             }
         })
+        if (current != null) {
+            showTools()
+        }
+    }
+
+    private fun showTools() {
+        content.addView(heading("Tools"))
+        if (apps.apps().isEmpty()) {
+            content.addView(body("No tools yet. Add a signed tool to this space."))
+        }
+        apps.apps().forEach { app ->
+            if (apps.isTrusted(app)) {
+                content.addView(action("Open ${app.record.name}") { openApp(app) })
+            } else {
+                content.addView(action("${app.record.name} — New — Review") { showAppReview(app) })
+            }
+        }
+        content.addView(action("Add a tool (choose manifest, then bundle)") {
+            startActivityForResult(openDocumentIntent(), PICK_APP_MANIFEST)
+        })
+    }
+
+    /** The trust-decision moment: plain language only, mirroring iOS. */
+    private fun showAppReview(app: InstalledApp) {
+        content.removeAllViews()
+        content.addView(heading(app.record.name))
+        content.addView(body(app.record.description))
+        content.addView(heading("This app can"))
+        app.record.permissions.forEach { content.addView(body(it)) }
+        content.addView(action("Let everyone in this space use this") {
+            runAction("${app.record.name} is on for this space") {
+                apps.trust(app)
+                show(ConferenceSurface.SPACES)
+            }
+        })
+        content.addView(action("Not now") { show(ConferenceSurface.SPACES) })
+    }
+
+    private fun openApp(app: InstalledApp) {
+        runAction("Opened ${app.record.name}") {
+            val gated = apps.requireTrusted(app)
+            val resolver = AppResourceResolver(gated.record.appId, gated.bundle)
+            val bridge = RiotJsBridge(
+                UniffiAppDataPort(controller.openAppRuntime(), gated.record.appId),
+                controller.displayName(),
+            )
+            val host = AppWebViewHost(this, resolver, bridge)
+            runningApp = gated to host
+            content.removeAllViews()
+            content.addView(action("Close ${gated.record.name}") { closeApp() })
+            content.addView(host.webView, weighted())
+            host.load()
+        }
+    }
+
+    private fun closeApp() {
+        runningApp?.second?.destroy()
+        runningApp = null
+        show(ConferenceSurface.SPACES)
+    }
+
+    private fun openDocumentIntent() = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+        addCategory(Intent.CATEGORY_OPENABLE)
+        type = "application/octet-stream"
     }
 
     private fun showBoard() {
@@ -239,6 +326,32 @@ class MainActivity : Activity() {
                 show(ConferenceSurface.IMPORT_PREVIEW)
             }
         }
+        if (requestCode == PICK_APP_MANIFEST && resultCode == RESULT_OK) {
+            runAction("Now choose the tool's bundle file") {
+                val uri = checkNotNull(data?.data)
+                pendingAppManifest = contentResolver.openInputStream(uri)!!.use {
+                    BoundedInput.read(it, MAX_APP_MANIFEST_BYTES)
+                }
+                startActivityForResult(openDocumentIntent(), PICK_APP_BUNDLE)
+            }
+        }
+        if (requestCode == PICK_APP_BUNDLE && resultCode == RESULT_OK) {
+            runAction("Tool added — review it under Tools") {
+                val manifest = checkNotNull(pendingAppManifest) { "That file isn't a Riot tool" }
+                val uri = checkNotNull(data?.data)
+                val bytes = contentResolver.openInputStream(uri)!!.use {
+                    BoundedInput.read(it, AppBundleCodec.MAX_BUNDLE_TOTAL_BYTES)
+                }
+                try {
+                    apps.install(manifest, bytes)
+                } catch (error: Exception) {
+                    throw IllegalStateException("That file isn't a Riot tool")
+                } finally {
+                    pendingAppManifest = null
+                }
+                show(ConferenceSurface.SPACES)
+            }
+        }
     }
 
     private fun showConnection() {
@@ -315,5 +428,8 @@ class MainActivity : Activity() {
 
     private companion object {
         const val IMPORT_DOCUMENT = 10
+        const val PICK_APP_MANIFEST = 11
+        const val PICK_APP_BUNDLE = 12
+        const val MAX_APP_MANIFEST_BYTES = 4_096
     }
 }
