@@ -173,10 +173,17 @@ private struct ConnectionStatusView: View {
                 Text("Connections stay between nearby phones. Riot never switches this nearby session to the internet.")
                     .foregroundStyle(.secondary)
                 if nearby.state == .idle || nearby.state == .failed {
-                    Button("Find nearby phones") { nearby.findNearby() }
+                    Button("Find nearby phones") {
+                        nearby.findNearby { try model.openNearbySyncBoundary() }
+                    }
                         .buttonStyle(.borderedProminent)
                 } else {
                     Button("Stop looking", role: .cancel) { nearby.stop() }
+                }
+                if case .preview = nearby.state {
+                    Button("Add them") { nearby.addPreviewedContent() }
+                        .buttonStyle(.borderedProminent)
+                    Button("Not now", role: .cancel) { nearby.rejectPreviewedContent() }
                 }
             }
             if !nearby.phones.isEmpty {

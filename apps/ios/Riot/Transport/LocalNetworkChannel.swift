@@ -92,6 +92,61 @@ public final class LocalTCPFrameChannel: FrameChannel, @unchecked Sendable {
     }
 }
 
+public final class LocalNetworkListener: @unchecked Sendable {
+    public var onAccepted: ((LocalTCPFrameChannel) -> Void)?
+    private let queue = DispatchQueue(label: "net.protest.riot.local-listener")
+    private var listener: NWListener?
+
+    public init() {}
+
+    public func start(completion: @escaping @Sendable (LocalEndpoint?) -> Void) {
+        do {
+            let parameters = NWParameters.tcp
+            parameters.requiredInterfaceType = .wifi
+            parameters.includePeerToPeer = true
+            let listener = try NWListener(using: parameters, on: .any)
+            self.listener = listener
+            listener.newConnectionHandler = { [weak self] connection in
+                guard let self else { return }
+                connection.start(queue: self.queue)
+                self.onAccepted?(LocalTCPFrameChannel(connection: connection))
+            }
+            listener.stateUpdateHandler = { state in
+                if case .ready = state, let port = listener.port, let host = Self.localIPv4Address() {
+                    completion(LocalEndpoint(host: host, port: port.rawValue))
+                } else if case .failed = state {
+                    completion(nil)
+                }
+            }
+            listener.start(queue: queue)
+        } catch {
+            completion(nil)
+        }
+    }
+
+    public func stop() {
+        listener?.cancel()
+        listener = nil
+    }
+
+    private static func localIPv4Address() -> String? {
+        var interfaces: UnsafeMutablePointer<ifaddrs>?
+        guard getifaddrs(&interfaces) == 0, let first = interfaces else { return nil }
+        defer { freeifaddrs(interfaces) }
+        for pointer in sequence(first: first, next: { $0.pointee.ifa_next }) {
+            let interface = pointer.pointee
+            guard interface.ifa_addr.pointee.sa_family == UInt8(AF_INET),
+                  (interface.ifa_flags & UInt32(IFF_LOOPBACK)) == 0 else { continue }
+            var address = [CChar](repeating: 0, count: Int(INET_ADDRSTRLEN))
+            var socketAddress = interface.ifa_addr.pointee
+            guard getnameinfo(&socketAddress, socklen_t(interface.ifa_addr.pointee.sa_len), &address, socklen_t(address.count), nil, 0, NI_NUMERICHOST) == 0 else { continue }
+            let host = String(decoding: address.prefix { $0 != 0 }.map(UInt8.init(bitPattern:)), as: UTF8.self)
+            if LocalEndpoint(host: host, port: 1) != nil { return host }
+        }
+        return nil
+    }
+}
+
 private final class OneShotCompletion: @unchecked Sendable {
     private let lock = NSLock()
     private var completion: (@Sendable (LocalTCPFrameChannel?) -> Void)?

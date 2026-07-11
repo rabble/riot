@@ -77,5 +77,31 @@ the old private signer, so signer continuity begins at migration; corrupt or
 wrong-key sealed state fails closed instead of silently rotating identity.
 
 The current shell includes exactly five surfaces: Spaces, Incident board,
-Compose & sign, Import preview, and Connection. Nearby transport is not yet
-wired; the connection surface explicitly reports offline/local-device-only.
+Compose & sign, Import preview, and Connection.
+
+## Nearby transport
+
+The Connection surface advertises and scans simultaneously with CoreBluetooth.
+Phones expose a fresh adjective-and-noun name per session, and neither side
+accepts content frames until both people confirm. BLE frames use bounded
+length-prefix reassembly and readiness-driven chunk queues in both central and
+peripheral directions.
+
+After confirmation, the phones exchange only a validated numeric private or
+link-local address and bounded port. One deterministic side makes one direct
+Wi-Fi TCP attempt; the other accepts through a local `NWListener`. If that
+single attempt is unavailable or fails, the session fixes itself to BLE. It
+does not switch per message and there is no DNS, public-address, relay, or
+internet fallback in this nearby path.
+
+`SyncCoordinator` starts the generated mobile reconciliation session, carries
+its opaque frames, exposes preview/add/not-now states in plain language, and
+persists the pending canonical bundle before accepting it. Protocol and
+transport failures cancel the session without accepting partial content.
+
+The simulator verifies compilation, loopback contracts, UI, signer state, and
+the generated bridge but cannot verify real BLE discovery or a two-phone radio
+exchange. Physical iPhones must still prove mutual discovery, confirmation,
+BLE notification backpressure, the Wi-Fi handoff/fallback, offline preview and
+acceptance, and matching canonical IDs before this transport is called
+field-ready.

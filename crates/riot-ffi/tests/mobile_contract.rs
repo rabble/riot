@@ -510,17 +510,22 @@ fn mobile_sync_bridge_transfers_a_missing_entry_through_review_and_commit() {
     let review = initiator.receive_frame(take_frame(&responder)).unwrap();
     assert_eq!(review.kind, SyncOutcomeKind::ReviewImport);
     assert_eq!(review.entries, vec![signed.entry.clone()]);
-
     assert_eq!(
-        initiator.accept_import().unwrap().kind,
-        SyncOutcomeKind::FrameReady
+        review.import_bundle_bytes,
+        Some(signed.bundle_bytes.clone())
     );
+
+    let accepted = initiator.accept_import().unwrap();
+    assert_eq!(accepted.kind, SyncOutcomeKind::FrameReady);
+    assert_eq!(accepted.import_bundle_bytes, None);
     let final_frame = responder.receive_frame(take_frame(&initiator)).unwrap();
     assert_eq!(final_frame.kind, SyncOutcomeKind::FrameReady);
     assert!(final_frame.terminal);
     let completed = initiator.receive_frame(take_frame(&responder)).unwrap();
     assert_eq!(completed.kind, SyncOutcomeKind::Complete);
     assert!(completed.terminal);
+    assert_eq!(completed.import_bundle_bytes, None);
+    assert!(matches!(initiator.begin(), Err(MobileError::ObjectClosed)));
     assert_eq!(receiver.list_current_entries().unwrap(), vec![signed.entry]);
 }
 
@@ -549,11 +554,43 @@ fn mobile_sync_rejection_never_commits_and_notifies_the_peer() {
     let local_reject = initiator.reject_import(7).unwrap();
     assert_eq!(local_reject.kind, SyncOutcomeKind::FrameReady);
     assert!(local_reject.terminal);
+    assert_eq!(local_reject.import_bundle_bytes, None);
     let rejected = responder.receive_frame(take_frame(&initiator)).unwrap();
     assert_eq!(rejected.kind, SyncOutcomeKind::Rejected);
     assert_eq!(rejected.rejection_code, Some(7));
     assert!(rejected.terminal);
+    assert_eq!(rejected.import_bundle_bytes, None);
+    assert!(matches!(responder.begin(), Err(MobileError::ObjectClosed)));
     assert!(receiver.list_current_entries().unwrap().is_empty());
+}
+
+#[test]
+fn mobile_sync_cancel_discards_pending_review_without_store_mutation() {
+    let sender = profile_with_space();
+    let space = sender.create_public_space("Cancelled sync".into()).unwrap();
+    let draft = sender.create_draft_alert(draft()).unwrap();
+    sender.sign_draft(draft.draft_id).unwrap();
+    let receiver = open_local_profile().unwrap();
+    receiver.join_public_space(space).unwrap();
+    let initiator = receiver.open_sync_session().unwrap();
+    let responder = sender.open_sync_session().unwrap();
+    initiator.begin().unwrap();
+    responder.receive_frame(take_frame(&initiator)).unwrap();
+    initiator.receive_frame(take_frame(&responder)).unwrap();
+    responder.receive_frame(take_frame(&initiator)).unwrap();
+    let review = initiator.receive_frame(take_frame(&responder)).unwrap();
+    assert!(review.import_bundle_bytes.is_some());
+
+    initiator.cancel().unwrap();
+    initiator.cancel().unwrap();
+    assert!(matches!(
+        initiator.accept_import(),
+        Err(MobileError::ObjectClosed)
+    ));
+    assert!(receiver.list_current_entries().unwrap().is_empty());
+    receiver
+        .open_sync_session()
+        .expect("cancel releases the profile");
 }
 
 #[test]
@@ -592,6 +629,44 @@ fn mobile_sync_requires_each_queued_frame_to_be_taken_before_progress() {
         Ok(riot_core::sync::SyncFrame::Hello { .. })
     ));
     assert_eq!(sync.take_outbound_frame().unwrap(), None);
+}
+
+#[test]
+fn mobile_sync_refuses_a_second_session_without_replacing_the_active_protocol() {
+    let profile = profile_with_space();
+    let first = profile.open_sync_session().unwrap();
+    first.begin().unwrap();
+
+    assert!(matches!(
+        profile.open_sync_session(),
+        Err(MobileError::InvalidInput)
+    ));
+    let queued = take_frame(&first);
+    assert!(matches!(
+        riot_core::sync::decode_frame(&queued),
+        Ok(riot_core::sync::SyncFrame::Hello { .. })
+    ));
+
+    first.cancel().unwrap();
+    profile
+        .open_sync_session()
+        .expect("cancel releases the single active sync slot");
+}
+
+#[test]
+fn mobile_sync_holds_a_stable_inventory_snapshot_until_cancel() {
+    let profile = profile_with_space();
+    let draft = profile.create_draft_alert(draft()).unwrap();
+    let sync = profile.open_sync_session().unwrap();
+
+    assert!(matches!(
+        profile.sign_draft(draft.draft_id),
+        Err(MobileError::InvalidInput)
+    ));
+    sync.cancel().unwrap();
+    profile
+        .sign_draft(draft.draft_id)
+        .expect("closing sync releases profile mutation");
 }
 
 #[test]
@@ -638,6 +713,11 @@ fn mobile_sync_refuses_to_advertise_a_partial_inventory_over_the_protocol_cap() 
 fn exported_sync_surface_uses_opaque_bytes_and_no_protocol_generics() {
     let surface = include_str!("../src/mobile_api.rs");
     assert!(surface.contains("frame_bytes: Vec<u8>"));
+    assert!(surface.contains("pub fn cancel(&self)"));
+    assert!(
+        !surface.contains("pub fn close(&self)"),
+        "UniFFI objects reserve close() for generated lifecycle disposal"
+    );
     for forbidden in [
         "SyncFrame",
         "SyncAction",

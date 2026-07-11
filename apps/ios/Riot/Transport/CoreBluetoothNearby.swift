@@ -12,6 +12,7 @@ public final class CoreBluetoothNearbyService: NSObject, @unchecked Sendable {
     public var onInboundPairingRequested: ((String) -> Void)?
     public var onFrame: ((Data) -> Void)?
     public var onConnected: (() -> Void)?
+    public var onRemoteEndpoint: ((LocalEndpoint?) -> Void)?
     public var onDisconnected: (() -> Void)?
 
     public let friendlyName: String
@@ -28,6 +29,9 @@ public final class CoreBluetoothNearbyService: NSObject, @unchecked Sendable {
     private var subscribers: [CBCentral] = []
     private var outboundConfirmed = false
     private var inboundConfirmed = false
+    private var localEndpoint: LocalEndpoint?
+    private var centralChunks: [Data] = []
+    private var peripheralChunks: [Data] = []
     private var decoder = FrameDecoder()
 
     public override init() {
@@ -46,10 +50,19 @@ public final class CoreBluetoothNearbyService: NSObject, @unchecked Sendable {
         if peripheralManager.state == .poweredOn { startAdvertising() }
     }
 
+    public func setLocalEndpoint(_ endpoint: LocalEndpoint?) {
+        localEndpoint = endpoint
+    }
+
     public func stop() {
         central.stopScan()
         peripheralManager.stopAdvertising()
         if let connected { central.cancelPeripheralConnection(connected) }
+        centralChunks.removeAll()
+        peripheralChunks.removeAll()
+        subscribers.removeAll()
+        outboundConfirmed = false
+        inboundConfirmed = false
     }
 
     public func requestPairing(with phone: DiscoveredPhone) {
@@ -70,7 +83,9 @@ public final class CoreBluetoothNearbyService: NSObject, @unchecked Sendable {
 
     public func confirmInboundPairing() throws {
         inboundConfirmed = true
-        try notifyEnvelope(Data([2]))
+        var acknowledgement = Data([2])
+        acknowledgement.append(PairingHandoff.encode(name: friendlyName, endpoint: localEndpoint))
+        try notifyEnvelope(acknowledgement)
         onConnected?()
     }
 
@@ -94,8 +109,9 @@ public final class CoreBluetoothNearbyService: NSObject, @unchecked Sendable {
         let encoded = FrameDecoder.encode(envelope)
         let limit = max(20, connected.maximumWriteValueLength(for: .withoutResponse))
         for offset in stride(from: 0, to: encoded.count, by: limit) {
-            connected.writeValue(encoded.subdata(in: offset..<min(offset + limit, encoded.count)), for: characteristic, type: .withoutResponse)
+            centralChunks.append(encoded.subdata(in: offset..<min(offset + limit, encoded.count)))
         }
+        drainCentralChunks()
     }
 
     private func notifyEnvelope(_ envelope: Data) throws {
@@ -103,12 +119,26 @@ public final class CoreBluetoothNearbyService: NSObject, @unchecked Sendable {
             throw NearbyTransportError.notConnected
         }
         let encoded = FrameDecoder.encode(envelope)
-        let limit = max(20, peripheralManager.maximumUpdateValueLength)
+        let limit = max(20, subscribers.map(\.maximumUpdateValueLength).min() ?? 20)
         for offset in stride(from: 0, to: encoded.count, by: limit) {
-            let chunk = encoded.subdata(in: offset..<min(offset + limit, encoded.count))
-            guard peripheralManager.updateValue(chunk, for: characteristic, onSubscribedCentrals: subscribers) else {
-                throw NearbyTransportError.disconnected
-            }
+            peripheralChunks.append(encoded.subdata(in: offset..<min(offset + limit, encoded.count)))
+        }
+        drainPeripheralChunks(characteristic: characteristic)
+    }
+
+    private func drainCentralChunks() {
+        guard let connected, let characteristic = remoteFrameCharacteristic else { return }
+        while connected.canSendWriteWithoutResponse, let next = centralChunks.first {
+            centralChunks.removeFirst()
+            connected.writeValue(next, for: characteristic, type: .withoutResponse)
+        }
+    }
+
+    private func drainPeripheralChunks(characteristic: CBMutableCharacteristic? = nil) {
+        guard let characteristic = characteristic ?? localFrameCharacteristic else { return }
+        while let next = peripheralChunks.first {
+            guard peripheralManager.updateValue(next, for: characteristic, onSubscribedCentrals: subscribers) else { return }
+            peripheralChunks.removeFirst()
         }
     }
 
@@ -136,9 +166,12 @@ public final class CoreBluetoothNearbyService: NSObject, @unchecked Sendable {
             let payload = envelope.dropFirst()
             switch kind {
             case 1:
-                guard let name = String(data: payload, encoding: .utf8), !name.isEmpty, name.count <= 64 else { continue }
-                onInboundPairingRequested?(name)
+                guard let handoff = PairingHandoff.decode(Data(payload)) else { continue }
+                onRemoteEndpoint?(handoff.endpoint)
+                onInboundPairingRequested?(handoff.name)
             case 2:
+                guard let handoff = PairingHandoff.decode(Data(payload)) else { continue }
+                onRemoteEndpoint?(handoff.endpoint)
                 outboundConfirmed = true
                 onConnected?()
             case 3 where outboundConfirmed || inboundConfirmed:
@@ -172,6 +205,7 @@ extension CoreBluetoothNearbyService: CBCentralManagerDelegate, CBPeripheralDele
     public func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
         connected = nil
         remoteFrameCharacteristic = nil
+        centralChunks.removeAll()
         onDisconnected?()
     }
 
@@ -188,12 +222,39 @@ extension CoreBluetoothNearbyService: CBCentralManagerDelegate, CBPeripheralDele
     public func peripheral(_ peripheral: CBPeripheral, didUpdateNotificationStateFor characteristic: CBCharacteristic, error: Error?) {
         guard error == nil, characteristic.isNotifying else { return }
         var request = Data([1])
-        request.append(Data(friendlyName.utf8))
+        request.append(PairingHandoff.encode(name: friendlyName, endpoint: localEndpoint))
         try? writeEnvelope(request, to: peripheral, characteristic: characteristic)
     }
 
     public func peripheral(_ peripheral: CBPeripheral, didUpdateValueFor characteristic: CBCharacteristic, error: Error?) {
         if let value = characteristic.value { accept(value) }
+    }
+
+    public func peripheralIsReady(toSendWriteWithoutResponse peripheral: CBPeripheral) {
+        drainCentralChunks()
+    }
+}
+
+private enum PairingHandoff {
+    static func encode(name: String, endpoint: LocalEndpoint?) -> Data {
+        let host = endpoint?.host ?? ""
+        let port = endpoint.map { String($0.port) } ?? ""
+        return Data("\(name)\n\(host)\n\(port)".utf8)
+    }
+
+    static func decode(_ data: Data) -> (name: String, endpoint: LocalEndpoint?)? {
+        guard let value = String(data: data, encoding: .utf8), value.utf8.count <= 256 else { return nil }
+        let fields = value.split(separator: "\n", omittingEmptySubsequences: false)
+        guard fields.count == 3, !fields[0].isEmpty, fields[0].count <= 64 else { return nil }
+        let endpoint: LocalEndpoint?
+        if fields[1].isEmpty && fields[2].isEmpty {
+            endpoint = nil
+        } else if let port = UInt16(fields[2]), let valid = LocalEndpoint(host: String(fields[1]), port: port) {
+            endpoint = valid
+        } else {
+            return nil
+        }
+        return (String(fields[0]), endpoint)
     }
 }
 
@@ -221,9 +282,13 @@ extension CoreBluetoothNearbyService: CBPeripheralManagerDelegate {
         subscribers.removeAll { $0.identifier == central.identifier }
         if subscribers.isEmpty { onDisconnected?() }
     }
+
+    public func peripheralManagerIsReady(toUpdateSubscribers peripheral: CBPeripheralManager) {
+        drainPeripheralChunks()
+    }
 }
 
-public final class CoreBluetoothFrameChannel: FrameChannel {
+public final class CoreBluetoothFrameChannel: FrameChannel, @unchecked Sendable {
     public var onReceive: ((Data) -> Void)?
     private let service: CoreBluetoothNearbyService
 

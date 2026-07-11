@@ -477,11 +477,7 @@ pub(crate) fn open_sync_session(
         if profile.preview.is_some() || profile.plan.is_some() {
             return Err(MobileError::InvalidInput);
         }
-        if profile
-            .sync_session
-            .as_ref()
-            .is_some_and(|session| session.pending.is_some())
-        {
+        if profile.sync_session.is_some() {
             return Err(MobileError::InvalidInput);
         }
         let namespace_id = parse_entry_id(
@@ -552,7 +548,8 @@ pub(crate) fn sync_receive_frame(
             }
             other => {
                 let terminal = active_sync_mut(profile, sync_id)?.bridge.is_terminal();
-                let terminal_without_frame = terminal && !matches!(other, ByteSyncOutcome::FrameReady);
+                let terminal_without_frame =
+                    terminal && !matches!(other, ByteSyncOutcome::FrameReady);
                 let result = outcome_without_import(other, terminal);
                 if terminal_without_frame {
                     profile.sync_session = None;
@@ -662,7 +659,7 @@ pub(crate) fn sync_reject_import(
     })
 }
 
-pub(crate) fn sync_close(
+pub(crate) fn sync_cancel(
     inner: &Arc<Mutex<ProfileState>>,
     sync_id: u64,
 ) -> Result<(), MobileError> {

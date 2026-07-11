@@ -123,6 +123,7 @@ class NearbyTransportContractTest {
         assertTrue(ble.sent.isEmpty())
         assertEquals(1, local.attempts)
         assertEquals(TransportKind.LOCAL_IP, connection.kind)
+        assertTrue(ble.closed)
     }
 
     @Test
@@ -161,6 +162,7 @@ private class RecordingFrameChannel : FrameChannel {
     val sent = mutableListOf<ByteArray>()
     private var receiver: (ByteArray) -> Unit = {}
     private var open = true
+    val closed: Boolean get() = !open
 
     override fun send(frame: ByteArray) {
         if (!open) throw IOException("disconnected")

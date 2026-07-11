@@ -103,6 +103,8 @@ pub struct SyncOutcome {
     pub entries: Vec<CurrentEntry>,
     pub rejection_code: Option<u8>,
     pub terminal: bool,
+    /// Exact canonical evidence bundle to persist before accepting a reviewed
+    /// import. Present only for `ReviewImport`; never a sync protocol frame.
     pub import_bundle_bytes: Option<Vec<u8>>,
 }
 
@@ -273,7 +275,9 @@ impl MobileSyncSession {
         crate::mobile_state::sync_reject_import(&self.inner, self.sync_id, code)
     }
 
-    pub fn close(&self) -> Result<(), MobileError> {
-        crate::mobile_state::sync_close(&self.inner, self.sync_id)
+    pub fn cancel(&self) -> Result<(), MobileError> {
+        // Explicit cancellation is required because the profile owns the
+        // pending preview independently of the language handle lifetime.
+        crate::mobile_state::sync_cancel(&self.inner, self.sync_id)
     }
 }

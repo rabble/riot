@@ -85,4 +85,106 @@ final class TransportContractTests: XCTestCase {
         XCTAssertNil(LocalEndpoint(host: "8.8.8.8", port: 53))
         XCTAssertNil(LocalEndpoint(host: "192.168.4.2", port: 0))
     }
+
+    func testManyMTUChunksReassembleOneLargeFrameWithoutReordering() throws {
+        let payload = Data((0..<8_192).map { UInt8($0 % 251) })
+        let encoded = FrameDecoder.encode(payload)
+        var decoder = FrameDecoder()
+        var decoded: [Data] = []
+
+        for offset in stride(from: 0, to: encoded.count, by: 19) {
+            decoded.append(contentsOf: try decoder.append(encoded.subdata(in: offset..<min(offset + 19, encoded.count))))
+        }
+
+        XCTAssertEqual(decoded, [payload])
+    }
+
+    func testCoordinatorBeginsProtocolAndSendsHelloImmediately() throws {
+        let channels = LoopbackFrameChannel.pair()
+        var wire: [Data] = []
+        channels.second.onReceive = { wire.append($0) }
+        let connection = NearbyConnection(bluetooth: channels.first, localAttempt: { nil })
+        connection.confirmPairing()
+        try connection.activate()
+        let session = FakeSyncBoundary(outbound: [Data("hello".utf8)])
+        let coordinator = SyncCoordinator(session: session, connection: connection, friendlyName: "Quiet Harbor")
+
+        coordinator.start()
+
+        XCTAssertTrue(session.didBegin)
+        XCTAssertEqual(wire, [Data("hello".utf8)])
+    }
+
+    func testGeneratedAdapterPersistsPendingBundleWhenImportIsAccepted() throws {
+        let bundle = Data([9, 8, 7])
+        let backend = FakeGeneratedBackend(bundle: bundle)
+        var persisted: [Data] = []
+        let adapter = GeneratedSyncSessionAdapter(backend: backend) { persisted.append($0) }
+
+        XCTAssertEqual(try adapter.receive(Data([1])), .readyToPreview(count: 0))
+        try adapter.acceptImport()
+
+        XCTAssertEqual(persisted, [bundle])
+        XCTAssertTrue(backend.didAccept)
+    }
+
+    func testCompletedSyncStaysCaughtUpWhenTerminalCleanupIsAlreadyClosed() throws {
+        let channels = LoopbackFrameChannel.pair()
+        let connection = NearbyConnection(bluetooth: channels.first, localAttempt: { nil })
+        connection.confirmPairing()
+        try connection.activate()
+        let session = FakeSyncBoundary(outbound: [], beginOutcome: .done, closeError: NearbyTransportError.disconnected)
+        let coordinator = SyncCoordinator(session: session, connection: connection, friendlyName: "Quiet Harbor")
+
+        coordinator.start()
+
+        XCTAssertEqual(coordinator.state, .caughtUp)
+    }
+
+    func testPersistenceFailurePreventsImportAcceptance() throws {
+        let backend = FakeGeneratedBackend(bundle: Data([4, 5, 6]))
+        let adapter = GeneratedSyncSessionAdapter(backend: backend) { _ in
+            throw NearbyTransportError.disconnected
+        }
+        _ = try adapter.receive(Data([1]))
+
+        XCTAssertThrowsError(try adapter.acceptImport())
+        XCTAssertFalse(backend.didAccept)
+    }
+}
+
+private final class FakeSyncBoundary: MobileSyncSessionBoundary {
+    var didBegin = false
+    private var outbound: [Data]
+    private let beginOutcome: NearbySyncOutcome
+    private let closeError: Error?
+
+    init(outbound: [Data], beginOutcome: NearbySyncOutcome = .sendMore, closeError: Error? = nil) {
+        self.outbound = outbound
+        self.beginOutcome = beginOutcome
+        self.closeError = closeError
+    }
+    func begin() throws -> NearbySyncOutcome { didBegin = true; return beginOutcome }
+    func nextOutbound() throws -> Data? { outbound.isEmpty ? nil : outbound.removeFirst() }
+    func receive(_ frame: Data) throws -> NearbySyncOutcome { .sendMore }
+    func acceptImport() throws {}
+    func rejectImport() throws {}
+    func close() throws { if let closeError { throw closeError } }
+}
+
+private final class FakeGeneratedBackend: GeneratedSyncSessionBackend {
+    let bundle: Data
+    var didAccept = false
+
+    init(bundle: Data) { self.bundle = bundle }
+    func begin() throws -> SyncOutcome { outcome(kind: .frameReady) }
+    func takeOutboundFrame() throws -> Data? { nil }
+    func receiveFrame(frameBytes: Data) throws -> SyncOutcome { outcome(kind: .reviewImport, bundle: bundle) }
+    func acceptImport() throws -> SyncOutcome { didAccept = true; return outcome(kind: .complete) }
+    func rejectImport(code: UInt8) throws -> SyncOutcome { outcome(kind: .rejected) }
+    func cancel() throws {}
+
+    private func outcome(kind: SyncOutcomeKind, bundle: Data? = nil) -> SyncOutcome {
+        SyncOutcome(kind: kind, entries: [], rejectionCode: nil, terminal: kind == .complete, importBundleBytes: bundle)
+    }
 }

@@ -56,6 +56,37 @@ after a fresh controller/core restart and compares the complete 64-character
 signer identifier. Its migration fixture is a real AES-GCM-encrypted v1 profile
 written with the same Android Keystore alias, not an identity-less v2 stand-in.
 
+## Nearby phone transport
+
+The Connection surface advertises and scans at the same time, shows only a
+short session name such as `Blue Kite`, and requires a person on each phone to
+confirm. After both confirmations, the phones exchange a numeric local address
+over Bluetooth and make one direct local-network socket attempt. A successful
+socket is fixed for that session; otherwise the session is fixed to bounded,
+ordered Bluetooth frames. It never switches transport per message and never
+tries an internet host.
+
+Android requires the `INTERNET` manifest permission for direct LAN sockets as
+well as internet sockets. Riot constrains this permission in code: the socket
+connector rejects DNS names and public IPv4/IPv6 addresses before dialing. On
+Android 12 and newer, discovery requests scan, connect, and advertise Bluetooth
+permissions. Android 11 and older use fine location because that is the
+platform requirement for Bluetooth scanning on those versions.
+
+`SyncCoordinator` moves opaque frames between the selected nearby connection
+and the generated Rust session. A reviewed canonical bundle is preflighted and
+written through the encrypted profile store before core acceptance. Completion
+closes the generated handle and the nearby connection; failure cancels both.
+The screen deliberately uses plain connection language rather than protocol or
+radio terminology.
+
+The JVM suite proves friendly naming, explicit confirmation, remote-confirmation
+waiting, bounded byte-for-byte framing, disconnect/retry, the single local
+attempt, session-fixed fallback, and public-address rejection. The emulator
+suite proves manifest and Android-version permission wiring. Real discovery,
+pairing, and transfer between two physical phones remains the documented
+hardware rehearsal gate because Android emulators cannot validate the radios.
+
 ## Reproduce the checks
 
 The proven environment uses JDK 17 and the API 36 SDK:

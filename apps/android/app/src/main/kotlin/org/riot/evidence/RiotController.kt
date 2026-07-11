@@ -13,6 +13,8 @@ import uniffi.riot_ffi.PublicSpace
 import uniffi.riot_ffi.PublicIdentity
 import uniffi.riot_ffi.openLocalProfile
 import uniffi.riot_ffi.openProfileFromSealedIdentity
+import org.riot.evidence.transport.GeneratedMobileSyncBridge
+import org.riot.evidence.transport.MobileSyncSessionBridge
 
 class RiotController(filesDir: File) : AutoCloseable {
     private val store = AndroidKeystoreProfileStore(
@@ -52,6 +54,11 @@ class RiotController(filesDir: File) : AutoCloseable {
     fun identity(): PublicIdentity = profile.identity()
 
     fun entries(): List<CurrentEntry> = profile.listCurrentEntries()
+
+    fun openSyncBridge(): MobileSyncSessionBridge = GeneratedMobileSyncBridge(
+        profile.openSyncSession(),
+        ::persistAcceptedSync,
+    )
 
     fun createAndSignAlert(headline: String, description: String, aiAssisted: Boolean): CurrentEntry {
         check(currentSpace != null) { "Create or join a public space first" }
@@ -130,6 +137,13 @@ class RiotController(filesDir: File) : AutoCloseable {
         if (snapshot.identityState == null) {
             persist(persisted!!)
         }
+    }
+
+    private fun persistAcceptedSync(bundle: ByteArray, entries: List<CurrentEntry>) {
+        val snapshot = checkNotNull(persisted) { "Create or join a public space first" }
+        val prospective = mergeAcceptedSync(snapshot, bundle, entries)
+        TemporaryKey.useOwned(PersistedProfileCodec.encode(prospective)) { Unit }
+        persist(prospective)
     }
 
     private fun openProfile(snapshot: PersistedProfile?): MobileProfile {

@@ -2,9 +2,11 @@ package org.riot.evidence.transport
 
 import android.Manifest
 import android.content.pm.PackageManager
+import android.os.Build
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -28,7 +30,7 @@ class AndroidNearbyPlatformTest {
     }
 
     @Test
-    fun applicationManifestDeclaresNearbyOnlyPermissions() {
+    fun installedPackageExposesPermissionsForThisAndroidVersion() {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         val info = context.packageManager.getPackageInfo(
             context.packageName,
@@ -39,7 +41,11 @@ class AndroidNearbyPlatformTest {
         assertTrue(Manifest.permission.BLUETOOTH_SCAN in declared)
         assertTrue(Manifest.permission.BLUETOOTH_CONNECT in declared)
         assertTrue(Manifest.permission.BLUETOOTH_ADVERTISE in declared)
-        assertTrue(Manifest.permission.ACCESS_FINE_LOCATION in declared)
+        if (Build.VERSION.SDK_INT <= 30) {
+            assertTrue(Manifest.permission.ACCESS_FINE_LOCATION in declared)
+        } else {
+            assertFalse(Manifest.permission.ACCESS_FINE_LOCATION in declared)
+        }
         assertTrue(Manifest.permission.INTERNET in declared) // Required by Android even for direct LAN sockets.
     }
 }

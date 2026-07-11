@@ -20,6 +20,7 @@ class SyncCoordinatorTest {
 
         coordinator.start()
 
+        assertTrue(bridge.begun)
         assertEquals(NearbyUiState.GettingLatest("Blue Kite"), coordinator.state)
         assertArrayEquals(byteArrayOf(1), channel.sent[0])
         assertArrayEquals(byteArrayOf(2, 3), channel.sent[1])
@@ -38,6 +39,19 @@ class SyncCoordinatorTest {
         coordinator.acceptImport()
         assertTrue(bridge.accepted)
         assertEquals(NearbyUiState.CaughtUp, coordinator.state)
+        assertTrue(channel.closed)
+    }
+
+    @Test
+    fun alreadyCurrentSessionReleasesNearbyConnection() {
+        val channel = CoordinatorFrameChannel()
+        val bridge = RecordingSyncBridge(beginResult = SyncBridgeOutcome.Done)
+        val coordinator = SyncCoordinator(NearbyConnection(channel, TransportKind.BLE), bridge, "Blue Kite")
+
+        coordinator.start()
+
+        assertEquals(NearbyUiState.AlreadyCurrent, coordinator.state)
+        assertTrue(channel.closed)
     }
 
     @Test
@@ -51,22 +65,28 @@ class SyncCoordinatorTest {
 
         assertEquals("Couldn't connect — try again", coordinator.state.message)
         assertTrue(channel.closed)
+        assertTrue(bridge.closed)
     }
 }
 
 private class RecordingSyncBridge(
     private val outbound: ArrayDeque<ByteArray> = ArrayDeque(),
+    private val beginResult: SyncBridgeOutcome = SyncBridgeOutcome.SendMore,
     private val receiveResult: SyncBridgeOutcome = SyncBridgeOutcome.SendMore,
     private val receiveFailure: Exception? = null,
 ) : MobileSyncSessionBridge {
     var accepted = false
+    var begun = false
+    var closed = false
+    override fun begin(): SyncBridgeOutcome { begun = true; return beginResult }
     override fun nextOutbound(): ByteArray? = outbound.removeFirstOrNull()
     override fun receive(frame: ByteArray): SyncBridgeOutcome {
         receiveFailure?.let { throw it }
         return receiveResult
     }
-    override fun acceptImport() { accepted = true }
-    override fun rejectImport() = Unit
+    override fun acceptImport(): SyncBridgeOutcome { accepted = true; return SyncBridgeOutcome.Done }
+    override fun rejectImport(): SyncBridgeOutcome = SyncBridgeOutcome.Done
+    override fun close() { closed = true }
 }
 
 private class CoordinatorFrameChannel : FrameChannel {

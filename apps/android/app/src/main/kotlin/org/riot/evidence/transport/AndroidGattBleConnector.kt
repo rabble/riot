@@ -30,18 +30,30 @@ class AndroidGattBleConnector(private val context: Context) : BleConnector {
         var channel: GattClientFrameChannel? = null
         var endpoint: LocalEndpoint? = null
         var failure: IOException? = null
-        var endpointReads = 0
+        val confirmation = RemoteConfirmationWait(MAX_ENDPOINT_READ_ATTEMPTS)
         var endpointCharacteristic: BluetoothGattCharacteristic? = null
         val handler = Handler(Looper.getMainLooper())
         lateinit var requestEndpoint: (BluetoothGatt) -> Unit
         requestEndpoint = { gatt ->
             val characteristic = endpointCharacteristic
             if (characteristic == null) {
+                failure = IOException("nearby confirmation unavailable")
                 ready.countDown()
-            } else if (endpointReads++ >= MAX_ENDPOINT_READ_ATTEMPTS) {
+            } else if (!confirmation.beginAttempt()) {
+                failure = IOException("nearby confirmation timed out")
                 ready.countDown()
             } else if (!gatt.readCharacteristic(characteristic)) {
-                handler.postDelayed({ requestEndpoint(gatt) }, ENDPOINT_RETRY_MILLIS)
+                when (confirmation.completeAttempt(confirmed = false)) {
+                    ConfirmationDecision.RETRY -> handler.postDelayed(
+                        { requestEndpoint(gatt) },
+                        ENDPOINT_RETRY_MILLIS,
+                    )
+                    ConfirmationDecision.FAILED -> {
+                        failure = IOException("nearby confirmation timed out")
+                        ready.countDown()
+                    }
+                    ConfirmationDecision.READY -> Unit
+                }
             }
         }
 
@@ -71,6 +83,11 @@ class AndroidGattBleConnector(private val context: Context) : BleConnector {
                 }
                 channel = GattClientFrameChannel(gatt, data)
                 endpointCharacteristic = service.getCharacteristic(AndroidBleDiscovery.ENDPOINT_UUID)
+                if (endpointCharacteristic == null) {
+                    failure = IOException("nearby confirmation unavailable")
+                    ready.countDown()
+                    return
+                }
                 if (!enableNotifications(gatt, data)) {
                     requestEndpoint(gatt)
                 }
@@ -90,15 +107,26 @@ class AndroidGattBleConnector(private val context: Context) : BleConnector {
                 value: ByteArray,
                 status: Int,
             ) {
-                if (characteristic.uuid == AndroidBleDiscovery.ENDPOINT_UUID && status == BluetoothGatt.GATT_SUCCESS) {
-                    endpoint = LocalEndpointAdvertisement.decode(value)
-                    ready.countDown()
-                } else if (characteristic.uuid == AndroidBleDiscovery.ENDPOINT_UUID) {
-                    handler.postDelayed({ requestEndpoint(gatt) }, ENDPOINT_RETRY_MILLIS)
+                if (characteristic.uuid != AndroidBleDiscovery.ENDPOINT_UUID) return
+                val confirmed = status == BluetoothGatt.GATT_SUCCESS
+                when (confirmation.completeAttempt(confirmed)) {
+                    ConfirmationDecision.READY -> {
+                        endpoint = LocalEndpointAdvertisement.decode(value)
+                        ready.countDown()
+                    }
+                    ConfirmationDecision.RETRY -> handler.postDelayed(
+                        { requestEndpoint(gatt) },
+                        ENDPOINT_RETRY_MILLIS,
+                    )
+                    ConfirmationDecision.FAILED -> {
+                        failure = IOException("nearby confirmation timed out")
+                        ready.countDown()
+                    }
                 }
             }
 
             @Deprecated("Used on Android 12 and earlier")
+            @Suppress("DEPRECATION")
             override fun onCharacteristicRead(
                 gatt: BluetoothGatt,
                 characteristic: BluetoothGattCharacteristic,
@@ -114,6 +142,7 @@ class AndroidGattBleConnector(private val context: Context) : BleConnector {
             }
 
             @Deprecated("Used on Android 12 and earlier")
+            @Suppress("DEPRECATION")
             override fun onCharacteristicChanged(gatt: BluetoothGatt, characteristic: BluetoothGattCharacteristic) =
                 onCharacteristicChanged(gatt, characteristic, characteristic.value ?: byteArrayOf())
 

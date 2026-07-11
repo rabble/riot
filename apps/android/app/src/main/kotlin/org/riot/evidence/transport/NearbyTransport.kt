@@ -18,6 +18,32 @@ data class LocalEndpoint(val host: String, val port: Int) {
 
 enum class TransportKind { LOCAL_IP, BLE }
 
+enum class ConfirmationDecision { RETRY, READY, FAILED }
+
+class RemoteConfirmationWait(private val maxAttempts: Int) {
+    private var attempts = 0
+    var isConfirmed = false
+        private set
+
+    init {
+        require(maxAttempts > 0)
+    }
+
+    fun beginAttempt(): Boolean {
+        if (isConfirmed || attempts >= maxAttempts) return false
+        attempts += 1
+        return true
+    }
+
+    fun completeAttempt(confirmed: Boolean): ConfirmationDecision {
+        if (confirmed) {
+            isConfirmed = true
+            return ConfirmationDecision.READY
+        }
+        return if (attempts >= maxAttempts) ConfirmationDecision.FAILED else ConfirmationDecision.RETRY
+    }
+}
+
 interface FrameChannel : AutoCloseable {
     @Throws(IOException::class)
     fun send(frame: ByteArray)
@@ -78,6 +104,7 @@ class SessionTransportSelector(private val localIpConnector: LocalIpConnector) {
             }
         }
         return if (local != null) {
+            ble.channel.close()
             NearbyConnection(local, TransportKind.LOCAL_IP)
         } else {
             NearbyConnection(ble.channel, TransportKind.BLE)

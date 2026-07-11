@@ -16,6 +16,7 @@ import android.widget.TextView
 import uniffi.riot_ffi.CurrentEntry
 import org.riot.evidence.transport.AndroidNearbyController
 import org.riot.evidence.transport.NearbyUiState
+import org.riot.evidence.transport.SyncCoordinator
 
 class MainActivity : Activity() {
     private lateinit var controller: RiotController
@@ -25,6 +26,8 @@ class MainActivity : Activity() {
     private var reviewedDraft: ReviewSnapshot? = null
     private var pendingImportEntries: List<CurrentEntry> = emptyList()
     private var currentSurface = ConferenceSurface.SPACES
+    private var syncCoordinator: SyncCoordinator? = null
+    private var syncState: NearbyUiState? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -34,9 +37,27 @@ class MainActivity : Activity() {
             onChanged = {
                 if (currentSurface == ConferenceSurface.CONNECTION) show(ConferenceSurface.CONNECTION)
             },
-            onConnected = { _, _ ->
-                // SyncCoordinator attaches here once the generated mobile sync bridge lands.
-                status.text = "Connected nearby"
+            onConnected = { phone, connection ->
+                syncCoordinator?.close()
+                lateinit var active: SyncCoordinator
+                active = SyncCoordinator(
+                    connection,
+                    controller.openSyncBridge(),
+                    phone.friendlyName,
+                ) { next ->
+                    runOnUiThread {
+                        if (syncCoordinator === active) {
+                            syncState = next
+                            status.text = next.message
+                            if (currentSurface == ConferenceSurface.CONNECTION) {
+                                show(ConferenceSurface.CONNECTION)
+                            }
+                        }
+                    }
+                }
+                syncCoordinator = active
+                syncState = NearbyUiState.Connecting
+                active.start()
             },
         )
         setContentView(buildShell())
@@ -44,6 +65,7 @@ class MainActivity : Activity() {
     }
 
     override fun onDestroy() {
+        syncCoordinator?.close()
         nearby.close()
         controller.close()
         super.onDestroy()
@@ -219,9 +241,19 @@ class MainActivity : Activity() {
     }
 
     private fun showConnection() {
-        content.addView(body(nearby.state.message))
+        val visibleState = syncState ?: nearby.state
+        content.addView(body(visibleState.message))
+        if (visibleState is NearbyUiState.UpdatesReady) {
+            content.addView(action("Add them") { syncCoordinator?.acceptImport() })
+            content.addView(action("Not now") { syncCoordinator?.rejectImport() })
+        }
         if (nearby.state is NearbyUiState.Idle || nearby.state is NearbyUiState.Failed) {
-            content.addView(action("Find nearby") { nearby.findNearby() })
+            content.addView(action("Find nearby") {
+                syncCoordinator?.close()
+                syncCoordinator = null
+                syncState = null
+                nearby.findNearby()
+            })
         }
         nearby.phones.forEach { phone ->
             content.addView(action(phone.friendlyName) { nearby.select(phone) })

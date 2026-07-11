@@ -8,10 +8,12 @@ public enum NearbySyncOutcome: Equatable, Sendable {
 }
 
 public protocol MobileSyncSessionBoundary: AnyObject {
+    func begin() throws -> NearbySyncOutcome
     func nextOutbound() throws -> Data?
     func receive(_ frame: Data) throws -> NearbySyncOutcome
     func acceptImport() throws
     func rejectImport() throws
+    func close() throws
 }
 
 public enum NearbyConnectionState: Equatable, Sendable {
@@ -62,6 +64,7 @@ public final class SyncCoordinator {
     public func start() {
         do {
             state = .gettingLatest(name: friendlyName)
+            try handle(try session.begin())
             try pumpOutbound()
         } catch {
             state = .failed
@@ -83,12 +86,8 @@ public final class SyncCoordinator {
 
     private func receive(_ frame: Data) {
         do {
-            switch try session.receive(frame) {
-            case .sendMore: try pumpOutbound()
-            case let .readyToPreview(count): state = .preview(count: count, name: friendlyName)
-            case .done: state = .caughtUp
-            case .failed: state = .failed; connection.disconnect()
-            }
+            try handle(try session.receive(frame))
+            try pumpOutbound()
         } catch {
             state = .failed
             connection.disconnect()
@@ -97,5 +96,67 @@ public final class SyncCoordinator {
 
     private func pumpOutbound() throws {
         while let frame = try session.nextOutbound() { try connection.send(frame) }
+    }
+
+    private func handle(_ outcome: NearbySyncOutcome) throws {
+        switch outcome {
+        case .sendMore: break
+        case let .readyToPreview(count): state = .preview(count: count, name: friendlyName)
+        case .done: state = .caughtUp; try? session.close()
+        case .failed: state = .failed; connection.disconnect(); try? session.close()
+        }
+    }
+}
+
+public protocol GeneratedSyncSessionBackend: AnyObject {
+    func begin() throws -> SyncOutcome
+    func takeOutboundFrame() throws -> Data?
+    func receiveFrame(frameBytes: Data) throws -> SyncOutcome
+    func acceptImport() throws -> SyncOutcome
+    func rejectImport(code: UInt8) throws -> SyncOutcome
+    func cancel() throws
+}
+
+extension MobileSyncSession: GeneratedSyncSessionBackend {}
+
+public final class GeneratedSyncSessionAdapter: MobileSyncSessionBoundary {
+    private let backend: GeneratedSyncSessionBackend
+    private let persistBundle: (Data) throws -> Void
+    private var pendingBundle: Data?
+
+    public init(backend: GeneratedSyncSessionBackend, persistBundle: @escaping (Data) throws -> Void) {
+        self.backend = backend
+        self.persistBundle = persistBundle
+    }
+
+    public func begin() throws -> NearbySyncOutcome { map(try backend.begin()) }
+    public func nextOutbound() throws -> Data? { try backend.takeOutboundFrame() }
+
+    public func receive(_ frame: Data) throws -> NearbySyncOutcome {
+        map(try backend.receiveFrame(frameBytes: frame))
+    }
+
+    public func acceptImport() throws {
+        guard let pendingBundle else { throw NearbyTransportError.notConnected }
+        try persistBundle(pendingBundle)
+        _ = try backend.acceptImport()
+        self.pendingBundle = nil
+    }
+
+    public func rejectImport() throws {
+        _ = try backend.rejectImport(code: 1)
+        pendingBundle = nil
+    }
+
+    public func close() throws { try backend.cancel() }
+
+    private func map(_ outcome: SyncOutcome) -> NearbySyncOutcome {
+        if let bundle = outcome.importBundleBytes { pendingBundle = bundle }
+        switch outcome.kind {
+        case .frameReady: return .sendMore
+        case .reviewImport: return .readyToPreview(count: UInt32(outcome.entries.count))
+        case .complete: return .done
+        case .rejected: return .failed
+        }
     }
 }

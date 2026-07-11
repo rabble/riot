@@ -176,6 +176,17 @@ public final class RiotProfileRepository {
         return try profile.listCurrentEntries().map(RiotEntry.init)
     }
 
+    public func openSyncBoundary() throws -> MobileSyncSessionBoundary {
+        let backend = try profile.openSyncSession()
+        return GeneratedSyncSessionAdapter(backend: backend) { [weak self] bundle in
+            guard let self else { throw RepositoryError.profileClosed }
+            if !self.persisted.alerts.contains(where: { $0.bundle == bundle }) {
+                self.persisted.alerts.append(PersistedAlert(bundle: bundle))
+                try self.storage.save(self.persisted)
+            }
+        }
+    }
+
     private func sealCurrentIdentity() throws -> Data {
         let sealed = try Self.withWrappingKey(from: keyStore) { wrappingKey in
             try profile.sealIdentity(wrappingKey: wrappingKey)
@@ -199,6 +210,7 @@ public enum RepositoryError: Error {
     case spaceMismatch
     case invalidSealedIdentity
     case invalidWrappingKey
+    case profileClosed
 }
 
 private extension RiotEntry {

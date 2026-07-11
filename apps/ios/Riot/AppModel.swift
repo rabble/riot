@@ -80,6 +80,11 @@ public final class RiotAppModel: ObservableObject {
         errorMessage = nil
     }
 
+    public func openNearbySyncBoundary() throws -> MobileSyncSessionBoundary {
+        guard let repository else { throw RepositoryError.profileClosed }
+        return try repository.openSyncBoundary()
+    }
+
     public func bootstrap() {
         guard repository == nil else { return }
         do {

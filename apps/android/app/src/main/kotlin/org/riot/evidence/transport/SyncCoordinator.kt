@@ -9,10 +9,12 @@ sealed interface SyncBridgeOutcome {
 
 /** Narrow boundary implemented by the generated UniFFI SyncSession adapter. */
 interface MobileSyncSessionBridge {
+    fun begin(): SyncBridgeOutcome
     fun nextOutbound(): ByteArray?
     fun receive(frame: ByteArray): SyncBridgeOutcome
-    fun acceptImport()
-    fun rejectImport()
+    fun acceptImport(): SyncBridgeOutcome
+    fun rejectImport(): SyncBridgeOutcome
+    fun close()
 }
 
 class SyncCoordinator(
@@ -30,36 +32,45 @@ class SyncCoordinator(
 
     fun start() {
         update(NearbyUiState.GettingLatest(friendlyName))
-        safely(::drainOutbound)
+        safely { handle(bridge.begin()) }
     }
 
     fun acceptImport() {
         safely {
-            bridge.acceptImport()
-            update(NearbyUiState.CaughtUp)
+            handle(bridge.acceptImport(), accepted = true)
         }
     }
 
     fun rejectImport() {
         safely {
-            bridge.rejectImport()
-            update(NearbyUiState.Idle)
+            handle(bridge.rejectImport())
         }
     }
 
-    override fun close() = connection.disconnect()
+    override fun close() {
+        runCatching(bridge::close)
+        connection.disconnect()
+    }
 
     private fun receive(frame: ByteArray) {
         safely {
-            when (val outcome = bridge.receive(frame)) {
-                SyncBridgeOutcome.SendMore -> drainOutbound()
-                is SyncBridgeOutcome.ReadyToPreview -> {
-                    require(outcome.count >= 0) { "negative update count" }
-                    update(NearbyUiState.UpdatesReady(outcome.count, friendlyName))
-                }
-                SyncBridgeOutcome.Done -> update(NearbyUiState.AlreadyCurrent)
-                SyncBridgeOutcome.Failed -> fail()
+            handle(bridge.receive(frame))
+        }
+    }
+
+    private fun handle(outcome: SyncBridgeOutcome, accepted: Boolean = false) {
+        when (outcome) {
+            SyncBridgeOutcome.SendMore -> drainOutbound()
+            is SyncBridgeOutcome.ReadyToPreview -> {
+                require(outcome.count >= 0) { "negative update count" }
+                update(NearbyUiState.UpdatesReady(outcome.count, friendlyName))
             }
+            SyncBridgeOutcome.Done -> {
+                update(if (accepted) NearbyUiState.CaughtUp else NearbyUiState.AlreadyCurrent)
+                runCatching(bridge::close)
+                connection.disconnect()
+            }
+            SyncBridgeOutcome.Failed -> fail()
         }
     }
 
@@ -80,6 +91,7 @@ class SyncCoordinator(
     }
 
     private fun fail() {
+        runCatching(bridge::close)
         connection.disconnect()
         update(NearbyUiState.Failed)
     }

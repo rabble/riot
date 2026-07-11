@@ -15,6 +15,18 @@ fun CurrentEntry.toPersisted(bundleBytes: ByteArray) = PersistedAlert(
     bundleBytes = bundleBytes,
 )
 
+internal fun mergeAcceptedSync(
+    profile: PersistedProfile,
+    bundleBytes: ByteArray,
+    entries: List<CurrentEntry>,
+): PersistedProfile {
+    val existingIds = profile.alerts.mapTo(mutableSetOf()) { it.entryId }
+    val additions = entries
+        .filter { existingIds.add(it.entryId) }
+        .map { it.toPersisted(bundleBytes.copyOf()) }
+    return profile.copy(alerts = profile.alerts + additions)
+}
+
 fun PersistedSpace.toPublicSpace() = PublicSpace(
     namespaceId = namespaceId,
     title = title,

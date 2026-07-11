@@ -95,6 +95,10 @@ class AndroidNearbyController(
 
     @SuppressLint("MissingPermission")
     private fun startDiscovery() {
+        runCatching { server?.close() }
+        runCatching { listener?.close() }
+        server = null
+        listener = null
         phones.clear()
         update(NearbyUiState.Looking)
         try {
