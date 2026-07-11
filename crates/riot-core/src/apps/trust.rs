@@ -181,13 +181,28 @@ pub fn is_trusted(
     markers: &[TrustMarker],
     organizer_subspace_ids: &[[u8; 32]],
 ) -> bool {
-    // This tie-break is reader policy across different recognized organizer
-    // coordinates. Same-coordinate Trust/Revoke ties never reach this slice:
-    // Willow first selects one live entry by native payload-digest recency.
-    let latest = markers
-        .iter()
-        .filter(|m| &m.app_id == app_id)
-        .filter(|m| organizer_subspace_ids.contains(&m.author_subspace_id))
+    // Input must contain at most one Willow-resolved live marker per
+    // recognized organizer coordinate. Ignore other apps and unrecognized
+    // authors first; duplicates among the remaining coordinates mean the
+    // caller supplied unresolved input, so fail closed instead of inventing
+    // a second semantic winner.
+    let mut eligible = Vec::new();
+    for marker in markers.iter().filter(|marker| {
+        &marker.app_id == app_id && organizer_subspace_ids.contains(&marker.author_subspace_id)
+    }) {
+        if eligible
+            .iter()
+            .any(|existing: &&TrustMarker| existing.author_subspace_id == marker.author_subspace_id)
+        {
+            return false;
+        }
+        eligible.push(marker);
+    }
+
+    // This timestamp/Revoke tie-break is reader policy across different
+    // recognized organizer coordinates, after Willow resolved each one.
+    let latest = eligible
+        .into_iter()
         .max_by_key(|m| (m.timestamp_micros, m.kind == TrustMarkerKind::Revoke));
 
     matches!(latest, Some(m) if m.kind == TrustMarkerKind::Trust)
