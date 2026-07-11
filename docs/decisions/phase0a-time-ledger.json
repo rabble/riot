@@ -160,12 +160,30 @@
       ],
       "source": "docs/decisions/phase0a-wu2b-report.md",
       "note": "Arbiter + copy-on-write transaction + receipts + provenance; 13 core tests. G2 CORE only \u2014 lifecycle races, tombstone/charge accounting, hostile corpus, per-entry selection outstanding."
+    },
+    {
+      "work_unit": "WU2B continuation (selection/lifecycle)",
+      "status": "partial",
+      "reported_actual_hours": 0.6,
+      "charged_hours": 0.6,
+      "commits": [
+        "2ab47a4",
+        "3e790ee"
+      ],
+      "evidence_paths": [
+        "crates/riot-core/src/session.rs",
+        "crates/riot-core/tests/core_import_transaction.rs",
+        "crates/riot-core/tests/core_import_lifecycle.rs",
+        "docs/decisions/phase0a-wu2b-report.md"
+      ],
+      "source": "fresh conformance and locked workspace verification before 3e790ee",
+      "note": "Aggregate swarm implementation/review time. The initial spec review found tombstone eviction and missing state-preservation coverage; a RED regression and repair passed fresh spec review. Initial quality review found unbounded terminal storage; the repair imposed the session-wide 64-plan cap and removed the inspection vector clone, then fresh quality re-review approved. Full G2 remains blocked by lifecycle races, JoinPlan/conservative charge admission with exact bounds, and hostile corpus/panic quarantine."
     }
   ],
   "totals": {
-    "charged_hours": 7.45,
+    "charged_hours": 8.05,
     "reserved_g0_g1_repair_hours": 0.0,
-    "reserved_wu2_hours": 2.3,
+    "reserved_wu2_hours": 1.7,
     "reserved_wu3_hours": 4.0,
     "reserved_contingency_hours": 0.25,
     "reserved_wu4_hours": 2.0
