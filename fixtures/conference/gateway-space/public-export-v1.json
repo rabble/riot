@@ -25,7 +25,7 @@
   "generated_at": "2026-07-11T09:40:00Z",
   "namespace": "ae5f04268d4d2a2f86df7a43e0afe1f26577ac58dcefe95bd9b6e634c5e0155c",
   "renderer_profile": "incident-board/1",
-  "schema": "riot-public-gateway-export/1",
+  "schema": "riot-public-gateway-export/2",
   "source_fixture": "fixtures/conference/incident-space-v1.json",
   "source_fixture_sha256": "b74f215796d958a8d9bcf554ad483afad6ab27fd194fd52202f38aebce5297de",
   "source_manifest": "fixtures/conference/package-manifest-v1.json",

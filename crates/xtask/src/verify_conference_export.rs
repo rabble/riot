@@ -17,6 +17,12 @@ use crate::hex_codec;
 
 pub const VERIFICATION_STATUS_VALID: &str = "signature_verified";
 pub const VERIFICATION_STATUS_INVALID: &str = "signature_invalid";
+/// The export shape this tool produces. Verification moved from a single
+/// document-level placeholder to a real per-entry `verification_status`
+/// (see below), so this tool owns and unconditionally stamps the export's
+/// `schema` field to reflect that shape change — the same way it already
+/// owns and stamps each entry's `verification_status`.
+pub const EXPORT_SCHEMA: &str = "riot-public-gateway-export/2";
 
 /// Confirms that a fixture entry and an export entry at the same array index
 /// actually describe the same Willow entry, so that positional pairing alone
@@ -124,6 +130,10 @@ pub fn run(root: &Path) -> Result<(), String> {
     if let Some(map) = export.as_object_mut() {
         map.remove("verification_status");
     }
+    // Unconditionally stamp the export's schema version: this tool is the
+    // sole producer of this export shape, so it owns this field the same
+    // way it owns each entry's verification_status above.
+    export["schema"] = json!(EXPORT_SCHEMA);
 
     let pretty = serde_json::to_string_pretty(&export)
         .map_err(|error| format!("serialize {}: {error}", export_path.display()))?;
