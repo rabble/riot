@@ -324,7 +324,10 @@ fn conference_fixture_freezes_a_public_deterministic_incident_package() {
             "entry author must be one of the two fixture authors"
         );
         decode_hex(string(entry, "signature"), 64, "entry.signature");
-        decode_hex_any_length(string(entry, "willow_entry_bytes"), "entry.willow_entry_bytes");
+        decode_hex_any_length(
+            string(entry, "willow_entry_bytes"),
+            "entry.willow_entry_bytes",
+        );
         decode_hex_any_length(
             string(entry, "willow_capability_bytes"),
             "entry.willow_capability_bytes",
