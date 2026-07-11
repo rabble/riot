@@ -193,6 +193,18 @@ don't lag content again.
 
 | Codex (continuation) | App-directory Task 5b: carry app-data and app-index entries over nearby sync | `crates/riot-ffi/src/mobile_state.rs`, `crates/riot-ffi/tests/apps_contract.rs`; `crates/riot-core/src/sync/ffi_bridge.rs` only if investigation proves unavoidable and the claim is expanded first | **Executing — investigation then TDD/two-stage review** | Highest-risk remaining directory task. Current code explicitly excludes app entries from inventory and gates receive-side review through `inspectable_alert_entries`; investigation must prove whether FFI-only inclusion is sound before implementation. |
 
+### Handoff to the Task 5b owner — investigation memo, from the app-directory session (2026-07-12)
+
+**Claim respected, no code written.** My session (app-directory plan owner) dispatched a 5b implementer before your claim row landed; it detected your claim and ~600 lines of in-flight work in `mobile_state.rs`, stood down without touching any of your files, and instead produced the investigation your own Step 1 calls for. **Memo committed as `b501ce4`** (appended to `docs/superpowers/plans/2026-07-11-app-directory.md` under Task 5b; citations pinned to `53427c5`, not your WIP, so they stay valid). Three findings, offered in case they save you a cycle:
+
+1. **No `sync/` protocol changes are needed — the whole task is pure riot-ffi.** `crates/riot-core/src/sync/` is entirely payload-agnostic: it keys on `EntryId` + opaque `SignedWillowEntry` (`ffi_bridge.rs:27-36`, `state.rs:43,49,235-239`) and `SyncAction::ImportBundle(Vec<u8>)` passes raw bytes through. Zero alert-specific logic. Your claim's expansion trigger should not fire.
+2. **There are TWO receive-side gates, and they must move together.** Besides `inspectable_alert_entries` (`mobile_state.rs:804-863` — note `decode_alert` at `:817-818` rejects the *whole bundle*, not just the item, and `:859-861` rejects an all-app bundle outright), there is an independent eligible-count equality check at `:409`. Core *already* admits `apps/` + `app-index/` paths (`b4abd93`, `bac5558`), so it counts app entries as eligible; an FFI-side alert-only vector fails that equality even after the first gate is relaxed.
+3. **⚠️ The send side cannot be landed in two steps — this is the one most likely to bite.** `remember_sync_entries` (`:892-901`) stores *every* incoming entry unfiltered, while `ensure_complete_sync_inventory` (`:938-940`) *excludes* app entries from `live_ids`. So adding app entries to `sync_inventory` at write time **without dropping that exclusion in the same commit** makes `inventory_ids != live_ids` → `MobileError::Internal` → **`open_sync_session()` bricks permanently on the writer's own device**. The alert-only gate is load-bearing for the completeness invariant, not a policy choice. Inventory-remember, exclusion filter, and completeness equality are one atomic change with one shared definition of "participating entry".
+
+Also unaddressed by anyone so far: once app entries participate, they consume the same `MAX_SYNC_IDS` budget as alerts (`:944-946`) — a prolific app can turn a working `open_sync_session` into `SessionLimit`. Worth a documented envelope.
+
+**Task 5b is yours; I am not contending for it.** Everything else in the app-directory plan (Tasks 1, 2, 2b, 2c, 3, 5, 6 + the `verify_app_pair`/id-convention fix round) is landed and two-stage reviewed on my side — 5b is the last one. Ping this file if you want the work handed back instead.
+
 ## Active claim: JS apps runtime — iOS (2026-07-11, new)
 
 | Owner | Scope | Files | State | Evidence / handoff |
