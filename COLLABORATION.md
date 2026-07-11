@@ -39,7 +39,7 @@ or releasing work.
 | Codex Android agent | Task 4 Android durable signer wiring | `apps/android/` | **Done, released** | Landed `c690836` + `a1a9cba`, independent review APPROVED. Fifteen JVM + ten API36 tests prove exact signer continuity, true encrypted-v1 migration, pre-allocation/file bounds, error-path key/plaintext wiping, fail-closed atomicity, and exact paired ABIs. |
 | Codex root | Conference Task 4 native core packaging | `scripts/conference/build-native-core.sh`, `scripts/conference/test-native-core-package.sh`, `docs/decisions/riot-native-core-packaging.md`, generated/ignored native artifacts | **Done, released** | Committed `df44a36`, independently approved. Regenerated after sealed identity; locked Swift/Kotlin plus iOS device/simulator and Android arm64/x86_64 package test passes. |
 | Codex identity agent | Task 4 durable signer identity | `Cargo.toml`, `Cargo.lock`, `fixtures/manifest.json`, `crates/riot-core/src/willow/identity.rs`, `crates/riot-core/src/willow/mod.rs`, `crates/riot-ffi/` | **Done, released** | Committed `1fabe48` plus hardening `347af09`; independent security review APPROVED. Full workspace tests, strict clippy, bindings/secret scan, contract validation, cargo-audit, and fixed lock hash pass. Native two-layer wrapping-key integration is active. |
-| Codex identity agent | Task 5 mobile sync FFI bridge | `crates/riot-core/src/sync/ffi_bridge.rs`, `crates/riot-core/src/sync/mod.rs`, `crates/riot-ffi/`, `Cargo.lock`, `fixtures/manifest.json` if changed | **In progress — RED first** | Expose the existing bounded reconciliation state machine as opaque mobile handles and preserve accepted signed-bundle inventory without changing protocol semantics. |
+| Codex identity agent | Task 5 mobile sync FFI bridge | `crates/riot-core/src/sync/ffi_bridge.rs`, `crates/riot-core/src/sync/mod.rs`, `crates/riot-ffi/` | **Done, released — independently approved** | Landed `794b0ca` + `3ac6fb6` + `8efad91`. Twenty-three mobile contracts and nine core sync tests cover exact canonical bundle persistence, cancellation/rejection non-mutation, terminal invalidation, stable snapshots, partial-inventory refusal, and preservation of an active session when a second open is refused. Full locked workspace tests, strict clippy, generated Swift/Kotlin bindings, validator, and byte-only surface review pass. Files are free. |
 | Codex iOS agent | Task 5 iOS nearby transport | `apps/ios/` | **In progress — RED first** | Loopback transport contract, CoreBluetooth discovery/pair confirmation, one-shot local-IP handoff with BLE fallback, plain-language coordinator/UI. No Android/core edits. |
 | Codex Android agent | Task 5 Android nearby transport | `apps/android/` | **In progress — RED first** | Loopback transport contract, Android BLE discovery/pair confirmation, one-shot local-IP handoff with BLE fallback, plain-language coordinator/UI. No iOS/core edits. |
 | Claude | Fix P1/P2 defects in commit `d4edb77` (store byte-charge accounting) | `crates/riot-core/src/session.rs`, `crates/riot-core/src/import/join.rs` | **Done, released** | Committed `933ea14`. Stopped retaining the capability/token past inspect-time verification; split entry charge into a permanent per-seen-entry index charge + a live-only bytes charge; charge is now per-`DispositionRow` not per-receipt; `ImportContext::route` bytes are now charged and enforced; `namespace_views` (64) is now tracked and capped. `cargo test -p riot-core -p riot-conformance --all-features` all green (added two new adversarial tests: oversized route and 65th-namespace both trip real `StoreFull`); `cargo clippy -p riot-core --all-features --all-targets -- -D warnings` clean; `cargo xtask validate-contracts` PASS. This commit also carries Codex's small uncommitted `live_entry_ids`/`public_entry_identity` additions to session.rs, untouched by my edits. **session.rs and import/join.rs are free.** |
@@ -115,3 +115,41 @@ intermittently active elsewhere. Left untouched; not in this session's scope.
 | Owner | Scope | Files | State | Evidence / handoff |
 | --- | --- | --- | --- | --- |
 | Claude (this session) | Design pass on the native iOS shell (visual styling + tab/navigation structure) requested by rabble | `apps/ios/Riot/ConferenceShellView.swift`, `apps/ios/Riot/AppModel.swift`, plus new SwiftUI view/style files under `apps/ios/Riot/` | **Starting — brainstorming design first** | Taking over the now-free `apps/ios/` claim per user direction. Will not touch `apps/ios/Riot/Core/` (Keychain/identity layer, just landed in `5bb25fa`) or `crates/`/FFI. Design doc will land under `docs/superpowers/specs/` before implementation. |
+
+## Status: Task 5 (nearby transport) verified, fixed, and landed (2026-07-11, new session)
+
+A separate Claude session (this entry's author) brainstormed and wrote
+`docs/superpowers/specs/2026-07-11-nearby-transport-design.md` for Task 5, then
+found that Codex's "nearby transport swarm" (`5e16811` onward) had already
+built almost the entire feature concurrently — Rust FFI sync bridge, iOS
+BLE+local-IP transport, Android BLE+local-IP transport — matching the design
+closely (including the plain-language UI requirement) without direct
+coordination. Rather than duplicate the work, this session verified and
+fixed it instead:
+
+- The native library packages (`scripts/conference/build-native-core.sh`)
+  were stale relative to fast-moving Rust FFI changes multiple times; each
+  time this surfaced as iOS linker errors (`undefined symbol
+  _uniffi_riot_ffi_...`) that were actually "needs a rebuild," not a real
+  bug. Regenerated repeatedly as new Rust methods (`MobileSyncSession::cancel()`)
+  landed.
+- Real bug found and fixed: `CoreBluetoothFrameChannel` was missing
+  `@unchecked Sendable`, unlike its sibling `LocalTCPFrameChannel` — a Swift 6
+  strict-concurrency violation caught only by actually building, not by
+  reading the diff. Fixed to match the established pattern in the same file.
+- One flaky Android test (`NearbyTransportContractTest.
+  failedChosenLocalSessionNeverSwitchesPerMessageOrToInternet`) failed once
+  under heavy concurrent build load (cargo + xcodebuild + gradle running
+  simultaneously) and passed cleanly on every rerun — treated as a timing
+  flake, not a real bug, after confirming the file was stable and the retry
+  was clean.
+- Landed in four commits: `794b0ca` (Rust FFI bridge), `306b7c3` (Android
+  transport), `8efad91` (end-to-end wiring across all three surfaces —
+  `MobileSyncSession::cancel()`, the generated-adapter persist-before-accept
+  bridge on both platforms, UI wiring), `544dddb` (iOS test parity).
+
+Final state: `cargo test --workspace --all-features` 129 tests green,
+clippy/fmt/`xtask validate-contracts` clean; `xcodebuild test` (RiotKit)
+19/19 passed; `./gradlew testDebugUnitTest` 39/39 passed, both debug APKs
+assemble. Physical two-device BLE verification remains deferred per the
+design doc — not achievable in this environment.
