@@ -10,19 +10,26 @@ import android.webkit.WebViewClient
 import androidx.webkit.ServiceWorkerClientCompat
 import androidx.webkit.ServiceWorkerControllerCompat
 import androidx.webkit.WebSettingsCompat
+import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
 import java.io.ByteArrayInputStream
+
+/** Raised when the device's WebView lacks a feature the host needs to stay safe. */
+class AppHostUnavailableException(message: String) : Exception(message)
 
 /**
  * A hardened WebView that serves an app's bundle from memory over a
  * synthetic per-app https origin via `shouldInterceptRequest`. Every
  * response carries the iOS CSP, and `blockNetworkLoads` is a second wall:
- * even a missed interception cannot reach the network.
- *
- * Task 1 covers hardening + interception only; the `window.riot` bridge and
- * document-start shim arrive in Task 2.
+ * even a missed interception cannot reach the network. A synchronous
+ * `window.riot` bridge, injected at document start on the app's own origin,
+ * is the page's only I/O.
  */
-class AppWebViewHost(context: Context, private val resolver: AppResourceResolver) {
+class AppWebViewHost(
+    context: Context,
+    private val resolver: AppResourceResolver,
+    private val bridge: RiotJsBridge,
+) {
     companion object {
         const val CSP =
             "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:"
@@ -31,6 +38,12 @@ class AppWebViewHost(context: Context, private val resolver: AppResourceResolver
     val webView: WebView = WebView(context)
 
     init {
+        // Fail closed before configuring anything: without document-start
+        // injection the shim could race the page and leave `window.riot`
+        // undefined mid-load, so the host refuses to exist at all.
+        if (!WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
+            throw AppHostUnavailableException("This tool can't run on this phone yet")
+        }
         @SuppressLint("SetJavaScriptEnabled") // The bridge is the app's only I/O; see spec.
         webView.settings.apply {
             javaScriptEnabled = true
@@ -71,7 +84,15 @@ class AppWebViewHost(context: Context, private val resolver: AppResourceResolver
             )
         }
         webView.webViewClient = AppWebViewClient()
+        webView.addJavascriptInterface(bridge, "RiotNative")
+        WebViewCompat.addDocumentStartJavaScript(
+            webView, RiotJsShim.SOURCE, setOf("https://${resolver.originHost}"),
+        )
     }
+
+    /** Resume/sync trigger: re-fires every `window.riot.watch` callback. */
+    fun notifyDataChanged() =
+        webView.evaluateJavascript("window.__riotDataChanged && window.__riotDataChanged()", null)
 
     /** Named so Task 4 can drive interception through a real WebView. */
     inner class AppWebViewClient : WebViewClient() {
