@@ -1,9 +1,18 @@
 //! FFI contract for the signed-JS-apps runtime surface: manifest install,
-//! per-profile trust decisions, and namespace-scoped app data put/get/list —
-//! end-to-end through the UniFFI layer, in-process, same as
-//! `mobile_contract.rs`.
+//! per-profile trust decisions, namespace-scoped app data put/get/list, and
+//! the app-directory surface (listings, share, endorse) — end-to-end through
+//! the UniFFI layer, in-process, same as `mobile_contract.rs`.
 
-use riot_ffi::{open_local_profile, MobileError};
+use riot_ffi::{open_local_profile, MobileError, PublicSpace};
+
+/// Hex string (as returned by `install_app`/`identity`) to raw bytes (as the
+/// directory surface uses for 32-byte ids).
+fn unhex(value: &str) -> Vec<u8> {
+    (0..value.len())
+        .step_by(2)
+        .map(|index| u8::from_str_radix(&value[index..index + 2], 16).expect("hex"))
+        .collect()
+}
 
 fn manifest_and_bundle() -> (Vec<u8>, Vec<u8>) {
     // Manifest/bundle bytes are produced with riot-core's own codecs — the
@@ -172,6 +181,201 @@ fn app_data_put_does_not_break_sync_sessions() {
     runtime
         .app_data_put(app.app_id, "items/b".to_string(), b"y".to_vec())
         .expect("put works again after cancel");
+}
+
+#[test]
+fn shared_app_appears_in_directory_with_carrier_provenance() {
+    let profile = open_local_profile().expect("profile");
+    let space = profile
+        .create_public_space("Directory fixture".into())
+        .expect("space");
+    let runtime = profile.app_runtime();
+    let (manifest_bytes, bundle_bytes) = manifest_and_bundle();
+    let app = runtime
+        .install_app(manifest_bytes, bundle_bytes)
+        .expect("install");
+    let app_id = unhex(&app.app_id);
+
+    // Not listed before sharing: install alone publishes nothing.
+    let before = runtime.directory_listings().expect("listings");
+    assert!(before.iter().all(|listing| listing.app_id != app_id));
+
+    runtime
+        .share_app(app_id.clone(), space.clone())
+        .expect("share");
+
+    let listings = runtime.directory_listings().expect("listings");
+    let listing = listings
+        .iter()
+        .find(|listing| listing.app_id == app_id)
+        .expect("shared app listed");
+    assert_eq!(listing.name, "Checklist");
+    assert_eq!(listing.version, "1.0.0");
+    assert!(listing.bundle_present);
+    assert!(!listing.built_in);
+    assert!(listing.carrier_subspace_id.is_some());
+    assert_eq!(listing.superseded_by, None);
+    assert!(listing.trusted_in_spaces.is_empty()); // sharing never auto-trusts
+
+    // A space the profile has not joined is not a valid share target.
+    let foreign_space = PublicSpace {
+        namespace_id: "ab".repeat(32),
+        title: "Elsewhere".into(),
+        is_public: true,
+    };
+    assert!(matches!(
+        runtime.share_app(app_id, foreign_space),
+        Err(MobileError::InvalidInput)
+    ));
+
+    // Sharing an app id nothing local can resolve has nothing to publish.
+    assert!(matches!(
+        runtime.share_app(vec![0x5a; 32], space),
+        Err(MobileError::AppRejected)
+    ));
+}
+
+#[test]
+fn starter_checklist_is_listed_built_in_with_canonical_id() {
+    let profile = open_local_profile().expect("profile");
+    let runtime = profile.app_runtime();
+
+    let expected =
+        riot_core::apps::starter::verify_starter_catalog(riot_core::apps::starter::STARTER_CATALOG);
+    assert!(
+        !expected.is_empty(),
+        "embedded starter catalog must verify against its own codecs"
+    );
+
+    let listings = runtime.directory_listings().expect("listings");
+    for starter in &expected {
+        let listing = listings
+            .iter()
+            .find(|listing| listing.app_id == starter.app_id.to_vec())
+            .expect("starter app listed under its canonical id");
+        assert!(listing.built_in);
+        assert!(listing.bundle_present);
+        assert!(listing.carrier_subspace_id.is_none());
+        assert_eq!(listing.name, starter.manifest.name);
+    }
+}
+
+#[test]
+fn trusting_an_app_marks_the_space_in_listings() {
+    let profile = open_local_profile().expect("profile");
+    let runtime = profile.app_runtime();
+    let starter =
+        riot_core::apps::starter::verify_starter_catalog(riot_core::apps::starter::STARTER_CATALOG)
+            .pop()
+            .expect("starter app");
+    let app_id_hex: String = starter.app_id.iter().map(|b| format!("{b:02x}")).collect();
+    let own_namespace = unhex(&profile.identity().expect("identity").namespace_id);
+
+    runtime.trust_app(app_id_hex.clone()).expect("trust");
+    let listings = runtime.directory_listings().expect("listings");
+    let listing = listings
+        .iter()
+        .find(|listing| listing.app_id == starter.app_id.to_vec())
+        .expect("starter listed");
+    assert_eq!(listing.trusted_in_spaces, vec![own_namespace]);
+
+    runtime.untrust_app(app_id_hex).expect("untrust");
+    let listings = runtime.directory_listings().expect("listings");
+    let listing = listings
+        .iter()
+        .find(|listing| listing.app_id == starter.app_id.to_vec())
+        .expect("starter listed");
+    assert!(listing.trusted_in_spaces.is_empty());
+}
+
+#[test]
+fn endorsement_bumps_counts_and_retraction_clears_them() {
+    let profile = open_local_profile().expect("profile");
+    let runtime = profile.app_runtime();
+    let starter =
+        riot_core::apps::starter::verify_starter_catalog(riot_core::apps::starter::STARTER_CATALOG)
+            .pop()
+            .expect("starter app");
+    let app_id = starter.app_id.to_vec();
+
+    runtime
+        .endorse_app(app_id.clone(), "we ran the drill with this".into(), false)
+        .expect("endorse");
+    let listings = runtime.directory_listings().expect("listings");
+    let listing = listings
+        .iter()
+        .find(|listing| listing.app_id == app_id)
+        .expect("starter listed");
+    // The endorsement entry itself is live in the local store, so this
+    // profile's own subspace counts as met.
+    assert_eq!(listing.endorsing_met_subspaces.len(), 1);
+    assert_eq!(listing.endorsing_unmet_count, 0);
+
+    runtime
+        .endorse_app(app_id.clone(), String::new(), true)
+        .expect("retract");
+    let listings = runtime.directory_listings().expect("listings");
+    let listing = listings
+        .iter()
+        .find(|listing| listing.app_id == app_id)
+        .expect("starter listed");
+    assert!(listing.endorsing_met_subspaces.is_empty());
+    assert_eq!(listing.endorsing_unmet_count, 0);
+
+    // Note length is enforced by the core codec, surfaced as AppRejected.
+    assert!(matches!(
+        runtime.endorse_app(app_id, "x".repeat(201), false),
+        Err(MobileError::AppRejected)
+    ));
+    // Malformed app id.
+    assert!(matches!(
+        runtime.endorse_app(vec![1; 8], String::new(), false),
+        Err(MobileError::InvalidInput)
+    ));
+}
+
+#[test]
+fn share_and_endorse_respect_active_sync_and_never_brick_it() {
+    // Same discipline as app_data_put: app-index writes are refused while a
+    // sync session is active, and entries they add must not violate the
+    // alert-only sync-inventory completeness invariant afterwards.
+    let profile = open_local_profile().expect("profile");
+    let space = profile
+        .create_public_space("Sync guard fixture".into())
+        .expect("space");
+    let runtime = profile.app_runtime();
+    let (manifest_bytes, bundle_bytes) = manifest_and_bundle();
+    let app = runtime
+        .install_app(manifest_bytes, bundle_bytes)
+        .expect("install");
+    let app_id = unhex(&app.app_id);
+
+    runtime
+        .share_app(app_id.clone(), space.clone())
+        .expect("share");
+    runtime
+        .endorse_app(app_id.clone(), "endorsed".into(), false)
+        .expect("endorse");
+
+    let sync = profile
+        .open_sync_session()
+        .expect("sync opens after app-index writes");
+    assert!(matches!(
+        runtime.share_app(app_id.clone(), space.clone()),
+        Err(MobileError::InvalidInput)
+    ));
+    assert!(matches!(
+        runtime.endorse_app(app_id.clone(), String::new(), true),
+        Err(MobileError::InvalidInput)
+    ));
+    sync.cancel().expect("cancel");
+
+    runtime
+        .share_app(app_id.clone(), space)
+        .expect("re-share works after cancel");
+    runtime
+        .endorse_app(app_id, String::new(), true)
+        .expect("retract works after cancel");
 }
 
 #[test]

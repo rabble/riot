@@ -44,11 +44,12 @@ pub(crate) struct LocalProfile {
     sync_inventory: Vec<SignedWillowEntry>,
     sync_session: Option<StoredSyncSession>,
     next_handle_id: u64,
-    /// Content-derived ids of installed apps (dedup + cap accounting; the
-    /// display record is returned to the caller at install time, and bundle
-    /// resources are the native host's to persist until the app-directory
-    /// follow-up moves them into Willow entries).
-    installed_app_ids: Vec<[u8; 32]>,
+    /// Installed apps with their canonical manifest/bundle bytes (dedup +
+    /// cap accounting; the display record is returned to the caller at
+    /// install time). Retaining the bytes is what lets `share_app` publish
+    /// an installed app into the Willow app-index; the memory ceiling is
+    /// `MAX_INSTALLED_APPS` × `MAX_BUNDLE_TOTAL_BYTES`.
+    installed_apps: Vec<StoredInstalledApp>,
     /// Profile-local trust markers, evaluated by `riot_core::apps::trust`
     /// with this profile's own subspace as the sole recognized organizer.
     /// Syncing markers as Willow entries is the app-directory follow-up.
@@ -65,6 +66,12 @@ pub(crate) struct LocalProfile {
 struct StoredDraft {
     id: u64,
     draft: AlertDraft,
+}
+
+struct StoredInstalledApp {
+    app_id: [u8; 32],
+    manifest_bytes: Vec<u8>,
+    bundle_bytes: Vec<u8>,
 }
 
 struct StoredPreview {
@@ -142,7 +149,7 @@ fn profile_with_author(store: EvidenceStore, author: EvidenceAuthor) -> Arc<Mobi
             sync_inventory: Vec::new(),
             sync_session: None,
             next_handle_id: 1,
-            installed_app_ids: Vec::new(),
+            installed_apps: Vec::new(),
             app_trust_markers: Vec::new(),
             next_trust_marker_seq: 1,
             app_data_timestamp_floor_micros: 0,
@@ -876,11 +883,23 @@ fn remember_sync_entries(
 }
 
 fn ensure_complete_sync_inventory(profile: &LocalProfile) -> Result<(), MobileError> {
-    // App-data entries (`apps/<app_id>/...`) are deliberately outside the
-    // alert sync inventory: this sync review surface is alert-only, and the
-    // app-directory follow-up owns syncing app data. The completeness
-    // invariant therefore compares against live non-app entries only —
-    // otherwise one local app_data_put would brick open_sync_session.
+    // App-data entries (`apps/<app_id>/...`) and app-index entries
+    // (`app-index/<app_id>/...`, written by share_app/endorse_app) are
+    // deliberately outside the alert sync inventory: this sync review
+    // surface is alert-only, and the app-directory sync task owns carrying
+    // app entries. The completeness invariant therefore compares against
+    // live non-app entries only — otherwise one local app_data_put or
+    // share_app would brick open_sync_session.
+    let app_index_prefix =
+        riot_core::willow::Path::from_slices(&[riot_core::apps::index::APP_INDEX_COMPONENT])
+            .map_err(|_| MobileError::Internal)?;
+    let app_index_ids: std::collections::BTreeSet<_> = profile
+        .store
+        .entries_with_prefix(&app_index_prefix)
+        .map_err(map_core_error)?
+        .into_iter()
+        .map(|(id, _, _)| id)
+        .collect();
     let all_prefix =
         riot_core::willow::Path::from_slices(&[]).map_err(|_| MobileError::Internal)?;
     let mut live_ids: Vec<_> = profile
@@ -888,7 +907,9 @@ fn ensure_complete_sync_inventory(profile: &LocalProfile) -> Result<(), MobileEr
         .entries_with_prefix(&all_prefix)
         .map_err(map_core_error)?
         .into_iter()
-        .filter(|(_, entry, _)| !riot_core::apps::entry::is_app_data_entry(entry))
+        .filter(|(id, entry, _)| {
+            !riot_core::apps::entry::is_app_data_entry(entry) && !app_index_ids.contains(id)
+        })
         .map(|(id, _, _)| id)
         .collect();
     live_ids.sort_unstable();
@@ -1066,11 +1087,15 @@ pub(crate) fn install_app(
         let digest = app_bundle_digest(&bundle_bytes);
         let app_id = app_id_for(&manifest, &digest).map_err(map_apps_error)?;
 
-        if !profile.installed_app_ids.contains(&app_id) {
-            if profile.installed_app_ids.len() >= MAX_INSTALLED_APPS {
+        if !profile.installed_apps.iter().any(|app| app.app_id == app_id) {
+            if profile.installed_apps.len() >= MAX_INSTALLED_APPS {
                 return Err(MobileError::SessionLimit);
             }
-            profile.installed_app_ids.push(app_id);
+            profile.installed_apps.push(StoredInstalledApp {
+                app_id,
+                manifest_bytes,
+                bundle_bytes,
+            });
         }
         Ok(crate::apps_ffi::InstalledAppRecord {
             app_id: hex(&app_id),
@@ -1143,16 +1168,7 @@ pub(crate) fn app_data_put(
             return Err(MobileError::InvalidInput);
         }
         let app_id = parse_entry_id(&app_id)?;
-        let now_micros = system_snapshot()
-            .map_err(map_author_error)?
-            .unix_seconds
-            .saturating_mul(1_000_000);
-        let timestamp = now_micros.max(
-            profile
-                .app_data_timestamp_floor_micros
-                .checked_add(1)
-                .ok_or(MobileError::SessionLimit)?,
-        );
+        let timestamp = next_app_write_timestamp(profile)?;
         riot_core::apps::bridge::AppDataBridge::put(
             &profile.store,
             &profile.author,
@@ -1192,6 +1208,258 @@ pub(crate) fn app_data_list(
             .into_iter()
             .map(|(key, value)| crate::apps_ffi::AppDataItem { key, value })
             .collect())
+    })
+}
+
+/// Willow timestamp for the next same-profile app write (app data or
+/// app-index): wall-clock micros, floored to stay strictly increasing so a
+/// rapid overwrite of the same coordinate still prunes deterministically.
+/// Callers store the returned value back into
+/// `app_data_timestamp_floor_micros` only after the write succeeds.
+fn next_app_write_timestamp(profile: &LocalProfile) -> Result<u64, MobileError> {
+    let now_micros = system_snapshot()
+        .map_err(map_author_error)?
+        .unix_seconds
+        .saturating_mul(1_000_000);
+    Ok(now_micros.max(
+        profile
+            .app_data_timestamp_floor_micros
+            .checked_add(1)
+            .ok_or(MobileError::SessionLimit)?,
+    ))
+}
+
+/// Raw 32-byte app id as the directory FFI surface carries it.
+fn exact_app_id(value: &[u8]) -> Result<[u8; 32], MobileError> {
+    value.try_into().map_err(|_| MobileError::InvalidInput)
+}
+
+pub(crate) fn directory_listings(
+    inner: &Arc<Mutex<ProfileState>>,
+) -> Result<Vec<crate::apps_ffi::DirectoryListing>, MobileError> {
+    use riot_core::apps::directory::{
+        assemble_directory, AppProvenance, DirectoryInputs, SpaceTrust,
+    };
+    use riot_core::apps::index::scan_app_index;
+    use riot_core::apps::starter::{verify_starter_catalog, STARTER_CATALOG};
+
+    with_active(inner, |profile| {
+        let scanned = scan_app_index(&profile.store).map_err(map_apps_error)?;
+        let mut apps = verify_starter_catalog(STARTER_CATALOG);
+        apps.extend(scanned.apps);
+
+        let own_namespace_id = profile.author.identity().namespace_id;
+        let own_subspace_id = *profile.author.subspace_id().as_bytes();
+        // Organizer recognition is local policy: the profile's own subspace
+        // is the sole recognized organizer, the same source `is_app_trusted`
+        // evaluates against. For the profile's own namespace the compacted
+        // profile-local marker cache is authoritative (`set_app_trust` keeps
+        // exactly one marker per app, satisfying `is_trusted`'s
+        // one-marker-per-coordinate input contract); scanned trust entries
+        // only speak for other namespaces.
+        let mut spaces: Vec<SpaceTrust> = scanned
+            .spaces
+            .into_iter()
+            .filter(|space| space.space_namespace_id != own_namespace_id)
+            .map(|mut space| {
+                space.organizer_subspace_ids = vec![own_subspace_id];
+                space
+            })
+            .collect();
+        if !profile.app_trust_markers.is_empty() {
+            spaces.push(SpaceTrust {
+                space_namespace_id: own_namespace_id,
+                markers: profile.app_trust_markers.clone(),
+                organizer_subspace_ids: vec![own_subspace_id],
+            });
+        }
+
+        let listings = assemble_directory(&DirectoryInputs {
+            apps,
+            endorsements: scanned.endorsements,
+            spaces,
+            met_subspace_ids: live_entry_subspaces(profile)?,
+        });
+        listings
+            .into_iter()
+            .map(|listing| {
+                let (built_in, carrier_subspace_id) = match listing.provenance {
+                    AppProvenance::BuiltIn => (true, None),
+                    AppProvenance::Carried {
+                        carrier_subspace_id,
+                    } => (false, Some(carrier_subspace_id.to_vec())),
+                };
+                Ok(crate::apps_ffi::DirectoryListing {
+                    app_id: listing.app_id.to_vec(),
+                    name: listing.name,
+                    description: listing.description,
+                    version: listing.version,
+                    author_signing_key_id: listing.author.signing_key_id.to_vec(),
+                    permissions: listing.permissions,
+                    bundle_present: listing.bundle_present,
+                    built_in,
+                    carrier_subspace_id,
+                    trusted_in_spaces: listing
+                        .trusted_in_spaces
+                        .iter()
+                        .map(|id| id.to_vec())
+                        .collect(),
+                    endorsing_met_subspaces: listing
+                        .endorsements
+                        .met_subspace_ids
+                        .iter()
+                        .map(|id| id.to_vec())
+                        .collect(),
+                    endorsing_unmet_count: u32::try_from(listing.endorsements.unmet_count)
+                        .map_err(|_| MobileError::Internal)?,
+                    superseded_by: listing.superseded_by.map(|id| id.to_vec()),
+                })
+            })
+            .collect()
+    })
+}
+
+/// Documented v1 choice for "met" endorsers: the subspaces present among the
+/// store's live entries — every author this profile has actually held bytes
+/// from (its own included).
+fn live_entry_subspaces(profile: &LocalProfile) -> Result<Vec<[u8; 32]>, MobileError> {
+    let all_prefix =
+        riot_core::willow::Path::from_slices(&[]).map_err(|_| MobileError::Internal)?;
+    let mut subspaces = std::collections::BTreeSet::new();
+    for (_, entry, _) in profile
+        .store
+        .entries_with_prefix(&all_prefix)
+        .map_err(map_core_error)?
+    {
+        let identity = public_entry_identity(&riot_core::willow::encode_entry(&entry))
+            .map_err(|_| MobileError::Internal)?;
+        subspaces.insert(identity.signer_id);
+    }
+    Ok(subspaces.into_iter().collect())
+}
+
+pub(crate) fn share_app(
+    inner: &Arc<Mutex<ProfileState>>,
+    app_id: Vec<u8>,
+    space: PublicSpace,
+) -> Result<(), MobileError> {
+    use riot_core::apps::index::publish_app_index;
+
+    with_active(inner, |profile| {
+        // Same guard as app_data_put: a local app-index write must not race
+        // an in-flight sync review.
+        if sync_session_is_active(profile) {
+            return Err(MobileError::InvalidInput);
+        }
+        let app_id = exact_app_id(&app_id)?;
+        // A profile writes with one author bound to one namespace, so the
+        // only space it can carry an app into is the one it has joined or
+        // created — the same resolution join_public_space established.
+        let current = profile.space.as_ref().ok_or(MobileError::InvalidInput)?;
+        if !space.is_public || space.namespace_id != current.namespace_id {
+            return Err(MobileError::InvalidInput);
+        }
+        let (manifest_bytes, bundle_bytes) = resolve_app_payload_bytes(profile, &app_id)?;
+        let timestamp = next_app_write_timestamp(profile)?;
+        publish_app_index(
+            &profile.store,
+            &profile.author,
+            &manifest_bytes,
+            &bundle_bytes,
+            timestamp,
+        )
+        .map_err(map_apps_error)?;
+        profile.app_data_timestamp_floor_micros = timestamp;
+        Ok(())
+    })
+}
+
+/// The canonical manifest/bundle bytes for an app id, from whichever local
+/// source holds them: an install on this profile, the built-in starter
+/// catalog, or the live app-index. The content-derived id binds the exact
+/// bytes, so every verified source yields the identical pair.
+fn resolve_app_payload_bytes(
+    profile: &LocalProfile,
+    app_id: &[u8; 32],
+) -> Result<(Vec<u8>, Vec<u8>), MobileError> {
+    use riot_core::apps::bundle::{app_bundle_digest, decode_app_bundle};
+    use riot_core::apps::index::{app_index_bundle_path, app_index_manifest_path};
+    use riot_core::apps::manifest::{app_id_for, decode_manifest};
+    use riot_core::apps::starter::STARTER_CATALOG;
+
+    let verifies = |manifest_bytes: &[u8], bundle_bytes: &[u8]| -> bool {
+        let Ok(manifest) = decode_manifest(manifest_bytes) else {
+            return false;
+        };
+        let Ok(bundle) = decode_app_bundle(bundle_bytes) else {
+            return false;
+        };
+        manifest.entry_point == bundle.entry_point
+            && app_id_for(&manifest, &app_bundle_digest(bundle_bytes)).ok().as_ref() == Some(app_id)
+    };
+
+    if let Some(installed) = profile
+        .installed_apps
+        .iter()
+        .find(|app| app.app_id == *app_id)
+    {
+        return Ok((
+            installed.manifest_bytes.clone(),
+            installed.bundle_bytes.clone(),
+        ));
+    }
+    for (manifest_bytes, bundle_bytes) in STARTER_CATALOG {
+        if verifies(manifest_bytes, bundle_bytes) {
+            return Ok((manifest_bytes.to_vec(), bundle_bytes.to_vec()));
+        }
+    }
+    let payloads_at = |path: riot_core::willow::Path| -> Result<Vec<Vec<u8>>, MobileError> {
+        Ok(profile
+            .store
+            .entries_with_prefix(&path)
+            .map_err(map_core_error)?
+            .into_iter()
+            .filter_map(|(_, _, payload)| payload)
+            .collect())
+    };
+    let manifests = payloads_at(app_index_manifest_path(app_id).map_err(map_apps_error)?)?;
+    let bundles = payloads_at(app_index_bundle_path(app_id).map_err(map_apps_error)?)?;
+    for manifest_bytes in &manifests {
+        for bundle_bytes in &bundles {
+            if verifies(manifest_bytes, bundle_bytes) {
+                return Ok((manifest_bytes.clone(), bundle_bytes.clone()));
+            }
+        }
+    }
+    Err(MobileError::AppRejected)
+}
+
+pub(crate) fn endorse_app(
+    inner: &Arc<Mutex<ProfileState>>,
+    app_id: Vec<u8>,
+    note: String,
+    retract: bool,
+) -> Result<(), MobileError> {
+    use riot_core::apps::endorse::{write_endorsement, EndorsementMarker};
+
+    with_active(inner, |profile| {
+        // Same guard as app_data_put/share_app.
+        if sync_session_is_active(profile) {
+            return Err(MobileError::InvalidInput);
+        }
+        let app_id = exact_app_id(&app_id)?;
+        let marker = EndorsementMarker {
+            app_id,
+            note,
+            retracted: retract,
+        };
+        let timestamp = next_app_write_timestamp(profile)?;
+        // Note length and marker shape are enforced once, by the core codec
+        // inside write_endorsement.
+        write_endorsement(&profile.store, &profile.author, &marker, timestamp)
+            .map_err(map_apps_error)?;
+        profile.app_data_timestamp_floor_micros = timestamp;
+        Ok(())
     })
 }
 
