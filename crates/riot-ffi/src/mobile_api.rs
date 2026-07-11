@@ -149,10 +149,26 @@ pub fn open_local_profile() -> Result<Arc<MobileProfile>, MobileError> {
     crate::mobile_state::open_local_profile()
 }
 
+/// Restores only the local signing identity. Content/store persistence is a
+/// separate native concern. Both inputs remain opaque byte arrays in UniFFI.
+#[uniffi::export]
+pub fn open_profile_from_sealed_identity(
+    wrapping_key: Vec<u8>,
+    sealed_identity: Vec<u8>,
+) -> Result<Arc<MobileProfile>, MobileError> {
+    crate::mobile_state::open_profile_from_sealed_identity(wrapping_key, sealed_identity)
+}
+
 #[uniffi::export]
 impl MobileProfile {
     pub fn identity(&self) -> Result<PublicIdentity, MobileError> {
         crate::mobile_state::identity(&self.inner)
+    }
+
+    /// Returns authenticated opaque state suitable for Keychain/Keystore
+    /// storage. No raw signer or Willow secret type crosses this boundary.
+    pub fn seal_identity(&self, wrapping_key: Vec<u8>) -> Result<Vec<u8>, MobileError> {
+        crate::mobile_state::seal_identity(&self.inner, wrapping_key)
     }
 
     pub fn create_public_space(&self, title: String) -> Result<PublicSpace, MobileError> {

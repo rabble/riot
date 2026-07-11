@@ -29,7 +29,7 @@ pub use digest::{
 pub use entry::{create_signed_alert, AlertDraft, SignedAlert, SignedWillowEntry};
 pub use identity::{
     generate_communal_author, generate_communal_author_for_namespace, AuthorIdentity,
-    EvidenceAuthor, NamespaceKind,
+    EvidenceAuthor, NamespaceKind, SEALED_IDENTITY_BYTES,
 };
 
 // Conformance-only injection surface: absent from the release riot-ffi graph.
@@ -60,6 +60,11 @@ pub enum WillowError {
     InvalidAlert(crate::model::AlertError),
     /// A shared-author factory was given an owned rather than communal namespace.
     NamespaceNotCommunal,
+    /// An authenticated sealed identity was malformed, corrupted, or opened
+    /// with the wrong wrapping key.
+    SealedIdentityInvalid,
+    /// The AEAD could not seal an otherwise valid identity.
+    IdentitySealFailed,
 }
 
 impl std::fmt::Display for WillowError {

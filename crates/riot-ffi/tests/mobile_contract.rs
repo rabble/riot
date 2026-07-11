@@ -1,8 +1,8 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use riot_ffi::{
-    open_local_profile, AlertCertainty, AlertDraftInput, AlertFreshness, AlertSeverity,
-    AlertUrgency, MobileError, PublicSpace, SignedAlert,
+    open_local_profile, open_profile_from_sealed_identity, AlertCertainty, AlertDraftInput,
+    AlertFreshness, AlertSeverity, AlertUrgency, MobileError, PublicSpace, SignedAlert,
 };
 
 fn hex(bytes: &[u8]) -> String {
@@ -372,5 +372,85 @@ fn exported_mobile_surface_does_not_publish_key_material_or_willow_generics() {
             !surface.contains(forbidden),
             "FFI declaration leaks forbidden type or material: {forbidden}"
         );
+    }
+}
+
+#[test]
+fn sealed_identity_restores_the_same_signer_and_keeps_it_when_reattaching_its_space() {
+    let profile = profile_with_space();
+    let space = profile
+        .create_public_space("Durable identity".into())
+        .unwrap();
+    let before = profile.identity().unwrap();
+    let first_draft = profile.create_draft_alert(draft()).unwrap();
+    let first = profile.sign_draft(first_draft.draft_id).unwrap();
+    assert_eq!(first.entry.signer_id, before.signing_key_id);
+
+    let wrapping_key = vec![0x42; 32];
+    let sealed = profile.seal_identity(wrapping_key.clone()).unwrap();
+    let restored = open_profile_from_sealed_identity(wrapping_key, sealed).unwrap();
+    assert_eq!(restored.identity().unwrap(), before);
+    restored.join_public_space(space).unwrap();
+    assert_eq!(restored.identity().unwrap(), before);
+
+    let second_draft = restored.create_draft_alert(draft()).unwrap();
+    let second = restored.sign_draft(second_draft.draft_id).unwrap();
+    assert_eq!(second.entry.signer_id, before.signing_key_id);
+}
+
+#[test]
+fn sealed_identity_rejects_wrong_keys_tampering_truncation_and_invalid_key_lengths() {
+    let profile = open_local_profile().unwrap();
+    let sealed = profile.seal_identity(vec![0x11; 32]).unwrap();
+
+    assert!(matches!(
+        open_profile_from_sealed_identity(vec![0x12; 32], sealed.clone()),
+        Err(MobileError::InvalidInput)
+    ));
+    let mut tampered = sealed.clone();
+    *tampered.last_mut().unwrap() ^= 1;
+    assert!(matches!(
+        open_profile_from_sealed_identity(vec![0x11; 32], tampered),
+        Err(MobileError::InvalidInput)
+    ));
+    assert!(matches!(
+        open_profile_from_sealed_identity(vec![0x11; 32], sealed[..sealed.len() - 1].to_vec()),
+        Err(MobileError::InvalidInput)
+    ));
+    for invalid_key in [vec![], vec![0; 31], vec![0; 33]] {
+        assert!(matches!(
+            profile.seal_identity(invalid_key),
+            Err(MobileError::InvalidInput)
+        ));
+    }
+}
+
+#[test]
+fn restored_identity_gets_a_fresh_author_when_joining_another_communal_namespace() {
+    let profile = open_local_profile().unwrap();
+    let before = profile.identity().unwrap();
+    let sealed = profile.seal_identity(vec![0x23; 32]).unwrap();
+    let restored = open_profile_from_sealed_identity(vec![0x23; 32], sealed).unwrap();
+
+    let other = open_local_profile().unwrap();
+    let other_space = other.create_public_space("Another space".into()).unwrap();
+    restored.join_public_space(other_space.clone()).unwrap();
+    let after = restored.identity().unwrap();
+    assert_eq!(after.namespace_id, other_space.namespace_id);
+    assert_ne!(after.signing_key_id, before.signing_key_id);
+}
+
+#[test]
+fn sealed_identity_surface_is_opaque_bytes_only() {
+    let surface = include_str!("../src/mobile_api.rs");
+    assert!(surface.contains("sealed_identity: Vec<u8>"));
+    assert!(surface.contains("wrapping_key: Vec<u8>"));
+    for forbidden in [
+        "SigningKey",
+        "SubspaceSecret",
+        "secret_bytes",
+        "private_key",
+    ] {
+        assert!(!surface.contains(forbidden), "FFI leaks {forbidden}");
     }
 }

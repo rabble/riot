@@ -29,6 +29,9 @@ serde_json = "=1.0.145"
 ed25519-dalek = { version = "=2.2.0", default-features = false, features = ["std", "fast", "zeroize", "rand_core"] }
 rand_core = { version = "=0.6.4", features = ["getrandom"] }
 zeroize = "=1.9.0"
+# Mature RustCrypto AEAD pin for versioned local signer-state sealing. 0.11.0
+# is newer, but 0.10.1 is the established stable line used for this boundary.
+chacha20poly1305 = { version = "=0.10.1", default-features = false, features = ["alloc"] }
 
 # Evidence profile must unwind: the FFI boundary catches panics and
 # quarantines the session; abort would make that contract impossible.

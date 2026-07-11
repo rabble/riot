@@ -1,6 +1,8 @@
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::{Arc, Mutex, PoisonError};
 
+use zeroize::{Zeroize, Zeroizing};
+
 use riot_core::import::{decode_bundle, encode_bundle, BundleDecodeOutcome, ItemStatus};
 use riot_core::model::{decode_alert, encode_alert, AlertPayload, Certainty, Severity, Urgency};
 use riot_core::session::{
@@ -60,22 +62,45 @@ pub(crate) fn open_local_profile() -> Result<Arc<MobileProfile>, MobileError> {
         let session = RiotSession::open().map_err(|_| MobileError::Internal)?;
         let store = session.create_store().map_err(|_| MobileError::Internal)?;
         let author = generate_communal_author().map_err(map_author_error)?;
-        Ok(Arc::new(MobileProfile {
-            inner: Arc::new(Mutex::new(ProfileState::Active(Box::new(LocalProfile {
-                store,
-                author,
-                space: None,
-                drafts: Vec::new(),
-                preview: None,
-                plan: None,
-                entries: Vec::new(),
-                next_handle_id: 1,
-            })))),
-        }))
+        Ok(profile_with_author(store, author))
     })) {
         Ok(result) => result,
         Err(_) => Err(MobileError::Internal),
     }
+}
+
+pub(crate) fn open_profile_from_sealed_identity(
+    mut wrapping_key: Vec<u8>,
+    sealed_identity: Vec<u8>,
+) -> Result<Arc<MobileProfile>, MobileError> {
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        let key = exact_wrapping_key(&wrapping_key)?;
+        let author = EvidenceAuthor::open_sealed_identity(&key, &sealed_identity)
+            .map_err(map_author_error)?;
+        let session = RiotSession::open().map_err(|_| MobileError::Internal)?;
+        let store = session.create_store().map_err(|_| MobileError::Internal)?;
+        Ok(profile_with_author(store, author))
+    }));
+    wrapping_key.zeroize();
+    match result {
+        Ok(result) => result,
+        Err(_) => Err(MobileError::Internal),
+    }
+}
+
+fn profile_with_author(store: EvidenceStore, author: EvidenceAuthor) -> Arc<MobileProfile> {
+    Arc::new(MobileProfile {
+        inner: Arc::new(Mutex::new(ProfileState::Active(Box::new(LocalProfile {
+            store,
+            author,
+            space: None,
+            drafts: Vec::new(),
+            preview: None,
+            plan: None,
+            entries: Vec::new(),
+            next_handle_id: 1,
+        })))),
+    })
 }
 
 pub(crate) fn identity(inner: &Arc<Mutex<ProfileState>>) -> Result<PublicIdentity, MobileError> {
@@ -86,6 +111,18 @@ pub(crate) fn identity(inner: &Arc<Mutex<ProfileState>>) -> Result<PublicIdentit
             signing_key_id: hex(&identity.signing_key_id),
         })
     })
+}
+
+pub(crate) fn seal_identity(
+    inner: &Arc<Mutex<ProfileState>>,
+    mut wrapping_key: Vec<u8>,
+) -> Result<Vec<u8>, MobileError> {
+    let result = with_active(inner, |profile| {
+        let key = exact_wrapping_key(&wrapping_key)?;
+        profile.author.seal_identity(&key).map_err(map_author_error)
+    });
+    wrapping_key.zeroize();
+    result
 }
 
 pub(crate) fn create_public_space(
@@ -123,8 +160,10 @@ pub(crate) fn join_public_space(
             return Err(MobileError::InvalidInput);
         }
         let namespace_id = parse_entry_id(&space.namespace_id)?;
-        profile.author =
-            generate_communal_author_for_namespace(namespace_id).map_err(map_author_error)?;
+        if profile.author.identity().namespace_id != namespace_id {
+            profile.author =
+                generate_communal_author_for_namespace(namespace_id).map_err(map_author_error)?;
+        }
         let joined = PublicSpace {
             namespace_id: hex(&namespace_id),
             title: space.title,
@@ -572,6 +611,13 @@ fn parse_entry_id(value: &str) -> Result<[u8; 32], MobileError> {
     Ok(id)
 }
 
+fn exact_wrapping_key(value: &[u8]) -> Result<Zeroizing<[u8; 32]>, MobileError> {
+    value
+        .try_into()
+        .map(Zeroizing::new)
+        .map_err(|_| MobileError::InvalidInput)
+}
+
 fn hex(bytes: &[u8]) -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";
     let mut value = String::with_capacity(bytes.len() * 2);
@@ -611,6 +657,8 @@ fn map_author_error(error: WillowError) -> MobileError {
         WillowError::InvalidAlert(_) | WillowError::NamespaceNotCommunal => {
             MobileError::InvalidInput
         }
+        WillowError::SealedIdentityInvalid => MobileError::InvalidInput,
+        WillowError::IdentitySealFailed => MobileError::Internal,
         WillowError::PathInvalid
         | WillowError::DoesNotAuthorise
         | WillowError::DecodeFailed
