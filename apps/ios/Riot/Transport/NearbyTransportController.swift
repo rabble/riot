@@ -1,6 +1,22 @@
 import Foundation
 import SwiftUI
 
+enum LocalNetworkRole: Equatable {
+    case attempt
+    case wait
+
+    static func select(localName: String, localToken: String, remoteName: String, remoteToken: String) -> Self {
+        if localName != remoteName { return localName < remoteName ? .attempt : .wait }
+        return localToken < remoteToken ? .attempt : .wait
+    }
+}
+
+enum LocalChannelAdmission {
+    static func accepts(callbackGeneration: UUID, currentGeneration: UUID?, routeChosen: Bool) -> Bool {
+        callbackGeneration == currentGeneration && !routeChosen
+    }
+}
+
 @MainActor
 public final class NearbyTransportController: ObservableObject {
     @Published public private(set) var state: NearbyConnectionState = .idle
@@ -13,23 +29,42 @@ public final class NearbyTransportController: ObservableObject {
     private var listener: LocalNetworkListener?
     private var acceptedLocalChannel: LocalTCPFrameChannel?
     private var remoteEndpoint: LocalEndpoint?
+    private var remoteTieBreaker: String?
     private var nearbyConnection: NearbyConnection?
     private var coordinator: SyncCoordinator?
     private var syncBoundaryProvider: (() throws -> MobileSyncSessionBoundary)?
+    private var listenerGeneration: UUID?
 
     public init() {}
 
     public func findNearby(syncBoundaryProvider: @escaping () throws -> MobileSyncSessionBoundary) {
+        resetSession()
         self.syncBoundaryProvider = syncBoundaryProvider
-        let service = service ?? makeService()
+        let service = makeService()
         self.service = service
+        let generation = UUID()
+        listenerGeneration = generation
         state = .looking
         let listener = LocalNetworkListener()
-        listener.onAccepted = { [weak self] channel in
-            Task { @MainActor in self?.acceptedLocalChannel = channel }
+        listener.onAccepted = { [weak self, weak service] channel in
+            Task { @MainActor in
+                guard let self, let service,
+                      self.service === service,
+                      LocalChannelAdmission.accepts(
+                        callbackGeneration: generation,
+                        currentGeneration: self.listenerGeneration,
+                        routeChosen: self.nearbyConnection != nil
+                      ) else {
+                    channel.disconnect()
+                    return
+                }
+                self.acceptedLocalChannel = channel
+            }
         }
         self.listener = listener
-        listener.start { [weak service] endpoint in service?.setLocalEndpoint(endpoint) }
+        listener.start { [weak service] endpoint in
+            Task { @MainActor in service?.setLocalEndpoint(endpoint) }
+        }
         service.startLooking()
     }
 
@@ -58,15 +93,29 @@ public final class NearbyTransportController: ObservableObject {
     }
 
     public func stop() {
+        resetSession()
+        syncBoundaryProvider = nil
+        state = .idle
+    }
+
+    private func resetSession() {
+        coordinator?.stop()
+        nearbyConnection?.disconnect()
         service?.stop()
         listener?.stop()
+        acceptedLocalChannel?.disconnect()
         service = nil
+        listener = nil
+        listenerGeneration = nil
         selected = nil
         phones = []
         activeRoute = nil
         nearbyConnection = nil
         coordinator = nil
-        state = .idle
+        acceptedLocalChannel = nil
+        remoteEndpoint = nil
+        remoteTieBreaker = nil
+        isInboundRequest = false
     }
 
     public func addPreviewedContent() {
@@ -82,15 +131,14 @@ public final class NearbyTransportController: ObservableObject {
         service.onPhonesChanged = { [weak self] phones in
             Task { @MainActor in self?.phones = phones }
         }
-        service.onConnected = { [weak self] in
+        service.onConnected = { [weak self] endpoint, tieBreaker in
             Task { @MainActor in
                 guard let self, let selected = self.selected else { return }
+                self.remoteEndpoint = endpoint
+                self.remoteTieBreaker = tieBreaker
                 self.state = .gettingLatest(name: selected.friendlyName)
                 self.chooseSessionRoute(remoteName: selected.friendlyName)
             }
-        }
-        service.onRemoteEndpoint = { [weak self] endpoint in
-            Task { @MainActor in self?.remoteEndpoint = endpoint }
         }
         service.onInboundPairingRequested = { [weak self] name in
             Task { @MainActor in
@@ -104,6 +152,7 @@ public final class NearbyTransportController: ObservableObject {
         service.onDisconnected = { [weak self] in
             Task { @MainActor in
                 guard let self else { return }
+                self.coordinator?.stop()
                 if let selected = self.selected {
                     self.state = .outOfRange(name: selected.friendlyName)
                 } else {
@@ -115,13 +164,19 @@ public final class NearbyTransportController: ObservableObject {
     }
 
     private func chooseSessionRoute(remoteName: String) {
-        guard let service else { return }
+        guard let service, let remoteTieBreaker else { return }
         let bluetooth = CoreBluetoothFrameChannel(service: service)
-        if service.friendlyName < remoteName, let remoteEndpoint {
+        let role = LocalNetworkRole.select(
+            localName: service.friendlyName,
+            localToken: service.tieBreaker,
+            remoteName: remoteName,
+            remoteToken: remoteTieBreaker
+        )
+        if role == .attempt, let remoteEndpoint {
             LocalTCPFrameChannel.attempt(endpoint: remoteEndpoint) { [weak self] channel in
                 Task { @MainActor in self?.finishRouteSelection(bluetooth: bluetooth, local: channel) }
             }
-        } else if service.friendlyName > remoteName {
+        } else if role == .wait {
             Task { @MainActor [weak self] in
                 try? await Task.sleep(for: .seconds(2))
                 self?.finishRouteSelection(bluetooth: bluetooth, local: self?.acceptedLocalChannel)
@@ -134,6 +189,9 @@ public final class NearbyTransportController: ObservableObject {
     private func finishRouteSelection(bluetooth: FrameChannel, local: FrameChannel?) {
         guard nearbyConnection == nil else { return }
         listener?.stop()
+        listenerGeneration = nil
+        if let acceptedLocalChannel, acceptedLocalChannel !== local { acceptedLocalChannel.disconnect() }
+        self.acceptedLocalChannel = nil
         let connection = NearbyConnection(bluetooth: bluetooth) { local }
         connection.confirmPairing()
         do {
@@ -151,6 +209,8 @@ public final class NearbyTransportController: ObservableObject {
                 coordinator.start()
             }
         } catch {
+            connection.disconnect()
+            coordinator?.stop()
             state = .failed
         }
     }

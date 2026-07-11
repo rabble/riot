@@ -2,6 +2,7 @@ import Foundation
 
 enum NearbyLimits {
     static let maxFrameBytes = (8 * 1024 * 1024) + 128
+    static let maxBLEEnvelopeBytes = maxFrameBytes + 1
     static let maxPendingFrames = 64
 }
 
@@ -14,6 +15,40 @@ public enum NearbyTransportError: Error, Equatable {
     case pairingNotConfirmed
     case notConnected
     case disconnected
+}
+
+final class FailureLatch: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storedCallback: (() -> Void)?
+    private var failed = false
+    private var cancelled = false
+
+    var callback: (() -> Void)? {
+        get { lock.lock(); defer { lock.unlock() }; return storedCallback }
+        set {
+            lock.lock()
+            storedCallback = newValue
+            let deliver = failed && !cancelled ? newValue : nil
+            lock.unlock()
+            deliver?()
+        }
+    }
+
+    func fail() {
+        lock.lock()
+        guard !failed, !cancelled else { lock.unlock(); return }
+        failed = true
+        let deliver = storedCallback
+        lock.unlock()
+        deliver?()
+    }
+
+    func cancel() {
+        lock.lock()
+        cancelled = true
+        storedCallback = nil
+        lock.unlock()
+    }
 }
 
 public enum FriendlyNameGenerator {
@@ -29,6 +64,7 @@ public enum FriendlyNameGenerator {
 
 public protocol FrameChannel: AnyObject {
     var onReceive: ((Data) -> Void)? { get set }
+    var onFailure: (() -> Void)? { get set }
     func send(_ frame: Data) throws
     func disconnect()
 }
@@ -39,6 +75,7 @@ final class BoundedFrameInbox {
     private var pending: [Data] = []
     private var pendingBytes = 0
     private var failed = false
+    private var delivering = false
 
     var onReceive: ((Data) -> Void)? {
         get {
@@ -50,10 +87,10 @@ final class BoundedFrameInbox {
         set {
             lock.lock()
             receiver = newValue
-            let queued = newValue != nil && !failed ? pending : []
-            if !queued.isEmpty { pending.removeAll(); pendingBytes = 0 }
+            let shouldDrain = newValue != nil && !failed && !pending.isEmpty && !delivering
+            if shouldDrain { delivering = true }
             lock.unlock()
-            if let newValue { queued.forEach(newValue) }
+            if shouldDrain { drain() }
         }
     }
 
@@ -61,11 +98,6 @@ final class BoundedFrameInbox {
     func receive(_ frame: Data) -> Bool {
         lock.lock()
         guard !failed else { lock.unlock(); return false }
-        if let receiver {
-            lock.unlock()
-            receiver(frame)
-            return true
-        }
         guard pending.count < NearbyLimits.maxPendingFrames,
               pendingBytes + frame.count <= NearbyLimits.maxFrameBytes else {
             failed = true
@@ -76,8 +108,26 @@ final class BoundedFrameInbox {
         }
         pending.append(frame)
         pendingBytes += frame.count
+        let shouldDrain = receiver != nil && !delivering
+        if shouldDrain { delivering = true }
         lock.unlock()
+        if shouldDrain { drain() }
         return true
+    }
+
+    private func drain() {
+        while true {
+            lock.lock()
+            guard !failed, let receiver, !pending.isEmpty else {
+                delivering = false
+                lock.unlock()
+                return
+            }
+            let next = pending.removeFirst()
+            pendingBytes -= next.count
+            lock.unlock()
+            receiver(next)
+        }
     }
 }
 
@@ -86,6 +136,10 @@ public final class NearbyConnection {
         didSet { activeChannel?.onReceive = onReceive }
     }
     public private(set) var route: NearbyRoute?
+    public var onFailure: (() -> Void)? {
+        get { failureLatch.callback }
+        set { failureLatch.callback = newValue }
+    }
 
     private let bluetooth: FrameChannel
     private let localAttempt: () -> FrameChannel?
@@ -93,6 +147,7 @@ public final class NearbyConnection {
     private var pairingConfirmed = false
     private var activated = false
     private var isDisconnected = false
+    private let failureLatch = FailureLatch()
 
     public init(
         bluetooth: FrameChannel,
@@ -115,11 +170,13 @@ public final class NearbyConnection {
         if let local = localAttempt() {
             activeChannel = local
             route = .localNetwork
+            bluetooth.disconnect()
         } else {
             activeChannel = bluetooth
             route = .bluetooth
         }
         activeChannel?.onReceive = onReceive
+        activeChannel?.onFailure = { [weak self] in self?.fail() }
     }
 
     public func send(_ frame: Data) throws {
@@ -131,8 +188,16 @@ public final class NearbyConnection {
 
     public func disconnect() {
         isDisconnected = true
+        failureLatch.cancel()
         activeChannel?.disconnect()
         activeChannel = nil
+    }
+
+    private func fail() {
+        guard !isDisconnected else { return }
+        isDisconnected = true
+        activeChannel = nil
+        failureLatch.fail()
     }
 }
 
@@ -144,6 +209,7 @@ public final class LoopbackFrameChannel: FrameChannel {
     private let inbox = BoundedFrameInbox()
     private weak var other: LoopbackFrameChannel?
     private var connected = true
+    public var onFailure: (() -> Void)?
 
     public static func pair() -> (first: LoopbackFrameChannel, second: LoopbackFrameChannel) {
         let first = LoopbackFrameChannel()

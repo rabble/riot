@@ -74,6 +74,19 @@ final class TransportContractTests: XCTestCase {
         XCTAssertEqual(Set(NearbyRoute.allCases), [.localNetwork, .bluetooth])
     }
 
+    func testSelectingLocalNetworkClosesUnusedBluetoothChannel() throws {
+        let bluetooth = RecordingFrameChannel()
+        let local = RecordingFrameChannel()
+        let connection = NearbyConnection(bluetooth: bluetooth, localAttempt: { local })
+        connection.confirmPairing()
+
+        try connection.activate()
+
+        XCTAssertEqual(connection.route, .localNetwork)
+        XCTAssertTrue(bluetooth.didDisconnect)
+        XCTAssertFalse(local.didDisconnect)
+    }
+
     func testLocalHandoffAcceptsOnlyNumericPrivateOrLinkLocalEndpoints() {
         XCTAssertNotNil(LocalEndpoint(host: "192.168.4.2", port: 9_001))
         XCTAssertNotNil(LocalEndpoint(host: "10.0.0.7", port: 9_001))
@@ -128,7 +141,7 @@ final class TransportContractTests: XCTestCase {
         XCTAssertTrue(backend.didAccept)
     }
 
-    func testCompletedSyncStaysCaughtUpWhenTerminalCleanupIsAlreadyClosed() throws {
+    func testCompletedResponderStaysAlreadyCurrentWhenTerminalCleanupIsAlreadyClosed() throws {
         let channels = LoopbackFrameChannel.pair()
         let connection = NearbyConnection(bluetooth: channels.first, localAttempt: { nil })
         connection.confirmPairing()
@@ -143,7 +156,7 @@ final class TransportContractTests: XCTestCase {
 
         coordinator.start()
 
-        XCTAssertEqual(coordinator.state, .caughtUp)
+        XCTAssertEqual(coordinator.state, .alreadyCurrent)
         XCTAssertEqual(session.outboundCalls, 0)
     }
 
@@ -193,24 +206,266 @@ final class TransportContractTests: XCTestCase {
         XCTAssertNoThrow(try FrameDecoder.encode(Data(count: NearbyLimits.maxFrameBytes)))
         XCTAssertThrowsError(try FrameDecoder.encode(Data(count: NearbyLimits.maxFrameBytes + 1)))
     }
+
+    func testInboxDoesNotLetLiveFrameOvertakeRegistrationBacklog() throws {
+        let inbox = BoundedFrameInbox()
+        XCTAssertTrue(inbox.receive(Data([1])))
+        let enteredFirst = DispatchSemaphore(value: 0)
+        let releaseFirst = DispatchSemaphore(value: 0)
+        let finished = DispatchSemaphore(value: 0)
+        let received = LockedBytes()
+
+        DispatchQueue.global().async {
+            inbox.onReceive = { frame in
+                if frame == Data([1]) {
+                    enteredFirst.signal()
+                    releaseFirst.wait()
+                }
+                received.append(frame[0])
+                if frame == Data([2]) { finished.signal() }
+            }
+        }
+        XCTAssertEqual(enteredFirst.wait(timeout: .now() + 1), .success)
+        XCTAssertTrue(inbox.receive(Data([2])))
+        releaseFirst.signal()
+        XCTAssertEqual(finished.wait(timeout: .now() + 1), .success)
+        XCTAssertEqual(received.value, [1, 2])
+    }
+
+    func testMalformedLengthFailsDecoderClosed() {
+        var decoder = FrameDecoder()
+        let oversized = UInt32(NearbyLimits.maxFrameBytes + 1).bigEndian
+        let header = withUnsafeBytes(of: oversized) { Data($0) }
+
+        XCTAssertThrowsError(try decoder.append(header))
+    }
+
+    func testBLEEnvelopeAllowsExactMaximumCoreFrameButRejectsLarger() throws {
+        XCTAssertNoThrow(try BLEEnvelope.content(Data(count: NearbyLimits.maxFrameBytes)))
+        XCTAssertThrowsError(try BLEEnvelope.content(Data(count: NearbyLimits.maxFrameBytes + 1)))
+        let envelope = try BLEEnvelope.content(Data(count: NearbyLimits.maxFrameBytes))
+        XCTAssertNoThrow(try FrameDecoder.encode(envelope, maxFrameBytes: NearbyLimits.maxBLEEnvelopeBytes))
+    }
+
+    func testPeripheralPeerRegistryBindsConfirmationAndDecodersToOnePeer() throws {
+        var registry = BLEPeripheralPeerRegistry()
+        let alice = UUID()
+        let mallory = UUID()
+        XCTAssertTrue(registry.beginPairing(with: alice))
+        XCTAssertFalse(registry.beginPairing(with: mallory))
+        XCTAssertEqual(registry.confirmPending(), alice)
+        XCTAssertTrue(registry.acceptsContent(from: alice))
+        XCTAssertFalse(registry.acceptsContent(from: mallory))
+
+        let aliceWire = try FrameDecoder.encode(Data([3, 1]))
+        let malloryWire = try FrameDecoder.encode(Data([3, 2]))
+        XCTAssertEqual(try registry.decode(aliceWire.prefix(2), from: alice), [])
+        XCTAssertEqual(try registry.decode(malloryWire, from: mallory), [Data([3, 2])])
+        XCTAssertEqual(try registry.decode(aliceWire.dropFirst(2), from: alice), [Data([3, 1])])
+    }
+
+    func testMalformedPeerCannotReserveInboundPairingSlot() {
+        var registry = BLEPeripheralPeerRegistry()
+        let attacker = UUID()
+        let phone = UUID()
+
+        XCTAssertNil(registry.validatedPairingRequest(Data("malformed".utf8), from: attacker))
+        XCTAssertNil(registry.pendingPeer)
+        let valid = PairingHandoff.encode(name: "Blue River", endpoint: nil, tieBreaker: "phone-token")
+        XCTAssertNotNil(registry.validatedPairingRequest(valid, from: phone))
+        XCTAssertEqual(registry.pendingPeer, phone)
+    }
+
+    func testRevokingPeerAfterFailedAcknowledgementRemovesContentAuthority() {
+        var registry = BLEPeripheralPeerRegistry()
+        let phone = UUID()
+        XCTAssertTrue(registry.beginPairing(with: phone))
+        XCTAssertEqual(registry.confirmPending(), phone)
+        XCTAssertTrue(registry.acceptsContent(from: phone))
+
+        registry.remove(phone)
+
+        XCTAssertFalse(registry.acceptsContent(from: phone))
+        XCTAssertNil(registry.confirmedPeer)
+    }
+
+    func testPartiallySentBLECursorStillChargesItsFullRetainedAllocation() {
+        var cursor = BLEWriteCursor(data: Data(count: NearbyLimits.maxFrameBytes))
+        _ = cursor.nextChunk(limit: 20)
+
+        XCTAssertEqual(cursor.retainedCount, NearbyLimits.maxFrameBytes)
+        XCTAssertEqual(cursor.remainingCount, NearbyLimits.maxFrameBytes - 20)
+    }
+
+    func testHiddenTieBreakerSelectsExactlyOneLocalNetworkDialerWhenNamesCollide() {
+        XCTAssertEqual(LocalNetworkRole.select(localName: "Blue River", localToken: "a", remoteName: "Blue River", remoteToken: "b"), .attempt)
+        XCTAssertEqual(LocalNetworkRole.select(localName: "Blue River", localToken: "b", remoteName: "Blue River", remoteToken: "a"), .wait)
+    }
+
+    func testListenerEndpointCompletionIsOneShot() {
+        let values = LockedEndpoints()
+        let completion = OneShotEndpointCompletion { values.append($0) }
+        let endpoint = LocalEndpoint(host: "192.168.1.2", port: 9_001)!
+
+        completion.call(endpoint)
+        completion.call(nil)
+
+        XCTAssertEqual(values.value, [endpoint])
+    }
+
+    func testLateAcceptedLocalChannelIsRejectedAfterWinnerOrNewSearchGeneration() {
+        let first = UUID()
+        let second = UUID()
+
+        XCTAssertTrue(LocalChannelAdmission.accepts(callbackGeneration: first, currentGeneration: first, routeChosen: false))
+        XCTAssertFalse(LocalChannelAdmission.accepts(callbackGeneration: first, currentGeneration: first, routeChosen: true))
+        XCTAssertFalse(LocalChannelAdmission.accepts(callbackGeneration: first, currentGeneration: second, routeChosen: false))
+        XCTAssertFalse(LocalChannelAdmission.accepts(callbackGeneration: first, currentGeneration: nil, routeChosen: false))
+    }
+
+    func testActiveChannelFailureClosesSessionAndSurfacesPlainFailure() throws {
+        let channel = RecordingFrameChannel()
+        let connection = NearbyConnection(bluetooth: channel, localAttempt: { nil })
+        connection.confirmPairing(); try connection.activate()
+        let session = FakeSyncBoundary(outbound: [Data("hello".utf8)])
+        let coordinator = SyncCoordinator(session: session, connection: connection, friendlyName: "Blue River")
+        coordinator.start()
+
+        channel.triggerFailure()
+
+        XCTAssertEqual(coordinator.state, .failed)
+        XCTAssertEqual(session.closeCalls, 1)
+        XCTAssertThrowsError(try connection.send(Data([1])))
+    }
+
+    func testFailureBeforeChannelActivationIsDeliveredWhenCoordinatorRegisters() {
+        let latch = FailureLatch()
+        let calls = LockedCounter()
+        latch.fail()
+
+        latch.callback = { calls.increment() }
+
+        XCTAssertEqual(calls.value, 1)
+        latch.fail()
+        XCTAssertEqual(calls.value, 1)
+    }
+
+    func testCoordinatorClosesTerminalSessionsAndDisconnectsOnlyOnFailure() throws {
+        for action in ["accept", "reject", "failure"] {
+            let channels = LoopbackFrameChannel.pair()
+            let connection = NearbyConnection(bluetooth: channels.first, localAttempt: { nil })
+            connection.confirmPairing(); try connection.activate()
+            let session = FakeSyncBoundary(
+                outbound: [],
+                beginOutcome: action == "failure" ? .failed : .readyToPreview(count: 1)
+            )
+            let coordinator = SyncCoordinator(session: session, connection: connection, friendlyName: "Blue River")
+            coordinator.start()
+            if action == "accept" { coordinator.addPreviewedContent() }
+            if action == "reject" { coordinator.rejectPreviewedContent() }
+
+            XCTAssertEqual(session.closeCalls, 1, action)
+            if action == "failure" {
+                XCTAssertThrowsError(try connection.send(Data([1])), action)
+            } else {
+                XCTAssertNoThrow(try connection.send(Data([1])), action)
+            }
+        }
+    }
+
+    func testAcceptPumpsNonterminalFrameThenWaitsForPeerCompleteBeforeClosing() throws {
+        let channels = LoopbackFrameChannel.pair()
+        var wire: [Data] = []
+        channels.second.onReceive = { wire.append($0) }
+        let connection = NearbyConnection(bluetooth: channels.first, localAttempt: { nil })
+        connection.confirmPairing(); try connection.activate()
+        let session = FakeSyncBoundary(
+            outbound: [Data("accepted".utf8)],
+            beginOutcome: .readyToPreview(count: 1),
+            receiveOutcome: .done,
+            acceptOutcome: .sendMore(terminal: false)
+        )
+        let coordinator = SyncCoordinator(session: session, connection: connection, friendlyName: "Blue River")
+        coordinator.start()
+
+        coordinator.addPreviewedContent()
+        XCTAssertEqual(wire, [Data("accepted".utf8)])
+        XCTAssertEqual(session.outboundCalls, 1)
+        XCTAssertEqual(session.closeCalls, 0)
+        XCTAssertEqual(coordinator.state, .gettingLatest(name: "Blue River"))
+
+        try channels.second.send(Data("complete".utf8))
+        XCTAssertEqual(coordinator.state, .caughtUp)
+        XCTAssertEqual(session.closeCalls, 1)
+    }
+
+    func testTerminalRejectPumpsExactlyOneFrameThenClosesWithoutDisconnectingEarly() throws {
+        let channels = LoopbackFrameChannel.pair()
+        var wire: [Data] = []
+        channels.second.onReceive = { wire.append($0) }
+        let connection = NearbyConnection(bluetooth: channels.first, localAttempt: { nil })
+        connection.confirmPairing(); try connection.activate()
+        let session = FakeSyncBoundary(
+            outbound: [Data("reject".utf8)],
+            beginOutcome: .readyToPreview(count: 1),
+            rejectOutcome: .sendMore(terminal: true)
+        )
+        let coordinator = SyncCoordinator(session: session, connection: connection, friendlyName: "Blue River")
+        coordinator.start()
+
+        coordinator.rejectPreviewedContent()
+
+        XCTAssertEqual(wire, [Data("reject".utf8)])
+        XCTAssertEqual(session.outboundCalls, 1)
+        XCTAssertEqual(session.closeCalls, 1)
+        XCTAssertEqual(coordinator.state, .idle)
+        XCTAssertNoThrow(try connection.send(Data([9])))
+    }
+
+    func testResponderTerminalFramePumpsOnceThenShowsAlreadyCurrent() throws {
+        let channels = LoopbackFrameChannel.pair()
+        var wire: [Data] = []
+        channels.second.onReceive = { wire.append($0) }
+        let connection = NearbyConnection(bluetooth: channels.first, localAttempt: { nil })
+        connection.confirmPairing(); try connection.activate()
+        let session = FakeSyncBoundary(outbound: [Data("complete".utf8)], beginOutcome: .sendMore(terminal: true))
+        let coordinator = SyncCoordinator(session: session, connection: connection, friendlyName: "Blue River")
+
+        coordinator.start()
+
+        XCTAssertEqual(wire, [Data("complete".utf8)])
+        XCTAssertEqual(session.outboundCalls, 1)
+        XCTAssertEqual(session.closeCalls, 1)
+        XCTAssertEqual(coordinator.state, .alreadyCurrent)
+    }
 }
 
 private final class FakeSyncBoundary: MobileSyncSessionBoundary {
     var didBegin = false
     var outboundCalls = 0
+    var closeCalls = 0
     private var outbound: [Data]
     private let beginOutcome: NearbySyncOutcome
+    private let receiveOutcome: NearbySyncOutcome
+    private let acceptOutcome: NearbySyncOutcome
+    private let rejectOutcome: NearbySyncOutcome
     private let closeError: Error?
     private let outboundErrorAfterTerminal: Bool
 
     init(
         outbound: [Data],
-        beginOutcome: NearbySyncOutcome = .sendMore,
+        beginOutcome: NearbySyncOutcome = .sendMore(),
+        receiveOutcome: NearbySyncOutcome = .sendMore(),
+        acceptOutcome: NearbySyncOutcome = .done,
+        rejectOutcome: NearbySyncOutcome = .done,
         closeError: Error? = nil,
         outboundErrorAfterTerminal: Bool = false
     ) {
         self.outbound = outbound
         self.beginOutcome = beginOutcome
+        self.receiveOutcome = receiveOutcome
+        self.acceptOutcome = acceptOutcome
+        self.rejectOutcome = rejectOutcome
         self.closeError = closeError
         self.outboundErrorAfterTerminal = outboundErrorAfterTerminal
     }
@@ -220,10 +475,43 @@ private final class FakeSyncBoundary: MobileSyncSessionBoundary {
         if outboundErrorAfterTerminal && beginOutcome == .done { throw NearbyTransportError.disconnected }
         return outbound.isEmpty ? nil : outbound.removeFirst()
     }
-    func receive(_ frame: Data) throws -> NearbySyncOutcome { .sendMore }
-    func acceptImport() throws {}
-    func rejectImport() throws {}
-    func close() throws { if let closeError { throw closeError } }
+    func receive(_ frame: Data) throws -> NearbySyncOutcome { receiveOutcome }
+    func acceptImport() throws -> NearbySyncOutcome { acceptOutcome }
+    func rejectImport() throws -> NearbySyncOutcome { rejectOutcome }
+    func close() throws { closeCalls += 1; if let closeError { throw closeError } }
+}
+
+private final class LockedBytes: @unchecked Sendable {
+    private let lock = NSLock()
+    private var bytes: [UInt8] = []
+    func append(_ byte: UInt8) { lock.lock(); bytes.append(byte); lock.unlock() }
+    var value: [UInt8] { lock.lock(); defer { lock.unlock() }; return bytes }
+}
+
+private final class LockedEndpoints: @unchecked Sendable {
+    private let lock = NSLock()
+    private var endpoints: [LocalEndpoint] = []
+    func append(_ endpoint: LocalEndpoint?) {
+        guard let endpoint else { return }
+        lock.lock(); endpoints.append(endpoint); lock.unlock()
+    }
+    var value: [LocalEndpoint] { lock.lock(); defer { lock.unlock() }; return endpoints }
+}
+
+private final class LockedCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+    func increment() { lock.lock(); count += 1; lock.unlock() }
+    var value: Int { lock.lock(); defer { lock.unlock() }; return count }
+}
+
+private final class RecordingFrameChannel: FrameChannel {
+    var onReceive: ((Data) -> Void)?
+    var onFailure: (() -> Void)?
+    private(set) var didDisconnect = false
+    func send(_ frame: Data) throws {}
+    func disconnect() { didDisconnect = true }
+    func triggerFailure() { onFailure?() }
 }
 
 private final class FakeGeneratedBackend: GeneratedSyncSessionBackend {

@@ -1,7 +1,7 @@
 import Foundation
 
 public enum NearbySyncOutcome: Equatable, Sendable {
-    case sendMore
+    case sendMore(terminal: Bool = false)
     case readyToPreview(count: UInt32)
     case done
     case failed
@@ -11,8 +11,8 @@ public protocol MobileSyncSessionBoundary: AnyObject {
     func begin() throws -> NearbySyncOutcome
     func nextOutbound() throws -> Data?
     func receive(_ frame: Data) throws -> NearbySyncOutcome
-    func acceptImport() throws
-    func rejectImport() throws
+    func acceptImport() throws -> NearbySyncOutcome
+    func rejectImport() throws -> NearbySyncOutcome
     func close() throws
 }
 
@@ -53,56 +53,80 @@ public final class SyncCoordinator {
     private let session: MobileSyncSessionBoundary
     private let connection: NearbyConnection
     private let friendlyName: String
+    private var sessionClosed = false
+    private var acceptedImport = false
 
     public init(session: MobileSyncSessionBoundary, connection: NearbyConnection, friendlyName: String) {
         self.session = session
         self.connection = connection
         self.friendlyName = friendlyName
         connection.onReceive = { [weak self] frame in self?.receive(frame) }
+        connection.onFailure = { [weak self] in self?.fail() }
     }
 
     public func start() {
         do {
             state = .gettingLatest(name: friendlyName)
-            if try handle(try session.begin()) { try pumpOutbound() }
+            try process(try session.begin(), terminalState: .alreadyCurrent)
         } catch {
-            state = .failed
-            connection.disconnect()
+            fail()
         }
     }
 
     public func addPreviewedContent() {
         do {
-            try session.acceptImport()
-            state = .caughtUp
-        } catch { state = .failed }
+            acceptedImport = true
+            try process(try session.acceptImport(), terminalState: .caughtUp)
+            if !sessionClosed { state = .gettingLatest(name: friendlyName) }
+        } catch { fail() }
     }
 
     public func rejectPreviewedContent() {
-        try? session.rejectImport()
-        state = .idle
+        do {
+            try process(try session.rejectImport(), terminalState: .idle)
+        } catch { fail() }
+    }
+
+    public func stop() {
+        closeSession()
+        connection.disconnect()
     }
 
     private func receive(_ frame: Data) {
+        guard !sessionClosed else { return }
         do {
-            if try handle(try session.receive(frame)) { try pumpOutbound() }
+            try process(try session.receive(frame), terminalState: acceptedImport ? .caughtUp : .alreadyCurrent)
         } catch {
-            state = .failed
-            connection.disconnect()
+            fail()
         }
     }
 
-    private func pumpOutbound() throws {
-        while let frame = try session.nextOutbound() { try connection.send(frame) }
+    private func sendNextOutbound() throws {
+        guard let frame = try session.nextOutbound() else { throw NearbyTransportError.notConnected }
+        try connection.send(frame)
     }
 
-    private func handle(_ outcome: NearbySyncOutcome) throws -> Bool {
+    private func process(_ outcome: NearbySyncOutcome, terminalState: NearbyConnectionState) throws {
         switch outcome {
-        case .sendMore: return true
-        case let .readyToPreview(count): state = .preview(count: count, name: friendlyName); return false
-        case .done: state = .caughtUp; try? session.close(); return false
-        case .failed: state = .failed; connection.disconnect(); try? session.close(); return false
+        case let .sendMore(terminal):
+            try sendNextOutbound()
+            if terminal { state = terminalState; closeSession() }
+        case let .readyToPreview(count): state = .preview(count: count, name: friendlyName)
+        case .done: state = terminalState; closeSession()
+        case .failed: fail()
         }
+    }
+
+    private func fail() {
+        state = .failed
+        closeSession()
+        connection.disconnect()
+    }
+
+    private func closeSession() {
+        guard !sessionClosed else { return }
+        sessionClosed = true
+        try? session.close()
     }
 }
 
@@ -134,16 +158,18 @@ public final class GeneratedSyncSessionAdapter: MobileSyncSessionBoundary {
         map(try backend.receiveFrame(frameBytes: frame))
     }
 
-    public func acceptImport() throws {
+    public func acceptImport() throws -> NearbySyncOutcome {
         guard let pendingBundle else { throw NearbyTransportError.notConnected }
         try persistBundle(pendingBundle)
-        _ = try backend.acceptImport()
+        let outcome = map(try backend.acceptImport())
         self.pendingBundle = nil
+        return outcome
     }
 
-    public func rejectImport() throws {
-        _ = try backend.rejectImport(code: 1)
+    public func rejectImport() throws -> NearbySyncOutcome {
+        let generated = try backend.rejectImport(code: 1)
         pendingBundle = nil
+        return generated.kind == .rejected ? .done : map(generated)
     }
 
     public func close() throws { try backend.cancel() }
@@ -151,7 +177,7 @@ public final class GeneratedSyncSessionAdapter: MobileSyncSessionBoundary {
     private func map(_ outcome: SyncOutcome) -> NearbySyncOutcome {
         if let bundle = outcome.importBundleBytes { pendingBundle = bundle }
         switch outcome.kind {
-        case .frameReady: return .sendMore
+        case .frameReady: return .sendMore(terminal: outcome.terminal)
         case .reviewImport: return .readyToPreview(count: UInt32(outcome.entries.count))
         case .complete: return .done
         case .rejected: return .failed

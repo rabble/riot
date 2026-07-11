@@ -32,6 +32,10 @@ public struct LocalEndpoint: Equatable, Sendable {
 }
 
 public final class LocalTCPFrameChannel: FrameChannel, @unchecked Sendable {
+    public var onFailure: (() -> Void)? {
+        get { failureLatch.callback }
+        set { failureLatch.callback = newValue }
+    }
     public var onReceive: ((Data) -> Void)? {
         get { inbox.onReceive }
         set { inbox.onReceive = newValue }
@@ -40,17 +44,25 @@ public final class LocalTCPFrameChannel: FrameChannel, @unchecked Sendable {
     private let connection: NWConnection
     private let queue = DispatchQueue(label: "net.protest.riot.local-tcp")
     private var decoder = FrameDecoder()
+    private let failureLatch = FailureLatch()
 
     init(connection: NWConnection) {
         self.connection = connection
+        connection.stateUpdateHandler = { [weak self] state in
+            if case .failed = state { self?.fail() }
+            if case .cancelled = state { self?.fail() }
+        }
         receiveNext()
     }
 
     public func send(_ frame: Data) throws {
-        connection.send(content: try FrameDecoder.encode(frame), completion: .contentProcessed { _ in })
+        connection.send(content: try FrameDecoder.encode(frame), completion: .contentProcessed { [weak self] error in
+            if error != nil { self?.fail() }
+        })
     }
 
     public func disconnect() {
+        failureLatch.cancel()
         connection.cancel()
     }
 
@@ -58,15 +70,25 @@ public final class LocalTCPFrameChannel: FrameChannel, @unchecked Sendable {
         connection.receive(minimumIncompleteLength: 1, maximumLength: 64 * 1024) { [weak self] data, _, complete, error in
             guard let self else { return }
             if let data {
-                if let frames = try? self.decoder.append(data) {
+                do {
+                    let frames = try self.decoder.append(data)
                     for frame in frames where !self.inbox.receive(frame) {
-                        self.disconnect()
+                        self.fail()
                         return
                     }
+                } catch {
+                    self.fail()
+                    return
                 }
             }
             if error == nil && !complete { self.receiveNext() }
+            else { self.fail() }
         }
+    }
+
+    private func fail() {
+        failureLatch.fail()
+        connection.cancel()
     }
 
     public static func attempt(
@@ -86,7 +108,9 @@ public final class LocalTCPFrameChannel: FrameChannel, @unchecked Sendable {
         let finish = OneShotCompletion(completion)
         connection.stateUpdateHandler = { state in
             switch state {
-            case .ready: finish.call(LocalTCPFrameChannel(connection: connection))
+            case .ready:
+                let channel = LocalTCPFrameChannel(connection: connection)
+                if !finish.call(channel) { channel.disconnect() }
             case .failed, .cancelled: finish.call(nil)
             default: break
             }
@@ -97,6 +121,7 @@ public final class LocalTCPFrameChannel: FrameChannel, @unchecked Sendable {
         }
     }
 }
+
 
 public final class LocalNetworkListener: @unchecked Sendable {
     public var onAccepted: ((LocalTCPFrameChannel) -> Void)?
@@ -109,10 +134,14 @@ public final class LocalNetworkListener: @unchecked Sendable {
 
     public func start(completion: @escaping @Sendable (LocalEndpoint?) -> Void) {
         do {
+            admissionLock.lock()
+            accepted = false
+            admissionLock.unlock()
             let parameters = NWParameters.tcp
             parameters.requiredInterfaceType = .wifi
             parameters.includePeerToPeer = true
             let listener = try NWListener(using: parameters, on: .any)
+            let finishEndpoint = OneShotEndpointCompletion(completion)
             self.listener = listener
             listener.newConnectionHandler = { [weak self] connection in
                 guard let self else { return }
@@ -127,9 +156,9 @@ public final class LocalNetworkListener: @unchecked Sendable {
             }
             listener.stateUpdateHandler = { state in
                 if case .ready = state, let port = listener.port, let host = Self.localIPv4Address() {
-                    completion(LocalEndpoint(host: host, port: port.rawValue))
+                    finishEndpoint.call(LocalEndpoint(host: host, port: port.rawValue))
                 } else if case .failed = state {
-                    completion(nil)
+                    finishEndpoint.call(nil)
                 }
             }
             listener.start(queue: queue)
@@ -177,5 +206,22 @@ private final class OneShotCompletion: @unchecked Sendable {
         lock.unlock()
         callback?(channel)
         return callback != nil
+    }
+}
+
+final class OneShotEndpointCompletion: @unchecked Sendable {
+    private let lock = NSLock()
+    private var completion: (@Sendable (LocalEndpoint?) -> Void)?
+
+    init(_ completion: @escaping @Sendable (LocalEndpoint?) -> Void) {
+        self.completion = completion
+    }
+
+    func call(_ endpoint: LocalEndpoint?) {
+        lock.lock()
+        let callback = completion
+        completion = nil
+        lock.unlock()
+        callback?(endpoint)
     }
 }
