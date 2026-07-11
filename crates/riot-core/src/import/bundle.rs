@@ -522,7 +522,18 @@ fn verify_frame(frame: &BundleItemFrame) -> Result<ValidItem, BundleDiagnostic> 
     // from the slot would let one signed marker be replayed under a
     // different app's directory row. (Endorser/organizer-slot ownership is
     // bound at `inspect`, where the entry's subspace is compared against the
-    // path identity component.) Everything else is UnsupportedSchema.
+    // path identity component.) Profile paths
+    // (`profile/<32-byte subspace>/card`, shape defined by
+    // `profile::path::classify_profile_path`) must carry a canonical
+    // `ProfileCard`; card-slot ownership is likewise bound at `inspect`.
+    //
+    // Both `app-index/` and `profile/` are RESERVED prefixes: a path under
+    // either that is not exactly a recognized slot shape is UnsupportedSchema
+    // outright and must never fall through to the alert schema check below —
+    // otherwise a valid alert payload could rescue a malformed reserved path.
+    // Admission stays policy-free: shape and schema only (and slot ownership
+    // at `inspect`), never whether a name/marker is "allowed".
+    // Everything else is UnsupportedSchema.
     let schema_ok = if crate::apps::entry::is_app_data_path(entry.path()) {
         true
     } else {
@@ -548,8 +559,18 @@ fn verify_frame(frame: &BundleItemFrame) -> Result<ValidItem, BundleDiagnostic> 
                     entry.path().components().next().is_some_and(|component| {
                         component.as_ref() == crate::apps::index::APP_INDEX_COMPONENT
                     });
-                !is_malformed_app_index_path
-                    && crate::model::decode_alert(&frame.payload_bytes).is_ok()
+                if is_malformed_app_index_path {
+                    false
+                } else if crate::profile::path::is_profile_prefixed(entry.path()) {
+                    // Reserved prefix: only the exact card slot carrying a
+                    // canonical card payload is admissible. A malformed
+                    // profile path can NEVER fall through to the alert schema
+                    // below — otherwise a valid alert payload would rescue it.
+                    crate::profile::path::classify_profile_path(entry.path()).is_some()
+                        && crate::profile::card::decode_profile_card(&frame.payload_bytes).is_ok()
+                } else {
+                    crate::model::decode_alert(&frame.payload_bytes).is_ok()
+                }
             }
         }
     };

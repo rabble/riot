@@ -613,11 +613,20 @@ impl EvidenceStore {
                 // is the path component itself), but endorsement and trust
                 // slots belong to exactly the subspace named in their path:
                 // the entry's own subspace must equal that identity component,
-                // so nobody can write into someone else's slot.
+                // so nobody can write into someone else's slot. A profile card
+                // slot (`profile/<subspace>/card`) binds the same way — its
+                // subspace component IS the owner — which is what stops one
+                // person writing a display name into another person's slot.
+                // This binding is policy-free: it checks slot ownership only,
+                // never whether the claimed name is allowed or unique (name
+                // collisions are a render-time concern, via the key suffix).
                 let is_app_data = crate::apps::entry::is_app_data_path(
                     willow25::groupings::Keylike::path(authorised.entry()),
                 );
                 let app_index_slot = crate::apps::index::classify_app_index_path(
+                    willow25::groupings::Keylike::path(authorised.entry()),
+                );
+                let profile_subspace = crate::profile::path::classify_profile_path(
                     willow25::groupings::Keylike::path(authorised.entry()),
                 );
                 let path_matches = if is_app_data {
@@ -643,6 +652,12 @@ impl EvidenceStore {
                         crate::apps::index::AppIndexSlot::Manifest { .. }
                         | crate::apps::index::AppIndexSlot::Bundle { .. } => true,
                     }
+                } else if let Some(subspace_id) = profile_subspace {
+                    // A profile card slot belongs to exactly the subspace
+                    // named in its path: nobody writes a display name into
+                    // someone else's slot.
+                    *willow25::groupings::Keylike::subspace_id(authorised.entry()).as_bytes()
+                        == subspace_id
                 } else {
                     decode_alert(item.frame.payload_bytes())
                         .ok()
@@ -657,12 +672,14 @@ impl EvidenceStore {
                         .unwrap_or(false)
                 };
                 if path_matches {
-                    // App-data and app-index payloads are retained with the
-                    // live entry (see `Stored::payload`): apps read their
-                    // values back, and the directory scan reads manifests/
-                    // bundles/endorsements/trust markers back. Alert payloads stay
+                    // App-data, app-index, and profile payloads are retained
+                    // with the live entry (see `Stored::payload`): apps read
+                    // their values back, the directory scan reads manifests/
+                    // bundles/endorsements/trust markers back, and the profile
+                    // resolver reads display names back. Alert payloads stay
                     // digest-only.
-                    let retain_payload = is_app_data || app_index_slot.is_some();
+                    let retain_payload =
+                        is_app_data || app_index_slot.is_some() || profile_subspace.is_some();
                     verified.push(VerifiedEntry {
                         authorised,
                         entry_id: valid.entry_id,
