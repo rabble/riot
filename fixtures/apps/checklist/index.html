@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Checklist</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main>
+  <h1>Checklist</h1>
+  <p id="error" role="alert" hidden></p>
+  <form id="add-form">
+    <input id="new-item" type="text" aria-label="New item" placeholder="Add something to do" autocomplete="off">
+    <button id="add" type="submit">Add</button>
+  </form>
+  <ul id="items" aria-label="Checklist items"></ul>
+  <p id="empty">Nothing here yet. Add the first item.</p>
+</main>
+<script src="app.js"></script>
+</body>
+</html>
