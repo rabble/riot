@@ -21,6 +21,47 @@ polish not reachable from the script is out of scope.
 Not in scope: navigation rework, custom tab transitions, Android polish
 (Android stays functional-but-plain), and any change to the sync protocol.
 
+## Prerequisite discovered during design: minimal display names
+
+**Three of the four demo beats currently render hex gibberish.** There is no
+display-name plumbing anywhere: `app_display_name` returns `"member-" + 8 hex`
+(`mobile_state.rs:1374`), `AlertPayload` has no author-name field
+(`model/mod.rs:73`), and endorsements carry endorser *subspace ids* with no id→name
+mapping — so the board shows `member-a3f9c2b1`, the finale's emotional peak reads
+*"checked by member-3f9a…"*, and "Endorsed by KC Mutual Aid" has no name source at
+all. Seeding names into fixture content does not fix this: the *live* checklist
+check and the *live* sync arrival are exactly the moments that matter, and they
+would still show hex.
+
+So a minimal display-name layer is **in scope as this project's first phase**, not
+a follow-up. It is small because it reuses machinery the app-directory work already
+built, and it follows the recommendations already researched in
+`docs/research/2026-07-11-user-profiles-willow-research.md`:
+
+- **A profile entry in your own subspace** at a new `profile/` path family —
+  an ordinary signed Willow entry, canonically CBOR-encoded (same manual style as
+  `apps/endorse.rs`), payload `{ display_name: String }`, size-capped.
+- **Two-gate import admission** for the new path family — `verify_frame`'s schema
+  gate plus `inspect`'s binding gate (entry subspace must equal the path's subspace
+  component, so nobody writes a profile into someone else's slot). This is the same
+  single-sourced-classifier pattern as `is_app_data_path` / `classify_app_index_path`;
+  every new Willow path family in this codebase needs it.
+- **A resolver**: scan profile entries → `subspace_id → display name`.
+- **The Earthstar display rule (non-negotiable, from the research):** never render a
+  self-claimed name without its key-derived component. The UI shows **`Ana · a3f9`**,
+  never a bare "Ana". Same-name-different-key never merges — identical to the
+  impersonation rule the directory already enforces for apps.
+- **FFI**: `set_display_name(name)`, and display names surfaced on entries,
+  endorsements, and `riot.whoami()` (so the checklist writes a real name).
+
+Because a profile is just another signed entry, it **syncs like everything else** —
+which upgrades the finale rather than complicating it: phone B learns Ana's name
+because her profile entry arrives over the same nearby transport, live on stage.
+
+Explicitly NOT in scope: avatars, per-space keypairs / persona linking (the
+research's privacy default — a real identity change, deserving its own spec),
+profile editing beyond a single name field.
+
 ## The demo script (the driver)
 
 Roughly four minutes, two iPhones, both in airplane mode with Bluetooth on:
@@ -147,12 +188,26 @@ commit.
 
 1. Demo script (`docs/product/demo-script.md`) — written and committed first;
    it decides everything below.
-2. Seeded fixture + deterministic builder + drift guard (core/fixtures; no UI).
-3. Demo-mode loader + hidden toggle (shared RiotKit; testable without UI).
-4. Motion kit components (all new files; zero shared-file conflict).
-5. Integration pass into the five screens (the one coordinated window).
-6. macOS verification pass (build + render tests; no new UI code).
-7. XCUITest of the full script.
+2. **Minimal display names** (the prerequisite above): profile codec + `profile/`
+   path family + two-gate admission + resolver + FFI + the `Ana · a3f9` display
+   rule. Entirely `cargo test`-verifiable; no UI.
+3. Seeded fixture + deterministic builder + drift guard (core/fixtures; no UI).
+   Depends on step 2 — seeded members carry real profile entries.
+4. Demo-mode loader + hidden toggle (shared RiotKit; testable without UI).
+5. Motion kit components (all new files; zero shared-file conflict).
+6. Integration pass into the five screens (the one coordinated window).
+7. macOS verification pass (build + render tests; no new UI code).
+8. XCUITest of the full script.
 
-Steps 2–4 can proceed while the iOS runtime session still holds the shell
-files; only step 5 needs the coordination window.
+Steps 2–5 can proceed while the iOS runtime session still holds the shell
+files; only step 6 needs the coordination window.
+
+**Note on the sync interaction:** profile entries are a new path family, so —
+like app entries — they will not cross the sync surface until the sync-inclusion
+work (app-directory Task 5b, currently owned by another session) lands and is
+generalized past app paths. The demo's live "phone B learns Ana's name" beat
+therefore *depends on that task*. Until it lands, seeded profiles still render
+correctly on each device from local fixtures; only the live cross-device name
+learning waits. The implementation plan must verify 5b's landed shape and, if it
+hard-codes app paths, generalize the participating-entry predicate to include
+`profile/` rather than adding a second parallel mechanism.
