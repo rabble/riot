@@ -1291,8 +1291,13 @@ fn valid_pairs_verify_with_built_in_provenance_and_zero_timestamp() {
 fn corrupted_built_in_is_silently_excluded() {
     let (m, b) = pair("Checklist");
     let mut corrupt = b.clone();
-    let last = corrupt.len() - 1;
-    corrupt[last] ^= 0xFF;
+    // Flip the top-level CBOR map-header byte (index 0) — guaranteed to break
+    // strict decoding. Do NOT flip the last byte: it lands inside a resource's
+    // raw content bytes, which the codec deliberately treats as opaque (see
+    // apps_codec_hostile.rs) — the pair would still verify. (Corrected
+    // 2026-07-11 during execution; the original last-byte version could
+    // never pass against a spec-faithful implementation.)
+    corrupt[0] ^= 0xFF;
     let apps = verify_starter_catalog(&[(&m, &corrupt)]);
     assert!(apps.is_empty(), "corrupt bundle must be excluded, not an error");
 }
