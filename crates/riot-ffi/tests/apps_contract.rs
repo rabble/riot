@@ -3,7 +3,28 @@
 //! the app-directory surface (listings, share, endorse) — end-to-end through
 //! the UniFFI layer, in-process, same as `mobile_contract.rs`.
 
-use riot_ffi::{open_local_profile, MobileError, PublicSpace};
+use riot_ffi::{
+    open_local_profile, AlertCertainty, AlertDraftInput, AlertSeverity, AlertUrgency, MobileError,
+    PublicSpace,
+};
+
+/// A minimal well-formed alert draft, used only to produce a real (non
+/// app-data) signed bundle for the replay strictness test.
+fn alert_input() -> AlertDraftInput {
+    AlertDraftInput {
+        valid_from: None,
+        expires_at: u64::MAX - 1,
+        language: "en".to_string(),
+        urgency: AlertUrgency::Immediate,
+        severity: AlertSeverity::Severe,
+        certainty: AlertCertainty::Observed,
+        headline: "Replay strictness fixture".to_string(),
+        description: "A signed alert must never replay through the app-data path.".to_string(),
+        affected_area_claim: None,
+        source_claims: vec!["fixture".to_string()],
+        ai_assisted: false,
+    }
+}
 
 /// Hex string (as returned by `install_app`/`identity`) to raw bytes (as the
 /// directory surface uses for 32-byte ids).
@@ -395,4 +416,89 @@ fn trust_toggles_never_exhaust_the_marker_cap() {
     }
     runtime.trust_app(app.app_id.clone()).expect("final trust");
     assert!(runtime.is_app_trusted(app.app_id).expect("check"));
+}
+
+#[test]
+fn app_data_persists_across_a_fresh_profile_via_replay() {
+    // The relaunch-persistence contract end to end: a put hands back the
+    // committed bundle bytes, and a FRESH profile that joins the same space
+    // and replays those bytes reads the value back — exactly how the native
+    // host survives a process restart of the in-memory Rust store.
+    let author = open_local_profile().expect("profile");
+    let space = author
+        .create_public_space("Persist fixture".into())
+        .expect("space");
+    let runtime = author.app_runtime();
+    let (manifest_bytes, bundle_bytes) = manifest_and_bundle();
+    let app = runtime
+        .install_app(manifest_bytes, bundle_bytes)
+        .expect("install");
+
+    let receipt = runtime
+        .app_data_put_with_receipt(
+            app.app_id.clone(),
+            "items/a".to_string(),
+            b"{\"done\":true}".to_vec(),
+        )
+        .expect("put with receipt");
+    assert!(!receipt.is_empty(), "receipt carries the committed bundle");
+
+    let reopened = open_local_profile().expect("fresh profile");
+    reopened.join_public_space(space).expect("join same space");
+    let reopened_runtime = reopened.app_runtime();
+    reopened_runtime
+        .replay_app_data_bundle(receipt)
+        .expect("replay committed bundle");
+
+    let value = reopened_runtime
+        .app_data_get(app.app_id, "items/a".to_string())
+        .expect("get after replay");
+    assert_eq!(value, Some(b"{\"done\":true}".to_vec()));
+}
+
+#[test]
+fn replay_rejects_a_non_app_data_bundle() {
+    // Strictness: replay is app-data-only. A real signed alert bundle (a
+    // non-app-data path) must be refused, so replay can never smuggle alert
+    // entries past the alert review surface.
+    let profile = open_local_profile().expect("profile");
+    profile
+        .create_public_space("Alert fixture".into())
+        .expect("space");
+    let draft = profile
+        .create_draft_alert(alert_input())
+        .expect("draft alert");
+    let signed = profile.sign_draft(draft.draft_id).expect("sign draft");
+
+    let runtime = profile.app_runtime();
+    assert!(matches!(
+        runtime.replay_app_data_bundle(signed.bundle_bytes),
+        Err(MobileError::ImportRejected)
+    ));
+    // Garbage bytes are refused the same way.
+    assert!(matches!(
+        runtime.replay_app_data_bundle(vec![0xff; 16]),
+        Err(MobileError::ImportRejected)
+    ));
+}
+
+#[test]
+fn app_display_name_is_short_stable_and_non_identifying() {
+    let profile = open_local_profile().expect("profile");
+    let runtime = profile.app_runtime();
+
+    let name = runtime.app_display_name().expect("display name");
+    assert!(name.starts_with("member-"));
+    assert!(!name.is_empty());
+    assert!(name.len() < 24);
+    assert_ne!(name.len(), 64, "must not be full 64-hex key material");
+
+    let suffix = name.strip_prefix("member-").expect("member- prefix");
+    assert_eq!(suffix.len(), 8, "8 hex chars = first 4 subspace bytes");
+    assert!(suffix
+        .chars()
+        .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
+
+    // Stable across calls within a profile.
+    assert_eq!(runtime.app_display_name().expect("name again"), name);
 }

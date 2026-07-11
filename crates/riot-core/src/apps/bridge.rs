@@ -31,6 +31,23 @@ impl AppDataBridge {
         willow_timestamp_micros: u64,
         value: &[u8],
     ) -> Result<(), AppsError> {
+        Self::put_returning_bundle(store, author, app_id, key, willow_timestamp_micros, value)
+            .map(|_| ())
+    }
+
+    /// Exactly `put`, but hands back the canonical signed bundle bytes it
+    /// committed. Hosts that persist app data across relaunch (the native
+    /// runtime saves the bytes and replays them into a fresh profile) need
+    /// the committed bundle; `put` delegates here so both paths sign, encode,
+    /// and admit through one implementation.
+    pub fn put_returning_bundle(
+        store: &EvidenceStore,
+        author: &EvidenceAuthor,
+        app_id: &[u8; APP_ID_BYTES],
+        key: &str,
+        willow_timestamp_micros: u64,
+        value: &[u8],
+    ) -> Result<Vec<u8>, AppsError> {
         let entry = build_app_data_entry(author, app_id, key, willow_timestamp_micros, value)?;
         let authorised = authorise_entry(author, entry)?;
         let token = authorised.authorisation_token();
@@ -53,7 +70,7 @@ impl AppDataBridge {
         };
         let plan = preview.plan_all().map_err(session_err)?;
         match plan.commit().map_err(session_err)? {
-            CommitOutcome::Committed(_) | CommitOutcome::NoChanges(_) => Ok(()),
+            CommitOutcome::Committed(_) | CommitOutcome::NoChanges(_) => Ok(bundle_bytes),
         }
     }
 

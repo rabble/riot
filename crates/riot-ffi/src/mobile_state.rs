@@ -1160,6 +1160,21 @@ pub(crate) fn app_data_put(
     key: String,
     value: Vec<u8>,
 ) -> Result<(), MobileError> {
+    // Native callers that don't need the persistence receipt (Android's
+    // RiotJsBridge, iOS' AppRuntimeDataBridge) keep the void signature; the
+    // write itself is identical.
+    app_data_put_with_receipt(inner, app_id, key, value).map(|_| ())
+}
+
+/// `app_data_put` that also returns the canonical signed bundle bytes it
+/// committed. The native host persists these across relaunch and replays them
+/// into a fresh profile via `replay_app_data_bundle`.
+pub(crate) fn app_data_put_with_receipt(
+    inner: &Arc<Mutex<ProfileState>>,
+    app_id: String,
+    key: String,
+    value: Vec<u8>,
+) -> Result<Vec<u8>, MobileError> {
     with_active(inner, |profile| {
         // Same guard as sign_draft/inspect_bytes: store.inspect replaces the
         // session-wide preview slot, which would clobber an in-flight sync
@@ -1169,7 +1184,7 @@ pub(crate) fn app_data_put(
         }
         let app_id = parse_entry_id(&app_id)?;
         let timestamp = next_app_write_timestamp(profile)?;
-        riot_core::apps::bridge::AppDataBridge::put(
+        let bundle_bytes = riot_core::apps::bridge::AppDataBridge::put_returning_bundle(
             &profile.store,
             &profile.author,
             &app_id,
@@ -1179,7 +1194,64 @@ pub(crate) fn app_data_put(
         )
         .map_err(map_apps_error)?;
         profile.app_data_timestamp_floor_micros = timestamp;
-        Ok(())
+        Ok(bundle_bytes)
+    })
+}
+
+/// Admits a previously-committed app-data bundle (as returned by
+/// `app_data_put_with_receipt`) into this profile's store, so a host that
+/// persists app data by saving the signed bytes can rebuild the store on the
+/// next open. Strictly app-data-only: the bundle must decode to app-data-path
+/// entries and nothing else, so this can never be used to smuggle alert (or
+/// any other) entries past the alert review surface. Runs the same
+/// inspect/plan/commit admission every synced entry passes through.
+pub(crate) fn replay_app_data_bundle(
+    inner: &Arc<Mutex<ProfileState>>,
+    bytes: Vec<u8>,
+) -> Result<(), MobileError> {
+    with_active(inner, |profile| {
+        // Same preview-slot discipline as app_data_put.
+        if sync_session_is_active(profile) {
+            return Err(MobileError::InvalidInput);
+        }
+        let decoded = match decode_bundle(&bytes) {
+            BundleDecodeOutcome::Decoded(decoded) => decoded,
+            BundleDecodeOutcome::Rejected(_) => return Err(MobileError::ImportRejected),
+        };
+        let mut saw_entry = false;
+        for item in &decoded.items {
+            let ItemStatus::Valid(_) = item.status else {
+                continue;
+            };
+            let entry = riot_core::willow::decode_entry_canonic(item.frame.entry_bytes())
+                .map_err(|_| MobileError::ImportRejected)?;
+            if !riot_core::apps::entry::is_app_data_entry(&entry) {
+                return Err(MobileError::ImportRejected);
+            }
+            saw_entry = true;
+        }
+        if !saw_entry {
+            return Err(MobileError::ImportRejected);
+        }
+        profile.preview = None;
+        profile.plan = None;
+        let preview = inspect_core(&profile.store, &bytes, "app-data-replay")?;
+        let plan = preview.plan_all().map_err(map_core_error)?;
+        match plan.commit().map_err(map_core_error)? {
+            CommitOutcome::Committed(_) | CommitOutcome::NoChanges(_) => Ok(()),
+        }
+    })
+}
+
+/// A short, stable, non-identifying label an app can show for the current
+/// person: `"member-"` + the first 8 lowercase hex chars of the profile's
+/// subspace id. Never exposes full key material.
+pub(crate) fn app_display_name(
+    inner: &Arc<Mutex<ProfileState>>,
+) -> Result<String, MobileError> {
+    with_active(inner, |profile| {
+        let subspace_id = *profile.author.subspace_id().as_bytes();
+        Ok(format!("member-{}", hex(&subspace_id[..4])))
     })
 }
 

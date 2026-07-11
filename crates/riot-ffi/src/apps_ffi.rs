@@ -103,6 +103,32 @@ impl AppRuntimeSession {
         crate::mobile_state::app_data_put(&self.inner, app_id, key, value)
     }
 
+    /// `app_data_put` that also returns the canonical signed bundle bytes it
+    /// committed, for a host that persists app data across relaunch. The
+    /// void-returning `app_data_put` above stays for callers that don't need
+    /// the receipt (Android/iOS bridges); both commit identically.
+    pub fn app_data_put_with_receipt(
+        &self,
+        app_id: String,
+        key: String,
+        value: Vec<u8>,
+    ) -> Result<Vec<u8>, MobileError> {
+        crate::mobile_state::app_data_put_with_receipt(&self.inner, app_id, key, value)
+    }
+
+    /// Re-admits app-data bundle bytes previously returned by
+    /// `app_data_put_with_receipt`, rebuilding persisted app state on a fresh
+    /// profile. Rejects any bundle that is not app-data-only.
+    pub fn replay_app_data_bundle(&self, bytes: Vec<u8>) -> Result<(), MobileError> {
+        crate::mobile_state::replay_app_data_bundle(&self.inner, bytes)
+    }
+
+    /// A short, stable, non-identifying label for the current person that an
+    /// app may display (`"member-"` + 8 hex chars of the subspace id).
+    pub fn app_display_name(&self) -> Result<String, MobileError> {
+        crate::mobile_state::app_display_name(&self.inner)
+    }
+
     pub fn app_data_get(
         &self,
         app_id: String,
