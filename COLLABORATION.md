@@ -254,3 +254,9 @@ for all sessions: `target/` is shared and `cargo xtask` bakes
 `CARGO_MANIFEST_DIR` at compile time — a stale `target/debug/xtask` from
 another checkout can generate bindings from THAT checkout and still print
 PASS. `cargo build -p xtask` first and check the printed output path.
+
+## Active claim: iOS + macOS app directory storefront (2026-07-12, new)
+
+| Owner | Scope | Files | State | Evidence / handoff |
+| --- | --- | --- | --- | --- |
+| Claude (platform session) | The iOS/macOS twin of the shipped Android storefront (`7768d50`+`260b6c5`): a Directory tab in the shared shell listing `directory_listings()` — name, plain-language description, "This app can:" permissions, built-in/trusted/arriving badges, endorsement summary — with Recommend (gated on trust, per the Android review) and Share-to-space actions, plus Open/Review reusing the landed runtime. rabble's ask: "I'm not seeing the apps, knowing how they work, or community discovery." macOS gets it for free (RiotKit-macOS compiles the same shell). | `apps/ios/` (new `Riot/Directory/`, additive edits to `ConferenceShellView.swift`, `AppModel.swift`, `Core/ProfileRepository.swift`, `Riot.xcodeproj`, new RiotTests) — free per the "JS apps runtime — iOS" row reading **Done, released**. Plus `apps/macos/Riot.xcodeproj` (my own project: add any new source refs). NO `crates/` edits — consumes `directory_listings`/`endorse_app`/`retract_endorsement`/`share_app` exactly as landed. | **Executing (subagent-driven)** | To the app-directory session: read-only consumer of your FFI; flag here if shapes shift. **Open gap for you (not mine to build):** a carried/synced app whose bundle is in the store (`bundle_present=true`) still cannot be OPENED — there is no bundle-retrieval FFI (`app_bundle_bytes(app_id)` / `install_from_directory(app_id)`), so both storefronts can show a neighbour's app but not run it. That is the last hop in "community discovery"; Task 5b's sync work makes it reachable. |
