@@ -53,8 +53,8 @@ class AppRuntimeEndToEndTest {
         val session = profile.appRuntime()
         val apps = RiotAppsController(session)
         val app = apps.install(
-            ChecklistFixture.manifestBytes(context),
-            ChecklistFixture.bundleBytes(context),
+            ChecklistFixture.committedManifestBytes(context),
+            ChecklistFixture.committedBundleBytes(context),
         )
         assertEquals("Checklist", app.record.name)
         assertFalse(session.isAppTrusted(app.record.appId))
@@ -138,8 +138,8 @@ class AppRuntimeEndToEndTest {
         profile.createPublicSpace("Berlin Mutual Aid")
         val apps = RiotAppsController(profile.appRuntime())
         val app = apps.install(
-            ChecklistFixture.manifestBytes(context),
-            ChecklistFixture.bundleBytes(context),
+            ChecklistFixture.committedManifestBytes(context),
+            ChecklistFixture.committedBundleBytes(context),
         )
         assertThrows(IllegalStateException::class.java) { apps.requireTrusted(app) }
     }

@@ -4,14 +4,21 @@ import android.content.Context
 import org.json.JSONObject
 
 /**
- * Packs the committed `fixtures/apps/checklist/` sources (frozen
- * content-hash inputs — never edit) into canonical manifest/bundle bytes.
- * `install_app`'s strict Rust decoder is the oracle proving this Kotlin
- * encoding stays byte-exact with `manifest.rs`/`bundle.rs`; packed `.cbor`
- * artifacts replace this packer when the directory plan's CLI lands
- * (gated Task 7).
+ * The end-to-end tests install the committed, CLI-packed artifacts directly
+ * ([committedManifestBytes]/[committedBundleBytes]) — the byte-identical app
+ * iOS installs, so both platforms derive the same `app_id`. The hand-rolled
+ * packer below is retained for adversarial-input duty and as the canonicality
+ * oracle: `install_app`'s strict Rust decoder proves this Kotlin encoding
+ * stays byte-exact with `manifest.rs`/`bundle.rs`. Its placeholder author ids
+ * make it a deliberately different app from the committed artifacts.
  */
 object ChecklistFixture {
+    /** The committed CLI-packed manifest, bundled as an asset via `fixtures/apps`. */
+    fun committedManifestBytes(context: Context): ByteArray = readAsset(context, "checklist.manifest.cbor")
+
+    /** The committed CLI-packed bundle, bundled as an asset via `fixtures/apps`. */
+    fun committedBundleBytes(context: Context): ByteArray = readAsset(context, "checklist.bundle.cbor")
+
     // Fixed public placeholder author (never key material; install_app
     // verifies content, not authorship) — conference-fixture precedent.
     private val NAMESPACE_ID = ByteArray(32) { 0x11 }
