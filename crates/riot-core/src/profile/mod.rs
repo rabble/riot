@@ -10,7 +10,7 @@
 
 pub mod card;
 pub mod path;
-// pub mod resolver;
+pub mod resolver;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProfileError {

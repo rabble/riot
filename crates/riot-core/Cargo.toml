@@ -93,3 +93,7 @@ required-features = ["conformance"]
 [[test]]
 name = "apps_trust_entries"
 required-features = ["conformance"]
+
+[[test]]
+name = "profile_resolver"
+required-features = ["conformance"]
