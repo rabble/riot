@@ -19,6 +19,7 @@ class SyncCoordinatorTest {
         )
 
         coordinator.start()
+        channel.deliver(byteArrayOf(4))
 
         assertTrue(bridge.begun)
         assertEquals(NearbyUiState.GettingLatest("Blue Kite"), coordinator.state)
@@ -36,6 +37,7 @@ class SyncCoordinatorTest {
         )
         val coordinator = SyncCoordinator(NearbyConnection(channel, TransportKind.BLE), bridge, "Quiet River")
         coordinator.start()
+        channel.sent.clear()
 
         channel.deliver(byteArrayOf(9))
 
@@ -60,6 +62,7 @@ class SyncCoordinatorTest {
         )
         val coordinator = SyncCoordinator(NearbyConnection(channel, TransportKind.BLE), bridge, "Blue Kite")
         coordinator.start()
+        channel.sent.clear()
         channel.deliver(byteArrayOf(9))
         bridge.outboundTakes = 0
 
@@ -69,7 +72,7 @@ class SyncCoordinatorTest {
         assertEquals(NearbyUiState.Idle, coordinator.state)
         assertTrue(bridge.closed)
         assertTrue(!channel.closed)
-        assertEquals(2, bridge.outboundTakes)
+        assertEquals(1, bridge.outboundTakes)
     }
 
     @Test
@@ -99,7 +102,7 @@ class SyncCoordinatorTest {
         assertEquals(NearbyUiState.AlreadyCurrent, coordinator.state)
         assertTrue(bridge.closed)
         assertTrue(!channel.closed)
-        assertEquals(2, bridge.outboundTakes)
+        assertEquals(1, bridge.outboundTakes)
     }
 
     @Test
@@ -118,7 +121,7 @@ class SyncCoordinatorTest {
 }
 
 private class RecordingSyncBridge(
-    private val outbound: ArrayDeque<ByteArray> = ArrayDeque(),
+    private val outbound: ArrayDeque<ByteArray> = ArrayDeque(listOf(byteArrayOf(1))),
     private val beginResult: SyncBridgeOutcome = SyncBridgeOutcome.SendMore(terminal = false),
     private val receiveResults: ArrayDeque<SyncBridgeOutcome> = ArrayDeque(),
     private val receiveFailure: Exception? = null,
@@ -127,8 +130,16 @@ private class RecordingSyncBridge(
     var begun = false
     var closed = false
     var outboundTakes = 0
+    private var terminalFrameExpected = (beginResult as? SyncBridgeOutcome.SendMore)?.terminal == true
+    private var terminalFrameTaken = false
     override fun begin(): SyncBridgeOutcome { begun = true; return beginResult }
-    override fun nextOutbound(): ByteArray? { outboundTakes += 1; return outbound.removeFirstOrNull() }
+    override fun nextOutbound(): ByteArray? {
+        if (terminalFrameTaken) error("terminal session is already closed")
+        outboundTakes += 1
+        return outbound.removeFirstOrNull()?.also {
+            if (terminalFrameExpected) terminalFrameTaken = true
+        }
+    }
     override fun receive(frame: ByteArray): SyncBridgeOutcome {
         receiveFailure?.let { throw it }
         return receiveResults.removeFirstOrNull() ?: SyncBridgeOutcome.SendMore(terminal = false)
@@ -140,6 +151,7 @@ private class RecordingSyncBridge(
     }
     override fun rejectImport(): SyncBridgeOutcome {
         outbound += byteArrayOf(12)
+        terminalFrameExpected = true
         return SyncBridgeOutcome.SendMore(terminal = true)
     }
     override fun close() { closed = true }

@@ -64,7 +64,7 @@ class SyncCoordinator(
     private fun handle(outcome: SyncBridgeOutcome, terminalState: NearbyUiState? = null) {
         when (outcome) {
             is SyncBridgeOutcome.SendMore -> {
-                drainOutbound()
+                sendOutboundFrame()
                 if (outcome.terminal) {
                     runCatching(bridge::close)
                     update(terminalState ?: if (acceptedImport) {
@@ -87,13 +87,9 @@ class SyncCoordinator(
         }
     }
 
-    private fun drainOutbound() {
-        repeat(MAX_OUTBOUND_FRAMES_PER_TURN) {
-            val frame = bridge.nextOutbound() ?: return
-            connection.send(frame)
-        }
-        check(bridge.nextOutbound() == null) { "too many queued outbound frames" }
-    }
+    private fun sendOutboundFrame() = connection.send(
+        checkNotNull(bridge.nextOutbound()) { "missing queued outbound frame" },
+    )
 
     private fun safely(action: () -> Unit) {
         try {
@@ -112,9 +108,5 @@ class SyncCoordinator(
     private fun update(next: NearbyUiState) {
         state = next
         onStateChange(next)
-    }
-
-    private companion object {
-        const val MAX_OUTBOUND_FRAMES_PER_TURN = 256
     }
 }

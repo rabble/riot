@@ -3,7 +3,6 @@ package org.riot.evidence.transport
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
-import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import uniffi.riot_ffi.SyncOutcome
@@ -31,11 +30,10 @@ class GeneratedMobileSyncBridgeTest {
         assertTrue(handle.accepted)
         assertArrayEquals(bundle, persisted)
         assertArrayEquals(byteArrayOf(10), bridge.nextOutbound())
-        assertNull(bridge.nextOutbound())
         assertTrue(handle.lifecycle.isEmpty())
 
         assertEquals(SyncBridgeOutcome.Done, bridge.receive(byteArrayOf(11)))
-        assertEquals(listOf("persist", "accept", "take", "take", "close"), events)
+        assertEquals(listOf("persist", "accept", "take", "close"), events)
     }
 
     @Test
@@ -62,7 +60,6 @@ class GeneratedMobileSyncBridgeTest {
         bridge.receive(byteArrayOf(1))
         assertEquals(SyncBridgeOutcome.SendMore(terminal = true), bridge.rejectImport())
         assertArrayEquals(byteArrayOf(12), bridge.nextOutbound())
-        assertNull(bridge.nextOutbound())
 
         assertTrue(handle.rejected)
         assertFalse(persisted)
@@ -105,9 +102,14 @@ private class RecordingGeneratedSyncHandle(
     override fun begin(): SyncOutcome = beginOutcome
     private val outbound = ArrayDeque<ByteArray>()
     private var acceptedAwaitingComplete = false
+    private var terminalFrameQueued = false
+    private var terminalFrameTaken = false
     override fun takeOutboundFrame(): ByteArray? {
+        if (terminalFrameTaken) error("terminal session is already closed")
         events += "take"
-        return outbound.removeFirstOrNull()
+        return outbound.removeFirstOrNull()?.also {
+            if (terminalFrameQueued) terminalFrameTaken = true
+        }
     }
     override fun receiveFrame(frame: ByteArray): SyncOutcome =
         if (acceptedAwaitingComplete) outcome(SyncOutcomeKind.COMPLETE) else receiveOutcome
@@ -121,6 +123,7 @@ private class RecordingGeneratedSyncHandle(
     override fun rejectImport(code: UByte): SyncOutcome {
         rejected = true
         outbound += byteArrayOf(12)
+        terminalFrameQueued = true
         return outcome(SyncOutcomeKind.FRAME_READY, terminal = true)
     }
     override fun cancel() { lifecycle += "cancel" }

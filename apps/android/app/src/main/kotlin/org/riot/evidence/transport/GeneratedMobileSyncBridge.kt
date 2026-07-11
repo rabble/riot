@@ -41,7 +41,7 @@ class GeneratedMobileSyncBridge internal constructor(
 
     override fun nextOutbound(): ByteArray? {
         val frame = handle.takeOutboundFrame()?.copyOf()
-        if (frame == null && terminalAfterDrain) disposeTerminal()
+        if (frame != null && terminalAfterDrain) disposeTerminal()
         return frame
     }
 
