@@ -180,3 +180,9 @@ redeployed to `https://riot-protest-net-marketing.protestnet.workers.dev`
 **Live, matches `main`.** `marketing/` remains unclaimed/free for further
 edits; please leave a handoff row here if you touch it next so redeploys
 don't lag content again.
+
+## Queued claim: app directory (2026-07-11, new — blocked on signed JS apps platform)
+
+| Owner | Scope | Files | State | Evidence / handoff |
+| --- | --- | --- | --- | --- |
+| Claude (this session) | App directory: storefront data layer, endorsements, publish/share/endorse, starter catalog, `riot-app` CLI. Spec + plan only so far — **no code started** | Planned: new `crates/riot-core/src/apps/{index,endorse,directory,starter}.rs` + tests, additive edits to `crates/riot-ffi/src/apps_ffi.rs` + `mobile_state.rs`, new `crates/riot-app-cli/`, root `Cargo.toml` (one member line) | **Blocked — do not start until the "signed JS apps platform" claim above reads Done** | Spec committed: `docs/superpowers/specs/2026-07-11-app-directory-design.md` (approved by rabble). Plan committed: `docs/superpowers/plans/2026-07-11-app-directory.md` (7 tasks, core+FFI+CLI, all `cargo test`-verifiable; native storefront UI deliberately deferred to a follow-up plan). Consumes the platform plan's codecs, trust eval, `entries_with_prefix`, payload retrieval, and `apps_ffi.rs` — whoever executes must first re-check the landed shapes (explicit steps in the plan's preamble). |
