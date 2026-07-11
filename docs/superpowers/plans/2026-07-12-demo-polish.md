@@ -830,7 +830,9 @@ In `crates/riot-ffi/tests/profile_contract.rs`, mirroring the harness in `apps_c
 - `my_display_name() -> Result<String, MobileError>` — `resolve_display_names` + `render_display_name` for the profile's own subspace.
 - `display_names() -> Result<Vec<DisplayNameRecord>, MobileError>` where `DisplayNameRecord { subspace_id: Vec<u8>, rendered: String }` — the id→name map the UI needs for board rows, endorsement lists, and checklist attribution. Follow the id convention settled in the apps FFI: **raw `Vec<u8>`**, not hex.
 
-Change `app_display_name` (`mobile_state.rs:1374`, currently `format!("member-{}", hex(&subspace_id[..4]))`) to return `render_display_name(resolved_name_for_own_subspace, &subspace_id)` — this is the single change that fixes `riot.whoami()` and therefore the checklist's "checked by" line.
+Change `app_display_name` (`mobile_state.rs:1374`, currently `format!("member-{}", hex(&subspace_id[..4]))`) to return `render_display_name(resolved_name_for_own_subspace, &subspace_id)`.
+
+**Note:** this makes the *rendering* correct, but it is NOT sufficient on its own — an app that stores that string into its own data has stored a **snapshot** that a later rename can never repair. **Task 6b** is what actually fixes this, by making `whoami()` return a stable `{id, displayName, tag}` and having apps store the **id**. Do not consider "the checklist shows a real name" done at the end of this task.
 
 - [ ] **Step 4: Gates and commit**
 
@@ -848,6 +850,74 @@ git commit -m "feat(ffi): expose display names; whoami returns a real rendered n
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>" -- crates/riot-ffi/src/profile_ffi.rs crates/riot-ffi/src/mobile_state.rs crates/riot-ffi/src/lib.rs crates/riot-ffi/tests/profile_contract.rs
 ```
+
+---
+
+### Task 6b: Apps store an author **id**, not a name snapshot — and the checklist repack
+
+**Files:**
+- Modify: `fixtures/apps/checklist/app.js` — store `updated_by_id`, resolve names at render
+- Modify: `apps/ios/Riot/Apps/RiotJS.swift` and `apps/android/.../apps/RiotJsShim.kt` — `whoami()` shape + new `riot.profile(id)`
+- Modify: `crates/riot-ffi/src/apps_ffi.rs` / `mobile_state.rs` — back the two bridge calls
+- Repack: `cargo run -p riot-core --example pack_checklist` → new `fixtures/apps/checklist.*.cbor` + the starter-catalog app_id pin
+- Test: checklist bridge tests on both platforms; the starter drift guard
+
+**⚠️ This task MUST land before Task 7,** and it is time-critical for a reason that has nothing to do with this plan's convenience. **Read this before starting:**
+
+The checklist stores `updated_by` **into its own item value at write time** — a name *snapshot*. If display names ship that way, then the moment Ana renames herself, every item she ever checked still shows her old name **forever**, and no rename can repair them. The fix is to store an **id** and resolve the name **at render time**:
+
+- `riot.whoami()` → `{ id, displayName, tag }` (stable id + current rendering)
+- the app stores **`updated_by_id`**, never a name
+- new bridge call `riot.profile(id)` → `{ displayName, tag }`, called when drawing each row
+
+**Why the ordering is forced:** editing `app.js` changes the bundle bytes → changes the content-derived `app_id` → **every space's organizer must re-approve the checklist.** Doing this now, while the app is barely deployed, costs nothing. Doing it after the demo means a forced re-approval event in front of real users. And Task 7's demo fixture *embeds a checklist app_id* — pack it before this lands and the fixture pins a stale id.
+
+**Coordination (do this first):** `fixtures/apps/checklist/`, `RiotJS.swift`, and `RiotJsShim.kt` belong to the iOS/Android runtime sessions. They **raised this finding themselves** and expect the change. Post a claim row in `COLLABORATION.md` naming these files and confirm no conflicting in-flight work before editing. If either runtime session has uncommitted changes to them → STOP, BLOCKED.
+
+- [ ] **Step 1: FFI — back the two bridge calls**
+
+`whoami` must return the id alongside the rendering. Add a UniFFI record `WhoAmI { id: Vec<u8>, display_name: String, tag: String }` (id = the raw 32-byte subspace; `tag` = the 8-hex key suffix, so JS can render `Ana · a3f9` without re-deriving it) and `profile_for(id: Vec<u8>) -> Result<WhoAmI, MobileError>` resolving through Task 5's `resolve_display_names` + `render_display_name`. An unknown id resolves to the `member · <tag>` fallback — never an error, because an app must be able to render a row authored by someone whose profile hasn't synced yet.
+
+- [ ] **Step 2: Bridge — iOS and Android**
+
+`RiotJS.swift`: `whoami` returns the record as `{ id, displayName, tag }` (id as a lowercase hex string across the JS boundary — JS has no byte arrays here; hex is what the rest of the bridge already uses). Add `profile: function (id) { return call("profile", { id: id }); }`. Mirror exactly in `RiotJsShim.kt` and its `@JavascriptInterface` host.
+
+- [ ] **Step 3: The checklist app**
+
+In `fixtures/apps/checklist/app.js`: store `updated_by_id: me.id` instead of `updated_by: me.displayName`; when rendering a row, call `riot.profile(row.value.updated_by_id)` and show `displayName · tag`. **Back-compat:** an item written by the old code has `updated_by` and no `updated_by_id` — render that stored string as-is (it is a legacy snapshot, and there is no id to resolve). Do not crash on it, do not migrate it.
+
+- [ ] **Step 4: Repack and re-pin**
+
+Run: `cargo run -p riot-core --example pack_checklist`
+This regenerates the packed bytes AND changes the checklist's `app_id`. Update every pin of the old id (the starter-catalog test pin — grep the old id hex across the repo; the current one is `aa9633…`). The starter drift guard is what proves you repacked; it must go green.
+
+- [ ] **Step 5: Gates and commit**
+
+Run: `cargo test --workspace --all-features` (green), `xcodebuild test -scheme RiotKit` (green — the existing `ChecklistFlowUITests` end-to-end must still pass; it is the real proof the bridge change didn't break the app), and the Android JVM checklist tests.
+
+```bash
+git commit -m "feat(apps): store author id, not a name snapshot; resolve names at render
+
+Renames now update all history. Changes the checklist app_id — organizers
+re-approve once, deliberately taken now while the app is barely deployed.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>" -- fixtures/apps/checklist apps/ios/Riot/Apps/RiotJS.swift apps/android/app/src/main/kotlin/org/riot/evidence/apps/RiotJsShim.kt crates/riot-ffi/src/apps_ffi.rs crates/riot-ffi/src/mobile_state.rs crates/riot-core/src/apps/starter.rs crates/riot-core/tests/apps_starter.rs
+```
+
+(Adjust the pathspec to the files you actually touched — including whatever holds the app_id pin.)
+
+---
+
+### Task 6c: Hostile-corpus test for the profile codec
+
+**Files:**
+- Modify: `crates/riot-core/tests/apps_codec_hostile.rs` (or create `profile_codec_hostile.rs` if that file's structure resists extension — match its existing pattern either way)
+
+Task 2's review verified by hand that `decode_profile_card` survives truncation sweeps, byte-flip sweeps with a canonicality assertion, trailing garbage, forged CBOR headers claiming huge counts, indefinite-length maps/strings, non-canonical integer widths, and 1024 rounds of deterministic random garbage — **but nothing in the tree pins that behavior.** This codec receives attacker-controlled bytes at the Task 4 import gate; the sibling codecs facing the same threat model have exactly this suite. Add `profile_card` to it.
+
+- [ ] **Step 1:** Read `crates/riot-core/tests/apps_codec_hostile.rs` and extend it for `ProfileCard` with the same properties it already asserts for manifest/bundle: every truncation rejected; every byte-flip either rejected or still canonical (re-encode equality); trailing garbage rejected; forged huge-count headers cause no OOM/panic; deterministic random garbage never panics.
+- [ ] **Step 2:** `cargo test -p riot-core --test apps_codec_hostile` → all green (existing + new).
+- [ ] **Step 3:** Commit: `test(profile): hostile corpus for the profile-card codec`.
 
 ---
 

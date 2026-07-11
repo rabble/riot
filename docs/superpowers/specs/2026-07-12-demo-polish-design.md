@@ -51,8 +51,41 @@ built, and it follows the recommendations already researched in
   self-claimed name without its key-derived component. The UI shows **`Ana · a3f9`**,
   never a bare "Ana". Same-name-different-key never merges — identical to the
   impersonation rule the directory already enforces for apps.
-- **FFI**: `set_display_name(name)`, and display names surfaced on entries,
-  endorsements, and `riot.whoami()` (so the checklist writes a real name).
+- **FFI**: `set_display_name(name)`, and display names surfaced on entries and
+  endorsements.
+
+**Correction (2026-07-12, from a parallel profiles brainstorm — this one changes
+app bytes, so it happens now):** an earlier draft of this section said display names
+are surfaced on `riot.whoami()` "so the checklist writes a real name". That is
+**wrong, and would bake in permanent staleness.** The checklist writes `updated_by`
+**into its own item value at write time** (`fixtures/apps/checklist/app.js`) — a
+snapshot. The moment Ana renames herself, every item she ever checked still shows
+her old name, forever, and no rename can ever repair them.
+
+The correct shape stores an **id, not a name**:
+
+- `riot.whoami()` returns `{ id, displayName, tag }` — a *stable* id plus the
+  current rendering.
+- Apps store **`updated_by_id`**, never a name.
+- A new bridge call `riot.profile(id) -> { displayName, tag }` resolves the id **at
+  render time**, so a rename instantly updates all history everywhere.
+
+**Why this must happen before the demo fixture is packed:** editing
+`fixtures/apps/checklist/app.js` changes the bundle bytes → changes the
+content-derived `app_id` → **every space's organizer must re-approve the checklist**.
+Doing it now, while the app is barely deployed, costs nothing. Doing it after the
+demo means a forced re-approval event in front of users. It is an additive bridge
+change (iOS `RiotJS.swift`, Android `RiotJsShim.kt`), coordinated with the runtime
+sessions that own those files.
+
+### Honesty about the key tag
+
+The `· a3f9` suffix is **anti-casual-impersonation only, and the spec says so
+plainly rather than implying it is security.** A determined attacker can grind a
+keypair whose 32-bit tag matches Ana's. The defenses that actually hold are the
+full-subspace-id pins (organizer lists, app trust) and in-person comparison — so the
+profile sheet shows the **full 64-hex id** for exactly that purpose. The tag stops a
+drive-by "Ana"; it does not stop a targeted one.
 
 Because a profile is just another signed entry, it **syncs like everything else** —
 which upgrades the finale rather than complicating it: phone B learns Ana's name
@@ -61,6 +94,12 @@ because her profile entry arrives over the same nearby transport, live on stage.
 Explicitly NOT in scope: avatars, per-space keypairs / persona linking (the
 research's privacy default — a real identity change, deserving its own spec),
 profile editing beyond a single name field.
+
+**Two notes for whoever adds avatars later** (from the parallel session, both real):
+a 64 KiB PNG can decompress to gigabytes, so a byte-size cap alone is not enough —
+parse the PNG `IHDR` / JPEG `SOF` header for dimensions (≤512×512) **without
+decoding**, and never decode image bytes in core. And keep avatars out of the app
+bridge (native UI only), so image bytes never cross the sandbox boundary.
 
 ## The demo script (the driver)
 
