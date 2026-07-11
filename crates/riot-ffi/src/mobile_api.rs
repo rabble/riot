@@ -123,6 +123,7 @@ pub enum MobileError {
     StalePreview,
     EntropyUnavailable,
     ClockUnavailable,
+    AppRejected,
 }
 
 impl std::fmt::Display for MobileError {
@@ -141,6 +142,7 @@ impl std::fmt::Display for MobileError {
             Self::StalePreview => "STALE_PREVIEW",
             Self::EntropyUnavailable => "ENTROPY_UNAVAILABLE",
             Self::ClockUnavailable => "CLOCK_UNAVAILABLE",
+            Self::AppRejected => "APP_REJECTED",
         };
         f.write_str(code)
     }

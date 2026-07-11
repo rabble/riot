@@ -45,3 +45,15 @@ fn oversized_bundle_is_rejected() {
     bundle.resources[0].bytes = vec![0u8; MAX_BUNDLE_TOTAL_BYTES + 1];
     assert_eq!(encode_app_bundle(&bundle), Err(AppsError::BundleTooLarge));
 }
+
+#[test]
+fn bundle_digest_is_deterministic_and_content_sensitive() {
+    use riot_core::apps::bundle::app_bundle_digest;
+    let bytes_a = encode_app_bundle(&sample_bundle()).expect("encode");
+    let mut other = sample_bundle();
+    other.resources[1].bytes = b"console.log('bye')".to_vec();
+    let bytes_b = encode_app_bundle(&other).expect("encode");
+
+    assert_eq!(app_bundle_digest(&bytes_a), app_bundle_digest(&bytes_a));
+    assert_ne!(app_bundle_digest(&bytes_a), app_bundle_digest(&bytes_b));
+}

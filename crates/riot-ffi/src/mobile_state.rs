@@ -30,6 +30,8 @@ pub(crate) enum ProfileState {
 
 const MAX_RETAINED_DRAFTS: usize = 64;
 const MAX_SELECTED_ENTRY_IDS: usize = 64;
+const MAX_INSTALLED_APPS: usize = 16;
+const MAX_APP_TRUST_MARKERS: usize = 256;
 
 pub(crate) struct LocalProfile {
     store: EvidenceStore,
@@ -42,6 +44,22 @@ pub(crate) struct LocalProfile {
     sync_inventory: Vec<SignedWillowEntry>,
     sync_session: Option<StoredSyncSession>,
     next_handle_id: u64,
+    /// Content-derived ids of installed apps (dedup + cap accounting; the
+    /// display record is returned to the caller at install time, and bundle
+    /// resources are the native host's to persist until the app-directory
+    /// follow-up moves them into Willow entries).
+    installed_app_ids: Vec<[u8; 32]>,
+    /// Profile-local trust markers, evaluated by `riot_core::apps::trust`
+    /// with this profile's own subspace as the sole recognized organizer.
+    /// Syncing markers as Willow entries is the app-directory follow-up.
+    app_trust_markers: Vec<riot_core::apps::trust::TrustMarker>,
+    /// Monotonic ordering source for trust markers (LWW evaluation needs a
+    /// total order, not wall-clock truth).
+    next_trust_marker_seq: u64,
+    /// Floor guaranteeing strictly increasing Willow timestamps for
+    /// same-profile app-data writes, so a rapid overwrite of the same key
+    /// within one clock second still prunes deterministically.
+    app_data_timestamp_floor_micros: u64,
 }
 
 struct StoredDraft {
@@ -124,6 +142,10 @@ fn profile_with_author(store: EvidenceStore, author: EvidenceAuthor) -> Arc<Mobi
             sync_inventory: Vec::new(),
             sync_session: None,
             next_handle_id: 1,
+            installed_app_ids: Vec::new(),
+            app_trust_markers: Vec::new(),
+            next_trust_marker_seq: 1,
+            app_data_timestamp_floor_micros: 0,
         })))),
     })
 }
@@ -1006,6 +1028,154 @@ fn map_author_error(error: WillowError) -> MobileError {
         | WillowError::DoesNotAuthorise
         | WillowError::DecodeFailed
         | WillowError::TrailingBytes => MobileError::Internal,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Signed-JS-apps runtime surface (see apps_ffi.rs).
+// ---------------------------------------------------------------------------
+
+pub(crate) fn install_app(
+    inner: &Arc<Mutex<ProfileState>>,
+    manifest_bytes: Vec<u8>,
+    bundle_bytes: Vec<u8>,
+) -> Result<crate::apps_ffi::InstalledAppRecord, MobileError> {
+    use riot_core::apps::bundle::{app_bundle_digest, decode_app_bundle};
+    use riot_core::apps::manifest::{app_id_for, decode_manifest};
+
+    with_active(inner, |profile| {
+        let manifest = decode_manifest(&manifest_bytes).map_err(map_apps_error)?;
+        let bundle = decode_app_bundle(&bundle_bytes).map_err(map_apps_error)?;
+        if manifest.entry_point != bundle.entry_point {
+            return Err(MobileError::AppRejected);
+        }
+        let digest = app_bundle_digest(&bundle_bytes);
+        let app_id = app_id_for(&manifest, &digest).map_err(map_apps_error)?;
+
+        if !profile.installed_app_ids.contains(&app_id) {
+            if profile.installed_app_ids.len() >= MAX_INSTALLED_APPS {
+                return Err(MobileError::SessionLimit);
+            }
+            profile.installed_app_ids.push(app_id);
+        }
+        Ok(crate::apps_ffi::InstalledAppRecord {
+            app_id: hex(&app_id),
+            name: manifest.name,
+            description: manifest.description,
+            version: manifest.version,
+            entry_point: manifest.entry_point,
+            permissions: manifest.permissions,
+        })
+    })
+}
+
+pub(crate) fn set_app_trust(
+    inner: &Arc<Mutex<ProfileState>>,
+    app_id: String,
+    trusted: bool,
+) -> Result<(), MobileError> {
+    use riot_core::apps::trust::{TrustMarker, TrustMarkerKind};
+
+    with_active(inner, |profile| {
+        let app_id = parse_entry_id(&app_id)?;
+        if profile.app_trust_markers.len() >= MAX_APP_TRUST_MARKERS {
+            return Err(MobileError::SessionLimit);
+        }
+        let seq = profile.next_trust_marker_seq;
+        profile.next_trust_marker_seq = seq.checked_add(1).ok_or(MobileError::SessionLimit)?;
+        profile.app_trust_markers.push(TrustMarker {
+            app_id,
+            author_subspace_id: *profile.author.subspace_id().as_bytes(),
+            kind: if trusted {
+                TrustMarkerKind::Trust
+            } else {
+                TrustMarkerKind::Revoke
+            },
+            timestamp_micros: seq,
+        });
+        Ok(())
+    })
+}
+
+pub(crate) fn is_app_trusted(
+    inner: &Arc<Mutex<ProfileState>>,
+    app_id: String,
+) -> Result<bool, MobileError> {
+    with_active(inner, |profile| {
+        let app_id = parse_entry_id(&app_id)?;
+        Ok(riot_core::apps::trust::is_trusted(
+            &app_id,
+            &profile.app_trust_markers,
+            &[*profile.author.subspace_id().as_bytes()],
+        ))
+    })
+}
+
+pub(crate) fn app_data_put(
+    inner: &Arc<Mutex<ProfileState>>,
+    app_id: String,
+    key: String,
+    value: Vec<u8>,
+) -> Result<(), MobileError> {
+    with_active(inner, |profile| {
+        let app_id = parse_entry_id(&app_id)?;
+        let now_micros = system_snapshot()
+            .map_err(map_author_error)?
+            .unix_seconds
+            .saturating_mul(1_000_000);
+        let timestamp = now_micros.max(
+            profile
+                .app_data_timestamp_floor_micros
+                .checked_add(1)
+                .ok_or(MobileError::SessionLimit)?,
+        );
+        riot_core::apps::bridge::AppDataBridge::put(
+            &profile.store,
+            &profile.author,
+            &app_id,
+            &key,
+            timestamp,
+            &value,
+        )
+        .map_err(map_apps_error)?;
+        profile.app_data_timestamp_floor_micros = timestamp;
+        Ok(())
+    })
+}
+
+pub(crate) fn app_data_get(
+    inner: &Arc<Mutex<ProfileState>>,
+    app_id: String,
+    key: String,
+) -> Result<Option<Vec<u8>>, MobileError> {
+    with_active(inner, |profile| {
+        let app_id = parse_entry_id(&app_id)?;
+        riot_core::apps::bridge::AppDataBridge::get(&profile.store, &app_id, &key)
+            .map_err(map_apps_error)
+    })
+}
+
+pub(crate) fn app_data_list(
+    inner: &Arc<Mutex<ProfileState>>,
+    app_id: String,
+    prefix: String,
+) -> Result<Vec<crate::apps_ffi::AppDataItem>, MobileError> {
+    with_active(inner, |profile| {
+        let app_id = parse_entry_id(&app_id)?;
+        let items = riot_core::apps::bridge::AppDataBridge::list(&profile.store, &app_id, &prefix)
+            .map_err(map_apps_error)?;
+        Ok(items
+            .into_iter()
+            .map(|(key, value)| crate::apps_ffi::AppDataItem { key, value })
+            .collect())
+    })
+}
+
+fn map_apps_error(error: riot_core::apps::AppsError) -> MobileError {
+    use riot_core::apps::AppsError;
+    match error {
+        AppsError::StoreRejected => MobileError::StoreFull,
+        _ => MobileError::AppRejected,
     }
 }
 

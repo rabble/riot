@@ -16,8 +16,11 @@
 
 use minicbor::data::Type;
 use minicbor::{Decoder, Encoder};
+use sha2::{Digest, Sha256};
 
 use super::AppsError;
+
+const APP_BUNDLE_DIGEST_DOMAIN: &[u8] = b"riot/app-bundle/v1";
 
 pub const MAX_BUNDLE_RESOURCES: usize = 32;
 pub const MAX_RESOURCE_PATH_BYTES: usize = 256;
@@ -69,6 +72,17 @@ fn validate(bundle: &AppBundle) -> Result<(), AppsError> {
     }
 
     Ok(())
+}
+
+/// Domain-separated digest of a bundle's canonical encoded bytes — the
+/// `bundle_digest` input to `manifest::app_id_for`, following the pattern
+/// in `willow/digest.rs`.
+pub fn app_bundle_digest(encoded_bundle: &[u8]) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(APP_BUNDLE_DIGEST_DOMAIN);
+    hasher.update((encoded_bundle.len() as u32).to_be_bytes());
+    hasher.update(encoded_bundle);
+    hasher.finalize().into()
 }
 
 /// Validates and encodes the canonical byte representation.
