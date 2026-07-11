@@ -118,6 +118,7 @@ struct AppWebView: UIViewRepresentable {
         )
         let webView = WKWebView(frame: .zero, configuration: configuration)
         webView.navigationDelegate = coordinator
+        webView.uiDelegate = coordinator
         coordinator.bridge.webView = webView
         coordinator.observeDataChanges()
         if let url = coordinator.entryURL {
@@ -132,7 +133,7 @@ struct AppWebView: UIViewRepresentable {
 /// Owns the bridge, the navigation lock, and the change-notification observer
 /// for one hosted app.
 @MainActor
-final class AppRuntimeCoordinator: NSObject, WKNavigationDelegate {
+final class AppRuntimeCoordinator: NSObject, WKNavigationDelegate, WKUIDelegate {
     let bridge: AppBridgeController
     private let appIDHex: String
     private let entryPoint: String
@@ -177,6 +178,19 @@ final class AppRuntimeCoordinator: NSObject, WKNavigationDelegate {
     ) {
         let allowed = navigationAction.request.url?.scheme == AppSchemeHandler.scheme
         decisionHandler(allowed ? .allow : .cancel)
+    }
+
+    /// Refuses `window.open` and any other request for a secondary WebView.
+    /// Returning nil is WebKit's contract for "do not create one", so a trusted
+    /// page cannot spawn an unmanaged frame outside the navigation lock above.
+    /// Made explicit rather than resting on the absence of a UI delegate.
+    func webView(
+        _ webView: WKWebView,
+        createWebViewWith configuration: WKWebViewConfiguration,
+        for navigationAction: WKNavigationAction,
+        windowFeatures: WKWindowFeatures
+    ) -> WKWebView? {
+        nil
     }
 
     deinit {
