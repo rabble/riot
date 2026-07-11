@@ -1,7 +1,7 @@
 # Riot Phase 0A Public Kernel Evidence Sprint Design
 
-Date: 2026-07-10
-Status: Revision 5, REVISE. Platform preflight is PASS; G0 and G1 claims from commits `50083bb`/`b484ce8` are provisional and invalidated until the reviewed repair plan passes. WU2 is blocked. The platform pivot (shared Rust core, native iOS + Android shells) remains confirmed. A non-gating gateway/reader demo track runs in parallel (see the dual-mode spec's build phasing).
+Date: 2026-07-10 (last status update: 2026-07-11)
+Status: Revision 5 REVISE findings are repaired — G0 and G1 both PASS after the second-review repair (see `docs/decisions/phase0a-wu0-report.md`, `docs/decisions/phase0a-wu1-report.md`). G2 (WU2, Task 5) is not yet a full PASS: transaction core, explicit selection, bounded plan lifecycle, three arbiter concurrency races, and both hard byte budgets (16 MiB store + 2 MiB preview) are proven; the hostile-input/log-safety corpus and one untested race (session-close vs. a concurrent plan/preview action) remain — see `docs/decisions/phase0a-wu2b-report.md` for the exact list. WU3 groundwork (UniFFI binding generation, the mobile API surface) has already started in parallel per `COLLABORATION.md`, ahead of a formal full-G2 PASS; this diverges from this report's own "G2 FAIL stops native work" / the WU2B report's more conservative "must not begin until full G2 passes" — flagged as an open sequencing question, not resolved by this document. The platform pivot (shared Rust core, native iOS + Android shells) remains confirmed. A non-gating gateway/reader demo track has landed in parallel (see the dual-mode spec's build phasing; conference gateway shipped at commit `976e965`).
 
 ## Purpose
 
