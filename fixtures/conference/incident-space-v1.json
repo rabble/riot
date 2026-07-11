@@ -1,0 +1,49 @@
+{
+  "schema": "riot-conference-incident-space/1",
+  "namespace": {
+    "id": "3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c",
+    "visibility": "public"
+  },
+  "incident": {
+    "title": "Harbor District Evacuation",
+    "rendered_routes": [
+      "/site/incident-board",
+      "/site/incident-board/alerts"
+    ]
+  },
+  "authors": [
+    {
+      "display_name": "Avery Brooks",
+      "nostr_pubkey": "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+      "willow_subspace_id": "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a"
+    },
+    {
+      "display_name": "Jordan Lee",
+      "nostr_pubkey": "3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c",
+      "willow_subspace_id": "3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c"
+    }
+  ],
+  "entries": [
+    {
+      "kind": "alert",
+      "willow_entry_id": "f2d9e48a1c5b7390e6f1a8427c9d305ebb617ef44a98c206d1b5398fae74018b",
+      "author_nostr_pubkey": "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+      "title": "Ferry terminal access restricted",
+      "body": "Use the north entrance; the south pier is closed for inspection.",
+      "created_at": "2026-07-11T09:30:00Z",
+      "ai_assisted_draft": true,
+      "signature": "e5564300c360ac729086e2cc806e828a84877f1eb8e5d974d873e065224901555fb8821590a33bacc61e39701cf9b46bd25bf5f0595bbe24655141438e7a100b"
+    },
+    {
+      "kind": "observation",
+      "willow_entry_id": "7ab36491e2c0548ff361bca20d7e4968c5439ad01172fe8b406d95a73ce1206f",
+      "author_nostr_pubkey": "3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c",
+      "title": "Shelter check-in point open",
+      "body": "Community center staff are receiving arrivals at the west hall.",
+      "created_at": "2026-07-11T09:34:00Z",
+      "ai_assisted_draft": false,
+      "signature": "f3c6e60f3dc3bdfc66986f03a47b58ee4bd6b9669f40a21451a71874f0f2de627f3a0120fb87b1d5bd6c78333dc05d22a341e76f1d4c18337ed40da99d3f4c3e"
+    }
+  ],
+  "canonical_sha256": "24ba7ba70afd0f43be83779ee5b0eca205d242d3eabd1fbebfe617a68f7fff37"
+}
