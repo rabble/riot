@@ -34,8 +34,8 @@ fn signed(
 ) -> SignedWillowEntry {
     let payload = {
         let p = AlertPayload {
-            object_id: *b"riot-obj-txn0001",
-            revision_id: *b"riot-rev-txn0001",
+            object_id: [object; 16],
+            revision_id: [revision; 16],
             created_at: 1_000,
             valid_from: None,
             expires_at: 2_000,
@@ -65,9 +65,12 @@ fn signed(
 }
 
 fn signed_distinct(author: &EvidenceAuthor, index: u16) -> SignedWillowEntry {
+    let mut object_id = [0; 16];
+    object_id[..2].copy_from_slice(&index.to_be_bytes());
+    let revision_id = [0; 16];
     let payload = riot_core::model::encode_alert(&AlertPayload {
-        object_id: *b"riot-obj-txn0001",
-        revision_id: *b"riot-rev-txn0001",
+        object_id,
+        revision_id,
         created_at: 1_000,
         valid_from: None,
         expires_at: 2_000,
@@ -82,9 +85,7 @@ fn signed_distinct(author: &EvidenceAuthor, index: u16) -> SignedWillowEntry {
         ai_assisted: false,
     })
     .expect("payload");
-    let mut object_id = [0; 16];
-    object_id[..2].copy_from_slice(&index.to_be_bytes());
-    let entry = build_alert_entry(author, &object_id, &[0; 16], 100, &payload).expect("entry");
+    let entry = build_alert_entry(author, &object_id, &revision_id, 100, &payload).expect("entry");
     let authorised = authorise_entry(author, entry).expect("authorise");
     let token = authorised.authorisation_token();
     let signature: ed25519_dalek::Signature = token.signature().clone().into();

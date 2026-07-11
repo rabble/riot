@@ -12,7 +12,11 @@ use std::sync::{Arc, Mutex};
 
 use crate::import::bundle::{decode_bundle, BundleDecodeOutcome, BundleRejection, ItemStatus};
 use crate::import::join::{plan_join, JoinEffect, JoinState, STORE_CHARGE_ENTRY_BYTES};
-use crate::willow::{decode_capability_canonic, decode_entry_canonic, AuthorisationToken, EntryId};
+use crate::model::decode_alert;
+use crate::willow::{
+    alert_entry_path_matches_payload, decode_capability_canonic, decode_entry_canonic,
+    AuthorisationToken, EntryId,
+};
 use willow25::authorisation::PossiblyAuthorisedEntry;
 
 /// Ceilings from fixtures/manifest.json.
@@ -492,11 +496,29 @@ impl EvidenceStore {
                 let authorised = PossiblyAuthorisedEntry::new(entry, token)
                     .into_authorised_entry()
                     .map_err(|_| SessionError::Internal)?;
-                verified.push(VerifiedEntry {
-                    authorised,
-                    entry_id: valid.entry_id,
-                    entry_bytes_len: item.frame.entry_bytes().len(),
-                });
+                // A valid signature only proves the author signed these
+                // exact bytes, not that the Willow path they chose actually
+                // describes the payload underneath it. Without this check a
+                // validly signed entry could bind an arbitrary path to
+                // content it doesn't describe.
+                let path_matches = decode_alert(item.frame.payload_bytes())
+                    .ok()
+                    .and_then(|alert| {
+                        alert_entry_path_matches_payload(
+                            item.frame.entry_bytes(),
+                            &alert.object_id,
+                            &alert.revision_id,
+                        )
+                        .ok()
+                    })
+                    .unwrap_or(false);
+                if path_matches {
+                    verified.push(VerifiedEntry {
+                        authorised,
+                        entry_id: valid.entry_id,
+                        entry_bytes_len: item.frame.entry_bytes().len(),
+                    });
+                }
             }
             // Ineligible items are simply not carried into the preview.
         }

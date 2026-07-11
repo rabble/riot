@@ -23,8 +23,8 @@ fn author() -> EvidenceAuthor {
 
 fn signed(author: &EvidenceAuthor, tag: u8) -> SignedWillowEntry {
     let payload = riot_core::model::encode_alert(&AlertPayload {
-        object_id: *b"riot-obj-life001",
-        revision_id: *b"riot-rev-life001",
+        object_id: [tag; 16],
+        revision_id: [tag; 16],
         created_at: 1_000,
         valid_from: None,
         expires_at: 2_000,
