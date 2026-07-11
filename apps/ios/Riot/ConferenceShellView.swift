@@ -230,41 +230,64 @@ private struct ImportPreviewView: View {
 private struct ConnectionStatusView: View {
     @ObservedObject var model: RiotAppModel
     @StateObject private var nearby = NearbyTransportController()
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
-        List {
-            Section("Nearby") {
-                Label(nearby.state.message, systemImage: nearby.state == .idle ? "iphone.slash" : "antenna.radiowaves.left.and.right")
-                    .font(.headline)
-                Text("Connections stay between nearby phones. Riot never switches this nearby session to the internet.")
-                    .foregroundStyle(.secondary)
-                if nearby.state == .idle || nearby.state == .failed {
-                    Button("Find nearby phones") {
-                        nearby.findNearby { try model.openNearbySyncBoundary() }
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                RiotBadge(nearby.state.message, stamped: true)
+                RiotCard {
+                    VStack(alignment: .leading, spacing: 14) {
+                        Text("Connections stay between nearby phones. Riot never switches this nearby session to the internet.")
+                            .font(.riot(.body, size: 15, relativeTo: .callout))
+                            .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
+                        if nearby.state == .idle || nearby.state == .failed {
+                            Button("Find nearby phones") {
+                                nearby.findNearby { try model.openNearbySyncBoundary() }
+                            }
+                            .buttonStyle(.riotPrimary)
+                        } else {
+                            Button("Stop looking", role: .cancel) { nearby.stop() }
+                                .buttonStyle(.riotSecondary)
+                        }
+                        if case .preview = nearby.state {
+                            Button("Add them") { nearby.addPreviewedContent() }
+                                .buttonStyle(.riotPrimary)
+                            Button("Not now", role: .cancel) { nearby.rejectPreviewedContent() }
+                                .buttonStyle(.riotSecondary)
+                        }
                     }
-                        .buttonStyle(.borderedProminent)
-                } else {
-                    Button("Stop looking", role: .cancel) { nearby.stop() }
                 }
-                if case .preview = nearby.state {
-                    Button("Add them") { nearby.addPreviewedContent() }
-                        .buttonStyle(.borderedProminent)
-                    Button("Not now", role: .cancel) { nearby.rejectPreviewedContent() }
+                if !nearby.phones.isEmpty {
+                    RiotCard {
+                        VStack(alignment: .leading, spacing: 10) {
+                            Text("Phones")
+                                .font(.riot(.mono, size: 12, relativeTo: .caption))
+                                .textCase(.uppercase)
+                                .tracking(1)
+                                .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
+                            ForEach(nearby.phones) { phone in
+                                Button(phone.friendlyName) { nearby.requestConnection(to: phone) }
+                                    .buttonStyle(.riotSecondary)
+                            }
+                        }
+                    }
                 }
-            }
-            if !nearby.phones.isEmpty {
-                Section("Phones") {
-                    ForEach(nearby.phones) { phone in
-                        Button(phone.friendlyName) { nearby.requestConnection(to: phone) }
+                RiotCard {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("On this device")
+                            .font(.riot(.mono, size: 12, relativeTo: .caption))
+                            .textCase(.uppercase)
+                            .tracking(1)
+                            .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
+                        LabeledContent("Signed alerts", value: "\(model.entries.count)")
+                        LabeledContent("Renderer", value: "incident-board/1")
                     }
                 }
             }
-            Section("On this device") {
-                LabeledContent("Signed alerts", value: "\(model.entries.count)")
-                LabeledContent("Renderer", value: "incident-board/1")
-            }
+            .padding(20)
         }
-        .navigationTitle("Connection")
+        .riotHeader(eyebrow: "Transport", "Connection")
         .confirmationDialog(
             nearby.state.message,
             isPresented: Binding(
