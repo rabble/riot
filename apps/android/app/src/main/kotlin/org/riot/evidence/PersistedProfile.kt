@@ -1,7 +1,6 @@
 package org.riot.evidence
 
 import java.io.ByteArrayInputStream
-import java.io.ByteArrayOutputStream
 import java.io.DataInputStream
 import java.io.DataOutputStream
 import java.io.EOFException
@@ -26,40 +25,60 @@ data class PersistedAlert(
 data class PersistedProfile(
     val space: PersistedSpace,
     val alerts: List<PersistedAlert>,
+    val identityState: PersistedIdentityState? = null,
+)
+
+data class PersistedIdentityState(
+    val wrappingKey: ByteArray,
+    val sealedIdentity: ByteArray,
 )
 
 object PersistedProfileCodec {
     const val MAX_ENCODED_BYTES = 4 * 1024 * 1024 - 64
     private const val MAGIC = 0x52494f54
-    private const val VERSION = 1
+    private const val VERSION = 2
+    private const val LEGACY_VERSION = 1
+    const val WRAPPING_KEY_BYTES = 32
+    const val SEALED_IDENTITY_BYTES = 112
     private const val MAX_ALERTS = 256
     private const val MAX_STRING_BYTES = 16 * 1024
     private const val MAX_BUNDLE_BYTES = 2 * 1024 * 1024
 
     fun encode(profile: PersistedProfile): ByteArray {
         require(profile.alerts.size <= MAX_ALERTS) { "too many persisted alerts" }
-        val encoded = ByteArrayOutputStream().use { bytes ->
-            DataOutputStream(bytes).use { output ->
-                output.writeInt(MAGIC)
-                output.writeInt(VERSION)
-                output.writeString(profile.space.namespaceId)
-                output.writeString(profile.space.title)
-                output.writeInt(profile.alerts.size)
-                profile.alerts.forEach { alert ->
-                    output.writeString(alert.entryId)
-                    output.writeString(alert.namespaceId)
-                    output.writeString(alert.signerId)
-                    output.writeString(alert.headline)
-                    output.writeLong(alert.createdAt)
-                    output.writeBoolean(alert.validFrom != null)
-                    alert.validFrom?.let(output::writeLong)
-                    output.writeLong(alert.expiresAt)
-                    output.writeBoolean(alert.aiAssisted)
-                    require(alert.bundleBytes.size <= MAX_BUNDLE_BYTES) { "bundle is too large" }
-                    output.writeInt(alert.bundleBytes.size)
-                    output.write(alert.bundleBytes)
-                }
+        val encoded = WipingByteArrayOutputStream().use { bytes ->
+            val output = DataOutputStream(bytes)
+            output.writeInt(MAGIC)
+            output.writeInt(VERSION)
+            output.writeString(profile.space.namespaceId)
+            output.writeString(profile.space.title)
+            output.writeInt(profile.alerts.size)
+            profile.alerts.forEach { alert ->
+                output.writeString(alert.entryId)
+                output.writeString(alert.namespaceId)
+                output.writeString(alert.signerId)
+                output.writeString(alert.headline)
+                output.writeLong(alert.createdAt)
+                output.writeBoolean(alert.validFrom != null)
+                alert.validFrom?.let(output::writeLong)
+                output.writeLong(alert.expiresAt)
+                output.writeBoolean(alert.aiAssisted)
+                require(alert.bundleBytes.size <= MAX_BUNDLE_BYTES) { "bundle is too large" }
+                output.writeInt(alert.bundleBytes.size)
+                output.write(alert.bundleBytes)
             }
+            output.writeBoolean(profile.identityState != null)
+            profile.identityState?.let { identity ->
+                require(identity.wrappingKey.size == WRAPPING_KEY_BYTES) {
+                    "invalid identity wrapping key length"
+                }
+                require(identity.sealedIdentity.size == SEALED_IDENTITY_BYTES) {
+                    "invalid sealed identity length"
+                }
+                output.write(identity.wrappingKey)
+                output.write(identity.sealedIdentity)
+            }
+            output.flush()
             bytes.toByteArray()
         }
         require(encoded.size <= MAX_ENCODED_BYTES) { "persisted profile is too large" }
@@ -69,7 +88,8 @@ object PersistedProfileCodec {
     fun decode(bytes: ByteArray): PersistedProfile = try {
         DataInputStream(ByteArrayInputStream(bytes)).use { input ->
             require(input.readInt() == MAGIC) { "invalid profile header" }
-            require(input.readInt() == VERSION) { "unsupported profile version" }
+            val version = input.readInt()
+            require(version == LEGACY_VERSION || version == VERSION) { "unsupported profile version" }
             val space = PersistedSpace(input.readString(), input.readString())
             val count = input.readInt()
             require(count in 0..MAX_ALERTS) { "invalid persisted alert count" }
@@ -98,8 +118,16 @@ object PersistedProfileCodec {
                     bundle,
                 )
             }
+            val identityState = if (version == VERSION && input.readBoolean()) {
+                PersistedIdentityState(
+                    ByteArray(WRAPPING_KEY_BYTES).also(input::readFully),
+                    ByteArray(SEALED_IDENTITY_BYTES).also(input::readFully),
+                )
+            } else {
+                null
+            }
             require(input.available() == 0) { "trailing persisted profile bytes" }
-            PersistedProfile(space, alerts)
+            PersistedProfile(space, alerts, identityState)
         }
     } catch (error: EOFException) {
         throw IllegalArgumentException("truncated persisted profile", error)

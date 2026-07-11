@@ -1,5 +1,7 @@
 package org.riot.evidence
 
+import java.io.ByteArrayOutputStream
+import java.io.DataOutputStream
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -27,9 +29,11 @@ class PersistedProfileCodecTest {
                     bundleBytes = byteArrayOf(0x01, 0x02, 0x7f),
                 ),
             ),
+            identityState = PersistedIdentityState(ByteArray(32) { 7 }, ByteArray(112) { 9 }),
         )
 
-        val restored = PersistedProfileCodec.decode(PersistedProfileCodec.encode(profile))
+        val encoded = PersistedProfileCodec.encode(profile)
+        val restored = PersistedProfileCodec.decode(encoded)
 
         assertEquals(entryId, restored.alerts.single().entryId)
         assertEquals(namespaceId, restored.alerts.single().namespaceId)
@@ -39,6 +43,32 @@ class PersistedProfileCodecTest {
         assertEquals(1_720_003_600L, restored.alerts.single().expiresAt)
         assertTrue(restored.alerts.single().aiAssisted)
         assertArrayEquals(profile.alerts.single().bundleBytes, restored.alerts.single().bundleBytes)
+        assertArrayEquals(ByteArray(32) { 7 }, restored.identityState!!.wrappingKey)
+        assertArrayEquals(ByteArray(112) { 9 }, restored.identityState!!.sealedIdentity)
+        encoded.fill(0)
+        restored.identityState!!.wrappingKey.fill(0)
+    }
+
+    @Test
+    fun legacyVersionOneProfileMigratesWithoutIdentityState() {
+        val legacy = ByteArrayOutputStream().use { bytes ->
+            DataOutputStream(bytes).use { output ->
+                output.writeInt(0x52494f54)
+                output.writeInt(1)
+                output.writeInt(64)
+                output.write("02".repeat(32).toByteArray())
+                output.writeInt(16)
+                output.write("Legacy aid space".toByteArray())
+                output.writeInt(0)
+            }
+            bytes.toByteArray()
+        }
+
+        val migrated = PersistedProfileCodec.decode(legacy)
+
+        assertEquals("Legacy aid space", migrated.space.title)
+        assertTrue(migrated.alerts.isEmpty())
+        assertEquals(null, migrated.identityState)
     }
 
     @Test

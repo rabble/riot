@@ -17,6 +17,55 @@ import uniffi.riot_ffi.openLocalProfile
 @RunWith(AndroidJUnit4::class)
 class BindingSemanticsTest {
     @Test
+    fun profileWithoutIdentityStateMigratesOnceThenKeepsSigner() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val directory = File(context.cacheDir, "identity-migration-${System.nanoTime()}").apply { mkdirs() }
+        val store = AndroidKeystoreProfileStore(
+            "riot-conference-profile",
+            File(directory, "conference-profile.bin"),
+        )
+        store.save(PersistedProfile(PersistedSpace("02".repeat(32), "Legacy space"), emptyList()))
+
+        val migratedSigner = RiotController(directory).use { it.identity().signingKeyId }
+        val restoredSigner = RiotController(directory).use { it.identity().signingKeyId }
+        val migratedState = store.load()!!.identityState!!
+
+        assertEquals(migratedSigner, restoredSigner)
+        assertEquals(PersistedProfileCodec.WRAPPING_KEY_BYTES, migratedState.wrappingKey.size)
+        assertEquals(PersistedProfileCodec.SEALED_IDENTITY_BYTES, migratedState.sealedIdentity.size)
+        migratedState.wrappingKey.fill(0)
+        store.clear()
+        directory.deleteRecursively()
+    }
+
+    @Test
+    fun signerIdentitySurvivesFreshControllerAndCoreRestart() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val directory = File(context.cacheDir, "signer-continuity-${System.nanoTime()}").apply { mkdirs() }
+        lateinit var firstSigner: String
+        lateinit var firstEntryId: String
+
+        RiotController(directory).use { first ->
+            first.createSpace("Durable Mutual Aid")
+            firstSigner = first.identity().signingKeyId
+            val signed = first.createAndSignAlert("Before restart", "First offline post.", false)
+            firstEntryId = signed.entryId
+            assertEquals(firstSigner, signed.signerId)
+        }
+        RiotController(directory).use { restored ->
+            val secondSigner = restored.identity().signingKeyId
+            val signed = restored.createAndSignAlert("After restart", "Second offline post.", true)
+
+            assertEquals(firstSigner, secondSigner)
+            assertEquals(firstSigner, signed.signerId)
+            assertEquals(64, secondSigner.length)
+            assertEquals(setOf(firstEntryId, signed.entryId), restored.entries().map { it.entryId }.toSet())
+        }
+
+        directory.deleteRecursively()
+    }
+
+    @Test
     fun controllerCreatesAndSignsAReviewedAlert() {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         val directory = File(context.cacheDir, "controller-sign-${System.nanoTime()}").apply { mkdirs() }

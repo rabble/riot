@@ -23,7 +23,8 @@ class AndroidKeystoreProfileStore(
     fun save(profile: PersistedProfile) {
         val cipher = Cipher.getInstance(TRANSFORMATION)
         cipher.init(Cipher.ENCRYPT_MODE, getOrCreateKey())
-        val ciphertext = cipher.doFinal(PersistedProfileCodec.encode(profile))
+        val plaintext = PersistedProfileCodec.encode(profile)
+        val ciphertext = TemporaryKey.useOwned(plaintext) { cipher.doFinal(it) }
         val envelope = ByteArrayOutputStream().use { bytes ->
             DataOutputStream(bytes).use { output ->
                 output.writeInt(cipher.iv.size)
@@ -62,7 +63,8 @@ class AndroidKeystoreProfileStore(
         }
         val cipher = Cipher.getInstance(TRANSFORMATION)
         cipher.init(Cipher.DECRYPT_MODE, getOrCreateKey(), GCMParameterSpec(128, iv))
-        return PersistedProfileCodec.decode(cipher.doFinal(ciphertext))
+        val plaintext = cipher.doFinal(ciphertext)
+        return TemporaryKey.useOwned(plaintext, PersistedProfileCodec::decode)
     }
 
     fun clear() {

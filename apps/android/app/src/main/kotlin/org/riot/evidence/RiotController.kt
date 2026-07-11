@@ -1,6 +1,7 @@
 package org.riot.evidence
 
 import java.io.File
+import java.security.SecureRandom
 import uniffi.riot_ffi.AlertCertainty
 import uniffi.riot_ffi.AlertDraftInput
 import uniffi.riot_ffi.AlertSeverity
@@ -9,14 +10,16 @@ import uniffi.riot_ffi.CurrentEntry
 import uniffi.riot_ffi.MobileImportPreview
 import uniffi.riot_ffi.MobileProfile
 import uniffi.riot_ffi.PublicSpace
+import uniffi.riot_ffi.PublicIdentity
 import uniffi.riot_ffi.openLocalProfile
+import uniffi.riot_ffi.openProfileFromSealedIdentity
 
 class RiotController(filesDir: File) : AutoCloseable {
-    private val profile: MobileProfile = openLocalProfile()
     private val store = AndroidKeystoreProfileStore(
         "riot-conference-profile",
         File(filesDir, "conference-profile.bin"),
     )
+    private val profile: MobileProfile
     private var persisted: PersistedProfile? = null
     private var pendingPreview: MobileImportPreview? = null
     private var pendingImportBytes: ByteArray? = null
@@ -25,14 +28,16 @@ class RiotController(filesDir: File) : AutoCloseable {
         private set
 
     init {
-        restore()
+        val snapshot = store.load()
+        profile = openProfile(snapshot)
+        restore(snapshot)
     }
 
     fun createSpace(title: String): PublicSpace {
         val space = profile.createPublicSpace(title.trim())
         currentSpace = space
         persisted = PersistedProfile(PersistedSpace(space.namespaceId, space.title), emptyList())
-        store.save(persisted!!)
+        persist(persisted!!)
         return space
     }
 
@@ -40,9 +45,11 @@ class RiotController(filesDir: File) : AutoCloseable {
         val joined = profile.joinPublicSpace(space)
         currentSpace = joined
         persisted = PersistedProfile(PersistedSpace(joined.namespaceId, joined.title), emptyList())
-        store.save(persisted!!)
+        persist(persisted!!)
         return joined
     }
+
+    fun identity(): PublicIdentity = profile.identity()
 
     fun entries(): List<CurrentEntry> = profile.listCurrentEntries()
 
@@ -67,7 +74,7 @@ class RiotController(filesDir: File) : AutoCloseable {
         val signed = profile.signDraft(draft.draftId)
         val snapshot = checkNotNull(persisted)
         persisted = snapshot.copy(alerts = snapshot.alerts + signed.entry.toPersisted(signed.bundleBytes))
-        store.save(persisted!!)
+        persist(persisted!!)
         return signed.entry
     }
 
@@ -91,13 +98,13 @@ class RiotController(filesDir: File) : AutoCloseable {
                 .filterNot { it.entryId in existingIds }
                 .map { it.toPersisted(bundle) },
         )
-        PersistedProfileCodec.encode(prospective)
+        TemporaryKey.useOwned(PersistedProfileCodec.encode(prospective)) { Unit }
         preview.createPlan(entries.map { it.entryId }).use { it.accept() }
         preview.close()
         pendingPreview = null
         pendingImportBytes = null
         persisted = prospective
-        store.save(prospective)
+        persist(prospective)
         return entries
     }
 
@@ -107,8 +114,8 @@ class RiotController(filesDir: File) : AutoCloseable {
         profile.close()
     }
 
-    private fun restore() {
-        val snapshot = store.load() ?: return
+    private fun restore(snapshot: PersistedProfile?) {
+        if (snapshot == null) return
         currentSpace = profile.joinPublicSpace(snapshot.space.toPublicSpace())
         val restoredBundles = mutableListOf<ByteArray>()
         snapshot.alerts.forEach { alert ->
@@ -119,6 +126,48 @@ class RiotController(filesDir: File) : AutoCloseable {
             }
             restoredBundles += alert.bundleBytes
         }
-        persisted = snapshot
+        persisted = snapshot.copy(identityState = null)
+        if (snapshot.identityState == null) {
+            persist(persisted!!)
+        }
+    }
+
+    private fun openProfile(snapshot: PersistedProfile?): MobileProfile {
+        val state = snapshot?.identityState ?: return openLocalProfile()
+        return try {
+            TemporaryKey.useCopy(state.wrappingKey) { temporary ->
+                openProfileFromSealedIdentity(temporary, state.sealedIdentity)
+            }
+        } finally {
+            state.wrappingKey.fill(0)
+        }
+    }
+
+    private fun persist(content: PersistedProfile) {
+        val storedState = store.load()?.identityState
+        val state = storedState ?: createIdentityState()
+        try {
+            store.save(content.copy(identityState = state))
+            persisted = content.copy(identityState = null)
+        } finally {
+            state.wrappingKey.fill(0)
+        }
+    }
+
+    private fun createIdentityState(): PersistedIdentityState {
+        val wrappingKey = ByteArray(PersistedProfileCodec.WRAPPING_KEY_BYTES)
+        SecureRandom().nextBytes(wrappingKey)
+        return try {
+            val sealed = TemporaryKey.useCopy(wrappingKey) { temporary ->
+                profile.sealIdentity(temporary)
+            }
+            check(sealed.size == PersistedProfileCodec.SEALED_IDENTITY_BYTES) {
+                "Core returned an invalid sealed identity"
+            }
+            PersistedIdentityState(wrappingKey, sealed)
+        } catch (error: Throwable) {
+            wrappingKey.fill(0)
+            throw error
+        }
     }
 }

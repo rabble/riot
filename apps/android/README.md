@@ -36,11 +36,22 @@ The binding-semantic device test turns no network on and asserts that full
 entry, namespace, and signer IDs, freshness, and the AI-assistance disclosure
 survive that reload.
 
-The current Rust mobile boundary does not yet export a durable signing-key
-container. Existing signed entries restore faithfully, but opening a fresh
-core profile creates a new local signing identity for later posts. Production
-key continuity therefore remains a core/FFI follow-up, not a claim of this
-shell.
+Signer continuity uses two explicit encryption layers. Rust seals its opaque
+112-byte identity state with a random 32-byte wrapping key. That wrapping key
+and sealed state exist only inside the bounded profile plaintext, whose entire
+envelope is encrypted by the non-exportable Android Keystore AES-GCM key. On
+restart, Android decrypts the profile and passes temporary byte-array copies to
+the narrow `openProfileFromSealedIdentity` binding; temporary wrapping-key
+copies are zeroed in `finally` after both seal and open calls. The encoded and
+decrypted profile plaintext arrays are likewise cleared after AES-GCM or decode,
+and the codec wipes its internal byte-stream buffer on close. This is not a
+claim that Rust receives or holds a direct Android Keystore key handle.
+
+Version-one profiles without identity state migrate safely: their content and
+space restore first, the resulting local identity is sealed into version two,
+and subsequent restarts retain that signer. The device suite signs before and
+after a fresh controller/core restart and compares the complete 64-character
+signer identifier.
 
 ## Reproduce the checks
 
