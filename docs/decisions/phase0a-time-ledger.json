@@ -197,12 +197,44 @@
       ],
       "source": "commit 3b719b3 and fresh independent spec/quality approval",
       "note": "Spec-ambiguity repair: 64 plans per live preview, parent-consumption precedence, and replacement-time tombstone release; TDD and 75 conformance tests. Full G2 remains blocked by the recorded Task 5 matrix."
+    },
+    {
+      "work_unit": "WU2 G2 (arbiter lifecycle-concurrency evidence)",
+      "status": "completed",
+      "reported_actual_hours": 0.2,
+      "charged_hours": 0.2,
+      "commits": [
+        "934004d"
+      ],
+      "evidence_paths": [
+        "crates/riot-core/tests/core_import_concurrency.rs",
+        "crates/riot-core/Cargo.toml"
+      ],
+      "source": "cargo test -p riot-core --test core_import_concurrency (3 passed)",
+      "note": "Three real-thread race tests prove the single Arc<Mutex> arbiter linearizes racing plan issuance, racing close/commit on one plan, and racing inspect/commit; all pass against the existing lock with no production change. Satisfies the WU2 three-lifecycle-concurrency-test requirement. Hours are an estimate, not a tracked duration. 0.2h from the WU2 reserve."
+    },
+    {
+      "work_unit": "WU2 G2 (retained_store_budget_bytes charge accounting)",
+      "status": "partial",
+      "reported_actual_hours": 0.3,
+      "charged_hours": 0.3,
+      "commits": [
+        "d4edb77"
+      ],
+      "evidence_paths": [
+        "crates/riot-core/src/session.rs",
+        "crates/riot-core/src/import/join.rs",
+        "crates/riot-core/tests/core_import_charge_budget.rs",
+        "crates/riot-core/Cargo.toml"
+      ],
+      "source": "cargo test -p riot-core --test core_import_charge_budget (3 passed)",
+      "note": "Wires the 16 MiB retained_store_budget_bytes charge from fixtures/manifest.json into commit; pure-arithmetic boundary unit test plus 3 integration tests. Not a clean G2 pass: a subsequent codex review found the formula undercounts (charges only entry_bytes.len, not retained capability/token bytes), never charges the unbounded route string, drops charge on entry pruning, and never tracks or enforces the namespace_views=64 ceiling. Follow-up fix queued (blocked on session.rs). Hours are an estimate, not a tracked duration. 0.3h from the WU2 reserve."
     }
   ],
   "totals": {
-    "charged_hours": 8.30,
+    "charged_hours": 8.80,
     "reserved_g0_g1_repair_hours": 0.0,
-    "reserved_wu2_hours": 1.45,
+    "reserved_wu2_hours": 0.95,
     "reserved_wu3_hours": 4.0,
     "reserved_contingency_hours": 0.25,
     "reserved_wu4_hours": 2.0
