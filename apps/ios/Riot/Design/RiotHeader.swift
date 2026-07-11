@@ -36,10 +36,15 @@ public struct RiotHeader: View {
 
 public extension View {
     func riotHeader(eyebrow: String? = nil, _ title: String) -> some View {
-        self
-            .toolbar(.hidden, for: .navigationBar)
-            .safeAreaInset(edge: .top, spacing: 0) {
-                RiotHeader(eyebrow: eyebrow, title: title)
-            }
+        let content = safeAreaInset(edge: .top, spacing: 0) {
+            RiotHeader(eyebrow: eyebrow, title: title)
+        }
+        // ToolbarPlacement.navigationBar exists only on iOS; there is no
+        // navigation bar to hide on macOS, where RiotKit also compiles.
+        #if os(iOS)
+            return content.toolbar(.hidden, for: .navigationBar)
+        #else
+            return content
+        #endif
     }
 }
