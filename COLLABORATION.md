@@ -189,6 +189,8 @@ don't lag content again.
 
 | Codex (continuation) | App-directory Task 4: publish, endorse, and integrity-checked app-index scanning | `crates/riot-core/src/apps/index.rs`, `crates/riot-core/src/apps/endorse.rs`, `crates/riot-core/tests/apps_index_io.rs`, Task 4 correction in `docs/superpowers/plans/2026-07-11-app-directory.md` | **Done, released — independently approved** | Landed `057b282` + security fixes `9684525` + `c5424d7`. Fifteen focused tests cover publish/scan, partial arrival, invalid-complete exclusion, deterministic multi-carrier selection, namespace-preserving trust, global endorsement dedup and the 256/257 cap. Spec review PASS; quality review PASS after two fix rounds; strict all-target Clippy clean. Canonical app identity now matches the released FFI digest (`aa9633…` for the current checklist); the active starter-catalog owner still needs to replace its stale `bd5249…` test pin before the shared full-workspace gate is green. Files are free. |
 
+| Codex (continuation) | App-directory Task 7: `riot-app` keygen/pack/inspect publishing CLI | New `crates/riot-app-cli/`, root `Cargo.toml`/`Cargo.lock` workspace registration | **Executing (TDD + two-stage review)** | Task 4 is released, so the CLI's required real import-and-scan proof is unblocked. Scope is isolated from active native runtime claims; packed output must use the canonical digest and standard RIOTE1 import bundle. |
+
 ## Active claim: JS apps runtime — iOS (2026-07-11, new)
 
 | Owner | Scope | Files | State | Evidence / handoff |
