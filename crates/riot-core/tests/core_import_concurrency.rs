@@ -44,8 +44,7 @@ fn signed(author: &EvidenceAuthor, object: u8, tag: u8) -> SignedWillowEntry {
         ai_assisted: false,
     })
     .expect("payload");
-    let entry =
-        build_alert_entry(author, &[object; 16], &[1; 16], 100, &payload).expect("entry");
+    let entry = build_alert_entry(author, &[object; 16], &[1; 16], 100, &payload).expect("entry");
     let authorised = authorise_entry(author, entry).expect("authorise");
     let token = authorised.authorisation_token();
     let signature: ed25519_dalek::Signature = token.signature().clone().into();
@@ -206,7 +205,10 @@ fn core_import_concurrency_racing_inspect_and_commit_never_observes_a_torn_gener
                     .expect_preview()
             })
         };
-        (commit_handle.join().unwrap(), inspect_handle.join().unwrap())
+        (
+            commit_handle.join().unwrap(),
+            inspect_handle.join().unwrap(),
+        )
     });
 
     // Whichever interleaving occurred, the new preview's plan_all() must

@@ -22,17 +22,28 @@ const MAX_PLANS_PER_PREVIEW: usize = 64;
 
 /// Fixed accounting charges and the hard retained-store budget from
 /// fixtures/manifest.json. These bound the store's *total* retained byte
-/// footprint (live entries plus permanent receipt/reference history), which
-/// no single count-based ceiling above composes to guarantee on its own.
+/// footprint (live entries plus permanent receipt/reference/namespace/index
+/// history), which no single count-based ceiling above composes to
+/// guarantee on its own.
 const STORE_CHARGE_NAMESPACE_BYTES: u64 = 256;
+/// Charged once per retained `DispositionRow`, matching the actual
+/// per-row growth of a receipt's retained `Vec<DispositionRow>` — a receipt
+/// with more rows genuinely retains more bytes, so a flat per-receipt charge
+/// would undercount.
 const STORE_CHARGE_RECEIPT_BYTES: u64 = 256;
 const STORE_CHARGE_DIGEST_REFERENCE_BYTES: u64 = 32;
 const RETAINED_STORE_BUDGET_BYTES: u64 = 16_777_216;
+/// `namespace_views` from fixtures/manifest.json: the most distinct Willow
+/// namespaces one store may ever observe.
+const MAX_NAMESPACE_VIEWS: usize = 64;
 
-/// Would committing a receipt that charges `receipt_charge_delta` bytes,
+/// Would committing a receipt that charges `receipt_charge_delta` bytes
+/// (per-row overhead, digest references, and the receipt's own route bytes),
 /// against a store already carrying `retained_receipt_charge_bytes` of
-/// permanent receipt/reference history and `live_entry_charge_bytes` of
-/// current live-entry charge, push the store over its frozen retained-byte
+/// permanent receipt history, `seen_index_charge_bytes` of permanent
+/// per-seen-entry index overhead, `live_entry_bytes` of current live-entry
+/// canonical bytes, and `namespace_charge_bytes` for every distinct
+/// namespace ever observed, push the store over its frozen retained-byte
 /// budget? Pure arithmetic: exactly testable at the boundary without
 /// needing to legitimately construct 16 MiB of retained state, which the
 /// tighter per-unit ceilings already prevent under the current
@@ -41,11 +52,15 @@ const RETAINED_STORE_BUDGET_BYTES: u64 = 16_777_216;
 fn store_charge_exceeds_budget(
     retained_receipt_charge_bytes: u64,
     receipt_charge_delta: u64,
-    live_entry_charge_bytes: u64,
+    seen_index_charge_bytes: u64,
+    live_entry_bytes: u64,
+    namespace_charge_bytes: u64,
 ) -> bool {
     retained_receipt_charge_bytes
         .saturating_add(receipt_charge_delta)
-        .saturating_add(live_entry_charge_bytes)
+        .saturating_add(seen_index_charge_bytes)
+        .saturating_add(live_entry_bytes)
+        .saturating_add(namespace_charge_bytes)
         > RETAINED_STORE_BUDGET_BYTES
 }
 
@@ -67,6 +82,26 @@ pub enum SessionError {
     /// Test-only injected pre-swap failure (proves rollback).
     Injected,
     Internal,
+}
+
+/// Full public identifiers recovered from canonical entry bytes. Consumers
+/// that only need display/provenance facts do not receive a generic Willow
+/// value or any signer material.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PublicEntryIdentity {
+    pub namespace_id: [u8; 32],
+    pub signer_id: [u8; 32],
+}
+
+/// Reads public namespace and signer identifiers from canonical entry bytes.
+pub fn public_entry_identity(bytes: &[u8]) -> Result<PublicEntryIdentity, SessionError> {
+    use willow25::groupings::{Keylike, Namespaced};
+
+    let entry = decode_entry_canonic(bytes).map_err(|_| SessionError::Internal)?;
+    Ok(PublicEntryIdentity {
+        namespace_id: *entry.namespace_id().as_bytes(),
+        signer_id: *entry.subspace_id().as_bytes(),
+    })
 }
 
 /// Local import context: the route the bytes arrived by. Receipt time comes
@@ -153,11 +188,17 @@ struct StoreState {
     /// entry id -> first receipt that accepted it, and its arrival disposition.
     first_receipt: Vec<(EntryId, u64, bool)>, // (id, receipt_id, dominated_on_arrival)
     next_receipt_id: u64,
-    /// Permanent charge from the namespace (once) plus every committed
-    /// receipt's fixed overhead and digest references. Monotonic — unlike
-    /// live-entry charge, receipt history is never pruned. Live-entry
-    /// charge is added on top at read time via `join.live_entry_charge_bytes()`.
+    /// Permanent charge from every committed receipt's per-row overhead,
+    /// digest references, and route bytes. Monotonic — receipt history is
+    /// never pruned. Entry-index and live-entry-byte charge are added on top
+    /// at read time via `join.seen_index_charge_bytes()` /
+    /// `join.live_entry_bytes()`; namespace charge via `seen_namespaces`.
     retained_receipt_charge_bytes: u64,
+    /// Distinct Willow namespace IDs ever observed by this store, bounded at
+    /// `MAX_NAMESPACE_VIEWS`. `JoinState` can hold entries from more than
+    /// one namespace at once (they simply never prune each other), so this
+    /// is tracked independently of the join state.
+    seen_namespaces: Vec<[u8; 32]>,
 }
 
 /// A verified, ready-to-commit entry captured at inspection time. Only
@@ -283,7 +324,8 @@ impl RiotSession {
             receipts: Vec::new(),
             first_receipt: Vec::new(),
             next_receipt_id: 1,
-            retained_receipt_charge_bytes: STORE_CHARGE_NAMESPACE_BYTES,
+            retained_receipt_charge_bytes: 0,
+            seen_namespaces: Vec::new(),
         });
         st.store_closed = false;
         Ok(EvidenceStore {
@@ -331,6 +373,15 @@ impl EvidenceStore {
         Ok(st.store.as_ref().unwrap().join.live_ids().len())
     }
 
+    /// Complete canonical IDs for the current live view. This keeps callers
+    /// on a typed public identity boundary rather than exposing stored Willow
+    /// values or signer state.
+    pub fn live_entry_ids(&self) -> Result<Vec<EntryId>, SessionError> {
+        let st = self.inner.lock().map_err(|_| SessionError::Internal)?;
+        st.require_store(self.store_id)?;
+        Ok(st.store.as_ref().unwrap().join.live_ids())
+    }
+
     pub fn receipt_count(&self) -> Result<usize, SessionError> {
         let st = self.inner.lock().map_err(|_| SessionError::Internal)?;
         st.require_store(self.store_id)?;
@@ -353,7 +404,10 @@ impl EvidenceStore {
         let st = self.inner.lock().map_err(|_| SessionError::Internal)?;
         st.require_store(self.store_id)?;
         let store = st.store.as_ref().unwrap();
-        Ok(store.retained_receipt_charge_bytes + store.join.live_entry_charge_bytes())
+        Ok(store.retained_receipt_charge_bytes
+            + store.join.seen_index_charge_bytes()
+            + store.join.live_entry_bytes()
+            + store.seen_namespaces.len() as u64 * STORE_CHARGE_NAMESPACE_BYTES)
     }
 
     pub fn close(&self) -> Result<(), SessionError> {
@@ -747,12 +801,43 @@ impl ImportPlan {
                 EntryDisposition::AlreadyPresent { .. } => 0,
             })
             .sum();
-        let receipt_charge_delta =
-            STORE_CHARGE_RECEIPT_BYTES + reference_count * STORE_CHARGE_DIGEST_REFERENCE_BYTES;
+        // Charged once per retained DispositionRow (not once per receipt):
+        // a receipt's Vec<DispositionRow> genuinely grows with row count.
+        // The route is retained once per receipt, so its bytes are charged
+        // once here rather than per row.
+        let receipt_charge_delta = receipt.dispositions.len() as u64 * STORE_CHARGE_RECEIPT_BYTES
+            + reference_count * STORE_CHARGE_DIGEST_REFERENCE_BYTES
+            + receipt.route.len() as u64;
+
+        // Every distinct Willow namespace this batch introduces charges once
+        // and counts against the namespace_views ceiling. An AlreadyPresent
+        // entry's namespace was necessarily already seen, so scanning the
+        // whole batch (not just new winners) cannot spuriously inflate this.
+        let new_namespaces: Vec<[u8; 32]> = {
+            use willow25::groupings::Namespaced;
+            let mut found = Vec::new();
+            for v in &entries {
+                let namespace_id = *v.authorised.entry().namespace_id().as_bytes();
+                if !store.seen_namespaces.contains(&namespace_id) && !found.contains(&namespace_id)
+                {
+                    found.push(namespace_id);
+                }
+            }
+            found
+        };
+        if store.seen_namespaces.len() + new_namespaces.len() > MAX_NAMESPACE_VIEWS {
+            terminate_plan(&mut st, self.plan_id, PlanTerminal::Consumed);
+            return Err(SessionError::StoreFull);
+        }
+        let namespace_charge_bytes = (store.seen_namespaces.len() + new_namespaces.len()) as u64
+            * STORE_CHARGE_NAMESPACE_BYTES;
+
         if store_charge_exceeds_budget(
             store.retained_receipt_charge_bytes,
             receipt_charge_delta,
-            join_plan.next.live_entry_charge_bytes(),
+            join_plan.next.seen_index_charge_bytes(),
+            join_plan.next.live_entry_bytes(),
+            namespace_charge_bytes,
         ) {
             terminate_plan(&mut st, self.plan_id, PlanTerminal::Consumed);
             return Err(SessionError::StoreFull);
@@ -760,6 +845,7 @@ impl ImportPlan {
         store.join = join_plan.next;
         store.generation = after_generation;
         store.retained_receipt_charge_bytes += receipt_charge_delta;
+        store.seen_namespaces.extend(new_namespaces);
         for rec in newly_first {
             if !store.first_receipt.iter().any(|(id, _, _)| *id == rec.0) {
                 store.first_receipt.push(rec);
@@ -820,20 +906,30 @@ mod charge_budget_tests {
         // Exactly at the ceiling: not exceeded.
         assert!(!store_charge_exceeds_budget(
             RETAINED_STORE_BUDGET_BYTES - 100,
-            60,
-            40
+            30,
+            30,
+            20,
+            20
         ));
         // One byte over the ceiling: exceeded.
         assert!(store_charge_exceeds_budget(
             RETAINED_STORE_BUDGET_BYTES - 100,
-            60,
-            41
+            30,
+            30,
+            20,
+            21
         ));
     }
 
     #[test]
-    fn store_charge_exceeds_budget_sums_all_three_components_without_overflow_panics() {
-        assert!(store_charge_exceeds_budget(u64::MAX, u64::MAX, u64::MAX));
-        assert!(!store_charge_exceeds_budget(0, 0, 0));
+    fn store_charge_exceeds_budget_sums_all_five_components_without_overflow_panics() {
+        assert!(store_charge_exceeds_budget(
+            u64::MAX,
+            u64::MAX,
+            u64::MAX,
+            u64::MAX,
+            u64::MAX
+        ));
+        assert!(!store_charge_exceeds_budget(0, 0, 0, 0, 0));
     }
 }

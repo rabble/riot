@@ -17,14 +17,16 @@
 use willow25::authorisation::AuthorisedEntry;
 use willow25::entry::EntrylikeExt;
 
-use crate::willow::{encode_entry, entry_id, EntryId};
+use crate::willow::{encode_entry, entry_id, Entry, EntryId};
 
 /// Ceilings from fixtures/manifest.json.
 const MAX_STORE_ENTRIES: usize = 1_024;
 const MAX_REFERENCES: usize = 1_024;
-/// Fixed per-live-entry accounting charge toward `retained_store_budget_bytes`
-/// (see `session::RETAINED_STORE_BUDGET_BYTES`), on top of the entry's own
-/// canonical byte length.
+/// Fixed per-seen-entry accounting charge toward `retained_store_budget_bytes`
+/// (see `session::RETAINED_STORE_BUDGET_BYTES`). Charged permanently once an
+/// entry is accepted (mirrors the permanent `seen`/`first_receipt` index
+/// growth), separately from the entry's own canonical bytes, which are only
+/// retained — and only charged — while the entry is live.
 const STORE_CHARGE_ENTRY_BYTES: u64 = 512;
 
 /// A bounded join could not represent the complete result without exceeding
@@ -37,19 +39,26 @@ pub enum JoinLimitError {
 }
 
 /// One stored entry with its precomputed canonical bytes and value identity.
+/// Deliberately retains only the `Entry` (needed for future prune
+/// comparisons), never the authorising capability/signature token: nothing
+/// downstream reads them again after `inspect`-time verification, so
+/// retaining them would be both wasted memory and an uncharged, unbounded
+/// contribution to the retained-store budget (capabilities run up to 64 KiB
+/// each per `fixtures/manifest.json`).
 #[derive(Clone)]
 struct Stored {
-    authorised: AuthorisedEntry,
+    entry: Entry,
     entry_bytes: Vec<u8>,
     id: EntryId,
 }
 
 impl Stored {
     fn new(authorised: AuthorisedEntry) -> Self {
-        let entry_bytes = encode_entry(authorised.entry());
+        let entry = authorised.entry().clone();
+        let entry_bytes = encode_entry(&entry);
         let id = entry_id(&entry_bytes);
         Self {
-            authorised,
+            entry,
             entry_bytes,
             id,
         }
@@ -57,7 +66,7 @@ impl Stored {
 
     /// Does this entry prune `other`? (Willow's canonical predicate.)
     fn prunes(&self, other: &Stored) -> bool {
-        self.authorised.entry().prunes(other.authorised.entry())
+        self.entry.prunes(&other.entry)
     }
 }
 
@@ -209,16 +218,20 @@ impl JoinState {
         self.live.len()
     }
 
-    /// Sum of the store's byte-charge for currently live entries: a fixed
-    /// per-entry accounting overhead plus each entry's actual canonical
-    /// size. Only live entries are charged here — pruned entries stop
-    /// contributing once they leave the live set, even though their
-    /// receipt/reference history remains charged permanently.
-    pub(crate) fn live_entry_charge_bytes(&self) -> u64 {
-        self.live
-            .iter()
-            .map(|s| STORE_CHARGE_ENTRY_BYTES + s.entry_bytes.len() as u64)
-            .sum()
+    /// Permanent per-seen-entry index charge: `seen` and `first_receipt`
+    /// retain a record of every entry ever accepted for the store's
+    /// lifetime, so this charge must never decrease, even as entries are
+    /// pruned from the live view.
+    pub(crate) fn seen_index_charge_bytes(&self) -> u64 {
+        self.seen.len() as u64 * STORE_CHARGE_ENTRY_BYTES
+    }
+
+    /// Sum of currently live entries' own canonical byte length. Unlike the
+    /// seen-index charge, this genuinely drops when an entry is pruned: its
+    /// `Stored` value (and thus its `entry_bytes` allocation) leaves `live`
+    /// and is freed.
+    pub(crate) fn live_entry_bytes(&self) -> u64 {
+        self.live.iter().map(|s| s.entry_bytes.len() as u64).sum()
     }
 
     /// Canonical entry bytes of every live entry.
