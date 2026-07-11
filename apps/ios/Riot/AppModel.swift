@@ -6,7 +6,6 @@ public enum RiotDestination: String, CaseIterable, Identifiable, Sendable {
     case directory
     case board
     case compose
-    case importPreview
     case connection
 
     public var id: Self { self }
@@ -19,7 +18,6 @@ public enum RiotDestination: String, CaseIterable, Identifiable, Sendable {
         case .directory: "App directory"
         case .board: "Incident board"
         case .compose: "Compose & sign"
-        case .importPreview: "Import preview"
         case .connection: "Connection"
         }
     }
@@ -30,7 +28,6 @@ public enum RiotDestination: String, CaseIterable, Identifiable, Sendable {
         case .directory: "Apps"
         case .board: "Board"
         case .compose: "Compose"
-        case .importPreview: "Import"
         case .connection: "Connect"
         }
     }
@@ -41,7 +38,6 @@ public enum RiotDestination: String, CaseIterable, Identifiable, Sendable {
         case .directory: "square.grid.2x2"
         case .board: "exclamationmark.bubble"
         case .compose: "square.and.pencil"
-        case .importPreview: "tray.and.arrow.down"
         case .connection: "antenna.radiowaves.left.and.right"
         }
     }
@@ -57,7 +53,6 @@ public final class RiotAppModel: ObservableObject {
     @Published public var destination: RiotDestination = .spaces
     @Published public private(set) var space: RiotSpace?
     @Published public private(set) var entries: [RiotEntry] = []
-    @Published public private(set) var importEntries: [RiotEntry] = []
     @Published public private(set) var apps: [RiotSpaceApp] = []
     @Published public private(set) var connectionStatus: RiotConnectionStatus = .offline
     @Published public private(set) var errorMessage: String?

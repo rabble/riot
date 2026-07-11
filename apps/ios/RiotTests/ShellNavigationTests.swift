@@ -2,7 +2,7 @@ import XCTest
 @testable import RiotKit
 
 final class ShellNavigationTests: XCTestCase {
-    func testConferenceShellExposesOnlyTheSixPlannedSurfaces() {
+    func testConferenceShellExposesOnlyWorkingSurfaces() {
         XCTAssertEqual(
             RiotDestination.phoneTabs.map(\.title),
             [
@@ -10,13 +10,12 @@ final class ShellNavigationTests: XCTestCase {
                 "App directory",
                 "Incident board",
                 "Compose & sign",
-                "Import preview",
                 "Connection",
             ]
         )
         XCTAssertEqual(
             RiotDestination.phoneTabs.map(\.tabTitle),
-            ["Spaces", "Apps", "Board", "Compose", "Import", "Connect"]
+            ["Spaces", "Apps", "Board", "Compose", "Connect"]
         )
     }
 

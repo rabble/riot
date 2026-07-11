@@ -48,7 +48,6 @@ struct ConferenceShellView: View {
         case .directory: AppDirectoryTab(model: model)
         case .board: IncidentBoardView(model: model)
         case .compose: ComposeReviewSignView(model: model)
-        case .importPreview: ImportPreviewView(model: model)
         case .connection: ConnectionStatusView(model: model)
         }
     }
@@ -272,45 +271,6 @@ private struct ComposeReviewSignView: View {
             .padding(20)
         }
         .riotHeader(eyebrow: "Draft, review, sign", "Compose & sign")
-    }
-}
-
-private struct ImportPreviewView: View {
-    @ObservedObject var model: RiotAppModel
-    @Environment(\.colorScheme) private var colorScheme
-
-    var body: some View {
-        ScrollView {
-            VStack(spacing: 16) {
-                RiotCard {
-                    VStack(alignment: .leading, spacing: 10) {
-                        RiotBadge("Nothing is accepted automatically")
-                        Text("Nearby and file transports will place signed public entries here. You choose what enters this local space.")
-                            .font(.riot(.body, size: 15, relativeTo: .callout))
-                            .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
-                    }
-                }
-                if model.importEntries.isEmpty {
-                    RiotEmptyState(
-                        title: "No pending import",
-                        message: "Incoming signed entries will appear here for you to preview before they touch your board."
-                    )
-                } else {
-                    ForEach(model.importEntries) { entry in
-                        RiotCard {
-                            VStack(alignment: .leading, spacing: 8) {
-                                Text(entry.headline)
-                                    .font(.riot(.body, size: 16, relativeTo: .headline))
-                                    .foregroundStyle(RiotTheme.ink(for: colorScheme))
-                                IdentifierRow(label: "Signer", value: entry.signerID)
-                            }
-                        }
-                    }
-                }
-            }
-            .padding(20)
-        }
-        .riotHeader(eyebrow: "Preview first", "Import preview")
     }
 }
 

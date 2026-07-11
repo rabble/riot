@@ -50,7 +50,7 @@ xcodebuild test \
   -scheme RiotKit \
   -destination 'platform=iOS Simulator,name=iPhone 17 Pro,OS=26.2,arch=arm64' \
   -derivedDataPath build/ios-derived \
-  -only-testing:RiotKitTests/ShellNavigationTests
+  -only-testing:RiotTests/ShellNavigationTests
 ```
 
 Expected: `testConferenceShellExposesOnlyWorkingSurfaces` fails because `phoneTabs` still includes `Import preview` / `Import`.
