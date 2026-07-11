@@ -2,13 +2,12 @@ import XCTest
 @testable import RiotKit
 
 /// Repository-layer tests for the signed-JS-apps surface: starter install on
-/// open, host-side trust gating, trust persistence across reopen, and resource
-/// serving.
+/// open, host-side trust gating, trust and app-data persistence across reopen,
+/// resource serving, and display names.
 ///
-/// NOTE: the plan's "app-data survives reopen" test is intentionally OUT of
-/// this task — app-data persistence across relaunch depends on a later FFI
-/// addition (replay-persistence returns, gated Task 5). Only trust persistence
-/// is exercised here.
+/// App-data now survives relaunch via `appDataPutWithReceipt` receipts persisted
+/// in the snapshot and replayed on open (Task 10's relaunch-persistence
+/// contract), so the previously-gated reopen test is exercised for real here.
 final class AppRepositoryTests: XCTestCase {
     // MARK: - Fixtures
 
@@ -172,13 +171,127 @@ final class AppRepositoryTests: XCTestCase {
         XCTAssertFalse(try reopened.spaceApps()[0].trusted)
     }
 
+    // MARK: - App-data persistence across reopen
+
+    func testAppDataSurvivesReopen() throws {
+        let storage = try makeStorage("appdata-reopen")
+        let keyStore = TestWrappingKeyStore()
+        let packs = try starterPacks()
+
+        let first = try RiotProfileRepository.open(
+            storage: storage, keyStore: keyStore, starterPacks: packs
+        )
+        _ = try first.createPublicSpace(title: "Berlin Mutual Aid")
+        let appID = try first.spaceApps()[0].appIDHex
+        try first.appDataPut(appID: appID, key: "note", valueJSON: "\"hello\"")
+
+        // A fresh Rust session (app-data is in-memory there); the repository must
+        // replay the persisted receipt on open so the value comes back.
+        let second = try RiotProfileRepository.open(
+            storage: storage, keyStore: keyStore, starterPacks: packs
+        )
+        XCTAssertEqual(try second.appDataGet(appID: appID, key: "note"), "\"hello\"")
+    }
+
+    func testOpensSnapshotWrittenBeforeAppDataBundlesField() throws {
+        let snapshotURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("app-repo-legacy-appdata-\(UUID().uuidString).json")
+        let keyStore = TestWrappingKeyStore()
+        let packs = try starterPacks()
+
+        let first = try RiotProfileRepository.open(
+            storage: try ProtectedProfileStorage(fileURL: snapshotURL),
+            keyStore: keyStore,
+            starterPacks: packs
+        )
+        _ = try first.createPublicSpace(title: "Berlin Mutual Aid")
+        let appID = try first.spaceApps()[0].appIDHex
+        try first.appDataPut(appID: appID, key: "note", valueJSON: "\"hi\"")
+        // Emulate a pre-`appDataBundles` snapshot by stripping the field.
+        try removeKey("appDataBundles", from: snapshotURL)
+
+        // Decodes cleanly with an empty bundle list; nothing to replay, so the
+        // value is simply absent rather than the open failing.
+        let reopened = try RiotProfileRepository.open(
+            storage: try ProtectedProfileStorage(fileURL: snapshotURL),
+            keyStore: keyStore,
+            starterPacks: packs
+        )
+        XCTAssertNil(try reopened.appDataGet(appID: appID, key: "note"))
+    }
+
+    func testCorruptPersistedBundleDoesNotPreventOpen() throws {
+        let snapshotURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("app-repo-appdata-corrupt-\(UUID().uuidString).json")
+        let keyStore = TestWrappingKeyStore()
+        let packs = try starterPacks()
+
+        let first = try RiotProfileRepository.open(
+            storage: try ProtectedProfileStorage(fileURL: snapshotURL),
+            keyStore: keyStore,
+            starterPacks: packs
+        )
+        _ = try first.createPublicSpace(title: "Berlin Mutual Aid")
+        let appID = try first.spaceApps()[0].appIDHex
+        try first.appDataPut(appID: appID, key: "a", valueJSON: "\"first\"")
+        try first.appDataPut(appID: appID, key: "b", valueJSON: "\"second\"")
+        // Wedge a garbage bundle between the two healthy receipts.
+        try insertGarbageBundle(into: snapshotURL, at: 1)
+
+        // The corrupt element is skipped on replay; the healthy bundles on either
+        // side of it still commit, so open succeeds and both values are present.
+        let reopened = try RiotProfileRepository.open(
+            storage: try ProtectedProfileStorage(fileURL: snapshotURL),
+            keyStore: keyStore,
+            starterPacks: packs
+        )
+        XCTAssertEqual(try reopened.appDataGet(appID: appID, key: "a"), "\"first\"")
+        XCTAssertEqual(try reopened.appDataGet(appID: appID, key: "b"), "\"second\"")
+    }
+
+    // MARK: - Display name
+
+    func testDisplayNameComesFromProfileNotPlaceholder() throws {
+        let repository = try RiotProfileRepository.open(
+            storage: try makeStorage("displayname"),
+            keyStore: TestWrappingKeyStore(),
+            starterPacks: try starterPacks()
+        )
+        _ = try repository.createPublicSpace(title: "Berlin Mutual Aid")
+        let appID = try repository.spaceApps()[0].appIDHex
+        try repository.trustApp(appID: appID)
+        let bridge = try XCTUnwrap(repository.appDataBridge(appID: appID))
+
+        let name = bridge.displayName()
+        XCTAssertTrue(name.hasPrefix("member-"), "expected an FFI-derived name, got \(name)")
+        XCTAssertNotEqual(name, "member")
+    }
+
     // MARK: - Snapshot helpers
 
     private func removeTrustedAppIDs(from snapshotURL: URL) throws {
+        try removeKey("trustedAppIDs", from: snapshotURL)
+    }
+
+    private func removeKey(_ key: String, from snapshotURL: URL) throws {
         var object = try XCTUnwrap(
             JSONSerialization.jsonObject(with: Data(contentsOf: snapshotURL)) as? [String: Any]
         )
-        object.removeValue(forKey: "trustedAppIDs")
+        object.removeValue(forKey: key)
+        try JSONSerialization.data(withJSONObject: object).write(to: snapshotURL, options: .atomic)
+    }
+
+    /// Inserts a structurally-valid-but-meaningless bundle into the persisted
+    /// `appDataBundles` array. The element is valid base64 (so the snapshot still
+    /// decodes to `Data`) but is not a signed bundle (so replay throws and the
+    /// element is skipped).
+    private func insertGarbageBundle(into snapshotURL: URL, at index: Int) throws {
+        var object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(contentsOf: snapshotURL)) as? [String: Any]
+        )
+        var bundles = object["appDataBundles"] as? [Any] ?? []
+        bundles.insert(Data("garbage".utf8).base64EncodedString(), at: index)
+        object["appDataBundles"] = bundles
         try JSONSerialization.data(withJSONObject: object).write(to: snapshotURL, options: .atomic)
     }
 }

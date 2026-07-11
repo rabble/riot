@@ -18,14 +18,28 @@ public protocol AppDataBridging: AnyObject {
 public final class AppRuntimeDataBridge: AppDataBridging {
     private let session: AppRuntimeSession
     private let appIDHex: String
+    /// The host's persisting write path (`RiotProfileRepository.appDataPut`).
+    /// When absent (e.g. an isolated host test that has no repository), writes
+    /// go straight to the session and are not persisted for replay.
+    private let onPut: ((_ key: String, _ valueJSON: String) throws -> Void)?
+    private var cachedDisplayName: String?
 
-    public init(session: AppRuntimeSession, appIDHex: String) {
+    public init(
+        session: AppRuntimeSession,
+        appIDHex: String,
+        onPut: ((_ key: String, _ valueJSON: String) throws -> Void)? = nil
+    ) {
         self.session = session
         self.appIDHex = appIDHex
+        self.onPut = onPut
     }
 
     public func put(key: String, valueJSON: String) throws {
-        try session.appDataPut(appId: appIDHex, key: key, value: Data(valueJSON.utf8))
+        if let onPut {
+            try onPut(key, valueJSON)
+        } else {
+            try session.appDataPut(appId: appIDHex, key: key, value: Data(valueJSON.utf8))
+        }
     }
 
     public func get(key: String) throws -> String? {
@@ -39,9 +53,14 @@ public final class AppRuntimeDataBridge: AppDataBridging {
         }
     }
 
-    /// v1 placeholder until profiles carry names; a fuller name arrives with a
-    /// later FFI addition.
-    public func displayName() -> String { "member" }
+    /// The profile's display name from Rust, cached after the first success.
+    /// Falls back to "member" only if the FFI call throws.
+    public func displayName() -> String {
+        if let cachedDisplayName { return cachedDisplayName }
+        guard let name = try? session.appDisplayName() else { return "member" }
+        cachedDisplayName = name
+        return name
+    }
 }
 
 /// Bridges `window.riot` postMessage calls to the app-data store for ONE app.

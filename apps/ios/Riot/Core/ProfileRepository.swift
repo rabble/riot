@@ -69,25 +69,39 @@ private struct PersistedProfile: Codable {
     var alerts: [PersistedAlert]
     var sealedIdentity: Data?
     var trustedAppIDs: [String]
+    // Committed signed app-data bundles (the receipts returned by
+    // `appDataPutWithReceipt`), replayed in order on open so app data survives a
+    // process restart (Rust's app-data store is in-memory per session).
+    var appDataBundles: [Data]
 
-    static let empty = PersistedProfile(space: nil, alerts: [], sealedIdentity: nil, trustedAppIDs: [])
+    static let empty = PersistedProfile(
+        space: nil, alerts: [], sealedIdentity: nil, trustedAppIDs: [], appDataBundles: []
+    )
 
-    init(space: RiotSpace?, alerts: [PersistedAlert], sealedIdentity: Data?, trustedAppIDs: [String]) {
+    init(
+        space: RiotSpace?,
+        alerts: [PersistedAlert],
+        sealedIdentity: Data?,
+        trustedAppIDs: [String],
+        appDataBundles: [Data]
+    ) {
         self.space = space
         self.alerts = alerts
         self.sealedIdentity = sealedIdentity
         self.trustedAppIDs = trustedAppIDs
+        self.appDataBundles = appDataBundles
     }
 
-    // Custom decode so snapshots written before `trustedAppIDs` existed decode
-    // to an empty list rather than failing (synthesized Codable would throw on
-    // the missing key). Encoding stays synthesized.
+    // Custom decode so snapshots written before `trustedAppIDs`/`appDataBundles`
+    // existed decode to empty lists rather than failing (synthesized Codable
+    // would throw on the missing key). Encoding stays synthesized.
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         space = try container.decodeIfPresent(RiotSpace.self, forKey: .space)
         alerts = try container.decodeIfPresent([PersistedAlert].self, forKey: .alerts) ?? []
         sealedIdentity = try container.decodeIfPresent(Data.self, forKey: .sealedIdentity)
         trustedAppIDs = try container.decodeIfPresent([String].self, forKey: .trustedAppIDs) ?? []
+        appDataBundles = try container.decodeIfPresent([Data].self, forKey: .appDataBundles) ?? []
     }
 }
 
@@ -207,6 +221,13 @@ public final class RiotProfileRepository {
             try? appRuntime.trustApp(appId: appID)
         }
 
+        // Rust's app-data store is in-memory per session, so re-commit the
+        // persisted signed bundles in the order they were written. A single
+        // corrupt bundle is skipped (`try?`) rather than aborting the open.
+        for bundle in persisted.appDataBundles {
+            try? appRuntime.replayAppDataBundle(bytes: bundle)
+        }
+
         let repository = RiotProfileRepository(
             profile: profile,
             storage: storage,
@@ -308,7 +329,30 @@ public final class RiotProfileRepository {
     public func appDataBridge(appID: String) -> AppDataBridging? {
         guard installedApp(appID: appID) != nil else { return nil }
         guard (try? appRuntime.isAppTrusted(appId: appID)) == true else { return nil }
-        return AppRuntimeDataBridge(session: appRuntime, appIDHex: appID)
+        // Route the bridge's writes through `appDataPut` so every put from the
+        // page is committed with a receipt and persisted for replay on the next
+        // open; reads/list/name still go straight to the session.
+        return AppRuntimeDataBridge(session: appRuntime, appIDHex: appID) { [weak self] key, valueJSON in
+            try self?.appDataPut(appID: appID, key: key, valueJSON: valueJSON)
+        }
+    }
+
+    /// Commits an app-data write with a receipt and persists the returned signed
+    /// bundle so the value survives a process restart (replayed on `open`). This
+    /// is the single write path; the WebView bridge delegates here.
+    public func appDataPut(appID: String, key: String, valueJSON: String) throws {
+        let receipt = try appRuntime.appDataPutWithReceipt(
+            appId: appID, key: key, value: Data(valueJSON.utf8)
+        )
+        persisted.appDataBundles.append(receipt)
+        try storage.save(persisted)
+    }
+
+    /// Reads an app-data value as the JSON text the page stored, or nil if the
+    /// key is unset.
+    public func appDataGet(appID: String, key: String) throws -> String? {
+        guard let data = try appRuntime.appDataGet(appId: appID, key: key) else { return nil }
+        return String(decoding: data, as: UTF8.self)
     }
 
     /// The resource resolver for a TRUSTED installed app, or nil otherwise.
