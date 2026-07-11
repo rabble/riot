@@ -4,6 +4,7 @@ import java.io.ByteArrayOutputStream
 import java.io.DataOutputStream
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Assert.assertThrows
 import org.junit.Test
@@ -73,9 +74,10 @@ class PersistedProfileCodecTest {
 
     @Test
     fun totalProfileSizeIsBoundedEvenWhenIndividualBundlesAreValid() {
+        val sharedTwoMiBBundle = ByteArray(2 * 1024 * 1024)
         val profile = PersistedProfile(
             PersistedSpace("02".repeat(32), "Berlin Mutual Aid"),
-            List(3) { index ->
+            List(256) { index ->
                 PersistedAlert(
                     entryId = "%02x".format(index).repeat(32),
                     namespaceId = "02".repeat(32),
@@ -85,13 +87,112 @@ class PersistedProfileCodecTest {
                     validFrom = null,
                     expiresAt = 2,
                     aiAssisted = false,
-                    bundleBytes = ByteArray(2 * 1024 * 1024),
+                    bundleBytes = sharedTwoMiBBundle,
                 )
             },
         )
 
+        var streamAllocated = false
         assertThrows(IllegalArgumentException::class.java) {
-            PersistedProfileCodec.encode(profile)
+            PersistedProfileCodec.encodeWithHooksForTest(
+                profile,
+                onStreamAllocated = { streamAllocated = true },
+            )
         }
+        assertFalse("oversize must reject before stream allocation", streamAllocated)
     }
+
+    @Test
+    fun exactPreflightMatchesEncodedBytes() {
+        val profile = profileWithIdentity()
+
+        val encoded = PersistedProfileCodec.encode(profile)
+
+        assertEquals(PersistedProfileCodec.encodedSizeForTest(profile), encoded.size)
+        encoded.fill(0)
+        profile.identityState!!.wrappingKey.fill(0)
+    }
+
+    @Test
+    fun returnedPlaintextIsWipedWhenPostCopyStepFails() {
+        val profile = profileWithIdentity()
+        lateinit var returnedPlaintext: ByteArray
+
+        assertThrows(IllegalStateException::class.java) {
+            PersistedProfileCodec.encodeWithHooksForTest(
+                profile,
+                afterCopy = {
+                    returnedPlaintext = it
+                    throw IllegalStateException("injected post-copy failure")
+                },
+            )
+        }
+
+        assertArrayEquals(ByteArray(returnedPlaintext.size), returnedPlaintext)
+        profile.identityState!!.wrappingKey.fill(0)
+    }
+
+    @Test
+    fun decodedWrappingKeyIsWipedOnTruncatedSealedIdentity() {
+        val profile = profileWithIdentity()
+        val encoded = PersistedProfileCodec.encode(profile)
+        lateinit var cleared: ByteArray
+
+        assertThrows(IllegalArgumentException::class.java) {
+            PersistedProfileCodec.decodeWithIdentityKeyObserverForTest(
+                encoded.copyOf(encoded.size - 1),
+                onRejectedIdentityKey = { cleared = it },
+            )
+        }
+
+        assertArrayEquals(ByteArray(PersistedProfileCodec.WRAPPING_KEY_BYTES), cleared)
+        encoded.fill(0)
+        profile.identityState!!.wrappingKey.fill(0)
+    }
+
+    @Test
+    fun partiallyReadWrappingKeyIsWipedOnEof() {
+        val profile = profileWithIdentity()
+        val encoded = PersistedProfileCodec.encode(profile)
+        val truncatedMidKey = encoded.copyOf(encoded.size - PersistedProfileCodec.SEALED_IDENTITY_BYTES - 16)
+        lateinit var cleared: ByteArray
+
+        assertThrows(IllegalArgumentException::class.java) {
+            PersistedProfileCodec.decodeWithIdentityKeyObserverForTest(
+                truncatedMidKey,
+                onRejectedIdentityKey = { cleared = it },
+            )
+        }
+
+        assertArrayEquals(ByteArray(PersistedProfileCodec.WRAPPING_KEY_BYTES), cleared)
+        encoded.fill(0)
+        truncatedMidKey.fill(0)
+        profile.identityState!!.wrappingKey.fill(0)
+    }
+
+    @Test
+    fun decodedWrappingKeyIsWipedOnTrailingBytes() {
+        val profile = profileWithIdentity()
+        val encoded = PersistedProfileCodec.encode(profile)
+        val withTrailing = encoded + 0x7f
+        lateinit var cleared: ByteArray
+
+        assertThrows(IllegalArgumentException::class.java) {
+            PersistedProfileCodec.decodeWithIdentityKeyObserverForTest(
+                withTrailing,
+                onRejectedIdentityKey = { cleared = it },
+            )
+        }
+
+        assertArrayEquals(ByteArray(PersistedProfileCodec.WRAPPING_KEY_BYTES), cleared)
+        encoded.fill(0)
+        withTrailing.fill(0)
+        profile.identityState!!.wrappingKey.fill(0)
+    }
+
+    private fun profileWithIdentity() = PersistedProfile(
+        PersistedSpace("02".repeat(32), "Bounded identity"),
+        emptyList(),
+        PersistedIdentityState(ByteArray(32) { 0x22 }, ByteArray(112) { 0x44 }),
+    )
 }

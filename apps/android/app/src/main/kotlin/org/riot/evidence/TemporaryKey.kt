@@ -19,7 +19,7 @@ object TemporaryKey {
     }
 }
 
-internal class WipingByteArrayOutputStream : ByteArrayOutputStream() {
+internal class WipingByteArrayOutputStream(initialSize: Int = 32) : ByteArrayOutputStream(initialSize) {
     override fun close() {
         buf.fill(0)
         super.close()

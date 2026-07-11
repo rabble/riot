@@ -2,7 +2,12 @@ package org.riot.evidence
 
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import java.io.ByteArrayOutputStream
+import java.io.DataOutputStream
 import java.io.File
+import java.security.KeyStore
+import javax.crypto.Cipher
+import javax.crypto.SecretKey
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Assert.assertThrows
@@ -17,17 +22,31 @@ import uniffi.riot_ffi.openLocalProfile
 @RunWith(AndroidJUnit4::class)
 class BindingSemanticsTest {
     @Test
-    fun profileWithoutIdentityStateMigratesOnceThenKeepsSigner() {
+    fun encryptedLegacyVersionOneMigratesThenKeepsSigner() {
         val context = InstrumentationRegistry.getInstrumentation().targetContext
         val directory = File(context.cacheDir, "identity-migration-${System.nanoTime()}").apply { mkdirs() }
         val store = AndroidKeystoreProfileStore(
             "riot-conference-profile",
             File(directory, "conference-profile.bin"),
         )
-        store.save(PersistedProfile(PersistedSpace("02".repeat(32), "Legacy space"), emptyList()))
+        val legacyProfile = PersistedProfile(PersistedSpace("02".repeat(32), "Legacy space"), emptyList())
+        store.save(legacyProfile)
+        writeEncryptedLegacyV1(
+            File(directory, "conference-profile.bin"),
+            "riot-conference-profile",
+            legacyProfile,
+        )
+        assertEquals(null, store.load()!!.identityState)
 
-        val migratedSigner = RiotController(directory).use { it.identity().signingKeyId }
-        val restoredSigner = RiotController(directory).use { it.identity().signingKeyId }
+        lateinit var migratedEntryId: String
+        val migratedSigner = RiotController(directory).use {
+            migratedEntryId = it.createAndSignAlert("Migrated", "Encrypted v1 content.", false).entryId
+            it.identity().signingKeyId
+        }
+        val restoredSigner = RiotController(directory).use {
+            assertEquals(listOf(migratedEntryId), it.entries().map { entry -> entry.entryId })
+            it.identity().signingKeyId
+        }
         val migratedState = store.load()!!.identityState!!
 
         assertEquals(migratedSigner, restoredSigner)
@@ -204,5 +223,40 @@ class BindingSemanticsTest {
         assertThrows(IllegalArgumentException::class.java) { store.save(oversized) }
         assertEquals(original, store.load())
         store.clear()
+    }
+
+    private fun writeEncryptedLegacyV1(file: File, keyAlias: String, profile: PersistedProfile) {
+        val plaintext = ByteArrayOutputStream().use { bytes ->
+            DataOutputStream(bytes).use { output ->
+                output.writeInt(0x52494f54)
+                output.writeInt(1)
+                output.writeLegacyString(profile.space.namespaceId)
+                output.writeLegacyString(profile.space.title)
+                output.writeInt(0)
+            }
+            bytes.toByteArray()
+        }
+        val keyStore = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
+        val key = keyStore.getKey(keyAlias, null) as SecretKey
+        val cipher = Cipher.getInstance("AES/GCM/NoPadding").apply {
+            init(Cipher.ENCRYPT_MODE, key)
+        }
+        val ciphertext = TemporaryKey.useOwned(plaintext) { cipher.doFinal(it) }
+        val envelope = ByteArrayOutputStream().use { bytes ->
+            DataOutputStream(bytes).use { output ->
+                output.writeInt(cipher.iv.size)
+                output.write(cipher.iv)
+                output.writeInt(ciphertext.size)
+                output.write(ciphertext)
+            }
+            bytes.toByteArray()
+        }
+        file.writeBytes(envelope)
+    }
+
+    private fun DataOutputStream.writeLegacyString(value: String) {
+        val encoded = value.toByteArray(Charsets.UTF_8)
+        writeInt(encoded.size)
+        write(encoded)
     }
 }

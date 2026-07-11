@@ -44,14 +44,17 @@ restart, Android decrypts the profile and passes temporary byte-array copies to
 the narrow `openProfileFromSealedIdentity` binding; temporary wrapping-key
 copies are zeroed in `finally` after both seal and open calls. The encoded and
 decrypted profile plaintext arrays are likewise cleared after AES-GCM or decode,
-and the codec wipes its internal byte-stream buffer on close. This is not a
+and the codec wipes its internal byte-stream buffer on close. The codec computes
+the exact cumulative encoded size before allocating that buffer, and encrypted
+file length is rejected from metadata before `AtomicFile.readFully()`. This is not a
 claim that Rust receives or holds a direct Android Keystore key handle.
 
 Version-one profiles without identity state migrate safely: their content and
 space restore first, the resulting local identity is sealed into version two,
 and subsequent restarts retain that signer. The device suite signs before and
 after a fresh controller/core restart and compares the complete 64-character
-signer identifier.
+signer identifier. Its migration fixture is a real AES-GCM-encrypted v1 profile
+written with the same Android Keystore alias, not an identity-less v2 stand-in.
 
 ## Reproduce the checks
 

@@ -48,6 +48,7 @@ class AndroidKeystoreProfileStore(
 
     fun load(): PersistedProfile? {
         if (!atomicFile.baseFile.exists()) return null
+        requireBoundedFileLength(atomicFile.baseFile.length())
         val envelope = atomicFile.readFully()
         val (iv, ciphertext) = DataInputStream(ByteArrayInputStream(envelope)).use { input ->
             val ivLength = input.readInt()
@@ -88,9 +89,19 @@ class AndroidKeystoreProfileStore(
         }
     }
 
-    private companion object {
-        const val ANDROID_KEYSTORE = "AndroidKeyStore"
-        const val TRANSFORMATION = "AES/GCM/NoPadding"
-        const val MAX_ENCRYPTED_PROFILE_BYTES = 4 * 1024 * 1024
+    companion object {
+        private const val ANDROID_KEYSTORE = "AndroidKeyStore"
+        private const val TRANSFORMATION = "AES/GCM/NoPadding"
+        private const val MAX_ENCRYPTED_PROFILE_BYTES = 4 * 1024 * 1024
+        private const val MIN_ENCRYPTED_FILE_BYTES = 4 + 12 + 4 + 16
+        private const val MAX_ENCRYPTED_FILE_BYTES = MAX_ENCRYPTED_PROFILE_BYTES + 4 + 32 + 4
+
+        private fun requireBoundedFileLength(length: Long) {
+            require(length in MIN_ENCRYPTED_FILE_BYTES.toLong()..MAX_ENCRYPTED_FILE_BYTES.toLong()) {
+                "invalid encrypted profile file length"
+            }
+        }
+
+        internal fun requireBoundedFileLengthForTest(length: Long) = requireBoundedFileLength(length)
     }
 }
