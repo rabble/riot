@@ -548,10 +548,10 @@ impl EvidenceStore {
                 // (already shape-checked in `verify_frame`) is the identity.
                 // App-index manifest/bundle slots are likewise exempt (their
                 // payload schema was checked in `verify_frame`; their app ID
-                // is the path component itself), but an endorsement slot
-                // belongs to exactly the subspace named in its path: the
-                // entry's own subspace must equal the path's endorser
-                // component, so nobody can write into someone else's slot.
+                // is the path component itself), but endorsement and trust
+                // slots belong to exactly the subspace named in their path:
+                // the entry's own subspace must equal that identity component,
+                // so nobody can write into someone else's slot.
                 let is_app_data = crate::apps::entry::is_app_data_path(
                     willow25::groupings::Keylike::path(authorised.entry()),
                 );
@@ -569,6 +569,14 @@ impl EvidenceStore {
                             *willow25::groupings::Keylike::subspace_id(authorised.entry())
                                 .as_bytes()
                                 == endorser_subspace_id
+                        }
+                        crate::apps::index::AppIndexSlot::Trust {
+                            organizer_subspace_id,
+                            ..
+                        } => {
+                            *willow25::groupings::Keylike::subspace_id(authorised.entry())
+                                .as_bytes()
+                                == organizer_subspace_id
                         }
                         crate::apps::index::AppIndexSlot::Manifest { .. }
                         | crate::apps::index::AppIndexSlot::Bundle { .. } => true,
@@ -590,7 +598,7 @@ impl EvidenceStore {
                     // App-data and app-index payloads are retained with the
                     // live entry (see `Stored::payload`): apps read their
                     // values back, and the directory scan reads manifests/
-                    // bundles/endorsements back. Alert payloads stay
+                    // bundles/endorsements/trust markers back. Alert payloads stay
                     // digest-only.
                     let retain_payload = is_app_data || app_index_slot.is_some();
                     verified.push(VerifiedEntry {
@@ -675,6 +683,52 @@ impl EvidenceStore {
             first_receipt_id,
             asserts_truth: false,
         })
+    }
+}
+
+/// Sign and commit one payload at an exact Willow path through the standard
+/// admission pipeline. App-index writers share this boundary so local writes
+/// cannot bypass the same schema and path-binding gates as synced entries.
+pub(crate) fn commit_at(
+    store: &EvidenceStore,
+    author: &crate::willow::identity::EvidenceAuthor,
+    path: &crate::willow::Path,
+    payload: &[u8],
+    willow_timestamp_micros: u64,
+) -> Result<(), crate::apps::AppsError> {
+    let entry = crate::willow::Entry::builder()
+        .namespace_id(author.namespace_id().clone())
+        .subspace_id(author.subspace_id())
+        .path(path.clone())
+        .timestamp(willow_timestamp_micros)
+        .payload(payload)
+        .build();
+    let authorised = crate::willow::authorise_entry(author, entry)?;
+    let token = authorised.authorisation_token();
+    let signature: ed25519_dalek::Signature = token.signature().clone().into();
+    let signed = crate::willow::SignedWillowEntry {
+        entry_bytes: crate::willow::encode_entry(authorised.entry()),
+        capability_bytes: crate::willow::encode_capability(token.capability()),
+        signature: signature.to_bytes(),
+        payload_bytes: payload.to_vec(),
+    };
+    let bundle = crate::import::bundle::encode_bundle(std::slice::from_ref(&signed))
+        .map_err(|_| crate::apps::AppsError::StoreRejected)?;
+    let preview = match store
+        .inspect(&bundle, ImportContext::new("app-index-write"))
+        .map_err(|_| crate::apps::AppsError::StoreRejected)?
+    {
+        InspectOutcome::Preview(preview) => preview,
+        InspectOutcome::Rejected(_) => return Err(crate::apps::AppsError::StoreRejected),
+    };
+    let plan = preview
+        .plan_all()
+        .map_err(|_| crate::apps::AppsError::StoreRejected)?;
+    match plan
+        .commit()
+        .map_err(|_| crate::apps::AppsError::StoreRejected)?
+    {
+        CommitOutcome::Committed(_) | CommitOutcome::NoChanges(_) => Ok(()),
     }
 }
 

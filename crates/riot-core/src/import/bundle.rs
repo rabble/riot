@@ -519,10 +519,10 @@ fn verify_frame(frame: &BundleItemFrame) -> Result<ValidItem, BundleDiagnostic> 
     // decodable payloads, so each slot gets its strict canonical decoder;
     // an endorsement payload must additionally name the same app as its
     // path — the marker's `app_id` is signed content, and letting it drift
-    // from the slot would let one signed endorsement be replayed under a
-    // different app's directory row. (Endorser-slot ownership is bound at
-    // `inspect`, where the entry's subspace is compared against the path's
-    // endorser component.) Everything else is UnsupportedSchema.
+    // from the slot would let one signed marker be replayed under a
+    // different app's directory row. (Endorser/organizer-slot ownership is
+    // bound at `inspect`, where the entry's subspace is compared against the
+    // path identity component.) Everything else is UnsupportedSchema.
     let schema_ok = if crate::apps::entry::is_app_data_path(entry.path()) {
         true
     } else {
@@ -535,6 +535,11 @@ fn verify_frame(frame: &BundleItemFrame) -> Result<ValidItem, BundleDiagnostic> 
             }
             Some(crate::apps::index::AppIndexSlot::Endorsement { app_id, .. }) => {
                 crate::apps::endorse::decode_endorsement(&frame.payload_bytes)
+                    .map(|marker| marker.app_id == app_id)
+                    .unwrap_or(false)
+            }
+            Some(crate::apps::index::AppIndexSlot::Trust { app_id, .. }) => {
+                crate::apps::trust::decode_trust_marker(&frame.payload_bytes)
                     .map(|marker| marker.app_id == app_id)
                     .unwrap_or(false)
             }

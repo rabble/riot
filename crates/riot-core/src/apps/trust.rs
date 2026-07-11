@@ -6,6 +6,20 @@
 //! same app, the most recent timestamp wins — ordinary last-write-wins,
 //! same as any other Willow path.
 
+use minicbor::{Decoder, Encoder};
+use willow25::groupings::{Coordinatelike, Keylike};
+
+use crate::session::{commit_at, EvidenceStore};
+use crate::willow::identity::EvidenceAuthor;
+
+use super::index::{
+    app_index_prefix_for, app_index_trust_path, classify_app_index_path, AppIndexSlot,
+};
+use super::AppsError;
+
+const FIELD_COUNT: u64 = 2;
+const MAX_TRUST_MARKER_BYTES: usize = 64;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrustMarkerKind {
     Trust,
@@ -18,6 +32,132 @@ pub struct TrustMarker {
     pub author_subspace_id: [u8; 32],
     pub kind: TrustMarkerKind,
     pub timestamp_micros: u64,
+}
+
+/// Encode the signed payload fields of a trust marker. Author and timestamp
+/// are deliberately omitted: the Willow entry supplies both identities.
+pub fn encode_trust_marker(marker: &TrustMarker) -> Result<Vec<u8>, AppsError> {
+    let mut buffer = Vec::new();
+    let mut encoder = Encoder::new(&mut buffer);
+    let result: Result<_, minicbor::encode::Error<core::convert::Infallible>> = (|| {
+        encoder.map(FIELD_COUNT)?;
+        encoder.u8(0)?.bytes(&marker.app_id)?;
+        encoder.u8(1)?.u8(match marker.kind {
+            TrustMarkerKind::Trust => 0,
+            TrustMarkerKind::Revoke => 1,
+        })?;
+        Ok(())
+    })();
+    result.map_err(|_| AppsError::IndexFieldInvalid)?;
+    if buffer.len() > MAX_TRUST_MARKER_BYTES {
+        return Err(AppsError::IndexFieldInvalid);
+    }
+    Ok(buffer)
+}
+
+/// Strict canonical payload decoder. The returned author and timestamp are
+/// placeholders; callers reading a stored marker replace them from the entry.
+pub fn decode_trust_marker(input: &[u8]) -> Result<TrustMarker, AppsError> {
+    if input.len() > MAX_TRUST_MARKER_BYTES {
+        return Err(AppsError::IndexFieldInvalid);
+    }
+    let mut decoder = Decoder::new(input);
+    let pairs = decoder
+        .map()
+        .map_err(|_| AppsError::IndexFieldInvalid)?
+        .ok_or(AppsError::IndexFieldInvalid)?;
+    if pairs != FIELD_COUNT {
+        return Err(AppsError::IndexFieldInvalid);
+    }
+
+    let key0 = decoder.u64().map_err(|_| AppsError::IndexFieldInvalid)?;
+    if key0 != 0 {
+        return Err(AppsError::IndexFieldInvalid);
+    }
+    let app_id = decoder
+        .bytes()
+        .map_err(|_| AppsError::IndexFieldInvalid)?
+        .try_into()
+        .map_err(|_| AppsError::IndexFieldInvalid)?;
+    let key1 = decoder.u64().map_err(|_| AppsError::IndexFieldInvalid)?;
+    if key1 != 1 {
+        return Err(AppsError::IndexFieldInvalid);
+    }
+    let kind = match decoder.u8().map_err(|_| AppsError::IndexFieldInvalid)? {
+        0 => TrustMarkerKind::Trust,
+        1 => TrustMarkerKind::Revoke,
+        _ => return Err(AppsError::IndexFieldInvalid),
+    };
+    if decoder.position() != input.len() {
+        return Err(AppsError::IndexFieldInvalid);
+    }
+
+    let marker = TrustMarker {
+        app_id,
+        author_subspace_id: [0; 32],
+        kind,
+        timestamp_micros: 0,
+    };
+    if encode_trust_marker(&marker)? != input {
+        return Err(AppsError::IndexFieldInvalid);
+    }
+    Ok(marker)
+}
+
+pub fn write_trust_marker(
+    store: &EvidenceStore,
+    organizer: &EvidenceAuthor,
+    app_id: &[u8; 32],
+    kind: TrustMarkerKind,
+    willow_timestamp_micros: u64,
+) -> Result<(), AppsError> {
+    let marker = TrustMarker {
+        app_id: *app_id,
+        author_subspace_id: *organizer.subspace_id().as_bytes(),
+        kind,
+        timestamp_micros: willow_timestamp_micros,
+    };
+    let payload = encode_trust_marker(&marker)?;
+    let path = app_index_trust_path(app_id, organizer.subspace_id().as_bytes())?;
+    commit_at(store, organizer, &path, &payload, willow_timestamp_micros)
+}
+
+pub fn trust_markers_for(
+    store: &EvidenceStore,
+    app_id: &[u8; 32],
+) -> Result<Vec<TrustMarker>, AppsError> {
+    let prefix = app_index_prefix_for(app_id)?;
+    let entries = store
+        .entries_with_prefix(&prefix)
+        .map_err(|_| AppsError::StoreRejected)?;
+    let mut markers = Vec::new();
+    for (_, entry, payload) in entries {
+        let Some(AppIndexSlot::Trust {
+            app_id: path_app_id,
+            organizer_subspace_id,
+        }) = classify_app_index_path(entry.path())
+        else {
+            continue;
+        };
+        if &path_app_id != app_id || entry.subspace_id().as_bytes() != &organizer_subspace_id {
+            continue;
+        }
+        let Some(payload) = payload else { continue };
+        let Ok(decoded) = decode_trust_marker(&payload) else {
+            continue;
+        };
+        if decoded.app_id != path_app_id {
+            continue;
+        }
+        markers.push(TrustMarker {
+            app_id: path_app_id,
+            author_subspace_id: organizer_subspace_id,
+            kind: decoded.kind,
+            timestamp_micros: u64::from(entry.timestamp()),
+        });
+    }
+    markers.sort_by_key(|marker| marker.author_subspace_id);
+    Ok(markers)
 }
 
 pub fn is_trusted(

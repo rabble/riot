@@ -14,9 +14,10 @@ use riot_core::apps::bundle::{encode_app_bundle, AppBundle, AppResource, MAX_BUN
 use riot_core::apps::endorse::{encode_endorsement, EndorsementMarker};
 use riot_core::apps::index::{
     app_index_bundle_path, app_index_endorsement_path, app_index_manifest_path,
-    classify_app_index_path, AppIndexSlot, APP_INDEX_COMPONENT,
+    app_index_trust_path, classify_app_index_path, AppIndexSlot, APP_INDEX_COMPONENT,
 };
 use riot_core::apps::manifest::{encode_manifest, AppManifest};
+use riot_core::apps::trust::{encode_trust_marker, TrustMarker, TrustMarkerKind};
 use riot_core::import::{encode_bundle, BundleEncodeError, DiagnosticCode, ItemComponent};
 use riot_core::model::{encode_alert, AlertPayload, Certainty, Severity, Urgency};
 use riot_core::session::{
@@ -221,6 +222,49 @@ fn endorsement_written_into_someone_elses_slot_is_rejected_at_inspect() {
 }
 
 #[test]
+fn trust_marker_with_mismatched_payload_app_id_is_rejected() {
+    let author = generate_communal_author().expect("author");
+    let payload = encode_trust_marker(&TrustMarker {
+        app_id: [1u8; 32],
+        author_subspace_id: *author.subspace_id().as_bytes(),
+        kind: TrustMarkerKind::Trust,
+        timestamp_micros: 100,
+    })
+    .expect("encode trust marker");
+    let path = app_index_trust_path(&[2u8; 32], author.subspace_id().as_bytes()).expect("path");
+    expect_unsupported_schema(signed_at_path(&author, path, &payload));
+}
+
+#[test]
+fn trust_marker_written_into_someone_elses_slot_is_rejected_at_inspect() {
+    let session = RiotSession::open().expect("session");
+    let store = session.create_store().expect("store");
+    let author = generate_communal_author().expect("author");
+    let app_id = [3u8; 32];
+    let payload = encode_trust_marker(&TrustMarker {
+        app_id,
+        author_subspace_id: *author.subspace_id().as_bytes(),
+        kind: TrustMarkerKind::Trust,
+        timestamp_micros: 100,
+    })
+    .expect("encode trust marker");
+
+    let someone_else = [9u8; 32];
+    assert_ne!(&someone_else, author.subspace_id().as_bytes());
+    let spoofed_slot = app_index_trust_path(&app_id, &someone_else).expect("path");
+    let spoofed = signed_at_path(&author, spoofed_slot, &payload);
+
+    // The canonical payload and matching app id reach the schema gate.
+    let bundle_bytes = encode_bundle(std::slice::from_ref(&spoofed)).expect("encode bundle");
+    let preview = store
+        .inspect(&bundle_bytes, ImportContext::new("test-route"))
+        .expect("inspect")
+        .expect_preview();
+    assert_eq!(preview.eligible_count().expect("eligible_count"), 0);
+    assert_eq!(store.live_count().expect("live_count"), 0);
+}
+
+#[test]
 fn app_index_path_with_extra_components_is_rejected() {
     let author = generate_communal_author().expect("author");
     // Even a perfectly valid manifest payload is rejected when the path has
@@ -273,9 +317,17 @@ fn malformed_app_index_path_does_not_fall_through_to_alert_schema() {
 fn app_index_classifier_recognizes_only_exact_slot_shapes() {
     let app_id = [7u8; 32];
     let endorser = [8u8; 32];
+    let organizer = [9u8; 32];
     assert_eq!(
         classify_app_index_path(&app_index_manifest_path(&app_id).expect("manifest path")),
         Some(AppIndexSlot::Manifest { app_id })
+    );
+    assert_eq!(
+        classify_app_index_path(&app_index_trust_path(&app_id, &organizer).expect("trust path")),
+        Some(AppIndexSlot::Trust {
+            app_id,
+            organizer_subspace_id: organizer,
+        })
     );
     assert_eq!(
         classify_app_index_path(&app_index_bundle_path(&app_id).expect("bundle path")),
@@ -301,6 +353,9 @@ fn app_index_classifier_recognizes_only_exact_slot_shapes() {
             .expect("missing endorser"),
         Path::from_slices(&[APP_INDEX_COMPONENT, &app_id, b"endorsements", &[8u8; 31]])
             .expect("short endorser"),
+        Path::from_slices(&[APP_INDEX_COMPONENT, &app_id, b"trust"]).expect("missing organizer"),
+        Path::from_slices(&[APP_INDEX_COMPONENT, &app_id, b"trust", &[9u8; 31]])
+            .expect("short organizer"),
         Path::from_slices(&[APP_INDEX_COMPONENT, &app_id, b"bundle", b"extra"])
             .expect("extra component"),
         Path::from_slices(&[
@@ -311,6 +366,8 @@ fn app_index_classifier_recognizes_only_exact_slot_shapes() {
             b"extra",
         ])
         .expect("extra endorsement component"),
+        Path::from_slices(&[APP_INDEX_COMPONENT, &app_id, b"trust", &organizer, b"extra"])
+            .expect("extra trust component"),
     ];
     for path in invalid_paths {
         assert_eq!(classify_app_index_path(&path), None, "path: {path:?}");

@@ -1,6 +1,7 @@
 //! App-index paths: where a distributable app lives as Willow entries.
 //! `app-index/<app_id>/manifest`, `app-index/<app_id>/bundle`, and
-//! `app-index/<app_id>/endorsements/<endorser-subspace>`. Deliberately a
+//! `app-index/<app_id>/endorsements/<endorser-subspace>`, and
+//! `app-index/<app_id>/trust/<organizer-subspace>`. Deliberately a
 //! different top-level component from `apps/<app_id>/...` (runtime data,
 //! `entry.rs`) so an app writing a data key named "manifest" can never
 //! collide with its own distribution entries.
@@ -54,6 +55,14 @@ pub fn app_index_endorsement_path(
     .map_err(|_| AppsError::PathInvalid)
 }
 
+pub fn app_index_trust_path(
+    app_id: &[u8; APP_ID_BYTES],
+    organizer_subspace_id: &[u8; 32],
+) -> Result<Path, AppsError> {
+    Path::from_slices(&[APP_INDEX_COMPONENT, app_id, b"trust", organizer_subspace_id])
+        .map_err(|_| AppsError::PathInvalid)
+}
+
 /// Admission-boundary classification of an app-index path. Single source
 /// of truth shared by local writes and the import pipeline's two gates,
 /// same discipline as `entry::is_app_data_path`: locally constructible
@@ -71,6 +80,10 @@ pub enum AppIndexSlot {
     Endorsement {
         app_id: [u8; APP_ID_BYTES],
         endorser_subspace_id: [u8; 32],
+    },
+    Trust {
+        app_id: [u8; APP_ID_BYTES],
+        organizer_subspace_id: [u8; 32],
     },
 }
 
@@ -102,6 +115,13 @@ pub fn classify_app_index_path(path: &Path) -> Option<AppIndexSlot> {
                     app_id,
                     endorser_subspace_id,
                 })
+        }
+        b"trust" => {
+            let organizer_subspace_id: [u8; 32] = components.next()?.as_ref().try_into().ok()?;
+            components.next().is_none().then_some(AppIndexSlot::Trust {
+                app_id,
+                organizer_subspace_id,
+            })
         }
         _ => None,
     }

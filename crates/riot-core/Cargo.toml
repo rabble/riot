@@ -85,3 +85,7 @@ required-features = ["conformance"]
 [[test]]
 name = "apps_bridge"
 required-features = ["conformance"]
+
+[[test]]
+name = "apps_trust_entries"
+required-features = ["conformance"]
