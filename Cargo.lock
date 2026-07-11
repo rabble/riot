@@ -1517,8 +1517,10 @@ name = "riot-ffi"
 version = "0.1.0"
 dependencies = [
  "ed25519-dalek",
+ "minicbor",
  "riot-core",
  "uniffi",
+ "willow25",
  "zeroize",
 ]
 

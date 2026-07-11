@@ -694,19 +694,24 @@ fn mobile_sync_retains_a_regularly_accepted_public_bundle_for_the_next_peer() {
 }
 
 #[test]
-fn mobile_sync_refuses_to_advertise_a_partial_inventory_over_the_protocol_cap() {
+fn mobile_writers_refuse_to_create_a_partial_inventory_over_the_protocol_cap() {
     let profile = profile_with_space();
-    for index in 0..=riot_core::sync::MAX_SYNC_IDS {
+    for index in 0..riot_core::sync::MAX_SYNC_IDS {
         let mut input = draft();
         input.headline = format!("Bounded sync entry {index}");
         let draft = profile.create_draft_alert(input).unwrap();
         profile.sign_draft(draft.draft_id).unwrap();
     }
-
+    let draft = profile.create_draft_alert(draft()).unwrap();
     assert!(matches!(
-        profile.open_sync_session(),
+        profile.sign_draft(draft.draft_id),
         Err(MobileError::SessionLimit)
     ));
+    profile
+        .open_sync_session()
+        .expect("the exact complete cap remains advertisable")
+        .cancel()
+        .unwrap();
 }
 
 #[test]

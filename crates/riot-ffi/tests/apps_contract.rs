@@ -4,9 +4,11 @@
 //! the UniFFI layer, in-process, same as `mobile_contract.rs`.
 
 use riot_ffi::{
-    open_local_profile, AlertCertainty, AlertDraftInput, AlertSeverity, AlertUrgency, MobileError,
-    PublicSpace,
+    open_local_profile, open_profile_from_sealed_identity, AlertCertainty, AlertDraftInput,
+    AlertSeverity, AlertUrgency, MobileError, MobileProfile, MobileSyncSession, PublicSpace,
+    SyncOutcomeKind,
 };
+use std::sync::Arc;
 
 /// A minimal well-formed alert draft, used only to produce a real (non
 /// app-data) signed bundle for the replay strictness test.
@@ -63,6 +65,507 @@ fn manifest_and_bundle() -> (Vec<u8>, Vec<u8>) {
         encode_manifest(&manifest).expect("manifest"),
         encode_app_bundle(&bundle).expect("bundle"),
     )
+}
+
+fn signed_bundle_at(
+    author: &riot_core::willow::EvidenceAuthor,
+    path: riot_core::willow::Path,
+    payload: &[u8],
+) -> Vec<u8> {
+    let signed = signed_entry_at(author, path, payload);
+    riot_core::import::encode_bundle(&[signed]).unwrap()
+}
+
+fn signed_entry_at(
+    author: &riot_core::willow::EvidenceAuthor,
+    path: riot_core::willow::Path,
+    payload: &[u8],
+) -> riot_core::willow::SignedWillowEntry {
+    let entry = riot_core::willow::Entry::builder()
+        .namespace_id(author.namespace_id().clone())
+        .subspace_id(author.subspace_id())
+        .path(path)
+        .timestamp(1)
+        .payload(payload)
+        .build();
+    let authorised = riot_core::willow::authorise_entry(author, entry).unwrap();
+    let token = authorised.authorisation_token();
+    let signature: ed25519_dalek::Signature = token.signature().clone().into();
+    riot_core::willow::SignedWillowEntry {
+        entry_bytes: riot_core::willow::encode_entry(authorised.entry()),
+        capability_bytes: riot_core::willow::encode_capability(token.capability()),
+        signature: signature.to_bytes(),
+        payload_bytes: payload.to_vec(),
+    }
+}
+
+fn frame_unchecked(signed: &riot_core::willow::SignedWillowEntry) -> Vec<u8> {
+    use minicbor::Encoder;
+    let mut bytes = riot_core::import::BUNDLE_MAGIC.to_vec();
+    let mut encoder = Encoder::new(&mut bytes);
+    encoder.map(2).unwrap();
+    encoder
+        .u8(0)
+        .unwrap()
+        .str(riot_core::import::BUNDLE_CODEC_ID)
+        .unwrap();
+    encoder.u8(1).unwrap().array(1).unwrap();
+    encoder.map(4).unwrap();
+    encoder.u8(0).unwrap().bytes(&signed.entry_bytes).unwrap();
+    encoder
+        .u8(1)
+        .unwrap()
+        .bytes(&signed.capability_bytes)
+        .unwrap();
+    encoder.u8(2).unwrap().bytes(&signed.signature).unwrap();
+    encoder.u8(3).unwrap().bytes(&signed.payload_bytes).unwrap();
+    bytes
+}
+
+fn take_frame(session: &MobileSyncSession) -> Vec<u8> {
+    session
+        .take_outbound_frame()
+        .expect("take outbound frame")
+        .expect("sync outcome queued a frame")
+}
+
+fn sync_to_review(
+    receiver: &Arc<MobileProfile>,
+    sender: &Arc<MobileProfile>,
+) -> (
+    Arc<MobileSyncSession>,
+    Arc<MobileSyncSession>,
+    riot_ffi::SyncOutcome,
+) {
+    let initiator = receiver.open_sync_session().expect("receiver sync");
+    let responder = sender.open_sync_session().expect("sender sync");
+    initiator.begin().expect("begin");
+    responder
+        .receive_frame(take_frame(&initiator))
+        .expect("receive hello");
+    initiator
+        .receive_frame(take_frame(&responder))
+        .expect("receive summary");
+    responder
+        .receive_frame(take_frame(&initiator))
+        .expect("receive request");
+    let review = initiator
+        .receive_frame(take_frame(&responder))
+        .expect("receive entries");
+    (initiator, responder, review)
+}
+
+fn accept_and_finish(initiator: &MobileSyncSession, responder: &MobileSyncSession) {
+    assert_eq!(
+        initiator.accept_import().expect("accept import").kind,
+        SyncOutcomeKind::FrameReady
+    );
+    let responder_outcome = responder
+        .receive_frame(take_frame(initiator))
+        .expect("receive post-import summary");
+    if !responder_outcome.terminal {
+        initiator
+            .receive_frame(take_frame(responder))
+            .expect("send reverse entries");
+        let reverse_review = responder
+            .receive_frame(take_frame(initiator))
+            .expect("review reverse entries");
+        assert_eq!(reverse_review.kind, SyncOutcomeKind::ReviewImport);
+        assert_eq!(
+            responder
+                .accept_import()
+                .expect("accept reverse import")
+                .kind,
+            SyncOutcomeKind::FrameReady
+        );
+    }
+    assert_eq!(
+        initiator
+            .receive_frame(take_frame(responder))
+            .expect("receive complete")
+            .kind,
+        SyncOutcomeKind::Complete
+    );
+}
+
+#[test]
+fn nearby_sync_carries_app_data_and_shared_app_without_fake_alert_rows() {
+    let sender = open_local_profile().expect("sender");
+    let space = sender
+        .create_public_space("App sync".into())
+        .expect("space");
+    let sender_runtime = sender.app_runtime();
+    let (manifest_bytes, bundle_bytes) = manifest_and_bundle();
+    let app = sender_runtime
+        .install_app(manifest_bytes, bundle_bytes)
+        .expect("install");
+    sender_runtime
+        .app_data_put(
+            app.app_id.clone(),
+            "items/a".into(),
+            b"from sender".to_vec(),
+        )
+        .expect("put app data");
+    sender_runtime
+        .share_app(app.app_id_bytes.clone(), space.clone())
+        .expect("share app");
+
+    let receiver = open_local_profile().expect("receiver");
+    receiver.join_public_space(space).expect("join");
+    let (initiator, responder, review) = sync_to_review(&receiver, &sender);
+    assert_eq!(review.kind, SyncOutcomeKind::ReviewImport);
+    assert!(review.entries.is_empty(), "app entries are not fake alerts");
+    assert!(review.import_bundle_bytes.is_some());
+    accept_and_finish(&initiator, &responder);
+
+    assert_eq!(
+        receiver
+            .app_runtime()
+            .app_data_get(app.app_id.clone(), "items/a".into())
+            .expect("read synced app data"),
+        Some(b"from sender".to_vec())
+    );
+    let listing = receiver
+        .app_runtime()
+        .directory_listings()
+        .expect("directory")
+        .into_iter()
+        .find(|listing| listing.app_id == app.app_id_bytes)
+        .expect("synced shared app");
+    assert!(listing.bundle_present);
+    assert!(!listing.built_in);
+}
+
+#[test]
+fn nearby_sync_mixes_alert_ui_with_app_entries_and_commits_both() {
+    let sender = open_local_profile().expect("sender");
+    let space = sender
+        .create_public_space("Mixed sync".into())
+        .expect("space");
+    let signed_alert = sender
+        .sign_draft(
+            sender
+                .create_draft_alert(alert_input())
+                .expect("draft")
+                .draft_id,
+        )
+        .expect("sign alert");
+    let runtime = sender.app_runtime();
+    let (manifest_bytes, bundle_bytes) = manifest_and_bundle();
+    let app = runtime
+        .install_app(manifest_bytes, bundle_bytes)
+        .expect("install");
+    runtime
+        .app_data_put(app.app_id.clone(), "items/a".into(), b"mixed".to_vec())
+        .expect("put");
+
+    let receiver = open_local_profile().expect("receiver");
+    receiver.join_public_space(space).expect("join");
+    let (initiator, responder, review) = sync_to_review(&receiver, &sender);
+    assert_eq!(review.kind, SyncOutcomeKind::ReviewImport);
+    assert_eq!(review.entries, vec![signed_alert.entry.clone()]);
+    accept_and_finish(&initiator, &responder);
+    assert_eq!(
+        receiver.list_current_entries().unwrap(),
+        vec![signed_alert.entry]
+    );
+    assert_eq!(
+        receiver
+            .app_runtime()
+            .app_data_get(app.app_id, "items/a".into())
+            .unwrap(),
+        Some(b"mixed".to_vec())
+    );
+}
+
+#[test]
+fn portable_app_only_review_can_plan_hidden_entries_without_fake_rows() {
+    let sender = open_local_profile().unwrap();
+    let space = sender.create_public_space("Portable apps".into()).unwrap();
+    let runtime = sender.app_runtime();
+    let (manifest_bytes, bundle_bytes) = manifest_and_bundle();
+    let app = runtime.install_app(manifest_bytes, bundle_bytes).unwrap();
+    let receipt = runtime
+        .app_data_put_with_receipt(app.app_id.clone(), "items/a".into(), b"portable".to_vec())
+        .unwrap();
+
+    let receiver = open_local_profile().unwrap();
+    receiver.join_public_space(space).unwrap();
+    let preview = receiver.inspect_bytes(receipt, "portable".into()).unwrap();
+    assert!(preview.eligible_entries().unwrap().is_empty());
+    let accepted = preview.create_plan(Vec::new()).unwrap().accept().unwrap();
+    assert_eq!(accepted.accepted_entry_ids.len(), 1);
+    assert_eq!(
+        receiver
+            .app_runtime()
+            .app_data_get(app.app_id, "items/a".into())
+            .unwrap(),
+        Some(b"portable".to_vec())
+    );
+}
+
+#[test]
+fn nearby_sync_reconciles_trust_and_revoke_for_the_same_organizer_identity() {
+    let sender = open_local_profile().expect("sender");
+    let space = sender
+        .create_public_space("Trust sync".into())
+        .expect("space");
+    let wrapping_key = vec![0x5a; 32];
+    let sealed = sender
+        .seal_identity(wrapping_key.clone())
+        .expect("seal identity");
+    let receiver = open_profile_from_sealed_identity(wrapping_key, sealed).expect("restore");
+    receiver.join_public_space(space).expect("join");
+
+    let starter =
+        riot_core::apps::starter::verify_starter_catalog(riot_core::apps::starter::STARTER_CATALOG)
+            .pop()
+            .expect("starter");
+    let app_id: String = starter
+        .app_id
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    sender
+        .app_runtime()
+        .trust_app(app_id.clone())
+        .expect("trust");
+    let (initiator, responder, review) = sync_to_review(&receiver, &sender);
+    assert!(review.entries.is_empty());
+    accept_and_finish(&initiator, &responder);
+    assert!(receiver
+        .app_runtime()
+        .is_app_trusted(app_id.clone())
+        .unwrap());
+
+    sender
+        .app_runtime()
+        .untrust_app(app_id.clone())
+        .expect("revoke");
+    let (initiator, responder, _) = sync_to_review(&receiver, &sender);
+    accept_and_finish(&initiator, &responder);
+    assert!(!receiver.app_runtime().is_app_trusted(app_id).unwrap());
+}
+
+#[test]
+fn rejected_app_only_sync_never_commits_app_data() {
+    let sender = open_local_profile().expect("sender");
+    let space = sender
+        .create_public_space("Reject apps".into())
+        .expect("space");
+    let runtime = sender.app_runtime();
+    let (manifest_bytes, bundle_bytes) = manifest_and_bundle();
+    let app = runtime.install_app(manifest_bytes, bundle_bytes).unwrap();
+    runtime
+        .app_data_put(app.app_id.clone(), "items/a".into(), b"no".to_vec())
+        .unwrap();
+    let cancelled_receiver = open_local_profile().unwrap();
+    cancelled_receiver.join_public_space(space.clone()).unwrap();
+    let (cancelled, cancelled_responder, review) = sync_to_review(&cancelled_receiver, &sender);
+    assert!(review.entries.is_empty());
+    cancelled.cancel().unwrap();
+    cancelled_responder.cancel().unwrap();
+    assert_eq!(
+        cancelled_receiver
+            .app_runtime()
+            .app_data_get(app.app_id.clone(), "items/a".into())
+            .unwrap(),
+        None
+    );
+
+    let receiver = open_local_profile().unwrap();
+    receiver.join_public_space(space).unwrap();
+    let (initiator, responder, review) = sync_to_review(&receiver, &sender);
+    assert!(review.entries.is_empty());
+    assert!(initiator.reject_import(9).unwrap().terminal);
+    let rejected = responder.receive_frame(take_frame(&initiator)).unwrap();
+    assert_eq!(rejected.kind, SyncOutcomeKind::Rejected);
+    assert_eq!(
+        receiver
+            .app_runtime()
+            .app_data_get(app.app_id, "items/a".into())
+            .unwrap(),
+        None
+    );
+}
+
+#[test]
+fn app_overwrite_prunes_old_proof_and_exact_sync_id_limit_is_enforced() {
+    let sender = open_local_profile().unwrap();
+    let space = sender
+        .create_public_space("Inventory bounds".into())
+        .unwrap();
+    let runtime = sender.app_runtime();
+    let (manifest_bytes, bundle_bytes) = manifest_and_bundle();
+    let app = runtime.install_app(manifest_bytes, bundle_bytes).unwrap();
+    runtime
+        .app_data_put(
+            app.app_id.clone(),
+            "items/overwrite".into(),
+            b"old".to_vec(),
+        )
+        .unwrap();
+    runtime
+        .app_data_put(
+            app.app_id.clone(),
+            "items/overwrite".into(),
+            b"new".to_vec(),
+        )
+        .unwrap();
+    for index in 1..riot_core::sync::MAX_SYNC_IDS {
+        runtime
+            .app_data_put(
+                app.app_id.clone(),
+                format!("items/item-{index}"),
+                vec![index as u8],
+            )
+            .expect("exact cap remains admissible");
+    }
+    sender
+        .open_sync_session()
+        .expect("64 live entries sync")
+        .cancel()
+        .unwrap();
+    assert!(matches!(
+        runtime.app_data_put(app.app_id.clone(), "items/overflow".into(), b"x".to_vec()),
+        Err(MobileError::SessionLimit)
+    ));
+
+    let receiver = open_local_profile().unwrap();
+    receiver.join_public_space(space).unwrap();
+    let (initiator, responder, _) = sync_to_review(&receiver, &sender);
+    accept_and_finish(&initiator, &responder);
+    assert_eq!(
+        receiver
+            .app_runtime()
+            .app_data_get(app.app_id, "items/overwrite".into())
+            .unwrap(),
+        Some(b"new".to_vec())
+    );
+}
+
+#[test]
+fn app_prefix_write_prunes_descendant_proofs_before_sync() {
+    let sender = open_local_profile().unwrap();
+    let space = sender.create_public_space("Prefix pruning".into()).unwrap();
+    let runtime = sender.app_runtime();
+    let (manifest_bytes, bundle_bytes) = manifest_and_bundle();
+    let app = runtime.install_app(manifest_bytes, bundle_bytes).unwrap();
+    runtime
+        .app_data_put(app.app_id.clone(), "items/a".into(), b"child".to_vec())
+        .unwrap();
+    runtime
+        .app_data_put(app.app_id.clone(), "items".into(), b"parent".to_vec())
+        .unwrap();
+    sender.open_sync_session().unwrap().cancel().unwrap();
+
+    let receiver = open_local_profile().unwrap();
+    receiver.join_public_space(space).unwrap();
+    let (initiator, responder, _) = sync_to_review(&receiver, &sender);
+    accept_and_finish(&initiator, &responder);
+    assert_eq!(
+        receiver
+            .app_runtime()
+            .app_data_get(app.app_id.clone(), "items/a".into())
+            .unwrap(),
+        None
+    );
+    assert_eq!(
+        receiver
+            .app_runtime()
+            .app_data_get(app.app_id, "items".into())
+            .unwrap(),
+        Some(b"parent".to_vec())
+    );
+}
+
+#[test]
+fn aggregate_sync_inventory_is_bounded_to_one_bundle_before_session_clone() {
+    let profile = open_local_profile().unwrap();
+    profile.create_public_space("Byte bound".into()).unwrap();
+    let runtime = profile.app_runtime();
+    let (manifest_bytes, bundle_bytes) = manifest_and_bundle();
+    let app = runtime.install_app(manifest_bytes, bundle_bytes).unwrap();
+    for index in 0..7 {
+        runtime
+            .app_data_put(
+                app.app_id.clone(),
+                format!("items/large-{index}"),
+                vec![index as u8; riot_core::import::MAX_ITEM_PAYLOAD_BYTES],
+            )
+            .expect("inventory below aggregate byte cap");
+    }
+    assert!(matches!(
+        runtime.app_data_put(
+            app.app_id,
+            "items/large-7".into(),
+            vec![7; riot_core::import::MAX_ITEM_PAYLOAD_BYTES],
+        ),
+        Err(MobileError::SessionLimit)
+    ));
+    profile
+        .open_sync_session()
+        .expect("bounded inventory opens")
+        .cancel()
+        .unwrap();
+}
+
+#[test]
+fn app_import_rejects_foreign_namespace_and_spoofed_index_slots() {
+    use riot_core::apps::endorse::{encode_endorsement, EndorsementMarker};
+    use riot_core::apps::entry::app_data_path;
+    use riot_core::apps::index::app_index_endorsement_path;
+    use riot_core::willow::generate_communal_author;
+
+    let receiver = open_local_profile().unwrap();
+    receiver.create_public_space("Admission".into()).unwrap();
+    let foreign = generate_communal_author().unwrap();
+    let app_id = [0x33; 32];
+    let foreign_app = signed_bundle_at(
+        &foreign,
+        app_data_path(&app_id, "items/a").unwrap(),
+        b"foreign",
+    );
+    assert!(matches!(
+        receiver.inspect_bytes(foreign_app, "nearby".into()),
+        Err(MobileError::ImportRejected)
+    ));
+
+    let author_identity = receiver.identity().unwrap();
+    let author = riot_core::willow::generate_communal_author_for_namespace(
+        unhex(&author_identity.namespace_id).try_into().unwrap(),
+    )
+    .unwrap();
+    let marker = EndorsementMarker {
+        app_id,
+        note: "spoof".into(),
+        retracted: false,
+    };
+    let spoofed_slot = app_index_endorsement_path(&app_id, &[0x77; 32]).unwrap();
+    let spoofed = frame_unchecked(&signed_entry_at(
+        &author,
+        spoofed_slot,
+        &encode_endorsement(&marker).unwrap(),
+    ));
+    assert!(matches!(
+        receiver.inspect_bytes(spoofed, "nearby".into()),
+        Err(MobileError::ImportRejected)
+    ));
+
+    let wrong_payload = EndorsementMarker {
+        app_id: [0x44; 32],
+        note: "wrong app".into(),
+        retracted: false,
+    };
+    let mismatched = frame_unchecked(&signed_entry_at(
+        &author,
+        app_index_endorsement_path(&app_id, author.subspace_id().as_bytes()).unwrap(),
+        &encode_endorsement(&wrong_payload).unwrap(),
+    ));
+    assert!(matches!(
+        receiver.inspect_bytes(mismatched, "nearby".into()),
+        Err(MobileError::ImportRejected)
+    ));
 }
 
 #[test]
@@ -202,6 +705,28 @@ fn app_data_put_does_not_break_sync_sessions() {
     runtime
         .app_data_put(app.app_id, "items/b".to_string(), b"y".to_vec())
         .expect("put works again after cancel");
+}
+
+#[test]
+fn app_write_never_replaces_an_active_portable_review() {
+    let sender = open_local_profile().unwrap();
+    let space = sender.create_public_space("Review guard".into()).unwrap();
+    let signed = sender
+        .sign_draft(sender.create_draft_alert(alert_input()).unwrap().draft_id)
+        .unwrap();
+    let receiver = open_local_profile().unwrap();
+    receiver.join_public_space(space).unwrap();
+    let preview = receiver
+        .inspect_bytes(signed.bundle_bytes, "portable".into())
+        .unwrap();
+    let app_id = "11".repeat(32);
+    assert!(matches!(
+        receiver
+            .app_runtime()
+            .app_data_put(app_id, "items/a".into(), b"blocked".to_vec()),
+        Err(MobileError::InvalidInput)
+    ));
+    assert_eq!(preview.eligible_entries().unwrap(), vec![signed.entry]);
 }
 
 #[test]
@@ -432,8 +957,10 @@ fn share_and_endorse_respect_active_sync_and_never_brick_it() {
 
 #[test]
 fn trust_toggles_never_exhaust_the_marker_cap() {
-    // Regression (review M2): markers compact to latest-per-app, so the cap
-    // bounds distinct apps, not lifetime toggles.
+    // Regression (review M2): well below the store's separate 256-receipt
+    // lifetime bound, markers compact to latest-per-app, so the marker cap
+    // bounds distinct apps rather than ordinary toggle count. Automatic
+    // receipt compaction is a separate follow-up (iOS plan d370ac0).
     let profile = open_local_profile().expect("profile");
     let runtime = profile.app_runtime();
     let (manifest_bytes, bundle_bytes) = manifest_and_bundle();
@@ -441,12 +968,54 @@ fn trust_toggles_never_exhaust_the_marker_cap() {
         .install_app(manifest_bytes, bundle_bytes)
         .expect("install");
 
-    for _ in 0..300 {
+    for _ in 0..100 {
         runtime.trust_app(app.app_id.clone()).expect("trust");
         runtime.untrust_app(app.app_id.clone()).expect("untrust");
     }
     runtime.trust_app(app.app_id.clone()).expect("final trust");
     assert!(runtime.is_app_trusted(app.app_id).expect("check"));
+}
+
+#[test]
+fn trust_store_full_leaves_cache_and_sync_inventory_on_the_last_committed_marker() {
+    let profile = open_local_profile().expect("profile");
+    profile.create_public_space("Receipt bound".into()).unwrap();
+    let runtime = profile.app_runtime();
+    let starter =
+        riot_core::apps::starter::verify_starter_catalog(riot_core::apps::starter::STARTER_CATALOG)
+            .pop()
+            .unwrap();
+    let app_id: String = starter
+        .app_id
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+
+    for index in 0..256 {
+        if index % 2 == 0 {
+            runtime
+                .trust_app(app_id.clone())
+                .expect("within receipt bound");
+        } else {
+            runtime
+                .untrust_app(app_id.clone())
+                .expect("within receipt bound");
+        }
+    }
+    assert!(!runtime.is_app_trusted(app_id.clone()).unwrap());
+    assert!(matches!(
+        runtime.trust_app(app_id.clone()),
+        Err(MobileError::StoreFull)
+    ));
+    assert!(
+        !runtime.is_app_trusted(app_id).unwrap(),
+        "cache changes only after a successful commit"
+    );
+    profile
+        .open_sync_session()
+        .expect("failed write did not break complete inventory")
+        .cancel()
+        .unwrap();
 }
 
 #[test]

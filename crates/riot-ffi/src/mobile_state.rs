@@ -1,9 +1,14 @@
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::{Arc, Mutex, PoisonError};
 
+use ed25519_dalek::Signature;
+use willow25::entry::EntrylikeExt;
+use willow25::groupings::Keylike;
 use zeroize::{Zeroize, Zeroizing};
 
-use riot_core::import::{decode_bundle, encode_bundle, BundleDecodeOutcome, ItemStatus};
+use riot_core::import::{
+    decode_bundle, encode_bundle, BundleDecodeOutcome, ItemStatus, MAX_BUNDLE_BYTES,
+};
 use riot_core::model::{decode_alert, encode_alert, AlertPayload, Certainty, Severity, Urgency};
 use riot_core::session::{
     public_entry_identity, CommitOutcome, EvidenceStore, ImportContext, ImportPlan, ImportPreview,
@@ -32,6 +37,9 @@ const MAX_RETAINED_DRAFTS: usize = 64;
 const MAX_SELECTED_ENTRY_IDS: usize = 64;
 const MAX_INSTALLED_APPS: usize = 16;
 const MAX_APP_TRUST_MARKERS: usize = 256;
+/// The complete retained inventory must fit one protocol bundle. This caps
+/// aggregate proof/payload retention at 8 MiB before any session clones it.
+const MAX_SYNC_INVENTORY_BYTES: usize = MAX_BUNDLE_BYTES;
 
 pub(crate) struct LocalProfile {
     store: EvidenceStore,
@@ -54,9 +62,6 @@ pub(crate) struct LocalProfile {
     /// with this profile's own subspace as the sole recognized organizer.
     /// Syncing markers as Willow entries is the app-directory follow-up.
     app_trust_markers: Vec<riot_core::apps::trust::TrustMarker>,
-    /// Monotonic ordering source for trust markers (LWW evaluation needs a
-    /// total order, not wall-clock truth).
-    next_trust_marker_seq: u64,
     /// Floor guaranteeing strictly increasing Willow timestamps for
     /// same-profile app-data writes, so a rapid overwrite of the same key
     /// within one clock second still prunes deterministically.
@@ -100,8 +105,8 @@ struct StoredSyncImport {
     sync_entries: Vec<SignedWillowEntry>,
 }
 
-struct InspectableAlert {
-    current: CurrentEntry,
+struct InspectableEntry {
+    current: Option<CurrentEntry>,
     signed: SignedWillowEntry,
 }
 
@@ -151,7 +156,6 @@ fn profile_with_author(store: EvidenceStore, author: EvidenceAuthor) -> Arc<Mobi
             next_handle_id: 1,
             installed_apps: Vec::new(),
             app_trust_markers: Vec::new(),
-            next_trust_marker_seq: 1,
             app_data_timestamp_floor_micros: 0,
         })))),
     })
@@ -285,6 +289,8 @@ pub(crate) fn sign_draft(
         let core_signed =
             create_signed_alert(&profile.author, profile.drafts[draft_index].draft.clone())
                 .map_err(map_author_error)?;
+        let next_inventory =
+            prospective_sync_inventory(profile, std::slice::from_ref(&core_signed.signed))?;
         let bundle_bytes = encode_bundle(std::slice::from_ref(&core_signed.signed))
             .map_err(|_| MobileError::Internal)?;
 
@@ -301,7 +307,7 @@ pub(crate) fn sign_draft(
 
         let entry = current_entry_from_signed(&core_signed)?;
         remember_entry(&mut profile.entries, entry.clone());
-        remember_sync_entries(profile, vec![core_signed.signed.clone()])?;
+        install_sync_inventory(profile, next_inventory)?;
         profile.drafts.remove(draft_index);
         Ok(SignedAlert {
             entry,
@@ -325,10 +331,9 @@ pub(crate) fn list_current_entries(
         // does — otherwise a single local `app_data_put`, or its replay on the
         // next open, leaves a live non-alert entry with no match in
         // `profile.entries` and bricks this listing with `Internal`.
-        let app_index_prefix = riot_core::willow::Path::from_slices(&[
-            riot_core::apps::index::APP_INDEX_COMPONENT,
-        ])
-        .map_err(|_| MobileError::Internal)?;
+        let app_index_prefix =
+            riot_core::willow::Path::from_slices(&[riot_core::apps::index::APP_INDEX_COMPONENT])
+                .map_err(|_| MobileError::Internal)?;
         let app_index_ids: std::collections::BTreeSet<_> = profile
             .store
             .entries_with_prefix(&app_index_prefix)
@@ -384,17 +389,17 @@ pub(crate) fn inspect_bytes(
             .as_ref()
             .ok_or(MobileError::InvalidInput)?
             .namespace_id;
-        let inspectable = inspectable_alert_entries(&bytes, namespace_id)?;
+        let inspectable = inspectable_entries(&bytes, namespace_id)?;
         let entries: Vec<_> = inspectable
             .iter()
-            .map(|item| item.current.clone())
+            .filter_map(|item| item.current.clone())
             .collect();
-        let sync_entries = inspectable.into_iter().map(|item| item.signed).collect();
+        let sync_entries: Vec<_> = inspectable.into_iter().map(|item| item.signed).collect();
         profile.ensure_handle_capacity()?;
         profile.preview = None;
         profile.plan = None;
         let preview = inspect_core(&profile.store, &bytes, &route)?;
-        if preview.eligible_count().map_err(map_core_error)? != entries.len() {
+        if preview.eligible_count().map_err(map_core_error)? != sync_entries.len() {
             return Err(MobileError::ImportRejected);
         }
         let preview_id = profile.alloc_handle_id()?;
@@ -431,9 +436,6 @@ pub(crate) fn create_plan(
     selected_entry_ids: Vec<String>,
 ) -> Result<Arc<MobileImportPlan>, MobileError> {
     with_active(inner, |profile| {
-        if selected_entry_ids.is_empty() {
-            return Err(MobileError::InvalidInput);
-        }
         if selected_entry_ids.len() > MAX_SELECTED_ENTRY_IDS {
             return Err(MobileError::SessionLimit);
         }
@@ -453,17 +455,32 @@ pub(crate) fn create_plan(
                 .ok_or(MobileError::PreviewConsumed)?;
             let mut selection = Vec::with_capacity(selected_entry_ids.len());
             let mut selected_entries = Vec::with_capacity(selected_entry_ids.len());
-            let mut selected_sync_entries = Vec::with_capacity(selected_entry_ids.len());
+            let mut selected_sync_entries = Vec::with_capacity(preview.sync_entries.len());
             for selected_id in &selected_entry_ids {
-                let entry_id = parse_entry_id(selected_id)?;
+                let parsed_id = parse_entry_id(selected_id)?;
                 let entry_index = preview
                     .entries
                     .iter()
                     .position(|entry| entry.entry_id == *selected_id)
                     .ok_or(MobileError::InvalidInput)?;
-                selection.push(entry_id);
+                selection.push(parsed_id);
                 selected_entries.push(preview.entries[entry_index].clone());
-                selected_sync_entries.push(preview.sync_entries[entry_index].clone());
+                let signed = preview
+                    .sync_entries
+                    .iter()
+                    .find(|signed| hex(&entry_id(&signed.entry_bytes)) == *selected_id)
+                    .ok_or(MobileError::Internal)?;
+                selected_sync_entries.push(signed.clone());
+            }
+            for signed in &preview.sync_entries {
+                let id = hex(&entry_id(&signed.entry_bytes));
+                if !preview.entries.iter().any(|entry| entry.entry_id == id) {
+                    selection.push(entry_id(&signed.entry_bytes));
+                    selected_sync_entries.push(signed.clone());
+                }
+            }
+            if selection.is_empty() {
+                return Err(MobileError::InvalidInput);
             }
             let plan = preview
                 .preview
@@ -504,6 +521,7 @@ pub(crate) fn accept_plan(
             .filter(|plan| plan.id == plan_id)
             .map(|plan| (plan.entries.clone(), plan.sync_entries.clone()))
             .ok_or(MobileError::PlanConsumed)?;
+        let next_inventory = prospective_sync_inventory(profile, &sync_entries)?;
         let outcome = profile
             .plan
             .as_ref()
@@ -518,9 +536,14 @@ pub(crate) fn accept_plan(
                 for entry in &entries {
                     remember_entry(&mut profile.entries, entry.clone());
                 }
-                remember_sync_entries(profile, sync_entries)?;
+                install_sync_inventory(profile, next_inventory)?;
+                advance_app_write_floor(profile, &sync_entries)?;
+                refresh_app_trust_markers(profile)?;
                 Ok(ImportAcceptance {
-                    accepted_entry_ids: entries.into_iter().map(|entry| entry.entry_id).collect(),
+                    accepted_entry_ids: sync_entries
+                        .into_iter()
+                        .map(|signed| hex(&entry_id(&signed.entry_bytes)))
+                        .collect(),
                 })
             }
         }
@@ -628,18 +651,19 @@ fn prepare_sync_import(
         .ok_or(MobileError::InvalidInput)?
         .namespace_id
         .clone();
-    let inspectable = inspectable_alert_entries(bundle_bytes, &namespace_id)?;
+    let inspectable = inspectable_entries(bundle_bytes, &namespace_id)?;
     let entries: Vec<_> = inspectable
         .iter()
-        .map(|item| item.current.clone())
+        .filter_map(|item| item.current.clone())
         .collect();
-    let sync_entries = inspectable.into_iter().map(|item| item.signed).collect();
+    let sync_entries: Vec<_> = inspectable.into_iter().map(|item| item.signed).collect();
     profile.preview = None;
     profile.plan = None;
     let preview = inspect_core(&profile.store, bundle_bytes, "conference-sync")?;
-    if preview.eligible_count().map_err(map_core_error)? != entries.len() {
+    if preview.eligible_count().map_err(map_core_error)? != sync_entries.len() {
         return Err(MobileError::ImportRejected);
     }
+    prospective_sync_inventory(profile, &sync_entries)?;
     active_sync_mut(profile, sync_id)?.pending = Some(StoredSyncImport {
         preview,
         entries: entries.clone(),
@@ -681,17 +705,26 @@ pub(crate) fn sync_accept_import(
                 .pending
                 .as_ref()
                 .ok_or(MobileError::InvalidInput)?;
+            (pending.entries.clone(), pending.sync_entries.clone())
+        };
+        let next_inventory = prospective_sync_inventory(profile, &sync_entries)?;
+        {
+            let pending = active_sync_mut(profile, sync_id)?
+                .pending
+                .as_ref()
+                .ok_or(MobileError::InvalidInput)?;
             let plan = pending.preview.plan_all().map_err(map_core_error)?;
             match plan.commit().map_err(map_core_error)? {
                 CommitOutcome::Committed(_) | CommitOutcome::NoChanges(_) => {}
             }
-            (pending.entries.clone(), pending.sync_entries.clone())
-        };
+        }
         active_sync_mut(profile, sync_id)?.pending = None;
         for entry in entries {
             remember_entry(&mut profile.entries, entry);
         }
-        remember_sync_entries(profile, sync_entries)?;
+        install_sync_inventory(profile, next_inventory)?;
+        advance_app_write_floor(profile, &sync_entries)?;
+        refresh_app_trust_markers(profile)?;
         let session = active_sync_mut(profile, sync_id)?;
         let outcome = session.bridge.import_accepted().map_err(map_sync_error)?;
         outcome_without_import(outcome, session.bridge.is_terminal())
@@ -801,10 +834,10 @@ fn inspect_core(
     }
 }
 
-fn inspectable_alert_entries(
+fn inspectable_entries(
     bytes: &[u8],
     expected_namespace_id: &str,
-) -> Result<Vec<InspectableAlert>, MobileError> {
+) -> Result<Vec<InspectableEntry>, MobileError> {
     let decoded = match decode_bundle(bytes) {
         BundleDecodeOutcome::Decoded(decoded) => decoded,
         BundleDecodeOutcome::Rejected(_) => return Err(MobileError::ImportRejected),
@@ -814,25 +847,31 @@ fn inspectable_alert_entries(
         let ItemStatus::Valid(valid) = item.status else {
             continue;
         };
-        let alert =
-            decode_alert(item.frame.payload_bytes()).map_err(|_| MobileError::ImportRejected)?;
-        if !alert_entry_path_matches_payload(
-            item.frame.entry_bytes(),
-            &alert.object_id,
-            &alert.revision_id,
-        )
-        .map_err(|_| MobileError::ImportRejected)?
-        {
-            return Err(MobileError::ImportRejected);
-        }
+        let decoded_entry = riot_core::willow::decode_entry_canonic(item.frame.entry_bytes())
+            .map_err(|_| MobileError::ImportRejected)?;
         let identity = public_entry_identity(item.frame.entry_bytes())
             .map_err(|_| MobileError::ImportRejected)?;
         let namespace_id = hex(&identity.namespace_id);
         if namespace_id != expected_namespace_id {
             return Err(MobileError::ImportRejected);
         }
-        entries.push(InspectableAlert {
-            current: CurrentEntry {
+        let is_app = riot_core::apps::entry::is_app_data_entry(&decoded_entry)
+            || riot_core::apps::index::classify_app_index_path(decoded_entry.path()).is_some();
+        let current = if is_app {
+            None
+        } else {
+            let alert = decode_alert(item.frame.payload_bytes())
+                .map_err(|_| MobileError::ImportRejected)?;
+            if !alert_entry_path_matches_payload(
+                item.frame.entry_bytes(),
+                &alert.object_id,
+                &alert.revision_id,
+            )
+            .map_err(|_| MobileError::ImportRejected)?
+            {
+                return Err(MobileError::ImportRejected);
+            }
+            Some(CurrentEntry {
                 entry_id: hex(&valid.entry_id),
                 namespace_id,
                 signer_id: hex(&identity.signer_id),
@@ -843,7 +882,10 @@ fn inspectable_alert_entries(
                     expires_at: alert.expires_at,
                 },
                 ai_assisted: alert.ai_assisted,
-            },
+            })
+        };
+        entries.push(InspectableEntry {
+            current,
             signed: SignedWillowEntry {
                 entry_bytes: item.frame.entry_bytes().to_vec(),
                 capability_bytes: item.frame.capability_bytes().to_vec(),
@@ -885,61 +927,100 @@ fn remember_entry(entries: &mut Vec<CurrentEntry>, entry: CurrentEntry) {
     }
 }
 
-fn remember_sync_entries(
-    profile: &mut LocalProfile,
-    incoming: Vec<SignedWillowEntry>,
-) -> Result<(), MobileError> {
+fn prospective_sync_inventory(
+    profile: &LocalProfile,
+    incoming: &[SignedWillowEntry],
+) -> Result<Vec<SignedWillowEntry>, MobileError> {
+    let mut candidates = profile.sync_inventory.clone();
     for signed in incoming {
         let id = entry_id(&signed.entry_bytes);
-        if !profile
-            .sync_inventory
+        if !candidates
             .iter()
             .any(|known| entry_id(&known.entry_bytes) == id)
         {
-            profile.sync_inventory.push(signed);
+            candidates.push(signed.clone());
         }
     }
-    let live_ids = profile.store.live_entry_ids().map_err(map_core_error)?;
-    profile
-        .sync_inventory
-        .retain(|signed| live_ids.contains(&entry_id(&signed.entry_bytes)));
-    profile
-        .sync_inventory
-        .sort_unstable_by_key(|signed| entry_id(&signed.entry_bytes));
-    profile.sync_inventory.truncate(MAX_SYNC_IDS);
+
+    // Simulate Willow's full prefix-pruning relation so overwritten proofs
+    // leave the candidate set before count/byte accounting. Proofs are never
+    // rebuilt from store metadata.
+    let decoded: Vec<_> = candidates
+        .iter()
+        .map(|signed| {
+            riot_core::willow::decode_entry_canonic(&signed.entry_bytes)
+                .map_err(|_| MobileError::Internal)
+        })
+        .collect::<Result<_, _>>()?;
+    let ids: Vec<_> = candidates
+        .iter()
+        .map(|signed| entry_id(&signed.entry_bytes))
+        .collect();
+    let keep: Vec<_> = decoded
+        .iter()
+        .enumerate()
+        .map(|(index, candidate)| {
+            !decoded.iter().enumerate().any(|(other_index, other)| {
+                ids[other_index] != ids[index] && other.prunes(candidate)
+            })
+        })
+        .collect();
+    candidates = candidates
+        .into_iter()
+        .zip(keep)
+        .filter_map(|(signed, keep)| keep.then_some(signed))
+        .collect();
+    candidates.sort_unstable_by_key(|signed| entry_id(&signed.entry_bytes));
+    if candidates.len() > MAX_SYNC_IDS {
+        return Err(MobileError::SessionLimit);
+    }
+    let encoded = encode_bundle(&candidates).map_err(|_| MobileError::SessionLimit)?;
+    if encoded.len() > MAX_SYNC_INVENTORY_BYTES {
+        return Err(MobileError::SessionLimit);
+    }
+    Ok(candidates)
+}
+
+fn install_sync_inventory(
+    profile: &mut LocalProfile,
+    mut inventory: Vec<SignedWillowEntry>,
+) -> Result<(), MobileError> {
+    let mut live_ids = profile.store.live_entry_ids().map_err(map_core_error)?;
+    live_ids.sort_unstable();
+    inventory.retain(|signed| live_ids.contains(&entry_id(&signed.entry_bytes)));
+    inventory.sort_unstable_by_key(|signed| entry_id(&signed.entry_bytes));
+    let inventory_ids: Vec<_> = inventory
+        .iter()
+        .map(|signed| entry_id(&signed.entry_bytes))
+        .collect();
+    if inventory_ids != live_ids {
+        return Err(MobileError::Internal);
+    }
+    profile.sync_inventory = inventory;
+    Ok(())
+}
+
+fn advance_app_write_floor(
+    profile: &mut LocalProfile,
+    entries: &[SignedWillowEntry],
+) -> Result<(), MobileError> {
+    for signed in entries {
+        let entry = riot_core::willow::decode_entry_canonic(&signed.entry_bytes)
+            .map_err(|_| MobileError::Internal)?;
+        let is_app = riot_core::apps::entry::is_app_data_entry(&entry)
+            || riot_core::apps::index::classify_app_index_path(entry.path()).is_some();
+        if is_app {
+            let timestamp = riot_core::willow::entry_timestamp_micros(&signed.entry_bytes)
+                .map_err(|_| MobileError::Internal)?;
+            profile.app_data_timestamp_floor_micros =
+                profile.app_data_timestamp_floor_micros.max(timestamp);
+        }
+    }
     Ok(())
 }
 
 fn ensure_complete_sync_inventory(profile: &LocalProfile) -> Result<(), MobileError> {
-    // App-data entries (`apps/<app_id>/...`) and app-index entries
-    // (`app-index/<app_id>/...`, written by share_app/endorse_app) are
-    // deliberately outside the alert sync inventory: this sync review
-    // surface is alert-only, and the app-directory sync task owns carrying
-    // app entries. The completeness invariant therefore compares against
-    // live non-app entries only — otherwise one local app_data_put or
-    // share_app would brick open_sync_session.
-    let app_index_prefix =
-        riot_core::willow::Path::from_slices(&[riot_core::apps::index::APP_INDEX_COMPONENT])
-            .map_err(|_| MobileError::Internal)?;
-    let app_index_ids: std::collections::BTreeSet<_> = profile
-        .store
-        .entries_with_prefix(&app_index_prefix)
-        .map_err(map_core_error)?
-        .into_iter()
-        .map(|(id, _, _)| id)
-        .collect();
-    let all_prefix =
-        riot_core::willow::Path::from_slices(&[]).map_err(|_| MobileError::Internal)?;
-    let mut live_ids: Vec<_> = profile
-        .store
-        .entries_with_prefix(&all_prefix)
-        .map_err(map_core_error)?
-        .into_iter()
-        .filter(|(id, entry, _)| {
-            !riot_core::apps::entry::is_app_data_entry(entry) && !app_index_ids.contains(id)
-        })
-        .map(|(id, _, _)| id)
-        .collect();
+    let mut live_ids = profile.store.live_entry_ids().map_err(map_core_error)?;
     live_ids.sort_unstable();
     if live_ids.len() > MAX_SYNC_IDS {
         return Err(MobileError::SessionLimit);
@@ -951,6 +1032,10 @@ fn ensure_complete_sync_inventory(profile: &LocalProfile) -> Result<(), MobileEr
         .collect();
     if inventory_ids != live_ids {
         return Err(MobileError::Internal);
+    }
+    let encoded = encode_bundle(&profile.sync_inventory).map_err(|_| MobileError::SessionLimit)?;
+    if encoded.len() > MAX_SYNC_INVENTORY_BYTES {
+        return Err(MobileError::SessionLimit);
     }
     Ok(())
 }
@@ -1112,7 +1197,11 @@ pub(crate) fn install_app(
         let app_id = verify_app_pair(&manifest_bytes, &bundle_bytes).map_err(map_apps_error)?;
         let manifest = decode_manifest(&manifest_bytes).map_err(map_apps_error)?;
 
-        if !profile.installed_apps.iter().any(|app| app.app_id == app_id) {
+        if !profile
+            .installed_apps
+            .iter()
+            .any(|app| app.app_id == app_id)
+        {
             if profile.installed_apps.len() >= MAX_INSTALLED_APPS {
                 return Err(MobileError::SessionLimit);
             }
@@ -1139,29 +1228,39 @@ pub(crate) fn set_app_trust(
     app_id: String,
     trusted: bool,
 ) -> Result<(), MobileError> {
-    use riot_core::apps::trust::{TrustMarker, TrustMarkerKind};
+    use riot_core::apps::index::app_index_trust_path;
+    use riot_core::apps::trust::{encode_trust_marker, TrustMarker, TrustMarkerKind};
 
     with_active(inner, |profile| {
+        if sync_session_is_active(profile) {
+            return Err(MobileError::InvalidInput);
+        }
         let app_id = parse_entry_id(&app_id)?;
-        // Only the latest marker per app matters for evaluation; compact so
-        // repeated trust/untrust toggles never exhaust the cap (which then
-        // bounds *distinct* apps, not lifetime toggles).
-        profile.app_trust_markers.retain(|m| m.app_id != app_id);
-        if profile.app_trust_markers.len() >= MAX_APP_TRUST_MARKERS {
+        if !profile
+            .app_trust_markers
+            .iter()
+            .any(|marker| marker.app_id == app_id)
+            && profile.app_trust_markers.len() >= MAX_APP_TRUST_MARKERS
+        {
             return Err(MobileError::SessionLimit);
         }
-        let seq = profile.next_trust_marker_seq;
-        profile.next_trust_marker_seq = seq.checked_add(1).ok_or(MobileError::SessionLimit)?;
-        profile.app_trust_markers.push(TrustMarker {
+        let timestamp = next_app_write_timestamp(profile)?;
+        let kind = if trusted {
+            TrustMarkerKind::Trust
+        } else {
+            TrustMarkerKind::Revoke
+        };
+        let marker = TrustMarker {
             app_id,
             author_subspace_id: *profile.author.subspace_id().as_bytes(),
-            kind: if trusted {
-                TrustMarkerKind::Trust
-            } else {
-                TrustMarkerKind::Revoke
-            },
-            timestamp_micros: seq,
-        });
+            kind,
+            timestamp_micros: timestamp,
+        };
+        let payload = encode_trust_marker(&marker).map_err(map_apps_error)?;
+        let path = app_index_trust_path(&app_id, profile.author.subspace_id().as_bytes())
+            .map_err(map_apps_error)?;
+        commit_local_app_entry(profile, path, &payload, timestamp)?;
+        profile.app_data_timestamp_floor_micros = timestamp;
         Ok(())
     })
 }
@@ -1210,15 +1309,8 @@ pub(crate) fn app_data_put_with_receipt(
         }
         let app_id = parse_entry_id(&app_id)?;
         let timestamp = next_app_write_timestamp(profile)?;
-        let bundle_bytes = riot_core::apps::bridge::AppDataBridge::put_returning_bundle(
-            &profile.store,
-            &profile.author,
-            &app_id,
-            &key,
-            timestamp,
-            &value,
-        )
-        .map_err(map_apps_error)?;
+        let path = riot_core::apps::entry::app_data_path(&app_id, &key).map_err(map_apps_error)?;
+        let bundle_bytes = commit_local_app_entry(profile, path, &value, timestamp)?;
         profile.app_data_timestamp_floor_micros = timestamp;
         Ok(bundle_bytes)
     })
@@ -1246,8 +1338,9 @@ pub(crate) fn replay_app_data_bundle(
         };
         let mut saw_entry = false;
         let mut max_replayed_timestamp = 0u64;
+        let mut signed_entries = Vec::new();
         for item in &decoded.items {
-            let ItemStatus::Valid(_) = item.status else {
+            let ItemStatus::Valid(_) = &item.status else {
                 continue;
             };
             let entry = riot_core::willow::decode_entry_canonic(item.frame.entry_bytes())
@@ -1259,10 +1352,21 @@ pub(crate) fn replay_app_data_bundle(
                 .map_err(|_| MobileError::ImportRejected)?;
             max_replayed_timestamp = max_replayed_timestamp.max(timestamp);
             saw_entry = true;
+            signed_entries.push(SignedWillowEntry {
+                entry_bytes: item.frame.entry_bytes().to_vec(),
+                capability_bytes: item.frame.capability_bytes().to_vec(),
+                signature: item
+                    .frame
+                    .signature_bytes()
+                    .try_into()
+                    .map_err(|_| MobileError::ImportRejected)?,
+                payload_bytes: item.frame.payload_bytes().to_vec(),
+            });
         }
         if !saw_entry {
             return Err(MobileError::ImportRejected);
         }
+        let next_inventory = prospective_sync_inventory(profile, &signed_entries)?;
         profile.preview = None;
         profile.plan = None;
         let preview = inspect_core(&profile.store, &bytes, "app-data-replay")?;
@@ -1280,6 +1384,7 @@ pub(crate) fn replay_app_data_bundle(
                 profile.app_data_timestamp_floor_micros = profile
                     .app_data_timestamp_floor_micros
                     .max(max_replayed_timestamp);
+                install_sync_inventory(profile, next_inventory)?;
                 Ok(())
             }
         }
@@ -1289,9 +1394,7 @@ pub(crate) fn replay_app_data_bundle(
 /// A short, stable, non-identifying label an app can show for the current
 /// person: `"member-"` + the first 8 lowercase hex chars of the profile's
 /// subspace id. Never exposes full key material.
-pub(crate) fn app_display_name(
-    inner: &Arc<Mutex<ProfileState>>,
-) -> Result<String, MobileError> {
+pub(crate) fn app_display_name(inner: &Arc<Mutex<ProfileState>>) -> Result<String, MobileError> {
     with_active(inner, |profile| {
         let subspace_id = *profile.author.subspace_id().as_bytes();
         Ok(format!("member-{}", hex(&subspace_id[..4])))
@@ -1347,6 +1450,66 @@ fn next_app_write_timestamp(profile: &LocalProfile) -> Result<u64, MobileError> 
 /// Raw 32-byte app id as the directory FFI surface carries it.
 fn exact_app_id(value: &[u8]) -> Result<[u8; 32], MobileError> {
     value.try_into().map_err(|_| MobileError::InvalidInput)
+}
+
+/// Build, authorise, preflight, admit, commit, and retain one exact app
+/// entry. Inventory capacity is proven before store mutation, so a
+/// successful commit can never leave a live entry without its signed proof.
+fn commit_local_app_entry(
+    profile: &mut LocalProfile,
+    path: riot_core::willow::Path,
+    payload: &[u8],
+    timestamp_micros: u64,
+) -> Result<Vec<u8>, MobileError> {
+    if profile.preview.is_some() || profile.plan.is_some() {
+        return Err(MobileError::InvalidInput);
+    }
+    let entry = riot_core::willow::Entry::builder()
+        .namespace_id(profile.author.namespace_id().clone())
+        .subspace_id(profile.author.subspace_id())
+        .path(path)
+        .timestamp(timestamp_micros)
+        .payload(payload)
+        .build();
+    let authorised =
+        riot_core::willow::authorise_entry(&profile.author, entry).map_err(map_author_error)?;
+    let token = authorised.authorisation_token();
+    let signature: Signature = token.signature().clone().into();
+    let signed = SignedWillowEntry {
+        entry_bytes: riot_core::willow::encode_entry(authorised.entry()),
+        capability_bytes: riot_core::willow::encode_capability(token.capability()),
+        signature: signature.to_bytes(),
+        payload_bytes: payload.to_vec(),
+    };
+    let next_inventory = prospective_sync_inventory(profile, std::slice::from_ref(&signed))?;
+    let bundle_bytes =
+        encode_bundle(std::slice::from_ref(&signed)).map_err(|_| MobileError::SessionLimit)?;
+    let preview = inspect_core(&profile.store, &bundle_bytes, "local-app-write")?;
+    if preview.eligible_count().map_err(map_core_error)? != 1 {
+        return Err(MobileError::AppRejected);
+    }
+    let plan = preview.plan_all().map_err(map_core_error)?;
+    match plan.commit().map_err(map_core_error)? {
+        CommitOutcome::Committed(_) | CommitOutcome::NoChanges(_) => {}
+    }
+    install_sync_inventory(profile, next_inventory)?;
+    refresh_app_trust_markers(profile)?;
+    Ok(bundle_bytes)
+}
+
+fn refresh_app_trust_markers(profile: &mut LocalProfile) -> Result<(), MobileError> {
+    let own_namespace_id = profile.author.identity().namespace_id;
+    profile.app_trust_markers = riot_core::apps::index::scan_app_index(&profile.store)
+        .map_err(map_apps_error)?
+        .spaces
+        .into_iter()
+        .find(|space| space.space_namespace_id == own_namespace_id)
+        .map(|space| space.markers)
+        .unwrap_or_default();
+    if profile.app_trust_markers.len() > MAX_APP_TRUST_MARKERS {
+        return Err(MobileError::SessionLimit);
+    }
+    Ok(())
 }
 
 pub(crate) fn directory_listings(
@@ -1463,7 +1626,7 @@ pub(crate) fn share_app(
     app_id: Vec<u8>,
     space: PublicSpace,
 ) -> Result<(), MobileError> {
-    use riot_core::apps::index::publish_app_index;
+    use riot_core::apps::index::{app_index_bundle_path, app_index_manifest_path, verify_app_pair};
 
     with_active(inner, |profile| {
         // Same guard as app_data_put: a local app-index write must not race
@@ -1480,15 +1643,22 @@ pub(crate) fn share_app(
             return Err(MobileError::InvalidInput);
         }
         let (manifest_bytes, bundle_bytes) = resolve_app_payload_bytes(profile, &app_id)?;
+        if verify_app_pair(&manifest_bytes, &bundle_bytes).map_err(map_apps_error)? != app_id {
+            return Err(MobileError::AppRejected);
+        }
         let timestamp = next_app_write_timestamp(profile)?;
-        publish_app_index(
-            &profile.store,
-            &profile.author,
+        commit_local_app_entry(
+            profile,
+            app_index_manifest_path(&app_id).map_err(map_apps_error)?,
             &manifest_bytes,
+            timestamp,
+        )?;
+        commit_local_app_entry(
+            profile,
+            app_index_bundle_path(&app_id).map_err(map_apps_error)?,
             &bundle_bytes,
             timestamp,
-        )
-        .map_err(map_apps_error)?;
+        )?;
         profile.app_data_timestamp_floor_micros = timestamp;
         Ok(())
     })
@@ -1502,9 +1672,7 @@ fn resolve_app_payload_bytes(
     profile: &LocalProfile,
     app_id: &[u8; 32],
 ) -> Result<(Vec<u8>, Vec<u8>), MobileError> {
-    use riot_core::apps::index::{
-        app_index_bundle_path, app_index_manifest_path, verify_app_pair,
-    };
+    use riot_core::apps::index::{app_index_bundle_path, app_index_manifest_path, verify_app_pair};
     use riot_core::apps::starter::STARTER_CATALOG;
 
     let verifies = |manifest_bytes: &[u8], bundle_bytes: &[u8]| -> bool {
@@ -1556,7 +1724,8 @@ pub(crate) fn endorse_app(
     note: String,
     retract: bool,
 ) -> Result<(), MobileError> {
-    use riot_core::apps::endorse::{write_endorsement, EndorsementMarker};
+    use riot_core::apps::endorse::{encode_endorsement, EndorsementMarker};
+    use riot_core::apps::index::app_index_endorsement_path;
 
     with_active(inner, |profile| {
         // Same guard as app_data_put/share_app.
@@ -1570,10 +1739,10 @@ pub(crate) fn endorse_app(
             retracted: retract,
         };
         let timestamp = next_app_write_timestamp(profile)?;
-        // Note length and marker shape are enforced once, by the core codec
-        // inside write_endorsement.
-        write_endorsement(&profile.store, &profile.author, &marker, timestamp)
+        let payload = encode_endorsement(&marker).map_err(map_apps_error)?;
+        let path = app_index_endorsement_path(&app_id, profile.author.subspace_id().as_bytes())
             .map_err(map_apps_error)?;
+        commit_local_app_entry(profile, path, &payload, timestamp)?;
         profile.app_data_timestamp_floor_micros = timestamp;
         Ok(())
     })
@@ -1718,7 +1887,13 @@ mod tests {
         // the floor advance the fresh floor would be 0, this write would get
         // `now * 1e6` (far below seeded_floor + 1), and the stale replayed value
         // would win.
-        app_data_put(&fresh.inner, app_id.clone(), "items/a".into(), b"new".to_vec()).unwrap();
+        app_data_put(
+            &fresh.inner,
+            app_id.clone(),
+            "items/a".into(),
+            b"new".to_vec(),
+        )
+        .unwrap();
         assert_eq!(
             app_data_get(&fresh.inner, app_id, "items/a".into()).unwrap(),
             Some(b"new".to_vec())
@@ -1744,7 +1919,13 @@ mod tests {
         create_public_space(&profile.inner, "Aid".into()).unwrap();
 
         // A live app-data entry exists but no alert has been signed.
-        app_data_put(&profile.inner, app_id.clone(), "items/a".into(), b"hi".to_vec()).unwrap();
+        app_data_put(
+            &profile.inner,
+            app_id.clone(),
+            "items/a".into(),
+            b"hi".to_vec(),
+        )
+        .unwrap();
         assert!(list_current_entries(&profile.inner).unwrap().is_empty());
 
         // A signed alert lists, and the app-data entry stays excluded.
