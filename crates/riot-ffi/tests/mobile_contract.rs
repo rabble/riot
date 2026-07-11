@@ -3,6 +3,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use riot_ffi::{
     open_local_profile, open_profile_from_sealed_identity, AlertCertainty, AlertDraftInput,
     AlertFreshness, AlertSeverity, AlertUrgency, MobileError, PublicSpace, SignedAlert,
+    SyncOutcomeKind,
 };
 
 fn hex(bytes: &[u8]) -> String {
@@ -462,5 +463,191 @@ fn sealed_identity_surface_is_opaque_bytes_only() {
         "private_key",
     ] {
         assert!(!surface.contains(forbidden), "FFI leaks {forbidden}");
+    }
+}
+
+fn take_frame(session: &riot_ffi::MobileSyncSession) -> Vec<u8> {
+    session
+        .take_outbound_frame()
+        .unwrap()
+        .expect("sync outcome queued a canonical frame")
+}
+
+#[test]
+fn mobile_sync_bridge_transfers_a_missing_entry_through_review_and_commit() {
+    let sender = open_local_profile().unwrap();
+    let space = sender.create_public_space("Nearby sync".into()).unwrap();
+    let draft = sender.create_draft_alert(draft()).unwrap();
+    let signed = sender.sign_draft(draft.draft_id).unwrap();
+
+    let receiver = open_local_profile().unwrap();
+    receiver.join_public_space(space).unwrap();
+    let initiator = receiver.open_sync_session().unwrap();
+    let responder = sender.open_sync_session().unwrap();
+
+    assert_eq!(initiator.begin().unwrap().kind, SyncOutcomeKind::FrameReady);
+    assert_eq!(
+        responder
+            .receive_frame(take_frame(&initiator))
+            .unwrap()
+            .kind,
+        SyncOutcomeKind::FrameReady
+    );
+    assert_eq!(
+        initiator
+            .receive_frame(take_frame(&responder))
+            .unwrap()
+            .kind,
+        SyncOutcomeKind::FrameReady
+    );
+    assert_eq!(
+        responder
+            .receive_frame(take_frame(&initiator))
+            .unwrap()
+            .kind,
+        SyncOutcomeKind::FrameReady
+    );
+    let review = initiator.receive_frame(take_frame(&responder)).unwrap();
+    assert_eq!(review.kind, SyncOutcomeKind::ReviewImport);
+    assert_eq!(review.entries, vec![signed.entry.clone()]);
+
+    assert_eq!(
+        initiator.accept_import().unwrap().kind,
+        SyncOutcomeKind::FrameReady
+    );
+    let final_frame = responder.receive_frame(take_frame(&initiator)).unwrap();
+    assert_eq!(final_frame.kind, SyncOutcomeKind::FrameReady);
+    assert!(final_frame.terminal);
+    let completed = initiator.receive_frame(take_frame(&responder)).unwrap();
+    assert_eq!(completed.kind, SyncOutcomeKind::Complete);
+    assert!(completed.terminal);
+    assert_eq!(receiver.list_current_entries().unwrap(), vec![signed.entry]);
+}
+
+#[test]
+fn mobile_sync_rejection_never_commits_and_notifies_the_peer() {
+    let sender = open_local_profile().unwrap();
+    let space = sender.create_public_space("Rejected sync".into()).unwrap();
+    let draft = sender.create_draft_alert(draft()).unwrap();
+    sender.sign_draft(draft.draft_id).unwrap();
+    let receiver = open_local_profile().unwrap();
+    receiver.join_public_space(space).unwrap();
+    let initiator = receiver.open_sync_session().unwrap();
+    let responder = sender.open_sync_session().unwrap();
+
+    initiator.begin().unwrap();
+    responder.receive_frame(take_frame(&initiator)).unwrap();
+    initiator.receive_frame(take_frame(&responder)).unwrap();
+    responder.receive_frame(take_frame(&initiator)).unwrap();
+    assert_eq!(
+        initiator
+            .receive_frame(take_frame(&responder))
+            .unwrap()
+            .kind,
+        SyncOutcomeKind::ReviewImport
+    );
+    let local_reject = initiator.reject_import(7).unwrap();
+    assert_eq!(local_reject.kind, SyncOutcomeKind::FrameReady);
+    assert!(local_reject.terminal);
+    let rejected = responder.receive_frame(take_frame(&initiator)).unwrap();
+    assert_eq!(rejected.kind, SyncOutcomeKind::Rejected);
+    assert_eq!(rejected.rejection_code, Some(7));
+    assert!(rejected.terminal);
+    assert!(receiver.list_current_entries().unwrap().is_empty());
+}
+
+#[test]
+fn mobile_sync_rejects_malformed_bytes_without_advancing_or_dropping_queued_frames() {
+    let first = profile_with_space();
+    let space = first.create_public_space("Canonical sync".into()).unwrap();
+    let second = open_local_profile().unwrap();
+    second.join_public_space(space).unwrap();
+    let initiator = first.open_sync_session().unwrap();
+    let responder = second.open_sync_session().unwrap();
+    initiator.begin().unwrap();
+    responder.receive_frame(take_frame(&initiator)).unwrap();
+    let legitimate_summary = take_frame(&responder);
+
+    assert!(matches!(
+        initiator.receive_frame(vec![0xff]),
+        Err(MobileError::InvalidInput)
+    ));
+    assert_eq!(
+        initiator.receive_frame(legitimate_summary).unwrap().kind,
+        SyncOutcomeKind::FrameReady
+    );
+    assert!(take_frame(&initiator).len() <= riot_core::sync::MAX_SYNC_FRAME_BYTES);
+}
+
+#[test]
+fn mobile_sync_requires_each_queued_frame_to_be_taken_before_progress() {
+    let profile = profile_with_space();
+    let sync = profile.open_sync_session().unwrap();
+    sync.begin().unwrap();
+
+    assert!(matches!(sync.begin(), Err(MobileError::InvalidInput)));
+    let queued = take_frame(&sync);
+    assert!(matches!(
+        riot_core::sync::decode_frame(&queued),
+        Ok(riot_core::sync::SyncFrame::Hello { .. })
+    ));
+    assert_eq!(sync.take_outbound_frame().unwrap(), None);
+}
+
+#[test]
+fn mobile_sync_retains_a_regularly_accepted_public_bundle_for_the_next_peer() {
+    let sender = profile_with_space();
+    let space = sender.create_public_space("Relay sync".into()).unwrap();
+    let draft = sender.create_draft_alert(draft()).unwrap();
+    let signed = sender.sign_draft(draft.draft_id).unwrap();
+    let relay = open_local_profile().unwrap();
+    relay.join_public_space(space.clone()).unwrap();
+    import_one(&relay, &signed);
+    let receiver = open_local_profile().unwrap();
+    receiver.join_public_space(space).unwrap();
+    let initiator = receiver.open_sync_session().unwrap();
+    let responder = relay.open_sync_session().unwrap();
+
+    initiator.begin().unwrap();
+    responder.receive_frame(take_frame(&initiator)).unwrap();
+    initiator.receive_frame(take_frame(&responder)).unwrap();
+    responder.receive_frame(take_frame(&initiator)).unwrap();
+    let review = initiator.receive_frame(take_frame(&responder)).unwrap();
+
+    assert_eq!(review.kind, SyncOutcomeKind::ReviewImport);
+    assert_eq!(review.entries, vec![signed.entry]);
+}
+
+#[test]
+fn mobile_sync_refuses_to_advertise_a_partial_inventory_over_the_protocol_cap() {
+    let profile = profile_with_space();
+    for index in 0..=riot_core::sync::MAX_SYNC_IDS {
+        let mut input = draft();
+        input.headline = format!("Bounded sync entry {index}");
+        let draft = profile.create_draft_alert(input).unwrap();
+        profile.sign_draft(draft.draft_id).unwrap();
+    }
+
+    assert!(matches!(
+        profile.open_sync_session(),
+        Err(MobileError::SessionLimit)
+    ));
+}
+
+#[test]
+fn exported_sync_surface_uses_opaque_bytes_and_no_protocol_generics() {
+    let surface = include_str!("../src/mobile_api.rs");
+    assert!(surface.contains("frame_bytes: Vec<u8>"));
+    for forbidden in [
+        "SyncFrame",
+        "SyncAction",
+        "SignedWillowEntry",
+        "ReconcileSession",
+        "willow25::",
+    ] {
+        assert!(
+            !surface.contains(forbidden),
+            "FFI sync surface leaks {forbidden}"
+        );
     }
 }

@@ -89,6 +89,23 @@ pub struct ImportAcceptance {
     pub accepted_entry_ids: Vec<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum SyncOutcomeKind {
+    FrameReady,
+    ReviewImport,
+    Complete,
+    Rejected,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct SyncOutcome {
+    pub kind: SyncOutcomeKind,
+    pub entries: Vec<CurrentEntry>,
+    pub rejection_code: Option<u8>,
+    pub terminal: bool,
+    pub import_bundle_bytes: Option<Vec<u8>>,
+}
+
 #[derive(Debug, uniffi::Error)]
 pub enum MobileError {
     Internal,
@@ -142,6 +159,12 @@ pub struct MobileImportPreview {
 pub struct MobileImportPlan {
     pub(crate) inner: std::sync::Arc<std::sync::Mutex<crate::mobile_state::ProfileState>>,
     pub(crate) plan_id: u64,
+}
+
+#[derive(uniffi::Object)]
+pub struct MobileSyncSession {
+    pub(crate) inner: std::sync::Arc<std::sync::Mutex<crate::mobile_state::ProfileState>>,
+    pub(crate) sync_id: u64,
 }
 
 #[uniffi::export]
@@ -201,6 +224,10 @@ impl MobileProfile {
     ) -> Result<Arc<MobileImportPreview>, MobileError> {
         crate::mobile_state::inspect_bytes(&self.inner, bytes, route)
     }
+
+    pub fn open_sync_session(&self) -> Result<Arc<MobileSyncSession>, MobileError> {
+        crate::mobile_state::open_sync_session(&self.inner)
+    }
 }
 
 #[uniffi::export]
@@ -221,5 +248,32 @@ impl MobileImportPreview {
 impl MobileImportPlan {
     pub fn accept(&self) -> Result<ImportAcceptance, MobileError> {
         crate::mobile_state::accept_plan(&self.inner, self.plan_id)
+    }
+}
+
+#[uniffi::export]
+impl MobileSyncSession {
+    pub fn begin(&self) -> Result<SyncOutcome, MobileError> {
+        crate::mobile_state::sync_begin(&self.inner, self.sync_id)
+    }
+
+    pub fn receive_frame(&self, frame_bytes: Vec<u8>) -> Result<SyncOutcome, MobileError> {
+        crate::mobile_state::sync_receive_frame(&self.inner, self.sync_id, frame_bytes)
+    }
+
+    pub fn take_outbound_frame(&self) -> Result<Option<Vec<u8>>, MobileError> {
+        crate::mobile_state::sync_take_outbound_frame(&self.inner, self.sync_id)
+    }
+
+    pub fn accept_import(&self) -> Result<SyncOutcome, MobileError> {
+        crate::mobile_state::sync_accept_import(&self.inner, self.sync_id)
+    }
+
+    pub fn reject_import(&self, code: u8) -> Result<SyncOutcome, MobileError> {
+        crate::mobile_state::sync_reject_import(&self.inner, self.sync_id, code)
+    }
+
+    pub fn close(&self) -> Result<(), MobileError> {
+        crate::mobile_state::sync_close(&self.inner, self.sync_id)
     }
 }

@@ -4,10 +4,12 @@
 //! The caller must pass received `Entries` bundles through the existing
 //! preview/plan/commit admission boundary before retaining them.
 
+mod ffi_bridge;
 mod reconcile;
 mod state;
 mod wire;
 
+pub use ffi_bridge::{ByteSyncOutcome, ByteSyncSession};
 pub use reconcile::missing_entry_ids;
 pub use state::{ReconcileSession, SyncAction};
 pub use wire::{

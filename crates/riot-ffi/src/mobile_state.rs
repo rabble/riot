@@ -9,16 +9,18 @@ use riot_core::session::{
     public_entry_identity, CommitOutcome, EvidenceStore, ImportContext, ImportPlan, ImportPreview,
     ImportSelection, InspectOutcome, RiotSession,
 };
+use riot_core::sync::{ByteSyncOutcome, ByteSyncSession, SyncError, MAX_SYNC_IDS};
 use riot_core::willow::{
     alert_entry_path_matches_payload, create_signed_alert, entry_id, generate_communal_author,
     generate_communal_author_for_namespace, system_snapshot, AlertDraft, EvidenceAuthor,
-    SignedAlert as CoreSignedAlert, WillowError,
+    SignedAlert as CoreSignedAlert, SignedWillowEntry, WillowError,
 };
 
 use crate::mobile_api::{
     AlertCertainty, AlertDraftInput, AlertDraftRecord, AlertFreshness, AlertSeverity, AlertUrgency,
     CurrentEntry, ImportAcceptance, MobileError, MobileImportPlan, MobileImportPreview,
-    MobileProfile, PublicIdentity, PublicSpace, SignedAlert,
+    MobileProfile, MobileSyncSession, PublicIdentity, PublicSpace, SignedAlert, SyncOutcome,
+    SyncOutcomeKind,
 };
 
 pub(crate) enum ProfileState {
@@ -37,6 +39,8 @@ pub(crate) struct LocalProfile {
     preview: Option<StoredPreview>,
     plan: Option<StoredPlan>,
     entries: Vec<CurrentEntry>,
+    sync_inventory: Vec<SignedWillowEntry>,
+    sync_session: Option<StoredSyncSession>,
     next_handle_id: u64,
 }
 
@@ -49,12 +53,32 @@ struct StoredPreview {
     id: u64,
     preview: ImportPreview,
     entries: Vec<CurrentEntry>,
+    sync_entries: Vec<SignedWillowEntry>,
 }
 
 struct StoredPlan {
     id: u64,
     plan: ImportPlan,
     entries: Vec<CurrentEntry>,
+    sync_entries: Vec<SignedWillowEntry>,
+}
+
+struct StoredSyncSession {
+    id: u64,
+    bridge: ByteSyncSession,
+    pending: Option<StoredSyncImport>,
+}
+
+struct StoredSyncImport {
+    preview: ImportPreview,
+    entries: Vec<CurrentEntry>,
+    sync_entries: Vec<SignedWillowEntry>,
+    bundle_bytes: Vec<u8>,
+}
+
+struct InspectableAlert {
+    current: CurrentEntry,
+    signed: SignedWillowEntry,
 }
 
 pub(crate) fn open_local_profile() -> Result<Arc<MobileProfile>, MobileError> {
@@ -98,6 +122,8 @@ fn profile_with_author(store: EvidenceStore, author: EvidenceAuthor) -> Arc<Mobi
             preview: None,
             plan: None,
             entries: Vec::new(),
+            sync_inventory: Vec::new(),
+            sync_session: None,
             next_handle_id: 1,
         })))),
     })
@@ -130,6 +156,9 @@ pub(crate) fn create_public_space(
     title: String,
 ) -> Result<PublicSpace, MobileError> {
     with_active(inner, |profile| {
+        if sync_session_is_active(profile) {
+            return Err(MobileError::InvalidInput);
+        }
         if title.trim().is_empty() || title.len() > 512 {
             return Err(MobileError::InvalidInput);
         }
@@ -148,6 +177,9 @@ pub(crate) fn join_public_space(
     space: PublicSpace,
 ) -> Result<PublicSpace, MobileError> {
     with_active(inner, |profile| {
+        if sync_session_is_active(profile) {
+            return Err(MobileError::InvalidInput);
+        }
         if !space.is_public
             || space.title.trim().is_empty()
             || space.title.len() > 512
@@ -214,6 +246,9 @@ pub(crate) fn sign_draft(
     draft_id: u64,
 ) -> Result<SignedAlert, MobileError> {
     with_active(inner, |profile| {
+        if sync_session_is_active(profile) {
+            return Err(MobileError::InvalidInput);
+        }
         let draft_index = profile
             .drafts
             .iter()
@@ -238,6 +273,7 @@ pub(crate) fn sign_draft(
 
         let entry = current_entry_from_signed(&core_signed)?;
         remember_entry(&mut profile.entries, entry.clone());
+        remember_sync_entries(profile, vec![core_signed.signed.clone()])?;
         profile.drafts.remove(draft_index);
         Ok(SignedAlert {
             entry,
@@ -281,6 +317,9 @@ pub(crate) fn inspect_bytes(
     route: String,
 ) -> Result<Arc<MobileImportPreview>, MobileError> {
     with_active(inner, |profile| {
+        if sync_session_is_active(profile) {
+            return Err(MobileError::InvalidInput);
+        }
         if route.trim().is_empty() || route.len() > 256 {
             return Err(MobileError::InvalidInput);
         }
@@ -289,7 +328,12 @@ pub(crate) fn inspect_bytes(
             .as_ref()
             .ok_or(MobileError::InvalidInput)?
             .namespace_id;
-        let entries = inspectable_alert_entries(&bytes, namespace_id)?;
+        let inspectable = inspectable_alert_entries(&bytes, namespace_id)?;
+        let entries: Vec<_> = inspectable
+            .iter()
+            .map(|item| item.current.clone())
+            .collect();
+        let sync_entries = inspectable.into_iter().map(|item| item.signed).collect();
         profile.ensure_handle_capacity()?;
         profile.preview = None;
         profile.plan = None;
@@ -302,6 +346,7 @@ pub(crate) fn inspect_bytes(
             id: preview_id,
             preview,
             entries,
+            sync_entries,
         });
         Ok(Arc::new(MobileImportPreview {
             inner: Arc::clone(inner),
@@ -344,7 +389,7 @@ pub(crate) fn create_plan(
             return Err(MobileError::InvalidInput);
         }
         profile.ensure_handle_capacity()?;
-        let (selection, selected_entries, plan) = {
+        let (selection, selected_entries, selected_sync_entries, plan) = {
             let preview = profile
                 .preview
                 .as_ref()
@@ -352,22 +397,28 @@ pub(crate) fn create_plan(
                 .ok_or(MobileError::PreviewConsumed)?;
             let mut selection = Vec::with_capacity(selected_entry_ids.len());
             let mut selected_entries = Vec::with_capacity(selected_entry_ids.len());
+            let mut selected_sync_entries = Vec::with_capacity(selected_entry_ids.len());
             for selected_id in &selected_entry_ids {
                 let entry_id = parse_entry_id(selected_id)?;
-                let entry = preview
+                let entry_index = preview
                     .entries
                     .iter()
-                    .find(|entry| entry.entry_id == *selected_id)
-                    .cloned()
+                    .position(|entry| entry.entry_id == *selected_id)
                     .ok_or(MobileError::InvalidInput)?;
                 selection.push(entry_id);
-                selected_entries.push(entry);
+                selected_entries.push(preview.entries[entry_index].clone());
+                selected_sync_entries.push(preview.sync_entries[entry_index].clone());
             }
             let plan = preview
                 .preview
                 .plan(ImportSelection::new(selection))
                 .map_err(map_core_error)?;
-            (selected_entry_ids, selected_entries, plan)
+            (
+                selected_entry_ids,
+                selected_entries,
+                selected_sync_entries,
+                plan,
+            )
         };
         if selection.len() != selected_entries.len() {
             return Err(MobileError::Internal);
@@ -377,6 +428,7 @@ pub(crate) fn create_plan(
             id: plan_id,
             plan,
             entries: selected_entries,
+            sync_entries: selected_sync_entries,
         });
         Ok(Arc::new(MobileImportPlan {
             inner: Arc::clone(inner),
@@ -390,11 +442,11 @@ pub(crate) fn accept_plan(
     plan_id: u64,
 ) -> Result<ImportAcceptance, MobileError> {
     with_active(inner, |profile| {
-        let entries = profile
+        let (entries, sync_entries) = profile
             .plan
             .as_ref()
             .filter(|plan| plan.id == plan_id)
-            .map(|plan| plan.entries.clone())
+            .map(|plan| (plan.entries.clone(), plan.sync_entries.clone()))
             .ok_or(MobileError::PlanConsumed)?;
         let outcome = profile
             .plan
@@ -410,11 +462,234 @@ pub(crate) fn accept_plan(
                 for entry in &entries {
                     remember_entry(&mut profile.entries, entry.clone());
                 }
+                remember_sync_entries(profile, sync_entries)?;
                 Ok(ImportAcceptance {
                     accepted_entry_ids: entries.into_iter().map(|entry| entry.entry_id).collect(),
                 })
             }
         }
+    })
+}
+
+pub(crate) fn open_sync_session(
+    inner: &Arc<Mutex<ProfileState>>,
+) -> Result<Arc<MobileSyncSession>, MobileError> {
+    with_active(inner, |profile| {
+        if profile.preview.is_some() || profile.plan.is_some() {
+            return Err(MobileError::InvalidInput);
+        }
+        if profile
+            .sync_session
+            .as_ref()
+            .is_some_and(|session| session.pending.is_some())
+        {
+            return Err(MobileError::InvalidInput);
+        }
+        let namespace_id = parse_entry_id(
+            &profile
+                .space
+                .as_ref()
+                .ok_or(MobileError::InvalidInput)?
+                .namespace_id,
+        )?;
+        ensure_complete_sync_inventory(profile)?;
+        let bridge = ByteSyncSession::new(namespace_id, profile.sync_inventory.clone())
+            .map_err(map_sync_error)?;
+        let sync_id = profile.alloc_handle_id()?;
+        profile.sync_session = Some(StoredSyncSession {
+            id: sync_id,
+            bridge,
+            pending: None,
+        });
+        Ok(Arc::new(MobileSyncSession {
+            inner: Arc::clone(inner),
+            sync_id,
+        }))
+    })
+}
+
+pub(crate) fn sync_begin(
+    inner: &Arc<Mutex<ProfileState>>,
+    sync_id: u64,
+) -> Result<SyncOutcome, MobileError> {
+    with_active(inner, |profile| {
+        let session = active_sync_mut(profile, sync_id)?;
+        let outcome = session.bridge.begin().map_err(map_sync_error)?;
+        outcome_without_import(outcome, session.bridge.is_terminal())
+    })
+}
+
+pub(crate) fn sync_receive_frame(
+    inner: &Arc<Mutex<ProfileState>>,
+    sync_id: u64,
+    frame_bytes: Vec<u8>,
+) -> Result<SyncOutcome, MobileError> {
+    with_active(inner, |profile| {
+        let outcome = active_sync_mut(profile, sync_id)?
+            .bridge
+            .receive_bytes(&frame_bytes)
+            .map_err(map_sync_error)?;
+        match outcome {
+            ByteSyncOutcome::ImportBundle(bundle_bytes) => {
+                match prepare_sync_import(profile, sync_id, &bundle_bytes) {
+                    Ok(outcome) => Ok(outcome),
+                    Err(error) => {
+                        let code = if matches!(
+                            error,
+                            MobileError::StoreFull | MobileError::SessionLimit
+                        ) {
+                            2
+                        } else {
+                            1
+                        };
+                        let session = active_sync_mut(profile, sync_id)?;
+                        let outcome = session
+                            .bridge
+                            .import_rejected(code)
+                            .map_err(map_sync_error)?;
+                        outcome_without_import(outcome, session.bridge.is_terminal())
+                    }
+                }
+            }
+            other => {
+                let terminal = active_sync_mut(profile, sync_id)?.bridge.is_terminal();
+                outcome_without_import(other, terminal)
+            }
+        }
+    })
+}
+
+fn prepare_sync_import(
+    profile: &mut LocalProfile,
+    sync_id: u64,
+    bundle_bytes: &[u8],
+) -> Result<SyncOutcome, MobileError> {
+    let namespace_id = profile
+        .space
+        .as_ref()
+        .ok_or(MobileError::InvalidInput)?
+        .namespace_id
+        .clone();
+    let inspectable = inspectable_alert_entries(bundle_bytes, &namespace_id)?;
+    let entries: Vec<_> = inspectable
+        .iter()
+        .map(|item| item.current.clone())
+        .collect();
+    let sync_entries = inspectable.into_iter().map(|item| item.signed).collect();
+    profile.preview = None;
+    profile.plan = None;
+    let preview = inspect_core(&profile.store, bundle_bytes, "conference-sync")?;
+    if preview.eligible_count().map_err(map_core_error)? != entries.len() {
+        return Err(MobileError::ImportRejected);
+    }
+    active_sync_mut(profile, sync_id)?.pending = Some(StoredSyncImport {
+        preview,
+        entries: entries.clone(),
+        sync_entries,
+        bundle_bytes: bundle_bytes.to_vec(),
+    });
+    Ok(SyncOutcome {
+        kind: SyncOutcomeKind::ReviewImport,
+        entries,
+        rejection_code: None,
+        terminal: false,
+        import_bundle_bytes: Some(bundle_bytes.to_vec()),
+    })
+}
+
+pub(crate) fn sync_take_outbound_frame(
+    inner: &Arc<Mutex<ProfileState>>,
+    sync_id: u64,
+) -> Result<Option<Vec<u8>>, MobileError> {
+    with_active(inner, |profile| {
+        let (frame, terminal) = {
+            let session = active_sync_mut(profile, sync_id)?;
+            let frame = session.bridge.take_outbound_frame();
+            (frame, session.bridge.is_terminal())
+        };
+        if terminal && frame.is_some() {
+            profile.sync_session = None;
+        }
+        Ok(frame)
+    })
+}
+
+pub(crate) fn sync_accept_import(
+    inner: &Arc<Mutex<ProfileState>>,
+    sync_id: u64,
+) -> Result<SyncOutcome, MobileError> {
+    with_active(inner, |profile| {
+        let (entries, sync_entries) = {
+            let pending = active_sync_mut(profile, sync_id)?
+                .pending
+                .as_ref()
+                .ok_or(MobileError::InvalidInput)?;
+            let plan = pending.preview.plan_all().map_err(map_core_error)?;
+            match plan.commit().map_err(map_core_error)? {
+                CommitOutcome::Committed(_) | CommitOutcome::NoChanges(_) => {}
+            }
+            (pending.entries.clone(), pending.sync_entries.clone())
+        };
+        active_sync_mut(profile, sync_id)?.pending = None;
+        for entry in entries {
+            remember_entry(&mut profile.entries, entry);
+        }
+        remember_sync_entries(profile, sync_entries)?;
+        let session = active_sync_mut(profile, sync_id)?;
+        let outcome = session.bridge.import_accepted().map_err(map_sync_error)?;
+        outcome_without_import(outcome, session.bridge.is_terminal())
+    })
+}
+
+pub(crate) fn sync_reject_import(
+    inner: &Arc<Mutex<ProfileState>>,
+    sync_id: u64,
+    code: u8,
+) -> Result<SyncOutcome, MobileError> {
+    with_active(inner, |profile| {
+        let session = active_sync_mut(profile, sync_id)?;
+        if session.pending.take().is_none() {
+            return Err(MobileError::InvalidInput);
+        }
+        let outcome = session
+            .bridge
+            .import_rejected(code)
+            .map_err(map_sync_error)?;
+        outcome_without_import(outcome, session.bridge.is_terminal())
+    })
+}
+
+fn active_sync_mut(
+    profile: &mut LocalProfile,
+    sync_id: u64,
+) -> Result<&mut StoredSyncSession, MobileError> {
+    profile
+        .sync_session
+        .as_mut()
+        .filter(|session| session.id == sync_id)
+        .ok_or(MobileError::ObjectClosed)
+}
+
+fn sync_session_is_active(profile: &LocalProfile) -> bool {
+    profile.sync_session.is_some()
+}
+
+fn outcome_without_import(
+    outcome: ByteSyncOutcome,
+    terminal: bool,
+) -> Result<SyncOutcome, MobileError> {
+    let (kind, rejection_code) = match outcome {
+        ByteSyncOutcome::FrameReady => (SyncOutcomeKind::FrameReady, None),
+        ByteSyncOutcome::Rejected(code) => (SyncOutcomeKind::Rejected, Some(code)),
+        ByteSyncOutcome::Complete => (SyncOutcomeKind::Complete, None),
+        ByteSyncOutcome::ImportBundle(_) => return Err(MobileError::Internal),
+    };
+    Ok(SyncOutcome {
+        kind,
+        entries: Vec::new(),
+        rejection_code,
+        terminal,
+        import_bundle_bytes: None,
     })
 }
 
@@ -458,7 +733,7 @@ fn inspect_core(
 fn inspectable_alert_entries(
     bytes: &[u8],
     expected_namespace_id: &str,
-) -> Result<Vec<CurrentEntry>, MobileError> {
+) -> Result<Vec<InspectableAlert>, MobileError> {
     let decoded = match decode_bundle(bytes) {
         BundleDecodeOutcome::Decoded(decoded) => decoded,
         BundleDecodeOutcome::Rejected(_) => return Err(MobileError::ImportRejected),
@@ -485,17 +760,29 @@ fn inspectable_alert_entries(
         if namespace_id != expected_namespace_id {
             return Err(MobileError::ImportRejected);
         }
-        entries.push(CurrentEntry {
-            entry_id: hex(&valid.entry_id),
-            namespace_id,
-            signer_id: hex(&identity.signer_id),
-            headline: alert.headline,
-            freshness: AlertFreshness {
-                created_at: alert.created_at,
-                valid_from: alert.valid_from,
-                expires_at: alert.expires_at,
+        entries.push(InspectableAlert {
+            current: CurrentEntry {
+                entry_id: hex(&valid.entry_id),
+                namespace_id,
+                signer_id: hex(&identity.signer_id),
+                headline: alert.headline,
+                freshness: AlertFreshness {
+                    created_at: alert.created_at,
+                    valid_from: alert.valid_from,
+                    expires_at: alert.expires_at,
+                },
+                ai_assisted: alert.ai_assisted,
             },
-            ai_assisted: alert.ai_assisted,
+            signed: SignedWillowEntry {
+                entry_bytes: item.frame.entry_bytes().to_vec(),
+                capability_bytes: item.frame.capability_bytes().to_vec(),
+                signature: item
+                    .frame
+                    .signature_bytes()
+                    .try_into()
+                    .map_err(|_| MobileError::ImportRejected)?,
+                payload_bytes: item.frame.payload_bytes().to_vec(),
+            },
         });
     }
     if entries.is_empty() {
@@ -525,6 +812,48 @@ fn remember_entry(entries: &mut Vec<CurrentEntry>, entry: CurrentEntry) {
     if !entries.iter().any(|known| known.entry_id == entry.entry_id) {
         entries.push(entry);
     }
+}
+
+fn remember_sync_entries(
+    profile: &mut LocalProfile,
+    incoming: Vec<SignedWillowEntry>,
+) -> Result<(), MobileError> {
+    for signed in incoming {
+        let id = entry_id(&signed.entry_bytes);
+        if !profile
+            .sync_inventory
+            .iter()
+            .any(|known| entry_id(&known.entry_bytes) == id)
+        {
+            profile.sync_inventory.push(signed);
+        }
+    }
+    let live_ids = profile.store.live_entry_ids().map_err(map_core_error)?;
+    profile
+        .sync_inventory
+        .retain(|signed| live_ids.contains(&entry_id(&signed.entry_bytes)));
+    profile
+        .sync_inventory
+        .sort_unstable_by_key(|signed| entry_id(&signed.entry_bytes));
+    profile.sync_inventory.truncate(MAX_SYNC_IDS);
+    Ok(())
+}
+
+fn ensure_complete_sync_inventory(profile: &LocalProfile) -> Result<(), MobileError> {
+    let mut live_ids = profile.store.live_entry_ids().map_err(map_core_error)?;
+    live_ids.sort_unstable();
+    if live_ids.len() > MAX_SYNC_IDS {
+        return Err(MobileError::SessionLimit);
+    }
+    let inventory_ids: Vec<_> = profile
+        .sync_inventory
+        .iter()
+        .map(|signed| entry_id(&signed.entry_bytes))
+        .collect();
+    if inventory_ids != live_ids {
+        return Err(MobileError::Internal);
+    }
+    Ok(())
 }
 
 impl LocalProfile {
@@ -663,6 +992,23 @@ fn map_author_error(error: WillowError) -> MobileError {
         | WillowError::DoesNotAuthorise
         | WillowError::DecodeFailed
         | WillowError::TrailingBytes => MobileError::Internal,
+    }
+}
+
+fn map_sync_error(error: SyncError) -> MobileError {
+    match error {
+        SyncError::FrameTooLarge | SyncError::TooManyEntryIds | SyncError::BundleTooLarge => {
+            MobileError::SessionLimit
+        }
+        SyncError::MalformedFrame
+        | SyncError::NonCanonicalFrame
+        | SyncError::UnsupportedCodec
+        | SyncError::DuplicateEntryId
+        | SyncError::EntryIdsNotSorted
+        | SyncError::NamespaceMismatch
+        | SyncError::UnexpectedFrame
+        | SyncError::UnknownEntryId
+        | SyncError::InvalidBundle => MobileError::InvalidInput,
     }
 }
 
