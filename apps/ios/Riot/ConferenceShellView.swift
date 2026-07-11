@@ -163,14 +163,28 @@ private struct ImportPreviewView: View {
 
 private struct ConnectionStatusView: View {
     @ObservedObject var model: RiotAppModel
+    @StateObject private var nearby = NearbyTransportController()
 
     var body: some View {
         List {
-            Section("Current path") {
-                Label(model.connectionDisclosure, systemImage: "iphone.slash")
+            Section("Nearby") {
+                Label(nearby.state.message, systemImage: nearby.state == .idle ? "iphone.slash" : "antenna.radiowaves.left.and.right")
                     .font(.headline)
-                Text("Internet fallback is off. Nearby pairing and bounded local sync are added as an explicit next transport layer.")
+                Text("Connections stay between nearby phones. Riot never switches this nearby session to the internet.")
                     .foregroundStyle(.secondary)
+                if nearby.state == .idle || nearby.state == .failed {
+                    Button("Find nearby phones") { nearby.findNearby() }
+                        .buttonStyle(.borderedProminent)
+                } else {
+                    Button("Stop looking", role: .cancel) { nearby.stop() }
+                }
+            }
+            if !nearby.phones.isEmpty {
+                Section("Phones") {
+                    ForEach(nearby.phones) { phone in
+                        Button(phone.friendlyName) { nearby.requestConnection(to: phone) }
+                    }
+                }
             }
             Section("On this device") {
                 LabeledContent("Signed alerts", value: "\(model.entries.count)")
@@ -178,6 +192,16 @@ private struct ConnectionStatusView: View {
             }
         }
         .navigationTitle("Connection")
+        .confirmationDialog(
+            nearby.state.message,
+            isPresented: Binding(
+                get: { if case .confirm = nearby.state { return true }; return false },
+                set: { if !$0 { nearby.cancelConnection() } }
+            )
+        ) {
+            Button("Confirm") { nearby.confirmConnection() }
+            Button("Cancel", role: .cancel) { nearby.cancelConnection() }
+        }
     }
 }
 

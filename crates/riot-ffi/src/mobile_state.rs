@@ -73,7 +73,6 @@ struct StoredSyncImport {
     preview: ImportPreview,
     entries: Vec<CurrentEntry>,
     sync_entries: Vec<SignedWillowEntry>,
-    bundle_bytes: Vec<u8>,
 }
 
 struct InspectableAlert {
@@ -553,7 +552,12 @@ pub(crate) fn sync_receive_frame(
             }
             other => {
                 let terminal = active_sync_mut(profile, sync_id)?.bridge.is_terminal();
-                outcome_without_import(other, terminal)
+                let terminal_without_frame = terminal && !matches!(other, ByteSyncOutcome::FrameReady);
+                let result = outcome_without_import(other, terminal);
+                if terminal_without_frame {
+                    profile.sync_session = None;
+                }
+                result
             }
         }
     })
@@ -586,7 +590,6 @@ fn prepare_sync_import(
         preview,
         entries: entries.clone(),
         sync_entries,
-        bundle_bytes: bundle_bytes.to_vec(),
     });
     Ok(SyncOutcome {
         kind: SyncOutcomeKind::ReviewImport,
@@ -656,6 +659,20 @@ pub(crate) fn sync_reject_import(
             .import_rejected(code)
             .map_err(map_sync_error)?;
         outcome_without_import(outcome, session.bridge.is_terminal())
+    })
+}
+
+pub(crate) fn sync_close(
+    inner: &Arc<Mutex<ProfileState>>,
+    sync_id: u64,
+) -> Result<(), MobileError> {
+    with_active(inner, |profile| match profile.sync_session.as_ref() {
+        Some(session) if session.id == sync_id => {
+            profile.sync_session = None;
+            Ok(())
+        }
+        Some(_) => Err(MobileError::ObjectClosed),
+        None => Ok(()),
     })
 }
 

@@ -5,8 +5,8 @@
 	objectVersion = 77;
 	objects = {
 		A00000000000000000000001 = {isa = PBXGroup; children = (A00000000000000000000002, A00000000000000000000003, A00000000000000000000004); sourceTree = "<group>";};
-		A00000000000000000000002 = {isa = PBXGroup; path = Riot; sourceTree = "<group>"; children = (A00000000000000000000012, A00000000000000000000017, A00000000000000000000014, A00000000000000000000015, A00000000000000000000016);};
-		A00000000000000000000003 = {isa = PBXGroup; path = RiotTests; sourceTree = "<group>"; children = (A00000000000000000000010, A00000000000000000000013);};
+		A00000000000000000000002 = {isa = PBXGroup; path = Riot; sourceTree = "<group>"; children = (A00000000000000000000012, A00000000000000000000017, A00000000000000000000019, A0000000000000000000001A, A0000000000000000000001B, A0000000000000000000001C, A0000000000000000000001D, A0000000000000000000001E, A00000000000000000000014, A00000000000000000000015, A00000000000000000000016);};
+		A00000000000000000000003 = {isa = PBXGroup; path = RiotTests; sourceTree = "<group>"; children = (A00000000000000000000010, A00000000000000000000013, A00000000000000000000018);};
 		A00000000000000000000004 = {isa = PBXGroup; name = Products; sourceTree = "<group>"; children = (A00000000000000000000005, A00000000000000000000006, A00000000000000000000007);};
 		A00000000000000000000005 = {isa = PBXFileReference; explicitFileType = archive.ar; path = libRiotKit.a; sourceTree = BUILT_PRODUCTS_DIR;};
 		A00000000000000000000006 = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; path = RiotTests.xctest; sourceTree = BUILT_PRODUCTS_DIR;};
@@ -19,6 +19,13 @@
 		A00000000000000000000015 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RiotApp.swift; sourceTree = "<group>";};
 		A00000000000000000000016 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConferenceShellView.swift; sourceTree = "<group>";};
 		A00000000000000000000017 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Core/WrappingKeyStore.swift; sourceTree = "<group>";};
+		A00000000000000000000018 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TransportContractTests.swift; sourceTree = "<group>";};
+		A00000000000000000000019 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Transport/NearbyTransport.swift; sourceTree = "<group>";};
+		A0000000000000000000001A = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Transport/FrameCodec.swift; sourceTree = "<group>";};
+		A0000000000000000000001B = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Transport/LocalNetworkChannel.swift; sourceTree = "<group>";};
+		A0000000000000000000001C = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Transport/CoreBluetoothNearby.swift; sourceTree = "<group>";};
+		A0000000000000000000001D = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Transport/SyncCoordinator.swift; sourceTree = "<group>";};
+		A0000000000000000000001E = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Transport/NearbyTransportController.swift; sourceTree = "<group>";};
 		A00000000000000000000020 = {isa = PBXBuildFile; fileRef = A00000000000000000000010;};
 		A00000000000000000000021 = {isa = PBXBuildFile; fileRef = A00000000000000000000011;};
 		A00000000000000000000022 = {isa = PBXBuildFile; fileRef = A00000000000000000000005;};
@@ -29,8 +36,15 @@
 		A00000000000000000000027 = {isa = PBXBuildFile; fileRef = A00000000000000000000016;};
 		A00000000000000000000028 = {isa = PBXBuildFile; fileRef = A00000000000000000000005;};
 		A00000000000000000000029 = {isa = PBXBuildFile; fileRef = A00000000000000000000017;};
-		A00000000000000000000030 = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (A00000000000000000000021, A00000000000000000000023, A00000000000000000000025, A00000000000000000000029); runOnlyForDeploymentPostprocessing = 0;};
-		A00000000000000000000031 = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (A00000000000000000000020, A00000000000000000000024); runOnlyForDeploymentPostprocessing = 0;};
+		A0000000000000000000002A = {isa = PBXBuildFile; fileRef = A00000000000000000000018;};
+		A0000000000000000000002B = {isa = PBXBuildFile; fileRef = A00000000000000000000019;};
+		A0000000000000000000002C = {isa = PBXBuildFile; fileRef = A0000000000000000000001A;};
+		A0000000000000000000002D = {isa = PBXBuildFile; fileRef = A0000000000000000000001B;};
+		A0000000000000000000002E = {isa = PBXBuildFile; fileRef = A0000000000000000000001C;};
+		A0000000000000000000002F = {isa = PBXBuildFile; fileRef = A0000000000000000000001D;};
+		A00000000000000000000038 = {isa = PBXBuildFile; fileRef = A0000000000000000000001E;};
+		A00000000000000000000030 = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (A00000000000000000000021, A00000000000000000000023, A00000000000000000000025, A00000000000000000000029, A0000000000000000000002B, A0000000000000000000002C, A0000000000000000000002D, A0000000000000000000002E, A0000000000000000000002F, A00000000000000000000038); runOnlyForDeploymentPostprocessing = 0;};
+		A00000000000000000000031 = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (A00000000000000000000020, A00000000000000000000024, A0000000000000000000002A); runOnlyForDeploymentPostprocessing = 0;};
 		A00000000000000000000032 = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0;};
 		A00000000000000000000033 = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (A00000000000000000000022); runOnlyForDeploymentPostprocessing = 0;};
 		A00000000000000000000034 = {isa = PBXHeadersBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0;};
