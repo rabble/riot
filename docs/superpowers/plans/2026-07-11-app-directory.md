@@ -138,6 +138,18 @@ pub fn app_bundle_digest(bundle_bytes: &[u8]) -> [u8; 32] {
     hasher.update(bundle_bytes);
     hasher.finalize().into()
 }
+```
+
+> **Execution-time correction (2026-07-11, Task 5 review finding):** the platform
+> session independently landed `apps/bundle.rs::app_bundle_digest` (domain
+> `riot/app-bundle/v1`), used by the released FFI `install_app`. Two digest
+> domains for the same concept would give byte-identical apps different
+> `app_id`s per code path. Reconciled during Task 4: `bundle.rs`'s released
+> domain is canonical; `index.rs` re-exports it (`pub use super::bundle::
+> app_bundle_digest;`) instead of defining its own. The code block above is
+> retained for history; do not re-introduce the second domain.
+
+```rust
 
 pub fn app_index_prefix_for(app_id: &[u8; APP_ID_BYTES]) -> Result<Path, AppsError> {
     Path::from_slices(&[APP_INDEX_COMPONENT, app_id]).map_err(|_| AppsError::PathInvalid)
