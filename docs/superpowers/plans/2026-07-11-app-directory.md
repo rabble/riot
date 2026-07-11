@@ -19,7 +19,8 @@
 
 ## File Structure
 
-- `crates/riot-core/src/apps/index.rs` — Task 1: app-index path builders + `app_bundle_digest`; Task 4: publish/scan store I/O
+- `crates/riot-core/src/apps/index.rs` — Task 1: app-index path builders + `app_bundle_digest`; Task 2b: admission classifier; Task 4: publish/scan store I/O
+- `crates/riot-core/src/import/bundle.rs` + `crates/riot-core/src/session.rs` — Task 2b: admit app-index entries at both import gates (mirrors `b4abd93`)
 - `crates/riot-core/src/apps/endorse.rs` — Task 2: endorsement marker codec; Task 4: `write_endorsement`
 - `crates/riot-core/src/apps/directory.rs` — Task 3: pure listing assembly
 - `crates/riot-core/src/apps/starter.rs` — Task 5: starter-catalog verification + (empty for now) embedded catalog
@@ -390,6 +391,181 @@ Expected: clean.
 ```bash
 git add crates/riot-core/src/apps/endorse.rs crates/riot-core/src/apps/mod.rs crates/riot-core/tests/apps_endorse.rs
 git commit -m "feat(apps): add endorsement marker codec"
+```
+
+---
+
+### Task 2b: Admit app-index entries at the import boundary
+
+**Files:**
+- Modify: `crates/riot-core/src/apps/index.rs` — add `AppIndexSlot` + `classify_app_index_path`
+- Modify: `crates/riot-core/src/import/bundle.rs` — extend `verify_frame`'s schema gate
+- Modify: `crates/riot-core/src/session.rs` — extend `inspect`'s path/payload binding gate
+- Test: `crates/riot-core/tests/core_import_app_index_entries.rs`
+
+**Why this task exists (added 2026-07-11 after commit `b4abd93` landed):** the import pipeline enforces payload schema at two gates — `verify_frame`'s schema check and `inspect`'s path/payload binding — and rejects everything that is neither an alert path nor the exact app-data shape as `UnsupportedSchema`. Without this task, every `app-index/...` entry Task 4 writes is rejected before commit. Mirror `b4abd93`'s pattern exactly: a single-sourced shape classifier in the apps module, consulted at both gates. Unlike app-data (opaque payloads), app-index slots have *decodable* payloads, so the gate checks more: manifests/bundles must decode canonically, and endorsements must decode *and* bind — payload `app_id` == path `app_id` at `verify_frame`, entry subspace == path endorser component at `inspect` (so nobody can write into someone else's endorsement slot).
+
+- [ ] **Step 1: Write the failing tests**
+
+Mirror the signed-one-entry-bundle helper pattern from `crates/riot-core/tests/core_import_app_entries.rs` (committed in `b4abd93` — read it first and reuse its helper shape) for building each entry. Cover:
+
+```rust
+// crates/riot-core/tests/core_import_app_index_entries.rs
+// Helpers: build a signed one-item bundle for an arbitrary (path, payload),
+// inspect+plan+commit it, mirroring core_import_app_entries.rs. Sketch of
+// the assertions each test makes:
+
+#[test]
+fn valid_manifest_entry_at_manifest_slot_commits() {
+    // payload = encode_manifest(valid manifest), path = app_index_manifest_path(app_id)
+    // -> inspect yields Preview, commit succeeds, entry live.
+}
+
+#[test]
+fn valid_bundle_entry_at_bundle_slot_commits() {
+    // payload = encode_app_bundle(valid bundle), path = app_index_bundle_path(app_id)
+}
+
+#[test]
+fn garbage_payload_at_manifest_slot_is_rejected_as_unsupported_schema() {
+    // payload = b"not-cbor", path = manifest slot -> UnsupportedSchema diagnostic.
+}
+
+#[test]
+fn endorsement_with_mismatched_payload_app_id_is_rejected() {
+    // marker.app_id = [1;32] but path app_id = [2;32] -> UnsupportedSchema.
+}
+
+#[test]
+fn endorsement_written_into_someone_elses_slot_is_rejected_at_inspect() {
+    // path endorser component = other subspace, entry signed by attacker
+    // -> rejected at the inspect binding gate (same rejection surface the
+    //    alert path-binding tests in core_import_path_binding.rs assert).
+}
+
+#[test]
+fn app_index_path_with_extra_components_is_rejected() {
+    // app-index/<id>/manifest/extra -> UnsupportedSchema (classifier returns None).
+}
+```
+
+- [ ] **Step 2: Run tests to verify they fail**
+
+Run: `cargo test -p riot-core --test core_import_app_index_entries`
+Expected: the two happy-path tests fail with `UnsupportedSchema` rejections (the gates don't know app-index yet); adversarial tests may pass vacuously — that's fine at this step.
+
+- [ ] **Step 3: Implement the classifier**
+
+```rust
+// add to crates/riot-core/src/apps/index.rs
+
+/// Admission-boundary classification of an app-index path. Single source
+/// of truth shared by local writes and the import pipeline's two gates,
+/// same discipline as `entry::is_app_data_path`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AppIndexSlot {
+    Manifest { app_id: [u8; 32] },
+    Bundle { app_id: [u8; 32] },
+    Endorsement { app_id: [u8; 32], endorser_subspace_id: [u8; 32] },
+}
+
+pub fn classify_app_index_path(path: &crate::willow::Path) -> Option<AppIndexSlot> {
+    let mut components = path.components();
+    if components.next()?.as_ref() != APP_INDEX_COMPONENT {
+        return None;
+    }
+    let app_id: [u8; 32] = components.next()?.as_ref().try_into().ok()?;
+    let slot = components.next()?;
+    match slot.as_ref() {
+        b"manifest" => components
+            .next()
+            .is_none()
+            .then_some(AppIndexSlot::Manifest { app_id }),
+        b"bundle" => components
+            .next()
+            .is_none()
+            .then_some(AppIndexSlot::Bundle { app_id }),
+        b"endorsements" => {
+            let endorser_subspace_id: [u8; 32] =
+                components.next()?.as_ref().try_into().ok()?;
+            components.next().is_none().then_some(AppIndexSlot::Endorsement {
+                app_id,
+                endorser_subspace_id,
+            })
+        }
+        _ => None,
+    }
+}
+```
+
+(Exact `components()` iterator item type: match whatever `is_app_data_path` in `apps/entry.rs` uses — it landed in `b4abd93` and is the pattern to copy.)
+
+- [ ] **Step 4: Extend `verify_frame`'s schema gate**
+
+In `crates/riot-core/src/import/bundle.rs`, where `b4abd93` added the `is_app_data_path` exemption, extend to:
+
+```rust
+    let app_index_schema_ok = match crate::apps::index::classify_app_index_path(entry.path()) {
+        Some(crate::apps::index::AppIndexSlot::Manifest { .. }) => {
+            crate::apps::manifest::decode_manifest(&frame.payload_bytes).is_ok()
+        }
+        Some(crate::apps::index::AppIndexSlot::Bundle { .. }) => {
+            crate::apps::bundle::decode_app_bundle(&frame.payload_bytes).is_ok()
+        }
+        Some(crate::apps::index::AppIndexSlot::Endorsement { app_id, .. }) => {
+            crate::apps::endorse::decode_endorsement(&frame.payload_bytes)
+                .map(|marker| marker.app_id == app_id)
+                .unwrap_or(false)
+        }
+        None => false,
+    };
+    if !crate::apps::entry::is_app_data_path(entry.path())
+        && !app_index_schema_ok
+        && crate::model::decode_alert(&frame.payload_bytes).is_err()
+    {
+        return Err(BundleDiagnostic { /* UnsupportedSchema, unchanged */ });
+    }
+```
+
+Adapt to the exact code shape that's there — the condition structure `b4abd93` left may have shifted; the invariant is: alert paths keep the alert schema check, app-data stays opaque, each app-index slot gets its decoder, everything else is `UnsupportedSchema`.
+
+- [ ] **Step 5: Extend `inspect`'s binding gate**
+
+In `crates/riot-core/src/session.rs`, where `b4abd93` exempted app-data from alert path-binding, add the endorsement slot-binding arm:
+
+```rust
+    let entry_path = willow25::groupings::Keylike::path(authorised.entry());
+    let path_matches = match crate::apps::index::classify_app_index_path(entry_path) {
+        Some(crate::apps::index::AppIndexSlot::Endorsement { endorser_subspace_id, .. }) => {
+            // An endorsement slot belongs to exactly the subspace named in
+            // its path — reject writes into someone else's slot.
+            *willow25::groupings::Coordinatelike::subspace(authorised.entry()).as_bytes()
+                == endorser_subspace_id
+        }
+        Some(_) => true, // manifest/bundle: payload embeds no path identity beyond Step 4's checks
+        None if crate::apps::entry::is_app_data_path(entry_path) => true,
+        None => { /* existing alert binding, unchanged */ }
+    };
+```
+
+(The exact subspace accessor: copy whatever `session.rs` already uses to read an entry's subspace — check nearby code rather than trusting the trait path above.)
+
+- [ ] **Step 6: Run tests to verify they pass**
+
+Run: `cargo test -p riot-core --test core_import_app_index_entries`
+Expected: 6 passed.
+
+Run: `cargo test --workspace --all-features`
+Expected: all green — especially the existing `core_import_app_entries.rs` and `core_import_path_binding.rs` suites, which prove the gates didn't loosen for alerts or app-data.
+
+- [ ] **Step 7: Clippy and commit**
+
+Run: `cargo clippy -p riot-core --all-features --all-targets -- -D warnings`
+Expected: clean.
+
+```bash
+git add crates/riot-core/src/apps/index.rs crates/riot-core/src/import/bundle.rs crates/riot-core/src/session.rs crates/riot-core/tests/core_import_app_index_entries.rs
+git commit -m "feat(core): admit app-index entries at the import boundary"
 ```
 
 ---
@@ -987,6 +1163,8 @@ pub fn scan_app_index(store: &EvidenceStore) -> Result<ScannedIndex, AppsError> 
     //   bundle will be checked against at launch time by the runtime host.
     // Endorsements: decode_endorsement; skip when marker.app_id != path app_id
     //   OR entry author subspace != path subspace component (spoofed slot).
+    //   Task 2b's gates already reject these at import — this re-check is
+    //   cheap defense in depth for entries that predate the gates.
 }
 ```
 
@@ -1552,4 +1730,4 @@ git commit -m "feat(cli): add riot-app pack/keygen/inspect publishing tool"
 2. Everything here is `cargo test`-verifiable — no simulator/emulator needed.
 3. Follow-up plans (write fresh, in order):
    - **Native storefront UI** (iOS `apps/ios/Riot/Directory/`, Android equivalent): storefront screen, review/detail page, space picker, Tools row — consuming Task 6's FFI surface. Blocked on nothing else in this plan, but launching apps also needs:
-   - **WebView runtime + checklist app** (already named as the core-platform plan's follow-up). Once the checklist exists, generate its pair with `riot-app pack` using the fixed Riot project author key, commit under `fixtures/apps/checklist/`, and flip `STARTER_CATALOG` from `&[]` to include it — Task 5's `the_shipped_catalog_verifies_completely` test guards it from then on.
+   - **WebView runtime + checklist app** (already named as the core-platform plan's follow-up). Once the checklist exists, generate its pair with `riot-app pack` (manifest carrying the pinned public project `AuthorIdentity` — no key material enters the repo; integrity is content-addressed, per the runtime spec's 2026-07-11 correction in `afae443`), commit the pair's bytes under `fixtures/apps/checklist/`, and flip `STARTER_CATALOG` from `&[]` to include it — Task 5's `the_shipped_catalog_verifies_completely` test guards it from then on.

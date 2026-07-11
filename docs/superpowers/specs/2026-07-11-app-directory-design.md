@@ -55,13 +55,21 @@ Trust markers are unchanged from the platform design: organizer-signed,
 last-write-wins, only honored from a space's known-organizer subspace list.
 
 **Starter catalog**: a small set of built-in apps (first: the checklist)
-embedded in the binary via `include_bytes!` as manifest+bundle pairs signed
-by a fixed Riot project author identity — the same fixed-public-author
-precedent as the conference fixture. Built-ins run through the exact same
-decode/verify path as synced apps and get zero special treatment in code;
-"Built into Riot" is a provenance label, not a trust shortcut. Like any
-other app, a built-in is only launchable in a space once an organizer
-trusts it there.
+embedded in the binary via `include_bytes!` as manifest+bundle pairs.
+**Correction (2026-07-11, planning-time ground truth, aligning with the
+runtime spec's `afae443` correction):** an earlier phrasing here said the
+pairs are "signed by a fixed Riot project author identity." There is no
+manifest/bundle signature mechanism to reuse — app integrity is
+content-addressed (strict canonical decoding plus the content-derived
+`app_id`), and Willow entry signatures only exist where entries cross
+devices, where the carrier signs. So the starter catalog commits **no key
+material**: embedded pairs are verified through the standard
+`decode_manifest`/`decode_app_bundle` path with the `app_id` re-derived on
+load, and the manifest's `author` field carries a fixed committed *public*
+identity (the conference fixture's fixed-public-author precedent).
+Built-ins otherwise get zero special treatment in code; "Built into Riot"
+is a provenance label, not a trust shortcut. Like any other app, a
+built-in is only launchable in a space once an organizer trusts it there.
 
 **Provenance is derived, not declared.** Two verifiable sources, no free
 text: "Shared by Ana" comes from the carrier's signature on the
