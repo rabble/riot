@@ -959,11 +959,11 @@ footer { padding: 48px 0 60px; }
     </div>
 
     <div class="evidence-meta reveal">
-      <span><span class="n">5</span> research passes</span>
-      <span><span class="n">117</span> sources fetched</span>
-      <span><span class="n">506</span> claims extracted</span>
-      <span><span class="n">106</span> claims adversarially verified</span>
-      <span><span class="n">19</span> refuted on the record</span>
+      <span><span class="n">6</span> research passes</span>
+      <span><span class="n">143</span> sources fetched</span>
+      <span><span class="n">620</span> claims extracted</span>
+      <span><span class="n">124</span> claims adversarially verified</span>
+      <span><span class="n">26</span> refuted on the record</span>
     </div>
 
     <!-- CARD 1 -->
@@ -1116,6 +1116,36 @@ footer { padding: 48px 0 60px; }
       </div>
     </article>
 
+    <!-- CARD 6 -->
+    <article class="dispatch-card reveal">
+      <div class="dc-head">
+        <div class="dc-title">
+          <div class="dc-num">DISPATCH 06 · 2026&#8209;07&#8209;11</div>
+          <h3>Optional media authenticity: ProofMode &amp; C2PA</h3>
+        </div>
+        <div class="dc-stats">
+          <div class="stat"><b>26</b>sources</div>
+          <div class="stat"><b>114</b>claims</div>
+          <div class="stat ok"><b>18</b>confirmed</div>
+          <div class="stat no"><b>7</b>refuted</div>
+        </div>
+      </div>
+      <div class="dc-body">
+        <p class="dc-summary">C2PA/ProofMode provenance is built to <em>disclose</em> capture metadata as proof of authenticity. Riot's safety model needs the opposite for protest photography — strip that same metadata before publish. Does the tension actually resolve?</p>
+        <div class="finding-list">
+          <div class="finding"><span class="vote ok">3&#8209;0 &#10003;</span><span class="finding-text">ProofMode's proof bundle is already <b>detachable</b> from the media file — original photo, hash, sensor CSV, signature, kept separate, not baked in.</span></div>
+          <div class="finding"><span class="vote ok">3&#8209;0 &#10003;</span><span class="finding-text">C2PA formally supports <b>redacting assertions like GPS</b>, not restricted to the original signer — a downstream publisher can strip them before release.</span></div>
+          <div class="finding"><span class="vote ok">3&#8209;0 &#10003;</span><span class="finding-text">The same "exclusion range" that enables redaction leaves those bytes <b>unprotected</b> — anyone can alter or insert false data there without breaking the signature.</span></div>
+          <div class="finding"><span class="vote ok">3&#8209;0 &#10003;</span><span class="finding-text">ProofMode's persistent per&#8209;install signing key <b>contradicts its own no&#8209;persistent&#8209;identity design goal</b> — a real repeat&#8209;contributor correlation risk.</span></div>
+        </div>
+        <div class="dc-implication">
+          <span class="il-tag">For Riot</span>
+          Model this as a detachable <span class="mono">verification</span> annotation, redacted by default before anything crosses the Group→Newswire bridge, full provenance kept private. Record <em>what</em> was redacted — a "valid" check doesn't cover excluded fields.
+        </div>
+        <div class="dc-sources"><span class="src-path">docs/research/2026-07-11-proofmode-c2pa-media-authenticity-research.md</span></div>
+      </div>
+    </article>
+
   </div>
 </section>
 
@@ -1199,6 +1229,7 @@ footer { padding: 48px 0 60px; }
           <li>docs/research/2026-07-11-hybrid-gossip-backhaul-research.md</li>
           <li>docs/research/2026-07-11-shutdown-resistant-distribution-research.md</li>
           <li>docs/research/2026-07-11-arti-tor-backhaul-research.md</li>
+          <li>docs/research/2026-07-11-proofmode-c2pa-media-authenticity-research.md</li>
         </ul>
       </div>
     </div>
