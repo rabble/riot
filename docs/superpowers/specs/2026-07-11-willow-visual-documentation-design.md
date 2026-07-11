@@ -1,7 +1,8 @@
 # Willow Visual Documentation System
 
 Date: 2026-07-11
-Status: Approved in brainstorming; revision 2 pending design review gate
+Status: Approved in brainstorming; design review blocked after round 3 pending
+security/governance decision
 
 ## Purpose
 
