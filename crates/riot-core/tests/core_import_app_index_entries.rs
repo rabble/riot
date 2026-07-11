@@ -10,7 +10,7 @@
 //! recognize stays `UnsupportedSchema`, on the same `verify_frame` surface a
 //! hostile peer's bundle would hit.
 
-use riot_core::apps::bundle::{encode_app_bundle, AppBundle, AppResource};
+use riot_core::apps::bundle::{encode_app_bundle, AppBundle, AppResource, MAX_BUNDLE_TOTAL_BYTES};
 use riot_core::apps::endorse::{encode_endorsement, EndorsementMarker};
 use riot_core::apps::index::{
     app_index_bundle_path, app_index_endorsement_path, app_index_manifest_path,
@@ -127,6 +127,31 @@ fn valid_bundle_entry_at_bundle_slot_commits() {
     commit_entry(&store, &signed_at_path(&author, path.clone(), &payload));
 
     assert_eq!(store.live_count().expect("live_count"), 1);
+    let matches = store.entries_with_prefix(&path).expect("query");
+    assert_eq!(matches.len(), 1);
+    assert_eq!(matches[0].2.as_deref(), Some(payload.as_slice()));
+}
+
+#[test]
+fn near_maximum_bundle_entry_survives_inspect_plan_and_commit() {
+    let session = RiotSession::open().expect("session");
+    let store = session.create_store().expect("store");
+    let author = generate_communal_author().expect("author");
+
+    let bundle = AppBundle {
+        entry_point: "index.html".to_string(),
+        resources: vec![AppResource {
+            path: "index.html".to_string(),
+            content_type: "application/octet-stream".to_string(),
+            bytes: vec![0x5a; MAX_BUNDLE_TOTAL_BYTES - 128],
+        }],
+    };
+    let payload = encode_app_bundle(&bundle).expect("near-maximum bundle remains codec-valid");
+    assert!(payload.len() > MAX_BUNDLE_TOTAL_BYTES - 256);
+    let path = app_index_bundle_path(&[9u8; 32]).expect("path");
+
+    commit_entry(&store, &signed_at_path(&author, path.clone(), &payload));
+
     let matches = store.entries_with_prefix(&path).expect("query");
     assert_eq!(matches.len(), 1);
     assert_eq!(matches[0].2.as_deref(), Some(payload.as_slice()));

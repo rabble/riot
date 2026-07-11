@@ -67,6 +67,18 @@ fn preview_output_entries_charge_bytes(entries: &[VerifiedEntry], route_len: usi
         + route_len as u64
 }
 
+/// Retained bytes added by a plan on top of its still-live preview. Entry
+/// metadata and the route are cloned into `PlanState`, but immutable payload
+/// bytes are `Arc`-shared with `PreviewState`, so charging them a second time
+/// would count an allocation that does not exist.
+fn plan_output_entries_charge_bytes(entries: &[VerifiedEntry], route_len: usize) -> u64 {
+    entries
+        .iter()
+        .map(|v| STORE_CHARGE_ENTRY_BYTES + v.entry_bytes_len as u64)
+        .sum::<u64>()
+        + route_len as u64
+}
+
 /// Would a preview/plan pair with this much combined retained-entry/route
 /// charge, plus `plan_tombstones.len() * PLAN_TOMBSTONE_BYTES`, exceed the
 /// 2 MiB preview-output budget? Pure arithmetic, exactly testable at the
@@ -249,10 +261,11 @@ struct VerifiedEntry {
     /// Canonical entry byte length, captured once at verification time so
     /// preview-output charging never needs to re-encode.
     entry_bytes_len: usize,
-    /// Payload bytes carried through to live retention — populated only for
-    /// app-data entries (see `Stored::payload`); `None` for alerts. Charged
-    /// into the preview-output budget alongside the entry bytes.
-    payload: Option<Vec<u8>>,
+    /// Payload bytes carried through to live retention for app-data and
+    /// app-index entries (see `Stored::payload`); `None` for alerts. The
+    /// preview owns the allocation and plans share it immutably, so the
+    /// preview-output budget charges these bytes exactly once.
+    payload: Option<Arc<[u8]>>,
 }
 
 struct PreviewState {
@@ -428,7 +441,8 @@ impl EvidenceStore {
     }
 
     /// Live entries whose path is prefixed by `prefix`, with their canonical
-    /// ids and retained payload bytes (`Some` only for app-data entries).
+    /// ids and retained payload bytes (`Some` for app-data and app-index
+    /// entries).
     /// Same typed boundary as `live_entry_ids`; the returned `Entry` carries
     /// the payload digest/length, never signer or capability state.
     pub fn entries_with_prefix(
@@ -533,11 +547,11 @@ impl EvidenceStore {
                 // no identity a path could contradict — the path itself
                 // (already shape-checked in `verify_frame`) is the identity.
                 // App-index manifest/bundle slots are likewise exempt (their
-                // payload schema and app_id binding were checked in
-                // `verify_frame`), but an endorsement slot belongs to
-                // exactly the subspace named in its path: the entry's own
-                // subspace must equal the path's endorser component, so
-                // nobody can write into someone else's endorsement slot.
+                // payload schema was checked in `verify_frame`; their app ID
+                // is the path component itself), but an endorsement slot
+                // belongs to exactly the subspace named in its path: the
+                // entry's own subspace must equal the path's endorser
+                // component, so nobody can write into someone else's slot.
                 let is_app_data = crate::apps::entry::is_app_data_path(
                     willow25::groupings::Keylike::path(authorised.entry()),
                 );
@@ -583,7 +597,8 @@ impl EvidenceStore {
                         authorised,
                         entry_id: valid.entry_id,
                         entry_bytes_len: item.frame.entry_bytes().len(),
-                        payload: retain_payload.then(|| item.frame.payload_bytes().to_vec()),
+                        payload: retain_payload
+                            .then(|| Arc::<[u8]>::from(item.frame.payload_bytes())),
                     });
                 }
             }
@@ -756,16 +771,17 @@ impl ImportPreview {
             }
             (entries, p.route.clone(), p.base_generation)
         };
-        // The new plan retains its own copy of the selected entries plus a
-        // route, on top of the still-live preview's own retained copy;
-        // superseding the current plan (if any) adds one more tombstone.
-        // All of it counts against the same preview-output budget.
+        // The new plan retains its own selected-entry metadata and route on
+        // top of the still-live preview. Immutable payload allocations stay
+        // shared with that preview; superseding the current plan (if any)
+        // adds one more tombstone. Every unique retained allocation counts
+        // against the same preview-output budget.
         let prospective_tombstones = st.plan_tombstones.len() + usize::from(st.plan.is_some());
         let preview_charge = {
             let p = st.preview.as_ref().unwrap();
             preview_output_entries_charge_bytes(&p.entries, p.route.len())
         };
-        let plan_charge = preview_output_entries_charge_bytes(&entries, route.len());
+        let plan_charge = plan_output_entries_charge_bytes(&entries, route.len());
         if preview_output_exceeds_budget(
             preview_charge + plan_charge + prospective_tombstones as u64 * PLAN_TOMBSTONE_BYTES,
         ) {
@@ -857,7 +873,12 @@ impl ImportPlan {
 
         let batch = entries
             .iter()
-            .map(|v| (v.authorised.clone(), v.payload.clone()))
+            .map(|v| {
+                (
+                    v.authorised.clone(),
+                    v.payload.as_ref().map(|payload| payload.to_vec()),
+                )
+            })
             .collect();
         let join_plan =
             plan_join_with_payloads(&pre_join, batch).map_err(|_| SessionError::StoreFull)?;
