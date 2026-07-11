@@ -487,7 +487,11 @@ private final class SyncPeerDriver: @unchecked Sendable {
         peerName: String,
         wire: DispatchQueue
     ) throws {
-        let connection = NearbyConnection(base: channel, baseRoute: .localNetwork, localAttempt: { nil })
+        // `bluetooth:` is the base-channel slot, not a claim about the radio:
+        // with no local upgrade to attempt, `activate()` runs the session on the
+        // channel passed here — the real loopback TCP socket. The route label it
+        // reports is irrelevant to what these tests assert.
+        let connection = NearbyConnection(bluetooth: channel, localAttempt: { nil })
         connection.confirmPairing()
         try connection.activate()
         let coordinator = SyncCoordinator(session: boundary, connection: connection, friendlyName: peerName)
