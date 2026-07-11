@@ -18,7 +18,7 @@ from typing import Mapping
 from urllib.parse import unquote, urlsplit
 
 
-EXPORT_SCHEMA = "riot-public-gateway-export/1"
+EXPORT_SCHEMA = "riot-public-gateway-export/2"
 EXPORT_REVISION = "conference-gateway-export-v1"
 RENDERER_PROFILE = "incident-board/1"
 VERIFICATION_STATUS_VALID = "signature_verified"
@@ -26,7 +26,7 @@ VERIFICATION_STATUS_INVALID = "signature_invalid"
 ALLOWED_VERIFICATION_STATUSES = frozenset(
     {VERIFICATION_STATUS_VALID, VERIFICATION_STATUS_INVALID}
 )
-PINNED_EXPORT_SHA256 = "e5b4f7cad195ce81d6b8e462032fcdb94bc04a56723e39f94a8598345ba35a35"
+PINNED_EXPORT_SHA256 = "d41e95ae50500ff7fe3eecfaa8dd685ae9807be16e27982e40f5735fe9b5ecd1"
 PINNED_QR_SVG_SHA256 = "c53738a65751d96cdc855750211898a280d6411cc3dc21db431f6cb820b6a99e"
 PUBLIC_NAMESPACE = "ae5f04268d4d2a2f86df7a43e0afe1f26577ac58dcefe95bd9b6e634c5e0155c"
 INCIDENT_TITLE = "Harbor District Evacuation"
