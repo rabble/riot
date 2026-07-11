@@ -133,12 +133,18 @@ final class TransportContractTests: XCTestCase {
         let connection = NearbyConnection(bluetooth: channels.first, localAttempt: { nil })
         connection.confirmPairing()
         try connection.activate()
-        let session = FakeSyncBoundary(outbound: [], beginOutcome: .done, closeError: NearbyTransportError.disconnected)
+        let session = FakeSyncBoundary(
+            outbound: [],
+            beginOutcome: .done,
+            closeError: NearbyTransportError.disconnected,
+            outboundErrorAfterTerminal: true
+        )
         let coordinator = SyncCoordinator(session: session, connection: connection, friendlyName: "Quiet Harbor")
 
         coordinator.start()
 
         XCTAssertEqual(coordinator.state, .caughtUp)
+        XCTAssertEqual(session.outboundCalls, 0)
     }
 
     func testPersistenceFailurePreventsImportAcceptance() throws {
@@ -155,17 +161,29 @@ final class TransportContractTests: XCTestCase {
 
 private final class FakeSyncBoundary: MobileSyncSessionBoundary {
     var didBegin = false
+    var outboundCalls = 0
     private var outbound: [Data]
     private let beginOutcome: NearbySyncOutcome
     private let closeError: Error?
+    private let outboundErrorAfterTerminal: Bool
 
-    init(outbound: [Data], beginOutcome: NearbySyncOutcome = .sendMore, closeError: Error? = nil) {
+    init(
+        outbound: [Data],
+        beginOutcome: NearbySyncOutcome = .sendMore,
+        closeError: Error? = nil,
+        outboundErrorAfterTerminal: Bool = false
+    ) {
         self.outbound = outbound
         self.beginOutcome = beginOutcome
         self.closeError = closeError
+        self.outboundErrorAfterTerminal = outboundErrorAfterTerminal
     }
     func begin() throws -> NearbySyncOutcome { didBegin = true; return beginOutcome }
-    func nextOutbound() throws -> Data? { outbound.isEmpty ? nil : outbound.removeFirst() }
+    func nextOutbound() throws -> Data? {
+        outboundCalls += 1
+        if outboundErrorAfterTerminal && beginOutcome == .done { throw NearbyTransportError.disconnected }
+        return outbound.isEmpty ? nil : outbound.removeFirst()
+    }
     func receive(_ frame: Data) throws -> NearbySyncOutcome { .sendMore }
     func acceptImport() throws {}
     func rejectImport() throws {}

@@ -64,8 +64,7 @@ public final class SyncCoordinator {
     public func start() {
         do {
             state = .gettingLatest(name: friendlyName)
-            try handle(try session.begin())
-            try pumpOutbound()
+            if try handle(try session.begin()) { try pumpOutbound() }
         } catch {
             state = .failed
             connection.disconnect()
@@ -86,8 +85,7 @@ public final class SyncCoordinator {
 
     private func receive(_ frame: Data) {
         do {
-            try handle(try session.receive(frame))
-            try pumpOutbound()
+            if try handle(try session.receive(frame)) { try pumpOutbound() }
         } catch {
             state = .failed
             connection.disconnect()
@@ -98,12 +96,12 @@ public final class SyncCoordinator {
         while let frame = try session.nextOutbound() { try connection.send(frame) }
     }
 
-    private func handle(_ outcome: NearbySyncOutcome) throws {
+    private func handle(_ outcome: NearbySyncOutcome) throws -> Bool {
         switch outcome {
-        case .sendMore: break
-        case let .readyToPreview(count): state = .preview(count: count, name: friendlyName)
-        case .done: state = .caughtUp; try? session.close()
-        case .failed: state = .failed; connection.disconnect(); try? session.close()
+        case .sendMore: return true
+        case let .readyToPreview(count): state = .preview(count: count, name: friendlyName); return false
+        case .done: state = .caughtUp; try? session.close(); return false
+        case .failed: state = .failed; connection.disconnect(); try? session.close(); return false
         }
     }
 }
