@@ -570,6 +570,28 @@ git commit -m "feat(core): admit app-index entries at the import boundary"
 
 ---
 
+### Task 2c: Trust markers as synced Willow entries
+
+**Files:**
+- Modify: `crates/riot-core/src/apps/index.rs` — add `app_index_trust_path`, extend `AppIndexSlot`/`classify_app_index_path`
+- Modify: `crates/riot-core/src/apps/trust.rs` — add `encode_trust_marker`/`decode_trust_marker` (payload codec) and `write_trust_marker`
+- Modify: `crates/riot-core/src/import/bundle.rs`, `crates/riot-core/src/session.rs` — the new slot's admission arms (same two gates as Task 2b)
+- Test: extend `crates/riot-core/tests/core_import_app_index_entries.rs` + new `crates/riot-core/tests/apps_trust_entries.rs`
+
+**Why (added after the platform claim closed):** platform Task 6 deliberately left trust markers profile-local/in-memory and queued "sync them as Willow entries" to this plan (see its `COLLABORATION.md` handoff row). The directory design requires synced trust — one organizer decision covering every member including future joiners.
+
+**Shape:** `app-index/<app_id>/trust/<organizer-subspace>` — exactly parallel to the endorsement slot: one LWW slot per organizer, payload codec in `trust.rs`'s canonical style carrying `{app_id, kind: Trust|Revoke}` (map of 2, key 0 = app_id bytes, key 1 = kind as u8 0/1, same canonicality re-encode check as `endorse.rs`; entry timestamp supplies `TrustMarker::timestamp_micros`, payload carries no time). Admission: `AppIndexSlot::Trust { app_id, organizer_subspace_id }` arm in the Task 2b classifier; `verify_frame` requires decode + payload app_id == path app_id; `inspect` requires entry subspace == path organizer component (nobody writes into someone else's trust slot). Whether the *writer is actually a recognized organizer* is deliberately NOT an admission check — organizer lists are reader-side policy (`is_trusted`'s `organizer_subspace_ids` argument), matching the design's "entries from any other subspace at the trust-list path are ignored," and admission gates must stay policy-free.
+
+**TDD steps (same rhythm as Tasks 2/2b):**
+- [ ] Failing codec tests in `apps_trust_entries.rs`: round-trip Trust and Revoke, tamper/trailing-byte rejection, unknown kind byte rejected.
+- [ ] Failing store tests: `write_trust_marker(store, organizer, app_id, TrustMarkerKind::Trust, ts)` then a scan helper `trust_markers_for(store, app_id)` returns one `TrustMarker` with the organizer's subspace and the entry's timestamp; a Revoke written later (higher timestamp) replaces it (LWW slot); a marker hand-written into another subspace's slot is rejected at inspect (extend `core_import_app_index_entries.rs`).
+- [ ] Implement codec + path + classifier arm + both admission arms + `write_trust_marker` (same `commit_at` helper as Task 4's publish path — if Task 4 hasn't run yet, introduce the helper here and Task 4 reuses it).
+- [ ] `cargo test --workspace --all-features` green; clippy clean; commit `feat(apps): sync app trust markers as Willow entries`.
+
+**Ripples into later tasks:** Task 4's `scan_app_index` also collects trust slots into `Vec<(space_namespace_id, TrustMarker)>` grouped per namespace (feeding Task 3's `SpaceTrust.markers`). Task 6's FFI step must wire the landed profile-local `trust_app`/`untrust_app` to ALSO write the entry via `write_trust_marker` (profile-local state stays as the fast cache; the entry is the sync truth) — re-check the landed Task 6 shape first, as ever.
+
+---
+
 ### Task 3: Pure directory assembly
 
 **Files:**
