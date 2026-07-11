@@ -4,6 +4,7 @@
 pub mod apps;
 pub mod import;
 pub mod model;
+pub mod profile;
 pub mod session;
 pub mod sync;
 pub mod willow;
