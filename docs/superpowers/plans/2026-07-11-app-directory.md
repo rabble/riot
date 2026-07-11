@@ -1373,6 +1373,23 @@ git commit -m "feat(apps): add starter-catalog verification"
 
 ---
 
+### Task 5b: Carry app entries over the sync surface
+
+**Files (expected — confirm during investigation):**
+- Modify: `crates/riot-ffi/src/mobile_state.rs` — sync inventory + completeness invariant + receive-side review
+- Possibly: `crates/riot-core/src/sync/ffi_bridge.rs`
+- Test: extend `crates/riot-ffi/tests/apps_contract.rs` (exists since platform Task 6 / `d2aae48`)
+
+**Why (added 2026-07-11 after `d2aae48`):** the platform's review-fix round made the exclusion explicit: `ensure_complete_sync_inventory` (`mobile_state.rs:878`) filters out app entries via `is_app_data_entry`, the sync inventory is alert-only, and its commit message records "FFI sync review is alert-only so app entries in a hostile sync bundle are rejected at review" and "syncing app data belongs to the app-directory follow-up." Without this task, nothing under `apps/` or `app-index/` ever leaves the phone — no app spread, no trust sync, no endorsement sync. This is the plan's highest-risk task; investigate before coding.
+
+- [ ] **Step 1: Investigate (no code).** Read the full sync path in `mobile_state.rs` (`open_sync_session` → inventory build → frames → receive-side review/accept) and `sync/ffi_bridge.rs`. Answer in writing, in the task commit message: (a) where exactly does a received non-alert entry get rejected today; (b) what the inventory stores per entry (it holds `SignedWillowEntry` with payload bytes — how do app-data entries, whose payloads live in the store's retention added by `12b8995`, get their bytes for inventory?); (c) how `MAX_SYNC_IDS` and the ~1MiB app-value size interact with inventory memory (the platform team's known-remaining note about preview+plan double-charge). If any answer reveals this needs core `sync/` protocol changes rather than FFI-layer inclusion, STOP and report BLOCKED with findings — that variant needs a human decision because `sync/` is outside this plan's claim.
+- [ ] **Step 2: Failing tests.** In `apps_contract.rs`, following its existing two-profile sync harness: (a) profile A `app_data_put` + publishes an app-index pair (Task 4 API via FFI or direct core calls, whichever the harness uses); sync A→B; B's directory listing shows the app and B's `AppDataBridge`-visible data contains A's entry. (b) Completeness invariant: after `app_data_put`, `open_sync_session` still works and the synced inventory includes the app entry. (c) Hostile case stays hostile: a sync bundle carrying a malformed app-index entry (bad payload for its slot) is still rejected item-wise, proving Task 2b's gates hold on the sync path too.
+- [ ] **Step 3: Implement inclusion.** Expected shape: build sync inventory from ALL live entries (alerts + app-data + app-index) with payloads from the retention layer; drop the `is_app_data_entry` filter in `ensure_complete_sync_inventory`; ensure the receive-side accept path routes every admitted entry through the same inspect→plan→commit it already uses (Task 2b made the gates path-aware, so no alert-only assumption should remain). Keep `MAX_SYNC_IDS` as the cap; if inventory memory for payload-bearing app entries is a concern, cap per-entry payload participation at `MAX_ITEM_PAYLOAD_BYTES` (already enforced) and note the memory envelope in the commit message.
+- [ ] **Step 4:** `cargo test -p riot-ffi --all-features` green; `cargo test --workspace --all-features` green; clippy clean; `cargo xtask validate-contracts` PASS.
+- [ ] **Step 5:** Commit `feat(ffi): carry app entries over the sync surface`. Update the COLLABORATION.md claim row files list if `sync/ffi_bridge.rs` was touched (it's currently claimed-free but listed under a Codex "Done, released" row — post a note).
+
+---
+
 ### Task 6: FFI surface — directory listings, share, endorse
 
 **Files:**
