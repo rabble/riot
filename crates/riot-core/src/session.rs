@@ -532,11 +532,33 @@ impl EvidenceStore {
                 // from the alert binding: their payload is opaque and embeds
                 // no identity a path could contradict — the path itself
                 // (already shape-checked in `verify_frame`) is the identity.
+                // App-index manifest/bundle slots are likewise exempt (their
+                // payload schema and app_id binding were checked in
+                // `verify_frame`), but an endorsement slot belongs to
+                // exactly the subspace named in its path: the entry's own
+                // subspace must equal the path's endorser component, so
+                // nobody can write into someone else's endorsement slot.
                 let is_app_data = crate::apps::entry::is_app_data_path(
+                    willow25::groupings::Keylike::path(authorised.entry()),
+                );
+                let app_index_slot = crate::apps::index::classify_app_index_path(
                     willow25::groupings::Keylike::path(authorised.entry()),
                 );
                 let path_matches = if is_app_data {
                     true
+                } else if let Some(slot) = app_index_slot {
+                    match slot {
+                        crate::apps::index::AppIndexSlot::Endorsement {
+                            endorser_subspace_id,
+                            ..
+                        } => {
+                            *willow25::groupings::Keylike::subspace_id(authorised.entry())
+                                .as_bytes()
+                                == endorser_subspace_id
+                        }
+                        crate::apps::index::AppIndexSlot::Manifest { .. }
+                        | crate::apps::index::AppIndexSlot::Bundle { .. } => true,
+                    }
                 } else {
                     decode_alert(item.frame.payload_bytes())
                         .ok()
@@ -551,11 +573,17 @@ impl EvidenceStore {
                         .unwrap_or(false)
                 };
                 if path_matches {
+                    // App-data and app-index payloads are retained with the
+                    // live entry (see `Stored::payload`): apps read their
+                    // values back, and the directory scan reads manifests/
+                    // bundles/endorsements back. Alert payloads stay
+                    // digest-only.
+                    let retain_payload = is_app_data || app_index_slot.is_some();
                     verified.push(VerifiedEntry {
                         authorised,
                         entry_id: valid.entry_id,
                         entry_bytes_len: item.frame.entry_bytes().len(),
-                        payload: is_app_data.then(|| item.frame.payload_bytes().to_vec()),
+                        payload: retain_payload.then(|| item.frame.payload_bytes().to_vec()),
                     });
                 }
             }

@@ -514,10 +514,41 @@ fn verify_frame(frame: &BundleItemFrame) -> Result<ValidItem, BundleDiagnostic> 
     // `apps::entry::is_app_data_path`) instead carry opaque app payloads:
     // integrity is covered by the digest/length checks above, size by
     // `MAX_ITEM_PAYLOAD_BYTES`, and the payload embeds no identity for the
-    // path to bind, so no payload schema applies to them.
-    if !crate::apps::entry::is_app_data_path(entry.path())
-        && crate::model::decode_alert(&frame.payload_bytes).is_err()
-    {
+    // path to bind, so no payload schema applies to them. App-index paths
+    // (shape defined by `apps::index::classify_app_index_path`) carry
+    // decodable payloads, so each slot gets its strict canonical decoder;
+    // an endorsement payload must additionally name the same app as its
+    // path — the marker's `app_id` is signed content, and letting it drift
+    // from the slot would let one signed endorsement be replayed under a
+    // different app's directory row. (Endorser-slot ownership is bound at
+    // `inspect`, where the entry's subspace is compared against the path's
+    // endorser component.) Everything else is UnsupportedSchema.
+    let schema_ok = if crate::apps::entry::is_app_data_path(entry.path()) {
+        true
+    } else {
+        match crate::apps::index::classify_app_index_path(entry.path()) {
+            Some(crate::apps::index::AppIndexSlot::Manifest { .. }) => {
+                crate::apps::manifest::decode_manifest(&frame.payload_bytes).is_ok()
+            }
+            Some(crate::apps::index::AppIndexSlot::Bundle { .. }) => {
+                crate::apps::bundle::decode_app_bundle(&frame.payload_bytes).is_ok()
+            }
+            Some(crate::apps::index::AppIndexSlot::Endorsement { app_id, .. }) => {
+                crate::apps::endorse::decode_endorsement(&frame.payload_bytes)
+                    .map(|marker| marker.app_id == app_id)
+                    .unwrap_or(false)
+            }
+            None => {
+                let is_malformed_app_index_path =
+                    entry.path().components().next().is_some_and(|component| {
+                        component.as_ref() == crate::apps::index::APP_INDEX_COMPONENT
+                    });
+                !is_malformed_app_index_path
+                    && crate::model::decode_alert(&frame.payload_bytes).is_ok()
+            }
+        }
+    };
+    if !schema_ok {
         return Err(BundleDiagnostic {
             code: DiagnosticCode::UnsupportedSchema,
             component: ItemComponent::Schema,

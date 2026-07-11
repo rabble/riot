@@ -38,8 +38,7 @@ pub fn app_index_manifest_path(app_id: &[u8; APP_ID_BYTES]) -> Result<Path, Apps
 }
 
 pub fn app_index_bundle_path(app_id: &[u8; APP_ID_BYTES]) -> Result<Path, AppsError> {
-    Path::from_slices(&[APP_INDEX_COMPONENT, app_id, b"bundle"])
-        .map_err(|_| AppsError::PathInvalid)
+    Path::from_slices(&[APP_INDEX_COMPONENT, app_id, b"bundle"]).map_err(|_| AppsError::PathInvalid)
 }
 
 pub fn app_index_endorsement_path(
@@ -53,4 +52,57 @@ pub fn app_index_endorsement_path(
         endorser_subspace_id,
     ])
     .map_err(|_| AppsError::PathInvalid)
+}
+
+/// Admission-boundary classification of an app-index path. Single source
+/// of truth shared by local writes and the import pipeline's two gates,
+/// same discipline as `entry::is_app_data_path`: locally constructible
+/// paths (the builders above) and remotely admissible ones can never drift
+/// apart. Size ceilings are not re-checked here — the import pipeline
+/// already enforces `MAX_PATH_*` on every path before any schema decision.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AppIndexSlot {
+    Manifest {
+        app_id: [u8; APP_ID_BYTES],
+    },
+    Bundle {
+        app_id: [u8; APP_ID_BYTES],
+    },
+    Endorsement {
+        app_id: [u8; APP_ID_BYTES],
+        endorser_subspace_id: [u8; 32],
+    },
+}
+
+/// Returns which app-index slot `path` addresses, or `None` when the path
+/// is not exactly one of the three recognized shapes (wrong prefix, wrong
+/// id length, unknown slot name, missing or extra trailing components).
+pub fn classify_app_index_path(path: &Path) -> Option<AppIndexSlot> {
+    let mut components = path.components();
+    if components.next()?.as_ref() != APP_INDEX_COMPONENT {
+        return None;
+    }
+    let app_id: [u8; APP_ID_BYTES] = components.next()?.as_ref().try_into().ok()?;
+    let slot = components.next()?;
+    match slot.as_ref() {
+        b"manifest" => components
+            .next()
+            .is_none()
+            .then_some(AppIndexSlot::Manifest { app_id }),
+        b"bundle" => components
+            .next()
+            .is_none()
+            .then_some(AppIndexSlot::Bundle { app_id }),
+        b"endorsements" => {
+            let endorser_subspace_id: [u8; 32] = components.next()?.as_ref().try_into().ok()?;
+            components
+                .next()
+                .is_none()
+                .then_some(AppIndexSlot::Endorsement {
+                    app_id,
+                    endorser_subspace_id,
+                })
+        }
+        _ => None,
+    }
 }
