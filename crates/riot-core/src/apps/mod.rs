@@ -5,6 +5,7 @@
 pub mod bridge;
 pub mod bundle;
 pub mod entry;
+pub mod index;
 pub mod manifest;
 pub mod trust;
 
@@ -22,6 +23,9 @@ pub enum AppsError {
     BundleTooLarge,
     /// The store refused the write (session/budget/admission failure).
     StoreRejected,
+    IndexFieldInvalid,
+    EndorsementFieldInvalid,
+    IndexEntryMismatch,
 }
 
 impl std::fmt::Display for AppsError {
