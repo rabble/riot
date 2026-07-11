@@ -63,6 +63,20 @@ pub struct ScannedIndex {
 /// existing `index::app_bundle_digest` imports compiling against it.
 pub use super::bundle::app_bundle_digest;
 
+/// The canonical pair invariant, in one place: decode both codecs, require
+/// entry-point equality, and re-derive the content identity from the exact
+/// bytes. Every path that accepts a manifest/bundle pair (install, publish,
+/// scan, share) must go through this — the dual-digest-domain reconciliation
+/// above records what happens when this invariant family forks.
+pub fn verify_app_pair(manifest_bytes: &[u8], bundle_bytes: &[u8]) -> Result<AppId, AppsError> {
+    let manifest = decode_manifest(manifest_bytes)?;
+    let bundle = decode_app_bundle(bundle_bytes)?;
+    if manifest.entry_point != bundle.entry_point {
+        return Err(AppsError::IndexEntryMismatch);
+    }
+    app_id_for(&manifest, &app_bundle_digest(bundle_bytes))
+}
+
 /// Validates a canonical manifest/bundle pair, derives its content identity,
 /// then publishes the two Willow entries through normal admission. The two
 /// commits are intentionally sequential: a live manifest may precede its
@@ -76,12 +90,7 @@ pub fn publish_app_index(
     bundle_bytes: &[u8],
     willow_timestamp_micros: u64,
 ) -> Result<AppId, AppsError> {
-    let manifest = decode_manifest(manifest_bytes)?;
-    let bundle = decode_app_bundle(bundle_bytes)?;
-    if manifest.entry_point != bundle.entry_point {
-        return Err(AppsError::IndexEntryMismatch);
-    }
-    let app_id = app_id_for(&manifest, &app_bundle_digest(bundle_bytes))?;
+    let app_id = verify_app_pair(manifest_bytes, bundle_bytes)?;
     commit_at(
         store,
         carrier,
@@ -102,13 +111,10 @@ pub fn publish_app_index(
 #[derive(Clone)]
 struct ManifestCandidate {
     manifest: AppManifest,
-    timestamp_micros: u64,
-}
-
-#[derive(Clone)]
-struct BundleCandidate {
+    /// The exact payload bytes, retained so the completeness check can run
+    /// through `verify_app_pair` rather than a re-implementation of it.
     bytes: Vec<u8>,
-    entry_point: String,
+    timestamp_micros: u64,
 }
 
 #[derive(Clone)]
@@ -150,7 +156,7 @@ pub fn scan_app_index(store: &EvidenceStore) -> Result<ScannedIndex, AppsError> 
         .map_err(|_| AppsError::StoreRejected)?;
     type CarrierKey = (AppId, [u8; 32], [u8; 32]);
     let mut manifests: BTreeMap<CarrierKey, ManifestCandidate> = BTreeMap::new();
-    let mut bundles: BTreeMap<CarrierKey, BundleCandidate> = BTreeMap::new();
+    let mut bundles: BTreeMap<CarrierKey, Vec<u8>> = BTreeMap::new();
     let mut endorsement_candidates = Vec::new();
     let mut trust_by_namespace: BTreeMap<[u8; 32], Vec<TrustMarker>> = BTreeMap::new();
 
@@ -166,22 +172,16 @@ pub fn scan_app_index(store: &EvidenceStore) -> Result<ScannedIndex, AppsError> 
                         (app_id, namespace_id, subspace_id),
                         ManifestCandidate {
                             manifest,
+                            bytes: payload,
                             timestamp_micros,
                         },
                     );
                 }
             }
-            Some(AppIndexSlot::Bundle { app_id }) => {
-                if let Ok(bundle) = decode_app_bundle(&payload) {
-                    bundles.insert(
-                        (app_id, namespace_id, subspace_id),
-                        BundleCandidate {
-                            bytes: payload,
-                            entry_point: bundle.entry_point,
-                        },
-                    );
-                }
+            Some(AppIndexSlot::Bundle { app_id }) if decode_app_bundle(&payload).is_ok() => {
+                bundles.insert((app_id, namespace_id, subspace_id), payload);
             }
+            Some(AppIndexSlot::Bundle { .. }) => {}
             Some(AppIndexSlot::Endorsement {
                 app_id,
                 endorser_subspace_id,
@@ -246,11 +246,7 @@ pub fn scan_app_index(store: &EvidenceStore) -> Result<ScannedIndex, AppsError> 
                 carrier_subspace_id: subspace_id,
                 manifest_timestamp_micros: candidate.timestamp_micros,
             }),
-            Some(bundle)
-                if candidate.manifest.entry_point == bundle.entry_point
-                    && app_id_for(&candidate.manifest, &app_bundle_digest(&bundle.bytes)).ok()
-                        == Some(app_id) =>
-            {
+            Some(bundle_bytes) if verify_app_pair(&candidate.bytes, bundle_bytes).ok() == Some(app_id) => {
                 candidates.push((
                     namespace_id,
                     subspace_id,
@@ -350,9 +346,38 @@ fn reconcile_endorsements(candidates: Vec<EndorsementCandidate>) -> Vec<Endorsem
 #[cfg(test)]
 mod tests {
     use super::{
-        reconcile_endorsements, EndorsementCandidate, EndorsementRecord,
+        reconcile_endorsements, verify_app_pair, EndorsementCandidate, EndorsementRecord,
         MAX_SCANNED_ENDORSEMENTS_PER_APP,
     };
+    use crate::apps::manifest::{decode_manifest, encode_manifest};
+    use crate::apps::starter::{verify_starter_catalog, STARTER_CATALOG};
+    use crate::apps::AppsError;
+
+    #[test]
+    fn verify_app_pair_enforces_the_canonical_triple() {
+        let (manifest_bytes, bundle_bytes) = STARTER_CATALOG[0];
+
+        // Happy path: the derived id matches the starter catalog's own
+        // verification of the same pair.
+        let expected = verify_starter_catalog(STARTER_CATALOG)[0].app_id;
+        assert_eq!(
+            verify_app_pair(manifest_bytes, bundle_bytes),
+            Ok(expected)
+        );
+
+        // Entry-point mismatch between an otherwise-valid pair.
+        let mut manifest = decode_manifest(manifest_bytes).expect("starter manifest");
+        manifest.entry_point = "elsewhere.html".to_string();
+        let mismatched = encode_manifest(&manifest).expect("re-encode");
+        assert_eq!(
+            verify_app_pair(&mismatched, bundle_bytes),
+            Err(AppsError::IndexEntryMismatch)
+        );
+
+        // Garbage on either side is a decode failure, never a panic.
+        assert!(verify_app_pair(&[0xff; 8], bundle_bytes).is_err());
+        assert!(verify_app_pair(manifest_bytes, &[0xff; 8]).is_err());
+    }
 
     fn candidate(
         app_id: [u8; 32],

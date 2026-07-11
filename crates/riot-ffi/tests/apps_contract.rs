@@ -215,7 +215,10 @@ fn shared_app_appears_in_directory_with_carrier_provenance() {
     let app = runtime
         .install_app(manifest_bytes, bundle_bytes)
         .expect("install");
-    let app_id = unhex(&app.app_id);
+    // The raw-bytes id crosses straight into the directory surface — no
+    // hex bridging on the native side.
+    let app_id = app.app_id_bytes.clone();
+    assert_eq!(app_id, unhex(&app.app_id));
 
     // Not listed before sharing: install alone publishes nothing.
     let before = runtime.directory_listings().expect("listings");
@@ -234,6 +237,7 @@ fn shared_app_appears_in_directory_with_carrier_provenance() {
     assert_eq!(listing.version, "1.0.0");
     assert!(listing.bundle_present);
     assert!(!listing.built_in);
+    assert!(listing.installed);
     assert!(listing.carrier_subspace_id.is_some());
     assert_eq!(listing.superseded_by, None);
     assert!(listing.trusted_in_spaces.is_empty()); // sharing never auto-trusts
@@ -276,9 +280,35 @@ fn starter_checklist_is_listed_built_in_with_canonical_id() {
             .expect("starter app listed under its canonical id");
         assert!(listing.built_in);
         assert!(listing.bundle_present);
+        assert!(!listing.installed); // built-ins start uninstalled
         assert!(listing.carrier_subspace_id.is_none());
         assert_eq!(listing.name, starter.manifest.name);
     }
+}
+
+#[test]
+fn installing_a_starter_pair_flips_the_listing_installed_flag() {
+    let profile = open_local_profile().expect("profile");
+    let runtime = profile.app_runtime();
+    let (manifest_bytes, bundle_bytes) = riot_core::apps::starter::STARTER_CATALOG[0];
+
+    let record = runtime
+        .install_app(manifest_bytes.to_vec(), bundle_bytes.to_vec())
+        .expect("install starter pair");
+    // The raw-bytes id matches the canonical starter id and the listing id
+    // directly — no hex bridging.
+    let starter =
+        riot_core::apps::starter::verify_starter_catalog(riot_core::apps::starter::STARTER_CATALOG)
+            .remove(0);
+    assert_eq!(record.app_id_bytes, starter.app_id.to_vec());
+
+    let listings = runtime.directory_listings().expect("listings");
+    let listing = listings
+        .iter()
+        .find(|listing| listing.app_id == record.app_id_bytes)
+        .expect("starter listed");
+    assert!(listing.built_in);
+    assert!(listing.installed);
 }
 
 #[test]
@@ -332,8 +362,9 @@ fn endorsement_bumps_counts_and_retraction_clears_them() {
     assert_eq!(listing.endorsing_met_subspaces.len(), 1);
     assert_eq!(listing.endorsing_unmet_count, 0);
 
+    // The named method is the same operation as endorse_app(.., "", true).
     runtime
-        .endorse_app(app_id.clone(), String::new(), true)
+        .retract_endorsement(app_id.clone())
         .expect("retract");
     let listings = runtime.directory_listings().expect("listings");
     let listing = listings

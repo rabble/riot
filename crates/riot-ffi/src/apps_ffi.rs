@@ -21,6 +21,11 @@ pub struct AppDataItem {
 #[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
 pub struct InstalledAppRecord {
     pub app_id: String,
+    /// The same id as raw bytes — the convention the directory surface
+    /// (`DirectoryListing.app_id`, `share_app`, `endorse_app`) uses, so
+    /// natives never bridge the hex/raw seam themselves. `app_id` stays hex
+    /// for released callers.
+    pub app_id_bytes: Vec<u8>,
     pub name: String,
     pub description: String,
     pub version: String,
@@ -42,6 +47,9 @@ pub struct DirectoryListing {
     pub permissions: Vec<String>,
     pub bundle_present: bool,
     pub built_in: bool,
+    /// Whether this app was installed on this profile via `install_app`
+    /// (starter built-ins start uninstalled).
+    pub installed: bool,
     /// Set for carried apps: the subspace of the carrier whose complete
     /// verified pair won the scan. `None` for built-ins.
     pub carrier_subspace_id: Option<Vec<u8>>,
@@ -159,7 +167,9 @@ impl AppRuntimeSession {
     }
 
     /// Writes (or, with `retract`, withdraws) this profile's endorsement
-    /// marker for an app at its own Willow coordinate.
+    /// marker for an app at its own Willow coordinate. Endorsing an app id
+    /// whose pair has not arrived yet is permitted by design — the marker
+    /// composes with the app's later arrival.
     pub fn endorse_app(
         &self,
         app_id: Vec<u8>,
@@ -167,5 +177,11 @@ impl AppRuntimeSession {
         retract: bool,
     ) -> Result<(), MobileError> {
         crate::mobile_state::endorse_app(&self.inner, app_id, note, retract)
+    }
+
+    /// Named retraction for storefront call sites: `endorse_app` with an
+    /// empty note and `retract` set.
+    pub fn retract_endorsement(&self, app_id: Vec<u8>) -> Result<(), MobileError> {
+        crate::mobile_state::endorse_app(&self.inner, app_id, String::new(), true)
     }
 }

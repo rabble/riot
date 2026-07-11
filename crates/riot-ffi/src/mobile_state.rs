@@ -1075,17 +1075,14 @@ pub(crate) fn install_app(
     manifest_bytes: Vec<u8>,
     bundle_bytes: Vec<u8>,
 ) -> Result<crate::apps_ffi::InstalledAppRecord, MobileError> {
-    use riot_core::apps::bundle::{app_bundle_digest, decode_app_bundle};
-    use riot_core::apps::manifest::{app_id_for, decode_manifest};
+    use riot_core::apps::index::verify_app_pair;
+    use riot_core::apps::manifest::decode_manifest;
 
     with_active(inner, |profile| {
+        // The single canonical pair invariant; the manifest re-decode below
+        // only extracts display fields from bytes verify_app_pair accepted.
+        let app_id = verify_app_pair(&manifest_bytes, &bundle_bytes).map_err(map_apps_error)?;
         let manifest = decode_manifest(&manifest_bytes).map_err(map_apps_error)?;
-        let bundle = decode_app_bundle(&bundle_bytes).map_err(map_apps_error)?;
-        if manifest.entry_point != bundle.entry_point {
-            return Err(MobileError::AppRejected);
-        }
-        let digest = app_bundle_digest(&bundle_bytes);
-        let app_id = app_id_for(&manifest, &digest).map_err(map_apps_error)?;
 
         if !profile.installed_apps.iter().any(|app| app.app_id == app_id) {
             if profile.installed_apps.len() >= MAX_INSTALLED_APPS {
@@ -1099,6 +1096,7 @@ pub(crate) fn install_app(
         }
         Ok(crate::apps_ffi::InstalledAppRecord {
             app_id: hex(&app_id),
+            app_id_bytes: app_id.to_vec(),
             name: manifest.name,
             description: manifest.description,
             version: manifest.version,
@@ -1239,7 +1237,7 @@ pub(crate) fn replay_app_data_bundle(
         let plan = preview.plan_all().map_err(map_core_error)?;
         match plan.commit().map_err(map_core_error)? {
             CommitOutcome::Committed(_) | CommitOutcome::NoChanges(_) => Ok(()),
-        }
+                }
     })
 }
 
@@ -1361,6 +1359,10 @@ pub(crate) fn directory_listings(
                         carrier_subspace_id,
                     } => (false, Some(carrier_subspace_id.to_vec())),
                 };
+                let installed = profile
+                    .installed_apps
+                    .iter()
+                    .any(|app| app.app_id == listing.app_id);
                 Ok(crate::apps_ffi::DirectoryListing {
                     app_id: listing.app_id.to_vec(),
                     name: listing.name,
@@ -1370,6 +1372,7 @@ pub(crate) fn directory_listings(
                     permissions: listing.permissions,
                     bundle_present: listing.bundle_present,
                     built_in,
+                    installed,
                     carrier_subspace_id,
                     trusted_in_spaces: listing
                         .trusted_in_spaces
@@ -1454,22 +1457,18 @@ fn resolve_app_payload_bytes(
     profile: &LocalProfile,
     app_id: &[u8; 32],
 ) -> Result<(Vec<u8>, Vec<u8>), MobileError> {
-    use riot_core::apps::bundle::{app_bundle_digest, decode_app_bundle};
-    use riot_core::apps::index::{app_index_bundle_path, app_index_manifest_path};
-    use riot_core::apps::manifest::{app_id_for, decode_manifest};
+    use riot_core::apps::index::{
+        app_index_bundle_path, app_index_manifest_path, verify_app_pair,
+    };
     use riot_core::apps::starter::STARTER_CATALOG;
 
     let verifies = |manifest_bytes: &[u8], bundle_bytes: &[u8]| -> bool {
-        let Ok(manifest) = decode_manifest(manifest_bytes) else {
-            return false;
-        };
-        let Ok(bundle) = decode_app_bundle(bundle_bytes) else {
-            return false;
-        };
-        manifest.entry_point == bundle.entry_point
-            && app_id_for(&manifest, &app_bundle_digest(bundle_bytes)).ok().as_ref() == Some(app_id)
+        verify_app_pair(manifest_bytes, bundle_bytes).ok().as_ref() == Some(app_id)
     };
 
+    // Verified at install — install_app derived app_id from these exact
+    // bytes; if installed apps ever persist/reload, the reload path must
+    // re-verify.
     if let Some(installed) = profile
         .installed_apps
         .iter()
@@ -1618,4 +1617,6 @@ mod tests {
             Err(MobileError::SessionFailed)
         ));
     }
+
+}
 }
