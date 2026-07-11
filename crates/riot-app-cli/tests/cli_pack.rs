@@ -150,6 +150,37 @@ fn validates_manifest_shape_and_resources() {
 }
 
 #[test]
+fn rejects_duplicate_manifest_keys_without_last_wins_parsing() {
+    let cases = [
+        (
+            r#"{"name":"first","name":"second","description":"d","version":"1","entry_point":"index.html","permissions":[]}"#,
+            "duplicate field 'name'",
+        ),
+        (
+            r#"{"name":"x","description":"d","version":"1","entry_point":"index.html","permissions":[],"author":"first","author":"second"}"#,
+            "unknown field 'author'",
+        ),
+        (
+            r#"{"name":"x","description":"d","version":"1","entry_point":"index.html","permissions":[],"extra":1,"name":"last"}"#,
+            "unknown field 'extra'",
+        ),
+    ];
+    for (json, expected) in cases {
+        let tmp = copy_fixture();
+        fs::write(tmp.path().join("riot-app.json"), json).unwrap();
+        let author = generate_communal_author().unwrap();
+        assert!(matches!(
+            pack(PackInput {
+                app_dir: tmp.path(),
+                author: &author,
+                timestamp_micros: 1,
+            }),
+            Err(PackError::ManifestJsonInvalid { reason }) if reason.contains(expected)
+        ));
+    }
+}
+
+#[test]
 fn nested_paths_are_normalized_sorted_and_size_is_precise() {
     let tmp = copy_fixture();
     fs::create_dir(tmp.path().join("z")).unwrap();
@@ -306,13 +337,14 @@ fn signed_items(bytes: &[u8]) -> Vec<SignedWillowEntry> {
 #[test]
 fn key_files_round_trip_are_private_and_fail_closed() {
     let tmp = tempfile::tempdir().unwrap();
-    let generated = keygen(tmp.path()).unwrap();
+    let key_dir = tmp.path().join("keys");
+    let generated = keygen(&key_dir).unwrap();
     assert_eq!(
-        load_author(tmp.path()).unwrap().identity(),
+        load_author(&key_dir).unwrap().identity(),
         generated.identity
     );
     assert!(matches!(
-        keygen(tmp.path()),
+        keygen(&key_dir),
         Err(KeyError::AlreadyExists { .. })
     ));
     assert!(generated.warning.contains("anyone"));
@@ -322,7 +354,7 @@ fn key_files_round_trip_are_private_and_fail_closed() {
         use std::os::unix::fs::PermissionsExt;
         for name in ["author.wrapkey", "author.sealed"] {
             assert_eq!(
-                fs::metadata(tmp.path().join(name))
+                fs::metadata(key_dir.join(name))
                     .unwrap()
                     .permissions()
                     .mode()
@@ -332,11 +364,11 @@ fn key_files_round_trip_are_private_and_fail_closed() {
         }
     }
 
-    let key_path = tmp.path().join("author.wrapkey");
+    let key_path = key_dir.join("author.wrapkey");
     let original_key = fs::read(&key_path).unwrap();
     for bad in [b"abc".as_slice(), &[b'g'; 64][..]] {
         fs::write(&key_path, bad).unwrap();
-        let error = match load_author(tmp.path()) {
+        let error = match load_author(&key_dir) {
             Ok(_) => panic!("bad wrapping key accepted"),
             Err(error) => error.to_string(),
         };
@@ -347,52 +379,55 @@ fn key_files_round_trip_are_private_and_fail_closed() {
     let wrong_key = vec![b'0'; 64];
     fs::write(&key_path, &wrong_key).unwrap();
     assert!(matches!(
-        load_author(tmp.path()),
+        load_author(&key_dir),
         Err(KeyError::InvalidSealedIdentity)
     ));
-    let key_bytes = fs::read(tmp.path().join("author.wrapkey")).unwrap();
+    let key_bytes = fs::read(key_dir.join("author.wrapkey")).unwrap();
     assert_eq!(key_bytes, wrong_key);
 
     // Restore the original valid key before testing authenticated ciphertext tampering.
     let generated_again = tempfile::tempdir().unwrap();
-    keygen(generated_again.path()).unwrap();
-    let unrelated_valid_key = fs::read(generated_again.path().join("author.wrapkey")).unwrap();
+    let generated_again_dir = generated_again.path().join("keys");
+    keygen(&generated_again_dir).unwrap();
+    let unrelated_valid_key = fs::read(generated_again_dir.join("author.wrapkey")).unwrap();
     fs::write(&key_path, unrelated_valid_key).unwrap();
     assert!(matches!(
-        load_author(tmp.path()),
+        load_author(&key_dir),
         Err(KeyError::InvalidSealedIdentity)
     ));
 
     // Regenerate a coherent pair for the sealed-file tamper assertion.
     let coherent = tempfile::tempdir().unwrap();
-    keygen(coherent.path()).unwrap();
-    let sealed_path = coherent.path().join("author.sealed");
+    let coherent_dir = coherent.path().join("keys");
+    keygen(&coherent_dir).unwrap();
+    let sealed_path = coherent_dir.join("author.sealed");
     let mut sealed = fs::read(&sealed_path).unwrap();
     *sealed.last_mut().unwrap() ^= 1;
     fs::write(sealed_path, sealed).unwrap();
     assert!(matches!(
-        load_author(coherent.path()),
+        load_author(&coherent_dir),
         Err(KeyError::InvalidSealedIdentity)
     ));
 }
 
 #[test]
-fn keygen_does_not_create_a_partial_pair_when_either_destination_exists() {
-    let sealed_exists = tempfile::tempdir().unwrap();
-    fs::write(sealed_exists.path().join("author.sealed"), b"reserved").unwrap();
+fn keygen_requires_the_destination_directory_not_to_exist() {
+    let tmp = tempfile::tempdir().unwrap();
+    let existing = tmp.path().join("existing");
+    fs::create_dir(&existing).unwrap();
     assert!(matches!(
-        keygen(sealed_exists.path()),
+        keygen(&existing),
         Err(KeyError::AlreadyExists { .. })
     ));
-    assert!(!sealed_exists.path().join("author.wrapkey").exists());
+    assert_eq!(fs::read_dir(&existing).unwrap().count(), 0);
 
-    let wrap_exists = tempfile::tempdir().unwrap();
-    fs::write(wrap_exists.path().join("author.wrapkey"), b"reserved").unwrap();
+    let existing_file = tmp.path().join("existing-file");
+    fs::write(&existing_file, b"reserved").unwrap();
     assert!(matches!(
-        keygen(wrap_exists.path()),
+        keygen(&existing_file),
         Err(KeyError::AlreadyExists { .. })
     ));
-    assert!(!wrap_exists.path().join("author.sealed").exists());
+    assert_eq!(fs::read(&existing_file).unwrap(), b"reserved");
 }
 
 #[test]

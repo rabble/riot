@@ -1475,6 +1475,7 @@ dependencies = [
  "ed25519-dalek",
  "rand_core",
  "riot-core",
+ "serde",
  "serde_json",
  "tempfile",
  "zeroize",

@@ -2,6 +2,7 @@
 name = "riot-app-cli"
 version = "0.1.0"
 edition = "2021"
+publish = false
 
 [lib]
 name = "riot_app_cli"
@@ -13,6 +14,7 @@ path = "src/main.rs"
 [dependencies]
 riot-core = { path = "../riot-core" }
 serde_json.workspace = true
+serde = "=1.0.228"
 rand_core.workspace = true
 ed25519-dalek.workspace = true
 zeroize.workspace = true

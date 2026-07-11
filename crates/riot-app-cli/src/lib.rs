@@ -1,5 +1,5 @@
 use std::collections::BTreeSet;
-use std::fs::{self, OpenOptions};
+use std::fs::{self, DirBuilder, File, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Component, Path, PathBuf};
 
@@ -18,6 +18,7 @@ use riot_core::willow::{
     authorise_entry, encode_capability, encode_entry, generate_communal_author, AuthorIdentity,
     Entry, EvidenceAuthor, Path as WillowPath, SignedWillowEntry,
 };
+use serde::de::{self, Deserializer, MapAccess, Visitor};
 use zeroize::Zeroizing;
 
 pub const KEY_WARNING: &str =
@@ -44,7 +45,7 @@ pub enum PackError {
         path: PathBuf,
         source: io::Error,
     },
-    InvalidManifest {
+    ManifestJsonInvalid {
         reason: String,
     },
     InvalidResourcePath {
@@ -81,7 +82,7 @@ impl std::fmt::Display for PackError {
             } => {
                 write!(f, "{operation} '{}': {source}", path.display())
             }
-            Self::InvalidManifest { reason } => write!(f, "riot-app.json: {reason}"),
+            Self::ManifestJsonInvalid { reason } => write!(f, "riot-app.json: {reason}"),
             Self::InvalidResourcePath { path } => write!(f, "invalid resource path '{path}'"),
             Self::UnsupportedResource { path } => {
                 write!(f, "unsupported resource file '{path}'")
@@ -155,6 +156,7 @@ pub enum KeyError {
     InvalidWrapKey,
     InvalidSealedIdentity,
     EntropyUnavailable,
+    InvalidOutputDirectory,
 }
 
 impl std::fmt::Display for KeyError {
@@ -179,6 +181,12 @@ impl std::fmt::Display for KeyError {
                 "author.sealed is invalid, damaged, or does not match author.wrapkey"
             ),
             Self::EntropyUnavailable => write!(f, "operating-system randomness is unavailable"),
+            Self::InvalidOutputDirectory => {
+                write!(
+                    f,
+                    "key output must name a new directory below an existing parent"
+                )
+            }
         }
     }
 }
@@ -301,67 +309,107 @@ pub fn pack(input: PackInput<'_>) -> Result<PackOutput, PackError> {
 }
 
 fn parse_manifest_input(input: &[u8]) -> Result<ManifestInput, PackError> {
-    let value: serde_json::Value =
-        serde_json::from_slice(input).map_err(|error| PackError::InvalidManifest {
-            reason: format!("invalid JSON: {error}"),
+    let mut deserializer = serde_json::Deserializer::from_slice(input);
+    let manifest = deserializer
+        .deserialize_map(ManifestInputVisitor)
+        .map_err(|error| PackError::ManifestJsonInvalid {
+            reason: error.to_string(),
         })?;
-    let object = value
-        .as_object()
-        .ok_or_else(|| PackError::InvalidManifest {
-            reason: "top level must be an object".into(),
+    deserializer
+        .end()
+        .map_err(|error| PackError::ManifestJsonInvalid {
+            reason: error.to_string(),
         })?;
-    const FIELDS: [&str; 5] = [
-        "name",
-        "description",
-        "version",
-        "entry_point",
-        "permissions",
-    ];
-    for key in object.keys() {
-        if !FIELDS.contains(&key.as_str()) {
-            return Err(PackError::InvalidManifest {
-                reason: format!("unknown field '{key}'"),
-            });
-        }
+    Ok(manifest)
+}
+
+struct ManifestInputVisitor;
+
+impl<'de> Visitor<'de> for ManifestInputVisitor {
+    type Value = ManifestInput;
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("a riot-app.json object")
     }
-    for field in FIELDS {
-        if !object.contains_key(field) {
-            return Err(PackError::InvalidManifest {
-                reason: format!("missing field '{field}'"),
-            });
+
+    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut name = None;
+        let mut description = None;
+        let mut version = None;
+        let mut entry_point = None;
+        let mut permissions = None;
+        while let Some(key) = map.next_key::<String>()? {
+            match key.as_str() {
+                "name" => {
+                    if name.is_some() {
+                        return Err(de::Error::custom("duplicate field 'name'"));
+                    }
+                    name = Some(
+                        map.next_value::<String>()
+                            .map_err(|_| de::Error::custom("'name' must be a string"))?,
+                    );
+                }
+                "description" => {
+                    if description.is_some() {
+                        return Err(de::Error::custom("duplicate field 'description'"));
+                    }
+                    description = Some(
+                        map.next_value::<String>()
+                            .map_err(|_| de::Error::custom("'description' must be a string"))?,
+                    );
+                }
+                "version" => {
+                    if version.is_some() {
+                        return Err(de::Error::custom("duplicate field 'version'"));
+                    }
+                    version = Some(
+                        map.next_value::<String>()
+                            .map_err(|_| de::Error::custom("'version' must be a string"))?,
+                    );
+                }
+                "entry_point" => {
+                    if entry_point.is_some() {
+                        return Err(de::Error::custom("duplicate field 'entry_point'"));
+                    }
+                    entry_point = Some(
+                        map.next_value::<String>()
+                            .map_err(|_| de::Error::custom("'entry_point' must be a string"))?,
+                    );
+                }
+                "permissions" => {
+                    if permissions.is_some() {
+                        return Err(de::Error::custom("duplicate field 'permissions'"));
+                    }
+                    let raw = map.next_value::<serde_json::Value>()?;
+                    let values = raw
+                        .as_array()
+                        .ok_or_else(|| de::Error::custom("'permissions' must be an array"))?;
+                    let mut parsed = Vec::with_capacity(values.len());
+                    for (index, value) in values.iter().enumerate() {
+                        parsed.push(value.as_str().map(str::to_owned).ok_or_else(|| {
+                            de::Error::custom(format!(
+                                "permission at index {index} must be a string"
+                            ))
+                        })?);
+                    }
+                    permissions = Some(parsed);
+                }
+                _ => {
+                    return Err(de::Error::custom(format!("unknown field '{key}'")));
+                }
+            }
         }
-    }
-    let string = |field: &'static str| -> Result<String, PackError> {
-        object[field]
-            .as_str()
-            .map(str::to_owned)
-            .ok_or_else(|| PackError::InvalidManifest {
-                reason: format!("'{field}' must be a string"),
-            })
-    };
-    let permissions = object["permissions"]
-        .as_array()
-        .ok_or_else(|| PackError::InvalidManifest {
-            reason: "'permissions' must be an array".into(),
-        })?
-        .iter()
-        .enumerate()
-        .map(|(index, value)| {
-            value
-                .as_str()
-                .map(str::to_owned)
-                .ok_or_else(|| PackError::InvalidManifest {
-                    reason: format!("permission at index {index} must be a string"),
-                })
+        Ok(ManifestInput {
+            name: name.ok_or_else(|| de::Error::missing_field("name"))?,
+            description: description.ok_or_else(|| de::Error::missing_field("description"))?,
+            version: version.ok_or_else(|| de::Error::missing_field("version"))?,
+            entry_point: entry_point.ok_or_else(|| de::Error::missing_field("entry_point"))?,
+            permissions: permissions.ok_or_else(|| de::Error::missing_field("permissions"))?,
         })
-        .collect::<Result<Vec<_>, _>>()?;
-    Ok(ManifestInput {
-        name: string("name")?,
-        description: string("description")?,
-        version: string("version")?,
-        entry_point: string("entry_point")?,
-        permissions,
-    })
+    }
 }
 
 fn collect_resources(
@@ -612,34 +660,132 @@ pub fn inspect(bytes: &[u8]) -> Result<InspectReport, InspectError> {
 }
 
 pub fn keygen(out: &Path) -> Result<KeygenOutput, KeyError> {
-    fs::create_dir_all(out).map_err(|source| KeyError::Io {
-        operation: "create key directory",
-        path: out.to_path_buf(),
-        source,
-    })?;
-    let wrap_path = out.join("author.wrapkey");
-    let sealed_path = out.join("author.sealed");
-    for path in [&wrap_path, &sealed_path] {
-        if path.exists() {
-            return Err(KeyError::AlreadyExists { path: path.clone() });
+    keygen_inner(out, |_| Ok(()))
+}
+
+#[derive(Clone, Copy)]
+enum KeygenStage {
+    AfterWrapKey,
+}
+
+fn keygen_inner<F>(out: &Path, mut checkpoint: F) -> Result<KeygenOutput, KeyError>
+where
+    F: FnMut(KeygenStage) -> Result<(), KeyError>,
+{
+    ensure_absent(out)?;
+    if out.file_name().is_none() {
+        return Err(KeyError::InvalidOutputDirectory);
+    }
+    let parent = match out.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent,
+        _ => Path::new("."),
+    };
+    if !parent.is_dir() {
+        return Err(KeyError::InvalidOutputDirectory);
+    }
+    let temp = create_key_temp_directory(parent)?;
+    let mut published = false;
+    let result = (|| {
+        let author = generate_communal_author().map_err(|_| KeyError::EntropyUnavailable)?;
+        let identity = author.identity();
+        let mut wrapping_key = Zeroizing::new([0u8; 32]);
+        OsRng
+            .try_fill_bytes(&mut wrapping_key[..])
+            .map_err(|_| KeyError::EntropyUnavailable)?;
+        let sealed = author
+            .seal_identity(&wrapping_key)
+            .map_err(|_| KeyError::EntropyUnavailable)?;
+        let encoded_key = Zeroizing::new(hex_lower_bytes(&wrapping_key[..]));
+
+        write_private_temp(&temp.join("author.wrapkey"), &encoded_key)?;
+        checkpoint(KeygenStage::AfterWrapKey)?;
+        write_private_temp(&temp.join("author.sealed"), &sealed)?;
+        sync_directory(&temp)?;
+        sync_directory(parent)?;
+        ensure_absent(out)?;
+        fs::rename(&temp, out).map_err(|source| KeyError::Io {
+            operation: "publish key directory",
+            path: out.to_path_buf(),
+            source,
+        })?;
+        published = true;
+        if let Err(error) = sync_directory(parent) {
+            let _ = fs::remove_dir_all(out);
+            let _ = sync_directory(parent);
+            return Err(error);
+        }
+        Ok(KeygenOutput {
+            identity,
+            warning: KEY_WARNING,
+        })
+    })();
+    if !published {
+        let _ = fs::remove_dir_all(&temp);
+    }
+    result
+}
+
+fn ensure_absent(path: &Path) -> Result<(), KeyError> {
+    match fs::symlink_metadata(path) {
+        Ok(_) => Err(KeyError::AlreadyExists {
+            path: path.to_path_buf(),
+        }),
+        Err(source) if source.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(source) => Err(KeyError::Io {
+            operation: "inspect key output",
+            path: path.to_path_buf(),
+            source,
+        }),
+    }
+}
+
+fn create_key_temp_directory(parent: &Path) -> Result<PathBuf, KeyError> {
+    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    for _ in 0..128 {
+        let sequence = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let path = parent.join(format!(
+            ".riot-app-keygen-{}-{sequence}",
+            std::process::id()
+        ));
+        let mut builder = DirBuilder::new();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            builder.mode(0o700);
+        }
+        match builder.create(&path) {
+            Ok(()) => return Ok(path),
+            Err(source) if source.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(source) => {
+                return Err(KeyError::Io {
+                    operation: "create temporary key directory",
+                    path,
+                    source,
+                })
+            }
         }
     }
-    let author = generate_communal_author().map_err(|_| KeyError::EntropyUnavailable)?;
-    let identity = author.identity();
-    let mut wrapping_key = Zeroizing::new([0u8; 32]);
-    OsRng
-        .try_fill_bytes(&mut wrapping_key[..])
-        .map_err(|_| KeyError::EntropyUnavailable)?;
-    let sealed = author
-        .seal_identity(&wrapping_key)
-        .map_err(|_| KeyError::EntropyUnavailable)?;
-    let encoded_key = Zeroizing::new(hex_lower_bytes(&wrapping_key[..]));
-
-    write_two_private_files(&wrap_path, &encoded_key, &sealed_path, &sealed)?;
-    Ok(KeygenOutput {
-        identity,
-        warning: KEY_WARNING,
+    Err(KeyError::Io {
+        operation: "create temporary key directory",
+        path: parent.to_path_buf(),
+        source: io::Error::new(io::ErrorKind::AlreadyExists, "temporary names exhausted"),
     })
+}
+
+#[cfg(unix)]
+fn sync_directory(path: &Path) -> Result<(), KeyError> {
+    File::open(path)
+        .and_then(|directory| directory.sync_all())
+        .map_err(|source| KeyError::Io {
+            operation: "sync directory",
+            path: path.to_path_buf(),
+            source,
+        })
+}
+
+#[cfg(not(unix))]
+fn sync_directory(_path: &Path) -> Result<(), KeyError> {
+    Ok(())
 }
 
 pub fn load_author(key_dir: &Path) -> Result<EvidenceAuthor, KeyError> {
@@ -686,20 +832,6 @@ pub fn write_new_atomic(path: &Path, bytes: &[u8]) -> Result<(), KeyError> {
     })();
     let _ = fs::remove_file(&temp);
     result
-}
-
-fn write_two_private_files(
-    first: &Path,
-    first_bytes: &[u8],
-    second: &Path,
-    second_bytes: &[u8],
-) -> Result<(), KeyError> {
-    write_new_atomic(first, first_bytes)?;
-    if let Err(error) = write_new_atomic(second, second_bytes) {
-        let _ = fs::remove_file(first);
-        return Err(error);
-    }
-    Ok(())
 }
 
 fn temp_path(path: &Path) -> PathBuf {
@@ -773,4 +905,26 @@ fn hex_lower_bytes(bytes: &[u8]) -> Vec<u8> {
         output.push(HEX[(byte & 0xf) as usize]);
     }
     output
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{keygen_inner, KeyError, KeygenStage};
+
+    #[test]
+    fn keygen_failure_after_first_temp_file_leaves_no_final_or_temp_directory() {
+        let parent = tempfile::tempdir().expect("temp parent");
+        let output = parent.path().join("keys");
+        let error = keygen_inner(&output, |stage| match stage {
+            KeygenStage::AfterWrapKey => Err(KeyError::InvalidOutputDirectory),
+        });
+        assert!(error.is_err());
+        assert!(!output.exists());
+        assert_eq!(
+            std::fs::read_dir(parent.path())
+                .expect("read parent")
+                .count(),
+            0
+        );
+    }
 }
