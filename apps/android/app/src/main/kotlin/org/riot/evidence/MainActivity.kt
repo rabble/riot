@@ -235,8 +235,10 @@ class MainActivity : Activity() {
             }
             if (badges.isNotEmpty()) content.addView(body(badges.joinToString("  ·  ")))
 
-            content.addView(body("This app can:"))
-            listing.permissions.forEach { content.addView(body("• $it")) }
+            if (listing.permissions.isNotEmpty()) {
+                content.addView(body("This app can:"))
+                listing.permissions.forEach { content.addView(body("• $it")) }
+            }
 
             val met = listing.endorsingMetSubspaces.size
             val unmet = listing.endorsingUnmetCount.toInt()
@@ -260,16 +262,21 @@ class MainActivity : Activity() {
                     content.addView(body("Still arriving from your group…"))
             }
 
-            val note = EditText(this).apply {
-                hint = "Why you recommend it (optional)"
-            }
-            content.addView(note)
-            content.addView(action("Recommend") {
-                runAction("Recommended ${listing.name}") {
-                    directory.recommend(listing, note.text.toString())
-                    show(ConferenceSurface.APP_DIRECTORY)
+            // Endorsement is an organizer speaking for a space that already
+            // trusts the app (design spec), so Recommend only appears once the
+            // app is on in the current space.
+            if (directory.canRecommend(listing, space)) {
+                val note = EditText(this).apply {
+                    hint = "Why you recommend it (optional)"
                 }
-            })
+                content.addView(note)
+                content.addView(action("Recommend") {
+                    runAction("Recommended ${listing.name}") {
+                        directory.recommend(listing, note.text.toString())
+                        show(ConferenceSurface.APP_DIRECTORY)
+                    }
+                })
+            }
 
             if (space != null) {
                 content.addView(action("Share to this space") {
@@ -445,6 +452,11 @@ class MainActivity : Activity() {
                 }
                 show(ConferenceSurface.SPACES)
             }
+        }
+        // Second picker cancelled: drop the half-finished manifest so it can't
+        // pair with an unrelated bundle on a later add.
+        if (requestCode == PICK_APP_BUNDLE && resultCode != RESULT_OK) {
+            pendingAppManifest = null
         }
     }
 

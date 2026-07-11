@@ -127,6 +127,17 @@ class DirectoryControllerTest {
     }
 
     @Test
+    fun recommendIsOfferedOnlyWhenTrustedInCurrentSpace() {
+        val controller = DirectoryController(FakePort(), FakeInstalledApps(), FakeStarter(null))
+        val nsBytes = ByteArray(32) { 0x11 }
+        val space = PublicSpace(namespaceId = "11".repeat(32), title = "Berlin", isPublic = true)
+
+        assertTrue(controller.canRecommend(listing(byteArrayOf(1), listOf(nsBytes)), space))
+        assertFalse(controller.canRecommend(listing(byteArrayOf(1)), space))
+        assertFalse(controller.canRecommend(listing(byteArrayOf(1), listOf(nsBytes)), null))
+    }
+
+    @Test
     fun recommendEndorsesWithoutRetracting() {
         val port = FakePort()
         val controller = DirectoryController(port, FakeInstalledApps(), FakeStarter(null))
@@ -139,5 +150,20 @@ class DirectoryControllerTest {
         assertTrue(appId.contentEquals(id))
         assertEquals("we use this every action", note)
         assertFalse(retract)
+    }
+
+    @Test
+    fun shareDelegatesAppIdAndSpaceToThePort() {
+        val port = FakePort()
+        val controller = DirectoryController(port, FakeInstalledApps(), FakeStarter(null))
+        val id = byteArrayOf(7, 7)
+        val space = PublicSpace(namespaceId = "22".repeat(32), title = "Jail Support", isPublic = true)
+
+        controller.share(listing(id), space)
+
+        assertEquals(1, port.shared.size)
+        val (appId, target) = port.shared.single()
+        assertTrue(appId.contentEquals(id))
+        assertSame(space, target)
     }
 }

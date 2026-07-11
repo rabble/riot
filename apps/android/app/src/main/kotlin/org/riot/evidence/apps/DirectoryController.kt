@@ -75,6 +75,14 @@ class DirectoryController(
         return listing.trustedInSpaces.any { hex(it) == space.namespaceId }
     }
 
+    /**
+     * Whether this profile may recommend the app: endorsement speaks for a
+     * space that already trusts the app (design spec), so it is offered only
+     * where the app is on in the current space.
+     */
+    fun canRecommend(listing: DirectoryListing, space: PublicSpace?): Boolean =
+        trustedInCurrentSpace(listing, space)
+
     fun recommend(listing: DirectoryListing, note: String) =
         port.endorse(listing.appId, note, false)
 
