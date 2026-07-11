@@ -19,6 +19,7 @@ build/generated/riot-ffi/riot_ffiFFI.modulemap
 build/generated/riot-ffi/uniffi/riot_ffi/riot_ffi.kt
 build/native/ios-device/libriot_ffi.a
 build/native/ios-simulator/libriot_ffi.a
+build/native/macos/libriot_ffi.a
 build/native/android/jniLibs/arm64-v8a/libriot_ffi.so
 build/native/android/jniLibs/x86_64/libriot_ffi.so
 "
@@ -32,8 +33,10 @@ done
 
 file "$ROOT/build/native/ios-device/libriot_ffi.a" | grep -q 'ar archive'
 file "$ROOT/build/native/ios-simulator/libriot_ffi.a" | grep -q 'ar archive'
+file "$ROOT/build/native/macos/libriot_ffi.a" | grep -q 'ar archive'
 lipo -info "$ROOT/build/native/ios-device/libriot_ffi.a" | grep -q 'architecture: arm64'
 lipo -info "$ROOT/build/native/ios-simulator/libriot_ffi.a" | grep -q 'architecture: arm64'
+lipo -info "$ROOT/build/native/macos/libriot_ffi.a" | grep -q 'architecture: arm64'
 otool -l "$ROOT/build/native/ios-device/libriot_ffi.a" | grep -q 'LC_VERSION_MIN_IPHONEOS'
 otool -l "$ROOT/build/native/ios-simulator/libriot_ffi.a" | grep -A3 -m1 'LC_BUILD_VERSION' | grep -q 'platform 7'
 file "$ROOT/build/native/android/jniLibs/arm64-v8a/libriot_ffi.so" | grep -q 'ELF 64-bit LSB shared object, ARM aarch64'

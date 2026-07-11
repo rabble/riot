@@ -25,7 +25,7 @@ test -x "$X86_64_CLANG" || {
     exit 1
 }
 
-for target in aarch64-apple-ios aarch64-apple-ios-sim aarch64-linux-android x86_64-linux-android; do
+for target in aarch64-apple-ios aarch64-apple-ios-sim aarch64-apple-darwin aarch64-linux-android x86_64-linux-android; do
     rustup target list --installed | grep -qx "$target" || {
         echo "native-core-package: rust target not installed: $target" >&2
         exit 1
@@ -36,6 +36,7 @@ cd "$ROOT"
 cargo run --locked --package xtask -- generate-bindings
 cargo build -p riot-ffi --lib --release --locked --target aarch64-apple-ios
 cargo build -p riot-ffi --lib --release --locked --target aarch64-apple-ios-sim
+cargo build -p riot-ffi --lib --release --locked --target aarch64-apple-darwin
 
 CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$AARCH64_CLANG" \
     CC_aarch64_linux_android="$AARCH64_CLANG" \
@@ -48,6 +49,7 @@ rm -rf "$ROOT/build/native"
 mkdir -p \
     build/native/ios-device \
     build/native/ios-simulator \
+    build/native/macos \
     build/native/android/jniLibs/arm64-v8a \
     build/native/android/jniLibs/x86_64
 
@@ -55,9 +57,11 @@ install -m 0644 target/aarch64-apple-ios/release/libriot_ffi.a \
     build/native/ios-device/libriot_ffi.a
 install -m 0644 target/aarch64-apple-ios-sim/release/libriot_ffi.a \
     build/native/ios-simulator/libriot_ffi.a
+install -m 0644 target/aarch64-apple-darwin/release/libriot_ffi.a \
+    build/native/macos/libriot_ffi.a
 install -m 0644 target/aarch64-linux-android/release/libriot_ffi.so \
     build/native/android/jniLibs/arm64-v8a/libriot_ffi.so
 install -m 0644 target/x86_64-linux-android/release/libriot_ffi.so \
     build/native/android/jniLibs/x86_64/libriot_ffi.so
 
-echo "native-core-package: built iOS device/simulator and Android arm64/x86_64"
+echo "native-core-package: built iOS device/simulator, macOS arm64, and Android arm64/x86_64"
