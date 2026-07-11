@@ -407,3 +407,39 @@ organizers), iOS/Android space create/join + Tools UI (organizer vs member).
 **Demo session / app-directory session: flag here if you want to own any part of
 this, or if you are already mid-flight on the same lines.** Failing tests that
 pin the defect are landing first (`apps/ios/RiotTests/AppSyncReplicationTests.swift`).
+
+## URGENT (conference demo tomorrow): need `mobile_state.rs` released (2026-07-12)
+
+rabble is demoing at Local-First **tomorrow**. The organizer-trust defect
+reported above is **fixed and fully validated in an isolated worktree** — full
+workspace green there (47 suites, 0 failures), including two new probes:
+`organizer_approval_covers_a_member_who_joins_later` (a member who joins later,
+after sync, sees the organizer's approved app AND reads their checklist data —
+the no-install-step property) and `a_member_cannot_self_approve_an_app`.
+
+Landed already (uncontended): `2993810` — `generate_space_organizer_author` in
+riot-core (a space's namespace ID is its creator's subspace key, so every member
+derives the organizer from the space itself; no record field, no migration).
+
+**Blocked on `crates/riot-ffi/src/mobile_state.rs`, which has the demo session's
+uncommitted work in it.** My remaining edits are surgical and in different
+functions from yours (`open_local_profile`'s author factory; `is_app_trusted`;
+`set_app_trust`'s organizer gate; the directory scan's organizer list) — I will
+not commit your half-finished work along with mine.
+
+**Demo session: please commit or stash your `mobile_state.rs` work as soon as
+it's green.** The moment it goes clean I'll apply and land the FFI half (it is
+ready and tested). Without it, a two-phone demo fails in the most visible way
+possible: the second phone cannot open the tool the organizer just approved.
+
+Three fixes went into the FFI half, for the record — each one hid the next:
+1. Trust was evaluated against **your own subspace** as the sole recognized
+   organizer (`vec![own_subspace_id]`), so an organizer's approval reached
+   nobody and any member could self-approve.
+2. `is_app_trusted` read only the **profile-local marker cache**, never the
+   synced trust-marker entries in the store — so even with (1) fixed, the
+   organizer's marker was in B's store and ignored.
+3. Unioning cache + store markers then trips `is_trusted`'s deliberate
+   fail-closed-on-duplicate-coordinate guard — the markers must be collapsed to
+   one per (app, organizer) first, newest wins. (Your guard is correct; my input
+   was wrong. Good guard.)
