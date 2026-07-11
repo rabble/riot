@@ -7,7 +7,9 @@
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+use camino::Utf8PathBuf;
 use sha2::{Digest, Sha256};
+use uniffi::{GenerateOptions, TargetLanguage};
 
 const WILLOW25_PIN: &str = "=0.6.0-alpha.3";
 const BAB_RS_PIN: &str = "=0.8.1";
@@ -72,17 +74,101 @@ fn main() -> ExitCode {
                 ExitCode::FAILURE
             }
         }
+        Some("generate-bindings") => match generate_mobile_bindings(&workspace_root()) {
+            Ok(out_dir) => {
+                println!("generate-bindings: PASS ({})", out_dir.display());
+                ExitCode::SUCCESS
+            }
+            Err(error) => {
+                eprintln!("generate-bindings: FAIL: {error}");
+                ExitCode::FAILURE
+            }
+        },
         Some(other) => {
             eprintln!("unknown xtask command: {other}");
-            eprintln!("available: validate-contracts");
+            eprintln!("available: {}", available_commands().join(", "));
             ExitCode::FAILURE
         }
         None => {
             eprintln!("usage: cargo xtask <command>");
-            eprintln!("available: validate-contracts");
+            eprintln!("available: {}", available_commands().join(", "));
             ExitCode::FAILURE
         }
     }
+}
+
+fn available_commands() -> &'static [&'static str] {
+    &["validate-contracts", "generate-bindings"]
+}
+
+fn generate_mobile_bindings(root: &Path) -> Result<PathBuf, String> {
+    let status = std::process::Command::new("cargo")
+        .args(["build", "-p", "riot-ffi", "--lib", "--locked"])
+        .current_dir(root)
+        .status()
+        .map_err(|error| format!("could not build riot-ffi: {error}"))?;
+    if !status.success() {
+        return Err("cargo build -p riot-ffi --lib --locked failed".into());
+    }
+
+    let library = root.join("target").join("debug").join(format!(
+        "{}riot_ffi{}",
+        std::env::consts::DLL_PREFIX,
+        std::env::consts::DLL_SUFFIX
+    ));
+    if !library.is_file() {
+        return Err(format!(
+            "host riot-ffi library absent: {}",
+            library.display()
+        ));
+    }
+
+    let out_dir = root.join("build/generated/riot-ffi");
+    if out_dir.exists() {
+        std::fs::remove_dir_all(&out_dir)
+            .map_err(|error| format!("could not clean {}: {error}", out_dir.display()))?;
+    }
+    std::fs::create_dir_all(&out_dir)
+        .map_err(|error| format!("could not create {}: {error}", out_dir.display()))?;
+
+    let source = Utf8PathBuf::from_path_buf(library)
+        .map_err(|path| format!("non-UTF-8 library path: {}", path.display()))?;
+    let bindgen_out = Utf8PathBuf::from_path_buf(out_dir.clone())
+        .map_err(|path| format!("non-UTF-8 output path: {}", path.display()))?;
+    uniffi::generate(GenerateOptions {
+        languages: vec![TargetLanguage::Swift, TargetLanguage::Kotlin],
+        source,
+        out_dir: bindgen_out,
+        config_override: None,
+        format: false,
+        crate_filter: None,
+        metadata_no_deps: false,
+    })
+    .map_err(|error| format!("UniFFI generation failed: {error:#}"))?;
+    validate_generated_bindings(&out_dir)?;
+
+    Ok(out_dir)
+}
+
+fn validate_generated_bindings(out_dir: &Path) -> Result<(), String> {
+    let required = [
+        "riot_ffi.swift",
+        "riot_ffiFFI.h",
+        "riot_ffiFFI.modulemap",
+        "uniffi/riot_ffi/riot_ffi.kt",
+    ];
+    for relative in required {
+        let path = out_dir.join(relative);
+        let metadata = std::fs::metadata(&path)
+            .map_err(|error| format!("generated binding absent at {}: {error}", path.display()))?;
+        if !metadata.is_file() || metadata.len() == 0 {
+            return Err(format!(
+                "generated binding is not a non-empty file: {}",
+                path.display()
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn workspace_root() -> PathBuf {
@@ -476,6 +562,28 @@ fn check_schema(root: &Path, failures: &mut Vec<String>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn exposes_locked_binding_generation_command() {
+        assert!(available_commands().contains(&"generate-bindings"));
+    }
+
+    #[test]
+    fn generated_binding_contract_requires_both_native_languages() {
+        let dir = temp_dir("binding-contract");
+        std::fs::create_dir_all(dir.join("uniffi/riot_ffi")).unwrap();
+        std::fs::write(dir.join("riot_ffi.swift"), "// swift").unwrap();
+        std::fs::write(dir.join("riot_ffiFFI.h"), "// header").unwrap();
+        std::fs::write(dir.join("riot_ffiFFI.modulemap"), "// module").unwrap();
+
+        assert!(validate_generated_bindings(&dir).is_err());
+        std::fs::write(
+            dir.join("uniffi/riot_ffi/riot_ffi.kt"),
+            "// kotlin bindings",
+        )
+        .unwrap();
+        assert_eq!(validate_generated_bindings(&dir), Ok(()));
+    }
 
     fn scaffold(dir: &Path, workspace_toml: &str, lock: &str, manifest: &str) {
         std::fs::create_dir_all(dir.join("fixtures/willow")).unwrap();
