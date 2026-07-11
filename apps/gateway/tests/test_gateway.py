@@ -223,7 +223,7 @@ class ServerHeadersTest(unittest.TestCase):
     def test_successful_responses_forbid_scripts_network_and_referrers(self) -> None:
         port = self.server.server_address[1]
         with urlopen(f"http://127.0.0.1:{port}/site/", timeout=2) as response:
-            self.assertEqual(response.headers["Content-Security-Policy"], "default-src 'none'; script-src 'none'; connect-src 'none'; base-uri 'none'; form-action 'none'")
+            self.assertEqual(response.headers["Content-Security-Policy"], gateway_module.CONTENT_SECURITY_POLICY)
             self.assertEqual(response.headers["X-Content-Type-Options"], "nosniff")
             self.assertEqual(response.headers["Referrer-Policy"], "no-referrer")
 
@@ -239,7 +239,7 @@ class ServerHeadersTest(unittest.TestCase):
                 error = result.exception
                 try:
                     headers = error.headers
-                    self.assertEqual(headers["Content-Security-Policy"], "default-src 'none'; script-src 'none'; connect-src 'none'; base-uri 'none'; form-action 'none'")
+                    self.assertEqual(headers["Content-Security-Policy"], gateway_module.CONTENT_SECURITY_POLICY)
                     self.assertEqual(headers["X-Content-Type-Options"], "nosniff")
                     self.assertEqual(headers["Referrer-Policy"], "no-referrer")
                 finally:

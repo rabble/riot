@@ -7,6 +7,7 @@ renders the fixed incident-board profile from it.
 
 from __future__ import annotations
 
+import base64
 from dataclasses import dataclass, field
 import hashlib
 from html import escape
@@ -31,6 +32,152 @@ SOURCE_MANIFEST = "fixtures/conference/package-manifest-v1.json"
 SOURCE_MANIFEST_SHA256 = "2863f1676ced91a2c90eb003662a532b0eefa38a0aabe747c3084b3e873d1fab"
 ALLOWED_KINDS = frozenset({"alert", "observation", "resource", "request", "offer"})
 SITE_ROUTES = frozenset({"/site/", "/site/incident-board", "/site/incident-board/alerts"})
+
+STYLE_CSS = """
+:root {
+  --paper: #ede7d3;
+  --panel: #e3dcc4;
+  --ink: #1b2430;
+  --ink-muted: #55606e;
+  --line: rgba(27, 36, 48, 0.16);
+  --hazard: #b23a22;
+  --depth: #2e5c7a;
+  --anchor: #3d6b4f;
+  --flag: #8a5c14;
+  color-scheme: light dark;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --paper: #14181d;
+    --panel: #1c2128;
+    --ink: #ece6d3;
+    --ink-muted: #9aa6b2;
+    --line: rgba(236, 230, 211, 0.16);
+    --anchor: #6fae82;
+    --flag: #d9a441;
+  }
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, sans-serif;
+  line-height: 1.45;
+}
+.board { max-width: 40rem; margin: 0 auto; padding: 2rem 1.25rem 4rem; }
+.eyebrow, .entries-label {
+  margin: 0 0 0.75rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-muted);
+}
+.entries-label { border-top: 1px solid var(--line); padding-top: 1.5rem; margin-top: 0.5rem; }
+.fixture-status { margin: 0 0 1.5rem; font-size: 0.85rem; color: var(--ink-muted); }
+.fixture-status__tag {
+  display: inline-block;
+  padding: 0.05rem 0.4rem;
+  border: 1px solid var(--flag);
+  border-radius: 2px;
+  color: var(--flag);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.headline {
+  margin: 0 0 0.5rem;
+  font-family: Georgia, "Iowan Old Style", "Times New Roman", serif;
+  font-weight: 700;
+  font-size: clamp(1.9rem, 5vw, 2.6rem);
+  line-height: 1.1;
+}
+.subhead { margin: 0 0 2rem; color: var(--ink-muted); font-size: 1rem; }
+.ticket {
+  display: flex;
+  align-items: center;
+  gap: 1.25rem;
+  margin: 0 0 2rem;
+  padding: 1.1rem 1.25rem;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-left: 3px dashed var(--ink-muted);
+  border-radius: 3px;
+}
+.ticket__main { flex: 1; min-width: 0; }
+.ticket__action { margin: 0 0 0.5rem; }
+.ticket__link {
+  display: inline-block;
+  font-weight: 600;
+  font-size: 0.95rem;
+  color: var(--ink);
+  text-decoration: none;
+  border-bottom: 2px solid var(--hazard);
+  padding-bottom: 0.1rem;
+}
+.ticket__link:hover, .ticket__link:focus-visible { color: var(--hazard); }
+.ticket__namespace {
+  margin: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.75rem;
+  color: var(--ink-muted);
+  word-break: break-all;
+}
+.ticket__namespace code { font: inherit; color: inherit; }
+.ticket__qr { flex: none; line-height: 0; }
+.ticket__qr svg { width: 100px; height: 100px; display: block; }
+.entries { display: flex; flex-direction: column; gap: 1.5rem; }
+.entry { margin: 0; padding: 0.1rem 0 0.1rem 1rem; border-left: 4px solid var(--ink-muted); }
+.entry--alert { border-left-color: var(--hazard); }
+.entry--resource { border-left-color: var(--depth); }
+.entry--request { border-left-color: var(--flag); }
+.entry--offer { border-left-color: var(--anchor); }
+.kind {
+  display: inline-block;
+  margin: 0 0 0.5rem;
+  padding: 0.1rem 0.5rem;
+  font-weight: 700;
+  font-size: 0.7rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  border-radius: 2px;
+  border: 1px solid currentColor;
+}
+.kind--alert { background: var(--hazard); border-color: var(--hazard); color: #fff; }
+.kind--resource { background: var(--depth); border-color: var(--depth); color: #fff; }
+.kind--request { color: var(--flag); }
+.kind--offer { color: var(--anchor); }
+.kind--observation { color: var(--ink-muted); }
+.entry__title {
+  margin: 0 0 0.35rem;
+  font-family: Georgia, "Iowan Old Style", "Times New Roman", serif;
+  font-weight: 700;
+  font-size: 1.25rem;
+  line-height: 1.25;
+}
+.entry__body { margin: 0 0 0.6rem; font-size: 1rem; }
+.entry__meta {
+  margin: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.75rem;
+  color: var(--ink-muted);
+}
+.entry__meta span + span::before { content: " \\00b7 "; }
+a { color: inherit; }
+:focus-visible { outline: 2px solid var(--hazard); outline-offset: 2px; }
+@media (prefers-reduced-motion: reduce) {
+  * { transition: none !important; animation: none !important; }
+}
+""".strip()
+
+_STYLE_CSS_HASH = base64.b64encode(hashlib.sha256(STYLE_CSS.encode("utf-8")).digest()).decode("ascii")
+CONTENT_SECURITY_POLICY = (
+    "default-src 'none'; "
+    f"style-src 'sha256-{_STYLE_CSS_HASH}'; "
+    "script-src 'none'; connect-src 'none'; base-uri 'none'; form-action 'none'"
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 GATEWAY_FIXTURE_DIR = REPO_ROOT / "fixtures" / "conference" / "gateway-space"
@@ -274,17 +421,22 @@ def _render_page(
     namespace_uri = f"riot://open?namespace={namespace}"
     return f"""<!doctype html>
 <html lang=\"en\">
-<head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>{escaped_title} · Riot</title></head>
+<head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>{escaped_title} · Riot</title><style>{STYLE_CSS}</style></head>
 <body>
-<main>
-  <p>Public Riot export · renderer profile: {RENDERER_PROFILE}</p>
-  <p>Fixture verification: {escape(verification_status.replace("_", " "))}</p>
-  <h1>{escaped_title}</h1>
-  <p>Available offline from this local public export.</p>
-  <p>Public namespace: <code>{namespace}</code></p>
-  <div class=\"qr-code\">{qr_svg}</div>
-  <p><a href=\"{namespace_uri}\">Open in Riot</a></p>
-  <section aria-label=\"Incident entries\">{cards}</section>
+<main class=\"board\">
+  <p class=\"eyebrow\">Public Riot export · renderer profile: {RENDERER_PROFILE}</p>
+  <p class=\"fixture-status\">Fixture verification: <span class=\"fixture-status__tag\">{escape(verification_status.replace("_", " "))}</span></p>
+  <h1 class=\"headline\">{escaped_title}</h1>
+  <p class=\"subhead\">Available offline from this local public export.</p>
+  <div class=\"ticket\">
+    <div class=\"ticket__main\">
+      <p class=\"ticket__action\"><a class=\"ticket__link\" href=\"{namespace_uri}\">Open in Riot</a></p>
+      <p class=\"ticket__namespace\">Public namespace: <code>{namespace}</code></p>
+    </div>
+    <div class=\"ticket__qr\">{qr_svg}</div>
+  </div>
+  <h2 class=\"entries-label\">Incident entries</h2>
+  <section aria-label=\"Incident entries\" class=\"entries\">{cards}</section>
 </main>
 </body>
 </html>"""
@@ -293,13 +445,11 @@ def _render_page(
 def _render_entry(entry: PublicEntry) -> str:
     assisted = "AI-assisted draft" if entry.ai_assisted else "Human-authored draft"
     return f"""
-<article>
-  <p>{escape(entry.kind.title())}</p>
-  <h2>{escape(entry.title)}</h2>
-  <p>{escape(entry.body)}</p>
-  <p>Claimed author (unverified fixture): <code>{entry.signer}</code></p>
-  <p>Freshness: <time datetime=\"{entry.freshness}\">{entry.freshness}</time></p>
-  <p>{assisted}</p>
+<article class=\"entry entry--{entry.kind}\">
+  <span class=\"kind kind--{entry.kind}\">{escape(entry.kind.title())}</span>
+  <h2 class=\"entry__title\">{escape(entry.title)}</h2>
+  <p class=\"entry__body\">{escape(entry.body)}</p>
+  <p class=\"entry__meta\"><span>Claimed author (unverified fixture): <code>{entry.signer}</code></span><span>Freshness: <time datetime=\"{entry.freshness}\">{entry.freshness}</time></span><span>{assisted}</span></p>
 </article>"""
 
 

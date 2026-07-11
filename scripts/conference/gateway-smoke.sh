@@ -47,7 +47,7 @@ if [ -z "$READY" ]; then
     exit 1
 fi
 
-python3 - "$PORT" "$ROOT/fixtures/conference/gateway-space/public-export-v1.json" <<'PY'
+python3 - "$PORT" "$ROOT/fixtures/conference/gateway-space/public-export-v1.json" "$ROOT/apps/gateway" <<'PY'
 import hashlib
 import json
 from pathlib import Path
@@ -55,12 +55,15 @@ import sys
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
-port, export_path = sys.argv[1:]
+port, export_path, gateway_dir = sys.argv[1:]
+sys.path.insert(0, gateway_dir)
+import riot_gateway
+
 base = f"http://127.0.0.1:{port}"
 with urlopen(f"{base}/site/", timeout=2) as response:
     page = response.read().decode("utf-8")
     assert response.status == 200
-    assert response.headers["Content-Security-Policy"] == "default-src 'none'; script-src 'none'; connect-src 'none'; base-uri 'none'; form-action 'none'"
+    assert response.headers["Content-Security-Policy"] == riot_gateway.CONTENT_SECURITY_POLICY
     assert response.headers["X-Content-Type-Options"] == "nosniff"
     assert response.headers["Referrer-Policy"] == "no-referrer"
 
@@ -85,7 +88,7 @@ for request, expected_status in (
         urlopen(request, timeout=2)
     except HTTPError as error:
         assert error.code == expected_status, error.code
-        assert error.headers["Content-Security-Policy"] == "default-src 'none'; script-src 'none'; connect-src 'none'; base-uri 'none'; form-action 'none'"
+        assert error.headers["Content-Security-Policy"] == riot_gateway.CONTENT_SECURITY_POLICY
         assert error.headers["X-Content-Type-Options"] == "nosniff"
         assert error.headers["Referrer-Policy"] == "no-referrer"
         error.close()

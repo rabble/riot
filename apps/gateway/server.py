@@ -8,14 +8,11 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from riot_gateway import DEFAULT_EXPORT_PATH, GatewayError, PublicGateway
+from riot_gateway import CONTENT_SECURITY_POLICY, DEFAULT_EXPORT_PATH, GatewayError, PublicGateway
 
 
 SECURITY_HEADERS = (
-    (
-        "Content-Security-Policy",
-        "default-src 'none'; script-src 'none'; connect-src 'none'; base-uri 'none'; form-action 'none'",
-    ),
+    ("Content-Security-Policy", CONTENT_SECURITY_POLICY),
     ("X-Content-Type-Options", "nosniff"),
     ("Referrer-Policy", "no-referrer"),
 )
