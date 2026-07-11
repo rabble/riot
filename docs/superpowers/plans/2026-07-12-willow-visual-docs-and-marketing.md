@@ -18,24 +18,19 @@
 - `crates/xtask/src/lib.rs`: importable test boundary for repository validators.
 - `crates/xtask/src/documentation/`: typed JSON parsing, Markdown normalization, path containment, PNG inspection, corpus and marketing validation.
 - `crates/xtask/tests/documentation_validation.rs`: collision-safe fixture repositories and committed-repository integration coverage.
-- `README.md`, `docs/{architecture,product,research,decisions,superpowers/specs,superpowers/plans}/**/*.md`: canonical primer, local boundary, direct official sources, and targeted figures.
+- Every repository Markdown file outside generated/vendor/cache directories: material-Willow discovery, canonical primer or explicit exemption, local boundary, direct official sources, and targeted figures.
 - `marketing/assets/willow/`: source-side copies of the three marketing figures.
 - `marketing/public/assets/willow/`: Wrangler-deployed copies of the same figures.
 - `marketing/index.html`, `marketing/public/index.html`: byte-identical visual explainer and existing site.
 - `marketing/README.md`: accurate live deployment and republish instructions.
-- `.coverage-thresholds.json`: verified four-metric Rust coverage mapping and enforcement command.
 - `COLLABORATION.md`: implementation and deployed-version handoff.
 
-## Task 1: Prove the Coverage Toolchain Before Broad Edits
+## Task 1: Scaffold the Documentation Validator
 
 **Files:**
-- Modify: `.coverage-thresholds.json`
 - Modify: `Cargo.toml`
 - Modify: `crates/xtask/Cargo.toml`
 - Create: `crates/xtask/src/lib.rs`
-- Create: `crates/xtask/src/coverage.rs`
-- Create: `crates/xtask/tests/coverage_summary.rs`
-- Modify: `crates/xtask/src/main.rs`
 
 - [ ] **Step 1: Pin the exact tooling inputs**
 
@@ -50,65 +45,23 @@ percent-encoding = "=2.3.2"
 
 Expose them from `crates/xtask/Cargo.toml` with `{ workspace = true }`.
 
-- [ ] **Step 2: Write failing coverage-summary tests**
-
-Create fixtures for exactly 100% and 99.99% totals. Tests must assert lines, functions, branches, and LLVM regions mapped to statements independently:
-
-```rust
-#[test]
-fn rejects_a_single_branch_below_threshold() {
-    let json = summary(100.0, 100.0, 99.99, 100.0);
-    let errors = enforce_coverage_summary(&json, &thresholds_100());
-    assert_eq!(errors, ["branches coverage 99.99 is below required 100"]);
-}
-```
-
-- [ ] **Step 3: Run the RED test**
-
-Run: `cargo test -p xtask --test coverage_summary rejects_a_single_branch_below_threshold -- --exact`
-
-Expected: FAIL because `enforce_coverage_summary` does not exist.
-
-- [ ] **Step 4: Implement the minimal typed summary checker**
+- [ ] **Step 2: Create the importable library boundary**
 
 Create `crates/xtask/src/lib.rs`:
 
 ```rust
-pub mod coverage;
+//! Shared, importable validation library for `cargo xtask` commands.
 ```
 
-Implement `coverage::enforce_coverage_summary` with fail-closed JSON parsing, denominator checks, finite percentages, and stable sorted diagnostics. Add `enforce-coverage-summary <summary> <thresholds>` command wiring to `main.rs`.
+Use only `pub mod documentation;` after Task 2 creates that module. At this task boundary, `lib.rs` may be empty except for crate-level documentation so it compiles independently.
 
-- [ ] **Step 5: Run focused GREEN tests**
-
-Run: `cargo test -p xtask --test coverage_summary`
-
-Expected: all coverage-summary cases PASS.
-
-- [ ] **Step 6: Install and prove the pinned branch-capable runner**
-
-Run:
-
-```bash
-cargo install cargo-llvm-cov --version 0.8.7 --locked
-rustup toolchain install nightly-2026-07-10 --component llvm-tools-preview
-cargo +nightly-2026-07-10 llvm-cov --workspace --all-features --branch --json --summary-only --output-path target/coverage/summary.json
-cargo xtask enforce-coverage-summary target/coverage/summary.json .coverage-thresholds.json
-```
-
-Expected: the command executes and reports the actual four metrics. If the existing workspace is below 100%, record the exact pre-existing deficit in `COLLABORATION.md`; do not lower thresholds or claim completion.
-
-- [ ] **Step 7: Update the source-of-truth enforcement**
-
-Set `thresholds.statementsMetric` to `llvm_regions` and replace the Tarpaulin command with the exact two-command string from the governing design only after Step 6 proves it locally.
-
-- [ ] **Step 8: Run formatting, focused tests, and commit**
+- [ ] **Step 3: Verify the scaffold and commit**
 
 ```bash
 cargo fmt --all -- --check
-cargo test -p xtask --test coverage_summary
-git add .coverage-thresholds.json Cargo.toml Cargo.lock crates/xtask/Cargo.toml crates/xtask/src/lib.rs crates/xtask/src/coverage.rs crates/xtask/src/main.rs crates/xtask/tests/coverage_summary.rs
-git commit -m "test: enforce all configured Rust coverage metrics"
+cargo test -p xtask
+git add Cargo.toml Cargo.lock crates/xtask/Cargo.toml crates/xtask/src/lib.rs
+git commit -m "refactor(xtask): add validator library boundary"
 ```
 
 ## Task 2: Vendor Willow Artwork With Provenance
@@ -126,10 +79,18 @@ git commit -m "test: enforce all configured Rust coverage metrics"
 - Create: `docs/assets/willow/LICENSE-EVIDENCE.md`
 - Create: `docs/assets/willow/LICENSE-MIT`
 - Create: `docs/assets/willow/LICENSE-APACHE`
+- Modify: `crates/xtask/src/lib.rs`
+- Create: `crates/xtask/src/documentation/mod.rs`
+- Create: `crates/xtask/src/documentation/model.rs`
+- Create: `crates/xtask/src/documentation/png.rs`
+- Create: `crates/xtask/tests/documentation_validation.rs`
 
 - [ ] **Step 1: Write failing manifest and PNG tests**
 
 Tests cover missing assets, wrong hash, wrong magic bytes, APNG, dimensions over 8192, more than 40 megapixels, paths outside `docs/assets/willow`, symlinks, duplicate IDs, unknown protocol IDs, future dates, and noncanonical URLs.
+In the same test file, define `FixtureRepo` on `tempfile::TempDir` with
+`new`, `write_manifest_asset`, and `validate` helpers so every test owns an
+isolated automatically removed repository.
 
 ```rust
 #[test]
@@ -173,11 +134,11 @@ Do not transform the bytes. Record SHA-256, byte length, decoded dimensions, ver
 
 - [ ] **Step 5: Create the typed registries**
 
-Populate `protocols.json` with the eight IDs and official URLs from the design. Populate `primer.json` with the exact Authority → Movement → Convergence copy. Populate `coverage.json` with the initial 34-document list, sorted protocol IDs, exact extra-figure records, captions, and an empty exemptions array.
+Populate `protocols.json` with the eight IDs and official URLs from the design. Populate `primer.json` with the exact Authority → Movement → Convergence copy. Populate `coverage.json` with the initial 36-document list, sorted protocol IDs, exact extra-figure records and captions, plus the dated `COLLABORATION.md` coordination-ledger exemption.
 
 - [ ] **Step 6: Implement bounded PNG and manifest validation**
 
-Use `png::Decoder` limits, sequential decode, cumulative limits, safe ASCII semantic filenames, canonical path containment, and no symlink following. Hashes are drift checks; diagnostics must not call them publisher authentication.
+Add `pub mod documentation;` to `crates/xtask/src/lib.rs`. Implement the initial `documentation::{model,png}` modules with `png::Decoder` limits, sequential decode, cumulative limits, safe ASCII semantic filenames, canonical path containment, and no symlink following. Hashes are drift checks; diagnostics must not call them publisher authentication.
 
 - [ ] **Step 7: Run GREEN tests and commit**
 
@@ -191,13 +152,13 @@ git commit -m "docs: vendor attributed Willow protocol artwork"
 ## Task 3: Build the Canonical Markdown Validator and Synchronizer
 
 **Files:**
-- Create: `crates/xtask/src/documentation/mod.rs`
-- Create: `crates/xtask/src/documentation/model.rs`
+- Modify: `crates/xtask/src/documentation/mod.rs`
+- Modify: `crates/xtask/src/documentation/model.rs`
 - Create: `crates/xtask/src/documentation/markdown.rs`
 - Create: `crates/xtask/src/documentation/paths.rs`
-- Create: `crates/xtask/src/documentation/png.rs`
+- Modify: `crates/xtask/src/documentation/png.rs`
 - Modify: `crates/xtask/src/main.rs`
-- Extend: `crates/xtask/tests/documentation_validation.rs`
+- Modify: `crates/xtask/tests/documentation_validation.rs`
 
 - [ ] **Step 1: Write failing Markdown contract tests**
 
@@ -225,8 +186,6 @@ Expected: FAIL because Markdown normalization and dependency equality are absent
 
 Implement, in order: bounded file discovery; strict JSON schema parsing; semantic cross-registry checks; CommonMark/GFM parsing; canonical primer/boundary/figure comparison; URL/path normalization; PNG/catalog inspection; sorted diagnostics. `validate_documentation(root)` performs no writes or network calls.
 
-Add `pub mod documentation;` to `crates/xtask/src/lib.rs` in this step, after `crates/xtask/src/documentation/mod.rs` exists.
-
 - [ ] **Step 4: Add an explicit synchronizer command**
 
 Add `cargo xtask sync-willow-docs --check` and `--write`. `--write` inserts or replaces only paired generated primer/source/figure blocks and the fixed skip/content headings; it never rewrites text outside markers. Boundary text and historical context must already exist in `coverage.json` and are emitted from that reviewed data.
@@ -252,11 +211,11 @@ git commit -m "feat(xtask): validate Willow documentation contracts"
 ## Task 4: Migrate the Complete Technical Corpus
 
 **Files:**
-- Modify: the initial 34 documents listed in the governing design, any additional Willow-bearing documents found by the preflight rescan, and `coverage.json`
+- Modify: the initial 36 documents listed in the governing design, any additional Willow-bearing documents found by the repository-wide preflight rescan, and `coverage.json`
 
 - [ ] **Step 1: Prove the committed corpus fails before synchronization**
 
-First rerun the governing design's material-Willow scan across all coverage roots. Add every newly matched document to `coverage.json` or add a dated, owned, justified exemption; an empty exemption list remains preferred. Then run: `cargo xtask sync-willow-docs --check`.
+First rerun the governing design's material-Willow scan across every tracked repository Markdown file outside its explicit generated/vendor/cache exclusions. Add every newly matched document to `coverage.json` or add a dated, owned, justified exemption. Then run: `cargo xtask sync-willow-docs --check`.
 
 Expected: FAIL listing all covered documents missing the versioned primer.
 
@@ -391,6 +350,8 @@ Re-run only affected screenshots and validation after each fix. Do not accept ho
 
 Within seven days, test the five representative readers and five representative documents defined in the governing design. Record participant categories, per-question results, completion times, expert skip-link times, keyboard/VoiceOver findings, and pass/fail in `docs/decisions/willow-visual-reader-study.md`. At least four readers must answer all five questions correctly within five minutes; every expert must use the skip link within 30 seconds; any critical accessibility failure blocks acceptance.
 
+Add that results file to `coverage.json` as a dated, owned evaluation-artifact exemption, rerun `cargo xtask sync-willow-docs --check` and `cargo xtask validate-contracts`, and commit the study plus updated coverage manifest.
+
 - [ ] **Step 6: Run the full repository gate**
 
 ```bash
@@ -398,9 +359,10 @@ cargo test --workspace --all-features
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo fmt --all -- --check
 cargo xtask validate-contracts
+cargo tarpaulin --fail-under 100
 ```
 
-Then run the exact coverage command stored in `.coverage-thresholds.json`. Expected: every configured metric meets 100%, or completion remains blocked with the exact pre-existing deficit recorded.
+Expected: every command passes. The Tarpaulin invocation is the exact command currently stored in `.coverage-thresholds.json`.
 
 ## Task 7: Publish the Existing Marketing Worker and Verify Live Bytes
 
@@ -413,9 +375,10 @@ Then run the exact coverage command stored in `.coverage-thresholds.json`. Expec
 cd marketing
 npx wrangler whoami
 npx wrangler versions list
+npx wrangler deployments list --json
 ```
 
-Expected: authenticated account owns `riot-protest-net-marketing`; current live version is visible. Save the current version ID as the rollback target. Stop if account or worker differs.
+Expected: authenticated account owns `riot-protest-net-marketing`. Parse the deployment with 100% traffic from `deployments list --json` and save that version ID as the rollback target; `versions list` alone is not treated as traffic evidence. Stop if account or worker differs.
 
 - [ ] **Step 2: Deploy the verified `marketing/public` tree**
 
@@ -440,7 +403,7 @@ git commit -m "docs: record Willow marketing deployment"
 
 ## Final Acceptance
 
-- [ ] Every technical document matched by the final material-Willow scan contains one valid full visual primer and tailored boundary or a dated, owned exemption.
+- [ ] Every technical document matched by the final repository-wide material-Willow scan contains one valid full visual primer and tailored boundary or a dated, owned exemption.
 - [ ] The canonical architecture uses all relevant official Willow figures and direct specifications.
 - [ ] Marketing source and deploy HTML are byte-identical and visually clean at desktop/mobile and light/dark.
 - [ ] No doc or site depends on Willow-hosted images at render time.

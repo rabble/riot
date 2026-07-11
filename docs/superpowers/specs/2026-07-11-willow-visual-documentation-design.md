@@ -343,7 +343,8 @@ sorted. The initial IDs are `confidential-sync`, `data-model`, `drop-format`,
 ```json
 {
   "version": 1,
-  "roots": ["README.md", "docs/product", "docs/architecture", "docs/research", "docs/decisions", "docs/superpowers/specs", "docs/superpowers/plans"],
+  "roots": ["."],
+  "excluded_roots": [".beads", ".claude", ".superpowers", "target", "vendor", "docs/superpowers/specs/.clearance-*"],
   "documents": [
     { "path": "README.md", "protocols": ["data-model", "drop-format", "encrypted-willow", "meadowcap", "wtp"], "extra_figures": [] }
   ],
@@ -353,8 +354,10 @@ sorted. The initial IDs are `confidential-sync`, `data-model`, `drop-format`,
 }
 ```
 
-The illustrative exemption above describes the schema and is not committed as
-an actual bypass; the initial `exemptions` array is empty. Document paths are normalized repository-relative UTF-8 paths
+The illustrative exemption above describes the schema. The committed initial
+exemptions are `COLLABORATION.md` and, once created,
+`docs/decisions/willow-visual-reader-study.md`, with the rationales stated in the
+scope section. Document paths are normalized repository-relative UTF-8 paths
 using `/`; absolute paths, empty components, `.`, `..`, backslashes, NUL/control
 characters, normalization collisions, symlinks, and paths outside the fixed
 roots are rejected before any file is opened. Documents and exemptions must be
@@ -391,18 +394,14 @@ comment, coverage record, primer baseline, and additional-protocol block.
 
 ## Scope and Coverage
 
-The coverage roots are:
-
-- `README.md`;
-- `docs/product/**/*.md`;
-- `docs/architecture/**/*.md`;
-- `docs/research/**/*.md`;
-- `docs/decisions/**/*.md`;
-- `docs/superpowers/specs/**/*.md`;
-- `docs/superpowers/plans/**/*.md`.
+The coverage root is the repository root. Discovery scans every tracked
+`*.md` file while excluding generated, vendor, cache, worktree metadata,
+`.superpowers/`, `.beads/`, `.claude/`, `target/`, and
+`docs/superpowers/specs/.clearance-*` paths. This includes app-specific and
+marketing READMEs, not only `docs/**`.
 
 A coverage manifest explicitly lists every document that receives the primer.
-The initial scope starts with these 34 documents and is rescanned immediately
+The initial scope starts with these 36 documents and is rescanned immediately
 before corpus migration so concurrently landed Willow-bearing documents cannot
 escape coverage:
 
@@ -440,6 +439,14 @@ escape coverage:
 32. `docs/superpowers/plans/2026-07-12-willow-visual-docs-and-marketing.md`
 33. `docs/research/2026-07-11-user-profiles-willow-research.md`
 34. `docs/superpowers/specs/2026-07-12-demo-polish-design.md`
+35. `apps/ios/README.md`
+36. `marketing/README.md`
+
+`COLLABORATION.md` is initially exempt because it is a mutable agent-coordination
+ledger rather than explanatory technical documentation. Its exemption records
+owner `repository-maintainer`, the review date, and this rationale. The future
+reader-study results file is likewise exempt as evaluation evidence about the
+primer rather than a document that explains Riot architecture.
 
 Historical research and decision reports receive the same complete orientation;
 their original findings remain intact beneath it. A visually distinct
@@ -513,10 +520,10 @@ initial mappings, beyond the three primer assets, are:
 | `data-model-paths`, `data-model-overwrite`, `data-model-prefix-pruning` | the three `phase0a-wu*-report.md` files; `2026-07-10-willow-implementation-audit.md`; `2026-07-10-riot-phase0a-public-kernel.md`; `2026-07-10-riot-evidence-sprint-design.md` |
 | `data-model-namespaces`, `meadowcap-capability-verification`, `meadowcap-communal-namespace`, `meadowcap-owned-namespace` | `2026-07-10-dual-mode-research-addendum.md`; `2026-07-10-riot-dual-mode-design.md`; both app-directory spec/plan files; both signed-JS-apps spec/plan files; `2026-07-11-full-meadowcap-management-design.md`; both conference-gateway-signature-verification spec/plan files; `2026-07-11-user-profiles-willow-research.md` |
 | `drop-improvised-carriers`, `confidential-sync-selective-exchange` | `docs/decisions/riot-conference-sync.md`; `2026-07-10-initial-research.md`; `2026-07-11-hybrid-gossip-backhaul-research.md`; `2026-07-11-shutdown-resistant-distribution-research.md`; `2026-07-11-nearby-transport-design.md`; both conference-native-demo spec/plan files; `2026-07-10-riot-prototype.md` |
-| none | README; product brief; mutual-aid research; disaster/mutual-aid evidence research; app-ecosystem research; JS-runtime-iOS design; this visual-documentation design; the Willow visual docs and marketing implementation plan; `2026-07-12-demo-polish-design.md` |
+| none | README; product brief; mutual-aid research; disaster/mutual-aid evidence research; app-ecosystem research; JS-runtime-iOS design; this visual-documentation design; the Willow visual docs and marketing implementation plan; `2026-07-12-demo-polish-design.md`; `apps/ios/README.md`; `marketing/README.md` |
 
 Paths in the committed manifest are the full repository-relative paths from the
-34-item starting scope list; basenames above are unambiguous shorthand only in this
+36-item starting scope list; basenames above are unambiguous shorthand only in this
 human-readable table. Each implementation-time coverage record supplies the
 exact nonempty caption for every listed asset.
 
@@ -663,29 +670,14 @@ resolves under `docs/assets/willow/` or whose source contains
 rules. Ordinary `https:` links to official protocol text remain allowed.
 
 The source and tests follow mandatory TDD and the repository coverage contract.
-`.coverage-thresholds.json` is the sole configured gate and currently names
-`cargo tarpaulin --fail-under 100`, which does not substantiate its four separate
-metric claims. This work resolves that pre-existing mismatch rather than
-repeating it. The source-of-truth file gains an explicit metric mapping in which
-LLVM regions are the Rust equivalent used for `statements`, and its enforcement
-command becomes:
-
-```text
-cargo +nightly-2026-07-10 llvm-cov --workspace --all-features --branch --json --summary-only --fail-under-lines 100 --fail-under-functions 100 --fail-under-regions 100 --output-path target/coverage/summary.json
-cargo xtask enforce-coverage-summary target/coverage/summary.json .coverage-thresholds.json
-```
-
-The environment pins `cargo-llvm-cov =0.8.7` and nightly `2026-07-10` for the
-unstable branch instrumentation. `enforce-coverage-summary` validates the JSON
-schema and independently requires total `branches.percent >= thresholds.branches`;
-it also cross-checks lines, functions, and regions/statements against the same
-threshold file rather than trusting only the preceding process exit. Missing,
-NaN, unknown, or zero-denominator metrics fail closed. Tests provide below- and
-at-threshold fixtures for all four mappings. `.coverage-thresholds.json` remains
-the single source of threshold values and the complete two-command enforcement
-string; the old Tarpaulin command is removed only when this replacement is
-proved locally. No completion claim is allowed if the pinned branch-capable gate
-cannot run.
+This rollout runs the exact enforcement command currently recorded in
+`.coverage-thresholds.json`: `cargo tarpaulin --fail-under 100`. The file's
+four-metric wording is a pre-existing project-level mismatch, but replacing the
+workspace coverage platform is not coupled to this documentation and marketing
+change. Focused validator tests must cover every introduced branch and the
+configured repository command remains blocking. A separate reviewed task may
+reconcile Rust coverage metrics without holding the requested visual rollout or
+deployment hostage to a new nightly toolchain.
 
 The RED tests prove that validation rejects:
 
@@ -834,8 +826,8 @@ being corrected explicitly.
 - Protocol maturity and Riot implementation status are explicit and accurate.
 - The documentation validator is built through recorded RED-GREEN-REFACTOR
   cycles, runs offline, is included in `validate-contracts`, and passes the
-  reconciled command in `.coverage-thresholds.json` without overstating which
-  metrics that command measures.
+  exact command currently configured in `.coverage-thresholds.json` without
+  claiming that it independently proves metrics it does not report.
 - Representative pages are visually reviewed in GitHub light and dark themes,
   at 320 CSS pixels, and at 200% zoom, and the five-reader acceptance study
   passes within seven days.
