@@ -5,3 +5,4 @@ build/
 local.properties
 *.xcresult
 Vine Is Back*
+.DS_Store
