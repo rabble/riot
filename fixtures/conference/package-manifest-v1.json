@@ -1,13 +1,13 @@
 {
-  "schema": "riot-conference-package/1",
-  "renderer_profile": "incident-board/1",
-  "namespace": "3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c",
-  "title": "Harbor District Evacuation",
   "allowed_object_kinds": [
     "alert",
     "observation",
     "resource",
     "request",
     "offer"
-  ]
+  ],
+  "namespace": "ae5f04268d4d2a2f86df7a43e0afe1f26577ac58dcefe95bd9b6e634c5e0155c",
+  "renderer_profile": "incident-board/1",
+  "schema": "riot-conference-package/1",
+  "title": "Harbor District Evacuation"
 }
