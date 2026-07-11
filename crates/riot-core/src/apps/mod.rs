@@ -4,6 +4,7 @@
 
 pub mod bridge;
 pub mod bundle;
+pub mod endorse;
 pub mod entry;
 pub mod index;
 pub mod manifest;
