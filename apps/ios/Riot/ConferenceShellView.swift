@@ -190,26 +190,40 @@ private struct ComposeReviewSignView: View {
 
 private struct ImportPreviewView: View {
     @ObservedObject var model: RiotAppModel
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
-        List {
-            Section("Preview first") {
-                Label("Nothing is accepted automatically", systemImage: "checkmark.shield")
-                Text("Nearby and file transports will place signed public entries here. You choose what enters this local space.")
-                    .foregroundStyle(.secondary)
-            }
-            if model.importEntries.isEmpty {
-                ContentUnavailableView("No pending import", systemImage: "tray")
-            } else {
-                ForEach(model.importEntries) { entry in
-                    VStack(alignment: .leading) {
-                        Text(entry.headline).font(.headline)
-                        IdentifierRow(label: "Signer", value: entry.signerID)
+        ScrollView {
+            VStack(spacing: 16) {
+                RiotCard {
+                    VStack(alignment: .leading, spacing: 10) {
+                        RiotBadge("Nothing is accepted automatically")
+                        Text("Nearby and file transports will place signed public entries here. You choose what enters this local space.")
+                            .font(.riot(.body, size: 15, relativeTo: .callout))
+                            .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
+                    }
+                }
+                if model.importEntries.isEmpty {
+                    RiotEmptyState(
+                        title: "No pending import",
+                        message: "Incoming signed entries will appear here for you to preview before they touch your board."
+                    )
+                } else {
+                    ForEach(model.importEntries) { entry in
+                        RiotCard {
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text(entry.headline)
+                                    .font(.riot(.body, size: 16, relativeTo: .headline))
+                                    .foregroundStyle(RiotTheme.ink(for: colorScheme))
+                                IdentifierRow(label: "Signer", value: entry.signerID)
+                            }
+                        }
                     }
                 }
             }
+            .padding(20)
         }
-        .navigationTitle("Import preview")
+        .riotHeader(eyebrow: "Preview first", "Import preview")
     }
 }
 
