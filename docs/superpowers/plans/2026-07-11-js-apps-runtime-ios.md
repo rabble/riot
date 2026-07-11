@@ -116,7 +116,12 @@ const input = document.getElementById("new-item");
 const error = document.getElementById("error");
 
 let me = { displayName: "" };
-riot.whoami().then((who) => { me = who; });
+riot.whoami().then((who) => { me = who; }).catch(() => {});
+
+function newID() {
+  if (crypto.randomUUID) { return crypto.randomUUID(); }
+  return Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) => b.toString(16).padStart(2, "0")).join("");
+}
 
 function showError(message) {
   error.textContent = message;
@@ -140,10 +145,12 @@ function render(rows) {
     box.setAttribute("aria-label", row.value.text);
     box.addEventListener("change", () => {
       riot.put(row.key, { ...row.value, done: box.checked, ...stamp() })
-        .catch(() => showError("Couldn't save that — try again"));
+        .catch(() => { box.checked = !box.checked; showError("Couldn't save that — try again"); });
     });
     const label = document.createElement("label");
     label.textContent = row.value.text;
+    box.id = "box-" + row.key.replaceAll("/", "-");
+    label.htmlFor = box.id;
     const meta = document.createElement("span");
     meta.className = "meta";
     meta.textContent = row.value.updated_by || "";
@@ -156,9 +163,9 @@ form.addEventListener("submit", (event) => {
   event.preventDefault();
   const text = input.value.trim();
   if (!text) { return; }
-  riot.put("items/" + crypto.randomUUID(), { text, done: false, ...stamp() })
-    .then(() => { input.value = ""; })
-    .catch(() => showError("Couldn't save that — try again"));
+  input.value = "";
+  riot.put("items/" + newID(), { text, done: false, ...stamp() })
+    .catch(() => { input.value = text; showError("Couldn't save that — try again"); });
 });
 
 riot.watch("items", render);
@@ -787,7 +794,10 @@ public enum RiotJS {
           return call("put", { key: key, value: JSON.stringify(value) }).then(function () { return undefined; });
         },
         list: function (prefix) {
-          return call("list", { prefix: prefix }).then(function (rows) {
+          // Prefixes are segment-based; a trailing "/" would produce an
+          // empty segment the core rejects, so normalize it away here.
+          var clean = prefix.replace(/\\/+$/, "");
+          return call("list", { prefix: clean }).then(function (rows) {
             return rows.map(function (r) { return { key: r.key, value: JSON.parse(r.value) }; });
           });
         },
