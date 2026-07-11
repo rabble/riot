@@ -7,7 +7,7 @@ final class BindingSemanticsTests: XCTestCase {
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
         let storage = try ProtectedProfileStorage(fileURL: directory.appendingPathComponent("profile.json"))
 
-        let repository = try RiotProfileRepository.open(storage: storage)
+        let repository = try RiotProfileRepository.open(storage: storage, keyStore: TestWrappingKeyStore())
 
         XCTAssertNil(repository.currentSpace)
         XCTAssertEqual(try repository.currentEntries(), [])
@@ -19,7 +19,8 @@ final class BindingSemanticsTests: XCTestCase {
         let snapshotURL = directory.appendingPathComponent("profile.json")
         let storage = try ProtectedProfileStorage(fileURL: snapshotURL)
 
-        let first = try RiotProfileRepository.open(storage: storage)
+        let keys = TestWrappingKeyStore()
+        let first = try RiotProfileRepository.open(storage: storage, keyStore: keys)
         let space = try first.createPublicSpace(title: "Berlin Mutual Aid")
         let expiresAt = UInt64(Date().timeIntervalSince1970) + 3_600
         let signed = try first.signAlert(
@@ -39,7 +40,7 @@ final class BindingSemanticsTests: XCTestCase {
 
         // Reopening creates a fresh in-memory Rust profile and must rehydrate it
         // only from the protected local snapshot. No network transport is used.
-        let reloaded = try RiotProfileRepository.open(storage: storage)
+        let reloaded = try RiotProfileRepository.open(storage: storage, keyStore: keys)
         let entries = try reloaded.currentEntries()
 
         XCTAssertEqual(entries.count, 1)
@@ -50,4 +51,66 @@ final class BindingSemanticsTests: XCTestCase {
         XCTAssertEqual(entries[0].expiresAt, expiresAt)
         XCTAssertTrue(entries[0].aiAssisted)
     }
+
+    func testSealedSignerSurvivesProcessRestartAndRestoresContentOffline() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let snapshotURL = directory.appendingPathComponent("profile.json")
+        let storage = try ProtectedProfileStorage(fileURL: snapshotURL)
+        let keys = TestWrappingKeyStore()
+
+        var firstProcess: RiotProfileRepository? = try RiotProfileRepository.open(
+            storage: storage,
+            keyStore: keys
+        )
+        let space = try XCTUnwrap(firstProcess).createPublicSpace(title: "Durable Berlin Mutual Aid")
+        let first = try XCTUnwrap(firstProcess).signAlert(
+            in: space,
+            draft: restartDraft(headline: "First signer continuity alert")
+        )
+        let sealedIdentity = try sealedIdentityBytes(in: snapshotURL)
+        XCTAssertEqual(sealedIdentity.count, 112)
+        firstProcess = nil
+
+        let secondProcess = try RiotProfileRepository.open(storage: storage, keyStore: keys)
+        let restoredBeforeSecondSign = try secondProcess.currentEntries()
+        let second = try secondProcess.signAlert(
+            in: try XCTUnwrap(secondProcess.currentSpace),
+            draft: restartDraft(headline: "Second signer continuity alert")
+        )
+
+        XCTAssertEqual(restoredBeforeSecondSign.map(\.entryID), [first.entryID])
+        XCTAssertEqual(first.signerID.count, 64)
+        XCTAssertEqual(second.signerID, first.signerID)
+        XCTAssertEqual(try secondProcess.currentEntries().count, 2)
+    }
+}
+
+private final class TestWrappingKeyStore: WrappingKeyStore {
+    private var key: Data?
+
+    func loadOrCreateWrappingKey() throws -> Data {
+        if let key { return key }
+        let created = Data(repeating: 0x5a, count: 32)
+        key = created
+        return created
+    }
+}
+
+private func restartDraft(headline: String) -> AlertDraft {
+    AlertDraft(
+        expiresAt: UInt64(Date().timeIntervalSince1970) + 3_600,
+        headline: headline,
+        description: "Signed before or after a simulated process restart.",
+        sourceClaims: ["Local continuity test"],
+        aiAssisted: false
+    )
+}
+
+private func sealedIdentityBytes(in snapshotURL: URL) throws -> Data {
+    let object = try XCTUnwrap(
+        JSONSerialization.jsonObject(with: Data(contentsOf: snapshotURL)) as? [String: Any]
+    )
+    let encoded = try XCTUnwrap(object["sealedIdentity"] as? String)
+    return try XCTUnwrap(Data(base64Encoded: encoded))
 }

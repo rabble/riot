@@ -46,8 +46,9 @@ private struct PersistedAlert: Codable {
 private struct PersistedProfile: Codable {
     var space: RiotSpace?
     var alerts: [PersistedAlert]
+    var sealedIdentity: Data?
 
-    static let empty = PersistedProfile(space: nil, alerts: [])
+    static let empty = PersistedProfile(space: nil, alerts: [], sealedIdentity: nil)
 }
 
 public final class ProtectedProfileStorage {
@@ -80,6 +81,7 @@ public final class ProtectedProfileStorage {
 public final class RiotProfileRepository {
     private let profile: MobileProfile
     private let storage: ProtectedProfileStorage
+    private let keyStore: WrappingKeyStore
     private var persisted: PersistedProfile
 
     public var currentSpace: RiotSpace? { persisted.space }
@@ -87,16 +89,32 @@ public final class RiotProfileRepository {
     private init(
         profile: MobileProfile,
         storage: ProtectedProfileStorage,
+        keyStore: WrappingKeyStore,
         persisted: PersistedProfile
     ) {
         self.profile = profile
         self.storage = storage
+        self.keyStore = keyStore
         self.persisted = persisted
     }
 
-    public static func open(storage: ProtectedProfileStorage) throws -> RiotProfileRepository {
-        let persisted = try storage.load()
-        let profile = try openLocalProfile()
+    public static func open(
+        storage: ProtectedProfileStorage,
+        keyStore: WrappingKeyStore = KeychainWrappingKeyStore()
+    ) throws -> RiotProfileRepository {
+        var persisted = try storage.load()
+        let profile: MobileProfile
+        if let sealedIdentity = persisted.sealedIdentity {
+            guard sealedIdentity.count == 112 else { throw RepositoryError.invalidSealedIdentity }
+            profile = try withWrappingKey(from: keyStore) { wrappingKey in
+                try openProfileFromSealedIdentity(
+                    wrappingKey: wrappingKey,
+                    sealedIdentity: sealedIdentity
+                )
+            }
+        } else {
+            profile = try openLocalProfile()
+        }
         if let space = persisted.space {
             _ = try profile.joinPublicSpace(
                 space: PublicSpace(namespaceId: space.namespaceID, title: space.title, isPublic: true)
@@ -108,7 +126,18 @@ public final class RiotProfileRepository {
                 _ = try preview.createPlan(selectedEntryIds: entryIDs).accept()
             }
         }
-        return RiotProfileRepository(profile: profile, storage: storage, persisted: persisted)
+        let repository = RiotProfileRepository(
+            profile: profile,
+            storage: storage,
+            keyStore: keyStore,
+            persisted: persisted
+        )
+        if persisted.sealedIdentity == nil {
+            persisted.sealedIdentity = try repository.sealCurrentIdentity()
+            repository.persisted = persisted
+            try storage.save(persisted)
+        }
+        return repository
     }
 
     public func createPublicSpace(title: String) throws -> RiotSpace {
@@ -146,10 +175,30 @@ public final class RiotProfileRepository {
         guard currentSpace != nil else { return [] }
         return try profile.listCurrentEntries().map(RiotEntry.init)
     }
+
+    private func sealCurrentIdentity() throws -> Data {
+        let sealed = try Self.withWrappingKey(from: keyStore) { wrappingKey in
+            try profile.sealIdentity(wrappingKey: wrappingKey)
+        }
+        guard sealed.count == 112 else { throw RepositoryError.invalidSealedIdentity }
+        return sealed
+    }
+
+    private static func withWrappingKey<T>(
+        from keyStore: WrappingKeyStore,
+        operation: (Data) throws -> T
+    ) throws -> T {
+        var key = try keyStore.loadOrCreateWrappingKey()
+        defer { key.resetBytes(in: key.startIndex..<key.endIndex) }
+        guard key.count == 32 else { throw RepositoryError.invalidWrappingKey }
+        return try operation(key)
+    }
 }
 
 public enum RepositoryError: Error {
     case spaceMismatch
+    case invalidSealedIdentity
+    case invalidWrappingKey
 }
 
 private extension RiotEntry {
