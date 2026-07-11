@@ -109,6 +109,9 @@ fn committed_artifacts_match_the_committed_source() {
     let mut resources = Vec::new();
     for entry in std::fs::read_dir(&dir).expect("read dir") {
         let entry = entry.expect("entry");
+        if !entry.file_type().expect("file type").is_file() {
+            continue;
+        }
         let name = entry.file_name().to_string_lossy().into_owned();
         if name == "riot-app.json" {
             continue;
