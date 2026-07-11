@@ -3,31 +3,42 @@ import RiotKit
 
 struct ConferenceShellView: View {
     @ObservedObject var model: RiotAppModel
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
-        TabView(selection: $model.destination) {
-            ForEach(RiotDestination.phoneTabs) { destination in
-                NavigationStack {
-                    destinationView(destination)
-                        .safeAreaInset(edge: .bottom) {
-                            Text(model.connectionDisclosure)
-                                .font(.caption.weight(.semibold))
-                                .frame(maxWidth: .infinity)
-                                .padding(10)
-                                .background(.thinMaterial)
-                        }
+        VStack(spacing: 0) {
+            ZStack {
+                ForEach(RiotDestination.phoneTabs) { destination in
+                    NavigationStack {
+                        destinationView(destination)
+                    }
+                    .opacity(model.destination == destination ? 1 : 0)
+                    .allowsHitTesting(model.destination == destination)
                 }
-                .tabItem {
-                    Label(destination.tabTitle, systemImage: destination.systemImage)
-                }
-                .tag(destination)
             }
+            connectionDisclosureBar
+            RiotTabBar(selection: $model.destination)
         }
+        .background(RiotTheme.paper(for: colorScheme).ignoresSafeArea())
         .alert("Riot couldn’t finish that", isPresented: errorBinding) {
             Button("OK") { model.dismissError() }
         } message: {
             Text(model.errorMessage ?? "Unknown local error")
         }
+    }
+
+    private var connectionDisclosureBar: some View {
+        Text(model.connectionDisclosure)
+            .font(.riot(.mono, size: 11, relativeTo: .caption2))
+            .textCase(.uppercase)
+            .tracking(0.5)
+            .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 8)
+            .background(RiotTheme.paper2(for: colorScheme))
+            .overlay(alignment: .top) {
+                Rectangle().fill(RiotTheme.line(for: colorScheme)).frame(height: 1)
+            }
     }
 
     @ViewBuilder
