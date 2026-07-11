@@ -13,6 +13,7 @@ use riot_core::willow::{
     authorise_entry, encode_capability, encode_entry, generate_communal_author, Entry,
     EvidenceAuthor, Path, SignedWillowEntry,
 };
+use std::collections::BTreeSet;
 
 fn sample_pair(author: &EvidenceAuthor) -> (Vec<u8>, Vec<u8>, [u8; 32]) {
     let manifest = AppManifest {
@@ -199,7 +200,7 @@ fn trust_scan_keeps_namespace_author_and_timestamp() {
 }
 
 #[test]
-fn manifest_only_is_listed_but_bundle_only_is_not() {
+fn manifest_only_is_pending_but_bundle_only_is_absent() {
     let session = RiotSession::open().expect("session");
     let store = session.create_store().expect("store");
     let carrier = generate_communal_author().expect("carrier");
@@ -225,9 +226,81 @@ fn manifest_only_is_listed_but_bundle_only_is_not() {
     );
 
     let scanned = scan_app_index(&store).expect("scan");
-    assert_eq!(scanned.apps.len(), 1);
-    assert_eq!(scanned.apps[0].app_id, app_id);
-    assert!(!scanned.apps[0].bundle_present);
+    assert!(scanned.apps.is_empty());
+    assert_eq!(scanned.pending_manifests.len(), 1);
+    assert_eq!(scanned.pending_manifests[0].claimed_app_id, app_id);
+    assert_eq!(scanned.pending_manifests[0].manifest.name, "Checklist");
+    assert_eq!(
+        scanned.pending_manifests[0].carrier_subspace_id,
+        *carrier.subspace_id().as_bytes()
+    );
+    assert_eq!(scanned.pending_manifests[0].manifest_timestamp_micros, 100);
+}
+
+#[test]
+fn matching_bundle_promotes_pending_manifest_to_verified_app() {
+    let session = RiotSession::open().expect("session");
+    let store = session.create_store().expect("store");
+    let carrier = generate_communal_author().expect("carrier");
+    let developer = generate_communal_author().expect("developer");
+    let (manifest, bundle, app_id) = sample_pair(&developer);
+    import_signed(
+        &store,
+        &[signed_at(
+            &carrier,
+            app_index_manifest_path(&app_id).expect("path"),
+            &manifest,
+            100,
+        )],
+    );
+    let pending = scan_app_index(&store).expect("pending scan");
+    assert!(pending.apps.is_empty());
+    assert_eq!(pending.pending_manifests.len(), 1);
+
+    import_signed(
+        &store,
+        &[signed_at(
+            &carrier,
+            app_index_bundle_path(&app_id).expect("path"),
+            &bundle,
+            101,
+        )],
+    );
+    let promoted = scan_app_index(&store).expect("promoted scan");
+    assert_eq!(promoted.apps.len(), 1);
+    assert_eq!(promoted.apps[0].app_id, app_id);
+    assert!(promoted.apps[0].bundle_present);
+    assert!(promoted.pending_manifests.is_empty());
+}
+
+#[test]
+fn forged_manifest_claiming_legitimate_id_never_enters_verified_apps() {
+    let session = RiotSession::open().expect("session");
+    let store = session.create_store().expect("store");
+    let carrier = generate_communal_author().expect("carrier");
+    let legitimate_developer = generate_communal_author().expect("developer");
+    let attacker = generate_communal_author().expect("attacker");
+    let (_, _, legitimate_id) = sample_pair(&legitimate_developer);
+    let (forged_manifest, _, forged_id) = sample_pair(&attacker);
+    assert_ne!(legitimate_id, forged_id);
+    import_signed(
+        &store,
+        &[signed_at(
+            &carrier,
+            app_index_manifest_path(&legitimate_id).expect("path"),
+            &forged_manifest,
+            100,
+        )],
+    );
+
+    let scanned = scan_app_index(&store).expect("scan");
+    assert!(scanned.apps.is_empty());
+    assert_eq!(scanned.pending_manifests.len(), 1);
+    assert_eq!(scanned.pending_manifests[0].claimed_app_id, legitimate_id);
+    assert_eq!(
+        scanned.pending_manifests[0].manifest.author,
+        attacker.identity()
+    );
 }
 
 #[test]
@@ -329,11 +402,13 @@ fn endorsement_scan_is_capped_at_exactly_256() {
     })
     .expect("encode");
     let mut entries = Vec::new();
+    let mut endorser_ids = Vec::new();
     for i in 0..=MAX_SCANNED_ENDORSEMENTS_PER_APP {
         let mut secret = [0u8; 32];
         secret[..8].copy_from_slice(&(i as u64 + 1).to_be_bytes());
         let endorser =
             EvidenceAuthor::from_parts_for_tests(namespace.namespace_id().clone(), &secret);
+        endorser_ids.push(*endorser.subspace_id().as_bytes());
         entries.push(signed_at(
             &endorser,
             app_index_endorsement_path(&app_id, endorser.subspace_id().as_bytes()).expect("path"),
@@ -344,19 +419,194 @@ fn endorsement_scan_is_capped_at_exactly_256() {
     for chunk in entries[..MAX_SCANNED_ENDORSEMENTS_PER_APP].chunks(64) {
         import_signed(&store, chunk);
     }
-    assert_eq!(
-        scan_app_index(&store)
-            .expect("scan exact")
-            .endorsements
-            .len(),
-        MAX_SCANNED_ENDORSEMENTS_PER_APP
-    );
+    let exact: Vec<_> = scan_app_index(&store)
+        .expect("scan exact")
+        .endorsements
+        .into_iter()
+        .map(|record| record.endorser_subspace_id)
+        .collect();
+    let mut expected_exact = endorser_ids[..MAX_SCANNED_ENDORSEMENTS_PER_APP].to_vec();
+    expected_exact.sort_unstable();
+    assert_eq!(exact, expected_exact);
     import_signed(&store, &entries[MAX_SCANNED_ENDORSEMENTS_PER_APP..]);
-    assert_eq!(
-        scan_app_index(&store)
-            .expect("scan over")
-            .endorsements
-            .len(),
-        MAX_SCANNED_ENDORSEMENTS_PER_APP
+    let over: Vec<_> = scan_app_index(&store)
+        .expect("scan over")
+        .endorsements
+        .into_iter()
+        .map(|record| record.endorser_subspace_id)
+        .collect();
+    endorser_ids.sort_unstable();
+    assert_eq!(over, endorser_ids[..MAX_SCANNED_ENDORSEMENTS_PER_APP]);
+}
+
+#[cfg(feature = "conformance")]
+#[test]
+fn endorsement_namespace_copies_dedup_by_subspace_and_newest_wins() {
+    let session = RiotSession::open().expect("session");
+    let store = session.create_store().expect("store");
+    let first_namespace = generate_communal_author().expect("namespace");
+    let second_namespace = generate_communal_author().expect("namespace");
+    let secret = [0x41; 32];
+    let first =
+        EvidenceAuthor::from_parts_for_tests(first_namespace.namespace_id().clone(), &secret);
+    let second =
+        EvidenceAuthor::from_parts_for_tests(second_namespace.namespace_id().clone(), &secret);
+    let app_id = [8u8; 32];
+    let active = encode_endorsement(&EndorsementMarker {
+        app_id,
+        note: String::new(),
+        retracted: false,
+    })
+    .expect("active");
+    let retracted = encode_endorsement(&EndorsementMarker {
+        app_id,
+        note: String::new(),
+        retracted: true,
+    })
+    .expect("retracted");
+    import_signed(
+        &store,
+        &[
+            signed_at(
+                &first,
+                app_index_endorsement_path(&app_id, first.subspace_id().as_bytes()).expect("path"),
+                &active,
+                200,
+            ),
+            signed_at(
+                &second,
+                app_index_endorsement_path(&app_id, second.subspace_id().as_bytes()).expect("path"),
+                &retracted,
+                100,
+            ),
+        ],
     );
+
+    let scanned = scan_app_index(&store).expect("scan");
+    assert_eq!(scanned.endorsements.len(), 1);
+    assert_eq!(
+        scanned.endorsements[0].endorser_subspace_id,
+        *first.subspace_id().as_bytes()
+    );
+    assert!(
+        !scanned.endorsements[0].retracted,
+        "newer namespace copy wins"
+    );
+}
+
+#[cfg(feature = "conformance")]
+#[test]
+fn equal_timestamp_retraction_wins_in_both_import_orders() {
+    let first_namespace = generate_communal_author().expect("namespace");
+    let second_namespace = generate_communal_author().expect("namespace");
+    let secret = [0x42; 32];
+    let first =
+        EvidenceAuthor::from_parts_for_tests(first_namespace.namespace_id().clone(), &secret);
+    let second =
+        EvidenceAuthor::from_parts_for_tests(second_namespace.namespace_id().clone(), &secret);
+    let app_id = [9u8; 32];
+    let active = encode_endorsement(&EndorsementMarker {
+        app_id,
+        note: String::new(),
+        retracted: false,
+    })
+    .expect("active");
+    let retracted = encode_endorsement(&EndorsementMarker {
+        app_id,
+        note: String::new(),
+        retracted: true,
+    })
+    .expect("retracted");
+    let active_entry = signed_at(
+        &first,
+        app_index_endorsement_path(&app_id, first.subspace_id().as_bytes()).expect("path"),
+        &active,
+        100,
+    );
+    let retracted_entry = signed_at(
+        &second,
+        app_index_endorsement_path(&app_id, second.subspace_id().as_bytes()).expect("path"),
+        &retracted,
+        100,
+    );
+
+    for entries in [
+        [&active_entry, &retracted_entry],
+        [&retracted_entry, &active_entry],
+    ] {
+        let session = RiotSession::open().expect("session");
+        let store = session.create_store().expect("store");
+        import_signed(&store, std::slice::from_ref(entries[0]));
+        import_signed(&store, std::slice::from_ref(entries[1]));
+        let scanned = scan_app_index(&store).expect("scan");
+        assert_eq!(scanned.endorsements.len(), 1);
+        assert!(scanned.endorsements[0].retracted);
+    }
+}
+
+#[cfg(feature = "conformance")]
+#[test]
+fn namespace_duplicates_do_not_crowd_unique_endorsers_before_cap() {
+    let session = RiotSession::open().expect("session");
+    let store = session.create_store().expect("store");
+    let app_id = [10u8; 32];
+    let payload = encode_endorsement(&EndorsementMarker {
+        app_id,
+        note: String::new(),
+        retracted: false,
+    })
+    .expect("marker");
+    let duplicate_secret = [0x51; 32];
+    let mut entries = Vec::new();
+    // The real store admits at most 64 namespaces. Exercise 63 duplicate
+    // namespace copies here; index.rs's private reconciliation unit test
+    // covers the requested exact 256-copy hostile input.
+    for _ in 0..63 {
+        let namespace = generate_communal_author().expect("namespace");
+        let endorser = EvidenceAuthor::from_parts_for_tests(
+            namespace.namespace_id().clone(),
+            &duplicate_secret,
+        );
+        entries.push(signed_at(
+            &endorser,
+            app_index_endorsement_path(&app_id, endorser.subspace_id().as_bytes()).expect("path"),
+            &payload,
+            100,
+        ));
+    }
+    let unique_namespace = generate_communal_author().expect("namespace");
+    let mut expected = BTreeSet::new();
+    expected.insert(
+        *EvidenceAuthor::from_parts_for_tests(
+            unique_namespace.namespace_id().clone(),
+            &duplicate_secret,
+        )
+        .subspace_id()
+        .as_bytes(),
+    );
+    for i in 0..(MAX_SCANNED_ENDORSEMENTS_PER_APP - 1) {
+        let mut secret = [0u8; 32];
+        secret[..8].copy_from_slice(&(i as u64 + 1).to_be_bytes());
+        let endorser =
+            EvidenceAuthor::from_parts_for_tests(unique_namespace.namespace_id().clone(), &secret);
+        expected.insert(*endorser.subspace_id().as_bytes());
+        entries.push(signed_at(
+            &endorser,
+            app_index_endorsement_path(&app_id, endorser.subspace_id().as_bytes()).expect("path"),
+            &payload,
+            100,
+        ));
+    }
+    for chunk in entries.chunks(64) {
+        import_signed(&store, chunk);
+    }
+
+    let actual: BTreeSet<_> = scan_app_index(&store)
+        .expect("scan")
+        .endorsements
+        .into_iter()
+        .map(|record| record.endorser_subspace_id)
+        .collect();
+    assert_eq!(actual, expected);
+    assert_eq!(actual.len(), MAX_SCANNED_ENDORSEMENTS_PER_APP);
 }

@@ -8,6 +8,7 @@
 
 use std::collections::BTreeMap;
 
+use willow25::entry::Entrylike;
 use willow25::groupings::{Coordinatelike, Keylike, Namespaced};
 
 use crate::session::{commit_at, EvidenceStore};
@@ -29,9 +30,23 @@ pub const APP_INDEX_COMPONENT: &[u8] = b"app-index";
 /// per-app cap is applied, so store iteration order cannot choose survivors.
 pub const MAX_SCANNED_ENDORSEMENTS_PER_APP: usize = 256;
 
+/// A decoded manifest whose claimed path identity cannot yet be verified
+/// because no matching bundle is live at the same Willow carrier coordinate.
+/// Consumers may show this as "still arriving", but must not feed it into
+/// trust, supersession, or launch decisions.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingManifest {
+    pub claimed_app_id: AppId,
+    pub manifest: AppManifest,
+    pub carrier_namespace_id: [u8; 32],
+    pub carrier_subspace_id: [u8; 32],
+    pub manifest_timestamp_micros: u64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ScannedIndex {
     pub apps: Vec<IndexedApp>,
+    pub pending_manifests: Vec<PendingManifest>,
     pub endorsements: Vec<EndorsementRecord>,
     /// Namespace-grouped markers. Organizer recognition is deliberately left
     /// empty for the directory assembler's caller to supply as local policy.
@@ -51,7 +66,9 @@ pub use super::bundle::app_bundle_digest;
 /// Validates a canonical manifest/bundle pair, derives its content identity,
 /// then publishes the two Willow entries through normal admission. The two
 /// commits are intentionally sequential: a live manifest may precede its
-/// still-arriving bundle.
+/// still-arriving bundle. Consequently, an error from the bundle commit may
+/// be returned after the manifest commit has succeeded; callers must treat
+/// publication as resumable partial arrival, not an atomic transaction.
 pub fn publish_app_index(
     store: &EvidenceStore,
     carrier: &EvidenceAuthor,
@@ -94,11 +111,38 @@ struct BundleCandidate {
     entry_point: String,
 }
 
+#[derive(Clone)]
+struct EndorsementCandidate {
+    record: EndorsementRecord,
+    timestamp_micros: u64,
+    namespace_id: [u8; 32],
+    payload_digest: [u8; 32],
+    entry_id: [u8; 32],
+}
+
+impl EndorsementCandidate {
+    /// Global reputation is keyed by endorser subspace, not namespace. A
+    /// newer namespace copy wins; equal-time disagreement fails closed to a
+    /// retraction. Fully tied values use immutable Willow identity bytes so
+    /// input order can never select the result.
+    fn wins_over(&self, other: &Self) -> bool {
+        self.timestamp_micros > other.timestamp_micros
+            || (self.timestamp_micros == other.timestamp_micros
+                && (self.record.retracted && !other.record.retracted
+                    || (self.record.retracted == other.record.retracted
+                        && (self.namespace_id, self.payload_digest, self.entry_id)
+                            < (other.namespace_id, other.payload_digest, other.entry_id))))
+    }
+}
+
 /// Scans the complete live app-index view. Invalid records are item-local and
 /// silently ignored. When several carriers publish one app, a complete pair
 /// wins over an incomplete one, then the lexicographically smallest Willow
 /// `(namespace_id, subspace_id)` coordinate wins. That coordinate is made of
 /// Willow's native identity bytes and is independent of store iteration.
+/// The endorsement ceiling bounds only returned materialized records; the
+/// live store is still scanned so global `(app_id, endorser)` reconciliation
+/// cannot be biased by early termination.
 pub fn scan_app_index(store: &EvidenceStore) -> Result<ScannedIndex, AppsError> {
     let prefix = Path::from_slices(&[APP_INDEX_COMPONENT]).map_err(|_| AppsError::PathInvalid)?;
     let entries = store
@@ -107,10 +151,10 @@ pub fn scan_app_index(store: &EvidenceStore) -> Result<ScannedIndex, AppsError> 
     type CarrierKey = (AppId, [u8; 32], [u8; 32]);
     let mut manifests: BTreeMap<CarrierKey, ManifestCandidate> = BTreeMap::new();
     let mut bundles: BTreeMap<CarrierKey, BundleCandidate> = BTreeMap::new();
-    let mut endorsements = Vec::new();
+    let mut endorsement_candidates = Vec::new();
     let mut trust_by_namespace: BTreeMap<[u8; 32], Vec<TrustMarker>> = BTreeMap::new();
 
-    for (_, entry, payload) in entries {
+    for (entry_id, entry, payload) in entries {
         let Some(payload) = payload else { continue };
         let namespace_id = *entry.namespace_id().as_bytes();
         let subspace_id = *entry.subspace_id().as_bytes();
@@ -151,16 +195,18 @@ pub fn scan_app_index(store: &EvidenceStore) -> Result<ScannedIndex, AppsError> 
                 if marker.app_id != app_id {
                     continue;
                 }
-                endorsements.push((
-                    app_id,
-                    endorser_subspace_id,
-                    namespace_id,
-                    EndorsementRecord {
+                let candidate = EndorsementCandidate {
+                    record: EndorsementRecord {
                         app_id,
                         endorser_subspace_id,
                         retracted: marker.retracted,
                     },
-                ));
+                    timestamp_micros,
+                    namespace_id,
+                    payload_digest: *entry.payload_digest().as_bytes(),
+                    entry_id,
+                };
+                endorsement_candidates.push(candidate);
             }
             Some(AppIndexSlot::Trust {
                 app_id,
@@ -189,44 +235,47 @@ pub fn scan_app_index(store: &EvidenceStore) -> Result<ScannedIndex, AppsError> 
         }
     }
 
-    let mut candidates: Vec<(bool, [u8; 32], [u8; 32], IndexedApp)> = Vec::new();
+    let mut candidates: Vec<([u8; 32], [u8; 32], IndexedApp)> = Vec::new();
+    let mut pending_manifests = Vec::new();
     for ((app_id, namespace_id, subspace_id), candidate) in manifests {
         let bundle = bundles.get(&(app_id, namespace_id, subspace_id));
-        let bundle_present = if let Some(bundle) = bundle {
-            if candidate.manifest.entry_point != bundle.entry_point
-                || app_id_for(&candidate.manifest, &app_bundle_digest(&bundle.bytes)).ok()
-                    != Some(app_id)
-            {
-                continue;
-            }
-            true
-        } else {
-            false
-        };
-        candidates.push((
-            bundle_present,
-            namespace_id,
-            subspace_id,
-            IndexedApp {
-                app_id,
-                manifest: candidate.manifest,
-                bundle_present,
-                provenance: AppProvenance::Carried {
-                    carrier_subspace_id: subspace_id,
+        let is_verified = bundle.is_some_and(|bundle| {
+            candidate.manifest.entry_point == bundle.entry_point
+                && app_id_for(&candidate.manifest, &app_bundle_digest(&bundle.bytes)).ok()
+                    == Some(app_id)
+        });
+        if is_verified {
+            candidates.push((
+                namespace_id,
+                subspace_id,
+                IndexedApp {
+                    app_id,
+                    manifest: candidate.manifest,
+                    bundle_present: true,
+                    provenance: AppProvenance::Carried {
+                        carrier_subspace_id: subspace_id,
+                    },
+                    manifest_timestamp_micros: candidate.timestamp_micros,
                 },
+            ));
+        } else {
+            pending_manifests.push(PendingManifest {
+                claimed_app_id: app_id,
+                manifest: candidate.manifest,
+                carrier_namespace_id: namespace_id,
+                carrier_subspace_id: subspace_id,
                 manifest_timestamp_micros: candidate.timestamp_micros,
-            },
-        ));
+            });
+        }
     }
     candidates.sort_by(|a, b| {
-        a.3.app_id
-            .cmp(&b.3.app_id)
-            .then_with(|| b.0.cmp(&a.0))
+        a.2.app_id
+            .cmp(&b.2.app_id)
+            .then_with(|| a.0.cmp(&b.0))
             .then_with(|| a.1.cmp(&b.1))
-            .then_with(|| a.2.cmp(&b.2))
     });
     let mut apps = Vec::new();
-    for (_, _, _, app) in candidates {
+    for (_, _, app) in candidates {
         if apps
             .last()
             .is_none_or(|previous: &IndexedApp| previous.app_id != app.app_id)
@@ -234,20 +283,16 @@ pub fn scan_app_index(store: &EvidenceStore) -> Result<ScannedIndex, AppsError> 
             apps.push(app);
         }
     }
+    pending_manifests.sort_by_key(|pending| {
+        (
+            pending.claimed_app_id,
+            pending.carrier_namespace_id,
+            pending.carrier_subspace_id,
+            pending.manifest_timestamp_micros,
+        )
+    });
 
-    endorsements.sort_by_key(|(app_id, endorser, namespace, _)| (*app_id, *endorser, *namespace));
-    let mut endorsement_counts: BTreeMap<AppId, usize> = BTreeMap::new();
-    let endorsements = endorsements
-        .into_iter()
-        .filter_map(|(app_id, _, _, record)| {
-            let count = endorsement_counts.entry(app_id).or_default();
-            if *count == MAX_SCANNED_ENDORSEMENTS_PER_APP {
-                return None;
-            }
-            *count += 1;
-            Some(record)
-        })
-        .collect();
+    let endorsements = reconcile_endorsements(endorsement_candidates);
 
     let spaces = trust_by_namespace
         .into_iter()
@@ -268,9 +313,91 @@ pub fn scan_app_index(store: &EvidenceStore) -> Result<ScannedIndex, AppsError> 
         .collect();
     Ok(ScannedIndex {
         apps,
+        pending_manifests,
         endorsements,
         spaces,
     })
+}
+
+fn reconcile_endorsements(candidates: Vec<EndorsementCandidate>) -> Vec<EndorsementRecord> {
+    let mut by_endorser: BTreeMap<(AppId, [u8; 32]), EndorsementCandidate> = BTreeMap::new();
+    for candidate in candidates {
+        let key = (
+            candidate.record.app_id,
+            candidate.record.endorser_subspace_id,
+        );
+        match by_endorser.get(&key) {
+            Some(current) if !candidate.wins_over(current) => {}
+            _ => {
+                by_endorser.insert(key, candidate);
+            }
+        }
+    }
+    let mut counts: BTreeMap<AppId, usize> = BTreeMap::new();
+    by_endorser
+        .into_iter()
+        .filter_map(|((app_id, _), candidate)| {
+            let count = counts.entry(app_id).or_default();
+            if *count == MAX_SCANNED_ENDORSEMENTS_PER_APP {
+                return None;
+            }
+            *count += 1;
+            Some(candidate.record)
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        reconcile_endorsements, EndorsementCandidate, EndorsementRecord,
+        MAX_SCANNED_ENDORSEMENTS_PER_APP,
+    };
+
+    fn candidate(
+        app_id: [u8; 32],
+        endorser: [u8; 32],
+        namespace: [u8; 32],
+    ) -> EndorsementCandidate {
+        EndorsementCandidate {
+            record: EndorsementRecord {
+                app_id,
+                endorser_subspace_id: endorser,
+                retracted: false,
+            },
+            timestamp_micros: 100,
+            namespace_id: namespace,
+            payload_digest: [3; 32],
+            entry_id: namespace,
+        }
+    }
+
+    #[test]
+    fn two_hundred_fifty_six_namespace_copies_consume_one_output_slot() {
+        let app_id = [7; 32];
+        let duplicate = [1; 32];
+        let mut candidates = Vec::new();
+        for i in 0..MAX_SCANNED_ENDORSEMENTS_PER_APP {
+            let mut namespace = [0u8; 32];
+            namespace[..8].copy_from_slice(&(i as u64).to_be_bytes());
+            candidates.push(candidate(app_id, duplicate, namespace));
+        }
+        for i in 0..(MAX_SCANNED_ENDORSEMENTS_PER_APP - 1) {
+            let mut endorser = [2u8; 32];
+            endorser[..8].copy_from_slice(&(i as u64).to_be_bytes());
+            candidates.push(candidate(app_id, endorser, [9; 32]));
+        }
+
+        let records = reconcile_endorsements(candidates);
+        assert_eq!(records.len(), MAX_SCANNED_ENDORSEMENTS_PER_APP);
+        assert_eq!(
+            records
+                .iter()
+                .filter(|record| record.endorser_subspace_id == duplicate)
+                .count(),
+            1
+        );
+    }
 }
 
 pub fn app_index_prefix_for(app_id: &[u8; APP_ID_BYTES]) -> Result<Path, AppsError> {
