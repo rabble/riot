@@ -417,6 +417,23 @@ impl EvidenceStore {
         Ok(st.store.as_ref().unwrap().join.live_ids())
     }
 
+    /// Live entries whose path is prefixed by `prefix`, with their canonical
+    /// ids. Same typed boundary as `live_entry_ids`; the returned `Entry`
+    /// carries the payload digest/length, never signer or capability state.
+    pub fn entries_with_prefix(
+        &self,
+        prefix: &crate::willow::Path,
+    ) -> Result<Vec<(EntryId, crate::willow::Entry)>, SessionError> {
+        let st = self.inner.lock().map_err(|_| SessionError::Internal)?;
+        st.require_store(self.store_id)?;
+        Ok(st
+            .store
+            .as_ref()
+            .unwrap()
+            .join
+            .live_entries_with_prefix(prefix))
+    }
+
     pub fn receipt_count(&self) -> Result<usize, SessionError> {
         let st = self.inner.lock().map_err(|_| SessionError::Internal)?;
         st.require_store(self.store_id)?;
@@ -500,18 +517,27 @@ impl EvidenceStore {
                 // exact bytes, not that the Willow path they chose actually
                 // describes the payload underneath it. Without this check a
                 // validly signed entry could bind an arbitrary path to
-                // content it doesn't describe.
-                let path_matches = decode_alert(item.frame.payload_bytes())
-                    .ok()
-                    .and_then(|alert| {
-                        alert_entry_path_matches_payload(
-                            item.frame.entry_bytes(),
-                            &alert.object_id,
-                            &alert.revision_id,
-                        )
+                // content it doesn't describe. App-data entries are exempt
+                // from the alert binding: their payload is opaque and embeds
+                // no identity a path could contradict — the path itself
+                // (already shape-checked in `verify_frame`) is the identity.
+                let path_matches = if crate::apps::entry::is_app_data_path(
+                    willow25::groupings::Keylike::path(authorised.entry()),
+                ) {
+                    true
+                } else {
+                    decode_alert(item.frame.payload_bytes())
                         .ok()
-                    })
-                    .unwrap_or(false);
+                        .and_then(|alert| {
+                            alert_entry_path_matches_payload(
+                                item.frame.entry_bytes(),
+                                &alert.object_id,
+                                &alert.revision_id,
+                            )
+                            .ok()
+                        })
+                        .unwrap_or(false)
+                };
                 if path_matches {
                     verified.push(VerifiedEntry {
                         authorised,

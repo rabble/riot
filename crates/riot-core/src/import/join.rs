@@ -16,6 +16,7 @@
 
 use willow25::authorisation::AuthorisedEntry;
 use willow25::entry::EntrylikeExt;
+use willow25::groupings::Keylike;
 
 use crate::willow::{encode_entry, entry_id, Entry, EntryId};
 
@@ -116,6 +117,18 @@ impl JoinState {
     /// The ids of every live entry.
     pub fn live_ids(&self) -> Vec<EntryId> {
         self.live.iter().map(|s| s.id).collect()
+    }
+
+    /// Live entries whose path is prefixed by `prefix`.
+    pub fn live_entries_with_prefix(
+        &self,
+        prefix: &crate::willow::Path,
+    ) -> Vec<(EntryId, crate::willow::Entry)> {
+        self.live
+            .iter()
+            .filter(|s| prefix.is_prefix_of(s.entry.path()))
+            .map(|s| (s.id, s.entry.clone()))
+            .collect()
     }
 }
 

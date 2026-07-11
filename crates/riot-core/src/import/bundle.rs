@@ -509,8 +509,15 @@ fn verify_frame(frame: &BundleItemFrame) -> Result<ValidItem, BundleDiagnostic> 
         });
     }
 
-    // Schema: the payload must be exactly one canonical Riot alert.
-    if crate::model::decode_alert(&frame.payload_bytes).is_err() {
+    // Schema: an alert-path entry's payload must be exactly one canonical
+    // Riot alert. App-data paths (`apps/<app_id>/...`, shape defined by
+    // `apps::entry::is_app_data_path`) instead carry opaque app payloads:
+    // integrity is covered by the digest/length checks above, size by
+    // `MAX_ITEM_PAYLOAD_BYTES`, and the payload embeds no identity for the
+    // path to bind, so no payload schema applies to them.
+    if !crate::apps::entry::is_app_data_path(entry.path())
+        && crate::model::decode_alert(&frame.payload_bytes).is_err()
+    {
         return Err(BundleDiagnostic {
             code: DiagnosticCode::UnsupportedSchema,
             component: ItemComponent::Schema,

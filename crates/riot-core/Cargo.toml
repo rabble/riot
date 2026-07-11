@@ -69,3 +69,11 @@ required-features = ["conformance"]
 [[test]]
 name = "core_import_path_size_ceilings"
 required-features = ["conformance"]
+
+[[test]]
+name = "core_entries_with_prefix"
+required-features = ["conformance"]
+
+[[test]]
+name = "core_import_app_entries"
+required-features = ["conformance"]

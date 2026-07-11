@@ -19,17 +19,50 @@ const _: () = assert!(APP_ID_BYTES <= MAX_PATH_COMPONENT_BYTES);
 /// digits, or hyphens — the same safe-path-segment rule already used for
 /// conference-fixture routes. `crypto.randomUUID()` output (lowercase hex
 /// and hyphens) satisfies this directly.
+fn is_valid_key_segment(segment: &[u8]) -> bool {
+    !segment.is_empty()
+        && segment
+            .iter()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || *b == b'-')
+}
+
 fn validate_segment(segment: &str) -> Result<(), AppsError> {
-    if segment.is_empty() {
-        return Err(AppsError::KeySegmentInvalid);
+    if is_valid_key_segment(segment.as_bytes()) {
+        Ok(())
+    } else {
+        Err(AppsError::KeySegmentInvalid)
     }
-    if !segment
-        .bytes()
-        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
-    {
-        return Err(AppsError::KeySegmentInvalid);
+}
+
+/// Admission-boundary shape check: `apps / <32-byte app_id> / <one or more
+/// valid key segments>`. The single source of truth shared by
+/// `app_data_path` (local writes) and the import pipeline's `verify_frame`
+/// (remote entries), so locally constructible paths and remotely admissible
+/// ones can never drift apart. Size ceilings are not re-checked here — the
+/// import pipeline already enforces `MAX_PATH_*` on every path before any
+/// schema decision.
+pub fn is_app_data_path(path: &Path) -> bool {
+    let mut components = path.components();
+    let Some(first) = components.next() else {
+        return false;
+    };
+    if first.as_ref() != APPS_COMPONENT {
+        return false;
     }
-    Ok(())
+    let Some(app_id) = components.next() else {
+        return false;
+    };
+    if app_id.len() != APP_ID_BYTES {
+        return false;
+    }
+    let mut saw_key_segment = false;
+    for component in components {
+        if !is_valid_key_segment(component.as_ref()) {
+            return false;
+        }
+        saw_key_segment = true;
+    }
+    saw_key_segment
 }
 
 pub fn app_data_path(app_id: &[u8; APP_ID_BYTES], key: &str) -> Result<Path, AppsError> {
