@@ -548,6 +548,35 @@ fn inspect_and_cli_reject_terminal_control_fields_without_echoing_them() {
     assert!(!output.stdout.contains(&0x1b));
 }
 
+#[test]
+fn pack_errors_escape_hostile_json_keys_and_paths() {
+    let tmp = copy_fixture();
+    fs::write(tmp.path().join("riot-app.json"), r#"{"name":"x","description":"d","version":"1","entry_point":"index.html","permissions":[],"evil\u001bkey":1}"#).unwrap();
+    let author = generate_communal_author().unwrap();
+    let error = pack(PackInput {
+        app_dir: tmp.path(),
+        author: &author,
+        timestamp_micros: 1,
+    })
+    .unwrap_err()
+    .to_string();
+    assert!(!error.contains('\u{1b}'));
+    assert!(error.contains("\\u{1b}"));
+
+    let tmp = copy_fixture();
+    fs::write(tmp.path().join("bad\nname.js"), b"x").unwrap();
+    let author = generate_communal_author().unwrap();
+    let error = pack(PackInput {
+        app_dir: tmp.path(),
+        author: &author,
+        timestamp_micros: 1,
+    })
+    .unwrap_err()
+    .to_string();
+    assert!(!error.contains('\n'));
+    assert!(error.contains("\\n"));
+}
+
 fn signed_at(
     author: &EvidenceAuthor,
     path: WillowPath,

@@ -1,6 +1,6 @@
-//! Unix-only secure publisher for Riot app bundles.
-#[cfg(not(unix))]
-compile_error!("riot-app-cli currently requires Unix descriptor-relative filesystem primitives");
+//! macOS/Linux-only secure publisher for Riot app bundles.
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+compile_error!("riot-app-cli currently supports only macOS and Linux");
 
 use std::collections::BTreeSet;
 use std::ffi::{CStr, CString, OsStr, OsString};
@@ -111,17 +111,31 @@ impl std::fmt::Display for PackError {
                     path.to_string_lossy().escape_default()
                 )
             }
-            Self::ManifestJsonInvalid { reason } => write!(f, "riot-app.json: {reason}"),
-            Self::InvalidResourcePath { path } => write!(f, "invalid resource path '{path}'"),
+            Self::ManifestJsonInvalid { reason } => {
+                write!(f, "riot-app.json: {}", escape_text(reason))
+            }
+            Self::InvalidResourcePath { path } => {
+                write!(f, "invalid resource path '{}'", escape_text(path))
+            }
             Self::UnsupportedResource { path } => {
-                write!(f, "unsupported resource file '{path}'")
+                write!(f, "unsupported resource file '{}'", escape_text(path))
             }
             Self::MissingEntryPoint { entry_point } => {
-                write!(f, "entry_point '{entry_point}' is not a packed resource")
+                write!(
+                    f,
+                    "entry_point '{}' is not a packed resource",
+                    escape_text(entry_point)
+                )
             }
-            Self::Symlink { path } => write!(f, "symbolic link is not allowed: '{path}'"),
+            Self::Symlink { path } => {
+                write!(f, "symbolic link is not allowed: '{}'", escape_text(path))
+            }
             Self::NonRegularFile { path } => {
-                write!(f, "non-regular resource is not allowed: '{path}'")
+                write!(
+                    f,
+                    "non-regular resource is not allowed: '{}'",
+                    escape_text(path)
+                )
             }
             Self::TooLarge { actual, limit } => {
                 write!(
@@ -141,6 +155,10 @@ impl std::fmt::Display for PackError {
             }
         }
     }
+}
+
+fn escape_text(value: &str) -> String {
+    value.chars().flat_map(char::escape_default).collect()
 }
 
 impl std::error::Error for PackError {
@@ -297,22 +315,35 @@ impl PinnedDir {
     }
 
     fn names(&self, total: &mut usize) -> io::Result<Vec<OsString>> {
+        self.names_with(total, |directory| unsafe { libc::readdir(directory) })
+    }
+
+    fn names_with<F>(&self, total: &mut usize, mut next: F) -> io::Result<Vec<OsString>>
+    where
+        F: FnMut(*mut libc::DIR) -> *mut libc::dirent,
+    {
         let duplicate = unsafe { libc::dup(self.0.as_raw_fd()) };
         if duplicate < 0 {
             return Err(io::Error::last_os_error());
         }
-        let directory = unsafe { libc::fdopendir(duplicate) };
-        if directory.is_null() {
+        let raw_directory = unsafe { libc::fdopendir(duplicate) };
+        if raw_directory.is_null() {
             unsafe {
                 libc::close(duplicate);
             }
             return Err(io::Error::last_os_error());
         }
+        let directory = OwnedDir(raw_directory);
         let mut names = Vec::new();
         loop {
-            let entry = unsafe { libc::readdir(directory) };
+            set_errno(0);
+            let entry = next(directory.0);
             if entry.is_null() {
-                break;
+                let error = get_errno();
+                if error == 0 {
+                    break;
+                }
+                return Err(io::Error::from_raw_os_error(error));
             }
             let name = unsafe { CStr::from_ptr((*entry).d_name.as_ptr()) }.to_bytes();
             if name == b"." || name == b".." {
@@ -320,9 +351,6 @@ impl PinnedDir {
             }
             *total = total.saturating_add(1);
             if names.len() == MAX_DIRECTORY_ENTRIES || *total > MAX_TOTAL_ENTRIES {
-                unsafe {
-                    libc::closedir(directory);
-                }
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
                     "directory scan limit exceeded",
@@ -330,12 +358,36 @@ impl PinnedDir {
             }
             names.push(OsString::from_vec(name.to_vec()));
         }
-        unsafe {
-            libc::closedir(directory);
-        }
         names.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
         Ok(names)
     }
+}
+
+struct OwnedDir(*mut libc::DIR);
+
+impl Drop for OwnedDir {
+    fn drop(&mut self) {
+        unsafe {
+            libc::closedir(self.0);
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn errno_location() -> *mut libc::c_int {
+    unsafe { libc::__error() }
+}
+#[cfg(target_os = "linux")]
+fn errno_location() -> *mut libc::c_int {
+    unsafe { libc::__errno_location() }
+}
+fn set_errno(value: libc::c_int) {
+    unsafe {
+        *errno_location() = value;
+    }
+}
+fn get_errno() -> libc::c_int {
+    unsafe { *errno_location() }
 }
 
 fn openat_file(parent: libc::c_int, name: &OsStr, flags: libc::c_int) -> io::Result<File> {
@@ -1145,6 +1197,7 @@ pub fn keygen(out: &Path) -> Result<KeygenOutput, KeyError> {
 enum KeygenStage {
     AfterWrapKey,
     BeforePublish,
+    BeforeParentSync,
 }
 
 fn keygen_inner<F>(out: &Path, mut checkpoint: F) -> Result<KeygenOutput, KeyError>
@@ -1174,18 +1227,7 @@ where
             source: io::Error::last_os_error(),
         });
     }
-    let stage = PinnedDir(
-        openat_file(
-            parent_dir.0.as_raw_fd(),
-            &stage_name,
-            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
-        )
-        .map_err(|source| KeyError::Io {
-            operation: "open key staging directory",
-            path: PathBuf::from(&stage_name),
-            source,
-        })?,
-    );
+    let stage = open_stage_or_cleanup(&parent_dir, &stage_name, "open key staging directory")?;
     let mut published = false;
     let result = (|| {
         let author = generate_communal_author().map_err(|_| KeyError::EntropyUnavailable)?;
@@ -1238,22 +1280,43 @@ where
             }
         })?;
         published = true;
-        if let Err(source) = parent_dir.0.sync_all() {
-            if let Ok(final_c) = CString::new(out.file_name().expect("checked").as_bytes()) {
-                unsafe {
-                    libc::unlinkat(
-                        parent_dir.0.as_raw_fd(),
-                        final_c.as_ptr(),
-                        libc::AT_REMOVEDIR,
-                    );
-                }
-            }
-            let _ = parent_dir.0.sync_all();
-            return Err(KeyError::Io {
+        let sync_result = checkpoint(KeygenStage::BeforeParentSync).and_then(|()| {
+            parent_dir.0.sync_all().map_err(|source| KeyError::Io {
                 operation: "sync published key parent",
                 path: parent.to_path_buf(),
                 source,
-            });
+            })
+        });
+        if let Err(error) = sync_result {
+            unlinkat_checked(
+                &stage,
+                OsStr::new("author.wrapkey"),
+                0,
+                "rollback wrapping key",
+            )?;
+            unlinkat_checked(
+                &stage,
+                OsStr::new("author.sealed"),
+                0,
+                "rollback sealed identity",
+            )?;
+            stage.0.sync_all().map_err(|cleanup| KeyError::Io {
+                operation: "sync rolled-back key directory",
+                path: out.to_path_buf(),
+                source: cleanup,
+            })?;
+            unlinkat_checked(
+                &parent_dir,
+                out.file_name().expect("checked"),
+                libc::AT_REMOVEDIR,
+                "rollback published key directory",
+            )?;
+            parent_dir.0.sync_all().map_err(|cleanup| KeyError::Io {
+                operation: "sync key rollback parent",
+                path: parent.to_path_buf(),
+                source: cleanup,
+            })?;
+            return Err(error);
         }
         Ok(KeygenOutput {
             identity,
@@ -1261,23 +1324,89 @@ where
         })
     })();
     if !published {
-        for name in ["author.wrapkey", "author.sealed"] {
-            if let Ok(name) = CString::new(name) {
-                unsafe {
-                    libc::unlinkat(stage.0.as_raw_fd(), name.as_ptr(), 0);
-                }
-            }
-        }
+        let cleanup = unlinkat_if_exists(
+            &stage,
+            OsStr::new("author.wrapkey"),
+            0,
+            "clean wrapping key",
+        )
+        .and_then(|()| {
+            unlinkat_if_exists(
+                &stage,
+                OsStr::new("author.sealed"),
+                0,
+                "clean sealed identity",
+            )
+        });
         drop(stage);
-        unsafe {
-            libc::unlinkat(
-                parent_dir.0.as_raw_fd(),
-                stage_c.as_ptr(),
+        let cleanup = cleanup.and_then(|()| {
+            unlinkat_checked(
+                &parent_dir,
+                &stage_name,
                 libc::AT_REMOVEDIR,
-            );
-        }
+                "clean key staging directory",
+            )
+        });
+        cleanup?;
     }
     result
+}
+
+fn unlinkat_checked(
+    directory: &PinnedDir,
+    name: &OsStr,
+    flags: libc::c_int,
+    operation: &'static str,
+) -> Result<(), KeyError> {
+    let name_c = CString::new(name.as_bytes()).map_err(|_| KeyError::InvalidOutputDirectory)?;
+    if unsafe { libc::unlinkat(directory.0.as_raw_fd(), name_c.as_ptr(), flags) } == 0 {
+        Ok(())
+    } else {
+        Err(KeyError::Io {
+            operation,
+            path: PathBuf::from(name),
+            source: io::Error::last_os_error(),
+        })
+    }
+}
+
+fn unlinkat_if_exists(
+    directory: &PinnedDir,
+    name: &OsStr,
+    flags: libc::c_int,
+    operation: &'static str,
+) -> Result<(), KeyError> {
+    match unlinkat_checked(directory, name, flags, operation) {
+        Err(KeyError::Io { source, .. }) if source.kind() == io::ErrorKind::NotFound => Ok(()),
+        other => other,
+    }
+}
+
+fn open_stage_or_cleanup(
+    parent: &PinnedDir,
+    name: &OsStr,
+    operation: &'static str,
+) -> Result<PinnedDir, KeyError> {
+    match openat_file(
+        parent.0.as_raw_fd(),
+        name,
+        libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+    ) {
+        Ok(file) => Ok(PinnedDir(file)),
+        Err(source) => {
+            unlinkat_checked(
+                parent,
+                name,
+                libc::AT_REMOVEDIR,
+                "clean unopened staging directory",
+            )?;
+            Err(KeyError::Io {
+                operation,
+                path: PathBuf::from(name),
+                source,
+            })
+        }
+    }
 }
 
 fn ensure_absent(path: &Path) -> Result<(), KeyError> {
@@ -1451,18 +1580,7 @@ where
             source: io::Error::last_os_error(),
         });
     }
-    let stage = PinnedDir(
-        openat_file(
-            parent.0.as_raw_fd(),
-            &stage_name,
-            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
-        )
-        .map_err(|source| KeyError::Io {
-            operation: "open output staging directory",
-            path: PathBuf::from(&stage_name),
-            source,
-        })?,
-    );
+    let stage = open_stage_or_cleanup(&parent, &stage_name, "open output staging directory")?;
     let artifact = OsStr::new("artifact");
     let mut file = createat_file(
         stage.0.as_raw_fd(),
@@ -1505,24 +1623,27 @@ where
             })
         });
         if let Err(error) = sync_result {
-            if let Ok(final_c) = CString::new(final_name.as_bytes()) {
-                unsafe {
-                    libc::unlinkat(parent.0.as_raw_fd(), final_c.as_ptr(), 0);
-                }
-                let _ = parent.0.sync_all();
-            }
+            unlinkat_checked(&parent, final_name, 0, "rollback published artifact")?;
+            parent.0.sync_all().map_err(|source| KeyError::Io {
+                operation: "sync artifact rollback parent",
+                path: PathBuf::from("<output-parent>"),
+                source,
+            })?;
             return Err(error);
         }
         Ok(())
     })();
-    let artifact_c = CString::new(artifact.as_bytes()).expect("static artifact name");
-    unsafe {
-        libc::unlinkat(stage.0.as_raw_fd(), artifact_c.as_ptr(), 0);
-    }
+    let cleanup = unlinkat_if_exists(&stage, artifact, 0, "clean staged artifact");
     drop(stage);
-    unsafe {
-        libc::unlinkat(parent.0.as_raw_fd(), stage_c.as_ptr(), libc::AT_REMOVEDIR);
-    }
+    let cleanup = cleanup.and_then(|()| {
+        unlinkat_checked(
+            &parent,
+            &stage_name,
+            libc::AT_REMOVEDIR,
+            "clean artifact staging directory",
+        )
+    });
+    cleanup?;
     result
 }
 
@@ -1732,7 +1853,7 @@ mod tests {
         let output = parent.path().join("keys");
         let error = keygen_inner(&output, |stage| match stage {
             KeygenStage::AfterWrapKey => Err(KeyError::InvalidOutputDirectory),
-            KeygenStage::BeforePublish => Ok(()),
+            KeygenStage::BeforePublish | KeygenStage::BeforeParentSync => Ok(()),
         });
         assert!(error.is_err());
         assert!(!output.exists());
@@ -1758,6 +1879,21 @@ mod tests {
         assert!(matches!(error, Err(KeyError::AlreadyExists { .. })));
         assert_eq!(std::fs::read(output.join("marker")).unwrap(), b"attacker");
         assert_eq!(std::fs::read_dir(parent.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn keygen_parent_sync_failure_removes_files_and_final_directory() {
+        let parent = tempdir();
+        let output = parent.path().join("keys");
+        let error = keygen_inner(&output, |stage| {
+            if matches!(stage, KeygenStage::BeforeParentSync) {
+                return Err(KeyError::InvalidOutputDirectory);
+            }
+            Ok(())
+        });
+        assert!(error.is_err());
+        assert!(!output.exists());
+        assert_eq!(std::fs::read_dir(parent.path()).unwrap().count(), 0);
     }
 
     #[test]
@@ -1816,6 +1952,18 @@ mod tests {
     #[test]
     fn directory_enumeration_and_directory_count_are_bounded() {
         let parent = tempdir();
+        let empty = parent.path().join("empty");
+        std::fs::create_dir(&empty).unwrap();
+        let pinned = super::PinnedDir::open_path(&empty).unwrap();
+        let mut count = 0;
+        assert!(pinned.names(&mut count).unwrap().is_empty());
+        let mut count = 0;
+        let error = pinned.names_with(&mut count, |_| {
+            super::set_errno(libc::EIO);
+            std::ptr::null_mut()
+        });
+        assert_eq!(error.unwrap_err().raw_os_error(), Some(libc::EIO));
+
         let many_entries = parent.path().join("many-entries");
         std::fs::create_dir(&many_entries).unwrap();
         for index in 0..=super::MAX_TOTAL_ENTRIES {
