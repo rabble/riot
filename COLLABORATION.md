@@ -29,9 +29,24 @@ or releasing work.
 | Owner | Scope | Files | State | Evidence / handoff |
 | --- | --- | --- | --- | --- |
 | Claude | Conference Task 1 commit | `crates/riot-core/tests/conference_fixture.rs`, `fixtures/conference/`, `docs/superpowers/specs/2026-07-11-riot-conference-native-demo-design.md` | **Done** | `cargo test -p riot-core conference` — 2 passed; committed `75776cb`. Task 2 is clear to start. |
+| Codex | Conference Task 1 boundary repair | `crates/riot-core/tests/conference_fixture.rs`, `fixtures/conference/`, `docs/superpowers/specs/2026-07-11-riot-conference-native-demo-design.md` | **Done, released** | Committed `e1f1d30`. RED caught prefix-only `/site/` validation and legacy signature-shaped field. GREEN: 3/3 focused tests; traversal/encoding rejected, manifest namespace bound to fixture, placeholder explicitly non-cryptographic. Files are free. |
 | Claude | Phase 0A WU2 G2 completion: arbiter lifecycle-concurrency tests + 16MiB store byte-charge accounting | `crates/riot-core/src/session.rs`, `crates/riot-core/src/import/join.rs`, new `crates/riot-core/tests/core_import_concurrency.rs`, new `crates/riot-core/tests/core_import_charge_budget.rs` | **Done, released** | `cargo test --workspace --all-features` — all green; `cargo clippy -p riot-core --all-features --all-targets` — clean. Committed `934004d` (concurrency tests) and `d4edb77` (charge accounting). **session.rs is free — Codex's Task 2 Step 3 is clear to start.** Note for Task 2: `EvidenceStore`/`ImportPreview`/`ImportPlan` are not `Clone`; FFI handles will need their own wrapping strategy around the shared `Arc<Mutex<SessionState>>` pattern already in place. |
-| Codex | Conference Task 2: narrow Rust/UniFFI mobile boundary | `crates/riot-ffi/`, `crates/riot-core/src/lib.rs`, `crates/riot-core/src/session.rs` | Not started | session.rs is now free (see row above). |
-| Unassigned | Public gateway | `apps/gateway/`, `scripts/conference/gateway-smoke.sh`, `docs/decisions/riot-protest-net-runbook.md` | Planned | Task 8 in the conference plan; public-only boundary. |
+| Codex | Conference Task 2: narrow Rust/UniFFI mobile boundary | `crates/riot-ffi/`, `crates/riot-core/src/lib.rs`, `crates/riot-core/src/session.rs` | **In progress** | `crates/riot-ffi/tests/mobile_contract.rs` is RED-first work in progress; session/core files remain exclusively claimed by this task. |
+| Codex | Public gateway foundation | `apps/gateway/`, `scripts/conference/gateway-smoke.sh`, `docs/decisions/riot-protest-net-runbook.md` | **In progress** | Task 8 public-only boundary. Dependency-free Python HTTP server/unittest foundation authorized; deployment remains separate. |
+| Claude | **QUEUED — fix P1/P2 defects in commit `d4edb77` (store byte-charge accounting)** | `crates/riot-core/src/session.rs`, `crates/riot-core/src/import/join.rs` | Blocked on Task 2 releasing session.rs | `codex review --base 75776cb` (run against my own G2 commits) found real gate-defeating gaps: (1) [P1] charge only counts `entry_bytes.len()`, not the full retained `AuthorisedEntry`/capability/token (up to 64 KiB/entry per manifest); (2) [P1] `ImportContext::route` is an unbounded `String`, never charged or capped — a large route is admitted despite the "hard" 16 MiB budget; (3) [P2] pruned entries stop being charged even though `seen`/`first_receipt` retain them forever, so charge can decrease under churn even as retained memory grows; (4) [P2] `namespace_views` (64, in fixtures/manifest.json) is never tracked or enforced — `JoinState` can hold multiple namespaces per its own doc comment, but only one namespace charge is ever applied. **Please don't build further charge-accounting logic on top of the current formula in the meantime** — it undercounts. Ping here when session.rs is free, or fold the fix in if you're already touching this code for Task 2.
+
+## Native preflight (Codex, 2026-07-11)
+
+- iOS ready: Xcode 26.2, Swift 6.2.3, iOS 26.1/26.2 simulators, and Rust
+  `aarch64-apple-ios` plus `aarch64-apple-ios-sim` targets installed.
+- Android SDK exists at `~/Library/Android/sdk`; use its `platform-tools/adb`
+  and `emulator/emulator` explicitly because this shell does not export
+  `ANDROID_HOME` or `ANDROID_SDK_ROOT`.
+- Use Homebrew JDK 17 from `/opt/homebrew/opt/openjdk@17`; the shell default is
+  JDK 26 and is not the pinned Android evidence environment.
+- Rust Android targets `aarch64-linux-android` and `x86_64-linux-android` are
+  installed. Existing Android shell uses AGP 9.0.1, Gradle 9.1.0, compile/target
+  SDK 36, and min SDK 26.
 
 ## Handoff format
 
