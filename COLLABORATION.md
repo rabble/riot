@@ -159,3 +159,18 @@ design doc — not achievable in this environment.
 | Owner | Scope | Files | State | Evidence / handoff |
 | --- | --- | --- | --- | --- |
 | Claude (this session) | Fold this session's 5 research docs' design implications into the actual specs (not just leaving them as standalone research docs) | `docs/superpowers/specs/2026-07-10-riot-dual-mode-design.md`, `docs/architecture/willow-architecture.md` | **Done, released** | Committed `d3f9535`, pushed to `origin/main`. Added a 2026-07-11 addendum to the dual-mode spec (matching the existing addendum format) and two grounded notes to willow-architecture.md (Object Types: media authenticity via `verification`; Phase 2 WTP: Arti/data-mule transport candidates). Docs-only, no code touched. Both files are free. |
+
+## Reconciled: public marketing site claim (2026-07-11, update)
+
+The `marketing/` row above (claimed by "Claude (this session)", filed as
+**In progress**) is updated: content — including a "For the technically
+curious" section (real sync-protocol/admission-boundary/keystore summary)
+and an expanded 6-step "how it works" flow — was added by another
+concurrent session directly to `marketing/public/index.html` without a
+handoff note here; it landed inside commit `a6112d0` alongside this
+session's original build. Verified structurally sound (balanced tags) and
+redeployed to `https://riot-protest-net-marketing.protestnet.workers.dev`
+(Version `e00dc22e`) — live now byte-matches the committed file. Status:
+**Live, matches `main`.** `marketing/` remains unclaimed/free for further
+edits; please leave a handoff row here if you touch it next so redeploys
+don't lag content again.
