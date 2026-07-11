@@ -246,6 +246,41 @@ Run core, FFI, iOS, Android, and two-device rehearsal checks. Commit the runbook
 
 Commit: `docs: record Riot conference native rehearsal`
 
+## Task 8: Ship the public Riot gateway at `riot.protest.net`
+
+**Files:**
+- Create: `apps/gateway/`
+- Create: `apps/gateway/tests/`
+- Create: `fixtures/conference/gateway-space/`
+- Create: `scripts/conference/gateway-smoke.sh`
+- Create: `docs/decisions/riot-protest-net-runbook.md`
+
+- [ ] **Step 1: Write RED public-boundary tests**
+
+Test that the gateway renders only the fixed public `incident-board/1` package from a signed/public fixture; `/site/` routes resolve; signer, freshness, AI-assistance, and an offline/open-in-Riot affordance render; private-group fields, capabilities, receipts, private identifiers, remote-code fields, and arbitrary package profiles are rejected before rendering.
+
+- [ ] **Step 2: Run RED**
+
+Run the gateway test command.
+
+Expected: FAIL because the gateway does not exist.
+
+- [ ] **Step 3: Implement a stateless public reader**
+
+The gateway reads only a versioned, public export produced by the same conference fixture/sync boundary. It owns no canonical content state, no signing authority, no private key, no private-group route, and no write API. Every page exposes the public namespace ID as a QR code plus an `Open in Riot` affordance. A signed drop/download may be served only as an opaque public artifact.
+
+- [ ] **Step 4: Run GREEN locally**
+
+Run the gateway tests and `scripts/conference/gateway-smoke.sh` against a local server.
+
+Expected: public content renders at a stable route; private/malformed content is refused; no network fetch is needed to render the fixture.
+
+- [ ] **Step 5: Deploy and verify the domain**
+
+Deploy only through the repository's documented hosting path once it exists. Verify `https://riot.protest.net` serves the public incident board, has no write endpoint, and its smoke script records the deployed revision and content hash. Never commit domain credentials, API tokens, signing material, or deployment secrets.
+
+Commit: `feat: add public Riot conference gateway`
+
 ## Explicit deferrals
 
 - Upstream WTP/Drop Format/Confidential Sync interoperability claims.
@@ -253,3 +288,4 @@ Commit: `docs: record Riot conference native rehearsal`
 - Arbitrary executable app packages or remote code loading.
 - Automatic publication, autonomous agents, or model-held cross-space memory.
 - Mesh relay routing beyond the paired/direct nearby transport demo.
+- Private content, group invitations, private rendezvous, or authenticated write APIs at `riot.protest.net`.
