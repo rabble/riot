@@ -14,22 +14,37 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import uniffi.riot_ffi.CurrentEntry
+import org.riot.evidence.transport.AndroidNearbyController
+import org.riot.evidence.transport.NearbyUiState
 
 class MainActivity : Activity() {
     private lateinit var controller: RiotController
+    private lateinit var nearby: AndroidNearbyController
     private lateinit var content: LinearLayout
     private lateinit var status: TextView
     private var reviewedDraft: ReviewSnapshot? = null
     private var pendingImportEntries: List<CurrentEntry> = emptyList()
+    private var currentSurface = ConferenceSurface.SPACES
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         controller = RiotController(filesDir)
+        nearby = AndroidNearbyController(
+            this,
+            onChanged = {
+                if (currentSurface == ConferenceSurface.CONNECTION) show(ConferenceSurface.CONNECTION)
+            },
+            onConnected = { _, _ ->
+                // SyncCoordinator attaches here once the generated mobile sync bridge lands.
+                status.text = "Connected nearby"
+            },
+        )
         setContentView(buildShell())
         show(ConferenceSurface.SPACES)
     }
 
     override fun onDestroy() {
+        nearby.close()
         controller.close()
         super.onDestroy()
     }
@@ -77,6 +92,7 @@ class MainActivity : Activity() {
     }
 
     private fun show(surface: ConferenceSurface) {
+        currentSurface = surface
         content.removeAllViews()
         content.addView(heading(surface.label))
         when (surface) {
@@ -203,12 +219,32 @@ class MainActivity : Activity() {
     }
 
     private fun showConnection() {
+        content.addView(body(nearby.state.message))
+        if (nearby.state is NearbyUiState.Idle || nearby.state is NearbyUiState.Failed) {
+            content.addView(action("Find nearby") { nearby.findNearby() })
+        }
+        nearby.phones.forEach { phone ->
+            content.addView(action(phone.friendlyName) { nearby.select(phone) })
+        }
+        if (nearby.state is NearbyUiState.ConfirmPairing) {
+            content.addView(action("Confirm") { nearby.confirmPairing() })
+            content.addView(action("Cancel") { nearby.cancelPairing() })
+        }
         content.addView(body(
-            "Offline ready\n" +
-                "Nearby peer: not connected\n" +
-                "Transport: local only\n\n" +
-                "Riot conference sync is bounded incremental reconciliation. It does not claim WTP compatibility.",
+            "Works directly between nearby phones. It never switches to an internet service. " +
+                "Physical-phone radio verification is still required.",
         ))
+    }
+
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray,
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == AndroidNearbyController.PERMISSION_REQUEST) {
+            nearby.permissionResult(grantResults.isNotEmpty() && grantResults.all { it == android.content.pm.PackageManager.PERMISSION_GRANTED })
+        }
     }
 
     private fun runAction(success: String, action: () -> Unit) {
