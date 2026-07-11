@@ -10,6 +10,12 @@ import SwiftUI
 /// an app is the host's trust-gated job, not this surface's.
 public struct DirectoryView: View {
     @ObservedObject private var model: RiotAppModel
+    /// Selection is observed explicitly because `RiotAppModel` no longer
+    /// publishes it (see the performance contract on `RiotNavigationModel`).
+    /// Without this the view would not re-render on a tab change and the
+    /// `onChange(of: navigation.destination)` below — which is what syncs the
+    /// directory when this tab becomes visible — would silently never fire.
+    @ObservedObject private var navigation: RiotNavigationModel
     @StateObject private var directory = RiotDirectoryModel()
     @Environment(\.colorScheme) private var colorScheme
     @State private var reviewing: RiotSpaceApp?
@@ -17,32 +23,36 @@ public struct DirectoryView: View {
     private let onOpen: (RiotSpaceApp) -> Void
 
     public init(model: RiotAppModel, onOpen: @escaping (RiotSpaceApp) -> Void) {
-        self.model = model
+        _model = ObservedObject(wrappedValue: model)
+        _navigation = ObservedObject(wrappedValue: model.navigation)
         self.onOpen = onOpen
     }
 
     public var body: some View {
-        Group {
-            if directory.rows.isEmpty {
-                RiotEmptyState(
-                    title: "No apps yet",
-                    message: "Apps your communities carry will show up here. Nothing runs until an organizer turns one on for a space."
-                )
-            } else {
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 16) {
-                        intro
-                        ForEach(directory.rows) { row in
-                            card(for: row)
-                        }
+        // Status (a load failure, a just-sent recommendation) renders above
+        // both branches. A directory that failed to load has no rows, and
+        // showing "No apps yet" there would tell the person there are no
+        // apps when in truth we never managed to look.
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                status
+                if directory.rows.isEmpty {
+                    RiotEmptyState(
+                        title: "No apps yet",
+                        message: "Apps your communities carry will show up here. Nothing runs until an organizer turns one on for a space."
+                    )
+                } else {
+                    intro
+                    ForEach(directory.rows) { row in
+                        card(for: row)
                     }
-                    .padding(20)
                 }
             }
+            .padding(20)
         }
         .riotHeader(eyebrow: "From your communities", "Apps")
         .onAppear(perform: sync)
-        .onChange(of: model.destination) { _, destination in
+        .onChange(of: navigation.destination) { _, destination in
             if destination == .directory { sync() } else { directory.clearConfirmation() }
         }
         .onChange(of: model.apps) { _, _ in directory.refresh() }
@@ -69,18 +79,20 @@ public struct DirectoryView: View {
     }
 
     private var intro: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Every app your communities carry shows up here. Nothing runs until an organizer turns it on for a space.")
-                .font(.riot(.body, size: 15, relativeTo: .callout))
-                .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
-            if let confirmation = directory.confirmation {
-                RiotBadge(confirmation, stamped: true)
-            }
-            if let errorMessage = directory.errorMessage {
-                Text(errorMessage)
-                    .font(.riot(.mono, size: 12, relativeTo: .caption))
-                    .foregroundStyle(RiotTheme.pink(for: colorScheme))
-            }
+        Text("Every app your communities carry shows up here. Nothing runs until an organizer turns it on for a space.")
+            .font(.riot(.body, size: 15, relativeTo: .callout))
+            .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
+    }
+
+    /// Shown whether or not any rows loaded — see the note in `body`.
+    @ViewBuilder private var status: some View {
+        if let confirmation = directory.confirmation {
+            RiotBadge(confirmation, stamped: true)
+        }
+        if let errorMessage = directory.errorMessage {
+            Text(errorMessage)
+                .font(.riot(.mono, size: 12, relativeTo: .caption))
+                .foregroundStyle(RiotTheme.pink(for: colorScheme))
         }
     }
 

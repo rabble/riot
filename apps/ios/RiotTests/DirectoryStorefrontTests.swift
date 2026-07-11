@@ -258,7 +258,7 @@ final class DirectoryStorefrontTests: XCTestCase {
         XCTAssertNil(model.errorMessage)
     }
 
-    func testFailingDirectorySurfacesTheErrorInsteadOfShowingStaleRows() {
+    func testFailingRefreshRecordsAnErrorAndKeepsTheRowsItAlreadyHas() {
         let port = FakeDirectoryPort(listings: [listing(appID: appID, name: "Checklist")])
         let model = RiotDirectoryModel(port: port)
         model.refresh()
@@ -267,6 +267,24 @@ final class DirectoryStorefrontTests: XCTestCase {
         port.failure = FakeDirectoryError.unavailable
         model.refresh()
 
+        XCTAssertNotNil(model.errorMessage)
+        // Deliberate: a failed refresh keeps the last good rows rather than
+        // blanking the surface. The error is what tells the person the list
+        // may be stale.
+        XCTAssertEqual(model.rows.count, 1)
+    }
+
+    /// The failure that has no stale rows to fall back on: without an error
+    /// to show, this surface would render "No apps yet" — telling the person
+    /// there are no apps when in truth the directory never loaded.
+    func testFirstLoadFailureSurfacesAnErrorRatherThanLookingEmpty() {
+        let port = FakeDirectoryPort(listings: [listing(appID: appID, name: "Checklist")])
+        port.failure = FakeDirectoryError.unavailable
+        let model = RiotDirectoryModel(port: port)
+
+        model.refresh()
+
+        XCTAssertTrue(model.rows.isEmpty)
         XCTAssertNotNil(model.errorMessage)
     }
 
