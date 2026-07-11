@@ -36,7 +36,7 @@ Phase 0A honesty note: all alert entries sit at the fixed four-component path `o
 
 ### Ceilings
 
-`MAX_STORE_ENTRIES` (1024) and `MAX_REFERENCES` (1024) from the manifest are enforced; reference lists are truncated and the store size is asserted before commit.
+`MAX_STORE_ENTRIES` (1024) and `MAX_REFERENCES` (1024) from the manifest are enforced. A join that would exceed either ceiling returns a typed capacity error before state installation; effect reference lists are never truncated.
 
 ## Notes and scope
 

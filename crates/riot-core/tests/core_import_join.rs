@@ -6,7 +6,7 @@
 //!
 //! Requires the `conformance` feature (deterministic authors/clocks).
 
-use riot_core::import::join::{join_batch, JoinEffect, JoinState};
+use riot_core::import::join::{join_batch, JoinEffect, JoinLimitError, JoinState};
 use riot_core::model::{AlertPayload, Certainty, Severity, Urgency};
 use riot_core::willow::{
     authorise_entry, build_alert_entry, encode_entry, entry_id, EntryId, EvidenceAuthor,
@@ -93,6 +93,43 @@ fn live_ids(state: &JoinState) -> Vec<EntryId> {
     ids
 }
 
+fn distinct_entry(authors: &[EvidenceAuthor], index: u16) -> AuthorisedEntry {
+    let mut object_id = [0; 16];
+    object_id[..2].copy_from_slice(&index.to_be_bytes());
+    make_entry(
+        authors,
+        &EntrySpec {
+            author_ix: 0,
+            object_id,
+            revision_id: [0; 16],
+            timestamp: 100,
+            payload_tag: 1,
+        },
+    )
+}
+
+#[test]
+fn core_import_join_rejects_a_new_entry_when_seen_is_at_its_exact_ceiling() {
+    let authors = authors();
+    let mut state = JoinState::new();
+    for start in (0..1_024).step_by(64) {
+        let batch = (start..start + 64)
+            .map(|index| distinct_entry(&authors, index as u16))
+            .collect();
+        join_batch(&mut state, batch).expect("batch at the ceiling is accepted");
+    }
+    let live_before = live_ids(&state);
+    let new_entry = distinct_entry(&authors, 1_024);
+    let new_id = entry_id(&encode_entry(new_entry.entry()));
+
+    assert_eq!(
+        join_batch(&mut state, vec![new_entry]),
+        Err(JoinLimitError::SeenEntries)
+    );
+    assert_eq!(live_ids(&state), live_before);
+    assert!(!state.has_seen(&new_id));
+}
+
 #[test]
 fn core_import_join_distinct_subspaces_do_not_prune() {
     let authors = authors();
@@ -118,7 +155,7 @@ fn core_import_join_distinct_subspaces_do_not_prune() {
         },
     );
     let mut state = JoinState::new();
-    let effects = join_batch(&mut state, vec![a, b]);
+    let effects = join_batch(&mut state, vec![a, b]).unwrap();
     assert_eq!(
         effects
             .iter()
@@ -165,8 +202,8 @@ fn core_import_join_newer_prefix_prunes_older_descendant() {
     // Winner names only pre-state entries it pruned (never same-batch), so
     // this cross-batch case is where pruned_entry_ids is populated.
     let mut state = JoinState::new();
-    join_batch(&mut state, vec![older]);
-    let effects = join_batch(&mut state, vec![newer]);
+    join_batch(&mut state, vec![older]).unwrap();
+    let effects = join_batch(&mut state, vec![newer]).unwrap();
     assert_eq!(state.live_count(), 1);
     assert_eq!(live_ids(&state), vec![newer_id]);
     assert!(effects.iter().any(
@@ -201,7 +238,7 @@ fn core_import_join_older_at_same_coordinate_is_not_live() {
 
     let mut state = JoinState::new();
     // Insert newer first, then older: older must be NotLive, dominated by newer.
-    let effects = join_batch(&mut state, vec![newer, older]);
+    let effects = join_batch(&mut state, vec![newer, older]).unwrap();
     assert_eq!(live_ids(&state), vec![newer_id]);
     assert!(effects.iter().any(
         |e| matches!(e, JoinEffect::NotLive { dominating_entry_ids } if dominating_entry_ids.contains(&newer_id))
@@ -234,7 +271,7 @@ fn core_import_join_equal_coordinate_ties_by_digest_then_length() {
         },
     );
     let mut state = JoinState::new();
-    join_batch(&mut state, vec![a, b]);
+    join_batch(&mut state, vec![a, b]).unwrap();
     // Exactly one survives at this coordinate; whichever willow25 keeps.
     assert_eq!(state.live_count(), 1);
 }
@@ -253,8 +290,8 @@ fn core_import_join_duplicate_insertion_is_already_present() {
         },
     );
     let mut state = JoinState::new();
-    join_batch(&mut state, vec![e.clone()]);
-    let effects = join_batch(&mut state, vec![e]);
+    join_batch(&mut state, vec![e.clone()]).unwrap();
+    let effects = join_batch(&mut state, vec![e]).unwrap();
     assert_eq!(state.live_count(), 1);
     assert!(effects
         .iter()
@@ -302,7 +339,7 @@ fn core_import_join_is_order_independent_over_all_permutations() {
     for perm in permutations(&[0, 1, 2, 3]) {
         let mut state = JoinState::new();
         let batch: Vec<AuthorisedEntry> = perm.iter().map(|&i| entries[i].clone()).collect();
-        join_batch(&mut state, batch);
+        join_batch(&mut state, batch).unwrap();
         let ids = live_ids(&state);
         match &canonical {
             None => canonical = Some(ids),
@@ -337,14 +374,14 @@ fn core_import_join_is_idempotent_and_commutative() {
 
     // Commutative: {a,b} == {b,a}.
     let mut s1 = JoinState::new();
-    join_batch(&mut s1, vec![a.clone(), b.clone()]);
+    join_batch(&mut s1, vec![a.clone(), b.clone()]).unwrap();
     let mut s2 = JoinState::new();
-    join_batch(&mut s2, vec![b.clone(), a.clone()]);
+    join_batch(&mut s2, vec![b.clone(), a.clone()]).unwrap();
     assert_eq!(live_ids(&s1), live_ids(&s2));
 
     // Idempotent: re-joining the same batch changes nothing.
     let before = live_ids(&s1);
-    join_batch(&mut s1, vec![a, b]);
+    join_batch(&mut s1, vec![a, b]).unwrap();
     assert_eq!(live_ids(&s1), before);
 }
 
@@ -413,7 +450,7 @@ fn core_import_join_matches_memorystore_over_permutations() {
         // Riot join.
         let mut state = JoinState::new();
         let batch: Vec<AuthorisedEntry> = perm.iter().map(|&i| entries[i].clone()).collect();
-        join_batch(&mut state, batch);
+        join_batch(&mut state, batch).unwrap();
         let riot_ids = live_ids(&state);
 
         // willow25 MemoryStore oracle, same insertion order.

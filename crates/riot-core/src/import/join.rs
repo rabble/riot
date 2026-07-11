@@ -23,6 +23,15 @@ use crate::willow::{encode_entry, entry_id, EntryId};
 const MAX_STORE_ENTRIES: usize = 1_024;
 const MAX_REFERENCES: usize = 1_024;
 
+/// A bounded join could not represent the complete result without exceeding
+/// one of its fixed ceilings. No partial plan is produced for this condition.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JoinLimitError {
+    StoreEntries,
+    SeenEntries,
+    EffectReferences,
+}
+
 /// One stored entry with its precomputed canonical bytes and value identity.
 #[derive(Clone)]
 struct Stored {
@@ -99,9 +108,19 @@ impl JoinState {
 
 /// Computes the join of `pre` with `batch` without mutating `pre`. Effects
 /// are derived from `(pre ∪ batch)` as one set — order-independent.
-pub fn plan_join(pre: &JoinState, batch: Vec<AuthorisedEntry>) -> JoinPlan {
+pub fn plan_join(pre: &JoinState, batch: Vec<AuthorisedEntry>) -> Result<JoinPlan, JoinLimitError> {
     let batch: Vec<Stored> = batch.into_iter().map(Stored::new).collect();
     let pre_live: Vec<EntryId> = pre.live.iter().map(|s| s.id).collect();
+
+    let mut next_seen = pre.seen.clone();
+    for item in &batch {
+        if !next_seen.contains(&item.id) {
+            if next_seen.len() >= MAX_STORE_ENTRIES {
+                return Err(JoinLimitError::SeenEntries);
+            }
+            next_seen.push(item.id);
+        }
+    }
 
     let mut union: Vec<Stored> = pre.live.clone();
     for candidate in &batch {
@@ -119,10 +138,9 @@ pub fn plan_join(pre: &JoinState, batch: Vec<AuthorisedEntry>) -> JoinPlan {
         })
         .cloned()
         .collect();
-    assert!(
-        final_live.len() <= MAX_STORE_ENTRIES,
-        "join exceeded store ceiling"
-    );
+    if final_live.len() > MAX_STORE_ENTRIES {
+        return Err(JoinLimitError::StoreEntries);
+    }
     let final_ids: Vec<EntryId> = final_live.iter().map(|s| s.id).collect();
 
     let effects = batch
@@ -131,50 +149,51 @@ pub fn plan_join(pre: &JoinState, batch: Vec<AuthorisedEntry>) -> JoinPlan {
             let effect = if pre.seen.contains(&item.id) {
                 JoinEffect::AlreadyPresent
             } else if final_ids.contains(&item.id) {
-                let mut pruned: Vec<EntryId> = pre_live
-                    .iter()
-                    .copied()
-                    .filter(|pid| {
-                        union
-                            .iter()
-                            .find(|s| &s.id == pid)
-                            .map(|victim| item.prunes(victim))
-                            .unwrap_or(false)
-                    })
-                    .collect();
-                pruned.truncate(MAX_REFERENCES);
+                let pruned = checked_reference_ids(pre_live.iter().copied().filter(|pid| {
+                    union
+                        .iter()
+                        .find(|s| &s.id == pid)
+                        .map(|victim| item.prunes(victim))
+                        .unwrap_or(false)
+                }))?;
                 JoinEffect::Winner {
                     pruned_entry_ids: pruned,
                 }
             } else {
-                let mut dominators: Vec<EntryId> = final_live
-                    .iter()
-                    .filter(|live| live.prunes(item))
-                    .map(|live| live.id)
-                    .collect();
-                dominators.truncate(MAX_REFERENCES);
+                let dominators = checked_reference_ids(
+                    final_live
+                        .iter()
+                        .filter(|live| live.prunes(item))
+                        .map(|live| live.id),
+                )?;
                 JoinEffect::NotLive {
                     dominating_entry_ids: dominators,
                 }
             };
-            (item.id, effect)
+            Ok((item.id, effect))
         })
-        .collect();
+        .collect::<Result<Vec<_>, JoinLimitError>>()?;
 
-    let mut next_seen = pre.seen.clone();
-    for item in &batch {
-        if !next_seen.contains(&item.id) {
-            next_seen.push(item.id);
-        }
-    }
-
-    JoinPlan {
+    Ok(JoinPlan {
         next: JoinState {
             live: final_live,
             seen: next_seen,
         },
         effects,
+    })
+}
+
+fn checked_reference_ids(
+    ids: impl IntoIterator<Item = EntryId>,
+) -> Result<Vec<EntryId>, JoinLimitError> {
+    let mut references = Vec::new();
+    for id in ids {
+        if references.len() >= MAX_REFERENCES {
+            return Err(JoinLimitError::EffectReferences);
+        }
+        references.push(id);
     }
+    Ok(references)
 }
 
 impl JoinState {
@@ -193,12 +212,14 @@ impl JoinState {
 }
 
 /// Joins a batch into the state and returns one effect per batch item, in
-/// batch order. Panics only on gross ceiling violations (bounded well above
-/// any Phase 0A fixture).
-pub fn join_batch(state: &mut JoinState, batch: Vec<AuthorisedEntry>) -> Vec<JoinEffect> {
-    let plan = plan_join(state, batch);
+/// batch order. Limit failures leave `state` unchanged.
+pub fn join_batch(
+    state: &mut JoinState,
+    batch: Vec<AuthorisedEntry>,
+) -> Result<Vec<JoinEffect>, JoinLimitError> {
+    let plan = plan_join(state, batch)?;
     *state = plan.next;
-    plan.effects.into_iter().map(|(_, effect)| effect).collect()
+    Ok(plan.effects.into_iter().map(|(_, effect)| effect).collect())
 }
 
 impl JoinState {
@@ -214,5 +235,30 @@ impl JoinState {
     #[cfg(feature = "conformance")]
     pub fn contains_live(&self, id: &EntryId) -> bool {
         self.live.iter().any(|s| &s.id == id)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{checked_reference_ids, JoinLimitError, MAX_REFERENCES};
+
+    #[test]
+    fn checked_reference_ids_preserves_the_exact_ceiling_and_rejects_overflow() {
+        let ids = (0..MAX_REFERENCES).map(|index| {
+            let mut id = [0; 32];
+            id[..8].copy_from_slice(&(index as u64).to_be_bytes());
+            id
+        });
+        assert_eq!(checked_reference_ids(ids).unwrap().len(), MAX_REFERENCES);
+
+        let too_many = (0..=MAX_REFERENCES).map(|index| {
+            let mut id = [0; 32];
+            id[..8].copy_from_slice(&(index as u64).to_be_bytes());
+            id
+        });
+        assert_eq!(
+            checked_reference_ids(too_many),
+            Err(JoinLimitError::EffectReferences)
+        );
     }
 }

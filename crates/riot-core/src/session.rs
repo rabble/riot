@@ -609,7 +609,7 @@ impl ImportPlan {
         let pre_join = store.join.clone();
 
         let batch = entries.iter().map(|v| v.authorised.clone()).collect();
-        let join_plan = plan_join(&pre_join, batch);
+        let join_plan = plan_join(&pre_join, batch).map_err(|_| SessionError::StoreFull)?;
 
         // Any entry whose id was not previously seen makes this a real change.
         let any_new = join_plan

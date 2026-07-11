@@ -64,6 +64,38 @@ fn signed(
     }
 }
 
+fn signed_distinct(author: &EvidenceAuthor, index: u16) -> SignedWillowEntry {
+    let payload = riot_core::model::encode_alert(&AlertPayload {
+        object_id: *b"riot-obj-txn0001",
+        revision_id: *b"riot-rev-txn0001",
+        created_at: 1_000,
+        valid_from: None,
+        expires_at: 2_000,
+        language: "en".into(),
+        urgency: Urgency::Immediate,
+        severity: Severity::Severe,
+        certainty: Certainty::Observed,
+        headline: format!("distinct transaction alert {index}"),
+        description: "Transaction fixture.".into(),
+        affected_area_claim: None,
+        source_claims: vec!["fixture".into()],
+        ai_assisted: false,
+    })
+    .expect("payload");
+    let mut object_id = [0; 16];
+    object_id[..2].copy_from_slice(&index.to_be_bytes());
+    let entry = build_alert_entry(author, &object_id, &[0; 16], 100, &payload).expect("entry");
+    let authorised = authorise_entry(author, entry).expect("authorise");
+    let token = authorised.authorisation_token();
+    let signature: ed25519_dalek::Signature = token.signature().clone().into();
+    SignedWillowEntry {
+        entry_bytes: encode_entry(authorised.entry()),
+        capability_bytes: encode_capability(token.capability()),
+        signature: signature.to_bytes(),
+        payload_bytes: payload,
+    }
+}
+
 fn bundle(items: &[SignedWillowEntry]) -> Vec<u8> {
     encode_bundle(items).expect("encode bundle")
 }
@@ -82,6 +114,45 @@ fn core_import_transaction_open_and_create_store() {
         session.create_store(),
         Err(SessionError::SessionLimit)
     ));
+}
+
+#[test]
+fn core_import_transaction_capacity_error_from_a_plan_leaves_store_unchanged() {
+    let a = author();
+    let session = RiotSession::open().unwrap();
+    let store = session.create_store().unwrap();
+    for start in (0..1_024).step_by(64) {
+        let entries: Vec<_> = (start..start + 64)
+            .map(|index| signed_distinct(&a, index as u16))
+            .collect();
+        store
+            .inspect(&bundle(&entries), ctx())
+            .unwrap()
+            .expect_preview()
+            .plan_all()
+            .unwrap()
+            .commit()
+            .unwrap();
+    }
+    let generation_before = store.generation().unwrap();
+    let receipts_before = store.receipt_count().unwrap();
+    let live_before = store.live_count().unwrap();
+
+    let plan = store
+        .inspect(&bundle(&[signed_distinct(&a, 1_024)]), ctx())
+        .unwrap()
+        .expect_preview()
+        .plan_all()
+        .unwrap();
+    assert_eq!(plan.commit(), Err(SessionError::StoreFull));
+    assert_eq!(
+        plan.commit(),
+        Err(SessionError::StoreFull),
+        "capacity failure must not consume the plan"
+    );
+    assert_eq!(store.generation().unwrap(), generation_before);
+    assert_eq!(store.receipt_count().unwrap(), receipts_before);
+    assert_eq!(store.live_count().unwrap(), live_before);
 }
 
 #[test]
