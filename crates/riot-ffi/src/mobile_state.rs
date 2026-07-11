@@ -1218,6 +1218,23 @@ pub(crate) fn install_from_directory(
     })
 }
 
+/// The stored bundle bytes a native host needs to *serve* a held app's pages.
+/// `install_from_directory` admits a carried app into the runtime, but the
+/// WebView still has to render it, and a carried app has no local file to read
+/// — the store holds the only copy. Same `None`-means-unopenable reasoning.
+pub(crate) fn app_bundle_bytes(
+    inner: &Arc<Mutex<ProfileState>>,
+    app_id: Vec<u8>,
+) -> Result<Vec<u8>, MobileError> {
+    let app_id = exact_app_id(&app_id)?;
+    with_active(inner, |profile| {
+        riot_core::apps::index::app_pair_bytes(&profile.store, &app_id)
+            .map_err(map_apps_error)?
+            .map(|pair| pair.bundle_bytes)
+            .ok_or(MobileError::AppRejected)
+    })
+}
+
 /// The one install path into the runtime. Verifies the canonical pair
 /// invariant, then records the app against this profile under the install cap.
 fn install_pair(

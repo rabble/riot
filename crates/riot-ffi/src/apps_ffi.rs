@@ -105,6 +105,18 @@ impl AppRuntimeSession {
         crate::mobile_state::install_from_directory(&self.inner, app_id)
     }
 
+    /// The stored bundle bytes for an app this profile holds. `install_from_directory`
+    /// admits a carried app into the runtime, but the native host still has to
+    /// *serve* its pages to the WebView, and for a carried app there is no local
+    /// file to read them from — the only copy is the one in the store. Returns
+    /// the same canonical bytes the pair invariant verified, so a host decoding
+    /// them re-derives this exact `app_id`.
+    ///
+    /// `AppRejected` on the same conditions as `install_from_directory`.
+    pub fn app_bundle_bytes(&self, app_id: Vec<u8>) -> Result<Vec<u8>, MobileError> {
+        crate::mobile_state::app_bundle_bytes(&self.inner, app_id)
+    }
+
     pub fn trust_app(&self, app_id: String) -> Result<(), MobileError> {
         crate::mobile_state::set_app_trust(&self.inner, app_id, true)
     }

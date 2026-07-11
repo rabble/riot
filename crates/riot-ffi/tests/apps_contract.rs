@@ -1256,6 +1256,30 @@ fn a_carried_app_installs_from_the_store_exactly_as_a_direct_install_would() {
             .installed,
         "the carried app is now installed on this profile"
     );
+
+    // Admitting the app is not enough: the host still has to serve its pages,
+    // and for a carried app the store holds the only copy of them.
+    let bundle_bytes = receiver_runtime
+        .app_bundle_bytes(direct.app_id_bytes.clone())
+        .expect("bundle bytes for serving");
+    let served = riot_core::apps::bundle::decode_app_bundle(&bundle_bytes).expect("decodes");
+    assert_eq!(served.entry_point, carried.entry_point);
+    assert!(
+        served
+            .resources
+            .iter()
+            .any(|resource| resource.path == served.entry_point),
+        "the entry point is actually servable"
+    );
+}
+
+#[test]
+fn app_bundle_bytes_refuses_an_app_this_profile_has_never_seen() {
+    let profile = open_local_profile().expect("profile");
+    assert!(matches!(
+        profile.app_runtime().app_bundle_bytes(vec![0x9a; 32]),
+        Err(MobileError::AppRejected)
+    ));
 }
 
 #[test]
