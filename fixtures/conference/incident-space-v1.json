@@ -32,7 +32,7 @@
       "body": "Use the north entrance; the south pier is closed for inspection.",
       "created_at": "2026-07-11T09:30:00Z",
       "ai_assisted_draft": true,
-      "signature": "e5564300c360ac729086e2cc806e828a84877f1eb8e5d974d873e065224901555fb8821590a33bacc61e39701cf9b46bd25bf5f0595bbe24655141438e7a100b"
+      "opaque_package_shape_placeholder_not_a_signature": "e5564300c360ac729086e2cc806e828a84877f1eb8e5d974d873e065224901555fb8821590a33bacc61e39701cf9b46bd25bf5f0595bbe24655141438e7a100b"
     },
     {
       "kind": "observation",
@@ -42,7 +42,7 @@
       "body": "Community center staff are receiving arrivals at the west hall.",
       "created_at": "2026-07-11T09:34:00Z",
       "ai_assisted_draft": false,
-      "signature": "f3c6e60f3dc3bdfc66986f03a47b58ee4bd6b9669f40a21451a71874f0f2de627f3a0120fb87b1d5bd6c78333dc05d22a341e76f1d4c18337ed40da99d3f4c3e"
+      "opaque_package_shape_placeholder_not_a_signature": "f3c6e60f3dc3bdfc66986f03a47b58ee4bd6b9669f40a21451a71874f0f2de627f3a0120fb87b1d5bd6c78333dc05d22a341e76f1d4c18337ed40da99d3f4c3e"
     }
   ],
   "canonical_sha256": "24ba7ba70afd0f43be83779ee5b0eca205d242d3eabd1fbebfe617a68f7fff37"

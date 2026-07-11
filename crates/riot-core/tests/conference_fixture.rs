@@ -75,6 +75,20 @@ fn decode_hex(value: &str, expected_len: usize, label: &str) -> Vec<u8> {
         .collect()
 }
 
+fn is_normalized_site_route(route: &str) -> bool {
+    let Some(path) = route.strip_prefix("/site/") else {
+        return false;
+    };
+
+    !path.is_empty()
+        && path.split('/').all(|segment| {
+            !segment.is_empty()
+                && segment
+                    .bytes()
+                    .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+        })
+}
+
 fn reject_private_or_executable_surface(value: &Value, path: &str) {
     match value {
         Value::Object(object) => {
@@ -166,9 +180,9 @@ fn canonical_fixture_bytes(fixture: &Value) -> Vec<u8> {
                 .u8(6)?
                 .bool(bool_value(entry, "ai_assisted_draft"))?;
             encoder.u8(7)?.bytes(&decode_hex(
-                string(entry, "signature"),
+                string(entry, "opaque_package_shape_placeholder_not_a_signature"),
                 64,
-                "entry.signature",
+                "entry.opaque_package_shape_placeholder_not_a_signature",
             ))?;
         }
         encoder.u8(5)?.array(routes.len() as u64)?;
@@ -219,8 +233,8 @@ fn conference_fixture_freezes_a_public_deterministic_incident_package() {
     for route in routes {
         let route = route.as_str().expect("route must be a string");
         assert!(
-            route.starts_with("/site/"),
-            "route must stay below /site/: {route}"
+            is_normalized_site_route(route),
+            "route must be a normalized safe path below /site/: {route}"
         );
     }
 
@@ -249,7 +263,7 @@ fn conference_fixture_freezes_a_public_deterministic_incident_package() {
     let entries = array(root.get("entries").expect("entries"), "entries");
     assert!(
         !entries.is_empty(),
-        "fixture must include signed public content"
+        "fixture must include public package-shape entries"
     );
     let mut ai_assisted_drafts = 0;
     for entry in entries {
@@ -264,7 +278,7 @@ fn conference_fixture_freezes_a_public_deterministic_incident_package() {
                 "body",
                 "created_at",
                 "ai_assisted_draft",
-                "signature",
+                "opaque_package_shape_placeholder_not_a_signature",
             ],
             "entry",
         );
@@ -283,7 +297,11 @@ fn conference_fixture_freezes_a_public_deterministic_incident_package() {
             author_ids.contains(&author),
             "entry author must be one of the two fixture authors"
         );
-        decode_hex(string(entry, "signature"), 64, "entry.signature");
+        decode_hex(
+            string(entry, "opaque_package_shape_placeholder_not_a_signature"),
+            64,
+            "entry.opaque_package_shape_placeholder_not_a_signature",
+        );
         ai_assisted_drafts += usize::from(bool_value(entry, "ai_assisted_draft"));
     }
     assert_eq!(
@@ -299,6 +317,36 @@ fn conference_fixture_freezes_a_public_deterministic_incident_package() {
     );
     let actual_hash = format!("{:x}", Sha256::digest(first));
     assert_eq!(string(root, "canonical_sha256"), actual_hash);
+}
+
+#[test]
+fn conference_routes_reject_unsafe_or_non_normalized_site_paths() {
+    for route in [
+        "/site/",
+        "/site//alerts",
+        "/site/../admin",
+        "/site/./alerts",
+        "/site/%2e%2e/admin",
+        "/site/%2E%2E/admin",
+        "/site/incident%2fadmin",
+        "/site/incident%2Fadmin",
+        "/site/%252e%252e/admin",
+        "/site/alerts?next=/admin",
+        "/site/alerts#admin",
+        "/site/ALERTS",
+    ] {
+        assert!(
+            !is_normalized_site_route(route),
+            "unsafe or non-normalized route must be rejected: {route}"
+        );
+    }
+
+    for route in ["/site/incident-board", "/site/incident-board/alerts"] {
+        assert!(
+            is_normalized_site_route(route),
+            "normalized route must remain accepted: {route}"
+        );
+    }
 }
 
 #[test]
@@ -321,6 +369,17 @@ fn conference_manifest_is_fixed_public_and_non_executable() {
     assert_eq!(string(root, "renderer_profile"), RENDERER_PROFILE);
     assert_eq!(string(root, "title"), TITLE);
     decode_hex(string(root, "namespace"), 32, "manifest.namespace");
+    let fixture = read_json("incident-space-v1.json");
+    let fixture_root = object(&fixture, "fixture");
+    let fixture_namespace = object(
+        fixture_root.get("namespace").expect("namespace"),
+        "fixture.namespace",
+    );
+    assert_eq!(
+        string(root, "namespace"),
+        string(fixture_namespace, "id"),
+        "manifest namespace must exactly match the incident fixture's public namespace"
+    );
     let kinds = array(
         root.get("allowed_object_kinds")
             .expect("allowed_object_kinds"),
