@@ -9,6 +9,7 @@ pub mod endorse;
 pub mod entry;
 pub mod index;
 pub mod manifest;
+pub mod starter;
 pub mod trust;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
