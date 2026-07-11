@@ -402,7 +402,9 @@ The coverage roots are:
 - `docs/superpowers/plans/**/*.md`.
 
 A coverage manifest explicitly lists every document that receives the primer.
-The initial scope is frozen at these 32 documents:
+The initial scope starts with these 34 documents and is rescanned immediately
+before corpus migration so concurrently landed Willow-bearing documents cannot
+escape coverage:
 
 1. `README.md`
 2. `docs/architecture/willow-architecture.md`
@@ -436,6 +438,8 @@ The initial scope is frozen at these 32 documents:
 30. `docs/superpowers/specs/2026-07-11-signed-js-apps-design.md`
 31. `docs/superpowers/specs/2026-07-11-willow-visual-documentation-design.md`
 32. `docs/superpowers/plans/2026-07-12-willow-visual-docs-and-marketing.md`
+33. `docs/research/2026-07-11-user-profiles-willow-research.md`
+34. `docs/superpowers/specs/2026-07-12-demo-polish-design.md`
 
 Historical research and decision reports receive the same complete orientation;
 their original findings remain intact beneath it. A visually distinct
@@ -507,12 +511,12 @@ initial mappings, beyond the three primer assets, are:
 | --- | --- |
 | all nine non-primer catalog assets | `docs/architecture/willow-architecture.md` |
 | `data-model-paths`, `data-model-overwrite`, `data-model-prefix-pruning` | the three `phase0a-wu*-report.md` files; `2026-07-10-willow-implementation-audit.md`; `2026-07-10-riot-phase0a-public-kernel.md`; `2026-07-10-riot-evidence-sprint-design.md` |
-| `data-model-namespaces`, `meadowcap-capability-verification`, `meadowcap-communal-namespace`, `meadowcap-owned-namespace` | `2026-07-10-dual-mode-research-addendum.md`; `2026-07-10-riot-dual-mode-design.md`; both app-directory spec/plan files; both signed-JS-apps spec/plan files; `2026-07-11-full-meadowcap-management-design.md`; both conference-gateway-signature-verification spec/plan files |
+| `data-model-namespaces`, `meadowcap-capability-verification`, `meadowcap-communal-namespace`, `meadowcap-owned-namespace` | `2026-07-10-dual-mode-research-addendum.md`; `2026-07-10-riot-dual-mode-design.md`; both app-directory spec/plan files; both signed-JS-apps spec/plan files; `2026-07-11-full-meadowcap-management-design.md`; both conference-gateway-signature-verification spec/plan files; `2026-07-11-user-profiles-willow-research.md` |
 | `drop-improvised-carriers`, `confidential-sync-selective-exchange` | `docs/decisions/riot-conference-sync.md`; `2026-07-10-initial-research.md`; `2026-07-11-hybrid-gossip-backhaul-research.md`; `2026-07-11-shutdown-resistant-distribution-research.md`; `2026-07-11-nearby-transport-design.md`; both conference-native-demo spec/plan files; `2026-07-10-riot-prototype.md` |
-| none | README; product brief; mutual-aid research; disaster/mutual-aid evidence research; app-ecosystem research; JS-runtime-iOS design; this visual-documentation design; the Willow visual docs and marketing implementation plan |
+| none | README; product brief; mutual-aid research; disaster/mutual-aid evidence research; app-ecosystem research; JS-runtime-iOS design; this visual-documentation design; the Willow visual docs and marketing implementation plan; `2026-07-12-demo-polish-design.md` |
 
 Paths in the committed manifest are the full repository-relative paths from the
-32-item scope list; basenames above are unambiguous shorthand only in this
+34-item starting scope list; basenames above are unambiguous shorthand only in this
 human-readable table. Each implementation-time coverage record supplies the
 exact nonempty caption for every listed asset.
 

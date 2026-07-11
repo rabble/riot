@@ -75,7 +75,6 @@ Create `crates/xtask/src/lib.rs`:
 
 ```rust
 pub mod coverage;
-pub mod documentation;
 ```
 
 Implement `coverage::enforce_coverage_summary` with fail-closed JSON parsing, denominator checks, finite percentages, and stable sorted diagnostics. Add `enforce-coverage-summary <summary> <thresholds>` command wiring to `main.rs`.
@@ -174,7 +173,7 @@ Do not transform the bytes. Record SHA-256, byte length, decoded dimensions, ver
 
 - [ ] **Step 5: Create the typed registries**
 
-Populate `protocols.json` with the eight IDs and official URLs from the design. Populate `primer.json` with the exact Authority → Movement → Convergence copy. Populate `coverage.json` with the frozen 32-document list, sorted protocol IDs, exact extra-figure records, captions, and an empty exemptions array.
+Populate `protocols.json` with the eight IDs and official URLs from the design. Populate `primer.json` with the exact Authority → Movement → Convergence copy. Populate `coverage.json` with the initial 34-document list, sorted protocol IDs, exact extra-figure records, captions, and an empty exemptions array.
 
 - [ ] **Step 6: Implement bounded PNG and manifest validation**
 
@@ -226,6 +225,8 @@ Expected: FAIL because Markdown normalization and dependency equality are absent
 
 Implement, in order: bounded file discovery; strict JSON schema parsing; semantic cross-registry checks; CommonMark/GFM parsing; canonical primer/boundary/figure comparison; URL/path normalization; PNG/catalog inspection; sorted diagnostics. `validate_documentation(root)` performs no writes or network calls.
 
+Add `pub mod documentation;` to `crates/xtask/src/lib.rs` in this step, after `crates/xtask/src/documentation/mod.rs` exists.
+
 - [ ] **Step 4: Add an explicit synchronizer command**
 
 Add `cargo xtask sync-willow-docs --check` and `--write`. `--write` inserts or replaces only paired generated primer/source/figure blocks and the fixed skip/content headings; it never rewrites text outside markers. Boundary text and historical context must already exist in `coverage.json` and are emitted from that reviewed data.
@@ -251,11 +252,11 @@ git commit -m "feat(xtask): validate Willow documentation contracts"
 ## Task 4: Migrate the Complete Technical Corpus
 
 **Files:**
-- Modify: the exact 32 documents frozen in the governing design and `coverage.json`
+- Modify: the initial 34 documents listed in the governing design, any additional Willow-bearing documents found by the preflight rescan, and `coverage.json`
 
 - [ ] **Step 1: Prove the committed corpus fails before synchronization**
 
-Run: `cargo xtask sync-willow-docs --check`
+First rerun the governing design's material-Willow scan across all coverage roots. Add every newly matched document to `coverage.json` or add a dated, owned, justified exemption; an empty exemption list remains preferred. Then run: `cargo xtask sync-willow-docs --check`.
 
 Expected: FAIL listing all covered documents missing the versioned primer.
 
@@ -276,7 +277,7 @@ Historical reports also receive the dated current-context text without modifying
 
 Run: `cargo xtask sync-willow-docs --write`
 
-Expected: 32 documents updated; no unlisted file changed.
+Expected: all currently covered documents updated; no unlisted file changed.
 
 - [ ] **Step 4: Make `willow-architecture.md` the complete canonical explainer**
 
@@ -373,6 +374,7 @@ npx playwright screenshot --browser chromium --viewport-size "1440,1000" --wait-
 npx playwright screenshot --browser chromium --viewport-size "390,844" --wait-for-timeout 1500 http://localhost:18081 /tmp/riot-willow-visual-review/mobile.png
 npx playwright screenshot --browser chromium --color-scheme dark --viewport-size "1440,1000" --wait-for-timeout 1500 http://localhost:18081 /tmp/riot-willow-visual-review/desktop-dark.png
 npx playwright screenshot --browser chromium --color-scheme dark --viewport-size "390,844" --wait-for-timeout 1500 http://localhost:18081 /tmp/riot-willow-visual-review/mobile-dark.png
+npx playwright screenshot --browser chromium --full-page --viewport-size "1440,1000" --wait-for-timeout 1500 http://localhost:18081/#willow /tmp/riot-willow-visual-review/full-page.png
 ```
 
 Inspect images for white-card treatment, no overflow, correct order, readable captions, visible attribution, and no broken assets.
@@ -385,7 +387,11 @@ Render README, canonical architecture, one spec, one plan, and one historical re
 
 Re-run only affected screenshots and validation after each fix. Do not accept horizontal scrolling or missing images.
 
-- [ ] **Step 5: Run the full repository gate**
+- [ ] **Step 5: Run the five-reader acceptance study**
+
+Within seven days, test the five representative readers and five representative documents defined in the governing design. Record participant categories, per-question results, completion times, expert skip-link times, keyboard/VoiceOver findings, and pass/fail in `docs/decisions/willow-visual-reader-study.md`. At least four readers must answer all five questions correctly within five minutes; every expert must use the skip link within 30 seconds; any critical accessibility failure blocks acceptance.
+
+- [ ] **Step 6: Run the full repository gate**
 
 ```bash
 cargo test --workspace --all-features
@@ -409,7 +415,7 @@ npx wrangler whoami
 npx wrangler versions list
 ```
 
-Expected: authenticated account owns `riot-protest-net-marketing`; current live version is visible. Stop if account or worker differs.
+Expected: authenticated account owns `riot-protest-net-marketing`; current live version is visible. Save the current version ID as the rollback target. Stop if account or worker differs.
 
 - [ ] **Step 2: Deploy the verified `marketing/public` tree**
 
@@ -420,6 +426,8 @@ Expected: Wrangler publishes a new version of `riot-protest-net-marketing` and p
 - [ ] **Step 3: Verify live HTML and assets**
 
 Fetch the live HTML and three asset URLs, compare SHA-256 with the committed deploy tree, verify the `#willow` section and official links, and confirm no private content or write endpoint was introduced.
+
+If verification fails, immediately restore 100% traffic to the saved prior version with `npx wrangler versions deploy <prior-version-id>@100% --yes`, then verify the prior HTML hash before reporting the failed rollout.
 
 - [ ] **Step 4: Record handoff and commit**
 
@@ -432,11 +440,12 @@ git commit -m "docs: record Willow marketing deployment"
 
 ## Final Acceptance
 
-- [ ] All 32 technical documents contain one valid full visual primer and tailored boundary.
+- [ ] Every technical document matched by the final material-Willow scan contains one valid full visual primer and tailored boundary or a dated, owned exemption.
 - [ ] The canonical architecture uses all relevant official Willow figures and direct specifications.
 - [ ] Marketing source and deploy HTML are byte-identical and visually clean at desktop/mobile and light/dark.
 - [ ] No doc or site depends on Willow-hosted images at render time.
 - [ ] Asset provenance, licensing, hashes, alt text, and protocol maturity are explicit.
 - [ ] Workspace tests, strict Clippy, formatting, contract validation, and the configured coverage gate pass.
+- [ ] The five-reader study and keyboard/VoiceOver acceptance thresholds pass and are recorded.
 - [ ] The Workers deployment is republished and live bytes match the committed `marketing/public` tree.
 - [ ] `riot.protest.net` itself is not changed without the separate DNS/TLS and edge-policy approvals.
