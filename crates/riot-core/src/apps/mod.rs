@@ -25,6 +25,11 @@ pub enum AppsError {
     BundleTooLarge,
     /// The store refused the write (session/budget/admission failure).
     StoreRejected,
+    /// A local app-index write would replace an active import review.
+    StoreBusy,
+    /// The requested local write is older than, or conflicts at the same
+    /// timestamp with, the live value at its exact Willow coordinate.
+    StaleWrite,
     IndexFieldInvalid,
     EndorsementFieldInvalid,
     IndexEntryMismatch,

@@ -7,7 +7,7 @@
 //! same as any other Willow path.
 
 use minicbor::{Decoder, Encoder};
-use willow25::groupings::{Coordinatelike, Keylike};
+use willow25::groupings::{Coordinatelike, Keylike, Namespaced};
 
 use crate::session::{commit_at, EvidenceStore};
 use crate::willow::identity::EvidenceAuthor;
@@ -111,6 +111,21 @@ pub fn write_trust_marker(
     kind: TrustMarkerKind,
     willow_timestamp_micros: u64,
 ) -> Result<(), AppsError> {
+    // Local semantic updates at this one-slot coordinate are monotonic by
+    // timestamp. Willow's payload-digest recency tie-break remains the
+    // deterministic rule for directly imported entries, but local callers
+    // must advance time to change Trust <-> Revoke so storage order cannot
+    // override the intended semantic order.
+    if let Some(current) = trust_markers_for(store, organizer.namespace_id().as_bytes(), app_id)?
+        .into_iter()
+        .find(|marker| marker.author_subspace_id == *organizer.subspace_id().as_bytes())
+    {
+        if willow_timestamp_micros < current.timestamp_micros
+            || (willow_timestamp_micros == current.timestamp_micros && kind != current.kind)
+        {
+            return Err(AppsError::StaleWrite);
+        }
+    }
     let marker = TrustMarker {
         app_id: *app_id,
         author_subspace_id: *organizer.subspace_id().as_bytes(),
@@ -124,6 +139,7 @@ pub fn write_trust_marker(
 
 pub fn trust_markers_for(
     store: &EvidenceStore,
+    namespace_id: &[u8; 32],
     app_id: &[u8; 32],
 ) -> Result<Vec<TrustMarker>, AppsError> {
     let prefix = app_index_prefix_for(app_id)?;
@@ -132,6 +148,9 @@ pub fn trust_markers_for(
         .map_err(|_| AppsError::StoreRejected)?;
     let mut markers = Vec::new();
     for (_, entry, payload) in entries {
+        if entry.namespace_id().as_bytes() != namespace_id {
+            continue;
+        }
         let Some(AppIndexSlot::Trust {
             app_id: path_app_id,
             organizer_subspace_id,

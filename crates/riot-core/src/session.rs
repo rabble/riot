@@ -403,6 +403,17 @@ pub enum InspectOutcome {
     Rejected(BundleRejection),
 }
 
+enum InspectInnerError {
+    Busy,
+    Session(SessionError),
+}
+
+impl From<SessionError> for InspectInnerError {
+    fn from(error: SessionError) -> Self {
+        Self::Session(error)
+    }
+}
+
 impl InspectOutcome {
     /// Test convenience: unwrap a Preview or panic.
     pub fn expect_preview(self) -> ImportPreview {
@@ -506,8 +517,50 @@ impl EvidenceStore {
         bytes: &[u8],
         context: ImportContext,
     ) -> Result<InspectOutcome, SessionError> {
+        self.inspect_inner(bytes, context, true)
+            .map_err(|error| match error {
+                InspectInnerError::Session(error) => error,
+                InspectInnerError::Busy => SessionError::Internal,
+            })
+    }
+
+    /// Local writes must never replace a pending user or sync review.
+    fn inspect_local_write(
+        &self,
+        bytes: &[u8],
+        context: ImportContext,
+    ) -> Result<InspectOutcome, InspectInnerError> {
+        self.inspect_inner(bytes, context, false)
+    }
+
+    /// Release only the helper-owned preview; if another inspect replaced it
+    /// concurrently, leave that newer review untouched.
+    fn finish_local_write(&self, preview_id: u64) -> Result<(), SessionError> {
         let mut st = self.inner.lock().map_err(|_| SessionError::Internal)?;
         st.require_store(self.store_id)?;
+        if st
+            .preview
+            .as_ref()
+            .is_some_and(|preview| preview.preview_id == preview_id)
+        {
+            st.plan = None;
+            st.plan_tombstones.clear();
+            st.preview = None;
+        }
+        Ok(())
+    }
+
+    fn inspect_inner(
+        &self,
+        bytes: &[u8],
+        context: ImportContext,
+        replace_active_review: bool,
+    ) -> Result<InspectOutcome, InspectInnerError> {
+        let mut st = self.inner.lock().map_err(|_| SessionError::Internal)?;
+        st.require_store(self.store_id)?;
+        if !replace_active_review && (st.preview.is_some() || st.plan.is_some()) {
+            return Err(InspectInnerError::Busy);
+        }
 
         // Decode + verify OUTSIDE any state mutation.
         let decoded = match decode_bundle(bytes) {
@@ -621,7 +674,7 @@ impl EvidenceStore {
             &verified,
             context.route.len(),
         )) {
-            return Err(SessionError::StoreFull);
+            return Err(SessionError::StoreFull.into());
         }
 
         let store = st.store.as_ref().unwrap();
@@ -714,21 +767,39 @@ pub(crate) fn commit_at(
     };
     let bundle = crate::import::bundle::encode_bundle(std::slice::from_ref(&signed))
         .map_err(|_| crate::apps::AppsError::StoreRejected)?;
-    let preview = match store
-        .inspect(&bundle, ImportContext::new("app-index-write"))
-        .map_err(|_| crate::apps::AppsError::StoreRejected)?
-    {
-        InspectOutcome::Preview(preview) => preview,
-        InspectOutcome::Rejected(_) => return Err(crate::apps::AppsError::StoreRejected),
+    let preview = match store.inspect_local_write(&bundle, ImportContext::new("app-index-write")) {
+        Ok(InspectOutcome::Preview(preview)) => preview,
+        Ok(InspectOutcome::Rejected(_)) => return Err(crate::apps::AppsError::StoreRejected),
+        Err(InspectInnerError::Busy) => return Err(crate::apps::AppsError::StoreBusy),
+        Err(InspectInnerError::Session(_)) => return Err(crate::apps::AppsError::StoreRejected),
     };
-    let plan = preview
-        .plan_all()
+    let local_preview_id = preview.preview_id;
+    let plan = match preview.plan_all() {
+        Ok(plan) => plan,
+        Err(_) => {
+            let _ = store.finish_local_write(local_preview_id);
+            return Err(crate::apps::AppsError::StoreRejected);
+        }
+    };
+    let outcome = plan.commit();
+    store
+        .finish_local_write(local_preview_id)
         .map_err(|_| crate::apps::AppsError::StoreRejected)?;
-    match plan
-        .commit()
-        .map_err(|_| crate::apps::AppsError::StoreRejected)?
-    {
-        CommitOutcome::Committed(_) | CommitOutcome::NoChanges(_) => Ok(()),
+    match outcome.map_err(|_| crate::apps::AppsError::StoreRejected)? {
+        // With one submitted entry, duplicate-only `NoChanges` proves the
+        // exact canonical entry id was already present: safe idempotence.
+        CommitOutcome::NoChanges(_) => Ok(()),
+        CommitOutcome::Committed(receipt) => match receipt.dispositions.as_slice() {
+            [DispositionRow {
+                disposition: EntryDisposition::AppliedAtCommit { .. },
+                ..
+            }] => Ok(()),
+            [DispositionRow {
+                disposition: EntryDisposition::DominatedAtCommit { .. },
+                ..
+            }] => Err(crate::apps::AppsError::StaleWrite),
+            _ => Err(crate::apps::AppsError::StoreRejected),
+        },
     }
 }
 

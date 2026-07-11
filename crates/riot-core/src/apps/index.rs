@@ -88,7 +88,7 @@ pub enum AppIndexSlot {
 }
 
 /// Returns which app-index slot `path` addresses, or `None` when the path
-/// is not exactly one of the three recognized shapes (wrong prefix, wrong
+/// is not exactly one of the four recognized shapes (wrong prefix, wrong
 /// id length, unknown slot name, missing or extra trailing components).
 pub fn classify_app_index_path(path: &Path) -> Option<AppIndexSlot> {
     let mut components = path.components();
