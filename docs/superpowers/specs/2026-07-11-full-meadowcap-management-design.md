@@ -299,12 +299,26 @@ intersection platform restrictions
 ```
 
 Launching creates an opaque, revocable `AppExecutionSession` bound to profile,
-Space namespace, exact app ID and manifest digest, WebView instance and origin,
+content namespace, optional linked governance namespace, exact app ID and manifest digest, WebView instance and origin,
 navigation generation, effective grant, actor, receiver key, and policy
 snapshot. Bridge operations accept only that opaque handle and relative
 operation data; they never accept a caller-selected app ID or Space ID. Any
 navigation, origin change, policy change, revocation, or WebView destruction
 closes the handle. The broker re-evaluates authority for every operation.
+Grants are tagged with the namespace they cover; an Open Space session may use
+communal own-data authority in the content namespace and separately provisioned
+shared-data/app-policy authority in its linked owned governance namespace.
+
+Every externally observable bridge effect is linearized against the authority
+repository generation. A short generation guard is acquired immediately before
+each network header/body chunk, redirect hop, platform-permission dispatch,
+protected read return, or other native side effect; the effect occurs before a
+concurrent frontier commit or is cancelled after it, never after a known
+revocation. Durable writes condition their transaction on the same generation.
+A frontier change signals and cancels in-flight work before further output and
+zeroizes buffered protected data. If an OS permission sheet cannot be retracted
+after dispatch, its result is discarded and no data or bridge result is
+returned under the stale generation.
 
 ### Durable authority repository
 
@@ -370,10 +384,10 @@ and independently issuing or attenuating a covering read capability.
 | Verifier | `annotations/v1/verification/**`; `annotations/v1/correction/**` | `content/v1/**`; those two annotation prefixes |
 | Dispatcher | Separate prefixes below `workflow/v1/task/**`, `request/**`, `commitment/**`, and `handoff/**` | The same four workflow prefixes |
 | Directory curator | Exact manifest and bundle slots below `app-index/<app_id>/` plus `governance/v1/directory/withdrawals/**`; never endorsement slots | `app-index/**`; `governance/v1/directory/**` |
-| App endorser | Exact `app-index/<app_id>/endorsements/<endorser_space_id>` path for each app | Exact `app-index/<app_id>/**` |
+| App endorser | Exact `app-index/<app_id>/endorsements-v2/<endorser_space_id>` path for each app | Exact `app-index/<app_id>/**` |
 | App approver | `governance/v1/apps/approvals/**` and `governance/v1/apps/revocations/**` | `app-index/**`; `governance/v1/apps/**` |
 | Governance proposer | `governance/v1/proposals/<actor_id>/**`; no decision authority | The same proposal prefix plus public governance decisions |
-| Delegating administrator | Governance paths for `roles/**`, `members/**`, `invitations/**`, and scoped `revocations/**`, plus explicit covering parent capabilities for each grantable role | The governance prefixes plus reads explicitly required by each grantable role |
+| Delegating administrator | Governance paths for `actors/**`, `roles/**`, `members/**`, `invitations/**`, `activations/**`, `capabilities/**`, and scoped `revocations/**`, plus explicit covering parent capabilities for each grantable role | The governance prefixes plus reads explicitly required by each grantable role |
 | Root custodian | Full owned area, used only for genesis, initial delegation, recovery declarations, and migration | Full owned area |
 
 Runtime app data retains the implemented `apps/<app_id>/<relative_key...>`
@@ -409,6 +423,10 @@ attribution use the Meadowcap receiver plus its active actor binding.
 Endorsement slots are keyed by stable `endorser_space_id` and are writable only
 by a receiver currently authorized as that Space's app endorser; device keys
 cannot create multiple endorsements for the same community.
+Legacy communal endorsements retain
+`app-index/<app_id>/endorsements/<endorser_subspace_id>`. Managed/stable-actor
+endorsements use the distinct `endorsements-v2` component, so profile dispatch
+can never reinterpret one 32-byte identity as the other.
 
 ## Governance ledger
 
@@ -419,6 +437,37 @@ strictly increasing per-actor sequence, previous actor-record ID, authorizing
 capability fingerprint, kind-specific body, and a display-only creation time.
 `record_id` is a domain-separated hash of the canonical record. The entry path
 must match the record kind and target under `governance/v1/`.
+
+All literal components below are ASCII bytes. Actor, receiver, capability,
+app, namespace, invite, action, role-instance, checkpoint, and record IDs are raw 32-byte
+components; `sequence_be` is an 8-byte unsigned big-endian component. These are
+the complete V1 governance kinds and exact paths; extra/missing components or a
+path target that differs from the canonical body is ineligible.
+
+| Record kind | Exact path | Required write authority |
+| --- | --- | --- |
+| `Genesis` | `governance/v1/genesis` | Root-issued owned capability for this exact path; receiver entry signature |
+| `ActorBinding` | `governance/v1/actors/<actor_id>/bindings/<receiver_id>/<record_id>` | Delegating administrator `actors/**` |
+| `MemberDecision` | `governance/v1/members/<actor_id>/<record_id>` | Delegating administrator `members/**` |
+| `InviteManagerDecision` | `governance/v1/invitations/<invite_id>/manager/<record_id>` | Delegating administrator `invitations/**` |
+| `InviteResponse` | `governance/v1/invitations/<invite_id>/responses/<receiver_id>/<record_id>` | Invitee's exact pre-activation response capability |
+| `InviteActivation` | `governance/v1/activations/<invite_id>/<record_id>` | Delegating administrator `activations/**` |
+| `RoleDecision` | `governance/v1/roles/<actor_id>/<role_instance_id>/<record_id>` | Delegating administrator `roles/**` plus the covering parent named in the body |
+| `CapabilityIssued` | `governance/v1/capabilities/issued/<capability_fingerprint>/<record_id>` | Delegating administrator `capabilities/**` plus valid attenuation from the named covering parent |
+| `CapabilityRenewed` | `governance/v1/capabilities/renewed/<capability_fingerprint>/<record_id>` | Same as issuance; renewed capability has a new fingerprint |
+| `CapabilityRevoked` | `governance/v1/revocations/<capability_fingerprint>/<record_id>` | Root, self, ancestor receiver, or scoped revocation administrator as defined below |
+| `Checkpoint` | `governance/v1/checkpoints/<checkpoint_id>` | Root or exact `checkpoints/**` capability |
+| `ActionReceipt` | `governance/v1/actions/<actor_id>/<receiver_id>/<sequence_be>` | Receipt capability paired in the same role bundle |
+| `Proposal` | `governance/v1/proposals/<actor_id>/<record_id>` | Actor's exact proposal prefix |
+| `AppealSubmitted` | `governance/v1/appeals/submissions/<actor_id>/<action_id>/<record_id>` | Actor's exact member appeal prefix |
+| `AppealResolved` | `governance/v1/appeals/resolutions/<action_id>/<record_id>` | Moderator resolution prefix |
+| `AppApproved` | `governance/v1/apps/approvals/<app_id>/<record_id>` | App approver approval prefix |
+| `AppRevoked` | `governance/v1/apps/revocations/<app_id>/<record_id>` | App approver revocation prefix |
+| `AppProvisioned` | `governance/v1/apps/provisioning/<app_id>/<receiver_id>/<record_id>` | App-data issuer with covering per-app parent plus provisioning prefix |
+| `DirectoryWithdrawn` | `governance/v1/directory/withdrawals/<app_id>/<record_id>` | Directory curator withdrawal prefix |
+| `RecoveryDeclared` | `governance/v1/recovery/<record_id>` | Root only |
+| `MigrationDeclared` | `governance/v1/migrations/<new_namespace_id>/<record_id>` | Healthy root only; compromised-root candidates are non-authoritative attestations |
+| `LensSuccessor` | `governance/v1/lenses/successors/<new_namespace_id>/<record_id>` | Current lens root or delegated lens-successor authority |
 
 A capability fingerprint is
 `SHA-256("riot/meadowcap-fingerprint/v1" || canonical_capability_bytes)`; the
@@ -500,6 +549,11 @@ from generating another receipt, which is the recursion base case. Their own
 entry signature, Meadowcap receipt-prefix capability, actor binding, canonical
 path/body binding, action-entry hash, and previous-action hash are still fully
 verified. A receipt cannot name itself or another receipt as its action.
+The governance genesis is the only privileged action without a receipt: it is
+validated against the empty frontier by its root-issued owned capability and
+creates the first actor binding. Every other non-receipt privileged action must
+have exactly one valid paired receipt, and one receipt may pair with exactly one
+action.
 
 Entry timestamps more than ten minutes ahead of a reliable local wall clock
 are quarantined. An unavailable or rolled-back clock blocks issuance, renewal,
@@ -605,6 +659,9 @@ per-device authority from the linked owned governance Space.
 - Each app/profile uses an isolated WebView data store/process where supported,
   a restrictive CSP with remote scripts disabled by default, and bridge
   suspension before navigation begins.
+- Subresources, WebSockets, service workers, downloads, custom schemes, and
+  top-level external navigation are denied unless represented by a typed grant
+  and routed through the same host proxy and generation guard.
 
 ### Plural directories
 
@@ -627,13 +684,23 @@ Receiver keys are per device; `actor_id` is the stable person/role identity.
 Adding a device creates a new receiver and a narrowly delegated child
 capability. Receiver keys are never copied between devices.
 
-An `InviteV1` is recipient-bound and contains a random 256-bit invite ID,
-Space/profile fingerprint, inviter actor and receiver, requested actor binding,
-canonical child capabilities, expiry coordinate, one-use nonce, and—when
-private—the invitee's MLS KeyPackage reference. It is encrypted to the
-invitee-provided receiver key and signed by the inviter. A recipient first
-shares an `InviteRequestV1` by QR/file/nearby exchange; managers cannot mint a
-secret-bearing invite to an unknown receiver.
+An `InviteRequestV1` contains a random 256-bit request ID, Meadowcap receiver
+signing key, separate X25519 HPKE encryption key, requested Space fingerprint,
+request nonce, protocol version, and—when private—the MLS KeyPackage. The
+receiver signs
+`"riot/invite-request/v1" || canonical_request_without_signature`, binding the
+encryption key and KeyPackage to the signing receiver and request context.
+
+`InviteV1` is recipient-bound and contains a separate random 256-bit invite ID,
+the complete request digest, Space/profile fingerprint, inviter actor and
+receiver, requested actor binding, canonical child capabilities, expiry
+coordinate, one-use nonce, and MLS reference. Its canonical clear header binds
+invite ID, request ID/digest, both signing receivers, and protocol version; its
+body is HPKE X25519/HKDF-SHA-256/ChaCha20-Poly1305 encrypted to the request's
+encryption key with that header as AAD, then the inviter signs the header and
+ciphertext digest. A recipient first shares the request by QR/file/nearby
+exchange; managers cannot mint a secret-bearing invite to an unknown or
+unbound encryption key.
 
 The durable invitation state machine is `draft -> issued -> delivered ->
 previewed -> accepted_pending -> active`, with terminal `rejected`, `cancelled`,
@@ -653,6 +720,11 @@ abandoned repair atomically consumes the invite nonce and transitively revokes
 all pre-issued roots. Invite nonce consumption and the activation/revocation
 transition commit in the same authority-repository transaction, so a crash
 cannot reopen the invite.
+
+The sole pre-activation exception is a separate exact-path response capability
+for `governance/v1/invitations/<invite_id>/responses/<receiver_id>/**`. Policy
+permits it only for canonical accept/reject responses bound to the request and
+invite digests; it cannot authorize role, content, app, or activation writes.
 
 Private managed invites use a recoverable two-phase flow:
 
@@ -767,6 +839,9 @@ version fails without partial restore.
 Export requires user presence, a destination warning, and successful test
 decrypt/namespace verification before completion. Riot never places the key or
 plaintext on the clipboard, in logs, crash reports, or automatic cloud backup.
+Recovery-key screens suppress app-switcher snapshots, screenshots/screen
+recording, analytics capture, and notification overlays where platform APIs
+permit; unsupported protections are disclosed before display.
 Five failed UI imports close the recovery session; high-entropy key security,
 not throttling, prevents offline guessing. A future passphrase mode would
 require a separate review and at least Argon2id with 64 MiB, three iterations,
@@ -869,12 +944,19 @@ fingerprint, policy frontier, exporter actor/receiver, recipient encryption-key
 IDs, optional MLS group/epoch, payload digest/length, and anti-replay envelope
 ID. A random 256-bit content key encrypts the drop with XChaCha20-Poly1305; each
 recipient gets an HPKE X25519/HKDF-SHA-256/ChaCha20-Poly1305 wrap bound to the
-header as AAD. Device records carry encryption keys separately from Meadowcap
+header as AAD. For every recipient the signed header also binds the fingerprint
+of an active read capability covering the complete exported area and its active
+actor/device binding at the named frontier. Export validates those predicates
+before creating any wrap; an arbitrary bound encryption key without covering
+read authority is ineligible. Device records carry encryption keys separately from Meadowcap
 signature receivers; an actor-binding record signs the receiver and encryption
 key together. The active exporter receiver signs
 `"riot/protected-drop-signature/v1" || canonical_header || ciphertext_digest`.
 Import verifies that signature, the actor/device binding, and covering export
-read authority at the named policy frontier before unwrapping content. Private-group exports instead bind to the current MLS
+read authority at the named policy frontier before unwrapping content. Before
+unwrapping, the local recipient must possess the header-named active read
+capability, its active receiver/encryption-key binding, and coverage of the full
+area under a non-stale accepted frontier. Private-group exports additionally bind to the current MLS
 group and epoch and include only current members; an old epoch or removed
 member cannot receive a newly created export. Import rejects recipient,
 namespace, epoch, digest, replay, version, and downgrade mismatches before
@@ -1021,6 +1103,8 @@ tests; platform integration tests exercise the real storage adapters.
 - Capability-fingerprint domain/version separation and receiver-versus-entry
   subspace attribution.
 - Versioned role-template golden tests pin every path/mode bundle above.
+- Every closed GovernanceRecordV1 kind has exact path/body/authority golden and
+  missing/extra/wrong-target negative fixtures.
 
 ### Admission and replication
 
@@ -1078,6 +1162,9 @@ tests; platform integration tests exercise the real storage adapters.
 - Pre-activation invite capabilities fail every local/import/read path;
   activation and nonce consumption are crash-atomic; cancellation revokes all
   descendants.
+- Invite request receiver/HPKE/KeyPackage binding, request-digest substitution,
+  wrong-recipient decryption, and exact pre-activation response-capability
+  confinement.
 - Manifest V1/V2 decoding, V1 sandbox restrictions, canonical V2 permission
   subset algebra, network redirect/origin checks, and mandatory reapproval.
 - Opaque app-session confused-deputy tests for caller-selected app/Space IDs,
@@ -1085,10 +1172,14 @@ tests; platform integration tests exercise the real storage adapters.
 - App approval/provisioning states, exact per-device app capabilities, future
   invite provisioning, unavailable Tools rows, and per-app subtree revocation.
 - ProtectedDrop exporter-signature, actor/encryption-key binding, export-area
-  authority, and crash-atomic replay consumption.
+  authority, per-recipient covering read authority, and crash-atomic replay
+  consumption.
 - Any governance-frontier change closes protected-sync and app sessions before
   their next output; cutoff-map predicates cover late ancestors, absent
   descendants, and concurrent branches.
+- Generation-guard races at every network chunk/redirect, native permission
+  dispatch, protected return, and durable write linearize before revocation or
+  cancel without further output.
 - Exact current legacy paths and managed V1 paths are pinned in codec/schema
   dispatch tests.
 
