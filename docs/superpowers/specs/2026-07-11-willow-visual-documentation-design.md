@@ -157,11 +157,13 @@ The README and all other primers link to that document using a stable
 
 Each in-scope document must have exactly one H1. Existing YAML front matter and
 contiguous title metadata (`Date:`, `Status:`, and equivalent introductory
-metadata lines) remain directly beneath that H1. The Willow declaration, an
-accessible `[Skip to document-specific content](#document-specific-content)`
-link, and the prologue follow the metadata and precede any hand-authored table
-of contents or first body H2. A document with no H1, multiple H1s, or a primer
-inserted before its title/metadata fails validation.
+metadata lines) remain directly beneath that H1. An accessible
+`[Skip to document-specific content](#document-specific-content)` link, the
+`willow-protocols` declaration, and the prologue follow the metadata in that
+exact order and precede any hand-authored table of contents or first body H2.
+The declaration is immediately adjacent to the primer start marker. A document
+with no H1, multiple H1s, or a primer inserted before its title/metadata fails
+validation.
 
 Each in-scope document contains exactly one prologue bounded by paired markers.
 The example below uses asset catalog identifiers because the correct relative
@@ -258,8 +260,9 @@ that heading. The validator checks the link, destination, order, and uniqueness;
 navigation does not depend on a generated table of contents.
 
 Historical documents use this exact order: original H1 and original date/status
-metadata; skip link; primer; boundary; additional-protocol block when required;
-`## Current protocol context (added YYYY-MM-DD)` with current framing;
+metadata; skip link; protocol declaration; primer; boundary;
+additional-protocol block when required; `## Current protocol context (added
+YYYY-MM-DD)` with current framing;
 `## Document-specific content`; then the untouched historical record. The dated
 context heading occurs exactly once and is outside all validation markers.
 
@@ -602,9 +605,13 @@ Willow figure:
    Unicode and reject normalization changes;
 4. perform ASCII-case-insensitive URI-scheme detection before and after decode;
    reject schemes, protocol-relative paths, absolute filesystem paths,
-   backslashes, drive prefixes, `.`, `..`, and empty components;
-5. resolve lexically from the containing document, require the result beneath
-   `docs/assets/willow/`, and reject ASCII-case-folded or NFC path collisions;
+   backslashes, drive prefixes, `.`, and empty components; allow `..` only in a
+   relative Markdown destination and only for the bounded resolution in step 5;
+5. resolve relative `..` components lexically from the containing document,
+   reject traversal above the repository root, require the normalized result
+   beneath `docs/assets/willow/`, and reject ASCII-case-folded or NFC path
+   collisions; registry paths remain repository-relative and may never contain
+   `..`;
 6. call `symlink_metadata` on every existing component and reject any symlink;
 7. canonicalize the repository root, asset root, parent, and file; verify final
    containment; require a regular file and matching catalog record before
@@ -782,7 +789,7 @@ being corrected explicitly.
 - The twelve upstream PNG illustrations are vendored byte-for-byte with bounded
   format validation, immutable-source provenance, manifest, hashes, alt text,
   attribution, adequate asset-specific license evidence, and both license texts.
-- `willow-architecture.md` contains the canonical security → movement →
+- `willow-architecture.md` contains the canonical authority → movement →
   convergence explanation and direct official links.
 - README and every in-scope Willow-bearing technical document contain the full
   visual primer and a tailored boundary block.
