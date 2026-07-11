@@ -140,29 +140,51 @@ private struct IncidentBoardView: View {
 
 private struct ComposeReviewSignView: View {
     @ObservedObject var model: RiotAppModel
+    @Environment(\.colorScheme) private var colorScheme
     @State private var headline = "Water available at the east entrance"
     @State private var details = "Bring a bottle. Volunteers are refilling the tank."
     @State private var aiAssisted = true
 
     var body: some View {
-        Form {
-            Section("Draft") {
-                TextField("Headline", text: $headline, axis: .vertical)
-                TextField("What people need to know", text: $details, axis: .vertical)
-                    .lineLimit(4...8)
-                Toggle("Started with model assistance", isOn: $aiAssisted)
-            }
-            Section("Review before signing") {
-                Text("Signing publishes this alert into your local public space. A model cannot press this button or sync for you.")
-                    .font(.callout)
-                Button("Review complete — sign locally") {
-                    model.sign(headline: headline, description: details, aiAssisted: aiAssisted)
+        ScrollView {
+            VStack(spacing: 16) {
+                RiotCard {
+                    VStack(alignment: .leading, spacing: 14) {
+                        Text("Draft")
+                            .font(.riot(.mono, size: 12, relativeTo: .caption))
+                            .textCase(.uppercase)
+                            .tracking(1)
+                            .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
+                        TextField("Headline", text: $headline, axis: .vertical)
+                            .font(.riot(.body, size: 17, relativeTo: .body))
+                        TextField("What people need to know", text: $details, axis: .vertical)
+                            .font(.riot(.body, size: 15, relativeTo: .body))
+                            .lineLimit(4...8)
+                        Toggle("Started with model assistance", isOn: $aiAssisted)
+                            .tint(RiotTheme.pink(for: colorScheme))
+                    }
                 }
-                .buttonStyle(.borderedProminent)
-                .disabled(model.space == nil || headline.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                RiotCard {
+                    VStack(alignment: .leading, spacing: 14) {
+                        Text("Review before signing")
+                            .font(.riot(.mono, size: 12, relativeTo: .caption))
+                            .textCase(.uppercase)
+                            .tracking(1)
+                            .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
+                        Text("Signing publishes this alert into your local public space. A model cannot press this button or sync for you.")
+                            .font(.riot(.body, size: 15, relativeTo: .callout))
+                            .foregroundStyle(RiotTheme.ink(for: colorScheme))
+                        Button("Review complete — sign locally") {
+                            model.sign(headline: headline, description: details, aiAssisted: aiAssisted)
+                        }
+                        .buttonStyle(.riotPrimary)
+                        .disabled(model.space == nil || headline.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    }
+                }
             }
+            .padding(20)
         }
-        .navigationTitle("Compose & sign")
+        .riotHeader(eyebrow: "Draft, review, sign", "Compose & sign")
     }
 }
 
