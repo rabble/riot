@@ -86,6 +86,12 @@ before assuming a file is safe to edit uncontested.
   installed. Existing Android shell uses AGP 9.0.1, Gradle 9.1.0, compile/target
   SDK 36, and min SDK 26.
 
+## Active claim: signed JS apps platform (2026-07-11, new)
+
+| Owner | Scope | Files | State | Evidence / handoff |
+| --- | --- | --- | --- | --- |
+| Claude (this session) | New feature, outside Phase 0A budget: signed, space-trusted JS apps that read/write their own Willow namespace and sync over the existing nearby transport. First app is a shared checklist. | New: `crates/riot-core/src/apps/`, new FFI surface in `crates/riot-ffi/`, new `apps/ios/Riot/Apps/`, new `apps/android/.../apps/`, new `apps/checklist/`. Does not touch existing `import/`, `sync/`, or nearby-transport files. | **Planning** | Design doc committed: `docs/superpowers/specs/2026-07-11-signed-js-apps-design.md`. Writing the implementation plan now (`docs/superpowers/plans/`); will claim specific file paths per-task before editing. `apps/ios/` and `apps/android/` remain otherwise as claimed by Task 5 agents above — this claim is additive (new subdirectories only), not a takeover. |
+
 ## Handoff format
 
 Append or replace a claim row with: owner, exact files, commit (if any), tests
