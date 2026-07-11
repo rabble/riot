@@ -363,3 +363,47 @@ profile work changes `app_display_name` off the `member-` prefix, which
 still pins — it fails in the working tree. Verified green at pristine HEAD in
 an isolated worktree, so it is purely your in-flight change; you'll want to
 update that test's expectation as part of your landing.
+
+## DEFECT: a space has no organizer — the organizer's app approval reaches nobody (2026-07-12, iOS runtime session)
+
+Found while building a two-peer replication test. **The headline "one organizer
+decision covers everyone, no install step" property is broken**, and it looks
+fine on one device, which is why every test passed.
+
+- `riot-core` has the right concept — `SpaceTrust.organizer_subspace_ids`
+  (`apps/directory.rs:39`), and `trust::is_trusted` only honors markers authored
+  by a recognized organizer. Correct.
+- But the scan never populates it (`apps/index.rs:376`
+  `organizer_subspace_ids: Vec::new()`), and the FFI fills it with **your own
+  subspace** (`mobile_state.rs:1763` `vec![own_subspace_id]`; `is_app_trusted`
+  at `:1345` likewise).
+- `PublicSpace { namespace_id, title, is_public }` records **no organizer**, and
+  `namespace_id` is an independent keypair, NOT the creator's subspace
+  (`willow/identity.rs::generate`) — so a joiner cannot even learn who the
+  organizer is.
+
+**Consequences.** (1) A (creator/organizer) approves the checklist; B joins,
+syncs, *receives* A's trust marker — and ignores it, because B's recognized-
+organizer list is `[B]`. B sees the app untrusted, `appDataBridge` returns nil,
+B cannot open it, and the UI tells B "Ask an organizer to turn this on" — advice
+that can never work. (2) Trust is vacuous as a permission model: **any member can
+self-approve any app**, which is exactly what the organizer gate exists to
+prevent.
+
+The platform spec required "a fixed, known organizer subspace_id per space"; the
+FFI substituted "me" as a stand-in and nothing downstream noticed.
+
+**Proposed fix (claiming it — will not start until the demo session releases
+`mobile_state.rs`):** give `PublicSpace` an `organizer_subspace_id`, set to the
+creator's subspace at `create_public_space`, carried in the joinable space record
+(and any QR/link payload), honored at `join_public_space`, and used as the
+recognized-organizer list everywhere trust is evaluated (`is_app_trusted`, the
+index scan's `SpaceTrust`). Then: A's approval covers B automatically (no install
+step), and B — not an organizer — correctly cannot self-approve.
+
+Files this will touch: `crates/riot-ffi/src/mobile_state.rs` + `mobile_api.rs`
+(PublicSpace record), `crates/riot-core/src/apps/index.rs` (scan populates
+organizers), iOS/Android space create/join + Tools UI (organizer vs member).
+**Demo session / app-directory session: flag here if you want to own any part of
+this, or if you are already mid-flight on the same lines.** Failing tests that
+pin the defect are landing first (`apps/ios/RiotTests/AppSyncReplicationTests.swift`).
