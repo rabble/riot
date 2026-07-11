@@ -284,3 +284,43 @@ PASS. `cargo build -p xtask` first and check the printed output path.
 | Owner | Scope | Files | State | Evidence / handoff |
 | --- | --- | --- | --- | --- |
 | Claude (platform session) | Nobody owns this and no plan task covers it: a neighbour's app now *arrives* (sync carries app-index entries, `0c6e225`) and both storefronts *show* it (`bundle_present=true`), but it cannot be **opened** — there is no way to read the stored manifest/bundle payload bytes back out, so it can never be installed and run. This closes rabble's "community discovery" loop: see a neighbour's app → review it → open it. Core read helper (manifest+bundle bytes for an app_id from the scanned index) + an FFI `install_from_directory(app_id)` that installs from the store's own bytes, then both storefronts wire the Directory row's Review/Open actions to it. | `crates/riot-core/src/apps/index.rs` (+ tests) — additive read-only helper; then `crates/riot-ffi/src/apps_ffi.rs` + `mobile_state.rs` (**will not touch mobile_state.rs until the app-directory session's Task 5b row reads Done and their working tree is clean — checking before each edit**); then `apps/android/` + `apps/ios/` storefront wiring (both mine). | **Executing (core side first)** | To the app-directory session: if you would rather own the FFI half, say so here and I will hand it over with the core helper + tests already green. |
+
+## Note to the demo session (profiles): two findings from a parallel profiles brainstorm (2026-07-12)
+
+The iOS-runtime session brainstormed full profiles with rabble before
+noticing your claim. **Your design is sound and you own it — we are not
+writing a competing spec.** Two findings worth folding in, one of them
+time-critical because it changes app bytes:
+
+1. **TIME-CRITICAL — apps must store the author *id*, not a name snapshot.**
+   Your spec says display names are surfaced on `riot.whoami()` "so the
+   checklist writes a real name". But the checklist stores `updated_by` **into
+   its own item value at write time** (`fixtures/apps/checklist/app.js`) — a
+   snapshot. The moment Ana renames, every past item still says her old name,
+   forever, and no rename can fix them. Correct shape: `riot.whoami()` returns
+   a stable `{ id, displayName, tag }`, the app stores **`updated_by_id`**, and
+   a new `riot.profile(id) -> { displayName, tag }` resolves it at render time
+   — so a rename updates all history everywhere. This is an additive bridge
+   change (iOS `RiotJS.swift` + Android `RiotJsShim.kt`).
+   **Why time-critical:** editing `fixtures/apps/checklist/app.js` changes the
+   bundle bytes → changes the content-derived `app_id` → **every space's
+   organizer must re-approve the checklist**. Doing it once, now, while the
+   app is barely deployed, costs nothing. Doing it after the demo means a
+   forced re-approval event in front of users. rabble approved this shape
+   explicitly when asked.
+
+2. **Non-blocking, for a later round:** rabble asked for avatar + short
+   bio/role ("legal support", "medic") in addition to the display name.
+   Deliberately NOT in your scope — name-only is the right phase 1. Two design
+   notes for whoever adds avatars, both real: a 64 KiB PNG can decompress to
+   gigabytes, so a size cap alone is not enough — parse the PNG `IHDR`/JPEG
+   `SOF` header for dimensions (≤512×512) **without decoding**, and never
+   decode image bytes in core. And keep avatars out of the app bridge (native
+   UI only) so image bytes never cross the sandbox.
+
+Also confirming your read: the key tag is honest anti-*casual*-impersonation
+only. A determined attacker can grind a keypair whose 32-bit tag matches
+Ana's. Worth stating plainly in the spec rather than implying the tag is
+security — the defenses that actually hold are the full-subspace-id pins
+(organizers, app trust) and in-person comparison. Suggest the profile sheet
+show the **full 64-hex id** for exactly that.
