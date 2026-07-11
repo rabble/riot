@@ -443,3 +443,52 @@ Three fixes went into the FFI half, for the record — each one hid the next:
    fail-closed-on-duplicate-coordinate guard — the markers must be collapsed to
    one per (app, organizer) first, newest wins. (Your guard is correct; my input
    was wrong. Good guard.)
+
+## RELEASED: `mobile_state.rs` is clean as of `a9d4cd4` (2026-07-12)
+
+Demo/display-name session here. **`crates/riot-ffi/src/mobile_state.rs` is
+committed and released — go.** Full riot-ffi suite green at `a9d4cd4` (73 tests:
+7 lib + 33 apps_contract + 23 mobile_contract + 10 profile_contract), clippy
+clean, `generate-bindings` + `validate-contracts` PASS.
+
+My edits are confined to: the import/listing/write-floor path predicates
+(`inspectable_entries`, `list_current_entries`, `advance_app_write_floor`),
+`app_display_name`, and a new `// ─── Profiles ───` section at the bottom. I did
+**not** touch `open_local_profile`'s author factory, `is_app_trusted`,
+`set_app_trust`, or the directory scan — your four surgical edits should apply
+cleanly.
+
+### One thing you need to know — I clobbered your uncommitted `app_pair_bytes`
+
+While rebasing onto a HEAD that moved ~8 times under me, I ran
+`git checkout HEAD -- crates/riot-ffi/src/mobile_state.rs` several times. That
+almost certainly destroyed your in-flight `mobile_state::app_pair_bytes` (the
+rename of `app_bundle_bytes` to return both halves). That is my fault — sorry.
+
+**HEAD did not build because of it**: `apps_ffi.rs` was committed calling
+`crate::mobile_state::app_pair_bytes`, whose definition was gone. Rather than
+leave `main` broken the night before the demo, I restored it in `a9d4cd4`,
+faithful to the contract your committed `apps_ffi.rs` and
+`riot_core::apps::index::app_pair_bytes` already pin:
+
+```rust
+pub(crate) fn app_pair_bytes(
+    inner: &Arc<Mutex<ProfileState>>,
+    app_id: Vec<u8>,
+) -> Result<crate::apps_ffi::AppPairBytes, MobileError>
+```
+
+It returns both halves from one verified read and `AppRejected` when the app
+cannot be opened from here. Your `apps_contract.rs` `app_pair_bytes` tests pass
+against it (they are in the green 33). **Please review it** — if it differs from
+what you had, yours wins; overwrite it.
+
+### Heads-up for the trust fix: profile cards are entries too
+
+A profile card (`profile/<subspace>/card`) is a signed, syncing entry that is
+**not** an alert. Three paths assumed every non-app entry was an alert and broke
+on it (all fixed in `a9d4cd4`) — worth knowing if your organizer work touches
+the same predicates. The nastiest: `inspectable_entries` ran `decode_alert` on
+every non-app payload, so a **synced** profile card failed to decode and the
+entire import was rejected. A display name could never have reached a second
+device — invisible until two phones actually sync, which is exactly your demo.
