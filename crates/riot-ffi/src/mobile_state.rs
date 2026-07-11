@@ -319,9 +319,37 @@ pub(crate) fn list_current_entries(
             .as_ref()
             .ok_or(MobileError::InvalidInput)?
             .namespace_id;
-        let live_ids = profile.store.live_entry_ids().map_err(map_core_error)?;
-        let mut entries = Vec::with_capacity(live_ids.len());
-        for live_id in live_ids {
+        // Alerts only. App-data (`apps/<app_id>/...`) and app-index
+        // (`app-index/<app_id>/...`) entries share this store but are not
+        // alerts, so exclude them the same way `ensure_complete_sync_inventory`
+        // does — otherwise a single local `app_data_put`, or its replay on the
+        // next open, leaves a live non-alert entry with no match in
+        // `profile.entries` and bricks this listing with `Internal`.
+        let app_index_prefix = riot_core::willow::Path::from_slices(&[
+            riot_core::apps::index::APP_INDEX_COMPONENT,
+        ])
+        .map_err(|_| MobileError::Internal)?;
+        let app_index_ids: std::collections::BTreeSet<_> = profile
+            .store
+            .entries_with_prefix(&app_index_prefix)
+            .map_err(map_core_error)?
+            .into_iter()
+            .map(|(id, _, _)| id)
+            .collect();
+        let all_prefix =
+            riot_core::willow::Path::from_slices(&[]).map_err(|_| MobileError::Internal)?;
+        let alert_ids: Vec<_> = profile
+            .store
+            .entries_with_prefix(&all_prefix)
+            .map_err(map_core_error)?
+            .into_iter()
+            .filter(|(id, entry, _)| {
+                !riot_core::apps::entry::is_app_data_entry(entry) && !app_index_ids.contains(id)
+            })
+            .map(|(id, _, _)| id)
+            .collect();
+        let mut entries = Vec::with_capacity(alert_ids.len());
+        for live_id in alert_ids {
             let live_id = hex(&live_id);
             let entry = profile
                 .entries
@@ -1702,5 +1730,28 @@ mod tests {
         // The floor advance relies on a *canonical* decode, not a lenient
         // parse: junk bytes must error rather than silently yield a timestamp.
         assert!(riot_core::willow::entry_timestamp_micros(b"garbage").is_err());
+    }
+
+    #[test]
+    fn list_current_entries_skips_app_data_entries() {
+        // Regression: a local `app_data_put` (or its replay on the next open)
+        // leaves a live non-alert entry in the store. `list_current_entries`
+        // must list alerts only and skip it, rather than fail its "every live
+        // id is a known alert" invariant with `Internal` — the bug that left
+        // the Tools list empty on every relaunch after using an app.
+        let app_id = "ab".repeat(32);
+        let profile = open_local_profile().unwrap();
+        create_public_space(&profile.inner, "Aid".into()).unwrap();
+
+        // A live app-data entry exists but no alert has been signed.
+        app_data_put(&profile.inner, app_id.clone(), "items/a".into(), b"hi".to_vec()).unwrap();
+        assert!(list_current_entries(&profile.inner).unwrap().is_empty());
+
+        // A signed alert lists, and the app-data entry stays excluded.
+        let record = create_draft_alert(&profile.inner, valid_input()).unwrap();
+        let signed = sign_draft(&profile.inner, record.draft_id).unwrap();
+        let listed = list_current_entries(&profile.inner).unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].entry_id, signed.entry.entry_id);
     }
 }
