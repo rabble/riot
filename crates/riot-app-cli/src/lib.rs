@@ -1,6 +1,13 @@
+//! Unix-only secure publisher for Riot app bundles.
+#[cfg(not(unix))]
+compile_error!("riot-app-cli currently requires Unix descriptor-relative filesystem primitives");
+
 use std::collections::BTreeSet;
+use std::ffi::{CStr, CString, OsStr, OsString};
 use std::fs::{self, DirBuilder, File, OpenOptions};
 use std::io::{self, Read, Write};
+use std::os::fd::{AsRawFd, FromRawFd};
+use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::path::{Component, Path, PathBuf};
 
 use ed25519_dalek::Signature;
@@ -31,6 +38,9 @@ use zeroize::Zeroizing;
 pub const KEY_WARNING: &str =
     "Protect both author.wrapkey and author.sealed; anyone with both files can publish as this author.";
 const MAX_RESOURCE_PATH_COMPONENTS: usize = 64;
+const MAX_DIRECTORY_ENTRIES: usize = 4_096;
+const MAX_TOTAL_ENTRIES: usize = 4_096;
+const MAX_DIRECTORIES: usize = 256;
 
 pub struct PackInput<'a> {
     pub app_dir: &'a Path,
@@ -243,25 +253,134 @@ struct ManifestInput {
     permissions: Vec<String>,
 }
 
-pub fn pack(input: PackInput<'_>) -> Result<PackOutput, PackError> {
-    let root_metadata = fs::symlink_metadata(input.app_dir).map_err(|source| PackError::Io {
-        operation: "inspect app directory",
-        path: input.app_dir.to_path_buf(),
-        source,
-    })?;
-    if root_metadata.file_type().is_symlink() || !root_metadata.is_dir() {
-        return Err(PackError::NonRegularFile { path: ".".into() });
+struct PinnedDir(File);
+
+impl PinnedDir {
+    fn open_path(path: &Path) -> Result<Self, io::Error> {
+        use std::os::unix::fs::OpenOptionsExt;
+        let start = if path.is_absolute() {
+            Path::new("/")
+        } else {
+            Path::new(".")
+        };
+        let mut current = OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
+            .open(start)?;
+        for component in path.components() {
+            match component {
+                Component::RootDir | Component::CurDir => continue,
+                Component::Normal(name) => {
+                    current = openat_file(
+                        current.as_raw_fd(),
+                        name,
+                        libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+                    )?
+                }
+                _ => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "unsafe path component",
+                    ))
+                }
+            }
+        }
+        Ok(Self(current))
     }
-    let canonical_root = fs::canonicalize(input.app_dir).map_err(|source| PackError::Io {
-        operation: "canonicalize app directory",
+
+    fn open_child(&self, name: &OsStr) -> io::Result<File> {
+        openat_file(
+            self.0.as_raw_fd(),
+            name,
+            libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC,
+        )
+    }
+
+    fn names(&self, total: &mut usize) -> io::Result<Vec<OsString>> {
+        let duplicate = unsafe { libc::dup(self.0.as_raw_fd()) };
+        if duplicate < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let directory = unsafe { libc::fdopendir(duplicate) };
+        if directory.is_null() {
+            unsafe {
+                libc::close(duplicate);
+            }
+            return Err(io::Error::last_os_error());
+        }
+        let mut names = Vec::new();
+        loop {
+            let entry = unsafe { libc::readdir(directory) };
+            if entry.is_null() {
+                break;
+            }
+            let name = unsafe { CStr::from_ptr((*entry).d_name.as_ptr()) }.to_bytes();
+            if name == b"." || name == b".." {
+                continue;
+            }
+            *total = total.saturating_add(1);
+            if names.len() == MAX_DIRECTORY_ENTRIES || *total > MAX_TOTAL_ENTRIES {
+                unsafe {
+                    libc::closedir(directory);
+                }
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "directory scan limit exceeded",
+                ));
+            }
+            names.push(OsString::from_vec(name.to_vec()));
+        }
+        unsafe {
+            libc::closedir(directory);
+        }
+        names.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
+        Ok(names)
+    }
+}
+
+fn openat_file(parent: libc::c_int, name: &OsStr, flags: libc::c_int) -> io::Result<File> {
+    let name = CString::new(name.as_bytes())
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "NUL in path"))?;
+    let fd = unsafe { libc::openat(parent, name.as_ptr(), flags) };
+    if fd < 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(unsafe { File::from_raw_fd(fd) })
+    }
+}
+
+fn createat_file(
+    parent: libc::c_int,
+    name: &OsStr,
+    flags: libc::c_int,
+    mode: libc::mode_t,
+) -> io::Result<File> {
+    let name = CString::new(name.as_bytes())
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "NUL in path"))?;
+    let fd = unsafe { libc::openat(parent, name.as_ptr(), flags, mode as libc::c_uint) };
+    if fd < 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(unsafe { File::from_raw_fd(fd) })
+    }
+}
+
+pub fn pack(input: PackInput<'_>) -> Result<PackOutput, PackError> {
+    let root = PinnedDir::open_path(input.app_dir).map_err(|source| PackError::Io {
+        operation: "open app directory without following links",
         path: input.app_dir.to_path_buf(),
         source,
     })?;
-    let source = input.app_dir.join("riot-app.json");
-    let raw = secure_read_bounded(&canonical_root, input.app_dir, &source, MAX_MANIFEST_BYTES)?;
+    let manifest_file = root
+        .open_child(OsStr::new("riot-app.json"))
+        .map_err(|source| PackError::Io {
+            operation: "open riot-app.json beneath app root",
+            path: input.app_dir.join("riot-app.json"),
+            source,
+        })?;
+    let raw = read_opened_bounded(manifest_file, MAX_MANIFEST_BYTES, "riot-app.json")?;
     let meta = parse_manifest_input(&raw)?;
-    let mut resources = Vec::new();
-    collect_resources(&canonical_root, input.app_dir, &mut resources)?;
+    let mut resources = collect_resources(root)?;
     resources.sort_by(|a, b| a.path.as_bytes().cmp(b.path.as_bytes()));
 
     let actual = resources
@@ -533,53 +652,52 @@ impl Visitor<'_> for PermissionVisitor {
     }
 }
 
-fn collect_resources(
-    canonical_root: &Path,
-    source_root: &Path,
-    out: &mut Vec<AppResource>,
-) -> Result<(), PackError> {
-    let mut stack = vec![source_root.to_path_buf()];
+fn collect_resources(root: PinnedDir) -> Result<Vec<AppResource>, PackError> {
+    let mut out = Vec::new();
+    let mut stack = vec![(root, Vec::<OsString>::new())];
     let mut total = 0usize;
-    while let Some(directory) = stack.pop() {
-        let canonical = fs::canonicalize(&directory).map_err(|source| PackError::Io {
-            operation: "canonicalize resource directory",
-            path: directory.clone(),
-            source,
-        })?;
-        if !canonical.starts_with(canonical_root) {
-            return Err(PackError::InvalidResourcePath {
-                path: "<outside-root>".into(),
-            });
-        }
-        let entries = fs::read_dir(&directory).map_err(|source| PackError::Io {
-            operation: "read directory",
-            path: directory.clone(),
-            source,
-        })?;
-        let mut entries =
-            entries
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(|source| PackError::Io {
-                    operation: "read directory entry",
-                    path: directory.clone(),
-                    source,
-                })?;
-        entries.sort_by_key(|entry| entry.file_name());
-        for entry in entries {
-            let path = entry.path();
-            let relative = normalized_relative(source_root, &path)?;
-            let file_type = entry.file_type().map_err(|source| PackError::Io {
-                operation: "inspect",
-                path: path.clone(),
+    let mut examined = 0usize;
+    let mut directory_count = 1usize;
+    while let Some((directory, prefix)) = stack.pop() {
+        let names = directory
+            .names(&mut examined)
+            .map_err(|source| PackError::Io {
+                operation: "enumerate bounded app directory",
+                path: PathBuf::from("<app-root>"),
                 source,
             })?;
-            if file_type.is_symlink() {
-                return Err(PackError::Symlink { path: relative });
-            }
-            if file_type.is_dir() {
-                stack.push(path);
-            } else if file_type.is_file() {
-                if relative == "riot-app.json" {
+        for name in names {
+            let mut components = prefix.clone();
+            components.push(name.clone());
+            let relative = normalized_components(&components)?;
+            let opened = directory.open_child(&name).map_err(|source| {
+                if source.raw_os_error() == Some(libc::ELOOP) {
+                    PackError::Symlink {
+                        path: relative.clone(),
+                    }
+                } else {
+                    PackError::Io {
+                        operation: "open app child without following links",
+                        path: PathBuf::from(&relative),
+                        source,
+                    }
+                }
+            })?;
+            let metadata = opened.metadata().map_err(|source| PackError::Io {
+                operation: "inspect opened app child",
+                path: PathBuf::from(&relative),
+                source,
+            })?;
+            if metadata.is_dir() {
+                directory_count += 1;
+                if directory_count > MAX_DIRECTORIES {
+                    return Err(PackError::InvalidResourcePath {
+                        path: "<directory-limit-exceeded>".into(),
+                    });
+                }
+                stack.push((PinnedDir(opened), components));
+            } else if metadata.is_file() {
+                if prefix.is_empty() && name == OsStr::new("riot-app.json") {
                     continue;
                 }
                 if out.len() == MAX_BUNDLE_RESOURCES {
@@ -590,8 +708,7 @@ fn collect_resources(
                 }
                 let content_type = content_type_for(&relative)?;
                 let remaining = MAX_BUNDLE_TOTAL_BYTES.saturating_sub(total);
-                let bytes = match secure_read_bounded(canonical_root, source_root, &path, remaining)
-                {
+                let bytes = match read_opened_bounded(opened, remaining, &relative) {
                     Err(PackError::TooLarge { actual, .. }) => {
                         return Err(PackError::TooLarge {
                             actual: total.saturating_add(actual),
@@ -614,33 +731,19 @@ fn collect_resources(
             }
         }
     }
-    Ok(())
+    Ok(out)
 }
 
-fn normalized_relative(root: &Path, path: &Path) -> Result<String, PackError> {
-    let relative = path
-        .strip_prefix(root)
-        .map_err(|_| PackError::InvalidResourcePath {
-            path: path.display().to_string(),
-        })?;
+fn normalized_components(components: &[OsString]) -> Result<String, PackError> {
     let mut parts = Vec::new();
-    for component in relative.components() {
-        match component {
-            Component::Normal(value) => {
-                parts.push(
-                    value
-                        .to_str()
-                        .ok_or_else(|| PackError::InvalidResourcePath {
-                            path: "<non-UTF-8>".into(),
-                        })?,
-                )
-            }
-            _ => {
-                return Err(PackError::InvalidResourcePath {
-                    path: relative.display().to_string(),
-                })
-            }
-        }
+    for value in components {
+        parts.push(
+            value
+                .to_str()
+                .ok_or_else(|| PackError::InvalidResourcePath {
+                    path: "<non-UTF-8>".into(),
+                })?,
+        );
     }
     if parts.len() > MAX_RESOURCE_PATH_COMPONENTS {
         return Err(PackError::InvalidResourcePath {
@@ -665,7 +768,27 @@ fn normalized_relative(root: &Path, path: &Path) -> Result<String, PackError> {
     Ok(normalized)
 }
 
-#[cfg(unix)]
+#[cfg(test)]
+fn normalized_relative(root: &Path, path: &Path) -> Result<String, PackError> {
+    let relative = path
+        .strip_prefix(root)
+        .map_err(|_| PackError::InvalidResourcePath {
+            path: "<outside-root>".into(),
+        })?;
+    let components = relative
+        .components()
+        .map(|component| match component {
+            Component::Normal(value) => Ok(value.to_os_string()),
+            _ => Err(PackError::InvalidResourcePath {
+                path: "<invalid-component>".into(),
+            }),
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    normalized_components(&components)
+}
+
+#[cfg(all(unix, test))]
+#[allow(dead_code)]
 fn secure_read_bounded(
     canonical_root: &Path,
     source_root: &Path,
@@ -769,7 +892,7 @@ fn secure_read_bounded(
     Ok(bytes)
 }
 
-#[cfg(not(unix))]
+#[cfg(all(not(unix), test))]
 fn secure_read_bounded(
     _canonical_root: &Path,
     _source_root: &Path,
@@ -779,6 +902,37 @@ fn secure_read_bounded(
     Err(PackError::Core {
         operation: "provide no-follow resource reads on this platform",
     })
+}
+
+fn read_opened_bounded(mut file: File, limit: usize, label: &str) -> Result<Vec<u8>, PackError> {
+    let metadata = file.metadata().map_err(|source| PackError::Io {
+        operation: "inspect opened resource",
+        path: PathBuf::from(label),
+        source,
+    })?;
+    if !metadata.is_file() {
+        return Err(PackError::NonRegularFile { path: label.into() });
+    }
+    let actual = usize::try_from(metadata.len()).unwrap_or(usize::MAX);
+    if actual > limit {
+        return Err(PackError::TooLarge { actual, limit });
+    }
+    let mut bytes = Vec::with_capacity(actual);
+    Read::by_ref(&mut file)
+        .take((limit as u64).saturating_add(1))
+        .read_to_end(&mut bytes)
+        .map_err(|source| PackError::Io {
+            operation: "read opened resource",
+            path: PathBuf::from(label),
+            source,
+        })?;
+    if bytes.len() > limit {
+        return Err(PackError::TooLarge {
+            actual: bytes.len(),
+            limit,
+        });
+    }
+    Ok(bytes)
 }
 
 fn content_type_for(path: &str) -> Result<&'static str, PackError> {
@@ -875,6 +1029,17 @@ pub fn inspect(bytes: &[u8]) -> Result<InspectReport, InspectError> {
     let (bundle, bundle_bytes, bundle_carrier) = bundle.ok_or(InspectError::IncoherentPair {
         reason: "resource bundle is missing",
     })?;
+    if manifest.name.chars().any(char::is_control)
+        || manifest.version.chars().any(char::is_control)
+        || bundle
+            .resources
+            .iter()
+            .any(|resource| resource.path.chars().any(char::is_control))
+    {
+        return Err(InspectError::IncoherentPair {
+            reason: "display fields contain control characters",
+        });
+    }
     if manifest_carrier != bundle_carrier
         || manifest.author.namespace_id != manifest_carrier.namespace_id
         || manifest.author.subspace_id != manifest_carrier.subspace_id
@@ -994,10 +1159,33 @@ where
         Some(parent) if !parent.as_os_str().is_empty() => parent,
         _ => Path::new("."),
     };
-    if !parent.is_dir() {
-        return Err(KeyError::InvalidOutputDirectory);
+    let parent_dir = PinnedDir::open_path(parent).map_err(|source| KeyError::Io {
+        operation: "open key output parent without following links",
+        path: parent.to_path_buf(),
+        source,
+    })?;
+    let stage_name = OsString::from(format!(".riot-app-keygen-{}", random_hex_16()?));
+    let stage_c =
+        CString::new(stage_name.as_bytes()).map_err(|_| KeyError::InvalidOutputDirectory)?;
+    if unsafe { libc::mkdirat(parent_dir.0.as_raw_fd(), stage_c.as_ptr(), 0o700) } != 0 {
+        return Err(KeyError::Io {
+            operation: "create private key staging directory",
+            path: PathBuf::from(&stage_name),
+            source: io::Error::last_os_error(),
+        });
     }
-    let temp = create_key_temp_directory(parent)?;
+    let stage = PinnedDir(
+        openat_file(
+            parent_dir.0.as_raw_fd(),
+            &stage_name,
+            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+        )
+        .map_err(|source| KeyError::Io {
+            operation: "open key staging directory",
+            path: PathBuf::from(&stage_name),
+            source,
+        })?,
+    );
     let mut published = false;
     let result = (|| {
         let author = generate_communal_author().map_err(|_| KeyError::EntropyUnavailable)?;
@@ -1011,14 +1199,33 @@ where
             .map_err(|_| KeyError::EntropyUnavailable)?;
         let encoded_key = Zeroizing::new(hex_lower_bytes(&wrapping_key[..]));
 
-        write_private_temp(&temp.join("author.wrapkey"), &encoded_key)?;
+        write_private_at(&stage, OsStr::new("author.wrapkey"), &encoded_key)?;
         checkpoint(KeygenStage::AfterWrapKey)?;
-        write_private_temp(&temp.join("author.sealed"), &sealed)?;
-        sync_directory(&temp)?;
-        sync_directory(parent)?;
+        write_private_at(&stage, OsStr::new("author.sealed"), &sealed)?;
+        stage.0.sync_all().map_err(|source| KeyError::Io {
+            operation: "sync key staging directory",
+            path: PathBuf::from(&stage_name),
+            source,
+        })?;
+        parent_dir.0.sync_all().map_err(|source| KeyError::Io {
+            operation: "sync key output parent",
+            path: parent.to_path_buf(),
+            source,
+        })?;
         checkpoint(KeygenStage::BeforePublish)?;
-        rename_directory_noreplace(&temp, out).map_err(|source| {
-            if source.kind() == io::ErrorKind::AlreadyExists {
+        rename_file_noreplace_at(
+            &parent_dir,
+            &stage_name,
+            &parent_dir,
+            out.file_name().expect("checked above"),
+        )
+        .map_err(|source| {
+            if source.kind() == io::ErrorKind::AlreadyExists
+                || matches!(
+                    source.raw_os_error(),
+                    Some(libc::EEXIST) | Some(libc::ENOTEMPTY)
+                )
+            {
                 KeyError::AlreadyExists {
                     path: out.to_path_buf(),
                 }
@@ -1031,10 +1238,22 @@ where
             }
         })?;
         published = true;
-        if let Err(error) = sync_directory(parent) {
-            let _ = fs::remove_dir_all(out);
-            let _ = sync_directory(parent);
-            return Err(error);
+        if let Err(source) = parent_dir.0.sync_all() {
+            if let Ok(final_c) = CString::new(out.file_name().expect("checked").as_bytes()) {
+                unsafe {
+                    libc::unlinkat(
+                        parent_dir.0.as_raw_fd(),
+                        final_c.as_ptr(),
+                        libc::AT_REMOVEDIR,
+                    );
+                }
+            }
+            let _ = parent_dir.0.sync_all();
+            return Err(KeyError::Io {
+                operation: "sync published key parent",
+                path: parent.to_path_buf(),
+                source,
+            });
         }
         Ok(KeygenOutput {
             identity,
@@ -1042,7 +1261,21 @@ where
         })
     })();
     if !published {
-        let _ = fs::remove_dir_all(&temp);
+        for name in ["author.wrapkey", "author.sealed"] {
+            if let Ok(name) = CString::new(name) {
+                unsafe {
+                    libc::unlinkat(stage.0.as_raw_fd(), name.as_ptr(), 0);
+                }
+            }
+        }
+        drop(stage);
+        unsafe {
+            libc::unlinkat(
+                parent_dir.0.as_raw_fd(),
+                stage_c.as_ptr(),
+                libc::AT_REMOVEDIR,
+            );
+        }
     }
     result
 }
@@ -1061,6 +1294,7 @@ fn ensure_absent(path: &Path) -> Result<(), KeyError> {
     }
 }
 
+#[allow(dead_code)]
 fn create_key_temp_directory(parent: &Path) -> Result<PathBuf, KeyError> {
     for _ in 0..128 {
         let path = parent.join(format!(".riot-app-keygen-{}", random_hex_16()?));
@@ -1090,6 +1324,7 @@ fn create_key_temp_directory(parent: &Path) -> Result<PathBuf, KeyError> {
 }
 
 #[cfg(target_os = "macos")]
+#[allow(dead_code)]
 fn rename_directory_noreplace(from: &Path, to: &Path) -> io::Result<()> {
     use std::ffi::CString;
     use std::os::unix::ffi::OsStrExt;
@@ -1144,6 +1379,7 @@ fn rename_directory_noreplace(_from: &Path, _to: &Path) -> io::Result<()> {
 }
 
 #[cfg(unix)]
+#[allow(dead_code)]
 fn sync_directory(path: &Path) -> Result<(), KeyError> {
     File::open(path)
         .and_then(|directory| directory.sync_all())
@@ -1160,17 +1396,30 @@ fn sync_directory(_path: &Path) -> Result<(), KeyError> {
 }
 
 pub fn load_author(key_dir: &Path) -> Result<EvidenceAuthor, KeyError> {
-    let key_path = key_dir.join("author.wrapkey");
-    let sealed_path = key_dir.join("author.sealed");
-    let encoded = read_private_exact(&key_path, 64)?;
+    let directory = PinnedDir::open_path(key_dir).map_err(|source| KeyError::Io {
+        operation: "open key directory without following links",
+        path: key_dir.to_path_buf(),
+        source,
+    })?;
+    let encoded = read_private_exact_at(&directory, OsStr::new("author.wrapkey"), 64)?;
     let wrapping_key = decode_lower_hex_key(&encoded)?;
-    let sealed = read_private_exact(&sealed_path, riot_core::willow::SEALED_IDENTITY_BYTES)?;
+    let sealed = read_private_exact_at(
+        &directory,
+        OsStr::new("author.sealed"),
+        riot_core::willow::SEALED_IDENTITY_BYTES,
+    )?;
     EvidenceAuthor::open_sealed_identity(&wrapping_key, &sealed)
         .map_err(|_| KeyError::InvalidSealedIdentity)
 }
 
 pub fn write_new_atomic(path: &Path, bytes: &[u8]) -> Result<(), KeyError> {
-    write_new_atomic_inner(path, bytes, || Ok(()))
+    write_new_atomic_inner(path, bytes, |_| Ok(()))
+}
+
+#[derive(Clone, Copy)]
+enum OutputStage {
+    BeforePublish,
+    BeforeParentSync,
 }
 
 fn write_new_atomic_inner<F>(
@@ -1179,24 +1428,63 @@ fn write_new_atomic_inner<F>(
     mut before_publish: F,
 ) -> Result<(), KeyError>
 where
-    F: FnMut() -> Result<(), KeyError>,
+    F: FnMut(OutputStage) -> Result<(), KeyError>,
 {
-    ensure_absent(path)?;
     let parent = path
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
         .unwrap_or(Path::new("."));
-    let (temp, mut file) = create_random_temp_file(path)?;
+    let final_name = path.file_name().ok_or(KeyError::InvalidOutputDirectory)?;
+    let parent = PinnedDir::open_path(parent).map_err(|source| KeyError::Io {
+        operation: "open output parent without following links",
+        path: parent.to_path_buf(),
+        source,
+    })?;
+    let stage_name = OsString::from(format!(".riot-app-output-{}", random_hex_16()?));
+    let stage_c =
+        CString::new(stage_name.as_bytes()).map_err(|_| KeyError::InvalidOutputDirectory)?;
+    let made = unsafe { libc::mkdirat(parent.0.as_raw_fd(), stage_c.as_ptr(), 0o700) };
+    if made != 0 {
+        return Err(KeyError::Io {
+            operation: "create private output staging directory",
+            path: PathBuf::from(&stage_name),
+            source: io::Error::last_os_error(),
+        });
+    }
+    let stage = PinnedDir(
+        openat_file(
+            parent.0.as_raw_fd(),
+            &stage_name,
+            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+        )
+        .map_err(|source| KeyError::Io {
+            operation: "open output staging directory",
+            path: PathBuf::from(&stage_name),
+            source,
+        })?,
+    );
+    let artifact = OsStr::new("artifact");
+    let mut file = createat_file(
+        stage.0.as_raw_fd(),
+        artifact,
+        libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+        0o600,
+    )
+    .map_err(|source| KeyError::Io {
+        operation: "create staged output",
+        path: PathBuf::from(artifact),
+        source,
+    })?;
     let result = (|| {
         file.write_all(bytes)
             .and_then(|()| file.sync_all())
             .map_err(|source| KeyError::Io {
                 operation: "write temporary file",
-                path: temp.clone(),
+                path: PathBuf::from("<staged-output>"),
                 source,
             })?;
-        before_publish()?;
-        fs::hard_link(&temp, path).map_err(|source| {
+        before_publish(OutputStage::BeforePublish)?;
+        rename_file_noreplace_at(&stage, artifact, &parent, final_name).map_err(|source| {
             if source.kind() == io::ErrorKind::AlreadyExists {
                 KeyError::AlreadyExists {
                     path: path.to_path_buf(),
@@ -1209,38 +1497,84 @@ where
                 }
             }
         })?;
-        sync_directory(parent)?;
+        let sync_result = before_publish(OutputStage::BeforeParentSync).and_then(|()| {
+            parent.0.sync_all().map_err(|source| KeyError::Io {
+                operation: "sync output parent",
+                path: PathBuf::from("<output-parent>"),
+                source,
+            })
+        });
+        if let Err(error) = sync_result {
+            if let Ok(final_c) = CString::new(final_name.as_bytes()) {
+                unsafe {
+                    libc::unlinkat(parent.0.as_raw_fd(), final_c.as_ptr(), 0);
+                }
+                let _ = parent.0.sync_all();
+            }
+            return Err(error);
+        }
         Ok(())
     })();
-    let _ = fs::remove_file(&temp);
+    let artifact_c = CString::new(artifact.as_bytes()).expect("static artifact name");
+    unsafe {
+        libc::unlinkat(stage.0.as_raw_fd(), artifact_c.as_ptr(), 0);
+    }
+    drop(stage);
+    unsafe {
+        libc::unlinkat(parent.0.as_raw_fd(), stage_c.as_ptr(), libc::AT_REMOVEDIR);
+    }
     result
 }
 
-fn create_random_temp_file(path: &Path) -> Result<(PathBuf, File), KeyError> {
-    for _ in 0..128 {
-        let mut value = path.as_os_str().to_owned();
-        value.push(format!(".tmp-{}", random_hex_16()?));
-        let temp = PathBuf::from(value);
-        let mut options = OpenOptions::new();
-        options.write(true).create_new(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
-        match options.open(&temp) {
-            Ok(file) => return Ok((temp, file)),
-            Err(source) if source.kind() == io::ErrorKind::AlreadyExists => continue,
-            Err(source) => {
-                return Err(KeyError::Io {
-                    operation: "create temporary file",
-                    path: temp,
-                    source,
-                })
-            }
-        }
+#[cfg(target_os = "macos")]
+fn rename_file_noreplace_at(
+    from_dir: &PinnedDir,
+    from: &OsStr,
+    to_dir: &PinnedDir,
+    to: &OsStr,
+) -> io::Result<()> {
+    let from = CString::new(from.as_bytes()).unwrap();
+    let to = CString::new(to.as_bytes()).unwrap();
+    let result = unsafe {
+        libc::renameatx_np(
+            from_dir.0.as_raw_fd(),
+            from.as_ptr(),
+            to_dir.0.as_raw_fd(),
+            to.as_ptr(),
+            libc::RENAME_EXCL,
+        )
+    };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
     }
-    Err(KeyError::EntropyUnavailable)
+}
+
+#[cfg(target_os = "linux")]
+fn rename_file_noreplace_at(
+    from_dir: &PinnedDir,
+    from: &OsStr,
+    to_dir: &PinnedDir,
+    to: &OsStr,
+) -> io::Result<()> {
+    let from = CString::new(from.as_bytes()).unwrap();
+    let to = CString::new(to.as_bytes()).unwrap();
+    let result = unsafe {
+        libc::syscall(
+            libc::SYS_renameat2,
+            from_dir.0.as_raw_fd(),
+            from.as_ptr(),
+            to_dir.0.as_raw_fd(),
+            to.as_ptr(),
+            libc::RENAME_NOREPLACE,
+        )
+    };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
 }
 
 fn random_hex_16() -> Result<String, KeyError> {
@@ -1251,6 +1585,7 @@ fn random_hex_16() -> Result<String, KeyError> {
     Ok(hex_lower(&bytes[..]))
 }
 
+#[allow(dead_code)]
 fn write_private_temp(path: &Path, bytes: &[u8]) -> Result<(), KeyError> {
     let mut options = OpenOptions::new();
     options.write(true).create_new(true);
@@ -1273,18 +1608,39 @@ fn write_private_temp(path: &Path, bytes: &[u8]) -> Result<(), KeyError> {
         })
 }
 
-#[cfg(unix)]
-fn read_private_exact(path: &Path, expected: usize) -> Result<Zeroizing<Vec<u8>>, KeyError> {
-    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-    let mut file = OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
-        .open(path)
+fn write_private_at(directory: &PinnedDir, name: &OsStr, bytes: &[u8]) -> Result<(), KeyError> {
+    let mut file = createat_file(
+        directory.0.as_raw_fd(),
+        name,
+        libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+        0o600,
+    )
+    .map_err(|source| KeyError::Io {
+        operation: "create private staged file",
+        path: PathBuf::from(name),
+        source,
+    })?;
+    file.write_all(bytes)
+        .and_then(|()| file.sync_all())
         .map_err(|source| KeyError::Io {
-            operation: "open private key file without following links",
-            path: path.to_path_buf(),
+            operation: "write private staged file",
+            path: PathBuf::from(name),
             source,
-        })?;
+        })
+}
+
+fn read_private_exact_at(
+    directory: &PinnedDir,
+    name: &OsStr,
+    expected: usize,
+) -> Result<Zeroizing<Vec<u8>>, KeyError> {
+    use std::os::unix::fs::PermissionsExt;
+    let path = PathBuf::from(name);
+    let mut file = directory.open_child(name).map_err(|source| KeyError::Io {
+        operation: "open private key beneath pinned directory",
+        path: path.clone(),
+        source,
+    })?;
     let metadata = file.metadata().map_err(|source| KeyError::Io {
         operation: "inspect private key file",
         path: path.to_path_buf(),
@@ -1317,15 +1673,6 @@ fn read_private_exact(path: &Path, expected: usize) -> Result<Zeroizing<Vec<u8>>
         });
     }
     Ok(bytes)
-}
-
-#[cfg(not(unix))]
-fn read_private_exact(_path: &Path, expected: usize) -> Result<Zeroizing<Vec<u8>>, KeyError> {
-    Err(if expected == 64 {
-        KeyError::InvalidWrapKey
-    } else {
-        KeyError::InvalidSealedIdentity
-    })
 }
 
 fn decode_lower_hex_key(input: &[u8]) -> Result<Zeroizing<[u8; 32]>, KeyError> {
@@ -1375,9 +1722,13 @@ fn hex_lower_bytes(bytes: &[u8]) -> Vec<u8> {
 mod tests {
     use super::{keygen_inner, KeyError, KeygenStage};
 
+    fn tempdir() -> tempfile::TempDir {
+        tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).unwrap()
+    }
+
     #[test]
     fn keygen_failure_after_first_temp_file_leaves_no_final_or_temp_directory() {
-        let parent = tempfile::tempdir().expect("temp parent");
+        let parent = tempdir();
         let output = parent.path().join("keys");
         let error = keygen_inner(&output, |stage| match stage {
             KeygenStage::AfterWrapKey => Err(KeyError::InvalidOutputDirectory),
@@ -1395,7 +1746,7 @@ mod tests {
 
     #[test]
     fn keygen_competing_destination_is_preserved_and_temp_is_cleaned() {
-        let parent = tempfile::tempdir().expect("temp parent");
+        let parent = tempdir();
         let output = parent.path().join("keys");
         let error = keygen_inner(&output, |stage| {
             if matches!(stage, KeygenStage::BeforePublish) {
@@ -1411,33 +1762,95 @@ mod tests {
 
     #[test]
     fn output_competing_destination_is_preserved_and_temp_is_cleaned() {
-        let parent = tempfile::tempdir().expect("temp parent");
+        let parent = tempdir();
         let output = parent.path().join("bundle.riot");
-        let error = super::write_new_atomic_inner(&output, b"ours", || {
-            std::fs::write(&output, b"attacker").unwrap();
+        let error = super::write_new_atomic_inner(&output, b"ours", |stage| {
+            if matches!(stage, super::OutputStage::BeforePublish) {
+                std::fs::write(&output, b"attacker").unwrap();
+            }
             Ok(())
         });
-        assert!(matches!(error, Err(KeyError::AlreadyExists { .. })));
+        assert!(
+            matches!(error, Err(KeyError::AlreadyExists { .. })),
+            "{error:?}"
+        );
         assert_eq!(std::fs::read(&output).unwrap(), b"attacker");
         assert_eq!(std::fs::read_dir(parent.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn output_parent_sync_failure_removes_published_file() {
+        let parent = tempdir();
+        let output = parent.path().join("bundle.riot");
+        let error = super::write_new_atomic_inner(&output, b"ours", |stage| {
+            if matches!(stage, super::OutputStage::BeforeParentSync) {
+                return Err(KeyError::InvalidOutputDirectory);
+            }
+            Ok(())
+        });
+        assert!(error.is_err());
+        assert!(!output.exists());
+        assert_eq!(std::fs::read_dir(parent.path()).unwrap().count(), 0);
     }
 
     #[cfg(unix)]
     #[test]
     fn descriptor_relative_read_rejects_ancestor_swapped_to_outside_symlink() {
         use std::os::unix::fs::symlink;
-        let parent = tempfile::tempdir().unwrap();
+        let parent = tempdir();
         let root = parent.path().join("root");
         let outside = parent.path().join("outside");
         std::fs::create_dir_all(root.join("nested")).unwrap();
         std::fs::create_dir(&outside).unwrap();
         std::fs::write(root.join("nested/file.js"), b"inside").unwrap();
         std::fs::write(outside.join("file.js"), b"outside-secret").unwrap();
-        let discovered = root.join("nested/file.js");
-        std::fs::rename(root.join("nested"), root.join("moved")).unwrap();
-        symlink(&outside, root.join("nested")).unwrap();
-        let canonical_root = std::fs::canonicalize(&root).unwrap();
-        let result = super::secure_read_bounded(&canonical_root, &root, &discovered, 1024);
-        assert!(result.is_err());
+        let pinned = super::PinnedDir::open_path(&root).unwrap();
+        let moved_root = parent.path().join("moved-root");
+        std::fs::rename(&root, &moved_root).unwrap();
+        symlink(&outside, &root).unwrap();
+        let resources = super::collect_resources(pinned).unwrap();
+        assert_eq!(resources.len(), 1);
+        assert_eq!(resources[0].bytes, b"inside");
+    }
+
+    #[test]
+    fn directory_enumeration_and_directory_count_are_bounded() {
+        let parent = tempdir();
+        let many_entries = parent.path().join("many-entries");
+        std::fs::create_dir(&many_entries).unwrap();
+        for index in 0..=super::MAX_TOTAL_ENTRIES {
+            std::fs::create_dir(many_entries.join(format!("entry-{index:04}"))).unwrap();
+        }
+        let pinned = super::PinnedDir::open_path(&many_entries).unwrap();
+        let mut total = 0;
+        assert!(pinned.names(&mut total).is_err());
+
+        let split_a = parent.path().join("split-a");
+        let split_b = parent.path().join("split-b");
+        std::fs::create_dir(&split_a).unwrap();
+        std::fs::create_dir(&split_b).unwrap();
+        for index in 0..(super::MAX_TOTAL_ENTRIES / 2) {
+            std::fs::write(split_a.join(format!("entry-{index:04}")), b"").unwrap();
+        }
+        for index in 0..=(super::MAX_TOTAL_ENTRIES / 2) {
+            std::fs::write(split_b.join(format!("entry-{index:04}")), b"").unwrap();
+        }
+        let mut total = 0;
+        super::PinnedDir::open_path(&split_a)
+            .unwrap()
+            .names(&mut total)
+            .unwrap();
+        assert!(super::PinnedDir::open_path(&split_b)
+            .unwrap()
+            .names(&mut total)
+            .is_err());
+
+        let many_dirs = parent.path().join("many-dirs");
+        std::fs::create_dir(&many_dirs).unwrap();
+        for index in 0..super::MAX_DIRECTORIES {
+            std::fs::create_dir(many_dirs.join(format!("dir-{index:03}"))).unwrap();
+        }
+        let pinned = super::PinnedDir::open_path(&many_dirs).unwrap();
+        assert!(super::collect_resources(pinned).is_err());
     }
 }

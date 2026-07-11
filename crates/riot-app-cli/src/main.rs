@@ -150,7 +150,7 @@ fn current_unix_micros() -> Result<u64, String> {
 }
 
 fn usage() -> String {
-    "usage:\n  riot-app keygen --out <dir>\n  riot-app pack <app-dir> --key-dir <dir> --out <file> [--timestamp-micros <u64>]\n  riot-app inspect <file>".into()
+    "riot-app currently supports Unix only\nusage:\n  riot-app keygen --out <dir>\n  riot-app pack <app-dir> --key-dir <dir> --out <file> [--timestamp-micros <u64>]\n  riot-app inspect <file>".into()
 }
 
 fn escaped(value: &str) -> String {

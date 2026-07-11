@@ -27,8 +27,12 @@ fn fixture() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/hello-app")
 }
 
+fn tempdir() -> tempfile::TempDir {
+    tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).unwrap()
+}
+
 fn copy_fixture() -> tempfile::TempDir {
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = tempdir();
     for name in ["riot-app.json", "index.html", "app.js"] {
         fs::copy(fixture().join(name), tmp.path().join(name)).unwrap();
     }
@@ -490,6 +494,60 @@ fn inspect_rejects_spoofed_full_author_identity_and_mixed_timestamps() {
     ));
 }
 
+#[test]
+fn inspect_and_cli_reject_terminal_control_fields_without_echoing_them() {
+    let author = generate_communal_author().unwrap();
+    let bundle = AppBundle {
+        entry_point: "index.html".into(),
+        resources: vec![AppResource {
+            path: "index.html".into(),
+            content_type: "text/html".into(),
+            bytes: b"ok".to_vec(),
+        }],
+    };
+    let bundle_bytes = riot_core::apps::bundle::encode_app_bundle(&bundle).unwrap();
+    let manifest = AppManifest {
+        name: "evil\u{1b}[31m".into(),
+        description: "d".into(),
+        version: "1".into(),
+        author: author.identity(),
+        permissions: vec![],
+        entry_point: "index.html".into(),
+    };
+    let manifest_bytes = encode_manifest(&manifest).unwrap();
+    let app_id = app_id_for(&manifest, &app_bundle_digest(&bundle_bytes)).unwrap();
+    let artifact = encode_bundle(&[
+        signed_at(
+            &author,
+            app_index_manifest_path(&app_id).unwrap(),
+            &manifest_bytes,
+            7,
+        ),
+        signed_at(
+            &author,
+            app_index_bundle_path(&app_id).unwrap(),
+            &bundle_bytes,
+            7,
+        ),
+    ])
+    .unwrap();
+    assert!(matches!(
+        inspect(&artifact),
+        Err(InspectError::IncoherentPair { .. })
+    ));
+    let tmp = tempdir();
+    let path = tmp.path().join("hostile.riot");
+    fs::write(&path, artifact).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_riot-app"))
+        .arg("inspect")
+        .arg(path)
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(!output.stderr.contains(&0x1b));
+    assert!(!output.stdout.contains(&0x1b));
+}
+
 fn signed_at(
     author: &EvidenceAuthor,
     path: WillowPath,
@@ -532,7 +590,7 @@ fn signed_items(bytes: &[u8]) -> Vec<SignedWillowEntry> {
 
 #[test]
 fn key_files_round_trip_are_private_and_fail_closed() {
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = tempdir();
     let key_dir = tmp.path().join("keys");
     let generated = keygen(&key_dir).unwrap();
     assert_eq!(
@@ -582,7 +640,7 @@ fn key_files_round_trip_are_private_and_fail_closed() {
     assert_eq!(key_bytes, wrong_key);
 
     // Restore the original valid key before testing authenticated ciphertext tampering.
-    let generated_again = tempfile::tempdir().unwrap();
+    let generated_again = tempdir();
     let generated_again_dir = generated_again.path().join("keys");
     keygen(&generated_again_dir).unwrap();
     let unrelated_valid_key = fs::read(generated_again_dir.join("author.wrapkey")).unwrap();
@@ -593,7 +651,7 @@ fn key_files_round_trip_are_private_and_fail_closed() {
     ));
 
     // Regenerate a coherent pair for the sealed-file tamper assertion.
-    let coherent = tempfile::tempdir().unwrap();
+    let coherent = tempdir();
     let coherent_dir = coherent.path().join("keys");
     keygen(&coherent_dir).unwrap();
     let sealed_path = coherent_dir.join("author.sealed");
@@ -611,7 +669,7 @@ fn key_files_round_trip_are_private_and_fail_closed() {
 fn load_author_rejects_symlinks_unsafe_modes_and_oversized_files() {
     use std::os::unix::fs::{symlink, PermissionsExt};
 
-    let parent = tempfile::tempdir().unwrap();
+    let parent = tempdir();
     let keys = parent.path().join("keys");
     keygen(&keys).unwrap();
     let wrap = keys.join("author.wrapkey");
@@ -627,11 +685,22 @@ fn load_author_rejects_symlinks_unsafe_modes_and_oversized_files() {
     fs::set_permissions(&target, fs::Permissions::from_mode(0o600)).unwrap();
     symlink(&target, &wrap).unwrap();
     assert!(load_author(&keys).is_err());
+
+    let alias = parent.path().join("alias");
+    symlink(parent.path(), &alias).unwrap();
+    assert!(load_author(&alias.join("keys")).is_err());
+
+    fs::remove_file(&wrap).unwrap();
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+    let fifo = CString::new(wrap.as_os_str().as_bytes()).unwrap();
+    assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
+    assert!(load_author(&keys).is_err());
 }
 
 #[test]
 fn keygen_requires_the_destination_directory_not_to_exist() {
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = tempdir();
     let existing = tmp.path().join("existing");
     fs::create_dir(&existing).unwrap();
     assert!(matches!(
@@ -651,7 +720,7 @@ fn keygen_requires_the_destination_directory_not_to_exist() {
 
 #[test]
 fn command_line_keygen_pack_and_inspect_smoke() {
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = tempdir();
     let keys = tmp.path().join("keys");
     let artifact = tmp.path().join("hello.riot");
     let binary = env!("CARGO_BIN_EXE_riot-app");
