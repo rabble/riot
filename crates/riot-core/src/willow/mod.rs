@@ -27,7 +27,10 @@ pub use digest::{
     EntryId, EvidenceDigest, ObjectDigest,
 };
 pub use entry::{create_signed_alert, AlertDraft, SignedAlert, SignedWillowEntry};
-pub use identity::{generate_communal_author, AuthorIdentity, EvidenceAuthor, NamespaceKind};
+pub use identity::{
+    generate_communal_author, generate_communal_author_for_namespace, AuthorIdentity,
+    EvidenceAuthor, NamespaceKind,
+};
 
 // Conformance-only injection surface: absent from the release riot-ffi graph.
 #[cfg(feature = "conformance")]
@@ -55,6 +58,8 @@ pub enum WillowError {
     ClockUnavailable,
     /// The draft failed alert validation against the snapshot-derived times.
     InvalidAlert(crate::model::AlertError),
+    /// A shared-author factory was given an owned rather than communal namespace.
+    NamespaceNotCommunal,
 }
 
 impl std::fmt::Display for WillowError {
@@ -117,6 +122,21 @@ pub fn encode_entry(entry: &Entry) -> Vec<u8> {
 
 pub fn decode_entry_canonic(bytes: &[u8]) -> Result<Entry, WillowError> {
     decode_canonic_exact::<Entry>(bytes)
+}
+
+/// Whether canonical entry bytes use the exact alert path bound to the
+/// decoded payload's object and revision IDs. Callers receive only a boolean,
+/// never the generic Willow entry or path value.
+pub fn alert_entry_path_matches_payload(
+    entry_bytes: &[u8],
+    object_id: &[u8; 16],
+    revision_id: &[u8; 16],
+) -> Result<bool, WillowError> {
+    use willow25::groupings::Keylike;
+
+    let entry = decode_entry_canonic(entry_bytes)?;
+    let expected = alert_path(object_id, revision_id)?;
+    Ok(entry.path() == &expected)
 }
 
 pub fn encode_capability(capability: &WriteCapability) -> Vec<u8> {

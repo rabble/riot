@@ -126,6 +126,28 @@ pub fn generate_communal_author() -> Result<EvidenceAuthor, WillowError> {
     EvidenceAuthor::generate(os_fill)
 }
 
+/// Generates a fresh author subspace inside an existing communal namespace.
+/// The caller supplies only the complete public namespace ID; fresh signing
+/// material comes exclusively from OS entropy and never crosses this API.
+pub fn generate_communal_author_for_namespace(
+    namespace_id_bytes: [u8; 32],
+) -> Result<EvidenceAuthor, WillowError> {
+    let namespace_id = NamespaceId::from_bytes(&namespace_id_bytes);
+    if !namespace_id.is_communal() {
+        return Err(WillowError::NamespaceNotCommunal);
+    }
+
+    let mut subspace_secret_bytes = [0u8; 32];
+    let result = os_fill(&mut subspace_secret_bytes);
+    let subspace_secret = result.map(|()| SubspaceSecret::from_bytes(&subspace_secret_bytes));
+    subspace_secret_bytes.zeroize();
+
+    Ok(EvidenceAuthor {
+        namespace_id,
+        subspace_secret: subspace_secret?,
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Conformance-only injection surface (feature-gated; absent from release).
 // ---------------------------------------------------------------------------
