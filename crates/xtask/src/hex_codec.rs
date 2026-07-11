@@ -8,14 +8,14 @@ pub fn encode(bytes: &[u8]) -> String {
 }
 
 pub fn decode(value: &str, label: &str) -> Result<Vec<u8>, String> {
-    if value.len() % 2 != 0 || !value.bytes().all(|b| b.is_ascii_hexdigit()) {
-        return Err(format!("{label} must be lowercase hexadecimal"));
+    if !value.len().is_multiple_of(2) || !value.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(format!("{label} must be hexadecimal"));
     }
     (0..value.len())
         .step_by(2)
         .map(|i| {
             u8::from_str_radix(&value[i..i + 2], 16)
-                .map_err(|_| format!("{label} must be lowercase hexadecimal"))
+                .map_err(|_| format!("{label} must be hexadecimal"))
         })
         .collect()
 }
