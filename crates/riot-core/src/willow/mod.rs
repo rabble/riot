@@ -129,6 +129,14 @@ pub fn decode_entry_canonic(bytes: &[u8]) -> Result<Entry, WillowError> {
     decode_canonic_exact::<Entry>(bytes)
 }
 
+/// The Willow timestamp (microseconds) of a canonical entry encoding, as a
+/// plain integer. Lets callers outside this crate (riot-ffi) advance a
+/// monotonic write floor past replayed entries without pulling in willow25's
+/// entry traits — the willow value type never crosses the boundary.
+pub fn entry_timestamp_micros(entry_bytes: &[u8]) -> Result<u64, WillowError> {
+    Ok(u64::from(decode_entry_canonic(entry_bytes)?.timestamp()))
+}
+
 /// Whether canonical entry bytes use the exact alert path bound to the
 /// decoded payload's object and revision IDs. Callers receive only a boolean,
 /// never the generic Willow entry or path value.

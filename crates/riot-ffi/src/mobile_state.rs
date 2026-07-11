@@ -1217,6 +1217,7 @@ pub(crate) fn replay_app_data_bundle(
             BundleDecodeOutcome::Rejected(_) => return Err(MobileError::ImportRejected),
         };
         let mut saw_entry = false;
+        let mut max_replayed_timestamp = 0u64;
         for item in &decoded.items {
             let ItemStatus::Valid(_) = item.status else {
                 continue;
@@ -1226,6 +1227,9 @@ pub(crate) fn replay_app_data_bundle(
             if !riot_core::apps::entry::is_app_data_entry(&entry) {
                 return Err(MobileError::ImportRejected);
             }
+            let timestamp = riot_core::willow::entry_timestamp_micros(item.frame.entry_bytes())
+                .map_err(|_| MobileError::ImportRejected)?;
+            max_replayed_timestamp = max_replayed_timestamp.max(timestamp);
             saw_entry = true;
         }
         if !saw_entry {
@@ -1236,8 +1240,21 @@ pub(crate) fn replay_app_data_bundle(
         let preview = inspect_core(&profile.store, &bytes, "app-data-replay")?;
         let plan = preview.plan_all().map_err(map_core_error)?;
         match plan.commit().map_err(map_core_error)? {
-            CommitOutcome::Committed(_) | CommitOutcome::NoChanges(_) => Ok(()),
-                }
+            CommitOutcome::Committed(_) | CommitOutcome::NoChanges(_) => {
+                // Advance the write floor past every replayed entry, exactly
+                // as a live write would (`next_app_write_timestamp`). Without
+                // this, a same-key overwrite issued in the same wall-clock
+                // second as the original burst gets `now*1e6`, which can be
+                // below a replayed `now*1e6 + k` timestamp — cmp_recency would
+                // keep the stale replayed value and silently drop the new
+                // write. This is the exact invariant the replay path exists
+                // to preserve.
+                profile.app_data_timestamp_floor_micros = profile
+                    .app_data_timestamp_floor_micros
+                    .max(max_replayed_timestamp);
+                Ok(())
+            }
+        }
     })
 }
 
@@ -1618,5 +1635,72 @@ mod tests {
         ));
     }
 
-}
+    #[test]
+    fn replay_advances_the_write_floor_so_a_same_second_overwrite_is_not_dropped() {
+        // Regression: replay must advance app_data_timestamp_floor_micros past
+        // every replayed entry. Otherwise a same-key overwrite issued in the
+        // same wall-clock second as the original write burst gets a lower
+        // timestamp than the replayed value, and recency resolution silently
+        // keeps the stale replayed value. Seeding the floor (rather than racing
+        // the clock) makes the collision deterministic.
+        let app_id = "ab".repeat(32);
+
+        // Original profile: seed the floor far above any real `now * 1e6`
+        // (~year 2128), so the receipted write's timestamp is deterministically
+        // high regardless of the test clock — emulating a sub-second burst that
+        // bumped the floor above wall time.
+        let author = open_local_profile().unwrap();
+        let space = create_public_space(&author.inner, "Persist".into()).unwrap();
+        let seeded_floor = 5_000_000_000_000_000u64;
+        {
+            let mut state = lock_unpoisoned(&author.inner);
+            let ProfileState::Active(local) = &mut *state else {
+                panic!("profile active");
+            };
+            local.app_data_timestamp_floor_micros = seeded_floor;
+        }
+        let receipt = app_data_put_with_receipt(
+            &author.inner,
+            app_id.clone(),
+            "items/a".into(),
+            b"old".to_vec(),
+        )
+        .unwrap();
+
+        // Fresh profile joins the same space and replays the receipt.
+        let fresh = open_local_profile().unwrap();
+        join_public_space(&fresh.inner, space).unwrap();
+        replay_app_data_bundle(&fresh.inner, receipt).unwrap();
+        assert_eq!(
+            app_data_get(&fresh.inner, app_id.clone(), "items/a".into()).unwrap(),
+            Some(b"old".to_vec())
+        );
+
+        // The replay must have carried the floor to the replayed timestamp
+        // (seeded_floor + 1), not left it at zero.
+        {
+            let state = lock_unpoisoned(&fresh.inner);
+            let ProfileState::Active(local) = &*state else {
+                panic!("profile active");
+            };
+            assert!(local.app_data_timestamp_floor_micros > seeded_floor);
+        }
+
+        // An immediate same-key overwrite is therefore newer and wins. Without
+        // the floor advance the fresh floor would be 0, this write would get
+        // `now * 1e6` (far below seeded_floor + 1), and the stale replayed value
+        // would win.
+        app_data_put(&fresh.inner, app_id.clone(), "items/a".into(), b"new".to_vec()).unwrap();
+        assert_eq!(
+            app_data_get(&fresh.inner, app_id, "items/a".into()).unwrap(),
+            Some(b"new".to_vec())
+        );
+    }
+
+    #[test]
+    fn entry_timestamp_micros_rejects_non_canonical_bytes() {
+        // The floor advance relies on a *canonical* decode, not a lenient
+        // parse: junk bytes must error rather than silently yield a timestamp.
+        assert!(riot_core::willow::entry_timestamp_micros(b"garbage").is_err());
+    }
 }
