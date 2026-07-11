@@ -18,6 +18,25 @@ use crate::hex_codec;
 pub const VERIFICATION_STATUS_VALID: &str = "signature_verified";
 pub const VERIFICATION_STATUS_INVALID: &str = "signature_invalid";
 
+/// Confirms that a fixture entry and an export entry at the same array index
+/// actually describe the same Willow entry, so that positional pairing alone
+/// is never trusted to bind a proof to the wrong piece of public data.
+/// Pure and file-I/O-free, so it's directly unit-testable (see tests below).
+pub fn check_entry_identity(fixture_entry: &Value, export_entry: &Value, index: usize) -> Result<(), String> {
+    let fixture_entry_id = fixture_entry["willow_entry_id"]
+        .as_str()
+        .ok_or("incident entry: willow_entry_id must be a string")?;
+    let export_entry_id = export_entry["entry_id"]
+        .as_str()
+        .ok_or("public export entry: entry_id must be a string")?;
+    if fixture_entry_id != export_entry_id {
+        return Err(format!(
+            "entry identity mismatch at index {index}: fixture willow_entry_id {fixture_entry_id} does not match export entry_id {export_entry_id}"
+        ));
+    }
+    Ok(())
+}
+
 /// Pure verification core, independent of file I/O, so it's directly
 /// unit-testable with hand-built byte inputs (see the tests below).
 pub fn verify_signed_entry(
@@ -63,6 +82,11 @@ pub fn run(root: &Path) -> Result<(), String> {
 
     let mut verified_count = 0usize;
     for (index, entry) in fixture_entries.iter().enumerate() {
+        // Positional pairing alone is not enough to bind a proof to the right
+        // public entry: confirm the fixture's willow_entry_id actually matches
+        // the export entry's entry_id at this index before trusting the index.
+        check_entry_identity(entry, &export_entries[index], index)?;
+
         let entry_bytes = hex_codec::decode(
             entry["willow_entry_bytes"]
                 .as_str()
@@ -95,6 +119,8 @@ pub fn run(root: &Path) -> Result<(), String> {
         };
         export["entries"][index]["verification_status"] = json!(status);
     }
+    // Drop the stale document-level placeholder status: verification now
+    // lives per-entry (set above), not as a single top-level field.
     if let Some(map) = export.as_object_mut() {
         map.remove("verification_status");
     }
@@ -152,6 +178,21 @@ mod tests {
         let valid = verify_signed_entry(&tampered_entry, &signed.capability_bytes, &signed.signature)
             .unwrap();
         assert!(!valid);
+    }
+
+    #[test]
+    fn entry_identity_check_rejects_reordered_entries() {
+        let fixture_entry = json!({ "willow_entry_id": "aaa111" });
+        let export_entry_matching = json!({ "entry_id": "aaa111" });
+        let export_entry_mismatched = json!({ "entry_id": "bbb222" });
+
+        assert!(check_entry_identity(&fixture_entry, &export_entry_matching, 0).is_ok());
+
+        let error = check_entry_identity(&fixture_entry, &export_entry_mismatched, 3)
+            .expect_err("mismatched entry_id must be rejected");
+        assert!(error.contains("index 3"));
+        assert!(error.contains("aaa111"));
+        assert!(error.contains("bbb222"));
     }
 
     #[test]
