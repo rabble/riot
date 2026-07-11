@@ -9,7 +9,7 @@
 //! `resolver::render_display_name` is the only sanctioned way to display one.
 
 pub mod card;
-// pub mod path;
+pub mod path;
 // pub mod resolver;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
