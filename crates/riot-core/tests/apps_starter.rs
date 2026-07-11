@@ -69,7 +69,7 @@ fn the_shipped_catalog_verifies_completely() {
 /// Changing the source or repacking under new bytes changes this value —
 /// which is correct: new bytes are a new trust decision.
 const CHECKLIST_APP_ID_HEX: &str =
-    "aa9633796890899d5b6f958e8f34db1aaa9d621eedc88f17234cb6b36dd1b910";
+    "74e70c5dbc448afaa27097e7a45942accb4ba306f06b72b4ff9841c00d9d59c9";
 
 fn to_hex(bytes: &[u8]) -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";

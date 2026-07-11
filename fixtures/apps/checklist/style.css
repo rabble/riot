@@ -1,10 +1,13 @@
 :root { color-scheme: light dark; }
-body { font-family: -apple-system, sans-serif; margin: 0; padding: 16px; }
+body { font-family: -apple-system, sans-serif; margin: 0; padding: 16px; background: Canvas; color: CanvasText; }
 main { max-width: 480px; margin: 0 auto; }
 h1 { font-size: 1.4rem; text-transform: uppercase; letter-spacing: 0.05em; }
 #add-form { display: flex; gap: 8px; margin-bottom: 16px; }
-#new-item { flex: 1; padding: 10px; border: 2px solid currentColor; font-size: 1rem; }
-#add { padding: 10px 16px; border: 2px solid currentColor; background: none; font-size: 1rem; }
+/* Form controls do not inherit color: WebKit gives them fieldtext/buttontext,
+   and buttontext resolved to white here — which made this button, whose border
+   is currentColor, invisible against the page. */
+#new-item { flex: 1; padding: 10px; border: 2px solid currentColor; font-size: 1rem; color: inherit; background: none; }
+#add { padding: 10px 16px; border: 2px solid currentColor; background: none; font-size: 1rem; color: inherit; }
 #items { list-style: none; padding: 0; margin: 0; }
 #items li { display: flex; align-items: center; gap: 10px; padding: 10px 0; border-bottom: 1px solid currentColor; }
 #items li.done label { text-decoration: line-through; opacity: 0.6; }

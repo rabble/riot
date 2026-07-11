@@ -380,3 +380,55 @@ final class AppRuntimeHostTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(observed, 1, "notification did not re-run page watchers")
     }
 }
+
+extension AppRuntimeHostTests {
+    /// Form controls do not inherit `color` — WebKit gives a <button> the
+    /// `buttontext` system color, which resolved to WHITE in this WebView and
+    /// made the Add button (whose border is `currentColor`) invisible against
+    /// the page while staying tappable, so XCUITest passed on a button no
+    /// human could see. Pin the invariant: the button's foreground must match
+    /// the page's, in whatever colour scheme is in force.
+    func testAddButtonIsVisibleAgainstThePage() async throws {
+        try await assertChecklistControlsAreLegible(in: .light)
+        try await assertChecklistControlsAreLegible(in: .dark)
+    }
+
+    private func assertChecklistControlsAreLegible(
+        in scheme: UIUserInterfaceStyle
+    ) async throws {
+        let appID = String(repeating: "a", count: 64)
+        let resolver = try checklistResolver(appID: appID)
+        let bridge = AppBridgeController(bridge: try trustedRuntimeBridge(appID: appID))
+        let (webView, probe) = makeWebView(resolver: resolver, bridge: bridge)
+        webView.overrideUserInterfaceStyle = scheme
+        await loadEntryPoint(webView, probe, appID: appID)
+
+        let report = try await callAsync(webView, """
+        const style = (el) => getComputedStyle(el);
+        const button = document.getElementById('add');
+        const field = document.getElementById('new-item');
+        return JSON.stringify({
+          buttonColor: style(button).color,
+          buttonBorder: style(button).borderTopColor,
+          fieldColor: style(field).color,
+          bodyColor: style(document.body).color,
+          bodyBackground: style(document.body).backgroundColor,
+        });
+        """) as? String
+        let seen = try XCTUnwrap(report)
+        let values = try XCTUnwrap(
+            try JSONSerialization.jsonObject(with: Data(seen.utf8)) as? [String: String]
+        )
+        let body = try XCTUnwrap(values["bodyColor"])
+        XCTAssertEqual(values["buttonColor"], body, "\(scheme) button text vs page text: \(seen)")
+        XCTAssertEqual(values["buttonBorder"], body, "\(scheme) button border vs page text: \(seen)")
+        XCTAssertEqual(values["fieldColor"], body, "\(scheme) field text vs page text: \(seen)")
+        // The page must paint its own background: an unpainted canvas leaves the
+        // WebView's backing showing through (white in both schemes), which would
+        // make dark-mode text white-on-white.
+        XCTAssertNotEqual(
+            values["bodyBackground"], body,
+            "\(scheme) page background must contrast with its text: \(seen)"
+        )
+    }
+}
