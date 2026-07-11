@@ -38,6 +38,10 @@ fn unhex(value: &str) -> Vec<u8> {
 }
 
 fn manifest_and_bundle() -> (Vec<u8>, Vec<u8>) {
+    manifest_and_bundle_with_resource(b"<html>checklist</html>".to_vec())
+}
+
+fn manifest_and_bundle_with_resource(resource_bytes: Vec<u8>) -> (Vec<u8>, Vec<u8>) {
     // Manifest/bundle bytes are produced with riot-core's own codecs — the
     // same way the future `riot-app` packaging tool will produce them.
     use riot_core::apps::bundle::{encode_app_bundle, AppBundle, AppResource};
@@ -50,7 +54,7 @@ fn manifest_and_bundle() -> (Vec<u8>, Vec<u8>) {
         resources: vec![AppResource {
             path: "index.html".to_string(),
             content_type: "text/html".to_string(),
-            bytes: b"<html>checklist</html>".to_vec(),
+            bytes: resource_bytes,
         }],
     };
     let manifest = AppManifest {
@@ -480,6 +484,80 @@ fn app_prefix_write_prunes_descendant_proofs_before_sync() {
 }
 
 #[test]
+fn share_pair_is_atomic_when_only_one_sync_id_slot_remains() {
+    let profile = open_local_profile().unwrap();
+    let space = profile
+        .create_public_space("Atomic share IDs".into())
+        .unwrap();
+    let runtime = profile.app_runtime();
+    let (manifest_bytes, bundle_bytes) = manifest_and_bundle();
+    let app = runtime.install_app(manifest_bytes, bundle_bytes).unwrap();
+    for index in 0..(riot_core::sync::MAX_SYNC_IDS - 1) {
+        runtime
+            .app_data_put(
+                app.app_id.clone(),
+                format!("items/value-{index}"),
+                vec![index as u8],
+            )
+            .unwrap();
+    }
+
+    assert!(matches!(
+        runtime.share_app(app.app_id_bytes.clone(), space),
+        Err(MobileError::SessionLimit)
+    ));
+    assert!(runtime
+        .directory_listings()
+        .unwrap()
+        .iter()
+        .all(|listing| listing.app_id != app.app_id_bytes));
+
+    // An unchanged 63-entry inventory remains complete and still has one
+    // free slot for an ordinary single-entry write.
+    profile.open_sync_session().unwrap().cancel().unwrap();
+    runtime
+        .app_data_put(app.app_id, "items/after-failure".into(), b"ok".to_vec())
+        .expect("failed pair retained the final slot");
+}
+
+#[test]
+fn share_pair_is_atomic_when_manifest_fits_but_pair_exceeds_inventory_bytes() {
+    let profile = open_local_profile().unwrap();
+    let space = profile
+        .create_public_space("Atomic share bytes".into())
+        .unwrap();
+    let runtime = profile.app_runtime();
+    let (small_manifest, small_bundle) = manifest_and_bundle();
+    let data_app = runtime.install_app(small_manifest, small_bundle).unwrap();
+    for index in 0..7 {
+        runtime
+            .app_data_put(
+                data_app.app_id.clone(),
+                format!("items/large-{index}"),
+                vec![index as u8; riot_core::import::MAX_ITEM_PAYLOAD_BYTES],
+            )
+            .unwrap();
+    }
+    let (large_manifest, large_bundle) = manifest_and_bundle_with_resource(vec![0x5a; 1_048_000]);
+    let large_app = runtime.install_app(large_manifest, large_bundle).unwrap();
+
+    assert!(matches!(
+        runtime.share_app(large_app.app_id_bytes.clone(), space),
+        Err(MobileError::SessionLimit)
+    ));
+    assert!(runtime
+        .directory_listings()
+        .unwrap()
+        .iter()
+        .all(|listing| listing.app_id != large_app.app_id_bytes));
+    profile
+        .open_sync_session()
+        .expect("failed pair retained a bounded complete inventory")
+        .cancel()
+        .unwrap();
+}
+
+#[test]
 fn aggregate_sync_inventory_is_bounded_to_one_bundle_before_session_clone() {
     let profile = open_local_profile().unwrap();
     profile.create_public_space("Byte bound".into()).unwrap();
@@ -715,17 +793,35 @@ fn app_write_never_replaces_an_active_portable_review() {
         .sign_draft(sender.create_draft_alert(alert_input()).unwrap().draft_id)
         .unwrap();
     let receiver = open_local_profile().unwrap();
-    receiver.join_public_space(space).unwrap();
+    receiver.join_public_space(space.clone()).unwrap();
     let preview = receiver
         .inspect_bytes(signed.bundle_bytes, "portable".into())
         .unwrap();
-    let app_id = "11".repeat(32);
+    let (manifest_bytes, bundle_bytes) = manifest_and_bundle();
+    let app = receiver
+        .app_runtime()
+        .install_app(manifest_bytes, bundle_bytes)
+        .unwrap();
     assert!(matches!(
         receiver
             .app_runtime()
-            .app_data_put(app_id, "items/a".into(), b"blocked".to_vec()),
+            .share_app(app.app_id_bytes.clone(), space),
         Err(MobileError::InvalidInput)
     ));
+    assert!(matches!(
+        receiver.app_runtime().app_data_put(
+            app.app_id.clone(),
+            "items/a".into(),
+            b"blocked".to_vec()
+        ),
+        Err(MobileError::InvalidInput)
+    ));
+    assert!(receiver
+        .app_runtime()
+        .directory_listings()
+        .unwrap()
+        .iter()
+        .all(|listing| listing.app_id != app.app_id_bytes));
     assert_eq!(preview.eligible_entries().unwrap(), vec![signed.entry]);
 }
 

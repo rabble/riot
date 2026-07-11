@@ -1259,8 +1259,8 @@ pub(crate) fn set_app_trust(
         let payload = encode_trust_marker(&marker).map_err(map_apps_error)?;
         let path = app_index_trust_path(&app_id, profile.author.subspace_id().as_bytes())
             .map_err(map_apps_error)?;
-        commit_local_app_entry(profile, path, &payload, timestamp)?;
-        profile.app_data_timestamp_floor_micros = timestamp;
+        let signed = sign_local_app_entry(profile, path, &payload, timestamp)?;
+        commit_local_app_entries(profile, vec![signed])?;
         Ok(())
     })
 }
@@ -1310,8 +1310,8 @@ pub(crate) fn app_data_put_with_receipt(
         let app_id = parse_entry_id(&app_id)?;
         let timestamp = next_app_write_timestamp(profile)?;
         let path = riot_core::apps::entry::app_data_path(&app_id, &key).map_err(map_apps_error)?;
-        let bundle_bytes = commit_local_app_entry(profile, path, &value, timestamp)?;
-        profile.app_data_timestamp_floor_micros = timestamp;
+        let signed = sign_local_app_entry(profile, path, &value, timestamp)?;
+        let bundle_bytes = commit_local_app_entries(profile, vec![signed])?;
         Ok(bundle_bytes)
     })
 }
@@ -1452,18 +1452,13 @@ fn exact_app_id(value: &[u8]) -> Result<[u8; 32], MobileError> {
     value.try_into().map_err(|_| MobileError::InvalidInput)
 }
 
-/// Build, authorise, preflight, admit, commit, and retain one exact app
-/// entry. Inventory capacity is proven before store mutation, so a
-/// successful commit can never leave a live entry without its signed proof.
-fn commit_local_app_entry(
-    profile: &mut LocalProfile,
+/// Build and authorise one exact app entry without mutating profile state.
+fn sign_local_app_entry(
+    profile: &LocalProfile,
     path: riot_core::willow::Path,
     payload: &[u8],
     timestamp_micros: u64,
-) -> Result<Vec<u8>, MobileError> {
-    if profile.preview.is_some() || profile.plan.is_some() {
-        return Err(MobileError::InvalidInput);
-    }
+) -> Result<SignedWillowEntry, MobileError> {
     let entry = riot_core::willow::Entry::builder()
         .namespace_id(profile.author.namespace_id().clone())
         .subspace_id(profile.author.subspace_id())
@@ -1475,17 +1470,32 @@ fn commit_local_app_entry(
         riot_core::willow::authorise_entry(&profile.author, entry).map_err(map_author_error)?;
     let token = authorised.authorisation_token();
     let signature: Signature = token.signature().clone().into();
-    let signed = SignedWillowEntry {
+    Ok(SignedWillowEntry {
         entry_bytes: riot_core::willow::encode_entry(authorised.entry()),
         capability_bytes: riot_core::willow::encode_capability(token.capability()),
         signature: signature.to_bytes(),
         payload_bytes: payload.to_vec(),
-    };
-    let next_inventory = prospective_sync_inventory(profile, std::slice::from_ref(&signed))?;
-    let bundle_bytes =
-        encode_bundle(std::slice::from_ref(&signed)).map_err(|_| MobileError::SessionLimit)?;
+    })
+}
+
+/// Preflight and commit a complete local app batch through one RIOTE1
+/// inspect/plan/commit transaction. Inventory capacity is proven for the
+/// whole batch before store mutation, so paired app-index publication cannot
+/// leave a manifest without its bundle.
+fn commit_local_app_entries(
+    profile: &mut LocalProfile,
+    signed_entries: Vec<SignedWillowEntry>,
+) -> Result<Vec<u8>, MobileError> {
+    if signed_entries.is_empty() {
+        return Err(MobileError::InvalidInput);
+    }
+    if profile.preview.is_some() || profile.plan.is_some() {
+        return Err(MobileError::InvalidInput);
+    }
+    let next_inventory = prospective_sync_inventory(profile, &signed_entries)?;
+    let bundle_bytes = encode_bundle(&signed_entries).map_err(|_| MobileError::SessionLimit)?;
     let preview = inspect_core(&profile.store, &bundle_bytes, "local-app-write")?;
-    if preview.eligible_count().map_err(map_core_error)? != 1 {
+    if preview.eligible_count().map_err(map_core_error)? != signed_entries.len() {
         return Err(MobileError::AppRejected);
     }
     let plan = preview.plan_all().map_err(map_core_error)?;
@@ -1493,6 +1503,7 @@ fn commit_local_app_entry(
         CommitOutcome::Committed(_) | CommitOutcome::NoChanges(_) => {}
     }
     install_sync_inventory(profile, next_inventory)?;
+    advance_app_write_floor(profile, &signed_entries)?;
     refresh_app_trust_markers(profile)?;
     Ok(bundle_bytes)
 }
@@ -1647,19 +1658,19 @@ pub(crate) fn share_app(
             return Err(MobileError::AppRejected);
         }
         let timestamp = next_app_write_timestamp(profile)?;
-        commit_local_app_entry(
+        let manifest_entry = sign_local_app_entry(
             profile,
             app_index_manifest_path(&app_id).map_err(map_apps_error)?,
             &manifest_bytes,
             timestamp,
         )?;
-        commit_local_app_entry(
+        let bundle_entry = sign_local_app_entry(
             profile,
             app_index_bundle_path(&app_id).map_err(map_apps_error)?,
             &bundle_bytes,
             timestamp,
         )?;
-        profile.app_data_timestamp_floor_micros = timestamp;
+        commit_local_app_entries(profile, vec![manifest_entry, bundle_entry])?;
         Ok(())
     })
 }
@@ -1742,8 +1753,8 @@ pub(crate) fn endorse_app(
         let payload = encode_endorsement(&marker).map_err(map_apps_error)?;
         let path = app_index_endorsement_path(&app_id, profile.author.subspace_id().as_bytes())
             .map_err(map_apps_error)?;
-        commit_local_app_entry(profile, path, &payload, timestamp)?;
-        profile.app_data_timestamp_floor_micros = timestamp;
+        let signed = sign_local_app_entry(profile, path, &payload, timestamp)?;
+        commit_local_app_entries(profile, vec![signed])?;
         Ok(())
     })
 }
@@ -1934,5 +1945,89 @@ mod tests {
         let listed = list_current_entries(&profile.inner).unwrap();
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].entry_id, signed.entry.entry_id);
+    }
+
+    #[test]
+    fn failed_two_entry_share_leaves_store_generation_and_inventory_unchanged() {
+        let profile = open_local_profile().unwrap();
+        let space = create_public_space(&profile.inner, "Atomic pair".into()).unwrap();
+        let (manifest, bundle) = riot_core::apps::starter::STARTER_CATALOG[0];
+        let installed = install_app(&profile.inner, manifest.to_vec(), bundle.to_vec()).unwrap();
+        let app_id = hex(&installed.app_id_bytes);
+        for index in 0..(MAX_SYNC_IDS - 1) {
+            app_data_put(
+                &profile.inner,
+                app_id.clone(),
+                format!("items/value-{index}"),
+                vec![index as u8],
+            )
+            .unwrap();
+        }
+        let before = with_active(&profile.inner, |profile| {
+            Ok((
+                profile.store.generation().map_err(map_core_error)?,
+                profile.sync_inventory.clone(),
+            ))
+        })
+        .unwrap();
+
+        assert!(matches!(
+            share_app(&profile.inner, installed.app_id_bytes, space),
+            Err(MobileError::SessionLimit)
+        ));
+        let after = with_active(&profile.inner, |profile| {
+            Ok((
+                profile.store.generation().map_err(map_core_error)?,
+                profile.sync_inventory.clone(),
+            ))
+        })
+        .unwrap();
+        assert_eq!(after, before);
+    }
+
+    #[test]
+    fn successful_share_commits_manifest_and_bundle_in_one_generation() {
+        let profile = open_local_profile().unwrap();
+        let space = create_public_space(&profile.inner, "Atomic success".into()).unwrap();
+        let (manifest, bundle) = riot_core::apps::starter::STARTER_CATALOG[0];
+        let installed = install_app(&profile.inner, manifest.to_vec(), bundle.to_vec()).unwrap();
+        let before_generation = with_active(&profile.inner, |profile| {
+            profile.store.generation().map_err(map_core_error)
+        })
+        .unwrap();
+
+        share_app(&profile.inner, installed.app_id_bytes, space).unwrap();
+        with_active(&profile.inner, |profile| {
+            assert_eq!(
+                profile.store.generation().map_err(map_core_error)?,
+                before_generation + 1
+            );
+            assert_eq!(profile.store.live_count().map_err(map_core_error)?, 2);
+            assert_eq!(profile.sync_inventory.len(), 2);
+            let mut slots: Vec<_> = profile
+                .sync_inventory
+                .iter()
+                .map(|signed| {
+                    let entry = riot_core::willow::decode_entry_canonic(&signed.entry_bytes)
+                        .map_err(|_| MobileError::Internal)?;
+                    riot_core::apps::index::classify_app_index_path(entry.path())
+                        .ok_or(MobileError::Internal)
+                })
+                .collect::<Result<_, _>>()?;
+            slots.sort_unstable_by_key(|slot| match slot {
+                riot_core::apps::index::AppIndexSlot::Manifest { .. } => 0,
+                riot_core::apps::index::AppIndexSlot::Bundle { .. } => 1,
+                _ => 2,
+            });
+            assert!(matches!(
+                slots.as_slice(),
+                [
+                    riot_core::apps::index::AppIndexSlot::Manifest { .. },
+                    riot_core::apps::index::AppIndexSlot::Bundle { .. }
+                ]
+            ));
+            Ok(())
+        })
+        .unwrap();
     }
 }
