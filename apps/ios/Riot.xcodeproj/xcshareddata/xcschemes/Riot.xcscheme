@@ -5,9 +5,16 @@
       <BuildActionEntry buildForTesting="YES" buildForRunning="YES" buildForProfiling="YES" buildForArchiving="YES" buildForAnalyzing="YES">
         <BuildableReference BuildableIdentifier="primary" BlueprintIdentifier="A00000000000000000000052" BuildableName="Riot.app" BlueprintName="Riot" ReferencedContainer="container:Riot.xcodeproj"/>
       </BuildActionEntry>
+      <BuildActionEntry buildForTesting="YES" buildForRunning="NO" buildForProfiling="NO" buildForArchiving="NO" buildForAnalyzing="NO">
+        <BuildableReference BuildableIdentifier="primary" BlueprintIdentifier="B00000000000000000000009" BuildableName="RiotUITests.xctest" BlueprintName="RiotUITests" ReferencedContainer="container:Riot.xcodeproj"/>
+      </BuildActionEntry>
     </BuildActionEntries>
   </BuildAction>
-  <TestAction buildConfiguration="Debug" selectedDebuggerIdentifier="Xcode.DebuggerFoundation.Debugger.LLDB" selectedLauncherIdentifier="Xcode.DebuggerFoundation.Launcher.LLDB" shouldUseLaunchSchemeArgsEnv="YES"/>
+  <TestAction buildConfiguration="Debug" selectedDebuggerIdentifier="Xcode.DebuggerFoundation.Debugger.LLDB" selectedLauncherIdentifier="Xcode.DebuggerFoundation.Launcher.LLDB" shouldUseLaunchSchemeArgsEnv="YES">
+    <Testables>
+      <TestableReference skipped="NO"><BuildableReference BuildableIdentifier="primary" BlueprintIdentifier="B00000000000000000000009" BuildableName="RiotUITests.xctest" BlueprintName="RiotUITests" ReferencedContainer="container:Riot.xcodeproj"/></TestableReference>
+    </Testables>
+  </TestAction>
   <LaunchAction buildConfiguration="Debug" selectedDebuggerIdentifier="Xcode.DebuggerFoundation.Debugger.LLDB" selectedLauncherIdentifier="Xcode.DebuggerFoundation.Launcher.LLDB" launchStyle="0" useCustomWorkingDirectory="NO" ignoresPersistentStateOnLaunch="NO" debugDocumentVersioning="YES" debugServiceExtension="internal" allowLocationSimulation="YES">
     <BuildableProductRunnable runnableDebuggingMode="0"><BuildableReference BuildableIdentifier="primary" BlueprintIdentifier="A00000000000000000000052" BuildableName="Riot.app" BlueprintName="Riot" ReferencedContainer="container:Riot.xcodeproj"/></BuildableProductRunnable>
   </LaunchAction>
