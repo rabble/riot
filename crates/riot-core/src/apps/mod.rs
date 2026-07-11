@@ -5,6 +5,7 @@
 pub mod bundle;
 pub mod entry;
 pub mod manifest;
+pub mod trust;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AppsError {
