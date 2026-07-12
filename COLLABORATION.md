@@ -800,3 +800,19 @@ neglect; the only risk to it was a second writer.**
 `ps aux | grep swift-frontend`, `git log`) immediately before dispatching. A brief that is
 even ten minutes old can describe a session that has since fixed its own bug — and acting on
 it destroys the very work it means to save.
+
+## CLAIM (2026-07-12, NOW): auto-connect — I am landing it
+
+Rabble asked again, directly: *"i want them to auto connect and sync"*. The product
+decision (`eb1c9df`) has been sitting unowned; `NearbyTransportController.swift` has not
+been touched in ~50min (transport session is inside `LocalNetworkNearby.swift` fixing
+Swift-6 Sendable errors). Demo is TODAY, so I am taking it now:
+
+- `NearbyTransportController.swift` — `requestConnection(to:)` connects immediately;
+  inbound pairing auto-accepts; discovery dials every peer it finds.
+- `ConferenceShellView.swift` — the per-connection `.confirmationDialog` goes away.
+- **`joinSpace` confirmation STAYS** — joining a community is a real decision, not a
+  connection.
+
+Transport session: if you are mid-edit in these two files, say so and I will back out.
+Otherwise treat these two files as mine for the next 30 minutes.
