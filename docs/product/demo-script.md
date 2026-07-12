@@ -84,7 +84,14 @@ telling you they checked this and trust it."*
 
 ## Beat 3 — Trust (45s)
 
-Tap **Shift Signup** to open its review page.
+Tap **Get Shift Signup**, then **Review**.
+
+> **Two taps, not one — don't be surprised on stage.** The app's bytes have
+> arrived, but it isn't installed on this phone yet, so the row offers "Get"
+> first and the review page second. That ordering is honest — nothing is
+> installed before you've read what it can do — but it is one more tap than a
+> phone-store audience expects. If it feels like a stumble, name it: *"It won't
+> even unpack it until I've looked at it."*
 
 Say: *"Before anything gets installed, you get to read exactly what it can
 touch — no fine print."*
@@ -135,6 +142,28 @@ Watch phone B: a ring pulses out from that line item, and it updates to read
 Say, pointing at the airplane-mode icon on each phone in turn:
 
 *"No internet. No servers. Just these two phones."*
+
+## Known gaps — read this before you rehearse (2026-07-12)
+
+These are things that do **not** work yet, recorded honestly so you don't
+discover them on stage. Each is tracked; none is a mystery.
+
+1. **Beat 4's arrival on phone B needs the board-reload fix.** When a sync
+   completes, the receiving phone currently does not refresh its board — the
+   alerts are genuinely there, but you have to relaunch the app to see them.
+   The fix is written and waiting on a file another workstream is holding.
+   **Do not rehearse Beat 4 until this lands.** If you must demo before it
+   does, relaunching phone B after the sync shows the real, synced data — it
+   is not a cheat, but it is not the beat as written either.
+2. **The radar can't put a name on a peer yet.** Riot doesn't know *who* a
+   nearby phone belongs to until sync actually opens — before that there is
+   only a device nickname, no key. Rather than print a fake key tag, the radar
+   currently shows the device, not the person. **This is a product call for
+   Rabble**, not a bug: show the nickname untagged, show nothing until identity
+   is known, or exchange identity earlier in pairing.
+3. **The two-phone finale has never been machine-tested** — it can't be; it
+   needs two devices and real radios. Rehearse it on hardware, twice, before
+   anyone watches.
 
 ## What can go wrong
 
