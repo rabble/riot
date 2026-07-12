@@ -21,12 +21,12 @@ one. Its API names are also **not yet reconciled** (the design spec says
 
 Consequence for this plan:
 
-- **Phases A–D (Tasks 1–13) are store-independent** — pure `riot-core`/`riot-ffi`
-  Rust and iOS containment work. They are fully TDD-able and may begin
-  immediately; nothing here waits on SQLite.
-- **Phase E (Tasks 14–19) is store-dependent.** Its tasks name the exact store
+- **Phases A–D (Tasks 1–11) are store-independent** — `riot-core`/`riot-ffi`
+  Rust plus iOS **and Android** containment work. They are fully TDD-able and may
+  begin immediately; nothing here waits on SQLite.
+- **Phase E (Tasks 12–17) is store-dependent.** Its tasks name the exact store
   API calls they will use, but their final step-level code is **finalized when
-  the store's Task 8 (native API) and Task 9 (iOS cutover) land and the
+  the store's native-API task and iOS-cutover task land and the
   `RiotDatabase`/`DatabaseSession` naming is reconciled.** Do not implement
   Phase E against a guessed API surface.
 
@@ -162,7 +162,11 @@ impl OwnedRoot {
 }
 ```
 
-Note: `os_fill` is currently private to `identity.rs` — change its declaration to `pub(crate) fn os_fill`. `NamespaceSecret`, `.corresponding_namespace_id()`, and `NamespaceId::is_owned()` are all provided by `willow25` (verified present in the pinned crate).
+Notes (verified against the pinned crate):
+- `os_fill` is currently private to `identity.rs` — change its declaration to `pub(crate) fn os_fill`.
+- `NamespaceSecret::corresponding_namespace_id()` (`namespace_secret.rs:54`), `NamespaceSecret::from_bytes` (`:73`), and `NamespaceId::is_owned()` (`namespace_id.rs:104`, = odd final byte) all exist.
+- willow25 **already ships `randomly_generate_owned_namespace()`** (`namespace_secret.rs:143`). Prefer calling it over re-rolling the loop above; the hand-rolled version is shown only to make the retained-secret contrast explicit. Whichever is used, the secret is retained (not zeroized).
+- `AuthorIdentity::identity()` hardcodes `namespace_kind: NamespaceKind::Communal` (`identity.rs:74`). When Task 2 adds the owned author, update `identity()` so an owned author reports `NamespaceKind::Owned` — otherwise the kind is latent-wrong.
 
 - [ ] **Step 5: Wire the module** — `crates/riot-core/src/willow/mod.rs` (after the existing `mod identity;`):
 
@@ -237,13 +241,15 @@ impl OwnedRoot {
     /// delegate it an owned write capability from the root.
     pub fn author(&self) -> Result<OwnedSpaceAuthor, WillowError> {
         let inner = EvidenceAuthor::generate_in_namespace(self.namespace_id.clone())?;
-        // Root grants this subspace a write cap over the full namespace, then
-        // (Slice 2) reads narrow by path prefix. Slice 1 uses the full grant.
-        let write_capability = WriteCapability::new_owned(
-            self.namespace_secret.clone(),
-            inner.subspace_id(),
-        )
-        .map_err(|_| WillowError::DoesNotAuthorise)?;
+        // Root grants this subspace a write cap over the full namespace
+        // (Area::full()); Slice 2 reads narrow by path prefix. `new_owned` takes
+        // the keypair BY REFERENCE and returns `Self` — no Result, no `?`.
+        // Signature (write_capability.rs:250):
+        //   new_owned<K: Signer<NamespaceSignature> + Keypair<VerifyingKey=NamespaceId>>(
+        //       keypair: &K, user_key: SubspaceId) -> Self
+        // NamespaceSecret satisfies those bounds (namespace_secret.rs:155,163).
+        let write_capability =
+            WriteCapability::new_owned(&self.namespace_secret, inner.subspace_id());
         Ok(OwnedSpaceAuthor { inner, write_capability })
     }
 }
@@ -255,6 +261,8 @@ impl OwnedSpaceAuthor {
     pub fn write_capability(&self) -> WriteCapability {
         self.write_capability.clone()
     }
+    /// The single accessor name used everywhere (Tasks 3 and 6). Do not
+    /// introduce a second `_for_test` variant — one name avoids a compile break.
     pub(crate) fn evidence_author(&self) -> &EvidenceAuthor {
         &self.inner
     }
@@ -288,6 +296,8 @@ UX builds on the owned write path.
 
 **Files:**
 - Modify: `crates/riot-core/src/willow/mod.rs:102-113`
+- Modify: `crates/riot-core/src/session.rs:771` (`commit_at` → `commit_at_with` + wrapper)
+- Modify: `crates/riot-core/src/apps/index.rs:86` (`publish_app_index_with`)
 - Test: `crates/riot-core/tests/owned_write_path.rs` (new integration test)
 
 - [ ] **Step 1: Write the failing test** — `crates/riot-core/tests/owned_write_path.rs`:
@@ -307,7 +317,7 @@ fn owned_author_authorises_entry_in_owned_namespace() {
         .payload(b"x")
         .build();
     let authorised = authorise_entry_with(
-        author.evidence_author_for_test(),
+        author.evidence_author(),
         author.write_capability(),
         entry,
     );
@@ -349,7 +359,7 @@ pub fn authorise_entry(
 Add a `pub(crate)` `evidence_author_for_test`/`evidence_author` accessor on
 `OwnedSpaceAuthor` and export `authorise_entry_with`.
 
-- [ ] **Step 4: Thread through `commit_at` and `publish_app_index`** — in `apps/index.rs`, add capability-carrying variants `commit_at_with(store, author, capability, path, bytes, ts)` and `publish_app_index_with(store, author, capability, ...)`. The existing communal `commit_at`/`publish_app_index` become wrappers passing `author.write_capability()`. Show the `commit_at_with` body:
+- [ ] **Step 4: Thread through `commit_at` and `publish_app_index`** — **`commit_at` lives in `crates/riot-core/src/session.rs:771`** (`pub(crate)`), not `apps/index.rs`. Add `commit_at_with(store, author, capability, path, bytes, ts)` there and make the existing `commit_at` a wrapper passing `author.write_capability()` — this preserves every current caller (`profile/resolver.rs`, `apps/endorse.rs`, `apps/trust.rs`, `apps/index.rs::publish_app_index`). Then add `publish_app_index_with` in `apps/index.rs:86` alongside `publish_app_index`. Show the `commit_at_with` body:
 
 ```rust
 pub fn commit_at_with(
@@ -437,11 +447,16 @@ Expected: FAIL — `UnsupportedCapability` (owned capability rejected).
     // OR an owned namespace with an owned capability whose granted area covers
     // the entry. Delegations remain unsupported until Slice 2's read/grant flow.
     let namespace_ok = entry.namespace_id().is_communal() || entry.namespace_id().is_owned();
-    let capability_shape_ok = if capability.is_owned() {
-        entry.namespace_id().is_owned() && capability.includes_entry(entry)
-    } else {
-        !entry.namespace_id().is_owned() && capability.delegations().is_empty()
-    };
+    // Delegations stay unsupported until Slice 2 for BOTH kinds. The owned
+    // branch additionally requires the capability to cover the entry;
+    // `includes` (write_capability.rs:334, NOT `includes_entry`) checks
+    // namespace + subspace + path coverage. Entry impls Namespaced+Coordinatelike.
+    let capability_shape_ok = capability.delegations().is_empty()
+        && if capability.is_owned() {
+            entry.namespace_id().is_owned() && capability.includes(entry)
+        } else {
+            !entry.namespace_id().is_owned()
+        };
     if !namespace_ok || !capability_shape_ok {
         return Err(BundleDiagnostic {
             code: DiagnosticCode::UnsupportedCapability,
@@ -556,7 +571,9 @@ pub fn is_app_data_path(path: &Path) -> bool {
 
 - [ ] **Step 5: Generalize `app_index_*` + `classify_app_index_path`** — `index.rs`. Each `app_index_*` path builder gains a leading `Visibility` param; `classify_app_index_path` consumes and validates the visibility segment first, then proceeds exactly as today. Return the visibility alongside the slot: change `AppIndexSlot` consumers to receive `(Visibility, AppIndexSlot)`, or add a `visibility` field to each variant. Keep `endorsements` plural (matches `app_index_endorsement_path`).
 
-- [ ] **Step 6: Point `verify_frame` at the shared constant** — `bundle.rs`: where it derives/validates the path family, it validates the leading segment via `Visibility::from_segment(..).is_some()`, using the SAME `visibility` module — not a local string literal.
+- [ ] **Step 6: Route ALL gates through the classifiers — do NOT add a blanket visibility prefix to `verify_frame`.** `verify_frame` (`bundle.rs` `schema_ok`) and the local-write binding gate `inspect_inner`'s `path_matches` (`session.rs:623-673` — the **fourth** gate; the plan's "three gates" undercounts) both legitimately admit **alert evidence** (`objects/alert/...`) and **profile cards** (`profile/<subspace>/card`), which carry NO visibility segment. A top-level "first component ∈ {pub,con}" check would reject those on both import and local write and break existing tests. The single source of truth therefore lives **inside `is_app_data_path` / `classify_app_index_path`** (Steps 4–5), which consume the `visibility` module; `schema_ok` and `path_matches` keep delegating to those classifiers for the app families and keep their existing arms for alert/profile. No new prefix logic is added to `verify_frame` itself.
+
+- [ ] **Step 6b: Profile-card path stays unprefixed in Slice 1 (explicit decision).** The design places the calling card at `pub/profile/<subspace>/card`, but the calling card is only *used* in Slice 2 (the stranger-facing view). Slice 1 is public-only and does not move `profile/path.rs`; the ProfileCard write path is therefore intentionally NOT part of the `Visibility::Public` sweep. Record this so the grammar asymmetry (app/app-index carry `pub/`; profile/alert do not) is a decision, not a silent omission. `MAX_PATH_COMPONENTS = 64` (`bundle.rs:38`), so the extra leading segment is always within budget.
 
 - [ ] **Step 7: Write the cross-gate regression** — `crates/riot-core/tests/visibility_admission.rs`:
 
@@ -592,7 +609,20 @@ git commit -m "feat(apps): leading pub/con visibility segment as one admission s
 **Files:**
 - Create: `crates/riot-core/src/apps/page.rs`
 - Modify: `crates/riot-core/src/apps/manifest.rs` (add `kind` field)
+- Modify: `crates/riot-core/src/import/bundle.rs` (`schema_ok`: recognize the `pub/page/current` slot)
+- Modify: `crates/riot-core/src/session.rs` (`inspect_inner`'s `path_matches`: recognize + owner-bind the `pub/page/current` slot)
 - Test: `crates/riot-core/src/apps/page.rs` tests
+
+> **Critical (plan-gate feasibility blocker):** `pub/page/current` is a NEW path
+> family. Local writes pass through BOTH `verify_frame`'s `schema_ok` (`bundle.rs`)
+> and `inspect_inner`'s `path_matches` (`session.rs:623-673`); each only
+> recognizes app-data / app-index / profile / alert slots today. Without a new
+> slot in **both**, `publish_page` is rejected (`schema_ok` → `UnsupportedSchema`)
+> or silently dropped (`path_matches` fails to bind it to `verified`). Task 6
+> MUST add a `page/current` slot classifier to both, binding it to the writing
+> author's own subspace (last-write-wins, like the profile card). Add a
+> `classify_page_pointer(path) -> Option<Visibility>` helper in `page.rs` and call
+> it from both gates so this too is one source of truth.
 
 - [ ] **Step 1: Write the failing test** — `page.rs`:
 
@@ -616,15 +646,17 @@ mod tests {
 
 - [ ] **Step 3: Add `kind` to the manifest** — `manifest.rs`: add an optional `kind: ManifestKind` (`App` default, `Page`) to the parsed manifest struct + canonical CBOR round-trip. A `kind: page` manifest is otherwise a normal manifest.
 
-- [ ] **Step 4: Implement `publish_page`** — `page.rs`: calls `publish_app_index_with(store, author, capability, manifest, bundle, ts)` at `Visibility::Public`, then writes `pub/page/current = app_id` via `commit_at_with` at path `pub/page/current`.
+- [ ] **Step 4: Add the `page/current` slot to both admission gates** — implement `classify_page_pointer` in `page.rs` (matches `<vis>/page/current`, returns the `Visibility`); add an arm to `schema_ok` (`bundle.rs`) and to `path_matches` (`session.rs`) that accepts it and binds it to the writing author's own subspace (last-write-wins). Mirror exactly how the profile-card slot is handled in both gates.
 
-- [ ] **Step 5: Run, verify pass** — `cargo test -p riot-core apps::page` → PASS.
+- [ ] **Step 5: Implement `publish_page`** — `page.rs`: calls `publish_app_index_with(store, author, capability, manifest, bundle, ts)` at `Visibility::Public`, then writes `page/current = app_id` via `commit_at_with` at the path built for `Visibility::Public` + `page/current`.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 6: Run, verify pass** — `cargo test -p riot-core apps::page` → PASS (publication now clears both gates).
+
+- [ ] **Step 7: Commit**
 
 ```bash
-git add crates/riot-core/src/apps/page.rs crates/riot-core/src/apps/manifest.rs
-git commit -m "feat(apps): kind:page manifest + publish_page writing pub/page/current"
+git add crates/riot-core/src/apps/page.rs crates/riot-core/src/apps/manifest.rs crates/riot-core/src/import/bundle.rs crates/riot-core/src/session.rs
+git commit -m "feat(apps): kind:page manifest + publish_page + page/current slot in both admission gates"
 ```
 
 ---
@@ -765,7 +797,30 @@ func testCSPStrippedPageStillCannotReachNetwork() throws {
 
 - [ ] **Step 2: Run, verify fail** → FAIL (`AppNetworkBackstop` undefined).
 
-- [ ] **Step 3: Implement** — `AppNetworkBackstop.swift`: since WKWebView has no `blockNetworkLoads`, the backstop treats the custom scheme handler as the **sole** loader and denies the engine-level covert channels that bypass it. Concretely: a navigation-delegate policy that cancels any request whose scheme ≠ `riot-app`, applied to subresource decisions as well as top-level (the existing lock covers top-level only); and explicit denial of `dns-prefetch`/WebRTC via injected `<meta http-equiv>` hardening + a `WKWebpagePreferences` configuration. Document precisely what each line stops.
+- [ ] **Step 3: Implement via `WKContentRuleList`** (plan-gate feasibility fix) — a `WKNavigationDelegate` policy is the WRONG mechanism: `decidePolicyFor navigationAction` fires only for frame navigations, never for subresource loads (`fetch`/XHR/`img`/`script`/WebSocket), so a CSP-stripped `fetch('https://evil')` never reaches it. The CSP-independent tool that DOES gate subresource loads is **`WKContentRuleList`**. `AppNetworkBackstop.install` compiles and adds a rule list that blocks all loads and allows only the `riot-app` scheme:
+
+```swift
+enum AppNetworkBackstop {
+    // Blocks every load, then makes an exception for the app's own scheme.
+    // WKContentRuleList is evaluated by the network process for ALL resource
+    // loads (unlike the navigation delegate), so it holds even if CSP is absent.
+    static let ruleJSON = """
+    [
+      {"trigger":{"url-filter":".*"},"action":{"type":"block"}},
+      {"trigger":{"url-filter":"^riot-app://"},"action":{"type":"ignore-previous-rules"}}
+    ]
+    """
+    @MainActor static func install(into config: WKWebViewConfiguration) {
+        WKContentRuleListStore.default().compileContentRuleList(
+            forIdentifier: "riot-page-backstop", encodedContentRuleList: ruleJSON
+        ) { list, _ in
+            if let list { config.userContentController.add(list) }
+        }
+    }
+}
+```
+
+Because compilation is async, `install` must complete before the page loads — compile once at runtime start and gate the first `load(URLRequest:)` on the rule list being installed (the test's `waitForLoad()` already serializes this). Document that the rule list — not the navigation delegate — is the subresource wall; the navigation lock remains for top-level navigation.
 
 - [ ] **Step 4: Run, verify pass** → PASS.
 
@@ -780,14 +835,47 @@ git commit -m "feat(ios): network backstop independent of CSP + covert-channel c
 
 ---
 
+### Task 10: Android — foreign `kind: page` bundles mount deny-closed
+
+The spec (D3/D4) requires the deny-closed foreign-page posture and *provable*
+containment parity on **both** platforms; `apps/android/.../AppWebViewHost.kt`
+exists and today installs a bridge for trusted apps. This task is the Android
+mirror of Task 8 and is store-independent.
+
+**Files:**
+- Modify: `apps/android/app/src/main/kotlin/org/riot/.../AppWebViewHost.kt`
+- Create: `apps/android/.../ForeignPageWebViewHost.kt`
+- Test: `apps/android/app/src/androidTest/kotlin/org/riot/evidence/apps/ForeignPageContainmentTest.kt`
+
+- [ ] **Step 1: Write the failing instrumentation test** — a foreign `kind: page` bundle is hosted with **no `@JavascriptInterface` bridge object added** (no `put`, no `whoami`); a hostile page calling the bridge is a no-op and the store records zero visitor-signed writes.
+- [ ] **Step 2: Run, verify fail.**
+- [ ] **Step 3: Implement `ForeignPageWebViewHost`** — reuses the existing `blockNetworkLoads=true`, service-worker denial, Safe Browsing off, and DOM-storage disable (`AppWebViewHost.kt:52-84`) but calls **no `addJavascriptInterface`**. Route `kind: page` bundles from a namespace the viewer does not own to it.
+- [ ] **Step 4: Run, verify pass. Commit.**
+
+### Task 11: Android — secure-context API denial parity suite
+
+Android's synthetic `https://` origin is a **secure context**, unlocking APIs the
+iOS `riot-app://` non-secure origin never exposes (service workers, push,
+background sync, secure-context crypto). Spec D4 requires each to be independently
+denied and the denial proven.
+
+**Files:**
+- Test: `apps/android/.../SecureContextDenialTest.kt`
+- Modify: `AppWebViewHost.kt` / `ForeignPageWebViewHost.kt` as needed to close any gap the tests expose.
+
+- [ ] **Step 1: Write failing tests** — one assertion per API: `navigator.serviceWorker.register` rejects/absent; `PushManager` unavailable; background sync unavailable; `fetch`/XHR/WebSocket to any host blocked (network-load block); `<link rel=dns-prefetch>` and WebRTC/STUN produce no outbound connection (a request spy sees zero); form submission and `window.open` denied; a forged-origin storage read fails.
+- [ ] **Step 2: Run, verify which fail.**
+- [ ] **Step 3: Close any gaps** so every case is denied; document what each denial rests on.
+- [ ] **Step 4: Run, verify all pass. Commit.**
+
 ## Phase E — Personal-space UX (BLOCKED on multi-space store)
 
-> Do not begin until the store's native API (its Task 8) and iOS cutover (its
-> Task 9) are merged. Each task below names the store call it depends on; the
-> step-level Swift/Rust is finalized against the merged signatures — the
-> `RiotDatabase` vs `DatabaseSession` naming must be reconciled first.
+> Do not begin until the store's native-API task and iOS-cutover task are
+> merged. Each task below names the store call it depends on; the step-level
+> Swift/Rust is finalized against the merged signatures — the `RiotDatabase` vs
+> `DatabaseSession` naming must be reconciled first.
 
-### Task 14: FFI — create a personal (owned) space and persist it
+### Task 12: FFI — create a personal (owned) space and persist it
 
 **Depends on store:** the owned-space creation entry point (the store spec's
 `namespace_roots` table + `owned-root-custodian` role; the plan's Task 5 signer
@@ -803,7 +891,7 @@ create path (sibling of `create_communal_space`).
   the store's signer/space tables.
 - [ ] Run, verify pass. Commit.
 
-### Task 15: First-run onboarding gate (name + space)
+### Task 13: First-run onboarding gate (name + space)
 
 **Depends on store:** `list_spaces` (to detect "no spaces yet" → show onboarding)
 and Task 14. There is no onboarding flag in the app today (confirmed).
@@ -816,7 +904,7 @@ and Task 14. There is no onboarding flag in the app today (confirmed).
   when `list_spaces(includeArchived: false)` is empty.
 - [ ] Run, verify pass. Commit.
 
-### Task 16: Template gallery + source editor authoring
+### Task 14: Template gallery + source editor authoring
 
 **Depends on:** Task 6 (`publish_page`) via an FFI `publish_page` wrapper; store's
 `open_space`/`AppSession` to write into the personal namespace.
@@ -824,6 +912,11 @@ and Task 14. There is no onboarding flag in the app today (confirmed).
 - [ ] Failing test: selecting a template and publishing produces a signed
   `kind:page` bundle whose `pub/page/current` points at it; editing the source and
   republishing repoints `page/current` to a new app_id.
+- [ ] **[S1] Offline-authoring test (explicit no-network precondition):** with the
+  network unavailable and no local model, template selection, source editing, and
+  publication all succeed. Assert the offline condition in the test setup (a
+  request spy that must see zero outbound requests during the whole flow) — the
+  criterion is "works in a blackout," so the test must actually exercise it.
 - [ ] Implement `PageTemplates.swift` (the gaudy built-ins) and
   `PageAuthoringView.swift` (gallery → native fields → view-source editor).
   Rendered-preview-first is Slice 1.5; Slice 1 ships gallery + source editor.
@@ -831,9 +924,9 @@ and Task 14. There is no onboarding flag in the app today (confirmed).
   (missing/expired capability, signing failure, store-write failure).
 - [ ] Run, verify pass. Commit.
 
-### Task 17: Distinct creation entry points + Spaces-tab card + no privacy control
+### Task 15: Distinct creation entry points + Spaces-tab card + no privacy control
 
-**Depends on:** Tasks 14–16.
+**Depends on:** Tasks 12–14.
 
 - [ ] Failing UI test: the Spaces tab shows a personal-space card distinct from
   the group-space create control; "Make your page" (owned) and "Create group
@@ -844,7 +937,7 @@ and Task 14. There is no onboarding flag in the app today (confirmed).
   existing `SpacesView` structure; keep both space kinds visibly distinct.
 - [ ] Run, verify pass. Commit.
 
-### Task 18: Cross-device viewing (the demo)
+### Task 16: Cross-device viewing (the demo)
 
 **Depends on:** store's nearby-sync cutover (its Task 10) so a foreign owned
 namespace can sync into the viewer's store; Task 8 (deny-closed runtime).
@@ -857,30 +950,37 @@ namespace can sync into the viewer's store; Task 8 (deny-closed runtime).
   person's page" surface.
 - [ ] Run, verify pass. Commit.
 
-### Task 19: Slice-1 acceptance sweep
+### Task 17: Slice-1 acceptance sweep
 
 - [ ] Verify every **[S1]**-tagged test in the design's Testing strategy is green:
   namespace-kind-intrinsic, root-key-custody, owned-cap-minting, visibility one
   source of truth, containment suite, beacon/foreign-page posture, offline
-  authoring, iOS network backstop.
-- [ ] Confirm acceptance criteria 1–7 (Slice 1) are each demonstrable.
-- [ ] Run the Rust+Swift coverage command set against `.coverage-thresholds.json`;
-  meet thresholds. Commit any test gaps closed.
+  authoring, iOS network backstop, **and Android parity — foreign-page bridge-less
+  posture + secure-context denial suite (Tasks 10–11)**.
+- [ ] Confirm acceptance criteria 1–7 (Slice 1) are each demonstrable on **both**
+  iOS and Android (D4 requires provable parity).
+- [ ] Run the Rust+Swift+Kotlin coverage command set against
+  `.coverage-thresholds.json`; meet thresholds. Commit any test gaps closed.
 
 ---
 
 ## Self-review notes
 
 - **Spec coverage:** owned namespace (T1–2), capability threading (T3), admission
-  (T4), pub/con one-source-of-truth (T5), page=app + `kind:page` (T6),
-  custody incl. no-sync/no-backup + root-compromise storage decision (T7),
-  deny-closed foreign runtime + beacon (T8), iOS backstop + covert channels (T9),
-  onboarding/creation/authoring/no-privacy-control (T14–17), cross-device demo
-  (T18), acceptance sweep (T19). LLM authoring and recovery export are Slice 1.5,
+  (T4), pub/con one-source-of-truth (T5), page=app + `kind:page` incl. the
+  `page/current` slot in both gates (T6), custody incl. no-sync/no-backup +
+  root-compromise storage decision (T7), deny-closed foreign runtime + beacon
+  (T8), iOS backstop via WKContentRuleList + covert channels (T9), **Android
+  deny-closed foreign runtime (T10) and secure-context denial parity (T11)**,
+  onboarding/creation/authoring/no-privacy-control (T12–15), cross-device demo
+  (T16), acceptance sweep (T17). LLM authoring and recovery export are Slice 1.5,
   correctly absent here.
 - **Ordering:** the capability-threading refactor (T3) lands before any UX, per
-  the CTO review. Phase E is fully gated on the store.
-- **willow25 method names** (`WriteCapability::new_owned`, `includes_entry`,
-  `NamespaceSecret::corresponding_namespace_id`, `NamespaceId::is_owned`) are used
+  the CTO review. Phase E is fully gated on the store. iOS containment (T8–9)
+  can precede Android containment (T10–11) so the primary demo path is unblocked
+  first, but both land in Slice 1 — the spec requires *provable* parity.
+- **willow25 method names** (`WriteCapability::new_owned` taking `&keypair` and
+  returning `Self`; the coverage predicate `includes`, NOT `includes_entry`;
+  `NamespaceSecret::corresponding_namespace_id`; `NamespaceId::is_owned`) are used
   as named in the pinned crate; confirm exact spelling at implementation time and
   adjust the call, never hand-roll the area math.
