@@ -44,10 +44,17 @@ if [ ! -x "$BIN" ]; then
     exit 1
 fi
 
+# Launch the BUNDLE, not the binary inside it. Exec'ing
+# Riot.app/Contents/MacOS/Riot directly gives the process no app identity for
+# TCC, so the Info.plist's NSBluetoothAlwaysUsageDescription is invisible and
+# macOS kills the app the instant it touches Bluetooth ("attempted to access
+# privacy-sensitive data without a usage description") — i.e. the moment you
+# tap "Find nearby". `open -n` starts a fresh instance of the real bundle.
+APP_ABS=$(cd "$(dirname "$APP")" && pwd)/$(basename "$APP")
 i=1
 while [ "$i" -le "$COUNT" ]; do
     echo "launching instance $i (RIOT_PROFILE_ID=instance-$i)"
-    RIOT_PROFILE_ID="instance-$i" "$BIN" &
+    open -n --env "RIOT_PROFILE_ID=instance-$i" "$APP_ABS"
     i=$((i + 1))
 done
 
@@ -56,6 +63,6 @@ echo "$COUNT instance(s) running. Each has its own identity."
 echo "Reset an instance's profile by deleting its directory under:"
 echo "  ~/Library/Application Support/instances/"
 echo ""
-echo "Stop them all:  pkill -f 'Riot.app/Contents/MacOS/Riot'"
+echo "Stop them all:  pkill -x Riot"
 
 wait
