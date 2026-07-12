@@ -100,6 +100,29 @@ public final class RiotAppModel: ObservableObject {
     /// to decide whether the finale banner exists at all.
     @Published public private(set) var isDemoMode = false
 
+    /// Who this person is, as everyone else will see them: `"Ana · a3f91122"`
+    /// once they have named themselves, `"member · a3f91122"` before that.
+    ///
+    /// Nil only before the profile is open. The tag half is not decoration — it
+    /// is what keeps two people who both call themselves Ana apart — so this is
+    /// carried as the whole `RiotPerson` and drawn through ``RiotPerson/rendered``.
+    @Published public private(set) var me: RiotPerson?
+
+    /// What this person last typed as their name, so the field they edit it in
+    /// starts where they left it. Nil if they have never claimed one.
+    ///
+    /// Never drawn — it is a bare claim, not a rendering. ``me`` is what gets
+    /// shown.
+    @Published public private(set) var claimedName: String?
+
+    /// Why the last attempt to claim a name did not take, in words a person can
+    /// act on. Nil when the name saved, and cleared as soon as they try again.
+    ///
+    /// Separate from ``errorMessage`` on purpose: a name that is too long is a
+    /// thing to fix in the field they are already typing in, not an alert that
+    /// interrupts them.
+    @Published public private(set) var nameError: String?
+
     /// The entries that appeared in the LAST reload and were not on this phone
     /// before it — the six alerts crossing to phone B, an update landing while
     /// the board is open. Empty on the first read out of the profile, because
@@ -157,7 +180,12 @@ public final class RiotAppModel: ObservableObject {
     public func refreshFromStore() {
         space = repository?.currentSpace
         entries = (try? repository?.currentEntries()) ?? []
+        // Joining regenerates the author, so this person's own tag is not what it
+        // was a moment ago (the repository re-claims their name under the new one).
+        // Re-read who they are, or the identity on screen is the pre-join one.
+        me = try? repository?.me()
         refreshApps()
+        refreshDisplayNames()
     }
 
     /// Opens (or restores) the on-device profile and installs the starter tools.
@@ -184,6 +212,14 @@ public final class RiotAppModel: ObservableObject {
             self.repository = repository
             demoLoader = RiotDemoSpaceLoader(repository: repository, model: self)
             reload()
+            // Headless two-node testing: with RIOT_SEED_SPACE=1 a fresh phone
+            // opens a space on launch, so one scripted instance can host a space
+            // for another (fresh) instance to auto-join and sync — the whole
+            // pair -> join -> sync -> see-their-collection chain with no taps.
+            // Off by default; opening a space is a person's decision.
+            if space == nil, ProcessInfo.processInfo.environment["RIOT_SEED_SPACE"] == "1" {
+                createSpace(title: "Test Space")
+            }
         } catch {
             errorMessage = String(describing: error)
         }
@@ -202,11 +238,45 @@ public final class RiotAppModel: ObservableObject {
             space = repository.currentSpace
             entries = try repository.currentEntries()
             isDemoMode = repository.isDemoSpaceLoaded
+            me = try repository.me()
+            claimedName = repository.claimedName
             noteArrivals()
             refreshApps()
             refreshDisplayNames()
         }
     }
+
+    /// Claims a name for this person — the one thing on this screen that decides
+    /// how they appear to everyone they sync with.
+    ///
+    /// Core owns the rules (see `RiotProfileRepository.setDisplayName`), so this
+    /// does not pre-validate: it lets core refuse and translates that refusal.
+    /// The refusal is deliberately not routed through ``errorMessage`` — see
+    /// ``nameError``.
+    public func setDisplayName(_ name: String) {
+        guard let repository else { return }
+        do {
+            try repository.setDisplayName(name)
+            nameError = nil
+            // The claim changed how this person renders, and they are in their own
+            // name map — re-read both, so the field they just typed into echoes
+            // back the `Ana · a3f91122` their neighbour is about to see.
+            me = try repository.me()
+            claimedName = repository.claimedName
+            refreshDisplayNames()
+        } catch {
+            nameError = Self.nameRefusal
+            // The name on screen is still the one core holds — this attempt
+            // changed nothing — so leave `me` alone rather than clearing it.
+        }
+    }
+
+    /// Core answers both "that name is not usable" and "a sync is in flight" with
+    /// the same `InvalidInput`, and there is no third field to tell them apart. So
+    /// the sentence names both causes rather than guessing at one and being
+    /// confidently wrong at the person.
+    private static let nameRefusal =
+        "Riot couldn’t save that name. It may be too long, or Riot may be syncing with someone right now — wait a moment and try again."
 
     /// Works out which of the entries now on the board were not on this phone a
     /// moment ago. The first read is the baseline (see ``arrivals``).

@@ -55,17 +55,29 @@ struct ConferenceShellView: View {
     }
 
     private var connectionDisclosureBar: some View {
-        Text(model.connectionDisclosure)
-            .font(.riot(.mono, size: 11, relativeTo: .caption2))
-            .textCase(.uppercase)
-            .tracking(0.5)
-            .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 8)
-            .background(RiotTheme.paper2(for: colorScheme))
-            .overlay(alignment: .top) {
-                Rectangle().fill(RiotTheme.line(for: colorScheme)).frame(height: 1)
+        VStack(spacing: 3) {
+            // Who this person is, on every screen. The name is not printed bare —
+            // `rendered` is the sanctioned `Ana · a3f91122` — and it is NOT
+            // uppercased with the rest of the bar, because the half after the dot
+            // is lowercase hex off their key and has to read as what it is.
+            if let me = model.me {
+                Text("You are \(me.rendered)")
+                    .font(.riot(.mono, size: 11, relativeTo: .caption2))
+                    .foregroundStyle(RiotTheme.ink(for: colorScheme))
+                    .accessibilityIdentifier("identity-chip")
             }
+            Text(model.connectionDisclosure)
+                .font(.riot(.mono, size: 11, relativeTo: .caption2))
+                .textCase(.uppercase)
+                .tracking(0.5)
+                .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 8)
+        .background(RiotTheme.paper2(for: colorScheme))
+        .overlay(alignment: .top) {
+            Rectangle().fill(RiotTheme.line(for: colorScheme)).frame(height: 1)
+        }
     }
 
     @ViewBuilder
@@ -95,10 +107,18 @@ private struct SpacesView: View {
     @State private var title = "Berlin Mutual Aid"
     @State private var reviewing: RiotSpaceApp?
     @State private var running: RiotSpaceApp?
+    /// The name being typed, seeded from the claim this person last made so
+    /// editing starts where they left off rather than from an empty field.
+    @State private var name = ""
+
+    private var trimmedName: String {
+        name.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
+                youCard
                 RiotCard {
                     VStack(alignment: .leading, spacing: 12) {
                         Text("Public incident space")
@@ -149,6 +169,64 @@ private struct SpacesView: View {
                 Color.clear.onAppear { running = nil }
             }
         }
+    }
+
+    /// "This is me." The one place a person says who they are.
+    ///
+    /// It leads the first screen deliberately: everything else here — a space, an
+    /// alert, an app someone carried over — is signed BY someone, and until this
+    /// is filled in that someone is `member · a3f91122` to every device in the
+    /// room.
+    ///
+    /// What is echoed back is core's rendering, not what they typed. Seeing
+    /// `Ana · a3f91122` (and not just "Ana") is the point: the tag is the part
+    /// that actually comes from their key, and it is what keeps them apart from
+    /// the second Ana in the room.
+    private var youCard: some View {
+        RiotCard {
+            VStack(alignment: .leading, spacing: 12) {
+                Text("You")
+                    .font(.riot(.mono, size: 12, relativeTo: .caption))
+                    .textCase(.uppercase)
+                    .tracking(1)
+                    .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
+
+                if let me = model.me {
+                    Text(me.rendered)
+                        .font(.riot(.body, size: 20, relativeTo: .title3))
+                        .foregroundStyle(RiotTheme.ink(for: colorScheme))
+                        .textSelection(.enabled)
+                        .accessibilityIdentifier("my-rendered-name")
+                    Text("This is how you appear to everyone you sync with. Choose the name; the characters after the dot come from your key, so two people who both pick “Ana” are still told apart.")
+                        .font(.riot(.body, size: 13, relativeTo: .caption))
+                        .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
+                }
+
+                TextField("Your name", text: $name)
+                    .font(.riot(.body, size: 17, relativeTo: .body))
+                    .textFieldStyle(.plain)
+                    .accessibilityIdentifier("my-name-field")
+
+                Button("Save name") { model.setDisplayName(trimmedName) }
+                    .buttonStyle(.riotPrimary)
+                    .disabled(trimmedName.isEmpty)
+                    .accessibilityIdentifier("save-my-name")
+
+                // Core is the only thing that judges a name, so this is core's
+                // refusal put into words, not a rule re-implemented up here.
+                if let nameError = model.nameError {
+                    Text(nameError)
+                        .font(.riot(.body, size: 13, relativeTo: .caption))
+                        .foregroundStyle(RiotTheme.pink(for: colorScheme))
+                        .accessibilityIdentifier("my-name-error")
+                }
+            }
+        }
+        .onAppear { name = model.claimedName ?? "" }
+        // Only fires when the stored claim actually changes — saving a name sets it
+        // to what is already typed, so this never yanks the field out from under
+        // someone mid-edit.
+        .onChange(of: model.claimedName) { _, claimed in name = claimed ?? "" }
     }
 
     private var toolsCard: some View {
@@ -326,10 +404,65 @@ private struct ConnectionStatusView: View {
             .sorted { $0.rendered < $1.rendered }
     }
 
+    /// What is happening with the person on the other end, in words. Reached only
+    /// when there IS someone on the other end, so it never has to describe "no
+    /// one" — that is the empty state's job.
+    ///
+    /// The count comes from the import that actually landed, so "6 things" means
+    /// six things arrived, not six things were offered.
+    private var syncSentence: String {
+        switch nearby.state {
+        case .connecting: "Connecting…"
+        case .gettingLatest: "Getting the latest from them…"
+        case let .preview(count, _):
+            "\(count) new thing\(count == 1 ? "" : "s") to bring over — review them below"
+        case .caughtUp:
+            if let count = nearby.itemsBroughtOver, count > 0 {
+                "Synced · \(count) new thing\(count == 1 ? "" : "s") arrived"
+            } else {
+                "Synced · you both have the same things"
+            }
+        case .alreadyCurrent: "Synced · nothing new to bring over"
+        case .differentSpace: "They are in a different space, so nothing was shared"
+        case .outOfRange: "They went out of range"
+        case .failed: "The connection failed — try again"
+        default: "Connected"
+        }
+    }
+
+    /// Who this device is connected to RIGHT NOW, said plainly.
+    ///
+    /// The badge above can only ever describe a STATE ("All caught up"); this is
+    /// the only thing on the screen that answers the question a person actually
+    /// has, which is *caught up with whom*.
+    @ViewBuilder
+    private var connectedCard: some View {
+        if let peer = nearby.connectedPeer {
+            RiotCard {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Connected to")
+                        .font(.riot(.mono, size: 12, relativeTo: .caption))
+                        .textCase(.uppercase)
+                        .tracking(1)
+                        .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
+                    Text(peer)
+                        .font(.riot(.body, size: 20, relativeTo: .title3))
+                        .foregroundStyle(RiotTheme.ink(for: colorScheme))
+                        .accessibilityIdentifier("connected-peer")
+                    Text(syncSentence)
+                        .font(.riot(.body, size: 14, relativeTo: .callout))
+                        .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
+                        .accessibilityIdentifier("connected-sync-state")
+                }
+            }
+        }
+    }
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 RiotBadge(nearby.state.message, stamped: true)
+                connectedCard
                 RiotCard {
                     VStack(alignment: .leading, spacing: 14) {
                         Text("Connections stay between devices near you — over Bluetooth, or the local network you are both on. Riot never sends this session over the internet.")
@@ -406,6 +539,7 @@ private struct ConnectionStatusView: View {
             PeerProfileView(
                 model: model,
                 peerName: phone.friendlyName,
+                isConnected: nearby.connectedPeer == phone.friendlyName,
                 onInvite: { _ in
                     // Inviting = connect to them, which shares your space so their
                     // device can join it. They still confirm on their side.
@@ -450,6 +584,16 @@ private struct ConnectionStatusView: View {
         ) {
             Button("Join") { nearby.confirmJoinSpace() }
             Button("Not now", role: .cancel) { nearby.declineJoinSpace() }
+        }
+        .onChange(of: nearby.state) { _, state in
+            // Headless bring-up: with RIOT_AUTO_CONFIRM=1 a phone accepts the
+            // join-space step without a tap, so two instances can be driven all
+            // the way through pair -> join -> sync from a script. Off by default;
+            // joining a space is a deliberate act for a real person.
+            if case .joinSpace = state,
+               ProcessInfo.processInfo.environment["RIOT_AUTO_CONFIRM"] == "1" {
+                nearby.confirmJoinSpace()
+            }
         }
     }
 }
