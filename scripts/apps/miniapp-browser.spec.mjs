@@ -181,9 +181,12 @@ test("Decisions enables submit only for two valid choices", async ({ page }) => 
   const submit = page.getByRole("button", { name: "Post question" });
   await expect(submit).toBeDisabled();
   await page.getByLabel("Question", { exact: true }).fill("When should we meet?");
-  await page.getByLabel("Choice 1", { exact: true }).fill("Tuesday");
   await page.getByLabel("Choice 2", { exact: true }).fill("Thursday");
+  await page.getByLabel("Choice 3").fill("Saturday");
+  await expect(submit).toBeDisabled();
+  await page.getByLabel("Choice 1", { exact: true }).fill("Tuesday");
   await expect(submit).toBeEnabled();
+  await page.getByLabel("Choice 4").fill("Sunday");
   await page.getByLabel("Choice 2", { exact: true }).fill(" ");
   await expect(submit).toBeDisabled();
 });

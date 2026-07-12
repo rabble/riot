@@ -30,7 +30,8 @@ function validIdentity(value) { return value && ID_PATTERN.test(value.id || "");
 function validProposal(row) { const value = row && row.value; return Boolean(row && row.key === PROPOSAL_KEY && value && typeof value === "object" && COMPONENT.test(value.id || "") && typeof value.text === "string" && value.text.trim() && value.text.length <= 180 && Array.isArray(value.options) && value.options.length >= 2 && value.options.length <= 4 && value.options.every((option) => typeof option === "string" && option.trim() && option.length <= 100) && ID_PATTERN.test(value.asked_by_id || "") && Number.isFinite(value.at) && value.at >= 0); }
 function validVote(row) { const value = row && row.value; const parts = row && typeof row.key === "string" ? row.key.split("/") : []; return Boolean(parts.length === 3 && parts[0] === "votes" && COMPONENT.test(parts[1]) && ID_PATTERN.test(parts[2]) && value && typeof value === "object" && Number.isInteger(value.choice) && value.choice >= 0 && value.choice < 4 && Number.isFinite(value.at) && value.at >= 0); }
 function showError(message) { error.textContent = message; error.hidden = false; }
-function formValid() { const choices = optionInputs.map((input) => input.value.trim()).filter(Boolean); return questionInput.value.trim().length > 0 && choices.length >= 2 && choices.length <= 4; }
+function formChoices() { const first = optionInputs[0].value.trim(); const second = optionInputs[1].value.trim(); if (!first || !second) return null; return [first, second, ...optionInputs.slice(2).map((input) => input.value.trim()).filter(Boolean)]; }
+function formValid() { return questionInput.value.trim().length > 0 && formChoices() !== null; }
 function currentProposal() { return proposalRows.find(validProposal)?.value || null; }
 function profileLabel(id) { if (me && id === me.id) return "You"; const profile = profiles.get(id); return profile ? profile.displayName + " · " + profile.tag : "A neighbor"; }
 function resolveProfile(id) { if (!ID_PATTERN.test(id || "") || inflightProfiles.has(id) || profiles.has(id)) return; inflightProfiles.add(id); riot.profile(id).then((profile) => { inflightProfiles.delete(id); profiles.set(id, profile); paint(); }).catch(() => inflightProfiles.delete(id)); }
@@ -68,7 +69,7 @@ function closeForm(returnFocus) { form.hidden = true; poll.hidden = false; if (r
 replaceButton.addEventListener("click", openForm); document.getElementById("cancel").addEventListener("click", () => closeForm(true));
 form.addEventListener("input", paint); form.addEventListener("change", paint);
 form.addEventListener("submit", async (event) => {
-  event.preventDefault(); const text = questionInput.value.trim(); const choices = optionInputs.map((input) => input.value.trim()).filter(Boolean); if (!ready || !text || choices.length < 2) { if (!ready) showError("Wait for your identity before posting."); return; } const drafts = [questionInput.value, ...optionInputs.map((input) => input.value)]; posting = true; paint();
+  event.preventDefault(); const text = questionInput.value.trim(); const choices = formChoices(); if (!ready || !text || !choices) { if (!ready) showError("Wait for your identity before posting."); return; } const drafts = [questionInput.value, ...optionInputs.map((input) => input.value)]; posting = true; paint();
   try { await riot.put(PROPOSAL_KEY, { id: newID(), text, options: choices, asked_by_id: me.id, at: Date.now() }); form.reset(); closeForm(false); }
   catch { questionInput.value = drafts[0]; optionInputs.forEach((input, index) => { input.value = drafts[index + 1]; }); showError("Couldn't post the question. Your draft is safe; try again."); }
   finally { posting = false; paint(); }
