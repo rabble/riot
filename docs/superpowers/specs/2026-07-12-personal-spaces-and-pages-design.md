@@ -73,7 +73,7 @@ The design answers four questions:
 8. **Second device / replacement:** WHO gets a new phone; WANTS to decide in
    advance whether their personal space can be recovered; SO THAT loss is a
    choice they made, not a surprise; WHEN setting up the space and when the old
-   device is gone. *(Recovery mechanism Slice 2; the *decision* and its storage
+   device is gone. *(Recovery mechanism Slice 1.5; the *decision* and its storage
    consequences are fixed in Slice 1 — see Root key custody.)*
 9. **App maker:** WHO builds something useful on their page; WANTS to publish it
    as an app others can install; SO THAT tools spread person to person; WHEN
@@ -284,7 +284,7 @@ in Slice 1 and cannot be retrofitted without the namespace migration named above
   or backed-up root is a second seizure and coercion surface.
 - **Recovery is opt-in, off by default (user decision, 2026-07-12).** A user may
   *deliberately* produce a passphrase-encrypted recovery export (mechanism:
-  Slice 2). The UI states plainly that the export is itself a seizure/coercion
+  Slice 1.5). The UI states plainly that the export is itself a seizure/coercion
   surface. With no export and a lost device, the personal space's root is gone
   and the person creates a new space; the app says so before they rely on it.
 
@@ -524,3 +524,36 @@ JS tooling CLAUDE.md describes by default.
   (deferred, but name it).
 - **Tiers (Slice 2).** The `con/<tier>/**` segment is reserved; Slice 2 decides
   whether to populate more than one tier and what the tiers are.
+
+## Carried-forward implementation notes (for the plan, non-blocking)
+
+Raised by the review gate, agreed, and to be resolved at planning time rather
+than in this design:
+
+- **Name the iOS network backstop concretely.** WKWebView has no
+  `blockNetworkLoads` equivalent to Android's. The likely mechanism is treating
+  the custom scheme handler as the *sole* network loader (it already returns
+  `notFound` for any non-bundle host, `AppSchemeHandler.swift:31`) plus explicit
+  denial of the engine-level covert channels that bypass it (`dns-prefetch`,
+  WebRTC/STUN). Pick and pin this in the Slice 1 plan so the [S1] backstop test
+  targets a defined mechanism.
+- **Sequence the capability-threading refactor first.** `authorise_entry` /
+  `commit_at` / `publish_app_index` accept no externally supplied capability
+  today, so owned-cap minting is a threading refactor across the write path.
+  Land it (with the [S1] owned-cap-minting test) as the first work unit, before
+  the authoring UX builds on it. Put `NamespaceKind::Owned` on its own sealed
+  envelope path so the existing "authenticated non-communal plaintext is still
+  rejected" invariant (`identity.rs:142`) is not loosened, and keep the
+  allowed-visibility set in one shared constant consumed by all three admission
+  gates.
+- **Rendered preview is the primary review surface for assisted authoring
+  (Slice 1.5).** A person who cannot write HTML cannot audit it; containment,
+  not reading, is what keeps them safe. Show the rendered page first, source
+  underneath. Specify the LLM degraded states (generating, failed/timeout,
+  offline/model-unavailable) so the assist entry disables cleanly to templates
+  and the source editor.
+- **Consent copy conveys permanence (Slice 3).** The write-consent sheet says a
+  signed, replicating, non-recallable record — not merely "post as you" — and
+  the flow is designed for rarity so consent fatigue never trains tap-through.
+  When identifying reads (`whoami`/`profile`) later return behind consent, they
+  use the same host-authored, non-page-supplied copy rule as writes.
