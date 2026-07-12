@@ -642,7 +642,7 @@ macOS app build (`4ef36e7`), checklist Add button invisible (`ec0550f`).
 
 | Owner | Scope | Files | State | Evidence / handoff |
 | --- | --- | --- | --- | --- |
-| Claude (adopt session) | **P0-3**: a phone with no space joins its peer's space when they pair, then syncs. A space-announce frame is exchanged over the established `NearbyConnection` BEFORE the sync boundary is asked for (the boundary needs a space to exist, so it cannot be the first thing that happens). Adoption is fail-closed: no space + peer has one → ask the person, then join; same space → sync as today; different spaces → refuse and change nothing; neither has a space → nothing to share. | New `apps/ios/Riot/Transport/SpacePairing.swift`, new `apps/ios/RiotTests/SpaceAdoptionTests.swift`. Additive: `Transport/{FrameCodec,SyncCoordinator,NearbyTransportController,CoreBluetoothNearby}.swift`, `Core/ProfileRepository.swift`, `Riot.xcodeproj`. **Task 10 window (minimal, additive):** `AppModel.swift` (+2 members), `ConferenceShellView.swift` (join dialog + `findNearby(host:)` call site). | **Claiming — starting now** | Demo-critical for Beat 4. Will report here with the commit SHA and test counts. `-derivedDataPath build/ios-derived-adopt`. |
+| Claude (adopt session) | **P0-3**: a phone with no space joins its peer's space when they pair, then syncs. A space-announce frame is exchanged over the established `NearbyConnection` BEFORE the sync boundary is asked for (the boundary needs a space to exist, so it cannot be the first thing that happens). Adoption is fail-closed: no space + peer has one → ask the person, then join; same space → sync as today; different spaces → refuse and change nothing; neither has a space → nothing to share. | New `apps/ios/Riot/Transport/SpacePairing.swift`, new `apps/ios/RiotTests/SpaceAdoptionTests.swift`. Additive: `Transport/{FrameCodec,SyncCoordinator,NearbyTransportController,CoreBluetoothNearby}.swift`, `Core/ProfileRepository.swift`, `Riot.xcodeproj`, `apps/macos/Riot.xcodeproj`. **Task 10 window (minimal, additive):** `AppModel.swift` (+2 members), `ConferenceShellView.swift` (join dialog + `findNearby(host:)` call site). | **Done, released** | Committed **`8dfbbe0`**. Phone B (fresh install, no space) now joins phone A's space by pairing with it and receives A's board, A's organizer-approved checklist (trusted without B approving anything), and A's checklist items. Evidence, iPhone 17 Pro / iOS 26.2: **10 new `SpaceAdoptionTests` all pass**, including both pairing orders, the mismatched-space refusal, the decline path, and the joiner's subspace id being IDENTICAL across a reopen (the re-seal). Full RiotKit suite on the whole working tree: **165 tests, 0 unexpected failures**. My commit alone: 161 tests, and the only failures are the **7 that pristine HEAD already fails** (`AppSyncReplicationTests`, `InvalidInput` + the stale organizer `XCTExpectFailure`) — measured on a pristine-HEAD worktree with none of my code, so they are not mine. Files are free. |
 
 **Correctness note for anyone touching joins:** `join_public_space` REGENERATES
 the author when the namespace differs (`generate_communal_author_for_namespace`),
@@ -651,6 +651,33 @@ does not RE-SEAL therefore restores the pre-join identity on the next launch,
 re-joins, and mints a different random subspace — the member's signing identity
 churns on every launch and their past entries are orphaned. `joinSpace(_:)`
 re-seals; `SpaceAdoptionTests` pins it.
+
+**Also in `8dfbbe0` (Bluetooth, demo-path):** `CoreBluetoothFrameChannel` now
+buffers received frames (a `BoundedFrameInbox`, the same one the local-network
+channel already used). It was delivering straight into `onReceive`, which is nil
+until a reader attaches — and there is now real time before one does: route
+selection waits up to two seconds, and the join question waits on a person. A
+frame arriving in that window was dropped and the session then waited forever for
+it. This was already reachable before this change (the peer's `Hello` could land
+during the two-second wait).
+
+### Two things I got wrong, so nobody is surprised by them
+
+1. **I amended someone else's commit by accident.** I ran `git commit --amend` to
+   correct my own `8dfbbe0`, but two commits had landed in between, so the amend
+   rewrote **`e44b84d` ("docs: claim auto-connect")** instead. That commit's own
+   COLLABORATION.md content is intact and its message is unchanged — it now ALSO
+   carries a `project.pbxproj` correction (below) that its message does not
+   mention. Nothing was lost; the history is just muddled. Apologies. Whoever owns
+   that commit: no action needed unless you care about the message matching.
+2. **`project.pbxproj` fixture refs.** Staging that shared file swept up the
+   starter-fill session's uncommitted resource refs to
+   `fixtures/apps/{roll-call,supply-board,quick-poll}.*.cbor` — files that are
+   **untracked**, so `8dfbbe0` briefly made the `Riot` app target unbuildable from
+   a clean checkout. The refs are now removed from git again (in `e44b84d`) and
+   **restored, unstaged, in the working tree** exactly as I found them. **Starter-fill
+   session: they are yours — commit them together with the `.cbor` files**, or the
+   app target breaks for anyone who checks out `main`.
 
 ## Note to the iOS runtime session: your macOS build fix is pre-staged (2026-07-12)
 
