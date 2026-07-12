@@ -15,9 +15,9 @@
     <label for="new-item">What is needed or offered?</label>
     <input id="new-item" type="text" maxlength="180" placeholder="Two folding tables" autocomplete="off" required>
     <fieldset><legend>Choose a side</legend><label><input type="radio" name="kind" value="need" checked> I need this</label><label><input type="radio" name="kind" value="offer"> I can offer this</label></fieldset>
-    <button type="submit">Post item</button>
+    <button id="post" type="submit" disabled>Post item</button>
   </form>
-  <p id="status" role="status" aria-live="polite"></p>
+  <p id="status" role="status" aria-live="polite">Loading the exchange board…</p>
   <section class="board" aria-label="Community exchange board">
     <div class="lane needs"><h2>Needed <span id="need-count">0</span></h2><ul id="needs"></ul><p id="needs-empty" class="empty">No open needs right now.</p></div>
     <div class="lane offers"><h2>Offered <span id="offer-count">0</span></h2><ul id="offers"></ul><p id="offers-empty" class="empty">Nothing offered yet.</p></div>

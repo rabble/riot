@@ -19,10 +19,10 @@
     <label for="new-task">New task</label>
     <div class="form-row">
       <input id="new-task" type="text" placeholder="What needs doing?" maxlength="180" autocomplete="off" required>
-      <button id="add" type="submit">Add task</button>
+      <button id="add" type="submit" disabled>Add task</button>
     </div>
   </form>
-  <p id="status" class="status" role="status" aria-live="polite"></p>
+  <p id="status" class="status" role="status" aria-live="polite">Loading shared tasks…</p>
   <ul id="items" aria-label="Shared tasks"></ul>
   <p id="empty" class="empty">All clear. Add the first task when something comes up.</p>
 </main>

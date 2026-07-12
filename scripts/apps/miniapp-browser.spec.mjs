@@ -18,6 +18,13 @@ const APPS = [
   { app: "quick-poll", name: "Decisions", seededAction: "Add a crossing guard", emptyAction: "Ask a new question" },
 ];
 
+const LIFECYCLE_APPS = [
+  { app: "checklist", name: "Tasks", action: "Add task", root: "tasks", existing: "Existing neighborhood task" },
+  { app: "supply-board", name: "Needs & Offers", action: "Post item", root: "items", existing: "Existing supply request" },
+  { app: "roll-call", name: "Events", action: "Create event", root: "events", existing: "Existing block gathering" },
+  { app: "quick-poll", name: "Decisions", action: "Ask a new question", root: "proposals", existing: "Existing community decision?" },
+];
+
 test("Tasks primary flow", async ({ page }) => {
   await page.goto("/apps/checklist/?state=seeded");
   await page.getByLabel("New task").fill("Bring extension cord");
@@ -96,6 +103,114 @@ test("Decisions preserves a draft after a write error", async ({ page }) => {
   await page.getByRole("button", { name: "Post question" }).click();
   await expect(page.getByLabel("Question", { exact: true })).toHaveValue("Keep this question draft?");
   await expect(page.getByRole("alert")).toContainText("draft is safe");
+});
+
+for (const { app, name, action, root, existing } of LIFECYCLE_APPS) {
+  test(`${name} waits for identity before enabling mutations`, async ({ page }) => {
+    await page.goto(`/apps/${app}/?state=delayed-identity`);
+    const control = page.getByRole("button", { name: action });
+    await expect(control).toBeDisabled();
+    await expect(control).toBeEnabled();
+    await expect(page.getByText(existing, { exact: true })).toBeVisible();
+    if (app === "quick-poll") await expect(page.getByRole("button", { name: "First option" })).toBeEnabled();
+  });
+
+  test(`${name} keeps mutations disabled when identity fails`, async ({ page }) => {
+    await page.goto(`/apps/${app}/?state=identity-error`);
+    const control = page.getByRole("button", { name: action });
+    await expect(control).toBeDisabled();
+    await expect(page.getByRole("alert")).toContainText(/identity|shared storage/i);
+    await expect(control).toBeDisabled();
+  });
+
+  test(`${name} preserves existing unmarked data without adding demos`, async ({ page }) => {
+    await page.goto(`/apps/${app}/?state=existing-unmarked`);
+    await expect(page.getByRole("button", { name: action })).toBeEnabled();
+    await expect(page.getByText(existing, { exact: true })).toBeVisible();
+    await expect.poll(() => page.evaluate((prefix) => riot.list(prefix).then((rows) => rows.length), root)).toBe(1);
+    await expect.poll(() => page.evaluate(() => riot.get("meta/seeded").then((value) => value && value.status))).toBe("ready");
+  });
+
+  test(`${name} filters malformed rows while rendering valid siblings`, async ({ page }) => {
+    await page.goto(`/apps/${app}/?state=malformed`);
+    if (app === "quick-poll") await expect(page.locator("#question")).toHaveText("No decision is open yet");
+    else await expect(page.getByText(existing, { exact: true })).toBeVisible();
+    await expect(page.getByRole("button", { name: action })).toBeEnabled();
+  });
+}
+
+test("Tasks serializes completion and assignment mutations per row", async ({ page }) => {
+  await page.goto("/apps/checklist/?state=slow-write");
+  const row = page.locator(".task").filter({ hasText: "Existing neighborhood task" });
+  const complete = row.locator(".toggle");
+  const assign = row.getByRole("button", { name: /Take this/ });
+  await complete.click();
+  await expect(complete).toBeDisabled();
+  await expect(assign).toBeDisabled();
+  await expect(complete).toBeEnabled();
+  await assign.click();
+  await expect(row).toHaveClass(/done/);
+  await expect(row).toContainText("Taken by You");
+});
+
+test("Needs & Offers resolves and reopens one item", async ({ page }) => {
+  await page.goto("/apps/supply-board/?state=seeded");
+  const row = page.locator(".card").filter({ hasText: "Six folding chairs" });
+  await row.getByRole("button", { name: /Mark resolved/ }).click();
+  await expect(row.getByRole("button", { name: /Reopen/ })).toBeVisible();
+  await row.getByRole("button", { name: /Reopen/ }).click();
+  await expect(row.getByRole("button", { name: /Mark resolved/ })).toBeVisible();
+});
+
+test("Events records and cancels an RSVP", async ({ page }) => {
+  await page.goto("/apps/roll-call/?state=seeded");
+  const row = page.locator(".event").filter({ hasText: "Community garden workday" });
+  await row.getByRole("button", { name: /RSVP to/ }).click();
+  await expect(row.getByRole("button", { name: /Cancel RSVP/ })).toHaveAttribute("aria-pressed", "true");
+  await row.getByRole("button", { name: /Cancel RSVP/ }).click();
+  await expect(row.getByRole("button", { name: /RSVP to/ })).toHaveAttribute("aria-pressed", "false");
+});
+
+test("Decisions moves one profile's vote instead of adding another", async ({ page }) => {
+  await page.goto("/apps/quick-poll/?state=seeded");
+  const first = page.getByRole("button", { name: "Add a crossing guard" });
+  const second = page.getByRole("button", { name: "Paint a brighter crosswalk" });
+  await first.click();
+  await expect(first).toHaveAttribute("aria-pressed", "true");
+  await second.click();
+  await expect(first).toHaveAttribute("aria-pressed", "false");
+  await expect(second).toHaveAttribute("aria-pressed", "true");
+  await expect(page.locator("#tally")).toHaveText("1 vote");
+});
+
+test("Decisions ignores out-of-order profile results for replaced proposals", async ({ page }) => {
+  await page.goto("/apps/quick-poll/?state=profile-race");
+  await page.evaluate(() => riot.put("proposals/current", { id: "newer-decision", text: "Which evening works?", options: ["Tuesday", "Thursday"], asked_by_id: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", at: 20 }));
+  await expect(page.getByText("Which evening works?", { exact: true })).toBeVisible();
+  await expect(page.locator("#asked-by")).toContainText("Sam Chen");
+  await page.waitForTimeout(500);
+  await expect(page.locator("#asked-by")).toContainText("Sam Chen");
+});
+
+test("Decisions empty state is complete and never says loading", async ({ page }) => {
+  await page.goto("/apps/quick-poll/?state=empty");
+  await expect(page.locator("#question")).toHaveText("No decision is open yet");
+  await expect(page.getByText(/Loading the current question/)).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Ask a new question" })).toBeEnabled();
+});
+
+test("Events cancel returns focus to Create event", async ({ page }) => {
+  await page.goto("/apps/roll-call/?state=seeded");
+  await page.getByRole("button", { name: "Create event" }).click();
+  await page.getByRole("button", { name: "Cancel" }).click();
+  await expect(page.getByRole("button", { name: "Create event" })).toBeFocused();
+});
+
+test("Decisions cancel returns focus to Ask a new question", async ({ page }) => {
+  await page.goto("/apps/quick-poll/?state=seeded");
+  await page.getByRole("button", { name: "Ask a new question" }).click();
+  await page.getByRole("button", { name: "Cancel" }).click();
+  await expect(page.getByRole("button", { name: "Ask a new question" })).toBeFocused();
 });
 
 for (const { app, name, seededAction, emptyAction } of APPS) {

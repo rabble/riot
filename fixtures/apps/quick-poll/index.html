@@ -15,7 +15,7 @@
     <p id="asked-by"></p><h2 id="question">Loading the current question…</h2>
     <ol id="options" aria-label="Decision options"></ol>
     <p id="tally" role="status" aria-live="polite"></p>
-    <button id="replace" type="button">Ask a new question</button>
+    <button id="replace" type="button" disabled>Ask a new question</button>
   </section>
   <form id="ask-form" hidden>
     <label for="question-input">Question</label><input id="question-input" type="text" maxlength="180" required>
@@ -23,7 +23,7 @@
     <label for="option-2">Choice 2</label><input id="option-2" type="text" maxlength="100" required>
     <label for="option-3">Choice 3 <span>(optional)</span></label><input id="option-3" type="text" maxlength="100">
     <label for="option-4">Choice 4 <span>(optional)</span></label><input id="option-4" type="text" maxlength="100">
-    <div class="form-actions"><button id="cancel" type="button">Cancel</button><button type="submit">Post question</button></div>
+    <div class="form-actions"><button id="cancel" type="button">Cancel</button><button id="post-question" type="submit" disabled>Post question</button></div>
   </form>
 </main>
 <script src="app.js"></script>

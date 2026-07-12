@@ -33,6 +33,24 @@ function isWithin(parent, candidate) {
 
 function seedRows(app, state) {
   if (state === "empty") return [["meta/seeded", { version: 1 }]];
+  const existing = {
+    checklist: ["tasks/existing-task", { text: "Existing neighborhood task", created_at: 10, added_by_id: profiles.alex.id, assigned_to_id: "", completed: false }],
+    "supply-board": ["items/existing-item", { kind: "need", text: "Existing supply request", created_at: 10, added_by_id: profiles.alex.id, resolved_by_id: "" }],
+    "roll-call": ["events/existing-event", { title: "Existing block gathering", starts_at: "2030-07-18T18:00:00.000Z", place: "Library steps", created_by_id: profiles.alex.id }],
+    "quick-poll": ["proposals/current", { id: "existing-decision", text: "Existing community decision?", options: ["First option", "Second option"], asked_by_id: profiles.alex.id, at: 10 }],
+  }[app];
+  if (state === "existing-unmarked") return existing ? [existing] : [];
+  if (["delayed-identity", "identity-error", "profile-race", "error"].includes(state)) {
+    return existing ? [["meta/seeded", { version: 1, status: "ready" }], existing] : [];
+  }
+  if (state === "malformed") {
+    if (app === "quick-poll") return [["meta/seeded", { version: 1, status: "ready" }], ["proposals/current", null], ["votes/bad/bad", null]];
+    const invalidKey = { checklist: "tasks/bad", "supply-board": "items/bad", "roll-call": "events/bad", "quick-poll": "votes/existing-decision/bad" }[app];
+    return existing ? [["meta/seeded", { version: 1, status: "ready" }], existing, [invalidKey, null]] : [];
+  }
+  if (state === "slow-write" && app === "checklist") {
+    return [["meta/seeded", { version: 1, status: "ready" }], existing];
+  }
   if (app !== "checklist") return [];
   const rows = [
     ["items/bring-water", { text: "Bring water", done: false, updated_by_id: profiles.alex.id, updated_at: 1 }],
@@ -48,6 +66,10 @@ function mockBridgeSource(app, state) {
   const initialRows = JSON.stringify(seedRows(app, state));
   const serializedProfiles = JSON.stringify(Object.values(profiles));
   const failWrites = state === "error";
+  const delayedIdentity = state === "delayed-identity";
+  const failedIdentity = state === "identity-error";
+  const slowWrites = state === "slow-write";
+  const profileRace = state === "profile-race";
   return `
 (() => {
   "use strict";
@@ -101,6 +123,7 @@ function mockBridgeSource(app, state) {
       const clean = validateKey(key);
       const serialized = serializeJSON(value);
       if (${failWrites}) throw new Error("deterministic preview write failure");
+      if (${slowWrites}) await new Promise((resolve) => setTimeout(resolve, 150));
       store.set(clean, serialized);
       notify();
     },
@@ -110,9 +133,14 @@ function mockBridgeSource(app, state) {
       watchers.push({ prefix, callback });
       list(prefix).then(callback).catch(function () {});
     },
-    async whoami() { return { ...profileRows[0] }; },
+    async whoami() {
+      if (${failedIdentity}) throw new Error("deterministic identity failure");
+      if (${delayedIdentity}) await new Promise((resolve) => setTimeout(resolve, 500));
+      return { ...profileRows[0] };
+    },
     async profile(id) {
       if (typeof id !== "string" || !identityPattern.test(id)) throw new Error("invalid profile id");
+      if (${profileRace}) await new Promise((resolve) => setTimeout(resolve, id === "${profiles.alex.id}" ? 400 : 20));
       return { ...(profileByID.get(id) || { displayName: "member", tag: id.slice(0, 8) }) };
     },
   });
@@ -169,7 +197,7 @@ export function createPreviewServer() {
       const app = match[1];
       const resource = match[2] || "index.html";
       const requestedState = url.searchParams.get("state") || "seeded";
-      const state = ["seeded", "empty", "error", "post-action"].includes(requestedState)
+      const state = ["seeded", "empty", "error", "post-action", "delayed-identity", "identity-error", "existing-unmarked", "malformed", "profile-race", "slow-write"].includes(requestedState)
         ? requestedState
         : "seeded";
 
