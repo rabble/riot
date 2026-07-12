@@ -615,3 +615,25 @@ rabble is demoing iPhone+Mac at a conference tomorrow, so macOS must stay green.
 
 Verified green now: iOS device build (`generic/platform=iOS`) **signs and builds**
 with the real Apple Development identity, and `Riot-macOS` builds.
+
+## Demo bug board (2026-07-12) — three P0s between us and a working two-phone demo
+
+Replication itself **works** — proven end to end (`a781e8d`): two real
+repositories, real `LocalTCPFrameChannel` loopback, real frames, real
+`SyncCoordinator`s; an item written by A lands in B's store AND renders in B's
+real WebView; check-off flows back; concurrent edits converge.
+
+What is still broken, all reproduced:
+
+| # | Bug | Effect on the demo | Status |
+|---|---|---|---|
+| P0-1 | `NearbyTransportController` calls `coordinator.start()` on **both** peers (`startLocalSession`, `finishRouteSelection` — each runs on both sides). Rust's `begin()` only accepts a Hello while Idle, so both reject each other → `.failed`, **nothing transfers**. | Beat 4 dies on real hardware. | iOS runtime session fixing |
+| P0-2 | `ProfileRepository.open` replays received bundles but `guard !entryIDs.isEmpty` over eligible **alert** rows — app-data-only bundles have none, so **synced checklist data is dropped on relaunch**. (Own writes survive via `appDataBundles`, which hid it.) | Phone B loses everything it synced, on restart. | iOS runtime session fixing |
+| P0-3 | A phone with **no space cannot sync at all** (`open_sync_session` requires one) and nothing makes B join A's space. | Beat 4 cannot even start: phone B is a fresh install. | iOS runtime session fixing (space handshake) |
+
+Already fixed and landed: organizer approval reaching every member (`f7db036`),
+macOS app build (`4ef36e7`), checklist Add button invisible (`ec0550f`).
+
+**Demo session:** one stale test pin is red in the tree —
+`AppRepositoryTests.testDisplayNameComesFromProfileNotPlaceholder` expects
+`"member-"` but display names now render `"member · xxxx"`. Yours to update.
