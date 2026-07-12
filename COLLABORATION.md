@@ -914,3 +914,76 @@ to apply. Shout if you'd rather I take it and you'll stash.
 (Also, the TCC crash you saw is real but not yours: the **XCUITest runner** is a
 separate process and needs its own `NSBluetoothAlwaysUsageDescription` /
 `NSLocalNetworkUsageDescription` — fixed for the UI-test target in `4f61034`.)
+
+# ════════════════════════════════════════════════════════════════════
+# STATE OF PLAY — 2026-07-12, demo day. Written from EVIDENCE, not claims.
+# Everything above this line is history. Read THIS to know what to do.
+# ════════════════════════════════════════════════════════════════════
+
+## Measured right now (not asserted — I ran these)
+
+| Thing | State | Evidence |
+|---|---|---|
+| Rust workspace | **GREEN** | `cargo test --workspace --all-features` — 52 suites ok |
+| Android unit tests | **GREEN** | `./gradlew testDebugUnitTest` BUILD SUCCESSFUL |
+| macOS app | **BUILDS, and now ships its content** | `fa27bad` — the bundle previously held ONLY fonts: no checklist `.cbor`, no demo space. The Apps directory was therefore EMPTY on the Mac and nothing could be approved or opened. This was invisible because the loader `compactMap`s away what it cannot find. |
+| **iOS app** | **RED AT HEAD — demo blocker** | `cannot find 'PeerProfileView' in scope` (committed but never added to the Xcode project — I wired it) and `cannot find '__rtrace' in scope` (ConferenceShellView:671 calls a DEBUG tracer whose definition was never committed). A clean checkout cannot build for a phone. |
+
+## The rule nobody has written down, and it will end the demo
+
+**A profile created before the space-organizer scheme can NEVER approve an app.**
+`set_app_trust` now returns `LegacyProfileCannotOrganize` and there is deliberately
+no migration (under the old scheme a creator and a joiner are byte-identical, so a
+migration would let any member self-approve and gut the one human review gate).
+
+Every profile on this machine was that vintage — I wiped them. **Before the demo,
+delete `~/Library/Application Support/instances/` and start fresh.** If approving
+ever fails with an organizer error, that is what happened.
+
+## Demo-critical, in priority order
+
+1. **iOS build is red at HEAD** — nothing ships to a phone until `__rtrace` is
+   stripped from `ConferenceShellView` (profile-ui session is doing it) and
+   `PeerProfileView` stays wired (done).
+2. **Name yourself / see who you're connected to / reach the demo space** — the
+   FFI for all three has been landed for a day and **no view ever called it**.
+   `loadDemoSpace` in particular: `docs/product/demo-script.md` says "Settings →
+   long-press the version number", and there IS NO SETTINGS SCREEN. The seeded
+   Riverside space (6 alerts, part-done checklist, an app) has been unreachable
+   the whole time. Landing now (`308887b` + profile-ui session).
+3. **REAL RADIOS: ZERO VERIFICATION.** Every proof we have — replication,
+   redraw-on-sync, one-initiator election, space adoption — runs over loopback TCP
+   or Bonjour on a single Mac. **BLE between two physical iPhones has never
+   executed once.** Nobody should say "it syncs over Bluetooth" on stage until it
+   has. `sh scripts/demo-install-iphone.sh` puts a signed build on every connected
+   phone; that is the moment to find out.
+
+## Fixed today that would each have killed it (so nobody re-breaks them)
+
+- **A nearby peer blocked every app approval** (`0026b34`). Auto-connect made a
+  sync session almost always open, and `set_app_trust` refused while one was —
+  so "Let everyone in this space use this" failed with an unexplained error, and
+  no app could be opened at all. The approval now wins and the sync yields.
+- **`run-instances.sh` exec'd the binary inside the bundle** (`9b279a4`), so the
+  process had no app identity for TCC, the Info.plist's Bluetooth usage string was
+  invisible, and macOS hard-killed the app the instant anyone tapped "Find nearby".
+- **The macOS app shipped with no content** (`fa27bad`, above).
+- **`pack_checklist` was deleted by a stray `git add`** while `repack-starter.sh`
+  still called it (`c043795`). Restored; verified it reproduces both artifacts
+  byte-for-byte so the checklist's frozen app_id does not move.
+- The three P0s (dual-start, drop-on-relaunch, no-space-cannot-sync) — all landed
+  by the transport/adopt sessions, with a test that pins the dual-start bug so it
+  cannot come back quietly.
+
+## Standing instruction to every session, today
+
+The tree is hot and **whole-file writes have silently reverted other sessions'
+edits repeatedly today**, including mine. Therefore:
+- `git pull --rebase --autostash` before you start AND before you commit.
+- After ANY edit, re-read the file to confirm your change survived.
+- Stage ONLY your files by explicit path; verify with `git diff --cached`.
+  **The working tree is not evidence of what you are about to commit.**
+- **Never commit a call to a symbol whose definition you have not committed.**
+  That is exactly how iOS went red today, and it cost us the phone build.
+- If you add a Swift file, add it to BOTH `apps/ios/Riot.xcodeproj` AND
+  `apps/macos/Riot.xcodeproj`. This has broken the Mac app four times today.
