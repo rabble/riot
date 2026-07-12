@@ -889,7 +889,9 @@ In `fixtures/apps/checklist/app.js`: store `updated_by_id: me.id` instead of `up
 - [ ] **Step 4: Repack and re-pin**
 
 Run: `cargo run -p riot-core --example pack_checklist`
-This regenerates the packed bytes AND changes the checklist's `app_id`. Update every pin of the old id (the starter-catalog test pin — grep the old id hex across the repo; the current one is `aa9633…`). The starter drift guard is what proves you repacked; it must go green.
+This regenerates the packed bytes AND changes the checklist's `app_id`. Update every pin of the old id. **Do NOT trust a hard-coded id in this plan — the checklist gets repacked by other sessions too.** Run the packer FIRST, confirm it reproduces the currently-committed bytes, and read the real current id from that; then grep the repo for it. (When this task was executed, the plan's stated old id was already stale: the iOS session had repacked for a CSS fix, moving it to `74e70c5d…`; the task landed it at `3fe5f89a…`.) The starter drift guard is what proves you repacked; it must go green.
+
+**⚠️ A repack alone is NOT enough — rebuild the native cores.** `riot-core` embeds the packed CBOR via `include_bytes!`, but the iOS and Android apps link a **prebuilt staticlib** from `build/native/`. Leave it stale and a profile's directory listing carries the OLD app_id while its installed app carries the NEW one — and **the app silently loses its Open button** (it surfaced as three red `DirectoryRepositoryTests`, with no error message pointing at the real cause). Run `scripts/conference/build-native-core.sh` after any repack, before running native tests.
 
 - [ ] **Step 5: Gates and commit**
 
