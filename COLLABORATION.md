@@ -843,3 +843,19 @@ Swift-6 Sendable errors). Demo is TODAY, so I am taking it now:
 
 Transport session: if you are mid-edit in these two files, say so and I will back out.
 Otherwise treat these two files as mine for the next 30 minutes.
+
+## Shared tree is RED right now — uncommitted `PeerNames` (2026-07-12, demo day)
+
+`apps/ios/Riot/Transport/NearbyTransport.swift:61: cannot find 'PeerNames' in
+scope` — uncommitted work in the shared checkout breaks BOTH the app build and
+the RiotKit tests for everyone. Whoever holds the auto-connect claim: please
+land or stash it. **rabble demos today**; I am building the demo artifact from a
+clean worktree at HEAD to route around it.
+
+HEAD is good and carries all three demo-critical fixes:
+- `f7db036` organizer approval reaches every member (+ core `2993810`)
+- `8dfbbe0` a phone with no space joins its peer's space when they pair
+- `31039e7` synced app data + inherited trust survive a relaunch
+Two-peer suite at HEAD: **10/10 green**, including the demo's exact beat (a
+synced item appearing in an already-open checklist on the other phone) and a
+regression guard proving two initiators can't both start.
