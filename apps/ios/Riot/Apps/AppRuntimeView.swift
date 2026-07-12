@@ -36,18 +36,9 @@ struct AppRuntimeLaunch {
 /// navigation delegate is the load-bearing lock); browser state is
 /// non-persistent; the page's only I/O is the riot bridge.
 public struct AppRuntimeView: View {
-    /// Posted by refresh sources outside the page (foregrounding, and sync
-    /// accept) to re-run the page's `watch` callbacks.
+    /// Posted by refresh sources outside the page (foregrounding, and — where a
+    /// host wires it — sync completion) to re-run the page's `watch` callbacks.
     public static let dataChangedNotification = Notification.Name("RiotAppDataChanged")
-
-    /// Tells every app mounted right now that the store changed underneath it.
-    ///
-    /// The one call a refresh source makes, so that the sources — foregrounding
-    /// here, an accepted sync import in `NearbyTransportController` — cannot
-    /// drift apart in how they announce it.
-    public static func postDataChanged() {
-        NotificationCenter.default.post(name: dataChangedNotification, object: nil)
-    }
 
     private let repository: RiotProfileRepository
     private let appIDHex: String
@@ -85,7 +76,9 @@ public struct AppRuntimeView: View {
                     AppWebView(launch: launch)
                 }
                 .onChange(of: scenePhase) { _, phase in
-                    if phase == .active { Self.postDataChanged() }
+                    if phase == .active {
+                        NotificationCenter.default.post(name: Self.dataChangedNotification, object: nil)
+                    }
                 }
             } else {
                 // Trust was revoked between the Tools row rendering "Open" and
