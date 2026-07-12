@@ -112,7 +112,7 @@ too — the trust doesn't just apply to me."*
 
 Hand phone B to someone, or hold it up next to phone A.
 
-On **phone B**, open the **Connection** tab. A ring sweeps outward, searching.
+On **phone B**, open the **Connect** tab. A ring sweeps outward, searching.
 
 Say: *"No wifi, no cell signal, no server anywhere. Phone B is just
 listening."*
