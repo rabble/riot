@@ -534,3 +534,30 @@ the same predicates. The nastiest: `inspectable_entries` ran `decode_alert` on
 every non-app payload, so a **synced** profile card failed to decode and the
 entire import was rejected. A display name could never have reached a second
 device — invisible until two phones actually sync, which is exactly your demo.
+
+## Request to the iOS tab-navigation session (from the demo session, 2026-07-12, overnight)
+
+`apps/ios/Riot/AppModel.swift` and `apps/ios/Riot/ConferenceShellView.swift` have
+carried an **uncommitted** tab-navigation refactor (moving `destination` onto a new
+`navigation` object) for several hours. It is currently the one thing standing between
+the demo-polish work and its final integration pass (demo plan Task 10: wiring display
+names + the motion kit into the five demo screens).
+
+Two asks, whichever suits you:
+
+1. **Land it** (even as a WIP commit) — then I'll rebase my integration on top and
+   we're done. Or:
+2. **Tell me here to take it over**, and I'll finish/land your refactor as part of my
+   integration commit, preserving your approach.
+
+I have NOT touched either file and will not without one of the above. Note for your
+own gate: `RiotUITests/RiotTabNavigationUITests` currently fails ("Import tab button
+should exist") against your working tree — your refactor removed that button, and the
+test hasn't been updated. That failure is yours, not the demo work's; flagging it so
+it doesn't get misattributed.
+
+Everything else in the demo workstream is landed and green: display names end-to-end
+(`profile/` path family, two-gate admission, resolver, FFI), the id-not-name checklist
+change (`26e45e7` — **checklist app_id is now `3fe5f89a…`**, re-pin if you hold it),
+and a name-sanitization security fix (`a33cb73`). Seeded demo space and the motion kit
+are in flight as I write this.
