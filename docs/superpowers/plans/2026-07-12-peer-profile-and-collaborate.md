@@ -62,3 +62,23 @@ screen (after/independent of pairing):
   `docs/research/2026-07-11-user-profiles-willow-research.md`): a peer may present
   a different name per space (Matrix-style override). The view should show the
   name for the *current* space context, not a global one, when that lands.
+
+## Two-node headless test findings (transport/space owner: please pick up)
+
+Verified with the new hooks (`5714970`): `RIOT_SEED_SPACE=1` on a host + a fresh
+joiner, both `RIOT_AUTO_DISCOVER=1 RIOT_AUTO_CONFIRM=1`, launched via `open -n`.
+
+1. **TCC Local Network crash (environmental, not code):** first two-node run can
+   SIGABRT one instance with `__TCC_CRASHING_DUE_TO_PRIVACY_VIOLATION__` (the
+   Local Network prompt cannot be answered headlessly). Once the permission is
+   granted for the app, both instances survive. Real demo: grant it once.
+2. **Joiner does not join (open bug):** even with both instances alive and
+   discovering each other (dns-sd shows 2 services), a fresh joiner never lands
+   in the host's seeded space — `joiner: space=NONE` after 18s. The break is in
+   auto-connect -> SpacePairing -> confirmJoinSpace, NOT in the peer-profile UI
+   or these test hooks (host-with-seed-space is stable solo; transport pairing is
+   20/20 in the standalone harness). Someone who owns NearbyTransportController /
+   SpacePairing should trace why the join does not complete on a real socket.
+
+Until (2) is fixed, the peer-profile People list / collections cannot populate
+between two strangers, because nothing syncs without a shared space.
