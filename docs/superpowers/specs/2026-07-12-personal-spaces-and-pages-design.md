@@ -2,7 +2,9 @@
 
 ## Status
 
-Approved in product brainstorming on 2026-07-12.
+Approved in product brainstorming on 2026-07-12. Revised 2026-07-12 after the
+design review gate (Architect, Designer, Security, CTO blockers resolved; PM
+approved). Revision notes are inline where a decision changed.
 
 Riot today has one kind of space: a communal namespace shared by a group
 (`Berlin Mutual Aid`). This design adds a second kind: a **personal space** —
@@ -52,7 +54,7 @@ The design answers four questions:
    filled-in form; WHEN they set the page up or change it later.
 3. **Page author, assisted:** WHO cannot write HTML; WANTS to describe the page
    and have a model generate the bundle; SO THAT authorship is not gated on
-   knowing to code; WHEN creating or revising a page.
+   knowing to code; WHEN creating or revising a page. *(Slice 1.5.)*
 4. **Public publisher:** WHO wants to be found; WANTS anyone nearby to read
    their page with no negotiation; SO THAT the page works like a public
    homepage; WHEN the space is set public.
@@ -65,19 +67,25 @@ The design answers four questions:
    the owner makes, not a secret that leaks; WHEN meeting someone nearby.
    *(Slice 2.)*
 7. **Visitor:** WHO opens a page authored by someone they barely know; WANTS the
-   page to be unable to harm them, exfiltrate anything, or record the visit; SO
-   THAT looking at a page is never an attack; WHEN viewing any page.
-8. **App maker:** WHO builds something useful on their page; WANTS to publish it
+   page to be unable to harm them, exfiltrate anything, learn who they are, or
+   record the visit; SO THAT looking at a page is never an attack; WHEN viewing
+   any page.
+8. **Second device / replacement:** WHO gets a new phone; WANTS to decide in
+   advance whether their personal space can be recovered; SO THAT loss is a
+   choice they made, not a surprise; WHEN setting up the space and when the old
+   device is gone. *(Recovery mechanism Slice 2; the *decision* and its storage
+   consequences are fixed in Slice 1 — see Root key custody.)*
+9. **App maker:** WHO builds something useful on their page; WANTS to publish it
    as an app others can install; SO THAT tools spread person to person; WHEN
    sharing an app. *(Slice 3.)*
-9. **App chooser:** WHO is deciding whether to install a stranger's app; WANTS to
-   see what independent auditors found in it; SO THAT the choice is informed; WHEN
-   browsing the directory. *(Slice 3.)*
+10. **App chooser:** WHO is deciding whether to install a stranger's app; WANTS to
+    see what independent auditors found in it; SO THAT the choice is informed; WHEN
+    browsing the directory. *(Slice 3.)*
 
 ## Decisions
 
-These were settled in brainstorming and are load-bearing. Reopening any of them
-changes the architecture.
+These were settled in brainstorming and the review gate and are load-bearing.
+Reopening any of them changes the architecture.
 
 ### D1 — Private means a read gate, not encryption
 
@@ -105,49 +113,94 @@ scheme.
 > **A page is an app you published to your own space. An app is a page someone
 > else can install.**
 
-This is why LLM authoring, template authoring, and hand authoring all converge:
-they are three ways to produce one artifact.
+This convergence is why template, hand, and (Slice 1.5) model authoring all
+produce one artifact.
 
-### D3 — Reads are free, writes are consent-mediated
+**Path-layout consequence (review gate — Architect blocker).** The app paths are
+*not* reused verbatim. Today `APPS_COMPONENT`/`APP_INDEX_COMPONENT` are hardcoded
+as the **first** path component (`apps/entry.rs:12`, `apps/index.rs:26`) and the
+admission classifiers `is_app_data_path` (`entry.rs:44`) and
+`classify_app_index_path` (`index.rs:586`) reject anything whose first component
+is not exactly `apps`/`app-index`. The visibility segment (`pub`/`con`) sits
+*in front* of these. Therefore Slice 1 **generalizes the path grammar to carry a
+leading visibility segment**, and applies that change **in lockstep** across
+three gates that must never drift: the local-write path, `classify_app_index_path`
+/ `is_app_data_path`, and the import pipeline's `verify_frame`. This is one
+admission source of truth, matching the anti-drift discipline those modules
+already document. Getting local-write and import-admit out of step silently
+breaks page replication, which is Slice 1's whole demo.
 
-Page JavaScript may read through the bridge without friction. It may **never**
-write without an explicit native confirmation naming what is being signed.
+### D3 — Reads are metered, writes are consent-mediated, and Slice 1 denies both to foreign pages
 
-`AppDataBridge::put` signs with the *calling person's own key*
-(`apps/bridge.rs:1`). Untrusted page JS calling `put()` unattended would let a
-page you merely *looked at* write a **cryptographically attributable,
-non-repudiable, replicating** record that you were there. That is a tracking
-beacon strictly worse than a web one. On a tool used for protest and mutual aid,
-"who viewed this page" is the metadata that gets people hurt.
+Two things a page's JS can do are dangerous, and the review gate showed both are
+live in the *existing* runtime today, not only in the future guestbook:
 
-The network is not the exfiltration channel here. **The visitor's own signing key
-is.** A guestbook you consciously sign is still a guestbook; the sheet costs
-nothing anyone wanted.
+1. **Writes.** `AppDataBridge::put` signs with the *calling person's own key*
+   (`apps/bridge.rs:22`), and the current bridge path has **no consent gate**
+   (`AppBridgeController.swift:213`). Untrusted page JS calling `put()`
+   unattended would let a page you merely *looked at* write a
+   **cryptographically attributable, non-repudiable, replicating** record that
+   you were there — a tracking beacon strictly worse than a web one.
+2. **Identifying reads.** `whoami()` returns the *viewer's* stable subspace ID,
+   display name, and tag (`RiotJS.swift:51`, `AppBridgeController.swift:97`). A
+   stranger's page you merely view would learn exactly who you are. "Reads are
+   free" must not mean "reads deanonymize the visitor."
+
+The network was never the exfiltration channel here. **The visitor's own signing
+key and identity are.** So:
+
+- **Slice 1 (review gate — Security & CTO blocker): a `kind: page` bundle
+  rendered from a namespace the viewer does not own mounts with NO bridge —
+  no `put`, no `whoami`, no `profile`, deny-closed.** A foreign page in Slice 1
+  is inert HTML/CSS/JS behind the sandbox and can neither write nor identify its
+  reader. There is no consent UI in Slice 1, so there is no write path to gate;
+  the safe default is absence, not a silent live bridge. The beacon test asserts
+  this defined behavior.
+- **Slice 3** introduces the consent-mediated write bridge. A `put()` requires an
+  explicit native confirmation, authored by the **host** (never page-supplied
+  text), naming the concrete record being signed and its permanence, per-write or
+  per-explicitly-enumerated-batch. A guestbook you consciously sign still works;
+  the sheet costs nothing anyone wanted. Any identifying read exposed to a
+  foreign page in Slice 3 is likewise behind consent.
 
 ### D4 — Containment is by construction, not by trust
 
 Every page runs identically sandboxed regardless of who authored it, whether a
-model generated it, and how many auditors endorsed it:
+model generated it, and how many auditors endorsed it. The walls are, in order
+of what they stop:
 
 - **No network.** CSP is `default-src 'none'; script-src 'self'; style-src
-  'self'; img-src 'self' data:` (`AppSchemeHandler.swift:9`). No fetch, no XHR,
-  no WebSocket, no external subresource.
-- **Own origin per page.** iOS serves `riot-app://<app_id_hex>/<path>`, so the
-  app ID *is* the origin host and no page can reach another page's storage.
-- **Navigation locked.** Top-level navigation away from `riot-app://` is refused
+  'self'; img-src 'self' data:` (`AppSchemeHandler.swift:9`). No fetch, XHR, or
+  WebSocket.
+- **A second wall on the network, required for parity.** Android already backs
+  CSP with `blockNetworkLoads=true`, service-worker denial, Safe Browsing off,
+  and DOM-storage disable (`AppWebViewHost.kt:52`). iOS today relies on **CSP
+  alone**. Slice 1 must give iOS an independent network backstop equivalent to
+  Android's, or the design must record an explicit, justified exception. The
+  containment suite enumerates and tests the covert channels CSP does not
+  reliably govern per-engine: `<link rel=dns-prefetch>`, WebRTC/STUN, form
+  submission, `window.open`, `<link>` subresources. "iOS/Android-identical"
+  must be provable, not asserted.
+- **Own origin per page.** iOS serves `riot-app://<app_id_hex>/<path>`; Android
+  a synthetic origin. The app ID is the origin host, so no page reaches another
+  page's storage. Because the Android synthetic origin is a *secure context*
+  (unlocking service workers, push, background sync), Slice 1 enumerates every
+  powerful secure-context API and confirms each is independently denied, so the
+  two platforms' capability sets are provably equal.
+- **Navigation locked.** Top-level navigation away from the app scheme is refused
   in the navigation delegate, because CSP does not constrain it
   (`AppRuntimeView.swift:203`).
-- **No device permissions.** Page bundles get no camera, microphone, location,
-  or photo access in any slice of this design.
-- **No key material.** JS never sees a secret key or a raw capability. Writes are
-  performed natively and signed by the host.
+- **No device permissions.** `kind: page` bundles get no camera, microphone,
+  location, or photo access in any slice.
+- **No key material, no bridge for foreign pages in Slice 1** (D3).
 
 ### D5 — Auditor endorsements are signal, never capability
 
 An auditor — including an automated one running a model — is an ordinary
 subspace with an opinion. It publishes a signed attestation bound to an exact
 bundle digest, at the existing path family
-`app-index/<app_id>/endorsement/<auditor_subspace>`.
+`app-index/<app_id>/endorsements/<auditor_subspace>` (plural, matching
+`app_index_endorsement_path`, `index.rs:538`).
 
 Endorsements are **plural** (anyone may run an auditor; you choose whom to
 follow), **replicated** (they arrive over BLE with the bundle, so they work in a
@@ -155,33 +208,38 @@ blackout), and **advisory**.
 
 **An endorsement never unlocks a capability.** It does not grant network access,
 does not skip the consent sheet, does not widen the bridge. It informs *what a
-person chooses to install*; it never changes *what the code may do*.
+person chooses to install*; it never changes *what the code may do*. To keep this
+airtight against the review gate's finding that trust/install currently *does*
+grant the frictionless bridge (`AppReviewSheet` trusts an app "for everyone in the
+space"), the endorsement UI is **mechanically separate** from the install/trust
+action: an endorsement can never be the one tap that grants a bridge.
 
 The reasoning is the Meadowcap design's own principle 2 — *protocol validity is
 not community policy*. Containment is protocol; endorsement is policy. Merging
-them yields exactly what that spec warns against: "one unreviewable authorization
-mechanism." Concretely: an attacker gets unlimited offline attempts against a
-known reviewer, obfuscated JavaScript is the canonical defeat for LLM review, and
-Riot's users are targeted by adversaries with budgets. Keeping the sandbox costs
-nothing when the audit is right, and is the whole defense when it is wrong.
+them yields "one unreviewable authorization mechanism." Concretely: an attacker
+gets unlimited offline attempts against a known reviewer, obfuscated JavaScript is
+the canonical defeat for LLM review, and Riot's users face adversaries with
+budgets. Keeping the sandbox costs nothing when the audit is right and is the
+whole defense when it is wrong.
 
-UI copy says **"reviewed — no findings,"** never **"safe."** A review cannot
-certify safety, and users lean hardest on that word exactly when it matters most.
+UI copy says **"reviewed — no findings,"** never **"safe."**
 
-### D6 — The model runs host-side, never in the sandbox
+### D6 — The model runs host-side, never in the sandbox *(Slice 1.5)*
 
-LLM authoring is a native action that produces a bundle. The generated artifact
-then runs under D4 like any other, with no network and no special trust. The
-generator and the sandbox never touch. A prompt-injected model that emits a
-beacon is contained by the same walls as a malicious human author — which is the
-entire reason D3 and D4 are non-negotiable.
+Model-assisted authoring is deferred to Slice 1.5 (review gate — PM). Templates,
+the native name/bio/colors form, and the view-source editor fully satisfy
+"authorship is not gated on coding" in Slice 1; the model surface is the heaviest
+and riskiest part and its removal does not weaken the Slice 1 demo.
 
-**Local model is the default.** Remote inference is **opt-in per use, never
-sticky**, behind a sheet naming the provider in plain language: *"This sends your
-prompt to <provider>. Don't include anything you wouldn't post publicly."* Page
-content and Willow data are **never** auto-attached as context; only prompt text
-the person typed. Riot's thesis is that it works in a blackout — authoring must
-degrade to templates and hand-editing with no network at all.
+When it lands, its rules are fixed now: LLM authoring is a **native action that
+produces a bundle**; the generated artifact then runs under D4 with no network and
+no special trust — generator and sandbox never touch. **Local model is the
+default.** Remote inference is **opt-in per use, never sticky**, behind a sheet
+that names the provider *and* states that the connection itself (IP, timing, "this
+device is talking to a model provider") is metadata independent of the prompt:
+*"This sends your prompt to <provider>. The fact that you contacted them is also
+visible. Don't include anything you wouldn't post publicly."* Page content and
+Willow data are **never** auto-attached as context; only typed prompt text.
 
 ## Architecture
 
@@ -193,16 +251,14 @@ A personal space is a Willow **owned** namespace
 
 This differs from every namespace Riot creates today. Group spaces are communal:
 `NamespaceKind` has one variant, and `create_public_space` deliberately
-**zeroizes the namespace secret** (`willow/identity.rs:164`) because it confers
-no privilege in a communal namespace. Personal spaces invert this — the secret is
-the point, and it is **persisted in platform secure storage** (iOS Keychain,
-Android Keystore).
+**zeroizes the namespace secret** (`willow/identity.rs:164`). Personal spaces
+invert this — the secret is retained (custody below).
 
-Two keypairs are therefore in play, and must not be conflated:
+Two keypairs are in play and must not be conflated:
 
 | Key | Role | Storage |
 |---|---|---|
-| Namespace root (`NamespaceSecret`) | Mints read/write caps over the space | Secure enclave / Keychain |
+| Namespace root (`NamespaceSecret`, ed25519) | Mints read/write caps over the space | Platform Keychain/Keystore blob (see custody) |
 | Author subspace (`EvidenceAuthor`) | Signs entries as *you* | Existing profile storage |
 
 The existing `namespace_id == organizer_subspace_id` trick (`identity.rs:239`)
@@ -211,15 +267,45 @@ is a **communal**-space device and does not apply here.
 **Owned from day one, even though Slice 1 is public-only.** Communal-vs-owned is
 a bit flag *in the namespace ID itself* and cannot be changed afterward. Root
 replacement is a signed migration to a new namespace, not a rotation. Creating
-personal spaces as communal now would mean every early user must migrate — losing
-their namespace ID, and every capability anyone holds — the day connections-only
+personal spaces as communal now would force every early user to migrate — losing
+their namespace ID and every capability anyone holds — the day connections-only
 ships. This is the single most expensive mistake available in this design.
+
+### Root key custody (review gate — Security & CTO blocker)
+
+The root is an **ed25519** secret. It **cannot be Secure-Enclave-bound** — the
+enclave holds P-256 only. It is therefore a **Keychain/Keystore blob**, and the
+design commits to these properties, all fixed in Slice 1 because the key is minted
+in Slice 1 and cannot be retrofitted without the namespace migration named above:
+
+- **Accessibility:** `kSecAttrAccessibleWhenUnlockedThisDeviceOnly` (iOS) /
+  device-bound, auth-gated Keystore (Android).
+- **No iCloud/Google sync. No inclusion in device backups** by default. A synced
+  or backed-up root is a second seizure and coercion surface.
+- **Recovery is opt-in, off by default (user decision, 2026-07-12).** A user may
+  *deliberately* produce a passphrase-encrypted recovery export (mechanism:
+  Slice 2). The UI states plainly that the export is itself a seizure/coercion
+  surface. With no export and a lost device, the personal space's root is gone
+  and the person creates a new space; the app says so before they rely on it.
+
+**Owned-cap minting across FFI.** Cap minting happens in Rust core
+(`authorise_entry` → `write_capability`, today hardcoded to
+`new_communal`, `identity.rs:65`). Slice 1 adds an owned author/identity path so
+the root can mint `WriteCapability::new_owned(root, subspace)` and thread it
+through `authorise_entry`/`commit_at`/`publish_app_index`, none of which accept an
+externally supplied capability today. The plaintext root secret **never crosses
+FFI**: it crosses only as a **sealed/wrapped blob**, unsealed inside core, used,
+and zeroized immediately — reusing the existing sealed-identity precedent
+(`identity.rs:81`, `seal_identity`). The custody test asserts *"no plaintext root
+secret appears across FFI, in `riot-profile.json`, in logs, or in any Willow
+entry"* rather than "never crosses FFI."
 
 ### Path profile
 
 Read capabilities narrow by **path prefix**, so the public/protected boundary must
 be a *path* boundary, fixed before any entry is written. The first path component
-is the visibility segment:
+is the visibility segment, constrained by the generalized admission classifier
+(D2) to a closed set of allowed values:
 
 ```
 <personal owned namespace>/
@@ -228,187 +314,213 @@ is the visibility segment:
     page/current                   ← manifest digest of the live public page
     app-index/<app_id>/manifest
     app-index/<app_id>/bundle
-    app-index/<app_id>/endorsement/<auditor>     (Slice 3)
+    app-index/<app_id>/endorsements/<auditor>      (Slice 3)
     apps/<app_id>/**               ← public app data (Slice 3)
   con/                             ← served only to a holder of a read cap over con/**
-    page/current                   ← the connections-only page
-    app-index/<app_id>/**
-    apps/<app_id>/**               ← guestbook and other protected app data (Slice 3)
+    <tier>/                        ← RESERVED now (user decision, 2026-07-12): a
+                                     tier segment (e.g. connections, close) so
+                                     Slice 2 may offer tiers without migration.
+                                     Slice 2 decides whether to populate >1 tier.
+      page/current
+      app-index/<app_id>/**
+      apps/<app_id>/**             ← guestbook and other protected app data (Slice 3)
 ```
 
 - **Public space:** the real page lives in `pub/`.
 - **Connections-only space:** only the calling card is in `pub/`. A stranger sees
   a name, an avatar, and a *Request to connect* button — and nothing else.
-  Everything real is in `con/`.
 
 Granting read access is then one call:
-`ReadCapability::new_owned(root_keypair, requester_receiver_key)` delegated down
-to the `con/**` area, with expiry expressed as the capability's time range.
+`ReadCapability::new_owned(root_keypair, requester_receiver_key)` delegated to the
+`con/<tier>/**` area, with expiry expressed as the capability's time range.
 
-Human-readable labels never become secret path components (per the Meadowcap
-design's PIO guidance): protected path segments use high-entropy identifiers.
+Human-readable labels never become secret path components (Meadowcap PIO
+guidance): protected path segments use high-entropy identifiers.
 
 ### Page = app: authoring and publication
 
-Producing a page, from any of the three authoring modes, is one pipeline:
-
 ```
-template | hand-edit | LLM  →  bundle (HTML/CSS/JS)
-                           →  manifest { kind: page, entry_point, digest }
-                           →  sign with author subspace key
-                           →  write app-index/<app_id>/{manifest,bundle}
-                           →  set page/current = <app_id>
+template | hand-edit | (Slice 1.5) LLM  →  bundle (HTML/CSS/JS)
+                                       →  manifest { kind: page, entry_point, digest }
+                                       →  sign with author subspace key
+                                       →  write pub/app-index/<app_id>/{manifest,bundle}
+                                       →  set pub/page/current = <app_id>
 ```
 
-`app_id` is the manifest digest, as today — so **a page is immutable and
-content-addressed**, and publishing an edit publishes a new `app_id` and
-repoints `page/current`. This is what lets an auditor endorsement bind to an exact
-bundle: change one byte, the endorsement is void.
+`app_id` is the manifest digest, so **a page is immutable and content-addressed**;
+publishing an edit publishes a new `app_id` and repoints `page/current`. This is
+what lets an auditor endorsement bind to an exact bundle: change one byte, the
+endorsement is void.
 
-Writing into your own owned namespace still requires a write capability —
-`WriteCapability::new_owned(root_keypair, your_subspace)` — minted at space
-creation and stored alongside the profile.
+### Navigation and creation UX (review gate — Designer blocker)
 
-### Authoring UX
-
-**Templates first.** Ship a small set of deliberately gaudy starting points
-(starfield, tiled brick, under-construction, marquee banner). Pick one, edit
-name/bio/colors/images in a native form, publish. Under a minute, no code.
-
-**View source, always.** Any template drops into a raw HTML/CSS/JS editor. Editing
-the source makes the page yours. This is the GeoCities loop — *view source, steal
-it, make it worse* — and it is the reason we chose user-authored bundles over a
-fixed profile template.
-
-**Model assist.** Describe the page; a model emits a bundle; you review the
-generated source before it is signed. Local model by default, remote opt-in per
-D6. Generation is never required: with no network and no local model, templates
-and the source editor still work.
+- **First run is a full-screen onboarding gate** before the 5-tab shell: pick a
+  display name (finally giving `set_display_name` its first caller), then create
+  your personal space and land on template selection. Target: name + space inside
+  one minute; producing the first page is encouraged in the same flow but the
+  one-minute budget covers name + space.
+- **The personal space is a first-class card in the existing Spaces tab**, which
+  is already the default destination. Editing/republishing a page later uses the
+  same authoring surface as first creation, reached from that card.
+- **Two space kinds are visibly distinct at creation.** "Make your page"
+  (personal, owned, root key in Keychain) and "Create group space" (communal,
+  secret zeroized) are separate, unambiguously labeled entry points. Because D1's
+  thesis is that users make safety decisions on labels, conflating the kinds at
+  creation is a safety hazard, not a polish gap.
+- **Slice 1 exposes no privacy-implying control.** No visibility toggle, no
+  "connections only" switch that appears to protect while everything is written to
+  `pub/`. If the affordance is shown at all it is visibly unavailable
+  ("coming soon"), never a live-looking safety switch that does nothing.
+- **Defined empty/error states:** owner's space before its first page
+  (`page/current` unset); visitor opening a public space with no page set yet
+  (card-only vs empty vs loading); publish failures (missing/expired write
+  capability, signing failure, store-write failure) each have a defined UX.
 
 ### Runtime and containment
 
-Per D4, unchanged from the existing app runtime, with two additions:
+Per D4, with the Slice-1 foreign-page posture of D3. Trust is evaluated from the
+**viewer's** perspective: a space owner's trust marker over their own page does
+not bind a visitor, so a foreign `kind: page` bundle is never auto-trusted and, in
+Slice 1, mounts bridge-less. Existing directory apps trusted by an organizer in a
+space you joined keep their current behavior.
 
-1. **Viewer-relative trust.** Trust is evaluated from the *viewer's* perspective.
-   A space owner's trust marker over their own page does **not** bind a visitor.
-   A bundle living in a namespace you do not own is never trusted by you, so its
-   writes always prompt (D3). Existing directory apps, trusted by an organizer you
-   follow in a space you joined, keep their current frictionless behavior.
-2. **No device permissions for `kind: page` bundles**, in any slice.
+### Connection requests and read gate (Slice 2)
 
-### Connection requests (Slice 2)
-
-Reuses `InviteRequestV1` from the Meadowcap design (line 696) rather than
-inventing a second protocol. Delivery is **nearby-only** in this slice: an open,
-world-writable `pub/requests/**` area would be a spam and enumeration vector, and
-nearby-first matches how Riot already meets people.
-
-```
-requester → InviteRequestV1 { request_id, receiver signing key, space
-                              fingerprint, nonce, signature }        [over BLE]
-owner     → sees pending request with the requester's calling card
-owner     → accepts: delegate ReadCapability over con/** to receiver key, expiry set
-owner     → InviteV1 { recipient-bound, canonical child capability }  [over BLE]
-requester → stores cap; proves possession of receiver secret at next protected sync
-```
-
-Revocation is a signed revocation record plus capability expiry. It stops
-*future* reads once peers learn the new state. **It cannot recall data already
-synchronized.** The UI must say so.
-
-### Replication read gate (Slice 2)
-
-The current `/1` `Hello`/`Summary` codec discloses namespace and entry identifiers
-before authentication (Meadowcap design, line 238). It remains the **legacy
-public-only codec** and serves `pub/**`.
-
-`con/**` requires the protected codec from that design's §Replication read gate:
-handshake → prove receiver secret in a domain-separated transcript → bind
-receiver-named capabilities → reconcile only inside the granted area. The serving
-peer checks `cap.includes_area()` before binding a range and `cap.includes(entry)`
-before emitting any entry or payload. Failures close the session without a
-distinguishable protected-data response.
+Reuses `InviteRequestV1` (Meadowcap design line 696); delivery is **nearby-only**
+in this slice (an open, world-writable request area is a spam/enumeration vector).
+`pub/**` is served by the legacy `/1` codec; `con/**` requires the protected codec
+(Meadowcap §Replication read gate): handshake → prove receiver secret in a
+domain-separated transcript → bind receiver-named capabilities → reconcile only
+inside the granted area, checking `cap.includes_area()` before binding and
+`cap.includes(entry)` before emitting anything. Failures close the session with no
+distinguishable protected-data response. Revocation stops *future* reads once
+peers learn the new state; it cannot recall synchronized data, and the UI says so.
 
 ## Slices
 
-**Slice 1 — Make your page.** *(This spec's implementation target.)*
-Multi-space store; owned namespace creation with root key in secure storage;
-first-run flow prompting for profile + space; template gallery; source editor;
-model-assisted authoring; page publication; page runtime.
-**Public pages only** — no read gate is needed when everything is in `pub/`.
+**Slice 1 — Make your page.** *(Implementation target.)* Multi-space store; owned
+namespace + `NamespaceKind::Owned` + owned cap minting (net-new core work, first
+work unit); root key custody; first-run onboarding; template gallery; source
+editor; page publication; page runtime with the Slice-1 foreign-page posture
+(bridge-less) and the iOS network backstop. **Public pages only** — no read gate.
 Demoable end to end: create a space, build a hideous page, show it to the phone
 next to you.
 
-**Slice 2 — Connections only.** Read capability minting and delegation;
-`InviteRequestV1` request/grant flow over nearby; protected sync codec; revocation
-and expiry; the calling-card-only view of a connections-only space.
+**Slice 1.5 — Assisted authoring.** Local-default, remote-opt-in model authoring
+(D6); passphrase-encrypted root recovery export mechanism.
 
-**Slice 3 — Guestbooks, apps, auditors.** Consent-mediated bridge writes; narrow
-delegated write caps over `apps/<app_id>/**`; publishing a page as an installable
-app; auditor endorsements and follow lists.
+**Slice 2 — Connections only.** Read-cap minting/delegation; `InviteRequestV1`
+request/grant over nearby; protected sync codec; revocation and expiry;
+calling-card-only view; the tier decision for `con/<tier>/**`.
+
+**Slice 3 — Guestbooks, apps, auditors.** Consent-mediated bridge writes
+(host-authored copy, per-write/enumerated-batch); narrow delegated write caps over
+`apps/<app_id>/**`; publishing a page as an installable app; auditor endorsements
+and follow lists, mechanically separate from install/trust.
 
 ## Limitations, stated honestly
 
-These belong in user-facing copy, not only in this document.
+These belong in user-facing copy, not only here.
 
 1. **Connections-only is not encryption.** Plaintext at rest. A granted connection
-   can copy and reshare anything they can read. Device seizure reveals everything.
-2. **Existence leaks.** Without PIO/Confidential Sync (upstream proposals, not
-   final), an unauthorized peer can still learn your namespace ID and that
-   connections-only content exists. They obtain **zero entries and zero payloads**.
-   The content is protected; the silhouette is not.
-3. **Revocation is forward-only.** Removing a connection stops future reads. It
-   cannot un-send what already synced.
-4. **Audits are advisory.** "Reviewed — no findings" is a report, not a guarantee,
-   and never relaxes the sandbox.
-5. **Remote model authoring is network egress.** Opt-in, per-use, provider named.
+   can copy and reshare anything they read. Device seizure reveals the content.
+2. **Root compromise is total and permanent.** The root key is an extractable
+   Keychain blob (ed25519 cannot be enclave-bound). Extraction — forensics,
+   jailbreak, coercion, or an opt-in export — lets the holder mint new read caps
+   over `con/**` forever and author as any subspace in the namespace. This is
+   strictly worse than limitation 1 and is why the root defaults to no-sync,
+   no-backup, this-device-only.
+3. **Existence and identity leak.** Without PIO/Confidential Sync (upstream
+   proposals, not final), an unauthorized peer learns your namespace ID and that
+   `con/` content exists (zero entries, zero payloads served). The namespace ID
+   is the root public key — a **stable, unique identifier** disclosed pre-auth by
+   the legacy `/1` codec over BLE, enabling passive physical correlation of the
+   device across time and place (cf. commit `1187bdd`, "stop leaking device
+   name"). The content is protected; the silhouette is not.
+4. **Visitor identity was a live leak and is closed in Slice 1** by mounting
+   foreign pages bridge-less; when identifying reads return in later slices they
+   are consent-gated (D3).
+5. **Revocation is forward-only.** It cannot un-send what already synced.
+6. **Audits are advisory.** "Reviewed — no findings" is a report, never a
+   capability change.
+7. **Remote model authoring (Slice 1.5) is network egress**, and the connection
+   itself is metadata. Opt-in, per-use, provider named.
 
 ## Testing strategy
 
-- **Namespace kind is intrinsic.** Property test: a personal space's namespace ID
-  always reports `is_owned()`; a group space's always reports `is_communal()`; no
-  code path produces an owned namespace whose secret was zeroized.
-- **Root key custody.** The root `NamespaceSecret` never appears in
-  `riot-profile.json`, in any Willow entry, in any log, or across the FFI boundary.
-- **Path gate.** No entry may be written to `con/**` by a caller holding only a
-  `pub/**` capability; attenuation is enforced by the capability, not by the caller.
-- **Containment (the security-critical suite).** A hostile fixture page attempts,
-  and must fail at, each of: `fetch`/XHR/WebSocket to any host; loading an external
-  script, style, font, or image; top-level navigation off `riot-app://`; reading
-  another page's `localStorage`/IndexedDB via a forged origin; calling `put()`
-  without consent; obtaining a secret key or raw capability from the bridge;
-  requesting camera/microphone/location.
-- **Beacon test.** Opening a hostile page writes **zero** entries signed by the
-  visitor. Asserted at the store, not the UI.
-- **Endorsement binds the digest.** A single mutated byte in a bundle invalidates
-  every endorsement over it.
-- **Endorsement grants nothing.** A bundle with a valid endorsement from a followed
-  auditor is subject to byte-identical runtime restrictions as an unendorsed one.
-  This test exists to make D5 a regression, not a memo.
-- **Offline authoring.** With no network and no local model, template selection,
-  source editing, and publication all succeed.
+Each test is tagged with its owning slice; **Slice 1 acceptance (criterion 5)
+covers only the Slice-1 subset.**
 
-## Acceptance criteria
+- **[S1] Namespace kind is intrinsic.** A personal space's namespace ID always
+  reports `is_owned()`; a group space's always `is_communal()`; no path produces
+  an owned namespace whose secret was zeroized.
+- **[S1] Root key custody.** No plaintext root secret appears across FFI, in
+  `riot-profile.json`, in logs, or in any Willow entry; the Keychain item carries
+  the this-device-only, no-sync accessibility class.
+- **[S1] Owned cap minting.** Publishing into the owned namespace authorizes via
+  `new_owned` threaded through `authorise_entry`; a communal author cannot write
+  the owned namespace and vice versa.
+- **[S1] Visibility-segment admission is one source of truth.** A crafted entry
+  whose first component is not an allowed visibility value is rejected identically
+  by local-write, `classify_app_index_path`/`is_app_data_path`, and `verify_frame`.
+- **[S1] Containment (security-critical).** A hostile fixture page attempts, and
+  must fail at, each of: `fetch`/XHR/WebSocket; external script/style/font/image;
+  `<link rel=dns-prefetch>`; WebRTC/STUN; form submission; `window.open`;
+  top-level navigation off the app scheme; reading another page's storage via a
+  forged origin; every powerful secure-context API on Android's synthetic origin;
+  requesting camera/microphone/location.
+- **[S1] Beacon / foreign-page posture.** A foreign `kind: page` bundle has no
+  bridge: `put`, `whoami`, and `profile` are absent; opening a hostile page writes
+  **zero** entries signed by the visitor and returns nothing identifying.
+  Asserted at the store and the bridge, not the UI.
+- **[S1] Offline authoring.** With no network and no local model, template
+  selection, source editing, and publication all succeed.
+- **[S1] iOS network backstop.** With CSP stripped in a test build, the
+  independent iOS network backstop still blocks a subresource/network load — CSP
+  is not the only wall.
+- **[S2] Path gate.** No entry may be written to `con/**` by a caller holding only
+  a `pub/**` capability; attenuation is enforced by the capability.
+- **[S3] Endorsement binds the digest.** One mutated bundle byte invalidates every
+  endorsement over it.
+- **[S3] Endorsement grants nothing.** A bundle with a valid endorsement from a
+  followed auditor is subject to byte-identical runtime restrictions as an
+  unendorsed one, and no endorsement path reaches the trust/install action. This
+  test exists to make D5 a regression, not a memo.
+- **[S3] Consent copy is host-authored.** The write-consent sheet cannot render
+  page-supplied text, and one consent authorizes only the enumerated write(s).
+
+Coverage is enforced with the Rust+Swift command set (e.g. `cargo-llvm-cov`
+thresholds and Swift coverage), recorded in `.coverage-thresholds.json`, not the
+JS tooling CLAUDE.md describes by default.
+
+## Acceptance criteria (Slice 1)
 
 1. First launch prompts for a display name and a space; both exist inside one
-   minute, and `set_display_name` finally has a caller.
-2. A personal space is an owned namespace whose root secret lives in platform
-   secure storage and never leaves it.
+   minute, and `set_display_name` (the FFI setter with no current Swift caller)
+   gains its first caller.
+2. A personal space is an owned namespace whose root secret lives in
+   this-device-only, no-sync, no-backup secure storage and never leaves it in
+   plaintext.
 3. A person can pick a template, edit its source, and publish — producing a signed
-   bundle that another device renders after nearby sync.
-4. A model-assisted page can be generated, reviewed as source, and published; and
-   authoring still works with the network off.
-5. Every hostile-page test above fails closed.
+   bundle another device renders after nearby sync.
+4. A foreign `kind: page` bundle mounts with no bridge; the beacon and containment
+   tests fail closed; the iOS network backstop test passes.
+5. Every **Slice-1-tagged** hostile-page and containment test above fails closed.
 6. Group spaces (communal) and personal spaces (owned) coexist in the multi-space
-   store, and the app renders both.
-7. Slice 1 writes no entry outside `pub/**`, and the `con/**` prefix is reserved so
-   Slice 2 needs no migration.
+   store, are visibly distinct at creation, and both render.
+7. Slice 1 writes no entry outside `pub/**`; the `con/<tier>/**` prefix is reserved
+   so Slice 2 needs no migration; Slice 1 exposes no live privacy-implying control.
 
-## Open questions for Slice 2
+## Open questions
 
-- Does a connection get a read cap over all of `con/**`, or do we want tiers
-  (close friends vs connections) as distinct prefixes? Reserving `con/<tier>/**`
-  now costs nothing and is impossible to retrofit.
-- Is there a public request path at all, or is nearby-only permanent?
-- Per-device receiver keys versus one receiver per person: the Meadowcap design
-  says per-device (line 692), which implies a grant fans out to a person's devices.
+- **Start dependency on the multi-space store.** The store is a confirmed-unbuilt
+  hard blocker whose own design already persists owned namespaces + root-key
+  references. Can owned-namespace creation, custody, and the page runtime begin in
+  parallel against the store's *interface*, or must the store merge first? Biggest
+  schedule risk; resolve before sequencing Slice 1 work units.
+- **Slice 1 discovery model.** Viewing is nearby-only in Slice 1 (you render the
+  page of a phone you synced with). Confirm that is the intended Slice-1 audience
+  path, and how someone reaches a page whose author is not physically present
+  (deferred, but name it).
+- **Tiers (Slice 2).** The `con/<tier>/**` segment is reserved; Slice 2 decides
+  whether to populate more than one tier and what the tiers are.
