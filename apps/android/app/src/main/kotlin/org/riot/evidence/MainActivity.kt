@@ -24,6 +24,7 @@ import org.riot.evidence.apps.RiotAppsController
 import org.riot.evidence.apps.UniffiDirectoryPort
 import org.riot.evidence.apps.RiotJsBridge
 import org.riot.evidence.apps.UniffiAppDataPort
+import org.riot.evidence.apps.UniffiProfilePort
 import org.riot.evidence.transport.AndroidNearbyController
 import org.riot.evidence.transport.NearbyUiState
 import org.riot.evidence.transport.NearbyUiActions
@@ -334,7 +335,7 @@ class MainActivity : Activity() {
                         controller.onAppDataCommitted(gated.record.appId, key, bundle)
                     },
                 ),
-                controller.displayName(),
+                UniffiProfilePort(controller.profileSession()),
             )
             val host = AppWebViewHost(this, resolver, bridge)
             runningApp = gated to host

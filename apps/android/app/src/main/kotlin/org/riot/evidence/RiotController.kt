@@ -10,6 +10,7 @@ import uniffi.riot_ffi.AlertUrgency
 import uniffi.riot_ffi.CurrentEntry
 import uniffi.riot_ffi.MobileImportPreview
 import uniffi.riot_ffi.MobileProfile
+import uniffi.riot_ffi.ProfileSession
 import uniffi.riot_ffi.PublicSpace
 import uniffi.riot_ffi.PublicIdentity
 import uniffi.riot_ffi.openLocalProfile
@@ -84,8 +85,16 @@ class RiotController(filesDir: File) : AutoCloseable {
     fun onAppDataCommitted(appId: String, key: String, bundleBytes: ByteArray) =
         mutatePersistedIfPresent { recordAppData(it, appId, key, bundleBytes) }
 
-    /** Placeholder until real display names land; never exposes the full id. */
-    fun displayName(): String = "member-" + identity().signingKeyId.take(8)
+    /**
+     * The display-name surface, for `riot.whoami()` / `riot.profile(id)`.
+     *
+     * Replaces the old `displayName()` placeholder (`"member-<hex>"`), which was
+     * a label with nowhere for a real name to go. Real names now live in the
+     * profile FFI, and an app stores the **id** and re-resolves the name at
+     * render time — so a rename repairs every row that person ever touched
+     * instead of leaving a snapshot behind forever.
+     */
+    fun profileSession(): ProfileSession = profile.profile()
 
     fun entries(): List<CurrentEntry> = profile.listCurrentEntries()
 

@@ -273,9 +273,11 @@ final class AppRepositoryTests: XCTestCase {
         XCTAssertEqual(try reopened.appDataGet(appID: appID, key: "b"), "\"second\"")
     }
 
-    // MARK: - Display name
+    // MARK: - Identity
 
-    func testDisplayNameComesFromProfileNotPlaceholder() throws {
+    /// The contract an app depends on: `whoami()` hands over a STABLE id to
+    /// store, and the name is only a currently-drawable claim beside it.
+    func testWhoamiGivesAStableIDPlusTheTwoHalvesToDrawIt() throws {
         let repository = try RiotProfileRepository.open(
             storage: try makeStorage("displayname"),
             keyStore: TestWrappingKeyStore(),
@@ -286,9 +288,36 @@ final class AppRepositoryTests: XCTestCase {
         try repository.trustApp(appID: appID)
         let bridge = try XCTUnwrap(repository.appDataBridge(appID: appID))
 
-        let name = bridge.displayName()
-        XCTAssertTrue(name.hasPrefix("member-"), "expected an FFI-derived name, got \(name)")
-        XCTAssertNotEqual(name, "member")
+        let me = bridge.whoami()
+        XCTAssertEqual(me.idHex.count, 64, "the id an app stores is the 32-byte subspace id, in hex")
+        XCTAssertTrue(me.idHex.allSatisfy { $0.isHexDigit && !$0.isUppercase }, "lowercase hex: \(me.idHex)")
+        // No name claimed yet, so the fallback — and the tag is the id's own
+        // first 8 hex, which is what makes the pair hard to impersonate.
+        XCTAssertEqual(me.displayName, "member")
+        XCTAssertEqual(me.tag, String(me.idHex.prefix(8)))
+    }
+
+    /// An author whose profile has not synced here yet is a normal peer, not a
+    /// failure: the row still has to draw. Only a malformed id is an error.
+    func testProfileFallsBackForUnknownIDsAndRejectsMalformedOnes() throws {
+        let repository = try RiotProfileRepository.open(
+            storage: try makeStorage("profile-unknown"),
+            keyStore: TestWrappingKeyStore(),
+            starterPacks: try starterPacks()
+        )
+        _ = try repository.createPublicSpace(title: "Berlin Mutual Aid")
+        let appID = try repository.spaceApps()[0].appIDHex
+        try repository.trustApp(appID: appID)
+        let bridge = try XCTUnwrap(repository.appDataBridge(appID: appID))
+
+        let stranger = String(repeating: "ab", count: 32)
+        let unknown = try XCTUnwrap(bridge.profile(idHex: stranger), "an unsynced peer must still draw")
+        XCTAssertEqual(unknown.displayName, "member")
+        XCTAssertEqual(unknown.tag, "abababab")
+
+        XCTAssertNil(bridge.profile(idHex: "not-hex"))
+        XCTAssertNil(bridge.profile(idHex: "abcd"), "a wrong-length id is a caller bug")
+        XCTAssertNil(bridge.profile(idHex: ""))
     }
 
     // MARK: - Snapshot helpers

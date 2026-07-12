@@ -14,7 +14,7 @@ import android.webkit.JavascriptInterface
  * classpath, so the wire format is spelled out here and covered by JVM
  * tests directly.
  */
-class RiotJsBridge(private val port: AppDataPort, private val displayName: String) {
+class RiotJsBridge(private val port: AppDataPort, private val profiles: ProfilePort) {
     companion object {
         /** Total message budget; individual values are further capped in Rust. */
         const val MAX_MESSAGE_BYTES = 262_144
@@ -58,8 +58,35 @@ class RiotJsBridge(private val port: AppDataPort, private val displayName: Strin
         )
     }
 
+    /**
+     * `{ id, displayName, tag }`. The id is what the app STORES; displayName and
+     * tag are only what it draws right now, and it must re-resolve them through
+     * [riotProfile] on every render — otherwise a rename can never repair the
+     * rows already written.
+     */
     @JavascriptInterface
-    fun riotWhoami(): String = """{"ok":true,"value":{"displayName":${jsonQuote(displayName)}}}"""
+    fun riotWhoami(): String {
+        val me = profiles.whoami()
+        return """{"ok":true,"value":{"id":${jsonQuote(me.idHex)},""" +
+            """"displayName":${jsonQuote(me.displayName)},"tag":${jsonQuote(me.tag)}}}"""
+    }
+
+    /**
+     * Resolves a stored id to `{ displayName, tag }` — the two halves the page
+     * flattens into `"{displayName} · {tag}"`. Core has already guaranteed the
+     * name cannot contain the separator, so that flattening cannot forge a
+     * second tag; nothing is re-sanitized here.
+     *
+     * An id with no profile yet is NOT an error (it resolves to the `member`
+     * fallback). Only a malformed id fails.
+     */
+    @JavascriptInterface
+    fun riotProfile(idHex: String?): String {
+        if (idHex == null || idHex.toByteArray().size > MAX_MESSAGE_BYTES) return error(LOAD_ERROR)
+        val who = profiles.profileFor(idHex) ?: return error(LOAD_ERROR)
+        return """{"ok":true,"value":{"displayName":${jsonQuote(who.displayName)},""" +
+            """"tag":${jsonQuote(who.tag)}}}"""
+    }
 
     private fun error(message: String) = """{"ok":false,"error":${jsonQuote(message)}}"""
 

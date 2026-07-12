@@ -47,7 +47,15 @@ object RiotJsShim {
           watchers.push({ prefix: prefix, cb: cb });
           window.riot.list(prefix).then(cb).catch(function () {});
         },
+        // Returns { id, displayName, tag }. Store the ID. displayName and tag
+        // are only what to draw right now — re-resolve them with riot.profile()
+        // at render time, or a rename can never repair the rows already written.
         whoami: function () { return call(function () { return RiotNative.riotWhoami(); }); },
+        // Resolves a stored id to { displayName, tag }. Render as
+        // displayName + " · " + tag; the host guarantees displayName carries no
+        // separator. An id with no profile yet is not an error — it comes back
+        // as the "member" fallback.
+        profile: function (id) { return call(function () { return RiotNative.riotProfile(String(id)); }); },
       };
     })();
     """

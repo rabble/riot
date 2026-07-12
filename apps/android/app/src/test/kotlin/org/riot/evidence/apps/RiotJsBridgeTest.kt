@@ -16,9 +16,28 @@ private class FakeAppDataPort : AppDataPort {
         stored.filterKeys { it.startsWith(prefix) }.map { it.key to it.value }.sortedBy { it.first }
 }
 
+/**
+ * Stands in for the profile FFI. `profileFor` mirrors the real contract: an id
+ * it has never seen is NOT a failure — it resolves to the `member` fallback, so
+ * a row by a peer whose profile hasn't synced yet still draws. Only a malformed
+ * id is null.
+ */
+private class FakeProfilePort : ProfilePort {
+    val me = BridgeProfile(idHex = "ab".repeat(32), displayName = "member", tag = "abababab")
+    val known = mutableMapOf<String, String>()
+
+    override fun whoami(): BridgeProfile = me
+
+    override fun profileFor(idHex: String): BridgeProfile? {
+        if (idHex.length != 64 || !idHex.all { it in "0123456789abcdef" }) return null
+        return BridgeProfile(idHex, known[idHex] ?: "member", idHex.take(8))
+    }
+}
+
 class RiotJsBridgeTest {
     private val port = FakeAppDataPort()
-    private val bridge = RiotJsBridge(port, displayName = "member-ab12cd34")
+    private val profiles = FakeProfilePort()
+    private val bridge = RiotJsBridge(port, profiles)
 
     @Test
     fun putStoresJsonTextAndReturnsOkEnvelope() {
@@ -72,8 +91,44 @@ class RiotJsBridgeTest {
         )
     }
 
+    /**
+     * The id is the field that matters: it is what an app STORES. The name and
+     * tag beside it are only what to draw right now, and the app must re-resolve
+     * them through `riotProfile` at render time.
+     *
+     * Byte-identical to the iOS envelope — the two bridges must not drift.
+     */
     @Test
-    fun whoamiReturnsDisplayNameOnly() {
-        assertEquals("""{"ok":true,"value":{"displayName":"member-ab12cd34"}}""", bridge.riotWhoami())
+    fun whoamiCarriesTheStableIdAlongsideTheTwoHalvesToDrawIt() {
+        assertEquals(
+            """{"ok":true,"value":{"id":"${"ab".repeat(32)}","displayName":"member","tag":"abababab"}}""",
+            bridge.riotWhoami(),
+        )
+    }
+
+    @Test
+    fun profileResolvesAStoredIdToTheCurrentName() {
+        val id = "cd".repeat(32)
+        profiles.known[id] = "Ana"
+        assertEquals(
+            """{"ok":true,"value":{"displayName":"Ana","tag":"cdcdcdcd"}}""",
+            bridge.riotProfile(id),
+        )
+    }
+
+    /** An author whose profile hasn't synced here yet still has to draw. */
+    @Test
+    fun profileFallsBackToMemberForAnIdItHasNeverSeen() {
+        assertEquals(
+            """{"ok":true,"value":{"displayName":"member","tag":"efefefef"}}""",
+            bridge.riotProfile("ef".repeat(32)),
+        )
+    }
+
+    @Test
+    fun profileRejectsMalformedIds() {
+        assertEquals("""{"ok":false,"error":"Couldn't load that"}""", bridge.riotProfile("not-hex"))
+        assertEquals("""{"ok":false,"error":"Couldn't load that"}""", bridge.riotProfile("abcd"))
+        assertEquals("""{"ok":false,"error":"Couldn't load that"}""", bridge.riotProfile(null))
     }
 }

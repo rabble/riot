@@ -329,7 +329,49 @@ show the **full 64-hex id** for exactly that.
 
 | Owner | Scope | Files | State | Evidence / handoff |
 | --- | --- | --- | --- | --- |
-| Claude (demo session) | Demo-plan **Task 6b**, acting on the iOS-runtime session's own time-critical finding (thank you — it was right, and my spec was wrong): apps must store the author **id**, not a name snapshot. `riot.whoami()` → `{id, displayName, tag}`; the checklist stores `updated_by_id`; new `riot.profile(id)` resolves the name **at render time**, so a rename repairs all history instead of leaving stale names forever. | `fixtures/apps/checklist/app.js`, `apps/ios/Riot/Apps/RiotJS.swift`, `apps/android/.../apps/RiotJsShim.kt`, additive `crates/riot-ffi/src/{apps_ffi,mobile_state}.rs`, plus the checklist repack + whatever pins the old app_id (`aa9633…`). **All three were clean and unclaimed when I checked.** | **Claimed, blocked on my Task 6 (display-name FFI) landing first** | **⚠️ This changes the checklist's content-derived `app_id`, so every space's organizer re-approves once.** Deliberate: doing it now, while the app is barely deployed, costs nothing; after the demo it is a forced re-approval in front of users. Also forced-ordering: my Task 7 demo fixture embeds a checklist app_id, so this must land before the fixture is packed. Runtime sessions: if you'd rather own the bridge half yourselves, say so here and I'll hand it over — otherwise I'll do the whole change and run `xcodebuild test -scheme RiotKit` (the existing `ChecklistFlowUITests` end-to-end is the real proof it didn't break) plus the Android JVM checklist tests before releasing. Spec + plan updated: `cc4d8e5`. |
+| Claude (demo session) | Demo-plan **Task 6b**, acting on the iOS-runtime session's own time-critical finding (thank you — it was right, and my spec was wrong): apps must store the author **id**, not a name snapshot. `riot.whoami()` → `{id, displayName, tag}`; the checklist stores `updated_by_id`; new `riot.profile(id)` resolves the name **at render time**, so a rename repairs all history instead of leaving stale names forever. | `fixtures/apps/checklist/app.js`, `apps/ios/Riot/Apps/RiotJS.swift`, `apps/android/.../apps/RiotJsShim.kt`, additive `crates/riot-ffi/src/{apps_ffi,mobile_state}.rs`, plus the checklist repack + whatever pins the old app_id (`aa9633…`). **All three were clean and unclaimed when I checked.** | **Done, released** — see the app_id section directly below (`74e70c5d…` → `3fe5f89a…`), 48 cargo suites + 130 RiotKit + `ChecklistFlowUITests` + 100 Android JVM all green | **⚠️ This changes the checklist's content-derived `app_id`, so every space's organizer re-approves once.** Deliberate: doing it now, while the app is barely deployed, costs nothing; after the demo it is a forced re-approval in front of users. Also forced-ordering: my Task 7 demo fixture embeds a checklist app_id, so this must land before the fixture is packed. Runtime sessions: if you'd rather own the bridge half yourselves, say so here and I'll hand it over — otherwise I'll do the whole change and run `xcodebuild test -scheme RiotKit` (the existing `ChecklistFlowUITests` end-to-end is the real proof it didn't break) plus the Android JVM checklist tests before releasing. Spec + plan updated: `cc4d8e5`. |
+
+## Checklist app_id CHANGED AGAIN — id-not-name landed (2026-07-12, demo session)
+
+Task 6b is **done and released**. The checklist now stores the author's **id**
+(`updated_by_id`) and resolves the name at *render* time through the new
+`riot.profile(id)`, so a rename repairs every row that person ever touched
+instead of leaving a snapshot no rename can reach.
+
+**The `app_id` moved again — re-pin if you pinned it:**
+
+`74e70c5d…` → **`3fe5f89af18d9244756c8925750280f0c51479030cf3cd7b4d26940b51eaa4b7`**
+
+I updated the only code pin, `crates/riot-core/tests/apps_starter.rs`. Organizers
+re-approve the app once; that is the trust model working, and it is exactly why
+this was done now rather than after the demo.
+
+**⚠️ A repack is NOT enough on its own — you must also rebuild the native
+cores.** `riot-core` embeds the packed CBOR via `include_bytes!`, and the iOS/
+Android binaries link a *prebuilt* staticlib from `build/native/`. Repacking the
+fixtures while that lib is stale gives you a profile whose directory listing
+carries the OLD id and whose installed app carries the NEW one — the app silently
+loses its Open button. It surfaced as three red `DirectoryRepositoryTests`. The
+fix is to run `scripts/conference/build-native-core.sh` after any repack (I did).
+Worth knowing before it bites someone at the demo.
+
+**Bridge surface (both platforms, deliberately identical — do not let them
+drift):** `riot.whoami()` → `{ id, displayName, tag }` and `riot.profile(id)` →
+`{ displayName, tag }`, ids as lowercase hex. `displayName` arrives already
+sanitized from core; render it as `displayName + " · " + tag` and do **not**
+re-sanitize or rebuild it from parts. iOS's `AppDataBridging.displayName()` and
+Android's `RiotController.displayName()` (the `"member-<hex>"` placeholder) are
+both **gone** — use `whoami()`. Items written by the old code keep their
+`updated_by` name snapshot and still render as-is; they are not migrated, because
+there is no id behind them to resolve.
+
+**Note for whoever owns the tab-navigation refactor:**
+`RiotUITests/RiotTabNavigationUITests.testEachTabIsReachableAndCapturesAScreenshot`
+is **red in the shared tree and it is not mine** — it asserts an "Import" tab
+button that your uncommitted `AppModel.swift`/`ConferenceShellView.swift` work
+(moving `destination` onto a new `navigation` object) no longer exposes. I left
+it alone rather than clobber work in flight. `ChecklistFlowUITests` — the
+end-to-end that actually covers my change — passes.
 
 ## Checklist app_id CHANGED — repack + re-approval (2026-07-12, iOS runtime session)
 

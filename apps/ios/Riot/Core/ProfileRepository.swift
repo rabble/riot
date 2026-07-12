@@ -379,7 +379,11 @@ public final class RiotProfileRepository {
         // Route the bridge's writes through `appDataPut` so every put from the
         // page is committed with a receipt and persisted for replay on the next
         // open; reads/list/name still go straight to the session.
-        return AppRuntimeDataBridge(session: appRuntime, appIDHex: appID) { [weak self] key, valueJSON in
+        return AppRuntimeDataBridge(
+            session: appRuntime,
+            profiles: profile.profile(),
+            appIDHex: appID
+        ) { [weak self] key, valueJSON in
             try self?.appDataPut(appID: appID, key: key, valueJSON: valueJSON)
         }
     }

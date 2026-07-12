@@ -48,9 +48,24 @@ final class AppRuntimeHostTests: XCTestCase {
     }
 
     private func trustedRuntimeBridge(appID: String) throws -> AppRuntimeDataBridge {
+        try trustedRuntime(appID: appID).bridge
+    }
+
+    /// The profile too, for the tests that need to rename the person behind the
+    /// bridge — the repository has no rename surface yet, but `ProfileSession`
+    /// does, and the rename is exactly what this change exists to make work.
+    private func trustedRuntime(
+        appID: String
+    ) throws -> (bridge: AppRuntimeDataBridge, profiles: ProfileSession) {
         let profile = try openLocalProfile()
         _ = try profile.createPublicSpace(title: "Berlin Mutual Aid")
-        return AppRuntimeDataBridge(session: profile.appRuntime(), appIDHex: appID)
+        let profiles = profile.profile()
+        let bridge = AppRuntimeDataBridge(
+            session: profile.appRuntime(),
+            profiles: profiles,
+            appIDHex: appID
+        )
+        return (bridge, profiles)
     }
 
     /// Records the outcome of a single navigation so tests can wait for the
@@ -252,7 +267,12 @@ final class AppRuntimeHostTests: XCTestCase {
         func put(key: String, valueJSON: String) throws {}
         func get(key: String) throws -> String? { nil }
         func list(prefix: String) throws -> [(key: String, valueJSON: String)] { [] }
-        func displayName() -> String { "spy" }
+        func whoami() -> BridgeProfile {
+            BridgeProfile(idHex: String(repeating: "11", count: 32), displayName: "spy", tag: "11111111")
+        }
+        func profile(idHex: String) -> BridgeProfile? {
+            BridgeProfile(idHex: idHex, displayName: "spy", tag: String(idHex.prefix(8)))
+        }
     }
 
     private func navigationDecision(
@@ -378,6 +398,116 @@ final class AppRuntimeHostTests: XCTestCase {
             if observed >= 1 { break }
         }
         XCTAssertGreaterThanOrEqual(observed, 1, "notification did not re-run page watchers")
+    }
+}
+
+// MARK: - Attribution: the app stores an id, never a name
+
+extension AppRuntimeHostTests {
+    /// The whole point of the change, driven through the real page: an item the
+    /// checklist writes must carry the author's **id**, not a name snapshot.
+    func testChecklistStoresTheAuthorIDAndNotANameSnapshot() async throws {
+        let appID = String(repeating: "a", count: 64)
+        let runtime = try trustedRuntime(appID: appID)
+        let bridge = AppBridgeController(bridge: runtime.bridge)
+        let (webView, probe) = makeWebView(resolver: try checklistResolver(appID: appID), bridge: bridge)
+        await loadEntryPoint(webView, probe, appID: appID)
+
+        try await addItem(webView, text: "bring water")
+
+        let stored = try XCTUnwrap(runtime.bridge.list(prefix: "items").first?.valueJSON)
+        let value = try XCTUnwrap(
+            try JSONSerialization.jsonObject(with: Data(stored.utf8)) as? [String: Any]
+        )
+        let authorID = try XCTUnwrap(value["updated_by_id"] as? String, "no id stored: \(stored)")
+        XCTAssertEqual(authorID, runtime.bridge.whoami().idHex)
+        XCTAssertNil(
+            value["updated_by"],
+            "a name snapshot is exactly what must NOT be written any more: \(stored)"
+        )
+    }
+
+    /// The payoff. Ana checks something off, THEN claims her name — and the row
+    /// she already wrote says "Ana". Under a stored name snapshot this is
+    /// impossible: the old name would stand forever, unrepairable.
+    func testRenamingRepairsAttributionOnItemsAlreadyWritten() async throws {
+        let appID = String(repeating: "a", count: 64)
+        let runtime = try trustedRuntime(appID: appID)
+        let bridge = AppBridgeController(bridge: runtime.bridge)
+        let (webView, probe) = makeWebView(resolver: try checklistResolver(appID: appID), bridge: bridge)
+        await loadEntryPoint(webView, probe, appID: appID)
+
+        try await addItem(webView, text: "bring water")
+        let tag = runtime.bridge.whoami().tag
+        let before = try await eventuallyMeta(webView, equals: "member · \(tag)")
+        XCTAssertEqual(before, "member · \(tag)", "unnamed author should render as the fallback pair")
+
+        try runtime.profiles.setDisplayName(name: "Ana")
+        bridge.notifyDataChanged()
+
+        let after = try await eventuallyMeta(webView, equals: "Ana · \(tag)")
+        XCTAssertEqual(after, "Ana · \(tag)", "the rename must repair the row that was already written")
+    }
+
+    /// Back-compat: an item written by the OLD code carries `updated_by`, a bare
+    /// name with no id behind it. It must still draw — as-is, since there is
+    /// nothing to resolve — and it must not take the page down.
+    func testLegacyNameSnapshotRowsStillRender() async throws {
+        let appID = String(repeating: "a", count: 64)
+        let runtime = try trustedRuntime(appID: appID)
+        let bridge = AppBridgeController(bridge: runtime.bridge)
+        let (webView, probe) = makeWebView(resolver: try checklistResolver(appID: appID), bridge: bridge)
+        await loadEntryPoint(webView, probe, appID: appID)
+
+        // Exactly the shape the pre-id checklist wrote.
+        try runtime.bridge.put(
+            key: "items/legacy",
+            valueJSON: #"{"text":"old item","done":false,"updated_by":"Ana · deadbeef","updated_at":1}"#
+        )
+        bridge.notifyDataChanged()
+
+        let meta = try await eventuallyMeta(webView, equals: "Ana · deadbeef")
+        XCTAssertEqual(meta, "Ana · deadbeef", "a legacy snapshot must render as stored")
+        let rows = try await callAsync(webView, "return document.querySelectorAll('#items li').length;")
+        XCTAssertEqual(rows as? Int, 1, "the legacy row must not crash the render")
+    }
+
+    /// Adds an item the way a person does: through the page's own form handler,
+    /// so `stamp()` in `app.js` is what decides what gets stored.
+    private func addItem(_ webView: WKWebView, text: String) async throws {
+        let result = try await callAsync(webView, """
+            document.getElementById('new-item').value = \(jsLiteral(text));
+            document.getElementById('add-form')
+              .dispatchEvent(new Event('submit', { cancelable: true, bubbles: true }));
+            for (let i = 0; i < 100; i++) {
+              const rows = await window.riot.list('items');
+              if (rows.length > 0) { return 'added'; }
+              await new Promise((r) => setTimeout(r, 20));
+            }
+            return 'never stored';
+        """)
+        XCTAssertEqual(result as? String, "added")
+    }
+
+    /// Polls the first row's attribution until it settles: the name is resolved
+    /// asynchronously through `riot.profile()`, so the DOM lands a turn late.
+    private func eventuallyMeta(_ webView: WKWebView, equals expected: String) async throws -> String {
+        var seen = ""
+        for _ in 0..<100 {
+            seen = (try await callAsync(webView, """
+                const meta = document.querySelector('#items li .meta');
+                return meta ? meta.textContent : '';
+            """)) as? String ?? ""
+            if seen == expected { return seen }
+            try await Task.sleep(nanoseconds: 20_000_000)
+        }
+        return seen
+    }
+
+    private func jsLiteral(_ value: String) -> String {
+        let data = try? JSONSerialization.data(withJSONObject: [value])
+        let array = data.flatMap { String(data: $0, encoding: .utf8) } ?? "[\"\"]"
+        return String(array.dropFirst().dropLast())
     }
 }
 
