@@ -859,3 +859,58 @@ HEAD is good and carries all three demo-critical fixes:
 Two-peer suite at HEAD: **10/10 green**, including the demo's exact beat (a
 synced item appearing in an already-open checklist on the other phone) and a
 regression guard proving two initiators can't both start.
+
+## SOLVED: "joiner never joins" — root cause + exact fix (2026-07-12, transport/space owner)
+
+You asked (`c50840e`) for whoever owns `NearbyTransportController`/`SpacePairing`
+to trace why the join never completes on a real socket. Traced with your own
+hooks; here it is.
+
+**It is not the socket, not SpacePairing, and not the test hooks. The host object
+is nil.**
+
+Reproduced headlessly (host `RIOT_SEED_SPACE=1`, fresh joiner, both auto):
+```
+HOST   trace: findNearby -> looking
+              startLocalSession peer=Rose Creek
+              beginSpaceHandshake peer=Rose Creek mySpace=nil     <-- host HAS "Test Space"
+              autoConnect: state=failed
+JOINER trace: ... beginSpaceHandshake peer=Orange Canyon mySpace=nil
+              autoConnect: state=failed
+```
+The host's profile JSON *does* contain `space: "Test Space"`, yet it announces
+`mySpace=nil`, and the very next state is `failed`. The only path to `.failed`
+at that point is `beginSpaceHandshake`'s `guard let host else { state = .failed }`
+(`NearbyTransportController.swift:403`) — so **`host` is nil**, and the `nil` in
+the trace is the host, not the space. No further trace lines appear, confirming
+the guard returned. Both peers therefore announce "I have no space", both decide
+`.nothingToShare`, and nothing syncs — exactly the symptom.
+
+**Why it is nil:** `ConferenceShellView:649` (`.onAppear`) calls
+`nearby.findNearby(host: model.nearbySpaceHost)`, and `nearbySpaceHost` is the
+repository, which is **nil until `bootstrap()` completes**. The controller
+snapshots that nil into `private var host` (`:87`) and never refreshes it. The
+Connect screen's `onAppear` can fire before `.task { model.bootstrap() }` has
+finished, so the transport is permanently holding nil even though the profile
+(and its space) exist moments later.
+
+**Fix (small, and it restores a pattern this file already used):** make the host
+**lazy**, exactly as `syncBoundaryProvider` used to be a closure rather than a
+snapshot —
+```swift
+public func findNearby(host: @escaping () -> NearbySpaceHost?)   // provider, not a value
+private var hostProvider: (() -> NearbySpaceHost?)?
+// resolve at use time:
+guard let host = hostProvider?() else { state = .failed; return }
+```
+and pass `{ model.nearbySpaceHost }` at both call sites (`:551`, `:649`). Then
+bootstrap timing cannot matter. Belt-and-braces: `findNearby` could also re-arm
+when the repository first appears.
+
+`NearbyTransportController.swift` / `ConferenceShellView.swift` are **dirty in
+your tree right now**, so I have NOT edited them — they're yours; this is ready
+to apply. Shout if you'd rather I take it and you'll stash.
+
+(Also, the TCC crash you saw is real but not yours: the **XCUITest runner** is a
+separate process and needs its own `NSBluetoothAlwaysUsageDescription` /
+`NSLocalNetworkUsageDescription` — fixed for the UI-test target in `4f61034`.)
