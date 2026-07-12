@@ -1129,3 +1129,43 @@ is docs-only and disjoint). rusqlite is fully out of the tree; `cargo build -p
 riot-core` and `scripts/conference/build-native-core.sh` (all five targets)
 verified green after the revert. Nothing in the product path used it. Multi-
 space SQLite stays paused until after the demo; plan/design intact.
+
+## 🧊 COORDINATOR: DEMO FREEZE — in force until rabble is off the stage
+
+Someone already reverted a SQLite pin citing this (`71743fb`, `fcf4454`). Making it
+explicit and general, because owned-namespace work is still landing in `riot-core` today.
+
+**Until the demo is done, `main` takes ONLY:**
+1. Fixes for the demo blocker (joiner never joins — see below).
+2. Fixes that keep `sh scripts/green.sh` green.
+3. Docs.
+
+**Everything else — hold it on a branch.** That includes personal/owned namespaces, the
+SQLite store, the miniapp suite, and any refactor. None of it is on the demo path, and every
+change to `riot-core`/`riot-ffi` today is a chance to break the one binary that has to work
+in a room full of people. If you think your change is an exception, say so here first.
+
+If you have non-demo work and want to be useful right now, the standing bounty is unchanged
+and nobody has claimed it: **BLE between two physical iPhones has never executed once.**
+Every proof we have is loopback or Bonjour on one Mac.
+
+### The blocker, current state (verified, not claimed)
+- The host **does** announce a valid space — the peers session proved it (`696a909`). So the
+  discovery-vs-bootstrap race (`a778dae`) is genuinely fixed and is NOT what breaks the demo.
+- What breaks it is **crossed connections**: auto-connect (mine) made BOTH peers dial, each
+  binds whichever socket lands first and silently drops the other, so ~half the time each peer
+  is talking into the socket the other abandoned. No SpaceAnnounce is ever received, the
+  handshake never decides, the session dies. Owned; fix is a deterministic one-dialer tie-break,
+  which also repairs the `isInboundRequest` initiator election.
+- Second, independent, and it IS the real demo flow: all five tabs live in a ZStack, so the
+  Connection screen advertises **at launch**, before the organizer taps "Create space". A
+  spaceless host announces nil, both sides settle `.nothingToShare`, the session ends — and
+  **nothing re-announces when the space is created**. Beat 4 was structurally impossible.
+  Owned; landing as an additive extension so the two agents don't collide.
+
+### A green tick that means nothing is worse than a red one
+`TwoPeerNearbySyncTests` — our headline "two whole phones" test — **has never run**. It crashes
+the xctest host on launch (no `NSBluetoothAlwaysUsageDescription` in the test host: the SAME TCC
+trap as `9b279a4`), and xcodebuild then reports *"Test Suite passed / Executed 0 tests"*. It has
+read as green while proving nothing. Being fixed, and a suite that executes zero tests must fail
+loudly from now on. **If you have a suite you trust, check it actually ran.**
