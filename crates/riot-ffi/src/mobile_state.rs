@@ -77,6 +77,21 @@ pub(crate) struct LocalProfile {
     /// is the ONLY marker of demo mode — `hide_demo_space` refuses to un-list a
     /// space it did not itself list.
     demo_mode: Option<Box<DemoModeState>>,
+    /// True once this profile joined a space that was NOT its own — the author
+    /// had to be regenerated into a stranger's namespace (`join_public_space`).
+    ///
+    /// It exists ONLY to tell an honest refusal from a misleading one. A member
+    /// and a pre-organizer ("legacy") profile are byte-identical — both have
+    /// `subspace != namespace` — so nothing in the author can separate them, and
+    /// each needs a different thing said to it: a member should ask the
+    /// organizer, a legacy profile must start a new one. Neither may approve.
+    ///
+    /// Session-scoped, and safe to be: it never widens what a profile may do
+    /// (every path it selects between still REFUSES), it only picks the sentence.
+    /// It resets on relaunch, where a member is currently told the legacy line —
+    /// the wording is wrong, the refusal is not. Fixing that means persisting
+    /// provenance in the profile record, which is iOS's side of the boundary.
+    joined_others_space: bool,
 }
 
 /// What the profile was before demo mode was switched on.
@@ -184,6 +199,7 @@ fn profile_with_author(store: EvidenceStore, author: EvidenceAuthor) -> Arc<Mobi
             app_trust_markers: Vec::new(),
             app_data_timestamp_floor_micros: 0,
             demo_mode: None,
+            joined_others_space: false,
         })))),
     })
 }
@@ -251,9 +267,20 @@ pub(crate) fn join_public_space(
             return Err(MobileError::InvalidInput);
         }
         let namespace_id = parse_entry_id(&space.namespace_id)?;
+        // Moving namespaces is the ONLY moment we learn, for certain, that this
+        // space belongs to someone else: we had to mint a fresh communal author
+        // inside their namespace to write in it at all.
+        //
+        // The test is "was the author regenerated", NOT "was join_public_space
+        // called". On relaunch iOS restores EVERY persisted space through this
+        // function — a created one exactly like a joined one — and an organizer
+        // restoring their own space arrives here with the namespace already
+        // matching. Keying off the call would demote a real organizer to a member
+        // on their second launch; keying off the regeneration does not.
         if profile.author.identity().namespace_id != namespace_id {
             profile.author =
                 generate_communal_author_for_namespace(namespace_id).map_err(map_author_error)?;
+            profile.joined_others_space = true;
         }
         let joined = PublicSpace {
             namespace_id: hex(&namespace_id),
@@ -1530,6 +1557,49 @@ fn is_space_organizer(profile: &LocalProfile) -> bool {
     *profile.author.subspace_id().as_bytes() == space_organizer_subspace_id(profile)
 }
 
+/// Why this profile may not approve an app here — or `None` when it may.
+///
+/// The refusal is the SAME in both arms (the organizer gate does not move); only
+/// the sentence differs, because the two people need opposite advice. Splitting
+/// them is the whole point: `InvalidInput` used to cover both, which is how a
+/// silent, unexplained failure reached someone who had done nothing wrong.
+fn organizer_refusal(profile: &LocalProfile) -> Option<MobileError> {
+    if is_space_organizer(profile) {
+        return None;
+    }
+    if profile.joined_others_space {
+        // A member of someone else's space. Working as designed.
+        Some(MobileError::NotSpaceOrganizer)
+    } else {
+        // Not organizer-shaped, yet never joined anyone: a profile minted before
+        // organizers existed, sitting in a space it created and cannot prove it
+        // created. No migration exists — see `LegacyProfileCannotOrganize`.
+        Some(MobileError::LegacyProfileCannotOrganize)
+    }
+}
+
+/// Whether this profile may approve apps for its space — the question the review
+/// sheet asks BEFORE offering "Let everyone here use this".
+///
+/// A button that cannot succeed should not be drawn. This is what lets the sheet
+/// show the honest alternative instead, and it is deliberately a plain query: it
+/// grants nothing, and the gate in `set_app_trust` is still enforced independently.
+pub(crate) fn is_organizer(inner: &Arc<Mutex<ProfileState>>) -> Result<bool, MobileError> {
+    with_active(inner, |profile| Ok(is_space_organizer(profile)))
+}
+
+/// Whether this profile could EVER organize a space (its author is
+/// organizer-shaped). False only for pre-organizer "legacy" profiles, and the
+/// signal the UI uses to say "start a new profile" rather than "ask the organizer".
+pub(crate) fn can_organize(inner: &Arc<Mutex<ProfileState>>) -> Result<bool, MobileError> {
+    with_active(inner, |profile| {
+        Ok(!matches!(
+            organizer_refusal(profile),
+            Some(MobileError::LegacyProfileCannotOrganize)
+        ))
+    })
+}
+
 pub(crate) fn set_app_trust(
     inner: &Arc<Mutex<ProfileState>>,
     app_id: String,
@@ -1555,8 +1625,13 @@ pub(crate) fn set_app_trust(
         // Only a space's organizer may approve an app for it. Without this a
         // member could self-approve any app, which would make the trust gate
         // (the one human review moment in the whole design) meaningless.
-        if !is_space_organizer(profile) {
-            return Err(MobileError::InvalidInput);
+        //
+        // The gate is unchanged; what changed is that it now SAYS WHY. It used to
+        // return `InvalidInput` — the same code as a malformed app id — so the
+        // sheet closed with nothing to show and the app never appeared. A person
+        // who had done nothing wrong was locked out in silence.
+        if let Some(refusal) = organizer_refusal(profile) {
+            return Err(refusal);
         }
         let app_id = parse_entry_id(&app_id)?;
         if !profile

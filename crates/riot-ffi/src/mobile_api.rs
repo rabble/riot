@@ -124,6 +124,19 @@ pub enum MobileError {
     EntropyUnavailable,
     ClockUnavailable,
     AppRejected,
+    /// Approving an app was refused because this profile is a **member** of the
+    /// space, not its organizer. Honest and expected: only the organizer decides
+    /// what the space runs. The surface says "only the organizer can turn an app
+    /// on here" — it must NOT offer a way around it.
+    NotSpaceOrganizer,
+    /// Approving an app was refused because this profile predates space
+    /// organizers: its author is not organizer-shaped (`subspace != namespace`),
+    /// so it cannot prove it created its own space and can never approve an app
+    /// for it. There is no migration — under the old scheme a creator and a
+    /// joiner are byte-identical, so letting this profile approve would let ANY
+    /// member self-approve and would gut the one human review gate in the design.
+    /// The only true remedy is a new profile, and the surface says exactly that.
+    LegacyProfileCannotOrganize,
 }
 
 impl std::fmt::Display for MobileError {
@@ -143,6 +156,8 @@ impl std::fmt::Display for MobileError {
             Self::EntropyUnavailable => "ENTROPY_UNAVAILABLE",
             Self::ClockUnavailable => "CLOCK_UNAVAILABLE",
             Self::AppRejected => "APP_REJECTED",
+            Self::NotSpaceOrganizer => "NOT_SPACE_ORGANIZER",
+            Self::LegacyProfileCannotOrganize => "LEGACY_PROFILE_CANNOT_ORGANIZE",
         };
         f.write_str(code)
     }

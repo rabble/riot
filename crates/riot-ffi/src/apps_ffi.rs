@@ -143,6 +143,23 @@ impl AppRuntimeSession {
         crate::mobile_state::is_app_trusted(&self.inner, app_id)
     }
 
+    /// True when this profile may approve apps for its space — i.e. when
+    /// `trust_app` would get past the organizer gate.
+    ///
+    /// Ask BEFORE drawing "Let everyone here use this". Offering a button that
+    /// cannot succeed is how the original bug felt from the outside: the tap did
+    /// nothing and said nothing.
+    pub fn is_organizer(&self) -> Result<bool, MobileError> {
+        crate::mobile_state::is_organizer(&self.inner)
+    }
+
+    /// False only for a profile made before spaces had organizers, which can
+    /// never approve an app for any space. Separates "ask the organizer" (a
+    /// member, fine) from "start a new profile" (legacy, and nothing else works).
+    pub fn can_organize(&self) -> Result<bool, MobileError> {
+        crate::mobile_state::can_organize(&self.inner)
+    }
+
     pub fn app_data_put(
         &self,
         app_id: String,
