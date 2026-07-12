@@ -148,22 +148,16 @@ Say, pointing at the airplane-mode icon on each phone in turn:
 These are things that do **not** work yet, recorded honestly so you don't
 discover them on stage. Each is tracked; none is a mystery.
 
-1. **Beat 4's arrival on phone B needs the board-reload fix.** When a sync
-   completes, the receiving phone currently does not refresh its board — the
-   alerts are genuinely there, but you have to relaunch the app to see them.
-   The fix is written and waiting on a file another workstream is holding.
-   **Do not rehearse Beat 4 until this lands.** If you must demo before it
-   does, relaunching phone B after the sync shows the real, synced data — it
-   is not a cheat, but it is not the beat as written either.
-2. **The radar can't put a name on a peer yet.** Riot doesn't know *who* a
+1. **The radar can't put a name on a peer yet.** Riot doesn't know *who* a
    nearby phone belongs to until sync actually opens — before that there is
    only a device nickname, no key. Rather than print a fake key tag, the radar
    currently shows the device, not the person. **This is a product call for
    Rabble**, not a bug: show the nickname untagged, show nothing until identity
    is known, or exchange identity earlier in pairing.
-3. **The two-phone finale has never been machine-tested** — it can't be; it
-   needs two devices and real radios. Rehearse it on hardware, twice, before
-   anyone watches.
+2. **The two-phone finale has never run on two physical iPhones.** Headless
+   tests prove discovery, adoption, sync, and live redraw over Bonjour/TCP on
+   one Mac; they do not prove BLE discovery or transfer. Rehearse it on real
+   hardware twice before anyone watches.
 
 ## What can go wrong
 
