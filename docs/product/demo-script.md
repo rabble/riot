@@ -60,41 +60,36 @@ a few characters tied to their actual key, so nobody can fake being them."*
 
 ## Beat 2 — Discover (45s)
 
-Tap into the **App Directory** tab.
+Tap the **Apps** tab.
 
 Say: *"Riot ships with almost nothing built in — a checklist, that's it.
 Everything else is something someone in the network built and other people
 vouched for."*
 
-Point at the top of the list: **Checklist**, labeled **"Built into Riot"**,
-already switched on. That's the tool the courthouse-support checklist you'll
-check later lives in.
+Find **Checklist**, labeled **“Built in”** and **“On in this space.”** That's the
+tool the courthouse-support checklist you'll check later lives in.
 
-Scroll to **Available** and stop on **Shift Signup**.
+Find **Shift Signup**.
 
-Say: *"Someone in this network built a shift sign-up tool. It's not on
-anyone's phone yet — it's just sitting here, available, because two groups
-looked at it and said it's fine to use."*
+Say: *"Someone in this network built a shift sign-up tool. It isn't in my
+tools yet — this space carries it because two groups recommended it."*
 
-Read the endorsement line under it: **"Endorsed by Eastside Tenant Council and
-Courtyard Mutual Aid."**
+Read the recommendation line under it: **“Recommended by 2 groups you’ve met.”**
 
-Say: *"Those are two real groups in this network, not Riot the company,
-telling you they checked this and trust it."*
+Say: *"Those are recommendations from groups in this network, not Riot the
+company, telling you they use it."*
 
 ## Beat 3 — Trust (45s)
 
-Tap **Get Shift Signup**, then **Review**.
+Tap **Get Shift Signup**, then **Review Shift Signup**.
 
 > **Two taps, not one — don't be surprised on stage.** The app's bytes have
-> arrived, but it isn't installed on this phone yet, so the row offers "Get"
-> first and the review page second. That ordering is honest — nothing is
-> installed before you've read what it can do — but it is one more tap than a
-> phone-store audience expects. If it feels like a stumble, name it: *"It won't
-> even unpack it until I've looked at it."*
+> arrived, but it is not in Tools yet. “Get” takes it up; “Review” shows what it
+> can touch before the organizer turns it on. If the extra tap feels like a
+> stumble, name it: *"It won't run until I've looked at what it can do."*
 
-Say: *"Before anything gets installed, you get to read exactly what it can
-touch — no fine print."*
+Say: *"Before anything can run, you get to read exactly what it can touch — no
+fine print."*
 
 Read the permissions out loud, exactly as shown:
 
@@ -105,7 +100,7 @@ Read the permissions out loud, exactly as shown:
 
 Say: *"That's the whole list. It reads and writes shifts. That's it."*
 
-Tap **"Let everyone here use this."**
+Tap **“Let everyone in this space use this.”**
 
 The stamp slams down and the phone gives one solid thunk in your hand. Tap
 **Spaces**; **Shift Signup** appears in the **Tools** section.
