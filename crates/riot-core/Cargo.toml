@@ -29,12 +29,6 @@ rand_core = { workspace = true }
 hifitime = { workspace = true }
 zeroize = { workspace = true }
 chacha20poly1305 = { workspace = true }
-# Physical database for the multi-space store. A normal (non-dev) dependency on
-# purpose: it must compile into riot-core's build graph on every conference
-# target so cross-compilation of the bundled SQLite amalgamation is proven here,
-# in the de-risking task, before any schema is written against it. rusqlite types
-# never cross the UniFFI boundary — riot-ffi sends typed commands, per the design.
-rusqlite = { workspace = true }
 
 [dev-dependencies]
 willow25 = { workspace = true, features = ["dev"] }

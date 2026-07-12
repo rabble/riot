@@ -36,16 +36,6 @@ zeroize = "=1.9.0"
 # Mature RustCrypto AEAD pin for versioned local signer-state sealing. 0.11.0
 # is newer, but 0.10.1 is the established stable line used for this boundary.
 chacha20poly1305 = { version = "=0.10.1", default-features = false, features = ["alloc"] }
-# The multi-space store's physical database. `bundled` is the whole point: it
-# compiles one SQLite from vendored source, so an iPhone, an Android handset,
-# and a Mac all get identical storage and JSON semantics. Linking the platform
-# libsqlite3 instead would make our behavior a function of the user's OS
-# version — Apple's build differs from upstream even at the same version number.
-# Feature set is fixed by the store design ("Physical database"): backup =
-# recovery without live-file copying; blob = incremental payload reads; hooks =
-# post-commit change feed; limits = enforceable resource ceilings; serde_json =
-# JSON document projections.
-rusqlite = { version = "=0.40.1", default-features = false, features = ["backup", "blob", "bundled", "hooks", "limits", "serde_json"] }
 
 # Evidence profile must unwind: the FFI boundary catches panics and
 # quarantines the session; abort would make that contract impossible.
