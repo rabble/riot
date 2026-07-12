@@ -47,6 +47,39 @@ Each app must:
 - report save failures inline without discarding the current form;
 - remain usable with JavaScript data already persisted from an earlier version.
 
+## Visual and Interaction Design
+
+The suite must feel intentionally designed, not like eight CRUD examples. All apps share structural tokens—spacing, typography, surfaces, radii, shadows, focus rings, and motion timing—while each app has its own recognizable accent and visual motif. Assets remain local and fonts use the platform stack, so appearance never depends on a network request.
+
+The shared visual direction is warm, civic, and human: paper-like neutral backgrounds, ink-first contrast, restrained texture, expressive color, and content written in the voice of real neighbors. It avoids generic admin-dashboard styling, dense grids of identical cards, decorative gradients without hierarchy, and technical platform language.
+
+Each app gets a distinct accent without changing the interaction grammar:
+
+- Chat: electric blue with conversational bubbles;
+- Dispatches: coral with editorial typography;
+- Wiki: ochre with document and index motifs;
+- Photo Wall: magenta with image-forward edge-to-edge tiles;
+- Tasks: leaf green with tactile completion states;
+- Needs & Offers: teal and orange as a clear two-sided system;
+- Events: violet with date blocks and chronological rhythm;
+- Decisions: indigo with legible choice and result bars.
+
+Phone layouts prioritize a single column and one obvious primary action. Wider layouts may add a list/detail split where it materially improves navigation, but they must not merely stretch phone cards across the window. Forms open close to the action that invoked them, retain drafts after validation or save errors, focus the first meaningful field, and return focus sensibly when dismissed.
+
+Interaction requirements:
+
+- minimum 44-point touch targets and visible keyboard focus;
+- semantic labels, form labels, status text, and contrast meeting WCAG AA;
+- no color-only meaning;
+- immediate pressed, saving, success, empty, and error feedback;
+- destructive actions omitted from this release rather than made ambiguous;
+- subtle transitions that honor reduced-motion preferences;
+- long names and content wrap without clipping at 320-point width;
+- primary actions remain reachable with the software keyboard visible;
+- seeded content demonstrates hierarchy, truncation, attribution, and realistic edge lengths.
+
+Visual quality is a blocking release gate. Every app is rendered and reviewed at 390×844 and 1280×800 in seeded, composer/editor, post-action, empty, and error states. Screenshot review checks hierarchy, spacing, typography, contrast, overflow, focus, and whether the app’s identity is recognizable without reading its title. Failed visual review requires iteration and recapture before the app is accepted.
+
 ## App Definitions
 
 ### Chat
@@ -131,6 +164,8 @@ Implementation is test-driven and divided into independently reviewable slices:
 - starter-catalog tests proving all eight verified apps are present without bypassing trust;
 - host tests proving their pages load under Riot’s CSP and use only the supported bridge;
 - a smoke flow that opens every trusted app and exercises the primary action;
+- Playwright screenshots at phone and desktop widths for each app’s critical states, with documented visual findings and recapture after fixes;
+- accessibility checks for labels, keyboard focus, reduced motion, touch-target sizing, contrast, and narrow-width overflow;
 - full Rust, binding-generation, iOS RiotKit, macOS RiotKit, and relevant Android checks after integration.
 
 The demo is ready when all eight apps appear in the directory, can be approved and opened, display their seed content, accept their primary interaction, survive reopen, and introduce no regression in nearby sync or app isolation.
