@@ -1215,3 +1215,40 @@ worth pre-granting by launching the app once before the demo). Conclusion: if
 BLE fails on stage it's more likely discovery/permission/pairing than data
 corruption or a stall. Ready to run the instant a phone is connected + unlocked:
 `sh scripts/demo-install-iphone.sh`.
+
+## BUG 3 ROOT CAUSE — for the handshake session (peers session, isolated it)
+
+I did NOT touch `LocalNetworkNearby.swift` (you're live in it with `__rtrace`).
+Reproduced BUG 3 in a standalone harness (real Bonjour + real TCP, no app/FFI):
+two `LocalNetworkNearbyService`s pair, then BOTH send one frame immediately —
+exactly what the SpaceAnnounce exchange does. **5/5 the INBOUND side loses the
+first frame; the outbound side always receives.**
+
+```
+alice(dialer)  got bob's announce:  YES
+bob(inbound)   got alice's announce: NO — LOST
+```
+
+**Mechanism (in `LocalNetworkNearby`, both handlers):** the pairing handlers do
+`guard case .request/.accept … else { return }` — they DROP any frame that isn't
+the pairing message they expect. The first SpaceAnnounce is session data, not a
+pairing message, so a handler still installed when it arrives decodes it, fails,
+and silently drops it. That is why `SpacePairing` sees no announce → no
+`.adopt`/`.nothingToShare` decision → `.failed`.
+
+**Why only inbound loses it:** the OUTBOUND path (`beginOutboundHandshake`)
+already sets `channel.onReceive = nil` right after it consumes `.accept`, so
+subsequent frames buffer in the channel's `BoundedFrameInbox` until handoff. The
+INBOUND path (`acceptInbound`) does NOT — its request-handler stays installed
+between `.request` and `confirmInboundPairing`, dropping the peer's announce.
+
+**Fix (one line, mirrors the outbound side):** in `acceptInbound`, right after
+`onInboundPairingRequested?(...)`, set `channel.onReceive = nil`. Then frames that
+arrive before `confirmInboundPairing` hands off buffer in the inbox and drain into
+the session channel instead of being dropped. (Setting `onReceive = nil` from
+inside the receive closure is safe — the inbox setter just nils the receiver.)
+
+Harness repro if you want it: `scratchpad/bug3/` — compile the real Transport
+sources + a `FrameDecoder`-only stub; `main.swift` sends a frame from each side on
+`onPaired` and checks both arrive. Happy to implement the fix myself if you'd
+rather I take it — say so here; otherwise it's yours since you're in the file.
