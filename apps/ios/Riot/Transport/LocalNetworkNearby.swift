@@ -1,6 +1,21 @@
 import Foundation
 @preconcurrency import Network
 
+/// Lets exactly one of several racing completion paths win. `NSLock`-backed so it
+/// is safe to share across the `@Sendable` closures Network.framework calls.
+/// Named distinctly to avoid colliding with any similar helper elsewhere.
+private final class DialLatch: @unchecked Sendable {
+    private let lock = NSLock()
+    private var fired = false
+    func claim() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        if fired { return false }
+        fired = true
+        return true
+    }
+}
+
 /// Who a peer is, as carried in the Bonjour TXT record.
 ///
 /// `instanceID` — not the friendly name — is identity. Bonjour returns services
@@ -165,7 +180,14 @@ public final class LocalNetworkNearbyService: @unchecked Sendable {
     private func startAdvertising() {
         do {
             let listener = try NWListener(using: parameters(), on: .any)
+            // Name the service explicitly. Left unset, Network.framework defaults
+            // the Bonjour instance name to the DEVICE name ("Jane's MacBook Pro")
+            // — the owner's real name, broadcast in cleartext to the whole subnet
+            // (the exact leak the AWDL/Bonjour research documents). The instance
+            // id is a random per-session UUID: ephemeral and non-identifying, and
+            // distinct per instance so two on one machine do not collide.
             listener.service = NWListener.Service(
+                name: identity.instanceID,
                 type: Self.serviceType,
                 txtRecord: NWTXTRecord(identity.txtRecord)
             )
@@ -233,24 +255,82 @@ public final class LocalNetworkNearbyService: @unchecked Sendable {
             onDisconnected?()
             return
         }
+        dial(endpoint: target.endpoint, peer: target.identity, attemptsLeft: 3)
+    }
 
-        let connection = NWConnection(to: target.endpoint, using: parameters())
+    /// A connect to a just-advertised Bonjour endpoint is unreliable in two
+    /// distinct ways, and BOTH must be retried: (1) it fails or hangs (the far
+    /// side's listener/mDNS records are not ready yet); (2) it reaches `.ready`
+    /// but the stream never reaches the far side's listener — a "ready to
+    /// nowhere" that delivers no reply. So the attempt deadline covers the WHOLE
+    /// handshake through receiving `.accept`, not just the connect; a stalled
+    /// attempt is cancelled and a fresh connection dialled.
+    private func dial(endpoint: NWEndpoint, peer: NearbyPeerIdentity, attemptsLeft: Int) {
+        let connection = NWConnection(to: endpoint, using: parameters())
+        // First of {paired, declined, failed, deadline} wins; rest are no-ops.
+        // A Sendable latch + a method (not local funcs) because the @Sendable
+        // state handler cannot capture a local `var`/closure under Swift 6.
+        let settled = DialLatch()
         connection.stateUpdateHandler = { [weak self] state in
             guard let self else { return }
             switch state {
             case .ready:
+                // Do NOT claim here — connecting is not pairing. The handshake
+                // still has to land; if it does not, the deadline retries.
                 let channel = LocalTCPFrameChannel(connection: connection)
-                self.beginOutboundHandshake(on: channel, peer: target.identity)
+                self.beginOutboundHandshake(
+                    on: channel,
+                    peer: peer,
+                    onPaired: { remote in
+                        guard settled.claim() else { channel.disconnect(); return }
+                        self.onPaired?(channel, remote)
+                    },
+                    onDeclined: {
+                        guard settled.claim() else { return }
+                        self.onDisconnected?() // a "no" is final; do not retry it
+                    }
+                )
             case .failed, .cancelled:
-                self.onDisconnected?()
+                guard settled.claim() else { return }
+                self.retryDial(connection, endpoint: endpoint, peer: peer, attemptsLeft: attemptsLeft)
             default:
                 break
             }
         }
         connection.start(queue: queue)
+        queue.asyncAfter(deadline: .now() + 3.0) { [weak self] in
+            guard settled.claim(), let self else { return }
+            self.retryDial(connection, endpoint: endpoint, peer: peer, attemptsLeft: attemptsLeft)
+        }
     }
 
-    private func beginOutboundHandshake(on channel: LocalTCPFrameChannel, peer: NearbyPeerIdentity) {
+    /// Cancels the stalled/failed attempt and dials afresh, or gives up once the
+    /// attempt budget is spent.
+    private func retryDial(
+        _ connection: NWConnection,
+        endpoint: NWEndpoint,
+        peer: NearbyPeerIdentity,
+        attemptsLeft: Int
+    ) {
+        connection.cancel()
+        if attemptsLeft > 1 {
+            queue.asyncAfter(deadline: .now() + 0.4) { [weak self] in
+                self?.dial(endpoint: endpoint, peer: peer, attemptsLeft: attemptsLeft - 1)
+            }
+        } else {
+            onDisconnected?()
+        }
+    }
+
+    /// Sends our request and resolves via exactly one callback. It does not touch
+    /// `onPaired`/`onDisconnected` directly — the dial owns the retry decision,
+    /// because a lost handshake should be retried but a decline should not.
+    private func beginOutboundHandshake(
+        on channel: LocalTCPFrameChannel,
+        peer: NearbyPeerIdentity,
+        onPaired: @escaping (NearbyPeerIdentity) -> Void,
+        onDeclined: @escaping () -> Void
+    ) {
         lock.lock()
         pendingOutbound = channel
         lock.unlock()
@@ -267,13 +347,13 @@ public final class LocalNetworkNearbyService: @unchecked Sendable {
                 self.lock.lock()
                 self.pendingOutbound = nil
                 self.lock.unlock()
-                self.onPaired?(channel, remote)
+                onPaired(remote)
             case .decline:
                 channel.disconnect()
                 self.lock.lock()
                 self.pendingOutbound = nil
                 self.lock.unlock()
-                self.onDisconnected?()
+                onDeclined()
             case .request:
                 break // The side that dialled does not answer requests.
             }
