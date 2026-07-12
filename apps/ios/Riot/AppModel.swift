@@ -67,6 +67,45 @@ public final class RiotNavigationModel: ObservableObject {
     public init() {}
 }
 
+/// Whether a phone that has just gained a space has to announce it AGAIN, by
+/// starting to look afresh.
+///
+/// The advertisement does not carry the space — `SpacePairing` reads
+/// `currentSpace` LIVE when it shakes hands. So a phone that is merely `.looking`
+/// needs nothing: whichever peer turns up next will be told about the space then.
+/// Restarting there would only churn discovery.
+///
+/// What is genuinely stuck is a handshake that ALREADY ran and concluded there was
+/// nothing to share. Two spaceless phones settle on `.nothingToShare` and the
+/// session ends — and the ended session leaves the peer still selected, so
+/// auto-connect will never re-dial them. The organizer then taps "Create space" on
+/// a phone that has already had its one and only conversation with the phone
+/// beside it, and the space they just made can never reach it. Only a fresh look
+/// clears that and lets the two of them talk again.
+///
+/// Pure, because a guard is exactly what got this wrong before: auto-connect once
+/// required `.idle` and so never fired at all, `.looking` being the state
+/// discovery actually leaves behind. The states that must refuse:
+///
+/// - `.idle`: discovery never started, or the person tapped "Stop looking". A
+///   space appearing must not put them on the air behind their back.
+/// - Anything mid-session. Joining a peer's space is ITSELF a nil -> space change
+///   on the joiner, and it lands while the sync carrying it is still running — a
+///   restart there would tear down the very session doing the work.
+public enum NearbyReannounceGate {
+    public static func needsReannounce(state: NearbyConnectionState) -> Bool {
+        switch state {
+        // A session that ran, shared nothing, and left this phone unable to re-dial
+        // the peer it was just talking to.
+        case .nothingToShare, .differentSpace, .outOfRange, .failed:
+            return true
+        case .idle, .looking, .confirm, .connecting, .joinSpace,
+             .gettingLatest, .preview, .caughtUp, .alreadyCurrent:
+            return false
+        }
+    }
+}
+
 @MainActor
 public final class RiotAppModel: ObservableObject {
     /// Tab selection. Observe this — not the app model — for destination changes;
@@ -132,6 +171,23 @@ public final class RiotAppModel: ObservableObject {
     /// entry the view has not drawn yet": a relaunch must not feel like six people
     /// posting at once.
     @Published public private(set) var arrivals: Set<String> = []
+
+    /// True once the profile is open — i.e. there is an identity to advertise
+    /// with and a space (or the honest absence of one) to announce.
+    ///
+    /// The Connection screen gates discovery on this and must not start without
+    /// it. The shell builds every tab at launch (they all live in one ZStack, so
+    /// their state survives a tab switch), so `ConnectionStatusView.onAppear`
+    /// fires while `bootstrap` is still opening the profile off the window's
+    /// `.task`. A phone that began advertising in that window paired with no
+    /// repository behind it and announced a nil space — and a peer cannot adopt a
+    /// space that was never announced, which is exactly how a fresh phone failed
+    /// to join the organizer's.
+    ///
+    /// Published AFTER ``reload``, never before: the space has to be readable by
+    /// the time this opens the gate, or the gate opens onto the same nil announce
+    /// it exists to prevent.
+    @Published public private(set) var isProfileOpen = false
 
     /// Nil until the profile has been read once. That first read is the baseline,
     /// not an arrival — see ``arrivals``.
@@ -267,6 +323,10 @@ public final class RiotAppModel: ObservableObject {
                 _ = try? repository.createPublicSpace(title: "Test Space")
             }
             reload()
+            // LAST, and only on the success path: this is what lets the Connection
+            // screen start advertising, and it must not open until the space above
+            // is readable. See ``isProfileOpen``.
+            isProfileOpen = true
         } catch {
             errorMessage = String(describing: error)
         }

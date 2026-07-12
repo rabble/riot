@@ -483,10 +483,27 @@ private struct ConnectionStatusView: View {
     }
 
     /// Begin looking for peers, but only once the profile is open — a phone with
-    /// no identity yet would advertise and pair with nothing to announce. Safe to
-    /// call more than once; it no-ops unless idle and ready.
+    /// no repository behind it would advertise and pair with nothing to announce.
+    /// Safe to call more than once; it no-ops unless idle and ready.
+    ///
+    /// Gated on ``RiotAppModel/isProfileOpen`` rather than on `me`: the thing a
+    /// pairing needs is the REPOSITORY (it is what answers `currentSpace`), and
+    /// that flag is published only after the space is readable.
     private func startDiscoveryWhenReady() {
-        guard model.me != nil, nearby.state == .idle else { return }
+        guard model.isProfileOpen, nearby.state == .idle else { return }
+        nearby.findNearby(host: model.nearbySpaceHost)
+    }
+
+    /// This phone has a space it did not have when it started looking — the
+    /// organizer opens the app and only THEN taps "Create space". If its one
+    /// handshake with the phone beside it has already settled "nothing to share",
+    /// that space can never reach them; look again, so the two of them shake hands
+    /// afresh with a space in hand this time.
+    ///
+    /// `findNearby` resets the session before it restarts, which is what clears the
+    /// still-selected peer that was blocking auto-connect from re-dialling.
+    private func reannounceSpaceIfStuck() {
+        guard model.space != nil, NearbyReannounceGate.needsReannounce(state: nearby.state) else { return }
         nearby.findNearby(host: model.nearbySpaceHost)
     }
 
@@ -653,11 +670,39 @@ private struct ConnectionStatusView: View {
             startDiscoveryWhenReady()
         }
         // The profile opens asynchronously (`bootstrap` runs off the window's
-        // `.task`), and this screen can appear first. Starting discovery before
-        // the profile is open makes a phone advertise and pair with no identity
-        // and no space to announce — so wait until it is ready, and start the
-        // moment it becomes ready.
-        .onChange(of: model.me == nil) { _, _ in startDiscoveryWhenReady() }
+        // `.task`), and this screen can appear first — every tab is built at
+        // launch, so this `onAppear` fires even while the person is looking at
+        // Spaces. Starting discovery before the profile is open makes a phone
+        // advertise and pair with no identity and no space to announce — so wait
+        // until it is ready, and start the moment it becomes ready.
+        .onChange(of: model.isProfileOpen) { _, _ in startDiscoveryWhenReady() }
+        // A space this phone did not have when it started looking: the organizer
+        // opens the app, and only THEN taps "Create space". Discovery has been
+        // running since launch, announcing "no space" to everyone who paired — so
+        // announce the real one now, or the phone next to them can never hear
+        // about the space they just made.
+        //
+        // This also fires on a joiner the moment it adopts a peer's space, which
+        // is mid-sync and must NOT restart anything; `reannounceSpace` refuses
+        // while a session is live.
+        // A space this phone did not have when it started looking: the organizer
+        // opens the app, and only THEN taps "Create space".
+        .onChange(of: model.space) { _, _ in reannounceSpaceIfStuck() }
+        .onChange(of: nearby.state) { _, state in
+            // The other order: the space landed while a handshake was already in
+            // flight, so that handshake announced nothing and settled — and the
+            // space change above fired mid-session, where it was rightly refused.
+            // Catch it here, as the session settles.
+            //
+            // Only `.nothingToShare`, and only with a space in hand. That is what
+            // makes this terminate: it takes TWO spaceless phones to reach this
+            // state, so with a space to announce the next handshake cannot land
+            // back here. A `.failed` handshake is deliberately NOT retried from
+            // here — it would fail, restart, and fail again, and the two phones
+            // would spin against each other.
+            guard case .nothingToShare = state, model.space != nil else { return }
+            nearby.findNearby(host: model.nearbySpaceHost)
+        }
         // This phone has no space and the one it just connected to does. Joining
         // is how a fresh phone becomes part of a community — but it is the
         // person's decision, named plainly, and nothing is joined until they make
