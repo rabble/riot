@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Events</title>
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main>
+  <header><div><p class="eyebrow">What’s next</p><h1>Events</h1><p>Put a time on the calendar and see who’s in.</p></div><button id="create" type="button">Create event</button></header>
+  <p id="error" role="alert" hidden></p>
+  <form id="event-form" hidden>
+    <div><label for="title">Event title</label><input id="title" type="text" maxlength="120" autocomplete="off" required></div>
+    <div><label for="starts-at">Date and time</label><input id="starts-at" type="datetime-local" required></div>
+    <div><label for="place">Place</label><input id="place" type="text" maxlength="100" placeholder="Courtyard" autocomplete="off" required></div>
+    <div class="form-actions"><button type="button" id="cancel">Cancel</button><button type="submit">Save event</button></div>
+  </form>
+  <p id="status" role="status" aria-live="polite"></p>
+  <ol id="events" aria-label="Upcoming events"></ol>
+  <p id="empty">Nothing scheduled yet. Make the first plan.</p>
+</main>
+<script src="app.js"></script>
+</body>
+</html>

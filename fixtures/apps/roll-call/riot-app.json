@@ -1,0 +1,7 @@
+{
+  "name": "Events",
+  "description": "A shared calendar for making plans and seeing who is coming. It keeps event details and RSVPs in this space and nothing else — no internet, no location tracking.",
+  "version": "1.0.0",
+  "entry_point": "index.html",
+  "permissions": ["Keep its own notes in this space", "Show the names people in this space have chosen"]
+}

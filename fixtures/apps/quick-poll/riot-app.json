@@ -1,0 +1,7 @@
+{
+  "name": "Decisions",
+  "description": "A focused room for one current community question. Everyone gets one vote and can change it while the decision is open. It keeps the proposal and votes in this space and nothing else — no internet, no contacts.",
+  "version": "1.0.0",
+  "entry_point": "index.html",
+  "permissions": ["Keep its own notes in this space", "Show the names people in this space have chosen"]
+}

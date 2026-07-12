@@ -3,97 +3,72 @@
 const list = document.getElementById("items");
 const empty = document.getElementById("empty");
 const form = document.getElementById("add-form");
-const input = document.getElementById("new-item");
+const input = document.getElementById("new-task");
 const error = document.getElementById("error");
-
-// An item records WHO touched it as an id, never as a name. A name is a claim
-// its owner can change; a stored name is a snapshot, and no later rename can
-// ever go back and repair it. Store the id, resolve the name at render time,
-// and one rename fixes every row that person ever touched.
+const status = document.getElementById("status");
+const SEED_MARKER = "meta/seeded";
+const DEMO_IDS = { alex: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", sam: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" };
 let me = { id: "", displayName: "member", tag: "" };
-riot.whoami().then((who) => { me = who; }).catch(() => {});
-
-// id -> "Name · tag", last known. Purely a paint cache so a re-render doesn't
-// flicker: every render still re-resolves each id ONCE (once per unique id, not
-// once per row), so a rename — or a peer's profile card that only just synced
-// in — shows up on the next change without reopening the app.
+let rows = [];
 const names = new Map();
+const inflight = new Set();
 
 function newID() {
-  if (crypto.randomUUID) { return crypto.randomUUID(); }
-  return Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) => b.toString(16).padStart(2, "0")).join("");
+  if (crypto.randomUUID) return crypto.randomUUID().toLowerCase();
+  return Array.from(crypto.getRandomValues(new Uint8Array(16)), (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
-
-function showError(message) {
-  error.textContent = message;
-  error.hidden = false;
-}
-
-function stamp() {
-  return { updated_by_id: me.id, updated_at: Date.now() };
-}
-
-// Items written before ids carry `updated_by`: a bare name SNAPSHOT with no id
-// behind it. Show it exactly as stored — there is nothing to resolve and nothing
-// to repair — and never mistake it for something resolvable.
-function legacyAttribution(value) {
-  return typeof value.updated_by === "string" ? value.updated_by : "";
-}
-
-function render(rows) {
-  error.hidden = true;
-  rows.sort((a, b) => (a.value.updated_at || 0) - (b.value.updated_at || 0));
-  empty.hidden = rows.length > 0;
-  // id -> every meta element in this render waiting on that id. Repeated
-  // authors collapse into one lookup.
-  const pending = new Map();
-  list.replaceChildren(...rows.map((row) => {
-    const li = document.createElement("li");
-    if (row.value.done) { li.className = "done"; }
-    const box = document.createElement("input");
-    box.type = "checkbox";
-    box.checked = Boolean(row.value.done);
-    box.setAttribute("aria-label", row.value.text);
-    box.addEventListener("change", () => {
-      riot.put(row.key, { ...row.value, done: box.checked, ...stamp() })
-        .catch(() => { box.checked = !box.checked; showError("Couldn't save that — try again"); });
-    });
-    const label = document.createElement("label");
-    label.textContent = row.value.text;
-    box.id = "box-" + row.key.replaceAll("/", "-");
-    label.htmlFor = box.id;
-    const meta = document.createElement("span");
-    meta.className = "meta";
-    const id = row.value.updated_by_id;
-    if (typeof id === "string" && id) {
-      meta.textContent = names.get(id) || "";
-      const waiting = pending.get(id);
-      if (waiting) { waiting.push(meta); } else { pending.set(id, [meta]); }
-    } else {
-      meta.textContent = legacyAttribution(row.value);
-    }
-    li.append(box, label, meta);
-    return li;
-  }));
-  pending.forEach((elements, id) => {
-    riot.profile(id).then((who) => {
-      // The host hands the name and the tag over as separate fields precisely so
-      // this line can put them back together. The name is already sanitized —
-      // it cannot contain "·" — so flattening it here cannot forge a second tag.
-      const text = who.displayName + " · " + who.tag;
-      names.set(id, text);
-      elements.forEach((el) => { el.textContent = text; });
-    }).catch(() => {});
+function showError(message) { error.textContent = message; error.hidden = false; }
+function person(id) { return id === me.id ? "You" : names.get(id) || "A neighbor"; }
+function resolveProfiles(ids) {
+  [...new Set(ids)].forEach((id) => {
+    if (!/^[0-9a-f]{64}$/.test(id || "") || inflight.has(id)) return;
+    inflight.add(id);
+    riot.profile(id).then((profile) => {
+      inflight.delete(id);
+      const label = profile.displayName + " · " + profile.tag;
+      if (names.get(id) !== label) { names.set(id, label); paint(); }
+    }).catch(() => { inflight.delete(id); });
   });
 }
 
+async function ensureSeeded() {
+  if (await riot.get(SEED_MARKER)) return;
+  const seeds = [
+    ["tasks/bring-extension-cord", { text: "Bring the long extension cord", created_at: 1, added_by_id: DEMO_IDS.alex, assigned_to_id: "", completed: false }],
+    ["tasks/check-garden-gate", { text: "Check the garden gate latch", created_at: 2, added_by_id: DEMO_IDS.sam, assigned_to_id: DEMO_IDS.alex, completed: false }],
+    ["tasks/print-sign-in-sheet", { text: "Print the sign-in sheet", created_at: 3, added_by_id: DEMO_IDS.alex, assigned_to_id: DEMO_IDS.sam, completed: true }],
+  ];
+  for (const [key, value] of seeds) if (!(await riot.get(key))) await riot.put(key, value);
+  await riot.put(SEED_MARKER, { version: 1 });
+}
+
+function paint() {
+  error.hidden = true;
+  rows.sort((a, b) => (a.value.completed - b.value.completed) || ((a.value.created_at || 0) - (b.value.created_at || 0)));
+  empty.hidden = rows.length > 0;
+  status.textContent = rows.length ? `${rows.filter((row) => !row.value.completed).length} open · ${rows.filter((row) => row.value.completed).length} done` : "";
+  list.replaceChildren(...rows.map((row) => {
+    const value = row.value || {};
+    const li = document.createElement("li"); li.className = "task" + (value.completed ? " done" : "");
+    const toggle = document.createElement("button"); toggle.type = "button"; toggle.className = "toggle"; toggle.textContent = value.completed ? "✓" : "○"; toggle.setAttribute("aria-label", `${value.completed ? "Reopen" : "Complete"} ${value.text}`); toggle.setAttribute("aria-pressed", String(Boolean(value.completed)));
+    toggle.addEventListener("click", () => { toggle.disabled = true; riot.put(row.key, { ...value, completed: !value.completed }).catch(() => { toggle.disabled = false; showError("Couldn't update that task. Your text is still here; try again."); }); });
+    const copy = document.createElement("div"); copy.className = "task-copy";
+    const text = document.createElement("span"); text.className = "task-text"; text.textContent = String(value.text || "Untitled task");
+    const meta = document.createElement("span"); meta.className = "meta"; meta.textContent = value.assigned_to_id ? `Taken by ${person(value.assigned_to_id)}` : `Added by ${person(value.added_by_id)}`; copy.append(text, meta);
+    const assign = document.createElement("button"); assign.type = "button"; assign.className = "assign"; const mine = value.assigned_to_id === me.id; assign.textContent = mine ? "Unassign" : value.assigned_to_id ? "Take over" : "Take this"; assign.setAttribute("aria-label", `${assign.textContent}: ${value.text}`);
+    assign.addEventListener("click", () => { assign.disabled = true; riot.put(row.key, { ...value, assigned_to_id: mine ? "" : me.id }).catch(() => { assign.disabled = false; showError("Couldn't change the assignment. Try again."); }); });
+    li.append(toggle, copy, assign); return li;
+  }));
+  resolveProfiles(rows.flatMap((row) => [row.value.added_by_id, row.value.assigned_to_id]));
+}
+
 form.addEventListener("submit", (event) => {
-  event.preventDefault();
-  const text = input.value.trim();
-  if (!text) { return; }
-  input.value = "";
-  riot.put("items/" + newID(), { text, done: false, ...stamp() })
-    .catch(() => { input.value = text; showError("Couldn't save that — try again"); });
+  event.preventDefault(); const text = input.value.trim(); if (!text || !me.id) return;
+  const draft = input.value; input.value = "";
+  riot.put("tasks/" + newID(), { text, created_at: Date.now(), added_by_id: me.id, assigned_to_id: "", completed: false })
+    .then(() => { status.textContent = "Task added"; })
+    .catch(() => { input.value = draft; input.focus(); showError("Couldn't add that task. Your draft is safe; try again."); });
 });
 
-riot.watch("items", render);
+riot.watch("tasks", (next) => { rows = next; paint(); });
+riot.whoami().then((who) => { me = who; return ensureSeeded(); }).catch(() => { showError("Tasks couldn't open shared storage. Try reopening the app."); });

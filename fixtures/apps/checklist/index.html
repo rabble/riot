@@ -3,19 +3,28 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Checklist</title>
+<title>Tasks</title>
+<link rel="stylesheet" href="tokens.css">
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
 <main>
-  <h1>Checklist</h1>
-  <p id="error" role="alert" hidden></p>
-  <form id="add-form">
-    <input id="new-item" type="text" aria-label="New item" placeholder="Add something to do" autocomplete="off">
-    <button id="add" type="submit">Add</button>
+  <header>
+    <p class="eyebrow">Make it happen</p>
+    <h1>Tasks</h1>
+    <p class="intro">A living list of the small things that make the day work.</p>
+  </header>
+  <p id="error" class="notice" role="alert" hidden></p>
+  <form id="add-form" class="composer">
+    <label for="new-task">New task</label>
+    <div class="form-row">
+      <input id="new-task" type="text" placeholder="What needs doing?" maxlength="180" autocomplete="off" required>
+      <button id="add" type="submit">Add task</button>
+    </div>
   </form>
-  <ul id="items" aria-label="Checklist items"></ul>
-  <p id="empty">Nothing here yet. Add the first item.</p>
+  <p id="status" class="status" role="status" aria-live="polite"></p>
+  <ul id="items" aria-label="Shared tasks"></ul>
+  <p id="empty" class="empty">All clear. Add the first task when something comes up.</p>
 </main>
 <script src="app.js"></script>
 </body>

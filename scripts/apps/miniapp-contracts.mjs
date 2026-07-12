@@ -10,6 +10,12 @@ import vm from "node:vm";
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const tokensPath = path.join(repoRoot, "fixtures/apps/_shared/tokens.css");
 const previewHostPath = path.join(repoRoot, "scripts/apps/miniapp-preview-host.mjs");
+const APPS = [
+  ["checklist", "Tasks"],
+  ["supply-board", "Needs & Offers"],
+  ["roll-call", "Events"],
+  ["quick-poll", "Decisions"],
+];
 
 const missing = [];
 for (const [label, file] of [
@@ -41,6 +47,23 @@ assert.match(tokens, /--focus-ring\s*:/, "tokens must define a dedicated focus-r
 assert.match(tokens, /:focus-visible\s*\{[^}]*outline\s*:\s*3px\s+solid\s+var\(--focus-ring\)/s, "keyboard focus must use a visible 3px focus ring");
 assert.match(tokens, /@media\s*\(prefers-reduced-motion\s*:\s*reduce\)/, "motion must honor reduced-motion preferences");
 
+for (const [app, name] of APPS) {
+  const directory = path.join(repoRoot, "fixtures/apps", app);
+  for (const file of ["riot-app.json", "index.html", "tokens.css", "style.css", "app.js"]) {
+    await access(path.join(directory, file));
+  }
+  const manifest = JSON.parse(await readFile(path.join(directory, "riot-app.json"), "utf8"));
+  assert.equal(manifest.name, name, `${app} must use its approved visible name`);
+  const html = await readFile(path.join(directory, "index.html"), "utf8");
+  assert.match(html, /href=["']tokens\.css["'][\s\S]*href=["']style\.css["']/, `${app} must load tokens before app styles`);
+  const source = await readFile(path.join(directory, "app.js"), "utf8");
+  for (const operation of ["riot.watch", "riot.whoami", "riot.profile", "ensureSeeded"]) {
+    assert.match(source, new RegExp(operation.replace(".", "\\.")), `${app} must use ${operation}`);
+  }
+  assert.doesNotMatch(source, /innerHTML\s*=/, `${app} must build untrusted content safely`);
+  assert.doesNotMatch(source, /\bfetch\s*\(/, `${app} must not use the network`);
+}
+
 function rgb(hex) {
   const value = Number.parseInt(hex.slice(1), 16);
   return [(value >> 16) & 255, (value >> 8) & 255, value & 255];
@@ -63,8 +86,12 @@ function contrast(left, right) {
 
 const darkTokens = tokens.match(/@media\s*\(prefers-color-scheme:\s*dark\)\s*\{([\s\S]*?)\n\}/)?.[1] || "";
 const darkPaper = darkTokens.match(/--paper:\s*(#[0-9a-f]{6})/i)?.[1];
+const darkSurface = darkTokens.match(/--surface:\s*(#[0-9a-f]{6})/i)?.[1];
+const darkAccent = darkTokens.match(/--accent:\s*(#[0-9a-f]{6})/i)?.[1];
 const darkFocus = darkTokens.match(/--focus-ring:\s*(#[0-9a-f]{6})/i)?.[1];
-assert(darkPaper && darkFocus, "dark mode must define paper and focus-ring colors");
+assert(darkPaper && darkSurface && darkAccent && darkFocus, "dark mode must define paper, surface, accent, and focus-ring colors");
+assert(contrast(darkAccent, darkPaper) >= 3, "dark accent must have at least 3:1 contrast against paper");
+assert(contrast(darkAccent, darkSurface) >= 3, "dark accent must have at least 3:1 contrast against surface");
 assert(contrast(darkFocus, darkPaper) >= 3, "dark focus ring must have at least 3:1 contrast against paper");
 
 const { createPreviewServer } = await import("./miniapp-preview-host.mjs");

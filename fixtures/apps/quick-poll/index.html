@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Decisions</title>
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main>
+  <header><p class="eyebrow">One question at a time</p><h1>Decisions</h1></header>
+  <p id="error" role="alert" hidden></p>
+  <section id="poll" aria-labelledby="question">
+    <p id="asked-by"></p><h2 id="question">Loading the current question…</h2>
+    <ol id="options" aria-label="Decision options"></ol>
+    <p id="tally" role="status" aria-live="polite"></p>
+    <button id="replace" type="button">Ask a new question</button>
+  </section>
+  <form id="ask-form" hidden>
+    <label for="question-input">Question</label><input id="question-input" type="text" maxlength="180" required>
+    <label for="option-1">Choice 1</label><input id="option-1" type="text" maxlength="100" required>
+    <label for="option-2">Choice 2</label><input id="option-2" type="text" maxlength="100" required>
+    <label for="option-3">Choice 3 <span>(optional)</span></label><input id="option-3" type="text" maxlength="100">
+    <label for="option-4">Choice 4 <span>(optional)</span></label><input id="option-4" type="text" maxlength="100">
+    <div class="form-actions"><button id="cancel" type="button">Cancel</button><button type="submit">Post question</button></div>
+  </form>
+</main>
+<script src="app.js"></script>
+</body>
+</html>

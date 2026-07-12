@@ -1,0 +1,7 @@
+{
+  "name": "Needs & Offers",
+  "description": "A two-sided community board for asking for what is needed and sharing what is available. It keeps its notes in this space and nothing else — no internet, no photos.",
+  "version": "1.0.0",
+  "entry_point": "index.html",
+  "permissions": ["Keep its own notes in this space", "Show the names people in this space have chosen"]
+}

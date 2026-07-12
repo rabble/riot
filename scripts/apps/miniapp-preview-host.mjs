@@ -32,7 +32,8 @@ function isWithin(parent, candidate) {
 }
 
 function seedRows(app, state) {
-  if (app !== "checklist" || state === "empty") return [];
+  if (state === "empty") return [["meta/seeded", { version: 1 }]];
+  if (app !== "checklist") return [];
   const rows = [
     ["items/bring-water", { text: "Bring water", done: false, updated_by_id: profiles.alex.id, updated_at: 1 }],
     ["items/check-radio", { text: "Check the radio", done: true, updated_by_id: profiles.sam.id, updated_at: 2 }],
