@@ -1539,8 +1539,18 @@ pub(crate) fn set_app_trust(
     use riot_core::apps::trust::{encode_trust_marker, TrustMarker, TrustMarkerKind};
 
     with_active(inner, |profile| {
+        // A nearby peer must NOT block an approval. Phones auto-connect now, so
+        // a sync session is open most of the time an organizer is standing next
+        // to someone — and refusing here made "Let everyone in this space use
+        // this" fail with an unexplained error exactly when it was tapped.
+        //
+        // The guard existed because writing the trust marker goes through the
+        // store's shared inspect/plan slot, which an in-flight sync review is
+        // also using. So drop the sync rather than the approval: the approval is
+        // a deliberate human act, the sync is background chatter that reconnects
+        // on its own. Anything mid-review is discarded, not half-applied.
         if sync_session_is_active(profile) {
-            return Err(MobileError::InvalidInput);
+            profile.sync_session = None;
         }
         // Only a space's organizer may approve an app for it. Without this a
         // member could self-approve any app, which would make the trust gate
