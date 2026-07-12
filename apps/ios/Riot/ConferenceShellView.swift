@@ -110,6 +110,8 @@ private struct SpacesView: View {
     /// The name being typed, seeded from the claim this person last made so
     /// editing starts where they left off rather than from an empty field.
     @State private var name = ""
+    /// Why loading or removing the seeded space did not work, in one sentence.
+    @State private var demoFailure: String?
 
     private var trimmedName: String {
         name.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -132,11 +134,21 @@ private struct SpacesView: View {
                             Text("Public content · fixed incident-board/1 renderer")
                                 .font(.riot(.body, size: 13, relativeTo: .caption))
                                 .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
+                            if model.isDemoMode {
+                                removeDemoSection
+                            }
                         } else {
                             TextField("Space title", text: $title)
                                 .font(.riot(.body, size: 17, relativeTo: .body))
                             Button("Create public space") { model.createSpace(title: title) }
                                 .buttonStyle(.riotPrimary)
+                            loadDemoSection
+                        }
+                        if let demoFailure {
+                            Text(demoFailure)
+                                .font(.riot(.body, size: 13, relativeTo: .caption))
+                                .foregroundStyle(RiotTheme.pink(for: colorScheme))
+                                .accessibilityIdentifier("demo-failure")
                         }
                     }
                 }
@@ -168,6 +180,72 @@ private struct SpacesView: View {
             } else {
                 Color.clear.onAppear { running = nil }
             }
+        }
+    }
+
+    /// The seeded Riverside Tenants Union space, offered where a person will
+    /// actually find it: right under "create a space", at the moment they have
+    /// none and are deciding what to do.
+    ///
+    /// It used to be reachable only by long-pressing a version string, which is
+    /// the kind of thing you can only find if you already know it is there.
+    /// Discoverable beats clever: this is a stage prop, but a stage prop nobody
+    /// can pick up is just a missing feature.
+    ///
+    /// Offered ONLY when there is no space, because the import is additive and
+    /// refuses to displace a space the person already has — a button that could
+    /// only fail is not an offer.
+    @ViewBuilder
+    private var loadDemoSection: some View {
+        Divider().overlay(RiotTheme.line(for: colorScheme))
+        Text("Or start from a space that already has people in it — six alerts, a part-done checklist, and a tool in the directory.")
+            .font(.riot(.body, size: 13, relativeTo: .caption))
+            .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
+        Button("Load the demo space (Riverside Tenants Union)") { loadDemoSpace() }
+            .buttonStyle(.riotSecondary)
+            .accessibilityIdentifier("demo-load")
+    }
+
+    /// The way back out, so a rehearsal can be run twice.
+    ///
+    /// The copy says "hiding is not erasing" because that is the truth — the
+    /// store is append-only and the entries stay in it, inert — and a presenter
+    /// who expects a wipe and gets a hide will find out on stage.
+    @ViewBuilder
+    private var removeDemoSection: some View {
+        Divider().overlay(RiotTheme.line(for: colorScheme))
+        RiotBadge("Demo space")
+        Text(DemoModeCopy.hideExplanation)
+            .font(.riot(.body, size: 13, relativeTo: .caption))
+            .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
+        Button(DemoModeCopy.hide) { hideDemoSpace() }
+            .buttonStyle(.riotSecondary)
+            .accessibilityIdentifier("demo-hide")
+    }
+
+    /// Imports the seeded bundle through the ORDINARY import path — the same
+    /// `inspect → plan → commit` a bundle from a phone across the room takes. A
+    /// missing resource and a refused import say the same sentence, because the
+    /// difference matters to us and not to the person holding the phone.
+    private func loadDemoSpace() {
+        demoFailure = nil
+        guard let loader = model.demoLoader, let bytes = DemoFixture.bytes() else {
+            demoFailure = DemoModeCopy.missingFixture
+            return
+        }
+        do {
+            _ = try loader.loadDemoSpace(bytes: bytes)
+        } catch {
+            demoFailure = DemoModeCopy.loadFailed
+        }
+    }
+
+    private func hideDemoSpace() {
+        demoFailure = nil
+        do {
+            try model.demoLoader?.hideDemoSpace()
+        } catch {
+            demoFailure = "Couldn’t hide the demo space."
         }
     }
 
@@ -590,6 +668,7 @@ private struct ConnectionStatusView: View {
             // join-space step without a tap, so two instances can be driven all
             // the way through pair -> join -> sync from a script. Off by default;
             // joining a space is a deliberate act for a real person.
+            __rtrace("shell onChange state=\(state)")
             if case .joinSpace = state,
                ProcessInfo.processInfo.environment["RIOT_AUTO_CONFIRM"] == "1" {
                 nearby.confirmJoinSpace()
