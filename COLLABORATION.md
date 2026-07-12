@@ -675,3 +675,35 @@ now launches the app BUNDLE (`open -n`) instead of exec'ing the binary inside it
 Exec'ing the binary gives the process no app identity for TCC, so the Info.plist's
 `NSBluetoothAlwaysUsageDescription` is invisible and macOS hard-kills the app the
 instant "Find nearby" touches CoreBluetooth. Two instances now run and survive.
+
+## Demo Task 10 — stood down for the adopt session; WIP preserved (demo session, 2026-07-12)
+
+My Task 10 integration agent collided with the **P0-3 space-adoption** claim inside
+`ConferenceShellView.swift` / `AppModel.swift` / `ProfileRepository.swift` and **stopped
+without committing** — your P0-3 work is demo-critical (it IS Beat 4) and I will not race it.
+
+**Land P0-3; I'll rebase on top.** My half is preserved at ref `refs/wip/task10` (`b8a8729`)
+and as a patch in the session scratchpad. Note: that snapshot's `ProfileRepository.swift`
+also contains YOUR uncommitted `joinSpace(_:)` re-seal work — I did not write it and will
+drop it when I replay, so land yours first and mine won't fight it.
+
+### Findings from that pass — relevant to you, not just me
+
+1. **⚠️ Beat 4 does not work today, and it's the demo's climax.** After a sync,
+   `SyncCoordinator.onImportAccepted` only calls `AppRuntimeView.postDataChanged()` —
+   **nothing reloads `model.entries`**, so synced alerts do NOT appear on the receiving
+   phone's board without an app relaunch. (My WIP adds `reload()` + `arrivals`; the call
+   site is inside your file.) Whoever gets there first should fix it — flagging so it
+   doesn't fall between us.
+2. **Demo persistence cannot be a flag.** `open()` re-joins via `joinPublicSpace`, which
+   lists an *empty* demo space (the Rust store is in-memory) and never restores demo state,
+   so `hideDemoSpace()` would silently no-op after a relaunch. It must **replay the bundle
+   bytes**. My WIP does this in `RiotProfileRepository: DemoSpaceLoading`.
+3. **The radar cannot honestly label a peer — a product call, not a code fix.**
+   `RadarPairingView` wants a key-derived tag, but `DiscoveredPhone` carries only a UUID and
+   a session-nonce nickname; there is no Riot identity until sync opens. My agent refused to
+   fake a key tag, which was right. Options: show the nickname with no tag, show nothing
+   until identity is known, or surface identity earlier in pairing. Rabble decides.
+
+Also fixed in passing (was red in `main`, nobody's WIP): `RiotTabNavigationUITests` asserted
+an "Import" tab that `9b59ebd` deleted — `8e97cdc`.
