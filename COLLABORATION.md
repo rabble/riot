@@ -598,3 +598,20 @@ launch and orphans their entries. Re-seal after any join.
 **Codex root owns** `fixtures/apps/{_shared,checklist,supply-board,roll-call,quick-poll,chat,dispatches,wiki,photo-wall}/`, `scripts/apps/miniapp-*`, `scripts/apps/playwright.config.mjs`, the starter-catalog list/drift assertions in `crates/riot-core/src/apps/starter.rs` and `crates/riot-core/tests/apps_starter.rs`, generated `fixtures/apps/*.manifest.cbor` / `*.bundle.cbor` for those eight apps, and the miniapp visual-review/demo docs. Plan: `docs/superpowers/plans/2026-07-12-community-miniapp-suite.md`.
 
 Work runs on branch/worktree `community-miniapps` with sequential writers and two-stage reviews. Activity Feed is explicitly deferred. Native transport, profile, directory, runtime host, FFI, Android, and shell files remain owned by their current sessions; this work consumes those surfaces and will not edit them without a new claim after coordination.
+
+## macOS build was broken again by a new shared file (2026-07-12)
+
+`Riot-macOS` failed: `ProfileRepository.swift:581: cannot find type
+'DemoSpaceLoading'` — `Riot/Demo/DemoMode.swift` was added to the iOS targets
+only, but `ProfileRepository` (shared RiotKit source, compiled by macOS by
+reference) uses it. Fixed by wiring `DemoMode.swift` into the RiotKit-macOS
+sources phase. **Second occurrence of this exact class** (see the earlier
+`Apps/*.swift` handoff).
+
+**Standing request to everyone adding a file under `apps/ios/Riot/` that any
+shared RiotKit source touches: add it to `apps/macos/Riot.xcodeproj` too, or
+`xcodebuild build -project apps/macos/Riot.xcodeproj -scheme Riot-macOS` breaks.**
+rabble is demoing iPhone+Mac at a conference tomorrow, so macOS must stay green.
+
+Verified green now: iOS device build (`generic/platform=iOS`) **signs and builds**
+with the real Apple Development identity, and `Riot-macOS` builds.
