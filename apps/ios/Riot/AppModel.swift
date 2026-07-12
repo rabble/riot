@@ -229,6 +229,8 @@ public final class RiotAppModel: ObservableObject {
         me = try? repository?.me()
         refreshApps()
         refreshDisplayNames()
+        // Joining a space makes this person a MEMBER of it, not its organizer.
+        refreshOrganizerState()
     }
 
     /// Opens (or restores) the on-device profile and installs the starter tools.
@@ -254,15 +256,17 @@ public final class RiotAppModel: ObservableObject {
             )
             self.repository = repository
             demoLoader = RiotDemoSpaceLoader(repository: repository, model: self)
-            reload()
             // Headless two-node testing: with RIOT_SEED_SPACE=1 a fresh phone
             // opens a space on launch, so one scripted instance can host a space
-            // for another (fresh) instance to auto-join and sync — the whole
-            // pair -> join -> sync -> see-their-collection chain with no taps.
-            // Off by default; opening a space is a person's decision.
-            if space == nil, ProcessInfo.processInfo.environment["RIOT_SEED_SPACE"] == "1" {
-                createSpace(title: "Test Space")
+            // for another (fresh) instance to auto-join and sync. Seed BEFORE
+            // reload so the space exists by the time `me` is published and the
+            // readiness gate opens discovery — otherwise the host advertises
+            // spaceless. Off by default; opening a space is a person's decision.
+            if repository.currentSpace == nil,
+               ProcessInfo.processInfo.environment["RIOT_SEED_SPACE"] == "1" {
+                _ = try? repository.createPublicSpace(title: "Test Space")
             }
+            reload()
         } catch {
             errorMessage = String(describing: error)
         }
@@ -286,6 +290,7 @@ public final class RiotAppModel: ObservableObject {
             noteArrivals()
             refreshApps()
             refreshDisplayNames()
+            refreshOrganizerState()
         }
     }
 
@@ -411,17 +416,58 @@ public final class RiotAppModel: ObservableObject {
             guard let repository else { return }
             space = try repository.createPublicSpace(title: title)
             refreshApps()
+            // Creating a space is what makes you its organizer.
+            refreshOrganizerState()
             destination = .board
+        }
+    }
+
+    /// True when this person may approve apps here — i.e. they are this space's
+    /// organizer. The review sheet reads it to decide whether "Let everyone here
+    /// use this" is offered at all.
+    @Published public private(set) var canApproveApps = false
+
+    /// True for a profile made before spaces had organizers. It can never approve
+    /// an app for any space, so it needs different advice from a member: start a
+    /// new profile, rather than ask the organizer.
+    @Published public private(set) var isLegacyProfile = false
+
+    private func refreshOrganizerState() {
+        canApproveApps = (try? repository?.isOrganizer()) ?? false
+        isLegacyProfile = !((try? repository?.canOrganize()) ?? true)
+    }
+
+    /// Why an approval could not happen, in words a person can act on.
+    ///
+    /// The refusals are real and stay. What must never happen again is the one
+    /// rabble hit: `set_app_trust` returned `InvalidInput`, the sheet closed, and
+    /// the app simply never appeared — no reason given, and none discoverable.
+    static func approvalFailureMessage(_ error: Error) -> String {
+        switch error as? MobileError {
+        case .LegacyProfileCannotOrganize:
+            return "This profile was made before spaces had organizers, so it can’t "
+                + "approve apps for this space. Start a new profile to organize one."
+        case .NotSpaceOrganizer:
+            return "Only the organizer of this space can turn an app on here."
+        default:
+            return String(describing: error)
         }
     }
 
     /// Trusts an app in this space so everyone here can use it, then refreshes
     /// the listing so the row flips from "Review" to "Open".
     public func trustApp(appID: String) {
-        perform {
-            try repository?.trustApp(appID: appID)
+        guard let repository else { return }
+        do {
+            try repository.trustApp(appID: appID)
+            errorMessage = nil
             refreshApps()
+        } catch {
+            // Not `perform`: its `String(describing:)` is exactly how "InvalidInput"
+            // reached a person who had done nothing wrong.
+            errorMessage = Self.approvalFailureMessage(error)
         }
+        refreshOrganizerState()
     }
 
     private func refreshApps() {
