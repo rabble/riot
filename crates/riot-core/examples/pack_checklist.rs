@@ -22,10 +22,8 @@ use riot_core::willow::identity::{AuthorIdentity, NamespaceKind};
 /// Fixed committed PUBLIC author identity for built-in apps. Placeholder in
 /// the conference-fixture precedent — no private key exists for it; starter
 /// integrity is content-addressed, not signature-verified.
-const NAMESPACE_ID_HEX: &str =
-    "27cd7747ceecf672b65a998f1606162fc1e39793dd61a442a0af65ba4f92951e";
-const SUBSPACE_ID_HEX: &str =
-    "99069a7b075d21e0dc7e4b7c7daf311f8e1d308001763d9d78ef60e9b9857157";
+const NAMESPACE_ID_HEX: &str = "27cd7747ceecf672b65a998f1606162fc1e39793dd61a442a0af65ba4f92951e";
+const SUBSPACE_ID_HEX: &str = "99069a7b075d21e0dc7e4b7c7daf311f8e1d308001763d9d78ef60e9b9857157";
 
 fn main() {
     if let Err(err) = run() {
@@ -45,7 +43,10 @@ fn run() -> Result<(), String> {
     let mut resources = build_resources(&source_dir)?;
     resources.sort_by(|a, b| a.path.as_bytes().cmp(b.path.as_bytes()));
 
-    if !resources.iter().any(|r| r.path == manifest_meta.entry_point) {
+    if !resources
+        .iter()
+        .any(|r| r.path == manifest_meta.entry_point)
+    {
         return Err(format!(
             "entry_point '{}' not present among packed resources",
             manifest_meta.entry_point
@@ -158,8 +159,8 @@ fn required_str(value: &serde_json::Value, key: &str) -> Result<String, String> 
 
 fn build_resources(source_dir: &Path) -> Result<Vec<AppResource>, String> {
     let mut resources = Vec::new();
-    let entries = std::fs::read_dir(source_dir)
-        .map_err(|e| format!("read fixtures/apps/checklist: {e}"))?;
+    let entries =
+        std::fs::read_dir(source_dir).map_err(|e| format!("read fixtures/apps/checklist: {e}"))?;
     for entry in entries {
         let entry = entry.map_err(|e| format!("read dir entry: {e}"))?;
         if !entry

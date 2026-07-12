@@ -1,5 +1,8 @@
 .superpowers/
 target/
+.env
+.DS_Store
+*.log
 build/
 .gradle/
 local.properties

@@ -1,6 +1,5 @@
 use riot_core::apps::directory::{
-    assemble_directory, AppProvenance, DirectoryInputs, EndorsementRecord, IndexedApp,
-    SpaceTrust,
+    assemble_directory, AppProvenance, DirectoryInputs, EndorsementRecord, IndexedApp, SpaceTrust,
 };
 use riot_core::apps::manifest::AppManifest;
 use riot_core::apps::trust::{TrustMarker, TrustMarkerKind};
@@ -31,7 +30,9 @@ fn indexed(app_id: [u8; 32], m: AppManifest, carrier: [u8; 32], ts: u64) -> Inde
         app_id,
         manifest: m,
         bundle_present: true,
-        provenance: AppProvenance::Carried { carrier_subspace_id: carrier },
+        provenance: AppProvenance::Carried {
+            carrier_subspace_id: carrier,
+        },
         manifest_timestamp_micros: ts,
     }
 }
@@ -74,8 +75,18 @@ fn built_in_provenance_wins_over_carried_for_same_app_id() {
 fn same_name_different_author_never_merges() {
     let mut inputs = empty_inputs();
     inputs.apps = vec![
-        indexed([1u8; 32], manifest("Shift Signup", 1, "1.0.0"), [9u8; 32], 10),
-        indexed([2u8; 32], manifest("Shift Signup", 2, "1.0.0"), [9u8; 32], 10),
+        indexed(
+            [1u8; 32],
+            manifest("Shift Signup", 1, "1.0.0"),
+            [9u8; 32],
+            10,
+        ),
+        indexed(
+            [2u8; 32],
+            manifest("Shift Signup", 2, "1.0.0"),
+            [9u8; 32],
+            10,
+        ),
     ];
     let listings = assemble_directory(&inputs);
     assert_eq!(listings.len(), 2);
@@ -90,8 +101,14 @@ fn newer_manifest_from_same_author_and_name_supersedes_older() {
         indexed([2u8; 32], manifest("Checklist", 1, "1.1.0"), [9u8; 32], 20),
     ];
     let listings = assemble_directory(&inputs);
-    let old = listings.iter().find(|l| l.app_id == [1u8; 32]).expect("old");
-    let new = listings.iter().find(|l| l.app_id == [2u8; 32]).expect("new");
+    let old = listings
+        .iter()
+        .find(|l| l.app_id == [1u8; 32])
+        .expect("old");
+    let new = listings
+        .iter()
+        .find(|l| l.app_id == [2u8; 32])
+        .expect("new");
     assert_eq!(old.superseded_by, Some([2u8; 32]));
     assert_eq!(new.superseded_by, None);
 }
@@ -99,15 +116,36 @@ fn newer_manifest_from_same_author_and_name_supersedes_older() {
 #[test]
 fn endorsements_dedup_by_subspace_skip_retracted_and_split_met_unmet() {
     let mut inputs = empty_inputs();
-    inputs.apps = vec![indexed([7u8; 32], manifest("Checklist", 1, "1.0.0"), [9u8; 32], 10)];
+    inputs.apps = vec![indexed(
+        [7u8; 32],
+        manifest("Checklist", 1, "1.0.0"),
+        [9u8; 32],
+        10,
+    )];
     inputs.endorsements = vec![
-        EndorsementRecord { app_id: [7u8; 32], endorser_subspace_id: [4u8; 32], retracted: false },
+        EndorsementRecord {
+            app_id: [7u8; 32],
+            endorser_subspace_id: [4u8; 32],
+            retracted: false,
+        },
         // Same endorser twice: counts once.
-        EndorsementRecord { app_id: [7u8; 32], endorser_subspace_id: [4u8; 32], retracted: false },
+        EndorsementRecord {
+            app_id: [7u8; 32],
+            endorser_subspace_id: [4u8; 32],
+            retracted: false,
+        },
         // Retracted: does not count.
-        EndorsementRecord { app_id: [7u8; 32], endorser_subspace_id: [5u8; 32], retracted: true },
+        EndorsementRecord {
+            app_id: [7u8; 32],
+            endorser_subspace_id: [5u8; 32],
+            retracted: true,
+        },
         // Unmet endorser.
-        EndorsementRecord { app_id: [7u8; 32], endorser_subspace_id: [6u8; 32], retracted: false },
+        EndorsementRecord {
+            app_id: [7u8; 32],
+            endorser_subspace_id: [6u8; 32],
+            retracted: false,
+        },
     ];
     inputs.met_subspace_ids = vec![[4u8; 32]];
     let listings = assemble_directory(&inputs);
@@ -119,7 +157,12 @@ fn endorsements_dedup_by_subspace_skip_retracted_and_split_met_unmet() {
 fn trusted_in_reflects_per_space_trust_evaluation() {
     let organizer = [8u8; 32];
     let mut inputs = empty_inputs();
-    inputs.apps = vec![indexed([7u8; 32], manifest("Checklist", 1, "1.0.0"), [9u8; 32], 10)];
+    inputs.apps = vec![indexed(
+        [7u8; 32],
+        manifest("Checklist", 1, "1.0.0"),
+        [9u8; 32],
+        10,
+    )];
     inputs.spaces = vec![
         SpaceTrust {
             space_namespace_id: [10u8; 32],
@@ -145,8 +188,18 @@ fn trusted_in_reflects_per_space_trust_evaluation() {
 fn listings_sort_by_met_endorsements_then_name() {
     let mut inputs = empty_inputs();
     inputs.apps = vec![
-        indexed([1u8; 32], manifest("Zebra Notes", 1, "1.0.0"), [9u8; 32], 10),
-        indexed([2u8; 32], manifest("Alpha Notes", 2, "1.0.0"), [9u8; 32], 10),
+        indexed(
+            [1u8; 32],
+            manifest("Zebra Notes", 1, "1.0.0"),
+            [9u8; 32],
+            10,
+        ),
+        indexed(
+            [2u8; 32],
+            manifest("Alpha Notes", 2, "1.0.0"),
+            [9u8; 32],
+            10,
+        ),
         indexed([3u8; 32], manifest("Ride Board", 3, "1.0.0"), [9u8; 32], 10),
     ];
     inputs.endorsements = vec![EndorsementRecord {
