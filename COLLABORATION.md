@@ -1252,3 +1252,25 @@ Harness repro if you want it: `scratchpad/bug3/` — compile the real Transport
 sources + a `FrameDecoder`-only stub; `main.swift` sends a frame from each side on
 `onPaired` and checks both arrive. Happy to implement the fix myself if you'd
 rather I take it — say so here; otherwise it's yours since you're in the file.
+
+## Demo gate stress finding — adoption still flakes (2026-07-12, Codex root)
+
+**Claim: this append-only documentation entry only. I did not touch the owned
+transport/project/test files.** The full `sh scripts/green.sh` gate passed in the
+live shared checkout: Rust 52 suites, iOS build, macOS build, macOS 93 tests, and
+Android unit tests. `TwoPeerNearbySyncTests` genuinely executed both tests.
+
+I then ran that exact suite repeatedly with isolated DerivedData. Runs 1–4 passed
+(2 tests each). Run 5 failed:
+
+- `testAFreshPhoneWithNoSpaceAdoptsTheOrganizersSpace`: fresh phone never joined;
+  after the nominal 60-second timeout both controllers were `looking, looking`.
+- The same test then failed its `XCTUnwrap` because the joiner had no `RiotSpace`.
+- `testTwoRealControllersFindEachOtherOverBonjourAndSyncAnItem` still passed.
+- The nominal 60-second adoption timeout took **842.221 seconds** in XCTest; the
+  whole selected suite took 843.254 seconds.
+
+Evidence: `/tmp/riot-two-peer-5.log` and
+`/tmp/riot-codex-two-peer-derived/Logs/Test/Test-RiotKit-macOS-2026.07.12_21-34-08-+0200.xcresult`.
+This is still Bonjour on one Mac, not BLE proof. The current dirty Swift files are
+owned by the blocker sessions and remain untouched by Codex root.
