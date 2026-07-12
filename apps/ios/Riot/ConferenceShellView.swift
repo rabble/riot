@@ -668,7 +668,6 @@ private struct ConnectionStatusView: View {
             // join-space step without a tap, so two instances can be driven all
             // the way through pair -> join -> sync from a script. Off by default;
             // joining a space is a deliberate act for a real person.
-            __rtrace("shell onChange state=\(state)")
             if case .joinSpace = state,
                ProcessInfo.processInfo.environment["RIOT_AUTO_CONFIRM"] == "1" {
                 nearby.confirmJoinSpace()
