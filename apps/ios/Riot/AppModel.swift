@@ -207,14 +207,17 @@ public final class RiotAppModel: ObservableObject {
     /// Safe by construction: written once in `init` and read once in `deinit`, never
     /// concurrently, and `NotificationCenter` is itself thread-safe.
     private nonisolated(unsafe) var heldAppsObserver: NSObjectProtocol?
+    private nonisolated(unsafe) var committedStoreObserver: NSObjectProtocol?
 
     public init() {
         observeHeldApps()
+        observeCommittedStoreChanges()
     }
 
     init(testError: String) {
         errorMessage = testError
         observeHeldApps()
+        observeCommittedStoreChanges()
     }
 
     /// Re-read the held apps whenever ANY surface takes one up.
@@ -243,9 +246,34 @@ public final class RiotAppModel: ObservableObject {
         }
     }
 
+    /// Re-read native space state after a store mutation has committed.
+    ///
+    /// WebViews already observe this signal and redraw their app data. Alerts
+    /// use `RiotAppModel.entries` instead, so without the matching refresh a
+    /// freshly joined phone receives the board on disk but shows an empty board
+    /// until relaunch.
+    private func observeCommittedStoreChanges() {
+        committedStoreObserver = NotificationCenter.default.addObserver(
+            forName: AppRuntimeView.dataChangedNotification,
+            object: nil,
+            queue: nil
+        ) { [weak self] _ in
+            guard Thread.isMainThread else {
+                Task { @MainActor [weak self] in self?.refreshFromStore() }
+                return
+            }
+            MainActor.assumeIsolated {
+                self?.refreshFromStore()
+            }
+        }
+    }
+
     deinit {
         if let heldAppsObserver {
             NotificationCenter.default.removeObserver(heldAppsObserver)
+        }
+        if let committedStoreObserver {
+            NotificationCenter.default.removeObserver(committedStoreObserver)
         }
     }
 

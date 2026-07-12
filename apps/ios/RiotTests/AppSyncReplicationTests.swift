@@ -239,6 +239,41 @@ final class AppSyncReplicationTests: XCTestCase {
         XCTAssertNotNil(coordinator, "the mount's coordinator must outlive the sync — it owns the subscription")
     }
 
+    /// Accepted sync changes more than a running mini-app: alerts land on the
+    /// native incident board too. `SyncCoordinator` announces the committed
+    /// store through the same notification the WebView observes, so the app
+    /// model must re-read its native entries without a relaunch.
+    func testCommittedStoreNotificationRefreshesNativeBoardModel() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("native-board-\(UUID().uuidString)", isDirectory: true)
+        let model = RiotAppModel()
+        model.bootstrap(
+            storageDirectory: directory,
+            keyStore: TestWrappingKeyStore(),
+            starterPacks: try starterPacks()
+        )
+        model.createSpace(title: "Riverside Tenants Union")
+
+        let repository = try XCTUnwrap(model.profileRepository)
+        let space = try XCTUnwrap(model.space)
+        _ = try repository.signAlert(
+            in: space,
+            draft: AlertDraft(
+                expiresAt: UInt64(Date().timeIntervalSince1970) + 3_600,
+                headline: "Court support needed Thursday",
+                description: "Bring folding chairs",
+                sourceClaims: ["On-site organizer"],
+                aiAssisted: false
+            )
+        )
+        XCTAssertTrue(model.entries.isEmpty, "the model must be stale before the committed-store signal")
+
+        AppRuntimeView.postDataChanged()
+        await Task.yield()
+
+        XCTAssertEqual(model.entries.map(\.headline), ["Court support needed Thursday"])
+    }
+
     /// The review gate holds: the refresh fires once per ACCEPTED import and
     /// never merely because entries arrived. Content sitting in the preview is
     /// not in the store yet, so refreshing on receipt would redraw an app with
@@ -866,4 +901,3 @@ private final class TestWrappingKeyStore: WrappingKeyStore {
         return created
     }
 }
-
