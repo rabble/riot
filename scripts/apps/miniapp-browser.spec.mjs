@@ -12,23 +12,21 @@ if (playwrightPackage.version !== "1.61.1") {
 const { expect, test } = requireFromPlaywright("playwright/test");
 
 const APPS = [
-  { app: "checklist", name: "Tasks", seededAction: "Add task", emptyAction: "Add task" },
   { app: "supply-board", name: "Needs & Offers", seededAction: "Post item", emptyAction: "Post item" },
   { app: "roll-call", name: "Events", seededAction: "Create event", emptyAction: "Create event" },
   { app: "quick-poll", name: "Decisions", seededAction: "Add a crossing guard", emptyAction: "Ask a new question" },
 ];
 
 const LIFECYCLE_APPS = [
-  { app: "checklist", name: "Tasks", action: "Add task", root: "tasks", existing: "Existing neighborhood task", field: "New task", draft: "A valid task" },
   { app: "supply-board", name: "Needs & Offers", action: "Post item", root: "items", existing: "Existing supply request", field: "What is needed or offered?", draft: "A valid request" },
   { app: "roll-call", name: "Events", action: "Create event", root: "events", existing: "Existing block gathering" },
   { app: "quick-poll", name: "Decisions", action: "Ask a new question", root: "proposals", existing: "Existing community decision?" },
 ];
 
-test("Tasks primary flow", async ({ page }) => {
+test("Frozen Checklist primary flow", async ({ page }) => {
   await page.goto("/apps/checklist/?state=seeded");
-  await page.getByLabel("New task").fill("Bring extension cord");
-  await page.getByRole("button", { name: "Add task" }).click();
+  await page.getByLabel("New item").fill("Bring extension cord");
+  await page.getByRole("button", { name: "Add", exact: true }).click();
   await expect(page.getByText("Bring extension cord", { exact: true })).toBeVisible();
 });
 
@@ -68,12 +66,12 @@ test("Decisions primary flow", async ({ page }) => {
   await expect(page.locator("#tally")).toHaveText("1 vote");
 });
 
-test("Tasks preserves a draft after a write error", async ({ page }) => {
+test("Frozen Checklist preserves a draft after a write error", async ({ page }) => {
   await page.goto("/apps/checklist/?state=error");
-  await page.getByLabel("New task").fill("Keep this task draft");
-  await page.getByRole("button", { name: "Add task" }).click();
-  await expect(page.getByLabel("New task")).toHaveValue("Keep this task draft");
-  await expect(page.getByRole("alert")).toContainText("draft is safe");
+  await page.getByLabel("New item").fill("Keep this task draft");
+  await page.getByRole("button", { name: "Add", exact: true }).click();
+  await expect(page.getByLabel("New item")).toHaveValue("Keep this task draft");
+  await expect(page.getByRole("alert")).toContainText("Couldn't save");
 });
 
 test("Needs & Offers preserves a draft after a write error", async ({ page }) => {
@@ -144,16 +142,6 @@ for (const { app, name, action, root, existing, field, draft } of LIFECYCLE_APPS
   });
 }
 
-test("Tasks enables submit only for a valid ready form", async ({ page }) => {
-  await page.goto("/apps/checklist/?state=empty");
-  const submit = page.getByRole("button", { name: "Add task" });
-  await expect(submit).toBeDisabled();
-  await page.getByLabel("New task").fill("Sweep the steps");
-  await expect(submit).toBeEnabled();
-  await page.getByLabel("New task").fill("   ");
-  await expect(submit).toBeDisabled();
-});
-
 test("Needs & Offers enables submit only for a valid ready form", async ({ page }) => {
   await page.goto("/apps/supply-board/?state=empty");
   const submit = page.getByRole("button", { name: "Post item" });
@@ -189,52 +177,6 @@ test("Decisions enables submit only for two valid choices", async ({ page }) => 
   await page.getByLabel("Choice 4").fill("Sunday");
   await page.getByLabel("Choice 2", { exact: true }).fill(" ");
   await expect(submit).toBeDisabled();
-});
-
-test("Tasks serializes completion and assignment mutations per row", async ({ page }) => {
-  await page.goto("/apps/checklist/?state=slow-write");
-  const row = page.locator(".task").filter({ hasText: "Existing neighborhood task" });
-  const complete = row.locator(".toggle");
-  const assign = row.getByRole("button", { name: /Take this/ });
-  await complete.click();
-  await expect(complete).toBeDisabled();
-  await expect(assign).toBeDisabled();
-  await expect(complete).toBeEnabled();
-  await assign.click();
-  await expect(row).toHaveClass(/done/);
-  await expect(row).toContainText("Taken by You");
-});
-
-test("Tasks does not undo a remote completion hidden behind a stale Complete action", async ({ page }) => {
-  await page.goto("/apps/checklist/?state=slow-write");
-  const row = page.locator(".task").filter({ hasText: "Existing neighborhood task" });
-  await expect(row.getByRole("button", { name: /Complete/ })).toBeVisible();
-  await page.evaluate(() => __miniappPreview.remotePut("tasks/existing-task", {
-    text: "Existing neighborhood task",
-    created_at: 10,
-    added_by_id: "a".repeat(64),
-    assigned_to_id: "",
-    completed: true,
-  }));
-  await row.getByRole("button", { name: /Complete/ }).click();
-  await page.waitForTimeout(250);
-  await expect.poll(() => page.evaluate(() => riot.get("tasks/existing-task").then((value) => value.completed))).toBe(true);
-});
-
-test("Tasks does not undo a remote assignment hidden behind a stale Take this action", async ({ page }) => {
-  await page.goto("/apps/checklist/?state=slow-write");
-  const row = page.locator(".task").filter({ hasText: "Existing neighborhood task" });
-  await expect(row.getByRole("button", { name: /Take this/ })).toBeVisible();
-  await page.evaluate(() => __miniappPreview.remotePut("tasks/existing-task", {
-    text: "Existing neighborhood task",
-    created_at: 10,
-    added_by_id: "a".repeat(64),
-    assigned_to_id: "1".repeat(64),
-    completed: false,
-  }));
-  await row.getByRole("button", { name: /Take this/ }).click();
-  await page.waitForTimeout(250);
-  await expect.poll(() => page.evaluate(() => riot.get("tasks/existing-task").then((value) => value.assigned_to_id))).toBe("1".repeat(64));
 });
 
 test("Needs & Offers resolves and reopens one item", async ({ page }) => {

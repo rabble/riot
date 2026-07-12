@@ -11,7 +11,6 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../
 const tokensPath = path.join(repoRoot, "fixtures/apps/_shared/tokens.css");
 const previewHostPath = path.join(repoRoot, "scripts/apps/miniapp-preview-host.mjs");
 const APPS = [
-  ["checklist", "Tasks"],
   ["supply-board", "Needs & Offers"],
   ["roll-call", "Events"],
   ["quick-poll", "Decisions"],
@@ -46,6 +45,11 @@ assert.match(tokens, /min-height\s*:\s*44px\b/, "controls must be at least 44px 
 assert.match(tokens, /--focus-ring\s*:/, "tokens must define a dedicated focus-ring color");
 assert.match(tokens, /:focus-visible\s*\{[^}]*outline\s*:\s*3px\s+solid\s+var\(--focus-ring\)/s, "keyboard focus must use a visible 3px focus ring");
 assert.match(tokens, /@media\s*\(prefers-reduced-motion\s*:\s*reduce\)/, "motion must honor reduced-motion preferences");
+
+const frozenChecklist = path.join(repoRoot, "fixtures/apps/checklist");
+const frozenChecklistManifest = JSON.parse(await readFile(path.join(frozenChecklist, "riot-app.json"), "utf8"));
+assert.equal(frozenChecklistManifest.name, "Checklist", "the demo Checklist identity stays frozen");
+for (const file of ["riot-app.json", "index.html", "style.css", "app.js"]) await access(path.join(frozenChecklist, file));
 
 for (const [app, name] of APPS) {
   const directory = path.join(repoRoot, "fixtures/apps", app);
