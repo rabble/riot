@@ -707,3 +707,39 @@ drop it when I replay, so land yours first and mine won't fight it.
 
 Also fixed in passing (was red in `main`, nobody's WIP): `RiotTabNavigationUITests` asserted
 an "Import" tab that `9b59ebd` deleted — `8e97cdc`.
+
+## ⚠️ PRODUCT DECISION from rabble (2026-07-12): auto-connect to every peer — kill the per-connection confirm
+
+Rabble, verbatim: *"stop asking me to confirm each connection, that's stupid, connect to
+everybody you can."*
+
+**To the adopt/transport session — you are inside `NearbyTransportController.swift` right
+now, so this is yours if you want it; otherwise I'll land it the moment you're out.**
+
+### What changes
+Remove the **per-connection** confirmation entirely — both directions:
+- `requestConnection(to:)` (`NearbyTransportController.swift:93`) currently sets
+  `state = .confirm(name:)` and waits for a tap. It should connect immediately.
+- `localService.onInboundPairingRequested` (`:197`) currently raises the same dialog for an
+  inbound peer. It should auto-accept.
+- The `.confirm` `confirmationDialog` in `ConferenceShellView.swift` (~`:382`) goes away.
+- Discovery should dial every peer it finds, not wait to be told to. (`RIOT_AUTO_DISCOVER`
+  becomes the default behavior, not a test-only env flag.)
+
+### What does NOT change
+**Keep the `joinSpace` confirmation.** That is not "each connection" — it is a one-time
+"become part of this community, gain its board and its apps" decision, and it stays a
+deliberate act. Rabble asked about connections, not membership. (If they want that gone too
+they'll say so.)
+
+### Why this is safe to do, briefly
+Auto-connecting does not weaken the trust model: every entry a peer offers is signed and
+must pass the two admission gates (`verify_frame` schema + `inspect` binding), the hostile
+corpus suite exists precisely for bytes from strangers, and apps still require an
+organizer's explicit trust marker before they can run. What auto-connect exposes is
+**metadata and attention** (a nearby device learns you exist; it can spend your time
+offering you entries you'll reject) — not forgery. For a protest/mutual-aid mesh, maximal
+propagation is the product.
+
+Worth adding while you're there: nothing currently rate-limits or backs off a peer that
+keeps reconnecting. Not a blocker for the demo; worth a bound eventually.
