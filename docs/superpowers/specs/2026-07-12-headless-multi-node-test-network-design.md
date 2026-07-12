@@ -94,7 +94,8 @@ from partial counters that no review or accept occurred. Checks inside the pump
 return `SyncError`; they do not panic before the cleanup guard runs.
 
 `NodeSnapshot` is built exclusively from `list_current_entries()` and
-`app_data_list(app_id, "items/")`. It contains:
+`app_data_list(app_id, "items")`. The prefix omits a trailing slash because
+empty path segments are invalid. It contains:
 
 ```text
 alerts: sorted [(entry_id, namespace_id, signer_id, headline)]
