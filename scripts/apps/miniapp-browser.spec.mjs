@@ -19,8 +19,8 @@ const APPS = [
 ];
 
 const LIFECYCLE_APPS = [
-  { app: "checklist", name: "Tasks", action: "Add task", root: "tasks", existing: "Existing neighborhood task" },
-  { app: "supply-board", name: "Needs & Offers", action: "Post item", root: "items", existing: "Existing supply request" },
+  { app: "checklist", name: "Tasks", action: "Add task", root: "tasks", existing: "Existing neighborhood task", field: "New task", draft: "A valid task" },
+  { app: "supply-board", name: "Needs & Offers", action: "Post item", root: "items", existing: "Existing supply request", field: "What is needed or offered?", draft: "A valid request" },
   { app: "roll-call", name: "Events", action: "Create event", root: "events", existing: "Existing block gathering" },
   { app: "quick-poll", name: "Decisions", action: "Ask a new question", root: "proposals", existing: "Existing community decision?" },
 ];
@@ -105,10 +105,11 @@ test("Decisions preserves a draft after a write error", async ({ page }) => {
   await expect(page.getByRole("alert")).toContainText("draft is safe");
 });
 
-for (const { app, name, action, root, existing } of LIFECYCLE_APPS) {
+for (const { app, name, action, root, existing, field, draft } of LIFECYCLE_APPS) {
   test(`${name} waits for identity before enabling mutations`, async ({ page }) => {
     await page.goto(`/apps/${app}/?state=delayed-identity`);
     const control = page.getByRole("button", { name: action });
+    if (field) await page.getByLabel(field).fill(draft);
     await expect(control).toBeDisabled();
     await expect(control).toBeEnabled();
     await expect(page.getByText(existing, { exact: true })).toBeVisible();
@@ -118,13 +119,16 @@ for (const { app, name, action, root, existing } of LIFECYCLE_APPS) {
   test(`${name} keeps mutations disabled when identity fails`, async ({ page }) => {
     await page.goto(`/apps/${app}/?state=identity-error`);
     const control = page.getByRole("button", { name: action });
+    if (field) await page.getByLabel(field).fill(draft);
     await expect(control).toBeDisabled();
     await expect(page.getByRole("alert")).toContainText(/identity|shared storage/i);
+    await expect(page.getByText(existing, { exact: true })).toBeVisible();
     await expect(control).toBeDisabled();
   });
 
   test(`${name} preserves existing unmarked data without adding demos`, async ({ page }) => {
     await page.goto(`/apps/${app}/?state=existing-unmarked`);
+    if (field) await page.getByLabel(field).fill(draft);
     await expect(page.getByRole("button", { name: action })).toBeEnabled();
     await expect(page.getByText(existing, { exact: true })).toBeVisible();
     await expect.poll(() => page.evaluate((prefix) => riot.list(prefix).then((rows) => rows.length), root)).toBe(1);
@@ -133,11 +137,56 @@ for (const { app, name, action, root, existing } of LIFECYCLE_APPS) {
 
   test(`${name} filters malformed rows while rendering valid siblings`, async ({ page }) => {
     await page.goto(`/apps/${app}/?state=malformed`);
+    if (field) await page.getByLabel(field).fill(draft);
     if (app === "quick-poll") await expect(page.locator("#question")).toHaveText("No decision is open yet");
     else await expect(page.getByText(existing, { exact: true })).toBeVisible();
     await expect(page.getByRole("button", { name: action })).toBeEnabled();
   });
 }
+
+test("Tasks enables submit only for a valid ready form", async ({ page }) => {
+  await page.goto("/apps/checklist/?state=empty");
+  const submit = page.getByRole("button", { name: "Add task" });
+  await expect(submit).toBeDisabled();
+  await page.getByLabel("New task").fill("Sweep the steps");
+  await expect(submit).toBeEnabled();
+  await page.getByLabel("New task").fill("   ");
+  await expect(submit).toBeDisabled();
+});
+
+test("Needs & Offers enables submit only for a valid ready form", async ({ page }) => {
+  await page.goto("/apps/supply-board/?state=empty");
+  const submit = page.getByRole("button", { name: "Post item" });
+  await expect(submit).toBeDisabled();
+  await page.getByLabel("What is needed or offered?").fill("A long ladder");
+  await expect(submit).toBeEnabled();
+  await page.getByLabel("What is needed or offered?").fill("");
+  await expect(submit).toBeDisabled();
+});
+
+test("Events enables save only for a valid ready form", async ({ page }) => {
+  await page.goto("/apps/roll-call/?state=empty");
+  await page.getByRole("button", { name: "Create event" }).click();
+  const submit = page.getByRole("button", { name: "Save event" });
+  await expect(submit).toBeDisabled();
+  await page.getByLabel("Event title").fill("Porch concert");
+  await expect(submit).toBeEnabled();
+  await page.getByLabel("Event title").fill(" ");
+  await expect(submit).toBeDisabled();
+});
+
+test("Decisions enables submit only for two valid choices", async ({ page }) => {
+  await page.goto("/apps/quick-poll/?state=empty");
+  await page.getByRole("button", { name: "Ask a new question" }).click();
+  const submit = page.getByRole("button", { name: "Post question" });
+  await expect(submit).toBeDisabled();
+  await page.getByLabel("Question", { exact: true }).fill("When should we meet?");
+  await page.getByLabel("Choice 1", { exact: true }).fill("Tuesday");
+  await page.getByLabel("Choice 2", { exact: true }).fill("Thursday");
+  await expect(submit).toBeEnabled();
+  await page.getByLabel("Choice 2", { exact: true }).fill(" ");
+  await expect(submit).toBeDisabled();
+});
 
 test("Tasks serializes completion and assignment mutations per row", async ({ page }) => {
   await page.goto("/apps/checklist/?state=slow-write");
@@ -173,13 +222,17 @@ test("Events records and cancels an RSVP", async ({ page }) => {
 
 test("Decisions moves one profile's vote instead of adding another", async ({ page }) => {
   await page.goto("/apps/quick-poll/?state=seeded");
-  const first = page.getByRole("button", { name: "Add a crossing guard" });
-  const second = page.getByRole("button", { name: "Paint a brighter crosswalk" });
+  const first = page.getByRole("button", { name: /Add a crossing guard/ });
+  const second = page.getByRole("button", { name: /Paint a brighter crosswalk/ });
+  await expect(first).toHaveAccessibleName("Add a crossing guard, 0 votes, 0 percent");
   await first.click();
   await expect(first).toHaveAttribute("aria-pressed", "true");
+  await expect(first).toHaveAccessibleName("Add a crossing guard, 1 vote, 100 percent");
   await second.click();
   await expect(first).toHaveAttribute("aria-pressed", "false");
   await expect(second).toHaveAttribute("aria-pressed", "true");
+  await expect(first).toHaveAccessibleName("Add a crossing guard, 0 votes, 0 percent");
+  await expect(second).toHaveAccessibleName("Paint a brighter crosswalk, 1 vote, 100 percent");
   await expect(page.locator("#tally")).toHaveText("1 vote");
 });
 

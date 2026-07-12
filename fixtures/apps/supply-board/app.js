@@ -23,6 +23,7 @@ function newID() { if (crypto.randomUUID) return crypto.randomUUID().toLowerCase
 function validIdentity(value) { return value && ID_PATTERN.test(value.id || ""); }
 function validItem(row) { const value = row && row.value; return Boolean(row && ITEM_KEY.test(row.key) && value && typeof value === "object" && ["need", "offer"].includes(value.kind) && typeof value.text === "string" && value.text.trim() && value.text.length <= 180 && Number.isFinite(value.created_at) && value.created_at >= 0 && ID_PATTERN.test(value.added_by_id || "") && (value.resolved_by_id === "" || ID_PATTERN.test(value.resolved_by_id || ""))); }
 function showError(message) { error.textContent = message; error.hidden = false; status.textContent = message; }
+function formValid() { return input.value.trim().length > 0; }
 function person(id) { return me && id === me.id ? "You" : names.get(id) || "A neighbor"; }
 function resolveProfiles(ids) { [...new Set(ids)].forEach((id) => { if (!ID_PATTERN.test(id || "") || inflightProfiles.has(id)) return; inflightProfiles.add(id); riot.profile(id).then((profile) => { inflightProfiles.delete(id); const label = profile.displayName + " · " + profile.tag; if (names.get(id) !== label) { names.set(id, label); paint(); } }).catch(() => inflightProfiles.delete(id)); }); }
 
@@ -55,7 +56,7 @@ function card(row) {
 }
 function paint() {
   const valid = rows.filter(validItem).sort((a, b) => Number(Boolean(a.value.resolved_by_id)) - Number(Boolean(b.value.resolved_by_id)) || a.value.created_at - b.value.created_at);
-  postButton.disabled = !ready || posting;
+  postButton.disabled = !ready || posting || !formValid();
   const needRows = valid.filter((row) => row.value.kind === "need"); const offerRows = valid.filter((row) => row.value.kind === "offer"); needs.replaceChildren(...needRows.map(card)); offers.replaceChildren(...offerRows.map(card));
   document.getElementById("needs-empty").hidden = needRows.length > 0; document.getElementById("offers-empty").hidden = offerRows.length > 0; document.getElementById("need-count").textContent = String(needRows.filter((row) => !row.value.resolved_by_id).length); document.getElementById("offer-count").textContent = String(offerRows.filter((row) => !row.value.resolved_by_id).length);
   if (ready) status.textContent = valid.length ? `${valid.length} items on the board` : "The board is empty";
@@ -67,8 +68,10 @@ form.addEventListener("submit", async (event) => {
   catch { input.value = draft; input.focus(); showError("Couldn't post that item. Your draft is safe; try again."); }
   finally { posting = false; paint(); }
 });
+input.addEventListener("input", paint);
 async function init() {
-  try { const identity = await riot.whoami(); if (!validIdentity(identity)) throw new Error("invalid identity"); me = identity; await ensureSeeded(); ready = true; paint(); riot.watch("items", (next) => { rows = next; paint(); }); }
+  riot.watch("items", (next) => { rows = next; paint(); });
+  try { const identity = await riot.whoami(); if (!validIdentity(identity)) throw new Error("invalid identity"); me = identity; await ensureSeeded(); ready = true; paint(); }
   catch { ready = false; paint(); showError("Your identity couldn't be verified. The board remains read-only."); }
 }
 init();

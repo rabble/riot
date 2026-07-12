@@ -23,6 +23,7 @@ function newID() { if (crypto.randomUUID) return crypto.randomUUID().toLowerCase
 function validIdentity(value) { return value && ID_PATTERN.test(value.id || ""); }
 function validTask(row) { const value = row && row.value; return Boolean(row && TASK_KEY.test(row.key) && value && typeof value === "object" && typeof value.text === "string" && value.text.trim() && value.text.length <= 180 && Number.isFinite(value.created_at) && value.created_at >= 0 && ID_PATTERN.test(value.added_by_id || "") && (value.assigned_to_id === "" || ID_PATTERN.test(value.assigned_to_id || "")) && typeof value.completed === "boolean"); }
 function showError(message) { error.textContent = message; error.hidden = false; status.textContent = message; }
+function formValid() { return input.value.trim().length > 0; }
 function person(id) { return me && id === me.id ? "You" : names.get(id) || "A neighbor"; }
 function resolveProfiles(ids) { [...new Set(ids)].forEach((id) => { if (!ID_PATTERN.test(id || "") || inflightProfiles.has(id)) return; inflightProfiles.add(id); riot.profile(id).then((profile) => { inflightProfiles.delete(id); const label = profile.displayName + " · " + profile.tag; if (names.get(id) !== label) { names.set(id, label); paint(); } }).catch(() => inflightProfiles.delete(id)); }); }
 
@@ -60,7 +61,7 @@ async function mutateTask(row, change) {
 function paint() {
   const valid = rows.filter(validTask).sort((a, b) => Number(a.value.completed) - Number(b.value.completed) || a.value.created_at - b.value.created_at);
   empty.hidden = valid.length > 0;
-  addButton.disabled = !ready || adding;
+  addButton.disabled = !ready || adding || !formValid();
   if (ready) status.textContent = valid.length ? `${valid.filter((row) => !row.value.completed).length} open · ${valid.filter((row) => row.value.completed).length} done` : "No tasks yet";
   list.replaceChildren(...valid.map((row) => {
     const value = row.value; const locked = locks.has(row.key);
@@ -80,12 +81,13 @@ form.addEventListener("submit", async (event) => {
   catch { input.value = draft; input.focus(); showError("Couldn't add that task. Your draft is safe; try again."); }
   finally { adding = false; paint(); }
 });
+input.addEventListener("input", paint);
 
 async function init() {
+  riot.watch("tasks", (next) => { rows = next; paint(); });
   try {
     const identity = await riot.whoami(); if (!validIdentity(identity)) throw new Error("invalid identity"); me = identity;
     await ensureSeeded(); ready = true; paint();
-    riot.watch("tasks", (next) => { rows = next; paint(); });
   } catch { ready = false; paint(); showError("Your identity couldn't be verified. Tasks remain read-only."); }
 }
 init();

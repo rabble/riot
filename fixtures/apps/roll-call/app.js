@@ -29,6 +29,7 @@ function validIdentity(value) { return value && ID_PATTERN.test(value.id || "");
 function validEvent(row) { const value = row && row.value; return Boolean(row && EVENT_KEY.test(row.key) && value && typeof value === "object" && typeof value.title === "string" && value.title.trim() && value.title.length <= 120 && typeof value.starts_at === "string" && Number.isFinite(Date.parse(value.starts_at)) && typeof value.place === "string" && value.place.length <= 100 && ID_PATTERN.test(value.created_by_id || "")); }
 function validRsvp(row) { const match = row && typeof row.key === "string" ? row.key.match(RSVP_KEY) : null; const value = row && row.value; return Boolean(match && value && typeof value === "object" && typeof value.attending === "boolean" && Number.isFinite(value.at) && value.at >= 0); }
 function showError(message) { error.textContent = message; error.hidden = false; status.textContent = message; }
+function formValid() { return titleInput.value.trim().length > 0 && Number.isFinite(new Date(startsInput.value).getTime()); }
 function person(id) { return me && id === me.id ? "You" : names.get(id) || "A neighbor"; }
 function resolveProfiles(ids) { [...new Set(ids)].forEach((id) => { if (!ID_PATTERN.test(id || "") || inflightProfiles.has(id)) return; inflightProfiles.add(id); riot.profile(id).then((profile) => { inflightProfiles.delete(id); const label = profile.displayName + " · " + profile.tag; if (names.get(id) !== label) { names.set(id, label); paint(); } }).catch(() => inflightProfiles.delete(id)); }); }
 
@@ -56,10 +57,10 @@ async function toggleRsvp(eventID) {
   finally { rsvpLocks.delete(key); paint(); }
 }
 function paint() {
-  const valid = eventRows.filter(validEvent).sort((a, b) => Date.parse(a.value.starts_at) - Date.parse(b.value.starts_at)); createButton.disabled = !ready; saveButton.disabled = !ready || saving; document.getElementById("empty").hidden = valid.length > 0;
+  const valid = eventRows.filter(validEvent).sort((a, b) => Date.parse(a.value.starts_at) - Date.parse(b.value.starts_at)); createButton.disabled = !ready; saveButton.disabled = !ready || saving || !formValid(); document.getElementById("empty").hidden = valid.length > 0;
   if (ready) status.textContent = valid.length ? `${valid.length} upcoming events` : "No events are scheduled";
   list.replaceChildren(...valid.map((row) => {
-    const value = row.value; const id = row.key.split("/")[1]; const attending = rsvpsFor(id); const key = `rsvps/${id}/${me.id}`; const mine = attending.some((rsvp) => rsvp.key === key);
+    const value = row.value; const id = row.key.split("/")[1]; const attending = rsvpsFor(id); const key = `rsvps/${id}/${me ? me.id : ""}`; const mine = Boolean(me) && attending.some((rsvp) => rsvp.key === key);
     const li = document.createElement("li"); li.className = "event"; const date = new Date(value.starts_at); const dateBlock = document.createElement("div"); dateBlock.className = "date"; const month = document.createElement("span"); month.className = "month"; month.textContent = date.toLocaleDateString(undefined, { month: "short" }); const day = document.createElement("span"); day.className = "day"; day.textContent = date.toLocaleDateString(undefined, { day: "2-digit" }); dateBlock.append(month, day);
     const copy = document.createElement("div"); copy.className = "event-copy"; const heading = document.createElement("h2"); heading.textContent = value.title; const details = document.createElement("p"); details.className = "details"; details.textContent = `${date.toLocaleString(undefined, { weekday: "short", hour: "numeric", minute: "2-digit" })} · ${value.place || DEFAULT_PLACE}`; const meta = document.createElement("p"); meta.className = "rsvp-meta"; meta.textContent = attending.length ? `${attending.length} going · hosted by ${person(value.created_by_id)}` : `Be the first to RSVP · hosted by ${person(value.created_by_id)}`; copy.append(heading, details, meta);
     const button = document.createElement("button"); button.type = "button"; button.className = "rsvp" + (mine ? " going" : ""); button.disabled = !ready || rsvpLocks.has(key); button.textContent = mine ? "Going ✓" : "I’m going"; button.setAttribute("aria-pressed", String(mine)); button.setAttribute("aria-label", `${mine ? "Cancel RSVP for" : "RSVP to"} ${value.title}`); button.addEventListener("click", () => toggleRsvp(id)); li.append(dateBlock, copy, button); return li;
@@ -70,6 +71,7 @@ function openForm() { if (!ready) { showError("Wait for your identity before cre
 function localInputValue(date) { const shifted = new Date(date.getTime() - date.getTimezoneOffset() * 60000); return shifted.toISOString().slice(0, 16); }
 function closeForm(returnFocus) { form.hidden = true; createButton.hidden = false; if (returnFocus) createButton.focus(); }
 createButton.addEventListener("click", openForm); document.getElementById("cancel").addEventListener("click", () => closeForm(true));
+form.addEventListener("input", paint); form.addEventListener("change", paint);
 form.addEventListener("submit", async (event) => {
   event.preventDefault(); const title = titleInput.value.trim(); const place = placeInput.value.trim() || DEFAULT_PLACE; const starts = new Date(startsInput.value); if (!ready || !title || Number.isNaN(starts.getTime())) { if (!ready) showError("Wait for your identity before saving."); return; } const draft = { title: titleInput.value, starts: startsInput.value, place: placeInput.value }; saving = true; paint();
   try { await riot.put("events/" + newID(), { title, starts_at: starts.toISOString(), place, created_by_id: me.id }); form.reset(); closeForm(false); }
@@ -77,7 +79,8 @@ form.addEventListener("submit", async (event) => {
   finally { saving = false; paint(); }
 });
 async function init() {
-  try { const identity = await riot.whoami(); if (!validIdentity(identity)) throw new Error("invalid identity"); me = identity; await ensureSeeded(); ready = true; paint(); riot.watch("events", (next) => { eventRows = next; paint(); }); riot.watch("rsvps", (next) => { rsvpRows = next; paint(); }); }
+  riot.watch("events", (next) => { eventRows = next; paint(); }); riot.watch("rsvps", (next) => { rsvpRows = next; paint(); });
+  try { const identity = await riot.whoami(); if (!validIdentity(identity)) throw new Error("invalid identity"); me = identity; await ensureSeeded(); ready = true; paint(); }
   catch { ready = false; paint(); showError("Your identity couldn't be verified. Events remain read-only."); }
 }
 init();
