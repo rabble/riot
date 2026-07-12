@@ -107,8 +107,8 @@ Say: *"That's the whole list. It reads and writes shifts. That's it."*
 
 Tap **"Let everyone here use this."**
 
-The stamp slams down, the phone gives one solid thunk in your hand, and
-**Shift Signup** appears in the **Tools** tab.
+The stamp slams down and the phone gives one solid thunk in your hand. Tap
+**Spaces**; **Shift Signup** appears in the **Tools** section.
 
 Say: *"Now it's in my Tools, and it's in Tools for everyone else in this space
 too — the trust doesn't just apply to me."*
@@ -176,8 +176,9 @@ from scratch.
 **Beat 3 — Trust.** The stamp animation or haptic doesn't fire (common on a
 phone with haptics turned off in Settings, or on a first tap that lands a
 half-second early). The permission change itself always lands even if the
-flourish doesn't. Say: *"There it is, in Tools,"* and point at the Tools tab
-to show it landed — don't re-tap the button hunting for the animation.
+flourish doesn't. Tap **Spaces**, say: *"There it is, in Tools,"* and point at
+the Tools section to show it landed — don't re-tap the button hunting for the
+animation.
 
 **Beat 4 — Sync finale.** This is the beat most likely to wobble, because it
 depends on two radios finding each other live.
