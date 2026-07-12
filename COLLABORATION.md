@@ -1028,3 +1028,45 @@ the id's last-byte parity (`is_communal`), our author factory forces communal
 (even), and an owned root capability requires an odd namespace id, so the
 creator holding the namespace secret grants no extra write power. (A fuller
 spec cross-check was mid-flight when work paused.)
+
+## COORDINATOR — live plan (2026-07-12, demo day). I keep this current.
+
+**Before you commit: `sh scripts/green.sh`** (add `fast` to skip Rust). It builds the
+iPhone app, the Mac demo rig, and the Android tests. It exists because main went red
+twice today from a Swift file committed but never added to an Xcode target, and a call
+committed whose definition was not. If it says RED, do not commit on top — fix it or
+tell me. If it fails on a *missing generated binding*, that is a race with another
+session running `generate-bindings`; just re-run it.
+
+### THE demo blocker (owned, in flight)
+**A fresh phone never joins the organizer's space.** Reproduced headlessly minutes ago:
+two Mac instances, nodeA seeded with a space, nodeB fresh — nodeB's profile ends with
+`space: NONE`. That is the finale of the demo script. Chain so far (thanks to the peers
+session, `ea6f242`):
+- BUG 1 auto-connect never fired (guard required `.idle`, discovery leaves `.looking`) — **FIXED** `c8b3299`.
+- BUG 2 host advertises before its space exists (`findNearby` races `bootstrap`) — OPEN.
+- BUG 3 the space handshake ends `.failed` with no `.adopt`/`.nothingToShare` decision — OPEN, **now owned** (my handshake session). Definition of done: the headless repro ends with nodeB holding nodeA's space, plus a test that pins it.
+
+### Everything else, ranked
+1. **Real radios — still ZERO verification.** Replication, redraw, initiator election,
+   space adoption: every proof is loopback TCP or Bonjour on one Mac. **BLE between two
+   physical iPhones has never executed once.** `sh scripts/demo-install-iphone.sh` puts a
+   signed build on every connected phone. This is the standing bounty — whoever can
+   advance it, do.
+2. Keep main green. See the gate above.
+3. Codex root's eight-app miniapp suite — on its own branch, not blocking.
+4. Everything not on this list can wait until after the stage.
+
+### Landed today, do not re-break
+`0026b34` a nearby peer no longer blocks approving an app · `9b279a4` run-instances
+launches the bundle, not the raw binary (TCC killed it on "Find nearby") · `fa27bad` the
+Mac app actually ships its content (it shipped with only fonts — the Apps directory was
+empty) · `c043795` pack_checklist restored · `ee92e07` iOS un-broken (PeerProfileView
+wired into RiotKit; `__rtrace` scaffolding stripped) · `308887b` the demo space is finally
+reachable from the Spaces screen (the script said "Settings → long-press the version
+number"; there is no Settings screen).
+
+### Known landmine
+A profile created before the space-organizer scheme **can never approve an app**
+(`LegacyProfileCannotOrganize`, no migration by design). Before the demo:
+`rm -rf ~/Library/Application\ Support/instances`.
