@@ -988,6 +988,22 @@ edits repeatedly today**, including mine. Therefore:
 - If you add a Swift file, add it to BOTH `apps/ios/Riot.xcodeproj` AND
   `apps/macos/Riot.xcodeproj`. This has broken the Mac app four times today.
 
+## Active claim: personal spaces — owned namespace primitives (2026-07-12, personal-spaces session)
+
+Slice 1 Task 1 ONLY (design `docs/superpowers/specs/2026-07-12-personal-spaces-and-pages-design.md`,
+plan `docs/superpowers/plans/2026-07-12-personal-spaces-slice1.md`).
+
+**Files:** NEW `crates/riot-core/src/willow/owned.rs`; small additive edits to
+`crates/riot-core/src/willow/identity.rs` (add `NamespaceKind::Owned`, make
+`os_fill` pub(crate)), `crates/riot-core/src/willow/mod.rs` (module + export),
+`crates/riot-core/src/apps/manifest.rs` (add the `Owned => 1` u8 arm — REQUIRED
+or the enum's `namespace_kind_to_u8` match stops compiling).
+
+**Deliberately NOT touching** the storage-hot files (`session.rs`, `apps/index.rs`,
+`import/bundle.rs`, `mobile_state.rs`) — those are the SQLite-cutover session's.
+Task 3/4 (which need them) are deferred until that lands. Purely additive; keeps
+`cargo test --workspace` green. Demo-safe: no iOS/build surface touched.
+
 ## Active claim: multi-space SQLite cutover (2026-07-12, iOS runtime session)
 
 Taking the unclaimed, design-reviewed plan
