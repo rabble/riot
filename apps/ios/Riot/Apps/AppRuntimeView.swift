@@ -93,9 +93,19 @@ public struct AppRuntimeView: View {
 /// Bridges the trusted launch inputs into a configured `WKWebView`. Internal
 /// (not private) so the navigation lock and change-notification wiring on its
 /// coordinator can be unit-tested directly.
-struct AppWebView: UIViewRepresentable {
+///
+/// The WebView contract is identical on both platforms — non-persistent browser
+/// state, the injected `riot` bridge, the app's scheme handler, and the
+/// navigation lock. Only the representable protocol differs (UIKit on iOS,
+/// AppKit on macOS), so both entry points funnel through `makeWebView` and
+/// there is exactly one copy of the security-relevant configuration.
+struct AppWebView {
     let launch: AppRuntimeLaunch
 
+    /// `@MainActor` is explicit here: it was previously inferred from the
+    /// `UIViewRepresentable` conformance, which this struct no longer declares
+    /// directly (the conformances moved to the per-platform extensions below).
+    @MainActor
     func makeCoordinator() -> AppRuntimeCoordinator {
         AppRuntimeCoordinator(
             bridge: AppBridgeController(bridge: launch.bridge),
@@ -104,8 +114,8 @@ struct AppWebView: UIViewRepresentable {
         )
     }
 
-    func makeUIView(context: Context) -> WKWebView {
-        let coordinator = context.coordinator
+    @MainActor
+    fileprivate func makeWebView(coordinator: AppRuntimeCoordinator) -> WKWebView {
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = .nonPersistent()
         configuration.userContentController.addUserScript(
@@ -126,9 +136,25 @@ struct AppWebView: UIViewRepresentable {
         }
         return webView
     }
+}
+
+#if os(macOS)
+extension AppWebView: NSViewRepresentable {
+    func makeNSView(context: Context) -> WKWebView {
+        makeWebView(coordinator: context.coordinator)
+    }
+
+    func updateNSView(_ webView: WKWebView, context: Context) {}
+}
+#else
+extension AppWebView: UIViewRepresentable {
+    func makeUIView(context: Context) -> WKWebView {
+        makeWebView(coordinator: context.coordinator)
+    }
 
     func updateUIView(_ webView: WKWebView, context: Context) {}
 }
+#endif
 
 /// Owns the bridge, the navigation lock, and the change-notification observer
 /// for one hosted app.

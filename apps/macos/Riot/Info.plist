@@ -6,6 +6,10 @@
 	<string>Fonts</string>
 	<key>NSBluetoothAlwaysUsageDescription</key>
 	<string>Find nearby Riot phones you choose to connect with.</string>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_riot-sync._tcp</string>
+	</array>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Connect directly to a nearby Riot phone without using the internet.</string>
 </dict>

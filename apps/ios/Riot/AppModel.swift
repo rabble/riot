@@ -48,9 +48,39 @@ public enum RiotConnectionStatus: Equatable, Sendable {
     case nearby(String)
 }
 
+/// Which tab is on screen, on its own observable object.
+///
+/// PERFORMANCE CONTRACT: this deliberately does NOT live on `RiotAppModel`. The
+/// shell keeps all five destination views alive at once (a ZStack toggling
+/// opacity, so each tab's state — the compose draft, the nearby session's
+/// `@StateObject` — survives a switch), and every one of those views observes
+/// `RiotAppModel`. `@ObservedObject` subscribes to an object's
+/// `objectWillChange`, not to individual properties, so publishing `destination`
+/// from the app model made a single tab tap re-evaluate all five screen bodies.
+/// Keeping selection on a separate object means a tab tap only notifies what
+/// actually depends on it: the shell (for opacity) and the directory (which
+/// syncs when it becomes visible).
+@MainActor
+public final class RiotNavigationModel: ObservableObject {
+    @Published public var destination: RiotDestination = .spaces
+
+    public init() {}
+}
+
 @MainActor
 public final class RiotAppModel: ObservableObject {
-    @Published public var destination: RiotDestination = .spaces
+    /// Tab selection. Observe this — not the app model — for destination changes;
+    /// see the performance contract on `RiotNavigationModel`.
+    public let navigation = RiotNavigationModel()
+
+    /// Passthrough so callers (and `select`) keep reading and writing
+    /// `model.destination`. Not `@Published`: the storage lives on `navigation`,
+    /// and republishing it here would reintroduce the all-tabs re-render.
+    public var destination: RiotDestination {
+        get { navigation.destination }
+        set { navigation.destination = newValue }
+    }
+
     @Published public private(set) var space: RiotSpace?
     @Published public private(set) var entries: [RiotEntry] = []
     @Published public private(set) var apps: [RiotSpaceApp] = []
@@ -104,12 +134,7 @@ public final class RiotAppModel: ObservableObject {
     ) {
         guard repository == nil else { return }
         do {
-            let base = try storageDirectory ?? FileManager.default.url(
-                for: .applicationSupportDirectory,
-                in: .userDomainMask,
-                appropriateFor: nil,
-                create: true
-            )
+            let base = try storageDirectory ?? Self.defaultStorageDirectory()
             let storage = try ProtectedProfileStorage(fileURL: base.appendingPathComponent("riot-profile.json"))
             let repository = try RiotProfileRepository.open(
                 storage: storage,
@@ -123,6 +148,43 @@ public final class RiotAppModel: ObservableObject {
         } catch {
             errorMessage = String(describing: error)
         }
+    }
+
+    /// Where this instance keeps its profile.
+    ///
+    /// Every instance of the app shares one container — and therefore one
+    /// `riot-profile.json`, one identity — so two windows on a Mac are the same
+    /// person and syncing them is a no-op. `RIOT_PROFILE_ID` gives each instance
+    /// its own profile so they are genuinely different people, which is what
+    /// makes nearby sync testable on a single machine.
+    ///
+    /// It selects a SUBDIRECTORY of the container rather than taking a path:
+    /// under App Sandbox the app cannot write to an arbitrary location like
+    /// `/tmp/riot-a`, so a path override would fail at runtime on macOS. The
+    /// container is shared by both instances, so subdirectories of it are legal
+    /// for each. `RIOT_PROFILE_DIR` still takes an explicit path, for tests and
+    /// unsandboxed hosts.
+    private static func defaultStorageDirectory() throws -> URL {
+        let environment = ProcessInfo.processInfo.environment
+        if let path = environment["RIOT_PROFILE_DIR"], !path.isEmpty {
+            let url = URL(fileURLWithPath: path, isDirectory: true)
+            try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+            return url
+        }
+        let container = try FileManager.default.url(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask,
+            appropriateFor: nil,
+            create: true
+        )
+        guard let id = environment["RIOT_PROFILE_ID"], !id.isEmpty else { return container }
+        // Keep it a single path component: an id like "../../elsewhere" must not
+        // walk out of the container.
+        let safe = id.replacingOccurrences(of: "/", with: "_")
+        let url = container.appendingPathComponent("instances", isDirectory: true)
+            .appendingPathComponent(safe, isDirectory: true)
+        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        return url
     }
 
     public func createSpace(title: String) {

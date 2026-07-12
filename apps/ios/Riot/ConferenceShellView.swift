@@ -1,9 +1,36 @@
 import SwiftUI
 import RiotKit
 
+extension View {
+    /// Mounts a running app over the shell. `fullScreenCover` is a UIKit-era API
+    /// that does not exist on macOS, where a sheet is the platform's equivalent
+    /// for taking over the window; the app itself (`AppRuntimeView`) is the same
+    /// RiotKit view on both.
+    @ViewBuilder
+    func riotAppCover<Item: Identifiable, Content: View>(
+        item: Binding<Item?>,
+        @ViewBuilder content: @escaping (Item) -> Content
+    ) -> some View {
+        #if os(macOS)
+        sheet(item: item, content: content)
+        #else
+        fullScreenCover(item: item, content: content)
+        #endif
+    }
+}
+
 struct ConferenceShellView: View {
     @ObservedObject var model: RiotAppModel
+    /// Observed separately from `model` so a tab tap re-renders this shell only,
+    /// and not the four other destination views kept alive in the ZStack below.
+    /// See the performance contract on `RiotNavigationModel`.
+    @ObservedObject private var navigation: RiotNavigationModel
     @Environment(\.colorScheme) private var colorScheme
+
+    init(model: RiotAppModel) {
+        _model = ObservedObject(wrappedValue: model)
+        _navigation = ObservedObject(wrappedValue: model.navigation)
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -12,12 +39,12 @@ struct ConferenceShellView: View {
                     NavigationStack {
                         destinationView(destination)
                     }
-                    .opacity(model.destination == destination ? 1 : 0)
-                    .allowsHitTesting(model.destination == destination)
+                    .opacity(navigation.destination == destination ? 1 : 0)
+                    .allowsHitTesting(navigation.destination == destination)
                 }
             }
             connectionDisclosureBar
-            RiotTabBar(selection: $model.destination)
+            RiotTabBar(selection: $navigation.destination)
         }
         .background(RiotTheme.paper(for: colorScheme).ignoresSafeArea())
         .alert("Riot couldn’t finish that", isPresented: errorBinding) {
@@ -110,7 +137,7 @@ private struct SpacesView: View {
                 onCancel: { reviewing = nil }
             )
         }
-        .fullScreenCover(item: $running) { app in
+        .riotAppCover(item: $running) { app in
             if let repository = model.profileRepository {
                 AppRuntimeView(
                     repository: repository,
@@ -169,7 +196,7 @@ private struct AppDirectoryTab: View {
 
     var body: some View {
         DirectoryView(model: model, onOpen: { running = $0 })
-            .fullScreenCover(item: $running) { app in
+            .riotAppCover(item: $running) { app in
                 if let repository = model.profileRepository {
                     AppRuntimeView(
                         repository: repository,
@@ -285,11 +312,11 @@ private struct ConnectionStatusView: View {
                 RiotBadge(nearby.state.message, stamped: true)
                 RiotCard {
                     VStack(alignment: .leading, spacing: 14) {
-                        Text("Connections stay between nearby phones. Riot never switches this nearby session to the internet.")
+                        Text("Connections stay between devices near you — over Bluetooth, or the local network you are both on. Riot never sends this session over the internet.")
                             .font(.riot(.body, size: 15, relativeTo: .callout))
                             .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
                         if nearby.state == .idle || nearby.state == .failed {
-                            Button("Find nearby phones") {
+                            Button("Find nearby devices") {
                                 nearby.findNearby { try model.openNearbySyncBoundary() }
                             }
                             .buttonStyle(.riotPrimary)

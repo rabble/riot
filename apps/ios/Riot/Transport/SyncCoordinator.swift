@@ -30,8 +30,8 @@ public enum NearbyConnectionState: Equatable, Sendable {
 
     public var message: String {
         switch self {
-        case .idle: "Find nearby phones"
-        case .looking: "Looking for nearby phones..."
+        case .idle: "Find nearby devices"
+        case .looking: "Looking for nearby devices..."
         case let .confirm(name): "Connect with \(name)?"
         case .connecting: "Connecting..."
         case let .gettingLatest(name): "Getting the latest from \(name)..."

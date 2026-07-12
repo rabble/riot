@@ -141,7 +141,8 @@ public final class NearbyConnection {
         set { failureLatch.callback = newValue }
     }
 
-    private let bluetooth: FrameChannel
+    private let base: FrameChannel
+    private let baseRoute: NearbyRoute
     private let localAttempt: () -> FrameChannel?
     private var activeChannel: FrameChannel?
     private var pairingConfirmed = false
@@ -149,12 +150,30 @@ public final class NearbyConnection {
     private var isDisconnected = false
     private let failureLatch = FailureLatch()
 
+    /// The general form: whichever transport carried the pairing carries the
+    /// session, with an optional upgrade to something better.
+    ///
+    /// Bluetooth is not always available — two instances on one machine have no
+    /// usable radio (a single BLE controller never hears its own advertisement),
+    /// so a peer found over the local network arrives here with `.localNetwork`
+    /// as its base and nothing to upgrade to.
     public init(
+        base: FrameChannel,
+        baseRoute: NearbyRoute,
+        localAttempt: @escaping () -> FrameChannel?
+    ) {
+        self.base = base
+        self.baseRoute = baseRoute
+        self.localAttempt = localAttempt
+    }
+
+    /// The Bluetooth-first path: pair over the radio, then upgrade to the local
+    /// network if one is reachable.
+    public convenience init(
         bluetooth: FrameChannel,
         localAttempt: @escaping () -> FrameChannel?
     ) {
-        self.bluetooth = bluetooth
-        self.localAttempt = localAttempt
+        self.init(base: bluetooth, baseRoute: .bluetooth, localAttempt: localAttempt)
     }
 
     public func confirmPairing() {
@@ -167,13 +186,16 @@ public final class NearbyConnection {
         guard !activated else { return }
         activated = true
 
-        if let local = localAttempt() {
+        // Only worth upgrading if the base is not already the better route —
+        // a local-network base has nothing to trade up to, and swapping it out
+        // would drop the very channel the pairing arrived on.
+        if baseRoute != .localNetwork, let local = localAttempt() {
             activeChannel = local
             route = .localNetwork
-            bluetooth.disconnect()
+            base.disconnect()
         } else {
-            activeChannel = bluetooth
-            route = .bluetooth
+            activeChannel = base
+            route = baseRoute
         }
         activeChannel?.onReceive = onReceive
         activeChannel?.onFailure = { [weak self] in self?.fail() }

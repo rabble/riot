@@ -12,19 +12,29 @@ public struct LocalEndpoint: Equatable, Sendable {
         self.port = port
     }
 
+    /// The load-bearing check behind "Riot never switches this session to the
+    /// internet": only addresses that cannot be routed off the local link are
+    /// accepted. Loopback is included because it is the *same machine* — strictly
+    /// more local than the link-local and RFC1918 ranges already allowed — and it
+    /// is what lets two instances on one Mac pair with Wi-Fi switched off.
+    /// A routable address is still refused.
     private static func isLocalAddress(_ host: String) -> Bool {
         var ipv6 = in6_addr()
         if host.withCString({ inet_pton(AF_INET6, $0, &ipv6) }) == 1 {
             return withUnsafeBytes(of: &ipv6) { bytes in
                 let first = bytes[0]
                 let second = bytes[1]
-                return (first == 0xfe && (second & 0xc0) == 0x80)
-                    || (first & 0xfe) == 0xfc
+                if (first == 0xfe && (second & 0xc0) == 0x80) || (first & 0xfe) == 0xfc {
+                    return true
+                }
+                // ::1 — loopback.
+                return bytes.prefix(15).allSatisfy { $0 == 0 } && bytes[15] == 1
             }
         }
         let parts = host.split(separator: ".").compactMap { UInt8($0) }
         guard parts.count == 4 else { return false }
-        return parts[0] == 10
+        return parts[0] == 127
+            || parts[0] == 10
             || (parts[0] == 172 && (16...31).contains(parts[1]))
             || (parts[0] == 192 && parts[1] == 168)
             || (parts[0] == 169 && parts[1] == 254)
