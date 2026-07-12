@@ -1362,3 +1362,155 @@ fn install_from_directory_refuses_a_bundle_that_is_still_arriving() {
         "a manifest without its bundle is never listed as present"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Opening a BUILT-IN app. Built-ins ship as bytes inside the binary: they are
+// never written to the store and never arrive over sync. The directory listed
+// them anyway (it merges the starter catalog into its scan of the store), but
+// install and page-serving resolved bytes from the store alone — so every
+// built-in was permanently un-openable, and the UI told the user to go find a
+// peer carrying an app that was already compiled into their binary. These pin
+// that a profile which has never met anyone can open what it already has.
+// ---------------------------------------------------------------------------
+
+/// Every built-in, derived from the committed catalog — never a hard-coded id,
+/// which goes stale the moment anyone repacks an app.
+fn built_in_apps() -> Vec<riot_core::apps::directory::IndexedApp> {
+    let built_ins = riot_core::apps::starter::verify_starter_catalog(
+        riot_core::apps::starter::STARTER_CATALOG,
+    );
+    assert!(
+        !built_ins.is_empty(),
+        "the starter catalog must ship at least one verifiable built-in"
+    );
+    built_ins
+}
+
+fn built_in_checklist() -> riot_core::apps::directory::IndexedApp {
+    built_in_apps()
+        .into_iter()
+        .find(|app| app.manifest.name == "Checklist")
+        .expect("the starter catalog ships the Checklist app")
+}
+
+#[test]
+fn a_built_in_app_installs_on_a_profile_that_has_never_synced_with_anyone() {
+    // No space, no peer, no sync: nothing has ever entered this profile's
+    // store. The checklist's bytes are in the binary, and that must be enough.
+    let profile = open_local_profile().expect("profile");
+    let runtime = profile.app_runtime();
+    let checklist = built_in_checklist();
+    let app_id = checklist.app_id.to_vec();
+
+    let listing = runtime
+        .directory_listings()
+        .expect("directory")
+        .into_iter()
+        .find(|listing| listing.app_id == app_id)
+        .expect("the built-in checklist is listed");
+    assert!(listing.built_in);
+    assert!(listing.bundle_present);
+    assert!(!listing.installed, "listed, but not yet opened");
+    assert!(
+        listing.carrier_subspace_id.is_none(),
+        "no carrier holds it — its bytes are compiled in"
+    );
+
+    // The regression: this returned AppRejected, which the UI renders as
+    // "Checklist isn't all here yet. Sync with the group carrying it."
+    let installed = runtime
+        .install_from_directory(app_id.clone())
+        .expect("a built-in installs with no peer in sight");
+    assert_eq!(installed.app_id_bytes, app_id);
+    assert_eq!(installed.name, checklist.manifest.name);
+    assert_eq!(installed.entry_point, checklist.manifest.entry_point);
+
+    assert!(
+        runtime
+            .directory_listings()
+            .expect("directory")
+            .into_iter()
+            .find(|listing| listing.app_id == app_id)
+            .expect("still listed")
+            .installed,
+        "the built-in is now installed on this profile"
+    );
+}
+
+#[test]
+fn every_built_in_in_the_catalog_installs_and_serves_its_pages_unsynced() {
+    let profile = open_local_profile().expect("profile");
+    let runtime = profile.app_runtime();
+
+    for built_in in built_in_apps() {
+        let app_id = built_in.app_id.to_vec();
+
+        // Page serving is resolved before install, exactly as a host that has
+        // to render the app's entry point does.
+        let pair = runtime
+            .app_pair_bytes(app_id.clone())
+            .unwrap_or_else(|error| {
+                panic!(
+                    "built-in {} must serve its pages unsynced, got {error:?}",
+                    built_in.manifest.name
+                )
+            });
+        assert_eq!(
+            riot_core::apps::index::verify_app_pair(&pair.manifest_bytes, &pair.bundle_bytes)
+                .expect("the built-in pair re-verifies")
+                .to_vec(),
+            app_id,
+            "the served bytes are the ones the id was derived from"
+        );
+        let served = riot_core::apps::bundle::decode_app_bundle(&pair.bundle_bytes).expect("bundle");
+        assert!(
+            served
+                .resources
+                .iter()
+                .any(|resource| resource.path == served.entry_point),
+            "the entry point is actually servable"
+        );
+
+        let installed = runtime
+            .install_from_directory(app_id.clone())
+            .unwrap_or_else(|error| {
+                panic!(
+                    "built-in {} must install unsynced, got {error:?}",
+                    built_in.manifest.name
+                )
+            });
+        assert_eq!(installed.app_id_bytes, app_id);
+
+        // And once installed, serving still resolves to the same bytes.
+        let after = runtime.app_pair_bytes(app_id.clone()).expect("still serves");
+        assert_eq!(after.manifest_bytes, pair.manifest_bytes);
+        assert_eq!(after.bundle_bytes, pair.bundle_bytes);
+    }
+}
+
+#[test]
+fn an_app_that_is_neither_built_in_nor_carried_is_still_refused() {
+    // The "isn't all here yet" copy stays honest for an app this profile
+    // genuinely cannot resolve: not in the binary, not in the store.
+    let profile = open_local_profile().expect("profile");
+    let runtime = profile.app_runtime();
+    let (manifest_bytes, bundle_bytes) = manifest_and_bundle();
+    let stranger = riot_core::apps::index::verify_app_pair(&manifest_bytes, &bundle_bytes)
+        .expect("pair")
+        .to_vec();
+    assert!(
+        !built_in_apps()
+            .iter()
+            .any(|built_in| built_in.app_id.to_vec() == stranger),
+        "fixture app must not collide with a built-in"
+    );
+
+    assert!(matches!(
+        runtime.install_from_directory(stranger.clone()),
+        Err(MobileError::AppRejected)
+    ));
+    assert!(matches!(
+        runtime.app_pair_bytes(stranger),
+        Err(MobileError::AppRejected)
+    ));
+}

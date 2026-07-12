@@ -178,6 +178,33 @@ pub fn app_pair_bytes(
     Ok(None)
 }
 
+/// The pair for `app_id` if the embedded built-in catalog holds it.
+///
+/// A built-in app's bytes are compiled into the binary; they are never written
+/// to the store and never arrive over sync. Any resolver that reads only the
+/// store therefore cannot open a built-in — which is exactly how the directory
+/// came to list built-ins (it merges `verify_starter_catalog` with
+/// `scan_app_index`) while installing one always failed. The catalog is passed
+/// in rather than read from `starter`, so this stays a pure function of the
+/// bytes handed to it.
+///
+/// Every candidate leaves through `verify_app_pair`, the same canonical
+/// invariant publish, scan, and install enforce: an embedded pair that fails to
+/// re-derive the requested id is skipped, so a corrupt built-in is no more
+/// installable than a corrupt carried one, and the caller still sees the honest
+/// "not resolvable here" outcome.
+pub fn starter_pair_bytes(catalog: &[(&[u8], &[u8])], app_id: &AppId) -> Option<AppPairBytes> {
+    catalog
+        .iter()
+        .find(|(manifest_bytes, bundle_bytes)| {
+            verify_app_pair(manifest_bytes, bundle_bytes).ok().as_ref() == Some(app_id)
+        })
+        .map(|(manifest_bytes, bundle_bytes)| AppPairBytes {
+            manifest_bytes: manifest_bytes.to_vec(),
+            bundle_bytes: bundle_bytes.to_vec(),
+        })
+}
+
 #[derive(Clone)]
 struct ManifestCandidate {
     manifest: AppManifest,

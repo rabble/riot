@@ -1431,51 +1431,48 @@ pub(crate) fn install_app(
     })
 }
 
-/// Install an app this profile already holds in its store — one that arrived
-/// over nearby sync, or was published here. The manifest and bundle bytes are
-/// read back out of the store's own app-index rather than passed in, which is
-/// what lets a neighbour's app be *opened* and not merely listed.
+/// Install an app this profile already holds — one that arrived over nearby
+/// sync, was published here, or is built into Riot. The manifest and bundle
+/// bytes are resolved locally rather than passed in, which is what lets a
+/// neighbour's app be *opened* and not merely listed.
 ///
 /// It goes through the same `install_pair` as a direct `install_app`, so a
-/// carried app can never enter the runtime on weaker terms than one installed
-/// from bytes the caller supplied.
+/// carried or built-in app can never enter the runtime on weaker terms than one
+/// installed from bytes the caller supplied.
 pub(crate) fn install_from_directory(
     inner: &Arc<Mutex<ProfileState>>,
     app_id: Vec<u8>,
 ) -> Result<crate::apps_ffi::InstalledAppRecord, MobileError> {
     let app_id = exact_app_id(&app_id)?;
     with_active(inner, |profile| {
-        // `None` covers every way an app can be un-openable from here: never
-        // arrived, bundle still in flight, or nothing in the store but copies
+        // `AppRejected` covers every way an app can be un-openable from here:
+        // never arrived, bundle still in flight, or nothing local but copies
         // that fail to re-derive this id. None of them is a distinct outcome
         // to the caller — the app simply cannot be opened yet.
-        let pair = riot_core::apps::index::app_pair_bytes(&profile.store, &app_id)
-            .map_err(map_apps_error)?
-            .ok_or(MobileError::AppRejected)?;
+        let pair = resolve_app_payload_bytes(profile, &app_id)?;
         install_pair(profile, pair.manifest_bytes, pair.bundle_bytes)
     })
 }
 
-/// The stored manifest and bundle bytes a native host needs to *serve* a held
-/// app's pages and re-admit it after a relaunch. `install_from_directory` admits
-/// a carried app into the runtime, but the WebView still has to render it, and a
-/// carried app has no local file to read — the store holds the only copy. Same
-/// `None`-means-unopenable reasoning.
+/// The manifest and bundle bytes a native host needs to *serve* a held app's
+/// pages and re-admit it after a relaunch. `install_from_directory` admits an
+/// app into the runtime, but the WebView still has to render it, and a carried
+/// app has no local file to read — the store holds the only copy. Resolved from
+/// the same three sources, so a built-in serves its pages exactly as a carried
+/// app does.
 ///
-/// Both halves come from ONE verified read, so they can never disagree.
+/// Both halves come from ONE verified resolution, so they can never disagree.
 pub(crate) fn app_pair_bytes(
     inner: &Arc<Mutex<ProfileState>>,
     app_id: Vec<u8>,
 ) -> Result<crate::apps_ffi::AppPairBytes, MobileError> {
     let app_id = exact_app_id(&app_id)?;
     with_active(inner, |profile| {
-        riot_core::apps::index::app_pair_bytes(&profile.store, &app_id)
-            .map_err(map_apps_error)?
-            .map(|pair| crate::apps_ffi::AppPairBytes {
-                manifest_bytes: pair.manifest_bytes,
-                bundle_bytes: pair.bundle_bytes,
-            })
-            .ok_or(MobileError::AppRejected)
+        let pair = resolve_app_payload_bytes(profile, &app_id)?;
+        Ok(crate::apps_ffi::AppPairBytes {
+            manifest_bytes: pair.manifest_bytes,
+            bundle_bytes: pair.bundle_bytes,
+        })
     })
 }
 
@@ -2141,7 +2138,10 @@ pub(crate) fn share_app(
         if !space.is_public || space.namespace_id != current.namespace_id {
             return Err(MobileError::InvalidInput);
         }
-        let (manifest_bytes, bundle_bytes) = resolve_app_payload_bytes(profile, &app_id)?;
+        let riot_core::apps::index::AppPairBytes {
+            manifest_bytes,
+            bundle_bytes,
+        } = resolve_app_payload_bytes(profile, &app_id)?;
         if verify_app_pair(&manifest_bytes, &bundle_bytes).map_err(map_apps_error)? != app_id {
             return Err(MobileError::AppRejected);
         }
@@ -2165,20 +2165,27 @@ pub(crate) fn share_app(
 
 /// The canonical manifest/bundle bytes for an app id, from whichever local
 /// source holds them: an install on this profile, the built-in starter
-/// catalog, or the live app-index. The content-derived id binds the exact
-/// bytes, so every verified source yields the identical pair.
+/// catalog, or the live app-index in the store. The content-derived id binds
+/// the exact bytes, so every verified source yields the identical pair.
+///
+/// This is the ONE resolver for every path that needs an app's bytes — share
+/// it, install it out of the directory, serve its pages. Those paths forked
+/// once, and the fork was user-visible: install and page-serving read only the
+/// store, but a built-in's bytes live in the binary and are never written to
+/// the store or synced, so the directory (which merges the starter catalog into
+/// its listings) offered built-ins that could never be opened. Resolution has
+/// to consider every source the directory lists from.
+///
+/// `AppRejected` when no local source holds a pair that re-derives `app_id` —
+/// the honest "this app is not all here" outcome the UI reports.
 fn resolve_app_payload_bytes(
     profile: &LocalProfile,
     app_id: &[u8; 32],
-) -> Result<(Vec<u8>, Vec<u8>), MobileError> {
-    use riot_core::apps::index::{app_index_bundle_path, app_index_manifest_path, verify_app_pair};
+) -> Result<riot_core::apps::index::AppPairBytes, MobileError> {
+    use riot_core::apps::index::{app_pair_bytes as indexed_pair_bytes, starter_pair_bytes};
     use riot_core::apps::starter::STARTER_CATALOG;
 
-    let verifies = |manifest_bytes: &[u8], bundle_bytes: &[u8]| -> bool {
-        verify_app_pair(manifest_bytes, bundle_bytes).ok().as_ref() == Some(app_id)
-    };
-
-    // Verified at install — install_app derived app_id from these exact
+    // Verified at install — install_pair derived app_id from these exact
     // bytes; if installed apps ever persist/reload, the reload path must
     // re-verify.
     if let Some(installed) = profile
@@ -2186,35 +2193,20 @@ fn resolve_app_payload_bytes(
         .iter()
         .find(|app| app.app_id == *app_id)
     {
-        return Ok((
-            installed.manifest_bytes.clone(),
-            installed.bundle_bytes.clone(),
-        ));
+        return Ok(riot_core::apps::index::AppPairBytes {
+            manifest_bytes: installed.manifest_bytes.clone(),
+            bundle_bytes: installed.bundle_bytes.clone(),
+        });
     }
-    for (manifest_bytes, bundle_bytes) in STARTER_CATALOG {
-        if verifies(manifest_bytes, bundle_bytes) {
-            return Ok((manifest_bytes.to_vec(), bundle_bytes.to_vec()));
-        }
+    // Built into the binary: no store entries exist for these, ever.
+    if let Some(pair) = starter_pair_bytes(STARTER_CATALOG, app_id) {
+        return Ok(pair);
     }
-    let payloads_at = |path: riot_core::willow::Path| -> Result<Vec<Vec<u8>>, MobileError> {
-        Ok(profile
-            .store
-            .entries_with_prefix(&path)
-            .map_err(map_core_error)?
-            .into_iter()
-            .filter_map(|(_, _, payload)| payload)
-            .collect())
-    };
-    let manifests = payloads_at(app_index_manifest_path(app_id).map_err(map_apps_error)?)?;
-    let bundles = payloads_at(app_index_bundle_path(app_id).map_err(map_apps_error)?)?;
-    for manifest_bytes in &manifests {
-        for bundle_bytes in &bundles {
-            if verifies(manifest_bytes, bundle_bytes) {
-                return Ok((manifest_bytes.clone(), bundle_bytes.clone()));
-            }
-        }
-    }
-    Err(MobileError::AppRejected)
+    // Carried: the store holds the only copy. Both halves come from one
+    // verified read of a single carrier's entries.
+    indexed_pair_bytes(&profile.store, app_id)
+        .map_err(map_apps_error)?
+        .ok_or(MobileError::AppRejected)
 }
 
 pub(crate) fn endorse_app(
