@@ -15,8 +15,8 @@ You need two iPhones.
 - **Both phones in airplane mode, with Bluetooth turned back on.** Airplane
   mode first, then flip Bluetooth on — that's what proves there's no internet
   in the room while still letting the phones find each other directly.
-- **Phone A** has demo mode loaded: Settings → long-press the version number
-  → "Load demo space." This seeds the *Riverside Tenants Union* space with six
+- **Phone A** has demo mode loaded: open **Spaces** and tap **“Load the demo
+  space (Riverside Tenants Union).”** This seeds the space with six
   alerts, a partly-done checklist, and one available app in the directory.
   Load it once, well before you're on stage — never in front of the audience.
   **Phone A must not already be in another space.** Demo mode refuses to load
