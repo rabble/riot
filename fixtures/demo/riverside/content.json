@@ -1,0 +1,235 @@
+{
+  "_comment": [
+    "Source of truth for the seeded demo space (docs/product/demo-script.md).",
+    "Human-editable. Edit this, then re-run:",
+    "  cargo run -p riot-core --features conformance --example pack_demo_space",
+    "which rewrites demo-space.riot-evidence. The drift guard",
+    "(crates/riot-core/tests/demo_fixture_drift.rs) fails if you forget.",
+    "",
+    "EVERY time here is a fixed constant. Nothing in the packer reads a clock:",
+    "the bundle must be byte-for-byte reproducible or the drift guard is a lie.",
+    "Seeds are fixed too, so each person's subspace id — and therefore the key",
+    "tag shown beside their name — is stable across rebuilds. Ana's seed was",
+    "ground so her tag begins a3f9, which is the tag the demo script reads out."
+  ],
+
+  "space": {
+    "title": "Riverside Tenants Union",
+    "namespace_secret_seed": "75e730b2fa9866ee898783be8abf68ba56c6c66f6f9fcaba8858a89327159efa"
+  },
+
+  "members": [
+    {
+      "id": "ana",
+      "display_name": "Ana",
+      "subspace_secret_seed": "e341c3060c048cfa636d4080e8818ad5fb01ee4e306742e3170614f77ce29a2c",
+      "profile_at_unix": 1782864000
+    },
+    {
+      "id": "marcus",
+      "display_name": "Marcus",
+      "subspace_secret_seed": "5e70dfc1f4d2118acf76de5b565da4b1f14c6a940ebfddd5e5ba7af479c472e8",
+      "profile_at_unix": 1782864060
+    },
+    {
+      "id": "priya",
+      "display_name": "Priya",
+      "subspace_secret_seed": "962dd09a315b3906c549a291121fe89156fae0cc16d14d071b736d7bf8b39ac3",
+      "profile_at_unix": 1782864120
+    },
+    {
+      "id": "dee",
+      "display_name": "Dee",
+      "subspace_secret_seed": "0c207c03afc478d357ac6f1649a17022031186ef9e9bf9d22b2c32a2f8e7a9d0",
+      "profile_at_unix": 1782864180
+    },
+    {
+      "id": "eastside",
+      "display_name": "Eastside Tenant Council",
+      "subspace_secret_seed": "45540017454d9f316a5934a017ef6cd58fe75fc5bc94d18ad314fdd5e3d059c9",
+      "profile_at_unix": 1782864240
+    },
+    {
+      "id": "courtyard",
+      "display_name": "Courtyard Mutual Aid",
+      "subspace_secret_seed": "5e3557534754a0c748e9be8462b065e8687a46104a8612e196d9d2130566ef37",
+      "profile_at_unix": 1782864300
+    }
+  ],
+
+  "alerts": [
+    {
+      "author": "ana",
+      "object_id": "d1a7c4e05f3b4a1e8c9d20b6f7314a58",
+      "revision_id": "0b1c2d3e4f5061728394a5b6c7d8e9fa",
+      "created_at_unix": 1782950400,
+      "expires_at_unix": 1783728000,
+      "language": "en",
+      "urgency": "expected",
+      "severity": "moderate",
+      "certainty": "likely",
+      "headline": "Court support needed Thursday, 9am — bring folding chairs",
+      "description": "Eviction hearings start at 9am on the third floor. The gallery has almost no seating, so bring a folding chair if you have one. Come for as long as you can; even twenty minutes in the room helps.",
+      "source_claims": ["Riverside Tenants Union"]
+    },
+    {
+      "author": "marcus",
+      "object_id": "3f6b9028ac41b57e6d0e8f2a1c4d7b93",
+      "revision_id": "1c2d3e4f5061728394a5b6c7d8e9fa0b",
+      "created_at_unix": 1782957600,
+      "expires_at_unix": 1783728000,
+      "language": "en",
+      "urgency": "expected",
+      "severity": "minor",
+      "certainty": "likely",
+      "headline": "Diaper and formula drop at the Elm St lot, Saturday 11–2",
+      "description": "Sizes 1 through 5 and two brands of formula. Take what you need, no questions and no sign-in sheet. If you have extra to give, bring it by and we will pass it along.",
+      "source_claims": ["Riverside Tenants Union"]
+    },
+    {
+      "author": "priya",
+      "object_id": "8e2a4b6c0d1f3957ab24c6e80f5d7192",
+      "revision_id": "2d3e4f5061728394a5b6c7d8e9fa0b1c",
+      "created_at_unix": 1782964800,
+      "expires_at_unix": 1783728000,
+      "language": "en",
+      "urgency": "expected",
+      "severity": "moderate",
+      "certainty": "observed",
+      "headline": "Reminder: you don't have to open the door for anyone without a warrant",
+      "description": "You can talk through the closed door. Ask them to hold any paperwork up to the peephole or slide it under. If they say they have a warrant, ask to read it before you open anything.",
+      "source_claims": ["Riverside Tenants Union"]
+    },
+    {
+      "author": "dee",
+      "object_id": "5c7d9e1f0a2b3846d5e7f9081a2b3c4d",
+      "revision_id": "3e4f5061728394a5b6c7d8e9fa0b1c2d",
+      "created_at_unix": 1782972000,
+      "expires_at_unix": 1783728000,
+      "language": "en",
+      "urgency": "expected",
+      "severity": "minor",
+      "certainty": "likely",
+      "headline": "Ride offered to Thursday's hearing — 3 seats, leaving the laundromat at 8:30",
+      "description": "Grey hatchback, out front of the laundromat on Vine. I can take three people there and back. Find me here or just be outside at 8:25 — I would rather wait than leave anybody.",
+      "source_claims": ["Riverside Tenants Union"]
+    },
+    {
+      "author": "ana",
+      "object_id": "9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e",
+      "revision_id": "4f5061728394a5b6c7d8e9fa0b1c2d3e",
+      "created_at_unix": 1782979200,
+      "expires_at_unix": 1783728000,
+      "language": "en",
+      "urgency": "future",
+      "severity": "minor",
+      "certainty": "observed",
+      "headline": "Tuesday's general meeting moved to 7pm, same room",
+      "description": "The community room was double-booked at six, so we start an hour later. Same room, same agenda, and we will still be out by half past eight.",
+      "source_claims": ["Riverside Tenants Union"]
+    },
+    {
+      "author": "marcus",
+      "object_id": "a1b2c3d4e5f60718293a4b5c6d7e8f90",
+      "revision_id": "5061728394a5b6c7d8e9fa0b1c2d3e4f",
+      "created_at_unix": 1782986400,
+      "expires_at_unix": 1783728000,
+      "language": "en",
+      "urgency": "past",
+      "severity": "minor",
+      "certainty": "observed",
+      "headline": "Found a ring of keys on the courtyard bench — come by unit 4B",
+      "description": "Four keys and a small blue carabiner. Knock any evening this week and describe them and they are yours.",
+      "source_claims": ["Riverside Tenants Union"]
+    }
+  ],
+
+  "app": {
+    "_comment": "The Shift Signup app of demo-script Beats 2 and 3. A real manifest+bundle pair — it goes through verify_app_pair like any other app. The permissions are read out loud on stage, verbatim.",
+    "author": "priya",
+    "carrier": "priya",
+    "name": "Shift Signup",
+    "description": "Sign up for shifts at a court date, a supply drop, or a phone bank. Shows who has taken which slot, and lets you take one or give it back.",
+    "version": "1.0.0",
+    "entry_point": "index.html",
+    "permissions": [
+      "Can read the shift schedule board",
+      "Can add new shift sign-ups",
+      "Cannot see your messages",
+      "Cannot access any other tool"
+    ],
+    "published_at_unix": 1782993600,
+    "resources": [
+      {
+        "path": "app.js",
+        "content_type": "text/javascript",
+        "text": "\"use strict\";\n\nconst list = document.getElementById(\"shifts\");\nconst empty = document.getElementById(\"empty\");\n\nlet me = { id: \"\", displayName: \"member\", tag: \"\" };\nriot.whoami().then((who) => { me = who; }).catch(() => {});\n\nconst names = new Map();\n\nfunction render(rows) {\n  rows.sort((a, b) => (a.value.starts_at || 0) - (b.value.starts_at || 0));\n  empty.hidden = rows.length > 0;\n  const pending = new Map();\n  list.replaceChildren(...rows.map((row) => {\n    const li = document.createElement(\"li\");\n    const label = document.createElement(\"span\");\n    label.className = \"slot\";\n    label.textContent = row.value.label;\n    const who = document.createElement(\"span\");\n    who.className = \"who\";\n    const id = row.value.taken_by_id;\n    if (typeof id === \"string\" && id) {\n      who.textContent = names.get(id) || \"\";\n      const waiting = pending.get(id);\n      if (waiting) { waiting.push(who); } else { pending.set(id, [who]); }\n    } else {\n      who.textContent = \"open\";\n    }\n    const button = document.createElement(\"button\");\n    const mine = id === me.id;\n    button.textContent = mine ? \"Give it back\" : \"Take this shift\";\n    button.disabled = Boolean(id) && !mine;\n    button.addEventListener(\"click\", () => {\n      riot.put(row.key, Object.assign({}, row.value, { taken_by_id: mine ? \"\" : me.id })).catch(() => {});\n    });\n    li.append(label, who, button);\n    return li;\n  }));\n  pending.forEach((elements, id) => {\n    riot.profile(id).then((profile) => {\n      const text = profile.displayName + \" \\u00b7 \" + profile.tag;\n      names.set(id, text);\n      elements.forEach((el) => { el.textContent = text; });\n    }).catch(() => {});\n  });\n}\n\nriot.watch(\"shifts\", render);\n"
+      },
+      {
+        "path": "index.html",
+        "content_type": "text/html",
+        "text": "<!doctype html>\n<html lang=\"en\">\n  <head>\n    <meta charset=\"utf-8\" />\n    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />\n    <title>Shift Signup</title>\n    <link rel=\"stylesheet\" href=\"style.css\" />\n  </head>\n  <body>\n    <h1>Shifts</h1>\n    <p id=\"empty\" hidden>No shifts posted yet.</p>\n    <ul id=\"shifts\"></ul>\n    <script src=\"app.js\"></script>\n  </body>\n</html>\n"
+      },
+      {
+        "path": "style.css",
+        "content_type": "text/css",
+        "text": ":root { color-scheme: light dark; }\nbody { font: 16px/1.4 system-ui, sans-serif; margin: 16px; }\nh1 { font-size: 20px; margin: 0 0 12px; }\nul { list-style: none; margin: 0; padding: 0; }\nli { display: flex; align-items: center; gap: 8px; padding: 10px 0; border-bottom: 1px solid rgba(128, 128, 128, 0.35); }\n.slot { flex: 1; }\n.who { opacity: 0.7; font-size: 14px; }\nbutton { font: inherit; padding: 6px 10px; }\n"
+      }
+    ]
+  },
+
+  "endorsements": [
+    {
+      "_comment": "Demo-script Beat 2: 'Endorsed by Eastside Tenant Council and Courtyard Mutual Aid.'",
+      "endorser": "eastside",
+      "note": "We ran two court dates off this.",
+      "at_unix": 1783000800
+    },
+    {
+      "endorser": "courtyard",
+      "note": "Used it for the Saturday supply drops.",
+      "at_unix": 1783008000
+    }
+  ],
+
+  "checklist": {
+    "_comment": [
+      "The built-in checklist app (fixtures/apps/checklist), half done.",
+      "app_id is content-derived: the packer re-derives it from the committed",
+      "starter catalog and fails loudly if this pin has gone stale.",
+      "Items store updated_by_id — an id, never a name snapshot (commit 26e45e7).",
+      "'Bring folding chairs' is deliberately UNCHECKED: it is the item Ana",
+      "checks live on stage in Beat 4."
+    ],
+    "app_id": "3fe5f89af18d9244756c8925750280f0c51479030cf3cd7b4d26940b51eaa4b7",
+    "items": [
+      {
+        "key": "items/6f1c2a80-3b4d-4e5f-8a91-2c3d4e5f6a7b",
+        "author": "ana",
+        "text": "Confirm the hearing time with the court clerk",
+        "done": true,
+        "updated_by": "ana",
+        "updated_at_ms": 1783015200000,
+        "at_unix": 1783015200
+      },
+      {
+        "key": "items/7a2d3b91-4c5e-4f60-9b02-3d4e5f6a7b8c",
+        "author": "ana",
+        "text": "Bring folding chairs",
+        "done": false,
+        "updated_by": "ana",
+        "updated_at_ms": 1783018800000,
+        "at_unix": 1783018800
+      },
+      {
+        "key": "items/8b3e4ca2-5d6f-4071-ac13-4e5f6a7b8c9d",
+        "author": "priya",
+        "text": "Print 20 know-your-rights cards for the gallery",
+        "done": false,
+        "updated_by": "priya",
+        "updated_at_ms": 1783022400000,
+        "at_unix": 1783022400
+      }
+    ]
+  }
+}

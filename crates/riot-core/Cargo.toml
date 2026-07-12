@@ -9,10 +9,16 @@ publish = false
 # tests and conformance fixtures. MUST NOT be enabled in the release graph;
 # riot-ffi never enables it, and `cargo xtask validate-contracts` fails if it
 # appears in the riot-ffi feature closure.
-conformance = []
+#
+# It pulls in serde_json for exactly one reason: `demo_fixture` reads the demo
+# space's human-editable `content.json`. serde_json is therefore optional and
+# reachable ONLY through this feature — the release riot-ffi closure, which never
+# enables `conformance`, does not gain a JSON parser.
+conformance = ["dep:serde_json"]
 
 [dependencies]
 willow25 = { workspace = true }
+serde_json = { workspace = true, optional = true }
 bab_rs = { workspace = true }
 minicbor = { workspace = true }
 pollster = { workspace = true }
@@ -100,4 +106,14 @@ required-features = ["conformance"]
 
 [[test]]
 name = "core_import_path_family_isolation"
+required-features = ["conformance"]
+
+[[test]]
+name = "demo_fixture_drift"
+required-features = ["conformance"]
+
+# The demo packer signs with seeded keys so its output is byte-reproducible,
+# which is the raw-secret constructor behind `conformance`.
+[[example]]
+name = "pack_demo_space"
 required-features = ["conformance"]
