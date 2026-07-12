@@ -46,8 +46,12 @@ final class AppSyncReplicationTests: XCTestCase {
         let keyStore: WrappingKeyStore
     }
 
-    /// Two people in the same space, each with the checklist installed and
-    /// trusted. Alice creates the space; Bob joins it.
+    /// Two people in the same space, each with the checklist installed. Alice
+    /// creates the space, which makes her its organizer, and she is the only one
+    /// who approves the app. Bob joins and approves NOTHING — the core refuses a
+    /// member's self-approval, and a member is meant to inherit the organizer's
+    /// decision over sync. So Bob's checklist is not open to him until he has
+    /// synced with Alice at least once, exactly as on a real second phone.
     ///
     /// Bob "joins" by opening a profile whose stored snapshot already names
     /// Alice's space — `RiotProfileRepository.open` calls `joinPublicSpace` for
@@ -57,7 +61,7 @@ final class AppSyncReplicationTests: XCTestCase {
     private func openPair() throws -> (alice: Peer, bob: Peer) {
         let alice = try openPeer(name: "Alice", joining: nil)
         let space = try XCTUnwrap(alice.repository.currentSpace)
-        let bob = try openPeer(name: "Bob", joining: space)
+        let bob = try openPeer(name: "Bob", joining: space, approvingTheApp: false)
         XCTAssertEqual(
             alice.appID, bob.appID,
             "both peers must be running the same app — the id is content-derived"
@@ -177,6 +181,102 @@ final class AppSyncReplicationTests: XCTestCase {
         )
     }
 
+    /// The demo's headline beat: Bob is ALREADY LOOKING AT the checklist when
+    /// Alice's item arrives, and it appears on his screen without him touching
+    /// anything.
+    ///
+    /// This is the one the store-level tests above cannot make. They open the
+    /// app after the sync, so they are satisfied by the fresh `list` every mount
+    /// does. Here the page is mounted, rendered, and idle BEFORE the sync starts
+    /// — the only thing that can put Alice's item into this DOM is the refresh
+    /// that sync accept fires, re-running the page's `riot.watch` callback.
+    /// Delete `onImportAccepted` from `SyncCoordinator.addPreviewedContent` and
+    /// this test fails while every other test in the file still passes.
+    ///
+    /// The mount is the real one: the trust-gated bridge, and the real
+    /// `AppRuntimeCoordinator` whose `observeDataChanges()` is the subscription
+    /// the running app relies on.
+    func testSyncedItemAppearsInAnAlreadyOpenChecklistWithoutReopening() async throws {
+        let (alice, bob) = try openPair()
+
+        // The first sync is how Bob gets the checklist at all: he is a member,
+        // he approves nothing, and he inherits Alice's approval from her. This
+        // is the demo's opening move, not a test convenience — a second phone
+        // cannot open the app before it has met the organizer's once.
+        try await sync(initiator: bob, responder: alice)
+
+        // Bob's checklist is now open and rendered — and empty. Everything that
+        // follows has to change what is already on this screen.
+        let launch = try XCTUnwrap(
+            AppRuntimeLaunch(repository: bob.repository, appIDHex: bob.appID),
+            "Bob should have inherited the organizer's approval and be able to open the app"
+        )
+        let (webView, probe, coordinator) = makeLiveMount(launch: launch)
+        await loadEntryPoint(webView, probe, appID: launch.appIDHex)
+        let beforeSync = try await renderedItemLabels(webView)
+        XCTAssertEqual(beforeSync, [], "Bob's checklist must start empty — otherwise this proves nothing")
+
+        let text = "Bring water to the corner"
+        try XCTUnwrap(alice.repository.appDataBridge(appID: alice.appID))
+            .put(key: newItemKey(), valueJSON: try item(text: text, done: false, by: "Alice", at: 1))
+
+        // Bob never reloads and never remounts: the WebView above is untouched
+        // from here on. The sync accepts the import, which posts the refresh.
+        try await sync(initiator: bob, responder: alice)
+
+        // The refresh crosses to the page asynchronously (notification → main
+        // queue → evaluateJavaScript → the page's `watch` re-lists → DOM), so
+        // poll the DOM rather than assert on the first read.
+        var labels: [String] = []
+        for _ in 0..<80 where labels.isEmpty {
+            labels = try await renderedItemLabels(webView)
+        }
+        XCTAssertEqual(labels, [text], "Alice's item never appeared in the checklist Bob already had open")
+
+        let emptyHidden = try await callAsync(webView, "return document.getElementById('empty').hidden;")
+        XCTAssertEqual(emptyHidden as? Bool, true, "the open checklist still tells Bob there is nothing here")
+
+        XCTAssertNotNil(coordinator, "the mount's coordinator must outlive the sync — it owns the subscription")
+    }
+
+    /// The review gate holds: the refresh fires once per ACCEPTED import and
+    /// never merely because entries arrived. Content sitting in the preview is
+    /// not in the store yet, so refreshing on receipt would redraw an app with
+    /// data the person has not said yes to.
+    ///
+    /// Counted against a real exchange. ("Not now" is covered in
+    /// `TransportContractTests`, where the session can be driven to a reject.)
+    func testRefreshFiresOncePerAcceptedImportAndNotOnReceipt() async throws {
+        let (alice, bob) = try openPair()
+        try XCTUnwrap(alice.repository.appDataBridge(appID: alice.appID))
+            .put(key: newItemKey(), valueJSON: try item(text: "Cones", done: false, by: "Alice", at: 1))
+
+        let refreshes = RefreshCounter()
+        let token = NotificationCenter.default.addObserver(
+            forName: AppRuntimeView.dataChangedNotification,
+            object: nil,
+            queue: nil
+        ) { _ in refreshes.increment() }
+        defer { NotificationCenter.default.removeObserver(token) }
+
+        let states = try await sync(initiator: bob, responder: alice)
+
+        // Every preview this exchange produced was accepted (the driver accepts
+        // on preview, as the person tapping "Add them" does), so the refresh
+        // must have fired exactly that many times. If a mere arrival fired it,
+        // the count would run ahead of the accepts.
+        //
+        // Only Bob previews here: Alice is the organizer and holds everything
+        // Bob has, so she has nothing to import back from him.
+        let accepts = states.initiator.filter(\.isPreview).count
+            + states.responder.filter(\.isPreview).count
+        XCTAssertEqual(accepts, 1, "Bob should have previewed Alice's entries exactly once")
+        XCTAssertEqual(
+            refreshes.value, accepts,
+            "the refresh must fire once per ACCEPTED import — never on receipt"
+        )
+    }
+
     /// The other direction: Bob checks the item off, and Alice sees it checked.
     func testCheckingOffOnPeerBSyncsBackToPeerA() async throws {
         let (alice, bob) = try openPair()
@@ -242,18 +342,22 @@ final class AppSyncReplicationTests: XCTestCase {
             ],
             "the initiator did not run connect → preview → accept → done"
         )
-        // The responder imports too, in the same exchange — it never opened the
-        // protocol, so it publishes no `gettingLatest`, but Bob's own entries
-        // (his trust marker, his copy of the app index) are entries Alice does
-        // not have, so she previews and accepts them before completing. One
-        // session, both directions.
+        // The responder does not open the protocol — it `answer()`s, which
+        // publishes `gettingLatest` so the person who accepted the prompt sees
+        // the exchange running instead of sitting on "Connecting…".
+        //
+        // It previews nothing, and that is correct here rather than a gap: Alice
+        // is the organizer, and everything Bob holds came from her, so this
+        // exchange has nothing to carry back. (A sync where BOTH sides have
+        // something new does preview on both — `testCheckingOffOnPeerBSyncsBack`
+        // moves Bob's edit to Alice.) The session still completes for her.
         XCTAssertEqual(
             states.responder,
             [
-                .preview(count: 0, name: "Bob"),
-                .caughtUp,
+                .gettingLatest(name: "Bob"),   // answering, protocol not opened
+                .alreadyCurrent,               // nothing of Bob's is new to her
             ],
-            "the responder did not preview → accept → done"
+            "the responder did not answer → done"
         )
     }
 
@@ -290,6 +394,34 @@ final class AppSyncReplicationTests: XCTestCase {
         XCTAssertNotEqual(onAlice, aliceEdit, "Alice kept her own stale edit")
     }
 
+    /// Why exactly one peer may open the protocol — the failure is real, not a
+    /// theory, so it is pinned here.
+    ///
+    /// `NearbyTransportController` used to call `start()` from both
+    /// `startLocalSession` and `finishRouteSelection`, each of which runs on
+    /// BOTH sides of a pairing. The core accepts a `Hello` only from an idle
+    /// session and `begin()` leaves idle, so two initiators hand each other a
+    /// `Hello` in the wrong phase and both sessions fail — on two real phones,
+    /// with nothing replicated. This reproduces that wiring and pins the
+    /// failure, so the one-initiator rule cannot be undone quietly.
+    func testTwoInitiatorsFailAndReplicateNothing() async throws {
+        let (alice, bob) = try openPair()
+        let key = newItemKey()
+        try XCTUnwrap(alice.repository.appDataBridge(appID: alice.appID))
+            .put(key: key, valueJSON: try item(text: "Cones", done: false, by: "Alice", at: 1))
+
+        let states = try await sync(initiator: bob, responder: alice, bothBegin: true)
+
+        XCTAssertTrue(
+            states.initiator.contains(.failed) || states.responder.contains(.failed),
+            "two initiators must fail — if this passes, the Hello phase rule changed"
+        )
+        XCTAssertNil(
+            try bob.repository.appDataGet(appID: bob.appID, key: key),
+            "nothing may replicate when both peers open the protocol"
+        )
+    }
+
     // MARK: - Organizer trust
 
     /// The community property the whole app-trust model exists to deliver: the
@@ -299,18 +431,7 @@ final class AppSyncReplicationTests: XCTestCase {
     ///
     /// Alice creates the space, so Alice is the organizer, and she approves the
     /// checklist. Bob joins later and approves NOTHING. After they sync, Bob
-    /// holds Alice's approval marker — and it must count for him.
-    ///
-    /// CURRENTLY FAILS, and the failure is the point. A profile recognizes
-    /// exactly one organizer: itself. `mobile_state.rs:1768` fills every space's
-    /// `organizer_subspace_ids` with `vec![own_subspace_id]` (and `is_app_trusted`
-    /// evaluates against the same single id), while the scan that reads real
-    /// markers out of the store leaves the list empty (`apps/index.rs:376`).
-    /// `PublicSpace` carries no organizer, and a namespace id is an independent
-    /// keypair rather than the creator's subspace, so a joiner has no way to
-    /// learn who the organizer even is. Alice's marker therefore reaches Bob and
-    /// is ignored: he sees the app as untrusted and gets no bridge, so he cannot
-    /// open the checklist at all.
+    /// holds Alice's approval marker — and it counts for him.
     func testOrganizerApprovalCoversAMemberWhoJoinsLater() async throws {
         let alice = try openPeer(name: "Alice", joining: nil)              // organizer: approves
         let space = try XCTUnwrap(alice.repository.currentSpace)
@@ -328,11 +449,6 @@ final class AppSyncReplicationTests: XCTestCase {
         XCTAssertEqual(
             try bob.repository.appDataGet(appID: bob.appID, key: key), added,
             "the item itself replicated to Bob — only trust is in question"
-        )
-
-        XCTExpectFailure(
-            "KNOWN DEFECT: organizer approval does not propagate — see mobile_state.rs:1768 "
-            + "(organizer_subspace_ids = [own subspace]) and apps/index.rs:376 (scan leaves it empty)"
         )
 
         let app = try XCTUnwrap(try bob.repository.spaceApps().first)
@@ -353,22 +469,18 @@ final class AppSyncReplicationTests: XCTestCase {
     /// otherwise "the organizer decides what runs in this space" means nothing,
     /// and any member can opt themselves into any app that reaches them.
     ///
-    /// CURRENTLY FAILS: because each profile treats its own subspace as the
-    /// space's organizer (`mobile_state.rs:1768`), Bob's self-approval is
-    /// indistinguishable from an organizer's and hands him a working bridge.
-    func testMemberCannotSelfApproveAnApp() async throws {
+    /// The core fails CLOSED: a member's approval is refused outright rather
+    /// than stored and ignored.
+    func testMemberCannotSelfApproveAnApp() throws {
         let alice = try openPeer(name: "Alice", joining: nil)
         let space = try XCTUnwrap(alice.repository.currentSpace)
+        // Bob is a member of Alice's space, and he has not synced with her, so
+        // he holds no organizer approval. He is not the organizer.
         let bob = try openPeer(name: "Bob", joining: space, approvingTheApp: false)
-        try await sync(initiator: bob, responder: alice)
 
-        // Bob is a member of Alice's space. He is not the organizer.
-        try bob.repository.trustApp(appID: bob.appID)
-
-        XCTExpectFailure(
-            "KNOWN DEFECT: a member can self-approve — every profile recognizes its own subspace "
-            + "as the space's organizer (mobile_state.rs:1768), so nothing distinguishes Bob's "
-            + "marker from Alice's"
+        XCTAssertThrowsError(
+            try bob.repository.trustApp(appID: bob.appID),
+            "a member's self-approval must be refused, not quietly accepted"
         )
 
         let app = try XCTUnwrap(try bob.repository.spaceApps().first)
@@ -390,11 +502,15 @@ final class AppSyncReplicationTests: XCTestCase {
     /// it answers. The single exchange still carries data BOTH ways: after the
     /// initiator imports, it offers its own summary and the responder requests
     /// what it is missing in the same session.
+    /// `bothBegin` reproduces the wiring the controller USED to have — both
+    /// peers opening the protocol — so the failure that wiring causes is a
+    /// tested fact rather than a claim. Nothing but that test passes it.
     @discardableResult
     private func sync(
         initiator: Peer,
         responder: Peer,
-        timeout: TimeInterval = 30
+        timeout: TimeInterval = 30,
+        bothBegin: Bool = false
     ) async throws -> (initiator: [NearbyConnectionState], responder: [NearbyConnectionState]) {
         let wire = DispatchQueue(label: "net.protest.riot.tests.wire")
         let (dialled, accepted) = try await connectedChannels(on: wire)
@@ -416,7 +532,14 @@ final class AppSyncReplicationTests: XCTestCase {
             responderSide.stop()
         }
 
-        wire.async { initiatorSide.start() }
+        wire.async {
+            // The responder answers rather than begins — the asymmetry
+            // `NearbyTransportController.adopt` now enforces from
+            // `isInboundRequest`. Under `bothBegin` it begins too, which is the
+            // old wiring, and the session dies.
+            if bothBegin { responderSide.start() } else { responderSide.answer() }
+            initiatorSide.start()
+        }
         await fulfillment(of: [initiatorSide.done, responderSide.done], timeout: timeout)
 
         return (initiatorSide.states, responderSide.states)
@@ -517,6 +640,43 @@ final class AppSyncReplicationTests: XCTestCase {
         return (webView, probe)
     }
 
+    /// The mount as a person actually running the app has it: the same WebView
+    /// configuration as `makeWebView`, but built around the real
+    /// `AppRuntimeCoordinator` and with its real `observeDataChanges()`
+    /// subscription live. That subscription is the thing under test — it is what
+    /// turns an accepted sync import into a redraw of an already-open app — so
+    /// it must be the shipping one and not a restaging.
+    ///
+    /// The coordinator is returned, not discarded: it owns the subscription, and
+    /// a deallocated coordinator removes its observer in `deinit`.
+    private func makeLiveMount(
+        launch: AppRuntimeLaunch
+    ) -> (WKWebView, NavProbe, AppRuntimeCoordinator) {
+        let coordinator = AppRuntimeCoordinator(
+            bridge: AppBridgeController(bridge: launch.bridge),
+            appIDHex: launch.appIDHex,
+            entryPoint: launch.entryPoint
+        )
+        let configuration = WKWebViewConfiguration()
+        configuration.websiteDataStore = .nonPersistent()
+        configuration.userContentController.addUserScript(
+            WKUserScript(source: RiotJS.source, injectionTime: .atDocumentStart, forMainFrameOnly: true)
+        )
+        configuration.userContentController.add(coordinator.bridge, name: "riot")
+        configuration.setURLSchemeHandler(
+            AppSchemeHandler(resolver: launch.resolver),
+            forURLScheme: AppSchemeHandler.scheme
+        )
+        let webView = WKWebView(frame: .zero, configuration: configuration)
+        coordinator.bridge.webView = webView
+        coordinator.observeDataChanges()
+        // The nav delegate is the probe only so the load can be awaited; the
+        // navigation lock has its own tests.
+        let probe = NavProbe()
+        webView.navigationDelegate = probe
+        return (webView, probe, coordinator)
+    }
+
     private func loadEntryPoint(_ webView: WKWebView, _ probe: NavProbe, appID: String) async {
         webView.load(URLRequest(url: URL(string: "\(AppSchemeHandler.scheme)://\(appID)/index.html")!))
         await fulfillment(of: [probe.done], timeout: 30)
@@ -562,6 +722,34 @@ final class AppSyncReplicationTests: XCTestCase {
     }
 }
 
+// MARK: - Refresh bookkeeping
+
+/// Counts `dataChangedNotification` posts. The posts originate on the wire
+/// queue (an accept runs there), so the counter is locked.
+private final class RefreshCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+
+    func increment() {
+        lock.lock()
+        count += 1
+        lock.unlock()
+    }
+
+    var value: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return count
+    }
+}
+
+private extension NearbyConnectionState {
+    var isPreview: Bool {
+        if case .preview = self { return true }
+        return false
+    }
+}
+
 // MARK: - One peer's coordinator
 
 /// One end of a live sync: the app's own `SyncCoordinator` over a real channel,
@@ -593,6 +781,11 @@ private final class SyncPeerDriver: @unchecked Sendable {
         self.coordinator = coordinator
         done.assertForOverFulfill = false
 
+        // Nothing here wires up the refresh: `SyncCoordinator` announces an
+        // accepted import itself. That is the point — the redraw cannot depend
+        // on a host remembering to connect it, and this test does not get to
+        // supply the very wiring it is meant to be proving.
+
         coordinator.onStateChanged = { [weak self] state in
             guard let self else { return }
             self.lock.lock()
@@ -613,6 +806,9 @@ private final class SyncPeerDriver: @unchecked Sendable {
     }
 
     func start() { coordinator.start() }
+    /// The answering half — ready to receive, protocol not opened. What the
+    /// peer who did NOT dial does.
+    func answer() { coordinator.answer() }
     func stop() { coordinator.stop() }
 
     var states: [NearbyConnectionState] {
