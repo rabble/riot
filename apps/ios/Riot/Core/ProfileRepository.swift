@@ -240,7 +240,15 @@ public final class RiotProfileRepository {
             for alert in persisted.alerts {
                 let preview = try profile.inspectBytes(bytes: alert.bundle, route: "protected-local-reload")
                 let entryIDs = try preview.eligibleEntries().map(\.entryId)
-                guard !entryIDs.isEmpty else { continue }
+                // No `guard !entryIDs.isEmpty`: eligibleEntries lists reviewable
+                // ALERT rows only, so a bundle that arrived over sync carrying app
+                // data or a trust marker has none — and skipping it silently threw
+                // that bundle away on every relaunch. A member who synced the
+                // organizer's checklist came back to it empty AND locked (the
+                // approval is a synced entry too). Planning an empty selection
+                // commits the bundle's hidden entries, exactly as the FFI contract
+                // test `portable_app_only_review_can_plan_hidden_entries_without_
+                // fake_rows` pins. Alert bundles are unaffected — theirs is non-empty.
                 _ = try preview.createPlan(selectedEntryIds: entryIDs).accept()
             }
         }
