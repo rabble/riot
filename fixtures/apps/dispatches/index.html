@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Dispatches</title>
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main>
+  <header><div><p class="eyebrow">From the neighborhood</p><h1>Dispatches</h1><p>Longer notes worth keeping.</p></div><button id="write" type="button" disabled>Write a dispatch</button></header>
+  <p id="error" role="alert" hidden></p>
+  <p id="status" role="status" aria-live="polite">Loading dispatches…</p>
+  <section id="index-view" aria-label="Published updates">
+    <ol id="posts"></ol>
+    <p id="empty" hidden>No dispatches yet. Share the first update.</p>
+  </section>
+  <article id="detail-view" tabindex="-1" hidden>
+    <button id="back" type="button">All dispatches</button>
+    <p id="detail-meta" class="meta"></p>
+    <h2 id="detail-title"></h2>
+    <p id="detail-body"></p>
+  </article>
+  <form id="dispatch-form" hidden>
+    <div><label for="title">Title</label><input id="title" type="text" maxlength="120" autocomplete="off" required></div>
+    <div><label for="body">Dispatch</label><textarea id="body" maxlength="4000" rows="10" required></textarea></div>
+    <div class="form-actions"><button id="cancel" type="button">Cancel</button><button id="publish" type="submit" disabled>Publish</button></div>
+  </form>
+</main>
+<script src="app.js"></script>
+</body>
+</html>

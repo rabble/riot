@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chat</title>
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main>
+  <header><p class="eyebrow">Around the corner</p><h1>Chat</h1><p>Quick notes for the people here.</p></header>
+  <p id="error" role="alert" hidden></p>
+  <p id="status" role="status" aria-live="polite">Loading the conversation…</p>
+  <ol id="messages" aria-label="Conversation"></ol>
+  <p id="empty" hidden>No messages yet. Start the conversation.</p>
+</main>
+<form id="composer">
+  <label for="message">Message</label>
+  <textarea id="message" maxlength="500" rows="2" placeholder="Write a message" required></textarea>
+  <button id="send" type="submit" disabled>Send</button>
+</form>
+<script src="app.js"></script>
+</body>
+</html>

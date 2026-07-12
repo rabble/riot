@@ -1,0 +1,7 @@
+{
+  "name": "Chat",
+  "description": "A simple shared conversation for quick local coordination. It keeps messages in this space and nothing else — no internet, no attachments.",
+  "version": "1.0.0",
+  "entry_point": "index.html",
+  "permissions": ["Keep its own notes in this space", "Show the names people in this space have chosen"]
+}

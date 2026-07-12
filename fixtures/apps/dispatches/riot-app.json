@@ -1,0 +1,7 @@
+{
+  "name": "Dispatches",
+  "description": "A shared place for durable local updates and field notes. It keeps dispatches in this space and nothing else — no internet, no media uploads.",
+  "version": "1.0.0",
+  "entry_point": "index.html",
+  "permissions": ["Keep its own notes in this space", "Show the names people in this space have chosen"]
+}
