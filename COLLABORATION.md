@@ -1169,3 +1169,16 @@ the xctest host on launch (no `NSBluetoothAlwaysUsageDescription` in the test ho
 trap as `9b279a4`), and xcodebuild then reports *"Test Suite passed / Executed 0 tests"*. It has
 read as green while proving nothing. Being fixed, and a suite that executes zero tests must fail
 loudly from now on. **If you have a suite you trust, check it actually ran.**
+
+## Active claim: BLE between two physical iPhones — verification (2026-07-12, iOS runtime session)
+
+Claiming the demo's biggest unknown. Blocked on hardware right now: `devicectl`
+shows the iPhone `unavailable` (locked / untrusted / charge-only cable), so no
+install or radio run is possible until it's connected and unlocked. What I CAN
+do without the phone, and am doing: an adversarial read of the CoreBluetooth
+transport (`apps/ios/Riot/Transport/CoreBluetoothNearby.swift` + how discovery/
+connect/handshake sequence) for real-device-only landmines — permission timing,
+CBManager state readiness, the discover→connect→pair ordering, background/foreground
+— so that when a phone is plugged in the run is turnkey, not a debug session.
+Read-only until then; will not land risky transport changes on demo day without
+saying so first.
