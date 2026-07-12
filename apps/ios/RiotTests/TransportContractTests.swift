@@ -6,10 +6,22 @@ final class TransportContractTests: XCTestCase {
         let first = FriendlyNameGenerator.name(sessionNonce: 7)
         let second = FriendlyNameGenerator.name(sessionNonce: 8)
 
-        XCTAssertEqual(first, "Quiet Harbor")
-        XCTAssertEqual(second, "Amber Kite")
-        XCTAssertNotEqual(first, second)
-        XCTAssertFalse(first.contains("-"))
+        // Assert the CONTRACT, not two magic strings. This test used to pin
+        // "Quiet Harbor" and "Amber Kite" literally, which meant it broke the
+        // moment the word lists grew — the names changing is not a regression,
+        // it is the point. What must hold: a peer gets a stable, speakable,
+        // two-word handle that is not a technical identifier, and different
+        // phones get different handles. See `PeerNames` (and `PeerNamesTests`
+        // for the name-space and independence properties).
+        XCTAssertNotEqual(first, second, "different nonces must not collide this readily")
+        XCTAssertEqual(first, FriendlyNameGenerator.name(sessionNonce: 7), "must be stable")
+        for name in [first, second] {
+            XCTAssertEqual(name.split(separator: " ").count, 2, "two words: \(name)")
+            XCTAssertFalse(name.contains("-"), "not a technical identifier: \(name)")
+            // A phone is not a person: a peer handle must never wear the
+            // `Ana · a3f9` shape reserved for a name bound to a key.
+            XCTAssertFalse(name.contains("·"), "a device handle must never carry a key tag: \(name)")
+        }
     }
 
     func testPairingMustBeExplicitlyConfirmedBeforeFramesCanMove() throws {

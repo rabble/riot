@@ -52,13 +52,13 @@ final class FailureLatch: @unchecked Sendable {
 }
 
 public enum FriendlyNameGenerator {
-    private static let adjectives = ["Amber", "Blue", "Silver", "Quiet"]
-    private static let nouns = ["Kite", "River", "Harbor", "Pine"]
-
+    /// Delegates to `PeerNames`. This used to hold four adjectives and four
+    /// nouns and correlate their indices (`n % 4` and `(n * 2) % 4`), which put
+    /// most of an already-tiny name space out of reach — in a room, everyone
+    /// was a Blue Kite. See `PeerNames` for what a peer name is and, more
+    /// importantly, what it is not: a phone handle is never an identity.
     public static func name(sessionNonce: UInt64) -> String {
-        let adjective = adjectives[Int(sessionNonce % UInt64(adjectives.count))]
-        let noun = nouns[Int((sessionNonce &* 2) % UInt64(nouns.count))]
-        return "\(adjective) \(noun)"
+        PeerNames.name(sessionNonce: sessionNonce)
     }
 }
 
