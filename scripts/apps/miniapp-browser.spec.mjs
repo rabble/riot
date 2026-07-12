@@ -1,26 +1,15 @@
-import { existsSync, realpathSync } from "node:fs";
-import path from "node:path";
-import { pathToFileURL } from "node:url";
+import { realpathSync } from "node:fs";
+import { createRequire } from "node:module";
 
-async function loadPlaywrightTest() {
-  try {
-    return await import("@playwright/test");
-  } catch (error) {
-    if (error?.code !== "ERR_MODULE_NOT_FOUND") throw error;
-
-    // `npx playwright` installs the test runner in its own temporary package
-    // tree, which Node does not expose to imports originating in this repo.
-    // Resolve that exact running package without adding a second dependency.
-    let directory = path.dirname(realpathSync(process.argv[1]));
-    while (!existsSync(path.join(directory, "test.mjs")) && path.dirname(directory) !== directory) {
-      directory = path.dirname(directory);
-    }
-    if (!existsSync(path.join(directory, "test.mjs"))) throw error;
-    return import(pathToFileURL(path.join(directory, "test.mjs")).href);
-  }
+// Run with the exact command recorded in playwright.config.mjs. Anchoring a
+// require at npx's real CLI/worker entry exposes Playwright's public `test`
+// export without committing a package.json solely for this smoke suite.
+const requireFromPlaywright = createRequire(realpathSync(process.argv[1]));
+const playwrightPackage = requireFromPlaywright("playwright/package.json");
+if (playwrightPackage.version !== "1.61.1") {
+  throw new Error(`Playwright 1.61.1 required; got ${playwrightPackage.version}`);
 }
-
-const { expect, test } = await loadPlaywrightTest();
+const { expect, test } = requireFromPlaywright("playwright/test");
 
 for (const state of ["seeded", "empty"]) {
   test(`Checklist has a usable ${state} preview`, async ({ page }) => {

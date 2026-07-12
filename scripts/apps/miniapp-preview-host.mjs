@@ -9,6 +9,13 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../
 const appsRoot = path.join(repoRoot, "fixtures/apps");
 const host = "127.0.0.1";
 const port = Number.parseInt(process.env.PORT || "43117", 10);
+const csp = "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:";
+
+const profiles = {
+  you: { id: "1111111111111111111111111111111111111111111111111111111111111111", displayName: "You", tag: "11111111" },
+  alex: { id: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", displayName: "Alex Rivera", tag: "aaaaaaaa" },
+  sam: { id: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", displayName: "Sam Chen", tag: "bbbbbbbb" },
+};
 
 const mimeTypes = new Map([
   [".css", "text/css; charset=utf-8"],
@@ -27,75 +34,106 @@ function isWithin(parent, candidate) {
 function seedRows(app, state) {
   if (app !== "checklist" || state === "empty") return [];
   const rows = [
-    ["items/bring-water", { text: "Bring water", done: false, updated_by_id: "profile-alex", updated_at: 1 }],
-    ["items/check-radio", { text: "Check the radio", done: true, updated_by_id: "profile-sam", updated_at: 2 }],
+    ["items/bring-water", { text: "Bring water", done: false, updated_by_id: profiles.alex.id, updated_at: 1 }],
+    ["items/check-radio", { text: "Check the radio", done: true, updated_by_id: profiles.sam.id, updated_at: 2 }],
   ];
   if (state === "post-action") {
-    rows.push(["items/post-action", { text: "Share the route", done: false, updated_by_id: "profile-you", updated_at: 3 }]);
+    rows.push(["items/post-action", { text: "Share the route", done: false, updated_by_id: profiles.you.id, updated_at: 3 }]);
   }
   return rows;
 }
 
 function mockBridgeSource(app, state) {
   const initialRows = JSON.stringify(seedRows(app, state));
+  const serializedProfiles = JSON.stringify(Object.values(profiles));
   const failWrites = state === "error";
   return `
-<script data-miniapp-preview-bridge>
 (() => {
   "use strict";
-  const store = new Map(${initialRows});
+  const store = new Map(${initialRows}.map(([key, value]) => [key, JSON.stringify(value)]));
   const watchers = [];
-  const profiles = new Map([
-    ["profile-you", { displayName: "You", tag: "you" }],
-    ["profile-alex", { displayName: "Alex Rivera", tag: "alex" }],
-    ["profile-sam", { displayName: "Sam Chen", tag: "sam" }],
-  ]);
-  const normalize = (value) => String(value).replace(/\\/+$/, "");
-  const validKey = (key) => key && key.split("/").every((part) => part && part !== "." && part !== "..");
-  const clone = (value) => value == null ? null : structuredClone(value);
+  const profileRows = ${serializedProfiles};
+  const profileByID = new Map(profileRows.map(({ id, displayName, tag }) => [id, { displayName, tag }]));
+  const identityPattern = /^[0-9a-f]{64}$/;
+
+  function normalizePrefix(prefix) {
+    if (typeof prefix !== "string") throw new TypeError("prefix must be a string");
+    return prefix.replace(/\\/+$/, "");
+  }
+
+  function validateKey(key) {
+    if (typeof key !== "string" || !key) throw new Error("invalid key");
+    const segments = key.split("/");
+    if (segments.length > 62) throw new Error("invalid key");
+    let totalBytes = 36;
+    for (const segment of segments) {
+      if (!/^[a-z0-9-]+$/.test(segment) || segment.length > 256) throw new Error("invalid key");
+      totalBytes += segment.length;
+    }
+    if (totalBytes > 2048) throw new Error("invalid key");
+    return key;
+  }
+
+  function serializeJSON(value, seen = new Set()) {
+    if (value === null || typeof value === "string" || typeof value === "boolean") return JSON.stringify(value);
+    if (typeof value === "number") {
+      if (!Number.isFinite(value)) throw new TypeError("value must be JSON");
+      return JSON.stringify(value);
+    }
+    if (typeof value !== "object") throw new TypeError("value must be JSON");
+    if (seen.has(value)) throw new TypeError("value must be JSON");
+    const prototype = Object.getPrototypeOf(value);
+    if (!Array.isArray(value) && prototype !== Object.prototype && prototype !== null) {
+      throw new TypeError("value must be JSON");
+    }
+    seen.add(value);
+    if (Array.isArray(value)) value.forEach((item) => serializeJSON(item, seen));
+    else Object.values(value).forEach((item) => serializeJSON(item, seen));
+    seen.delete(value);
+    return JSON.stringify(value);
+  }
+
   const list = async (prefix) => {
-    const clean = normalize(prefix);
+    const clean = validateKey(normalizePrefix(prefix));
     return [...store.entries()]
       .filter(([key]) => key === clean || key.startsWith(clean + "/"))
       .sort(([left], [right]) => left.localeCompare(right))
-      .map(([key, value]) => ({ key, value: clone(value) }));
+      .map(([key, value]) => ({ key, value: JSON.parse(value) }));
   };
   const notify = () => queueMicrotask(() => {
-    watchers.forEach(({ prefix, callback }) => list(prefix).then(callback));
+    watchers.forEach(({ prefix, callback }) => list(prefix).then(callback).catch(function () {}));
   });
   window.riot = Object.freeze({
     async get(key) {
-      const clean = normalize(key);
-      if (!validKey(clean)) throw new Error("invalid key");
-      return clone(store.get(clean));
+      const clean = validateKey(key);
+      const value = store.get(clean);
+      return value === undefined ? null : JSON.parse(value);
     },
     async put(key, value) {
-      const clean = normalize(key);
-      if (!validKey(clean)) throw new Error("invalid key");
+      const clean = validateKey(key);
+      const serialized = serializeJSON(value);
       if (${failWrites}) throw new Error("deterministic preview write failure");
-      store.set(clean, clone(value));
+      store.set(clean, serialized);
       notify();
     },
     list,
     watch(prefix, callback) {
       if (typeof callback !== "function") throw new TypeError("watch callback must be a function");
-      const watcher = { prefix: normalize(prefix), callback };
-      watchers.push(watcher);
-      list(watcher.prefix).then(callback);
-      return () => {
-        const index = watchers.indexOf(watcher);
-        if (index >= 0) watchers.splice(index, 1);
-      };
+      watchers.push({ prefix, callback });
+      list(prefix).then(callback).catch(function () {});
     },
-    async whoami() { return { id: "profile-you", ...profiles.get("profile-you") }; },
-    async profile(id) { return clone(profiles.get(String(id)) || { displayName: "member", tag: "member" }); },
+    async whoami() { return { ...profileRows[0] }; },
+    async profile(id) {
+      if (typeof id !== "string" || !identityPattern.test(id)) throw new Error("invalid profile id");
+      return { ...(profileByID.get(id) || { displayName: "member", tag: id.slice(0, 8) }) };
+    },
   });
 })();
-</script>`;
+`;
 }
 
-function injectBridge(html, bridge) {
-  const foundation = `<link rel="stylesheet" href="/apps/_shared/tokens.css">${bridge}`;
+function injectBridge(html, app, state) {
+  const foundation = `<link rel="stylesheet" href="/apps/_shared/tokens.css"><script data-miniapp-preview-bridge src="/apps/${app}/__miniapp-preview-bridge.js?state=${state}"></script>`;
   const head = /<head(?:\s[^>]*)?>/i;
   if (head.test(html)) return html.replace(head, (match) => `${match}${foundation}`);
   return `${foundation}${html}`;
@@ -142,6 +180,28 @@ export function createPreviewServer() {
 
       const app = match[1];
       const resource = match[2] || "index.html";
+      const requestedState = url.searchParams.get("state") || "seeded";
+      const state = ["seeded", "empty", "error", "post-action"].includes(requestedState)
+        ? requestedState
+        : "seeded";
+
+      if (resource === "__miniapp-preview-bridge.js") {
+        if (!(await resolveResource(app, "index.html"))) {
+          response.writeHead(404).end("Not found");
+          return;
+        }
+        const body = Buffer.from(mockBridgeSource(app, state));
+        response.writeHead(200, {
+          "Cache-Control": "no-store",
+          "Content-Length": body.byteLength,
+          "Content-Security-Policy": csp,
+          "Content-Type": mimeTypes.get(".js"),
+          "X-Content-Type-Options": "nosniff",
+        });
+        response.end(body);
+        return;
+      }
+
       const file = await resolveResource(app, resource);
       const extension = file ? path.extname(file).toLowerCase() : "";
       const mime = mimeTypes.get(extension);
@@ -152,16 +212,12 @@ export function createPreviewServer() {
 
       let body = await readFile(file);
       if (extension === ".html") {
-        const requestedState = url.searchParams.get("state") || "seeded";
-        const state = ["seeded", "empty", "error", "post-action"].includes(requestedState)
-          ? requestedState
-          : "seeded";
-        body = Buffer.from(injectBridge(body.toString("utf8"), mockBridgeSource(app, state)));
+        body = Buffer.from(injectBridge(body.toString("utf8"), app, state));
       }
       response.writeHead(200, {
         "Cache-Control": "no-store",
         "Content-Length": body.byteLength,
-        "Content-Security-Policy": "default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'none'; object-src 'none'; base-uri 'none'",
+        "Content-Security-Policy": csp,
         "Content-Type": mime,
         "X-Content-Type-Options": "nosniff",
       });

@@ -6,6 +6,7 @@
   --muted: #6d675d;
   --line: #cfc5b4;
   --accent: #2457d6;
+  --focus-ring: #2457d6;
   --radius-sm: 8px;
   --radius: 14px;
   --radius-lg: 22px;
@@ -26,6 +27,7 @@
     --ink: #f7f1e6;
     --muted: #b9b0a2;
     --line: #4b463e;
+    --focus-ring: #8ab4ff;
     --shadow: 0 8px 24px rgb(0 0 0 / 30%);
   }
 }
@@ -68,7 +70,7 @@ textarea,
 }
 
 :focus-visible {
-  outline: 3px solid var(--accent);
+  outline: 3px solid var(--focus-ring);
   outline-offset: 3px;
 }
 

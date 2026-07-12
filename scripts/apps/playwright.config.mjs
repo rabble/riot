@@ -1,6 +1,10 @@
 export default {
   testDir: ".",
   testMatch: "miniapp-browser.spec.mjs",
+  outputDir: "../../target/miniapp-playwright-results",
+  metadata: {
+    command: "npx --yes playwright@1.61.1 test --config scripts/apps/playwright.config.mjs",
+  },
   use: {
     baseURL: "http://127.0.0.1:43117",
   },
