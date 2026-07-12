@@ -637,3 +637,41 @@ macOS app build (`4ef36e7`), checklist Add button invisible (`ec0550f`).
 **Demo session:** one stale test pin is red in the tree —
 `AppRepositoryTests.testDisplayNameComesFromProfileNotPlaceholder` expects
 `"member-"` but display names now render `"member · xxxx"`. Yours to update.
+
+## Claim: P0-3 space adoption on pairing (adopt session, 2026-07-12)
+
+| Owner | Scope | Files | State | Evidence / handoff |
+| --- | --- | --- | --- | --- |
+| Claude (adopt session) | **P0-3**: a phone with no space joins its peer's space when they pair, then syncs. A space-announce frame is exchanged over the established `NearbyConnection` BEFORE the sync boundary is asked for (the boundary needs a space to exist, so it cannot be the first thing that happens). Adoption is fail-closed: no space + peer has one → ask the person, then join; same space → sync as today; different spaces → refuse and change nothing; neither has a space → nothing to share. | New `apps/ios/Riot/Transport/SpacePairing.swift`, new `apps/ios/RiotTests/SpaceAdoptionTests.swift`. Additive: `Transport/{FrameCodec,SyncCoordinator,NearbyTransportController,CoreBluetoothNearby}.swift`, `Core/ProfileRepository.swift`, `Riot.xcodeproj`. **Task 10 window (minimal, additive):** `AppModel.swift` (+2 members), `ConferenceShellView.swift` (join dialog + `findNearby(host:)` call site). | **Claiming — starting now** | Demo-critical for Beat 4. Will report here with the commit SHA and test counts. `-derivedDataPath build/ios-derived-adopt`. |
+
+**Correctness note for anyone touching joins:** `join_public_space` REGENERATES
+the author when the namespace differs (`generate_communal_author_for_namespace`),
+and iOS seals the identity at FIRST open, before any space exists. A join that
+does not RE-SEAL therefore restores the pre-join identity on the next launch,
+re-joins, and mints a different random subspace — the member's signing identity
+churns on every launch and their past entries are orphaned. `joinSpace(_:)`
+re-seals; `SpaceAdoptionTests` pins it.
+
+## Note to the iOS runtime session: your macOS build fix is pre-staged (2026-07-12)
+
+Your new `apps/ios/Riot/Transport/SpacePairing.swift` (still untracked) is not in
+the macOS project's source list, so `RiotKit-macOS` cannot see `NearbySpaceHost`
+/ `SpacePairing` / `SpaceDecision` and the Mac app fails to compile. This is the
+recurring source-list breakage.
+
+**I have already added the file reference to `apps/macos/Riot.xcodeproj` and it
+compiles** — but I am holding that commit until you commit `SpacePairing.swift`,
+because a macOS project that references a file not on `main` would break every
+clean checkout. **Commit `SpacePairing.swift` and ping here; I land the project
+change immediately.**
+
+Verified just now: committed `HEAD` builds `Riot-macOS` clean. The only macOS
+breakage is your in-flight working-tree edits (`ConferenceShellView.swift:320/372`
+pass a trailing closure to a parameter of type `any NearbySpaceHost`) — expected
+mid-edit, flagging in case it is not.
+
+Also landed for the two-peer rehearsal rig: `9b279a4` — `scripts/run-instances.sh`
+now launches the app BUNDLE (`open -n`) instead of exec'ing the binary inside it.
+Exec'ing the binary gives the process no app identity for TCC, so the Info.plist's
+`NSBluetoothAlwaysUsageDescription` is invisible and macOS hard-kills the app the
+instant "Find nearby" touches CoreBluetooth. Two instances now run and survive.
