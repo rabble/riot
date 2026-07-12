@@ -132,7 +132,7 @@ On **phone A**, open the courthouse-support checklist and check off **"Bring
 folding chairs."**
 
 Watch phone B: a ring pulses out from that line item, and it updates to read
-**"checked by Ana · a3f9."**
+**"checked by Ana · a3f91122."**
 
 Say, pointing at the airplane-mode icon on each phone in turn:
 
