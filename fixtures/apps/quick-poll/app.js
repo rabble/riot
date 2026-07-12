@@ -24,6 +24,8 @@ let posting = false;
 const voteLocks = new Set();
 const profiles = new Map();
 const inflightProfiles = new Set();
+const profileRevisions = new Map();
+let sharedDataRevision = 0;
 
 function newID() { if (crypto.randomUUID) return crypto.randomUUID().toLowerCase(); return Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) => b.toString(16).padStart(2, "0")).join(""); }
 function validIdentity(value) { return value && ID_PATTERN.test(value.id || ""); }
@@ -34,7 +36,7 @@ function formChoices() { const first = optionInputs[0].value.trim(); const secon
 function formValid() { return questionInput.value.trim().length > 0 && formChoices() !== null; }
 function currentProposal() { return proposalRows.find(validProposal)?.value || null; }
 function profileLabel(id) { if (me && id === me.id) return "You"; const profile = profiles.get(id); return profile ? profile.displayName + " · " + profile.tag : "A neighbor"; }
-function resolveProfile(id) { if (!ID_PATTERN.test(id || "") || inflightProfiles.has(id) || profiles.has(id)) return; inflightProfiles.add(id); riot.profile(id).then((profile) => { inflightProfiles.delete(id); profiles.set(id, profile); paint(); }).catch(() => inflightProfiles.delete(id)); }
+function resolveProfile(id) { if (!ID_PATTERN.test(id || "") || inflightProfiles.has(id) || profileRevisions.get(id) === sharedDataRevision) return; const revision = sharedDataRevision; inflightProfiles.add(id); riot.profile(id).then((profile) => { inflightProfiles.delete(id); profiles.set(id, profile); profileRevisions.set(id, revision); paint(); }).catch(() => inflightProfiles.delete(id)); }
 
 async function ensureSeeded() {
   const existing = await riot.list("proposals"); const marker = await riot.get(SEED_MARKER);
@@ -75,7 +77,7 @@ form.addEventListener("submit", async (event) => {
   finally { posting = false; paint(); }
 });
 async function init() {
-  riot.watch("proposals", (next) => { proposalRows = next; paint(); }); riot.watch("votes", (next) => { voteRows = next; paint(); });
+  riot.watch("proposals", (next) => { proposalRows = next; sharedDataRevision += 1; paint(); }); riot.watch("votes", (next) => { voteRows = next; sharedDataRevision += 1; paint(); });
   try { const identity = await riot.whoami(); if (!validIdentity(identity)) throw new Error("invalid identity"); me = identity; await ensureSeeded(); ready = true; paint(); }
   catch { ready = false; paint(); showError("Your identity couldn't be verified. Decisions remain read-only."); }
 }

@@ -113,6 +113,15 @@ function mockBridgeSource(app, state) {
   const notify = () => queueMicrotask(() => {
     watchers.forEach(({ prefix, callback }) => list(prefix).then(callback).catch(function () {}));
   });
+  window.__miniappPreview = Object.freeze({
+    remotePut(key, value) {
+      store.set(validateKey(key), serializeJSON(value));
+    },
+    setProfile(id, profile) {
+      if (typeof id !== "string" || !identityPattern.test(id)) throw new Error("invalid profile id");
+      profileByID.set(id, { displayName: profile.displayName, tag: profile.tag });
+    },
+  });
   window.riot = Object.freeze({
     async get(key) {
       const clean = validateKey(key);

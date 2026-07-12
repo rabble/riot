@@ -205,6 +205,38 @@ test("Tasks serializes completion and assignment mutations per row", async ({ pa
   await expect(row).toContainText("Taken by You");
 });
 
+test("Tasks does not undo a remote completion hidden behind a stale Complete action", async ({ page }) => {
+  await page.goto("/apps/checklist/?state=slow-write");
+  const row = page.locator(".task").filter({ hasText: "Existing neighborhood task" });
+  await expect(row.getByRole("button", { name: /Complete/ })).toBeVisible();
+  await page.evaluate(() => __miniappPreview.remotePut("tasks/existing-task", {
+    text: "Existing neighborhood task",
+    created_at: 10,
+    added_by_id: "a".repeat(64),
+    assigned_to_id: "",
+    completed: true,
+  }));
+  await row.getByRole("button", { name: /Complete/ }).click();
+  await page.waitForTimeout(250);
+  await expect.poll(() => page.evaluate(() => riot.get("tasks/existing-task").then((value) => value.completed))).toBe(true);
+});
+
+test("Tasks does not undo a remote assignment hidden behind a stale Take this action", async ({ page }) => {
+  await page.goto("/apps/checklist/?state=slow-write");
+  const row = page.locator(".task").filter({ hasText: "Existing neighborhood task" });
+  await expect(row.getByRole("button", { name: /Take this/ })).toBeVisible();
+  await page.evaluate(() => __miniappPreview.remotePut("tasks/existing-task", {
+    text: "Existing neighborhood task",
+    created_at: 10,
+    added_by_id: "a".repeat(64),
+    assigned_to_id: "1".repeat(64),
+    completed: false,
+  }));
+  await row.getByRole("button", { name: /Take this/ }).click();
+  await page.waitForTimeout(250);
+  await expect.poll(() => page.evaluate(() => riot.get("tasks/existing-task").then((value) => value.assigned_to_id))).toBe("1".repeat(64));
+});
+
 test("Needs & Offers resolves and reopens one item", async ({ page }) => {
   await page.goto("/apps/supply-board/?state=seeded");
   const row = page.locator(".card").filter({ hasText: "Six folding chairs" });
@@ -214,6 +246,21 @@ test("Needs & Offers resolves and reopens one item", async ({ page }) => {
   await expect(row.getByRole("button", { name: /Mark resolved/ })).toBeVisible();
 });
 
+test("Needs & Offers does not reopen a remotely resolved item from a stale action", async ({ page }) => {
+  await page.goto("/apps/supply-board/?state=seeded");
+  const row = page.locator(".card").filter({ hasText: "Six folding chairs" });
+  await expect(row.getByRole("button", { name: /Mark resolved/ })).toBeVisible();
+  await page.evaluate(() => __miniappPreview.remotePut("items/folding-chairs", {
+    kind: "need",
+    text: "Six folding chairs",
+    created_at: 1,
+    added_by_id: "a".repeat(64),
+    resolved_by_id: "b".repeat(64),
+  }));
+  await row.getByRole("button", { name: /Mark resolved/ }).click();
+  await expect.poll(() => page.evaluate(() => riot.get("items/folding-chairs").then((value) => value.resolved_by_id))).toBe("b".repeat(64));
+});
+
 test("Events records and cancels an RSVP", async ({ page }) => {
   await page.goto("/apps/roll-call/?state=seeded");
   const row = page.locator(".event").filter({ hasText: "Community garden workday" });
@@ -221,6 +268,16 @@ test("Events records and cancels an RSVP", async ({ page }) => {
   await expect(row.getByRole("button", { name: /Cancel RSVP/ })).toHaveAttribute("aria-pressed", "true");
   await row.getByRole("button", { name: /Cancel RSVP/ }).click();
   await expect(row.getByRole("button", { name: /RSVP to/ })).toHaveAttribute("aria-pressed", "false");
+});
+
+test("Events does not cancel a remote RSVP from a stale I'm going action", async ({ page }) => {
+  await page.goto("/apps/roll-call/?state=seeded");
+  const row = page.locator(".event").filter({ hasText: "Community garden workday" });
+  await expect(row.getByRole("button", { name: /RSVP to/ })).toBeVisible();
+  const key = `rsvps/community-garden-workday/${"1".repeat(64)}`;
+  await page.evaluate(({ key }) => __miniappPreview.remotePut(key, { attending: true, at: 20 }), { key });
+  await row.getByRole("button", { name: /RSVP to/ }).click();
+  await expect.poll(() => page.evaluate((key) => riot.get(key).then((value) => value.attending), key)).toBe(true);
 });
 
 test("Decisions moves one profile's vote instead of adding another", async ({ page }) => {
@@ -246,6 +303,16 @@ test("Decisions ignores out-of-order profile results for replaced proposals", as
   await expect(page.locator("#asked-by")).toContainText("Sam Chen");
   await page.waitForTimeout(500);
   await expect(page.locator("#asked-by")).toContainText("Sam Chen");
+});
+
+test("Decisions refreshes a cached profile after shared data repaints", async ({ page }) => {
+  await page.goto("/apps/quick-poll/?state=seeded");
+  await expect(page.locator("#asked-by")).toContainText("Alex Rivera");
+  await page.evaluate(() => {
+    __miniappPreview.setProfile("a".repeat(64), { displayName: "Alex Morgan", tag: "new-name" });
+    return riot.put("votes/safer-school-crossing/" + "b".repeat(64), { choice: 0, at: 30 });
+  });
+  await expect(page.locator("#asked-by")).toContainText("Alex Morgan");
 });
 
 test("Decisions empty state is complete and never says loading", async ({ page }) => {

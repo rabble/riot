@@ -50,9 +50,9 @@ async function ensureSeeded() {
   await riot.put(SEED_MARKER, { version: 1, status: "ready", initialized_at: Date.now() });
 }
 function rsvpsFor(eventID) { return rsvpRows.filter(validRsvp).filter((row) => row.key.startsWith(`rsvps/${eventID}/`) && row.value.attending); }
-async function toggleRsvp(eventID) {
+async function toggleRsvp(eventID, attending) {
   const key = `rsvps/${eventID}/${me.id}`; if (!ready || rsvpLocks.has(key)) return; rsvpLocks.add(key); paint();
-  try { const latest = await riot.get(key); await riot.put(key, { attending: !(latest && latest.attending === true), at: Date.now() }); }
+  try { const latest = await riot.get(key); if (Boolean(latest && latest.attending === true) === attending) return; await riot.put(key, { attending, at: Date.now() }); }
   catch { showError("Couldn't update your RSVP. Try again."); }
   finally { rsvpLocks.delete(key); paint(); }
 }
@@ -63,7 +63,7 @@ function paint() {
     const value = row.value; const id = row.key.split("/")[1]; const attending = rsvpsFor(id); const key = `rsvps/${id}/${me ? me.id : ""}`; const mine = Boolean(me) && attending.some((rsvp) => rsvp.key === key);
     const li = document.createElement("li"); li.className = "event"; const date = new Date(value.starts_at); const dateBlock = document.createElement("div"); dateBlock.className = "date"; const month = document.createElement("span"); month.className = "month"; month.textContent = date.toLocaleDateString(undefined, { month: "short" }); const day = document.createElement("span"); day.className = "day"; day.textContent = date.toLocaleDateString(undefined, { day: "2-digit" }); dateBlock.append(month, day);
     const copy = document.createElement("div"); copy.className = "event-copy"; const heading = document.createElement("h2"); heading.textContent = value.title; const details = document.createElement("p"); details.className = "details"; details.textContent = `${date.toLocaleString(undefined, { weekday: "short", hour: "numeric", minute: "2-digit" })} · ${value.place || DEFAULT_PLACE}`; const meta = document.createElement("p"); meta.className = "rsvp-meta"; meta.textContent = attending.length ? `${attending.length} going · hosted by ${person(value.created_by_id)}` : `Be the first to RSVP · hosted by ${person(value.created_by_id)}`; copy.append(heading, details, meta);
-    const button = document.createElement("button"); button.type = "button"; button.className = "rsvp" + (mine ? " going" : ""); button.disabled = !ready || rsvpLocks.has(key); button.textContent = mine ? "Going ✓" : "I’m going"; button.setAttribute("aria-pressed", String(mine)); button.setAttribute("aria-label", `${mine ? "Cancel RSVP for" : "RSVP to"} ${value.title}`); button.addEventListener("click", () => toggleRsvp(id)); li.append(dateBlock, copy, button); return li;
+    const button = document.createElement("button"); button.type = "button"; button.className = "rsvp" + (mine ? " going" : ""); button.disabled = !ready || rsvpLocks.has(key); button.textContent = mine ? "Going ✓" : "I’m going"; button.setAttribute("aria-pressed", String(mine)); button.setAttribute("aria-label", `${mine ? "Cancel RSVP for" : "RSVP to"} ${value.title}`); button.addEventListener("click", () => toggleRsvp(id, !mine)); li.append(dateBlock, copy, button); return li;
   }));
   resolveProfiles(valid.map((row) => row.value.created_by_id));
 }

@@ -43,16 +43,16 @@ async function ensureSeeded() {
   await riot.put(SEED_MARKER, { version: 1, status: "ready" });
 }
 
-async function toggleResolved(row) {
+async function toggleResolved(row, shouldResolve) {
   if (!ready || locks.has(row.key)) return; locks.add(row.key); paint();
-  try { const latest = { key: row.key, value: await riot.get(row.key) }; if (!validItem(latest)) throw new Error("item changed shape"); await riot.put(row.key, { ...latest.value, resolved_by_id: latest.value.resolved_by_id ? "" : me.id }); }
+  try { const latest = { key: row.key, value: await riot.get(row.key) }; if (!validItem(latest)) throw new Error("item changed shape"); if (Boolean(latest.value.resolved_by_id) === shouldResolve) return; await riot.put(row.key, { ...latest.value, resolved_by_id: shouldResolve ? me.id : "" }); }
   catch { showError("Couldn't update that item. Try again."); }
   finally { locks.delete(row.key); paint(); }
 }
 function card(row) {
   const value = row.value; const li = document.createElement("li"); li.className = "card" + (value.resolved_by_id ? " resolved" : "");
   const text = document.createElement("p"); text.className = "item-text"; text.textContent = value.text; const meta = document.createElement("p"); meta.className = "meta"; meta.textContent = value.resolved_by_id ? `Sorted by ${person(value.resolved_by_id)}` : `Posted by ${person(value.added_by_id)}`;
-  const button = document.createElement("button"); button.type = "button"; button.className = "resolve"; button.disabled = !ready || locks.has(row.key); button.textContent = value.resolved_by_id ? "Reopen" : "Mark resolved"; button.setAttribute("aria-label", `${button.textContent}: ${value.text}`); button.addEventListener("click", () => toggleResolved(row)); li.append(text, meta, button); return li;
+  const button = document.createElement("button"); button.type = "button"; button.className = "resolve"; button.disabled = !ready || locks.has(row.key); button.textContent = value.resolved_by_id ? "Reopen" : "Mark resolved"; button.setAttribute("aria-label", `${button.textContent}: ${value.text}`); button.addEventListener("click", () => toggleResolved(row, !Boolean(value.resolved_by_id))); li.append(text, meta, button); return li;
 }
 function paint() {
   const valid = rows.filter(validItem).sort((a, b) => Number(Boolean(a.value.resolved_by_id)) - Number(Boolean(b.value.resolved_by_id)) || a.value.created_at - b.value.created_at);

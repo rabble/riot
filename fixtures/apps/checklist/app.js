@@ -51,9 +51,10 @@ async function mutateTask(row, change) {
   try {
     const latest = { key: row.key, value: await riot.get(row.key) };
     if (!validTask(latest)) throw new Error("task changed shape");
-    // Local mutations serialize per record and re-read the latest LWW value.
-    // Cross-device concurrent writes remain record-level last-writer-wins.
-    await riot.put(row.key, { ...latest.value, ...change(latest.value) });
+    // The label describes an explicit desired state. A fresh remote write may
+    // already have reached it while this stale button remained on screen.
+    if (Object.entries(change).every(([key, value]) => latest.value[key] === value)) return;
+    await riot.put(row.key, { ...latest.value, ...change });
   } catch { showError("Couldn't update that task. Try again."); }
   finally { locks.delete(row.key); paint(); }
 }
@@ -66,9 +67,9 @@ function paint() {
   list.replaceChildren(...valid.map((row) => {
     const value = row.value; const locked = locks.has(row.key);
     const li = document.createElement("li"); li.className = "task" + (value.completed ? " done" : "");
-    const toggle = document.createElement("button"); toggle.type = "button"; toggle.className = "toggle"; toggle.textContent = value.completed ? "✓" : "○"; toggle.disabled = !ready || locked; toggle.setAttribute("aria-label", `${value.completed ? "Reopen" : "Complete"} ${value.text}`); toggle.setAttribute("aria-pressed", String(value.completed)); toggle.addEventListener("click", () => mutateTask(row, (latest) => ({ completed: !latest.completed })));
+    const toggle = document.createElement("button"); toggle.type = "button"; toggle.className = "toggle"; toggle.textContent = value.completed ? "✓" : "○"; toggle.disabled = !ready || locked; toggle.setAttribute("aria-label", `${value.completed ? "Reopen" : "Complete"} ${value.text}`); toggle.setAttribute("aria-pressed", String(value.completed)); toggle.addEventListener("click", () => mutateTask(row, { completed: !value.completed }));
     const copy = document.createElement("div"); copy.className = "task-copy"; const text = document.createElement("span"); text.className = "task-text"; text.textContent = value.text; const meta = document.createElement("span"); meta.className = "meta"; meta.textContent = value.assigned_to_id ? `Taken by ${person(value.assigned_to_id)}` : `Added by ${person(value.added_by_id)}`; copy.append(text, meta);
-    const assign = document.createElement("button"); assign.type = "button"; assign.className = "assign"; assign.disabled = !ready || locked; const mine = me && value.assigned_to_id === me.id; assign.textContent = mine ? "Unassign" : value.assigned_to_id ? "Take over" : "Take this"; assign.setAttribute("aria-label", `${assign.textContent}: ${value.text}`); assign.addEventListener("click", () => mutateTask(row, (latest) => ({ assigned_to_id: latest.assigned_to_id === me.id ? "" : me.id })));
+    const assign = document.createElement("button"); assign.type = "button"; assign.className = "assign"; assign.disabled = !ready || locked; const mine = me && value.assigned_to_id === me.id; assign.textContent = mine ? "Unassign" : value.assigned_to_id ? "Take over" : "Take this"; assign.setAttribute("aria-label", `${assign.textContent}: ${value.text}`); assign.addEventListener("click", () => mutateTask(row, { assigned_to_id: mine ? "" : me.id }));
     li.append(toggle, copy, assign); return li;
   }));
   resolveProfiles(valid.flatMap((row) => [row.value.added_by_id, row.value.assigned_to_id]));
