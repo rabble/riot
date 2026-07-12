@@ -320,6 +320,89 @@ final class AppRepositoryTests: XCTestCase {
         XCTAssertNil(bridge.profile(idHex: ""))
     }
 
+    // MARK: - Naming yourself
+
+    /// The whole point of claiming a name: it is still yours next time.
+    ///
+    /// Core's profile store is in-memory per session and `set_display_name` hands
+    /// back no bundle to replay, so without the persisted claim this comes back
+    /// `member · <tag>` — to this person and to everyone they sync with.
+    func testDisplayNameSurvivesReopen() throws {
+        let storage = try makeStorage("my-name")
+        let keyStore = TestWrappingKeyStore()
+
+        let first = try RiotProfileRepository.open(
+            storage: storage, keyStore: keyStore, starterPacks: []
+        )
+        XCTAssertNil(first.claimedName, "nobody has claimed a name yet")
+        XCTAssertEqual(try first.me().displayName, "member")
+
+        try first.setDisplayName("Ana")
+        let named = try first.me()
+        XCTAssertEqual(named.rendered, "Ana · \(named.tag)", "the name is shown WITH the key-derived tag")
+
+        let reopened = try RiotProfileRepository.open(
+            storage: storage, keyStore: keyStore, starterPacks: []
+        )
+        XCTAssertEqual(try reopened.me().rendered, named.rendered, "a name claimed once is still yours after a relaunch")
+        XCTAssertEqual(reopened.claimedName, "Ana", "and the field they typed it into starts where they left it")
+    }
+
+    /// Joining someone else's space REGENERATES the author, which orphans the
+    /// profile card written under the old subspace. Unless the claim is
+    /// re-asserted, the person who just named themselves walks into the space they
+    /// joined as `member · <a different tag>` — nameless, on every row they sign.
+    func testDisplayNameSurvivesJoiningSomeoneElsesSpace() throws {
+        let host = try RiotProfileRepository.open(
+            storage: try makeStorage("name-host"),
+            keyStore: TestWrappingKeyStore(),
+            starterPacks: []
+        )
+        let space = try host.createPublicSpace(title: "Berlin Mutual Aid")
+
+        let storage = try makeStorage("name-joiner")
+        let keyStore = TestWrappingKeyStore()
+        let joiner = try RiotProfileRepository.open(
+            storage: storage, keyStore: keyStore, starterPacks: []
+        )
+        try joiner.setDisplayName("Ana")
+        let beforeJoin = try joiner.me()
+
+        try joiner.joinSpace(space)
+
+        let afterJoin = try joiner.me()
+        XCTAssertNotEqual(afterJoin.id, beforeJoin.id, "the join regenerated the author — the premise of this test")
+        XCTAssertEqual(afterJoin.displayName, "Ana", "the name follows the person through the join")
+        XCTAssertEqual(afterJoin.rendered, "Ana · \(afterJoin.tag)")
+
+        let reopened = try RiotProfileRepository.open(
+            storage: storage, keyStore: keyStore, starterPacks: []
+        )
+        XCTAssertEqual(
+            try reopened.me().rendered,
+            afterJoin.rendered,
+            "and it is still theirs after a relaunch inside the joined space"
+        )
+    }
+
+    /// Core is the single enforcement point for what a name may be, and a name it
+    /// refuses is never written to disk — so a relaunch cannot resurrect one.
+    func testNameCoreRefusesIsNeverPersisted() throws {
+        let storage = try makeStorage("bad-name")
+        let keyStore = TestWrappingKeyStore()
+        let repository = try RiotProfileRepository.open(
+            storage: storage, keyStore: keyStore, starterPacks: []
+        )
+
+        XCTAssertThrowsError(try repository.setDisplayName(""), "core bounds the name; the empty one is refused there")
+        XCTAssertNil(repository.claimedName, "Rust first, disk second: a refused name is never written")
+
+        let reopened = try RiotProfileRepository.open(
+            storage: storage, keyStore: keyStore, starterPacks: []
+        )
+        XCTAssertEqual(try reopened.me().displayName, "member", "and it did not come back on relaunch")
+    }
+
     // MARK: - Snapshot helpers
 
     private func removeTrustedAppIDs(from snapshotURL: URL) throws {

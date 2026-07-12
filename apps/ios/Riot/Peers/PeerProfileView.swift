@@ -23,17 +23,24 @@ public struct PeerProfileView: View {
     private let authoredName: String?
     private let onClose: () -> Void
     private let onInvite: ((RiotSpace) -> Void)?
+    /// Whether this is the person the device is in a session with right now, as
+    /// opposed to one it can merely see. The sheet must not say "near you now"
+    /// about someone it is actively synced with — that is the difference the
+    /// Connect screen exists to make plain.
+    private let isConnected: Bool
 
     public init(
         model: RiotAppModel,
         peerName: String,
         authoredName: String? = nil,
+        isConnected: Bool = false,
         onInvite: ((RiotSpace) -> Void)? = nil,
         onClose: @escaping () -> Void
     ) {
         _model = ObservedObject(wrappedValue: model)
         self.peerName = peerName
         self.authoredName = authoredName
+        self.isConnected = isConnected
         self.onInvite = onInvite
         self.onClose = onClose
     }
@@ -74,9 +81,17 @@ public struct PeerProfileView: View {
                 Text(peerName)
                     .font(.riot(.body, size: 20, relativeTo: .title3))
                     .foregroundStyle(RiotTheme.ink(for: colorScheme))
-                Text("Near you now. What they carry is theirs — nothing runs on your device until you turn it on.")
-                    .font(.riot(.body, size: 14, relativeTo: .callout))
-                    .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
+                if isConnected {
+                    RiotBadge("Connected to you now")
+                        .accessibilityIdentifier("peer-connected-badge")
+                }
+                Text(
+                    isConnected
+                        ? "You are connected to them right now. What they carry is theirs — nothing runs on your device until you turn it on."
+                        : "Near you now. What they carry is theirs — nothing runs on your device until you turn it on."
+                )
+                .font(.riot(.body, size: 14, relativeTo: .callout))
+                .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
             }
         }
     }

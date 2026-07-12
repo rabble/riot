@@ -23,6 +23,26 @@ public final class NearbyTransportController: ObservableObject {
     @Published public private(set) var phones: [DiscoveredPhone] = []
     @Published public private(set) var activeRoute: NearbyRoute?
 
+    /// The device this one is in a session with RIGHT NOW, or nil if it is only
+    /// looking.
+    ///
+    /// The state enum cannot answer this: its terminal cases (`caughtUp`,
+    /// `alreadyCurrent`) carry no name, so the screen could say "All caught up"
+    /// without ever saying caught up WITH WHOM — which was the whole complaint.
+    /// Set once a connection is live and held through sync, so the answer survives
+    /// the states that forget it. Cleared the moment the session ends.
+    @Published public private(set) var connectedPeer: String?
+
+    /// How many things came over in this session's last accepted import — the
+    /// concrete number behind "Synced". Nil until something has actually arrived,
+    /// which is not the same as zero: zero would claim an empty sync happened.
+    @Published public private(set) var itemsBroughtOver: UInt32?
+
+    /// The count the peer offered, remembered while the person looks at it, so it
+    /// can be reported once the import is accepted (the accepted state carries no
+    /// count of its own).
+    private var offeredCount: UInt32?
+
     private var service: CoreBluetoothNearbyService?
     /// Runs alongside Bluetooth, not instead of it. A radio cannot find a peer on
     /// the same machine (one BLE controller never hears its own advertisement),
@@ -168,6 +188,9 @@ public final class NearbyTransportController: ObservableObject {
         remoteEndpoint = nil
         remoteTieBreaker = nil
         isInboundRequest = false
+        connectedPeer = nil
+        itemsBroughtOver = nil
+        offeredCount = nil
     }
 
     public func addPreviewedContent() {
@@ -211,6 +234,8 @@ public final class NearbyTransportController: ObservableObject {
             Task { @MainActor in
                 guard let self else { return }
                 self.coordinator?.stop()
+                // They are gone: stop saying this device is connected to them.
+                self.connectedPeer = nil
                 if let selected = self.selected, self.selectedIsLocal {
                     self.state = .outOfRange(name: selected.friendlyName)
                 }
@@ -288,6 +313,8 @@ public final class NearbyTransportController: ObservableObject {
             Task { @MainActor in
                 guard let self else { return }
                 self.coordinator?.stop()
+                // They are gone: stop saying this device is connected to them.
+                self.connectedPeer = nil
                 if let selected = self.selected {
                     self.state = .outOfRange(name: selected.friendlyName)
                 } else {
@@ -356,6 +383,9 @@ public final class NearbyTransportController: ObservableObject {
             return
         }
         state = .connecting
+        // The wire is up and this peer is the one on the other end of it. From
+        // here the screen can name them, whatever the sync state does next.
+        connectedPeer = peerName
         let pairing = SpacePairing(connection: connection, host: host, friendlyName: peerName)
         self.pairing = pairing
         pairing.begin(
@@ -434,6 +464,14 @@ public final class NearbyTransportController: ObservableObject {
         nearbyConnection?.disconnect()
         nearbyConnection = nil
         activeRoute = nil
+        // Every path here is a session ending WITHOUT a completed sync (a refused
+        // join, a different space, nothing to share, a failure). A finished sync
+        // leaves the connection up and never comes through here, which is why
+        // "Synced — 6 things arrived" survives on screen and a dead session's
+        // claims do not.
+        connectedPeer = nil
+        itemsBroughtOver = nil
+        offeredCount = nil
     }
 
     /// Takes ownership of the session's coordinator and opens it from EXACTLY
@@ -447,7 +485,18 @@ public final class NearbyTransportController: ObservableObject {
     /// name dialled, and the person who answered the prompt did not — and it is
     /// true on exactly one side of every pairing, over either transport.
     private func adopt(_ coordinator: SyncCoordinator) {
-        coordinator.onStateChanged = { [weak self] state in self?.state = state }
+        coordinator.onStateChanged = { [weak self] state in
+            guard let self else { return }
+            // Carry the offered count across to the accepted state, which does not
+            // carry one — so "Synced" can say how many things actually arrived
+            // instead of just asserting that something did.
+            switch state {
+            case let .preview(count, _): self.offeredCount = count
+            case .caughtUp: self.itemsBroughtOver = self.offeredCount
+            default: break
+            }
+            self.state = state
+        }
         // A synced change must reach an app the person already has open. The
         // store is updated by the time this fires (it fires on accept, not on
         // receipt), so a live app re-reading now sees the imported items.

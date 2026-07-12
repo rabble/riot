@@ -92,6 +92,21 @@ private struct PersistedProfile: Codable {
     // to the same `load_demo_space` import. The presenter loads it backstage and
     // the phone may then sit, sleep, or be restarted before they walk on.
     var demoBundle: Data?
+    // The name this person claimed for themselves, as they typed it.
+    //
+    // Kept as the CLAIM, not as the signed entry: `set_display_name` hands back
+    // no bundle to replay, and the entry it writes lives in Rust's in-memory
+    // store, so a relaunch would come back as `member · <tag>` with nothing to
+    // restore from. Re-claiming the same string on open rewrites the same
+    // last-write-wins slot, and the name survives.
+    //
+    // It also survives the identity CHURNING, which is the subtler reason to
+    // hold the claim rather than the entry: joining a space regenerates the
+    // author (see `joinSpace`), so a card written under the old subspace is
+    // orphaned. Re-claiming afterwards writes it under whoever this person now
+    // is. Rust remains the only sanitizer — this string is never rendered, only
+    // handed back to `set_display_name`.
+    var displayName: String?
 
     static let empty = PersistedProfile(
         space: nil,
@@ -100,7 +115,8 @@ private struct PersistedProfile: Codable {
         trustedAppIDs: [],
         appDataBundles: [],
         carriedApps: [],
-        demoBundle: nil
+        demoBundle: nil,
+        displayName: nil
     )
 
     init(
@@ -110,7 +126,8 @@ private struct PersistedProfile: Codable {
         trustedAppIDs: [String],
         appDataBundles: [Data],
         carriedApps: [PersistedAppPack],
-        demoBundle: Data?
+        demoBundle: Data?,
+        displayName: String?
     ) {
         self.space = space
         self.alerts = alerts
@@ -119,11 +136,12 @@ private struct PersistedProfile: Codable {
         self.appDataBundles = appDataBundles
         self.carriedApps = carriedApps
         self.demoBundle = demoBundle
+        self.displayName = displayName
     }
 
     // Custom decode so snapshots written before `trustedAppIDs`/`appDataBundles`/
-    // `carriedApps`/`demoBundle` existed decode to empty rather than failing
-    // (synthesized Codable would throw on the missing key). Encoding stays
+    // `carriedApps`/`demoBundle`/`displayName` existed decode to empty rather than
+    // failing (synthesized Codable would throw on the missing key). Encoding stays
     // synthesized.
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
@@ -134,6 +152,7 @@ private struct PersistedProfile: Codable {
         appDataBundles = try container.decodeIfPresent([Data].self, forKey: .appDataBundles) ?? []
         carriedApps = try container.decodeIfPresent([PersistedAppPack].self, forKey: .carriedApps) ?? []
         demoBundle = try container.decodeIfPresent(Data.self, forKey: .demoBundle)
+        displayName = try container.decodeIfPresent(String.self, forKey: .displayName)
     }
 }
 
@@ -253,6 +272,22 @@ public final class RiotProfileRepository {
             }
         }
 
+        // Put this person's name back on. Rust's profile store is in-memory like
+        // the rest, so without this the person who named themselves "Ana" comes
+        // back after a relaunch as `member · a3f91122` — to themselves, and to
+        // everyone they sync with.
+        //
+        // AFTER the space restore, and only outside demo mode, because both move
+        // the author this writes under: re-joining pins the joined author (a
+        // claim written before it would be orphaned under the pre-join subspace),
+        // and `load_demo_space` BORROWS someone else's author entirely — claiming
+        // there would print this person's name on the demo persona. Demo mode
+        // repairs itself on `hideDemoSpace`, which re-claims once the real author
+        // is back.
+        if let claimed = persisted.displayName, persisted.demoBundle == nil {
+            try? profile.profile().setDisplayName(name: claimed)
+        }
+
         // Install the starter catalog. Rust's `installApp` is the integrity
         // oracle; a pair that fails to install, decode, or match its declared
         // entry point is silently excluded (spec's silent-exclusion rule).
@@ -346,6 +381,24 @@ public final class RiotProfileRepository {
         persisted.space = RiotSpace(namespaceID: joined.namespaceId, title: joined.title)
         persisted.sealedIdentity = try sealCurrentIdentity()
         try storage.save(persisted)
+        // The join just REGENERATED the author (see above), so the profile card
+        // written under the old subspace is orphaned: this person would appear to
+        // the space they just joined as `member · <new tag>`, nameless, on every
+        // row they sign from here on. Re-claim under who they now are.
+        reclaimDisplayName()
+    }
+
+    /// Re-asserts the persisted claim under the CURRENT author.
+    ///
+    /// Called after the two operations that move the author out from under a
+    /// profile card: joining a space (which regenerates it) and leaving demo mode
+    /// (which restores the real one after `load_demo_space` borrowed another).
+    /// Best-effort on purpose — a name that will not re-claim must not fail the
+    /// join or strand the person in the demo space, and the claim stays on disk
+    /// for the next open to retry.
+    private func reclaimDisplayName() {
+        guard let claimed = persisted.displayName else { return }
+        try? profile.profile().setDisplayName(name: claimed)
     }
 
     public func signAlert(in space: RiotSpace, draft: AlertDraft) throws -> RiotEntry {
@@ -573,6 +626,33 @@ public extension RiotProfileRepository {
         RiotPerson(try profile.profile().whoami())
     }
 
+    /// The name this person last claimed, exactly as they typed it — nil if they
+    /// never have.
+    ///
+    /// The ONE place a raw claim is handed back, and only for putting it back in
+    /// the field they typed it into. It is not a rendering and must never be drawn
+    /// as one: showing a bare claimed name is the impersonation the tag exists to
+    /// blunt. Anything on screen goes through ``me()``.
+    var claimedName: String? { persisted.displayName }
+
+    /// Claims a name for this person and keeps the claim, so it is still theirs
+    /// after a relaunch.
+    ///
+    /// The name is NOT validated here. Core is the single enforcement point — it
+    /// sanitizes the string and bounds its length, and an empty or oversized name
+    /// comes back from there as `InvalidInput`. Re-implementing those rules on
+    /// this side would only let the two disagree.
+    ///
+    /// Rust first, disk second: a name it refuses is never written, so a claim on
+    /// disk is always one core accepted. It throws while a sync is in flight (the
+    /// commit would clobber the preview an in-flight review is holding) — the
+    /// caller is expected to say so in plain language and let the person retry.
+    func setDisplayName(_ name: String) throws {
+        try profile.profile().setDisplayName(name: name)
+        persisted.displayName = name
+        try storage.save(persisted)
+    }
+
     /// Resolves one subspace id (lowercase hex) to a drawable person.
     ///
     /// An id this device has never seen a profile for is NOT an error: core
@@ -634,6 +714,10 @@ extension RiotProfileRepository: DemoSpaceLoading {
         persisted.space = nil
         persisted.demoBundle = nil
         try storage.save(persisted)
+        // Demo mode borrowed someone else's author; hiding it hands this person
+        // their own back. Their name went with the author that just left, so put
+        // it back on the one that returned.
+        reclaimDisplayName()
     }
 
     /// Whether this profile is showing the seeded demo space. The shell asks so
