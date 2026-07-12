@@ -21,6 +21,20 @@ COUNT="${1:-2}"
 APP="${RIOT_APP:-build/macos-derived/Build/Products/Debug/Riot.app}"
 BIN="$APP/Contents/MacOS/Riot"
 
+# Accept "2", tolerate a stray "2." (a pasted sentence), reject anything else
+# rather than letting the arithmetic below fail with a cryptic message.
+COUNT="${COUNT%.}"
+case "$COUNT" in
+    ''|*[!0-9]*)
+        echo "usage: sh scripts/run-instances.sh [count]   (count must be a whole number)" >&2
+        exit 1
+        ;;
+esac
+if [ "$COUNT" -lt 1 ]; then
+    echo "count must be at least 1" >&2
+    exit 1
+fi
+
 if [ ! -x "$BIN" ]; then
     echo "No macOS build at $APP" >&2
     echo "Build it first:" >&2
@@ -40,7 +54,7 @@ done
 echo ""
 echo "$COUNT instance(s) running. Each has its own identity."
 echo "Reset an instance's profile by deleting its directory under:"
-echo "  ~/Library/Containers/net.protest.riot/Data/Library/Application Support/instances/"
+echo "  ~/Library/Application Support/instances/"
 echo ""
 echo "Stop them all:  pkill -f 'Riot.app/Contents/MacOS/Riot'"
 
