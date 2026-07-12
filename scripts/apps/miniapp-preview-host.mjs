@@ -74,23 +74,10 @@ function mockBridgeSource(app, state) {
     return key;
   }
 
-  function serializeJSON(value, seen = new Set()) {
-    if (value === null || typeof value === "string" || typeof value === "boolean") return JSON.stringify(value);
-    if (typeof value === "number") {
-      if (!Number.isFinite(value)) throw new TypeError("value must be JSON");
-      return JSON.stringify(value);
-    }
-    if (typeof value !== "object") throw new TypeError("value must be JSON");
-    if (seen.has(value)) throw new TypeError("value must be JSON");
-    const prototype = Object.getPrototypeOf(value);
-    if (!Array.isArray(value) && prototype !== Object.prototype && prototype !== null) {
-      throw new TypeError("value must be JSON");
-    }
-    seen.add(value);
-    if (Array.isArray(value)) value.forEach((item) => serializeJSON(item, seen));
-    else Object.values(value).forEach((item) => serializeJSON(item, seen));
-    seen.delete(value);
-    return JSON.stringify(value);
+  function serializeJSON(value) {
+    const serialized = JSON.stringify(value);
+    if (typeof serialized !== "string") throw new TypeError("value must be JSON");
+    return serialized;
   }
 
   const list = async (prefix) => {

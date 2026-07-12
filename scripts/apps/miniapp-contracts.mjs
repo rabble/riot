@@ -112,6 +112,26 @@ try {
     '{"text":"hello","nested":[1,true,null]}',
     "values must round-trip through JSON",
   );
+  assert.equal(
+    await evaluate("window.riot.put('items/date', new Date('2026-07-12T12:34:56.000Z')).then(window.riot.get.bind(null, 'items/date'))"),
+    "2026-07-12T12:34:56.000Z",
+    "Date must round-trip through its JSON ISO string",
+  );
+  assert.equal(
+    await evaluate("window.riot.put('items/map', new Map([['ignored', true]])).then(window.riot.get.bind(null, 'items/map')).then(JSON.stringify)"),
+    "{}",
+    "Map must round-trip through JSON as an empty object",
+  );
+  assert.equal(
+    await evaluate("window.riot.put('items/nan', NaN).then(window.riot.get.bind(null, 'items/nan')).then(JSON.stringify)"),
+    "null",
+    "NaN must round-trip through JSON as null",
+  );
+  assert.equal(
+    await evaluate("window.riot.put('items/omitted', { kept: 1, omitted: undefined }).then(window.riot.get.bind(null, 'items/omitted')).then(JSON.stringify)"),
+    '{"kept":1}',
+    "undefined object properties must be omitted like JSON.stringify",
+  );
   for (const expression of [
     "window.riot.put('Items/uppercase', {})",
     "window.riot.put('items/under_score', {})",
@@ -120,8 +140,6 @@ try {
     "window.riot.put(Array(9).fill('a'.repeat(250)).join('/'), {})",
     "window.riot.list('Items')",
     "window.riot.put('items/bigint', 1n)",
-    "window.riot.put('items/date', new Date())",
-    "window.riot.put('items/map', new Map())",
     "(() => { const value = {}; value.self = value; return window.riot.put('items/cyclic', value); })()",
     "window.riot.put('items/undefined', undefined)",
   ]) {
@@ -132,7 +150,7 @@ try {
   assert.match(me.id, /^[0-9a-f]{64}$/);
   assert.match(me.tag, /^[0-9a-f]{8}$/);
   assert.equal(me.tag, me.id.slice(0, 8));
-  const seededIdentities = JSON.parse(await evaluate("window.riot.list('items').then((rows) => JSON.stringify(rows.filter((row) => row.value.updated_by_id).map((row) => row.value.updated_by_id)))"));
+  const seededIdentities = JSON.parse(await evaluate("window.riot.list('items').then((rows) => JSON.stringify(rows.filter((row) => row.value && row.value.updated_by_id).map((row) => row.value.updated_by_id)))"));
   assert(seededIdentities.length >= 2 && seededIdentities.every((id) => /^[0-9a-f]{64}$/.test(id)), "seed rows must use full valid profile IDs");
   const peer = await evaluate(`window.riot.profile('${"c".repeat(64)}')`);
   assert.equal(peer.displayName, "member");
