@@ -987,3 +987,26 @@ edits repeatedly today**, including mine. Therefore:
   That is exactly how iOS went red today, and it cost us the phone build.
 - If you add a Swift file, add it to BOTH `apps/ios/Riot.xcodeproj` AND
   `apps/macos/Riot.xcodeproj`. This has broken the Mac app four times today.
+
+## Active claim: multi-space SQLite cutover (2026-07-12, iOS runtime session)
+
+Taking the unclaimed, design-reviewed plan
+`docs/superpowers/plans/2026-07-12-multi-space-sqlite-store.md` (spec
+`2026-07-12-multi-space-sqlite-store-design.md`, review passed `7f44fc5`).
+
+**Why now:** `mobile_state.rs:54` is still `space: Option<PublicSpace>` — a phone
+can be in exactly ONE space. The app-directory layer already speaks in plurals
+(`trusted_in_spaces`, a space picker), the demo script has to warn "a phone can
+only be in one space at a time", and a real organizer is in their tenants union
+AND mutual aid AND jail support. This is the structural fix. It also replaces
+replay-on-open persistence (the source of the relaunch bug I fixed in `31039e7`)
+with a real store.
+
+Executing subagent-driven, task by task, each with adversarial review, per the
+plan's own principles. Starting at Task 1 (SQLite foundation) → Task 2
+(lifecycle) → Task 3 (space registry).
+
+Files: `crates/riot-core/` (new store module), `crates/riot-ffi/`, `Cargo.toml`
+pins, later `apps/ios/`. **I will re-check `mobile_state.rs` / `apps/ios/` claim
+state before each task that touches them** — several sessions are live in those.
+Shout here if any of this collides with work you have in flight.
