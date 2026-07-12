@@ -45,12 +45,21 @@ public struct PeerProfileView: View {
         self.onClose = onClose
     }
 
-    /// The peer's collection: directory entries this device attributes to them.
-    /// Matched on the rendered author string the core already produced, so a row
-    /// whose author we cannot name is never mis-attributed to this peer.
+    /// What this device has learned about from people nearby: the apps that came
+    /// in over a sync (`.arriving`) or are held pending your review (`.review`).
+    ///
+    /// NOTE: per-person attribution is temporarily unavailable — the directory
+    /// row's `author` field was removed from the model while attribution is being
+    /// reworked (see the plan doc). Until it returns, this shows the collection
+    /// that arrived from your peers rather than one filtered to a single person;
+    /// `authoredName` is retained on the API for when attribution lands.
     private var theirCollection: [RiotDirectoryRow] {
-        guard let authoredName else { return [] }
-        return directory.rows.filter { $0.author == authoredName }
+        directory.rows.filter { row in
+            switch row.availability {
+            case .review, .arriving: return true
+            case .open, .get: return false
+            }
+        }
     }
 
     public var body: some View {
