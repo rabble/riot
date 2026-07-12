@@ -94,14 +94,11 @@ public final class NearbyTransportController: ObservableObject {
         selected = phone
         isInboundRequest = false
         selectedIsLocal = localService?.canPair(with: phone) ?? false
-        state = .confirm(name: phone.friendlyName)
-        // A local-network peer is NOT dialled here: opening the connection is
-        // what makes their device ask them to accept, and it must not happen
-        // until the person on THIS side has said yes. Bluetooth keeps its own
-        // two-step (request over the radio, then confirm) below.
-        if !selectedIsLocal {
-            service?.requestPairing(with: phone)
-        }
+        // Auto-connect: connecting to a peer is not a decision worth a tap —
+        // it moves no data by itself, and every byte still passes the review
+        // gate before it lands. (Joining a SPACE is a real decision and keeps
+        // its confirmation.) Go straight to what the confirm tap used to do.
+        confirmConnection()
     }
 
     public func confirmConnection() {
@@ -200,7 +197,8 @@ public final class NearbyTransportController: ObservableObject {
                 self.isInboundRequest = true
                 self.selectedIsLocal = true
                 self.selected = DiscoveredPhone(id: UUID(), friendlyName: name)
-                self.state = .confirm(name: name)
+                // Auto-accept: a peer reaching us is not a decision worth a tap.
+                self.confirmConnection()
             }
         }
         localService.onPaired = { [weak self] channel, peer in
@@ -243,6 +241,18 @@ public final class NearbyTransportController: ObservableObject {
     /// a plain concatenation is correct.
     private func republishPhones() {
         phones = bluetoothPhones + localPhones
+        autoConnectToFirstPeer()
+    }
+
+    /// Auto-connect: a peer we can see is a peer we connect to. Nobody should
+    /// have to tap "connect" to a phone standing next to them — and connecting
+    /// moves no data on its own; the review gate still stands between a peer
+    /// and this store. Only dials while idle, so an in-flight session is never
+    /// interrupted, and never re-dials a peer already selected.
+    private func autoConnectToFirstPeer() {
+        guard case .idle = state, selected == nil else { return }
+        guard let peer = phones.first else { return }
+        requestConnection(to: peer)
     }
 
     private func makeService() -> CoreBluetoothNearbyService {
@@ -269,7 +279,9 @@ public final class NearbyTransportController: ObservableObject {
                 self.isInboundRequest = true
                 let phone = DiscoveredPhone(id: UUID(), friendlyName: name)
                 self.selected = phone
-                self.state = .confirm(name: name)
+                self.selectedIsLocal = false
+                // Auto-accept: a peer reaching us is not a decision worth a tap.
+                self.confirmConnection()
             }
         }
         service.onDisconnected = { [weak self] in

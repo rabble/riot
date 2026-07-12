@@ -367,24 +367,12 @@ private struct ConnectionStatusView: View {
             // of apps it did not have a moment ago — none of which this screen is
             // the source of. Re-read the profile when that happens.
             nearby.onSpaceJoined = { model.refreshFromStore() }
-            // Headless/automated bring-up: with RIOT_AUTO_DISCOVER=1 the app
-            // starts looking without a tap, so two instances can be driven to
-            // discover and pair from a script (see scripts/run-instances.sh).
-            // Off by default — discovery is a deliberate act for a real user.
-            if ProcessInfo.processInfo.environment["RIOT_AUTO_DISCOVER"] == "1",
-               nearby.state == .idle {
+            // Look for peers as soon as this screen appears, and connect to
+            // whatever we find. Nobody should have to tap to meet the phone
+            // next to them.
+            if nearby.state == .idle {
                 nearby.findNearby(host: model.nearbySpaceHost)
             }
-        }
-        .confirmationDialog(
-            nearby.state.message,
-            isPresented: Binding(
-                get: { if case .confirm = nearby.state { return true }; return false },
-                set: { if !$0 { nearby.cancelConnection() } }
-            )
-        ) {
-            Button("Confirm") { nearby.confirmConnection() }
-            Button("Cancel", role: .cancel) { nearby.cancelConnection() }
         }
         // This phone has no space and the one it just connected to does. Joining
         // is how a fresh phone becomes part of a community — but it is the
