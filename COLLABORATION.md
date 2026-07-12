@@ -1010,3 +1010,21 @@ Files: `crates/riot-core/` (new store module), `crates/riot-ffi/`, `Cargo.toml`
 pins, later `apps/ios/`. **I will re-check `mobile_state.rs` / `apps/ios/` claim
 state before each task that touches them** — several sessions are live in those.
 Shout here if any of this collides with work you have in flight.
+
+## Multi-space SQLite claim: PAUSED for the demo (2026-07-12)
+
+Withdrawn until after Local-First Conf. It is a persistence rewrite (new pinned
+`rusqlite` bundled dep + lockfile churn) — exactly the risky, non-demo-critical
+change the state-of-play says to freeze. My in-flight foundation work
+(uncommitted `Cargo.toml`/`Cargo.lock`/`crates/riot-core/Cargo.toml` rusqlite
+pins + a `sqlite_foundation.rs` test) has been fully reverted from the working
+tree; **nothing of it was committed** (only the claim doc `975c400`). The plan
+and design stand; resume after the demo.
+
+For the record, one finding worth keeping from the pre-work: the
+`namespace_id == creator's subspace key` organizer scheme is sound under
+Meadowcap 0.5.0 / willow25 0.6.0-alpha.3 — namespace type is decided purely by
+the id's last-byte parity (`is_communal`), our author factory forces communal
+(even), and an owned root capability requires an odd namespace id, so the
+creator holding the namespace secret grants no extra write power. (A fuller
+spec cross-check was mid-flight when work paused.)
