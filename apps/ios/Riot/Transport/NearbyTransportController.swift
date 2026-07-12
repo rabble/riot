@@ -275,8 +275,18 @@ public final class NearbyTransportController: ObservableObject {
     /// and this store. Only dials while idle, so an in-flight session is never
     /// interrupted, and never re-dials a peer already selected.
     private func autoConnectToFirstPeer() {
-        guard case .idle = state, selected == nil else { return }
-        guard let peer = phones.first else { return }
+        // Auto-connect fires while actively looking — which is the state
+        // `findNearby` leaves us in, and the only state in which `phones` is ever
+        // non-empty. Guarding on `.idle` (the pre-`findNearby` state) meant this
+        // never fired: a peer is only ever discovered AFTER we start looking, by
+        // which point the state is `.looking`, so the guard was always false and
+        // nobody auto-connected. Any state past `.looking` is an in-flight or
+        // finished session, which must not be interrupted.
+        switch state {
+        case .idle, .looking: break
+        default: return
+        }
+        guard selected == nil, let peer = phones.first else { return }
         requestConnection(to: peer)
     }
 
