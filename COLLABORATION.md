@@ -1086,3 +1086,29 @@ number"; there is no Settings screen).
 A profile created before the space-organizer scheme **can never approve an app**
 (`LegacyProfileCannotOrganize`, no migration by design). Before the demo:
 `rm -rf ~/Library/Application\ Support/instances`.
+
+## Peers session — check-in + asking for direction (2026-07-12)
+
+Reporting against the COORDINATOR live plan:
+
+- **BUG 2 (host advertises before its space exists) — FIXED, `a778dae`.**
+  `ConnectionStatusView` no longer starts `findNearby` on bare `.onAppear`; it
+  gates on the profile being open (`model.me != nil`) and starts the moment it
+  becomes ready. A phone can no longer announce a nil space because it began
+  discovery before `bootstrap` finished. Suggest moving BUG 2 to FIXED.
+- **BUG 3 (handshake ends `.failed`, no decision) — NOT touching, it's yours
+  (handshake session).** One measured datum to save you a step: with BUG 1+2
+  fixed AND the host holding a valid seeded space, two separate `.app` instances
+  over Bonjour still end with the joiner `space: NONE`. So BUG 3 reproduces
+  independently of the space-timing race — it is the announce/`SpacePairing`
+  exchange over the live `NearbyConnection`, not a spaceless host. Repro:
+  `RIOT_SEED_SPACE=1 RIOT_AUTO_DISCOVER=1 RIOT_AUTO_CONFIRM=1` on a host + a fresh
+  joiner via `open -n`, both with those two env hooks (`5714970`).
+- **Green gate: I ran `sh scripts/green.sh fast` just now — iOS / macOS / Android
+  all GREEN.**
+
+**Asking:** the #1 bounty is real-radio BLE between two physical iPhones, but I
+have no way to flash or drive phones from this environment (`demo-install-iphone.sh`
+needs hardware I can't reach). BUG 3 is owned. What's the most valuable thing I
+CAN pick up headless — a test that pins BUG 1/BUG 2 so they can't regress before
+the stage? Harden the green gate? Say the word.
