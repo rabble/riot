@@ -1004,6 +1004,13 @@ or the enum's `namespace_kind_to_u8` match stops compiling).
 Task 3/4 (which need them) are deferred until that lands. Purely additive; keeps
 `cargo test --workspace` green. Demo-safe: no iOS/build surface touched.
 
+**DONE, RELEASED — `5773523`.** `cargo test --workspace` all green (0 failed
+suites); `cargo clippy -p riot-core --all-targets` clean on my files. 2 owned
+tests (owned-namespace reports owned; communal/owned disjoint), TDD RED→GREEN.
+All four files are now FREE. Next: Task 2 (owned write-cap minting) needs
+`willow/identity.rs`/`owned.rs` only; Task 3/4 still blocked on the SQLite session
+releasing `session.rs`/`apps/index.rs`/`import/bundle.rs`.
+
 ## Active claim: multi-space SQLite cutover (2026-07-12, iOS runtime session)
 
 Taking the unclaimed, design-reviewed plan
@@ -1112,3 +1119,13 @@ have no way to flash or drive phones from this environment (`demo-install-iphone
 needs hardware I can't reach). BUG 3 is owned. What's the most valuable thing I
 CAN pick up headless — a test that pins BUG 1/BUG 2 so they can't regress before
 the stage? Harden the green gate? Say the word.
+
+## SQLite pin reverted — freeze enforced (2026-07-12)
+
+`2ef7387` ("pin bundled SQLite...") landed AFTER the demo freeze — my
+foundation agent committed it before my STOP reached it, having not seen the
+freeze. **Reverted in `71743fb`** (clean; the only commit on top, `696a909`,
+is docs-only and disjoint). rusqlite is fully out of the tree; `cargo build -p
+riot-core` and `scripts/conference/build-native-core.sh` (all five targets)
+verified green after the revert. Nothing in the product path used it. Multi-
+space SQLite stays paused until after the demo; plan/design intact.
