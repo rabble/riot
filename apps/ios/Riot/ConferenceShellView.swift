@@ -305,6 +305,9 @@ private struct ConnectionStatusView: View {
     @ObservedObject var model: RiotAppModel
     @StateObject private var nearby = NearbyTransportController()
     @Environment(\.colorScheme) private var colorScheme
+    /// The peer whose profile is open. Tapping a device opens their profile;
+    /// inviting them from there starts the connection that shares your space.
+    @State private var inspecting: DiscoveredPhone?
 
     var body: some View {
         ScrollView {
@@ -341,8 +344,9 @@ private struct ConnectionStatusView: View {
                                 .tracking(1)
                                 .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
                             ForEach(nearby.phones) { phone in
-                                Button(phone.friendlyName) { nearby.requestConnection(to: phone) }
+                                Button(phone.friendlyName) { inspecting = phone }
                                     .buttonStyle(.riotSecondary)
+                                    .accessibilityIdentifier("peer-\(phone.friendlyName)")
                             }
                         }
                     }
@@ -362,6 +366,19 @@ private struct ConnectionStatusView: View {
             .padding(20)
         }
         .riotHeader(eyebrow: "Transport", "Connection")
+        .sheet(item: $inspecting) { phone in
+            PeerProfileView(
+                model: model,
+                peerName: phone.friendlyName,
+                onInvite: { _ in
+                    // Inviting = connect to them, which shares your space so their
+                    // device can join it. They still confirm on their side.
+                    nearby.requestConnection(to: phone)
+                    inspecting = nil
+                },
+                onClose: { inspecting = nil }
+            )
+        }
         .onAppear {
             // A phone that joins a peer's space gains a space, a board, and a set
             // of apps it did not have a moment ago — none of which this screen is
