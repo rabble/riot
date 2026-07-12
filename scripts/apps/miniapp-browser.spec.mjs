@@ -34,10 +34,25 @@ test("Needs & Offers primary flow", async ({ page }) => {
 
 test("Events primary flow", async ({ page }) => {
   await page.goto("/apps/roll-call/?state=seeded");
+  const before = await page.locator("#events > li").count();
   await page.getByRole("button", { name: "Create event" }).click();
-  await page.getByLabel("Event title").fill("Courtyard supper");
+  await page.getByLabel("Event title").fill("Lantern walk");
   await page.getByRole("button", { name: "Save event" }).click();
-  await expect(page.getByText("Courtyard supper", { exact: true })).toBeVisible();
+  await expect(page.locator("#events > li")).toHaveCount(before + 1);
+  const event = page.locator(".event").filter({ hasText: "Lantern walk" });
+  await expect(event).toHaveCount(1);
+  await expect(event).toContainText("Place to be decided");
+});
+
+test("Events preserves a typed place", async ({ page }) => {
+  await page.goto("/apps/roll-call/?state=seeded");
+  await page.getByRole("button", { name: "Create event" }).click();
+  await page.getByLabel("Event title").fill("Tool swap");
+  await page.getByLabel("Place").fill("Library steps");
+  await page.getByRole("button", { name: "Save event" }).click();
+  const event = page.locator(".event").filter({ hasText: "Tool swap" });
+  await expect(event).toHaveCount(1);
+  await expect(event).toContainText("Library steps");
 });
 
 test("Decisions primary flow", async ({ page }) => {

@@ -14,7 +14,7 @@
   <form id="event-form" hidden>
     <div><label for="title">Event title</label><input id="title" type="text" maxlength="120" autocomplete="off" required></div>
     <div><label for="starts-at">Date and time</label><input id="starts-at" type="datetime-local" required></div>
-    <div><label for="place">Place</label><input id="place" type="text" maxlength="100" placeholder="Courtyard" autocomplete="off" required></div>
+    <div><label for="place">Place <span>(optional)</span></label><input id="place" type="text" maxlength="100" placeholder="Place to be decided" autocomplete="off"></div>
     <div class="form-actions"><button type="button" id="cancel">Cancel</button><button type="submit">Save event</button></div>
   </form>
   <p id="status" role="status" aria-live="polite"></p>
