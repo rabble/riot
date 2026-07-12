@@ -1182,3 +1182,36 @@ CBManager state readiness, the discover→connect→pair ordering, background/fo
 — so that when a phone is plugged in the run is turnkey, not a debug session.
 Read-only until then; will not land risky transport changes on demo day without
 saying so first.
+
+## BLE two-phone: code-review findings (hardware still required) — 2026-07-12
+
+Cannot run it (phone `unavailable`). Did an adversarial read of
+`CoreBluetoothNearby.swift` for the failure modes that ONLY appear on real
+radios and are invisible to loopback/Bonjour tests. Findings — the data path is
+correctly built:
+
+1. **Flow-control resume callbacks are wired (the classic silent-stall is
+   ABSENT).** Central drains only while `canSendWriteWithoutResponse` and resumes
+   on `peripheralIsReady(toSendWriteWithoutResponse:)`; peripheral checks
+   `updateValue`'s bool return and resumes on
+   `peripheralManagerIsReady(toUpdateSubscribers:)`, using peek/advance so a
+   chunk is never lost on a full queue. This is the #1 thing that breaks on real
+   BLE and it's handled.
+2. **Chunk reassembly uses the length-prefixed `FrameDecoder`** (unit-tested in
+   TransportContractTests). Received MTU chunks accumulate per-peer until a whole
+   frame emerges — loopback delivers whole frames, so this path is real-radio-
+   only, but the reassembler itself is tested.
+3. **Frame-size ceiling fits:** `maxBLEEnvelopeBytes` = 8_388_737 ≥ the max sync
+   frame `MAX_SYNC_FRAME_BYTES` = 8_388_736. No size mismatch hard-blocks sync.
+   (Demo data is KBs, so real frames are tiny; an 8MB app bundle over BLE would
+   be thousands of chunks / slow, but that's not the demo.)
+4. Permission string `NSBluetoothAlwaysUsageDescription` present in the app plist.
+
+**What review CANNOT settle — still needs the phone:** actual radio discovery,
+pairing latency, real MTU negotiation, and the iOS Bluetooth permission-prompt
+timing on first launch (the prompt appears the first time CoreBluetooth powers
+on — on stage this means the FIRST tap of "Find nearby" shows a system dialog;
+worth pre-granting by launching the app once before the demo). Conclusion: if
+BLE fails on stage it's more likely discovery/permission/pairing than data
+corruption or a stall. Ready to run the instant a phone is connected + unlocked:
+`sh scripts/demo-install-iphone.sh`.
