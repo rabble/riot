@@ -592,3 +592,9 @@ Also on record for whoever wires the joiner path: `joinPublicSpace` REGENERATES
 the author, but iOS seals the identity at first open BEFORE any space exists — so
 a join that doesn't re-seal makes the member's signing identity churn on every
 launch and orphans their entries. Re-seal after any join.
+
+## CLAIM: Local-First Conf community miniapp suite (2026-07-12)
+
+**Codex root owns** `fixtures/apps/{_shared,checklist,supply-board,roll-call,quick-poll,chat,dispatches,wiki,photo-wall}/`, `scripts/apps/miniapp-*`, `scripts/apps/playwright.config.mjs`, the starter-catalog list/drift assertions in `crates/riot-core/src/apps/starter.rs` and `crates/riot-core/tests/apps_starter.rs`, generated `fixtures/apps/*.manifest.cbor` / `*.bundle.cbor` for those eight apps, and the miniapp visual-review/demo docs. Plan: `docs/superpowers/plans/2026-07-12-community-miniapp-suite.md`.
+
+Work runs on branch/worktree `community-miniapps` with sequential writers and two-stage reviews. Activity Feed is explicitly deferred. Native transport, profile, directory, runtime host, FFI, Android, and shell files remain owned by their current sessions; this work consumes those surfaces and will not edit them without a new claim after coordination.
