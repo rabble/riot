@@ -22,8 +22,9 @@ use riot_core::session::{
 };
 use riot_core::sync::{ByteSyncOutcome, ByteSyncSession, SyncError, MAX_SYNC_IDS};
 use riot_core::willow::{
-    alert_entry_path_matches_payload, create_signed_alert, entry_id, generate_communal_author,
-    generate_communal_author_for_namespace, system_snapshot, AlertDraft, EvidenceAuthor,
+    alert_entry_path_matches_payload, create_signed_alert, entry_id,
+    generate_communal_author_for_namespace, generate_space_organizer_author, system_snapshot,
+    AlertDraft, EvidenceAuthor,
     SignedAlert as CoreSignedAlert, SignedWillowEntry, WillowError,
 };
 
@@ -135,7 +136,11 @@ pub(crate) fn open_local_profile() -> Result<Arc<MobileProfile>, MobileError> {
     match catch_unwind(AssertUnwindSafe(|| {
         let session = RiotSession::open().map_err(|_| MobileError::Internal)?;
         let store = session.create_store().map_err(|_| MobileError::Internal)?;
-        let author = generate_communal_author().map_err(map_author_error)?;
+        // Organizer-shaped from birth: the namespace ID is this profile's own
+        // subspace key, so if this person creates a space they are derivably its
+        // organizer — and the identity is fixed before it is sealed, so creating a
+        // space never rotates the signing key.
+        let author = generate_space_organizer_author().map_err(map_author_error)?;
         Ok(profile_with_author(store, author))
     })) {
         Ok(result) => result,
@@ -1514,6 +1519,20 @@ fn install_pair(
     })
 }
 
+/// The subspace recognized as this space's organizer. A space's namespace ID is
+/// its creator's subspace key (`generate_space_organizer_author`), so the
+/// organizer is derivable by every member from the space alone — no extra field,
+/// no key exchange.
+fn space_organizer_subspace_id(profile: &LocalProfile) -> [u8; 32] {
+    profile.author.identity().namespace_id
+}
+
+/// True when this profile is the space's organizer (its subspace key is the
+/// namespace). Only the organizer may approve apps for the space.
+fn is_space_organizer(profile: &LocalProfile) -> bool {
+    *profile.author.subspace_id().as_bytes() == space_organizer_subspace_id(profile)
+}
+
 pub(crate) fn set_app_trust(
     inner: &Arc<Mutex<ProfileState>>,
     app_id: String,
@@ -1524,6 +1543,12 @@ pub(crate) fn set_app_trust(
 
     with_active(inner, |profile| {
         if sync_session_is_active(profile) {
+            return Err(MobileError::InvalidInput);
+        }
+        // Only a space's organizer may approve an app for it. Without this a
+        // member could self-approve any app, which would make the trust gate
+        // (the one human review moment in the whole design) meaningless.
+        if !is_space_organizer(profile) {
             return Err(MobileError::InvalidInput);
         }
         let app_id = parse_entry_id(&app_id)?;
@@ -1562,11 +1587,46 @@ pub(crate) fn is_app_trusted(
 ) -> Result<bool, MobileError> {
     with_active(inner, |profile| {
         let app_id = parse_entry_id(&app_id)?;
-        Ok(riot_core::apps::trust::is_trusted(
-            &app_id,
-            &profile.app_trust_markers,
-            &[*profile.author.subspace_id().as_bytes()],
-        ))
+        let organizer = space_organizer_subspace_id(profile);
+        let own_namespace_id = profile.author.identity().namespace_id;
+
+        // Trust must be read from the STORE, not just the profile-local cache: an
+        // organizer's approval reaches a member as a synced trust-marker entry.
+        // Reading only the local cache (which `set_app_trust` fills for the author)
+        // meant an organizer's decision could never reach anyone else — that is the
+        // "one decision covers everyone, no install step" property.
+        //
+        // `is_trusted` fails closed if given two markers for the same coordinate, so
+        // the store's Willow-resolved marker and the author's own cached copy must be
+        // collapsed to one per (app, organizer) before asking. Newest wins, matching
+        // Willow's own per-path resolution.
+        let scanned = riot_core::apps::index::scan_app_index(&profile.store)
+            .map_err(map_apps_error)?;
+        let mut markers: Vec<riot_core::apps::trust::TrustMarker> = Vec::new();
+        let mut push_resolved = |marker: riot_core::apps::trust::TrustMarker| {
+            match markers.iter_mut().find(|existing| {
+                existing.app_id == marker.app_id
+                    && existing.author_subspace_id == marker.author_subspace_id
+            }) {
+                Some(existing) if marker.timestamp_micros > existing.timestamp_micros => {
+                    *existing = marker;
+                }
+                Some(_) => {}
+                None => markers.push(marker),
+            }
+        };
+        for space in scanned.spaces {
+            if space.space_namespace_id == own_namespace_id {
+                space.markers.into_iter().for_each(&mut push_resolved);
+            }
+        }
+        profile
+            .app_trust_markers
+            .iter()
+            .copied()
+            .for_each(&mut push_resolved);
+
+        Ok(riot_core::apps::trust::is_trusted(&app_id, &markers, &[organizer]))
     })
 }
 
@@ -1967,7 +2027,6 @@ pub(crate) fn directory_listings(
         apps.extend(scanned.apps);
 
         let own_namespace_id = profile.author.identity().namespace_id;
-        let own_subspace_id = *profile.author.subspace_id().as_bytes();
         // Organizer recognition is local policy: the profile's own subspace
         // is the sole recognized organizer, the same source `is_app_trusted`
         // evaluates against. For the profile's own namespace the compacted
@@ -1980,7 +2039,7 @@ pub(crate) fn directory_listings(
             .into_iter()
             .filter(|space| space.space_namespace_id != own_namespace_id)
             .map(|mut space| {
-                space.organizer_subspace_ids = vec![own_subspace_id];
+                space.organizer_subspace_ids = vec![space.space_namespace_id];
                 space
             })
             .collect();
@@ -1988,7 +2047,7 @@ pub(crate) fn directory_listings(
             spaces.push(SpaceTrust {
                 space_namespace_id: own_namespace_id,
                 markers: profile.app_trust_markers.clone(),
-                organizer_subspace_ids: vec![own_subspace_id],
+                organizer_subspace_ids: vec![own_namespace_id],
             });
         }
 
