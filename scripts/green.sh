@@ -44,6 +44,37 @@ else
     say "macOS app (demo rig)" "RED — $(grep -m1 'error:' /tmp/green-macos.log | sed 's|.*/||')"; fail=1
 fi
 
+# A suite that runs NOTHING must never read as a pass.
+#
+# TwoPeerNearbySyncTests — our headline "two whole phones" test — crashed its host
+# on launch (TCC: the test bundle had no NSBluetoothAlwaysUsageDescription, so
+# touching CoreBluetooth killed it), and xcodebuild then cheerfully printed
+# "Test Suite passed / Executed 0 tests". It read green for days while proving
+# nothing. Zero executed tests is a RED, not a pass.
+check_ran() {
+    log="$1"; name="$2"
+    if grep -q "Executed 0 tests" "$log" 2>/dev/null; then
+        say "$name" "RED — a suite executed ZERO tests (crashed host?). A green tick that proves nothing is worse than a red one."
+        return 1
+    fi
+    return 0
+}
+
+# The macOS test suite — the one that runs the transport/sync logic. This is where
+# the zero-executed-tests lie lived, so it is checked here whether it passes or not.
+if [ "$FAST" != "fast" ]; then
+    xcodebuild test -project apps/macos/Riot.xcodeproj -scheme RiotKit-macOS \
+        -destination 'platform=macOS' >/tmp/green-mactests.log 2>&1
+    rc=$?
+    if ! check_ran /tmp/green-mactests.log "macOS tests"; then
+        fail=1
+    elif [ "$rc" -eq 0 ]; then
+        say "macOS tests" "GREEN ($(grep -oE 'Executed [0-9]+ tests' /tmp/green-mactests.log | tail -1))"
+    else
+        say "macOS tests" "RED — see /tmp/green-mactests.log"; fail=1
+    fi
+fi
+
 if [ -d apps/android ]; then
     if (cd apps/android && JAVA_HOME=/opt/homebrew/opt/openjdk@17 ./gradlew testDebugUnitTest \
             >/tmp/green-android.log 2>&1); then
