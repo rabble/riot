@@ -9,6 +9,7 @@ const form = document.getElementById("dispatch-form");
 const titleInput = document.getElementById("title");
 const bodyInput = document.getElementById("body");
 const publishButton = document.getElementById("publish");
+const cancelButton = document.getElementById("cancel");
 const error = document.getElementById("error");
 const status = document.getElementById("status");
 const SEED_MARKER = "meta/seeded";
@@ -27,14 +28,17 @@ let view = "index";
 let selectedKey = "";
 const names = new Map();
 const inflightProfiles = new Set();
+const profileRevisions = new Map();
+let sharedDataRevision = 0;
 
 function newID() { if (crypto.randomUUID) return crypto.randomUUID().toLowerCase(); return Array.from(crypto.getRandomValues(new Uint8Array(16)), (byte) => byte.toString(16).padStart(2, "0")).join(""); }
 function validIdentity(value) { return Boolean(value && ID_PATTERN.test(value.id || "")); }
 function validPost(row) { const match = row && typeof row.key === "string" ? row.key.match(POST_KEY) : null; const value = row && row.value; return Boolean(match && value && typeof value === "object" && typeof value.title === "string" && value.title.trim() && value.title.length <= 120 && typeof value.body === "string" && value.body.trim() && value.body.length <= 4000 && typeof value.summary === "string" && value.summary.length <= 180 && Number.isFinite(value.created_at) && value.created_at >= 0 && ID_PATTERN.test(value.author_id || "")); }
 function summaryFor(body) { const clean = body.trim().replace(/\s+/g, " "); return clean.length <= 180 ? clean : clean.slice(0, 179).trimEnd() + "…"; }
 function showError(message) { error.textContent = message; error.hidden = false; status.textContent = message; }
+function clearError() { error.textContent = ""; error.hidden = true; if (ready) { const count = rows.filter(validPost).length; status.textContent = count ? `${count} dispatches` : "No dispatches yet"; } }
 function person(id) { if (me && id === me.id) return "You"; const profile = names.get(id); return profile ? `${profile.displayName} · ${profile.tag}` : "A neighbor"; }
-function resolveProfiles(ids) { [...new Set(ids)].forEach((id) => { if (!ID_PATTERN.test(id || "") || inflightProfiles.has(id) || names.has(id)) return; inflightProfiles.add(id); riot.profile(id).then((profile) => { inflightProfiles.delete(id); if (profile && typeof profile.displayName === "string" && typeof profile.tag === "string") names.set(id, profile); paint(); }).catch(() => inflightProfiles.delete(id)); }); }
+function resolveProfiles(ids) { [...new Set(ids)].forEach((id) => { if (!ID_PATTERN.test(id || "") || inflightProfiles.has(id) || profileRevisions.get(id) === sharedDataRevision) return; const revision = sharedDataRevision; inflightProfiles.add(id); riot.profile(id).then((profile) => { inflightProfiles.delete(id); if (profile && typeof profile.displayName === "string" && typeof profile.tag === "string") { names.set(id, profile); profileRevisions.set(id, revision); } paint(); }).catch(() => inflightProfiles.delete(id)); }); }
 
 async function ensureSeeded() {
   const existing = await riot.list("posts"); const marker = await riot.get(SEED_MARKER);
@@ -53,11 +57,13 @@ async function ensureSeeded() {
 function openIndex(returnFocus) { view = "index"; selectedKey = ""; paint(); if (returnFocus) writeButton.focus(); }
 function openDetail(key, focus) { selectedKey = key; view = "detail"; paint(); if (focus) detailView.focus(); }
 function openForm() { if (!ready) { showError("Wait for your identity before writing."); return; } view = "form"; paint(); titleInput.focus(); }
-function closeForm() { form.reset(); openIndex(true); }
+function closeForm() { if (publishing) return; form.reset(); openIndex(true); }
 
 function paint() {
   const valid = rows.filter(validPost).sort((left, right) => right.value.created_at - left.value.created_at || right.key.localeCompare(left.key));
-  writeButton.disabled = !ready; publishButton.disabled = !ready || publishing || !titleInput.value.trim() || !bodyInput.value.trim();
+  const selected = valid.find((row) => row.key === selectedKey);
+  if (view === "detail" && !selected) { view = "index"; selectedKey = ""; requestAnimationFrame(() => writeButton.focus()); }
+  writeButton.disabled = !ready || publishing; titleInput.disabled = publishing; bodyInput.disabled = publishing; cancelButton.disabled = publishing; publishButton.disabled = !ready || publishing || !titleInput.value.trim() || !bodyInput.value.trim();
   indexView.hidden = view !== "index"; detailView.hidden = view !== "detail"; form.hidden = view !== "form";
   empty.hidden = valid.length > 0;
   if (ready) status.textContent = valid.length ? `${valid.length} dispatches` : "No dispatches yet";
@@ -66,25 +72,23 @@ function paint() {
     const heading = document.createElement("h2"); heading.textContent = value.title; const summary = document.createElement("p"); summary.className = "summary"; summary.textContent = value.summary; const meta = document.createElement("p"); meta.className = "meta"; meta.textContent = `${person(value.author_id)} · ${new Date(value.created_at).toLocaleDateString()}`;
     button.append(heading, summary, meta); button.addEventListener("click", () => openDetail(row.key, true)); item.append(button); return item;
   }) : []));
-  const selected = valid.find((row) => row.key === selectedKey);
-  if (view === "detail" && !selected) { view = "index"; indexView.hidden = false; detailView.hidden = true; }
   if (selected) { document.getElementById("detail-title").textContent = selected.value.title; document.getElementById("detail-body").textContent = selected.value.body; document.getElementById("detail-meta").textContent = `${person(selected.value.author_id)} · ${new Date(selected.value.created_at).toLocaleString()}`; }
   resolveProfiles(valid.map((row) => row.value.author_id));
 }
 
 writeButton.addEventListener("click", openForm);
 document.getElementById("back").addEventListener("click", () => openIndex(true));
-document.getElementById("cancel").addEventListener("click", closeForm);
+cancelButton.addEventListener("click", closeForm);
 form.addEventListener("input", paint);
 form.addEventListener("submit", async (event) => {
   event.preventDefault(); const title = titleInput.value.trim(); const body = bodyInput.value.trim(); if (!ready || !title || !body) { if (!ready) showError("Wait for your identity before publishing."); return; }
-  const drafts = { title: titleInput.value, body: bodyInput.value }; const createdAt = Date.now(); const key = `posts/${createdAt}-${newID()}`; const post = { title, body, summary: summaryFor(body), created_at: createdAt, author_id: me.id }; publishing = true; paint();
-  try { await riot.put(key, post); if (!rows.some((row) => row.key === key)) rows = [...rows, { key, value: post }]; form.reset(); selectedKey = key; view = "detail"; paint(); detailView.focus(); }
-  catch { titleInput.value = drafts.title; bodyInput.value = drafts.body; bodyInput.focus(); showError("Couldn't publish that dispatch. Your drafts are safe; try again."); }
-  finally { publishing = false; paint(); }
+  const drafts = { title: titleInput.value, body: bodyInput.value }; const createdAt = Date.now(); const key = `posts/${createdAt}-${newID()}`; const post = { title, body, summary: summaryFor(body), created_at: createdAt, author_id: me.id }; let failed = false; clearError(); publishing = true; paint();
+  try { await riot.put(key, post); clearError(); if (!rows.some((row) => row.key === key)) rows = [...rows, { key, value: post }]; form.reset(); selectedKey = key; view = "detail"; paint(); detailView.focus(); }
+  catch { failed = true; titleInput.value = drafts.title; bodyInput.value = drafts.body; showError("Couldn't publish that dispatch. Your drafts are safe; try again."); }
+  finally { publishing = false; paint(); if (failed) bodyInput.focus(); }
 });
 async function init() {
-  riot.watch("posts", (next) => { rows = Array.isArray(next) ? next : []; paint(); });
+  riot.watch("posts", (next) => { rows = Array.isArray(next) ? next : []; sharedDataRevision += 1; paint(); });
   try { const identity = await riot.whoami(); if (!validIdentity(identity)) throw new Error("invalid identity"); me = identity; await ensureSeeded(); ready = true; paint(); }
   catch { ready = false; paint(); showError("Your identity couldn't be verified. Dispatches remain read-only."); }
 }

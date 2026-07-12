@@ -319,3 +319,86 @@ test("Chat keeps the final message clear of a resized composer on phone", async 
   }));
   expect(clearance.messageBottom).toBeLessThanOrEqual(clearance.composerTop);
 });
+
+test("Chat refreshes an author's profile after shared data changes", async ({ page }) => {
+  await page.goto("/apps/chat/?state=seeded");
+  await expect(page.locator(".message").filter({ hasText: "Is anyone heading" }).locator(".meta")).toContainText("Alex Rivera");
+  await page.evaluate(() => {
+    __miniappPreview.setProfile("a".repeat(64), { displayName: "Alex Morgan", tag: "new-name" });
+    return riot.put("messages/99-profile-refresh", { text: "Profile refresh", created_at: 99, author_id: "b".repeat(64) });
+  });
+  await expect(page.locator(".message").filter({ hasText: "Is anyone heading" }).locator(".meta")).toContainText("Alex Morgan");
+});
+
+test("Dispatches refreshes an author's profile after shared data changes", async ({ page }) => {
+  await page.goto("/apps/dispatches/?state=seeded");
+  const gardenPost = page.locator(".post").filter({ hasText: "The garden gate is open again" });
+  await expect(gardenPost.locator(".meta")).toContainText("Alex Rivera");
+  await page.evaluate(() => {
+    __miniappPreview.setProfile("a".repeat(64), { displayName: "Alex Morgan", tag: "new-name" });
+    return riot.put("posts/99-profile-refresh", { title: "Profile refresh", body: "Refresh profile names.", summary: "Refresh profile names.", created_at: 99, author_id: "b".repeat(64) });
+  });
+  await expect(gardenPost.locator(".meta")).toContainText("Alex Morgan");
+});
+
+test("Chat locks its draft while a send is pending", async ({ page }) => {
+  await page.goto("/apps/chat/?state=slow-write");
+  const message = page.getByLabel("Message");
+  await message.fill("Pending chat message");
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect(message).toBeDisabled();
+  await expect(message).toBeEnabled();
+  await expect(message).toHaveValue("");
+  await expect(page.getByText("Pending chat message", { exact: true })).toBeVisible();
+});
+
+test("Dispatches locks both drafts and cancel while publishing", async ({ page }) => {
+  await page.goto("/apps/dispatches/?state=slow-write");
+  await page.getByRole("button", { name: "Write a dispatch" }).click();
+  const title = page.getByLabel("Title"); const body = page.getByLabel("Dispatch"); const cancel = page.getByRole("button", { name: "Cancel" });
+  await title.fill("Pending dispatch"); await body.fill("This dispatch is still being published.");
+  await page.getByRole("button", { name: "Publish" }).click();
+  await expect(title).toBeDisabled(); await expect(body).toBeDisabled(); await expect(cancel).toBeDisabled();
+  await expect(page.getByText("Pending dispatch", { exact: true })).toBeVisible();
+  await expect(page.locator("#detail-view")).toBeVisible();
+});
+
+test("Chat clears a failed-write alert after a successful retry", async ({ page }) => {
+  await page.goto("/apps/chat/?state=error");
+  const message = page.getByLabel("Message"); await message.fill("Retry this message");
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect(page.locator("#error")).toBeVisible(); await expect(message).toHaveValue("Retry this message");
+  await page.evaluate(() => __miniappPreview.setWriteFailures(false));
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect(page.getByText("Retry this message", { exact: true })).toBeVisible();
+  await expect(page.locator("#error")).toBeHidden();
+  await expect(page.locator("#status")).toHaveText(/\d+ messages/);
+});
+
+test("Dispatches clears a failed-write alert after a successful retry", async ({ page }) => {
+  await page.goto("/apps/dispatches/?state=error");
+  await page.getByRole("button", { name: "Write a dispatch" }).click();
+  await page.getByLabel("Title").fill("Retry this dispatch"); await page.getByLabel("Dispatch").fill("Keep both fields until this succeeds.");
+  await page.getByRole("button", { name: "Publish" }).click();
+  await expect(page.locator("#error")).toBeVisible(); await expect(page.getByLabel("Title")).toHaveValue("Retry this dispatch");
+  await page.evaluate(() => __miniappPreview.setWriteFailures(false));
+  await page.getByRole("button", { name: "Publish" }).click();
+  await expect(page.getByText("Retry this dispatch", { exact: true })).toBeVisible();
+  await expect(page.locator("#error")).toBeHidden();
+  await expect(page.locator("#status")).toHaveText(/\d+ dispatches/);
+});
+
+test("Chat typing does not rebuild existing message rows", async ({ page }) => {
+  await page.goto("/apps/chat/?state=seeded");
+  await page.evaluate(() => { window.__firstChatRow = document.querySelector("#messages li"); });
+  await page.getByLabel("Message").fill("Draft without repaint");
+  expect(await page.evaluate(() => window.__firstChatRow === document.querySelector("#messages li"))).toBe(true);
+});
+
+test("Dispatches returns focus to the index when an open detail becomes invalid", async ({ page }) => {
+  await page.goto("/apps/dispatches/?state=existing-unmarked");
+  await page.getByText("The garden gate is open again", { exact: true }).click();
+  await page.evaluate(() => riot.put("posts/10-existing", null));
+  await expect(page.locator("#index-view")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Write a dispatch" })).toBeFocused();
+});

@@ -38,6 +38,8 @@ function seedRows(app, state) {
     "supply-board": ["items/existing-item", { kind: "need", text: "Existing supply request", created_at: 10, added_by_id: profiles.alex.id, resolved_by_id: "" }],
     "roll-call": ["events/existing-event", { title: "Existing block gathering", starts_at: "2030-07-18T18:00:00.000Z", place: "Library steps", created_by_id: profiles.alex.id }],
     "quick-poll": ["proposals/current", { id: "existing-decision", text: "Existing community decision?", options: ["First option", "Second option"], asked_by_id: profiles.alex.id, at: 10 }],
+    chat: ["messages/10-existing", { text: "I can bring extra tea.", created_at: 10, author_id: profiles.alex.id }],
+    dispatches: ["posts/10-existing", { title: "The garden gate is open again", body: "The east entrance is repaired and unlocked.", summary: "The east entrance is repaired and unlocked.", created_at: 10, author_id: profiles.alex.id }],
   }[app];
   if (state === "existing-unmarked") return existing ? [existing] : [];
   if (["delayed-identity", "identity-error", "profile-race", "error"].includes(state)) {
@@ -74,6 +76,7 @@ function mockBridgeSource(app, state) {
 (() => {
   "use strict";
   const store = new Map(${initialRows}.map(([key, value]) => [key, JSON.stringify(value)]));
+  let writesFail = ${failWrites};
   const watchers = [];
   const profileRows = ${serializedProfiles};
   const profileByID = new Map(profileRows.map(({ id, displayName, tag }) => [id, { displayName, tag }]));
@@ -121,6 +124,9 @@ function mockBridgeSource(app, state) {
       if (typeof id !== "string" || !identityPattern.test(id)) throw new Error("invalid profile id");
       profileByID.set(id, { displayName: profile.displayName, tag: profile.tag });
     },
+    setWriteFailures(enabled) {
+      writesFail = Boolean(enabled);
+    },
   });
   window.riot = Object.freeze({
     async get(key) {
@@ -131,7 +137,7 @@ function mockBridgeSource(app, state) {
     async put(key, value) {
       const clean = validateKey(key);
       const serialized = serializeJSON(value);
-      if (${failWrites}) throw new Error("deterministic preview write failure");
+      if (writesFail) throw new Error("deterministic preview write failure");
       if (${slowWrites}) await new Promise((resolve) => setTimeout(resolve, 150));
       store.set(clean, serialized);
       notify();

@@ -21,13 +21,16 @@ let ready = false;
 let sending = false;
 const names = new Map();
 const inflightProfiles = new Set();
+const profileRevisions = new Map();
+let sharedDataRevision = 0;
 
 function newID() { if (crypto.randomUUID) return crypto.randomUUID().toLowerCase(); return Array.from(crypto.getRandomValues(new Uint8Array(16)), (byte) => byte.toString(16).padStart(2, "0")).join(""); }
 function validIdentity(value) { return Boolean(value && ID_PATTERN.test(value.id || "")); }
 function validMessage(row) { const match = row && typeof row.key === "string" ? row.key.match(MESSAGE_KEY) : null; const value = row && row.value; return Boolean(match && value && typeof value === "object" && typeof value.text === "string" && value.text.trim() && value.text.length <= 500 && Number.isFinite(value.created_at) && value.created_at >= 0 && ID_PATTERN.test(value.author_id || "")); }
 function showError(message) { error.textContent = message; error.hidden = false; status.textContent = message; }
+function clearError() { error.textContent = ""; error.hidden = true; if (ready) { const count = rows.filter(validMessage).length; status.textContent = count ? `${count} messages` : "No messages yet"; } }
 function person(id) { if (me && id === me.id) return "You"; const profile = names.get(id); return profile ? `${profile.displayName} · ${profile.tag}` : "A neighbor"; }
-function resolveProfiles(ids) { [...new Set(ids)].forEach((id) => { if (!ID_PATTERN.test(id || "") || inflightProfiles.has(id) || names.has(id)) return; inflightProfiles.add(id); riot.profile(id).then((profile) => { inflightProfiles.delete(id); if (profile && typeof profile.displayName === "string" && typeof profile.tag === "string") names.set(id, profile); paint(); }).catch(() => inflightProfiles.delete(id)); }); }
+function resolveProfiles(ids) { [...new Set(ids)].forEach((id) => { if (!ID_PATTERN.test(id || "") || inflightProfiles.has(id) || profileRevisions.get(id) === sharedDataRevision) return; const revision = sharedDataRevision; inflightProfiles.add(id); riot.profile(id).then((profile) => { inflightProfiles.delete(id); if (profile && typeof profile.displayName === "string" && typeof profile.tag === "string") { names.set(id, profile); profileRevisions.set(id, revision); } paint(); }).catch(() => inflightProfiles.delete(id)); }); }
 function nearBottom() { return document.documentElement.scrollHeight - window.scrollY - window.innerHeight < 120; }
 function syncComposerClearance() { const keepBottom = nearBottom(); document.documentElement.style.setProperty("--composer-clearance", `${Math.ceil(form.getBoundingClientRect().height)}px`); if (keepBottom) requestAnimationFrame(() => window.scrollTo(0, document.documentElement.scrollHeight)); }
 
@@ -54,7 +57,7 @@ async function ensureSeeded() {
 function paint() {
   const shouldScroll = nearBottom();
   const valid = rows.filter(validMessage).sort((left, right) => left.value.created_at - right.value.created_at || left.key.localeCompare(right.key));
-  sendButton.disabled = !ready || sending || !input.value.trim();
+  updateComposerState();
   empty.hidden = valid.length > 0;
   if (ready) status.textContent = valid.length ? `${valid.length} messages` : "No messages yet";
   list.replaceChildren(...valid.map((row, index) => {
@@ -68,16 +71,18 @@ function paint() {
   if (shouldScroll) requestAnimationFrame(() => window.scrollTo({ top: document.documentElement.scrollHeight, behavior: "smooth" }));
 }
 
+function updateComposerState() { input.disabled = sending; sendButton.disabled = !ready || sending || !input.value.trim(); }
+
 form.addEventListener("submit", async (event) => {
   event.preventDefault(); const text = input.value.trim(); if (!ready || !text) { if (!ready) showError("Wait for your identity before sending."); return; }
-  const draft = input.value; const createdAt = Date.now(); input.value = ""; sending = true; paint();
-  try { await riot.put(`messages/${createdAt}-${newID()}`, { text, created_at: createdAt, author_id: me.id }); }
-  catch { input.value = draft; input.focus(); showError("Couldn't send that message. Your draft is safe; try again."); }
-  finally { sending = false; paint(); }
+  const draft = input.value; const createdAt = Date.now(); let failed = false; clearError(); input.value = ""; sending = true; updateComposerState();
+  try { await riot.put(`messages/${createdAt}-${newID()}`, { text, created_at: createdAt, author_id: me.id }); clearError(); }
+  catch { failed = true; input.value = draft; showError("Couldn't send that message. Your draft is safe; try again."); }
+  finally { sending = false; updateComposerState(); if (failed) input.focus(); }
 });
-input.addEventListener("input", paint);
+input.addEventListener("input", updateComposerState);
 async function init() {
-  riot.watch("messages", (next) => { rows = Array.isArray(next) ? next : []; paint(); });
+  riot.watch("messages", (next) => { rows = Array.isArray(next) ? next : []; sharedDataRevision += 1; paint(); });
   try { const identity = await riot.whoami(); if (!validIdentity(identity)) throw new Error("invalid identity"); me = identity; await ensureSeeded(); ready = true; paint(); }
   catch { ready = false; paint(); showError("Your identity couldn't be verified. Chat remains read-only."); }
 }
