@@ -13,7 +13,7 @@ use riot_core::model::{decode_alert, encode_alert, AlertPayload, Certainty, Seve
 use riot_core::profile::card::{encode_profile_card, ProfileCard};
 use riot_core::profile::path::{is_profile_prefixed, profile_card_path, SUBSPACE_ID_BYTES};
 use riot_core::profile::resolver::{
-    key_tag, render_display_name, resolve_display_names, FALLBACK_DISPLAY_NAME,
+    key_tag, render_display_name, resolve_display_names, sanitize_display_name,
 };
 use riot_core::profile::ProfileError;
 use riot_core::session::{
@@ -1515,16 +1515,22 @@ fn exact_subspace_id(value: &[u8]) -> Result<[u8; SUBSPACE_ID_BYTES], MobileErro
 /// The one place a resolved (or missing) name becomes a `WhoAmI`. An id with no
 /// card resolves to the `member` fallback rather than an error — see
 /// `ProfileSession::profile_for`.
+///
+/// `display_name` is SANITIZED here, by the same `sanitize_display_name` the
+/// rendered form uses, and that is not belt-and-braces. `WhoAmI` hands the name
+/// and the tag over as separate fields precisely so a renderer can reassemble
+/// them — and reassembling them is `name + " · " + tag`. If the raw claim went
+/// out, a name of `"Ana · a3f91122"` would come back together as
+/// `"Ana · a3f91122 · deadbeef"`, which begins with exactly what honest Ana
+/// renders to. The structure protects nothing once the renderer flattens it, so
+/// the field crossing the boundary must already be safe to flatten.
 fn who_am_i(
     names: &std::collections::BTreeMap<[u8; SUBSPACE_ID_BYTES], String>,
     subspace_id: [u8; SUBSPACE_ID_BYTES],
 ) -> crate::profile_ffi::WhoAmI {
     crate::profile_ffi::WhoAmI {
         id: subspace_id.to_vec(),
-        display_name: names
-            .get(&subspace_id)
-            .cloned()
-            .unwrap_or_else(|| FALLBACK_DISPLAY_NAME.to_string()),
+        display_name: sanitize_display_name(names.get(&subspace_id).map(String::as_str)),
         tag: key_tag(&subspace_id),
     }
 }

@@ -29,10 +29,17 @@ pub struct WhoAmI {
     /// The raw 32-byte subspace id — the stable handle, and the same raw-bytes
     /// id convention the directory surface uses.
     pub id: Vec<u8>,
-    /// The self-claimed name, or `"member"` if this person has never set one.
+    /// The self-claimed name, or `"member"` if this person has never set one (or
+    /// claimed one that sanitizes away to nothing).
+    ///
     /// **Self-claimed and unverified.** Never display this alone — it is half of
     /// a pair, and showing it without `tag` is exactly the impersonation the tag
     /// exists to blunt.
+    ///
+    /// Already run through `sanitize_display_name`: no separator, no bidi or
+    /// control characters. It is safe for a renderer to flatten this into
+    /// `"{display_name} · {tag}"` — the name cannot forge a second boundary — and
+    /// flattening it is the ONLY sanctioned way to show it.
     pub display_name: String,
     /// The key-derived tag: 8 lowercase hex chars of the subspace id. Display as
     /// `"{display_name} · {tag}"` — the same string `my_display_name` returns.
