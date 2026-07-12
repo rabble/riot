@@ -247,6 +247,69 @@ final class DirectoryRepositoryTests: XCTestCase {
         XCTAssertEqual(model.apps.map(\.appIDHex), held.map(\.appIDHex))
     }
 
+    // MARK: - Who may approve, and what the refusal says
+
+    /// A fresh profile that creates a space IS its organizer: the button is offered
+    /// and the approval lands. This is the path rabble expected to work.
+    func testCreatingASpaceMakesYouItsOrganizerAndApprovalWorks() throws {
+        let storageDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("organizer-\(UUID().uuidString)", isDirectory: true)
+        let model = RiotAppModel()
+        model.bootstrap(
+            storageDirectory: storageDirectory,
+            keyStore: TestWrappingKeyStore(),
+            starterPacks: try Self.starterPacks()
+        )
+        model.createSpace(title: "Berlin Mutual Aid")
+
+        XCTAssertTrue(model.canApproveApps, "the space's creator is its organizer")
+        XCTAssertFalse(model.isLegacyProfile)
+        XCTAssertNil(AppReviewSheet.unavailableReason(canApprove: true, isLegacyProfile: false))
+
+        let app = try XCTUnwrap(model.apps.first)
+        XCTAssertFalse(app.trusted)
+        model.trustApp(appID: app.appIDHex)
+
+        XCTAssertNil(model.errorMessage, "an organizer's approval must not fail")
+        XCTAssertTrue(try XCTUnwrap(model.apps.first).trusted, "the app is now on for the space")
+    }
+
+    /// The sheet must not offer a button that cannot succeed, and the sentence it
+    /// shows instead has to be true for the person reading it. A member is told to
+    /// ask the organizer; only a pre-organizer profile is told to start a new one.
+    func testTheApproveButtonIsReplacedByAnHonestSentenceWhenItCannotSucceed() {
+        let member = AppReviewSheet.unavailableReason(canApprove: false, isLegacyProfile: false)
+        XCTAssertEqual(member, "Only the organizer of this space can turn an app on here.")
+
+        let legacy = AppReviewSheet.unavailableReason(canApprove: false, isLegacyProfile: true)
+        XCTAssertEqual(
+            legacy,
+            "This profile was made before spaces had organizers, so it can’t "
+                + "approve apps for this space. Start a new profile to organize one."
+        )
+        XCTAssertNotEqual(member, legacy, "the two cases need opposite advice")
+
+        for message in [member, legacy].compactMap({ $0 }) {
+            XCTAssertFalse(message.contains("InvalidInput"), "no error codes")
+            XCTAssertFalse(message.lowercased().contains("namespace"), "no jargon")
+            XCTAssertFalse(message.lowercased().contains("subspace"), "no jargon")
+        }
+    }
+
+    /// If an approval ever does fail, the person must get words rather than the
+    /// `InvalidInput` that left rabble with a closed sheet and no explanation.
+    func testApprovalFailuresAreTranslatedOutOfErrorCodes() {
+        XCTAssertEqual(
+            RiotAppModel.approvalFailureMessage(MobileError.LegacyProfileCannotOrganize),
+            "This profile was made before spaces had organizers, so it can’t "
+                + "approve apps for this space. Start a new profile to organize one."
+        )
+        XCTAssertEqual(
+            RiotAppModel.approvalFailureMessage(MobileError.NotSpaceOrganizer),
+            "Only the organizer of this space can turn an app on here."
+        )
+    }
+
     /// The other half of the hop: once approved, the app a neighbour carried is
     /// served to the WebView from the store's own bytes — a carried app has no
     /// file on this device, so this is the only copy there is.

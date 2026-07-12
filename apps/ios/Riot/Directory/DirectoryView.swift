@@ -60,6 +60,8 @@ public struct DirectoryView: View {
         .sheet(item: $reviewing) { app in
             AppReviewSheet(
                 app: app,
+                canApprove: model.canApproveApps,
+                isLegacyProfile: model.isLegacyProfile,
                 onApprove: {
                     model.trustApp(appID: app.appIDHex)
                     reviewing = nil

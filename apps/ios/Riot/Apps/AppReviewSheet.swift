@@ -10,15 +10,43 @@ import SwiftUI
 public struct AppReviewSheet: View {
     @Environment(\.colorScheme) private var colorScheme
     private let app: RiotSpaceApp
+    private let canApprove: Bool
+    private let isLegacyProfile: Bool
     private let onApprove: () -> Void
     private let onCancel: () -> Void
 
+    /// The honest sentence for someone who cannot approve, or nil when they can.
+    ///
+    /// Two different people land here and they need opposite advice. A member is
+    /// fine — the organizer turns apps on, and that is the design. A pre-organizer
+    /// ("legacy") profile is not fine, and no amount of asking will help: nothing
+    /// in the app can make it an organizer, so the only true thing to say is that
+    /// a new profile is needed. Saying either sentence to the other person is a lie.
+    static func unavailableReason(canApprove: Bool, isLegacyProfile: Bool) -> String? {
+        guard !canApprove else { return nil }
+        if isLegacyProfile {
+            return "This profile was made before spaces had organizers, so it can’t "
+                + "approve apps for this space. Start a new profile to organize one."
+        }
+        return "Only the organizer of this space can turn an app on here."
+    }
+
+    /// - Parameters:
+    ///   - canApprove: whether this person is the space's organizer. When false the
+    ///     approve button is NOT DRAWN: a button that cannot succeed is how the
+    ///     original bug felt — the tap did nothing, and said nothing.
+    ///   - isLegacyProfile: whether they can never organize any space, which picks
+    ///     which honest sentence is shown in the button's place.
     public init(
         app: RiotSpaceApp,
+        canApprove: Bool = true,
+        isLegacyProfile: Bool = false,
         onApprove: @escaping () -> Void,
         onCancel: @escaping () -> Void
     ) {
         self.app = app
+        self.canApprove = canApprove
+        self.isLegacyProfile = isLegacyProfile
         self.onApprove = onApprove
         self.onCancel = onCancel
     }
@@ -46,10 +74,20 @@ public struct AppReviewSheet: View {
                         }
                     }
                 }
-                Button("Let everyone in this space use this") { onApprove() }
-                    .buttonStyle(.riotPrimary)
-                    .accessibilityIdentifier("approve-app")
-                Button("Not now") { onCancel() }
+                if let reason = Self.unavailableReason(
+                    canApprove: canApprove,
+                    isLegacyProfile: isLegacyProfile
+                ) {
+                    Text(reason)
+                        .font(.riot(.body, size: 15, relativeTo: .body))
+                        .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
+                        .accessibilityIdentifier("approve-unavailable")
+                } else {
+                    Button("Let everyone in this space use this") { onApprove() }
+                        .buttonStyle(.riotPrimary)
+                        .accessibilityIdentifier("approve-app")
+                }
+                Button(canApprove ? "Not now" : "Close") { onCancel() }
                     .buttonStyle(.riotSecondary)
             }
             .padding(20)
