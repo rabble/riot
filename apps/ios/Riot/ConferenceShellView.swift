@@ -308,6 +308,23 @@ private struct ConnectionStatusView: View {
     /// The peer whose profile is open. Tapping a device opens their profile;
     /// inviting them from there starts the connection that shares your space.
     @State private var inspecting: DiscoveredPhone?
+    /// A person you have already synced with, opened from the People list — this
+    /// one carries a real profile identity, so their collection populates.
+    @State private var inspectingPerson: RiotPerson?
+
+    /// Everyone this device can now name except yourself: the people you have
+    /// synced with. Distinct from "Devices" (a transport-level friendly name you
+    /// can connect to) — these are real profile identities whose collections are
+    /// attributable. Resolved from the published name map so the list updates as
+    /// profiles arrive.
+    private var syncedPeople: [RiotPerson] {
+        guard let repository = model.profileRepository,
+              let me = try? repository.me() else { return [] }
+        return model.displayNames.keys
+            .filter { $0.lowercased() != me.id.lowercased() }
+            .compactMap { try? repository.person(idHex: $0) }
+            .sorted { $0.rendered < $1.rendered }
+    }
 
     var body: some View {
         ScrollView {
@@ -351,6 +368,25 @@ private struct ConnectionStatusView: View {
                         }
                     }
                 }
+                if !syncedPeople.isEmpty {
+                    RiotCard {
+                        VStack(alignment: .leading, spacing: 10) {
+                            Text("People")
+                                .font(.riot(.mono, size: 12, relativeTo: .caption))
+                                .textCase(.uppercase)
+                                .tracking(1)
+                                .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
+                            Text("People you have synced with. Tap to see who they are and what they carry.")
+                                .font(.riot(.body, size: 13, relativeTo: .caption))
+                                .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
+                            ForEach(syncedPeople) { person in
+                                Button(person.rendered) { inspectingPerson = person }
+                                    .buttonStyle(.riotSecondary)
+                                    .accessibilityIdentifier("person-\(person.id)")
+                            }
+                        }
+                    }
+                }
                 RiotCard {
                     VStack(alignment: .leading, spacing: 10) {
                         Text("On this device")
@@ -377,6 +413,16 @@ private struct ConnectionStatusView: View {
                     inspecting = nil
                 },
                 onClose: { inspecting = nil }
+            )
+        }
+        .sheet(item: $inspectingPerson) { person in
+            // A real synced identity: their rendered name is what the directory
+            // attributes their apps to, so their collection actually populates.
+            PeerProfileView(
+                model: model,
+                peerName: person.rendered,
+                authoredName: person.rendered,
+                onClose: { inspectingPerson = nil }
             )
         }
         .onAppear {
