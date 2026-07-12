@@ -734,6 +734,23 @@ extension RiotProfileRepository: NearbySpaceHost {}
 
 // MARK: - App directory
 
+public extension Notification.Name {
+    /// The set of apps this profile HOLDS changed — someone took up a carried app.
+    ///
+    /// Two models read that set and neither owns the other: the directory (which
+    /// performs the get) and the app model (whose `apps` drives the Spaces → Tools
+    /// card). The directory used to refresh only ITSELF, so an app just taken up
+    /// was held, listed in the directory, and yet Tools still said "No tools yet" —
+    /// leaving the app reachable from nowhere, because Tools is the only route to
+    /// Open.
+    ///
+    /// Posted from the repository rather than from either model because the
+    /// repository is where the set actually changes, and it is the one thing both
+    /// models already share. Whoever shows held apps hears about it — including
+    /// surfaces that do not exist yet.
+    static let riotHeldAppsDidChange = Notification.Name("riot.heldAppsDidChange")
+}
+
 /// The repository is the storefront's port onto Rust. It only forwards: the
 /// directory is computed in the core on every call and never stored here, so a
 /// row that appears is a row Rust has verified.
@@ -782,6 +799,11 @@ extension RiotProfileRepository: DirectoryPorting {
         persisted.carriedApps.removeAll { $0.appIDHex == pack.appIDHex }
         persisted.carriedApps.append(pack)
         try storage.save(persisted)
+
+        // The app is now held and saved. Anything showing held apps is stale as of
+        // this line — most visibly the Tools card, the only route to Open. Posted
+        // after the save so no observer can read a set a later throw would undo.
+        NotificationCenter.default.post(name: .riotHeldAppsDidChange, object: self)
 
         return try spaceApp(app)
     }

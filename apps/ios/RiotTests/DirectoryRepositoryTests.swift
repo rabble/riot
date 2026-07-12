@@ -170,6 +170,83 @@ final class DirectoryRepositoryTests: XCTestCase {
         XCTAssertFalse(app.trusted)
     }
 
+    /// The "No tools yet" regression, and the reason a got app appeared NOWHERE.
+    ///
+    /// The directory performed the get and refreshed only ITSELF. The app model —
+    /// whose `apps` is the Spaces → Tools card, and Tools is the only route to
+    /// Open — never heard, so the card still said "No tools yet" about an app the
+    /// profile was holding. Both models here read the SAME repository, exactly as
+    /// the shell wires them.
+    func testGettingACarriedAppFillsTheToolsCardNotJustTheDirectory() throws {
+        let storageDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("tools-card-\(UUID().uuidString)", isDirectory: true)
+        let model = RiotAppModel()
+        model.bootstrap(
+            storageDirectory: storageDirectory,
+            keyStore: TestWrappingKeyStore(),
+            starterPacks: []
+        )
+        let repository = try XCTUnwrap(model.profileRepository)
+        model.createSpace(title: "Berlin Mutual Aid")
+
+        // Put the checklist in the store WITHOUT holding it — a neighbour's app,
+        // as it arrives over sync.
+        let listing = try XCTUnwrap(
+            repository.directoryListings().first { $0.name == "Checklist" }
+        )
+        try repository.shareApp(appID: listing.appId)
+        XCTAssertTrue(model.apps.isEmpty, "nothing is held yet: Tools correctly says 'No tools yet'")
+
+        let directory = RiotDirectoryModel(port: repository)
+        directory.refresh()
+        let row = try XCTUnwrap(directory.rows.first { $0.name == "Checklist" })
+        XCTAssertEqual(row.availability, .get)
+
+        directory.get(row) // the exact tap
+
+        XCTAssertNil(directory.errorMessage)
+        XCTAssertEqual(
+            model.apps.count, 1,
+            "the app is held — the Tools card must not still say 'No tools yet'"
+        )
+        XCTAssertEqual(model.apps.first?.name, "Checklist")
+        XCTAssertFalse(
+            try XCTUnwrap(model.apps.first).trusted,
+            "getting an app must not turn it on — the review gate still stands"
+        )
+    }
+
+    /// Sharing and recommending do NOT change what this profile holds, so the
+    /// Tools card has no equivalent gap. Pinned so the notification is not
+    /// "fixed" later by firing it from everything that touches an app.
+    func testSharingAnAppDoesNotChangeTheHeldAppsCard() throws {
+        let storageDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("tools-share-\(UUID().uuidString)", isDirectory: true)
+        let model = RiotAppModel()
+        model.bootstrap(
+            storageDirectory: storageDirectory,
+            keyStore: TestWrappingKeyStore(),
+            starterPacks: try Self.starterPacks()
+        )
+        let repository = try XCTUnwrap(model.profileRepository)
+        model.createSpace(title: "Berlin Mutual Aid")
+        let held = model.apps
+        XCTAssertEqual(held.count, 1, "the starter checklist is held on a fresh profile")
+
+        let listing = try XCTUnwrap(
+            repository.directoryListings().first { $0.name == "Checklist" }
+        )
+        let directory = RiotDirectoryModel(port: repository)
+        directory.refresh()
+        try repository.shareApp(appID: listing.appId)
+        directory.recommend(
+            try XCTUnwrap(directory.rows.first { $0.name == "Checklist" }),
+            note: "we use this every week"
+        )
+
+        XCTAssertEqual(model.apps.map(\.appIDHex), held.map(\.appIDHex))
+    }
+
     /// The other half of the hop: once approved, the app a neighbour carried is
     /// served to the WebView from the store's own bytes — a carried app has no
     /// file on this device, so this is the only copy there is.

@@ -144,10 +144,53 @@ public final class RiotAppModel: ObservableObject {
     /// property so callers cannot swap the repository out from under the model.
     public var profileRepository: RiotProfileRepository? { repository }
 
-    public init() {}
+    /// Kept alive for this model's lifetime; the app model IS the Tools card's
+    /// source, so it listens for as long as it exists.
+    ///
+    /// `nonisolated(unsafe)` so `deinit` — which is nonisolated — can unregister it.
+    /// Safe by construction: written once in `init` and read once in `deinit`, never
+    /// concurrently, and `NotificationCenter` is itself thread-safe.
+    private nonisolated(unsafe) var heldAppsObserver: NSObjectProtocol?
+
+    public init() {
+        observeHeldApps()
+    }
 
     init(testError: String) {
         errorMessage = testError
+        observeHeldApps()
+    }
+
+    /// Re-read the held apps whenever ANY surface takes one up.
+    ///
+    /// The directory performs the get and refreshes ITSELF; without this the app
+    /// model never hears, `apps` stays stale, and Tools says "No tools yet" about
+    /// an app the profile is holding — and since Tools is the only route to Open,
+    /// the app is then reachable from nowhere.
+    ///
+    /// Delivered on the posting thread (`queue: nil`) and posted from the main
+    /// actor, so the refresh lands synchronously: the card is right on the very
+    /// next render rather than a frame later.
+    private func observeHeldApps() {
+        heldAppsObserver = NotificationCenter.default.addObserver(
+            forName: .riotHeldAppsDidChange,
+            object: nil,
+            queue: nil
+        ) { [weak self] _ in
+            guard Thread.isMainThread else {
+                Task { @MainActor [weak self] in self?.refreshApps() }
+                return
+            }
+            MainActor.assumeIsolated {
+                self?.refreshApps()
+            }
+        }
+    }
+
+    deinit {
+        if let heldAppsObserver {
+            NotificationCenter.default.removeObserver(heldAppsObserver)
+        }
     }
 
     public var connectionDisclosure: String {
