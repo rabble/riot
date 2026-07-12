@@ -72,6 +72,21 @@ pub(crate) struct LocalProfile {
     /// same-profile app-data writes, so a rapid overwrite of the same key
     /// within one clock second still prunes deterministically.
     app_data_timestamp_floor_micros: u64,
+    /// Set exactly while the seeded demo space is the listed space. Its presence
+    /// is the ONLY marker of demo mode — `hide_demo_space` refuses to un-list a
+    /// space it did not itself list.
+    demo_mode: Option<Box<DemoModeState>>,
+}
+
+/// What the profile was before demo mode was switched on.
+///
+/// Only the author is remembered, because the space slot it replaced was
+/// necessarily empty (`load_demo_space` refuses to displace a listed space).
+struct DemoModeState {
+    /// The author held before the profile moved into the demo namespace, put
+    /// back by `hide_demo_space`. `None` only if the profile was somehow already
+    /// in that namespace and no move was needed.
+    previous_author: Option<EvidenceAuthor>,
 }
 
 struct StoredDraft {
@@ -163,6 +178,7 @@ fn profile_with_author(store: EvidenceStore, author: EvidenceAuthor) -> Arc<Mobi
             installed_apps: Vec::new(),
             app_trust_markers: Vec::new(),
             app_data_timestamp_floor_micros: 0,
+            demo_mode: None,
         })))),
     })
 }
@@ -242,6 +258,192 @@ pub(crate) fn join_public_space(
         profile.space = Some(joined.clone());
         Ok(joined)
     })
+}
+
+/// The title the seeded demo space is listed under. A bundle carries signed
+/// entries, not a space title, so this is the one place it is written down.
+pub(crate) const DEMO_SPACE_TITLE: &str = "Riverside Tenants Union";
+
+/// The import route recorded for demo bytes, alongside `local-sign` and
+/// `local-app-write`. It names where the bytes came from; it grants nothing.
+const DEMO_IMPORT_ROUTE: &str = "demo-space";
+
+/// Loads the seeded demo space from a signed bundle and lists its namespace.
+///
+/// The bytes go through the ORDINARY `inspect → plan → commit` pipeline — the
+/// same one a peer's bundle goes through. There is no privileged demo import:
+/// every entry is verified, admitted, and committed exactly as if it had arrived
+/// over sync, which is the whole point of shipping the demo as a real signed
+/// bundle rather than as native fixtures.
+///
+/// **Additive.** It refuses (leaving the store bit-for-bit untouched) if any
+/// OTHER space is listed. That is not squeamishness: the FFI store is
+/// single-namespace in practice — `open_sync_session` builds its inventory from
+/// every live entry and `ByteSyncSession` rejects an entry outside its namespace
+/// — so mixing the demo into somebody's real space would silently take their
+/// sync away. A person who wants the demo starts from a profile with no space.
+///
+/// **Idempotent.** Entries are content-addressed, so a second load finds every
+/// one of them already present, commits nothing, and re-lists the same space.
+///
+/// Fails with `InvalidInput` while a sync session is open, for the same reason
+/// `app_data_put` and `set_display_name` do: the commit runs through
+/// `store.inspect`, which replaces the session-wide preview slot an in-flight
+/// sync review is holding.
+pub(crate) fn load_demo_space(
+    inner: &Arc<Mutex<ProfileState>>,
+    bytes: Vec<u8>,
+) -> Result<PublicSpace, MobileError> {
+    with_active(inner, |profile| {
+        if sync_session_is_active(profile) {
+            return Err(MobileError::InvalidInput);
+        }
+        if profile.preview.is_some() || profile.plan.is_some() {
+            return Err(MobileError::InvalidInput);
+        }
+
+        // The namespace is the BUNDLE's own, read back from its signed entries.
+        // The demo space is not a special kind of space; it is just one this
+        // device did not author.
+        let namespace_id = whole_bundle_namespace_id(&bytes)?;
+        let namespace_hex = hex(&namespace_id);
+
+        let already_listed = profile
+            .space
+            .as_ref()
+            .is_some_and(|space| space.namespace_id == namespace_hex);
+        // The hard additive rule. Nothing below this line runs while a space
+        // that is not the demo is listed, so a real space cannot be displaced
+        // and its entries cannot be touched.
+        if !already_listed && profile.space.is_some() {
+            return Err(MobileError::ImportRejected);
+        }
+
+        let inspectable = inspectable_entries(&bytes, &namespace_hex)?;
+        if inspectable.is_empty() {
+            return Err(MobileError::ImportRejected);
+        }
+        let entries: Vec<_> = inspectable
+            .iter()
+            .filter_map(|item| item.current.clone())
+            .collect();
+        let sync_entries: Vec<_> = inspectable.into_iter().map(|item| item.signed).collect();
+        let next_inventory = prospective_sync_inventory(profile, &sync_entries)?;
+
+        // Every fallible step that would move the profile's identity happens
+        // BEFORE the commit, so a rejected bundle can never leave a half-moved
+        // profile behind.
+        let demo_author = if already_listed
+            || profile.author.identity().namespace_id == namespace_id
+        {
+            None
+        } else {
+            Some(generate_communal_author_for_namespace(namespace_id).map_err(map_author_error)?)
+        };
+
+        let preview = inspect_core(&profile.store, &bytes, DEMO_IMPORT_ROUTE)?;
+        let eligible = preview.eligible_count().map_err(map_core_error)?;
+        if eligible > sync_entries.len() {
+            return Err(MobileError::ImportRejected);
+        }
+        if eligible > 0 {
+            let plan = preview.plan_all().map_err(map_core_error)?;
+            match plan.commit().map_err(map_core_error)? {
+                CommitOutcome::Committed(_) | CommitOutcome::NoChanges(_) => {}
+            }
+        }
+        // `eligible == 0` is the idempotent re-load: the join already holds every
+        // one of these entries, so there is nothing to commit and no duplicate to
+        // create. Planning an empty selection would be an error, so don't.
+
+        for entry in entries {
+            remember_entry(&mut profile.entries, entry);
+        }
+        install_sync_inventory(profile, next_inventory)?;
+        advance_app_write_floor(profile, &sync_entries)?;
+
+        if !already_listed {
+            // The same move `join_public_space` makes: a communal namespace you
+            // did not create needs a subspace key IN it, or this person could
+            // never write to the space they are looking at. The SEALED identity
+            // on disk is not rewritten, and `hide_demo_space` puts this author
+            // back.
+            let previous_author =
+                demo_author.map(|author| std::mem::replace(&mut profile.author, author));
+            profile.demo_mode = Some(Box::new(DemoModeState { previous_author }));
+        }
+
+        let space = PublicSpace {
+            namespace_id: namespace_hex,
+            title: DEMO_SPACE_TITLE.to_string(),
+            is_public: true,
+        };
+        profile.space = Some(space.clone());
+        // After the author moved: trust markers are read against whichever
+        // namespace the profile is now in.
+        refresh_app_trust_markers(profile)?;
+        Ok(space)
+    })
+}
+
+/// Stops listing the demo space, and puts the pre-demo author back.
+///
+/// **This does not delete anything, and cannot.** Willow is append-only: there
+/// is no delete primitive here and this does not invent one. The demo's entries
+/// stay in the local store, inert and unreachable from the UI — no space lists
+/// their namespace, so nothing resolves them. The bytes come back only with a
+/// profile reset, which is the escape hatch that already exists.
+///
+/// A no-op (not an error) if demo mode was never on, and it will never un-list a
+/// space it did not itself list.
+pub(crate) fn hide_demo_space(inner: &Arc<Mutex<ProfileState>>) -> Result<(), MobileError> {
+    with_active(inner, |profile| {
+        if sync_session_is_active(profile) {
+            return Err(MobileError::InvalidInput);
+        }
+        let Some(state) = profile.demo_mode.take() else {
+            return Ok(());
+        };
+        if let Some(author) = state.previous_author {
+            profile.author = author;
+        }
+        profile.space = None;
+        profile.preview = None;
+        profile.plan = None;
+        refresh_app_trust_markers(profile)?;
+        Ok(())
+    })
+}
+
+/// The namespace of a demo bundle whose EVERY item is valid.
+///
+/// The ordinary import path tolerates a bundle with some bad items: it drops
+/// them and admits the rest, which is right for a peer's bundle picked up in the
+/// wild. It is wrong here. The demo bundle is one known artifact, and a copy of
+/// it with a flipped byte is not "the demo minus one alert" — it is damaged, and
+/// admitting the surviving 18 of its 19 entries would be exactly the
+/// half-imported state demo mode promises never to leave behind. So: all items
+/// valid, or nothing at all.
+///
+/// `inspectable_entries` then proves every frame names this same namespace, so a
+/// bundle that straddles namespaces is refused rather than partly imported.
+fn whole_bundle_namespace_id(bytes: &[u8]) -> Result<[u8; 32], MobileError> {
+    let decoded = match decode_bundle(bytes) {
+        BundleDecodeOutcome::Decoded(decoded) => decoded,
+        BundleDecodeOutcome::Rejected(_) => return Err(MobileError::ImportRejected),
+    };
+    if decoded.items.is_empty()
+        || decoded
+            .items
+            .iter()
+            .any(|item| !matches!(item.status, ItemStatus::Valid(_)))
+    {
+        return Err(MobileError::ImportRejected);
+    }
+    let first = &decoded.items[0];
+    let identity = public_entry_identity(first.frame.entry_bytes())
+        .map_err(|_| MobileError::ImportRejected)?;
+    Ok(identity.namespace_id)
 }
 
 pub(crate) fn create_draft_alert(
@@ -371,8 +573,14 @@ pub(crate) fn list_current_entries(
                 .find(|entry| entry.entry_id == live_id)
                 .cloned()
                 .ok_or(MobileError::Internal)?;
+            // One store can hold entries from more than one Willow namespace —
+            // loading the demo space and then hiding it again leaves exactly
+            // that (Willow is append-only; un-listing is not deleting). An entry
+            // outside the listed space is simply not part of THIS board, so skip
+            // it. Failing the whole listing here would brick the board for every
+            // space the profile lists afterwards.
             if entry.namespace_id != *namespace_id {
-                return Err(MobileError::Internal);
+                continue;
             }
             entries.push(entry);
         }
