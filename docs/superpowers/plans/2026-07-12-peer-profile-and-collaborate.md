@@ -82,3 +82,35 @@ joiner, both `RIOT_AUTO_DISCOVER=1 RIOT_AUTO_CONFIRM=1`, launched via `open -n`.
 
 Until (2) is fixed, the peer-profile People list / collections cannot populate
 between two strangers, because nothing syncs without a shared space.
+
+## Root-cause dig into joiner-never-joins (traced 2026-07-12)
+
+Instrumented the auto-connect -> pair -> join chain with file traces. Findings:
+
+**BUG 1 (FIXED, c8b3299): auto-connect never fired.** `autoConnectToFirstPeer()`
+guarded `case .idle = state`, but `findNearby` leaves state at `.looking` and a
+peer is only discovered while looking — so the guard was always false. No device
+ever auto-connected. Fixed to allow `.idle` OR `.looking`. Traces now show
+`autoConnect -> requestConnection`, `startLocalSession`, `beginSpaceHandshake`
+on both sides — the transport connects.
+
+**BUG 2 (OPEN, transport/startup owner): host advertises before its space
+exists.** At `beginSpaceHandshake`, `mySpace=nil` on the HOST even though it has
+a space moments later. `findNearby` (ConnectionStatusView.onAppear) races
+`bootstrap` (RiotMacApp `.task`), so a phone can start advertising/pairing before
+its profile/space is ready. A phone with no space announces nil, so the peer has
+nothing to adopt -> the joiner stays spaceless. Real fix: do not start
+discovery/advertising until the repository is open (and, for a host, gate on
+`currentSpace != nil` or re-announce when the space arrives). NOTE: RIOT_SEED_SPACE
+exacerbates this (it seeds in bootstrap); the real demo taps "Create space" first,
+so a real host usually has a space — but the race is genuine.
+
+**BUG 3 (OPEN): space handshake ends in `.failed` with no decision.** After
+`beginSpaceHandshake`, no `settle(...)` fires and state goes `.failed` — SpacePairing's
+`onFailure` path, not a `.nothingToShare`/`.adopt` decision. Needs a trace inside
+SpacePairing.receive/fail over the local-network channel to see whether the peer's
+SpaceAnnounce arrives malformed or the connection drops during handoff. Owner of
+SpacePairing / the LocalNetwork channel handoff should take this.
+
+Repro (both bugs 2+3 visible): the two `open -n ... RIOT_SEED_SPACE/AUTO_*` lines
+above; read /tmp/riot-trace-<id>.log with the file-trace instrumentation.
