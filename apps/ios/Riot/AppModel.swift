@@ -87,6 +87,33 @@ public final class RiotAppModel: ObservableObject {
     @Published public private(set) var connectionStatus: RiotConnectionStatus = .offline
     @Published public private(set) var errorMessage: String?
 
+    /// Every person this device can name, keyed by lowercase hex subspace id and
+    /// already rendered by core (`"Ana · a3f91122"`).
+    ///
+    /// Resolved ONCE per change rather than per row: a board redraw must not turn
+    /// into sixty FFI calls, and — more importantly — a view that resolved names
+    /// lazily while drawing would be mutating the model from inside its own body.
+    /// Read it through ``rendered(for:)``, which is the only accessor.
+    @Published public private(set) var displayNames: [String: String] = [:]
+
+    /// True when this phone is showing the seeded demo space. The shell reads it
+    /// to decide whether the finale banner exists at all.
+    @Published public private(set) var isDemoMode = false
+
+    /// The entries that appeared in the LAST reload and were not on this phone
+    /// before it — the six alerts crossing to phone B, an update landing while
+    /// the board is open. Empty on the first read out of the profile, because
+    /// entries that were already on disk did not arrive from anywhere.
+    ///
+    /// The board watches this to stamp and to buzz. It is deliberately not "every
+    /// entry the view has not drawn yet": a relaunch must not feel like six people
+    /// posting at once.
+    @Published public private(set) var arrivals: Set<String> = []
+
+    /// Nil until the profile has been read once. That first read is the baseline,
+    /// not an arrival — see ``arrivals``.
+    private var knownEntryIDs: Set<String>?
+
     private var repository: RiotProfileRepository?
 
     /// Read-only handle for the runtime host, which needs the live repository to
@@ -120,6 +147,19 @@ public final class RiotAppModel: ObservableObject {
         return try repository.openSyncBoundary()
     }
 
+    /// The profile a nearby pairing acts on: it announces the space this phone is
+    /// in, and joins the peer's if this phone has none.
+    public var nearbySpaceHost: NearbySpaceHost? { repository }
+
+    /// Re-reads everything the store owns. Called after this phone joins a peer's
+    /// space, where the profile gains a space — and, once the sync lands, a board
+    /// and a set of apps — without the person having done anything on this screen.
+    public func refreshFromStore() {
+        space = repository?.currentSpace
+        entries = (try? repository?.currentEntries()) ?? []
+        refreshApps()
+    }
+
     /// Opens (or restores) the on-device profile and installs the starter tools.
     ///
     /// `storageDirectory`, `keyStore`, and `starterPacks` all carry their
@@ -142,13 +182,79 @@ public final class RiotAppModel: ObservableObject {
                 starterPacks: starterPacks ?? Self.loadStarterPacks()
             )
             self.repository = repository
-            space = repository.currentSpace
-            entries = try repository.currentEntries()
-            refreshApps()
+            demoLoader = RiotDemoSpaceLoader(repository: repository, model: self)
+            reload()
         } catch {
             errorMessage = String(describing: error)
         }
     }
+
+    /// Re-reads everything the screens draw from the open profile: the listed
+    /// space, its board, its tools, and the names of the people on both.
+    ///
+    /// This is the one refresh path. Anything that changes the store from outside
+    /// the model — a sync round landing, demo mode loading the seeded space —
+    /// calls it, which is what makes entries that arrived over the air show up on
+    /// the board without a relaunch.
+    public func reload() {
+        guard let repository else { return }
+        perform {
+            space = repository.currentSpace
+            entries = try repository.currentEntries()
+            isDemoMode = repository.isDemoSpaceLoaded
+            noteArrivals()
+            refreshApps()
+            refreshDisplayNames()
+        }
+    }
+
+    /// Works out which of the entries now on the board were not on this phone a
+    /// moment ago. The first read is the baseline (see ``arrivals``).
+    private func noteArrivals() {
+        let ids = Set(entries.map(\.id))
+        arrivals = knownEntryIDs.map { ids.subtracting($0) } ?? []
+        knownEntryIDs = ids
+    }
+
+    /// The rendered name for a signer, or nil if this device cannot name them.
+    ///
+    /// Nil is a real answer and the caller must honour it by drawing NOTHING. It
+    /// must never fall back to the raw id: a 64-character key is not a name, and
+    /// showing one is precisely the failure the display-name work exists to end.
+    public func rendered(for signerID: String) -> String? {
+        displayNames[signerID.lowercased()]
+    }
+
+    /// The attribution line for a board row: `"Posted by Ana · a3f91122"`.
+    public func postedBy(_ entry: RiotEntry) -> String? {
+        rendered(for: entry.signerID).map { "Posted by \($0)" }
+    }
+
+    /// Names every person the current board and directory can point at.
+    ///
+    /// Two sources, in this order: the profile cards this device holds (one call,
+    /// every name it knows), and then — for any signer with no profile card yet —
+    /// core's own fallback for that id (`member · a3f91122`). The second pass is
+    /// what keeps a row signed by someone whose profile has not synced yet from
+    /// falling back to hex.
+    private func refreshDisplayNames() {
+        guard let repository else { return }
+        var names = (try? repository.displayNames()) ?? [:]
+        for signer in Set(entries.map { $0.signerID.lowercased() }) where names[signer] == nil {
+            guard let person = try? repository.person(idHex: signer) else { continue }
+            names[signer] = person.rendered
+        }
+        displayNames = names
+    }
+
+    /// Demo mode's port onto the live profile, or nil before one is open.
+    ///
+    /// The repository is what conforms — it persists the loaded space and the
+    /// bundle, so the demo survives the phone being put down between loading it
+    /// backstage and walking on. This wrapper exists only to pull the model back
+    /// in step afterwards; without it the seeded board would be sitting in Rust
+    /// with nothing on screen showing it.
+    public private(set) var demoLoader: DemoSpaceLoading?
 
     /// Where this instance keeps its profile.
     ///
@@ -224,6 +330,11 @@ public final class RiotAppModel: ObservableObject {
                 )
             )
             entries = try repository.currentEntries()
+            // An alert you signed yourself did not arrive from anyone: it stamps
+            // onto the board like any other entry, but it must not buzz in your
+            // hand as though someone else had posted it.
+            noteArrivals()
+            arrivals = []
             destination = .board
         }
     }
@@ -243,10 +354,16 @@ public final class RiotAppModel: ObservableObject {
     /// is dropped (Rust remains the integrity oracle for the bytes we do read),
     /// so a missing artifact leaves the Tools list empty rather than failing
     /// `bootstrap`.
+    /// Mirrors `STARTER_APPS` in `crates/riot-core/src/apps/starter.rs`, in the
+    /// same order. Adding a starter app means adding it here AND adding its two
+    /// `.cbor` artifacts to the Riot target's Resources build phase — a pack
+    /// that is listed but not bundled is silently dropped below.
+    private static let starterAppNames = ["checklist", "supply-board", "roll-call", "quick-poll"]
+
     private static func loadStarterPacks() -> [(manifest: Data, bundle: Data)] {
-        [("checklist.manifest", "checklist.bundle")].compactMap { manifestName, bundleName in
-            guard let manifest = loadPackData(named: manifestName),
-                  let bundle = loadPackData(named: bundleName)
+        starterAppNames.compactMap { app in
+            guard let manifest = loadPackData(named: "\(app).manifest"),
+                  let bundle = loadPackData(named: "\(app).bundle")
             else { return nil }
             return (manifest: manifest, bundle: bundle)
         }
@@ -283,5 +400,41 @@ public final class RiotAppModel: ObservableObject {
             .deletingLastPathComponent() // apps
             .deletingLastPathComponent() // repo root
             .appendingPathComponent("fixtures/apps")
+    }
+}
+
+/// Demo mode's port, wired to the live profile AND to the screens.
+///
+/// The import itself is the repository's (which is what persists it). All this
+/// adds is the step the port cannot know about: telling the model to re-read, so
+/// the seeded board is on screen the moment the sheet says it loaded.
+///
+/// It is deliberately NOT `@MainActor`, because `DemoSpaceLoading` is not: a
+/// main-actor conformance to a non-isolated protocol does not compile under
+/// Swift 6. The refresh hops back to the main actor itself, which is also why
+/// `model` is safe to capture — a `@MainActor` class is `Sendable`.
+public final class RiotDemoSpaceLoader: DemoSpaceLoading {
+    private let repository: RiotProfileRepository
+    private weak var model: RiotAppModel?
+
+    public init(repository: RiotProfileRepository, model: RiotAppModel?) {
+        self.repository = repository
+        self.model = model
+    }
+
+    public func loadDemoSpace(bytes: Data) throws -> RiotSpace {
+        let space = try repository.loadDemoSpace(bytes: bytes)
+        reloadModel()
+        return space
+    }
+
+    public func hideDemoSpace() throws {
+        try repository.hideDemoSpace()
+        reloadModel()
+    }
+
+    private func reloadModel() {
+        let model = model
+        Task { @MainActor in model?.reload() }
     }
 }

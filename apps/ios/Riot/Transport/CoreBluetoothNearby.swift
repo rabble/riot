@@ -436,13 +436,23 @@ extension CoreBluetoothNearbyService: CBPeripheralManagerDelegate {
 }
 
 public final class CoreBluetoothFrameChannel: FrameChannel, @unchecked Sendable {
-    public var onReceive: ((Data) -> Void)?
+    /// Frames are held until somebody is listening, exactly as on the local-network
+    /// channel. They arrive off the radio's queue, and there is real time between
+    /// this channel being built and a reader being attached to it — route selection
+    /// waits up to two seconds, and the space handshake asks the person a question.
+    /// Delivering into a nil callback in that window dropped the peer's first frame
+    /// on the floor and the session then waited forever for it.
+    public var onReceive: ((Data) -> Void)? {
+        get { inbox.onReceive }
+        set { inbox.onReceive = newValue }
+    }
     public var onFailure: (() -> Void)?
+    private let inbox = BoundedFrameInbox()
     private let service: CoreBluetoothNearbyService
 
     public init(service: CoreBluetoothNearbyService) {
         self.service = service
-        service.onFrame = { [weak self] in self?.onReceive?($0) }
+        service.onFrame = { [weak self] frame in self?.inbox.receive(frame) }
     }
 
     public func send(_ frame: Data) throws { try service.sendFrame(frame) }

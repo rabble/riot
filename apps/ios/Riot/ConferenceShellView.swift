@@ -317,7 +317,7 @@ private struct ConnectionStatusView: View {
                             .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
                         if nearby.state == .idle || nearby.state == .failed {
                             Button("Find nearby devices") {
-                                nearby.findNearby { try model.openNearbySyncBoundary() }
+                                nearby.findNearby(host: model.nearbySpaceHost)
                             }
                             .buttonStyle(.riotPrimary)
                         } else {
@@ -335,7 +335,7 @@ private struct ConnectionStatusView: View {
                 if !nearby.phones.isEmpty {
                     RiotCard {
                         VStack(alignment: .leading, spacing: 10) {
-                            Text("Phones")
+                            Text("Devices")
                                 .font(.riot(.mono, size: 12, relativeTo: .caption))
                                 .textCase(.uppercase)
                                 .tracking(1)
@@ -362,6 +362,20 @@ private struct ConnectionStatusView: View {
             .padding(20)
         }
         .riotHeader(eyebrow: "Transport", "Connection")
+        .onAppear {
+            // A phone that joins a peer's space gains a space, a board, and a set
+            // of apps it did not have a moment ago — none of which this screen is
+            // the source of. Re-read the profile when that happens.
+            nearby.onSpaceJoined = { model.refreshFromStore() }
+            // Headless/automated bring-up: with RIOT_AUTO_DISCOVER=1 the app
+            // starts looking without a tap, so two instances can be driven to
+            // discover and pair from a script (see scripts/run-instances.sh).
+            // Off by default — discovery is a deliberate act for a real user.
+            if ProcessInfo.processInfo.environment["RIOT_AUTO_DISCOVER"] == "1",
+               nearby.state == .idle {
+                nearby.findNearby(host: model.nearbySpaceHost)
+            }
+        }
         .confirmationDialog(
             nearby.state.message,
             isPresented: Binding(
@@ -371,6 +385,20 @@ private struct ConnectionStatusView: View {
         ) {
             Button("Confirm") { nearby.confirmConnection() }
             Button("Cancel", role: .cancel) { nearby.cancelConnection() }
+        }
+        // This phone has no space and the one it just connected to does. Joining
+        // is how a fresh phone becomes part of a community — but it is the
+        // person's decision, named plainly, and nothing is joined until they make
+        // it.
+        .confirmationDialog(
+            nearby.state.message,
+            isPresented: Binding(
+                get: { if case .joinSpace = nearby.state { return true }; return false },
+                set: { if !$0 { nearby.declineJoinSpace() } }
+            )
+        ) {
+            Button("Join") { nearby.confirmJoinSpace() }
+            Button("Not now", role: .cancel) { nearby.declineJoinSpace() }
         }
     }
 }

@@ -86,6 +86,12 @@ private struct PersistedProfile: Codable {
     var appDataBundles: [Data]
     // Apps carried here by other people, kept as bytes so they survive a restart.
     var carriedApps: [PersistedAppPack]
+    // The seeded demo bundle, when demo mode is on. Kept as the bundle's own
+    // bytes, not as a flag: Rust's store is in-memory, so the ONLY way the demo
+    // space is still there after a relaunch is to hand the same signed bytes back
+    // to the same `load_demo_space` import. The presenter loads it backstage and
+    // the phone may then sit, sleep, or be restarted before they walk on.
+    var demoBundle: Data?
 
     static let empty = PersistedProfile(
         space: nil,
@@ -93,7 +99,8 @@ private struct PersistedProfile: Codable {
         sealedIdentity: nil,
         trustedAppIDs: [],
         appDataBundles: [],
-        carriedApps: []
+        carriedApps: [],
+        demoBundle: nil
     )
 
     init(
@@ -102,7 +109,8 @@ private struct PersistedProfile: Codable {
         sealedIdentity: Data?,
         trustedAppIDs: [String],
         appDataBundles: [Data],
-        carriedApps: [PersistedAppPack]
+        carriedApps: [PersistedAppPack],
+        demoBundle: Data?
     ) {
         self.space = space
         self.alerts = alerts
@@ -110,10 +118,11 @@ private struct PersistedProfile: Codable {
         self.trustedAppIDs = trustedAppIDs
         self.appDataBundles = appDataBundles
         self.carriedApps = carriedApps
+        self.demoBundle = demoBundle
     }
 
     // Custom decode so snapshots written before `trustedAppIDs`/`appDataBundles`/
-    // `carriedApps` existed decode to empty lists rather than failing
+    // `carriedApps`/`demoBundle` existed decode to empty rather than failing
     // (synthesized Codable would throw on the missing key). Encoding stays
     // synthesized.
     init(from decoder: Decoder) throws {
@@ -124,6 +133,7 @@ private struct PersistedProfile: Codable {
         trustedAppIDs = try container.decodeIfPresent([String].self, forKey: .trustedAppIDs) ?? []
         appDataBundles = try container.decodeIfPresent([Data].self, forKey: .appDataBundles) ?? []
         carriedApps = try container.decodeIfPresent([PersistedAppPack].self, forKey: .carriedApps) ?? []
+        demoBundle = try container.decodeIfPresent(Data.self, forKey: .demoBundle)
     }
 }
 
@@ -212,9 +222,21 @@ public final class RiotProfileRepository {
             profile = try openLocalProfile()
         }
         if let space = persisted.space {
-            _ = try profile.joinPublicSpace(
-                space: PublicSpace(namespaceId: space.namespaceID, title: space.title, isPublic: true)
-            )
+            if let demoBundle = persisted.demoBundle {
+                // Demo mode survives a relaunch by REPLAYING THE BUNDLE, not by
+                // re-joining the namespace. `join_public_space` would list an
+                // empty space — the seeded alerts live in Rust's in-memory store
+                // and are gone — and it would never set the demo-mode state that
+                // `hide_demo_space` needs to put the person's own identity back.
+                // Handing the same signed bytes to the same import restores all
+                // three (the listing, the entries, the borrowed author), and it
+                // is idempotent because the entries are content-addressed.
+                _ = try profile.loadDemoSpace(bytes: demoBundle)
+            } else {
+                _ = try profile.joinPublicSpace(
+                    space: PublicSpace(namespaceId: space.namespaceID, title: space.title, isPublic: true)
+                )
+            }
             for alert in persisted.alerts {
                 let preview = try profile.inspectBytes(bytes: alert.bundle, route: "protected-local-reload")
                 let entryIDs = try preview.eligibleEntries().map(\.entryId)
@@ -285,6 +307,37 @@ public final class RiotProfileRepository {
         persisted.space = space
         try storage.save(persisted)
         return space
+    }
+
+    /// Joins a space someone else is already in — how a phone with nothing on it
+    /// becomes part of a community: by standing next to someone who is in one.
+    ///
+    /// RE-SEALS THE IDENTITY, and must. `join_public_space` REGENERATES the
+    /// author whenever the namespace differs from the one it currently holds
+    /// (`generate_communal_author_for_namespace` mints a fresh random subspace),
+    /// while `open` seals the identity at FIRST open — before any space exists.
+    /// Join without re-sealing and the next launch restores the PRE-JOIN
+    /// identity, re-joins, and mints a DIFFERENT subspace again: the person's
+    /// signing identity churns on every launch and everything they wrote last
+    /// time is orphaned from everything they write next. Re-sealing pins the
+    /// joined author, and `open`'s re-join then finds a namespace that already
+    /// matches and leaves the author alone.
+    ///
+    /// Joining the space this profile is already in is a no-op. Joining a
+    /// DIFFERENT space is refused — a phone is in one space.
+    public func joinSpace(_ space: RiotSpace) throws {
+        if let existing = persisted.space {
+            guard existing.namespaceID.lowercased() == space.namespaceID.lowercased() else {
+                throw RepositoryError.spaceMismatch
+            }
+            return
+        }
+        let joined = try profile.joinPublicSpace(
+            space: PublicSpace(namespaceId: space.namespaceID, title: space.title, isPublic: true)
+        )
+        persisted.space = RiotSpace(namespaceID: joined.namespaceId, title: joined.title)
+        persisted.sealedIdentity = try sealCurrentIdentity()
+        try storage.save(persisted)
     }
 
     public func signAlert(in space: RiotSpace, draft: AlertDraft) throws -> RiotEntry {
@@ -491,7 +544,101 @@ public enum RepositoryError: Error {
     case unknownAppResource
     case appBundleMismatch
     case noCurrentSpace
+    /// The id handed in was not a subspace id at all (wrong length, not hex).
+    /// An id this device has simply never met is NOT this error — core answers
+    /// that with the `member` fallback, on purpose.
+    case malformedPersonID
 }
+
+// MARK: - People
+
+/// The seam where a key id becomes something a screen may draw.
+///
+/// Core sanitizes the claimed name and derives the tag from the key itself, so
+/// `RiotPerson.rendered` — `"Ana · a3f91122"` — is the sanctioned rendering and
+/// the only one. Nothing in here ever hands a caller a bare claimed name (which
+/// would be the impersonation the tag exists to blunt) or a raw id (which is not
+/// a name at all).
+public extension RiotProfileRepository {
+    /// Who this device is, ready to draw.
+    func me() throws -> RiotPerson {
+        RiotPerson(try profile.profile().whoami())
+    }
+
+    /// Resolves one subspace id (lowercase hex) to a drawable person.
+    ///
+    /// An id this device has never seen a profile for is NOT an error: core
+    /// answers with the `member` fallback, which is load-bearing — a board row
+    /// signed by someone whose profile has not synced yet still has to be drawn,
+    /// and a peer who never claimed a name is a normal peer, not a failure.
+    func person(idHex: String) throws -> RiotPerson {
+        guard let id = RiotDirectoryRow.bytes(hex: idHex) else {
+            throw RepositoryError.malformedPersonID
+        }
+        return RiotPerson(try profile.profile().profileFor(id: id))
+    }
+
+    /// Every display name this device knows, keyed by lowercase hex subspace id,
+    /// already rendered by core. The map a board, an endorsement line, or an
+    /// attribution row needs in one call instead of one call per row.
+    func displayNames() throws -> [String: String] {
+        var names: [String: String] = [:]
+        for record in try profile.profile().displayNames() {
+            names[RiotDirectoryRow.hex(record.subspaceId)] = record.rendered
+        }
+        return names
+    }
+}
+
+private extension RiotPerson {
+    init(_ who: WhoAmI) {
+        self.init(
+            id: RiotDirectoryRow.hex(who.id),
+            displayName: who.displayName,
+            tag: who.tag
+        )
+    }
+}
+
+// MARK: - Demo mode
+
+/// Demo mode, persisted.
+///
+/// `DemoProfileLoader` (in `DemoMode.swift`) speaks to Rust and forgets; this
+/// conformance is the one the app actually installs, because the app has to
+/// survive being put down. The bundle's own bytes go into the snapshot beside
+/// the listed space — see `PersistedProfile.demoBundle` for why the bytes and
+/// not a flag.
+extension RiotProfileRepository: DemoSpaceLoading {
+    public func loadDemoSpace(bytes: Data) throws -> RiotSpace {
+        // Rust first. A bundle it refuses — corrupt, unsigned, or landing on a
+        // phone that is already in a real space — is never written to disk.
+        let listed = try profile.loadDemoSpace(bytes: bytes)
+        let space = RiotSpace(namespaceID: listed.namespaceId, title: listed.title)
+        persisted.space = space
+        persisted.demoBundle = bytes
+        try storage.save(persisted)
+        return space
+    }
+
+    public func hideDemoSpace() throws {
+        try profile.hideDemoSpace()
+        persisted.space = nil
+        persisted.demoBundle = nil
+        try storage.save(persisted)
+    }
+
+    /// Whether this profile is showing the seeded demo space. The shell asks so
+    /// the finale banner appears on a demo phone and nowhere else.
+    public var isDemoSpaceLoaded: Bool { persisted.demoBundle != nil }
+}
+
+// MARK: - Nearby pairing
+
+/// The profile a nearby pairing acts on. Every member is already implemented
+/// above — this states that the repository is the thing `SpacePairing` talks to,
+/// so the transport never reaches into storage.
+extension RiotProfileRepository: NearbySpaceHost {}
 
 // MARK: - App directory
 

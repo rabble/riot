@@ -41,14 +41,23 @@ public final class NearbyTransportController: ObservableObject {
     private var remoteTieBreaker: String?
     private var nearbyConnection: NearbyConnection?
     private var coordinator: SyncCoordinator?
-    private var syncBoundaryProvider: (() throws -> MobileSyncSessionBoundary)?
+    private var host: NearbySpaceHost?
+    private var pairing: SpacePairing?
+    /// The peer's space, once they have announced it and this phone has none —
+    /// held while the person decides whether to join. Nothing is joined until
+    /// they say so.
+    private var pendingAdoption: RiotSpace?
     private var listenerGeneration: UUID?
+
+    /// Fired after this phone has joined a peer's space, so the app can re-read a
+    /// profile that now has a space it did not have a moment ago.
+    public var onSpaceJoined: (() -> Void)?
 
     public init() {}
 
-    public func findNearby(syncBoundaryProvider: @escaping () throws -> MobileSyncSessionBoundary) {
+    public func findNearby(host: NearbySpaceHost?) {
         resetSession()
-        self.syncBoundaryProvider = syncBoundaryProvider
+        self.host = host
         let service = makeService()
         self.service = service
         let generation = UUID()
@@ -132,11 +141,14 @@ public final class NearbyTransportController: ObservableObject {
 
     public func stop() {
         resetSession()
-        syncBoundaryProvider = nil
+        host = nil
         state = .idle
     }
 
     private func resetSession() {
+        pairing?.cancel()
+        pairing = nil
+        pendingAdoption = nil
         coordinator?.stop()
         nearbyConnection?.disconnect()
         service?.stop()
@@ -210,7 +222,7 @@ public final class NearbyTransportController: ObservableObject {
     }
 
     /// A peer found over the local link is already connected on the channel that
-    /// carried the handshake, so that channel is the session's base route.
+    /// carried the pairing, so that channel is the session's base route.
     private func startLocalSession(channel: FrameChannel, peer: NearbyPeerIdentity) {
         guard nearbyConnection == nil else { return }
         let connection = NearbyConnection(base: channel, baseRoute: .localNetwork, localAttempt: { nil })
@@ -219,16 +231,7 @@ public final class NearbyTransportController: ObservableObject {
             try connection.activate()
             nearbyConnection = connection
             activeRoute = connection.route
-            if let provider = syncBoundaryProvider {
-                let coordinator = try SyncCoordinator(
-                    session: provider(),
-                    connection: connection,
-                    friendlyName: peer.friendlyName
-                )
-                coordinator.onStateChanged = { [weak self] state in self?.state = state }
-                self.coordinator = coordinator
-                coordinator.start()
-            }
+            beginSpaceHandshake(on: connection, peerName: peer.friendlyName)
         } catch {
             connection.disconnect()
             coordinator?.stop()
@@ -318,20 +321,126 @@ public final class NearbyTransportController: ObservableObject {
             try connection.activate()
             nearbyConnection = connection
             activeRoute = connection.route
-            if let selected, let provider = syncBoundaryProvider {
-                let coordinator = try SyncCoordinator(
-                    session: provider(),
-                    connection: connection,
-                    friendlyName: selected.friendlyName
-                )
-                coordinator.onStateChanged = { [weak self] state in self?.state = state }
-                self.coordinator = coordinator
-                coordinator.start()
+            if let selected {
+                beginSpaceHandshake(on: connection, peerName: selected.friendlyName)
             }
         } catch {
             connection.disconnect()
             coordinator?.stop()
             state = .failed
         }
+    }
+
+    /// Before anything is synced, the two phones say which space they are in.
+    ///
+    /// A phone with no space cannot even open a sync session (Rust refuses one
+    /// without a space), so the space has to travel first — and the only thing
+    /// that knows it is the phone standing next to this one. What happens next is
+    /// `SpaceAdoption.decide`: sync, offer to join, refuse, or say there is
+    /// nothing to share.
+    private func beginSpaceHandshake(on connection: NearbyConnection, peerName: String) {
+        guard let host else {
+            state = .failed
+            return
+        }
+        state = .connecting
+        let pairing = SpacePairing(connection: connection, host: host, friendlyName: peerName)
+        self.pairing = pairing
+        pairing.begin(
+            onDecision: { [weak self] decision in
+                Task { @MainActor in self?.settle(decision, peerName: peerName) }
+            },
+            onFailure: { [weak self] in
+                Task { @MainActor in self?.failSession() }
+            }
+        )
+    }
+
+    private func settle(_ decision: SpaceDecision, peerName: String) {
+        guard pairing != nil else { return }
+        switch decision {
+        case .proceed:
+            startSync(joining: nil, peerName: peerName)
+        case let .adopt(space):
+            // Their space is not taken silently. The person is told whose it is
+            // and what it is called, and they choose.
+            pendingAdoption = space
+            state = .joinSpace(title: space.title, name: peerName)
+        case .differentSpace:
+            state = .differentSpace(name: peerName)
+            endSession()
+        case .nothingToShare:
+            state = .nothingToShare
+            endSession()
+        }
+    }
+
+    /// The person said yes to joining the peer's space.
+    public func confirmJoinSpace() {
+        guard let space = pendingAdoption, let selected else { return }
+        pendingAdoption = nil
+        startSync(joining: space, peerName: selected.friendlyName)
+    }
+
+    /// The person said no. Nothing is joined, and the connection ends.
+    public func declineJoinSpace() {
+        pendingAdoption = nil
+        state = .looking
+        endSession()
+    }
+
+    private func startSync(joining space: RiotSpace?, peerName: String) {
+        guard let pairing else { return }
+        do {
+            // `resume` joins first when adopting: Rust refuses a join while a sync
+            // session is open, and refuses to open one without a space, so the
+            // order is forced.
+            let coordinator = try pairing.resume(joining: space)
+            if space != nil { onSpaceJoined?() }
+            adopt(coordinator)
+            // Only now does the wire belong to the session — and whatever the peer
+            // sent while this phone was deciding is replayed into it, in order.
+            pairing.handOff(to: coordinator)
+        } catch {
+            failSession()
+        }
+    }
+
+    private func failSession() {
+        state = .failed
+        endSession()
+    }
+
+    /// Tears down the connection without touching discovery: the person can still
+    /// pick another phone from the list.
+    private func endSession() {
+        pairing?.cancel()
+        pairing = nil
+        pendingAdoption = nil
+        coordinator?.stop()
+        coordinator = nil
+        nearbyConnection?.disconnect()
+        nearbyConnection = nil
+        activeRoute = nil
+    }
+
+    /// Takes ownership of the session's coordinator and opens it from EXACTLY
+    /// ONE side of the pairing.
+    ///
+    /// Both `startLocalSession` and `finishRouteSelection` run on both peers, so
+    /// whichever of them built the coordinator, only one device may `start()`
+    /// it: the core accepts a `Hello` only from an idle session, so two
+    /// initiators fail each other and nothing replicates. `isInboundRequest` is
+    /// the asymmetry already on hand — the person who tapped the other phone's
+    /// name dialled, and the person who answered the prompt did not — and it is
+    /// true on exactly one side of every pairing, over either transport.
+    private func adopt(_ coordinator: SyncCoordinator) {
+        coordinator.onStateChanged = { [weak self] state in self?.state = state }
+        // A synced change must reach an app the person already has open. The
+        // store is updated by the time this fires (it fires on accept, not on
+        // receipt), so a live app re-reading now sees the imported items.
+        coordinator.onImportAccepted = { AppRuntimeView.postDataChanged() }
+        self.coordinator = coordinator
+        if isInboundRequest { coordinator.answer() } else { coordinator.start() }
     }
 }

@@ -438,6 +438,97 @@ final class TransportContractTests: XCTestCase {
         XCTAssertEqual(session.closeCalls, 1)
         XCTAssertEqual(coordinator.state, .alreadyCurrent)
     }
+
+    // MARK: - Telling an open app the store changed
+
+    /// The refresh that redraws an already-open app fires on ACCEPT — after the
+    /// import is in the store — and at no other moment. Content that has merely
+    /// arrived is still sitting in the preview awaiting the person's yes, and
+    /// redrawing then would show them data they never accepted.
+    func testImportAcceptedFiresOnlyOnAccept() throws {
+        let channels = LoopbackFrameChannel.pair()
+        let connection = NearbyConnection(bluetooth: channels.first, localAttempt: { nil })
+        connection.confirmPairing(); try connection.activate()
+        let session = FakeSyncBoundary(
+            outbound: [Data("accepted".utf8)],
+            beginOutcome: .readyToPreview(count: 1),
+            acceptOutcome: .done
+        )
+        let coordinator = SyncCoordinator(session: session, connection: connection, friendlyName: "Blue River")
+        // Counted off the notification an open app actually listens for, not off
+        // a hook this test supplied.
+        var refreshes = 0
+        let token = NotificationCenter.default.addObserver(
+            forName: AppRuntimeView.dataChangedNotification, object: nil, queue: nil
+        ) { _ in refreshes += 1 }
+        defer { NotificationCenter.default.removeObserver(token) }
+
+        coordinator.start()
+        // Entries have ARRIVED and are being previewed. Nothing is in the store.
+        XCTAssertEqual(coordinator.state, .preview(count: 1, name: "Blue River"))
+        XCTAssertEqual(refreshes, 0, "a received-but-unaccepted import must not refresh an open app")
+
+        coordinator.addPreviewedContent()
+        XCTAssertEqual(refreshes, 1, "accepting the import must refresh the open app exactly once")
+    }
+
+    /// "Not now" must never redraw anything: a rejected import is not in the
+    /// store, so there is nothing new for an open app to show.
+    func testRejectingPreviewedContentNeverFiresTheRefresh() throws {
+        let channels = LoopbackFrameChannel.pair()
+        let connection = NearbyConnection(bluetooth: channels.first, localAttempt: { nil })
+        connection.confirmPairing(); try connection.activate()
+        let session = FakeSyncBoundary(
+            outbound: [Data("reject".utf8)],
+            beginOutcome: .readyToPreview(count: 1),
+            rejectOutcome: .sendMore(terminal: true)
+        )
+        let coordinator = SyncCoordinator(session: session, connection: connection, friendlyName: "Blue River")
+        var refreshes = 0
+        let token = NotificationCenter.default.addObserver(
+            forName: AppRuntimeView.dataChangedNotification, object: nil, queue: nil
+        ) { _ in refreshes += 1 }
+        defer { NotificationCenter.default.removeObserver(token) }
+
+        coordinator.start()
+        coordinator.rejectPreviewedContent()
+
+        XCTAssertEqual(refreshes, 0, "declining an import must not refresh an open app")
+    }
+
+    // MARK: - Exactly one initiator
+
+    /// The answering peer does NOT open the protocol. The core accepts a `Hello`
+    /// only from an idle session, so if both peers began, each would hand the
+    /// other a `Hello` in the wrong phase and both would fail. `answer()` leaves
+    /// this side idle and ready to receive.
+    func testAnswerDoesNotOpenTheProtocol() throws {
+        let channels = LoopbackFrameChannel.pair()
+        var wire: [Data] = []
+        channels.second.onReceive = { wire.append($0) }
+        let connection = NearbyConnection(bluetooth: channels.first, localAttempt: { nil })
+        connection.confirmPairing(); try connection.activate()
+        let session = FakeSyncBoundary(
+            outbound: [Data("summary".utf8)],
+            beginOutcome: .sendMore(terminal: false),
+            receiveOutcome: .sendMore(terminal: false)
+        )
+        let coordinator = SyncCoordinator(session: session, connection: connection, friendlyName: "Blue River")
+
+        coordinator.answer()
+
+        XCTAssertFalse(session.didBegin, "the answering peer must not open the protocol")
+        XCTAssertTrue(wire.isEmpty, "the answering peer must not send the first frame")
+        XCTAssertEqual(
+            coordinator.state, .gettingLatest(name: "Blue River"),
+            "the person who accepted the prompt should see the exchange running"
+        )
+
+        // It is nonetheless live: the initiator's frame drives it, which is the
+        // whole point of answering rather than sitting idle.
+        try channels.second.send(Data("hello".utf8))
+        XCTAssertEqual(wire, [Data("summary".utf8)], "the answering peer did not reply to the initiator")
+    }
 }
 
 private final class FakeSyncBoundary: MobileSyncSessionBoundary {

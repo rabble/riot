@@ -1,0 +1,175 @@
+import Foundation
+
+/// What THIS phone does about its space when it meets another one.
+public enum SpaceDecision: Equatable, Sendable {
+    /// Open the sync session. Either both phones are in the same space, or this
+    /// phone is in one and the other is not — in which case the other is being
+    /// asked, right now, whether to join THIS one, and the session is what they
+    /// join into.
+    case proceed
+    /// This phone is in no space and the peer is in one: joining theirs is what
+    /// makes a sync possible at all. The person is asked first.
+    case adopt(RiotSpace)
+    /// Both are in a space, and they are not the same one. A phone can only be
+    /// in one space, so this is refused — never silently switched.
+    case differentSpace
+    /// Neither phone is in a space. There is nothing to send either way.
+    case nothingToShare
+}
+
+public enum SpaceAdoption {
+    /// The whole rule, in one place, so it can be read and tested without a
+    /// radio. Namespaces are compared case-insensitively because the id is hex
+    /// text on this side of the FFI; the wire carries the raw bytes.
+    public static func decide(local: RiotSpace?, remote: RiotSpace?) -> SpaceDecision {
+        switch (local, remote) {
+        case (nil, nil):
+            // Two empty phones. Neither can even open a sync session.
+            return .nothingToShare
+        case let (nil, .some(theirs)):
+            return .adopt(theirs)
+        case (.some, nil):
+            // The mirror image of `.adopt`, seen from the phone that HAS the
+            // space: the other one is deciding whether to join it. So open the
+            // session and let them arrive. This must not end the connection —
+            // ending it here is exactly what would make the fresh phone's join
+            // land on a peer that has already hung up.
+            return .proceed
+        case let (.some(mine), .some(theirs)):
+            let same = mine.namespaceID.lowercased() == theirs.namespaceID.lowercased()
+            return same ? .proceed : .differentSpace
+        }
+    }
+}
+
+/// The profile a pairing acts on. `RiotProfileRepository` is the real one; the
+/// protocol exists so the transport does not reach into storage, and so a test
+/// can pair two real repositories over a real socket.
+public protocol NearbySpaceHost: AnyObject {
+    var currentSpace: RiotSpace? { get }
+    /// Joins `space` and RE-SEALS the identity — see `RiotProfileRepository`.
+    func joinSpace(_ space: RiotSpace) throws
+    func openSyncBoundary() throws -> MobileSyncSessionBoundary
+}
+
+/// The step before the sync: each phone says which space it is in, and only then
+/// is a sync session opened.
+///
+/// This has to come first. `open_sync_session` refuses a profile with no space,
+/// so a fresh phone cannot open a session to find out what it is missing — the
+/// space has to arrive before the session is asked for, and the only thing that
+/// knows it is the phone standing next to it.
+///
+/// It owns the connection's receive path from the moment it sends its announce
+/// until it hands over. That is not incidental: the peer sends its `Hello` the
+/// instant its own handshake finishes, which can be while the person here is
+/// still reading "Join Riverside Tenants Union?". Those frames are buffered and
+/// replayed IN ORDER into the coordinator once it exists. If the coordinator
+/// grabbed `onReceive` for itself, a frame arriving between that swap and the
+/// replay would jump the queue and the session would fail on an out-of-phase
+/// frame.
+public final class SpacePairing {
+    private let connection: NearbyConnection
+    private let host: NearbySpaceHost
+    private let friendlyName: String
+    /// Frames that arrive after the peer's announce, held until a coordinator is
+    /// ready for them. Same type the channels use, so ordering and the
+    /// attach-while-delivering race are already solved.
+    private let inbox = BoundedFrameInbox()
+    private let lock = NSLock()
+    private var announced = false
+    private var finished = false
+    private var onDecision: ((SpaceDecision) -> Void)?
+    private var onFailure: (() -> Void)?
+
+    public init(connection: NearbyConnection, host: NearbySpaceHost, friendlyName: String) {
+        self.connection = connection
+        self.host = host
+        self.friendlyName = friendlyName
+    }
+
+    /// Announces this phone's space and waits for the peer's. `onDecision` fires
+    /// exactly once, on the thread the peer's frame arrived on; `onFailure` fires
+    /// if the connection breaks or the peer's announce is malformed.
+    public func begin(
+        onDecision: @escaping (SpaceDecision) -> Void,
+        onFailure: @escaping () -> Void
+    ) {
+        self.onDecision = onDecision
+        self.onFailure = onFailure
+        connection.onReceive = { [weak self] frame in self?.receive(frame) }
+        connection.onFailure = { [weak self] in self?.fail() }
+        do {
+            try connection.send(SpaceAnnounceCodec.encode(host.currentSpace))
+        } catch {
+            fail()
+        }
+    }
+
+    /// Opens the sync session, joining `space` first when the person has agreed
+    /// to adopt the peer's. Joining BEFORE the boundary is opened is required in
+    /// both directions: `join_public_space` refuses while a sync session is
+    /// active, and `open_sync_session` refuses without a space.
+    public func resume(joining space: RiotSpace?) throws -> SyncCoordinator {
+        if let space { try host.joinSpace(space) }
+        return SyncCoordinator(
+            session: try host.openSyncBoundary(),
+            connection: connection,
+            friendlyName: friendlyName,
+            framesFromConnection: false
+        )
+    }
+
+    /// Hands the wire to the coordinator, replaying whatever arrived while the
+    /// handshake was still deciding. Call AFTER `start()`/`answer()`: a `Hello`
+    /// replayed into a coordinator that has not answered yet is a frame in the
+    /// wrong phase, which is the exact failure this class exists to avoid.
+    public func handOff(to coordinator: SyncCoordinator) {
+        inbox.onReceive = { [weak coordinator] frame in coordinator?.deliver(frame) }
+    }
+
+    /// Stops routing. The connection is the caller's to tear down.
+    public func cancel() {
+        lock.lock()
+        finished = true
+        onDecision = nil
+        onFailure = nil
+        lock.unlock()
+        inbox.onReceive = nil
+    }
+
+    private func receive(_ frame: Data) {
+        lock.lock()
+        guard !announced else {
+            lock.unlock()
+            // Anything after the announce belongs to the sync session: hold it
+            // (or pass it straight through once the coordinator is attached).
+            inbox.receive(frame)
+            return
+        }
+        announced = true
+        let decision = onDecision
+        lock.unlock()
+
+        let remote: RiotSpace?
+        do {
+            remote = try SpaceAnnounceCodec.decode(frame)
+        } catch {
+            fail()
+            return
+        }
+        guard let decision else { return }
+        decision(SpaceAdoption.decide(local: host.currentSpace, remote: remote))
+    }
+
+    private func fail() {
+        lock.lock()
+        guard !finished else { lock.unlock(); return }
+        finished = true
+        let failure = onFailure
+        onDecision = nil
+        onFailure = nil
+        lock.unlock()
+        failure?()
+    }
+}
