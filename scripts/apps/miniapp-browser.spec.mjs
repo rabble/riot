@@ -15,12 +15,16 @@ const APPS = [
   { app: "supply-board", name: "Needs & Offers", seededAction: "Post item", emptyAction: "Post item" },
   { app: "roll-call", name: "Events", seededAction: "Create event", emptyAction: "Create event" },
   { app: "quick-poll", name: "Decisions", seededAction: "Add a crossing guard", emptyAction: "Ask a new question" },
+  { app: "chat", name: "Chat", seededAction: "Send", emptyAction: "Send" },
+  { app: "dispatches", name: "Dispatches", seededAction: "Write a dispatch", emptyAction: "Write a dispatch" },
 ];
 
 const LIFECYCLE_APPS = [
   { app: "supply-board", name: "Needs & Offers", action: "Post item", root: "items", existing: "Existing supply request", field: "What is needed or offered?", draft: "A valid request" },
   { app: "roll-call", name: "Events", action: "Create event", root: "events", existing: "Existing block gathering" },
   { app: "quick-poll", name: "Decisions", action: "Ask a new question", root: "proposals", existing: "Existing community decision?" },
+  { app: "chat", name: "Chat", action: "Send", root: "messages", existing: "I can bring extra tea.", field: "Message", draft: "A valid message" },
+  { app: "dispatches", name: "Dispatches", action: "Write a dispatch", root: "posts", existing: "The garden gate is open again" },
 ];
 
 test("Frozen Checklist primary flow", async ({ page }) => {
@@ -28,6 +32,22 @@ test("Frozen Checklist primary flow", async ({ page }) => {
   await page.getByLabel("New item").fill("Bring extension cord");
   await page.getByRole("button", { name: "Add", exact: true }).click();
   await expect(page.getByText("Bring extension cord", { exact: true })).toBeVisible();
+});
+
+test("Chat primary flow", async ({ page }) => {
+  await page.goto("/apps/chat/?state=seeded");
+  await page.getByLabel("Message").fill("I can bring tea.");
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect(page.getByText("I can bring tea.", { exact: true })).toBeVisible();
+});
+
+test("Dispatches primary flow", async ({ page }) => {
+  await page.goto("/apps/dispatches/?state=seeded");
+  await page.getByRole("button", { name: "Write a dispatch" }).click();
+  await page.getByLabel("Title").fill("Garden gate repaired");
+  await page.getByLabel("Dispatch").fill("The east entrance is open again.");
+  await page.getByRole("button", { name: "Publish" }).click();
+  await expect(page.getByText("Garden gate repaired", { exact: true })).toBeVisible();
 });
 
 test("Needs & Offers primary flow", async ({ page }) => {
@@ -72,6 +92,25 @@ test("Frozen Checklist preserves a draft after a write error", async ({ page }) 
   await page.getByRole("button", { name: "Add", exact: true }).click();
   await expect(page.getByLabel("New item")).toHaveValue("Keep this task draft");
   await expect(page.getByRole("alert")).toContainText("Couldn't save");
+});
+
+test("Chat preserves a draft after a write error", async ({ page }) => {
+  await page.goto("/apps/chat/?state=error");
+  await page.getByLabel("Message").fill("Keep this message draft");
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect(page.getByLabel("Message")).toHaveValue("Keep this message draft");
+  await expect(page.getByRole("alert")).toContainText(/draft|safe|try again/i);
+});
+
+test("Dispatches preserves both drafts after a write error", async ({ page }) => {
+  await page.goto("/apps/dispatches/?state=error");
+  await page.getByRole("button", { name: "Write a dispatch" }).click();
+  await page.getByLabel("Title").fill("Keep this title");
+  await page.getByLabel("Dispatch").fill("Keep this longer dispatch body.");
+  await page.getByRole("button", { name: "Publish" }).click();
+  await expect(page.getByLabel("Title")).toHaveValue("Keep this title");
+  await expect(page.getByLabel("Dispatch")).toHaveValue("Keep this longer dispatch body.");
+  await expect(page.getByRole("alert")).toContainText(/draft|safe|try again/i);
 });
 
 test("Needs & Offers preserves a draft after a write error", async ({ page }) => {

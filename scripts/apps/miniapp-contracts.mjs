@@ -14,6 +14,8 @@ const APPS = [
   ["supply-board", "Needs & Offers"],
   ["roll-call", "Events"],
   ["quick-poll", "Decisions"],
+  ["chat", "Chat"],
+  ["dispatches", "Dispatches"],
 ];
 
 const missing = [];

@@ -47,7 +47,7 @@ function seedRows(app, state) {
   }
   if (state === "malformed") {
     if (app === "quick-poll") return [["meta/seeded", { version: 1, status: "ready" }], ["proposals/current", null], ["votes/bad/bad", null]];
-    const invalidKey = { checklist: "tasks/bad", "supply-board": "items/bad", "roll-call": "events/bad", "quick-poll": "votes/existing-decision/bad" }[app];
+    const invalidKey = { checklist: "tasks/bad", "supply-board": "items/bad", "roll-call": "events/bad", "quick-poll": "votes/existing-decision/bad", chat: "messages/bad", dispatches: "posts/bad" }[app];
     return existing ? [["meta/seeded", { version: 1, status: "ready" }], existing, [invalidKey, null]] : [];
   }
   if (state === "slow-write" && app === "checklist") {
