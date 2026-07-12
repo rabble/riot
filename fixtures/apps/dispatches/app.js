@@ -57,12 +57,12 @@ async function ensureSeeded() {
 function openIndex(returnFocus) { view = "index"; selectedKey = ""; paint(); if (returnFocus) writeButton.focus(); }
 function openDetail(key, focus) { selectedKey = key; view = "detail"; paint(); if (focus) detailView.focus(); }
 function openForm() { if (!ready) { showError("Wait for your identity before writing."); return; } view = "form"; paint(); titleInput.focus(); }
-function closeForm() { if (publishing) return; form.reset(); openIndex(true); }
+function closeForm() { if (publishing) return; clearError(); form.reset(); openIndex(true); }
 
 function paint() {
   const valid = rows.filter(validPost).sort((left, right) => right.value.created_at - left.value.created_at || right.key.localeCompare(left.key));
   const selected = valid.find((row) => row.key === selectedKey);
-  if (view === "detail" && !selected) { view = "index"; selectedKey = ""; requestAnimationFrame(() => writeButton.focus()); }
+  if (view === "detail" && !selected) { view = "index"; selectedKey = ""; requestAnimationFrame(() => (writeButton.disabled ? indexView : writeButton).focus()); }
   writeButton.disabled = !ready || publishing; titleInput.disabled = publishing; bodyInput.disabled = publishing; cancelButton.disabled = publishing; publishButton.disabled = !ready || publishing || !titleInput.value.trim() || !bodyInput.value.trim();
   indexView.hidden = view !== "index"; detailView.hidden = view !== "detail"; form.hidden = view !== "form";
   empty.hidden = valid.length > 0;

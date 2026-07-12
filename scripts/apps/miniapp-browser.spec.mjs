@@ -402,3 +402,28 @@ test("Dispatches returns focus to the index when an open detail becomes invalid"
   await expect(page.locator("#index-view")).toBeVisible();
   await expect(page.getByRole("button", { name: "Write a dispatch" })).toBeFocused();
 });
+
+test("Dispatches clears a failed-publish alert when Cancel abandons the drafts", async ({ page }) => {
+  await page.goto("/apps/dispatches/?state=error");
+  await page.getByRole("button", { name: "Write a dispatch" }).click();
+  await page.getByLabel("Title").fill("Abandon this title");
+  await page.getByLabel("Dispatch").fill("This failed draft will be intentionally abandoned.");
+  await page.getByRole("button", { name: "Publish" }).click();
+  await expect(page.locator("#error")).toContainText("drafts are safe");
+  await page.getByRole("button", { name: "Cancel" }).click();
+  await expect(page.locator("#index-view")).toBeVisible();
+  await expect(page.locator("#error")).toBeHidden();
+  await expect(page.locator("#status")).toHaveText(/\d+ dispatches/);
+  await page.getByRole("button", { name: "Write a dispatch" }).click();
+  await expect(page.getByLabel("Title")).toHaveValue("");
+  await expect(page.getByLabel("Dispatch")).toHaveValue("");
+});
+
+test("Dispatches focuses its index landmark when read-only detail is invalidated", async ({ page }) => {
+  await page.goto("/apps/dispatches/?state=identity-error");
+  await expect(page.getByRole("button", { name: "Write a dispatch" })).toBeDisabled();
+  await page.getByText("The garden gate is open again", { exact: true }).click();
+  await page.evaluate(() => riot.put("posts/10-existing", null));
+  await expect(page.locator("#index-view")).toBeVisible();
+  await expect(page.locator("#index-view")).toBeFocused();
+});
