@@ -188,12 +188,14 @@ pub fn decode_manifest(input: &[u8]) -> Result<AppManifest, AppsError> {
 fn namespace_kind_to_u8(kind: NamespaceKind) -> u8 {
     match kind {
         NamespaceKind::Communal => 0,
+        NamespaceKind::Owned => 1,
     }
 }
 
 fn namespace_kind_from_u8(value: u8) -> Option<NamespaceKind> {
     match value {
         0 => Some(NamespaceKind::Communal),
+        1 => Some(NamespaceKind::Owned),
         _ => None,
     }
 }

@@ -11,6 +11,7 @@ pub mod clock;
 pub mod digest;
 pub mod entry;
 pub mod identity;
+mod owned;
 
 use ufotofu::codec_prelude::{DecodableCanonic, EncodableExt};
 use ufotofu::producer::clone_from_slice;
@@ -31,6 +32,7 @@ pub use identity::{
     generate_communal_author, generate_communal_author_for_namespace, generate_space_organizer_author, AuthorIdentity,
     EvidenceAuthor, NamespaceKind, SEALED_IDENTITY_BYTES,
 };
+pub use owned::OwnedRoot;
 
 // Conformance-only injection surface: absent from the release riot-ffi graph.
 #[cfg(feature = "conformance")]
