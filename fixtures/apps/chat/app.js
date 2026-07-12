@@ -29,6 +29,13 @@ function showError(message) { error.textContent = message; error.hidden = false;
 function person(id) { if (me && id === me.id) return "You"; const profile = names.get(id); return profile ? `${profile.displayName} · ${profile.tag}` : "A neighbor"; }
 function resolveProfiles(ids) { [...new Set(ids)].forEach((id) => { if (!ID_PATTERN.test(id || "") || inflightProfiles.has(id) || names.has(id)) return; inflightProfiles.add(id); riot.profile(id).then((profile) => { inflightProfiles.delete(id); if (profile && typeof profile.displayName === "string" && typeof profile.tag === "string") names.set(id, profile); paint(); }).catch(() => inflightProfiles.delete(id)); }); }
 function nearBottom() { return document.documentElement.scrollHeight - window.scrollY - window.innerHeight < 120; }
+function syncComposerClearance() { const keepBottom = nearBottom(); document.documentElement.style.setProperty("--composer-clearance", `${Math.ceil(form.getBoundingClientRect().height)}px`); if (keepBottom) requestAnimationFrame(() => window.scrollTo(0, document.documentElement.scrollHeight)); }
+
+syncComposerClearance();
+requestAnimationFrame(syncComposerClearance);
+window.addEventListener("resize", syncComposerClearance);
+if ("ResizeObserver" in window) new ResizeObserver(syncComposerClearance).observe(form);
+else { input.addEventListener("input", syncComposerClearance); new MutationObserver(syncComposerClearance).observe(input, { attributes: true, attributeFilter: ["rows", "style"] }); }
 
 async function ensureSeeded() {
   const existing = await riot.list("messages"); const marker = await riot.get(SEED_MARKER);

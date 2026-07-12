@@ -1,6 +1,6 @@
-:root { --chat-blue: #2457d6; --chat-green: #14705f; --accent: var(--chat-blue); }
-html { scroll-padding-bottom: 116px; }
-body { padding: 0 var(--space-4) 112px; }
+:root { --chat-blue: #2457d6; --chat-green: #14705f; --accent: var(--chat-blue); --composer-clearance: 112px; }
+html { scroll-padding-bottom: calc(var(--composer-clearance) + var(--space-4)); }
+body { padding: 0 var(--space-4) calc(var(--composer-clearance) + var(--space-4)); }
 main { width: min(100%, 760px); margin: auto; }
 header { padding: var(--space-5) 0 var(--space-3); }
 .eyebrow { margin: 0; color: var(--chat-green); font-size: .78rem; font-weight: 850; letter-spacing: .14em; text-transform: uppercase; }

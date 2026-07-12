@@ -296,3 +296,26 @@ for (const { app, name, seededAction, emptyAction } of APPS) {
     });
   }
 }
+
+test("Chat keeps the final message clear of a resized composer on phone", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/apps/chat/?state=seeded");
+  await page.evaluate(async () => {
+    for (let index = 0; index < 16; index += 1) {
+      await riot.put(`messages/${100 + index}-clearance-${index}`, {
+        text: index === 15 ? "Final message stays visible" : `Conversation line ${index + 1}`,
+        created_at: 100 + index,
+        author_id: index % 2 ? "a".repeat(64) : "b".repeat(64),
+      });
+    }
+  });
+  await expect(page.getByText("Final message stays visible", { exact: true })).toBeVisible();
+  await page.getByLabel("Message").evaluate((textarea) => { textarea.style.height = "140px"; });
+  await expect.poll(() => page.locator("#composer").evaluate((composer) => composer.getBoundingClientRect().height)).toBeGreaterThan(112);
+  await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
+  const clearance = await page.evaluate(() => ({
+    messageBottom: document.querySelector("#messages li:last-child").getBoundingClientRect().bottom,
+    composerTop: document.getElementById("composer").getBoundingClientRect().top,
+  }));
+  expect(clearance.messageBottom).toBeLessThanOrEqual(clearance.composerTop);
+});
