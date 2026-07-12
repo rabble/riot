@@ -19,6 +19,10 @@ You need two iPhones.
   → "Load demo space." This seeds the *Riverside Tenants Union* space with six
   alerts, a partly-done checklist, and one available app in the directory.
   Load it once, well before you're on stage — never in front of the audience.
+  **Phone A must not already be in another space.** Demo mode refuses to load
+  onto a phone that has one — deliberately, because a phone can only be in one
+  space at a time, and quietly swapping it out would take away the very sync
+  this demo ends on. Use a phone with no space, or reset the profile first.
 - **Phone B** is a fresh install, signed in with its own profile, nothing
   loaded. It starts the demo with nothing on its board.
 
