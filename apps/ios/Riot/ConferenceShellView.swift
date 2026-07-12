@@ -482,6 +482,14 @@ private struct ConnectionStatusView: View {
             .sorted { $0.rendered < $1.rendered }
     }
 
+    /// Begin looking for peers, but only once the profile is open — a phone with
+    /// no identity yet would advertise and pair with nothing to announce. Safe to
+    /// call more than once; it no-ops unless idle and ready.
+    private func startDiscoveryWhenReady() {
+        guard model.me != nil, nearby.state == .idle else { return }
+        nearby.findNearby(host: model.nearbySpaceHost)
+    }
+
     /// What is happening with the person on the other end, in words. Reached only
     /// when there IS someone on the other end, so it never has to describe "no
     /// one" — that is the empty state's job.
@@ -642,13 +650,14 @@ private struct ConnectionStatusView: View {
             // of apps it did not have a moment ago — none of which this screen is
             // the source of. Re-read the profile when that happens.
             nearby.onSpaceJoined = { model.refreshFromStore() }
-            // Look for peers as soon as this screen appears, and connect to
-            // whatever we find. Nobody should have to tap to meet the phone
-            // next to them.
-            if nearby.state == .idle {
-                nearby.findNearby(host: model.nearbySpaceHost)
-            }
+            startDiscoveryWhenReady()
         }
+        // The profile opens asynchronously (`bootstrap` runs off the window's
+        // `.task`), and this screen can appear first. Starting discovery before
+        // the profile is open makes a phone advertise and pair with no identity
+        // and no space to announce — so wait until it is ready, and start the
+        // moment it becomes ready.
+        .onChange(of: model.me == nil) { _, _ in startDiscoveryWhenReady() }
         // This phone has no space and the one it just connected to does. Joining
         // is how a fresh phone becomes part of a community — but it is the
         // person's decision, named plainly, and nothing is joined until they make
