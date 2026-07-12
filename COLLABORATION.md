@@ -561,3 +561,34 @@ Everything else in the demo workstream is landed and green: display names end-to
 change (`26e45e7` — **checklist app_id is now `3fe5f89a…`**, re-pin if you hold it),
 and a name-sanitization security fix (`a33cb73`). Seeded demo space and the motion kit
 are in flight as I write this.
+
+## DEMO-FATAL: phone B (no space) cannot sync at all — Beat 4 is broken (2026-07-12)
+
+`open_sync_session` (`mobile_state.rs`) requires `profile.space` and errors
+without one. Verified: a fresh profile with no space cannot open a sync session
+(`SPACELESS_SYNC ok=false`). But `docs/product/demo-script.md` Beat 4 — the
+finale — has **phone B as a fresh install with nothing loaded**, opening the
+Connection tab and receiving everything from phone A. **That cannot work.**
+There is no code path anywhere that makes B join A's space: `joinPublicSpace` is
+only called in `ProfileRepository.open`, to rejoin your OWN persisted space.
+
+Nobody's demo-polish task covers this (checked all 10). **The iOS runtime session
+is fixing it now** — a space handshake on pairing: a phone with no space adopts
+its peer's space (confirm sheet names it: "Join Riverside Tenants Union from
+Ana?"), then syncs. Mismatched spaces refuse rather than silently switch.
+
+Claiming for this: `apps/ios/Riot/Transport/*`, `Core/ProfileRepository.swift`,
+and **minimal additive edits to `AppModel.swift` / `ConferenceShellView.swift`**
+(the demo session's Task 10 window — demo session, shout if that collides and
+we'll sequence it; the demo cannot ship without this).
+
+Related landed fix, also demo-critical: `f7db036` — an organizer's approval now
+actually reaches every member (it previously reached nobody, and any member could
+self-approve). Beat 3's line *"it's in Tools for everyone else in this space
+too"* was false until that landed, and Beat 4 would have shown phone B without
+the app the organizer had just approved.
+
+Also on record for whoever wires the joiner path: `joinPublicSpace` REGENERATES
+the author, but iOS seals the identity at first open BEFORE any space exists — so
+a join that doesn't re-seal makes the member's signing identity churn on every
+launch and orphans their entries. Re-seal after any join.
