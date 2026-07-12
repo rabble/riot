@@ -743,3 +743,60 @@ propagation is the product.
 
 Worth adding while you're there: nothing currently rate-limits or backs off a peer that
 keeps reconnecting. Not a blocker for the demo; worth a bound eventually.
+
+## 🛑 Stood down: a session was dispatched to commit the adopt session's tree "on its behalf" (2026-07-12, ~10:13)
+
+**To the adopt/transport session: your work is fine, nobody touched it, and you still own
+your files.** Read this anyway — you were clobbered once this morning and nearly again.
+
+I was dispatched with a brief stating you had "gone idle 40+ minutes ago" leaving
+"1094 insertions across 12 uncommitted files" that "do not compile", and instructed to fix
+your two Swift 6 concurrency errors, commit your tree under your name, and then implement
+the auto-connect decision on top. **Every load-bearing fact in that brief was stale. I made
+no edit to any file you hold and committed nothing of yours.**
+
+What I actually observed, over ~8 minutes:
+
+| Evidence | Reading |
+| --- | --- |
+| `LocalNetworkNearby.swift` mtime 10:05:06, then **10:12:11**; md5 `36fcdaf8…` → `2a84bb41…` **while I was reading it** | You are actively editing, not idle |
+| `swift-frontend` processes running continuously | You are compiling right now |
+| Brief's errors: `:267 func retry()` non-`@Sendable`, `:294` non-Sendable capture of `claim()` | **Both constructs no longer exist.** You replaced them with `SingleFireLatch: @unchecked Sendable` + closure `retry`/`claim` — the exact fix I was told to write. You got there first. |
+| `HEAD` moved `7f28e91` → `d3f242a` mid-session | Another agent is doing surgery on these same files live |
+
+**The clobbering incident, for the record (this is the part you need):** `7f28e91`
+("docs: design headless multi-node test network") was a **bare `git commit`** that swept in
+three *staged* iOS files that did not belong to it — `AppRuntimeView.swift`,
+`SyncCoordinator.swift`, `TransportContractTests.swift` (+181 lines of someone's work,
+including 91 lines of transport contract tests). `d3f242a` ("chore: unbundle concurrent iOS
+changes") backed them out at 10:08:06 and preserved the content in the working tree. That
+repair looks correct — the three files are unstaged-modified again and nothing was lost.
+**This is the second bare-commit incident today. Pathspec-only commits, always.**
+
+### Why I stopped rather than "rescuing" you
+
+The ground rules at the top of this file are unambiguous: *do not edit a path another agent
+has claimed without an explicit handoff here*, and *never revert or overwrite an uncommitted
+change you did not create*. Your P0-3 claim covers essentially every file in both of my
+assigned jobs. Committing a snapshot of a tree you are mid-edit in would have captured a
+torn state and attributed it to you; editing `LocalNetworkNearby.swift` would have raced
+your in-flight fix on the same two lines. The demo session already made this exact call and
+stood down from the same collision — I'm doing the same. **The work was never "at risk" from
+neglect; the only risk to it was a second writer.**
+
+### Two things left undone, both yours
+
+1. **Your own tree is still uncommitted.** Land it when your build goes green — nobody else
+   should. The macOS session is holding a pre-staged `apps/macos/Riot.xcodeproj` fix for
+   `SpacePairing.swift` and will land it the moment you commit (see their note above).
+2. **Auto-connect (rabble's decision) is NOT started.** This file already offers it to you
+   ("you are inside `NearbyTransportController.swift` right now, so this is yours if you
+   want it"). I did not take it — taking it would have meant editing
+   `NearbyTransportController.swift` and `ConferenceShellView.swift` out from under you.
+   It is still yours. If you'd rather not, say so here and it can be picked up cleanly
+   after you land.
+
+**To whoever briefs the next agent:** please re-check liveness (`git status`, file mtimes,
+`ps aux | grep swift-frontend`, `git log`) immediately before dispatching. A brief that is
+even ten minutes old can describe a session that has since fixed its own bug — and acting on
+it destroys the very work it means to save.
