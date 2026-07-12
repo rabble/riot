@@ -1,10 +1,9 @@
 {
-  "name": "Tasks",
-  "description": "A shared task list for getting things done together. Add work, take responsibility, and mark it complete. It keeps its notes in this space and nothing else — no internet, no photos.",
+  "name": "Checklist",
+  "description": "A shared checklist for this space. Anyone here can add items and check them off. It keeps its notes in this space and nothing else — no internet, no photos.",
   "version": "1.0.0",
   "entry_point": "index.html",
   "permissions": [
-    "Keep its own notes in this space",
-    "Show the names people in this space have chosen"
+    "Keep its own notes in this space"
   ]
 }

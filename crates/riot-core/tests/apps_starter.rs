@@ -69,7 +69,7 @@ fn the_shipped_catalog_verifies_completely() {
 /// Changing the source or repacking under new bytes changes this value —
 /// which is correct: new bytes are a new trust decision.
 const CHECKLIST_APP_ID_HEX: &str =
-    "6cbc40f13a7cb90247b90c4d71565bc0bdb10d87a202a940fbc86288d6aee480";
+    "3fe5f89af18d9244756c8925750280f0c51479030cf3cd7b4d26940b51eaa4b7";
 
 fn to_hex(bytes: &[u8]) -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";
@@ -82,10 +82,10 @@ fn to_hex(bytes: &[u8]) -> String {
 }
 
 #[test]
-fn shipped_catalog_contains_tasks() {
+fn shipped_catalog_contains_the_checklist() {
     let apps = verify_starter_catalog(STARTER_CATALOG);
     assert_eq!(apps.len(), 1);
-    assert_eq!(apps[0].manifest.name, "Tasks");
+    assert_eq!(apps[0].manifest.name, "Checklist");
     assert_eq!(apps[0].manifest.entry_point, "index.html");
     assert_eq!(to_hex(&apps[0].app_id), CHECKLIST_APP_ID_HEX);
 }

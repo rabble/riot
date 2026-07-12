@@ -1,28 +1,17 @@
-:root { --leaf: #287447; --leaf-soft: #dcebd7; --accent: var(--leaf); }
-body { padding: var(--space-4); background-image: radial-gradient(circle at 12px 12px, rgb(40 116 71 / 8%) 1px, transparent 1px); background-size: 24px 24px; }
-main { width: min(100%, 760px); margin: 0 auto; }
-header { padding: var(--space-5) 0 var(--space-4); }
-.eyebrow { margin: 0; color: var(--leaf); font-size: .78rem; font-weight: 800; letter-spacing: .12em; text-transform: uppercase; }
-h1 { margin: 0; font-size: clamp(2.5rem, 10vw, 5rem); line-height: .95; letter-spacing: -.055em; }
-.intro { max-width: 38rem; margin: var(--space-3) 0 0; color: var(--muted); }
-.composer { padding: var(--space-4); border: 1px solid var(--line); border-radius: var(--radius-lg); background: var(--surface); box-shadow: var(--shadow); }
-.composer > label { display: block; margin-bottom: var(--space-2); font-size: .82rem; font-weight: 800; letter-spacing: .05em; text-transform: uppercase; }
-.form-row { display: flex; gap: var(--space-2); }
-input { min-width: 0; flex: 1; padding: 0 var(--space-3); border: 2px solid var(--line); border-radius: var(--radius); background: var(--paper); }
-button { border: 0; border-radius: var(--radius); cursor: pointer; font-weight: 800; }
-#add { padding: 0 var(--space-5); background: var(--leaf); color: #fff; }
-#items { display: grid; gap: var(--space-3); margin: var(--space-5) 0 0; padding: 0; list-style: none; }
-.task { display: grid; grid-template-columns: 48px minmax(0, 1fr) auto; align-items: center; gap: var(--space-3); padding: var(--space-3); border: 1px solid var(--line); border-left: 6px solid var(--leaf); border-radius: var(--radius); background: var(--surface); box-shadow: 0 3px 0 rgb(40 116 71 / 14%); }
-.task.done { opacity: .72; border-left-color: var(--line); box-shadow: none; }
-.toggle { width: 44px; padding: 0; border: 2px solid var(--leaf); background: transparent; color: var(--leaf); font-size: 1.25rem; }
-.done .toggle { background: var(--leaf); color: #fff; }
-.task-copy { min-width: 0; }
-.task-text { display: block; font-weight: 750; overflow-wrap: anywhere; }
-.done .task-text { text-decoration: line-through 2px; text-decoration-color: var(--leaf); }
-.meta { display: block; margin-top: var(--space-1); color: var(--muted); font-size: .78rem; }
-.assign { padding: 0 var(--space-3); border: 1px solid var(--line); background: var(--paper); }
-.notice { padding: var(--space-3); border-left: 5px solid #b4382f; border-radius: var(--radius-sm); background: var(--surface); }
-.status { min-height: 1.5em; margin: var(--space-3) 0 0; color: var(--muted); }
-.empty { padding: var(--space-6) var(--space-4); border: 2px dashed var(--line); border-radius: var(--radius); color: var(--muted); text-align: center; }
-@media (prefers-color-scheme: dark) { :root { --leaf: #79d69a; --leaf-soft: #213a2a; } #add, .done .toggle { color: #102217; } }
-@media (max-width: 560px) { body { padding: var(--space-3); } .form-row { flex-direction: column; } #add { width: 100%; } .task { grid-template-columns: 44px minmax(0, 1fr); } .assign { grid-column: 2; justify-self: start; } }
+:root { color-scheme: light dark; }
+body { font-family: -apple-system, sans-serif; margin: 0; padding: 16px; background: Canvas; color: CanvasText; }
+main { max-width: 480px; margin: 0 auto; }
+h1 { font-size: 1.4rem; text-transform: uppercase; letter-spacing: 0.05em; }
+#add-form { display: flex; gap: 8px; margin-bottom: 16px; }
+/* Form controls do not inherit color: WebKit gives them fieldtext/buttontext,
+   and buttontext resolved to white here — which made this button, whose border
+   is currentColor, invisible against the page. */
+#new-item { flex: 1; padding: 10px; border: 2px solid currentColor; font-size: 1rem; color: inherit; background: none; }
+#add { padding: 10px 16px; border: 2px solid currentColor; background: none; font-size: 1rem; color: inherit; }
+#items { list-style: none; padding: 0; margin: 0; }
+#items li { display: flex; align-items: center; gap: 10px; padding: 10px 0; border-bottom: 1px solid currentColor; }
+#items li.done label { text-decoration: line-through; opacity: 0.6; }
+#items input[type="checkbox"] { width: 22px; height: 22px; }
+#items .meta { margin-left: auto; font-size: 0.75rem; opacity: 0.6; }
+#error { border: 2px solid currentColor; padding: 8px; }
+#empty { opacity: 0.6; }
