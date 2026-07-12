@@ -75,11 +75,25 @@ private struct PersistedAppPack: Codable {
     let bundle: Data
 }
 
+/// One app this profile recommended, kept as the CLAIM rather than the signed
+/// marker, for the same reason `displayName` is: `endorse_app` hands back no
+/// bundle to replay, and the entry it writes lives in Rust's in-memory store.
+/// Re-endorsing on open rewrites the same last-write-wins coordinate.
+private struct PersistedEndorsement: Codable {
+    let appIDHex: String
+    let note: String
+}
+
 private struct PersistedProfile: Codable {
     var space: RiotSpace?
     var alerts: [PersistedAlert]
     var sealedIdentity: Data?
     var trustedAppIDs: [String]
+    // Apps this person recommended to the people they sync with. Rust's marker
+    // store is in-memory like the rest, so without this the endorsement is gone
+    // on the next launch — the app stays in the directory, but this person's own
+    // "I vouch for this" is silently withdrawn from everyone they sync with.
+    var endorsements: [PersistedEndorsement]
     // Committed signed app-data bundles (the receipts returned by
     // `appDataPutWithReceipt`), replayed in order on open so app data survives a
     // process restart (Rust's app-data store is in-memory per session).
@@ -113,6 +127,7 @@ private struct PersistedProfile: Codable {
         alerts: [],
         sealedIdentity: nil,
         trustedAppIDs: [],
+        endorsements: [],
         appDataBundles: [],
         carriedApps: [],
         demoBundle: nil,
@@ -124,6 +139,7 @@ private struct PersistedProfile: Codable {
         alerts: [PersistedAlert],
         sealedIdentity: Data?,
         trustedAppIDs: [String],
+        endorsements: [PersistedEndorsement],
         appDataBundles: [Data],
         carriedApps: [PersistedAppPack],
         demoBundle: Data?,
@@ -133,6 +149,7 @@ private struct PersistedProfile: Codable {
         self.alerts = alerts
         self.sealedIdentity = sealedIdentity
         self.trustedAppIDs = trustedAppIDs
+        self.endorsements = endorsements
         self.appDataBundles = appDataBundles
         self.carriedApps = carriedApps
         self.demoBundle = demoBundle
@@ -149,6 +166,8 @@ private struct PersistedProfile: Codable {
         alerts = try container.decodeIfPresent([PersistedAlert].self, forKey: .alerts) ?? []
         sealedIdentity = try container.decodeIfPresent(Data.self, forKey: .sealedIdentity)
         trustedAppIDs = try container.decodeIfPresent([String].self, forKey: .trustedAppIDs) ?? []
+        endorsements = try container
+            .decodeIfPresent([PersistedEndorsement].self, forKey: .endorsements) ?? []
         appDataBundles = try container.decodeIfPresent([Data].self, forKey: .appDataBundles) ?? []
         carriedApps = try container.decodeIfPresent([PersistedAppPack].self, forKey: .carriedApps) ?? []
         demoBundle = try container.decodeIfPresent(Data.self, forKey: .demoBundle)
@@ -321,6 +340,17 @@ public final class RiotProfileRepository {
             try? appRuntime.trustApp(appId: appID)
         }
 
+        // Endorsement markers live in that same in-memory store. Re-assert them
+        // under the CURRENT author, which is why this runs after the space is
+        // restored: a join regenerates the author, and a marker written under the
+        // old subspace would be signed by someone who no longer exists. Endorsing
+        // an app whose bytes are not held here is allowed by design, so this does
+        // not depend on the install loop above having succeeded.
+        for endorsement in persisted.endorsements {
+            guard let appID = RiotDirectoryRow.bytes(hex: endorsement.appIDHex) else { continue }
+            try? appRuntime.endorseApp(appId: appID, note: endorsement.note, retract: false)
+        }
+
         // Rust's app-data store is in-memory per session, so re-commit the
         // persisted signed bundles in the order they were written. A single
         // corrupt bundle is skipped (`try?`) rather than aborting the open.
@@ -455,6 +485,20 @@ public final class RiotProfileRepository {
             permissions: app.record.permissions,
             trusted: try appRuntime.isAppTrusted(appId: app.record.appId)
         )
+    }
+
+    /// Whether this profile may approve apps for its space. Ask BEFORE offering
+    /// "Let everyone here use this": a button that cannot succeed should not be
+    /// drawn, which is better than any error message it could show.
+    public func isOrganizer() throws -> Bool {
+        try appRuntime.isOrganizer()
+    }
+
+    /// False only for a profile made before spaces had organizers — it can never
+    /// approve an app for ANY space, and the only remedy is a new profile. This is
+    /// what separates that from the ordinary "you are a member here" case.
+    public func canOrganize() throws -> Bool {
+        try appRuntime.canOrganize()
     }
 
     /// Marks an app trusted in Rust and persists the decision so it survives a
@@ -765,7 +809,16 @@ extension RiotProfileRepository: DirectoryPorting {
     /// an app whose bytes have not arrived yet is allowed by design — the marker
     /// composes with the app's later arrival.
     public func endorseApp(appID: Data, note: String, retract: Bool) throws {
+        // Rust first: a marker it refuses is never written to disk.
         try appRuntime.endorseApp(appId: appID, note: note, retract: retract)
+        let appIDHex = RiotDirectoryRow.hex(appID).lowercased()
+        persisted.endorsements.removeAll { $0.appIDHex == appIDHex }
+        if !retract {
+            persisted.endorsements.append(
+                PersistedEndorsement(appIDHex: appIDHex, note: note)
+            )
+        }
+        try storage.save(persisted)
     }
 
     /// Takes up an app this profile carries but has not run: Rust admits it from

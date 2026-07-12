@@ -85,6 +85,110 @@ final class BindingSemanticsTests: XCTestCase {
         XCTAssertEqual(try secondProcess.currentEntries().count, 2)
     }
 
+    /// A member's own alert must still be on the board after a relaunch.
+    ///
+    /// The creator's case is covered above, and it is not the same case: the
+    /// creator's author namespace IS the space, while a joiner's author was
+    /// regenerated INTO someone else's namespace. `open` re-joins before it
+    /// replays, so this pins that a joiner's replay still lands on the board.
+    /// `testJoinersSubspaceIdIsIdenticalAfterReopening` does not pin it — it
+    /// asserts one distinct signer, which still holds if the pre-restart alert
+    /// vanished entirely.
+    func testAlertSignedAfterJoiningSomeoneElsesSpaceSurvivesReopen() throws {
+        let organizer = try openRepository()
+        let space = try organizer.repository.createPublicSpace(title: "Riverside Tenants Union")
+
+        let member = try openRepository()
+        try member.repository.joinSpace(space)
+        let signed = try member.repository.signAlert(
+            in: space,
+            draft: restartDraft(headline: "Member's alert, written after joining")
+        )
+
+        let reopened = try RiotProfileRepository.open(
+            storage: try ProtectedProfileStorage(fileURL: member.url),
+            keyStore: member.keys
+        )
+
+        XCTAssertEqual(reopened.currentSpace, space)
+        XCTAssertEqual(
+            try reopened.currentEntries().map(\.entryID), [signed.entryID],
+            "the member's own alert is gone from the board after a relaunch"
+        )
+    }
+
+    /// An endorsement is this person vouching for an app to everyone they sync
+    /// with. Rust keeps the marker in the same in-memory store as trust, so
+    /// without a persisted claim to re-assert, a relaunch silently withdraws it.
+    func testEndorsementSurvivesReopen() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let url = directory.appendingPathComponent("profile.json")
+        let keys = TestWrappingKeyStore()
+        let packs = try starterPacks()
+
+        let first = try RiotProfileRepository.open(
+            storage: try ProtectedProfileStorage(fileURL: url),
+            keyStore: keys,
+            starterPacks: packs
+        )
+        _ = try first.createPublicSpace(title: "Riverside Tenants Union")
+        let app = try XCTUnwrap(first.installedApps().first)
+        let appID = try XCTUnwrap(RiotDirectoryRow.bytes(hex: app.appIDHex))
+        let me = try first.me().id.lowercased()
+
+        try first.endorseApp(appID: appID, note: "We use this every week", retract: false)
+        XCTAssertTrue(
+            try endorsers(of: app.appIDHex, in: first).contains(me),
+            "precondition: the endorsement is there before the relaunch"
+        )
+
+        let reopened = try RiotProfileRepository.open(
+            storage: try ProtectedProfileStorage(fileURL: url),
+            keyStore: keys,
+            starterPacks: packs
+        )
+
+        XCTAssertTrue(
+            try endorsers(of: app.appIDHex, in: reopened).contains(me),
+            "this person's endorsement is gone from the directory after a relaunch"
+        )
+    }
+
+    /// Retracting is a decision too: it must not come back from the dead on the
+    /// next launch because the claim was still sitting in the snapshot.
+    func testRetractedEndorsementStaysRetractedAcrossReopen() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let url = directory.appendingPathComponent("profile.json")
+        let keys = TestWrappingKeyStore()
+        let packs = try starterPacks()
+
+        let first = try RiotProfileRepository.open(
+            storage: try ProtectedProfileStorage(fileURL: url),
+            keyStore: keys,
+            starterPacks: packs
+        )
+        _ = try first.createPublicSpace(title: "Riverside Tenants Union")
+        let app = try XCTUnwrap(first.installedApps().first)
+        let appID = try XCTUnwrap(RiotDirectoryRow.bytes(hex: app.appIDHex))
+        let me = try first.me().id.lowercased()
+
+        try first.endorseApp(appID: appID, note: "Recommended", retract: false)
+        try first.endorseApp(appID: appID, note: "", retract: true)
+
+        let reopened = try RiotProfileRepository.open(
+            storage: try ProtectedProfileStorage(fileURL: url),
+            keyStore: keys,
+            starterPacks: packs
+        )
+
+        XCTAssertFalse(
+            try endorsers(of: app.appIDHex, in: reopened).contains(me),
+            "a withdrawn endorsement was re-asserted on the next launch"
+        )
+    }
+
     func testLegacySnapshotWithoutSealedIdentityMigratesWithoutLosingSignedContent() throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -104,6 +208,57 @@ final class BindingSemanticsTests: XCTestCase {
         XCTAssertEqual(try migrated.currentEntries().map(\.entryID), [signed.entryID])
         XCTAssertEqual(try sealedIdentityBytes(in: snapshotURL).count, 112)
     }
+}
+
+private extension BindingSemanticsTests {
+    func starterPacks() throws -> [(manifest: Data, bundle: Data)] {
+        let apps = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent() // RiotTests
+            .deletingLastPathComponent() // ios
+            .deletingLastPathComponent() // apps
+            .deletingLastPathComponent() // repo root
+            .appendingPathComponent("fixtures/apps")
+        return [(
+            manifest: try Data(contentsOf: apps.appendingPathComponent("checklist.manifest.cbor")),
+            bundle: try Data(contentsOf: apps.appendingPathComponent("checklist.bundle.cbor"))
+        )]
+    }
+
+    /// The subspaces the directory currently shows as endorsing `appIDHex`,
+    /// lowercased — core's own answer, not the snapshot's.
+    func endorsers(
+        of appIDHex: String,
+        in repository: RiotProfileRepository
+    ) throws -> [String] {
+        let listing = try repository.directoryListings().first {
+            RiotDirectoryRow.hex($0.appId).lowercased() == appIDHex.lowercased()
+        }
+        return try XCTUnwrap(listing).endorsingMetSubspaces
+            .map { RiotDirectoryRow.hex($0).lowercased() }
+    }
+}
+
+/// One profile's storage plus the wrapping key it was sealed under — everything
+/// needed to open the SAME person again, which is what a relaunch does.
+private struct OpenedRepository {
+    let repository: RiotProfileRepository
+    let url: URL
+    let keys: WrappingKeyStore
+}
+
+private func openRepository() throws -> OpenedRepository {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let url = directory.appendingPathComponent("profile.json")
+    let keys = TestWrappingKeyStore()
+    return OpenedRepository(
+        repository: try RiotProfileRepository.open(
+            storage: try ProtectedProfileStorage(fileURL: url),
+            keyStore: keys
+        ),
+        url: url,
+        keys: keys
+    )
 }
 
 private final class TestWrappingKeyStore: WrappingKeyStore {
