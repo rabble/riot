@@ -185,11 +185,12 @@ pub fn project(
                 }
             }
             NewswirePayload::EditorialAction(action)
-                if action.space_descriptor_entry_id == descriptor_id =>
+                if action.space_descriptor_entry_id == descriptor_id
+                    && roster.contains(&record.signer_id()) =>
             {
                 if record.tai_j2000_micros() > future_cutoff {
                     future.push(key);
-                } else if roster.contains(&record.signer_id()) {
+                } else {
                     actions.push(EligibleAction {
                         key,
                         record,
@@ -222,6 +223,9 @@ pub fn project(
         .map(|(index, action)| (action.record.entry_id(), index))
         .collect::<BTreeMap<_, _>>();
     let mut retracted = BTreeSet::new();
+    // Retractions are evaluated against pre-retraction target eligibility. This
+    // keeps every strictly later valid suppressing act active, independent of
+    // input order, while applying their shared suppression after the scan.
     for index in 0..actions.len() {
         if actions[index].action.kind != EditorialActionKind::Retract {
             continue;
@@ -230,6 +234,7 @@ pub fn project(
             continue;
         };
         if actions[target_index].action.kind == EditorialActionKind::Retract
+            || !actions[target_index].active
             || actions[target_index].key >= actions[index].key
         {
             continue;
@@ -243,9 +248,15 @@ pub fn project(
         }
     }
 
-    let tombstoned_post_ids = actions
+    let plaintext_redacted_post_ids = actions
         .iter()
-        .filter(|action| action.active && action.action.kind == EditorialActionKind::Tombstone)
+        .filter(|action| {
+            action.active
+                && matches!(
+                    action.action.kind,
+                    EditorialActionKind::Hide | EditorialActionKind::Tombstone
+                )
+        })
         .map(|action| action.action.target_entry_id)
         .collect::<BTreeSet<_>>();
 
@@ -259,7 +270,7 @@ pub fn project(
             kind: action.action.kind,
             reason: action.action.reason.clone(),
             correction_text: if action.action.kind == EditorialActionKind::Correct
-                && tombstoned_post_ids.contains(&action.action.target_entry_id)
+                && plaintext_redacted_post_ids.contains(&action.action.target_entry_id)
             {
                 None
             } else {
@@ -322,7 +333,7 @@ pub fn project(
         } else if !hide_ids.is_empty() {
             (
                 None,
-                eligible.post.source_claims.clone(),
+                Vec::new(),
                 PostTreatment::Hidden { actions: hide_ids },
             )
         } else {
@@ -382,6 +393,14 @@ mod tests {
     fn id(value: u32) -> EntryId {
         let mut id = [0; 32];
         id[28..].copy_from_slice(&value.to_be_bytes());
+        id
+    }
+
+    fn spread_id(early: u8, middle: u8, final_byte: u8) -> EntryId {
+        let mut id = [0; 32];
+        id[0] = early;
+        id[15] = middle;
+        id[31] = final_byte;
         id
     }
 
@@ -566,6 +585,27 @@ mod tests {
     }
 
     #[test]
+    fn equal_time_posts_compare_early_middle_and_final_id_bytes() {
+        let early = spread_id(1, 0, 0);
+        let middle = spread_id(1, 1, 0);
+        let final_byte = spread_id(1, 1, 1);
+        let greatest_early = spread_id(2, 0, 0);
+        let view = projection(&[
+            post(middle, 200, None),
+            post(greatest_early, 200, None),
+            post(early, 200, None),
+            post(final_byte, 200, None),
+        ]);
+        assert_eq!(
+            view.open_wire
+                .iter()
+                .map(|post| post.entry_id)
+                .collect::<Vec<_>>(),
+            vec![greatest_early, final_byte, middle, early]
+        );
+    }
+
+    #[test]
     fn exact_duplicate_collapses_and_conflicting_duplicate_errors() {
         let first = post(id(2), 200, None);
         let duplicate = first.clone();
@@ -621,6 +661,25 @@ mod tests {
     }
 
     #[test]
+    fn future_unknown_editor_action_is_not_collective_quarantine() {
+        let future_time = clock().tai_j2000_micros + MAX_FUTURE_SKEW_MICROS + 1;
+        let view = projection(&[
+            post(id(2), 100, None),
+            action_bound_to(
+                id(10),
+                future_time,
+                id(2),
+                EditorialActionKind::Feature,
+                [0x99; 32],
+                id(1),
+            ),
+        ]);
+        assert!(view.future_quarantine.is_empty());
+        assert!(view.editorial_history.is_empty());
+        assert!(view.front_page.is_empty());
+    }
+
+    #[test]
     fn future_cutoff_overflow_returns_stable_clock_error() {
         let overflow = ProjectionClockV1 {
             unix_seconds: 1_800_000_000,
@@ -646,6 +705,39 @@ mod tests {
             action(id(12), 400, id(3), EditorialActionKind::Feature),
         ];
         let view = projection(&records);
+        assert_eq!(
+            view.front_page
+                .iter()
+                .map(|post| post.entry_id)
+                .collect::<Vec<_>>(),
+            vec![id(2), id(3)]
+        );
+    }
+
+    #[test]
+    fn equal_time_features_compare_the_complete_action_id() {
+        let smaller_feature = spread_id(1, 0xff, 0xff);
+        let greater_feature = spread_id(2, 0, 0);
+        let view = projection(&[
+            post(id(2), 100, None),
+            post(id(3), 200, None),
+            action_bound_to(
+                smaller_feature,
+                500,
+                id(3),
+                EditorialActionKind::Feature,
+                EDITOR,
+                id(1),
+            ),
+            action_bound_to(
+                greater_feature,
+                500,
+                id(2),
+                EditorialActionKind::Feature,
+                EDITOR,
+                id(1),
+            ),
+        ]);
         assert_eq!(
             view.front_page
                 .iter()
@@ -718,7 +810,7 @@ mod tests {
     }
 
     #[test]
-    fn hide_treatment_removes_body_from_ordinary_projection() {
+    fn hide_treatment_removes_body_and_sources_from_ordinary_projection() {
         let view = projection(&[
             post(id(2), 100, None),
             action(id(10), 200, id(2), EditorialActionKind::Hide),
@@ -730,7 +822,37 @@ mod tests {
                 actions: vec![id(10)]
             }
         );
-        assert_eq!(view.open_wire[0].source_claims, vec!["eyewitness"]);
+        assert!(view.open_wire[0].source_claims.is_empty());
+    }
+
+    #[test]
+    fn hidden_row_redacts_sources_and_correction_plaintext_without_detail_api() {
+        let view = projection(&[
+            post(id(2), 100, None),
+            action(id(10), 200, id(2), EditorialActionKind::Correct),
+            action(id(11), 300, id(2), EditorialActionKind::Hide),
+        ]);
+        let row = &view.open_wire[0];
+        let correction = view
+            .editorial_history
+            .iter()
+            .find(|action| action.entry_id == id(10))
+            .unwrap();
+        assert_eq!(
+            (
+                row.source_claims.clone(),
+                correction.correction_text.clone()
+            ),
+            (Vec::<String>::new(), None)
+        );
+        assert_eq!(row.body, None);
+        assert_eq!(row.correction_ids, vec![id(10)]);
+        assert_eq!(correction.entry_id, id(10));
+        assert_eq!(correction.signer_id, EDITOR);
+        assert_eq!(correction.tai_j2000_micros, 200);
+        assert_eq!(correction.kind, EditorialActionKind::Correct);
+        assert!(correction.reason.is_some());
+        assert!(correction.active);
     }
 
     #[test]
@@ -780,6 +902,88 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![(id(10), false), (id(11), true)]
         );
+    }
+
+    #[test]
+    fn retract_targeting_effectless_action_is_inactive() {
+        let view = projection(&[
+            post(id(2), 100, None),
+            action(id(20), 200, id(99), EditorialActionKind::Feature),
+            action(id(21), 300, id(20), EditorialActionKind::Retract),
+        ]);
+        assert_eq!(
+            view.editorial_history
+                .iter()
+                .map(|action| (action.entry_id, action.active))
+                .collect::<Vec<_>>(),
+            vec![(id(20), false), (id(21), false)]
+        );
+        assert!(view.front_page.is_empty());
+    }
+
+    #[test]
+    fn all_strictly_later_equal_time_retractions_are_active_and_permutation_stable() {
+        let feature_id = spread_id(1, 1, 1);
+        let earlier_retract_id = spread_id(1, 1, 0);
+        let later_retract_one_id = spread_id(1, 2, 0);
+        let later_retract_two_id = spread_id(2, 0, 0);
+        let records = vec![
+            post(id(2), 100, None),
+            action_bound_to(
+                feature_id,
+                200,
+                id(2),
+                EditorialActionKind::Feature,
+                EDITOR,
+                id(1),
+            ),
+            action_bound_to(
+                earlier_retract_id,
+                200,
+                feature_id,
+                EditorialActionKind::Retract,
+                EDITOR,
+                id(1),
+            ),
+            action_bound_to(
+                later_retract_one_id,
+                200,
+                feature_id,
+                EditorialActionKind::Retract,
+                EDITOR,
+                id(1),
+            ),
+            action_bound_to(
+                later_retract_two_id,
+                200,
+                feature_id,
+                EditorialActionKind::Retract,
+                EDITOR,
+                id(1),
+            ),
+        ];
+        let expected = projection(&records);
+        assert_eq!(
+            expected
+                .editorial_history
+                .iter()
+                .map(|action| (action.entry_id, action.active))
+                .collect::<Vec<_>>(),
+            vec![
+                (earlier_retract_id, false),
+                (feature_id, false),
+                (later_retract_one_id, true),
+                (later_retract_two_id, true),
+            ]
+        );
+        assert!(expected.front_page.is_empty());
+
+        let mut reversed = records.clone();
+        reversed.reverse();
+        assert_eq!(projection(&reversed), expected);
+        let mut rotated = records;
+        rotated.rotate_left(2);
+        assert_eq!(projection(&rotated), expected);
     }
 
     #[test]
