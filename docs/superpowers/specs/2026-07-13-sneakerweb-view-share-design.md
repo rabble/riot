@@ -1,10 +1,9 @@
 # SneakerWeb view-and-share design
 
 Status: Product design and the human-directed post-escalation revision were
-approved on 2026-07-13. The revision is pending a fresh Metaswarm design review
-gate before planning or implementation. Fresh gate round 1 returned
-NEEDS_REVISION, and round 2 returned NEEDS_REVISION on native picker handoff and
-terminal UX details. This version resolves both rounds and is pending round 3.
+approved on 2026-07-13. Fresh Metaswarm gate rounds 1 and 2 returned
+NEEDS_REVISION; all five reviewers approved the resolved design in round 3 on
+2026-07-13. Written-spec user review is pending before implementation planning.
 
 ## Purpose
 
@@ -1480,3 +1479,27 @@ support until both import and export pass the official CLI round trip.
   and physical-device gates pass.
 - User-facing docs explain `Content is intact` versus publisher trust and the
   public nature of shared `.snk` content.
+
+## Design review record
+
+The post-escalation gate approved this design unanimously in round 3:
+
+| Role | Verdict |
+| --- | --- |
+| Product Manager | APPROVED |
+| Architect | APPROVED |
+| Designer/UX | APPROVED |
+| Security | APPROVED |
+| CTO/TDD readiness | APPROVED |
+
+Non-blocking notes carried into implementation planning:
+
+- choose one unambiguous picker event model (queued events or direct typed
+  returns) and enumerate every generated FFI task method;
+- bound and test CSPRNG collision retry for listing/share/revision IDs;
+- name and test the exact atomic no-replace primitive and unsupported-filesystem
+  error mapping on each platform;
+- make iOS result-bundle freshness checks as strict as Android's;
+- return organizers from app enablement to the preserved share selection; and
+- screen-reader test the independent Newswire/Directory choices when both share
+  one carrier.
