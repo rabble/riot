@@ -134,7 +134,7 @@ a:focus-visible, button:focus-visible { outline: 3px solid var(--pink); outline-
 
 /* ---------- Hero ---------- */
 .hero { padding: clamp(48px, 9vw, 96px) 0 clamp(48px, 8vw, 88px); position: relative; }
-.hero-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(260px, 420px); gap: clamp(24px, 5vw, 64px); align-items: center; }
+.hero-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(300px, 420px); gap: clamp(32px, 5vw, 72px); align-items: start; }
 .hero-stamp {
   display: inline-block;
   font-family: 'Space Mono', monospace;
@@ -169,28 +169,80 @@ a:focus-visible, button:focus-visible { outline: 3px solid var(--pink); outline-
 .btn.solid { background: var(--ink); color: var(--paper); }
 .btn.solid:hover { background: var(--pink); border-color: var(--pink); color: var(--paper); }
 .btn.outline:hover { border-color: var(--pink); color: var(--pink); }
-.hero-note { font-family: 'Space Mono', monospace; font-size: 12px; color: var(--ink-soft); }
-
-.hero-mesh { position: relative; aspect-ratio: 1 / 1; }
-.hero-mesh svg { display: block; }
-.hero-mesh .medge { stroke: var(--blue); stroke-width: 1.6; opacity: 0.7; }
-.hero-mesh .medge.dash { stroke: var(--pink); stroke-dasharray: 5 6; opacity: 0.85; }
-.hero-mesh .mnode { fill: var(--ink); }
-.hero-mesh .mnode.bridge { fill: var(--pink); }
-.hero-mesh .mnode-ring { fill: none; stroke: var(--pink); stroke-width: 1.4; opacity: 0.55; }
-.hero-mesh-caption {
-  margin-top: 14px;
+.hero-details { max-width: 600px; margin-top: 34px; padding-top: 20px; border-top: 2px solid var(--ink); }
+.hero-details-kicker {
+  margin: 0 0 8px;
+  color: var(--pink);
   font-family: 'Space Mono', monospace;
   font-size: 11px;
-  letter-spacing: 0.04em;
-  color: var(--ink-soft);
-  text-align: center;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
 }
-.hero-mesh-caption .k-blue { color: var(--blue); }
-.hero-mesh-caption .k-pink { color: var(--pink); }
+.hero-details h2 { margin: 0 0 10px; font-size: clamp(25px, 2.6vw, 34px); line-height: 1; }
+.hero-details p:not(.hero-details-kicker) { max-width: 58ch; margin: 0; color: var(--ink-soft); font-size: 15px; }
+.hero-details .hero-lineage { margin-top: 14px; font-family: 'Space Mono', monospace; font-size: 11px; }
+
+.device-scene { position: relative; min-height: 540px; display: flex; align-items: flex-start; justify-content: center; }
+.phone-frame {
+  position: relative;
+  z-index: 2;
+  overflow: hidden;
+  margin: 0;
+  background: #111;
+  border: 6px solid #111;
+  box-shadow: 8px 9px 0 var(--blue);
+}
+.phone-frame::after {
+  content: "";
+  position: absolute;
+  z-index: 4;
+  top: 7px;
+  left: 50%;
+  width: 34%;
+  height: 14px;
+  border-radius: 0 0 10px 10px;
+  background: #111;
+  transform: translateX(-50%);
+}
+.phone-frame img { display: block; width: 100%; height: auto; }
+.phone-frame.main { width: 220px; border-radius: 34px; transform: translateX(-26px) rotate(-3deg); }
+.hero-thumbs { position: absolute; z-index: 3; top: 18px; right: 0; display: grid; gap: 11px; }
+.phone-frame.thumb { width: 72px; border-width: 3px; border-radius: 15px; box-shadow: 4px 5px 0 var(--pink); }
+.phone-frame.thumb::after { top: 3px; height: 5px; border-radius: 0 0 4px 4px; }
+.phone-frame.thumb:nth-child(2) { transform: translateX(8px); }
+.proof-tag {
+  position: absolute;
+  z-index: 5;
+  right: 8px;
+  bottom: 4px;
+  max-width: 190px;
+  padding: 10px 12px;
+  background: #ffe138;
+  border: 2px solid #111;
+  box-shadow: 4px 4px 0 #111;
+  color: #111;
+  font-family: 'Space Mono', monospace;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  line-height: 1.4;
+  text-transform: uppercase;
+  transform: rotate(2deg);
+}
 @media (max-width: 860px) {
   .hero-grid { grid-template-columns: 1fr; }
-  .hero-mesh { max-width: 340px; margin: 8px auto 0; }
+  .hero-details { margin-top: 28px; }
+  .device-scene { width: min(100%, 330px); min-height: 450px; margin: 20px auto 0; }
+  .phone-frame.main { width: 176px; transform: translateX(-24px) rotate(-3deg); }
+  .hero-thumbs { top: 25px; right: 4px; gap: 8px; }
+  .phone-frame.thumb { width: 54px; border-width: 2px; border-radius: 11px; box-shadow: 3px 4px 0 var(--pink); }
+  .phone-frame.thumb::after { top: 2px; height: 4px; }
+  .proof-tag { right: 4px; bottom: 6px; max-width: 168px; font-size: 9px; }
+}
+@media (max-width: 540px) {
+  .hero.wrap { padding-left: 20px; padding-right: 20px; }
+  .hero-headline-wrap .poster { font-size: 36px; text-shadow: 4px 4px 0 var(--blue), -4px -3px 0 var(--pink); }
 }
 
 /* ---------- reveal ---------- */
@@ -359,7 +411,7 @@ footer.colophon {
 <header class="hero wrap">
   <span class="hero-stamp">In development — not yet released</span>
   <div class="hero-grid">
-    <div>
+    <div class="hero-copy">
       <div class="hero-headline-wrap">
         <h1 class="poster">When the internet goes down, keep publishing.</h1>
       </div>
@@ -368,56 +420,29 @@ footer.colophon {
         <a class="btn solid" href="#for">See who it's for</a>
         <a class="btn outline" href="#evidence">Read the evidence</a>
       </div>
-      <p class="hero-note" style="margin-top:26px;">A project in the lineage of Indymedia, protest.net, and TXTMob.</p>
-    </div>
-    <div>
-      <div class="hero-mesh">
-        <svg viewBox="0 0 560 560" width="100%" height="100%" role="img" aria-label="A mesh of connected devices, some linked directly, some by intermittent relay">
-        <g class="mesh-edges">
-        <line x1="360.9" y1="475.0" x2="457.2" y2="524.5" class="medge dash"/>
-        <line x1="506.1" y1="354.6" x2="457.2" y2="524.5" class="medge dash"/>
-        <line x1="379.4" y1="322.6" x2="506.1" y2="354.6" class="medge dash"/>
-        <line x1="370.9" y1="86.0" x2="350.1" y2="195.7" class="medge dash"/>
-        <line x1="229.3" y1="190.6" x2="350.1" y2="195.7" class="medge dash"/>
-        <line x1="71.7" y1="94.0" x2="246.1" y2="53.5" class="medge dash"/>
-        <line x1="517.2" y1="244.9" x2="506.1" y2="354.6" class="medge dash"/>
-        <line x1="105.7" y1="467.3" x2="213.1" y2="520.0" class="medge"/>
-        <line x1="71.7" y1="94.0" x2="229.3" y2="190.6" class="medge"/>
-        <line x1="246.1" y1="53.5" x2="229.3" y2="190.6" class="medge"/>
-        <line x1="175.7" y1="374.5" x2="213.1" y2="520.0" class="medge"/>
-        <line x1="246.1" y1="53.5" x2="370.9" y2="86.0" class="medge"/>
-        <line x1="62.3" y1="389.1" x2="175.7" y2="374.5" class="medge"/>
-        <line x1="175.7" y1="374.5" x2="105.7" y2="467.3" class="medge"/>
-        <line x1="62.3" y1="389.1" x2="105.7" y2="467.3" class="medge"/>
-        <line x1="350.1" y1="195.7" x2="379.4" y2="322.6" class="medge"/>
-        <line x1="213.1" y1="520.0" x2="360.9" y2="475.0" class="medge"/>
-        <line x1="370.9" y1="86.0" x2="502.7" y2="39.4" class="medge"/>
-        <line x1="71.7" y1="94.0" x2="32.9" y2="200.9" class="medge"/>
-        <line x1="379.4" y1="322.6" x2="360.9" y2="475.0" class="medge"/>
-        </g>
-        <g class="mesh-nodes">
-        <circle cx="71.7" cy="94.0" r="10" class="mnode bridge"/>
-        <circle cx="71.7" cy="94.0" r="17" class="mnode-ring"/>
-        <circle cx="246.1" cy="53.5" r="10" class="mnode bridge"/>
-        <circle cx="246.1" cy="53.5" r="17" class="mnode-ring"/>
-        <circle cx="370.9" cy="86.0" r="6.5" class="mnode"/>
-        <circle cx="502.7" cy="39.4" r="6.5" class="mnode"/>
-        <circle cx="32.9" cy="200.9" r="6.5" class="mnode"/>
-        <circle cx="229.3" cy="190.6" r="6.5" class="mnode"/>
-        <circle cx="350.1" cy="195.7" r="6.5" class="mnode"/>
-        <circle cx="517.2" cy="244.9" r="6.5" class="mnode"/>
-        <circle cx="62.3" cy="389.1" r="6.5" class="mnode"/>
-        <circle cx="175.7" cy="374.5" r="6.5" class="mnode"/>
-        <circle cx="379.4" cy="322.6" r="6.5" class="mnode"/>
-        <circle cx="506.1" cy="354.6" r="6.5" class="mnode"/>
-        <circle cx="105.7" cy="467.3" r="6.5" class="mnode"/>
-        <circle cx="213.1" cy="520.0" r="6.5" class="mnode"/>
-        <circle cx="360.9" cy="475.0" r="6.5" class="mnode"/>
-        <circle cx="457.2" cy="524.5" r="6.5" class="mnode"/>
-        </g>
-        </svg>
+      <div class="hero-details">
+        <p class="hero-details-kicker">More than a social feed</p>
+        <h2>Communities carry their own tools.</h2>
+        <p>A Riot space holds shared state and the small apps its organizers approve: checklists, alerts, decisions, events, and whatever the group needs next. Members can keep using those tools locally when no server is reachable.</p>
+        <p class="hero-lineage">In the lineage of Indymedia, protest.net, and TXTMob.</p>
       </div>
-      <p class="hero-mesh-caption">Every dot is a phone. <span class="k-blue">Solid lines</span> sync directly. <span class="k-pink">Dashed lines</span> catch up later — through whoever gets a signal first.</p>
+    </div>
+    <div class="device-scene" aria-label="Real Riot app screens from the iPhone simulator build">
+      <figure class="phone-frame main">
+        <img src="/assets/screenshots/spaces.png" width="1206" height="2622" alt="Riot Spaces screen showing a mutual-aid community and its tools">
+      </figure>
+      <div class="hero-thumbs" aria-label="More Riot miniapp screens">
+        <figure class="phone-frame thumb">
+          <img src="/assets/screenshots/apps.png" width="1206" height="2622" alt="Riot's organizer-approved apps screen">
+        </figure>
+        <figure class="phone-frame thumb">
+          <img src="/assets/screenshots/compose.png" width="1206" height="2622" alt="Composing a message in Riot">
+        </figure>
+        <figure class="phone-frame thumb">
+          <img src="/assets/screenshots/checklist.png" width="1206" height="2622" alt="A shared checklist running inside Riot">
+        </figure>
+      </div>
+      <span class="proof-tag">Real app screens<br>from the iPhone simulator build</span>
     </div>
   </div>
 </header>

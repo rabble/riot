@@ -1,7 +1,7 @@
 # Riot marketing site
 
 A dependency-free static site deployed as Cloudflare Workers assets. It has no
-backend, analytics, remote fonts, or runtime asset requests.
+backend, analytics, remote fonts, or third-party runtime requests.
 
 ## Routes
 
@@ -19,11 +19,16 @@ Edit the source files first:
 
 - `index.html`
 - `protocols/index.html`
+- `assets/screenshots/` for the real iPhone simulator screens used in the hero
 
 Then update their byte-identical deployment mirrors:
 
 - `public/index.html`
 - `public/protocols/index.html`
+- `public/assets/screenshots/`
+
+The hero screenshots demonstrate app UI captured from the iPhone simulator.
+They are not evidence of sync over physical-device radios.
 
 The contract check rejects mirror drift and missing editorial or accessibility
 requirements:

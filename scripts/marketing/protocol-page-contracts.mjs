@@ -23,6 +23,24 @@ const [home, publicHome, protocols, publicProtocols] = await Promise.all([
 assert.equal(home, publicHome, "homepage source and public mirror must be byte-identical");
 assert.equal(protocols, publicProtocols, "protocol page source and public mirror must be byte-identical");
 
+for (const name of ["spaces", "apps", "compose", "checklist"]) {
+  const [sourceAsset, publicAsset] = await Promise.all([
+    readFile(resolve(root, `marketing/assets/screenshots/${name}.png`)),
+    readFile(resolve(root, `marketing/public/assets/screenshots/${name}.png`)),
+  ]);
+  assert.deepEqual(sourceAsset, publicAsset, `${name} screenshot source and public mirror must be byte-identical`);
+}
+
+assert.doesNotMatch(home, /hero-mesh|mesh-edges|mesh-nodes/, "approved Hero C must replace the abstract mesh");
+assert.match(home, /\.hero-grid\s*\{[^}]*align-items:\s*start/i, "desktop hero copy and devices must be top-aligned");
+assert.match(home, /class="device-scene"[\s\S]*class="phone-frame main"[\s\S]*\/assets\/screenshots\/spaces\.png/i);
+for (const name of ["apps", "compose", "checklist"]) {
+  assert.match(home, new RegExp(`class="phone-frame thumb"[\\s\\S]*?/assets/screenshots/${name}\\.png`, "i"), `missing ${name} supporting phone`);
+}
+assert.match(home, /Real app screens[\s\S]*iPhone simulator build/i);
+assert.match(home, /More than a social feed[\s\S]*Communities carry their own tools[\s\S]*checklists, alerts, decisions, events/i);
+assert.match(home, /@media\s*\(max-width:\s*860px\)[\s\S]*\.device-scene/i, "Hero C needs a mobile device composition");
+
 const homeLinks = home.match(/href="\/protocols\/"/g) ?? [];
 assert.equal(homeLinks.length, 4, "homepage must contain four visible and secondary /protocols/ paths");
 assert.match(home, /<nav class="topnav">[\s\S]*href="\/protocols\/"[^>]*>Protocols</i);
