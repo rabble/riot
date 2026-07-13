@@ -3,8 +3,8 @@
 Status: Product design and the human-directed post-escalation revision were
 approved on 2026-07-13. The revision is pending a fresh Metaswarm design review
 gate before planning or implementation. Fresh gate round 1 returned
-NEEDS_REVISION; this version resolves its app-completion and remotely
-verifiable binding blockers and is pending round 2.
+NEEDS_REVISION, and round 2 returned NEEDS_REVISION on native picker handoff and
+terminal UX details. This version resolves both rounds and is pending round 3.
 
 ## Purpose
 
@@ -158,6 +158,10 @@ space attachment, or creates/re-signs a SneakerWeb site entry.
   `.snk` files produced by the SneakerWeb CLI. General slice-range persistence
   remains a later Willow Store-adapter feature;
 - search, full-text indexing, bookmarks, or remote discovery;
+- Directory-specific organizer hide/tombstone, ratings, comments, or deletion;
+  this first app lists valid bindings chronologically and relies on local site
+  block/removal plus ordinary app trust revocation. Newswire attachments retain
+  the Newswire's separate editorial-action model;
 - running the upstream CLI or its desktop filesystem store inside the app.
 
 Creating a new `.snk` container from already-authorised entries is in scope and
@@ -221,10 +225,12 @@ The SneakerWeb library has two presentations over the same store:
 - **Sites** is the default grid/list of all unblocked domains, deduplicated by
   full subspace ID and ordered by most recent local receipt. Alternative sort
   controls are outside the MVP.
-- **Received** lists source packages by safe filename, receipt time, file
-  digest, and every domain named by the package, including unchanged, older,
-  and blocked dispositions. Overlap never duplicates a Site card; original
-  package membership does not imply that every member changed live state.
+- **Received** lists source packages by safe filename or collection title,
+  receipt time, site count, and bounded human site titles as space permits.
+  Complete file digest, domain IDs, and unchanged/older/blocked per-domain
+  dispositions live only in Details. Overlap never duplicates a Site card;
+  original package membership does not imply that every member changed live
+  state.
 
 The first-use Sites empty state says `Open a .snk file to collect offline
 sites`, with Open File and receive guidance. Received says `Collections you
@@ -306,6 +312,18 @@ signs a share itself. List/picker results expose only an opaque listing/result
 handle, title, note, site count, encoded size, availability, and carrier display
 attribution.
 
+The capability's JavaScript surface is closed and promise-based:
+
+```js
+riot.collections.list(cursor)              // safe AppCollectionPage
+riot.collections.watch(generation, cb)     // invalidation, not raw records
+riot.collections.pick()                    // native picker/review/commit
+riot.collections.open(listingHandle)       // native card after user gesture
+```
+
+No lower-level picker task, selection submission, carrier resolver, or blob API
+is registered in `window.riot`.
+
 Attachment authority is not stored in generic app data. The host atomically
 commits a reserved signed `AppPublicCollectionBindingV1` beside the carrier;
 ordinary `riot.put` rejects the reserved path family before signing. Every
@@ -315,6 +333,11 @@ normal prefix keyed by the opaque listing ID, but invalid/unbound IDs never
 appear in the host listing projection and cannot open or download anything.
 An app therefore cannot mint, retarget, enumerate, or open another app or
 space's collection binding.
+`list/watch` is a host projection with a change generation; `STALE_CURSOR` or a
+missed generation requires replacing the app's safe summary snapshot, never
+merging unverified app state. Open always presents the native collection card
+first, and that card requires the separate Get collection action before any
+download.
 
 Post to Newswire creates an ordinary signed `NewsPostV1` whose attachment field
 references the carrier entry. The editable post headline defaults to the
@@ -342,6 +365,11 @@ requires the existing bilateral confirmation on both phones and is disabled
 with guidance only when local permission or an eligible confirmed person is
 absent; the `.snk` and direct-transfer envelope contain no Riot-community
 membership, destination records, internal notes, or private metadata.
+Before Accept/Reject, the recipient sees the confirmed sender handle plus the
+bounded sender-supplied collection title, site count, encoded size, and `Public
+SneakerWeb collection`; these preview fields are authenticated by the one-shot
+confirmed-session request but are not treated as content integrity. The
+envelope contains no note, raw ID, digest display, or community relationship.
 Community rows list only public/open spaces where the active profile may create
 the selected record. Review says `You are sharing this collection; you did not
 author its sites` and shows Publish/Cancel. Permission denial, peer
@@ -608,6 +636,9 @@ accept_direct_snk_receive(confirmed_nearby_session, request_id) -> DirectSnkRece
 reject_direct_snk_receive(confirmed_nearby_session, request_id) -> RejectOutcome
 begin_app_collection_pick(active_app_session, genuine_gesture_token)
   -> AppCollectionPickerTask
+AppCollectionPickerTask.take_native_event() -> AppCollectionPickerEvent
+AppCollectionPickerTask.submit_native_selection(domain_ids) -> AppCollectionReview
+AppCollectionPickerTask.submit_native_review(title, note) -> TransferProgress
 AppCollectionPickerTask.progress() -> TransferProgress
 AppCollectionPickerTask.finish() -> AppCollectionCommitResult
 AppCollectionPickerTask.retry() -> TransferProgress
@@ -642,9 +673,38 @@ the task across retry. Trust, capability, session generation, and active profile
 are rechecked before showing review, before the atomic commit, and before
 returning the result to JavaScript.
 
+The bridge-facing `riot.collections.pick()` dispatch creates the task but none
+of `take_native_event`, `submit_native_selection`, or `submit_native_review` is
+registered in the JavaScript message dispatcher. Swift/Kotlin retains the task
+handle and receives `PresentPicker { max_sites: 1,024 }` from
+`take_native_event`. The platform picker returns either Cancel or a bounded,
+ordered-unique array of complete 32-byte domain IDs. Cancel invokes task cancel;
+selection submission is legal only in `AwaitingNativePicker`, rechecks the
+active app/space/profile/gesture generation and every domain's availability/
+block generation, then returns `AppCollectionReview` containing only native
+safe titles, count, encoded estimate, default collection title, and disclosure
+copy.
+
+Swift/Kotlin presents that native review and either cancels or calls
+`submit_native_review` with the edited title and note. Core performs the exact
+safe-text normalization and size validation, then generates the random 16-byte
+listing ID and 16-byte child idempotency key itself and moves to Preparing.
+Review edits are allowed until the first accepted submit; afterward Retry uses
+the frozen normalized fields and same child. Changing them requires Cancel and
+a new picker flow. An identical duplicate selection/review call returns the
+original accepted review/progress; a different duplicate returns
+`INVALID_STATE`/`IDEMPOTENCY_CONFLICT` without mutation. Stale generation,
+unavailable domain, invalid text, or a call in the wrong state is a typed
+non-mutating failure. `take_native_event` is single-consumer and repeated after
+delivery returns `NO_EVENT` until the next state transition.
+
 The nearby multiplexer emits a bounded `IncomingPortableBlobRequest` DTO before
 either receive factory is legal; it contains request ID, safe peer handle,
-digest, length, and channel kind, never a filesystem path. Space receipt is
+digest, length, and channel kind, never a filesystem path. For a direct request
+it additionally requires safe collection title (`1..=80` Unicode scalars) and
+site count (`1..=1,024`), authenticated inside the confirmed one-shot request;
+for a space request those display fields are derived from the verified carrier
+rather than peer input. Space receipt is
 accepted only through `request_space_blob`; direct receipt is accepted only
 through `accept_direct_snk_receive` after native bilateral confirmation.
 
@@ -693,11 +753,33 @@ Opaque objects have complete state machines and single terminal results:
   retry while its 15-minute reviewed-selection lease remains valid, and
   asynchronous finish; repeated finish returns the same committed result or
   current typed error. Retry resumes the original child/idempotency key rather
-  than signing a new operation. Losing trust/capability/app-space-profile binding before
-  commit cancels the child and commits nothing. Revocation after commit leaves
-  signed public records intact but makes list/watch/open handlers unavailable
-  until the app is trusted again. Final handle drop cancels both parent and
-  child before commit.
+  than signing a new operation. `submit_native_selection` is the only
+  `AwaitingNativePicker -> Reviewing` transition and
+  `submit_native_review` is the only `Reviewing -> Preparing` transition.
+  Losing trust/capability/app-space-profile binding before commit cancels the
+  child and commits nothing. Revocation after commit leaves signed public
+  records intact but makes list/watch/open handlers unavailable until the app
+  is trusted again. Final handle drop cancels both parent and child before
+  commit.
+
+The native host retains the invoking miniapp route and focus token. Picker or
+review Cancel before commit returns a safe `cancelled` callback to the still-
+trusted invoking app, restores the invoking control's focus, and leaves no
+record. Retryable child failure remains in the native review with selection,
+frozen fields, idempotency key, Retry, and Cancel. Pre-commit trust/capability/
+session revocation commits nothing, sends no callback into the app, and routes
+to the host-owned community Tools surface with `Sneaker Directory is no longer
+available here` and organizer/member recovery guidance.
+
+The atomic carrier/binding commit is the final linearization point and wins
+over a later revocation or app closure. With trust intact, the host returns the
+safe `AppCollectionCommitResult` JavaScript projection, forces list/watch to a
+fresh host snapshot, returns to the miniapp, and focuses/announces the new
+listing. If trust/session/app availability disappears after commit but before
+callback, native announces `Shared to Sneaker Directory`, delivers no data to
+the app, and routes to the host-owned unavailable/Tools surface; it never
+reports the committed share as failed. Relaunch/retrust later projects the
+signed binding normally.
 - `DirectSnkSendTask`: `Negotiating -> Sending -> WaitingForVerifiedAck ->
   Sent(SendReceipt)`, with `Paused | Cancelled | Failed | OwnerClosed`. Sent is
   legal only after the receiver acknowledges exact length/digest verification;
@@ -739,14 +821,17 @@ The minimum DTO contracts are:
 | DTO | Required fields |
 | --- | --- |
 | `SneakerSite` | version, full 32-byte domain, native title, complete/index/preview flags, unblocked state/generation, current bytes/entry count, latest publisher timestamp, latest local receipt, source count |
-| `ReceivedSneak` | version, opaque source ID, safe filename, full SHA-256, encoded bytes, receipt route/time, exact domain counts by disposition, current-export-differs flag |
+| `ReceivedSneak` | version, opaque source ID, safe filename/collection title, encoded bytes, receipt route/time, site/disposition counts, bounded safe human titles, current-export-differs flag; no digest/domain ID |
 | `SneakerDetailsPage` | version, full domain/namespace, integrity vocabulary, publisher timestamp, source-history rows, live/accepted entry rows, next cursor |
-| `ReceivedSneakDetailsPage` | version, source facts, exact original domain/entry membership, receipt dispositions, current contribution/difference, next cursor |
+| `ReceivedSneakDetailsPage` | version, source facts including full SHA-256, exact original full domain/entry membership, receipt dispositions, current contribution/difference, next cursor |
 | `TransferProgress` | version, phase, completed bytes/items, optional bounded total, resumable/cancellable booleans |
 | `OpenSnkOutcome` | version, receipt ID, added/updated/unchanged/blocked/older counts, retained/reclaimable bytes, undo generation, zero-change reason |
 | `CarrierReceipt` | version, full space ID, idempotency key, full carrier entry ID, ordered destination kind/full entry ID pairs, blob digest/length, committed time |
 | `CommunityShareBatchResult` | version, preserved selection/review ID, ordered per-space idempotency key and `shared/retryable/no-longer-allowed/cancelled` outcome, optional CarrierReceipt/stable error |
 | `SendReceipt` | version, transfer request ID, safe peer handle, blob digest/length, verified-ack time |
+| `IncomingPortableBlobRequest` | version, request/channel IDs, safe peer handle, digest/length, channel kind; direct only: bounded safe title/site count; no note/community/raw site IDs |
+| `AppCollectionPickerEvent` | version, event generation, closed `PresentPicker/PresentReview/Return` variant and safe native-only fields |
+| `AppCollectionReview` | version, selected count/encoded estimate, bounded native site titles, normalized default title, disclosure, app/space/profile generation; no JavaScript projection |
 | `AppCollectionSummary` | version, app/space/session-bound opaque listing handle, safe title/note/site count/encoded size/availability/carrier attribution, change generation; no site IDs/digest/bytes |
 | `AppCollectionCommitResult` | version, opaque listing handle, full space/app IDs for native audit only, idempotency key, CarrierReceipt, committed time; JavaScript projection omits raw IDs/receipt and returns handle plus safe summary |
 
@@ -755,8 +840,9 @@ Stable core errors are `INVALID_DROP`, `WRONG_NAMESPACE`,
 `OWNER_CLOSED`, `BLOCKED`, `LEASE_CLOSED`, `INVALID_STATE`, `CANCELLED`,
 `TEMPORARY_IO`, `VIEWER_UNAVAILABLE`, `NO_AUTHORISED_HOLDER`, and
 `SECURITY_POLICY`, plus destination errors `APP_NOT_TRUSTED`,
-`APP_PERMISSION_DENIED`, `DESTINATION_NOT_WRITABLE`, and
-`IDEMPOTENCY_CONFLICT`. Raw parser/SQL/OS text never crosses FFI. Native maps only
+`APP_CAPABILITY_DENIED`, `DESTINATION_NOT_WRITABLE`, and
+`IDEMPOTENCY_CONFLICT`, and native-flow errors `NO_EVENT` and
+`INVALID_SELECTION`. Raw parser/SQL/OS text never crosses FFI. Native maps only
 these enums and typed fields to the user-state matrix above.
 
 ### Persistence
@@ -808,8 +894,10 @@ complete entries. Space/direct-nearby exports become CAS blobs only when an
 CAS finalization is crash-consistent: reserve quota in SQLite; create a
 no-follow random file in the app-protected, backup-excluded CAS staging
 directory; stream while checking length/chunks; fsync the file; and verify final
-SHA-256 and `.snk` length. A per-full-digest finalization lock serializes local
-contenders, and a platform `install_no_replace(staging, digest_path)` primitive
+SHA-256 and `.snk` length. A per-full-digest process-local finalization lock
+serializes in-process contenders; the platform
+`install_no_replace(staging, digest_path)` primitive is the cross-process
+arbiter and
 must atomically succeed only when the destination did not exist (for example,
 `renameat2(RENAME_NOREPLACE)` or same-filesystem link/create-exclusive
 semantics). Ordinary replacing rename is forbidden.
@@ -819,7 +907,8 @@ The digest lock is held through destination verification, directory fsync,
 installs the file, fsyncs the directory, transactionally publishes/attaches the
 row, and releases its reservation before unlocking. A
 loser opens the winner without following links, verifies regular-file type,
-exact length, and digest, deletes its staged duplicate, transactionally
+exact length, and digest, fsyncs the containing directory to establish
+durability in its process, deletes its staged duplicate, transactionally
 inserts-or-ignores then attaches the exact digest/length row, and releases its
 reservation. The insert-or-ignore covers a valid file left by a process death
 before row publication; conflicting row facts fail as corruption. A mismatching existing
@@ -1038,9 +1127,10 @@ entries must have the same verified signer.
 
 An app-hosted directory reference is a reserved host-owned record, not generic
 app data. Its Willow path has exactly four byte components: ASCII `objects`,
-ASCII `app-public-collections`, the lowercase 64-byte hex encoding of the full
-32-byte app ID, and the lowercase 32-byte hex encoding of a random 16-byte
-listing ID. `AppDataBridge` rejects this path family before any generic app
+ASCII `app-public-collections`, exactly 64 lowercase ASCII hex bytes encoding
+the full 32-byte app ID, and exactly 32 lowercase ASCII hex bytes encoding a
+random 16-byte listing ID.
+`AppDataBridge` rejects this path family before any generic app
 write is signed. Only `SpaceSneakerShareTask` may construct it.
 
 Its payload is a closed deterministic-CBOR map with the same definite-length,
@@ -1091,7 +1181,10 @@ rather than the receive owner. V1 peers fail with `This version can't receive
 collections` and ordinary sync remains unchanged. Blob frames are
 `Request/Accept/Reject/Chunk/Ack/Pause/Resume/Complete/Cancel`, length-delimited
 and capped at 256 KiB. At most two chunks are unacknowledged; checkpoints every
-32 MiB persist verified offset/chunk digests. The mux keeps the confirmed
+32 MiB persist verified offset/chunk digests. Direct `Request` includes the
+bounded title/site-count preview inside its one-shot capability MAC/transcript;
+space `Request` omits them and resolves display from the signed carrier. The
+mux keeps the confirmed
 connection open until all channels finish or 60 seconds idle, then closes once.
 Local TCP is preferred; BLE is a resumable public-content fallback with honest
 time/progress UI, never a confidentiality claim.
@@ -1253,15 +1346,19 @@ Implementation follows small RED-GREEN-REFACTOR slices:
    then the isolated hosts and loopback resolver.
 6. **Library UX:** failing UI/accessibility tests for zero-ceremony opening,
    Sites/Received deduplication, hidden-by-default identifiers, complete Details,
-   loading, empty, block, missing-link, and failure states; then native views.
+   Received-summary absence of digest/domain IDs, loading, empty, block,
+   missing-link, and failure states; then native views.
 7. **Sharing:** failing exact selection, required title, temporary-file cleanup,
    carrier/Newswire/host-binding schemas, same-space/signer checks, trusted-app
-   capability, opaque host gestures, app-picker commit success/cancel/retry/
-   duplicate suppression/trust revocation, cross-app/cross-space misuse and
+   capability, opaque host gestures, host-only picker selection/review state
+   transitions, app-picker commit success/cancel/retry/duplicate submission and
+   suppression/pre/post-commit trust revocation, terminal route/focus/
+   announcement behavior, cross-app/cross-space misuse and
    isolation, generic-write rejection for the reserved path, remote binding
    verification without local operation history, multi-community
    partial success and duplicate-free retry, atomic same-space destinations,
-   no-replace same-digest contention, unavailable-holder, chunk corruption,
+   no-replace same-digest contention, direct-request title/site-count preview,
+   unavailable-holder, chunk corruption,
    separate send/receive completion, resume, cancel, garbage-collection lease,
    and multi-peer handoff tests; then each route.
 8. **End to end:** official CLI -> Riot -> selected export -> official CLI;
