@@ -112,6 +112,7 @@ pub enum NewswireModelError {
     TooManyEntries(&'static str),
     DuplicateEditorialRosterKey,
     EditorialReasonRequired,
+    EditorialReasonForbidden,
     CorrectionTextRequired,
     CorrectionTextForbidden,
     AlertExpiryRequired,
@@ -587,6 +588,11 @@ fn validate_action(action: &EditorialActionV1) -> Result<(), NewswireModelError>
         (EditorialActionKind::Correct, false) => Err(NewswireModelError::CorrectionTextRequired),
         (EditorialActionKind::Correct, true) => Ok(()),
         (_, true) => Err(NewswireModelError::CorrectionTextForbidden),
+        (EditorialActionKind::Feature | EditorialActionKind::Verify, false)
+            if action.reason.is_some() =>
+        {
+            Err(NewswireModelError::EditorialReasonForbidden)
+        }
         (_, false) => Ok(()),
     }
 }
@@ -1330,6 +1336,15 @@ mod tests {
                 Err(NewswireModelError::CorrectionTextForbidden)
             );
         }
+        for kind in [EditorialActionKind::Feature, EditorialActionKind::Verify] {
+            let mut value = action();
+            value.kind = kind;
+            value.correction_text = None;
+            assert_eq!(
+                encode_editorial_action(&value),
+                Err(NewswireModelError::EditorialReasonForbidden)
+            );
+        }
         for kind in [
             EditorialActionKind::Correct,
             EditorialActionKind::Hide,
@@ -1577,8 +1592,15 @@ mod tests {
         ] {
             let mut value = action();
             value.kind = kind;
-            if kind != EditorialActionKind::Correct {
-                value.correction_text = None;
+            match kind {
+                EditorialActionKind::Feature | EditorialActionKind::Verify => {
+                    value.reason = None;
+                    value.correction_text = None;
+                }
+                EditorialActionKind::Correct => {}
+                EditorialActionKind::Hide
+                | EditorialActionKind::Tombstone
+                | EditorialActionKind::Retract => value.correction_text = None,
             }
             let bytes = encode_editorial_action(&value).unwrap();
             assert_eq!(decode_editorial_action(&bytes).unwrap(), value);

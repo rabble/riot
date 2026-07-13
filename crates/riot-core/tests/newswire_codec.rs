@@ -388,6 +388,43 @@ fn editorial_action_field_combinations_are_closed() {
 }
 
 #[test]
+fn feature_and_verify_forbid_editorial_reasons() {
+    for kind in [EditorialActionKind::Feature, EditorialActionKind::Verify] {
+        let mut invalid = action();
+        invalid.kind = kind;
+        invalid.correction_text = None;
+        assert_eq!(
+            encode_editorial_action(&invalid),
+            Err(NewswireModelError::EditorialReasonForbidden),
+            "{kind:?}"
+        );
+    }
+}
+
+#[test]
+fn feature_and_verify_wire_payloads_with_reasons_fail_closed() {
+    for kind in [EditorialActionKind::Feature, EditorialActionKind::Verify] {
+        let mut valid = action();
+        valid.kind = kind;
+        valid.reason = None;
+        valid.correction_text = None;
+        let mut forbidden = encode_editorial_action(&valid).unwrap();
+        assert_eq!(forbidden[0], 0xa4);
+        forbidden[0] = 0xa5;
+        minicbor::Encoder::new(&mut forbidden)
+            .u8(4)
+            .unwrap()
+            .str("not allowed")
+            .unwrap();
+        assert_eq!(
+            decode_editorial_action(&forbidden),
+            Err(NewswireModelError::EditorialReasonForbidden),
+            "{kind:?}"
+        );
+    }
+}
+
+#[test]
 fn operational_profiles_enforce_post_requirements() {
     let alert = OperationalProfileV1::Alert(AlertProfileV1 {
         urgency: Urgency::Immediate,
