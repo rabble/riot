@@ -1,6 +1,6 @@
 # Newswire Core Slice 1 Implementation Plan
 
-Plan review gate: **REVISED AFTER ITERATION 2; PENDING. Do not execute until all three plan reviewers pass this exact text.**
+Plan review gate: **ESCALATION REQUIRED AFTER ITERATION 3. Feasibility found one fixture-count blocker; completeness and scope passed. Do not execute until Rabble chooses revise or override.**
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
