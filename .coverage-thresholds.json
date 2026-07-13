@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$comment": "Coverage thresholds for orchestrator agents and CI. Portable across projects — adjust values per-repo.",
+  "thresholds": {
+    "lines": 100,
+    "branches": 100,
+    "functions": 100,
+    "statements": 100
+  },
+  "enforcement": {
+    "command": "scripts/web/coverage.sh",
+    "blockPRCreation": true,
+    "blockTaskCompletion": true,
+    "description": "Orchestrator agents MUST run the composite command and require 100% Tarpaulin lines, LLVM lines/functions/statements (enforced as regions)/branches, and authored JavaScript coverage before marking any task complete or creating a PR. If any configured threshold is missed, the task fails."
+  }
+}
