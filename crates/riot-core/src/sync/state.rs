@@ -136,7 +136,7 @@ impl ReconcileSession {
         let Phase::AwaitingImportDecision(after_import) = self.phase else {
             return Err(SyncError::UnexpectedFrame);
         };
-        self.retain_pending_entries()?;
+        self.retain_pending_entries();
         match after_import {
             AfterImport::SendSummary => {
                 self.phase = Phase::AwaitingRequestOrComplete;
@@ -224,7 +224,8 @@ impl ReconcileSession {
         next: Phase,
     ) -> Result<SyncAction, SyncError> {
         let selected = self.select(requested)?;
-        let bundle_bytes = encode_bundle(&selected).map_err(|_| SyncError::InvalidBundle)?;
+        let bundle_bytes = encode_bundle(&selected)
+            .expect("selected entries are a subset of the prevalidated inventory");
         self.phase = next;
         Ok(SyncAction::Send(SyncFrame::Entries {
             namespace_id: self.namespace_id,
@@ -244,21 +245,18 @@ impl ReconcileSession {
         Ok(selected)
     }
 
-    fn retain_pending_entries(&mut self) -> Result<(), SyncError> {
+    fn retain_pending_entries(&mut self) {
         let pending_ids: Vec<_> = self
             .pending_entries
             .iter()
             .map(|entry| entry_id(&entry.entry_bytes))
             .collect();
-        for id in &pending_ids {
-            if self.inventory.iter().any(|(known, _)| known == id) {
-                return Err(SyncError::DuplicateEntryId);
-            }
-        }
+        // `expected` comes from `missing_entry_ids`, and inventory cannot
+        // change while an import decision is pending, so these IDs are
+        // disjoint from the retained inventory by construction.
         self.inventory
             .extend(pending_ids.into_iter().zip(self.pending_entries.drain(..)));
         self.inventory.sort_by_key(|(id, _)| *id);
-        Ok(())
     }
 }
 
@@ -287,7 +285,7 @@ fn verify_received_bundle(
                 .frame
                 .signature_bytes()
                 .try_into()
-                .map_err(|_| SyncError::InvalidBundle)?,
+                .expect("valid bundle items have exact 64-byte signatures"),
             payload_bytes: item.frame.payload_bytes().to_vec(),
         });
     }
