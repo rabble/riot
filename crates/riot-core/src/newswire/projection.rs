@@ -37,18 +37,18 @@ impl std::error::Error for NewswireProjectionError {}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ProjectionClockV1 {
-    unix_seconds: i64,
+    unix_seconds: u64,
     tai_j2000_micros: u64,
 }
 
 impl ProjectionClockV1 {
     pub fn system() -> Result<Self, NewswireProjectionError> {
-        Self::from_snapshot(
+        Ok(Self::from_snapshot(
             system_snapshot().map_err(|_| NewswireProjectionError::ClockUnavailable)?,
-        )
+        ))
     }
 
-    pub fn unix_seconds(&self) -> i64 {
+    pub fn unix_seconds(&self) -> u64 {
         self.unix_seconds
     }
 
@@ -56,19 +56,18 @@ impl ProjectionClockV1 {
         self.tai_j2000_micros
     }
 
-    fn from_snapshot(snapshot: ClockSnapshot) -> Result<Self, NewswireProjectionError> {
-        Ok(Self {
-            unix_seconds: i64::try_from(snapshot.unix_seconds)
-                .map_err(|_| NewswireProjectionError::ClockOutOfRange)?,
+    fn from_snapshot(snapshot: ClockSnapshot) -> Self {
+        Self {
+            unix_seconds: snapshot.unix_seconds,
             tai_j2000_micros: snapshot.tai_j2000_micros,
-        })
+        }
     }
 
     #[cfg(feature = "conformance")]
     pub fn from_unix_seconds(unix_seconds: i64) -> Result<Self, NewswireProjectionError> {
         let snapshot = crate::willow::snapshot_from_unix_seconds(unix_seconds, 0)
             .map_err(|_| NewswireProjectionError::ClockOutOfRange)?;
-        Self::from_snapshot(snapshot)
+        Ok(Self::from_snapshot(snapshot))
     }
 }
 
@@ -207,6 +206,16 @@ pub fn project(
     actions.sort_by_key(|action| action.key);
     future.sort_unstable();
 
+    let eligible_post_ids = posts
+        .iter()
+        .map(|post| post.record.entry_id())
+        .collect::<BTreeSet<_>>();
+    for action in &mut actions {
+        if action.action.kind != EditorialActionKind::Retract {
+            action.active = eligible_post_ids.contains(&action.action.target_entry_id);
+        }
+    }
+
     let action_indexes = actions
         .iter()
         .enumerate()
@@ -230,9 +239,15 @@ pub fn project(
     }
     for action in &mut actions {
         if action.action.kind != EditorialActionKind::Retract {
-            action.active = !retracted.contains(&action.record.entry_id());
+            action.active &= !retracted.contains(&action.record.entry_id());
         }
     }
+
+    let tombstoned_post_ids = actions
+        .iter()
+        .filter(|action| action.active && action.action.kind == EditorialActionKind::Tombstone)
+        .map(|action| action.action.target_entry_id)
+        .collect::<BTreeSet<_>>();
 
     let editorial_history = actions
         .iter()
@@ -243,12 +258,17 @@ pub fn project(
             target_entry_id: action.action.target_entry_id,
             kind: action.action.kind,
             reason: action.action.reason.clone(),
-            correction_text: action.action.correction_text.clone(),
+            correction_text: if action.action.kind == EditorialActionKind::Correct
+                && tombstoned_post_ids.contains(&action.action.target_entry_id)
+            {
+                None
+            } else {
+                action.action.correction_text.clone()
+            },
             active: action.active,
         })
         .collect();
 
-    let unix_now = u64::try_from(clock.unix_seconds).ok();
     let mut open_wire = Vec::new();
     let mut earlier = Vec::new();
     let mut featured = Vec::new();
@@ -266,11 +286,6 @@ pub fn project(
             .filter(|action| action.action.kind == EditorialActionKind::Verify)
             .map(|action| action.record.entry_id())
             .collect();
-        let correction_ids = targeted
-            .iter()
-            .filter(|action| action.action.kind == EditorialActionKind::Correct)
-            .map(|action| action.record.entry_id())
-            .collect();
         let hide_ids = targeted
             .iter()
             .filter(|action| action.action.kind == EditorialActionKind::Hide)
@@ -281,6 +296,15 @@ pub fn project(
             .filter(|action| action.action.kind == EditorialActionKind::Tombstone)
             .map(|action| action.record.entry_id())
             .collect::<Vec<_>>();
+        let correction_ids = if tombstone_ids.is_empty() {
+            targeted
+                .iter()
+                .filter(|action| action.action.kind == EditorialActionKind::Correct)
+                .map(|action| action.record.entry_id())
+                .collect()
+        } else {
+            Vec::new()
+        };
         let feature_key = targeted
             .iter()
             .filter(|action| action.action.kind == EditorialActionKind::Feature)
@@ -319,12 +343,10 @@ pub fn project(
             correction_ids,
             treatment,
         };
-        let expired = unix_now.is_some_and(|now| {
-            eligible
-                .post
-                .expires_at_unix_seconds
-                .is_some_and(|expires_at| expires_at <= now)
-        });
+        let expired = eligible
+            .post
+            .expires_at_unix_seconds
+            .is_some_and(|expires_at| expires_at <= clock.unix_seconds);
         if expired {
             earlier.push(projected);
         } else {
@@ -355,6 +377,7 @@ mod tests {
     const NAMESPACE: [u8; 32] = [0x20; 32];
     const AUTHOR: [u8; 32] = [0x30; 32];
     const EDITOR: [u8; 32] = [0x40; 32];
+    const EDITOR_TWO: [u8; 32] = [0x41; 32];
 
     fn id(value: u32) -> EntryId {
         let mut id = [0; 32];
@@ -367,6 +390,18 @@ mod tests {
             unix_seconds: 1_800_000_000,
             tai_j2000_micros: 100,
         }
+    }
+
+    #[test]
+    fn projection_clock_preserves_the_full_unsigned_snapshot_value() {
+        let clock = ProjectionClockV1::from_snapshot(ClockSnapshot {
+            unix_seconds: u64::MAX,
+            tai_j2000_micros: 42,
+            uncertainty_seconds: 0,
+        });
+        let unix_seconds: u64 = clock.unix_seconds();
+        assert_eq!(unix_seconds, u64::MAX);
+        assert_eq!(clock.tai_j2000_micros(), 42);
     }
 
     fn record(
@@ -412,7 +447,13 @@ mod tests {
     }
 
     fn descriptor() -> VerifiedNewswireRecord {
-        descriptor_with(id(1), NAMESPACE, NAMESPACE, NAMESPACE, vec![EDITOR])
+        descriptor_with(
+            id(1),
+            NAMESPACE,
+            NAMESPACE,
+            NAMESPACE,
+            vec![EDITOR, EDITOR_TWO],
+        )
     }
 
     fn post_bound_to(
@@ -559,8 +600,8 @@ mod tests {
     #[test]
     fn expired_posts_move_to_earlier_only() {
         let view = projection(&[
-            post(id(2), 10, Some(clock().unix_seconds as u64)),
-            post(id(3), 20, Some(clock().unix_seconds as u64 + 1)),
+            post(id(2), 10, Some(clock().unix_seconds)),
+            post(id(3), 20, Some(clock().unix_seconds + 1)),
         ]);
         assert_eq!(view.open_wire[0].entry_id, id(3));
         assert_eq!(view.earlier[0].entry_id, id(2));
@@ -615,19 +656,35 @@ mod tests {
     }
 
     #[test]
-    fn verification_retains_every_action_id_without_a_score() {
+    fn verification_retains_every_recognized_signer_and_action_without_a_score() {
         let records = vec![
             post(id(2), 100, None),
-            action(id(11), 300, id(2), EditorialActionKind::Verify),
-            action(id(10), 200, id(2), EditorialActionKind::Verify),
+            action_bound_to(
+                id(11),
+                300,
+                id(2),
+                EditorialActionKind::Verify,
+                EDITOR_TWO,
+                id(1),
+            ),
+            action_bound_to(
+                id(10),
+                200,
+                id(2),
+                EditorialActionKind::Verify,
+                EDITOR,
+                id(1),
+            ),
         ];
         let view = projection(&records);
         assert_eq!(view.open_wire[0].verification_ids, vec![id(10), id(11)]);
-        assert_eq!(view.editorial_history.len(), 2);
-        assert!(view
-            .editorial_history
-            .iter()
-            .all(|item| item.signer_id == EDITOR && item.active));
+        assert_eq!(
+            view.editorial_history
+                .iter()
+                .map(|item| (item.entry_id, item.signer_id, item.active))
+                .collect::<Vec<_>>(),
+            vec![(id(10), EDITOR, true), (id(11), EDITOR_TWO, true)]
+        );
     }
 
     #[test]
@@ -689,7 +746,7 @@ mod tests {
         assert_eq!(row.tai_j2000_micros, 100);
         assert_eq!(row.body, None);
         assert!(row.source_claims.is_empty());
-        assert_eq!(row.correction_ids, vec![id(10)]);
+        assert!(row.correction_ids.is_empty());
         assert_eq!(
             row.treatment,
             PostTreatment::Tombstoned {
@@ -697,6 +754,15 @@ mod tests {
             }
         );
         assert_eq!(view.editorial_history.len(), 2);
+        let correction = view
+            .editorial_history
+            .iter()
+            .find(|action| action.entry_id == id(10))
+            .unwrap();
+        assert_eq!(correction.signer_id, EDITOR);
+        assert_eq!(correction.kind, EditorialActionKind::Correct);
+        assert!(correction.reason.is_some());
+        assert_eq!(correction.correction_text, None);
     }
 
     #[test]
@@ -755,22 +821,73 @@ mod tests {
     }
 
     #[test]
+    fn in_space_retract_targeting_wrong_space_action_is_inactive_history_only() {
+        let wrong_space_action = record(
+            id(30),
+            [0x22; 32],
+            EDITOR,
+            200,
+            NewswirePayload::EditorialAction(EditorialActionV1 {
+                space_descriptor_entry_id: id(1),
+                target_entry_id: id(2),
+                kind: EditorialActionKind::Feature,
+                reason: None,
+                correction_text: None,
+            }),
+        );
+        let view = projection(&[
+            post(id(2), 100, None),
+            wrong_space_action,
+            action(id(31), 300, id(30), EditorialActionKind::Retract),
+        ]);
+        assert!(view.front_page.is_empty());
+        assert_eq!(view.open_wire[0].treatment, PostTreatment::Ordinary);
+        assert_eq!(
+            view.editorial_history
+                .iter()
+                .map(|action| (action.entry_id, action.active))
+                .collect::<Vec<_>>(),
+            vec![(id(31), false)]
+        );
+    }
+
+    #[test]
     fn non_retraction_invalid_targets_stay_history_only() {
+        let wrong_space_post = record(
+            id(4),
+            [0x22; 32],
+            AUTHOR,
+            120,
+            NewswirePayload::NewsPost(NewsPostV1 {
+                space_descriptor_entry_id: id(1),
+                headline: "Wrong space".into(),
+                body: "Not eligible here".into(),
+                language: "en".into(),
+                event_time_unix_seconds: None,
+                expires_at_unix_seconds: None,
+                coarse_location: None,
+                source_claims: vec![],
+                operational_profile: None,
+                ai_assisted: false,
+            }),
+        );
         let records = vec![
             post(id(2), 100, None),
             post_bound_to(id(3), 110, id(999), None),
+            wrong_space_post,
             action(id(20), 200, id(21), EditorialActionKind::Feature),
             action(id(21), 210, id(99), EditorialActionKind::Verify),
             action(id(22), 220, id(1), EditorialActionKind::Correct),
             action(id(23), 230, id(3), EditorialActionKind::Hide),
             action(id(24), 240, id(20), EditorialActionKind::Tombstone),
+            action(id(25), 250, id(4), EditorialActionKind::Verify),
         ];
         let view = projection(&records);
         assert_eq!(view.open_wire.len(), 1);
         assert_eq!(view.open_wire[0].treatment, PostTreatment::Ordinary);
         assert!(view.front_page.is_empty());
-        assert_eq!(view.editorial_history.len(), 5);
-        assert!(view.editorial_history.iter().all(|item| item.active));
+        assert_eq!(view.editorial_history.len(), 6);
+        assert!(view.editorial_history.iter().all(|item| !item.active));
     }
 
     #[test]
@@ -804,7 +921,7 @@ mod tests {
     fn arrival_permutations_produce_byte_for_byte_equal_projection() {
         let records = vec![
             post(id(2), 100, None),
-            post(id(3), 90, Some(clock().unix_seconds as u64)),
+            post(id(3), 90, Some(clock().unix_seconds)),
             action(id(10), 200, id(2), EditorialActionKind::Feature),
             action(id(11), 210, id(2), EditorialActionKind::Verify),
             action(id(12), 220, id(2), EditorialActionKind::Correct),

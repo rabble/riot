@@ -36,8 +36,9 @@ fn member(namespace_id: [u8; 32], secret: [u8; 32]) -> EvidenceAuthor {
 }
 
 fn fixed_clock(clock: ProjectionClockV1, offset_micros: u64) -> FixedClock {
+    let unix_seconds: u64 = clock.unix_seconds();
     FixedClock(ClockSnapshot {
-        unix_seconds: clock.unix_seconds() as u64,
+        unix_seconds,
         tai_j2000_micros: clock.tai_j2000_micros() + offset_micros,
         uncertainty_seconds: 0,
     })
@@ -110,7 +111,7 @@ fn inspected_signed_records_feed_the_public_projection_api() {
             headline: "Harbor update".into(),
             body: "A human-authored report.".into(),
             language: "en".into(),
-            event_time_unix_seconds: Some(clock.unix_seconds() as u64),
+            event_time_unix_seconds: Some(clock.unix_seconds()),
             expires_at_unix_seconds: None,
             coarse_location: Some("north pier".into()),
             source_claims: vec!["eyewitness".into()],
