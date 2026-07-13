@@ -1,7 +1,7 @@
 # Riot local-first PWA vertical slice design
 
 Date: 2026-07-13
-Status: Revision 10 — second design-review corrections, review pending
+Status: Revision 11 — final design-review corrections, review pending
 
 ## Purpose
 
@@ -335,9 +335,22 @@ accepted log remains the durable source from which live alerts are rebuilt; it
 is not advertised as a complete Replicator feed. Names remain renderer-local
 decoration outside `CommunityProjectionV1`; sync does not invent or trust them.
 
-Each coordinator session has only the fixed capability `duplex-frames` and a
-protocol role, `initiator|responder`; it never receives a concrete transport
-kind. The trusted browser host binds its returned session ID exactly once to a
+This alert-only view is a new, explicit exchange profile,
+`org.riot.alert-live-set/1`, selected and matched before either side passes a
+frame to `ByteSyncSession`. It reuses the bounded canonical sync frames only
+inside that matched profile. It is not wire-compatible with the existing native
+`org.riot.conference-sync/1` complete-inventory session, whose inventory includes
+profile, app-data, and app-index records. A missing, different, or unnegotiated
+profile fails before `Hello`; there is no attempt to infer compatibility from
+entry IDs. No live network adapter or cross-native interoperability claim ships
+in this MVP. Future native/browser transports either adopt the alert profile or
+negotiate another versioned profile with its own complete review/projection
+rules; transport choice still does not alter signed record formats.
+
+Each coordinator session has only the fixed capability `duplex-frames`, the
+fixed `org.riot.alert-live-set/1` exchange profile, and a protocol role,
+`initiator|responder`; it never receives a concrete transport kind. The trusted
+browser host binds its returned session ID exactly once to a
 locally selected immutable port/kind ID. The remote peer and received
 bytes cannot set or alter that host binding. There is no silent fallback:
 failure of `nym` or any future metadata-resistant adapter may not transmit
@@ -381,9 +394,15 @@ An incoming entries frame follows this exact durability sequence:
    IDs, signatures, capabilities, and bundle ceilings, but retains its pending
    entries without calling `import_accepted`.
 2. `ReplicationCoordinator` performs ordinary inspect and creates a
-   `ReplicationImportReviewV1` for every expected eligible entry. Duplex sync is
-   all-or-reject: unlike file import, it does not permit a selective subset that
-   would disagree with the requested frame.
+   `ReplicationImportReviewV1` only if decoded count, exact requested/pending ID
+   count, valid row count, and eligible row count are equal; there are zero
+   rejected, unsupported, duplicate, or non-alert rows; and prospective
+   inventory validation proves the durable live set plus every pending entry
+   remains within 64 IDs and 8 MiB. The prospective plan's entry IDs must equal
+   the pending IDs exactly. Any failed equality rejects the whole session before
+   an accept action exists. Duplex sync is all-or-reject: unlike file import, it
+   does not permit a selective subset that would disagree with the requested
+   frame or with `ByteSyncSession::pending_entries`.
 3. `accept_replication_import(session_id, review_id)` rechecks session/review
    liveness, commits through plan-all, and returns an exact normalized
    `PendingBundleV1` while entering `awaiting-persistence`. It does not advance
@@ -404,9 +423,10 @@ has the same effect. Rejecting before commit calls `import_rejected`; accepting
 or rejecting a stale/wrong review or wrong hash changes nothing.
 
 The controller never opens a socket, resolves a URL, selects a gateway, invokes
-Web Bluetooth, or imports a Nym package. Async browser I/O implementations are
-host-owned; `riot-client` owns their versioned descriptors/envelopes and the
-coordinator semantics.
+Web Bluetooth, or imports a Nym package. `riot-client` is the authoritative owner
+of exchange-profile, envelope, state-transition, limit, and error semantics.
+The JS browser host implements only asynchronous registry/port I/O against that
+contract and may not redefine it per renderer.
 
 Two immutable transport capabilities avoid conflating files with peer sessions:
 
@@ -414,7 +434,7 @@ Two immutable transport capabilities avoid conflating files with peer sessions:
   ID or handshake. `file` is the sole MVP implementation and always uses the
   existing selective preview/import or consolidated export paths.
 - `duplex-frames` moves `TransportEnvelopeV1 { version, session_id,
-  payload_kind: sync-frame, payload_bytes }`. Nearby, direct-community-node,
+  exchange_profile, payload_kind: sync-frame, payload_bytes }`. Nearby, direct-community-node,
   HTTPS-gateway, and Nym are reserved kinds with no implementation or UI in the
   MVP; deterministic in-memory tests drive this capability only.
 
@@ -460,6 +480,17 @@ never branches on it. One port operation is in flight at a time. A
 ID. Mode mismatch fails before bytes cross into the controller. A `file` port
 cannot bind a replication session and returns `TRANSPORT_MODE_MISMATCH` in the
 host; file import/export never masquerades as a live replication session.
+
+`TransportEnvelopeV1.session_id` and `exchange_profile` are host-local routing
+metadata, not peer wire fields. On send, the port verifies the locally bound
+session/profile and strips both before its concrete adapter transmits the opaque
+canonical `payload_bytes`; adapter-specific setup must have already negotiated
+the same exchange profile. On receive, that established port wraps peer payload
+bytes with its own local bound session ID/profile before returning the event.
+Independent peers never compare or share controller session IDs. A future
+network adapter must separately specify its connection/handshake identifier and
+profile-negotiation bytes; this MVP defines neither because it ships no duplex
+adapter.
 
 Transport kind, endpoint, first-seen time, delivery attempt, and availability
 are optional local receipt facts. They never enter signed payloads, entry IDs,
@@ -620,8 +651,8 @@ lowercase hex strings. Closed enums use the existing lowercase names
 | `ReplicationImportReviewV1` | `version`, `session_id`, `review: ImportReviewV1`; all eligible rows are selected and selection cannot be edited |
 | `PendingBundleV1` | `version`, exact accepted-only `bundle_bytes: Uint8Array`, `admission_route: AdmissionRouteV1`, complete `entry_ids: string[]`, `sha256` |
 | `BundleArtifactV1` | `version`, canonical `bundle_bytes: Uint8Array`, complete `entry_ids: string[]`, `sha256`, deterministic `filename` |
-| `TransportEnvelopeV1` | `version`, `capability: TransportCapabilityV1`, `session_id: string|null`, `payload_kind` (`bundle|sync-frame`), bounded `payload_bytes` |
-| `ReplicationSessionV1` | `version`, opaque `session_id`, complete `namespace_id`, `role: ReplicationRoleV1`, `state: ReplicationStateV1` |
+| `TransportEnvelopeV1` | `version`, `capability: TransportCapabilityV1`, `session_id: string|null`, `exchange_profile: string|null`, `payload_kind` (`bundle|sync-frame`), bounded `payload_bytes` |
+| `ReplicationSessionV1` | `version`, opaque `session_id`, complete `namespace_id`, `exchange_profile` (fixed `org.riot.alert-live-set/1`), `role: ReplicationRoleV1`, `state: ReplicationStateV1` |
 | `ReplicationOutcomeV1` | `version`, `session_id`, `state: ReplicationStateV1`, `review: ReplicationImportReviewV1|null`, `rejection_code: string|null` |
 | `TransportEventV1` | `version`, `kind` (`envelope|closed|failed`), `envelope: TransportEnvelopeV1|null`, `failure_code: TransportFailureCodeV1|null`, `message_key: string|null` |
 | `TransportSendResultV1` | `version`, `status` (`sent|cancelled|unavailable|failed`), `failure_code: TransportFailureCodeV1|null`, `message_key: string|null` |
@@ -671,10 +702,48 @@ encodes the same structure with the versioned
 `org.riot.community-projection/1` canonical CBOR codec: definite-length maps and
 arrays, unsigned integer field keys in ascending order, UTF-8 text, byte strings
 for complete binary IDs/digests, and no floating-point or optional omitted
-fields (`null` is explicit). The codec's golden vectors are shared by Rust,
-WASM, and renderer conformance tests. “Byte-identical projection” means those
-canonical bytes from the same signed live alert set and projection-code version,
-not identical DOM, localized labels, or CSS.
+fields (`null` is explicit). Its authoritative schema is:
+
+```text
+CommunityProjectionV1 = {
+  0: 1,                         # unsigned version
+  1: bytes32 namespace_id,
+  2: [ProjectedUpdateV1 ...]    # total order defined above
+}
+
+ProjectedUpdateV1 = {
+  0: 1,                         # unsigned version
+  1: bytes32 entry_id,
+  2: bytes32 namespace_id,
+  3: bytes32 signer_id,
+  4: text headline,
+  5: text description,
+  6: text language,
+  7: uint urgency,
+  8: uint severity,
+  9: uint certainty,
+  10: null | uint valid_from_unix_seconds,
+  11: uint expires_at_unix_seconds,
+  12: null | text affected_area,
+  13: [text source_claim ...],   # signed order retained
+  14: bool ai_assisted,
+  15: uint created_at_unix_seconds,
+  16: text key_tag,              # exactly eight lowercase hex characters
+  17: true signature_valid,
+  18: true capability_valid
+}
+```
+
+Urgency codes are `immediate=0, expected=1, future=2, past=3, unknown=4`;
+severity codes are `extreme=0, severe=1, moderate=2, minor=3, unknown=4`;
+certainty codes are `observed=0, likely=1, possible=2, unlikely=3, unknown=4`.
+Every text/count ceiling is the corresponding validated `riot-core` ceiling;
+indefinite values, tags, duplicate keys, unknown keys, non-minimal integers,
+invalid UTF-8, and trailing bytes are rejected. The checked-in schema module and
+golden vectors are authoritative for Rust, WASM, and renderer conformance tests.
+“Byte-identical projection” means these canonical bytes from the same signed
+live alert set and projection-code version, not identical DOM, localized labels,
+or CSS.
 
 The workspace pins `wasm-bindgen = 0.2.126`. `scripts/web/build.sh` verifies
 `wasm-bindgen-cli 0.2.126`, runs
@@ -868,7 +937,7 @@ The post flow is:
    created/expiry times, and Technical details digest.
 3. Final **Post update** action. While signing/persisting it is disabled and
    labeled **Posting…**; cancellation is unavailable after signing begins.
-4. Success copy: **Saved on this browser. Export or exchange it to share.** The
+4. Success copy: **Saved on this browser. Export it to share.** The
    new update is inserted by signed creation time without moving focus.
 
 Import review shows one selectable row per valid update: headline, body, author
@@ -881,6 +950,9 @@ the member identity and accepts the selected rows together. With an existing
 community the CTA is **Add selected updates**. Either CTA is disabled when
 nothing is selected, and Cancel has no mutation. The label field says **This
 name exists only on this browser.**
+Selectable rows use native labeled checkboxes inside a `fieldset`/`legend`;
+selection changes announce the selected count in a polite live region without
+re-reading the whole row. Rejected rows contain no disabled fake checkbox.
 
 States:
 
@@ -899,7 +971,14 @@ States:
 - Unsupported but valid storage schema: read-only recovery with the distinctly
   labeled unverified recovery artifact; no
   automatic migration or reset.
-- Storage full: refuse the mutation and offer Export community data.
+- Storage full before core commit: refuse the mutation with `STORE_FULL`, retain
+  the editable draft/selection, and keep **Export community data** available for
+  the previously durable history.
+- Persistence failure after core commit: show only the blocked `not-saved`
+  recovery queue; every export/transport is disabled. After successful Retry,
+  normal export includes the new durable record. After confirmed Close without
+  saving, the controller reloads the prior durable state and normal export
+  becomes available again without the discarded record.
 - Another writer tab: read-only Home with **Riot is open in another tab**.
 - Another writer tab before a community exists: a read-only first-run page with
   the same explanation and no create/import controls; it automatically offers
@@ -1188,8 +1267,10 @@ Stable user-facing categories:
 - `REPLAY_FAILED` — stop at the first corrupt record and offer the distinctly
   labeled unverified recovery artifact; never silently skip.
 - `REPLICATION_WINDOW_EXCEEDED` — current live inventory exceeds the MVP's 64
-  ID/8 MiB reconciliation window; no session opens and file export remains
-  available.
+  entry/8 MiB reconciliation and single-bundle export window; no session opens.
+  Previously retained per-operation bundles remain durable locally, but this
+  MVP cannot produce one complete live-set export. The UI states that limitation
+  and points to future paginated export rather than promising a false fallback.
 - `REPLICATION_UNEXPECTED_FRAME` — wrong session/state/frame ordering or mode;
   no mutation and no peer acceptance acknowledgement.
 - `INTERNAL` — close the WASM session, retain persisted bytes, and offer reload.
@@ -1284,7 +1365,10 @@ TDD work proceeds in independently green slices:
    8-MiB live-window failures, immutable local transport binding, no silent
    fallback, initiator and responder starts, simultaneous-initiation rejection,
    terminal Complete/Reject receive paths, alert-only inventory filtering,
-   non-alert entries-frame rejection, frame-drain ordering, all-or-reject review, exact
+   exchange-profile mismatch before Hello, explicit incompatibility with native
+   complete-inventory sync, non-alert entries-frame rejection, equality of
+   requested/pending/decoded/valid/eligible/planned ID sets, prospective live-set
+   validation, frame-drain ordering, all-or-reject review, exact
    commit→persist→hash-ack transition, wrong/stale hash safety, crash-before-ack
    retry safety, oversize/mode-mismatch rejection, and zero controller I/O.
    Only then add the ordinary Rust surface; existing `riot-ffi` tests must prove
@@ -1304,7 +1388,8 @@ TDD work proceeds in independently green slices:
    bundle+manifest+draft commit, first-join transaction
    failure/identity discard, recovery-queue mutation blocking, the exact
    `TransportPortV1` state contract, closed failure mapping, cancel/concurrency
-   behavior, an in-memory duplex fake proving bounded opaque frame exchange,
+   behavior, registry-authoritative kind binding, adapter stripping/rebinding of
+   distinct peer-local session IDs, an in-memory duplex fake proving bounded opaque frame exchange,
    unavailable reserved adapters with zero mutation and no UI controls, and the
    file picker/download bundle-carrier as the only concrete implementation. Real
    IndexedDB/WebCrypto/Web Locks tests use unique browser contexts; no in-memory
