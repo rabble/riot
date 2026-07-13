@@ -1287,6 +1287,10 @@ Stable user-facing categories:
 - `PERSISTENCE_FAILED` — core may hold an in-memory commit; show non-durable
   state, block every transport, and offer Retry or confirmed Close without
   saving.
+- `PERSISTENCE_PENDING` — session close/cancel is forbidden while a
+  core-committed bundle awaits durability acknowledgement; zero state change,
+  with Retry or confirmed whole-controller Close without saving as the only
+  exits.
 - `REPLAY_FAILED` — stop at the first corrupt record and offer the distinctly
   labeled unverified recovery artifact; never silently skip.
 - `REPLICATION_WINDOW_EXCEEDED` — current live inventory exceeds the MVP's 64
@@ -1382,7 +1386,8 @@ TDD work proceeds in independently green slices:
    store-charge outcomes for very short and maximum-length endpoint labels;
    consolidated deterministic export; immutable review IDs; member posting;
    pending-profile confirm/abort; bundle-persistence acknowledgement and
-   mutation blocking; duplicate import; and every stable error mapping. The same
+   mutation blocking; `PERSISTENCE_PENDING` on session close/cancel with zero
+   state change; duplicate import; and every stable error mapping. The same
    tests wrap the existing byte-only session in `ReplicationCoordinator` and
    prove exactly one active session/frame buffer/pending import, the 64-ID and
    8-MiB live-window failures, immutable local transport binding, no silent
