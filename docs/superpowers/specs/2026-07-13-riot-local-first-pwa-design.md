@@ -845,7 +845,7 @@ order into a normalized bundle; rejected, unselected, foreign-namespace, and
 non-alert frames never enter persistence or export.
 
 A versioned manifest is split into a fixed header
-`{version, namespace_id, record_count, total_bytes}` and ordered descriptor rows
+`{version, generation, namespace_id, record_count, total_bytes}` and ordered descriptor rows
 `{ordinal, sha256, byte_length, admission_route, transport_receipt|null}`.
 `MAX_LOG_RECORDS = 4096`, the header is at most 4 KiB, each descriptor is at most
 512 bytes, all descriptors total at most 1 MiB, each bundle is at most 8 MiB,
@@ -853,29 +853,40 @@ and staged canonical bundle bytes total at most 16 MiB.
 
 The header and every descriptor value are stored as canonical CBOR `Blob`s, not
 structured-clone object graphs. Store keys are fixed: literal `header`, unsigned
-ordinal integers, and 64-character lowercase SHA-256 hex respectively. On open,
-one read-only IndexedDB transaction calls `count()` on the header, descriptor,
-and bundle stores without enumerating untrusted keys. It requires exactly one
-header, fetches only literal `header`, requires a `Blob`, checks `Blob.size <= 4
-KiB` before `arrayBuffer()`, and parses the bounded canonical header. It then
-requires descriptor count to equal bounded `record_count`, fetches only expected
-ordinal keys `0..record_count-1`, and size-checks each descriptor Blob before
-decoding. After collecting bounded expected unique hashes, it requires the
-bundle-store count to equal that set size and fetches only those exact bounded
-hash keys. Thus an attacker-sized unexpected key is never enumerated or
-materialized: it can only cause a count/missing-expected-key rejection.
+ordinal integers, and 64-character lowercase SHA-256 hex respectively. Restore
+uses phased read-only transactions under the page-lifetime exclusive writer
+lock, and never awaits `Blob.arrayBuffer()`, CBOR parsing, or hashing while an
+IndexedDB transaction must remain active:
 
-For each referenced bundle, the host requires a `Blob`, checks `Blob.size`
-before `arrayBuffer()`, hashes and validates it, appends it to the
-at-most-16-MiB staging log, then releases the individual buffer before
-advancing. Missing, duplicate, out-of-order, non-`Blob`, oversized, unexpected,
-or noncanonical metadata/objects are `REPLAY_FAILED`. Browser/IDB may deserialize
-a malicious non-Blob value returned at an exact expected key before JavaScript
-can reject its type; the design makes no claim against same-origin/browser
-memory exhaustion before JS control, but application code never enumerates
-unknown keys or intentionally accumulates unbounded manifest/bundle values.
-Unsupported but internally consistent schema versions enter read-only recovery
-and preserve bounded raw records for recovery export.
+1. A short transaction calls `count()` on the header store, fetches only literal
+   `header`, requires a `Blob`, and returns its handle. After transaction
+   completion, the host checks `Blob.size <= 4 KiB`, buffers, and parses it.
+2. A second short transaction re-fetches the header Blob handle, calls `count()`
+   on descriptors, and returns only expected ordinal Blob handles
+   `0..record_count-1`; request handlers reject non-Blob or over-512-byte values.
+   After completion, the host buffers/re-parses the header and requires the same
+   exact bytes/generation, then sequentially buffers/decodes descriptors within
+   the 1 MiB aggregate ceiling.
+3. A third short transaction again fetches the exact header Blob, calls
+   `count()` on bundles, and returns Blob handles only for expected unique
+   64-character hashes. Request handlers reject non-Blob values and any
+   per-bundle/declared aggregate size mismatch. After completion, the host
+   revalidates the same header bytes/generation, then sequentially buffers,
+   hashes, validates, and stages the immutable bundle snapshots within the 16
+   MiB ceiling.
+
+Thus asynchronous decoding cannot make a needed transaction inactive, and an
+attacker-sized unexpected key is never enumerated or materialized: it can only
+cause a count/missing-expected-key rejection. `generation` changes atomically
+with every manifest write. The Web Lock and repeated exact-header checks prevent
+application-writer races; hostile same-origin code outside Riot can still race
+or exhaust browser resources and is already outside the trusted-release claim.
+Missing, duplicate, out-of-order, non-`Blob`, oversized, unexpected, or
+noncanonical metadata/objects are `REPLAY_FAILED`. Browser/IDB may deserialize a
+malicious non-Blob value returned at an exact expected key before JavaScript can
+reject its type; the design makes no claim against that pre-JS browser
+allocation. Unsupported but internally consistent schema versions enter
+read-only recovery and preserve bounded raw records for recovery export.
 Duplicate bundle hashes retain the first local receipt and do not grow storage;
 that receipt is informational and never changes record trust or projection.
 
@@ -1173,9 +1184,11 @@ a community mutation.
    matching service-worker cache.
 2. Acquire the exclusive writer lock, use store `count()` plus only the exact
    fixed header/ordinal/hash keys to validate size-checkable metadata Blobs and
-   one bundle Blob at a time in one read-only IndexedDB transaction. Reject
-   count, per-record, manifest, or aggregate ceiling violations before adding
-   bytes to the bounded staging log; never enumerate unknown keys.
+   immutable bundle Blob handles in three short read-only transactions. Decode
+   and hash only after each transaction completes; revalidate the exact header
+   generation in every phase. Reject count, per-record, manifest, generation,
+   or aggregate ceiling violations before adding bytes to the bounded staging
+   log; never enumerate unknown keys.
 3. Pass the protected identity, community, and complete `RestoreLogV1` to the
    controller's atomic `restore_community` transition. It permits an empty
    organizer log and otherwise replays every bundle with its fixed admission route
@@ -1425,6 +1438,7 @@ TDD work proceeds in independently green slices:
    header/512-byte descriptor/1-MiB manifest-row ceilings, non-Blob values,
    hostile oversized/unexpected keys never materialized, hostile oversized
    header/descriptor/bundle values rejected by Blob size before `arrayBuffer()`,
+   transaction auto-close/liveness, cross-phase generation drift,
    count/object/aggregate rejection before staging,
    missing/extra/rollback-limitation copy, atomic transaction abort, 16 MiB
    boundary, storage clear, corrupt replay, unsupported schema, exclusive writer,
