@@ -61,32 +61,38 @@ fn check_text(value: &str, max: usize) -> Result<(), AppsError> {
 /// Validates and encodes the canonical byte representation.
 pub fn encode_manifest(manifest: &AppManifest) -> Result<Vec<u8>, AppsError> {
     validate(manifest)?;
+    Ok(encode_validated_manifest(manifest))
+}
 
+/// Encodes a manifest that has already passed [`validate`]. The validated
+/// field maxima cap the canonical document far below `MAX_MANIFEST_BYTES`, and
+/// `Vec<u8>` is an infallible minicbor writer.
+fn encode_validated_manifest(manifest: &AppManifest) -> Vec<u8> {
     let mut buffer: Vec<u8> = Vec::new();
     let mut e = Encoder::new(&mut buffer);
-    let r: Result<_, minicbor::encode::Error<core::convert::Infallible>> = (|| {
-        e.map(FIELD_COUNT)?;
-        e.u8(0)?.str(&manifest.name)?;
-        e.u8(1)?.str(&manifest.description)?;
-        e.u8(2)?.str(&manifest.version)?;
-        e.u8(3)?.bytes(&manifest.author.namespace_id)?;
-        e.u8(4)?.bytes(&manifest.author.subspace_id)?;
-        e.u8(5)?
-            .u8(namespace_kind_to_u8(manifest.author.namespace_kind))?;
-        e.u8(6)?.bytes(&manifest.author.signing_key_id)?;
-        e.u8(7)?.array(manifest.permissions.len() as u64)?;
-        for permission in &manifest.permissions {
-            e.str(permission)?;
-        }
-        e.u8(8)?.str(&manifest.entry_point)?;
-        Ok(())
-    })();
-    r.map_err(|_| AppsError::ManifestFieldInvalid)?;
-
-    if buffer.len() > MAX_MANIFEST_BYTES {
-        return Err(AppsError::ManifestFieldInvalid);
+    let _ = e.map(FIELD_COUNT);
+    let _ = e.u8(0);
+    let _ = e.str(&manifest.name);
+    let _ = e.u8(1);
+    let _ = e.str(&manifest.description);
+    let _ = e.u8(2);
+    let _ = e.str(&manifest.version);
+    let _ = e.u8(3);
+    let _ = e.bytes(&manifest.author.namespace_id);
+    let _ = e.u8(4);
+    let _ = e.bytes(&manifest.author.subspace_id);
+    let _ = e.u8(5);
+    let _ = e.u8(namespace_kind_to_u8(manifest.author.namespace_kind));
+    let _ = e.u8(6);
+    let _ = e.bytes(&manifest.author.signing_key_id);
+    let _ = e.u8(7);
+    let _ = e.array(manifest.permissions.len() as u64);
+    for permission in &manifest.permissions {
+        let _ = e.str(permission);
     }
-    Ok(buffer)
+    let _ = e.u8(8);
+    let _ = e.str(&manifest.entry_point);
+    buffer
 }
 
 /// Strict canonical decoder: rejects unknown/duplicate/misordered keys,
@@ -105,84 +111,71 @@ pub fn decode_manifest(input: &[u8]) -> Result<AppManifest, AppsError> {
         return Err(AppsError::ManifestFieldInvalid);
     }
 
-    let mut name: Option<String> = None;
-    let mut description: Option<String> = None;
-    let mut version: Option<String> = None;
-    let mut namespace_id: Option<[u8; 32]> = None;
-    let mut subspace_id: Option<[u8; 32]> = None;
-    let mut namespace_kind: Option<NamespaceKind> = None;
-    let mut signing_key_id: Option<[u8; 32]> = None;
-    let mut permissions: Option<Vec<String>> = None;
-    let mut entry_point: Option<String> = None;
-
-    let mut last_key: Option<u64> = None;
-    for _ in 0..pairs {
-        let key = d.u64().map_err(|_| AppsError::ManifestFieldInvalid)?;
-        if let Some(previous) = last_key {
-            if key <= previous {
-                return Err(AppsError::ManifestFieldInvalid);
-            }
-        }
-        last_key = Some(key);
-
-        match key {
-            0 => name = Some(decode_text(&mut d, MAX_APP_NAME_BYTES)?),
-            1 => description = Some(decode_text(&mut d, MAX_APP_DESCRIPTION_BYTES)?),
-            2 => version = Some(decode_text(&mut d, MAX_APP_VERSION_BYTES)?),
-            3 => namespace_id = Some(decode_id32(&mut d)?),
-            4 => subspace_id = Some(decode_id32(&mut d)?),
-            5 => {
-                let raw = d.u8().map_err(|_| AppsError::ManifestFieldInvalid)?;
-                namespace_kind =
-                    Some(namespace_kind_from_u8(raw).ok_or(AppsError::ManifestFieldInvalid)?);
-            }
-            6 => signing_key_id = Some(decode_id32(&mut d)?),
-            7 => {
-                let len = d
-                    .array()
-                    .map_err(|_| AppsError::ManifestFieldInvalid)?
-                    .ok_or(AppsError::ManifestFieldInvalid)?;
-                if len as usize > MAX_APP_PERMISSIONS {
-                    return Err(AppsError::ManifestFieldInvalid);
-                }
-                let mut items = Vec::with_capacity(len as usize);
-                for _ in 0..len {
-                    items.push(decode_text(&mut d, MAX_APP_PERMISSION_BYTES)?);
-                }
-                permissions = Some(items);
-            }
-            8 => entry_point = Some(decode_text(&mut d, MAX_APP_ENTRY_POINT_BYTES)?),
-            _ => return Err(AppsError::ManifestFieldInvalid),
-        }
+    require_key(&mut d, 0)?;
+    let name = decode_text(&mut d, MAX_APP_NAME_BYTES)?;
+    require_key(&mut d, 1)?;
+    let description = decode_text(&mut d, MAX_APP_DESCRIPTION_BYTES)?;
+    require_key(&mut d, 2)?;
+    let version = decode_text(&mut d, MAX_APP_VERSION_BYTES)?;
+    require_key(&mut d, 3)?;
+    let namespace_id = decode_id32(&mut d)?;
+    require_key(&mut d, 4)?;
+    let subspace_id = decode_id32(&mut d)?;
+    require_key(&mut d, 5)?;
+    let raw_kind = d.u8().map_err(|_| AppsError::ManifestFieldInvalid)?;
+    let namespace_kind = namespace_kind_from_u8(raw_kind).ok_or(AppsError::ManifestFieldInvalid)?;
+    require_key(&mut d, 6)?;
+    let signing_key_id = decode_id32(&mut d)?;
+    require_key(&mut d, 7)?;
+    let len = d
+        .array()
+        .map_err(|_| AppsError::ManifestFieldInvalid)?
+        .ok_or(AppsError::ManifestFieldInvalid)?;
+    if len as usize > MAX_APP_PERMISSIONS {
+        return Err(AppsError::ManifestFieldInvalid);
     }
+    let mut permissions = Vec::with_capacity(len as usize);
+    for _ in 0..len {
+        permissions.push(decode_text(&mut d, MAX_APP_PERMISSION_BYTES)?);
+    }
+    require_key(&mut d, 8)?;
+    let entry_point = decode_text(&mut d, MAX_APP_ENTRY_POINT_BYTES)?;
 
     if d.position() != input.len() {
         return Err(AppsError::ManifestFieldInvalid);
     }
 
     let manifest = AppManifest {
-        name: name.ok_or(AppsError::ManifestFieldInvalid)?,
-        description: description.ok_or(AppsError::ManifestFieldInvalid)?,
-        version: version.ok_or(AppsError::ManifestFieldInvalid)?,
+        name,
+        description,
+        version,
         author: AuthorIdentity {
-            namespace_id: namespace_id.ok_or(AppsError::ManifestFieldInvalid)?,
-            subspace_id: subspace_id.ok_or(AppsError::ManifestFieldInvalid)?,
-            namespace_kind: namespace_kind.ok_or(AppsError::ManifestFieldInvalid)?,
-            signing_key_id: signing_key_id.ok_or(AppsError::ManifestFieldInvalid)?,
+            namespace_id,
+            subspace_id,
+            namespace_kind,
+            signing_key_id,
         },
-        permissions: permissions.ok_or(AppsError::ManifestFieldInvalid)?,
-        entry_point: entry_point.ok_or(AppsError::ManifestFieldInvalid)?,
+        permissions,
+        entry_point,
     };
 
-    validate(&manifest)?;
-
     // Canonicality proof: only the exact encoder output is acceptable.
-    let reencoded = encode_manifest(&manifest)?;
+    // The field decoders above enforce every invariant from `validate` before
+    // allocating the reconstructed manifest, so re-encoding is infallible.
+    let reencoded = encode_validated_manifest(&manifest);
     if reencoded != input {
         return Err(AppsError::ManifestFieldInvalid);
     }
 
     Ok(manifest)
+}
+
+fn require_key(d: &mut Decoder<'_>, expected: u64) -> Result<(), AppsError> {
+    if d.u64().map_err(|_| AppsError::ManifestFieldInvalid)? == expected {
+        Ok(())
+    } else {
+        Err(AppsError::ManifestFieldInvalid)
+    }
 }
 
 fn namespace_kind_to_u8(kind: NamespaceKind) -> u8 {

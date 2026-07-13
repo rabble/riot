@@ -100,7 +100,8 @@ pub fn verify_starter_catalog(pairs: &[(&[u8], &[u8])]) -> Vec<IndexedApp> {
             if manifest.entry_point != bundle.entry_point {
                 return None;
             }
-            let app_id = app_id_for(&manifest, &app_bundle_digest(bundle_bytes)).ok()?;
+            let app_id = app_id_for(&manifest, &app_bundle_digest(bundle_bytes))
+                .expect("a decoded manifest always re-encodes");
             Some(IndexedApp {
                 app_id,
                 manifest,
