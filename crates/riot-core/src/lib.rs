@@ -11,6 +11,7 @@ pub mod apps;
 pub mod demo_fixture;
 pub mod import;
 pub mod model;
+pub mod newswire;
 pub mod profile;
 pub mod session;
 pub mod sync;
