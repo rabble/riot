@@ -1,7 +1,7 @@
 # Riot local-first PWA vertical slice design
 
 Date: 2026-07-13
-Status: Revision 4 after metaswarm design-review findings
+Status: Revision 5 after metaswarm design-review findings
 
 ## Purpose
 
@@ -70,8 +70,9 @@ data import does not recover identity.
 
 ## Chosen approach
 
-Use a framework-free PWA host plus a small `wasm-bindgen` adapter around the
-shared `riot-ffi` controller and `riot-core` protocol implementation.
+Use a framework-free PWA host plus a small `wasm-bindgen` adapter around a
+shared ordinary-Rust `riot-client` controller and the `riot-core` protocol
+implementation.
 
 Alternatives rejected for this slice:
 
@@ -132,7 +133,7 @@ static host
 browser UI ---- typed JS host/controller ---- riot-web WASM adapter
    |                         |                     |
    |                         |                     v
-   |                         |            riot-ffi shared controller
+   |                         |            riot-client shared controller
    |                         |                     |
    |                         |                     v
    |                         |                 riot-core
@@ -165,14 +166,13 @@ imports before enabling mutation. No serialized internal Rust store is trusted.
 
 ### Rust/WASM adapter
 
-A new `riot-web` workspace crate is a `cdylib` and ordinary Rust library. It
-exports one opaque `WebRiot` object and versioned DTOs through `wasm-bindgen`.
-It does **not** implement a second profile/store controller. It depends on the
-ordinary Rust API of `riot-ffi` and extends that shared controller with the
-missing prepared-review, join-from-bundle, accepted-only bundle, and consolidated
-export operations. Native callers keep using the same controller through
-UniFFI; the browser uses it through the thin `riot-web` binding. All state,
-namespace admission, entry projection, and error mapping therefore have one
+A new `riot-client` ordinary Rust library owns the profile/store state machine,
+prepared reviews, join-from-bundle, accepted-only bundles, and consolidated
+export. Existing `riot-ffi` becomes the native UniFFI adapter over that
+controller; a new `riot-web` `cdylib`/ordinary library becomes the thin
+`wasm-bindgen` adapter over the same controller. `riot-web` does not depend on
+UniFFI and neither binding implements controller state. All state, namespace
+admission, entry projection, and error mapping therefore have one
 implementation.
 
 Public operations:
@@ -182,9 +182,9 @@ Public operations:
 - `preview_new_community(bundle_bytes) -> CommunityImportReviewV1`
 - `join_reviewed_community(review_id, selected_entry_ids, local_title) -> CommunityJoinedV1`
 - `preview_import(bundle_bytes) -> ImportReviewV1`
-- `accept_import(review_id, selected_entry_ids) -> DurableBundleV1`
+- `accept_import(review_id, selected_entry_ids) -> PendingBundleV1`
 - `prepare_update(UpdateDraftV1) -> UpdateReviewV1`
-- `post_review(review_id) -> DurableBundleV1`
+- `post_review(review_id) -> PendingBundleV1`
 - `list_updates() -> UpdateV1[]`
 - `export_community() -> BundleArtifactV1`
 - `confirm_profile_persisted(pending_profile_id) -> CommunityV1`
@@ -199,9 +199,10 @@ mutation operation is available: it restores the sealed author, requires the
 caller-supplied community and manifest namespaces to equal the namespace sealed
 into that author, requires the caller-supplied signer ID to equal the sealed
 signer, and replays every ordered record with its retained route. A zero-record
-organizer log is valid; every record present must authenticate the same
-namespace. Any failure closes the partial session. Only `local_title` is
-editable. It verifies organizer
+organizer log is valid. A member profile must have at least its atomic join
+bundle, so a zero-record member log is `REPLAY_FAILED`; every record present
+must authenticate the same namespace. Any failure closes the partial session.
+Only `local_title` is editable. It verifies organizer
 equality before exposing organizer behavior. A restored member has
 `namespace != signer/subspace`; relationship is always derived from that fact,
 never trusted from the editable local community record. The record's title is a
@@ -272,8 +273,8 @@ lowercase hex strings. Closed enums use the existing lowercase names
 | `ProposedCommunityV1` | `version`, `namespace_id`, `relationship` (always `member`) |
 | `CommunityCreatedV1` | `version`, `pending_profile_id`, `community`, `wrapping_key_bytes`, `sealed_identity_bytes` |
 | `CommunityImportReviewV1` | `version`, `review: ImportReviewV1`, `proposed_community: ProposedCommunityV1`, `suggested_local_title` |
-| `CommunityJoinedV1` | `version`, `pending_profile_id`, `community: CommunityV1`, `wrapping_key_bytes`, `sealed_identity_bytes`, `accepted_bundle: DurableBundleV1` |
-| `RestoreRecordV1` | `version`, `bundle_bytes: Uint8Array`, `normalized_route`, `sha256` |
+| `CommunityJoinedV1` | `version`, `pending_profile_id`, `community: CommunityV1`, `wrapping_key_bytes`, `sealed_identity_bytes`, `accepted_bundle: PendingBundleV1` |
+| `RestoreRecordV1` | `version`, `bundle_bytes: Uint8Array`, `route` (`web-local-post|web-file-import`), `sha256` |
 | `RestoreLogV1` | `version`, `namespace_id`, `total_bytes`, ordered `records: RestoreRecordV1[]` |
 | `UpdateDraftV1` | `version`, `headline`, `description`, `language`, `urgency`, `severity`, `certainty`, `valid_from: decimal-string|null`, `expires_at`, `affected_area: string|null`, ordered `source_claims: string[]`, `ai_assisted` |
 | `UpdateV1` | draft fields plus `entry_id`, `namespace_id`, `signer_id`, rendered `author_label`, `created_at`, `signature_valid`, `capability_valid`, `durability` |
@@ -282,14 +283,14 @@ lowercase hex strings. Closed enums use the existing lowercase names
 | `TechnicalDetailsV1` | `version`, complete `entry_id`, `namespace_id`, `signer_id`, `payload_sha256`, `signature_valid`, `capability_valid` |
 | `ImportRowV1` | `version`, `headline`, `description`, deterministic `author_label`, ordered `source_claims: string[]`, `created_at`, `expires_at`, `ai_assisted`, `selectable`, fixed `rejection_code|null`, `technical: TechnicalDetailsV1` |
 | `ImportReviewV1` | `version`, `review_id`, `namespace_id`, `byte_count`, ordered `valid_rows: ImportRowV1[]`, ordered `rejected_rows: ImportRowV1[]`, `selected_entry_ids: string[]` |
-| `DurableBundleV1` | `version`, exact accepted-only `bundle_bytes: Uint8Array`, normalized `route`, complete `entry_ids: string[]`, `sha256` |
+| `PendingBundleV1` | `version`, exact accepted-only `bundle_bytes: Uint8Array`, `route` (`web-local-post|web-file-import`), complete `entry_ids: string[]`, `sha256` |
 | `BundleArtifactV1` | `version`, canonical `bundle_bytes: Uint8Array`, complete `entry_ids: string[]`, `sha256`, deterministic `filename` |
 | `WebErrorV1` | `version`, stable `code`, `field: string|null`, `message_key`; never raw parser/debug text |
 
-Every public call returns `Result<T, WebErrorV1>`. `route` is not caller
-controlled: local posts use `web-local-post`, file/demo imports use
-`web-file-import`, and startup replay uses the exact route stored with that log
-record. Every opaque import, review, or pending-profile ID is single-use,
+Every public call returns `Result<T, WebErrorV1>`. `route` is a closed enum, not
+free caller-controlled text: local posts use `web-local-post`, file/demo imports
+use `web-file-import`, and startup replay accepts only and uses the exact enum
+stored with that log record. Every opaque import, review, or pending-profile ID is single-use,
 session-bound, and rejected after replacement, commit/abort, or close.
 
 Every nested DTO also carries `version: 1`; arrays are always present, even
@@ -323,6 +324,39 @@ root.
 
 The adapter maps internal errors to a closed enumeration of stable browser
 error codes and never exposes debug strings that could contain input bytes.
+
+### Browser-compilable Willow dependency
+
+The crates.io `willow25 = 0.6.0-alpha.3` package unconditionally depends on
+`fjall`/`lsm-tree`; `lsm-tree` deliberately fails to compile for
+`wasm32-unknown-unknown`. Riot therefore vendors that exact released source at
+`vendor/willow25-browser/` and selects it through `[patch.crates-io]`. The fork
+keeps the package name/version and protocol code unchanged. Its allowlisted
+patch is only:
+
+- mark `fjall` and `async-fs` optional;
+- add a `persistent-storage` feature containing those dependencies; and
+- gate `storage::persistent_store` and its re-export on
+  `all(feature = "std", feature = "persistent-storage")`.
+
+`MemoryStore`, entry/capability codecs, Meadowcap, and cryptographic parameters
+remain the upstream code. Riot enables `std` but not `persistent-storage` for
+both `riot-client` and `riot-web`; no Riot crate currently uses
+`PersistentStore`. The vendor directory includes the crates.io archive checksum,
+license files, package URL, an upstream per-file hash manifest, and one
+reviewable patch file. `xtask verify-willow-vendor` checks unchanged files
+against that manifest and patched files against their committed post-patch
+hashes; it also fails if `fjall`, `async-fs`, or `lsm-tree` appears in the
+`riot-web` target feature graph. Replacing the fork requires an upstream release
+with the same optional-storage boundary plus the full conformance suite.
+
+The browser graph is exactly
+`riot-web -> riot-client -> riot-core -> willow25(MemoryStore)`. Target-specific
+configuration enables `getrandom 0.2`'s `js` backend. Native release builds keep
+the workspace's required `panic = "unwind"`; `.cargo/config.toml` sets
+`-C panic=abort` only for `wasm32-unknown-unknown`, where no UniFFI panic-catching
+contract exists. The feasibility gate builds this complete release graph and
+the native UniFFI graph before browser feature work continues.
 
 ### Browser vault
 
@@ -361,7 +395,7 @@ order into a normalized bundle; rejected, unselected, foreign-namespace, and
 non-alert frames never enter persistence or export.
 
 A versioned manifest records its single `namespace_id`, ordered
-`{sha256, byte_length, normalized_route}` records, and total retained bytes. On
+`{sha256, byte_length, route}` records, and total retained bytes. On
 every open, one read-only IndexedDB transaction snapshots the manifest and all
 bundle objects before validation. The host recomputes each object hash and size,
 validates the manifest namespace/totals/order/version, and rejects missing,
@@ -715,8 +749,16 @@ rendered in an `aria-live` region.
 `.coverage-thresholds.json` remains the source of truth: 100% lines, branches,
 functions, and statements. Before production implementation begins, its
 enforcement command changes to `scripts/web/coverage.sh`. That script runs
-`cargo tarpaulin --fail-under 100` and pinned `c8 --100` Node tests over every
-authored production JS/controller/service-worker module. Generated
+the existing `cargo tarpaulin --workspace --all-features --fail-under 100` line
+gate, verifies `cargo-llvm-cov 0.7.0`, runs
+`cargo llvm-cov clean --workspace`, and generates
+`cargo llvm-cov --workspace --all-features --branch --json --output-path target/llvm-cov/riot.json`.
+A checked-in
+validator fails unless LLVM totals report 100% lines, functions, regions, and
+branches; LLVM regions are the Rust executable-statement metric recorded under
+the repository's `statements` threshold. The script then runs pinned `c8 --100`
+Node tests over every authored production JS/controller/service-worker module,
+including 100% JS statements. Generated
 `wasm-bindgen` glue is excluded from JS coverage because it is generated from
 Rust; the authored Rust implementation remains covered on the host and the glue
 is exercised in both browser engines. Playwright behavior tests remain blocking
@@ -727,25 +769,33 @@ local verification use `npm ci`, never floating `npx` resolution. Browser ports
 (IndexedDB, WebCrypto, CacheStorage, Web Locks, downloads) are injected behind
 small authored modules so all branches run under Node fakes for coverage and
 again against real browser implementations for behavioral proof.
+`playwright.config.js` has named `chromium` and `webkit` projects. CI installs
+the package-lock-pinned browser revisions with
+`./node_modules/.bin/playwright install --with-deps chromium webkit`.
 
 TDD work proceeds in independently green slices:
 
 1. **Coverage gate (RED first):** a fixture production branch absent from tests
    makes `scripts/web/coverage.sh` fail; add the composite threshold command to
-   `.coverage-thresholds.json`, then remove the fixture and prove the empty web
-   baseline plus existing Rust suite pass before feature code.
+   `.coverage-thresholds.json`, then separately prove missing Rust line,
+   function, region/statement, and branch coverage and missing JS coverage each
+   fail before removing the fixtures. The empty web baseline plus existing Rust
+   suite pass before feature code.
 2. **WASM build contract (RED first):** a target check fails on the current
-   `getrandom` browser configuration. Add only target-scoped dependency features
-   needed for `wasm32-unknown-unknown`; do not enable conformance or filesystem
-   storage in the release graph. Tests assert and compile the complete release
-   graph—including `riot-ffi`, UniFFI, `willow25`/`fjall`, and the workspace panic
-   strategy—not merely `getrandom`. If that graph cannot target WASM, extract or
-   feature-gate the shared Rust controller; never duplicate it in JavaScript.
+   `getrandom` configuration and, after a temporary entropy fix, at
+   `lsm-tree`'s unsupported-platform guard. Vendor the exact allowlisted
+   `willow25` optional-storage patch, add target-scoped entropy/panic settings,
+   and extract the ordinary `riot-client` controller from its UniFFI adapter.
+   `xtask verify-willow-vendor`, `cargo tree`, native release checks, and the
+   full `riot-web` release build must prove that the browser graph uses
+   `MemoryStore`, contains no `fjall`/`async-fs`/`lsm-tree`/UniFFI, and preserves
+   the native unwind contract. This is a hard gate; no browser feature code
+   proceeds until it passes.
 3. **Prepared alert core:** host Rust tests first require frozen IDs/times/bytes,
    domain-separated digest, signature over the exact retained entry bytes,
    expiry/stale failure, zero mutation on failure, and compatibility output from
    `create_signed_alert`; then split prepare/sign in `riot-core`.
-4. **Shared controller extension:** `riot-ffi` contract tests first cover
+4. **Shared controller extension:** `riot-client` contract tests first cover
    organizer create/empty-log restore, import-as-member, atomic restore
    finalization, stored namespace/signer mismatch rejection,
    single-namespace rejection,
@@ -753,7 +803,8 @@ TDD work proceeds in independently green slices:
    consolidated deterministic export, immutable review IDs, member posting,
    pending-profile confirm/abort, bundle-persistence acknowledgement and mutation
    blocking, duplicate import, and every stable error mapping. Only then add the new
-   ordinary Rust/UniFFI surface.
+   ordinary Rust surface; existing `riot-ffi` tests must then prove the native
+   adapter preserves its contract.
 5. **WASM DTO lifecycle:** host Rust tests cover every DTO field/enum/time/byte
    conversion and `WebErrorV1` branch before `wasm-bindgen` exposure. Browser
    smoke tests then call create, prepare, post, import, list, export, and close
@@ -764,7 +815,8 @@ TDD work proceeds in independently green slices:
    missing/extra/rollback-limitation copy, atomic transaction abort, 16 MiB
    boundary, storage clear, corrupt replay, unsupported schema, exclusive writer,
    second-tab/no-community read-only behavior, post transaction interruption
-   immediately before/after bundle+manifest+draft commit, first-join transaction
+   including hard page termination immediately before/after
+   bundle+manifest+draft commit, first-join transaction
    failure/identity discard, and recovery-queue mutation blocking. Real
    IndexedDB/WebCrypto/Web Locks tests use unique browser contexts; no in-memory
    mock certifies persistence.
@@ -788,10 +840,11 @@ Required verification:
 ```text
 cargo test --workspace --all-features
 cargo check --workspace --all-features
-cargo check -p riot-web --target wasm32-unknown-unknown
 cargo fmt --all -- --check
 cargo clippy --workspace --all-features -- -D warnings
 npm ci
+./node_modules/.bin/playwright install --with-deps chromium webkit
+scripts/web/build.sh
 scripts/web/coverage.sh
 npm run test:web:e2e
 ```
