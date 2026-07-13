@@ -52,47 +52,48 @@ pub fn newswire_path(
 }
 
 pub fn classify_newswire_path(path: &Path) -> Option<(NewswirePathKind, u64, [u8; 32])> {
-    let components: Vec<&[u8]> = path.components().map(AsRef::as_ref).collect();
-    match components.as_slice() {
-        [root, version, family, time, digest]
-            if *root == ROOT
-                && *version == VERSION
-                && *family == DESCRIPTORS
-                && time.len() == 8
-                && digest.len() == 32 =>
-        {
-            Some((
-                NewswirePathKind::Descriptor,
-                u64::from_be_bytes((*time).try_into().ok()?),
-                (*digest).try_into().ok()?,
-            ))
-        }
-        [root, version, descriptor, family, time, digest]
-            if *root == ROOT
-                && *version == VERSION
-                && descriptor.len() == 32
-                && (*family == POSTS || *family == ACTIONS)
-                && time.len() == 8
-                && digest.len() == 32 =>
-        {
-            let space_descriptor_entry_id = (*descriptor).try_into().ok()?;
-            let kind = if *family == POSTS {
-                NewswirePathKind::Post {
-                    space_descriptor_entry_id,
-                }
-            } else {
-                NewswirePathKind::EditorialAction {
-                    space_descriptor_entry_id,
-                }
-            };
-            Some((
-                kind,
-                u64::from_be_bytes((*time).try_into().ok()?),
-                (*digest).try_into().ok()?,
-            ))
-        }
-        _ => None,
+    let mut components = path.components();
+    if components.next()?.as_ref() != ROOT || components.next()?.as_ref() != VERSION {
+        return None;
     }
+
+    let third = components.next()?;
+    if third.as_ref() == DESCRIPTORS {
+        let time = components.next()?;
+        let digest = components.next()?;
+        if components.next().is_some() {
+            return None;
+        }
+        return Some((
+            NewswirePathKind::Descriptor,
+            u64::from_be_bytes(time.as_ref().try_into().ok()?),
+            digest.as_ref().try_into().ok()?,
+        ));
+    }
+
+    let space_descriptor_entry_id = third.as_ref().try_into().ok()?;
+    let family = components.next()?;
+    let kind = if family.as_ref() == POSTS {
+        NewswirePathKind::Post {
+            space_descriptor_entry_id,
+        }
+    } else if family.as_ref() == ACTIONS {
+        NewswirePathKind::EditorialAction {
+            space_descriptor_entry_id,
+        }
+    } else {
+        return None;
+    };
+    let time = components.next()?;
+    let digest = components.next()?;
+    if components.next().is_some() {
+        return None;
+    }
+    Some((
+        kind,
+        u64::from_be_bytes(time.as_ref().try_into().ok()?),
+        digest.as_ref().try_into().ok()?,
+    ))
 }
 
 #[cfg(test)]
@@ -142,6 +143,15 @@ mod tests {
         for path in malformed {
             assert_eq!(classify_newswire_path(&path), None, "{path:?}");
         }
+    }
+
+    #[test]
+    fn excessive_component_count_is_rejected() {
+        let mut components: Vec<&[u8]> = vec![ROOT, VERSION, DESCRIPTORS];
+        components.extend(std::iter::repeat_n(b"extra".as_slice(), 61));
+        let path = Path::from_slices(&components).unwrap();
+        assert_eq!(path.component_count(), 64);
+        assert_eq!(classify_newswire_path(&path), None);
     }
 
     #[test]

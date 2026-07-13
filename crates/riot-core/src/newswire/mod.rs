@@ -12,6 +12,9 @@ pub enum NewswireError {
     ModelInvalid,
     CanonicalEntryInvalid,
     CanonicalCapabilityInvalid,
+    EntryBytesExceeded,
+    CapabilityBytesExceeded,
+    PayloadBytesExceeded,
     CapabilityInvalid,
     SignatureInvalid,
     PayloadLengthMismatch,
@@ -20,6 +23,7 @@ pub enum NewswireError {
     PathDigestMismatch,
     DuplicatedFieldMismatch,
     AuthorityInvalid,
+    NonCommunalNamespace,
     ClockUnavailable,
     SigningFailed,
 }

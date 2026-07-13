@@ -1,11 +1,12 @@
 //! Public conformance proof for descriptor-bound Newswire records.
 
 use riot_core::import::join::{plan_join, JoinState};
+use riot_core::import::{MAX_CAPABILITY_BYTES, MAX_ENTRY_BYTES};
 use riot_core::newswire::{
     create_signed_editorial_action_with_clock, create_signed_news_post_with_clock,
     create_signed_space_descriptor_with_clock, inspect_news_record, EditorialActionKind,
-    EditorialActionV1, NewsPostV1, NewswirePathKind, NewswirePayload, SignedNewswireRecord,
-    SpaceDescriptorV1,
+    EditorialActionV1, NewsPostV1, NewswireError, NewswirePathKind, NewswirePayload,
+    SignedNewswireRecord, SpaceDescriptorV1, MAX_NEWSWIRE_PAYLOAD_BYTES,
 };
 use riot_core::willow::{
     authorise_entry, decode_capability_canonic, decode_entry_canonic, encode_capability,
@@ -38,6 +39,18 @@ fn founder(mut secret: [u8; 32]) -> EvidenceAuthor {
         let subspace_id = subspace_secret.corresponding_subspace_id();
         let namespace_id = willow25::entry::NamespaceId::from_bytes(subspace_id.as_bytes());
         if namespace_id.is_communal() {
+            return EvidenceAuthor::from_parts_for_tests(namespace_id, &secret);
+        }
+        secret[0] = secret[0].wrapping_add(1);
+    }
+}
+
+fn noncommunal_founder(mut secret: [u8; 32]) -> EvidenceAuthor {
+    loop {
+        let subspace_secret = willow25::entry::SubspaceSecret::from_bytes(&secret);
+        let subspace_id = subspace_secret.corresponding_subspace_id();
+        let namespace_id = willow25::entry::NamespaceId::from_bytes(subspace_id.as_bytes());
+        if !namespace_id.is_communal() {
             return EvidenceAuthor::from_parts_for_tests(namespace_id, &secret);
         }
         secret[0] = secret[0].wrapping_add(1);
@@ -278,6 +291,15 @@ fn factories_enforce_founder_namespace_and_fixed_roster_authority() {
     )
     .unwrap();
     let verified = inspect_news_record(&space_record.signed).unwrap();
+    assert_eq!(
+        create_signed_editorial_action_with_clock(
+            &editor,
+            &verified,
+            &clock(602),
+            action([8; 32], [9; 32]),
+        ),
+        Err(NewswireError::DuplicatedFieldMismatch)
+    );
     assert!(create_signed_news_post_with_clock(
         &outsider,
         &verified,
@@ -294,6 +316,34 @@ fn factories_enforce_founder_namespace_and_fixed_roster_authority() {
         action(space_record.entry_id, [9; 32]),
     )
     .is_err());
+}
+
+#[test]
+fn noncommunal_namespace_never_becomes_verified_newswire_authority() {
+    let author = noncommunal_founder([36; 32]);
+    let namespace_id = *author.namespace_id().as_bytes();
+    let payload = descriptor(namespace_id, vec![]);
+
+    let payload_bytes = riot_core::newswire::encode_space_descriptor(&payload).unwrap();
+    let digest = william3_digest(&payload_bytes);
+    let path = Path::from_slices(&[
+        b"newswire",
+        b"v1",
+        b"descriptors",
+        &604u64.to_be_bytes(),
+        &digest,
+    ])
+    .unwrap();
+    let signed = sign_raw(&author, path, 604, payload_bytes);
+    assert_eq!(
+        inspect_news_record(&signed),
+        Err(riot_core::newswire::NewswireError::NonCommunalNamespace)
+    );
+
+    assert_eq!(
+        create_signed_space_descriptor_with_clock(&author, &clock(604), payload),
+        Err(riot_core::newswire::NewswireError::NonCommunalNamespace)
+    );
 }
 
 #[test]
@@ -418,4 +468,74 @@ fn inspection_rejects_every_hostile_envelope_and_binding_mismatch() {
     assert!(inspect_news_record(&length_mismatch).is_err());
 
     assert_eq!(entry_id(&good.signed.entry_bytes), good.entry_id);
+}
+
+#[test]
+fn public_inspection_enforces_component_ceilings_before_decoding_or_hashing() {
+    let oversized_entry = SignedWillowEntry {
+        entry_bytes: vec![0; MAX_ENTRY_BYTES + 1],
+        capability_bytes: vec![],
+        signature: [0; 64],
+        payload_bytes: vec![],
+    };
+    assert_eq!(
+        inspect_news_record(&oversized_entry),
+        Err(NewswireError::EntryBytesExceeded)
+    );
+
+    let oversized_capability = SignedWillowEntry {
+        entry_bytes: vec![],
+        capability_bytes: vec![0; MAX_CAPABILITY_BYTES + 1],
+        signature: [0; 64],
+        payload_bytes: vec![],
+    };
+    assert_eq!(
+        inspect_news_record(&oversized_capability),
+        Err(NewswireError::CapabilityBytesExceeded)
+    );
+
+    let oversized_payload = SignedWillowEntry {
+        entry_bytes: vec![],
+        capability_bytes: vec![],
+        signature: [0; 64],
+        payload_bytes: vec![0; MAX_NEWSWIRE_PAYLOAD_BYTES + 1],
+    };
+    assert_eq!(
+        inspect_news_record(&oversized_payload),
+        Err(NewswireError::PayloadBytesExceeded)
+    );
+
+    let organizer = founder([44; 32]);
+    let namespace_id = *organizer.namespace_id().as_bytes();
+    let good = create_signed_space_descriptor_with_clock(
+        &organizer,
+        &clock(704),
+        descriptor(namespace_id, vec![]),
+    )
+    .unwrap();
+
+    let mut entry_at_limit = good.signed.clone();
+    entry_at_limit.entry_bytes.resize(MAX_ENTRY_BYTES, 0);
+    assert_eq!(
+        inspect_news_record(&entry_at_limit),
+        Err(NewswireError::CanonicalEntryInvalid)
+    );
+
+    let mut capability_at_limit = good.signed.clone();
+    capability_at_limit
+        .capability_bytes
+        .resize(MAX_CAPABILITY_BYTES, 0);
+    assert_eq!(
+        inspect_news_record(&capability_at_limit),
+        Err(NewswireError::CanonicalCapabilityInvalid)
+    );
+
+    let mut payload_at_limit = good.signed;
+    payload_at_limit
+        .payload_bytes
+        .resize(MAX_NEWSWIRE_PAYLOAD_BYTES, 0);
+    assert_eq!(
+        inspect_news_record(&payload_at_limit),
+        Err(NewswireError::PayloadLengthMismatch)
+    );
 }

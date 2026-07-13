@@ -2,6 +2,7 @@
 
 use willow25::prelude::*;
 
+use crate::import::{MAX_CAPABILITY_BYTES, MAX_ENTRY_BYTES};
 use crate::willow::{
     authorise_entry, decode_capability_canonic, decode_entry_canonic, encode_capability,
     encode_entry, entry_id, system_snapshot, verify_entry, william3_digest, AuthorisationToken,
@@ -12,7 +13,7 @@ use super::path::{classify_newswire_path, newswire_path, NewswirePathKind};
 use super::{
     decode_editorial_action, decode_news_post, decode_space_descriptor, encode_editorial_action,
     encode_news_post, encode_space_descriptor, EditorialActionV1, NewsPostV1, NewswireError,
-    SpaceDescriptorV1,
+    SpaceDescriptorV1, MAX_NEWSWIRE_PAYLOAD_BYTES,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -151,6 +152,9 @@ fn require_founding_organizer(
     author: &EvidenceAuthor,
     descriptor: &SpaceDescriptorV1,
 ) -> Result<(), NewswireError> {
+    if !author.namespace_id().is_communal() {
+        return Err(NewswireError::NonCommunalNamespace);
+    }
     let namespace_id = author.namespace_id().as_bytes();
     let signer_id = author.subspace_id();
     if namespace_id != signer_id.as_bytes() || descriptor.namespace_id != *namespace_id {
@@ -287,17 +291,21 @@ pub fn create_signed_editorial_action_with_clock(
 pub fn inspect_news_record(
     signed: &SignedWillowEntry,
 ) -> Result<VerifiedNewswireRecord, NewswireError> {
+    if signed.entry_bytes.len() > MAX_ENTRY_BYTES {
+        return Err(NewswireError::EntryBytesExceeded);
+    }
+    if signed.capability_bytes.len() > MAX_CAPABILITY_BYTES {
+        return Err(NewswireError::CapabilityBytesExceeded);
+    }
+    if signed.payload_bytes.len() > MAX_NEWSWIRE_PAYLOAD_BYTES {
+        return Err(NewswireError::PayloadBytesExceeded);
+    }
+
     let entry = decode_entry_canonic(&signed.entry_bytes)
         .map_err(|_| NewswireError::CanonicalEntryInvalid)?;
     let capability = decode_capability_canonic(&signed.capability_bytes)
         .map_err(|_| NewswireError::CanonicalCapabilityInvalid)?;
 
-    if entry.payload_length() != signed.payload_bytes.len() as u64 {
-        return Err(NewswireError::PayloadLengthMismatch);
-    }
-    if *entry.payload_digest().as_bytes() != william3_digest(&signed.payload_bytes) {
-        return Err(NewswireError::PayloadDigestMismatch);
-    }
     if capability.is_owned()
         || !capability.delegations().is_empty()
         || capability.granted_namespace() != entry.namespace_id()
@@ -318,6 +326,19 @@ pub(crate) fn inspect_verified_components(
     entry: &Entry,
     payload_bytes: &[u8],
 ) -> Result<VerifiedNewswireRecord, NewswireError> {
+    if payload_bytes.len() > MAX_NEWSWIRE_PAYLOAD_BYTES {
+        return Err(NewswireError::PayloadBytesExceeded);
+    }
+    inspect_verified_components_bounded(entry, payload_bytes)
+}
+
+fn inspect_verified_components_bounded(
+    entry: &Entry,
+    payload_bytes: &[u8],
+) -> Result<VerifiedNewswireRecord, NewswireError> {
+    if !entry.namespace_id().is_communal() {
+        return Err(NewswireError::NonCommunalNamespace);
+    }
     if entry.payload_length() != payload_bytes.len() as u64 {
         return Err(NewswireError::PayloadLengthMismatch);
     }
@@ -763,6 +784,23 @@ mod tests {
         assert_eq!(
             inspect_news_record(&same_length_digest_mismatch),
             Err(NewswireError::PayloadDigestMismatch)
+        );
+    }
+
+    #[test]
+    fn internal_component_inspection_rejects_noncommunal_namespace_exactly() {
+        let namespace_id = willow25::entry::NamespaceId::from_bytes(&[1; 32]);
+        assert!(!namespace_id.is_communal());
+        let entry = Entry::builder()
+            .namespace_id(namespace_id)
+            .subspace_id(willow25::entry::SubspaceId::from([2; 32]))
+            .path(Path::from_slices(&[b"newswire"]).unwrap())
+            .timestamp(0)
+            .payload(b"")
+            .build();
+        assert_eq!(
+            inspect_verified_components(&entry, b""),
+            Err(NewswireError::NonCommunalNamespace)
         );
     }
 }
