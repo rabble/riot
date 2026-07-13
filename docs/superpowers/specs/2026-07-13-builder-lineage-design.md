@@ -15,10 +15,11 @@ making it the homepage's primary user proposition.
 
 ## Copy and attribution
 
-Credit `@rabble` with building Riot and the Willow implementation used by Riot.
-Do not publish a legal name or imply sole authorship of the Willow protocol
-specification. Summarize the relevant through-line: protest.net, Indymedia's
-technology network, TXTMob, Odeo/Twitter, Planetary, Nos, Divine, and Riot.
+Credit `@rabble` with building Riot using the Willow libraries. Do not publish a
+legal name, claim that `@rabble` implemented Willow, or imply sole authorship of
+the Willow protocol specification. Summarize the relevant through-line:
+protest.net, Indymedia's technology network, TXTMob, Odeo/Twitter, Planetary,
+Nos, Divine, and Riot.
 
 The builder card has two supporting columns:
 
@@ -45,8 +46,9 @@ No portrait, new font, remote image, background graphic, or JavaScript is added.
 
 ## Verification
 
-The marketing contract pins the builder anchor, `@rabble` credit, Willow
-implementation wording, both government-action dates, and all four source URLs.
-Source and public homepage mirrors remain byte-identical. Visual QA covers
-desktop and mobile, and release verification compares the live Worker bytes to
-the committed public mirror.
+The marketing contract pins the builder anchor, `@rabble` credit, Willow-library
+dependency wording, both government-action dates, and all four source URLs. It
+also rejects claims that `@rabble` implemented Willow. Source and public
+homepage mirrors remain byte-identical. Visual QA covers desktop and mobile,
+and release verification compares the live Worker bytes to the committed public
+mirror.

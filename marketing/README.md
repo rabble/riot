@@ -13,10 +13,10 @@ The protocol page is secondary by design, but intentionally discoverable. The
 homepage links to it from the navigation, a prominent comparison panel beneath
 “How it works,” “For the technically curious,” and the footer.
 
-The homepage's Lineage section credits @rabble with building Riot and Riot's
-Willow implementation, and links the builder history and reported government
-actions against Indymedia to their sources. The copy intentionally does not
-claim sole authorship of the Willow protocol specification.
+The homepage's Lineage section credits @rabble with building Riot using the
+Willow libraries, and links the builder history and reported government actions
+against Indymedia to their sources. The copy intentionally does not claim that
+@rabble implemented Willow or authored the Willow protocol specification.
 
 ## Source and deployment mirrors
 
