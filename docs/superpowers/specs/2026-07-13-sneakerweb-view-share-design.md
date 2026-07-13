@@ -2,7 +2,9 @@
 
 Status: Product design and the human-directed post-escalation revision were
 approved on 2026-07-13. The revision is pending a fresh Metaswarm design review
-gate before planning or implementation.
+gate before planning or implementation. Fresh gate round 1 returned
+NEEDS_REVISION; this version resolves its app-completion and remotely
+verifiable binding blockers and is pending round 2.
 
 ## Purpose
 
@@ -136,7 +138,8 @@ space attachment, or creates/re-signs a SneakerWeb site entry.
 - system share sheet and nearby person transfer;
 - content-addressed, on-demand `.snk` attachments referenced by Riot space
   cards;
-- Newswire attachment references and app-scoped Sneaker Directory listings in
+- Newswire attachment references and host-authorized, app-bound Sneaker
+  Directory listings in
   one or several public communities;
 - one explicit `portable_public_collections` miniapp capability and a bounded
   host-mediated picker/open contract that exposes no `.snk` bytes to app code;
@@ -295,21 +298,23 @@ app owns directory presentation, categories, descriptions, and future social
 features in app-scoped storage. Its mutable annotations are separate from the
 immutable carrier title/note. It never receives `.snk` bytes, filesystem
 access, a database handle, block state, raw site IDs, blob digests, signing
-keys, or access to the global library. Its explicit capability adds only two
-host-mediated, user-gesture operations: open Riot's native collection picker,
-and open a validated opaque carrier reference in Riot's native collection
-card/viewer. Picker results exposed to JavaScript are bounded safe display
-metadata: opaque draft/reference handle, title, note, site count, encoded size,
-availability, and carrier display attribution.
+keys, or access to the global library. Its explicit capability adds only three
+classes of host-mediated operation: list/watch safe Directory summaries, open
+a validated opaque listing handle in Riot's native card/viewer, or begin Riot's
+native collection-picker/review/commit flow. JavaScript never completes or
+signs a share itself. List/picker results expose only an opaque listing/result
+handle, title, note, site count, encoded size, availability, and carrier display
+attribution.
 
-The native share flow may write the same signed app-scoped listing record the
-miniapp would request at `collections/<listing-id>` under its existing
-`apps/<app-id>/<space-id>/` prefix. That closed record contains a full carrier
-entry reference, safe title/note, creation time, and the sharing profile's
-ordinary app attribution. It contains no blob bytes or site identifiers. The
-host accepts it only for the active space, exact trusted app ID, declared
-capability, and a carrier committed in the same operation. An app cannot mint,
-retarget, enumerate, or open another space's carrier reference.
+Attachment authority is not stored in generic app data. The host atomically
+commits a reserved signed `AppPublicCollectionBindingV1` beside the carrier;
+ordinary `riot.put` rejects the reserved path family before signing. Every
+receiving device can verify that binding independently. The app may store
+categories, reactions, discussion, or other social annotations under its
+normal prefix keyed by the opaque listing ID, but invalid/unbound IDs never
+appear in the host listing projection and cannot open or download anything.
+An app therefore cannot mint, retarget, enumerate, or open another app or
+space's collection binding.
 
 Post to Newswire creates an ordinary signed `NewsPostV1` whose attachment field
 references the carrier entry. The editable post headline defaults to the
@@ -481,8 +486,9 @@ and attachment digests. Swift and Kotlin own platform document entry points,
 WebViews, OS sharing, and nearby lifecycle, calling versioned UniFFI types.
 Site HTML/JavaScript never receives a database, filesystem,
 namespace-selection, or native bridge API. A trusted social miniapp remains in
-the existing isolated app host and sees only its own signed listing records and
-the two bounded `portable_public_collections` host gestures described above.
+the existing isolated app host and sees only verified safe binding summaries,
+its own signed social-annotation records, and the three bounded
+`portable_public_collections` operation classes described above.
 
 The fixed SneakerWeb namespace is permanently reserved with collection kind
 `sneakerweb-public`. `RiotDatabase` rejects creating/joining it as a Riot space,
@@ -515,7 +521,7 @@ projections.
 - `SneakerCarrier`: canonical Riot carrier-card payload validation and mapping
   between a signed space entry and one portable blob digest;
 - `SocialCollectionHost`: capability, active-space/app binding, opaque
-  draft/reference handles, closed app-listing codec, and native collection-card
+  listing handles, closed host-binding codec, and native collection-card
   handoff. It never enters the site renderer or exposes the SneakerCollection
   query/resource API to miniapp JavaScript;
 - `SpaceSneakerShare`: atomic carrier plus Newswire/app-reference creation,
@@ -532,10 +538,11 @@ versioned manifest contract before the Directory bundle ships:
   host capability;
 - manifest v2 adds canonical key `9`, a definite, lexicographically sorted,
   duplicate-free array of closed machine capability tokens, and derives its
-  app ID under domain `riot/app-id/v2`;
+  app ID under domain `riot/app-id/v2`; key `9` is mandatory even when the array
+  is empty;
 - the only new token in this slice is exact ASCII
-  `portable_public_collections`; unknown tokens fail closed rather than grant a
-  partial capability;
+  `portable_public_collections`; any unknown token rejects the entire v2
+  manifest rather than loading it with a partial capability set;
 - the organizer review page renders host-owned copy for the token:
   `Open and share public SneakerWeb collections you choose. It cannot read other
   files, sites, or apps.` This copy is not supplied by the bundle author;
@@ -600,8 +607,15 @@ begin_direct_snk_send(confirmed_nearby_session, export_lease) -> DirectSnkSendTa
 accept_direct_snk_receive(confirmed_nearby_session, request_id) -> DirectSnkReceiveTask
 reject_direct_snk_receive(confirmed_nearby_session, request_id) -> RejectOutcome
 begin_app_collection_pick(active_app_session, genuine_gesture_token)
-  -> NativeCollectionPickerRequest
-open_app_collection_listing(active_app_session, listing_key, genuine_gesture_token)
+  -> AppCollectionPickerTask
+AppCollectionPickerTask.progress() -> TransferProgress
+AppCollectionPickerTask.finish() -> AppCollectionCommitResult
+AppCollectionPickerTask.retry() -> TransferProgress
+AppCollectionPickerTask.cancel() -> CancelOutcome
+list_app_collection_bindings(active_app_session, cursor) -> AppCollectionPage
+watch_app_collection_bindings(active_app_session, generation) -> AppCollectionChange
+open_app_collection_binding(active_app_session, listing_handle,
+  genuine_gesture_token)
   -> NativeCarrierCard
 ```
 
@@ -611,17 +625,22 @@ a caller-supplied namespace.
 
 `destinations` is a closed non-empty set for one space: at most one
 `NewswireAttachment { headline, body }` and at most one
-`AppDirectoryListing { trusted_app_id, listing_id }`. The core verifies the
+`AppPublicCollectionBinding { trusted_app_id, listing_id }`. The core verifies the
 NewsPost contract or exact trusted app/capability/active-space binding before
 signing. A native multi-community coordinator creates one task per selected
 space with independently generated 128-bit idempotency keys; there is no
 cross-space atomic transaction.
 
-Only native picker completion supplies domain IDs to
-`NativeCollectionPickerRequest`; miniapp JavaScript receives the resulting
-`AppCollectionDraft` opaque handle and safe display fields, never the selection
-IDs. The gesture token is single-use, bound to the active trusted app/space
-session, and expires after 30 seconds if no native picker is shown.
+Only native picker completion supplies domain IDs. `AppCollectionPickerTask`
+owns the entire native picker -> collection review -> prepared blob ->
+`SpaceSneakerShareTask(AppPublicCollectionBinding)` flow and returns a committed
+`AppCollectionCommitResult`; miniapp JavaScript never receives a draft that it
+can retarget or commit. Its gesture token is single-use, bound to the active
+trusted app/space/profile session, and expires after 30 seconds if no native
+picker is shown. The generated per-space idempotency key remains attached to
+the task across retry. Trust, capability, session generation, and active profile
+are rechecked before showing review, before the atomic commit, and before
+returning the result to JavaScript.
 
 The nearby multiplexer emits a bounded `IncomingPortableBlobRequest` DTO before
 either receive factory is legal; it contains request ID, safe peer handle,
@@ -667,6 +686,18 @@ Opaque objects have complete state machines and single terminal results:
   `IDEMPOTENCY_CONFLICT` without mutation.
   A retryable pre-commit failure preserves its prepared lease/review fields
   until the visible idle expiry; cancellation or expiry releases them.
+- `AppCollectionPickerTask`: `AwaitingNativePicker -> Reviewing -> Preparing ->
+  Delegating(SpaceSneakerShareTask) -> Committed(AppCollectionCommitResult)`,
+  with recoverable `Retryable` and terminal `UserCancelled |
+  NonRetryableFailed | OwnerClosed`. It exposes progress, idempotent cancel,
+  retry while its 15-minute reviewed-selection lease remains valid, and
+  asynchronous finish; repeated finish returns the same committed result or
+  current typed error. Retry resumes the original child/idempotency key rather
+  than signing a new operation. Losing trust/capability/app-space-profile binding before
+  commit cancels the child and commits nothing. Revocation after commit leaves
+  signed public records intact but makes list/watch/open handlers unavailable
+  until the app is trusted again. Final handle drop cancels both parent and
+  child before commit.
 - `DirectSnkSendTask`: `Negotiating -> Sending -> WaitingForVerifiedAck ->
   Sent(SendReceipt)`, with `Paused | Cancelled | Failed | OwnerClosed`. Sent is
   legal only after the receiver acknowledges exact length/digest verification;
@@ -716,7 +747,8 @@ The minimum DTO contracts are:
 | `CarrierReceipt` | version, full space ID, idempotency key, full carrier entry ID, ordered destination kind/full entry ID pairs, blob digest/length, committed time |
 | `CommunityShareBatchResult` | version, preserved selection/review ID, ordered per-space idempotency key and `shared/retryable/no-longer-allowed/cancelled` outcome, optional CarrierReceipt/stable error |
 | `SendReceipt` | version, transfer request ID, safe peer handle, blob digest/length, verified-ack time |
-| `AppCollectionDraft` | version, app/space-bound opaque handle, safe title/note/site count/encoded size, expiry; no site IDs/digest/bytes |
+| `AppCollectionSummary` | version, app/space/session-bound opaque listing handle, safe title/note/site count/encoded size/availability/carrier attribution, change generation; no site IDs/digest/bytes |
+| `AppCollectionCommitResult` | version, opaque listing handle, full space/app IDs for native audit only, idempotency key, CarrierReceipt, committed time; JavaScript projection omits raw IDs/receipt and returns handle plus safe summary |
 
 Stable core errors are `INVALID_DROP`, `WRONG_NAMESPACE`,
 `INCOMPLETE_PAYLOAD`, `LIMIT_EXCEEDED`, `STORAGE_FULL`, `STALE_CURSOR`,
@@ -749,6 +781,7 @@ The SQLite design gains:
 | `portable_blobs` | SHA-256 digest, length, protected local path/blob handle, completeness, reference count, and last access. |
 | `space_blob_refs` | Space namespace, signed carrier entry, portable blob digest, state, and local availability. |
 | `space_sneaker_share_ops` | Full space/signer/idempotency key, task state, prepared-lease expiry, exact destination request, terminal carrier/destination IDs, and cleanup state. |
+| `app_public_collection_bindings` | Rebuildable verified space/app/listing-to-carrier projection, full signer IDs, live trust/capability availability, and change generation for paged list/watch. |
 | `blob_chunks` | Resumable chunk index, length, chunk digest, and completion state for in-flight nearby transfers. |
 
 The authoritative entry tables retain full canonical entry, capability,
@@ -781,18 +814,24 @@ must atomically succeed only when the destination did not exist (for example,
 `renameat2(RENAME_NOREPLACE)` or same-filesystem link/create-exclusive
 semantics). Ordinary replacing rename is forbidden.
 
-The winner installs the file, fsyncs the directory, transactionally
-publishes/attaches the `portable_blobs` row, and releases its reservation. A
+The digest lock is held through destination verification, directory fsync,
+`portable_blobs` publication/attachment, and reservation release. The winner
+installs the file, fsyncs the directory, transactionally publishes/attaches the
+row, and releases its reservation before unlocking. A
 loser opens the winner without following links, verifies regular-file type,
 exact length, and digest, deletes its staged duplicate, transactionally
-attaches the existing row, and releases its reservation. A mismatching existing
+inserts-or-ignores then attaches the exact digest/length row, and releases its
+reservation. The insert-or-ignore covers a valid file left by a process death
+before row publication; conflicting row facts fail as corruption. A mismatching existing
 path is quarantined as corruption and fails closed; it is never overwritten
 while a lease may exist. Deterministic same-digest contenders are tested with
 barriers before install, after install, before/after row publication, and across
 process-death reconciliation. Startup runs before database service: delete expired
-staging/chunks/share temporaries, reconcile final files without rows and rows
-without files, expire leases/reservations, recompute references, and finish or
-roll back pending removals. A complete unreferenced file becomes a bounded
+staging/chunks/share temporaries; verify any digest-named final file without a
+row; insert/attach it only when a durable carrier/share operation/reservation
+references the exact digest and length; otherwise mark it as a bounded orphan;
+reconcile rows without files; expire leases/reservations; recompute references;
+and finish or roll back pending removals. A complete unreferenced file becomes a bounded
 orphan eligible for deletion, never an implicit accepted collection.
 
 ### Resource budgets
@@ -997,30 +1036,41 @@ entry ID must resolve to a valid carrier in the same public community; clients
 never follow a cross-space attachment reference. The NewsPost and carrier outer
 entries must have the same verified signer.
 
-An app-hosted directory reference is a closed JSON value at
-`collections/<32-lowercase-hex-listing-id>` inside the trusted app's ordinary
-space-scoped data prefix:
+An app-hosted directory reference is a reserved host-owned record, not generic
+app data. Its Willow path has exactly four byte components: ASCII `objects`,
+ASCII `app-public-collections`, the lowercase 64-byte hex encoding of the full
+32-byte app ID, and the lowercase 32-byte hex encoding of a random 16-byte
+listing ID. `AppDataBridge` rejects this path family before any generic app
+write is signed. Only `SpaceSneakerShareTask` may construct it.
 
-```json
-{
-  "schema": "org.riot.sneaker-directory-listing/1",
-  "listing_id": "<16 random bytes as 32 lowercase hex>",
-  "carrier_entry_id": "<complete canonical carrier entry ID>",
-  "title": "<exact carrier title>",
-  "note": "<exact carrier note or empty>",
-  "created_at_micros": 0
-}
-```
+Its payload is a closed deterministic-CBOR map with the same definite-length,
+shortest-form, sorted-key, no-tags/floats/unknowns/trailing-bytes rules as the
+carrier:
 
-The host validates exact keys/types, the key/value listing-ID match, safe text,
-publisher timestamp bounds, same-space carrier resolution, exact title/note
-match, listing-entry/carrier signer equality, current app trust, and declared
-capability before returning a native
-card. The outer app-data entry signer supplies sharing attribution; the JSON has
-no member/profile field. Categories, reactions, or discussion are separate
-app-owned records keyed by listing ID and cannot retarget the carrier. Unknown
-or malformed listings remain inert app data and never reach the attachment
-resolver.
+| Key | Name | CBOR type | Required validation |
+| --- | --- | --- | --- |
+| `0` | schema | text | Exact ASCII `org.riot.app-public-collection-binding/1`. |
+| `1` | space ID | byte string | Exactly 32 bytes and equal to the containing public namespace. |
+| `2` | app ID | byte string | Exactly 32 bytes and equal to the path app component. |
+| `3` | listing ID | byte string | Exactly 16 bytes and equal to the path listing component. |
+| `4` | carrier entry ID | byte string | Complete canonical `RiotEntryIdV1` bytes, `1..=4,096`, resolving in key `1`. |
+| `5` | signer subspace ID | byte string | Exactly 32 bytes and equal to both outer entry signers. |
+| `6` | created time | unsigned integer | Exact share-operation time in microseconds within the existing signed-time bounds. |
+
+The binding outer signer must equal the carrier outer signer, and the carrier
+must be committed in the same SQLite/Willow transaction. Current app trust and
+the declared capability are required at creation and at list/watch/open time;
+they are not embedded as permanent authority. A receiving device verifies path,
+CBOR, space, app, signer, carrier, and live trust without local share-operation
+history.
+
+The host derives a stable opaque `listing_handle` as base64url of the full
+SHA-256 of the canonical binding entry. App code receives that handle and safe
+summary only, never key `4`; the handle is a lookup key, not authority, and is
+resolved solely within the active app/space. Categories, reactions, or
+discussion are ordinary app-owned records keyed by the handle and cannot
+create or retarget a binding. Unknown/malformed bindings and annotations for an
+unbound handle remain inert and never reach the attachment resolver.
 
 The `.snk` bytes live in `PortableBlobStore`, deduplicated by SHA-256. Space
 entry reconciliation carries only the small record. Devices never advertise a
@@ -1179,7 +1229,10 @@ Before implementation, its enforcement command is versioned to
 `scripts/coverage-gate.sh`; that checked script runs both commands below and
 fails if either tool is missing or any configured dimension is below 100. This
 updates the source of truth rather than silently enforcing a second threshold
-elsewhere.
+elsewhere. The checked wrapper documents the Rust mapping
+`statements -> LLVM regions`, requires the configured statements and regions
+thresholds to agree, and reports both names in its gate output; it does not
+quietly treat line coverage as statement coverage.
 Implementation follows small RED-GREEN-REFACTOR slices:
 
 1. **Protocol constants and decoder:** failing official-fixture and hostile
@@ -1202,8 +1255,11 @@ Implementation follows small RED-GREEN-REFACTOR slices:
    Sites/Received deduplication, hidden-by-default identifiers, complete Details,
    loading, empty, block, missing-link, and failure states; then native views.
 7. **Sharing:** failing exact selection, required title, temporary-file cleanup,
-   carrier/Newswire/app-listing schemas, same-space/signer checks, trusted-app
-   capability, opaque host gestures, cross-app isolation, multi-community
+   carrier/Newswire/host-binding schemas, same-space/signer checks, trusted-app
+   capability, opaque host gestures, app-picker commit success/cancel/retry/
+   duplicate suppression/trust revocation, cross-app/cross-space misuse and
+   isolation, generic-write rejection for the reserved path, remote binding
+   verification without local operation history, multi-community
    partial success and duplicate-free retry, atomic same-space destinations,
    no-replace same-digest contention, unavailable-holder, chunk corruption,
    separate send/receive completion, resume, cancel, garbage-collection lease,
