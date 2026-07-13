@@ -16,6 +16,8 @@ const APPS = [
   ["quick-poll", "Decisions"],
   ["chat", "Chat"],
   ["dispatches", "Dispatches"],
+  ["wiki", "Wiki"],
+  ["photo-wall", "Photo Wall"],
 ];
 
 const missing = [];

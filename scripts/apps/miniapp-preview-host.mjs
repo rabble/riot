@@ -16,6 +16,7 @@ const profiles = {
   alex: { id: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", displayName: "Alex Rivera", tag: "aaaaaaaa" },
   sam: { id: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", displayName: "Sam Chen", tag: "bbbbbbbb" },
 };
+const safeRasterDataURL = "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==";
 
 const mimeTypes = new Map([
   [".css", "text/css; charset=utf-8"],
@@ -32,6 +33,7 @@ function isWithin(parent, candidate) {
 }
 
 function seedRows(app, state) {
+  if (state === "initialized-empty") return [["meta/seeded", { version: 1, status: "ready" }]];
   if (state === "empty") return [["meta/seeded", { version: 1 }]];
   const existing = {
     checklist: ["tasks/existing-task", { text: "Existing neighborhood task", created_at: 10, added_by_id: profiles.alex.id, assigned_to_id: "", completed: false }],
@@ -40,14 +42,22 @@ function seedRows(app, state) {
     "quick-poll": ["proposals/current", { id: "existing-decision", text: "Existing community decision?", options: ["First option", "Second option"], asked_by_id: profiles.alex.id, at: 10 }],
     chat: ["messages/10-existing", { text: "I can bring extra tea.", created_at: 10, author_id: profiles.alex.id }],
     dispatches: ["posts/10-existing", { title: "The garden gate is open again", body: "The east entrance is repaired and unlocked.", summary: "The east entrance is repaired and unlocked.", created_at: 10, author_id: profiles.alex.id }],
+    wiki: ["pages/meeting-guide", { title: "Meeting guide", body: "Meet by the library steps.", updated_at: 10, updated_by_id: profiles.alex.id }],
+    "photo-wall": ["photos/10-existing", { caption: "Courtyard tables ready for supper", data_url: safeRasterDataURL, created_at: 10, author_id: profiles.alex.id }],
   }[app];
+  if (state === "interrupted-seeding") return existing ? [["meta/seeded", { version: 1, status: "seeding" }], existing] : [];
   if (state === "existing-unmarked") return existing ? [existing] : [];
   if (["delayed-identity", "identity-error", "profile-race", "error"].includes(state)) {
     return existing ? [["meta/seeded", { version: 1, status: "ready" }], existing] : [];
   }
   if (state === "malformed") {
     if (app === "quick-poll") return [["meta/seeded", { version: 1, status: "ready" }], ["proposals/current", null], ["votes/bad/bad", null]];
-    const invalidKey = { checklist: "tasks/bad", "supply-board": "items/bad", "roll-call": "events/bad", "quick-poll": "votes/existing-decision/bad", chat: "messages/bad", dispatches: "posts/bad" }[app];
+    if (app === "photo-wall") return [
+      ["meta/seeded", { version: 1, status: "ready" }],
+      existing,
+      ["photos/11-hostile-svg", { caption: "Hostile SVG must not render", data_url: "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg'%3E%3Cscript%3Ealert(1)%3C/script%3E%3C/svg%3E", created_at: 11, author_id: profiles.sam.id }],
+    ];
+    const invalidKey = { checklist: "tasks/bad", "supply-board": "items/bad", "roll-call": "events/bad", "quick-poll": "votes/existing-decision/bad", chat: "messages/bad", dispatches: "posts/bad", wiki: "pages/BAD_SLUG", "photo-wall": "photos/bad" }[app];
     return existing ? [["meta/seeded", { version: 1, status: "ready" }], existing, [invalidKey, null]] : [];
   }
   if (state === "slow-write" && app === "checklist") {
@@ -119,6 +129,14 @@ function mockBridgeSource(app, state) {
   window.__miniappPreview = Object.freeze({
     remotePut(key, value) {
       store.set(validateKey(key), serializeJSON(value));
+    },
+    remoteDelete(key) {
+      store.delete(validateKey(key));
+      notify();
+    },
+    remotePutAll(entries) {
+      entries.forEach(([key, value]) => store.set(validateKey(key), serializeJSON(value)));
+      notify();
     },
     setProfile(id, profile) {
       if (typeof id !== "string" || !identityPattern.test(id)) throw new Error("invalid profile id");
@@ -212,7 +230,7 @@ export function createPreviewServer() {
       const app = match[1];
       const resource = match[2] || "index.html";
       const requestedState = url.searchParams.get("state") || "seeded";
-      const state = ["seeded", "empty", "error", "post-action", "delayed-identity", "identity-error", "existing-unmarked", "malformed", "profile-race", "slow-write"].includes(requestedState)
+      const state = ["seeded", "empty", "initialized-empty", "interrupted-seeding", "error", "post-action", "delayed-identity", "identity-error", "existing-unmarked", "malformed", "profile-race", "slow-write"].includes(requestedState)
         ? requestedState
         : "seeded";
 
