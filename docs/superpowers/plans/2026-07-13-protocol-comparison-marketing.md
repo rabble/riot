@@ -30,13 +30,13 @@
 - [ ] Copy the source page mechanically to the public mirror and verify the pair is byte-identical.
 - [ ] Run the contract test and fix only page-specific failures.
 
-### Task 3: Add quiet homepage entry points
+### Task 3: Add discoverable homepage entry points
 
 **Files:**
 - Modify: `marketing/index.html`
 - Modify: `marketing/public/index.html`
 
-- [ ] Add a contextual `/protocols/` link inside “For the technically curious” and one footer link without changing the hero, primary calls to action, or homepage navigation hierarchy.
+- [ ] Add a highlighted `/protocols/` navigation item, a comparison panel below “How it works,” a contextual link inside “For the technically curious,” and one footer link without changing the hero or primary calls to action.
 - [ ] Copy the source homepage mechanically to the public mirror and verify the pair is byte-identical.
 - [ ] Run the contract test and verify GREEN.
 

@@ -9,8 +9,9 @@ backend, analytics, remote fonts, or runtime asset requests.
 - `/protocols/` — a source-backed field guide comparing Riot and Willow with
   adjacent social, relay, federation, nearby-messaging, and local-first systems.
 
-The protocol page is secondary by design. The homepage links to it only from
-“For the technically curious” and the footer.
+The protocol page is secondary by design, but intentionally discoverable. The
+homepage links to it from the navigation, a prominent comparison panel beneath
+“How it works,” “For the technically curious,” and the footer.
 
 ## Source and deployment mirrors
 

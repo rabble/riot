@@ -12,9 +12,10 @@ Riot, not the primary audience encountering Riot for the first time.
 
 The existing homepage remains centered on the human outcome: communities can
 create, verify, carry, and use information without dependable infrastructure.
-It gains only two quiet links to `/protocols/`: one inside “For the technically
-curious” and one in the footer. The homepage hero, primary calls to action, and
-main navigation do not become a protocol comparison.
+The field guide is discoverable through a highlighted `Protocols` navigation
+item, a prominent comparison panel beneath “How it works,” the existing “For
+the technically curious” disclosure, and the footer. The homepage hero and
+primary calls to action do not become a protocol comparison.
 
 The comparison is one long-form page rather than a collection of child routes.
 It combines the three useful formats Rabble selected:
@@ -291,7 +292,7 @@ Implementation is complete only when:
 8. Playwright screenshots at 390×844 and 1280×800 show no clipped copy,
    overlapping navigation, or page-level horizontal overflow;
 9. the existing homepage's primary hierarchy and calls to action remain
-   unchanged apart from the two quiet protocol links;
+   unchanged apart from the protocol navigation item and comparison panel;
 10. local structural contracts and the existing marketing deployment command
     complete successfully.
 

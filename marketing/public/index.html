@@ -127,6 +127,10 @@ a:focus-visible, button:focus-visible { outline: 3px solid var(--pink); outline-
 .topnav { display: flex; gap: 26px; font-family: 'Space Mono', monospace; font-size: 12.5px; letter-spacing: 0.05em; text-transform: uppercase; }
 .topnav a { color: var(--ink); text-decoration: none; }
 .topnav a:hover { color: var(--pink); }
+.topnav .protocol-nav { color: var(--pink); font-weight: 700; border-bottom: 2px solid currentColor; }
+@media (max-width: 760px) {
+  .topnav a:not(.protocol-nav) { display: none; }
+}
 
 /* ---------- Hero ---------- */
 .hero { padding: clamp(48px, 9vw, 96px) 0 clamp(48px, 8vw, 88px); position: relative; }
@@ -232,6 +236,31 @@ section { padding: clamp(56px, 9vw, 100px) 0; }
 .step p { font-size: 15.5px; color: var(--ink-soft); margin: 0; max-width: 34ch; }
 @media (max-width: 820px) { .steps { grid-template-columns: 1fr; gap: 34px; } }
 
+.protocol-callout {
+  scroll-margin-top: 96px;
+  margin-top: 52px;
+  padding: clamp(22px, 4vw, 34px);
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: clamp(18px, 4vw, 40px);
+  border: 2px solid var(--ink);
+  background: var(--ink);
+  color: var(--paper);
+  box-shadow: 7px 7px 0 var(--pink);
+  text-decoration: none;
+  transition: transform 140ms ease, box-shadow 140ms ease;
+}
+.protocol-callout:hover { color: var(--paper); transform: translate(3px, 3px); box-shadow: 4px 4px 0 var(--pink); }
+.protocol-callout-kicker { font-family: 'Space Mono', monospace; font-size: 11.5px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--pink); }
+.protocol-callout-copy strong { display: block; font-family: 'Anton', sans-serif; font-size: clamp(27px, 4vw, 42px); line-height: 1; text-transform: uppercase; font-weight: 400; }
+.protocol-callout-copy span { display: block; margin-top: 9px; color: color-mix(in srgb, var(--paper) 74%, transparent); font-size: 15px; }
+.protocol-callout-arrow { font-family: 'Anton', sans-serif; font-size: clamp(38px, 6vw, 64px); line-height: 1; color: var(--pink); }
+@media (max-width: 640px) {
+  .protocol-callout { grid-template-columns: 1fr auto; }
+  .protocol-callout-kicker { grid-column: 1 / -1; }
+}
+
 .techdrop { margin-top: 44px; border: 2px solid var(--ink); }
 .techdrop summary {
   cursor: pointer; list-style: none; padding: 18px 22px;
@@ -322,6 +351,7 @@ footer.colophon {
       <a href="#how">How it works</a>
       <a href="#evidence">Evidence</a>
       <a href="#status">Status</a>
+      <a href="/protocols/" class="protocol-nav">Protocols</a>
     </nav>
   </div>
 </div>
@@ -463,6 +493,12 @@ footer.colophon {
         <p>Every device that's seen more of the story catches the rest up. Nothing gets silently lost, nothing gets silently deleted.</p>
       </div>
     </div>
+
+    <a class="protocol-callout reveal" id="protocol-comparison" href="/protocols/">
+      <span class="protocol-callout-kicker">Protocol comparison</span>
+      <span class="protocol-callout-copy"><strong>Where does Riot fit?</strong><span>Compare Riot, Willow, and neighboring protocols by data model, authority, transport, privacy, offline behavior, and extension model.</span></span>
+      <span class="protocol-callout-arrow" aria-hidden="true">→</span>
+    </a>
 
     <details class="techdrop reveal">
       <summary><span class="techdrop-label">For the technically curious</span></summary>

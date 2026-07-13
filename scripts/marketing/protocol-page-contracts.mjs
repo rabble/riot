@@ -24,7 +24,9 @@ assert.equal(home, publicHome, "homepage source and public mirror must be byte-i
 assert.equal(protocols, publicProtocols, "protocol page source and public mirror must be byte-identical");
 
 const homeLinks = home.match(/href="\/protocols\/"/g) ?? [];
-assert.equal(homeLinks.length, 2, "homepage must contain exactly two quiet /protocols/ links");
+assert.equal(homeLinks.length, 4, "homepage must contain four visible and secondary /protocols/ paths");
+assert.match(home, /<nav class="topnav">[\s\S]*href="\/protocols\/"[^>]*>Protocols</i);
+assert.match(home, /class="protocol-callout reveal"[\s\S]*Where does Riot fit\?[\s\S]*Compare Riot, Willow, and neighboring protocols/i);
 assert.match(home, /For the technically curious[\s\S]*Compare Riot with adjacent protocols/i);
 assert.match(home, /<footer[\s\S]*Protocol field guide/i);
 
