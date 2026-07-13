@@ -1,7 +1,7 @@
 # Loomio-inspired consent decisions design
 
 Date: 2026-07-13
-Status: User-approved direction; design review round 2 pending
+Status: User-approved direction; design review round 3 pending
 
 ## Product decision
 
@@ -12,8 +12,8 @@ discussion, revisions, reasoned positions, objections, and recorded outcome
 together.
 
 The first release targets Riot's current **public communal communities**. It
-does not promise private deliberation: anyone carrying the communal namespace
-can inspect the governance roster, discussion, positions, objections, and
+does not promise private deliberation: anyone who joins or receives a copy of
+the communal namespace can read the governance roster, discussion, positions, objections, and
 outcomes. Moderator rules control who participates, not who can read the
 underlying plaintext records. The product states this before setup and before a
 person contributes.
@@ -178,8 +178,8 @@ display names and short tags are non-authoritative.
 
 Any snapshotted participant may propose. The proposal author remains its
 facilitator for the MVP. The facilitator may revise and begin closure. An active
-moderator may also revise, freeze, withdraw, or resolve conflicts by referencing
-the current moderator epoch. Facilitator transfer is deferred.
+moderator may also revise, withdraw, or resolve authorized conflict types by
+referencing the current moderator epoch. Facilitator transfer is deferred.
 
 If the facilitator becomes unavailable, a moderator may continue the process.
 If no valid moderator exists, the decision is readable but cannot be closed as
@@ -208,7 +208,10 @@ changes affect new proposals only.
 The authoritative signed lifecycle is:
 
 ```text
-Open -> Close intent -> Consented | No consent | Withdrawn | Outcome conflict
+Open -> Close pending -> Consented | No consent | Withdrawn
+  ^          |                 |
+  |          v                 v
+  +---- Reopened <------ Outcome conflict
 ```
 
 Draft is host-local state. **Review due** is non-authoritative presentation:
@@ -227,13 +230,17 @@ From the board, **Start a proposal** opens a host-owned local draft containing:
 
 Drafts are stored in `local_state` by namespace, Decisions collection, profile,
 and draft ID. They are never synced. Each edit autosaves transactionally.
-Leaving keeps the draft; Discard requires confirmation.
+Leaving keeps the draft; Discard requires confirmation. Each profile may retain
+8 drafts and 64 KiB of draft JSON per community. `draftsPage(cursor, limit)` is
+capped at 20; reaching the quota asks the person to open or discard a draft and
+never discards one automatically.
 
 Before opening, Review shows the exact proposal, facilitator identity,
 participant count, response rule, review date, and this warning:
 
-> This is a public community record. Anyone carrying this community can inspect
-> the proposal, discussion, names, positions, objections, and outcome.
+> This is a public community record. Anyone who joins or receives a copy of
+> this community can read the proposal, discussion, names, positions,
+> objections, and outcome.
 
 Opening rechecks the policy and roster heads. If stale, the draft remains and
 Review refreshes before confirmation. A successful command atomically commits
@@ -264,7 +271,8 @@ Concurrent position heads are a **Position conflict**. The participant resolves
 it by publishing one successor referencing all heads and choosing one stance
 and reason. Until resolved, the participant counts as responded but the
 decision cannot close as consent. No arrival-time or last-write-wins choice is
-allowed.
+allowed. A moderator can inspect or annotate the conflict but cannot resolve,
+suppress, or choose another person's stance.
 
 - **Support:** safe enough to try.
 - **Stand aside:** not supported, but not prevented.
@@ -307,32 +315,81 @@ display metadata only.
 only from a valid close intent. The normal UI labels it **Recorded outcome**,
 not an absolute statement that every disconnected device had synchronized.
 
+After `beginClose`, the phase is **Close pending**. Position, revision, and new
+close commands are disabled; discussion remains readable. The board shows
+**Finish recording outcome** to the facilitator and active moderators after
+relaunch. `recordOutcome` revalidates the close intent and current local
+evidence. If new unincluded evidence is already present it returns `Conflict`
+without committing. `cancelClose` publishes a branch resolution referencing
+the close-intent head and a successor phase head that returns the unchanged
+revision to Open.
+
 Any subsequently learned valid position on the closed revision that was not in
 the close frontier is **Unincluded evidence**, never “authored after closure.”
 It creates Outcome conflict. If it is Object, the consent outcome cannot be
-selected during resolution; a moderator must record No consent or publish a new
-revision and reopen. If it is Support or Stand aside, a moderator may replace
-the outcome with one whose frontier includes it. This implements the product
-decision that a causally concurrent objection forces review.
+selected during resolution.
+
+`resolveOutcomeConflict` is one atomic Rust transaction and has three typed
+modes, each referencing all conflicting close intents, outcomes, and unincluded
+position heads:
+
+- **Record no consent:** commits `BranchResolution`, a successor `CloseIntent`
+  with the expanded evidence frontier, and a No consent `DecisionOutcome`.
+- **Replace recorded outcome:** allowed only when expanded evidence has no
+  Object or position conflict; commits the same three-record successor chain
+  and may preserve Consented.
+- **Reopen with revision:** commits `BranchResolution` plus a new
+  `ProposalRevision` whose predecessor phase is the conflict and whose change
+  summary explains the response. The resulting phase is Open and every
+  participant must position on the new revision.
+
+Because every successor descends from all conflict heads, it is not concurrent
+with the records it resolves. An unincluded Object permits only Record no
+consent or Reopen with revision. `Withdrawn` may be recorded immediately by the
+facilitator or active moderator without meeting the participation minimum;
+No consent may also record insufficient participation. Only Consented requires
+the configured minimum.
 
 Concurrent close intents or outcomes also create Outcome conflict. No outcome
 is canonical while conflict exists.
 
 ## Canonical records and Willow paths
 
+All protocol payloads use canonical integer-key CBOR maps. Decoders reject
+duplicates, indefinite lengths, unknown required enum values, unsorted head
+arrays, and any value whose canonical re-encoding differs. Head arrays sort by
+full 32-byte head ID.
+
 The collection ID is
-`SHA256("riot/decisions-collection/v1" || namespace_id)`. Every protocol record
-uses a unique immutable Willow coordinate in its verified author subspace:
+`SHA256("riot/decisions-collection/v1" || namespace_id)`. A payload has a stable
+logical record ID, but its immutable coordinate ends in a digest-bound variant:
 
 ```text
-decisions / v1 / <collection-id> / <kind> / <object-id> / <record-id>
+decisions / v1 / <collection-id> / <kind> / <object-id> / <variant-id>
 ```
 
-No Decisions protocol record uses a replaceable Willow coordinate. Every
-logical update is a new record with predecessor heads, so Willow pruning cannot
-remove evidence later named by an outcome. Same logical record ID with different
-digests is equivocation and creates a conflict or invalid set; it is never
-resolved by timestamp.
+`payload_digest` is SHA-256 of canonical payload bytes. `variant_id` is
+`SHA256("riot/decisions-variant/v1" || kind || object_id || logical_record_id ||
+author_id || payload_digest)`. `head_id` is
+`SHA256("riot/decisions-head/v1" || collection_id || kind || object_id ||
+logical_record_id || author_id || variant_id || payload_digest)`.
+The evidence-set digest uses
+`SHA256("riot/decisions-evidence/v1" || canonical_cbor(authority_heads,
+phase_head, revision_head, sorted_participant_ids,
+sorted(participant_id -> position_heads | NoPosition), requested_outcome,
+outcome_statement))` and is always recomputed by core.
+
+Different semantic payload variants necessarily occupy distinct Willow paths,
+so Willow pruning cannot remove an equivocation branch. More than one variant for the
+same `(kind, object, logical ID, author)` **poisons that logical stream** and
+blocks dependent authority or consent until an authorized successor references
+every variant head. Equivocation is never discarded as merely invalid and is
+never resolved by timestamp.
+
+Re-proving the identical canonical semantic payload at the same variant path is
+not a new head; the current live Willow proof is interchangeable. Outcomes
+reference semantic head IDs, not a timestamp-bearing entry proof, so pruning an
+identical duplicate cannot erase the named decision evidence.
 
 MVP records are:
 
@@ -349,7 +406,7 @@ MVP records are:
 | `Position` | Participant's causal stance stream on one revision |
 | `CloseIntent` | Exact participant/position evidence frontier |
 | `DecisionOutcome` | Recorded outcome tied to one close intent |
-| `BranchResolution` | Typed resolution for roster, policy, revision, position, or outcome heads |
+| `BranchResolution` | Typed resolution for app access, moderator roster, participant roster, policy, revision, close, or outcome heads; never another person's position |
 
 Every record contains schema version, record and collection IDs, verified full
 author ID, predecessor/authority/phase heads, payload digest, and signed Willow
@@ -362,6 +419,9 @@ timestamp. Identity-bearing fields must match verified entry metadata.
 - Missing predecessors produce `MissingEvidence`, not partial validity.
 - Concurrent authority, roster, policy, revision, position, close, or outcome
   heads disable any action that would overstate consent.
+- Only a `Position` successor signed by the verified participant may resolve
+  that participant's position variants or heads; an Object remains blocking
+  until that successor changes it.
 - Branch resolution must reference every current head. A resolution that loses
   a race returns `StaleHead` and does not commit.
 - Projection validity is a pure function of the accepted signed record set and
@@ -387,6 +447,13 @@ the approved `RiotDatabase`/`SpaceSession` architecture in
   community; and
 - schema migration is ordered and transactional under `schema_migrations`.
 
+For SQLite-backed Decisions paths, this design normatively supersedes that
+design's sentence retaining the prototype's 1,024-entry/16-MiB whole-store
+ceiling. The legacy in-memory store keeps its existing ceiling; Decisions uses
+the per-space/global accounting below. The implementation prerequisite updates
+the checked-in manifest, limit constants, and SQLite design contract together
+before any Decisions record is admitted.
+
 Swift does not maintain a parallel receipt array. If the database commit
 succeeds but UI acknowledgement is interrupted, retrying the same command ID
 returns the committed result.
@@ -410,35 +477,79 @@ insufficient. Decisions depends on a generic sync v2 before product exposure:
 
 This is a generic Riot sync improvement, not a Decisions-only transport.
 
+The sender materializes each advertised sorted ID list in SQLite. A snapshot
+pins IDs, not extra payload copies, for 10 minutes; at most 8 snapshots and
+16,384 IDs per namespace are retained. Requested immutable entries remain in
+`accepted_entries`. Expired or evicted snapshots return `SnapshotExpired`, and
+the receiver discards that partial inventory and restarts from page one.
+Snapshot rows survive process restart until expiry; cleanup never removes
+accepted evidence.
+
 ## Capacity, denial of service, and performance
 
-The first release supports and tests:
+The first release supports and tests these semantic limits:
 
 - 32 governance participants;
 - 8 simultaneously open decisions and 2 open proposals per author;
-- 8 revisions per decision;
-- 4 position updates per participant per revision;
+- 8 revisions per decision including revision 1;
+- 4 total Position records per participant per revision, including the initial
+  position and three successors;
 - 16 comments per author and 128 comments total per decision;
 - 4 annotations per comment;
-- 256 closed decisions retained and synchronizable;
-- 16,384 live Decisions records or 64 MiB canonical retained bytes per public
-  community, whichever comes first.
+- 8 close intents, 8 outcomes, and 16 branch resolutions per decision;
+- 64 app-access records, 64 moderator-roster records, 128 participant-roster
+  records, and 128 policy records per community;
+- at most 8 unresolved heads for each authority/configuration stream and 32
+  unresolved heads for a decision stream; and
+- 256 closed decisions retained and synchronizable.
 
-Limits are checked by Rust both for local commands and deterministic projection
-of imported records. Per-author quotas prevent one participant from consuming
-another's allowance. Duplicate record IDs/digests cost no second quota.
-Position and authority limits follow causal ordinal. Comments and annotations
-reference the author's current per-decision contribution heads; concurrent
-records at the last available ordinal are admitted by full record-ID order up
-to the remaining quota and the rest are deterministically `OverQuota`,
-independent of arrival order.
+Limits are checked by Rust for local commands and deterministic projection of
+imports. Per-author quotas prevent one participant consuming another's
+allowance. Duplicate variants cost no second quota. Position and authority
+limits follow causal ordinal. Comments and annotations reference the author's
+current per-decision contribution heads; concurrent records at the last
+available ordinal are admitted by full head-ID order up to remaining quota and
+the rest are deterministically `OverQuota`, independent of arrival order.
 
-Moderator roster repair, participant roster repair, policy repair, branch
-resolution, hide annotations, close intent, and outcome records use reserved
-quotas unavailable to ordinary comments or position churn. At the community
-ceiling Riot refuses new proposals with **This community's decision record is
-full**; it never deletes evidence automatically. Export/archive is follow-up
-work required before raising the ceiling.
+SQLite physically allocates each public community 72 MiB: 14,336 ordinary
+canonical records/56 MiB, 2,048 protected canonical records/8 MiB, a
+1,024-digest/4-MiB rejected-record quarantine, and 4 MiB of indexes/metadata.
+The global database supports 8 full-capacity communities: 131,072 canonical
+records and 576 MiB including quarantine/metadata. Additional communities may
+exist only while both their per-space and the global limits remain available.
+
+The protected partition admits only semantically authorized app access,
+moderator/participant roster, policy, branch resolution, moderator hide,
+close-intent, and outcome records within the exact stream quotas above.
+Ordinary comments, revisions, and position churn cannot consume it. Decisions
+path admission performs canonical Willow verification and domain semantic/quota
+preflight in one Rust-owned transaction before storing full bytes.
+Unauthorized, malformed-domain, or `OverQuota` variants store only a bounded
+digest, author, kind, and reason in quarantine. After 64 digests per author or
+1,024 per community, Riot increments an aggregate rejection counter and retains
+no attacker payload/proof. Reimport may be re-evaluated but cannot consume the
+protected partition.
+
+A quarantined digest that collides on logical stream identity with an admitted
+variant still marks that stream `Poisoned`; it can never make an Object,
+revocation, or authority branch disappear from consent accounting. Repair
+requires an authorized successor referencing every retained full head and every
+quarantined variant digest. If required bytes are unavailable, the stream stays
+fail-closed.
+
+A canonical record whose authorization cannot yet be decided solely because a
+predecessor is missing uses a separate pending-evidence slice within the same
+4-MiB quarantine: at most 128 full records/author and 512/community. Arrival of
+a predecessor re-evaluates it transactionally. Eviction is full-head-ID order;
+sync may reoffer an evicted record, and no pending record enters the projection
+or protected quota before authorization succeeds.
+
+At the ordinary or global ceiling Riot refuses new proposals with **This
+community's decision record is full**; it never deletes evidence automatically.
+The protected partition remains available for repair and closure until its own
+stream/global cap. Export/archive and raising limits are follow-up work. All
+conflict-head queries page at 32 and return total count plus `hasMore`, never an
+unbounded head array.
 
 Release-build budgets, measured over ten runs at the supported maximum, are:
 
@@ -451,11 +562,26 @@ Missing a budget blocks the performance claim and trial release.
 
 ## App trust and upgrades
 
-The host constructs a Decisions session only for an exact app ID named by one
-unconflicted `DecisionAppAccess` head and declaring the Decisions permission.
+Tool availability is one composed gate, never two competing authorities. The
+host constructs a Decisions session only when:
+
+1. the exact installed package has a currently accepted organizer TrustMarker
+   under the existing app runtime contract;
+2. its manifest declares machine capability `org.riot.decisions.v1`; and
+3. the same app ID is named by one unconflicted `DecisionAppAccess` head.
+
+The session approval generation is the tuple `(trust_marker_entry_id,
+decision_app_access_head, database_generation)`. Every query and command
+rechecks the tuple transactionally. A change to either authority invalidates
+the session, removes/recomputes the Tools listing, closes an already-open tool,
+and prevents immediate reopen until all three conditions are true again.
+
 App-access successors are organizer-authored, reference all current access
-heads, and never use timestamp ordering. The session binds that head as its app
-approval generation and rechecks it on every query and command.
+heads, and never use timestamp ordering.
+
+This requires manifest schema v2 to add a bounded machine-readable
+`capabilities` array. Existing `permissions` remains plain-language review copy
+and cannot grant native access. Schema-v1 apps cannot request Decisions.
 
 App access is a **local execution boundary**, not remote record provenance. A
 human-signed Decisions record remains valid or invalid based on human/community
@@ -465,18 +591,29 @@ Revocation removes both read and command access, closes the tool, and returns to
 Tools as required by the community-navigation contract. It never leaves a
 revoked app in a read-only collection view.
 
-A successor app ID may access the same deterministic collection after ordinary
-organizer review and an app-access successor that names it. No claim about
+A successor app ID may access the same deterministic collection only after a
+new exact TrustMarker review and an app-access successor that names it. No claim about
 which app authored synchronized human records is made. A malicious
 organizer-approved app remains a residual risk; bounded native commands,
 confirmation for policy/roster/outcome actions, and exact bundle review reduce
 but cannot eliminate it.
 
+Initial access is not circular. A native host-owned
+`CommunityGovernanceAdminV1.bootstrapDecisions` operation is available from
+Community settings after the exact TrustMarker is accepted but before a
+`DecisionSessionV1` exists. The organizer must first acknowledge the fixed
+public-data disclosure in trusted native UI. The operation takes app ID,
+expected TrustMarker entry ID, expected empty app-access/moderator heads, and an
+idempotency ID; it atomically commits the initial `DecisionAppAccess` and
+`ModeratorRoster` containing the organizer. Retry returns the original commit;
+non-empty/stale heads fail without mutation. Successors use the corresponding
+native `updateDecisionsAccess` operation.
+
 ## Bounded API contract
 
 `DecisionSessionV1` is immutably bound to namespace, signer, app ID, collection
-ID, app-approval generation, and database generation. JavaScript supplies none
-of those values.
+ID, the composed approval-generation tuple, and database generation. JavaScript
+supplies none of those values.
 
 Queries are cursor-bounded:
 
@@ -485,21 +622,31 @@ Queries are cursor-bounded:
 - `boardPage(filter, cursor, limit, observedNow)` returns at most 50 summaries;
 - `decisionView(decisionId, cursor, limit, observedNow)` returns header plus at
   most 50 timeline records;
+- `conflictHeadsPage(streamId, cursor, limit)` returns at most 32 full heads;
 - `changes(afterSequence, limit)` returns durable invalidations; host push is a
   reload hint, and missed pushes resume from sequence; and
-- `drafts`, `loadDraft`, `saveDraft`, and `discardDraft` operate only on
-  host-local SQLite state.
+- `draftsPage(cursor, limit)`, `loadDraft`, `saveDraft`, and `discardDraft`
+  operate only on host-local SQLite state with the 20-row page and draft quotas.
 
 Commands include `publishModeratorRoster`, `publishParticipantRoster`,
 `publishPolicy`, `openDecision`, `appendComment`, `annotateComment`,
 `publishRevision`, `setPosition`, `beginClose`, `recordOutcome`, and
-`resolveBranch`.
+`cancelClose`, `resolveBranch`, and `resolveOutcomeConflict`. `setPosition` is
+the only position-resolution command and core requires the signer to equal the
+position participant.
 
 Every command carries a caller-generated idempotency ID plus expected causal
 heads. Core derives record IDs and author. Repeating the same command ID and
 payload returns the original `Committed { recordId, changeSequence }`; the same
 ID with different bytes returns `InvalidCommand`. A head mismatch returns
-current full heads without committing.
+the head count and first bounded page without committing.
+
+Roster, policy, moderator revision, close, outcome, access, and branch-
+resolution commands do not proceed from a JavaScript confirmation alone. The
+host renders trusted native review from the exact canonical command bytes,
+acting full identity, expected heads, and public consequence; confirmation then
+revalidates those same bytes and heads at commit. A changed byte/head cancels
+the signature request and returns `StaleHead`.
 
 Stable error codes and recovery are:
 
@@ -512,6 +659,7 @@ Stable error codes and recovery are:
 | `MissingEvidence` | Keep read-only and retry sync/import |
 | `Validation` | Focus the named field; preserve draft |
 | `Capacity` | Explain the exact reached limit |
+| `SnapshotExpired` | Reset the page to the first snapshot and preserve focus/filter |
 | `AppRevoked` | Close tool and return to Tools |
 | `UnsupportedVersion` | Block mutation and offer app update |
 | `Storage` | Preserve local input and offer retry |
@@ -525,12 +673,15 @@ Setup lives in **Community settings > Decisions**; everyday policy inspection
 lives in the tool's **How we decide** view.
 
 1. Organizer approves the exact Decisions app.
-2. Core bootstraps a moderator roster containing the organizer.
-3. Organizer verifies and adds at least one other participant by full key.
-4. A moderator publishes the participant roster.
-5. A moderator reviews the public-data disclosure, chooses minimum responses
-   and response window, and publishes the first policy.
-6. The Decisions tool becomes writable.
+2. Trusted native setup shows the fixed public-data disclosure; no identity-
+   bearing Decisions record exists until the organizer acknowledges it.
+3. The native bootstrap transaction commits app access and a moderator roster
+   containing the organizer.
+4. Organizer verifies and adds at least one other participant by full key.
+5. A moderator publishes the participant roster.
+6. A moderator chooses minimum responses and response window, reviews the same
+   disclosure, and publishes the first policy.
+7. The Decisions tool becomes writable.
 
 Before completion, members see **Decisions isn't set up yet** and the missing
 step. Only the authorized actor sees the repair action. Zero participants,
@@ -542,6 +693,11 @@ Roster removal and policy edits show the exact successor, affected future
 proposals, public-data warning, and confirmation. Open proposals retain their
 snapshots.
 
+Each profile acknowledges public contribution once per policy head in
+host-local state. A policy successor resets acknowledgement. Every composer
+still shows one-line public permanence copy; only the first contribution under
+that policy opens the full acknowledgement. It is never inferred from app use.
+
 ## Board, proposal, and conflict UX
 
 The default landing filter is **Needs you**, followed by **Open** and **Closed**.
@@ -551,7 +707,16 @@ incomplete.
 
 Board ordering is: reconfirm after revision, no current position, active
 objection needing facilitator attention, locally Review due, then recent valid
-activity. Cards show compact participation; full counts live on detail.
+activity. The total sort key is `(priority, signed_activity_timestamp desc,
+activity_head_id asc, decision_id asc)`. Timestamps do not affect validity.
+Timeline order is causal depth, signed timestamp, then full head ID. Concurrent
+records therefore have one deterministic presentation order. Cards show compact
+participation; full counts live on detail.
+
+Board and timeline cursors bind a projection change-sequence snapshot and the
+last total sort key. Any relevant mutation between pages returns
+`SnapshotExpired`; the client restarts at page one while preserving filter and
+focus. It never combines two projection generations.
 
 Proposal detail leads with exact current text, then participation, active
 objections, and the chronological discussion/revision timeline. Helper copy
@@ -563,11 +728,23 @@ Participants encountering a policy, roster, revision, position, or outcome
 conflict see a banner, can inspect all branches, and retain read/discussion where
 safe. Actions that could overstate consent are disabled.
 
-Authorized moderators open **Resolve conflict**, compare full authors and
-records side by side, choose or compose a successor, review consequences, and
-confirm. If another resolution wins first, `StaleHead` reloads the comparison
-without discarding composed text. An Object in unincluded evidence forbids
-selecting the prior consent outcome.
+For a Position conflict, only that participant sees **Choose your current
+position**. The view compares their variants, requires a fresh stance/reason,
+and signs a Position successor referencing every head. Moderators can inspect
+and annotate but have no resolution action.
+
+For other conflicts, the actor authorized for that record type opens **Resolve
+conflict**, compares full authors and records in columns on wide screens or
+stacked cards on narrow screens, composes the permitted successor, reviews
+consequences, and confirms. If another resolution wins first, `StaleHead`
+reloads comparison without discarding composed text. An Object in unincluded
+evidence forbids selecting the prior consent outcome.
+
+Close pending appears on board and detail with the exact evidence summary.
+Facilitator or active moderator can **Finish recording outcome** or **Cancel
+close and return to discussion** after relaunch. If unincluded evidence arrives
+before outcome commit, Finish becomes Resolve outcome conflict; no stranded
+close intent is silently finalized.
 
 ## Offline and error behavior
 
@@ -625,7 +802,9 @@ Planning must create tests before implementation for these minimum contracts:
 
 | Given | When | Then |
 | --- | --- | --- |
+| Accepted exact TrustMarker and no Decisions heads | Organizer acknowledges disclosure and bootstraps | App access plus initial moderator roster commit atomically and retry is idempotent |
 | Two record permutations contain identical valid evidence | Project both | Authoritative views are byte-identical |
+| Same logical position ID has two digest-bound variants | Either arrives first | Both immutable heads remain and the position stream is poisoned/blocking |
 | A moderator epoch closes without an offline action in its frontier | That action arrives | It is `StaleAuthority` and changes no projection |
 | One participant creates concurrent Support and Object heads | Either arrives first | Position conflict blocks consent until that participant resolves it |
 | A revision commits | Prior positions exist | They remain historical and Needs you requests reconfirmation |
@@ -635,6 +814,8 @@ Planning must create tests before implementation for these minimum contracts:
 | App approval generation changes while open | Next query/command runs | Session returns `AppRevoked` and host closes the tool |
 | Sync inventory exceeds 64 records | Peers reconcile with v2 | All pages converge without mixed snapshots |
 | A participant exceeds comment quota | Another participant comments | Only the offender is rejected; reserved authority commands still commit |
+| Unauthorized communal authors fill ordinary/quarantine limits | Organizer repairs authority | Full repair bytes still commit in the protected partition |
+| A cursor's projection sequence changes between pages | Next page is requested | `SnapshotExpired` resets pagination without mixing generations |
 
 Required reusable test infrastructure is `DeterministicIdentityFactory`,
 `TempRiotDatabase`, `FakeObservationClock`, `ProjectionPermutationHarness`,
@@ -645,13 +826,15 @@ Each work unit follows RED (contract test fails), GREEN (minimum behavior), then
 REFACTOR with the full affected suite. The implementation plan must enumerate
 those cycles method by method, including every stable error code and head-race.
 
-Before implementation, `.coverage-thresholds.json` remains the single source of
-truth and must be extended with surface-specific enforcement commands: Rust
-line/branch/function/statement coverage, Istanbul coverage for miniapp
-JavaScript, and LLVM/Xcode coverage extraction for changed Swift modules. Each
-configured threshold is 100 percent. Generated bindings may be excluded only by
-an explicit checked-in path exemption. PR creation and task completion remain
-blocked until every configured command passes.
+Before production code, work unit 0 extends `.coverage-thresholds.json`—the
+single source of truth—to invoke checked-in `scripts/coverage-rust.sh`,
+`scripts/coverage-miniapps.mjs`, and `scripts/coverage-apple.sh`. They enforce
+line/branch/function/statement coverage for Rust and Istanbul-instrumented
+miniapp JavaScript, plus LLVM/Xcode line/function/branch coverage for changed
+Swift modules. Each available configured metric is 100 percent. Generated
+UniFFI bindings may be excluded only by an explicit checked-in path exemption.
+PR creation and task completion remain blocked until every configured command
+passes.
 
 Final verification also runs workspace tests, strict formatting and Clippy,
 SQLite migration/recovery tests, UniFFI contract tests, iOS/macOS builds and
@@ -663,7 +846,10 @@ the repository green script.
 
 Within 14 calendar days of a release-candidate build, run a moderated trial with
 5–9 people matching the neighborhood mutual-aid persona and the three seeded
-scenarios.
+scenarios. The task script also samples organizer setup/recovery, two concurrent
+decisions, and comment correction/withdrawal. Percentages below use all assigned
+task attempts as the denominator; comprehension uses all scored question
+responses.
 
 Release requires:
 
@@ -686,11 +872,16 @@ expanding beyond the trial.
 
 The implementation plan must order these reviewable units:
 
-1. multi-space SQLite prerequisite and persistent generic signed records;
-2. generic paged reconciliation v2;
-3. canonical Decisions codecs, paths, causal authority, quotas, and projection;
-4. bounded UniFFI/native session, local drafts, stable errors, and watches;
-5. organizer bootstrap, roster, policy, and moderator conflict UX;
+0. multi-surface 100-percent coverage enforcement;
+1. multi-space SQLite prerequisite, superseding capacity manifest, physical
+   admission partitions, and persistent generic signed records;
+2. generic paged reconciliation v2 and stable snapshot cursors;
+3. canonical Decisions codecs, digest-bound paths, causal authority, exact
+   quotas, and deterministic projection;
+4. composed app approval/bootstrap, bounded UniFFI/native session, local drafts,
+   stable errors, and watches;
+5. organizer setup, roster, policy, native confirmations, and authority conflict
+   UX;
 6. board, proposal creation, discussion, correction/withdrawal, revision, and
    causal positions;
 7. close intent, outcomes, unincluded-evidence conflicts, and resolution UX;
