@@ -1,7 +1,7 @@
 # Riot local-first PWA vertical slice design
 
 Date: 2026-07-13
-Status: Revision 2 after metaswarm design-review findings
+Status: Revision 3 after metaswarm design-review findings
 
 ## Purpose
 
@@ -61,7 +61,10 @@ coaching or a server-side account. The evaluation occurs before calling the
 slice product-ready. It fails if signing or reload requires the network, reload
 changes the signing identity, import bypasses preview/accept, any participant
 mistakes public-data export for identity recovery, or two of five users abandon
-the same step.
+the same step. A second timed checkpoint requires four of five first-time users
+to import a supplied bundle, understand that they are joining with a new member
+identity, select updates, and reach Home in under three minutes without
+coaching.
 
 ## Chosen approach
 
@@ -180,13 +183,17 @@ Public operations:
 - `prepare_update(UpdateDraftV1) -> UpdateReviewV1`
 - `post_review(review_id) -> DurableBundleV1`
 - `list_updates() -> UpdateV1[]`
-- `export_community() -> DurableBundleV1`
+- `export_community() -> BundleArtifactV1`
 - `close()`
 
 `create_community` creates one organizer-shaped author with
 `generate_space_organizer_author`; its namespace equals its signer/subspace.
-`open_community` restores that sealed author and verifies the organizer equality
-before exposing organizer behavior. A restored member has
+`open_community` restores that sealed author and requires the caller-supplied
+community namespace to equal both the namespace sealed into the author and the
+sole namespace authenticated from the complete replay log. It separately
+requires the caller-supplied signer ID to equal the signer sealed into the
+author before it enables any mutation. Only `local_title` is editable. It verifies organizer
+equality before exposing organizer behavior. A restored member has
 `namespace != signer/subspace`; relationship is always derived from that fact,
 never trusted from the editable local community record. The record's title is a
 local label, not signed authority. `join_reviewed_community` first validates a
@@ -205,8 +212,9 @@ is no privileged demo admission path in the PWA.
 `create_signed_alert` convenience function:
 
 1. `prepare_alert` allocates object/revision IDs, captures the clock snapshot,
-   validates and encodes the payload, builds the complete entry and capability,
-   and retains those immutable canonical bytes without signing.
+   validates and canonically encodes the payload, builds the complete entry and
+   capability, and retains the entry object plus exact canonical entry,
+   capability, and payload bytes without signing.
 2. The shared controller binds the prepared object to a single-use review ID,
    current namespace, full signer ID, store generation, and SHA-256 digest of
    `{domain-separator, entry-bytes, capability-bytes, payload-bytes}`.
@@ -214,11 +222,19 @@ is no privileged demo admission path in the PWA.
    destination community, acting identity, created time, expiry, source claims,
    and digest in Technical details.
 4. `post_review` rechecks review liveness, namespace, signer, store generation,
-   and expiry, then signs only the retained entry/capability bytes. It never
-   allocates new IDs, captures a new creation timestamp, or re-encodes editable
-   fields. Any mismatch returns `REVIEW_STALE` and requires a new review.
-5. The resulting one-entry bundle commits through ordinary
-   inspect → plan → commit. Existing `create_signed_alert` becomes
+   and expiry. Ed25519 receives exactly the retained canonical Willow entry
+   bytes as its sole message, matching Meadowcap
+   `AuthorisationToken::new_for_entry`; capability and payload bytes are
+   digest-bound review evidence but are not concatenated into the signature
+   message. The controller builds the token from the retained capability object
+   and returned signature, verifies it against the retained entry and expected
+   signer, and rejects any mismatch. It never allocates new IDs, captures a new
+   creation timestamp, or re-encodes editable fields. Any mismatch returns
+   `REVIEW_STALE` and requires a new review.
+5. The one-entry bundle uses the exact reviewed entry, capability, and payload
+   byte arrays plus the verified signature; none is reconstructed from UI data.
+   It commits through ordinary inspect → plan → commit. Existing
+   `create_signed_alert` becomes
    prepare-then-sign internally so native behavior and test vectors do not fork.
 
 This removes the review/sign time-of-check/time-of-use gap and provides the
@@ -236,15 +252,19 @@ lowercase hex strings. Closed enums use the existing lowercase names
 | DTO | Required fields |
 | --- | --- |
 | `CommunityV1` | `version`, `namespace_id`, `local_title`, `relationship` (`organizer|member`), `signer_id` |
+| `ProposedCommunityV1` | `version`, `namespace_id`, `local_title`, `relationship` (always `member`) |
 | `CommunityCreatedV1` | `version`, `community`, `wrapping_key_bytes`, `sealed_identity_bytes` |
-| `CommunityImportReviewV1` | all `ImportReviewV1` fields plus `proposed_community` and `relationship: member` |
+| `CommunityImportReviewV1` | `version`, `review: ImportReviewV1`, `proposed_community: ProposedCommunityV1` |
 | `CommunityJoinedV1` | `version`, `community`, `wrapping_key_bytes`, `sealed_identity_bytes`, `accepted_bundle` |
 | `UpdateDraftV1` | `version`, `headline`, `description`, `language`, `urgency`, `severity`, `certainty`, `valid_from`, `expires_at`, `affected_area`, ordered `source_claims`, `ai_assisted` |
 | `UpdateV1` | draft fields plus `entry_id`, `namespace_id`, `signer_id`, rendered `author_label`, `created_at`, `signature_valid`, `capability_valid`, `durability` |
-| `UpdateReviewV1` | `version`, `review_id`, immutable `update`, `community`, `acting_author_label`, `canonical_digest` |
-| `ImportRowV1` | `entry_id`, `headline`, `description`, `author_label`, ordered sources, created/expiry, `selectable`, fixed `rejection_code`, and nested Technical details |
-| `ImportReviewV1` | `version`, `review_id`, `namespace_id`, `local_title`, byte count, selected-by-default valid rows, rejected rows |
+| `ReviewedUpdateV1` | draft fields plus allocated `object_id`, `revision_id`, `entry_id`, `namespace_id`, `signer_id`, `created_at` |
+| `UpdateReviewV1` | `version`, `review_id`, `update: ReviewedUpdateV1`, `community: CommunityV1`, `acting_author_label`, `canonical_digest` |
+| `TechnicalDetailsV1` | `version`, complete `entry_id`, `namespace_id`, `signer_id`, `payload_sha256`, `signature_valid`, `capability_valid` |
+| `ImportRowV1` | `version`, `headline`, `description`, deterministic `author_label`, ordered `source_claims: string[]`, `created_at`, `expires_at`, `ai_assisted`, `selectable`, fixed `rejection_code|null`, `technical: TechnicalDetailsV1` |
+| `ImportReviewV1` | `version`, `review_id`, `namespace_id`, `local_title`, `byte_count`, ordered `valid_rows`, ordered `rejected_rows`, `selected_entry_ids` |
 | `DurableBundleV1` | `version`, exact accepted-only `bundle_bytes`, normalized `route`, complete `entry_ids`, `sha256` |
+| `BundleArtifactV1` | `version`, canonical `bundle_bytes`, complete `entry_ids`, `sha256`, deterministic `filename` |
 | `WebErrorV1` | `version`, stable `code`, optional `field`, `message_key`; never raw parser/debug text |
 
 Every public call returns `Result<T, WebErrorV1>`. `route` is not caller
@@ -252,6 +272,14 @@ controlled: local posts use `web-local-post`, file/demo imports use
 `web-file-import`, and startup replay uses the exact route stored with that log
 record. Every opaque import/review ID is single-use, session-bound, and rejected
 after replacement, commit, or close.
+
+Every nested DTO also carries `version: 1`. `durability` is the closed enum
+`durable|not-saved`; `rejection_code` is null for selectable rows and otherwise
+one of `invalid-signature|invalid-capability|wrong-community|malformed-update|expired|unsupported-entry-type`.
+The adapter derives labels without hidden profile state: the local signer is
+`You (organizer)` or `You (member)` and any other signer is `Community member`;
+complete signer IDs remain in Technical details. Display names are not part of
+this slice.
 
 The workspace pins `wasm-bindgen` exactly. `scripts/web/build.sh` verifies and
 uses the identical `wasm-bindgen-cli` version, runs the release WASM build, emits
@@ -301,9 +329,11 @@ controller re-encodes exactly the selected, admitted frames in ascending entry-I
 order into a normalized bundle; rejected, unselected, foreign-namespace, and
 non-alert frames never enter persistence or export.
 
-A versioned manifest records ordered `{sha256, byte_length, normalized_route}`
-records and total retained bytes. On every open, the host recomputes each object
-hash and size, validates manifest totals/order/version, and rejects missing,
+A versioned manifest records its single `namespace_id`, ordered
+`{sha256, byte_length, normalized_route}` records, and total retained bytes. On
+every open, one read-only IndexedDB transaction snapshots the manifest and all
+bundle objects before validation. The host recomputes each object hash and size,
+validates the manifest namespace/totals/order/version, and rejects missing,
 duplicate, or unexpected unreferenced objects as `REPLAY_FAILED`. Unsupported
 but internally consistent schema versions enter read-only recovery and preserve
 all raw records for export. Duplicate bundle hashes retain the first admission
@@ -358,8 +388,8 @@ technical containers and never name an ordinary top-level screen.
 
 With no retained community, first use offers:
 
-- **Create a community** — ask for a community name, optionally a display name,
-  then create the organizer-bound identity and community atomically.
+- **Create a community** — ask for a local community name, then create the
+  organizer-bound identity and community atomically.
 - **Import community data** — choose one public-data bundle, preview its single
   namespace and readable updates, provide or accept a local-only community
   label, then **Add this community**. Acceptance creates a fresh member signer
@@ -392,8 +422,10 @@ label, ordered sources, age, expiry, and AI-assisted status. Rejected rows are
 not selectable and show one fixed plain-language reason (`invalid signature`,
 `invalid capability`, `wrong community`, `malformed update`, `expired`, or
 `unsupported entry type`). Complete IDs and parser-safe codes are in Technical
-details. **Add selected updates** is disabled when nothing is selected. Cancel
-has no mutation.
+details. On first run the single atomic CTA is **Add this community**: it creates
+the member identity and accepts the selected rows together. With an existing
+community the CTA is **Add selected updates**. Either CTA is disabled when
+nothing is selected, and Cancel has no mutation.
 
 States:
 
@@ -410,6 +442,15 @@ States:
   automatic migration or reset.
 - Storage full: refuse the mutation and offer Export community data.
 - Another writer tab: read-only Home with **Riot is open in another tab**.
+- Another writer tab before a community exists: a read-only first-run page with
+  the same explanation and no create/import controls; it automatically offers
+  the normal actions only after the writer lock becomes available.
+- Install available: an in-app **Install Riot** action appears only while a
+  captured `beforeinstallprompt` is usable. Dismissal leaves a quiet install
+  action for a later visit; an interrupted or unknown prompt is recomputed on
+  next launch. `appinstalled` or standalone display mode hides the action.
+  Browsers without the event show concise browser-menu instructions and never
+  claim the app was installed.
 - Update available: preserve drafts, finish or recover any durable write, then
   offer **Reload to update**; never activate silently under an open page.
 - Unsupported browser: explain required WebAssembly, IndexedDB, WebCrypto, and
@@ -447,16 +488,20 @@ posted draft.
    signable request, and returns `UpdateReviewV1` without signing.
 3. UI renders only that immutable review.
 4. Human presses Post update.
-5. Controller revalidates review/session bindings, signs only retained canonical
-   bytes, encodes one canonical bundle, and commits through
+5. Controller revalidates review/session bindings, signs only the retained
+   canonical entry bytes, encodes one canonical bundle from every retained
+   component, and commits through
    inspect → plan → commit.
 6. Browser persists the exact bundle before reporting durable success.
 7. UI refreshes from the core's live view.
 
 If persistence fails after core commit, the controller keeps the generated
 bundle and every later unpersisted bundle in an ordered recovery queue, blocks
-all further mutations, presents `Not saved to this browser`, and offers Retry
-or immediate exact-bundle download. It never claims durable success.
+all further mutations, and opens a visible **Not saved to this browser**
+recovery screen listing each bundle in order with Retry and immediate
+exact-bundle download. It warns that closing or reloading can lose these
+in-memory bundles, requires explicit confirmation to discard them, and never
+claims durable success.
 
 ### Import or join
 
@@ -464,14 +509,20 @@ or immediate exact-bundle download. It never claims durable success.
    before `arrayBuffer()` and Rust rechecks the same ceiling.
 2. Shared controller decodes and verifies without mutation, requires exactly one
    public communal namespace, and produces readable rows.
-3. On first run, user provides a local-only community label and chooses Add this
-   community; the controller creates a member author in that namespace. With an
-   active community, the namespace must match or the whole import is rejected.
-4. User selects valid rows and presses Add selected updates.
+3. The user selects valid rows. On first run, they provide a local-only
+   community label and press **Add this community**; the controller atomically
+   creates a member author in that namespace and accepts the selection. With an
+   active community, the namespace must match or the whole import is rejected,
+   and the CTA is **Add selected updates**.
+4. Either cancellation or an empty selection leaves identity and store
+   unchanged.
 5. Controller commits exactly the selection and returns a normalized accepted-
    only canonical bundle; browser appends it with route `web-file-import` in one
    IndexedDB transaction.
-6. If browser persistence fails, the same non-durable recovery behavior applies.
+   On first-run join, the protected vault, community record, accepted bundle,
+   and manifest commit together in that transaction before success is shown.
+6. If browser persistence fails, the same non-durable recovery behavior applies;
+   no partially persisted member identity is exposed as joined.
 
 ### Startup and offline reload
 
@@ -489,12 +540,18 @@ or immediate exact-bundle download. It never claims durable success.
 The worker precaches the complete content-hashed release into a new cache; a
 failed fetch fails installation and the incomplete cache is deleted. HTML names
 only that release's hashed JS, WASM, CSS, and manifest assets. The waiting worker
-notifies clients but does not call `skipWaiting`. The writer tab enables Reload
-to update only after drafts are persisted and no mutation/recovery queue is
-active. Activation claims clients, deletes older release caches, and opens data
-only when its vault/log schema version is supported; otherwise it enters
-read-only recovery. Tests prove old or new assets are served coherently, never a
-mixture.
+notifies every controlled client but does not activate itself. **Reload to
+update** is enabled only after every open client acknowledges that drafts are
+persisted and no mutation/recovery queue is active; an unresponsive client makes
+the UI require that other Riot tabs be closed. The writer then sends the waiting
+worker `ACTIVATE_RELEASE`, which calls `skipWaiting`. On `controllerchange`, all
+acknowledged pages reload into the new release. The new worker calls
+`clients.claim()` but retains old release caches until `clients.matchAll()` and
+client release acknowledgements prove that no old-release page remains; fetches
+for old hashed assets continue to resolve from their matching old cache. It then
+deletes only unreferenced release caches. Data opens only when the vault/log
+schema version is supported; otherwise the new release enters read-only
+recovery. Tests prove old or new assets are served coherently, never a mixture.
 
 ## Security model
 
@@ -524,8 +581,8 @@ mixture.
   WebAssembly compilation; JavaScript `unsafe-eval`, `unsafe-inline`, blob
   workers, and data/network assets remain forbidden.
 - Response headers also set `Referrer-Policy: no-referrer`,
-  `X-Content-Type-Options: nosniff`, and a Permissions Policy disabling camera,
-  microphone, geolocation, payment, USB, Bluetooth, and other unused sensors.
+  `X-Content-Type-Options: nosniff`, and exactly
+  `Permissions-Policy: accelerometer=(), ambient-light-sensor=(), autoplay=(), bluetooth=(), camera=(), display-capture=(), encrypted-media=(), geolocation=(), gyroscope=(), hid=(), magnetometer=(), microphone=(), midi=(), payment=(), publickey-credentials-create=(), publickey-credentials-get=(), serial=(), usb=(), xr-spatial-tracking=()`.
 - No third-party runtime dependencies, analytics, fonts, or remote assets.
 - No `innerHTML` for imported/user content; render with text nodes.
 - Existing core byte/count/path/store ceilings remain authoritative.
@@ -603,10 +660,13 @@ TDD work proceeds in independently green slices:
 2. **WASM build contract (RED first):** a target check fails on the current
    `getrandom` browser configuration. Add only target-scoped dependency features
    needed for `wasm32-unknown-unknown`; do not enable conformance or filesystem
-   storage in the release graph. Tests assert the release feature closure and
-   successful WASM compilation.
+   storage in the release graph. Tests assert and compile the complete release
+   graph—including `riot-ffi`, UniFFI, `willow25`/`fjall`, and the workspace panic
+   strategy—not merely `getrandom`. If that graph cannot target WASM, extract or
+   feature-gate the shared Rust controller; never duplicate it in JavaScript.
 3. **Prepared alert core:** host Rust tests first require frozen IDs/times/bytes,
-   domain-separated digest, exact retained-byte signature, expiry/stale failure,
+   domain-separated digest, signature over the exact retained entry bytes,
+   expiry/stale failure,
    zero mutation on failure, and compatibility output from
    `create_signed_alert`; then split prepare/sign in `riot-core`.
 4. **Shared controller extension:** `riot-ffi` contract tests first cover
@@ -624,14 +684,16 @@ TDD work proceeds in independently green slices:
    failure, duplicate bundle/first route, manifest hash/size/order/total/version,
    missing/extra/rollback-limitation copy, atomic transaction abort, 16 MiB
    boundary, storage clear, corrupt replay, unsupported schema, exclusive writer,
-   second-tab read-only behavior, and recovery-queue mutation blocking. Real
+   second-tab/no-community read-only behavior, and recovery-queue mutation
+   blocking. Real
    IndexedDB/WebCrypto/Web Locks tests use unique browser contexts; no in-memory
    mock certifies persistence.
 7. **UI flows:** Playwright tests cover both first-run paths and demo, community
    naming, organizer/member action visibility, draft persistence,
    prepare→review→post, interruption at every durable boundary, offline restart,
    readable selective import, wrong-community rejection, deterministic export
-   filename/download failure, update-available flow, storage recovery, 320px and
+   filename/download failure, install states, update-available multi-client
+   activation, storage recovery, 320px and
    200% reflow, keyboard-only focus restoration, non-color states, live-region
    behavior, reduced motion, and no horizontal overflow.
 8. **Security/static contracts:** tests assert exact response headers, coherent
