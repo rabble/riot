@@ -1,7 +1,7 @@
 # Riot local-first PWA vertical slice design
 
 Date: 2026-07-13
-Status: Revision 6 after metaswarm design-review findings
+Status: Revision 7 after metaswarm design-review findings
 
 ## Purpose
 
@@ -351,6 +351,9 @@ against that manifest and patched files against their committed post-patch
 hashes; it also fails if `fjall`, `async-fs`, or `lsm-tree` appears in the
 `riot-web` target feature graph. Replacing the fork requires an upstream release
 with the same optional-storage boundary plus the full conformance suite.
+The workspace explicitly lists `vendor/willow25-browser` in `exclude`, and both
+coverage tools ignore that exact vendored path while continuing to measure all
+authored workspace Rust.
 
 The browser graph is exactly
 `riot-web -> riot-client -> riot-core -> willow25(MemoryStore)`. Target-specific
@@ -755,6 +758,9 @@ enforcement command changes to `scripts/web/coverage.sh`. A non-interactive
 `scripts/web/bootstrap.sh` installs `nightly-2026-07-01` with
 `llvm-tools-preview` using
 `rustup toolchain install nightly-2026-07-01 --profile minimal --component llvm-tools-preview --no-self-update`.
+It also runs and verifies
+`rustup target add wasm32-unknown-unknown --toolchain 1.95.0` for the workspace's
+pinned stable compiler.
 If the installed versions differ, it runs locked installs for
 `cargo-llvm-cov = 0.8.7`, `cargo-tarpaulin = 0.37.0`, and
 `wasm-bindgen-cli = 0.2.126`; the coverage/build scripts reject any other
