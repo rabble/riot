@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Photo Wall</title>
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main>
+  <header><p class="eyebrow">Seen around here</p><h1>Photo Wall</h1><p>Small scenes from the place we share.</p></header>
+  <p id="error" role="alert" hidden></p>
+  <form id="share-form">
+    <div class="field"><label for="caption">Caption</label><input id="caption" type="text" maxlength="300" autocomplete="off" placeholder="What are we looking at?" required></div>
+    <div class="field"><label for="photo">Choose a photo</label><input id="photo" type="file" accept="image/jpeg,image/png,image/webp,image/gif,image/svg+xml" required></div>
+    <figure id="preview" hidden><img id="preview-image" alt="Selected photo preview"><figcaption id="preview-note">Ready to share</figcaption></figure>
+    <button id="share" type="submit" disabled>Share photo</button>
+  </form>
+  <p id="status" role="status" aria-live="polite">Loading photos…</p>
+  <ol id="photos" aria-label="Community photos"></ol>
+  <p id="empty" hidden>No photos yet. Share the first view from around here.</p>
+</main>
+<script src="app.js"></script>
+</body>
+</html>

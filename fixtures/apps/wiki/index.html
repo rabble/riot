@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Wiki</title>
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main>
+  <header><p class="eyebrow">Notes we keep together</p><h1>Wiki</h1><p>Useful knowledge, written down and easy to find.</p></header>
+  <p id="error" role="alert" hidden></p>
+  <p id="status" role="status" aria-live="polite">Loading pages…</p>
+  <div class="workspace">
+    <nav id="page-index" aria-label="Wiki pages" tabindex="-1">
+      <h2>Pages</h2>
+      <ol id="pages"></ol>
+      <p id="empty" hidden>No pages have been written yet.</p>
+    </nav>
+    <article id="detail" tabindex="-1" hidden>
+      <button id="back" type="button">All pages</button>
+      <div id="reader">
+        <p id="detail-meta" class="meta"></p>
+        <h2 id="detail-title"></h2>
+        <p id="detail-body"></p>
+        <button id="edit" type="button" disabled>Edit page</button>
+      </div>
+      <form id="editor" hidden>
+        <h2 id="editor-title"></h2>
+        <label for="page-text">Page text</label>
+        <textarea id="page-text" maxlength="10000" rows="14" required></textarea>
+        <div class="form-actions"><button id="cancel" type="button">Cancel</button><button id="save" type="submit" disabled>Save page</button></div>
+      </form>
+    </article>
+  </div>
+</main>
+<script src="app.js"></script>
+</body>
+</html>

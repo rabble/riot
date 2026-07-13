@@ -1,0 +1,7 @@
+{
+  "name": "Photo Wall",
+  "description": "A captioned wall of community photos. It prepares smaller copies on this device and keeps them in this space — no internet or original-resolution uploads.",
+  "version": "1.0.0",
+  "entry_point": "index.html",
+  "permissions": ["Keep its own photos in this space", "Show the names people in this space have chosen"]
+}

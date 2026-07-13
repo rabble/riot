@@ -1,0 +1,7 @@
+{
+  "name": "Wiki",
+  "description": "A shared shelf of plain-text community knowledge. It keeps pages in this space and shows who last updated them — no internet or rich text.",
+  "version": "1.0.0",
+  "entry_point": "index.html",
+  "permissions": ["Keep its own pages in this space", "Show the names people in this space have chosen"]
+}
