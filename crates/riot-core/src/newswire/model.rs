@@ -964,7 +964,13 @@ mod tests {
     fn frozen_boundary_table_is_enforced_on_both_sides() {
         let mut valid_spaces = Vec::new();
         let mut value = space();
+        value.name = "n".into();
+        valid_spaces.push(value);
+        let mut value = space();
         value.name = "n".repeat(MAX_SPACE_NAME_BYTES);
+        valid_spaces.push(value);
+        let mut value = space();
+        value.summary = "s".into();
         valid_spaces.push(value);
         let mut value = space();
         value.summary = "s".repeat(MAX_SPACE_SUMMARY_BYTES);
@@ -1034,10 +1040,25 @@ mod tests {
 
         let mut valid_posts = Vec::new();
         let mut value = post();
+        value.headline = "h".into();
+        valid_posts.push(value);
+        let mut value = post();
         value.headline = "h".repeat(MAX_HEADLINE_BYTES);
         valid_posts.push(value);
         let mut value = post();
+        value.body = "b".into();
+        valid_posts.push(value);
+        let mut value = post();
         value.body = "b".repeat(MAX_BODY_OR_CORRECTION_BYTES);
+        valid_posts.push(value);
+        let mut value = post();
+        value.language = "en".into();
+        valid_posts.push(value);
+        let mut value = post();
+        value.language = "l".repeat(MAX_LANGUAGE_BYTES);
+        valid_posts.push(value);
+        let mut value = post();
+        value.coarse_location = Some("c".into());
         valid_posts.push(value);
         let mut value = post();
         value.coarse_location = Some("c".repeat(MAX_COARSE_LOCATION_BYTES));
@@ -1063,6 +1084,21 @@ mod tests {
             },
             {
                 let mut value = post();
+                value.language.clear();
+                (value, NewswireModelError::FieldEmpty("language"))
+            },
+            {
+                let mut value = post();
+                value.language = "e".into();
+                (value, NewswireModelError::FieldTooSmall("language"))
+            },
+            {
+                let mut value = post();
+                value.language = "l".repeat(MAX_LANGUAGE_BYTES + 1);
+                (value, NewswireModelError::FieldTooLarge("language"))
+            },
+            {
+                let mut value = post();
                 value.coarse_location = Some("c".repeat(MAX_COARSE_LOCATION_BYTES + 1));
                 (value, NewswireModelError::FieldTooLarge("coarse_location"))
             },
@@ -1082,6 +1118,10 @@ mod tests {
         }
 
         let mut valid_action = action();
+        valid_action.reason = Some("r".into());
+        valid_action.correction_text = Some("c".into());
+        assert!(encode_editorial_action(&valid_action).is_ok());
+        let mut valid_action = action();
         valid_action.reason = Some("r".repeat(MAX_EDITORIAL_REASON_BYTES));
         valid_action.correction_text = Some("c".repeat(MAX_BODY_OR_CORRECTION_BYTES));
         assert!(encode_editorial_action(&valid_action).is_ok());
@@ -1097,6 +1137,247 @@ mod tests {
             encode_editorial_action(&invalid_action),
             Err(NewswireModelError::FieldTooLarge("correction_text"))
         );
+
+        let mut max_contact = post();
+        max_contact.expires_at_unix_seconds = Some(1_800_000_900);
+        max_contact.operational_profile = Some(OperationalProfileV1::Request(RequestProfileV1 {
+            kind: RequestKind::Need,
+            needed_by_unix_seconds: None,
+            contact_instructions: "c".repeat(MAX_CONTACT_INSTRUCTIONS_BYTES),
+        }));
+        assert!(encode_news_post(&max_contact).is_ok());
+
+        let mut min_contact = max_contact.clone();
+        if let Some(OperationalProfileV1::Request(profile)) =
+            min_contact.operational_profile.as_mut()
+        {
+            profile.contact_instructions = "c".into();
+        }
+        assert!(encode_news_post(&min_contact).is_ok());
+
+        let mut empty_contact = max_contact.clone();
+        if let Some(OperationalProfileV1::Request(profile)) =
+            empty_contact.operational_profile.as_mut()
+        {
+            profile.contact_instructions.clear();
+        }
+        assert_eq!(
+            encode_news_post(&empty_contact),
+            Err(NewswireModelError::FieldEmpty("contact_instructions"))
+        );
+
+        let mut oversized_contact = max_contact;
+        if let Some(OperationalProfileV1::Request(profile)) =
+            oversized_contact.operational_profile.as_mut()
+        {
+            profile.contact_instructions = "c".repeat(MAX_CONTACT_INSTRUCTIONS_BYTES + 1);
+        }
+        assert_eq!(
+            encode_news_post(&oversized_contact),
+            Err(NewswireModelError::FieldTooLarge("contact_instructions"))
+        );
+    }
+
+    #[test]
+    fn semantic_rule_table_mirrors_the_public_contract() {
+        let mut duplicate_roster = space();
+        duplicate_roster.editorial_roster = vec![[0x20; 32], [0x20; 32]];
+        assert_eq!(
+            encode_space_descriptor(&duplicate_roster),
+            Err(NewswireModelError::DuplicateEditorialRosterKey)
+        );
+
+        let blank_space_cases = [
+            {
+                let mut value = space();
+                value.name = " \t".into();
+                (value, NewswireModelError::FieldEmpty("name"))
+            },
+            {
+                let mut value = space();
+                value.summary = "\n".into();
+                (value, NewswireModelError::FieldEmpty("summary"))
+            },
+            {
+                let mut value = space();
+                value.languages = vec!["  ".into()];
+                (value, NewswireModelError::FieldEmpty("language"))
+            },
+            {
+                let mut value = space();
+                value.geographic_tags = vec!["  ".into()];
+                (value, NewswireModelError::FieldEmpty("geographic_tag"))
+            },
+            {
+                let mut value = space();
+                value.topic_tags = vec!["  ".into()];
+                (value, NewswireModelError::FieldEmpty("topic_tag"))
+            },
+        ];
+        for (value, expected) in blank_space_cases {
+            assert_eq!(encode_space_descriptor(&value), Err(expected));
+        }
+
+        let blank_post_cases = [
+            {
+                let mut value = post();
+                value.headline = "  ".into();
+                (value, NewswireModelError::FieldEmpty("headline"))
+            },
+            {
+                let mut value = post();
+                value.body = "\t".into();
+                (value, NewswireModelError::FieldEmpty("body"))
+            },
+            {
+                let mut value = post();
+                value.language = "  ".into();
+                (value, NewswireModelError::FieldEmpty("language"))
+            },
+            {
+                let mut value = post();
+                value.coarse_location = Some("  ".into());
+                (value, NewswireModelError::FieldEmpty("coarse_location"))
+            },
+            {
+                let mut value = post();
+                value.source_claims = vec!["  ".into()];
+                (value, NewswireModelError::FieldEmpty("source_claim"))
+            },
+        ];
+        for (value, expected) in blank_post_cases {
+            assert_eq!(encode_news_post(&value), Err(expected));
+        }
+
+        let mut blank_reason = action();
+        blank_reason.reason = Some("  ".into());
+        assert_eq!(
+            encode_editorial_action(&blank_reason),
+            Err(NewswireModelError::FieldEmpty("reason"))
+        );
+        let mut blank_correction = action();
+        blank_correction.correction_text = Some("  ".into());
+        assert_eq!(
+            encode_editorial_action(&blank_correction),
+            Err(NewswireModelError::FieldEmpty("correction_text"))
+        );
+
+        let alert = OperationalProfileV1::Alert(AlertProfileV1 {
+            urgency: Urgency::Immediate,
+            severity: Severity::Severe,
+            certainty: Certainty::Observed,
+            valid_from_unix_seconds: Some(1_800_000_000),
+        });
+        let request = OperationalProfileV1::Request(RequestProfileV1 {
+            kind: RequestKind::Need,
+            needed_by_unix_seconds: Some(1_800_000_500),
+            contact_instructions: "Meet at the community kitchen.".into(),
+        });
+        let profile_requirement_cases = [
+            {
+                let mut value = post();
+                value.operational_profile = Some(alert.clone());
+                (value, NewswireModelError::AlertExpiryRequired)
+            },
+            {
+                let mut value = post();
+                value.operational_profile = Some(alert.clone());
+                value.expires_at_unix_seconds = Some(1_800_000_900);
+                value.coarse_location = None;
+                (value, NewswireModelError::AlertLocationRequired)
+            },
+            {
+                let mut value = post();
+                value.operational_profile = Some(alert);
+                value.expires_at_unix_seconds = Some(1_800_000_900);
+                value.source_claims.clear();
+                (value, NewswireModelError::AlertSourceClaimRequired)
+            },
+            {
+                let mut value = post();
+                value.operational_profile = Some(request.clone());
+                (value, NewswireModelError::RequestExpiryRequired)
+            },
+            {
+                let mut value = post();
+                value.operational_profile = Some(request);
+                value.expires_at_unix_seconds = Some(1_800_000_900);
+                value.coarse_location = None;
+                (value, NewswireModelError::RequestLocationRequired)
+            },
+        ];
+        for (value, expected) in profile_requirement_cases {
+            assert_eq!(encode_news_post(&value), Err(expected));
+        }
+
+        let mut missing_correction = action();
+        missing_correction.correction_text = None;
+        assert_eq!(
+            encode_editorial_action(&missing_correction),
+            Err(NewswireModelError::CorrectionTextRequired)
+        );
+        for kind in [
+            EditorialActionKind::Feature,
+            EditorialActionKind::Verify,
+            EditorialActionKind::Hide,
+            EditorialActionKind::Tombstone,
+            EditorialActionKind::Retract,
+        ] {
+            let mut value = action();
+            value.kind = kind;
+            assert_eq!(
+                encode_editorial_action(&value),
+                Err(NewswireModelError::CorrectionTextForbidden)
+            );
+        }
+        for kind in [
+            EditorialActionKind::Correct,
+            EditorialActionKind::Hide,
+            EditorialActionKind::Tombstone,
+            EditorialActionKind::Retract,
+        ] {
+            let mut value = action();
+            value.kind = kind;
+            value.reason = None;
+            if kind != EditorialActionKind::Correct {
+                value.correction_text = None;
+            }
+            assert_eq!(
+                encode_editorial_action(&value),
+                Err(NewswireModelError::EditorialReasonRequired)
+            );
+        }
+    }
+
+    #[test]
+    fn complete_payload_size_boundary_is_exact() {
+        let exact_limit = vec![0u8; MAX_NEWSWIRE_PAYLOAD_BYTES];
+        assert_ne!(
+            decode_space_descriptor(&exact_limit),
+            Err(NewswireModelError::InputTooLarge)
+        );
+        let over_limit = vec![0u8; MAX_NEWSWIRE_PAYLOAD_BYTES + 1];
+        assert_eq!(
+            decode_space_descriptor(&over_limit),
+            Err(NewswireModelError::InputTooLarge)
+        );
+    }
+
+    #[test]
+    fn every_payload_round_trips_with_optional_keys_present() {
+        let mut descriptor = space();
+        descriptor.predecessor = Some([0x30; 32]);
+        descriptor.successor = Some([0x31; 32]);
+        let bytes = encode_space_descriptor(&descriptor).unwrap();
+        assert_eq!(decode_space_descriptor(&bytes).unwrap(), descriptor);
+
+        let value = post();
+        let bytes = encode_news_post(&value).unwrap();
+        assert_eq!(decode_news_post(&bytes).unwrap(), value);
+
+        let value = action();
+        let bytes = encode_editorial_action(&value).unwrap();
+        assert_eq!(decode_editorial_action(&bytes).unwrap(), value);
     }
 
     #[test]
@@ -1134,9 +1415,18 @@ mod tests {
             .position(|window| window == SPACE_SCHEMA.as_bytes())
             .unwrap();
         wrong_schema[schema_position] = b'x';
+        let misordered = {
+            let mut bytes = Vec::new();
+            let mut encoder = Encoder::new(&mut bytes);
+            encoder.map(2).unwrap();
+            encoder.u8(1).unwrap().bytes(&[0x10; 32]).unwrap();
+            encoder.u8(0).unwrap().str(SPACE_SCHEMA).unwrap();
+            bytes
+        };
 
         let cases = [
             (unknown, NewswireModelError::UnknownKey(99)),
+            (misordered, NewswireModelError::DuplicateOrMisorderedKey(0)),
             (trailing, NewswireModelError::TrailingBytes),
             (widened, NewswireModelError::NonCanonical),
             (indefinite_map, NewswireModelError::NonCanonical),
@@ -1147,6 +1437,86 @@ mod tests {
         for (bytes, expected) in cases {
             assert_eq!(decode_space_descriptor(&bytes), Err(expected));
         }
+    }
+
+    #[test]
+    fn closed_operational_and_action_tags_reject_unknown_values() {
+        let mut request_post = post();
+        request_post.expires_at_unix_seconds = Some(1_800_000_900);
+        request_post.operational_profile = Some(OperationalProfileV1::Request(RequestProfileV1 {
+            kind: RequestKind::Need,
+            needed_by_unix_seconds: None,
+            contact_instructions: "Use the public desk.".into(),
+        }));
+        let request_bytes = encode_news_post(&request_post).unwrap();
+        let profile_marker = [0x09, 0xa2, 0x00, 0x01, 0x01, 0xa2, 0x00, 0x00];
+        let profile_position = request_bytes
+            .windows(profile_marker.len())
+            .position(|window| window == profile_marker)
+            .unwrap();
+
+        let mut unknown_profile = request_bytes.clone();
+        unknown_profile[profile_position + 3] = 2;
+        assert_eq!(
+            decode_news_post(&unknown_profile),
+            Err(NewswireModelError::InvalidEnum("operational_profile"))
+        );
+
+        let mut unknown_request_kind = request_bytes.clone();
+        unknown_request_kind[profile_position + 7] = 2;
+        assert_eq!(
+            decode_news_post(&unknown_request_kind),
+            Err(NewswireModelError::InvalidEnum("request_kind"))
+        );
+
+        let top_level_ai_key = request_bytes
+            .windows(2)
+            .rposition(|window| window == [0x0a, 0xf4])
+            .unwrap();
+        let mut unknown_request_key = request_bytes;
+        unknown_request_key[profile_position + 5] = 0xa3;
+        unknown_request_key.splice(top_level_ai_key..top_level_ai_key, [0x03, 0x00]);
+        assert_eq!(
+            decode_news_post(&unknown_request_key),
+            Err(NewswireModelError::UnknownKey(3))
+        );
+
+        let mut alert_post = post();
+        alert_post.expires_at_unix_seconds = Some(1_800_000_900);
+        alert_post.operational_profile = Some(OperationalProfileV1::Alert(AlertProfileV1 {
+            urgency: Urgency::Immediate,
+            severity: Severity::Severe,
+            certainty: Certainty::Observed,
+            valid_from_unix_seconds: None,
+        }));
+        let alert_bytes = encode_news_post(&alert_post).unwrap();
+        let alert_marker = [
+            0x09, 0xa2, 0x00, 0x00, 0x01, 0xa3, 0x00, 0x00, 0x01, 0x01, 0x02, 0x00,
+        ];
+        let alert_position = alert_bytes
+            .windows(alert_marker.len())
+            .position(|window| window == alert_marker)
+            .unwrap();
+        for (offset, field) in [(7, "urgency"), (9, "severity"), (11, "certainty")] {
+            let mut unknown_alert_enum = alert_bytes.clone();
+            unknown_alert_enum[alert_position + offset] = 5;
+            assert_eq!(
+                decode_news_post(&unknown_alert_enum),
+                Err(NewswireModelError::InvalidEnum(field))
+            );
+        }
+
+        let canonical_action = encode_editorial_action(&action()).unwrap();
+        let kind_position = canonical_action
+            .windows(2)
+            .position(|window| window == [0x03, EditorialActionKind::Correct as u8])
+            .unwrap();
+        let mut unknown_action_kind = canonical_action;
+        unknown_action_kind[kind_position + 1] = 6;
+        assert_eq!(
+            decode_editorial_action(&unknown_action_kind),
+            Err(NewswireModelError::InvalidEnum("editorial_action_kind"))
+        );
     }
 
     #[test]
