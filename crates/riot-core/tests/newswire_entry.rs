@@ -155,6 +155,14 @@ fn exact_paths_bind_time_digest_and_descriptor_identity() {
     assert_eq!(descriptor_entry.payload_digest_bytes(), descriptor_digest);
 
     let verified_descriptor = inspect_news_record(&descriptor_record.signed).unwrap();
+    assert_eq!(verified_descriptor.entry_id(), descriptor_record.entry_id);
+    assert_eq!(verified_descriptor.namespace_id(), namespace_id);
+    assert_eq!(
+        verified_descriptor.signer_id(),
+        *organizer.subspace_id().as_bytes()
+    );
+    assert_eq!(verified_descriptor.tai_j2000_micros(), 101);
+    assert_eq!(verified_descriptor.payload(), &descriptor_record.payload);
     let post_record = create_signed_news_post_with_clock(
         &editor,
         &verified_descriptor,
@@ -300,7 +308,7 @@ fn inspection_rejects_every_hostile_envelope_and_binding_mismatch() {
     )
     .unwrap();
     assert!(matches!(
-        inspect_news_record(&good.signed).unwrap().payload,
+        inspect_news_record(&good.signed).unwrap().payload(),
         NewswirePayload::SpaceDescriptor(_)
     ));
 

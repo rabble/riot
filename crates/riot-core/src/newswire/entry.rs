@@ -43,14 +43,50 @@ pub struct SignedNewswireRecord {
 ///     payload: todo!(),
 /// };
 /// ```
+///
+/// ```compile_fail
+/// use riot_core::newswire::{NewswirePayload, VerifiedNewswireRecord};
+/// fn rewrite_verified_context(
+///     mut verified: VerifiedNewswireRecord,
+///     replacement: NewswirePayload,
+/// ) {
+///     verified.entry_id = [0; 32];
+///     verified.namespace_id = [0; 32];
+///     verified.signer_id = [0; 32];
+///     verified.tai_j2000_micros = 0;
+///     verified.payload = replacement;
+/// }
+/// ```
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VerifiedNewswireRecord {
-    pub entry_id: EntryId,
-    pub namespace_id: [u8; 32],
-    pub signer_id: [u8; 32],
-    pub tai_j2000_micros: u64,
-    pub payload: NewswirePayload,
+    entry_id: EntryId,
+    namespace_id: [u8; 32],
+    signer_id: [u8; 32],
+    tai_j2000_micros: u64,
+    payload: NewswirePayload,
+}
+
+impl VerifiedNewswireRecord {
+    pub fn entry_id(&self) -> EntryId {
+        self.entry_id
+    }
+
+    pub fn namespace_id(&self) -> [u8; 32] {
+        self.namespace_id
+    }
+
+    pub fn signer_id(&self) -> [u8; 32] {
+        self.signer_id
+    }
+
+    pub fn tai_j2000_micros(&self) -> u64 {
+        self.tai_j2000_micros
+    }
+
+    pub fn payload(&self) -> &NewswirePayload {
+        &self.payload
+    }
 }
 
 fn encode_payload(payload: &NewswirePayload) -> Result<Vec<u8>, NewswireError> {
@@ -126,11 +162,11 @@ fn require_founding_organizer(
 fn descriptor_context(
     descriptor: &VerifiedNewswireRecord,
 ) -> Result<&SpaceDescriptorV1, NewswireError> {
-    let NewswirePayload::SpaceDescriptor(payload) = &descriptor.payload else {
+    let NewswirePayload::SpaceDescriptor(payload) = descriptor.payload() else {
         return Err(NewswireError::AuthorityInvalid);
     };
-    if payload.namespace_id != descriptor.namespace_id
-        || payload.namespace_id != descriptor.signer_id
+    if payload.namespace_id != descriptor.namespace_id()
+        || payload.namespace_id != descriptor.signer_id()
     {
         return Err(NewswireError::AuthorityInvalid);
     }
@@ -143,7 +179,7 @@ fn require_post_authority(
     post: &NewsPostV1,
 ) -> Result<(), NewswireError> {
     let descriptor_payload = descriptor_context(descriptor)?;
-    if post.space_descriptor_entry_id != descriptor.entry_id {
+    if post.space_descriptor_entry_id != descriptor.entry_id() {
         return Err(NewswireError::DuplicatedFieldMismatch);
     }
     if author.namespace_id().as_bytes() != &descriptor_payload.namespace_id {
@@ -158,7 +194,7 @@ fn require_action_authority(
     action: &EditorialActionV1,
 ) -> Result<(), NewswireError> {
     let descriptor_payload = descriptor_context(descriptor)?;
-    if action.space_descriptor_entry_id != descriptor.entry_id {
+    if action.space_descriptor_entry_id != descriptor.entry_id() {
         return Err(NewswireError::DuplicatedFieldMismatch);
     }
     let signer_id = *author.subspace_id().as_bytes();
@@ -408,10 +444,10 @@ mod tests {
         )
         .unwrap();
         let verified = inspect_news_record(&descriptor_record.signed).unwrap();
-        assert_eq!(verified.entry_id, descriptor_record.entry_id);
+        assert_eq!(verified.entry_id(), descriptor_record.entry_id);
 
         let post = NewsPostV1 {
-            space_descriptor_entry_id: verified.entry_id,
+            space_descriptor_entry_id: verified.entry_id(),
             headline: "Update".into(),
             body: "Human report".into(),
             language: "en".into(),
@@ -426,12 +462,12 @@ mod tests {
         let post_record =
             build_signed(&editor, snapshot(11), NewswirePayload::NewsPost(post)).unwrap();
         assert!(matches!(
-            inspect_news_record(&post_record.signed).unwrap().payload,
+            inspect_news_record(&post_record.signed).unwrap().payload(),
             NewswirePayload::NewsPost(_)
         ));
 
         let action = EditorialActionV1 {
-            space_descriptor_entry_id: verified.entry_id,
+            space_descriptor_entry_id: verified.entry_id(),
             target_entry_id: post_record.entry_id,
             kind: super::super::EditorialActionKind::Feature,
             reason: None,
@@ -445,7 +481,9 @@ mod tests {
         )
         .unwrap();
         assert!(matches!(
-            inspect_news_record(&action_record.signed).unwrap().payload,
+            inspect_news_record(&action_record.signed)
+                .unwrap()
+                .payload(),
             NewswirePayload::EditorialAction(_)
         ));
     }
@@ -465,7 +503,7 @@ mod tests {
             &editor,
             &verified,
             NewsPostV1 {
-                space_descriptor_entry_id: verified.entry_id,
+                space_descriptor_entry_id: verified.entry_id(),
                 headline: "Update".into(),
                 body: "Human report".into(),
                 language: "en".into(),
@@ -482,7 +520,7 @@ mod tests {
             &editor,
             &verified,
             EditorialActionV1 {
-                space_descriptor_entry_id: verified.entry_id,
+                space_descriptor_entry_id: verified.entry_id(),
                 target_entry_id: post_record.entry_id,
                 kind: super::super::EditorialActionKind::Feature,
                 reason: None,
@@ -517,7 +555,7 @@ mod tests {
         let outsider =
             generate_communal_author_for_namespace(*other.namespace_id().as_bytes()).unwrap();
         let post = NewsPostV1 {
-            space_descriptor_entry_id: verified.entry_id,
+            space_descriptor_entry_id: verified.entry_id(),
             headline: "Update".into(),
             body: "Report".into(),
             language: "en".into(),
@@ -539,7 +577,7 @@ mod tests {
 
         let absent_editor = generate_communal_author_for_namespace(namespace_id).unwrap();
         let action = EditorialActionV1 {
-            space_descriptor_entry_id: verified.entry_id,
+            space_descriptor_entry_id: verified.entry_id(),
             target_entry_id: [7; 32],
             kind: super::super::EditorialActionKind::Feature,
             reason: None,
