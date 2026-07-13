@@ -38,6 +38,7 @@ function summaryFor(body) { const clean = body.trim().replace(/\s+/g, " "); retu
 function showError(message) { error.textContent = message; error.hidden = false; status.textContent = message; }
 function clearError() { error.textContent = ""; error.hidden = true; if (ready) { const count = rows.filter(validPost).length; status.textContent = count ? `${count} dispatches` : "No dispatches yet"; } }
 function person(id) { if (me && id === me.id) return "You"; const profile = names.get(id); return profile ? `${profile.displayName} · ${profile.tag}` : "A neighbor"; }
+function displayWhen(timestamp, detailed = false) { if (timestamp > 0 && timestamp < 10000) return "Shared here"; const date = new Date(timestamp); return detailed ? date.toLocaleString() : date.toLocaleDateString(); }
 function resolveProfiles(ids) { [...new Set(ids)].forEach((id) => { if (!ID_PATTERN.test(id || "") || inflightProfiles.has(id) || profileRevisions.get(id) === sharedDataRevision) return; const revision = sharedDataRevision; inflightProfiles.add(id); riot.profile(id).then((profile) => { inflightProfiles.delete(id); if (profile && typeof profile.displayName === "string" && typeof profile.tag === "string") { names.set(id, profile); profileRevisions.set(id, revision); } paint(); }).catch(() => inflightProfiles.delete(id)); }); }
 
 async function ensureSeeded() {
@@ -69,10 +70,10 @@ function paint() {
   if (ready) status.textContent = valid.length ? `${valid.length} dispatches` : "No dispatches yet";
   list.replaceChildren(...(view === "index" ? valid.map((row) => {
     const value = row.value; const item = document.createElement("li"); item.className = "post"; const button = document.createElement("button"); button.type = "button";
-    const heading = document.createElement("h2"); heading.textContent = value.title; const summary = document.createElement("p"); summary.className = "summary"; summary.textContent = value.summary; const meta = document.createElement("p"); meta.className = "meta"; meta.textContent = `${person(value.author_id)} · ${new Date(value.created_at).toLocaleDateString()}`;
+    const heading = document.createElement("h2"); heading.textContent = value.title; const summary = document.createElement("p"); summary.className = "summary"; summary.textContent = value.summary; const meta = document.createElement("p"); meta.className = "meta"; meta.textContent = `${person(value.author_id)} · ${displayWhen(value.created_at)}`;
     button.append(heading, summary, meta); button.addEventListener("click", () => openDetail(row.key, true)); item.append(button); return item;
   }) : []));
-  if (selected) { document.getElementById("detail-title").textContent = selected.value.title; document.getElementById("detail-body").textContent = selected.value.body; document.getElementById("detail-meta").textContent = `${person(selected.value.author_id)} · ${new Date(selected.value.created_at).toLocaleString()}`; }
+  if (selected) { document.getElementById("detail-title").textContent = selected.value.title; document.getElementById("detail-body").textContent = selected.value.body; document.getElementById("detail-meta").textContent = `${person(selected.value.author_id)} · ${displayWhen(selected.value.created_at, true)}`; }
   resolveProfiles(valid.map((row) => row.value.author_id));
 }
 

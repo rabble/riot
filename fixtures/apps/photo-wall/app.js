@@ -54,6 +54,7 @@ function validDataURL(value) { return typeof value === "string" && value.length 
 function trustedSeedDataURL(key, value) { return TRUSTED_SEED_DATA_URLS.get(key) === value; }
 function validPhoto(row) { const match = row && typeof row.key === "string" ? row.key.match(PHOTO_KEY) : null; const value = row && row.value; return Boolean(match && value && typeof value === "object" && typeof value.caption === "string" && value.caption.trim() && value.caption.length <= 300 && (validDataURL(value.data_url) || trustedSeedDataURL(row.key, value.data_url)) && Number.isFinite(value.created_at) && value.created_at >= 0 && ID_PATTERN.test(value.author_id || "")); }
 function person(id) { if (me && id === me.id) return "You"; const profile = names.get(id); return profile ? `${profile.displayName} · ${profile.tag}` : "A neighbor"; }
+function displayWhen(timestamp) { return timestamp > 0 && timestamp < 10000 ? "Shared here" : new Date(timestamp).toLocaleDateString(); }
 function showError(message) { error.textContent = message; error.hidden = false; status.textContent = message; }
 function photoStatus(count) { return count > MAX_RENDERED_PHOTOS ? `${count} photos · showing newest ${MAX_RENDERED_PHOTOS}` : count ? `${count} photos` : "No photos yet"; }
 function clearError() { if (!ready) return; error.textContent = ""; error.hidden = true; status.textContent = photoStatus(rows.filter(validPhoto).length); }
@@ -105,7 +106,7 @@ function paintGallery() {
   const valid = rows.filter(validPhoto).sort((left, right) => right.value.created_at - left.value.created_at || right.key.localeCompare(left.key));
   empty.hidden = valid.length > 0;
   const rendered = valid.slice(0, MAX_RENDERED_PHOTOS);
-  list.replaceChildren(...rendered.map((row) => { const item = document.createElement("li"); item.className = "photo"; const figure = document.createElement("figure"); figure.style.margin = "0"; const image = document.createElement("img"); image.src = row.value.data_url; image.alt = row.value.caption; const details = document.createElement("figcaption"); const caption = document.createElement("p"); caption.className = "caption"; caption.textContent = row.value.caption; const meta = document.createElement("p"); meta.className = "meta"; meta.textContent = `${person(row.value.author_id)} · ${new Date(row.value.created_at).toLocaleDateString()}`; details.append(caption, meta); figure.append(image, details); item.append(figure); return item; }));
+  list.replaceChildren(...rendered.map((row) => { const item = document.createElement("li"); item.className = "photo"; const figure = document.createElement("figure"); figure.style.margin = "0"; const image = document.createElement("img"); image.src = row.value.data_url; image.alt = row.value.caption; const details = document.createElement("figcaption"); const caption = document.createElement("p"); caption.className = "caption"; caption.textContent = row.value.caption; const meta = document.createElement("p"); meta.className = "meta"; meta.textContent = `${person(row.value.author_id)} · ${displayWhen(row.value.created_at)}`; details.append(caption, meta); figure.append(image, details); item.append(figure); return item; }));
   if (ready && error.hidden) status.textContent = photoStatus(valid.length);
   resolveProfiles(rendered.map((row) => row.value.author_id));
 }

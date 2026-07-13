@@ -78,6 +78,19 @@ test("Photo Wall primary flow", async ({ page }) => {
   expect(Math.max(...dimensions)).toBeLessThanOrEqual(1280);
 });
 
+test("Seeded community content uses a human label instead of the Unix epoch", async ({ page }) => {
+  for (const app of ["chat", "dispatches", "photo-wall"]) {
+    await page.goto(`/apps/${app}/?state=seeded`);
+    await expect(page.locator(".meta").first()).toContainText("Shared here");
+    await expect(page.locator("body")).not.toContainText("1970");
+  }
+
+  await page.goto("/apps/wiki/?state=seeded");
+  await page.getByRole("link", { name: "Meeting guide" }).click();
+  await expect(page.locator("#detail-meta")).toContainText("Shared here");
+  await expect(page.locator("body")).not.toContainText("1970");
+});
+
 test("Photo Wall rejects a processed image that remains over 350 KiB", async ({ page }) => {
   await page.goto("/apps/photo-wall/?state=empty");
   await page.evaluate(() => { HTMLCanvasElement.prototype.toDataURL = () => `data:image/jpeg;base64,${"A".repeat(350 * 1024)}`; });

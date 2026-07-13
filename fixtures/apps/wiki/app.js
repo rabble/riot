@@ -35,6 +35,7 @@ let sharedDataRevision = 0;
 function validIdentity(value) { return Boolean(value && ID_PATTERN.test(value.id || "")); }
 function validPage(row) { const match = row && typeof row.key === "string" ? row.key.match(PAGE_KEY) : null; const value = row && row.value; return Boolean(match && match[1].length <= 120 && value && typeof value === "object" && typeof value.title === "string" && value.title.trim() && value.title.length <= 120 && typeof value.body === "string" && value.body.length <= 10000 && Number.isFinite(value.updated_at) && value.updated_at >= 0 && ID_PATTERN.test(value.updated_by_id || "")); }
 function person(id) { if (me && id === me.id) return "You"; const profile = names.get(id); return profile ? `${profile.displayName} · ${profile.tag}` : "A neighbor"; }
+function displayWhen(timestamp) { return timestamp > 0 && timestamp < 10000 ? "Shared here" : new Date(timestamp).toLocaleString(); }
 function showError(message) { error.textContent = message; error.hidden = false; status.textContent = message; }
 function clearError() { if (!ready) return; error.textContent = ""; error.hidden = true; const count = rows.filter(validPage).length; status.textContent = count ? `${count} pages` : "No pages yet"; }
 function resolveProfiles(ids) { [...new Set(ids)].forEach((id) => { if (!ID_PATTERN.test(id || "") || inflightProfiles.has(id) || profileRevisions.get(id) === sharedDataRevision) return; const revision = sharedDataRevision; inflightProfiles.add(id); riot.profile(id).then((profile) => { inflightProfiles.delete(id); if (profile && typeof profile.displayName === "string" && typeof profile.tag === "string") { names.set(id, profile); profileRevisions.set(id, revision); } paint(); }).catch(() => inflightProfiles.delete(id)); }); }
@@ -82,7 +83,7 @@ function paint() {
   if (selected) {
     document.getElementById("detail-title").textContent = selected.value.title;
     document.getElementById("detail-body").textContent = selected.value.body;
-    document.getElementById("detail-meta").textContent = `Updated by ${person(selected.value.updated_by_id)} · ${new Date(selected.value.updated_at).toLocaleString()}`;
+    document.getElementById("detail-meta").textContent = `Updated by ${person(selected.value.updated_by_id)} · ${displayWhen(selected.value.updated_at)}`;
     document.getElementById("editor-title").textContent = `Edit ${selected.value.title}`;
   }
   if (conflict) showError("This page changed or disappeared from shared storage. Your exact draft is still here; cancel or wait for the page to return.");

@@ -30,6 +30,7 @@ function validMessage(row) { const match = row && typeof row.key === "string" ? 
 function showError(message) { error.textContent = message; error.hidden = false; status.textContent = message; }
 function clearError() { error.textContent = ""; error.hidden = true; if (ready) { const count = rows.filter(validMessage).length; status.textContent = count ? `${count} messages` : "No messages yet"; } }
 function person(id) { if (me && id === me.id) return "You"; const profile = names.get(id); return profile ? `${profile.displayName} · ${profile.tag}` : "A neighbor"; }
+function displayWhen(timestamp) { return timestamp > 0 && timestamp < 10000 ? "Shared here" : new Date(timestamp).toLocaleString(); }
 function resolveProfiles(ids) { [...new Set(ids)].forEach((id) => { if (!ID_PATTERN.test(id || "") || inflightProfiles.has(id) || profileRevisions.get(id) === sharedDataRevision) return; const revision = sharedDataRevision; inflightProfiles.add(id); riot.profile(id).then((profile) => { inflightProfiles.delete(id); if (profile && typeof profile.displayName === "string" && typeof profile.tag === "string") { names.set(id, profile); profileRevisions.set(id, revision); } paint(); }).catch(() => inflightProfiles.delete(id)); }); }
 function nearBottom() { return document.documentElement.scrollHeight - window.scrollY - window.innerHeight < 120; }
 function syncComposerClearance() { const keepBottom = nearBottom(); document.documentElement.style.setProperty("--composer-clearance", `${Math.ceil(form.getBoundingClientRect().height)}px`); if (keepBottom) requestAnimationFrame(() => window.scrollTo(0, document.documentElement.scrollHeight)); }
@@ -64,7 +65,7 @@ function paint() {
     const value = row.value; const previous = valid[index - 1]; const grouped = Boolean(previous && previous.value.author_id === value.author_id);
     const item = document.createElement("li"); item.className = `message${value.author_id === (me && me.id) ? " mine" : ""}${grouped ? " grouped" : " group-start"}`;
     const text = document.createElement("p"); text.textContent = value.text;
-    const meta = document.createElement("p"); meta.className = "meta"; meta.textContent = `${person(value.author_id)} · ${new Date(value.created_at).toLocaleString()}`;
+    const meta = document.createElement("p"); meta.className = "meta"; meta.textContent = `${person(value.author_id)} · ${displayWhen(value.created_at)}`;
     item.append(text, meta); return item;
   }));
   resolveProfiles(valid.map((row) => row.value.author_id));
