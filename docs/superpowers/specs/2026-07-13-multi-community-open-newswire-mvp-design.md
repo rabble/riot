@@ -1,7 +1,7 @@
 # Multi-Community Open Newswire MVP Design
 
 Date: 2026-07-13
-Status: Revised after design review round 1; pending gate re-review
+Status: Approved by design review gate
 
 ## Purpose
 
