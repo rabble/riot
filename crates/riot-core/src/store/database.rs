@@ -544,6 +544,17 @@ impl RiotDatabase {
         Ok(result)
     }
 
+    /// Runs one crate-internal read through the managed, bounded, query-only
+    /// reader pool. Store layers receive the connection only for the duration
+    /// of the closure and cannot retain or expose it.
+    pub(crate) fn read_connection<T, F>(&self, operation: F) -> Result<T, DatabaseError>
+    where
+        F: FnOnce(&Connection) -> Result<T, DatabaseError>,
+    {
+        let reader = self.inner.readers.acquire()?;
+        operation(reader.connection())
+    }
+
     pub(crate) fn lock_writer(&self) -> Result<MutexGuard<'_, Connection>, DatabaseError> {
         self.inner
             .writer

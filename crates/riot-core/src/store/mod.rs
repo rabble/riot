@@ -6,6 +6,8 @@
 
 mod backup;
 mod database;
+pub(crate) mod evidence;
+mod memory;
 mod schema;
 
 pub use backup::BackupManifest;
