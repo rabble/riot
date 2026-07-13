@@ -15,8 +15,8 @@ making it the homepage's primary user proposition.
 
 ## Copy and attribution
 
-Credit Evan Henshaw-Plath (`@rabble`) with building Riot and the Willow
-implementation used by Riot. Do not imply sole authorship of the Willow protocol
+Credit `@rabble` with building Riot and the Willow implementation used by Riot.
+Do not publish a legal name or imply sole authorship of the Willow protocol
 specification. Summarize the relevant through-line: protest.net, Indymedia's
 technology network, TXTMob, Odeo/Twitter, Planetary, Nos, Divine, and Riot.
 

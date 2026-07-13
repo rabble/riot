@@ -19,7 +19,8 @@
 
 ```js
 assert.match(home, /<section[^>]+id="builder"[\s\S]*Built by @rabble/i);
-assert.match(home, /Riot[^.]*Willow implementation[^.]*Evan Henshaw-Plath/i);
+assert.match(home, /Riot[^.]*Willow implementation[^.]*@rabble/i);
+assert.doesNotMatch(home, /Evan Henshaw(?:-Plath| Plath)/i);
 assert.match(home, /2017[\s\S]*Linksunten[\s\S]*2026[\s\S]*complete ban/i);
 for (const href of builderSources) assert.match(home, new RegExp(`href="${escapeRegex(href)}"`));
 ```
@@ -52,7 +53,7 @@ node scripts/marketing/protocol-page-contracts.mjs
 </section>
 ```
 
-- [x] Use precise copy: “Riot and the Willow implementation inside it are being built by Evan Henshaw-Plath — @rabble.” Follow it with the protest.net, Indymedia, TXTMob, Odeo/Twitter, Planetary, Nos, Divine, and Riot history; do not claim sole authorship of the Willow specification.
+- [x] Use precise copy: “Riot and the Willow implementation inside it are being built by @rabble.” Follow it with the protest.net, Indymedia, TXTMob, Odeo/Twitter, Planetary, Nos, Divine, and Riot history; publish no legal name and do not claim sole authorship of the Willow specification.
 - [x] Link exactly these four sources:
 
 ```text

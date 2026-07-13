@@ -42,7 +42,8 @@ assert.match(home, /More than a social feed[\s\S]*Communities carry their own to
 assert.match(home, /@media\s*\(max-width:\s*860px\)[\s\S]*\.device-scene/i, "Hero C needs a mobile device composition");
 
 assert.match(home, /<section\s+id="builder"\s+class="builder-card"[\s\S]*Built by @rabble/i, "homepage needs a visible builder section");
-assert.match(home, /Riot and the Willow implementation inside it are being built by Evan Henshaw-Plath/i, "credit Riot's Willow implementation precisely");
+assert.match(home, /Riot and the Willow implementation inside it are being built by[\s\S]{0,180}>@rabble</i, "credit Riot's Willow implementation to @rabble");
+assert.doesNotMatch(home, /Evan Henshaw(?:-Plath| Plath)/i, "the marketing site must not publish @rabble's legal name");
 assert.match(home, /2017[\s\S]*Linksunten[\s\S]*2026[\s\S]*complete ban/i, "distinguish the two Indymedia government actions");
 for (const href of [
   "https://www.cjr.org/business_of_news/local-news-indymedia-network-25-anniversary.php",
