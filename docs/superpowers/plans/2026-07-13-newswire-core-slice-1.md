@@ -1,6 +1,6 @@
 # Newswire Core Slice 1 Implementation Plan
 
-Plan review gate: **ESCALATION REQUIRED AFTER ITERATION 3. Feasibility found one fixture-count blocker; completeness and scope passed. Do not execute until Rabble chooses revise or override.**
+Plan review gate: **MANUAL REVISION AUTHORIZED AFTER ITERATION 3; PENDING FRESH FINAL REVIEW.**
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -777,9 +777,15 @@ signature; and compares payload SHA-256, Riot EntryId, and evidence digest to
 lowercase full IDs in `fixtures/newswire/manifest.json`. It also asserts the
 manifest's fixed `unix_seconds` and `tai_j2000_micros` equal
 `ProjectionClockV1::from_unix_seconds(unix_seconds)`, pinning the paired
-hifitime/Willow conversion. It then imports the committed signed bytes into
-store A, imports the same records in reverse order into fresh store B, and
-asserts:
+hifitime/Willow conversion.
+
+Those three committed records are the cross-runtime golden set, not the whole
+behavior scenario. The test then uses the same deterministic conformance-only
+organizer, publisher, and editor helpers to construct the additional posts and
+editorial actions required by the scenario in memory. It combines the three
+decoded golden `SignedWillowEntry` values with those additional signed records,
+imports the complete set into store A, imports the same set in reverse order
+into fresh store B, and asserts:
 
 ```rust
 assert_eq!(
