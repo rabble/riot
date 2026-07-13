@@ -1,7 +1,7 @@
 # Riot local-first PWA vertical slice design
 
 Date: 2026-07-13
-Status: Revision 11 — final design-review corrections, review pending
+Status: Revision 12 — final-round blocker corrections, review pending
 
 ## Purpose
 
@@ -216,8 +216,8 @@ exclusive `riot-profile-writer` Web Lock for the page lifetime. If another tab
 holds it, this tab opens a read-only view labeled **Riot is open in another
 tab**; it cannot create a profile, post, accept an import, update storage, or
 activate a new release. Browsers without Web Locks show `UNSUPPORTED_BROWSER`.
-After acquiring the lock, the host snapshots the vault and complete bundle log,
-then gives both to the controller's atomic restore transition. That transition
+After acquiring the lock, the host cursor-validates and boundedly stages the
+vault and complete bundle log, then gives both to the controller's atomic restore transition. That transition
 opens the sealed identity, creates a fresh in-memory store, and replays accepted
 canonical bundles through the same inspect → plan → commit path used for new
 imports before enabling mutation. No serialized internal Rust store is trusted.
@@ -335,17 +335,19 @@ accepted log remains the durable source from which live alerts are rebuilt; it
 is not advertised as a complete Replicator feed. Names remain renderer-local
 decoration outside `CommunityProjectionV1`; sync does not invent or trust them.
 
-This alert-only view is a new, explicit exchange profile,
+This alert-only view is a new, explicit exchange session policy,
 `org.riot.alert-live-set/1`, selected and matched before either side passes a
-frame to `ByteSyncSession`. It reuses the bounded canonical sync frames only
-inside that matched profile. It is not wire-compatible with the existing native
-`org.riot.conference-sync/1` complete-inventory session, whose inventory includes
-profile, app-data, and app-index records. A missing, different, or unnegotiated
-profile fails before `Hello`; there is no attempt to infer compatibility from
-entry IDs. No live network adapter or cross-native interoperability claim ships
-in this MVP. Future native/browser transports either adopt the alert profile or
-negotiate another versioned profile with its own complete review/projection
-rules; transport choice still does not alter signed record formats.
+frame to `ByteSyncSession`. Its inner frames deliberately retain the existing
+`org.riot.conference-sync/1` codec and are therefore syntactically wire-compatible
+with legacy complete-inventory sync, but the inventory semantics are not
+interoperable. Every future duplex adapter must negotiate the outer exchange
+policy before routing any inner `Hello`; it must refuse a legacy/unnegotiated
+peer rather than letting syntactic compatibility bypass the policy. A missing or
+different policy fails before `Hello`; entry IDs never infer compatibility. No
+live adapter or cross-native interoperability claim ships in this MVP. Future
+native/browser transports either adopt the alert policy or negotiate another
+versioned policy with its own complete review/projection rules; transport choice
+still does not alter signed record formats.
 
 Each coordinator session has only the fixed capability `duplex-frames`, the
 fixed `org.riot.alert-live-set/1` exchange profile, and a protocol role,
@@ -371,7 +373,7 @@ import-review-required --reject--> final-frame-ready
 import-review-required --accept all reviewed entries--> awaiting-persistence
 awaiting-persistence --ack exact hash--> frame-ready | final-frame-ready | complete
 final-frame-ready --take-frame--> complete
-any nonterminal --close/cancel--> closed
+any nonterminal except awaiting-persistence --close/cancel--> closed
 malformed/limit/internal failure--> failed
 ```
 
@@ -387,6 +389,12 @@ is responder); role negotiation is not inferred from unauthenticated bytes.
 Transport cancellation before core commit closes the session with no community
 mutation. The browser keeps no background/idle session in this release; a future
 network adapter must add its own bounded timeout and retry policy before use.
+`close_replication_session` and session cancellation are forbidden in
+`awaiting-persistence` and return `PERSISTENCE_PENDING` with zero state change.
+Only exact-hash durability acknowledgement or confirmed `close()` of the entire
+controller can leave that state. Controller close discards the quarantined
+in-memory store and requires rebuild from the prior durable log; a session-only
+close can never expose or retain the core-committed pending entries.
 
 An incoming entries frame follows this exact durability sequence:
 
@@ -513,8 +521,8 @@ Only registered implementations may produce UI. Nearby, direct-node, HTTPS, and
 Nym do not appear as disabled controls or failed connections in this release.
 File UI distinguishes three facts: **Saved on this browser** after durable local
 commit; **Export prepared** after the browser accepts download initiation; and
-**Exchanged** only after a future peer transport completes its authenticated
-session. File export never claims another node received the data. With file as
+**Exchanged** only after a future peer transport completes exchange of
+authenticated records. File export never claims another node received the data. With file as
 the only adapter, Home shows offline availability and that exchange is manual,
 not a meaningless online/offline transport indicator.
 
@@ -836,17 +844,29 @@ controller re-encodes exactly the selected, admitted frames in ascending entry-I
 order into a normalized bundle; rejected, unselected, foreign-namespace, and
 non-alert frames never enter persistence or export.
 
-A versioned manifest records its single `namespace_id`, ordered
-`{sha256, byte_length, admission_route, transport_receipt|null}` records, and
-total retained bytes. On
-every open, one read-only IndexedDB transaction snapshots the manifest and all
-bundle objects before validation. The host recomputes each object hash and size,
-validates the manifest namespace/totals/order/version, and rejects missing,
-duplicate, or unexpected unreferenced objects as `REPLAY_FAILED`. Unsupported
-but internally consistent schema versions enter read-only recovery and preserve
-all raw records for export. Duplicate bundle hashes retain the first local
-receipt and do not grow storage; that receipt is informational and never changes
-record trust or projection.
+A versioned manifest is split into a fixed header
+`{version, namespace_id, record_count, total_bytes}` and ordered descriptor rows
+`{ordinal, sha256, byte_length, admission_route, transport_receipt|null}`.
+`MAX_LOG_RECORDS = 4096`, the header is at most 4 KiB, each descriptor is at most
+512 bytes, all descriptors total at most 1 MiB, each bundle is at most 8 MiB,
+and staged canonical bundle bytes total at most 16 MiB.
+
+On open, one read-only IndexedDB transaction first validates the fixed header,
+then uses `openKeyCursor` (keys only) to bound and compare descriptor/bundle key
+counts without materializing their values. It streams descriptors in ordinal
+order and rejects before staging when any count, descriptor, declared object, or
+aggregate ceiling would be exceeded. For each referenced key it fetches exactly
+one bundle stored as a `Blob`, checks `Blob.size` before `arrayBuffer()`, hashes
+and validates it, appends it to the at-most-16-MiB staging log, then releases the
+individual buffer before advancing. Missing, duplicate, out-of-order,
+non-`Blob`, or unexpected unreferenced objects are `REPLAY_FAILED`. Browser/IDB
+may deserialize a malicious non-Blob value before JavaScript can reject its type;
+the design makes no claim against same-origin/browser memory exhaustion before
+JS control, but application code never intentionally accumulates unbounded
+manifest or bundle values. Unsupported but internally consistent schema versions
+enter read-only recovery and preserve bounded raw records for recovery export.
+Duplicate bundle hashes retain the first local receipt and do not grow storage;
+that receipt is informational and never changes record trust or projection.
 
 The retained browser log uses the core's existing 16 MiB store budget as a hard
 upper bound. Browser code rejects a write before IndexedDB mutation if the
@@ -1012,7 +1032,8 @@ not move focus.
 Home's manual-exchange panel always explains: **Saved on this browser means the
 record is durable here. Export prepared means Riot created a file for you to
 carry; it cannot confirm anyone received it. Exchanged is reserved for a
-completed authenticated peer session, which this version does not provide.**
+completed exchange of authenticated records, which this version does not
+provide.**
 The vocabulary is therefore visible before the comprehension check even though
 the MVP never displays an Exchanged status badge.
 
@@ -1139,8 +1160,10 @@ a community mutation.
 
 1. Load one coherent content-versioned application release from network or the
    matching service-worker cache.
-2. Acquire the exclusive writer lock, then snapshot and validate the vault,
-   manifest, and all bundle records in one read-only IndexedDB transaction.
+2. Acquire the exclusive writer lock, then cursor-validate the fixed manifest
+   header, descriptor keys/rows, bundle keys, and one `Blob` bundle at a time in
+   one read-only IndexedDB transaction. Reject count, per-record, manifest, or
+   aggregate ceiling violations before adding bytes to the bounded staging log.
 3. Pass the protected identity, community, and complete `RestoreLogV1` to the
    controller's atomic `restore_community` transition. It permits an empty
    organizer log and otherwise replays every bundle with its fixed admission route
@@ -1381,7 +1404,9 @@ TDD work proceeds in independently green slices:
 6. **BrowserVault, BundleLog, writer lock, and transport port:** tests begin with missing
    implementations and cover first creation, reopen, authenticated-decryption
    failure, duplicate bundle/first receipt, manifest hash/size/order/total/version,
-   missing/extra/rollback-limitation copy, atomic transaction abort, 16 MiB
+   keys-only cursor counts, 4-KiB header/512-byte descriptor/1-MiB manifest-row
+   ceilings, non-Blob values, hostile oversized count/object/aggregate rejection
+   before staging, missing/extra/rollback-limitation copy, atomic transaction abort, 16 MiB
    boundary, storage clear, corrupt replay, unsupported schema, exclusive writer,
    second-tab/no-community read-only behavior, post transaction interruption
    including hard page termination immediately before/after
