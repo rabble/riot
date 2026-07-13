@@ -1,7 +1,7 @@
 # Riot local-first PWA vertical slice design
 
 Date: 2026-07-13
-Status: Revision 3 after metaswarm design-review findings
+Status: Revision 4 after metaswarm design-review findings
 
 ## Purpose
 
@@ -64,7 +64,9 @@ mistakes public-data export for identity recovery, or two of five users abandon
 the same step. A second timed checkpoint requires four of five first-time users
 to import a supplied bundle, understand that they are joining with a new member
 identity, select updates, and reach Home in under three minutes without
-coaching.
+coaching. Results are recorded separately for Chromium and WebKit with elapsed
+time, abandonment step, and whether each participant can explain that public
+data import does not recover identity.
 
 ## Chosen approach
 
@@ -155,10 +157,11 @@ exclusive `riot-profile-writer` Web Lock for the page lifetime. If another tab
 holds it, this tab opens a read-only view labeled **Riot is open in another
 tab**; it cannot create a profile, post, accept an import, update storage, or
 activate a new release. Browsers without Web Locks show `UNSUPPORTED_BROWSER`.
-After acquiring the lock, the host opens the vault, restores the sealed local
-identity, creates a fresh in-memory controller/store, and replays accepted
+After acquiring the lock, the host snapshots the vault and complete bundle log,
+then gives both to the controller's atomic restore transition. That transition
+opens the sealed identity, creates a fresh in-memory store, and replays accepted
 canonical bundles through the same inspect → plan → commit path used for new
-imports. No serialized internal Rust store is trusted.
+imports before enabling mutation. No serialized internal Rust store is trusted.
 
 ### Rust/WASM adapter
 
@@ -175,24 +178,30 @@ implementation.
 Public operations:
 
 - `create_community(title) -> CommunityCreatedV1`
-- `open_community(wrapping_key_bytes, sealed_identity_bytes, community) -> CommunityV1`
-- `preview_new_community(bundle_bytes, local_title) -> CommunityImportReviewV1`
-- `join_reviewed_community(review_id, selected_entry_ids) -> CommunityJoinedV1`
+- `restore_community(wrapping_key_bytes, sealed_identity_bytes, community, restore_log) -> CommunityV1`
+- `preview_new_community(bundle_bytes) -> CommunityImportReviewV1`
+- `join_reviewed_community(review_id, selected_entry_ids, local_title) -> CommunityJoinedV1`
 - `preview_import(bundle_bytes) -> ImportReviewV1`
 - `accept_import(review_id, selected_entry_ids) -> DurableBundleV1`
 - `prepare_update(UpdateDraftV1) -> UpdateReviewV1`
 - `post_review(review_id) -> DurableBundleV1`
 - `list_updates() -> UpdateV1[]`
 - `export_community() -> BundleArtifactV1`
-- `close()`
+- `confirm_profile_persisted(pending_profile_id) -> CommunityV1`
+- `abort_pending_profile(pending_profile_id) -> Result<(), WebErrorV1>`
+- `acknowledge_bundle_persisted(sha256) -> Result<(), WebErrorV1>`
+- `close() -> Result<(), WebErrorV1>`
 
 `create_community` creates one organizer-shaped author with
 `generate_space_organizer_author`; its namespace equals its signer/subspace.
-`open_community` restores that sealed author and requires the caller-supplied
-community namespace to equal both the namespace sealed into the author and the
-sole namespace authenticated from the complete replay log. It separately
-requires the caller-supplied signer ID to equal the signer sealed into the
-author before it enables any mutation. Only `local_title` is editable. It verifies organizer
+`restore_community` is one atomic controller transition. Before it returns, no
+mutation operation is available: it restores the sealed author, requires the
+caller-supplied community and manifest namespaces to equal the namespace sealed
+into that author, requires the caller-supplied signer ID to equal the sealed
+signer, and replays every ordered record with its retained route. A zero-record
+organizer log is valid; every record present must authenticate the same
+namespace. Any failure closes the partial session. Only `local_title` is
+editable. It verifies organizer
 equality before exposing organizer behavior. A restored member has
 `namespace != signer/subspace`; relationship is always derived from that fact,
 never trusted from the editable local community record. The record's title is a
@@ -201,6 +210,14 @@ single communal namespace and every displayed entry without mutation, then
 generates a fresh member author with `generate_communal_author_for_namespace`.
 Members may publish under their own subspace but never receive organizer-only
 authority. An active profile rejects imports from every other namespace.
+
+Create and first-run join return a `pending_profile_id` and leave the controller
+in a state where only confirm, abort, and close are callable. The host confirms
+only after the complete profile transaction commits. Post and existing-community
+import similarly block further mutation until the host acknowledges the exact
+bundle hash after its IndexedDB transaction; acknowledgement before persistence
+is forbidden by the host state machine. This makes the durable boundary
+explicit instead of relying on UI timing.
 
 The Riverside fixture goes through `preview_new_community` and
 `join_reviewed_community` with the local title `Riverside Tenants Union`. There
@@ -216,8 +233,8 @@ is no privileged demo admission path in the PWA.
    capability, and retains the entry object plus exact canonical entry,
    capability, and payload bytes without signing.
 2. The shared controller binds the prepared object to a single-use review ID,
-   current namespace, full signer ID, store generation, and SHA-256 digest of
-   `{domain-separator, entry-bytes, capability-bytes, payload-bytes}`.
+   current namespace, full signer ID, store generation, and
+   `SHA256("riot/update-review/v1" || u32be(entry length) || entry bytes || u32be(capability length) || capability bytes || u32be(payload length) || payload bytes)`.
 3. `UpdateReviewV1` renders exactly those retained semantic fields, including
    destination community, acting identity, created time, expiry, source claims,
    and digest in Technical details.
@@ -252,34 +269,43 @@ lowercase hex strings. Closed enums use the existing lowercase names
 | DTO | Required fields |
 | --- | --- |
 | `CommunityV1` | `version`, `namespace_id`, `local_title`, `relationship` (`organizer|member`), `signer_id` |
-| `ProposedCommunityV1` | `version`, `namespace_id`, `local_title`, `relationship` (always `member`) |
-| `CommunityCreatedV1` | `version`, `community`, `wrapping_key_bytes`, `sealed_identity_bytes` |
-| `CommunityImportReviewV1` | `version`, `review: ImportReviewV1`, `proposed_community: ProposedCommunityV1` |
-| `CommunityJoinedV1` | `version`, `community`, `wrapping_key_bytes`, `sealed_identity_bytes`, `accepted_bundle` |
-| `UpdateDraftV1` | `version`, `headline`, `description`, `language`, `urgency`, `severity`, `certainty`, `valid_from`, `expires_at`, `affected_area`, ordered `source_claims`, `ai_assisted` |
+| `ProposedCommunityV1` | `version`, `namespace_id`, `relationship` (always `member`) |
+| `CommunityCreatedV1` | `version`, `pending_profile_id`, `community`, `wrapping_key_bytes`, `sealed_identity_bytes` |
+| `CommunityImportReviewV1` | `version`, `review: ImportReviewV1`, `proposed_community: ProposedCommunityV1`, `suggested_local_title` |
+| `CommunityJoinedV1` | `version`, `pending_profile_id`, `community: CommunityV1`, `wrapping_key_bytes`, `sealed_identity_bytes`, `accepted_bundle: DurableBundleV1` |
+| `RestoreRecordV1` | `version`, `bundle_bytes: Uint8Array`, `normalized_route`, `sha256` |
+| `RestoreLogV1` | `version`, `namespace_id`, `total_bytes`, ordered `records: RestoreRecordV1[]` |
+| `UpdateDraftV1` | `version`, `headline`, `description`, `language`, `urgency`, `severity`, `certainty`, `valid_from: decimal-string|null`, `expires_at`, `affected_area: string|null`, ordered `source_claims: string[]`, `ai_assisted` |
 | `UpdateV1` | draft fields plus `entry_id`, `namespace_id`, `signer_id`, rendered `author_label`, `created_at`, `signature_valid`, `capability_valid`, `durability` |
 | `ReviewedUpdateV1` | draft fields plus allocated `object_id`, `revision_id`, `entry_id`, `namespace_id`, `signer_id`, `created_at` |
 | `UpdateReviewV1` | `version`, `review_id`, `update: ReviewedUpdateV1`, `community: CommunityV1`, `acting_author_label`, `canonical_digest` |
 | `TechnicalDetailsV1` | `version`, complete `entry_id`, `namespace_id`, `signer_id`, `payload_sha256`, `signature_valid`, `capability_valid` |
 | `ImportRowV1` | `version`, `headline`, `description`, deterministic `author_label`, ordered `source_claims: string[]`, `created_at`, `expires_at`, `ai_assisted`, `selectable`, fixed `rejection_code|null`, `technical: TechnicalDetailsV1` |
-| `ImportReviewV1` | `version`, `review_id`, `namespace_id`, `local_title`, `byte_count`, ordered `valid_rows`, ordered `rejected_rows`, `selected_entry_ids` |
-| `DurableBundleV1` | `version`, exact accepted-only `bundle_bytes`, normalized `route`, complete `entry_ids`, `sha256` |
-| `BundleArtifactV1` | `version`, canonical `bundle_bytes`, complete `entry_ids`, `sha256`, deterministic `filename` |
-| `WebErrorV1` | `version`, stable `code`, optional `field`, `message_key`; never raw parser/debug text |
+| `ImportReviewV1` | `version`, `review_id`, `namespace_id`, `byte_count`, ordered `valid_rows: ImportRowV1[]`, ordered `rejected_rows: ImportRowV1[]`, `selected_entry_ids: string[]` |
+| `DurableBundleV1` | `version`, exact accepted-only `bundle_bytes: Uint8Array`, normalized `route`, complete `entry_ids: string[]`, `sha256` |
+| `BundleArtifactV1` | `version`, canonical `bundle_bytes: Uint8Array`, complete `entry_ids: string[]`, `sha256`, deterministic `filename` |
+| `WebErrorV1` | `version`, stable `code`, `field: string|null`, `message_key`; never raw parser/debug text |
 
 Every public call returns `Result<T, WebErrorV1>`. `route` is not caller
 controlled: local posts use `web-local-post`, file/demo imports use
 `web-file-import`, and startup replay uses the exact route stored with that log
-record. Every opaque import/review ID is single-use, session-bound, and rejected
-after replacement, commit, or close.
+record. Every opaque import, review, or pending-profile ID is single-use,
+session-bound, and rejected after replacement, commit/abort, or close.
 
-Every nested DTO also carries `version: 1`. `durability` is the closed enum
+Every nested DTO also carries `version: 1`; arrays are always present, even
+when empty, and nullable fields are JSON `null`, never omitted. `byte_count` and
+`total_bytes` are safe non-negative JavaScript numbers bounded below 16 MiB.
+`durability` is the closed enum
 `durable|not-saved`; `rejection_code` is null for selectable rows and otherwise
 one of `invalid-signature|invalid-capability|wrong-community|malformed-update|expired|unsupported-entry-type`.
-The adapter derives labels without hidden profile state: the local signer is
-`You (organizer)` or `You (member)` and any other signer is `Community member`;
-complete signer IDs remain in Technical details. Display names are not part of
-this slice.
+The adapter derives the mandatory key tag as the first four signer/subspace
+bytes rendered as eight lowercase hex characters. It uses the shared profile
+resolver's verified name when present, otherwise `You` for the local signer and
+`Community member` for another signer; `author_label` is always
+`<rendered name> · <key tag>`. Role is shown separately. Complete signer IDs
+remain in Technical details. Creating or editing display names is not part of
+this slice. `suggested_local_title` is the literal `Imported community`; it has
+no authority meaning and may be edited before join.
 
 The workspace pins `wasm-bindgen` exactly. `scripts/web/build.sh` verifies and
 uses the identical `wasm-bindgen-cli` version, runs the release WASM build, emits
@@ -312,8 +338,13 @@ On first profile creation:
 5. Zero/finalize all reachable temporary byte buffers on both sides.
 
 On normal startup, WebCrypto decrypts the wrapping key only long enough to open
-the sealed Riot identity in WASM. This protects storage at rest from a passive
-copy of raw IndexedDB records, not from the origin itself. A malicious
+the sealed Riot identity in WASM. The envelope avoids storing the wrapping key
+as plaintext application bytes and `extractable: false` prevents ordinary JS
+export, but protection of a structured-cloned CryptoKey at rest is
+browser-dependent. Riot does not claim that it survives copying a browser
+profile or raw IndexedDB/key backing files. At most it protects a logical copy
+of the ciphertext records that excludes the stored CryptoKey, and it does not
+protect against the origin itself. A malicious
 same-origin page or service worker can use the stored non-extractable CryptoKey,
 invoke signing, or read decrypted application memory whenever it executes; the
 prototype makes no stronger claim. Clearing browser site data destroys the
@@ -342,8 +373,9 @@ route and do not grow storage.
 The retained browser log uses the core's existing 16 MiB store budget as a hard
 upper bound. Browser code rejects a write before IndexedDB mutation if the
 manifest would exceed that bound. One transaction writes the bundle and
-manifest atomically. Replay uses each record's original normalized route so
-provenance and route-byte accounting are stable.
+manifest atomically, together with the associated draft deletion or first-join
+profile metadata when that operation requires it. Replay uses each record's
+original normalized route so provenance and route-byte accounting are stable.
 
 The log detects corruption and internal omission relative to its manifest. It
 cannot detect same-origin deletion of both a manifest suffix and its objects,
@@ -354,7 +386,7 @@ time without claiming the browser holds a complete global history.
 **Export community data** asks the shared controller to encode the current live
 single-namespace inventory as one canonical bundle, sorted by entry ID and
 bounded by the native 8 MiB `MAX_BUNDLE_BYTES`. The deterministic filename is
-`riot-<local-title-slug>-<full-namespace-id>.riot-evidence`. One click produces
+`riot-<full-namespace-id>.riot-evidence`. One click produces
 one download or a clear failure; there is no partial multi-download state and
 no new outer container format.
 
@@ -365,13 +397,16 @@ only implementation in this slice is local. Its conceptual contract is:
 
 ```text
 SignerBackend.public_identity() -> public identity
-SignerBackend.sign(canonical_bytes, signing_context) -> signature
+SignerBackend.sign(canonical_entry_bytes, signing_context) -> signature
 SignerBackend.status() -> local | remote-online | remote-offline | locked
 ```
 
 A future remote backend may use OAuth Authorization Code + PKCE to authorize a
-Keycast-like Willow signer. That service must sign domain-separated canonical
-Willow/Meadowcap bytes and must not reinterpret drafts. NIP-46 is a useful
+Keycast-like Willow signer. That service must sign the exact retained canonical
+Willow entry bytes unchanged, just as the local Meadowcap implementation does,
+and must not reinterpret drafts. The signing context and domain-separated
+review digest inform signer-side policy but never enter the Ed25519 message.
+NIP-46 is a useful
 interaction model but is not a drop-in protocol because Riot uses Ed25519
 Willow signatures rather than Nostr secp256k1 events. The intended future model
 is remote root/recovery authority plus scoped, expiring local device
@@ -396,6 +431,13 @@ With no retained community, first use offers:
   within that namespace. Import is not identity recovery.
 - **Try the Riverside demo** — the same import-as-member flow with a fixed local
   label and committed fixture bytes.
+
+A browser with no retained profile cannot distinguish a genuinely clean first
+run from complete site-data clearing. The same visible warning therefore
+appears on every no-profile screen: **If you used Riot in this browser before,
+that signer and any organizer authority are gone. Import restores public
+updates only and creates a new member identity.** No copy claims to have
+detected a previous installation.
 
 With one retained community, launch opens **Home** directly. Home shows the
 local community name, online/offline and durability status, readable updates,
@@ -425,7 +467,8 @@ not selectable and show one fixed plain-language reason (`invalid signature`,
 details. On first run the single atomic CTA is **Add this community**: it creates
 the member identity and accepts the selected rows together. With an existing
 community the CTA is **Add selected updates**. Either CTA is disabled when
-nothing is selected, and Cancel has no mutation.
+nothing is selected, and Cancel has no mutation. The label field says **This
+name exists only on this browser.**
 
 States:
 
@@ -435,9 +478,11 @@ States:
 - Ready online/offline: identical core actions; only network-dependent copy
   changes.
 - Empty community: Post an update and Import updates actions.
-- Storage cleared/corrupt: no silent reset; explain what is missing, preserve
-  recoverable raw public bundles if possible, state that the prior identity
-  cannot be recovered in this slice, and offer raw export/import.
+- No retained profile: use the first-run warning above because a clean browser
+  and complete site-data clearing are indistinguishable.
+- Corrupt retained storage: no silent reset; explain what is present but cannot
+  open, preserve recoverable raw public bundles if possible, state that the
+  prior identity cannot be recovered in this slice, and offer raw export.
 - Unsupported but valid storage schema: read-only recovery with raw export; no
   automatic migration or reset.
 - Storage full: refuse the mutation and offer Export community data.
@@ -464,8 +509,15 @@ motion support, and responsive operation down to 320 CSS pixels. It uses one
 outlines, text/icon/shape rather than color-only state, 200% zoom reflow without
 horizontal scrolling, focus restoration to the invoking control after dialogs,
 and `aria-live` announcements that never steal focus. Drafts persist on every
-field change and survive navigation/reload; successful post clears only the
-posted draft.
+field change and survive navigation/reload. A failed form submission associates
+each error with its input through `aria-describedby`, focuses the first invalid
+field, and preserves every value. Successful post clears only the posted draft.
+Home orders non-expired updates by signed creation time descending and puts
+expired updates in a collapsed **Earlier** section. Newly inserted updates do
+not move focus.
+
+Every export action and success state says: **This file contains public
+community updates. It does not back up your identity or organizer authority.**
 
 ## Data flows
 
@@ -477,8 +529,13 @@ posted draft.
 4. Shared controller creates the organizer-bound author/community; BrowserVault
    protects the returned wrapping key and sealed identity.
 5. Vault, community record, and empty log manifest commit in one IndexedDB
-   transaction before success is shown.
-6. Home opens with organizer relationship in Community settings.
+   transaction before success is shown. The host then calls
+   `confirm_profile_persisted`; only that transition enables mutation. Failure
+   calls `abort_pending_profile`, closes the new controller, zeroes reachable
+   returned key buffers, and leaves the no-profile screen; no organizer identity
+   is presented as created.
+6. Home opens with organizer relationship in Community settings only after
+   confirmation.
 
 ### Prepare and post
 
@@ -492,16 +549,23 @@ posted draft.
    canonical entry bytes, encodes one canonical bundle from every retained
    component, and commits through
    inspect → plan → commit.
-6. Browser persists the exact bundle before reporting durable success.
-7. UI refreshes from the core's live view.
+6. One IndexedDB transaction writes the exact bundle, updates the manifest, and
+   deletes the posted draft (or replaces it with a durable posted marker) before
+   reporting durable success. Reload immediately before the transaction sees
+   the draft and no durable entry; reload immediately after sees the durable
+   entry and no postable draft. The retry path uses this same transaction.
+7. The host acknowledges the exact bundle hash only after commit; the controller
+   then permits another mutation and the UI refreshes from its live view.
 
 If persistence fails after core commit, the controller keeps the generated
-bundle and every later unpersisted bundle in an ordered recovery queue, blocks
-all further mutations, and opens a visible **Not saved to this browser**
-recovery screen listing each bundle in order with Retry and immediate
-exact-bundle download. It warns that closing or reloading can lose these
-in-memory bundles, requires explicit confirmation to discard them, and never
-claims durable success.
+bundle in a recovery queue, blocks all further mutations, and opens a visible
+**Not saved to this browser** recovery screen with Retry and immediate
+exact-bundle download. It warns that closing or reloading can lose the in-memory
+bundle and that a downloaded copy may circulate even if local persistence is
+abandoned. **Close without saving** requires confirmation, closes the controller,
+and reloads only the previously persisted state. Riot never claims durable
+success. While the queue exists the original draft cannot be posted again. A
+successful Retry atomically persists the bundle/manifest and clears that draft.
 
 ### Import or join
 
@@ -521,17 +585,27 @@ claims durable success.
    IndexedDB transaction.
    On first-run join, the protected vault, community record, accepted bundle,
    and manifest commit together in that transaction before success is shown.
-6. If browser persistence fails, the same non-durable recovery behavior applies;
-   no partially persisted member identity is exposed as joined.
+   The host then calls `confirm_profile_persisted`; an existing-community import
+   instead calls `acknowledge_bundle_persisted` with the exact hash.
+6. If an existing-community import fails persistence, the ordinary bundle
+   recovery queue applies. If the first-run join transaction fails, no mutable
+   joined handle or Retry claim escapes: the host calls
+   `abort_pending_profile`, closes the new controller, zeroes reachable new
+   identity buffers, returns to the still-readable import preview, and offers
+   download of the accepted public bundle plus a fresh
+   restart. A later join attempt intentionally creates a new member signer.
 
 ### Startup and offline reload
 
 1. Load one coherent content-versioned application release from network or the
    matching service-worker cache.
-2. Acquire the exclusive writer lock, then validate vault and bundle manifest.
-3. Restore identity into the shared controller.
-4. Replay every stored bundle with its recorded normalized route through normal
-   verification/admission.
+2. Acquire the exclusive writer lock, then snapshot and validate the vault,
+   manifest, and all bundle records in one read-only IndexedDB transaction.
+3. Pass the protected identity, community, and complete `RestoreLogV1` to the
+   controller's atomic `restore_community` transition. It permits an empty
+   organizer log and otherwise replays every bundle with its recorded route
+   through normal verification/admission before enabling mutations.
+4. Reject any community/manifest/author namespace or signer mismatch.
 5. Render only after replay completes; progress shows bundle count.
 6. A corrupt bundle stops replay and enters recovery instead of being skipped.
 
@@ -552,6 +626,9 @@ for old hashed assets continue to resolve from their matching old cache. It then
 deletes only unreferenced release caches. Data opens only when the vault/log
 schema version is supported; otherwise the new release enters read-only
 recovery. Tests prove old or new assets are served coherently, never a mixture.
+Navigation requests for stable `index.html` are always answered from the
+controlling worker's own release cache, so a deployment cannot inject new HTML
+into an old controlled page before activation.
 
 ## Security model
 
@@ -666,14 +743,16 @@ TDD work proceeds in independently green slices:
    feature-gate the shared Rust controller; never duplicate it in JavaScript.
 3. **Prepared alert core:** host Rust tests first require frozen IDs/times/bytes,
    domain-separated digest, signature over the exact retained entry bytes,
-   expiry/stale failure,
-   zero mutation on failure, and compatibility output from
+   expiry/stale failure, zero mutation on failure, and compatibility output from
    `create_signed_alert`; then split prepare/sign in `riot-core`.
 4. **Shared controller extension:** `riot-ffi` contract tests first cover
-   organizer create/restore, import-as-member, single-namespace rejection,
+   organizer create/empty-log restore, import-as-member, atomic restore
+   finalization, stored namespace/signer mismatch rejection,
+   single-namespace rejection,
    readable preview rows, exact selective normalized bundle, fixed routes,
    consolidated deterministic export, immutable review IDs, member posting,
-   duplicate import, and every stable error mapping. Only then add the new
+   pending-profile confirm/abort, bundle-persistence acknowledgement and mutation
+   blocking, duplicate import, and every stable error mapping. Only then add the new
    ordinary Rust/UniFFI surface.
 5. **WASM DTO lifecycle:** host Rust tests cover every DTO field/enum/time/byte
    conversion and `WebErrorV1` branch before `wasm-bindgen` exposure. Browser
@@ -684,8 +763,9 @@ TDD work proceeds in independently green slices:
    failure, duplicate bundle/first route, manifest hash/size/order/total/version,
    missing/extra/rollback-limitation copy, atomic transaction abort, 16 MiB
    boundary, storage clear, corrupt replay, unsupported schema, exclusive writer,
-   second-tab/no-community read-only behavior, and recovery-queue mutation
-   blocking. Real
+   second-tab/no-community read-only behavior, post transaction interruption
+   immediately before/after bundle+manifest+draft commit, first-join transaction
+   failure/identity discard, and recovery-queue mutation blocking. Real
    IndexedDB/WebCrypto/Web Locks tests use unique browser contexts; no in-memory
    mock certifies persistence.
 7. **UI flows:** Playwright tests cover both first-run paths and demo, community
@@ -693,8 +773,9 @@ TDD work proceeds in independently green slices:
    prepare→review→post, interruption at every durable boundary, offline restart,
    readable selective import, wrong-community rejection, deterministic export
    filename/download failure, install states, update-available multi-client
-   activation, storage recovery, 320px and
-   200% reflow, keyboard-only focus restoration, non-color states, live-region
+   activation and controlling-cache navigation, indistinguishable clean/cleared
+   no-profile warning, storage recovery, 320px and 200% reflow, keyboard-only
+   focus restoration, field-error association, non-color states, live-region
    behavior, reduced motion, and no horizontal overflow.
 8. **Security/static contracts:** tests assert exact response headers, coherent
    release cache installation/activation, zero third-party requests, no
@@ -726,8 +807,9 @@ service-worker, and WebCrypto behavior—not just DOM rendering—is in scope.
 2. A human can create, review exact frozen bytes, post, and durably persist a
    valid update without any network request after the initial application
    load.
-3. The same update, draft state, community, and identity appear after browser
-   restart in offline mode.
+3. The same update, remaining unposted drafts, community, and identity appear
+   after browser restart in offline mode; a successfully posted draft never
+   reappears as postable.
 4. One exported canonical public-data bundle imports through readable
    preview/accept into a second clean browser context. Imported entries preserve
    their complete original signer/namespace identities; the receiving browser
@@ -735,7 +817,8 @@ service-worker, and WebCrypto behavior—not just DOM rendering—is in scope.
 5. Invalid, oversized, corrupt, stale, expired, duplicate, and storage-full
    paths have deterministic tested outcomes and never silently mutate state.
 6. A second tab is read-only, a release update never mixes asset versions, and
-   interruptions never result in a false durable-success claim.
+   interruptions never result in a false durable-success claim or expose a
+   successfully posted draft as postable again.
 7. The PWA makes zero third-party runtime requests and remains usable with the
    origin offline after first load.
 8. No server stores user state or signing material, and no remote signer is
