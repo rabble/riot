@@ -1,7 +1,6 @@
 #!/bin/sh
-# Repack the starter checklist into the committed catalog artifacts.
-# Run from the repo root after editing fixtures/apps/checklist/.
-# NOTE: interim generator — switches to `riot-app pack` once that CLI lands.
+# Repack all built-in community miniapps into committed catalog artifacts.
+# The packer aborts before writing if it would change frozen Checklist bytes.
 set -eu
-cargo run -p riot-core --example pack_checklist
-echo "Packed. Commit the two fixtures/apps/checklist.*.cbor files."
+cargo run -p riot-core --example pack_starter
+echo "Packed all starter artifacts; frozen Checklist bytes are unchanged."

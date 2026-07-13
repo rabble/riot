@@ -20,9 +20,74 @@ const CHECKLIST_BUNDLE: &[u8] = include_bytes!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../fixtures/apps/checklist.bundle.cbor"
 ));
+const SUPPLY_BOARD_MANIFEST: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../fixtures/apps/supply-board.manifest.cbor"
+));
+const SUPPLY_BOARD_BUNDLE: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../fixtures/apps/supply-board.bundle.cbor"
+));
+const ROLL_CALL_MANIFEST: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../fixtures/apps/roll-call.manifest.cbor"
+));
+const ROLL_CALL_BUNDLE: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../fixtures/apps/roll-call.bundle.cbor"
+));
+const QUICK_POLL_MANIFEST: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../fixtures/apps/quick-poll.manifest.cbor"
+));
+const QUICK_POLL_BUNDLE: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../fixtures/apps/quick-poll.bundle.cbor"
+));
+const CHAT_MANIFEST: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../fixtures/apps/chat.manifest.cbor"
+));
+const CHAT_BUNDLE: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../fixtures/apps/chat.bundle.cbor"
+));
+const DISPATCHES_MANIFEST: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../fixtures/apps/dispatches.manifest.cbor"
+));
+const DISPATCHES_BUNDLE: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../fixtures/apps/dispatches.bundle.cbor"
+));
+const WIKI_MANIFEST: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../fixtures/apps/wiki.manifest.cbor"
+));
+const WIKI_BUNDLE: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../fixtures/apps/wiki.bundle.cbor"
+));
+const PHOTO_WALL_MANIFEST: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../fixtures/apps/photo-wall.manifest.cbor"
+));
+const PHOTO_WALL_BUNDLE: &[u8] = include_bytes!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../fixtures/apps/photo-wall.bundle.cbor"
+));
 
 /// (manifest_bytes, bundle_bytes) pairs embedded at compile time.
-pub const STARTER_CATALOG: &[(&[u8], &[u8])] = &[(CHECKLIST_MANIFEST, CHECKLIST_BUNDLE)];
+pub const STARTER_CATALOG: &[(&[u8], &[u8])] = &[
+    (CHECKLIST_MANIFEST, CHECKLIST_BUNDLE),
+    (SUPPLY_BOARD_MANIFEST, SUPPLY_BOARD_BUNDLE),
+    (ROLL_CALL_MANIFEST, ROLL_CALL_BUNDLE),
+    (QUICK_POLL_MANIFEST, QUICK_POLL_BUNDLE),
+    (CHAT_MANIFEST, CHAT_BUNDLE),
+    (DISPATCHES_MANIFEST, DISPATCHES_BUNDLE),
+    (WIKI_MANIFEST, WIKI_BUNDLE),
+    (PHOTO_WALL_MANIFEST, PHOTO_WALL_BUNDLE),
+];
 
 /// Decodes and integrity-checks every pair; invalid pairs are silently
 /// excluded, mirroring the import path's treatment of invalid items.

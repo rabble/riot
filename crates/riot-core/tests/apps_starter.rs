@@ -82,91 +82,113 @@ fn to_hex(bytes: &[u8]) -> String {
 }
 
 #[test]
-fn shipped_catalog_contains_the_checklist() {
+fn shipped_catalog_contains_the_community_suite_in_demo_order() {
     let apps = verify_starter_catalog(STARTER_CATALOG);
-    assert_eq!(apps.len(), 1);
+    let names: Vec<&str> = apps.iter().map(|app| app.manifest.name.as_str()).collect();
+    assert_eq!(
+        names,
+        [
+            "Checklist",
+            "Needs & Offers",
+            "Events",
+            "Decisions",
+            "Chat",
+            "Dispatches",
+            "Wiki",
+            "Photo Wall",
+        ]
+    );
     assert_eq!(apps[0].manifest.name, "Checklist");
     assert_eq!(apps[0].manifest.entry_point, "index.html");
     assert_eq!(to_hex(&apps[0].app_id), CHECKLIST_APP_ID_HEX);
 }
 
-/// Drift guard, key-free: the committed bundle artifact must equal a fresh
-/// canonical encode of the committed source files, and the committed
-/// manifest's fields must equal riot-app.json. Editing
-/// fixtures/apps/checklist/* without re-running
-/// scripts/apps/repack-starter.sh fails here.
+/// Drift guard, key-free: every artifact must equal a fresh canonical encode
+/// of its committed source directory and the frozen public built-in author.
 #[test]
-fn committed_artifacts_match_the_committed_source() {
+fn committed_artifacts_match_all_committed_sources() {
     use riot_core::apps::bundle::{encode_app_bundle, AppBundle, AppResource};
-    use riot_core::apps::manifest::decode_manifest;
+    use riot_core::apps::manifest::{decode_manifest, encode_manifest};
 
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/apps");
-    let dir = root.join("checklist");
-
-    // Bundle: pure function of the source files, no key involved. Mirrors the
-    // pack_checklist example exactly: skip riot-app.json, map by extension,
-    // sort by path in byte order.
-    let mut resources = Vec::new();
-    for entry in std::fs::read_dir(&dir).expect("read dir") {
-        let entry = entry.expect("entry");
-        if !entry.file_type().expect("file type").is_file() {
-            continue;
-        }
-        let name = entry.file_name().to_string_lossy().into_owned();
-        if name == "riot-app.json" {
-            continue;
-        }
-        let content_type = match name.rsplit_once('.').map(|(_, e)| e) {
-            Some("html") => "text/html",
-            Some("js") => "text/javascript",
-            Some("css") => "text/css",
-            Some("svg") => "image/svg+xml",
-            Some("png") => "image/png",
-            other => panic!("unsupported starter resource type: {name} ({other:?})"),
-        };
-        resources.push(AppResource {
-            path: name,
-            content_type: content_type.to_string(),
-            bytes: std::fs::read(entry.path()).expect("read resource"),
-        });
-    }
-    resources.sort_by(|a, b| a.path.as_bytes().cmp(b.path.as_bytes()));
-
-    let source: serde_json::Value = serde_json::from_str(
-        &std::fs::read_to_string(dir.join("riot-app.json")).expect("read riot-app.json"),
+    let frozen_manifest = decode_manifest(
+        &std::fs::read(root.join("checklist.manifest.cbor")).expect("frozen manifest"),
     )
-    .expect("parse riot-app.json");
+    .expect("decode frozen manifest");
 
-    let rebuilt = encode_app_bundle(&AppBundle {
-        entry_point: source["entry_point"].as_str().unwrap().to_string(),
-        resources,
-    })
-    .expect("re-encode bundle");
-    let committed_bundle = std::fs::read(root.join("checklist.bundle.cbor")).expect("artifact");
-    assert_eq!(
-        rebuilt, committed_bundle,
-        "bundle drift — re-run scripts/apps/repack-starter.sh"
-    );
+    for slug in [
+        "checklist",
+        "supply-board",
+        "roll-call",
+        "quick-poll",
+        "chat",
+        "dispatches",
+        "wiki",
+        "photo-wall",
+    ] {
+        let dir = root.join(slug);
+        let mut resources = Vec::new();
+        for entry in std::fs::read_dir(&dir).expect("read dir") {
+            let entry = entry.expect("entry");
+            if !entry.file_type().expect("file type").is_file() {
+                continue;
+            }
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name == "riot-app.json" {
+                continue;
+            }
+            let content_type = match name.rsplit_once('.').map(|(_, extension)| extension) {
+                Some("html") => "text/html",
+                Some("js") => "text/javascript",
+                Some("css") => "text/css",
+                Some("svg") => "image/svg+xml",
+                Some("png") => "image/png",
+                other => panic!("unsupported starter resource type: {name} ({other:?})"),
+            };
+            resources.push(AppResource {
+                path: name,
+                content_type: content_type.to_string(),
+                bytes: std::fs::read(entry.path()).expect("read resource"),
+            });
+        }
+        resources.sort_by(|left, right| left.path.as_bytes().cmp(right.path.as_bytes()));
 
-    // Manifest: field-for-field against riot-app.json (author is pack-time
-    // ephemeral and deliberately not re-derivable — not compared).
-    let committed_manifest = std::fs::read(root.join("checklist.manifest.cbor")).expect("artifact");
-    let manifest = decode_manifest(&committed_manifest).expect("decode manifest");
-    assert_eq!(manifest.name, source["name"].as_str().unwrap());
-    assert_eq!(
-        manifest.description,
-        source["description"].as_str().unwrap()
-    );
-    assert_eq!(manifest.version, source["version"].as_str().unwrap());
-    assert_eq!(
-        manifest.entry_point,
-        source["entry_point"].as_str().unwrap()
-    );
-    let permissions: Vec<&str> = source["permissions"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|p| p.as_str().unwrap())
-        .collect();
-    assert_eq!(manifest.permissions, permissions);
+        let source: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(dir.join("riot-app.json")).expect("read riot-app.json"),
+        )
+        .expect("parse riot-app.json");
+        let entry_point = source["entry_point"].as_str().unwrap().to_string();
+        let rebuilt_bundle = encode_app_bundle(&AppBundle {
+            entry_point: entry_point.clone(),
+            resources,
+        })
+        .expect("re-encode bundle");
+        let committed_bundle =
+            std::fs::read(root.join(format!("{slug}.bundle.cbor"))).expect("bundle artifact");
+        assert_eq!(
+            rebuilt_bundle, committed_bundle,
+            "{slug} bundle drift — re-run scripts/apps/repack-starter.sh"
+        );
+
+        let rebuilt_manifest = encode_manifest(&AppManifest {
+            name: source["name"].as_str().unwrap().to_string(),
+            description: source["description"].as_str().unwrap().to_string(),
+            version: source["version"].as_str().unwrap().to_string(),
+            author: frozen_manifest.author.clone(),
+            permissions: source["permissions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|permission| permission.as_str().unwrap().to_string())
+                .collect(),
+            entry_point,
+        })
+        .expect("re-encode manifest");
+        let committed_manifest =
+            std::fs::read(root.join(format!("{slug}.manifest.cbor"))).expect("manifest artifact");
+        assert_eq!(
+            rebuilt_manifest, committed_manifest,
+            "{slug} manifest drift — re-run scripts/apps/repack-starter.sh"
+        );
+    }
 }
