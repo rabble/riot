@@ -1,7 +1,7 @@
 # Riot local-first PWA vertical slice design
 
 Date: 2026-07-13
-Status: Revision 9 — design-review corrections, review pending
+Status: Revision 10 — second design-review corrections, review pending
 
 ## Purpose
 
@@ -260,7 +260,7 @@ Public operations:
 - `confirm_profile_persisted(pending_profile_id) -> CommunityV1`
 - `abort_pending_profile(pending_profile_id) -> Result<(), WebErrorV1>`
 - `acknowledge_bundle_persisted(sha256) -> Result<(), WebErrorV1>`
-- `open_replication_session(transport_kind) -> ReplicationSessionV1`
+- `open_replication_session(role: ReplicationRoleV1) -> ReplicationSessionV1`
 - `begin_replication(session_id) -> ReplicationOutcomeV1`
 - `receive_replication_frame(session_id, frame_bytes) -> ReplicationOutcomeV1`
 - `take_replication_frame(session_id) -> Uint8Array|null`
@@ -322,24 +322,38 @@ future protocol work that must not change signed record formats.
 
 `riot-client` owns a `ReplicationCoordinator` around one byte-only session. The
 MVP permits exactly one active replication session, one bounded outbound frame,
-one bounded inbound frame, and one pending import. It exchanges only the current
-verified live inventory, not every historical bundle in the append-only browser
-replay log. The accepted log remains the durable source from which the live
-inventory is rebuilt; it is not advertised as a complete Replicator feed.
+one bounded inbound frame, and one pending import. Its inventory contains only
+the current live, verified Riot alert/update entries supported by this PWA.
+Profile, app-data, and app-index entries are excluded before ID summary and
+cannot appear in an accepted entries frame; a received entries bundle containing
+any undisclosed/non-alert frame fails the whole exchange. This keeps every
+replicated entry human-readable in `ReplicationImportReviewV1`. Extending sync
+to additional record classes requires a later design with class-specific review
+and projection; no opaque record is silently committed. The coordinator does
+not exchange every historical bundle in the append-only browser replay log. The
+accepted log remains the durable source from which live alerts are rebuilt; it
+is not advertised as a complete Replicator feed. Names remain renderer-local
+decoration outside `CommunityProjectionV1`; sync does not invent or trust them.
 
-Each session is created with a locally selected immutable `TransportKindV1` and
-the fixed capability `duplex-frames`. The remote peer and received bytes cannot
-set or alter that binding. There is no silent fallback: failure of `nym` or any
-future metadata-resistant adapter may not transmit through direct-node or HTTPS
-without a new explicit local user/policy decision. Transport policy and record
-authenticity are separate concerns.
+Each coordinator session has only the fixed capability `duplex-frames` and a
+protocol role, `initiator|responder`; it never receives a concrete transport
+kind. The trusted browser host binds its returned session ID exactly once to a
+locally selected immutable port/kind ID. The remote peer and received
+bytes cannot set or alter that host binding. There is no silent fallback:
+failure of `nym` or any future metadata-resistant adapter may not transmit
+through direct-node or HTTPS without closing the session and making a new
+explicit local user/policy decision. Transport policy and record authenticity
+are separate concerns.
 
 The one replication state enum and legal transitions are:
 
 ```text
-idle --begin--> frame-ready --take-frame--> awaiting-frame
+idle(initiator) --begin--> frame-ready --take-frame--> awaiting-frame
+idle(responder) --receive Hello--> frame-ready --take-frame--> awaiting-frame
 awaiting-frame --receive summary/request--> frame-ready
 awaiting-frame --receive entries--> import-review-required
+awaiting-frame --receive Complete--> complete
+any frame-accepting state --receive Reject--> rejected
 import-review-required --reject--> final-frame-ready
 import-review-required --accept all reviewed entries--> awaiting-persistence
 awaiting-persistence --ack exact hash--> frame-ready | final-frame-ready | complete
@@ -350,8 +364,13 @@ malformed/limit/internal failure--> failed
 
 `frame-ready` forbids another begin, receive, accept, or reject until the caller
 drains the exact outbound frame. `final-frame-ready` permits only take or close;
-it becomes complete after its exact final frame is drained. `complete`, `closed`,
-and `failed` are terminal.
+it becomes complete after its exact final frame is drained. `rejected`,
+`complete`, `closed`, and `failed` are terminal. Only an initiator
+may call `begin`; only a responder may accept `Hello` from `idle`. Simultaneous
+initiation is a deterministic `REPLICATION_UNEXPECTED_FRAME`, not an implicit
+role change. A future duplex adapter assigns roles from its explicit
+connection/session setup (for example outbound is initiator and accepted inbound
+is responder); role negotiation is not inferred from unauthenticated bytes.
 Transport cancellation before core commit closes the session with no community
 mutation. The browser keeps no background/idle session in this release; a future
 network adapter must add its own bounded timeout and retry policy before use.
@@ -420,9 +439,10 @@ adapter/protocol failure --> failed
 The browser-owned interface is deliberately small and transport-neutral:
 
 ```text
-TransportRegistryV1.describe(kind) -> { capability, availability }
-TransportRegistryV1.open(kind, local_config) -> async TransportPortV1
-TransportPortV1.kind() -> TransportKindV1
+TransportRegistryV1.describe(kind_id) -> { capability, availability }
+TransportRegistryV1.open(kind_id, local_config) -> async TransportPortV1
+TransportRegistryV1.bind(session_id, port) -> immutable local binding
+TransportPortV1.kind_id() -> bounded string
 TransportPortV1.capability() -> TransportCapabilityV1
 TransportPortV1.state() -> TransportPortStateV1
 TransportPortV1.receive() -> async TransportEventV1
@@ -437,9 +457,9 @@ Each `TransportEventV1` and `TransportSendResultV1` carries a closed
 never branches on it. One port operation is in flight at a time. A
 `bundle-carrier` accepts only `bundle` envelopes with `session_id = null`; a
 `duplex-frames` port accepts only `sync-frame` envelopes with its bound session
-ID. Mode mismatch fails before bytes cross into the controller.
-`open_replication_session(file)` therefore returns `TRANSPORT_MODE_MISMATCH`;
-file import/export never masquerades as a live replication session.
+ID. Mode mismatch fails before bytes cross into the controller. A `file` port
+cannot bind a replication session and returns `TRANSPORT_MODE_MISMATCH` in the
+host; file import/export never masquerades as a live replication session.
 
 Transport kind, endpoint, first-seen time, delivery attempt, and availability
 are optional local receipt facts. They never enter signed payloads, entry IDs,
@@ -448,8 +468,15 @@ capability decisions, projection ordering, or completeness claims. Core import
 uses the single fixed `web-record-exchange` admission route for every
 external adapter; actual provenance lives only in the browser manifest's local
 receipt. Therefore identical received bytes have identical store-charge and
-admission outcomes across file, nearby, direct node, HTTPS, and Nym. First-route
+admission outcomes across file, nearby, direct node, HTTPS, and Nym. First-receipt
 retention is informational and attacker-influenceable.
+
+Browser-manifest `kind_id` is 1–64 lowercase ASCII bytes matching
+`[a-z0-9][a-z0-9.-]*`. `endpoint_label`, when a future adapter supplies one, is
+at most 128 UTF-8 bytes after removing user-info, query strings, fragments, and
+control characters; bearer tokens, cookies, OAuth codes, full Nym addresses,
+and other credentials are never retained. Receipt parse/size failure drops the
+receipt, not the already verified record.
 
 Only registered implementations may produce UI. Nearby, direct-node, HTTPS, and
 Nym do not appear as disabled controls or failed connections in this release.
@@ -578,11 +605,11 @@ lowercase hex strings. Closed enums use the existing lowercase names
 | `CommunityCreatedV1` | `version`, `pending_profile_id`, `community`, `wrapping_key_bytes`, `sealed_identity_bytes` |
 | `CommunityImportReviewV1` | `version`, `review: ImportReviewV1`, `proposed_community: ProposedCommunityV1`, `suggested_local_title` |
 | `CommunityJoinedV1` | `version`, `pending_profile_id`, `community: CommunityV1`, `wrapping_key_bytes`, `sealed_identity_bytes`, `accepted_bundle: PendingBundleV1` |
-| `TransportReceiptV1` | `version`, `kind: TransportKindV1`, `endpoint_label: string|null`, `first_seen_at`, `attempt: decimal-string|null` |
+| `TransportReceiptV1` | browser-manifest-only: `version`, bounded `kind_id`, bounded credential-free `endpoint_label: string|null`, `first_seen_at`, `attempt: decimal-string|null` |
 | `RestoreRecordV1` | `version`, `bundle_bytes: Uint8Array`, `admission_route: AdmissionRouteV1`, `transport_receipt: TransportReceiptV1|null`, `sha256` |
 | `RestoreLogV1` | `version`, `namespace_id`, `total_bytes`, ordered `records: RestoreRecordV1[]` |
 | `UpdateDraftV1` | `version`, `headline`, `description`, `language`, `urgency`, `severity`, `certainty`, `valid_from: decimal-string|null`, `expires_at`, `affected_area: string|null`, ordered `source_claims: string[]`, `ai_assisted` |
-| `ProjectedUpdateV1` | signed semantic fields plus complete `entry_id`, `namespace_id`, `signer_id`, verified `display_name: string|null`, `key_tag`, `created_at`, `signature_valid`, `capability_valid`; no receipt, durability, local-person pronoun, or renderer state |
+| `ProjectedUpdateV1` | signed semantic fields plus complete `entry_id`, `namespace_id`, `signer_id`, `key_tag`, `created_at`, `signature_valid`, `capability_valid`; no resolved name, receipt, durability, local-person pronoun, or renderer state |
 | `CommunityProjectionV1` | `version`, complete `namespace_id`, deterministic ordered `updates: ProjectedUpdateV1[]` |
 | `UpdateV1` | `version`, `projected: ProjectedUpdateV1`, rendered local `author_label`, `durability`, `transport_receipt: TransportReceiptV1|null` |
 | `ReviewedUpdateV1` | draft fields plus allocated `object_id`, `revision_id`, `entry_id`, `namespace_id`, `signer_id`, `created_at` |
@@ -594,7 +621,7 @@ lowercase hex strings. Closed enums use the existing lowercase names
 | `PendingBundleV1` | `version`, exact accepted-only `bundle_bytes: Uint8Array`, `admission_route: AdmissionRouteV1`, complete `entry_ids: string[]`, `sha256` |
 | `BundleArtifactV1` | `version`, canonical `bundle_bytes: Uint8Array`, complete `entry_ids: string[]`, `sha256`, deterministic `filename` |
 | `TransportEnvelopeV1` | `version`, `capability: TransportCapabilityV1`, `session_id: string|null`, `payload_kind` (`bundle|sync-frame`), bounded `payload_bytes` |
-| `ReplicationSessionV1` | `version`, opaque `session_id`, complete `namespace_id`, `transport_kind: TransportKindV1`, `state: ReplicationStateV1` |
+| `ReplicationSessionV1` | `version`, opaque `session_id`, complete `namespace_id`, `role: ReplicationRoleV1`, `state: ReplicationStateV1` |
 | `ReplicationOutcomeV1` | `version`, `session_id`, `state: ReplicationStateV1`, `review: ReplicationImportReviewV1|null`, `rejection_code: string|null` |
 | `TransportEventV1` | `version`, `kind` (`envelope|closed|failed`), `envelope: TransportEnvelopeV1|null`, `failure_code: TransportFailureCodeV1|null`, `message_key: string|null` |
 | `TransportSendResultV1` | `version`, `status` (`sent|cancelled|unavailable|failed`), `failure_code: TransportFailureCodeV1|null`, `message_key: string|null` |
@@ -605,14 +632,17 @@ Every public call returns `Result<T, WebErrorV1>`. The named closed enums are:
 - `AdmissionRouteV1 = web-local-post|web-record-exchange`. It is fixed by the
   operation, never supplied by an adapter; every external file or peer record
   uses `web-record-exchange`.
-- `TransportKindV1 = file|nearby|direct-community-node|https-gateway|nym`.
 - `TransportCapabilityV1 = bundle-carrier|duplex-frames`.
-- `ReplicationStateV1 = idle|frame-ready|final-frame-ready|awaiting-frame|import-review-required|awaiting-persistence|complete|closed|failed`.
+- `ReplicationRoleV1 = initiator|responder`.
+- `ReplicationStateV1 = idle|frame-ready|final-frame-ready|awaiting-frame|import-review-required|awaiting-persistence|rejected|complete|closed|failed`.
 - `TransportPortStateV1 = unavailable|ready|opening|exchanging|closed|failed`.
 - `TransportFailureCodeV1 = cancelled|unavailable|mode-mismatch|oversize|io|timeout|protocol`.
 
-Startup replay accepts only the two fixed admission values. `TransportKindV1`
-is informational local provenance and session policy, never core admission.
+Startup replay accepts only the two fixed admission values. Transport kind IDs
+exist only in the browser registry/manifest as local provenance and session
+policy, never in `riot-client` or core admission. The initial registered IDs are
+`file`, `nearby`, `direct-community-node`, `https-gateway`, and `nym`; a future
+adapter can add a bounded ID without changing protocol/controller types.
 Every opaque import, review, replication, or pending-profile ID is single-use,
 session-bound, and rejected after replacement, commit/abort, or close.
 
@@ -624,16 +654,27 @@ when empty, and nullable fields are JSON `null`, never omitted. `byte_count` and
 one of `invalid-signature|invalid-capability|wrong-community|malformed-update|expired|unsupported-entry-type`.
 `CommunityReplica::project()` is a pure, signer-free projection over verified
 accepted records. It deterministically sorts updates and returns structured
-`ProjectedUpdateV1` data; it contains no domain, endpoint, transport receipt,
-durability, current-user marker, or localized phrase. The adapter derives the
+`ProjectedUpdateV1` data; it contains no resolved profile name, domain,
+endpoint, transport receipt, durability, current-user marker, or localized
+phrase. The adapter derives the
 mandatory key tag as the first four signer/subspace bytes rendered as eight
-lowercase hex characters and includes a shared-resolver name only when that
-name was itself verified. The browser renderer may label the attached local
-publisher as `You` and otherwise use the verified name or `Community member`;
+lowercase hex characters. The browser renderer may label the attached local
+publisher as `You` and otherwise use `Community member`;
 `author_label` is `<rendered name> · <key tag>`. Role is shown separately.
 Complete signer IDs remain in Technical details. Creating or editing display
 names is not part of this slice. `suggested_local_title` is the literal
 `Imported community`; it has no authority meaning and may be edited before join.
+
+Projection order is `created_at` descending, then complete `entry_id` bytes
+ascending as the total tie-breaker. `CommunityReplica::project_canonical_bytes()`
+encodes the same structure with the versioned
+`org.riot.community-projection/1` canonical CBOR codec: definite-length maps and
+arrays, unsigned integer field keys in ascending order, UTF-8 text, byte strings
+for complete binary IDs/digests, and no floating-point or optional omitted
+fields (`null` is explicit). The codec's golden vectors are shared by Rust,
+WASM, and renderer conformance tests. “Byte-identical projection” means those
+canonical bytes from the same signed live alert set and projection-code version,
+not identical DOM, localized labels, or CSS.
 
 The workspace pins `wasm-bindgen = 0.2.126`. `scripts/web/build.sh` verifies
 `wasm-bindgen-cli 0.2.126`, runs
@@ -853,8 +894,10 @@ States:
   and complete site-data clearing are indistinguishable.
 - Corrupt retained storage: no silent reset; explain what is present but cannot
   open, preserve recoverable raw public bundles if possible, state that the
-  prior identity cannot be recovered in this slice, and offer raw export.
-- Unsupported but valid storage schema: read-only recovery with raw export; no
+  prior identity cannot be recovered in this slice, and offer the distinctly
+  labeled unverified recovery artifact.
+- Unsupported but valid storage schema: read-only recovery with the distinctly
+  labeled unverified recovery artifact; no
   automatic migration or reset.
 - Storage full: refuse the mutation and offer Export community data.
 - Another writer tab: read-only Home with **Riot is open in another tab**.
@@ -887,11 +930,27 @@ Home orders non-expired updates by signed creation time descending and puts
 expired updates in a collapsed **Earlier** section. Newly inserted updates do
 not move focus.
 
-Every export action and success state says: **This file contains public
+Home's manual-exchange panel always explains: **Saved on this browser means the
+record is durable here. Export prepared means Riot created a file for you to
+carry; it cannot confirm anyone received it. Exchanged is reserved for a
+completed authenticated peer session, which this version does not provide.**
+The vocabulary is therefore visible before the comprehension check even though
+the MVP never displays an Exchanged status badge.
+
+Every normal canonical export action and success state says: **This file contains public
 community updates. It does not back up your identity or organizer authority.**
 After the browser accepts download initiation, success says **Export prepared**
 and explicitly avoids **sent**, **delivered**, or **exchanged**. Picker/download
 cancellation leaves community state unchanged and shows no success claim.
+
+Corrupt/unsupported-storage recovery is a different artifact and never uses the
+normal export copy, success style, `.riot-evidence` extension, or normal import
+picker. It downloads `riot-unverified-recovery-<timestamp>.bin` with the visible
+warning: **Unverified recovery bytes. Riot could not verify these records; this
+file may be corrupt and may not import. It does not contain an identity backup.**
+Success says **Unverified recovery file prepared**. Raw recovery preserves bytes
+for expert/manual salvage only and makes no community-update or authenticity
+claim.
 
 ## Data flows
 
@@ -941,6 +1000,12 @@ durability acknowledgement. Only the exact-hash acknowledgement publishes the
 new record to those read/synchronization surfaces. Thus no transport can observe
 a locally posted record before its durable browser commit.
 
+The same quarantine invariant applies to every mutation path: local post,
+existing-community file import, first-run join, and duplex replication. Pending
+records may appear only in their dedicated recovery/review surface; normal
+projection, consolidated export, and any replication inventory advance only
+after the operation's exact durability acknowledgement.
+
 If persistence fails after core commit, the controller keeps the generated
 bundle in a recovery queue, blocks all further mutations, and opens a visible
 **Not saved to this browser** recovery screen with Retry and a warning that
@@ -950,6 +1015,11 @@ saving** requires confirmation, closes the controller, and reloads only the
 previously persisted state. Riot never claims durable success. While the queue
 exists the original draft cannot be posted again. A successful Retry atomically
 persists the bundle/manifest and clears that draft.
+On transition to recovery, focus moves to the recovery heading, the heading is
+announced once with the non-durable warning, and Retry is the next focusable
+control; focus never returns to the disabled Post action. Close-without-saving
+uses a labeled confirmation dialog and restores focus to its invoking control on
+cancel.
 
 ### Import or join
 
@@ -1058,6 +1128,10 @@ into an old controlled page before activation.
   `X-Content-Type-Options: nosniff`, and exactly
   `Permissions-Policy: accelerometer=(), ambient-light-sensor=(), autoplay=(), bluetooth=(), camera=(), display-capture=(), encrypted-media=(), geolocation=(), gyroscope=(), hid=(), magnetometer=(), microphone=(), midi=(), payment=(), publickey-credentials-create=(), publickey-credentials-get=(), serial=(), usb=(), xr-spatial-tracking=()`.
 - No third-party runtime dependencies, analytics, fonts, or remote assets.
+- Adding any future network/Nym adapter requires a separate reviewed deployment
+  policy that extends `connect-src`, `worker-src`, and Permissions Policy only
+  with the adapter's minimum explicit origins/capabilities; adapters may not
+  weaken the default CSP globally or introduce wildcard connectivity.
 - No `innerHTML` for imported/user content; render with text nodes.
 - Existing core byte/count/path/store ceilings remain authoritative.
 - Every transport carries only opaque bounded canonical frames or bundles into
@@ -1095,8 +1169,8 @@ Stable user-facing categories:
 
 - `UNSUPPORTED_BROWSER` — required platform API missing; link to public gateway.
 - `IDENTITY_LOCKED` / `IDENTITY_CORRUPT` — do not create a replacement; offer
-  raw public-data export if available and explain that identity recovery is not
-  present.
+  the distinctly labeled unverified recovery artifact if bytes are available
+  and explain that identity recovery is not present.
 - `ENTROPY_UNAVAILABLE` / `CLOCK_UNAVAILABLE` — no signing/profile mutation;
   retain the draft and offer retry.
 - `IMPORT_TOO_LARGE`, `IMPORT_REJECTED`, `WRONG_COMMUNITY`,
@@ -1106,22 +1180,23 @@ Stable user-facing categories:
 - `INVALID_DRAFT` / `EXPIRED_DRAFT` — return to editable form without posting.
 - `STORE_FULL` — no mutation; offer export.
 - `ANOTHER_WRITER` — read-only view until the other tab closes.
-- `UNSUPPORTED_SCHEMA` — read-only recovery and raw public-data export.
+- `UNSUPPORTED_SCHEMA` — read-only recovery and distinctly labeled unverified
+  recovery artifact.
 - `PERSISTENCE_FAILED` — core may hold an in-memory commit; show non-durable
   state, block every transport, and offer Retry or confirmed Close without
   saving.
-- `REPLAY_FAILED` — stop at the first corrupt record and offer raw-log export;
-  never silently skip.
+- `REPLAY_FAILED` — stop at the first corrupt record and offer the distinctly
+  labeled unverified recovery artifact; never silently skip.
 - `REPLICATION_WINDOW_EXCEEDED` — current live inventory exceeds the MVP's 64
   ID/8 MiB reconciliation window; no session opens and file export remains
   available.
 - `REPLICATION_UNEXPECTED_FRAME` — wrong session/state/frame ordering or mode;
   no mutation and no peer acceptance acknowledgement.
 - `INTERNAL` — close the WASM session, retain persisted bytes, and offer reload.
-- `TRANSPORT_CANCELLED` / `TRANSPORT_UNAVAILABLE` / `TRANSPORT_OVERSIZE` /
-  `TRANSPORT_FAILED` — no rollback of locally durable records, no silent
-  fallback, and no authority implication; file exchange remains available when
-  its adapter is usable.
+- `TRANSPORT_CANCELLED` / `TRANSPORT_UNAVAILABLE` /
+  `TRANSPORT_MODE_MISMATCH` / `TRANSPORT_OVERSIZE` / `TRANSPORT_FAILED` — no
+  rollback of locally durable records, no silent fallback, and no authority
+  implication; file exchange remains available when its adapter is usable.
 
 All errors are actionable, contain no raw imported bytes or secrets, and are
 rendered in an `aria-live` region.
@@ -1194,7 +1269,8 @@ TDD work proceeds in independently green slices:
    `create_signed_alert`; then split prepare/sign in `riot-core`.
 4. **Signer-free replica and shared publisher controller:** `riot-client`
    contract tests first cover `CommunityReplica` restore/projection with no
-   signer; byte-identical `CommunityProjectionV1` under two renderer hostnames;
+   signer; golden canonical-CBOR projection vectors, total order/tie cases, and
+   byte-identical `CommunityProjectionV1` under two renderer hostnames;
    organizer create/empty-log restore; import-as-member; atomic restore
    finalization; stored namespace/signer mismatch rejection; single-namespace
    rejection; readable preview rows; exact selective normalized bundle; fixed
@@ -1206,7 +1282,9 @@ TDD work proceeds in independently green slices:
    tests wrap the existing byte-only session in `ReplicationCoordinator` and
    prove exactly one active session/frame buffer/pending import, the 64-ID and
    8-MiB live-window failures, immutable local transport binding, no silent
-   fallback, frame-drain ordering, all-or-reject review, exact
+   fallback, initiator and responder starts, simultaneous-initiation rejection,
+   terminal Complete/Reject receive paths, alert-only inventory filtering,
+   non-alert entries-frame rejection, frame-drain ordering, all-or-reject review, exact
    commit→persist→hash-ack transition, wrong/stale hash safety, crash-before-ack
    retry safety, oversize/mode-mismatch rejection, and zero controller I/O.
    Only then add the ordinary Rust surface; existing `riot-ffi` tests must prove
@@ -1247,8 +1325,9 @@ TDD work proceeds in independently green slices:
    `innerHTML`, no remote URLs/assets, no secret logging tokens, no write without
    immutable review, no service-worker vault call in intended code, no
    private-group surface, no protocol/controller imports of browser networking
-   or Nym packages, no domain/endpoint in signed identity/projection, and no
-   implemented transport other than file exchange.
+   or Nym packages, no transport kind/endpoint in replication controller or
+   signed identity/projection, and no implemented transport other than file
+   exchange.
 
 Required verification:
 
