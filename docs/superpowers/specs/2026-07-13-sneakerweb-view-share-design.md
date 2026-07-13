@@ -3,7 +3,8 @@
 Status: Product design and the human-directed post-escalation revision were
 approved on 2026-07-13. Fresh Metaswarm gate rounds 1 and 2 returned
 NEEDS_REVISION; all five reviewers approved the resolved design in round 3 on
-2026-07-13. Written-spec user review is pending before implementation planning.
+2026-07-13. Rabble approved the written specification on 2026-07-13; implementation
+planning is now authorized, subject to the mandatory plan review gate.
 
 ## Purpose
 
