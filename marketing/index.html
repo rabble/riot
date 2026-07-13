@@ -471,6 +471,7 @@ footer.colophon {
         <p>Device-to-device sync is one small, transport-independent exchange: <code>Hello</code> → each side sends a <code>Summary</code> of what it has → each side <code>Request</code>s only what it's missing → <code>Entries</code> cross the wire → both sides send an updated <code>Summary</code> → <code>Complete</code>. Malformed, oversized, or out-of-sequence messages get a hard <code>Reject</code>, not a best-effort parse. The same frame bytes travel over BLE, local IP, QR, or a plain file — the sync layer doesn't know or care which.</p>
         <p>That exchange still can't skip the same admission boundary the UI uses: <b>inspect → preview → plan → commit</b>. Nothing is live in your store until you've explicitly planned and committed it — sync just gets bytes to your device, it doesn't get to decide what you publish.</p>
         <p>Your signing key never leaves your device in the clear. It's sealed behind your device's hardware-backed keystore — Keychain on iOS, Android Keystore on Android — and only unwrapped in memory for the moment it's needed.</p>
+        <p><a href="/protocols/"><b>Compare Riot with adjacent protocols →</b></a></p>
       </div>
     </details>
   </div>
@@ -589,7 +590,7 @@ footer.colophon {
 
 <footer class="colophon">
   <span>Riot — in development. No app has shipped.</span>
-  <span>A protest.net project.</span>
+  <span><a href="/protocols/">Protocol field guide</a> · A protest.net project.</span>
 </footer>
 
 <script>

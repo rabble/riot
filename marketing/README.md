@@ -1,30 +1,63 @@
 # Riot marketing site
 
-A single self-contained static file (`index.html`) — no build step, no
-backend, no external requests (fonts are inlined as base64 `@font-face` data
-URIs). Open it directly in a browser or serve the directory with any static
-file server.
+A dependency-free static site deployed as Cloudflare Workers assets. It has no
+backend, analytics, remote fonts, or runtime asset requests.
 
-This is separate from `apps/gateway/`, which serves the actual Willow
-`/site/` newswire content per `docs/decisions/riot-protest-net-runbook.md`.
-This is copy-only: what Riot is, who it's for, and an honest "not released
-yet" status. It does not render or fetch any Willow content.
+## Routes
 
-## What's missing before this can go live at `riot.protest.net`
+- `/` — Riot's human-facing product story.
+- `/protocols/` — a source-backed field guide comparing Riot and Willow with
+  adjacent social, relay, federation, nearby-messaging, and local-first systems.
 
-- **A real contact/updates mechanism.** The closing section currently only
-  links out to protest.net — there's no email or signup form because none
-  was available to wire up honestly. Add one before publishing, or leave it
-  as-is if a bare link is the intended CTA.
-- **Deployment itself.** Per `docs/decisions/riot-protest-net-runbook.md`,
-  actually serving this at `riot.protest.net` needs a DNS/TLS owner, an
-  approved hosting path, and an egress/edge policy review — none of which
-  this session has the authority or credentials to set up. This file is
-  ready to hand to whoever owns that.
+The protocol page is secondary by design. The homepage links to it only from
+“For the technically curious” and the footer.
 
-## Editing
+## Source and deployment mirrors
 
-Content and styles are in `index.html`. Fonts (Anton, Work Sans, Space Mono)
-are embedded inline; to change them, re-generate the base64 `@font-face`
-blocks rather than linking an external font CDN (the whole point of inlining
-was zero external requests).
+Edit the source files first:
+
+- `index.html`
+- `protocols/index.html`
+
+Then update their byte-identical deployment mirrors:
+
+- `public/index.html`
+- `public/protocols/index.html`
+
+The contract check rejects mirror drift and missing editorial or accessibility
+requirements:
+
+```sh
+node scripts/marketing/protocol-page-contracts.mjs
+```
+
+Run it from the repository root.
+
+## Local preview
+
+From the repository root:
+
+```sh
+python3 -m http.server 4173 --directory marketing/public
+```
+
+Then open `http://localhost:4173/` and
+`http://localhost:4173/protocols/`.
+
+## Deploy
+
+The Workers assets directory is configured in `wrangler.toml`. From this
+directory, deploy with:
+
+```sh
+npx wrangler deploy
+```
+
+After deployment, fetch both live routes and check their expected headings;
+Wrangler success alone does not prove the nested route is being served.
+
+## Scope
+
+This site is separate from `apps/gateway/`, which serves actual Willow `/site/`
+content. The marketing site describes Riot and links primary protocol sources;
+it does not render, mutate, or fetch a community's Willow data.

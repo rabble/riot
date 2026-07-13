@@ -1,0 +1,356 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="A source-backed field guide to Riot, Willow, AT Protocol, ActivityPub, DFOS, Nostr, Farcaster, Bitchat, Secure Scuttlebutt, Briar, and Matrix.">
+  <meta name="theme-color" content="#ff4f8b">
+  <title>Where Riot fits — a protocol field guide</title>
+  <style>
+    :root {
+      --paper: #f6f0e5;
+      --paper-2: #fffaf1;
+      --ink: #171614;
+      --muted: #605d57;
+      --pink: #ff4f8b;
+      --blue: #5b7cff;
+      --yellow: #ffdf3f;
+      --green: #a7e86d;
+      --line: #171614;
+      --shadow: 7px 7px 0 var(--ink);
+      --max: 1180px;
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      background: var(--paper);
+      font-family: "Arial", "Helvetica Neue", sans-serif;
+      font-size: 17px;
+      line-height: 1.58;
+    }
+    a { color: inherit; text-decoration-thickness: 2px; text-underline-offset: .18em; }
+    a:hover { text-decoration-color: var(--pink); }
+    a:focus-visible { outline: 4px solid var(--blue); outline-offset: 4px; }
+    h1, h2, h3, .brand, .poster {
+      font-family: Impact, Haettenschweiler, "Arial Narrow Bold", sans-serif;
+      font-weight: 900;
+      line-height: .98;
+      letter-spacing: .01em;
+      text-transform: uppercase;
+    }
+    h1 { max-width: 920px; margin: .25rem 0 1.25rem; font-size: clamp(4rem, 10vw, 9rem); }
+    h2 { margin: 0 0 1.2rem; font-size: clamp(2.65rem, 6vw, 5.4rem); }
+    h3 { margin: 0; font-size: clamp(2rem, 3.3vw, 3.1rem); }
+    p { max-width: 74ch; }
+    code { padding: .08em .3em; border: 1px solid currentColor; background: #fff; font-size: .9em; }
+    .wrap { width: min(calc(100% - 40px), var(--max)); margin-inline: auto; }
+    .skip-link { position: absolute; top: -100px; left: 12px; z-index: 100; padding: 10px 14px; background: #fff; border: 2px solid; }
+    .skip-link:focus { top: 12px; }
+    .site-nav {
+      position: sticky;
+      top: 0;
+      z-index: 20;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 20px;
+      min-height: 66px;
+      padding: 10px max(20px, calc((100% - var(--max)) / 2));
+      border-bottom: 3px solid var(--ink);
+      background: var(--paper);
+    }
+    .brand { font-size: 1.8rem; text-decoration: none; }
+    .brand span { padding: 1px 7px; background: var(--pink); }
+    .nav-links { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 10px 20px; font: 700 .78rem/1.2 "Courier New", monospace; letter-spacing: .06em; text-transform: uppercase; }
+    .nav-links a { text-decoration: none; border-bottom: 2px solid transparent; }
+    .nav-links a:hover { border-color: var(--ink); }
+    .hero { padding: clamp(72px, 10vw, 136px) 0 74px; border-bottom: 3px solid var(--ink); background: var(--pink); }
+    .kicker, .eyebrow, .stamp, .label { font: 700 .75rem/1.3 "Courier New", monospace; letter-spacing: .09em; text-transform: uppercase; }
+    .kicker { display: inline-block; margin: 0 0 1rem; padding: 7px 10px; border: 2px solid; background: var(--yellow); box-shadow: 4px 4px 0 var(--ink); }
+    .lede { max-width: 790px; margin: 0; font-size: clamp(1.18rem, 2.2vw, 1.55rem); font-weight: 700; }
+    .hero-meta { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 34px; }
+    .stamp { padding: 9px 12px; border: 2px solid; background: var(--paper-2); }
+    section { padding: clamp(72px, 9vw, 118px) 0; border-bottom: 3px solid var(--ink); }
+    .dark { color: var(--paper-2); background: var(--ink); }
+    .blue { background: var(--blue); }
+    .yellow { background: var(--yellow); }
+    .section-intro { margin: 0 0 42px; color: var(--muted); font-size: 1.13rem; }
+    .dark .section-intro { color: #d9d4ca; }
+    .eyebrow { margin: 0 0 12px; }
+    .layer-grid, .situation-grid, .why-grid, .limits-grid { display: grid; gap: 18px; }
+    .layer-grid { grid-template-columns: repeat(3, 1fr); }
+    .layer-card, .situation, .why-card, .limit-card {
+      padding: 24px;
+      border: 2px solid var(--ink);
+      background: var(--paper-2);
+      box-shadow: 5px 5px 0 var(--ink);
+    }
+    .layer-card strong, .situation strong { display: block; margin-bottom: 8px; font-size: 1.05rem; }
+    .layer-card p, .situation p, .why-card p, .limit-card p { margin: 0; }
+    .layer-card:nth-child(2n) { background: var(--green); }
+    .layer-card:nth-child(3n) { background: var(--yellow); }
+    .situation-grid { grid-template-columns: repeat(5, 1fr); }
+    .situation { min-height: 230px; display: flex; flex-direction: column; }
+    .situation .label { margin-bottom: 20px; color: var(--muted); }
+    .situation a { margin-top: auto; padding-top: 18px; font-weight: 800; }
+    .table-shell { overflow-x: auto; border: 3px solid var(--ink); background: var(--paper-2); box-shadow: var(--shadow); }
+    table { width: 100%; min-width: 1240px; border-collapse: collapse; font-size: .9rem; line-height: 1.42; }
+    caption { padding: 12px 16px; border-bottom: 2px solid; text-align: left; font: 700 .75rem/1.3 "Courier New", monospace; letter-spacing: .07em; text-transform: uppercase; }
+    th, td { padding: 15px 14px; border-right: 1px solid #817c73; border-bottom: 1px solid #817c73; text-align: left; vertical-align: top; }
+    thead th { position: sticky; top: 0; background: var(--yellow); font-size: .74rem; line-height: 1.25; text-transform: uppercase; }
+    tbody th { position: sticky; left: 0; z-index: 1; width: 150px; background: var(--paper-2); }
+    tr:last-child > * { border-bottom: 0; }
+    th:last-child, td:last-child { border-right: 0; }
+    .table-note { margin-top: 20px; font-size: .9rem; color: var(--muted); }
+    .why-grid { grid-template-columns: 1fr 1fr; }
+    .why-card { box-shadow: none; }
+    .why-card:first-child { background: var(--green); }
+    .why-card:last-child { background: var(--pink); }
+    .why-card h3 { margin-bottom: 20px; }
+    .why-card ul { padding-left: 1.2em; }
+    .why-card li + li { margin-top: 10px; }
+    .flow { display: grid; grid-template-columns: repeat(6, 1fr); gap: 12px; counter-reset: step; }
+    .flow-step { position: relative; min-height: 205px; padding: 54px 17px 18px; border: 2px solid; background: var(--paper-2); box-shadow: 4px 4px 0 var(--ink); counter-increment: step; }
+    .flow-step::before { content: "0" counter(step); position: absolute; top: 12px; left: 14px; font: 900 1.25rem/1 Impact, sans-serif; }
+    .flow-step::after { content: "→"; position: absolute; right: -17px; top: 82px; z-index: 2; font-size: 1.8rem; font-weight: 900; }
+    .flow-step:last-child::after { content: none; }
+    .proof-note { margin-top: 30px; padding: 20px; border: 2px solid; background: var(--yellow); font-weight: 700; }
+    .profiles { display: grid; gap: 26px; }
+    .profile { scroll-margin-top: 90px; display: grid; grid-template-columns: 280px 1fr; border: 3px solid var(--paper-2); }
+    .profile-head { padding: 27px; color: var(--ink); background: var(--yellow); border-right: 3px solid var(--paper-2); }
+    .profile-head h3 { font-size: clamp(2rem, 2.8vw, 2.65rem); overflow-wrap: anywhere; }
+    .profile:nth-child(3n + 2) .profile-head { background: var(--pink); }
+    .profile:nth-child(3n + 3) .profile-head { background: var(--green); }
+    .profile-head p { margin: 16px 0 0; font-size: .93rem; }
+    .profile-body { padding: 25px 28px; background: #22211f; }
+    .facts { display: grid; grid-template-columns: 1fr 1fr; gap: 20px 28px; margin: 0; }
+    .facts div { min-width: 0; }
+    .facts dt { margin-bottom: 5px; color: var(--yellow); font: 700 .7rem/1.3 "Courier New", monospace; letter-spacing: .08em; text-transform: uppercase; }
+    .facts dd { margin: 0; color: #eee9df; font-size: .94rem; }
+    .profile code { color: var(--ink); }
+    .source-link { display: inline-block; margin-top: 18px; color: var(--yellow); font: 700 .76rem/1.3 "Courier New", monospace; }
+    .limits-grid { grid-template-columns: repeat(3, 1fr); }
+    .limit-card { background: var(--paper-2); }
+    .limit-card .label { display: block; margin-bottom: 12px; }
+    .sources { columns: 2 340px; column-gap: 50px; padding: 0; list-style: none; }
+    .sources li { break-inside: avoid; margin-bottom: 20px; padding-bottom: 20px; border-bottom: 1px solid #7a766e; }
+    .sources strong { display: block; margin-bottom: 5px; }
+    .sources a { font-size: .93rem; }
+    footer { padding: 34px 20px; color: var(--paper-2); background: var(--ink); }
+    .footer-inner { width: min(100%, var(--max)); margin: auto; display: flex; flex-wrap: wrap; justify-content: space-between; gap: 16px; }
+    .footer-inner p { margin: 0; font: 700 .76rem/1.4 "Courier New", monospace; text-transform: uppercase; }
+    @media (max-width: 980px) {
+      .layer-grid { grid-template-columns: 1fr 1fr; }
+      .situation-grid { grid-template-columns: 1fr 1fr; }
+      .flow { grid-template-columns: 1fr 1fr 1fr; }
+      .flow-step:nth-child(3)::after { content: none; }
+      .profile { grid-template-columns: 220px 1fr; }
+      .limits-grid { grid-template-columns: 1fr 1fr; }
+    }
+    @media (max-width: 680px) {
+      body { font-size: 16px; }
+      .wrap { width: min(calc(100% - 28px), var(--max)); }
+      .site-nav { position: static; align-items: flex-start; padding: 10px 14px; }
+      .nav-links a:not(:last-child) { display: none; }
+      .hero { padding-top: 62px; }
+      h1 { font-size: clamp(3.7rem, 19vw, 6rem); }
+      .layer-grid, .situation-grid, .why-grid, .limits-grid { grid-template-columns: 1fr; }
+      .situation { min-height: 0; }
+      .flow { grid-template-columns: 1fr; }
+      .flow-step { min-height: 0; }
+      .flow-step::after, .flow-step:nth-child(3)::after { content: "↓"; top: auto; right: 16px; bottom: -25px; }
+      .flow-step:last-child::after { content: none; }
+      .profile { grid-template-columns: 1fr; }
+      .profile-head { border-right: 0; border-bottom: 3px solid var(--paper-2); }
+      .facts { grid-template-columns: 1fr; }
+      .sources { columns: 1; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      html { scroll-behavior: auto; }
+      *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
+    }
+  </style>
+</head>
+<body>
+  <a class="skip-link" href="#content">Skip to content</a>
+  <nav class="site-nav" aria-label="Protocol field guide">
+    <a class="brand" href="/"><span>Riot</span></a>
+    <div class="nav-links">
+      <a href="#matrix-table">Compare</a>
+      <a href="#why-willow">Why Willow</a>
+      <a href="#profiles">Field guide</a>
+      <a href="/">Back to Riot</a>
+    </div>
+  </nav>
+
+  <main id="content">
+    <header class="hero">
+      <div class="wrap">
+        <p class="kicker">Protocol field guide · Checked 13 July 2026</p>
+        <h1>Where Riot fits.</h1>
+        <p class="lede">Riot is a community application runtime built on Willow—not a new universal social protocol. It is being designed so a group can carry mergeable data and small, signed tools across its own devices, even when no home server can be reached.</p>
+        <div class="hero-meta">
+          <span class="stamp">Prototype</span>
+          <span class="stamp">Claims separated by evidence</span>
+          <span class="stamp">No universal winner</span>
+        </div>
+      </div>
+    </header>
+
+    <section id="layers">
+      <div class="wrap">
+        <p class="eyebrow">Start with the category</p>
+        <h2>These systems are not the same layer</h2>
+        <p class="section-intro">A fair comparison begins by refusing false equivalence. Some distribute public posts, some federate rooms, some move encrypted messages nearby, and some provide a substrate on which products can be built.</p>
+        <div class="layer-grid">
+          <article class="layer-card"><strong>Social publishing + federation</strong><p>AT Protocol and ActivityPub organize public social activity across internet services.</p></article>
+          <article class="layer-card"><strong>Signed relay or chain networks</strong><p>Nostr, Farcaster, and DFOS make signed identity or content portable across infrastructure with different trust models.</p></article>
+          <article class="layer-card"><strong>Nearby private messaging</strong><p>Bitchat and Briar focus on conversations that can move directly between devices.</p></article>
+          <article class="layer-card"><strong>Offline-first social feeds</strong><p>Secure Scuttlebutt replicates signed, append-only author feeds between peers.</p></article>
+          <article class="layer-card"><strong>Federated communication rooms</strong><p>Matrix synchronizes event graphs across participating homeservers, with optional end-to-end encryption.</p></article>
+          <article class="layer-card"><strong>Mergeable data + community apps</strong><p>Willow supplies a generic data model. Riot adds community meaning, policy, native UX, and a signed miniapp runtime.</p></article>
+        </div>
+      </div>
+    </section>
+
+    <section class="blue" id="situations">
+      <div class="wrap">
+        <p class="eyebrow">Choose by the job</p>
+        <h2>Orientation by situation</h2>
+        <div class="situation-grid">
+          <article class="situation"><span class="label">Public reach</span><strong>Publish into a global social web</strong><p>Start with AT Protocol, ActivityPub, Nostr, or Farcaster.</p><a href="#at-protocol">See publishing systems →</a></article>
+          <article class="situation"><span class="label">Portable account</span><strong>Move identity across providers</strong><p>AT Protocol, Nostr, Farcaster, and DFOS each anchor identity differently.</p><a href="#dfos">Compare authority →</a></article>
+          <article class="situation"><span class="label">Private chat</span><strong>Message a known person or group</strong><p>Briar, Bitchat, and encrypted Matrix rooms make confidentiality a first-order concern.</p><a href="#briar">See messaging systems →</a></article>
+          <article class="situation"><span class="label">No internet</span><strong>Communicate across nearby devices</strong><p>Bitchat and Briar ship direct transports; Secure Scuttlebutt was built for peer replication.</p><a href="#bitchat">See offline behavior →</a></article>
+          <article class="situation"><span class="label">Shared tools</span><strong>Carry community state and its apps</strong><p>This is Riot's target: data and small approved tools travel together.</p><a href="#riot-willow">See Riot + Willow →</a></article>
+        </div>
+      </div>
+    </section>
+
+    <section id="matrix-table">
+      <div class="wrap">
+        <p class="eyebrow">Compact orientation</p>
+        <h2>One matrix, shared questions</h2>
+        <p class="section-intro">This is an architectural map, not a scorecard. “Offline” means useful creation, reading, or exchange without a reachable home service—not merely a client cache.</p>
+        <div class="table-shell" role="region" aria-label="Protocol comparison table" tabindex="0">
+          <table>
+            <caption>Design centers and trust boundaries · scroll horizontally for all columns</caption>
+            <thead><tr><th scope="col">System</th><th scope="col">Design center</th><th scope="col">Canonical data</th><th scope="col">Authority</th><th scope="col">How data moves</th><th scope="col">Without internet</th><th scope="col">Privacy boundary</th><th scope="col">Extension model</th></tr></thead>
+            <tbody>
+              <tr><th scope="row"><a href="#riot-willow">Riot + Willow</a></th><td>Community state and signed miniapps</td><td>Willow entries in namespaces, subspaces, and paths; Riot projects app values</td><td>Device keys, namespace policy, organizer approval</td><td>Transport-independent sync frames over available carriers</td><td>Local read/write works; tested exchange is loopback/Bonjour, not two-phone BLE</td><td>Current public spaces are plaintext; private groups are planned</td><td>Signed, content-addressed offline miniapps with a narrow bridge</td></tr>
+              <tr><th scope="row"><a href="#at-protocol">AT Protocol</a></th><td>Large-scale public social apps</td><td>Signed public account repository on an authoritative PDS</td><td>DID plus rotatable keys and service location</td><td>PDS hosting, HTTP APIs, relay firehose, AppViews</td><td>Repo export/backups exist; normal network participation is service-oriented</td><td>Account repository content is public</td><td>Lexicons define records and APIs</td></tr>
+              <tr><th scope="row"><a href="#activitypub">ActivityPub</a></th><td>Federated social activity</td><td>ActivityStreams actors, inboxes, outboxes, objects, activities</td><td>Server-hosted actor account and implementation policy</td><td>Client-to-server and server-to-server HTTP</td><td>Clients may cache or draft; federation depends on reachable servers</td><td>Varies by implementation; participating servers process delivered content</td><td>Extensible ActivityStreams vocabularies</td></tr>
+              <tr><th scope="row"><a href="#dfos">DFOS</a></th><td>Verifiable identity and content chains</td><td>Signed identity/content operations committing to document CIDs</td><td><code>did:dfos</code> identity chains and credentials</td><td>HTTP web relays ingest, verify, store, and serve</td><td>Proofs and signed artifacts can be verified locally; distribution still needs carriage</td><td>Proof public; content access-controlled, not E2EE; storing relay sees plaintext</td><td>Application-defined documents plus standard schemas</td></tr>
+              <tr><th scope="row"><a href="#nostr">Nostr</a></th><td>Signed social events over relays</td><td>Immutable signed events; replaceability depends on event kind/NIP</td><td>secp256k1 keypair; optional external naming</td><td>Clients publish to and query WebSocket relays</td><td>Events can be created/read locally; reaching others typically needs a relay path</td><td>Public events are public; encrypted-message NIPs protect payloads, not all metadata</td><td>Event kinds and optional NIPs</td></tr>
+              <tr><th scope="row"><a href="#farcaster">Farcaster</a></th><td>Permissionless social apps</td><td>Signed offchain social messages tied to onchain accounts</td><td>OP Mainnet contracts plus delegated app keys</td><td>Peer server network (Snapchain) stores and syncs messages</td><td>Local signing is possible; ordinary propagation relies on server network access</td><td>Core social messages are public; infrastructure observes network activity</td><td>Clients, APIs, and feed-embedded Mini Apps</td></tr>
+              <tr><th scope="row"><a href="#bitchat">Bitchat</a></th><td>Nearby, serverless chat</td><td>Ephemeral chat packets and local identity state</td><td>Device keys plus out-of-band fingerprint verification</td><td>BLE and peer gossip with TTL</td><td>Core purpose: direct nearby exchange without servers</td><td>Noise sessions protect private messages; nearby traffic metadata remains observable</td><td>Messaging application protocol, not a general data runtime</td></tr>
+              <tr><th scope="row"><a href="#secure-scuttlebutt">Secure Scuttlebutt</a></th><td>Offline-first social feeds</td><td>Per-author signed append-only feed</td><td>Long-term author key; social graph shapes replication</td><td>Peer replication on LAN, direct links, pubs, or rooms</td><td>Strong: create, read, and later replicate from device stores</td><td>Public feeds replicate in plaintext; private-message formats encrypt content</td><td>Message types, client conventions, metafeeds</td></tr>
+              <tr><th scope="row"><a href="#briar">Briar</a></th><td>Private resilient messaging</td><td>Locally stored conversations and application data</td><td>Contact exchange and per-contact cryptographic relationships</td><td>Bluetooth, Wi-Fi, and Tor over internet</td><td>Direct Bluetooth/Wi-Fi exchange is a shipping product behavior</td><td>End-to-end protected content and metadata-minimizing design</td><td>Purpose-built messaging/forums/blogs, not a general third-party app runtime</td></tr>
+              <tr><th scope="row"><a href="#matrix">Matrix</a></th><td>Federated real-time communication</td><td>Room event graph plus deterministic state resolution</td><td>Homeserver-scoped user IDs, room membership, power levels, devices</td><td>Clients sync with homeservers; homeservers federate over HTTPS</td><td>Clients can cache; normal multi-party exchange depends on homeservers</td><td>Optional Olm/Megolm E2EE; homeservers retain graph and delivery metadata</td><td>Custom event types, clients, bots, bridges, application services</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="table-note">Maturity differs radically: ActivityPub and Matrix are deployed standards; AT Protocol, Nostr, Farcaster, SSB, Briar, and Bitchat have operating networks or products; DFOS, Willow, and Riot are earlier-stage efforts. Read the sources and threat models, not just this summary.</p>
+      </div>
+    </section>
+
+    <section class="yellow" id="why-willow">
+      <div class="wrap">
+        <p class="eyebrow">The central distinction</p>
+        <h2>Why Willow?</h2>
+        <p class="section-intro">Willow is deliberately below the product layer. It gives Riot a compact vocabulary for mergeable, selectively replicated bytes without dictating what a community, profile, checklist, or app must be.</p>
+        <div class="why-grid">
+          <article class="why-card"><h3>Willow provides</h3><ul><li>Namespaces, subspaces, hierarchical paths, timestamps, and payload digests.</li><li>Deterministic rules for which entries remain relevant and tools for reconciling partial replicas.</li><li>A data model independent of any single network transport.</li><li>Meadowcap capabilities for scoped read and write authority when an implementation adopts them.</li></ul><p>Willow does not define profiles, feeds, moderation, group membership, a miniapp catalog, or a WebView sandbox.</p></article>
+          <article class="why-card"><h3>Riot adds</h3><ul><li>Community and profile semantics, including organizer authority and app approval.</li><li>Signed, content-addressed HTML/CSS/JavaScript bundles reviewed before launch.</li><li>A nonpersistent native WebView with no network access and a narrow app-scoped data bridge.</li><li>Preview/accept policy, persistence, transport adapters, catalog UX, and community-facing native screens.</li></ul><p>Riot currently instantiates only part of the wider Willow family; using Willow does not imply interoperability with every Willow draft.</p></article>
+        </div>
+      </div>
+    </section>
+
+    <section id="data-path">
+      <div class="wrap">
+        <p class="eyebrow">Concrete, not abstract</p>
+        <h2>One checklist change, end to end</h2>
+        <div class="flow" aria-label="Checklist data flow">
+          <div class="flow-step">A person checks an item inside an approved miniapp.</div>
+          <div class="flow-step">The bridge validates the app-relative key and JSON value.</div>
+          <div class="flow-step">Riot writes a signed Willow entry under that app's community path.</div>
+          <div class="flow-step">Another device reconciles the entry over an available transport.</div>
+          <div class="flow-step">Riot projects the current value for the app key.</div>
+          <div class="flow-step">The open miniapp receives a change notification and redraws.</div>
+        </div>
+        <p class="proof-note"><strong>Proved:</strong> the native simulator app lifecycle, app bridge, redraw path, and headless loopback/Bonjour replication. <strong>Assumed, not proved:</strong> that the same path completes over BLE between two physical iPhones. That radio run has not been executed successfully yet.</p>
+      </div>
+    </section>
+
+    <section class="dark" id="profiles">
+      <div class="wrap">
+        <p class="eyebrow">Standardized deep dives</p>
+        <h2>A field guide, on each system's own terms</h2>
+        <p class="section-intro">Each profile asks the same questions: what is canonical, how data moves, who is trusted, what works offline, what privacy means, and how applications extend it.</p>
+        <div class="profiles">
+          <article class="profile" id="riot-willow"><div class="profile-head"><h3>Riot + Willow</h3><p>Community-owned state and approved small apps that can travel with it.</p></div><div class="profile-body"><dl class="facts"><div><dt>Canonical</dt><dd>Willow entries organized by namespace, subspace, path, timestamp, and digest. Riot maps app keys into isolated path prefixes and projects values for the runtime.</dd></div><div><dt>Movement</dt><dd>A sync state machine carries signed entries over transport adapters. Transport independence is architectural; current real-radio coverage is incomplete.</dd></div><div><dt>Trust + privacy</dt><dd>Devices validate signatures and authorization; organizers approve executable bundles. Current public spaces are not confidential, and private encrypted groups are not shipped.</dd></div><div><dt>Offline + extensions</dt><dd>Local state and installed apps run without a server. Signed bundles use <code>get</code>, <code>put</code>, <code>list</code>, <code>watch</code>, identity, and profile APIs inside a network-disabled WebView.</dd></div><div><dt>What it learns</dt><dd>From SSB and Briar: the device must remain useful during a partition. From Willow: data architecture should not be welded to one carrier.</dd></div><div><dt>Deliberate difference</dt><dd>The unit is shared application state, not only a social post, feed, room event, or message.</dd></div></dl><a class="source-link" href="https://willowprotocol.org/specs/" rel="noopener">Primary source: Willow specifications ↗</a></div></article>
+
+          <article class="profile" id="at-protocol"><div class="profile-head"><h3>AT Protocol</h3><p>An open protocol for large-scale public social applications.</p></div><div class="profile-body"><dl class="facts"><div><dt>Canonical</dt><dd>Each account has a signed, content-addressed public repository. The account's PDS is its authoritative repository location.</dd></div><div><dt>Movement</dt><dd>PDS hosts serve accounts; relays aggregate repository events; AppViews index application-specific views.</dd></div><div><dt>Trust + privacy</dt><dd>DIDs bind account keys and service location. Repository records are explicitly public and verifiable; private messaging needs additional application protocols.</dd></div><div><dt>Offline + extensions</dt><dd>Repositories can be exported for backup or migration, but normal social propagation is server-oriented. Lexicons define records and HTTP/WebSocket APIs.</dd></div><div><dt>What Riot learns</dt><dd>Portable identity and self-authenticating data reduce provider lock-in.</dd></div><div><dt>Deliberate difference</dt><dd>Riot targets community replicas on end devices and small offline apps, not a billion-account public firehose.</dd></div></dl><a class="source-link" href="https://atproto.com/specs/atp" rel="noopener">Primary source: AT Protocol specification ↗</a></div></article>
+
+          <article class="profile" id="activitypub"><div class="profile-head"><h3>ActivityPub</h3><p>A W3C protocol for decentralized social networking.</p></div><div class="profile-body"><dl class="facts"><div><dt>Canonical</dt><dd>ActivityStreams actors expose inboxes and outboxes containing activities and objects. The protocol does not mandate a universal content store or merge model.</dd></div><div><dt>Movement</dt><dd>A client-to-server API creates and manages activity; server-to-server HTTP delivers it across federated sites.</dd></div><div><dt>Trust + privacy</dt><dd>Actors live at server-controlled URLs and implementations enforce policy. Delivered content is processed by the participating servers; privacy and encryption are not uniform protocol guarantees.</dd></div><div><dt>Offline + extensions</dt><dd>Federation requires reachable servers. ActivityStreams vocabulary extensions let communities build many social applications.</dd></div><div><dt>What Riot learns</dt><dd>A small shared vocabulary can unlock a diverse social ecosystem.</dd></div><div><dt>Deliberate difference</dt><dd>Riot begins with replicated device state under partitions rather than server inbox delivery.</dd></div></dl><a class="source-link" href="https://www.w3.org/TR/activitypub/" rel="noopener">Primary source: W3C ActivityPub Recommendation ↗</a></div></article>
+
+          <article class="profile" id="dfos"><div class="profile-head"><h3>DFOS</h3><p>Verifiable identity and content chains with application-defined documents.</p></div><div class="profile-body"><dl class="facts"><div><dt>Canonical</dt><dd>Signed identity and content operations form chains; content operations commit to CIDs of canonical documents.</dd></div><div><dt>Movement</dt><dd>The Web Relay receives, verifies, stores, and serves chains, artifacts, countersignatures, and content blobs.</dd></div><div><dt>Trust + privacy</dt><dd>The proof plane is public. Content is access-controlled plaintext, not end-to-end encrypted: a relay operator can read what it stores.</dd></div><div><dt>Offline + extensions</dt><dd>Proofs and signed artifacts can be created and verified locally, but reaching another person needs a carrier or relay. Standard JSON Schemas are optional application vocabulary.</dd></div><div><dt>What Riot learns</dt><dd>Separate cryptographic proof from evolving social semantics, and name custody honestly.</dd></div><div><dt>Deliberate difference</dt><dd>Riot adds mergeable community state, device reconciliation, and a constrained executable app runtime; DFOS centers verifiable chains.</dd></div></dl><a class="source-link" href="https://protocol.dfos.com/spec/" rel="noopener">Primary source: DFOS Protocol v1 ↗</a></div></article>
+
+          <article class="profile" id="nostr"><div class="profile-head"><h3>Nostr</h3><p>A simple protocol of signed events exchanged through relays.</p></div><div class="profile-body"><dl class="facts"><div><dt>Canonical</dt><dd>The base object is a signed event with an ID, author public key, time, kind, tags, and content. NIPs add replaceable events and domain-specific conventions.</dd></div><div><dt>Movement</dt><dd>Clients publish events to relays and subscribe with filters. Relays choose storage and access policy.</dd></div><div><dt>Trust + privacy</dt><dd>Signatures authenticate events without trusting a relay. Public events expose content; encrypted DMs protect payloads while relays can still observe routing metadata.</dd></div><div><dt>Offline + extensions</dt><dd>Events can be signed and cached offline, then published later. New applications mostly emerge as event kinds and NIPs interpreted by clients.</dd></div><div><dt>What Riot learns</dt><dd>Simple, portable signed objects let clients and infrastructure evolve independently.</dd></div><div><dt>Deliberate difference</dt><dd>Riot reconciles app-scoped values inside a community namespace rather than distributing a global stream of immutable events.</dd></div></dl><a class="source-link" href="https://github.com/nostr-protocol/nips/blob/master/01.md" rel="noopener">Primary source: NIP-01 ↗</a></div></article>
+
+          <article class="profile" id="farcaster"><div class="profile-head"><h3>Farcaster</h3><p>A hybrid onchain/offchain network for permissionless social apps.</p></div><div class="profile-body"><dl class="facts"><div><dt>Canonical</dt><dd>Accounts and key authority are anchored in OP Mainnet contracts; most social actions are signed offchain messages.</dd></div><div><dt>Movement</dt><dd>Snapchain is a peer-to-peer network of servers that stores and synchronizes user data.</dd></div><div><dt>Trust + privacy</dt><dd>Onchain identity and delegated keys authorize public social messages. The core architecture is not a private-messaging system.</dd></div><div><dt>Offline + extensions</dt><dd>Normal distribution requires server reachability. Clients can vary widely, and Mini Apps run inside Farcaster feeds.</dd></div><div><dt>What Riot learns</dt><dd>A social graph can distribute applications where people already gather.</dd></div><div><dt>Deliberate difference</dt><dd>Riot miniapps run from signed bundles against a local community store with network access disabled, rather than as internet applications embedded in a global feed.</dd></div></dl><a class="source-link" href="https://docs.farcaster.xyz/learn/architecture/overview" rel="noopener">Primary source: Farcaster architecture ↗</a></div></article>
+
+          <article class="profile" id="bitchat"><div class="profile-head"><h3>Bitchat</h3><p>Secure peer-to-peer messaging over ephemeral nearby networks.</p></div><div class="profile-body"><dl class="facts"><div><dt>Canonical</dt><dd>Compact chat packets carry message, acknowledgment, routing, and fragmentation data; identity state remains on devices.</dd></div><div><dt>Movement</dt><dd>Peers use BLE-like transports and gossip packets with time-to-live limits; central routing servers are absent.</dd></div><div><dt>Trust + privacy</dt><dd>Noise XX establishes encrypted sessions. Human identity still requires out-of-band fingerprint verification, and nearby observers can detect radio activity.</dd></div><div><dt>Offline + extensions</dt><dd>Nearby operation without internet is the primary use case. The application layer is chat-specific rather than a general replicated datastore.</dd></div><div><dt>What Riot learns</dt><dd>Nearby exchange must tolerate loss, small frames, fragmentation, and ambiguous human identity.</dd></div><div><dt>Deliberate difference</dt><dd>Riot aims to reconcile durable community data and applications; Bitchat prioritizes ephemeral conversation.</dd></div></dl><a class="source-link" href="https://github.com/permissionlesstech/bitchat/blob/main/WHITEPAPER.md" rel="noopener">Primary source: Bitchat protocol whitepaper ↗</a></div></article>
+
+          <article class="profile" id="secure-scuttlebutt"><div class="profile-head"><h3>Secure Scuttlebutt</h3><p>A peer-to-peer protocol family for offline-first social applications.</p></div><div class="profile-body"><dl class="facts"><div><dt>Canonical</dt><dd>Each identity appends signed messages to its own hash-linked feed. Feed history is immutable; applications interpret message content.</dd></div><div><dt>Movement</dt><dd>Peers replicate feeds directly, on a LAN, or through pubs and rooms; EBT uses vector-clock-like state to exchange missing messages.</dd></div><div><dt>Trust + privacy</dt><dd>Author signatures authenticate feed messages. Public feeds are copied in plaintext; private-message formats encrypt selected content.</dd></div><div><dt>Offline + extensions</dt><dd>Local-first operation is foundational: write and read locally, replicate later. Message types, metafeeds, and client conventions form the extension surface.</dd></div><div><dt>What Riot learns</dt><dd>People can own useful local replicas instead of treating devices as thin server clients.</dd></div><div><dt>Deliberate difference</dt><dd>Willow permits mutable path-oriented projections and partial areas; classic SSB centers append-only author feeds.</dd></div></dl><a class="source-link" href="https://ssbc.github.io/scuttlebutt-protocol-guide/" rel="noopener">Primary source: Scuttlebutt Protocol Guide ↗</a></div></article>
+
+          <article class="profile" id="briar"><div class="profile-head"><h3>Briar</h3><p>A private messenger built to survive surveillance and network disruption.</p></div><div class="profile-body"><dl class="facts"><div><dt>Canonical</dt><dd>Conversations, groups, forums, and blogs are stored on participants' devices rather than a central service.</dd></div><div><dt>Movement</dt><dd>Devices can exchange through Bluetooth and Wi-Fi nearby, or through Tor when internet is available.</dd></div><div><dt>Trust + privacy</dt><dd>Contact exchange establishes cryptographic relationships. Briar states that neither content nor communication metadata is available to its project service.</dd></div><div><dt>Offline + extensions</dt><dd>Nearby communication is a real product path. Features are purpose-built; Briar is not a general third-party miniapp runtime.</dd></div><div><dt>What Riot learns</dt><dd>Threat modeling, metadata restraint, and direct device transports must shape the whole product—not sit in a privacy page.</dd></div><div><dt>Deliberate difference</dt><dd>Riot's first shipped model is public communal data and tool use; it must not borrow Briar's privacy language before encrypted groups exist.</dd></div></dl><a class="source-link" href="https://briarproject.org/how-it-works/" rel="noopener">Primary source: Briar — How it works ↗</a></div></article>
+
+          <article class="profile" id="matrix"><div class="profile-head"><h3>Matrix</h3><p>Open APIs for decentralized, federated real-time communication.</p></div><div class="profile-body"><dl class="facts"><div><dt>Canonical</dt><dd>Room events form a partially ordered event graph. Deterministic state resolution selects room state when events conflict.</dd></div><div><dt>Movement</dt><dd>Clients sync history with a homeserver; homeservers replicate room history over signed federation APIs.</dd></div><div><dt>Trust + privacy</dt><dd>Room authorization uses membership and power levels. Olm/Megolm can protect message content end to end, while homeservers still process graph and delivery metadata.</dd></div><div><dt>Offline + extensions</dt><dd>Clients can retain local history, but ordinary exchange depends on homeservers. Custom event types, application services, bots, and bridges are broad extension points.</dd></div><div><dt>What Riot learns</dt><dd>Deterministic conflict handling and explicit room authority are essential once multiple parties write shared state.</dd></div><div><dt>Deliberate difference</dt><dd>Riot places canonical replicas and miniapps on participant devices; Matrix's normal architecture synchronizes clients through federated homeservers.</dd></div></dl><a class="source-link" href="https://spec.matrix.org/latest/" rel="noopener">Primary source: Matrix specification ↗</a></div></article>
+        </div>
+      </div>
+    </section>
+
+    <section class="yellow" id="limits">
+      <div class="wrap">
+        <p class="eyebrow">Prototype means prototype</p>
+        <h2>What Riot does not provide yet</h2>
+        <div class="limits-grid">
+          <article class="limit-card"><span class="label">Confidentiality</span><p>Private encrypted groups are not shipped. Current public spaces are not confidential.</p></article>
+          <article class="limit-card"><span class="label">Physical radios</span><p>The complete sync path has not been verified over BLE between two physical iPhones.</p></article>
+          <article class="limit-card"><span class="label">Persistence</span><p>Durable multi-community storage is not complete across every app surface and lifecycle.</p></article>
+          <article class="limit-card"><span class="label">Interoperability</span><p>Riot is not an interoperable implementation of every Willow draft or transport specification.</p></article>
+          <article class="limit-card"><span class="label">Security review</span><p>The signed miniapp catalog and runtime are a prototype, not an audited app store.</p></article>
+          <article class="limit-card"><span class="label">Availability</span><p>A carrier can still delay or deny exchange. Local-first removes a mandatory home server; it does not repeal radio range, device loss, or hostile peers.</p></article>
+        </div>
+      </div>
+    </section>
+
+    <section id="sources">
+      <div class="wrap">
+        <p class="eyebrow">Maintainer documents, not vibes</p>
+        <h2>Primary source ledger</h2>
+        <p class="section-intro">Checked 13 July 2026. Protocols evolve; follow these specifications for current normative behavior and status.</p>
+        <ul class="sources">
+          <li><strong>Willow</strong><a href="https://willowprotocol.org/specs/data-model/" rel="noopener">Data Model</a> · <a href="https://willowprotocol.org/specs/meadowcap/" rel="noopener">Meadowcap</a> · <a href="https://willowprotocol.org/specs/willow25/" rel="noopener">Willow'25</a> · <a href="https://willowprotocol.org/specs/wtp/" rel="noopener">WTP</a></li>
+          <li><strong>AT Protocol</strong><a href="https://atproto.com/specs/atp" rel="noopener">Protocol</a> · <a href="https://atproto.com/specs/repository" rel="noopener">Repository</a> · <a href="https://atproto.com/specs/account" rel="noopener">Accounts</a></li>
+          <li><strong>ActivityPub</strong><a href="https://www.w3.org/TR/activitypub/" rel="noopener">W3C Recommendation</a> · <a href="https://www.w3.org/TR/activitystreams-core/" rel="noopener">ActivityStreams Core</a></li>
+          <li><strong>DFOS</strong><a href="https://protocol.dfos.com/spec/" rel="noopener">Protocol v1</a> · <a href="https://protocol.dfos.com/content-model/" rel="noopener">Content Model</a> · <a href="https://protocol.dfos.com/web-relay/" rel="noopener">Web Relay</a></li>
+          <li><strong>Nostr</strong><a href="https://github.com/nostr-protocol/nips/blob/master/01.md" rel="noopener">NIP-01</a> · <a href="https://github.com/nostr-protocol/nips/blob/master/44.md" rel="noopener">NIP-44</a></li>
+          <li><strong>Farcaster</strong><a href="https://docs.farcaster.xyz/learn/architecture/overview" rel="noopener">Architecture</a> · <a href="https://miniapps.farcaster.xyz/" rel="noopener">Mini Apps</a></li>
+          <li><strong>Bitchat</strong><a href="https://github.com/permissionlesstech/bitchat/blob/main/WHITEPAPER.md" rel="noopener">Protocol whitepaper</a> · <a href="https://github.com/permissionlesstech/bitchat" rel="noopener">Reference project</a></li>
+          <li><strong>Secure Scuttlebutt</strong><a href="https://ssbc.github.io/scuttlebutt-protocol-guide/" rel="noopener">Protocol Guide</a></li>
+          <li><strong>Briar</strong><a href="https://briarproject.org/how-it-works/" rel="noopener">How it works</a> · <a href="https://briarproject.org/privacy-policy/" rel="noopener">Privacy Policy</a></li>
+          <li><strong>Matrix</strong><a href="https://spec.matrix.org/latest/" rel="noopener">Specification</a> · <a href="https://spec.matrix.org/latest/rooms/" rel="noopener">Room versions</a> · <a href="https://spec.matrix.org/latest/server-server-api/" rel="noopener">Federation API</a></li>
+        </ul>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <div class="footer-inner"><p>Riot · a protest.net project · prototype</p><p><a href="/">Riot home</a> · <a href="#content">Back to top</a></p></div>
+  </footer>
+</body>
+</html>
