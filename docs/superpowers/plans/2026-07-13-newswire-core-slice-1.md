@@ -1,6 +1,6 @@
 # Newswire Core Slice 1 Implementation Plan
 
-Plan review gate: **PENDING. Do not execute until all three plan reviewers pass this exact text.**
+Plan review gate: **REVISED AFTER ITERATION 1; PENDING. Do not execute until all three plan reviewers pass this exact text.**
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -17,7 +17,8 @@ Plan review gate: **PENDING. Do not execute until all three plan reviewers pass 
 This plan is complete when a Rust integration test can:
 
 1. create a signed descriptor with a fixed editorial roster;
-2. create posts from two ordinary communal authors;
+2. create freeform, operational-alert, and operational-request posts from two
+   ordinary communal authors;
 3. create feature, verify, correct, hide, tombstone, and retract actions from a recognized editor;
 4. import the identical signed bytes through the ordinary evidence bundle path;
 5. rebuild the same projection from a fresh store; and
@@ -46,6 +47,7 @@ bytes after canonical decoding:
 | Body or editorial correction | 65,536 bytes |
 | Coarse location | 2,048 bytes |
 | Source claims | 16 entries, 1–1,024 bytes each |
+| Request contact instructions | 2,048 bytes |
 | Editorial reason | 4,096 bytes |
 | Records accepted by one projection call | 1,024 |
 
@@ -63,6 +65,7 @@ wrong schemas, and non-canonical re-encodings fail closed.
 - Create `crates/riot-core/src/newswire/store.rs` — scan a verified `EvidenceStore` and project one pinned descriptor.
 - Modify `crates/riot-core/src/lib.rs` — export `newswire`.
 - Modify `crates/riot-core/src/session.rs` — structurally admit and retain valid Newswire payloads.
+- Modify `crates/riot-core/src/import/bundle.rs` — recognize reserved Newswire paths before alert fallback.
 - Modify `crates/riot-core/src/import/join.rs` — update retained-payload documentation only; no join semantic change.
 - Modify `crates/riot-core/Cargo.toml` — register conformance integration tests.
 - Create `crates/riot-core/tests/newswire_codec.rs`.
@@ -71,7 +74,7 @@ wrong schemas, and non-canonical re-encodings fail closed.
 - Create `crates/riot-core/tests/newswire_projection.rs`.
 - Create `crates/riot-core/tests/newswire_end_to_end.rs`.
 - Create `crates/riot-core/examples/pack_newswire_vectors.rs`.
-- Create `fixtures/newswire/manifest.json` and three generated `.cbor` payload fixtures.
+- Create `fixtures/newswire/manifest.json`, three `.cbor` payload fixtures, and three complete `.riot-evidence` signed-record fixtures.
 - Create `scripts/newswire/repack-vectors.sh`.
 
 No FFI or application file is touched in this slice.
@@ -94,7 +97,7 @@ use riot_core::newswire::{
     decode_editorial_action, decode_news_post, decode_space_descriptor,
     encode_editorial_action, encode_news_post, encode_space_descriptor,
     AlertProfileV1, EditorialActionKind, EditorialActionV1, NewsPostV1,
-    SpaceDescriptorV1,
+    OperationalProfileV1, RequestKind, RequestProfileV1, SpaceDescriptorV1,
 };
 
 const SPACE_ID: [u8; 32] = [0x11; 32];
@@ -142,9 +145,9 @@ fn all_newswire_payloads_round_trip_canonically() {
 ```
 
 Add table-driven RED cases for every frozen boundary, duplicate roster keys,
-invalid action-field combinations, operational alert requirements, unknown
-CBOR keys, misordered keys, indefinite maps, trailing bytes, and a one-byte
-non-canonical integer encoding.
+invalid action-field combinations, operational alert and request requirements,
+unknown CBOR keys, misordered keys, indefinite maps, trailing bytes, and a
+one-byte non-canonical integer encoding.
 
 Run:
 
@@ -185,6 +188,22 @@ pub struct AlertProfileV1 {
     pub valid_from_unix_seconds: Option<u64>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RequestKind { Need = 0, Offer = 1 }
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RequestProfileV1 {
+    pub kind: RequestKind,
+    pub needed_by_unix_seconds: Option<u64>,
+    pub contact_instructions: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OperationalProfileV1 {
+    Alert(AlertProfileV1),
+    Request(RequestProfileV1),
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NewsPostV1 {
     pub space_descriptor_entry_id: [u8; 32],
@@ -195,7 +214,7 @@ pub struct NewsPostV1 {
     pub expires_at_unix_seconds: Option<u64>,
     pub coarse_location: Option<String>,
     pub source_claims: Vec<String>,
-    pub operational_profile: Option<AlertProfileV1>,
+    pub operational_profile: Option<OperationalProfileV1>,
     pub ai_assisted: bool,
 }
 
@@ -217,11 +236,14 @@ pub struct EditorialActionV1 {
 
 Encode definite CBOR maps with ascending integer keys. Space keys are `0..=9`,
 post keys are `0..=10`, and action keys are `0..=5`; optional keys are omitted.
-Key `0` is always the schema string. `AlertProfileV1` is a closed four-key
-map. When it is present, `expires_at_unix_seconds`, `coarse_location`, and at
-least one source claim are required. Export one `NewswireModelError` enum with
-stable variants naming every validation failure; do not return raw minicbor
-errors.
+Key `0` is always the schema string. `OperationalProfileV1` is a closed map:
+key `0` is `0` for Alert or `1` for Request, and key `1` contains the closed
+variant map. Alert carries urgency, severity, certainty, and optional
+valid-from; it requires post expiry, coarse location, and at least one source
+claim. Request carries Need/Offer, optional needed-by, and required contact
+instructions; it requires post expiry and coarse location. No other profile
+tag is accepted. Export one `NewswireModelError` enum with stable variants
+naming every validation failure; do not return raw minicbor errors.
 
 Register every conformance test now so later tasks do not silently run without
 their required feature:
@@ -404,6 +426,7 @@ record.
 ## Task 3: Admit and retain Newswire records through the ordinary store
 
 **Files:**
+- Modify: `crates/riot-core/src/import/bundle.rs`
 - Modify: `crates/riot-core/src/session.rs`
 - Modify: `crates/riot-core/src/import/join.rs`
 - Create: `crates/riot-core/src/newswire/store.rs`
@@ -428,10 +451,38 @@ Run:
 cargo test -p riot-core --features conformance --test newswire_import
 ```
 
-Expected: FAIL because session admission does not recognize Newswire paths and
-does not retain their payloads.
+Expected: FAIL because bundle schema verification rejects Newswire before
+session admission can recognize or retain it.
 
-- [ ] **Step 2: Add one structural classification branch to `inspect_inner`**
+- [ ] **Step 2: Reserve Newswire at bundle verification, then retain it in `inspect_inner`**
+
+In `import/bundle.rs`, add this branch inside `AppIndexSlot::None`, before the
+existing malformed reserved-path and profile/alert fallback:
+
+```rust
+if crate::newswire::is_newswire_prefix(entry.path()) {
+    crate::newswire::inspect_verified_components(&entry, &frame.payload_bytes).is_ok()
+} else {
+    let is_malformed_reserved_path =
+        entry.path().components().next().is_some_and(|component| {
+            let component = component.as_ref();
+            component == crate::apps::index::APP_INDEX_COMPONENT
+                || component == crate::apps::entry::APPS_COMPONENT
+        });
+    if is_malformed_reserved_path {
+        false
+    } else if crate::profile::path::is_profile_prefixed(entry.path()) {
+        crate::profile::path::classify_profile_path(entry.path()).is_some()
+            && crate::profile::card::decode_profile_card(&frame.payload_bytes).is_ok()
+    } else {
+        crate::model::decode_alert(&frame.payload_bytes).is_ok()
+    }
+}
+```
+
+This makes `newswire/v1` a reserved family: malformed Newswire never falls
+through to alert decoding, while an invalid item remains isolated from valid
+siblings by the existing item-status machinery.
 
 Compute Newswire classification before the alert fallback:
 
@@ -523,7 +574,8 @@ typed error instead of a partial projection.
 cargo test -p riot-core --features conformance --test newswire_import
 cargo test -p riot-core --all-features
 git add crates/riot-core/src/session.rs crates/riot-core/src/import/join.rs \
-  crates/riot-core/src/newswire crates/riot-core/tests/newswire_import.rs
+  crates/riot-core/src/import/bundle.rs crates/riot-core/src/newswire \
+  crates/riot-core/tests/newswire_import.rs
 git diff --cached --check
 git commit -m "feat(newswire): admit signed records into the evidence store"
 ```
@@ -555,6 +607,7 @@ of this matrix in named tests:
 | active tombstone | no body, source, location, or correction text in ordinary projection |
 | later valid retract | target action inactive, both remain in history |
 | retract of retract/later/missing/wrong-space target | no effect |
+| feature/verify/correct/hide/tombstone targeting absent, action, or wrong-space post | no effect |
 | unknown editor or forged descriptor binding | no collective effect |
 | arrival permutations | byte-for-byte equal projection |
 
@@ -566,16 +619,44 @@ cargo test -p riot-core --features conformance --test newswire_projection
 
 Expected: FAIL because the reducer does not exist.
 
+The overflow case is a unit test inside `projection.rs`, where the test module
+can construct the private clock fields at `u64::MAX`; no production or
+conformance API accepts independently chosen Unix and TAI values.
+
 - [ ] **Step 2: Add presentation-safe projection types**
 
 Use complete IDs and named state, never a blended ranking:
 
 ```rust
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ProjectionClockV1 {
-    pub unix_seconds: u64,
-    pub tai_j2000_micros: u64,
+    unix_seconds: u64,
+    tai_j2000_micros: u64,
 }
 
+impl ProjectionClockV1 {
+    pub fn system() -> Result<Self, crate::willow::WillowError> {
+        Ok(Self::from_snapshot(crate::willow::system_snapshot()?))
+    }
+
+    pub fn unix_seconds(&self) -> u64 { self.unix_seconds }
+    pub fn tai_j2000_micros(&self) -> u64 { self.tai_j2000_micros }
+
+    fn from_snapshot(snapshot: crate::willow::ClockSnapshot) -> Self {
+        Self {
+            unix_seconds: snapshot.unix_seconds,
+            tai_j2000_micros: snapshot.tai_j2000_micros,
+        }
+    }
+
+    #[cfg(feature = "conformance")]
+    pub fn from_unix_seconds(unix_seconds: i64) -> Result<Self, crate::willow::WillowError> {
+        let snapshot = crate::willow::snapshot_from_unix_seconds(unix_seconds, 0)?;
+        Ok(Self::from_snapshot(snapshot))
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NewswireProjection {
     pub open_wire: Vec<ProjectedPost>,
     pub front_page: Vec<ProjectedPost>,
@@ -594,6 +675,9 @@ pub enum PostTreatment {
 `ProjectedPost` may expose body, location, sources, and correction text only
 for `Ordinary`/explicit hidden-detail views. `Tombstoned` retains complete post
 ID, signer, entry time, action signer, reason, and history IDs only.
+The clock fields remain private: production obtains both values from one
+`system_snapshot`; conformance obtains both from one pinned hifitime conversion.
+There is no constructor accepting independent Unix and TAI values.
 
 - [ ] **Step 3: Implement the reducer exactly once**
 
@@ -606,6 +690,12 @@ marks a non-retraction action inactive when any later valid retraction targets
 it; forbids retraction targets that are retractions; then applies tombstone,
 hide, feature, verify, and correction rules from the approved design. No map or
 filesystem iteration order enters output.
+
+For each non-retraction action, resolve `target_entry_id` to an eligible
+`NewsPost` under the same pinned descriptor before it can become active. An
+absent target, an editorial-action target, a descriptor target, or a post from
+another descriptor has no effect and remains visible only in history. Resolve
+retraction targets separately under the earlier/non-retraction rule.
 
 Expose the store composition without duplicating reducer logic:
 
@@ -639,17 +729,25 @@ git commit -m "feat(newswire): derive deterministic collective views"
 - Create: `fixtures/newswire/space-v1.cbor`
 - Create: `fixtures/newswire/post-v1.cbor`
 - Create: `fixtures/newswire/editorial-action-v1.cbor`
+- Create: `fixtures/newswire/space-v1.riot-evidence`
+- Create: `fixtures/newswire/post-v1.riot-evidence`
+- Create: `fixtures/newswire/editorial-action-v1.riot-evidence`
 - Create: `scripts/newswire/repack-vectors.sh`
 - Create: `crates/riot-core/tests/newswire_end_to_end.rs`
 - Modify: `crates/riot-core/Cargo.toml`
 
 - [ ] **Step 1: Write the failing drift and rebuild test**
 
-The test reads the three fixture bytes, strictly decodes/re-encodes them, and
-compares SHA-256 plus Riot EntryId values to lowercase full IDs in
-`fixtures/newswire/manifest.json`. It then creates deterministic signed entries,
-imports them into store A, exports the ordinary signed bundle bytes, imports
-those bytes in reverse order into fresh store B, and asserts:
+The test reads the three payload fixtures and three complete signed
+`.riot-evidence` fixtures. It strictly decodes/re-encodes every payload,
+bundle, canonical entry, capability, and signature; verifies capability and
+signature; and compares payload SHA-256, Riot EntryId, and evidence digest to
+lowercase full IDs in `fixtures/newswire/manifest.json`. It also asserts the
+manifest's fixed `unix_seconds` and `tai_j2000_micros` equal
+`ProjectionClockV1::from_unix_seconds(unix_seconds)`, pinning the paired
+hifitime/Willow conversion. It then imports the committed signed bytes into
+store A, imports the same records in reverse order into fresh store B, and
+asserts:
 
 ```rust
 assert_eq!(
@@ -658,10 +756,11 @@ assert_eq!(
 );
 ```
 
-The scenario includes two publishers, one recognized editor, one unknown
-editor, feature, verification, correction, hide plus retraction, tombstone on a
-second post, an expired post, and a future-quarantined post. Assert no ID is
-truncated in the manifest or debug projection.
+The scenario includes freeform, alert-profile, and request-profile posts; two
+publishers; one recognized editor; one unknown editor; feature, verification,
+correction, hide plus retraction; tombstone on a second post; an expired post;
+and a future-quarantined post. Assert no ID is truncated in the manifest or
+debug projection.
 
 Run:
 
@@ -673,9 +772,20 @@ Expected: FAIL because vectors and packer do not exist.
 
 - [ ] **Step 2: Add deterministic vector generation**
 
-The example uses fixed public fixture values and the canonical encoders only;
-it writes the three payload files plus a stable pretty JSON manifest with one
-trailing newline. The script is the only regeneration entry point:
+The example uses fixed, clearly named conformance-only fixture secrets to
+construct a founding organizer (`namespace_id == subspace_id`), an ordinary
+publisher, and a roster editor. It calls the production-equivalent canonical
+encoders, signed factories, and evidence-bundle encoder; writes the three
+payload files, the three complete single-record `.riot-evidence` files, and a
+stable pretty JSON manifest with one trailing newline. The manifest's only
+top-level keys are `clock` and `records`. `clock` contains the fixed integer
+`unix_seconds = 1783000000` and the exact integer `tai_j2000_micros` returned by
+the pinned conversion. `records` contains exactly three rows in space, post,
+editorial-action dependency order. Each row contains `name`, `payload_file`,
+`bundle_file`, and the computed lowercase 64-hex `payload_sha256`, `entry_id`,
+and `evidence_digest`; generation fails unless every hex string decodes to 32
+bytes and every filename is unique. The script is the only regeneration entry
+point:
 
 Register the packer beside the existing conformance-only example:
 
@@ -692,9 +802,10 @@ cargo run -p riot-core --features conformance --example pack_newswire_vectors
 cargo test -p riot-core --features conformance --test newswire_end_to_end
 ```
 
-Do not place signing secrets in the fixture manifest. Golden signed entries are
-constructed in the conformance test from deterministic test-only authors; the
-committed CBOR files are payload vectors.
+Do not place signing secrets in the fixture manifest or generated artifacts.
+The conformance-only packer source may contain deterministic fixture seeds;
+`cargo xtask validate-contracts` must continue proving those constructors and
+seeds are absent from the `riot-ffi` release graph.
 
 - [ ] **Step 3: Regenerate, verify, and commit Task 5**
 
