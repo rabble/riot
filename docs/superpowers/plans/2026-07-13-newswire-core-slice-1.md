@@ -1,6 +1,6 @@
 # Newswire Core Slice 1 Implementation Plan
 
-Plan review gate: **MANUAL REVISION AUTHORIZED AFTER ITERATION 3; PENDING FRESH FINAL REVIEW.**
+Plan review gate: **SECOND MANUAL REVISION AUTHORIZED; PENDING FRESH FINAL REVIEW.**
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -94,13 +94,19 @@ wrong schemas, and non-canonical re-encodings fail closed.
 
 No FFI or application file is touched in this slice.
 
+Every new production module also contains `#[cfg(test)]` unit tests that run
+without the `conformance` feature. The conformance integration tests prove
+deterministic factories and committed vectors; the default-feature unit tests
+exercise every production line and branch so the repository's exact
+`cargo tarpaulin --fail-under 100` command measures the new code instead of
+skipping it.
+
 ## Task 1: Freeze canonical Newswire payloads
 
 **Files:**
 - Create: `crates/riot-core/src/newswire/mod.rs`
 - Create: `crates/riot-core/src/newswire/model.rs`
 - Modify: `crates/riot-core/src/lib.rs`
-- Modify: `crates/riot-core/Cargo.toml`
 - Test: `crates/riot-core/tests/newswire_codec.rs`
 
 - [ ] **Step 1: Write failing public codec tests**
@@ -167,7 +173,7 @@ one-byte non-canonical integer encoding.
 Run:
 
 ```bash
-cargo test -p riot-core --features conformance --test newswire_codec
+cargo test -p riot-core --test newswire_codec
 ```
 
 Expected: FAIL because `riot_core::newswire` does not exist.
@@ -260,20 +266,16 @@ instructions; it requires post expiry and coarse location. No other profile
 tag is accepted. Export one `NewswireModelError` enum with stable variants
 naming every validation failure; do not return raw minicbor errors.
 
-Register only the test file created in this task:
-
-```toml
-[[test]]
-name = "newswire_codec"
-required-features = ["conformance"]
-```
+Mirror the boundary and canonicality table in `model.rs` unit tests. Those unit
+tests use no injected clock, entropy, or raw key constructor and therefore run
+under the default feature set used by tarpaulin.
 
 - [ ] **Step 3: Prove canonical and hostile cases pass**
 
 Run:
 
 ```bash
-cargo test -p riot-core --features conformance --test newswire_codec
+cargo test -p riot-core --test newswire_codec
 cargo test -p riot-core --all-features
 ```
 
@@ -283,7 +285,7 @@ Expected: all codec tests PASS and existing tests remain green.
 
 ```bash
 git add crates/riot-core/src/lib.rs crates/riot-core/src/newswire \
-  crates/riot-core/tests/newswire_codec.rs crates/riot-core/Cargo.toml
+  crates/riot-core/tests/newswire_codec.rs
 git diff --cached --check
 git commit -m "feat(newswire): add canonical payload codecs"
 ```
@@ -417,10 +419,20 @@ digest/length, canonical payload bytes, exact path time/digest, descriptor
 founder binding, and envelope/payload duplicated values. Descriptor-dependent
 post/action authority is checked later against the pinned descriptor.
 
+Add default-feature unit tests inside `path.rs` and `entry.rs`. Path unit tests
+cover every exact family, component count/length, timestamp encoding, malformed
+reserved prefix, and path error. Entry unit tests use
+`generate_space_organizer_author()` plus
+`generate_communal_author_for_namespace()` and call the private
+snapshot-accepting builder directly, covering all production success and error
+branches without exporting an injectable release API. The conformance
+integration test remains the deterministic cross-record proof.
+
 - [ ] **Step 4: Run and commit Task 2**
 
 ```bash
 cargo test -p riot-core --features conformance --test newswire_entry
+cargo test -p riot-core --lib newswire::
 cargo test -p riot-core --all-features
 git add crates/riot-core/src/newswire crates/riot-core/tests/newswire_entry.rs \
   crates/riot-core/Cargo.toml
@@ -439,7 +451,6 @@ record.
 - Modify: `crates/riot-core/src/import/join.rs`
 - Create: `crates/riot-core/src/newswire/store.rs`
 - Modify: `crates/riot-core/src/newswire/mod.rs`
-- Modify: `crates/riot-core/Cargo.toml`
 - Test: `crates/riot-core/tests/newswire_import.rs`
 
 - [ ] **Step 1: Write failing import tests**
@@ -457,19 +468,16 @@ alert or opaque app admission.
 Run:
 
 ```bash
-cargo test -p riot-core --features conformance --test newswire_import
+cargo test -p riot-core --test newswire_import
 ```
 
 Expected: FAIL because bundle schema verification rejects Newswire before
 session admission can recognize or retain it.
 
-Register `newswire_import` only when its file exists:
-
-```toml
-[[test]]
-name = "newswire_import"
-required-features = ["conformance"]
-```
+`newswire_import.rs` uses production organizer/member factories and the normal
+bundle API, so it remains an auto-discovered default-feature integration test
+and runs under tarpaulin. Deterministic identities are unnecessary for its
+admission assertions.
 
 - [ ] **Step 2: Reserve Newswire at bundle verification, then retain it in `inspect_inner`**
 
@@ -585,14 +593,32 @@ EntryId. An absent descriptor, duplicate descriptor ID, missing retained
 payload, malformed retained record, or more than 1,024 records returns a stable
 typed error instead of a partial projection.
 
+Put tuple decoding behind a private pure helper so impossible/corrupt-store
+branches remain directly testable without adding a store mutation backdoor:
+
+```rust
+fn decode_scanned_entries(
+    descriptor_id: EntryId,
+    entries: Vec<crate::import::join::PrefixedEntry>,
+) -> Result<Vec<VerifiedNewswireRecord>, NewswireStoreError>;
+```
+
+Default-feature unit tests in `store.rs` pass fabricated prefix-query tuples to
+that helper and assert exact errors for duplicate descriptor ID, missing
+payload, malformed retained payload, entry/payload/path mismatch, and 1,025
+distinct records. The default-feature `newswire_import.rs` integration test
+asserts `load_space_descriptor` on an empty store returns `DescriptorNotFound`,
+then asserts the valid imported descriptor and records load successfully.
+
 - [ ] **Step 4: Run and commit Task 3**
 
 ```bash
-cargo test -p riot-core --features conformance --test newswire_import
+cargo test -p riot-core --test newswire_import
+cargo test -p riot-core --lib newswire::store
 cargo test -p riot-core --all-features
 git add crates/riot-core/src/session.rs crates/riot-core/src/import/join.rs \
   crates/riot-core/src/import/bundle.rs crates/riot-core/src/newswire \
-  crates/riot-core/tests/newswire_import.rs crates/riot-core/Cargo.toml
+  crates/riot-core/tests/newswire_import.rs
 git diff --cached --check
 git commit -m "feat(newswire): admit signed records into the evidence store"
 ```
@@ -651,6 +677,10 @@ required-features = ["conformance"]
 The overflow case is a unit test inside `projection.rs`, where the test module
 can construct the private clock fields at `u64::MAX`; no production or
 conformance API accepts independently chosen Unix and TAI values.
+Every other matrix row is also covered by default-feature unit tests in
+`projection.rs` using directly constructed verified records. The
+`newswire_projection` conformance integration test separately proves the
+public deterministic-clock and store composition surface.
 
 - [ ] **Step 2: Add presentation-safe projection types**
 
@@ -699,6 +729,30 @@ pub enum PostTreatment {
     Hidden { actions: Vec<EntryId> },
     Tombstoned { actions: Vec<EntryId> },
 }
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectedPost {
+    pub entry_id: EntryId,
+    pub author_id: [u8; 32],
+    pub tai_j2000_micros: u64,
+    pub body: Option<String>,
+    pub source_claims: Vec<String>,
+    pub verification_ids: Vec<EntryId>,
+    pub correction_ids: Vec<EntryId>,
+    pub treatment: PostTreatment,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectedEditorialAction {
+    pub entry_id: EntryId,
+    pub signer_id: [u8; 32],
+    pub tai_j2000_micros: u64,
+    pub target_entry_id: EntryId,
+    pub kind: EditorialActionKind,
+    pub reason: Option<String>,
+    pub correction_text: Option<String>,
+    pub active: bool,
+}
 ```
 
 `ProjectedPost` may expose body, location, sources, and correction text only
@@ -746,6 +800,7 @@ pub fn project_space(
 
 ```bash
 cargo test -p riot-core --features conformance --test newswire_projection
+cargo test -p riot-core --lib newswire::projection
 cargo test -p riot-core --all-features
 git add crates/riot-core/src/newswire crates/riot-core/tests/newswire_projection.rs \
   crates/riot-core/Cargo.toml
@@ -793,6 +848,41 @@ assert_eq!(
     project_space(&store_b, descriptor_id, clock).unwrap(),
 );
 ```
+
+Equality is only the convergence assertion. Capture each projection and also
+assert the scenario's fixed semantics:
+
+```rust
+let ids = |posts: &[ProjectedPost]| posts.iter().map(|post| post.entry_id).collect::<Vec<_>>();
+assert_eq!(ids(&projection_a.front_page), vec![featured_post_id]);
+assert_eq!(
+    ids(&projection_a.open_wire),
+    vec![tombstoned_post_id, request_post_id, featured_post_id],
+);
+assert_eq!(ids(&projection_a.earlier), vec![expired_post_id]);
+assert_eq!(projection_a.future_quarantine, vec![future_post_id]);
+let featured = projection_a.open_wire.iter().find(|post| post.entry_id == featured_post_id).unwrap();
+assert_eq!(featured.treatment, PostTreatment::Ordinary);
+assert_eq!(featured.verification_ids, vec![verify_action_id]);
+assert_eq!(featured.correction_ids, vec![correct_action_id]);
+let tombstoned = projection_a.open_wire.iter().find(|post| post.entry_id == tombstoned_post_id).unwrap();
+assert!(tombstoned.body.is_none());
+assert!(tombstoned.source_claims.is_empty());
+assert!(tombstoned.correction_ids.is_empty());
+assert!(!ids(&projection_a.front_page).contains(&request_post_id));
+assert_eq!(
+    projection_a.editorial_history.iter().map(|action| action.entry_id).collect::<Vec<_>>(),
+    recognized_action_ids_in_total_order,
+);
+```
+
+The hide on `featured_post_id` is followed by a valid retraction, hence
+`Ordinary`. The unknown editor's feature targets `request_post_id`, so that
+post remains off the Front page. `recognized_action_ids_in_total_order`
+contains feature, verify, correct, hide, retract, and tombstone IDs in fixed
+`(TAI time, EntryId)` order. Repeat the same semantic assertions for
+`projection_b`, or assert `projection_b == projection_a` after `projection_a`
+has passed every semantic assertion.
 
 The scenario includes freeform, alert-profile, and request-profile posts; two
 publishers; one recognized editor; one unknown editor; feature, verification,
