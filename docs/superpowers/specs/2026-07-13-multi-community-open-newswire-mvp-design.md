@@ -1,7 +1,7 @@
 # Multi-Community Open Newswire MVP Design
 
 Date: 2026-07-13
-Status: Revised after written-spec review; pending approval and design review gate
+Status: Revised after design review round 1; pending gate re-review
 
 ## Purpose
 
@@ -189,10 +189,41 @@ Both Riot and the browser use the same review-before-signing flow:
 6. Show local success plus Pending exchange until at least one selected
    transport accepts the record.
 
+The default Newswire composer creates a freeform `NewsPostV1`; only headline
+and body are required. Choosing an existing operational alert or request
+profile switches the composer to that profile's stricter required fields. For
+this Newswire route, this rule supersedes the default **Post an update** field
+requirements in the earlier community-navigation and local-first PWA designs.
+
 The browser creates and retains a local signing key by default. A person may
 explicitly use a one-off ephemeral identity when continuity is unsafe. Losing a
 browser key is unrecoverable in the MVP; the product explains that a new key is
 a new pseudonym.
+
+The browser persists signed posts and retry state in a durable local outbox
+before attempting gateway submission. Reloading or restarting the browser MUST
+not discard a locally successful pending post. A persistent browser pseudonym
+is protected only as well as the JavaScript delivered by its serving origin;
+the review screen states that limitation. Gateway-delivered web code MUST NOT
+generate, import, retain, or use an editorial-roster key. Editorial actions are
+signed only in Riot's native trusted code in this MVP.
+
+### Editorial action flow
+
+Every post detail exposes **Editorial history** to every reader. In Riot,
+recognized editorial keys additionally expose **Editorial action**. The action
+form conditionally requires the reason and correction text defined by the
+record contract. Its immutable review shows the complete target entry ID,
+community, acting editor key, action, reason, and replacement text before
+signing. A successful signature commits locally and shows Pending exchange;
+failure preserves the draft. Non-editors never receive an enabled editorial
+control, and UI visibility is never an authorization check. `correct` is
+labelled **Editorial correction** so it cannot be mistaken for an author edit.
+
+An empty Newswire says that no reports have arrived. If the Open wire has posts
+but none is currently featured, the Front page says that the collective has
+not selected a feature and links to the Open wire. Offline/stale state and
+projection failure are distinct from both empty states.
 
 ### Community tools
 
@@ -291,38 +322,60 @@ contains:
 - languages;
 - coarse geographic and topic tags;
 - fixed ordered roster of editorial public keys;
-- creation time and founding-signer signature; and
+- creation time; and
 - optional predecessor/successor space identifier.
 
 The descriptor never contains secret keys, precise member location, a complete
 membership list, or an authoritative gateway URL.
 
+For an MVP-created space, the descriptor is a signed Willow entry at
+`newswire/v1/descriptors/<random-16-byte-object-id>`. Its entry namespace MUST
+equal its declared complete namespace ID, and its verified entry subspace ID
+MUST equal that namespace ID. This bound signer is the founding organizer used
+by Riot's existing app-trust rules. The descriptor's complete canonical
+32-byte `EntryId` is the `space_descriptor_entry_id` pinned by join references
+and every Newswire record. A second descriptor in the same communal namespace
+is a different space definition, never an update or substitute for the pinned
+descriptor.
+
 ### News post
 
 `NewsPostV1` contains:
 
-- stable post identifier;
-- author public key;
+- pinned `space_descriptor_entry_id`;
 - headline and plain-text body;
-- signed creation time;
 - language;
 - optional event time, coarse location, source claims, media references, and
   expiry;
 - optional existing Riot operational-object profile; and
 - the existing AI-assisted provenance flag.
 
-Posts are append-only. An author corrects a post through another signed record;
-the MVP does not overwrite or delete the original.
+Posts are append-only. Author-authored correction linkage is deferred with post
+editing; the MVP does not overwrite or delete the original.
+`EditorialActionV1.correct` is an editorial correction, not an author revision.
+
+A post entry uses
+`newswire/v1/<space-descriptor-entry-id>/posts/<random-16-byte-object-id>`.
+Its authoritative post identifier is the complete canonical 32-byte Willow
+`EntryId`, not the 16-byte object ID. The verified entry subspace ID is the
+author key and the checked Willow entry timestamp is the signed creation time.
+If an encoding duplicates either value in its payload, admission MUST require
+exact equality with the verified entry envelope.
+
+An optional `MediaRefV1` contains only a content digest, declared byte length,
+and allow-listed media type. Core verifies all three against bounded bytes
+before storage or rendering. A media reference MUST NOT be an arbitrary URL,
+and neither a client nor a gateway automatically fetches a publisher-supplied
+URL. Source URLs, when present as claims, render as inert text unless a person
+explicitly chooses to navigate to them; gateways never fetch them.
 
 ### Editorial action
 
 `EditorialActionV1` contains:
 
-- stable editorial-action identifier;
-- target post identifier, or target editorial-action identifier for a
+- pinned `space_descriptor_entry_id`;
+- complete target post `EntryId`, or complete target editorial-action `EntryId` for a
   retraction;
-- editor public key;
-- signed creation time;
 - action: `feature`, `verify`, `correct`, `hide`, `tombstone`, or `retract`;
 - required human-readable reason for `correct`, `hide`, `tombstone`, and
   `retract`; and
@@ -334,35 +387,90 @@ recognized editor acts independently in the MVP. `retract` targets one prior
 editorial action and does not erase it. Every valid action and reversal remains
 inspectable as an act of the collective and an attributable act of its signer.
 
+An editorial-action entry uses
+`newswire/v1/<space-descriptor-entry-id>/actions/<random-16-byte-object-id>`.
+Its authoritative action identifier is its complete canonical 32-byte Willow
+`EntryId`; its verified entry subspace ID is the editor key; and its checked
+Willow timestamp is the signed creation time. Payload duplicates, if any, MUST
+exactly equal those verified envelope values. A target outside the pinned
+descriptor, of the wrong record family, or absent from the accepted record set
+has no projection effect.
+
 ### Existing app records
 
 App manifests, bundles, app-index records, organizer trust markers, and
 app-scoped data retain their approved schemas. This design introduces no
 cross-app read privilege or generic native bridge.
 
+App execution authority and Newswire editorial authority are independent. For
+MVP-created spaces, app-index `organizer_subspace_ids` is derived from the
+pinned descriptor entry's verified founding organizer (which equals the
+namespace ID), never caller-local configuration. Existing signed organizer
+trust markers authorize app execution; the descriptor's editorial roster
+authorizes Newswire projection. Neither grants the other authority.
+
+### Envelope and scope invariants
+
+Admission MUST establish all of the following before a record can affect a
+projection:
+
+1. The Willow entry, capability, canonical encoding, and complete `EntryId`
+   verify.
+2. The canonical path has the record-family form above and contains the exact
+   pinned descriptor `EntryId` where required.
+3. The payload's pinned descriptor `EntryId` equals the path binding and the
+   descriptor in the complete join reference.
+4. Any duplicated namespace, actor, record ID, or timestamp exactly equals the
+   authoritative verified entry-envelope value.
+5. An editorial action's actor occurs in the pinned descriptor's fixed roster.
+
+Exact duplicate `EntryId` values are one record. Object-ID reuse never
+identifies or targets a record and cannot make a target ambiguous.
+
 ## Projection Rules
 
-- **Open wire:** valid posts ordered by signed creation time descending, with a
-  deterministic full-ID tie-breaker. Expired posts move into an Earlier view.
-- **Front page:** non-expired posts with at least one current valid `feature`
-  action, ordered by feature time and full editorial-action ID.
-- **Verification:** display every current valid verification and its signer; do
-  not collapse several human attestations into an unexplained score.
-- **Correction:** show the original plus the signed correction and reason.
-- **Ordinary hide:** remove the body from default lists but provide a warning
-  interstitial through which a reader can inspect the original and signed
-  action.
-- **Safety tombstone:** suppress the body and payload references from gateway and
-  ordinary client projections. Retain only post ID, author key, timestamps,
-  action signer, reason, and action history.
-- **Retraction:** a valid `retract` removes its target editorial action from the
-  current collective projection while preserving both records in history.
-- **Unknown or invalid editorial action:** retain only as unauthoritative raw data if
-  local forensic policy permits; never alter the collective projection.
+The pure reducer is `project(accepted_records, as_of)`. Given identical
+accepted records and the same `as_of`, every implementation MUST return the
+same result. `MAX_FUTURE_SKEW_SECONDS` is the protocol constant `600`. A post or
+action whose checked entry time is greater than `as_of + 600 seconds` remains
+inspectable in a future-dated quarantine and has no current projection effect
+until it becomes eligible. Expiry and future eligibility use the supplied
+`as_of`, never arrival time.
 
-The projection must define deterministic precedence for multiple actions and
-reversals in executable tests before implementation. No client may use arrival
-order as authority.
+Eligible posts and actions have the total ascending order `(checked entry
+time, complete EntryId)`. Exact duplicate EntryIds are deduplicated. An eligible
+`retract` has an effect only when it targets an eligible, earlier,
+non-`retract` editorial action for the same pinned descriptor. Retractions
+cannot target retractions. A non-retraction action is **active** unless at least
+one eligible, valid, later retraction targets it. Missing, later, wrong-family,
+or wrong-space targets have no effect. Arrival order is never an input.
+
+For each eligible post:
+
+- **Open wire:** order posts by `(checked entry time, complete post EntryId)`
+  descending. A post whose expiry is less than or equal to `as_of` moves into
+  Earlier using the same order.
+- **Safety tombstone:** if any active `tombstone` exists, suppress body and
+  payload references from gateway and ordinary client projections. Retain only
+  complete post ID, author key, timestamps, action signer, reason, and action
+  history.
+- **Ordinary hide:** otherwise, if any active `hide` exists, remove the body
+  from default lists but provide a warning interstitial through which a reader
+  can inspect the original and signed actions.
+- **Feature:** otherwise, for a non-expired post with one or more active
+  `feature` actions, use the greatest action by the total order as that post's
+  current feature key. The Front page orders posts by current feature key
+  descending. A post with no active feature is absent from the Front page.
+- **Verification:** display every active verification in total order with its
+  signer; never collapse attestations into a score.
+- **Correction:** show the immutable original plus every active editorial
+  correction and reason in total order. List cards may summarize the greatest
+  active correction but MUST link to the complete history.
+
+Every valid action and retraction remains in Editorial history even when it no
+longer affects the current projection. Unknown or invalid actions may be kept
+as unauthoritative forensic data under local policy but never alter the
+collective projection.
 
 ## Data Flows
 
@@ -370,7 +478,8 @@ order as authority.
 
 1. Riot creates and signs an immutable `SpaceDescriptorV1` locally and binds its
    canonical digest into the complete space reference.
-2. The founding collective chooses its initial editorial public keys and
+2. The founding organizer key remains the existing app-trust organizer; the
+   founding collective chooses its separate initial editorial public keys and
    approved starter apps.
 3. The descriptor travels through nearby exchange, files, or a gateway.
 4. A gateway may list or feature it after local catalog review.
@@ -399,7 +508,9 @@ that this gateway declined to carry it.
 
 1. An editor chooses an action, supplies the required reason, and reviews the
    target, collective, and acting identity.
-2. Core or the web signer creates an `EditorialActionV1`.
+2. Riot native core creates and signs an `EditorialActionV1`;
+   gateway-delivered web code cannot hold or use an editorial-roster key in the
+   MVP.
 3. Clients and gateways verify both its signature and membership in the fixed
    editorial roster.
 4. Every implementation recomputes the same front page and wire projection.
@@ -414,6 +525,7 @@ that this gateway declined to carry it.
 | Path, size, count, or media budget exceeded | Reject before commit with a stable user-facing error |
 | Editorial action signed by an unknown editor | Ignore for collective projection |
 | Conflicting valid editorial actions | Preserve all; apply deterministic precedence and show history |
+| Future-dated signed record | Keep inspectable in quarantine; exclude until `as_of + MAX_FUTURE_SKEW_SECONDS` admits it |
 | Incomplete or unapproved app | Never execute; offer organizer review only when authority permits |
 | Lost browser key | Explain unrecoverable pseudonym loss and create a new identity only with consent |
 | Gateway delists a space | Remove from that directory only; direct access and other copies remain |
@@ -432,6 +544,9 @@ existing no-network, navigation, CSP, path, and payload constraints.
   attestation, not an automated fact score.
 - Editorial authority comes only from the full public keys in the space
   descriptor's fixed collective roster.
+- Existing app execution authority comes only from organizer trust markers
+  signed by the pinned descriptor's verified founding organizer; it is not
+  editorial authority.
 - No Nostr, Willow, post, editorial-action, or app identifier is truncated in
   protocol data, fixtures, diagnostics, or security decisions.
 - Public Newswire content is plaintext by design. Private-group state never
