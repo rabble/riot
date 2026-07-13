@@ -1,8 +1,8 @@
 # SneakerWeb view-and-share design
 
-Status: Product design approved on 2026-07-13. Metaswarm design review rounds 1
-and 2 returned NEEDS_REVISION; this revision incorporates all blocking findings
-and is pending round 3.
+Status: Product design approved on 2026-07-13. Metaswarm design review rounds
+1-3 returned NEEDS_REVISION; the mandatory gate is at human escalation before
+planning or implementation.
 
 ## Purpose
 
