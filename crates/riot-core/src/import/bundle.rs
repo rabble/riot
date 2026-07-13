@@ -227,20 +227,22 @@ fn frame_bundle_with_codec(codec: &str, frames: &[BundleItemFrame]) -> Vec<u8> {
     let mut buffer: Vec<u8> = Vec::new();
     buffer.extend_from_slice(BUNDLE_MAGIC);
     let mut e = Encoder::new(&mut buffer);
-    let r: Result<_, minicbor::encode::Error<core::convert::Infallible>> = (|| {
-        e.map(2)?;
-        e.u8(0)?.str(codec)?;
-        e.u8(1)?.array(frames.len() as u64)?;
-        for frame in frames {
-            e.map(4)?;
-            e.u8(0)?.bytes(&frame.entry_bytes)?;
-            e.u8(1)?.bytes(&frame.capability_bytes)?;
-            e.u8(2)?.bytes(&frame.signature_bytes)?;
-            e.u8(3)?.bytes(&frame.payload_bytes)?;
-        }
-        Ok(())
-    })();
-    debug_assert!(r.is_ok());
+    let _ = e.map(2);
+    let _ = e.u8(0);
+    let _ = e.str(codec);
+    let _ = e.u8(1);
+    let _ = e.array(frames.len() as u64);
+    for frame in frames {
+        let _ = e.map(4);
+        let _ = e.u8(0);
+        let _ = e.bytes(&frame.entry_bytes);
+        let _ = e.u8(1);
+        let _ = e.bytes(&frame.capability_bytes);
+        let _ = e.u8(2);
+        let _ = e.bytes(&frame.signature_bytes);
+        let _ = e.u8(3);
+        let _ = e.bytes(&frame.payload_bytes);
+    }
     buffer
 }
 

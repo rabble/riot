@@ -83,7 +83,10 @@ impl ByteSyncSession {
                     frame,
                     super::SyncFrame::Complete { .. } | super::SyncFrame::Reject { .. }
                 );
-                self.outbound = Some(encode_frame(&frame)?);
+                self.outbound = Some(
+                    encode_frame(&frame)
+                        .expect("reconciliation emits only bounded canonical sync frames"),
+                );
                 Ok(ByteSyncOutcome::FrameReady)
             }
             SyncAction::ImportBundle(bytes) => Ok(ByteSyncOutcome::ImportBundle(bytes)),
