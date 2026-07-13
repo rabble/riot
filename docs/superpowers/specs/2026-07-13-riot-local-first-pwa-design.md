@@ -1,7 +1,7 @@
 # Riot local-first PWA vertical slice design
 
 Date: 2026-07-13
-Status: Revision 7 after metaswarm design-review findings
+Status: Revision 8 — censorship-resistance architecture revision, review pending
 
 ## Purpose
 
@@ -16,6 +16,17 @@ The static host distributes application code; the browser owns its identity and
 accepted state. A future remote signer may recover the root identity and enroll
 scoped local device keys through OAuth, but no remote signer is required or
 implemented in this slice.
+
+The browser is also the primary Riot node, not a thin client for a gateway. It
+signs and commits locally before any synchronization attempt. Community identity
+and history derive from authenticated records, never a domain name, gateway,
+database, or renderer. Servers may improve discovery, retention, validation,
+rendering, or availability, but no server is authoritative.
+
+**Architectural invariant:** Communities are permanent; renderers are
+disposable. A website is only one possible presentation of a community's
+authenticated history. Community identity derives from signed records rather
+than domain names or server ownership.
 
 ## User and value
 
@@ -72,7 +83,11 @@ data import does not recover identity.
 
 Use a framework-free PWA host plus a small `wasm-bindgen` adapter around a
 shared ordinary-Rust `riot-client` controller and the `riot-core` protocol
-implementation.
+implementation. `riot-client` additionally owns the versioned record-exchange
+contract and transport-independent reconciliation coordinator. Browser-side
+adapters perform actual I/O; neither the controller nor protocol code knows
+whether records arrived through a file, a nearby peer, a direct community node,
+an HTTPS gateway, or a metadata-resistant transport.
 
 Alternatives rejected for this slice:
 
@@ -82,6 +97,12 @@ Alternatives rejected for this slice:
   would make the host canonical and undermine Riot's shutdown-resistant model.
 - Reimplementing Willow, Meadowcap, or bundle encoding in JavaScript would
   create a second protocol implementation without conformance evidence.
+- A JavaScript-only transport contract would make each renderer define its own
+  replication semantics. Riot instead keeps reconciliation and exchanged-record
+  validation in shared Rust while leaving browser-specific I/O outside WASM.
+- An async Rust transport trait called directly across `wasm-bindgen` would
+  prematurely couple the MVP to browser networking and executor choices. The
+  controller exposes bounded exchange operations; host adapters drive them.
 
 ## Scope
 
@@ -107,12 +128,19 @@ Alternatives rejected for this slice:
 - Offline reload after one successful online load.
 - A signer boundary whose only implementation is local in this slice but whose
   request/result contract can later support a remote recovery authority.
+- A versioned, transport-neutral record-exchange contract owned by
+  `riot-client`, with file import/export as the only concrete MVP transport.
+- Explicit separation of protocol, durable storage, synchronization, and
+  rendering so independent websites can later render the same authenticated
+  community history.
 
 ### Out of scope
 
 - Private groups, MLS, encrypted group drops, group rendezvous, or the explicit
   private↔public bridge.
 - Nearby BLE, Bonjour, WebRTC, WebTransport, WTP, or live multi-peer sync.
+- Direct community-node, HTTPS synchronization, Nym mixnet, automatic relay,
+  discovery-directory, or background replication implementations.
 - Remote OAuth, remote signing, remote identity-recovery UI, device enrollment,
   or capability revocation.
 - Hosted user accounts, server-side canonical state, analytics, notifications,
@@ -120,6 +148,8 @@ Alternatives rejected for this slice:
 - Arbitrary third-party miniapp installation. Existing bundled miniapps remain
   separate from this proof.
 - Deployment, DNS, TLS, and production hosting configuration.
+- Viewer/publisher/replicator mode selection in the UI; the MVP acts as one
+  local publisher/reader and does not retain history for other nodes.
 - Identity backup or recovery. `.riot-evidence` export contains public community
   data only; remote recovery is explicitly future work.
 
@@ -134,6 +164,7 @@ browser UI ---- typed JS host/controller ---- riot-web WASM adapter
    |                         |                     |
    |                         |                     v
    |                         |            riot-client shared controller
+   |                         |        state + replication coordinator
    |                         |                     |
    |                         |                     v
    |                         |                 riot-core
@@ -142,11 +173,32 @@ browser UI ---- typed JS host/controller ---- riot-web WASM adapter
    |                         |
    |                         +---- BrowserVault (IndexedDB + WebCrypto)
    |                         +---- BundleLog (IndexedDB, append-only)
-   |                         +---- File import/export
+   |                         +---- TransportPortV1 (browser I/O only)
+   |                                   |
+   |                                   +---- FileExchangeTransport (MVP)
+   |                                   +---- Nearby (deferred)
+   |                                   +---- Direct community node (deferred)
+   |                                   +---- HTTPS gateway (deferred)
+   |                                   +---- Nym mixnet (deferred)
    |
    +---- service worker cache (one content-versioned release only)
    +---- Web Lock (`riot-profile-writer`) for single-writer tabs
 ```
+
+The architecture has four replaceable layers:
+
+1. **Protocol** authenticates canonical records and authority in `riot-core`.
+2. **Storage** retains browser-owned identity, drafts, accepted records, and
+   projections locally.
+3. **Synchronization** reconciles and exchanges signed records through a
+   transport adapter after local commit.
+4. **Rendering** projects verified local state into one replaceable website or
+   application surface.
+
+A domain is not part of a community identifier. Two independent static sites
+may load the same signed records and render the same authenticated community
+without sharing a database, account system, or operator. A renderer may be
+stateful locally, but it is disposable from the community's perspective.
 
 The intended service worker caches no mutable user data and contains no signer
 API. That is code organization, not a security boundary: any compromised
@@ -190,6 +242,13 @@ Public operations:
 - `confirm_profile_persisted(pending_profile_id) -> CommunityV1`
 - `abort_pending_profile(pending_profile_id) -> Result<(), WebErrorV1>`
 - `acknowledge_bundle_persisted(sha256) -> Result<(), WebErrorV1>`
+- `open_replication_session() -> ReplicationSessionV1`
+- `begin_replication(session_id) -> ReplicationOutcomeV1`
+- `receive_replication_frame(session_id, frame_bytes) -> ReplicationOutcomeV1`
+- `take_replication_frame(session_id) -> Uint8Array|null`
+- `accept_replication_import(session_id) -> ReplicationOutcomeV1`
+- `reject_replication_import(session_id, code) -> ReplicationOutcomeV1`
+- `close_replication_session(session_id) -> Result<(), WebErrorV1>`
 - `close() -> Result<(), WebErrorV1>`
 
 `create_community` creates one organizer-shaped author with
@@ -223,6 +282,123 @@ explicit instead of relying on UI timing.
 The Riverside fixture goes through `preview_new_community` and
 `join_reviewed_community` with the local title `Riverside Tenants Union`. There
 is no privileged demo admission path in the PWA.
+
+### Transport-independent replication boundary
+
+Riot already has the correct protocol primitive in `riot-core`:
+`ReconcileSession` owns a bounded bidirectional exchange and explicitly owns no
+transport; `ByteSyncSession` converts that state machine to opaque canonical
+frames. The PWA must preserve and expose that separation rather than inventing a
+gateway API.
+
+`riot-client` owns a `ReplicationCoordinator` over those byte-only sessions. It
+accepts a local authenticated inventory and exposes versioned operations to:
+
+- open or close one bounded exchange for a namespace;
+- begin reconciliation;
+- receive one opaque bounded frame;
+- take one outbound frame;
+- surface a received canonical bundle through the ordinary preview → plan →
+  commit boundary;
+- acknowledge accepted or rejected imports only after their normal persistence
+  transition; and
+- report complete, rejected, paused, and failed session states without network
+  terminology.
+
+The controller never opens a socket, resolves a URL, selects a gateway, invokes
+Web Bluetooth, or imports a Nym package. It knows canonical records, namespace
+identity, bounded reconciliation frames, and admission results only.
+
+The browser host implements this controller-owned port shape:
+
+```text
+TransportPortV1.kind() -> file | nearby | direct-community-node |
+                          https-gateway | nym
+TransportPortV1.status() -> unavailable | ready | connecting |
+                            exchanging | paused | failed
+TransportPortV1.receive() -> async TransportEventV1(frame_bytes | bundle_bytes)
+TransportPortV1.send(frame_or_bundle_bytes) -> async TransportSendResultV1
+TransportPortV1.close() -> async result
+```
+
+This is a behavioral contract, not an invitation to add five adapters now.
+`file` is the only concrete MVP implementation. It receives a bounded canonical
+bundle from a user-selected file and sends a bounded canonical bundle through a
+user-initiated download; it uses ordinary preview/accept and export operations,
+not a fake connected-peer handshake. The other four enum values exist so UI,
+telemetry-free local receipts, and controller tests cannot collapse the
+architecture back to `gateway`. Attempting to open an unimplemented kind returns
+`TRANSPORT_UNAVAILABLE` without changing community state.
+
+Transport kind, endpoint, first-seen time, delivery attempt, and availability
+are local receipt facts. They never enter signed alert payloads, entry IDs,
+community identity, or deterministic projection. The same authenticated record
+received by file, nearby exchange, a direct node, an HTTPS gateway, or Nym must
+produce the same admission decision and projection. Duplicate, reordered,
+delayed, partially delivered, or replayed records remain safe under the existing
+ID-based reconciliation and preview-first admission rules.
+
+Publishing therefore has a strict order:
+
+```text
+review exact canonical bytes
+        ↓
+sign
+        ↓
+commit and persist locally
+        ↓
+report local durable success
+        ↓
+synchronize later through any available transport
+```
+
+Network failure can delay dissemination but cannot roll back publication to the
+local community history or make the signature invalid. The accepted bundle log
+is the source for later synchronization; the MVP does not need a second
+gateway-shaped upload queue.
+
+Planned transport roles are:
+
+- **Nearby peer exchange:** short-range browser/native exchange where platform
+  support permits it.
+- **Direct community node:** a deliberately chosen node that retains and serves
+  signed community records.
+- **HTTPS gateway:** a disposable cache, validator, renderer, discovery
+  directory, or synchronization endpoint; never the owner of a community.
+- **Nym mixnet:** a metadata-resistant browser adapter using Nym's browser
+  TypeScript/WASM SDK; it carries the same opaque bounded exchange bytes and is
+  neither mandatory nor part of the Riot protocol.
+- **File exchange:** human-carried canonical bundles, implemented in this MVP.
+
+Official Nym materials describe its TypeScript SDK as supporting browser-based
+mixnet applications and its browser client as WebAssembly running in a worker.
+That makes Nym a plausible future host adapter, not a reason to add Nym types or
+dependencies to `riot-core`, `riot-client`, or this release. The future design
+must separately threat-model message-size leakage, timing, cover traffic,
+recipient addressing, SDK supply chain, browser worker policy, availability,
+and the fact that metadata resistance does not make received claims true.
+
+### Deployment roles and disposable renderers
+
+Future deployments may choose one of three local capability profiles without
+changing community identity or record formats:
+
+- **Viewer:** receives, verifies, projects, and renders authenticated records;
+  it need not sign or retain records for strangers.
+- **Publisher:** additionally owns a signer, reviews exact bytes, commits
+  locally, and offers its records to transports.
+- **Replicator:** intentionally retains bounded community history and assists
+  reconciliation; this is an explicit operator/user choice, never a hidden duty
+  imposed on every viewer.
+
+The MVP is a publisher that reads its own selected community and exchanges by
+file. It does not implement a mode selector or serve other peers. The separation
+is architectural so a later static deployment containing only HTML, JS, WASM,
+and an optional transport adapter can render authenticated history without a
+central database. Sites such as `location.indymedia.org`,
+`berlin.indymedia.org`, `berlin.protest.net`, an archive, or a friend's host
+could independently present the same records; none of those domains becomes the
+community's root of trust.
 
 ### Immutable update review
 
@@ -283,15 +459,22 @@ lowercase hex strings. Closed enums use the existing lowercase names
 | `TechnicalDetailsV1` | `version`, complete `entry_id`, `namespace_id`, `signer_id`, `payload_sha256`, `signature_valid`, `capability_valid` |
 | `ImportRowV1` | `version`, `headline`, `description`, deterministic `author_label`, ordered `source_claims: string[]`, `created_at`, `expires_at`, `ai_assisted`, `selectable`, fixed `rejection_code|null`, `technical: TechnicalDetailsV1` |
 | `ImportReviewV1` | `version`, `review_id`, `namespace_id`, `byte_count`, ordered `valid_rows: ImportRowV1[]`, ordered `rejected_rows: ImportRowV1[]`, `selected_entry_ids: string[]` |
-| `PendingBundleV1` | `version`, exact accepted-only `bundle_bytes: Uint8Array`, `route` (`web-local-post|web-file-import`), complete `entry_ids: string[]`, `sha256` |
+| `PendingBundleV1` | `version`, exact accepted-only `bundle_bytes: Uint8Array`, closed `route` (local/file plus reserved future transport values below), complete `entry_ids: string[]`, `sha256` |
 | `BundleArtifactV1` | `version`, canonical `bundle_bytes: Uint8Array`, complete `entry_ids: string[]`, `sha256`, deterministic `filename` |
+| `ReplicationSessionV1` | `version`, opaque `session_id`, complete `namespace_id`, `state` (`idle|frame-ready|awaiting-frame|import-review-required|rejected|complete|closed`) |
+| `ReplicationOutcomeV1` | `version`, `session_id`, same closed `state`, `bundle_bytes: Uint8Array|null`, `rejection_code: string|null` |
+| `TransportEventV1` | `version`, `kind` (`frame|bundle|closed|failed`), `bytes: Uint8Array|null`, `message_key: string|null` |
+| `TransportSendResultV1` | `version`, `status` (`sent|cancelled|unavailable|failed`), `message_key: string|null` |
 | `WebErrorV1` | `version`, stable `code`, `field: string|null`, `message_key`; never raw parser/debug text |
 
 Every public call returns `Result<T, WebErrorV1>`. `route` is a closed enum, not
 free caller-controlled text: local posts use `web-local-post`, file/demo imports
-use `web-file-import`, and startup replay accepts only and uses the exact enum
-stored with that log record. Every opaque import, review, or pending-profile ID is single-use,
-session-bound, and rejected after replacement, commit/abort, or close.
+use `web-file-import`, and the reserved future values are `web-nearby`,
+`web-direct-community-node`, `web-https-gateway`, and `web-nym`. Startup replay
+accepts only and uses the exact enum stored with that log record. Reserved values
+may be replayed but cannot be created by an unavailable adapter. Every opaque
+import, review, replication, or pending-profile ID is single-use, session-bound,
+and rejected after replacement, commit/abort, or close.
 
 Every nested DTO also carries `version: 1`; arrays are always present, even
 when empty, and nullable fields are JSON `null`, never omitted. `byte_count` and
@@ -596,6 +779,9 @@ community updates. It does not back up your identity or organizer authority.**
    entry and no postable draft. The retry path uses this same transaction.
 7. The host acknowledges the exact bundle hash only after commit; the controller
    then permits another mutation and the UI refreshes from its live view.
+8. Local durable success is final for publication. The MVP performs no automatic
+   upload. The accepted log immediately makes the record available to file
+   export and to future replication sessions without changing or re-signing it.
 
 If persistence fails after core commit, the controller keeps the generated
 bundle in a recovery queue, blocks all further mutations, and opens a visible
@@ -634,6 +820,12 @@ successful Retry atomically persists the bundle/manifest and clears that draft.
    identity buffers, returns to the still-readable import preview, and offers
    download of the accepted public bundle plus a fresh
    restart. A later join attempt intentionally creates a new member signer.
+
+File import/export is the first `TransportPortV1` adapter. The file picker and
+download APIs live in the browser host; canonical bundle verification,
+selection, admission, and export remain in the controller/core. Cancelling a
+picker or download is a transport cancellation, not a protocol failure and not
+a community mutation.
 
 ### Startup and offline reload
 
@@ -683,6 +875,8 @@ into an old controlled page before activation.
 ### Untrusted
 
 - Every imported file and its filename/MIME type.
+- Every transport, peer, gateway, community node, Nym endpoint, discovery
+  result, delivery receipt, and renderer domain.
 - Every accepted public entry's claims; valid signatures do not assert truth.
 - The static host as a source of availability. A compromised future host
   release is capable of same-origin abuse, so production deployment requires a
@@ -703,6 +897,10 @@ into an old controlled page before activation.
 - No third-party runtime dependencies, analytics, fonts, or remote assets.
 - No `innerHTML` for imported/user content; render with text nodes.
 - Existing core byte/count/path/store ceilings remain authoritative.
+- Every transport carries only opaque bounded canonical frames or bundles into
+  the same verification/admission boundary. A transport can drop, delay,
+  duplicate, reorder, replay, censor, or observe traffic but cannot grant
+  authority, alter community identity, or bypass review/verification.
 - File input is size-checked before `arrayBuffer()` and rechecked in Rust.
 - Full IDs in UI and logs; secret/capability/signature bytes never logged.
 - Intended service-worker code caches only the coherent versioned release and
@@ -722,6 +920,11 @@ decrypted material. The vertical slice makes no hardware-backed,
 host-compromise, rollback-detection, or identity-recovery claim. The future
 remote authority reduces durable root exposure but does not remove the need for
 signer-side policy and human-readable approval.
+
+Metadata-resistant delivery is not anonymity by declaration. A future Nym
+adapter may reduce network metadata exposure, but Riot must not claim sender,
+recipient, timing, volume, browser, endpoint, or content privacy until that
+adapter's separate threat model and measurements support the claim.
 
 ## Errors and recovery
 
@@ -746,6 +949,8 @@ Stable user-facing categories:
 - `REPLAY_FAILED` — stop at the first corrupt record and offer raw-log export;
   never silently skip.
 - `INTERNAL` — close the WASM session, retain persisted bytes, and offer reload.
+- `TRANSPORT_UNAVAILABLE` / `TRANSPORT_FAILED` — no rollback of locally durable
+  records and no authority implication; file exchange remains available.
 
 All errors are actionable, contain no raw imported bytes or secrets, and are
 rendered in an `aria-live` region.
@@ -823,14 +1028,18 @@ TDD work proceeds in independently green slices:
    readable preview rows, exact selective normalized bundle, fixed routes,
    consolidated deterministic export, immutable review IDs, member posting,
    pending-profile confirm/abort, bundle-persistence acknowledgement and mutation
-   blocking, duplicate import, and every stable error mapping. Only then add the new
-   ordinary Rust surface; existing `riot-ffi` tests must then prove the native
-   adapter preserves its contract.
+   blocking, duplicate import, and every stable error mapping. The same tests
+   wrap the existing byte-only reconciliation session in the new
+   `ReplicationCoordinator`, prove the controller performs no I/O, and prove
+   identical records have identical admission/projection across every reserved
+   transport route. Only then add the new ordinary Rust surface; existing
+   `riot-ffi` tests must then prove the native adapter preserves its contract.
 5. **WASM DTO lifecycle:** host Rust tests cover every DTO field/enum/time/byte
    conversion and `WebErrorV1` branch before `wasm-bindgen` exposure. Browser
-   smoke tests then call create, prepare, post, import, list, export, and close
-   through generated glue.
-6. **BrowserVault, BundleLog, and writer lock:** tests begin with missing
+   smoke tests then call create, prepare, post, import, list, export,
+   open/begin/receive/accept/reject/close replication, and close through
+   generated glue.
+6. **BrowserVault, BundleLog, writer lock, and transport port:** tests begin with missing
    implementations and cover first creation, reopen, authenticated-decryption
    failure, duplicate bundle/first route, manifest hash/size/order/total/version,
    missing/extra/rollback-limitation copy, atomic transaction abort, 16 MiB
@@ -838,7 +1047,10 @@ TDD work proceeds in independently green slices:
    second-tab/no-community read-only behavior, post transaction interruption
    including hard page termination immediately before/after
    bundle+manifest+draft commit, first-join transaction
-   failure/identity discard, and recovery-queue mutation blocking. Real
+   failure/identity discard, recovery-queue mutation blocking, the exact
+   `TransportPortV1` state contract, an in-memory fake proving bounded opaque
+   frame exchange, unavailable reserved adapters with zero mutation, and the
+   file picker/download adapter as the only concrete implementation. Real
    IndexedDB/WebCrypto/Web Locks tests use unique browser contexts; no in-memory
    mock certifies persistence.
 7. **UI flows:** Playwright tests cover both first-run paths and demo, community
@@ -849,12 +1061,16 @@ TDD work proceeds in independently green slices:
    activation and controlling-cache navigation, indistinguishable clean/cleared
    no-profile warning, storage recovery, 320px and 200% reflow, keyboard-only
    focus restoration, field-error association, non-color states, live-region
-   behavior, reduced motion, and no horizontal overflow.
+   behavior, reduced motion, and no horizontal overflow. Posting succeeds while
+   every transport is unavailable; UI copy distinguishes **saved here** from
+   **exchanged**, and no gateway/domain is presented as community ownership.
 8. **Security/static contracts:** tests assert exact response headers, coherent
    release cache installation/activation, zero third-party requests, no
    `innerHTML`, no remote URLs/assets, no secret logging tokens, no write without
-   immutable review, no service-worker vault call in intended code, and no
-   private-group surface.
+   immutable review, no service-worker vault call in intended code, no
+   private-group surface, no protocol/controller imports of browser networking
+   or Nym packages, no domain/endpoint in signed identity/projection, and no
+   implemented transport other than file exchange.
 
 Required verification:
 
@@ -898,7 +1114,17 @@ service-worker, and WebCrypto behavior—not just DOM rendering—is in scope.
    origin offline after first load.
 8. No server stores user state or signing material, and no remote signer is
    needed for this slice.
-9. All repository quality gates and the composite 100% coverage enforcement
+9. `riot-client` owns a tested transport-independent replication coordinator;
+   protocol and controller code import no browser networking, gateway, domain,
+   or Nym dependency.
+10. File exchange is the only concrete transport, yet reserved adapters can be
+    unavailable without blocking local publication. The same record has the
+    same authentication, admission, and projection regardless of its local
+    transport route.
+11. Community identity and deterministic projection contain no renderer domain
+    or endpoint. A test fixture can be rendered under two unrelated hostnames
+    with byte-identical authenticated history and projection output.
+12. All repository quality gates and the composite 100% coverage enforcement
    command pass.
 
 ## Future work
@@ -906,8 +1132,13 @@ service-worker, and WebCrypto behavior—not just DOM rendering—is in scope.
 - Specify the OAuth recovery authority and scoped Meadowcap device enrollment
   as a separate design with signer-side policy, revocation, audit, and offline
   expiry behavior.
-- Add gateway/relay synchronization through the same reconciliation primitive
-  as other transports; do not create a canonical web database.
+- Specify and implement Nearby, direct community-node, disposable HTTPS
+  gateway, and Nym browser adapters independently through `TransportPortV1`;
+  do not create a canonical web database or change signed record formats.
+- Specify discovery and replicator retention policy separately from transport.
+  A viewer must never become a replicator implicitly.
+- Build stateless/disposable renderer deployments that rebuild projections from
+  signed replicated records and prove domain-independent community identity.
 - Threat-model private groups, signed PWA releases, unlock UX, plaintext
   lifetime, backups, and storage eviction before exposing encrypted group state
   to the hosted origin.
