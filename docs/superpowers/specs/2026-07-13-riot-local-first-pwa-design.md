@@ -1,7 +1,7 @@
 # Riot local-first PWA vertical slice design
 
 Date: 2026-07-13
-Status: Revision 12 — final-round blocker corrections, review pending
+Status: Revision 12 — approved by design review gate
 
 ## Purpose
 
