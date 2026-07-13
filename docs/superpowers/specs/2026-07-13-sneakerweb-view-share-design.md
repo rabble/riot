@@ -1,8 +1,8 @@
 # SneakerWeb view-and-share design
 
-Status: Product design approved on 2026-07-13. Metaswarm design review round 1
-returned NEEDS_REVISION; this revision incorporates all blocking findings and
-is pending round 2.
+Status: Product design approved on 2026-07-13. Metaswarm design review rounds 1
+and 2 returned NEEDS_REVISION; this revision incorporates all blocking findings
+and is pending round 3.
 
 ## Purpose
 
@@ -150,15 +150,20 @@ that record says who recommended the package, not who authored its sites.
 ### Navigation placement
 
 The SneakerWeb library is global, not scoped to the selected Riot community.
-It does not become a fifth community tab. On iPhone and Android, the global
-profile/avatar menu contains a labelled `SneakerWeb library` row alongside
-`Your profile`; on macOS it is a global sidebar item above the community
-destinations. This preserves the approved Home, Tools, People, and Nearby
-community shell.
+It does not become a fifth community tab. On iPhone and compact Android, the
+global profile/avatar menu contains a labelled `SneakerWeb library` row
+alongside `Your profile`. iPad and large-screen Android use that same global
+destination in the persistent profile/navigation sidebar rather than creating
+a community tab. This preserves the approved Home, Tools, People, and Nearby
+community shell. macOS is explicitly outside this mobile release; it must not
+advertise `.snk` document handling or the library until a separate design adds
+the complete macOS reader, sharing, and verification surface.
 
-Opening an external `.snk` pushes the global Received collection route. Back
-returns to the originating app/community when one exists, otherwise to the
-library. A reader toolbar provides Back, Forward, Library, Details, and Share.
+Opening an external `.snk` pushes the global Received collection route. When
+Riot initiated the route, Back returns to the originating Riot community;
+after an OS document launch, Back returns to Riot's library (Riot does not
+claim it can navigate into the external originating app). A reader toolbar
+provides Back, Forward, Library, Details, and Share.
 Back/Forward preserve site identity, path, and scroll position for the current
 reader session. Library returns to the prior Sites/Received position and focus.
 
@@ -202,11 +207,15 @@ open will appear here`. Pagination shows a native loading row, Retry on failure,
 and keeps the last stable page visible while retrying.
 
 A site card uses `sneakerweb.html` as a decorative preview when available.
-Independently, Riot parses the first HTML `<title>` from a complete
-`/index.html` without executing content, decodes character references, removes
-control and bidi-control characters, collapses whitespace, and limits display to 80 Unicode
-scalar values. An absent, empty, malformed, or non-HTML title becomes `Untitled
-site`; the full domain key is never the default title.
+Independently, Riot runs a streaming, non-executing title extractor over at
+most the first 256 KiB of a complete `/index.html`. It accepts at most 64 levels
+of markup nesting, 100,000 tokenizer steps, and 8 KiB of accumulated title text;
+crossing any limit aborts extraction rather than truncating parser state. It
+decodes character references, removes control and bidi-control characters,
+collapses whitespace, and limits display to 80 Unicode scalar values. An
+absent, empty, malformed, limit-exhausted, or non-HTML title becomes `Untitled
+site`; the full domain key is never the default title. Pathological HTML/title
+corpora and fuzzing cover this native extractor as well as the renderer.
 
 Opening a card loads `/index.html`. Relative navigation remains within the
 site. A canonical link to another collected domain opens it in the same reader.
@@ -265,6 +274,28 @@ and Publish/Cancel. Private/encrypted spaces are excluded from the MVP.
 Permission denial, peer disappearance, cancellation, and failure preserve the
 selection and offer Retry or another destination.
 
+Every destination exposes preparation as an explicit native state before
+handoff: `Preparing collection` reports selecting/encoding byte and item
+progress with Cancel. The task may continue in the background only while the
+OS grants execution; suspension removes incomplete output and returns to
+`Preparation interrupted` with Retry preserving the exact selection. System
+share then becomes `Ready to share` and hands its lease to the OS sheet;
+cancelling or returning from the sheet closes the lease without losing the
+selection.
+
+Direct nearby continues from preparation through `Waiting for confirmation`,
+bilateral Accept/Reject, `Connecting`, sender and receiver `Transferring`
+progress, Pause/Resume/Cancel, `Verifying`, and `Received/Open`. Peer loss is
+`Interrupted`; Resume is available only while the same confirmed session is
+alive and otherwise Retry starts fresh bilateral confirmation with a new
+one-shot capability. A failed integrity check restarts at zero rather than from
+an unverified checkpoint. Space share continues through `Preparing
+attachment`, `Posting`, and `Shared`; posting failure preserves the prepared
+lease and review fields for Retry until its bounded expiry. Cancel before the
+signed carrier commit leaves no card; once committed, success is final. All
+three flows use the accessibility progress announcement cadence below, and all
+failure/cancellation paths restore focus to the preserved review/selection.
+
 A space card reads `Street Medic Library · 4 sites · 18 MB`, shows identity
 derived from the outer signed entry, and repeats that the member carried rather
 than authored the sites. Its states are Available locally/Open; Not downloaded/
@@ -288,8 +319,9 @@ Details, Unblock, and Remove local data. Unblock recomputes current live content
 without fetching or publishing.
 
 Storage lists Sites, Received receipts, and portable blobs by reclaimable byte
-count. `Remove received record` deletes that receipt/associations; content held
-by another receipt remains. `Remove site from this device` deletes that domain's
+count. `Remove received record` deletes that receipt/associations and also
+deletes content for which it is the only retained source; content held by
+another receipt remains. `Remove site from this device` deletes that domain's
 payloads, accepted/live rows, caches, and source-entry associations while
 keeping a compact removal audit row and any independent Block; a future open may
 collect it again unless blocked. `Remove downloaded attachment` deletes an
@@ -305,7 +337,10 @@ accessibility label combines human title, freshness, availability, and a
 non-secret two-word disambiguator deterministically derived from the full domain
 key (for example, `amber river`; it is not a shortened identifier and carries
 no trust meaning). The same phrase appears visually only when duplicate titles
-need disambiguation. Decorative `sneakerweb.html` never supplies the accessible
+need disambiguation. If title and phrase both collide, cards receive a stable
+`item N of M` suffix ordered by the complete domain bytes; the ordinal is not an
+identifier and Details remains the only raw-key surface. Decorative
+`sneakerweb.html` never supplies the accessible
 name; Details always exposes the complete raw key.
 
 Selection announces changes and total count. Progress announces start, every
@@ -363,8 +398,10 @@ native bridge API.
 
 The fixed SneakerWeb namespace is permanently reserved with collection kind
 `sneakerweb-public`. `RiotDatabase` rejects creating/joining it as a Riot space,
-and `SpaceSession`, app/document projections, ordinary space sync, trust lists,
-and space change feeds reject or ignore it by invariant. Conversely, the
+and `SpaceSession`/FFI factories reject it with `RESERVED_NAMESPACE`.
+Repository constructors and ordinary space sync reject and disconnect the
+record; rebuildable app/document/trust/change-feed projectors ignore an already
+quarantined row and emit a diagnostic counter but never expose it. Conversely, the
 SneakerCollection route accepts no other namespace. Database CHECK constraints,
 repository constructors, migration tests, and FFI factories enforce this split;
 path text such as `apps/...` inside SneakerWeb can never enter Riot app
@@ -400,11 +437,16 @@ feature and proves official CLI vectors before application code proceeds.
 
 All FFI DTOs carry `schema_version = 1`; identifiers are fixed-width bytes and
 errors are closed enums with `retryable`, `recovery_action`, and safe detail
-fields. Calls execute on Riot's serialized database worker and never the native
-UI thread. Page cursors contain an opaque signed `(database_generation,
-collection_generation, last_sort_key)` snapshot; mutation makes them
-`STALE_CURSOR`, after which native restarts from page one while retaining the
-visible page.
+fields. FFI entry calls never execute work on the native UI thread. A short-lived
+state actor linearizes commands and submits only bounded SQLite transactions to
+Riot's serialized database worker. Streaming I/O, Drop parsing/encoding,
+hashing, and verification run on a bounded two-worker executor under per-task
+cancellation tokens; they publish immutable progress snapshots back to the
+actor at chunk boundaries. Consequently `progress`, `cancel`, block, and owner
+close remain serviceable while CPU/I/O work is active. Page cursors contain an
+opaque authenticated `(database_generation, collection_generation,
+last_sort_key)` snapshot; mutation makes them `STALE_CURSOR`, after which
+native restarts from page one while retaining the visible page.
 
 Native document providers are never exposed as arbitrary paths to Rust. The
 host opens the security-scoped URL/content URI and streams chunks into a
@@ -412,12 +454,16 @@ core-owned, app-protected, backup-excluded staging handle:
 
 ```text
 begin_snk_open(display_name, route, expected_bytes) -> OpenSnkTask
+begin_snk_open_from_blob(portable_blob_lease, display_name, route) -> OpenSnkTask
 OpenSnkTask.write_chunk(bytes) -> TransferProgress
 OpenSnkTask.progress() -> TransferProgress
 OpenSnkTask.finish() -> OpenSnkOutcome
 OpenSnkTask.cancel() -> CancelOutcome
+undo_snk_open(receipt_id, undo_generation) -> RemovalOutcome
 list_sneaker_sites(cursor) -> SneakerSitePage
 list_received_sneaks(cursor) -> ReceivedSneakPage
+list_blocked_sneaker_sites(cursor) -> SneakerSitePage
+list_sneaker_storage(cursor) -> SneakerStoragePage
 get_sneaker_site(domain_id) -> SneakerSite
 get_sneaker_details(domain_id, cursor) -> SneakerDetailsPage
 get_received_sneak_details(source_id, cursor) -> ReceivedSneakDetailsPage
@@ -426,17 +472,26 @@ block_sneaker_domain(domain_id) -> BlockOutcome
 unblock_sneaker_domain(domain_id) -> BlockOutcome
 remove_sneaker_source(source_id) -> RemovalOutcome
 remove_sneaker_site(domain_id) -> RemovalOutcome
+remove_portable_blob(blob_id) -> RemovalOutcome
 create_snk_export(domain_ids) -> SnkExportTask
 create_space_sneaker_share(public_space_session, export_lease, note) -> CarrierReceipt
 request_space_blob(public_space_session, carrier_entry_id, peer) -> BlobTransferTask
 begin_direct_snk_send(confirmed_nearby_session, export_lease) -> BlobTransferTask
+accept_direct_snk_receive(confirmed_nearby_session, request_id) -> BlobTransferTask
+reject_direct_snk_receive(confirmed_nearby_session, request_id) -> RejectOutcome
 ```
 
 Every domain parameter is exactly 32 bytes at the FFI boundary; string parsing
 exists only for canonical URLs and Details copy/paste. No SneakerWeb API accepts
 a caller-supplied namespace.
 
-Opaque objects have complete state machines:
+The nearby multiplexer emits a bounded `IncomingPortableBlobRequest` DTO before
+either receive factory is legal; it contains request ID, safe peer handle,
+digest, length, and channel kind, never a filesystem path. Space receipt is
+accepted only through `request_space_blob`; direct receipt is accepted only
+through `accept_direct_snk_receive` after native bilateral confirmation.
+
+Opaque objects have complete state machines and single terminal results:
 
 - `OpenSnkTask`: `Receiving -> Validating -> Committing -> Completed`, with
   terminal `Cancelled | Failed`. `write_chunk(max 256 KiB)` is legal only while
@@ -444,27 +499,43 @@ Opaque objects have complete state machines:
   `cancel` is idempotent. Repeated `finish` returns the same terminal outcome.
 - `SnkExportTask`: `Selecting -> Encoding -> Ready(ExportLease)`, with terminal
   `Cancelled | Failed`. It exposes progress/cancel/finish. `finish` yields an
-  `ExportLease` rather than bytes or a filesystem path.
+  `ExportLease` rather than bytes or a filesystem path. The first `finish`
+  starts/awaits the asynchronous job; repeated calls return the identical lease
+  identity or terminal error. The lease has a 15-minute idle expiry refreshed
+  by a successful read or retain call and is owned by the database generation.
 - `ExportLease`: metadata plus `read_range(offset, max <= 1 MiB)`,
   `retain_as_portable_blob()`, and idempotent `close`. Retain fsyncs and promotes
   the exact export into CAS; system share/native nearby may stream without
-  promotion. Expiry or close makes reads `LEASE_CLOSED`.
+  promotion. Every read and retain rechecks every selected domain's block
+  generation. Expiry or close makes reads `LEASE_CLOSED`; native owner teardown
+  closes all of its leases.
 - `ResourceLease`: immutable MIME/length/digest/block-generation metadata,
   bounded `read_range`, and idempotent `close`; every read rechecks its block
   generation.
-- `BlobTransferTask`: `Negotiating -> Transferring -> Verifying -> Ready`, with
-  `Paused | Cancelled | Failed`; it exposes progress, pause/resume, cancel, and
-  finish. Ready yields a content lease or invokes the ordinary Open task; it
-  never directly mutates SneakerCollection.
+- `BlobTransferTask`: `Negotiating -> Transferring -> Verifying ->
+  Ready(PortableBlobLease)`, with `Paused | Cancelled | Failed`; it exposes
+  progress, pause/resume, cancel, and finish. The first `finish` starts/awaits
+  the transfer and repeated calls return the same lease identity or terminal
+  error. `PortableBlobLease` is read-only, has the same 15-minute idle expiry,
+  and must be passed explicitly to `begin_snk_open_from_blob`; the transfer
+  never mutates SneakerCollection. Closing/expiry releases the active lease but
+  retains a promoted blob only when a carrier or explicit retain reference
+  owns it.
 
 All tasks are owned by a database generation and, when relevant, a public
 `SpaceSession`/nearby-session generation. After a terminal result, cancellation
 returns `AlreadyTerminal`, writes/reads return the terminal typed error, and
-close/drop only cleans resources. A database/session close before terminal
-wins and returns `OWNER_CLOSED`. Finish-versus-cancel and block-versus-read are
-linearized by the serialized worker: the first accepted command wins, except a
-newer block generation always prevents publication of an export/carrier. A
-process death has no callable outcome; startup reconciliation performs the
+close/drop only cleans resources. A database/session close accepted by the
+actor before commit returns `OWNER_CLOSED`; after atomic commit the completed
+result wins. For finish versus cancel, the first actor-accepted command wins.
+A newer block generation always overrides selection/encoding success and
+prevents export-lease, carrier, resource, or chunk publication. Cancellation
+sets an atomic token before queuing actor cleanup, so the worker observes it at
+the next 256 KiB/10,000-step checkpoint even if the actor queue is busy.
+Progress snapshots are monotonic and may lag by at most one checkpoint.
+Deterministic barrier tests cover finish/cancel, block/read, block/retain,
+owner-close/commit, and task-drop during validation, encoding, and verification.
+A process death has no callable outcome; startup reconciliation performs the
 same cleanup before new tasks start.
 
 The minimum DTO contracts are:
@@ -534,7 +605,12 @@ no-follow random file in the app-protected, backup-excluded CAS staging
 directory; stream while checking length/chunks; fsync the file; verify final
 SHA-256 and `.snk` length; atomically rename to the digest path; fsync the
 directory; then transactionally publish/attach the `portable_blobs` row and
-release the reservation. Startup runs before database service: delete expired
+release the reservation. If the digest path already exists, the core opens it
+without following links, verifies regular-file type, exact length, and digest,
+deletes the new staged duplicate, transactionally increments/attaches the
+existing row, and releases the reservation. A mismatching existing path is
+quarantined as corruption and fails closed; it is never overwritten while a
+lease may exist. Startup runs before database service: delete expired
 staging/chunks/share temporaries, reconcile final files without rows and rows
 without files, expire leases/reservations, recompute references, and finish or
 roll back pending removals. A complete unreferenced file becomes a bounded
@@ -616,11 +692,13 @@ listener or rewrite site bytes.
 
 Host validation is not authorization. Each reader creates an unguessable
 256-bit capability and installs it as a per-domain, HttpOnly, SameSite=Strict,
-non-persistent cookie through the native WebView cookie store before the first
-load. The server binds `(capability, reader, domain, block_generation)` and
+non-persistent host-only cookie with a fixed name, omitted `Domain`, and
+`Path=/` through the native WebView cookie store before the first load. The
+server binds `(capability, reader, domain, block_generation)` and
 returns the same indistinguishable 404 for absent/invalid cookie, Host, domain,
 or resource. JavaScript cannot read the cookie; closing/blocking the reader
-revokes it. Canonical cross-domain navigation asks native to mint/install a new
+revokes it synchronously in server state and the WebView cookie store.
+Canonical cross-domain navigation asks native to mint/install a new
 domain binding before load. Ordinary browsers/local apps without the capability
 cannot enumerate membership or read content. Tests must prove the cookie
 behavior on each supported WebView; if either platform cannot preserve it for
@@ -642,8 +720,8 @@ default-src 'self' data: blob:;
 script-src 'self' 'unsafe-inline' blob:;
 style-src 'self' 'unsafe-inline';
 connect-src 'none'; object-src 'none'; frame-src 'none';
-worker-src 'none'; base-uri 'self'; form-action 'none'
-frame-ancestors 'none'
+worker-src 'none'; base-uri 'self'; form-action 'none';
+frame-ancestors 'none';
 ```
 
 This permits same-site static resources and inline site script/style
@@ -663,7 +741,11 @@ Bluetooth, sensors, and clipboard access. Android explicitly permits only this
 cleartext loopback origin and blocks it from global service-worker interception;
 iOS uses an ephemeral `WKWebsiteDataStore`, app-bound navigation/content rules,
 and ATS limited to loopback. Platform tests prove no non-loopback bind and no
-fallback to a network-loaded resource.
+fallback to a network-loaded resource. Tests parse the emitted CSP rather than
+string-match it and assert every directive independently, especially
+`form-action` and `frame-ancestors`. Packet-level platform tests also prove DNS
+prefetch, preconnect, speculative navigation, and renderer-initiated sockets
+never leave loopback.
 
 `sneakerweb.html` is rendered offscreen in a sandboxed, scriptless,
 opaque-origin preview host with a reader capability, fixed viewport, and time/
@@ -677,23 +759,42 @@ confirmed genuine user gesture and a natively parsed `http` or `https` URL.
 Riot rejects userinfo, controls/bidi controls, URLs over 2,048 bytes, ambiguous
 IP/host syntax, and every custom/file/content/data/javascript/intent scheme.
 The confirmation renders inert, bidi-isolated text with normalized scheme,
-Unicode hostname, ASCII/punycode hostname, explicit port, and path before the
-system browser receives it. Site JavaScript cannot synthesize the confirmation
-or call an app URL handler.
+Unicode hostname, ASCII/punycode hostname, explicit port, path, query, and
+fragment before the system browser receives it. Site JavaScript cannot
+synthesize the confirmation or call an app URL handler.
 
 ### Space attachments and nearby transport
 
-A carrier is a closed canonical-CBOR system object
-`org.riot.sneakerweb-carrier/1` stored at
-`objects/sneakerweb-carrier/<16-byte-share-id>/<16-byte-revision-id>` in the
-selected public Riot namespace. It contains SHA-256 blob digest, encoded length,
-ordered unique full domain IDs, site count, sanitized display labels (80 Unicode
-scalars each), and an optional 1,024-byte UTF-8 note. It contains no member ID.
-The existing space signer creates an ordinary authorised Willow entry; its
-verified entry subspace is the sole sharing attribution. Validation rejects an
-owned/private namespace, unsupported schema/path, duplicate domain, size/count
-mismatch, invalid UTF-8/control/bidi display text, capability outside the exact
-namespace/subspace/path, or payload attribution field.
+A carrier is a closed RFC 8949 deterministic-CBOR map. Definite lengths,
+shortest integer/length forms, and numeric-key canonical order are mandatory;
+indefinite forms, tags, floats, duplicate/unknown keys, and trailing bytes are
+rejected. The complete version-1 schema is:
+
+| Key | Name | CBOR type | Required validation |
+| --- | --- | --- | --- |
+| `0` | schema | text | Required; exact ASCII `org.riot.sneakerweb-carrier/1`. |
+| `1` | blob digest | byte string | Required; exactly 32 SHA-256 bytes. |
+| `2` | encoded length | unsigned integer | Required; `1..=1,073,741,824`, equal to the blob length. |
+| `3` | domains | array of byte strings | Required; `1..=1,024` elements, each exactly 32 bytes, lexicographically increasing and therefore unique. |
+| `4` | labels | array of text | Required; exactly as many elements as key `3`; label at index `i` describes domain at index `i`; each is valid UTF-8, contains no control/bidi-control scalar, and is at most 80 Unicode scalars after whitespace collapse. |
+| `5` | site count | unsigned integer | Required; exactly the array length at keys `3` and `4`. |
+| `6` | note | text | Optional; at most 1,024 UTF-8 bytes after the same control/bidi rejection. |
+
+The top-level map therefore has exactly six pairs without a note or seven with
+one. It has no author/member/attribution field. The existing space signer
+creates an ordinary authorised Willow entry; its verified outer entry subspace
+and signer are the sole sharing attribution.
+
+The Willow path is exactly four byte components: ASCII `objects`, ASCII
+`sneakerweb-carrier`, the lowercase hexadecimal encoding of a 16-byte share ID,
+and the lowercase hexadecimal encoding of a 16-byte revision ID. Both IDs are
+independent 128-bit values from the platform CSPRNG and each encoded component
+is exactly 32 ASCII bytes; raw ID bytes, uppercase hex, other component counts,
+and other encodings are rejected. A version-1 share creates one immutable
+revision and never reuses either ID. Validation rejects an owned/private
+namespace, unsupported schema/path, duplicate/misordered domain, label/domain
+misalignment, size/count mismatch, invalid display text, capability outside
+the exact namespace/subspace/path, or any unknown payload field.
 
 Each share ID is immutable in the MVP; the revision component prevents prefix
 collision with other shares and no edit/delete UI exists. The closed importer
@@ -811,12 +912,17 @@ feature toggle:
    `dc3d20ffadb278e7a8c8e5a06890e10d21c5bcd6d08d8f5811877f6bc9d797c8`
    (MIT OR Apache-2.0), with an offline fixture manifest and reproducible
    generation command in `fixtures/sneakerweb/`.
-3. Keep `willow25 = 0.6.0-alpha.3`, default features off, and add exactly
-   `drop_format` beside `std`. Refresh `Cargo.lock` and record its checksum.
+3. Keep the workspace `willow25 = 0.6.0-alpha.3` declaration at default
+   features off with `std`. Add `features = ["drop_format"]` on the normal
+   `crates/riot-core -> willow25.workspace` dependency edge—the sole requesting
+   edge—because `riot-core::sneakerweb` owns the codec. Cargo feature unification
+   means every Willow use in a graph containing `riot-core` sees that feature;
+   this is requester-edge control, not an impossible claim of per-crate compile
+   isolation. Refresh `Cargo.lock` and record its checksum.
 4. Version `fixtures/manifest.json` and the architecture contract from the
    Phase 0A-only closure to the public-kernel SneakerWeb closure. Update xtask
-   so `drop_format` is required only through the dedicated codec/core path,
-   remains absent from unrelated test-only graphs, and continues to reject
+   so `drop_format` is requested only by that production core edge, is absent
+   from graphs that do not contain it, and continues to reject
    OpenMLS, conformance injection, version drift, or other default features.
 5. Refresh the checked feature-closure fixture and add validator tests for
    missing, correctly scoped, and illicitly widened Drop Format configurations.
@@ -826,8 +932,10 @@ feature toggle:
    runtime before schema/UI work.
 7. Drive `DropDecoder`/`DropEncoder` through bounded test producers, prove
    canonical termination, complete payload validation, hostile-input limits,
-   and CLI cross-import. Any failure stops the feature and preserves the old
-   release contract.
+   and CLI cross-import. The offline evidence records the exact installed
+   SneakerWeb executable SHA-256 and full CLI invocations in addition to crate
+   checksum and fixture digests. Any failure stops the feature and preserves
+   the old release contract.
 
 This gate supersedes the older research condition only with executable
 evidence: pinned upstream payload import, hosted/mobile builds, authoritative
@@ -877,7 +985,8 @@ malformed/truncated/mutated corpus generators, a temporary SQLite database,
 fault-injecting staged storage, a fake clock and storage quota, an in-memory
 portable-blob peer, loopback HTTP requests, native WebView test pages, and a
 CLI harness. Fuzz/property tests cover Drop decoding, URL/path conversion,
-carrier CBOR, selection isolation, arbitrary merge order, pathological
+bounded native HTML title extraction, carrier CBOR, selection isolation,
+arbitrary merge order, pathological
 capability depth, integer boundaries, block/read/export races, chunk resume,
 cross-space inventory leakage, absolute-form HTTP, malformed Host/cookies,
 synthetic external navigation, and port teardown/rebind. Deterministic barriers
@@ -904,7 +1013,7 @@ xcodebuild test -project apps/ios/Riot.xcodeproj -scheme Riot \
   -enableCodeCoverage YES -resultBundlePath build/snk-riot.xcresult
 scripts/verify-xcresult-tests.sh build/snk-riotkit.xcresult --require-tests
 scripts/verify-xcresult-tests.sh build/snk-riot.xcresult --require-tests
-(cd apps/android && ./gradlew testDebugUnitTest connectedDebugAndroidTest lintDebug)
+(cd apps/android && ../../scripts/android-sneakerweb-test-gate.sh)
 scripts/sneakerweb-interop.sh --offline --version 1.0.1
 scripts/sneakerweb-physical-rehearsal.sh --require-recorded-results
 ```
@@ -915,7 +1024,16 @@ enabled. Ten cold-cache and ten warm-cache runs use fixed 10 MiB and 100 MiB
 fixtures; each records wall time, peak RSS (100 MiB open must remain at or below
 512 MiB), encoded/retained bytes, transport, completion, and final digests.
 Recorded median/worst results and the novice cohort results are committed as a
-release evidence artifact. Zero executed native tests is a gate failure.
+release evidence artifact. `android-sneakerweb-test-gate.sh` deletes prior unit
+and connected-test result directories, records the run start time, executes
+`testDebugUnitTest connectedDebugAndroidTest lintDebug`, parses only fresh unit
+JUnit XML and connected-test result artifacts, requires positive executed-test
+counts in both categories, requires unit suites
+`SneakerLibraryViewModelTest` and `SneakerShareCoordinatorTest`, requires
+connected suites `SneakerDocumentOpenTest` and
+`SneakerWebViewIsolationTest`, and fails on missing, stale, skipped-only, or
+malformed results.
+Zero executed native tests on either platform is a gate failure.
 
 ## Delivery slices and dependencies
 
