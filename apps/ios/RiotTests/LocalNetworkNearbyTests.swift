@@ -215,8 +215,9 @@ final class TwoPeerNearbySyncTests: XCTestCase {
             "Bob must not already have the item — otherwise this proves nothing"
         )
 
-        let aliceNearby = NearbyTransportController()
-        let bobNearby = NearbyTransportController()
+        let realm = Self.privateServiceType()
+        let aliceNearby = NearbyTransportController(usesBluetooth: false, serviceType: realm)
+        let bobNearby = NearbyTransportController(usesBluetooth: false, serviceType: realm)
         defer {
             aliceNearby.stop()
             bobNearby.stop()
@@ -228,35 +229,17 @@ final class TwoPeerNearbySyncTests: XCTestCase {
 
         // Bob's phone SEES Alice's phone. This is Bonjour doing its job — no
         // endpoint is handed to anyone here.
-        let alicePhone = try await firstDiscoveredPhone(on: bobNearby)
+        _ = try await firstDiscoveredPhone(on: bobNearby)
 
-        // Bob taps Alice's name, then taps to confirm. Dialling her is what makes
-        // her phone ask HER — nothing happens until both people say yes.
-        bobNearby.requestConnection(to: alicePhone)
-        bobNearby.confirmConnection()
-
-        // Alice's phone asks her. She says yes.
+        // NOBODY TAPS "CONNECT". Both phones auto-connect on sight, which is what
+        // they do on a table at a conference, and it is what broke this: both dialled,
+        // each bound its session to a different socket, and the space handshake on
+        // each side then talked into a socket the other had abandoned. Which phone
+        // dials is the transport's business — the point is that exactly one does.
         //
-        // NOT an assertion, and that is a finding, not a shrug: on this test host
-        // the dial does not arrive. Bob's connection reports `.ready` and Alice's
-        // listener never sees it — the "ready to nowhere" `dial(...)` itself
-        // documents — and Bob exhausts his retries and fails. So the connect is
-        // skipped rather than failed, because a red bar here would say "the sync
-        // is broken" when what is unproven is whether this MACHINE can carry a
-        // Bonjour dial between two in-process peers at all. Everything below the
-        // connect is asserted hard.
-        //
-        // What this test therefore proves today: discovery is real (Bob found
-        // Alice over `_riot-sync._tcp` above, or we skipped before here). What it
-        // does NOT prove: that two phones can complete the dial. That is open, it
-        // is the auto-connect session's file, and it is a live demo risk.
-        try await settleOrSkip(
-            until: { if case .confirm = aliceNearby.state { return true }; return false },
-            skipping: "Bob discovered Alice over Bonjour but the dial never reached her listener "
-                + "(Bob exhausted his retries). The local-network CONNECT is unproven on this host.",
-            aliceNearby, bobNearby
-        )
-        aliceNearby.confirmConnection()
+        // This used to be hand-driven (`bobNearby.requestConnection` /
+        // `confirmConnection`, then Alice confirming) and skipped when the dial did
+        // not land, which is why it never caught any of this.
 
         // From here both people just tap "Add them" when their phone offers. The
         // sync — who begins, who answers — is the controller's business, not the
@@ -277,7 +260,73 @@ final class TwoPeerNearbySyncTests: XCTestCase {
         )
     }
 
+    /// THE DEMO FINALE, as a test: a fresh phone that is in NO space meets an
+    /// organizer who is in one, and ends up in theirs.
+    ///
+    /// This is the case the app existed to serve and could not do. Both phones
+    /// auto-connected on sight, so BOTH dialled; each ended up holding two sockets
+    /// to the other and bound its session to whichever pairing completed first, with
+    /// nothing making the two agree. Half the time they chose opposite sockets, each
+    /// announced its space into a socket the other had abandoned, neither ever read
+    /// an announce, and `SpacePairing` reached no decision at all — so
+    /// `SpaceAdoption.decide` was never asked, `.adopt` never fired, and the fresh
+    /// phone stayed spaceless. Every unit test above stayed green throughout,
+    /// because none of them lets two whole controllers meet.
+    func testAFreshPhoneWithNoSpaceAdoptsTheOrganizersSpace() async throws {
+        let organizer = try openPeer(name: "Organizer", joining: nil, approvingTheApp: true)
+        let theirSpace = try XCTUnwrap(organizer.repository.currentSpace)
+
+        let fresh = try openSpacelessPeer(name: "Fresh")
+        XCTAssertNil(
+            fresh.currentSpace,
+            "the fresh phone must start in NO space — otherwise this proves nothing"
+        )
+
+        let realm = Self.privateServiceType()
+        let organizerNearby = NearbyTransportController(usesBluetooth: false, serviceType: realm)
+        let freshNearby = NearbyTransportController(usesBluetooth: false, serviceType: realm)
+        defer {
+            organizerNearby.stop()
+            freshNearby.stop()
+        }
+
+        // Two phones on a table. Nobody taps "connect" on either one.
+        organizerNearby.findNearby(host: organizer.repository)
+        freshNearby.findNearby(host: fresh)
+
+        // The only tap in the whole flow: the fresh phone asks whether to join, and
+        // the person says yes. Joining a space IS a real decision and keeps its
+        // confirmation — `settle` taps it, below.
+        try await settle(
+            until: { fresh.currentSpace != nil },
+            failing: "the fresh phone never joined the organizer's space",
+            organizerNearby, freshNearby
+        )
+
+        let joined = try XCTUnwrap(fresh.currentSpace)
+        XCTAssertEqual(
+            joined.namespaceID.lowercased(), theirSpace.namespaceID.lowercased(),
+            "the fresh phone joined SOME space, but not the organizer's"
+        )
+        XCTAssertEqual(joined.title, theirSpace.title)
+    }
+
     // MARK: - Driving two phones
+
+    /// A Bonjour type nobody else is on, so this test's two phones find each other
+    /// and nothing else.
+    ///
+    /// On the real type they find every Riot advertising on the machine and the LAN
+    /// — other test processes, a developer's two app instances, the phone in
+    /// someone's pocket. `phones` is sorted by name, so the peers would auto-connect
+    /// to whichever STRANGER sorts first and never reach each other. That is not a
+    /// hypothetical: this test saw seven strangers and dialled "Autumn Creek".
+    ///
+    /// A Bonjour type is at most 15 characters, hence the short random suffix.
+    private static func privateServiceType() -> String {
+        let suffix = String(UUID().uuidString.filter(\.isHexDigit).prefix(8)).lowercased()
+        return "_riot\(suffix)._tcp"
+    }
 
     /// Waits for Bob's phone to list a peer, which only happens once the real
     /// browser has resolved the real advertisement.
@@ -296,33 +345,14 @@ final class TwoPeerNearbySyncTests: XCTestCase {
         )
     }
 
-    /// Like `settle`, but a timeout SKIPS instead of failing — for the one step
-    /// (the Bonjour dial) that this machine cannot currently carry. See the call
-    /// site: the skip is the honest report of a real gap, not a hidden failure.
-    private func settleOrSkip(
-        until done: () -> Bool,
-        skipping message: String,
-        timeout: TimeInterval = 45,
-        _ controllers: NearbyTransportController...
-    ) async throws {
-        let deadline = Date().addingTimeInterval(timeout)
-        while Date() < deadline {
-            if done() { return }
-            if controllers.contains(where: { $0.state == .failed }) { break }
-            try await Task.sleep(for: .milliseconds(50))
-        }
-        if !done() {
-            throw XCTSkip("\(message) States: "
-                          + controllers.map { "\($0.state)" }.joined(separator: ", "))
-        }
-    }
-
-    /// Runs both phones until `until` holds, tapping "Add them" for whoever is
-    /// being shown a preview.
+    /// Runs both phones until `until` holds, tapping "Add them" for whoever is being
+    /// shown a preview and "Join" for whoever is being offered a space.
     ///
-    /// Accepting — never auto-accepting on receipt — is the review gate: content
-    /// only lands in the store because a person said yes. Each side is tapped at
-    /// most once per preview it is actually shown.
+    /// Those are the only two taps in the product, and they are the two decisions
+    /// that are actually the person's: content only lands in the store because
+    /// someone said yes, and a space is never joined silently. Everything else —
+    /// who dials, who opens the sync — the controller decides, exactly as it does
+    /// on a real phone. Each side is tapped at most once per offer it is shown.
     private func settle(
         until done: () -> Bool,
         failing message: String,
@@ -331,12 +361,20 @@ final class TwoPeerNearbySyncTests: XCTestCase {
     ) async throws {
         let deadline = Date().addingTimeInterval(timeout)
         var accepted = Set<ObjectIdentifier>()
+        var joined = Set<ObjectIdentifier>()
         while Date() < deadline {
             if done() { return }
             for controller in controllers {
-                guard case .preview = controller.state else { continue }
-                guard accepted.insert(ObjectIdentifier(controller)).inserted else { continue }
-                controller.addPreviewedContent()
+                switch controller.state {
+                case .preview:
+                    guard accepted.insert(ObjectIdentifier(controller)).inserted else { continue }
+                    controller.addPreviewedContent()
+                case .joinSpace:
+                    guard joined.insert(ObjectIdentifier(controller)).inserted else { continue }
+                    controller.confirmJoinSpace()
+                default:
+                    continue
+                }
             }
             if controllers.contains(where: { $0.state == .failed }) {
                 return XCTFail(
@@ -362,6 +400,19 @@ final class TwoPeerNearbySyncTests: XCTestCase {
         let space = try XCTUnwrap(alice.repository.currentSpace)
         let bob = try openPeer(name: "Bob", joining: space, approvingTheApp: false)
         return (alice, bob)
+    }
+
+    /// A phone straight out of the box: an open profile, an identity, and NO space.
+    /// It cannot even open a sync session (the core refuses one without a space), so
+    /// the only way it ever gets one is by hearing a peer announce theirs.
+    private func openSpacelessPeer(name: String) throws -> RiotProfileRepository {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("two-peer-\(name)-\(UUID().uuidString).json")
+        return try RiotProfileRepository.open(
+            storage: try ProtectedProfileStorage(fileURL: url),
+            keyStore: TwoPeerKeyStore(),
+            starterPacks: try starterPacks()
+        )
     }
 
     private func openPeer(name: String, joining space: RiotSpace?, approvingTheApp: Bool) throws -> Peer {

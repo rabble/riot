@@ -1253,7 +1253,10 @@ sources + a `FrameDecoder`-only stub; `main.swift` sends a frame from each side 
 `onPaired` and checks both arrive. Happy to implement the fix myself if you'd
 rather I take it — say so here; otherwise it's yours since you're in the file.
 
-## Demo gate stress finding — adoption still flakes (2026-07-12, Codex root)
+## Demo gate stress finding — apparent flake was Mac sleep (2026-07-12, Codex root)
+
+**Documentation correction only.** Corrected the stress interpretation from
+measured `pmset` evidence; no transport, test, or project file edits.
 
 **Claim: this append-only documentation entry only. I did not touch the owned
 transport/project/test files.** The full `sh scripts/green.sh` gate passed in the
@@ -1261,7 +1264,7 @@ live shared checkout: Rust 52 suites, iOS build, macOS build, macOS 93 tests, an
 Android unit tests. `TwoPeerNearbySyncTests` genuinely executed both tests.
 
 I then ran that exact suite repeatedly with isolated DerivedData. Runs 1–4 passed
-(2 tests each). Run 5 failed:
+(2 tests each). Run 5 appeared to fail:
 
 - `testAFreshPhoneWithNoSpaceAdoptsTheOrganizersSpace`: fresh phone never joined;
   after the nominal 60-second timeout both controllers were `looking, looking`.
@@ -1272,5 +1275,353 @@ I then ran that exact suite repeatedly with isolated DerivedData. Runs 1–4 pas
 
 Evidence: `/tmp/riot-two-peer-5.log` and
 `/tmp/riot-codex-two-peer-derived/Logs/Test/Test-RiotKit-macOS-2026.07.12_21-34-08-+0200.xcresult`.
-This is still Bonjour on one Mac, not BLE proof. The current dirty Swift files are
-owned by the blocker sessions and remain untouched by Codex root.
+
+**Correction from measured power logs:** this was not a transport flake. `pmset -g
+log` records the Mac entering idle sleep at `21:34:08` for **841 seconds** and
+waking at `21:48:09`; XCTest measured the test at 842.221 seconds. The test host,
+its Bonjour services, and its 50 ms polling task were suspended. On wake, the
+wall-clock deadline had expired while both controllers still reflected the
+pre-sleep `.looking` state. The following test then discovered and synced in
+1.033 seconds. Do not count this run as evidence that adoption failed while the
+machine was awake.
+
+Awake evidence is now 4 separate-process suite passes plus one 10-iteration run:
+20/20 selected test executions passed with zero skips. This proves the current
+Bonjour-on-one-Mac path under those runs. It is still **not BLE proof**. The
+current dirty Swift files remain owned by the blocker sessions and untouched by
+Codex root.
+
+## Active claim: repair community-miniapps merge fallout (2026-07-12, Codex root)
+
+Main became red after `1202cd0` changed the content-addressed Checklist into
+Tasks. Claiming only the stale references that must move atomically with that
+change: `fixtures/demo/riverside/{content.json,demo-space.riot-evidence}`,
+`crates/riot-core/src/demo_fixture.rs`,
+`crates/riot-core/tests/demo_fixture_drift.rs`, and any exact old starter
+name/app-id reference in `apps/ios/RiotTests/BindingSemanticsTests.swift`.
+No transport, project, profile, FFI, or runtime-host files.
+
+## DONE: restored frozen demo checklist after red merge (2026-07-12, Codex root)
+
+`1202cd0` merged the post-demo community-miniapps branch during the full green
+gate and changed `fixtures/apps/checklist.manifest.cbor` plus
+`checklist.bundle.cbor`. That moved the checklist's frozen app identity and made
+both endorsement persistence tests deterministically red. This directly violates
+the demo freeze and the recorded requirement that repacking checklist reproduce
+the artifacts byte-for-byte.
+
+Claimed files: `fixtures/apps/checklist/**`,
+`fixtures/apps/checklist.bundle.cbor`,
+`fixtures/apps/checklist.manifest.cbor`, and
+`crates/riot-core/tests/apps_starter.rs` only. The failing tests already provide
+RED. Restored the pre-merge frozen checklist bytes/content and re-read every
+changed file. A concurrent session committed the exact same working-tree fix as
+`3539988`, so I did not create a duplicate commit. Verification after restore:
+
+- endorsement persistence focused tests: 2 executed, 0 failed;
+- checklist artifact drift/frozen-ID tests: 5 executed, 0 failed;
+- full gate: Rust 52 suites, iOS build, macOS build, macOS 93 tests, Android
+  unit tests — all green (run under `caffeinate`);
+- restored files compare byte-for-byte with pre-merge `9dade38`.
+
+No transport/project-file edits by this session.
+
+## DONE: correct the live demo setup path (2026-07-12, Codex root)
+
+Docs-only: `docs/product/demo-script.md`. The script still directs the presenter
+to a nonexistent Settings screen. Current measured UI is Spaces → “Load the demo
+space (Riverside Tenants Union)” (`ConferenceShellView.swift`, accessibility id
+`demo-load`). Correcting setup instructions only; no app or transport edits.
+
+Landed as `0aab707`. The rehearsal script now names the exact working Spaces
+button instead of directing the presenter to a screen that does not exist.
+
+## CANCELLED: board-reload blocker is still real (2026-07-12, Codex root)
+
+Docs-only continuation in `docs/product/demo-script.md`. Gap 1 still says live
+redraw is waiting, but `AppSyncReplicationTests.testSyncedItemAppearsInAnAlreadyOpenChecklistWithoutReopening`
+and `d30025e` prove notification → WebView redraw after accepted sync on the
+headless TCP path. Updating the script to state that proof and keep physical BLE
+explicitly unproven. No app or transport edits.
+
+Data-flow check reversed that assumption: `onSpaceJoined` calls
+`model.refreshFromStore()` inside `startSync`, immediately after joining and
+**before** accepted entries arrive. `SyncCoordinator.addPreviewedContent` later
+posts only `AppRuntimeView.dataChangedNotification`; it never reloads the native
+`RiotAppModel.entries`. Therefore an already-open WebView redraws, but the fresh
+phone's native incident board remains stale after the initial sync. The demo
+script's blocker stays. No script change made for this item.
+
+## DONE: refresh the native board after accepted sync (2026-07-12, Codex root)
+
+Demo-blocker fix under the freeze. Claimed files:
+`apps/ios/Riot/AppModel.swift` and
+`apps/ios/RiotTests/AppSyncReplicationTests.swift` only. The latter is an
+existing test file, so no Xcode project edits. Root cause: accepted sync posts
+`AppRuntimeView.dataChangedNotification`; WebViews observe it, but
+`RiotAppModel.entries` does not. TDD: first prove a model backed by the receiving
+repository remains stale until that committed-store notification, then make the
+model refresh from the same signal. No transport or project-file edits.
+
+Landed as `d2bb540`. TDD evidence: the new iOS test executed and failed with an
+empty native board, then passed after `RiotAppModel` began observing the existing
+post-commit notification. `AppSyncReplicationTests`: 11 executed, 0 failed. Full
+gate: Rust 52 suites, iOS phone build, macOS demo build, macOS 93 tests, Android
+unit tests — all green. Coverage gate remains a pre-existing repository blocker:
+Tarpaulin measured 83.37% (4,177/5,010), below the configured 100%; no claim that
+coverage passed. Physical BLE remains unproven.
+
+## DONE: retire the fixed board-reload warning (2026-07-12, Codex root)
+
+Docs-only: `docs/product/demo-script.md`. `d2bb540` now refreshes native board
+state on the committed-store signal, with the iOS regression test and full green
+gate recorded above. Removing the obsolete “do not rehearse” warning while
+leaving the real physical-radio warning untouched.
+
+Landed as `b7b7a47`. Known gaps now distinguish the remaining radar identity
+product decision and the completely unproven two-physical-iPhone BLE run from
+the headless paths that actually passed.
+
+## DONE: fix Tools navigation in demo script (2026-07-12, Codex root)
+
+Docs-only: `docs/product/demo-script.md`. Shift Signup and its exact permissions
+are present in the Riverside fixture, but the script says it appears in a
+nonexistent Tools tab. Current UI has five tabs (Spaces, Apps, Board, Compose,
+Connect); installed tools live in the Tools card on Spaces. Correcting only
+those stage directions.
+
+Landed as `f384de4`. Beat 3 now explicitly returns to Spaces and points at its
+Tools section; no nonexistent Tools tab remains in the rehearsal path.
+
+## DONE: align demo narration with shipping directory copy (2026-07-12, Codex root)
+
+Docs-only: `docs/product/demo-script.md`. Measured UI renders
+“Recommended by 2 groups you’ve met” (`RiotDirectoryRow.endorsementSummary`) and
+“Let everyone in this space use this” (`AppReviewSheet`). The script currently
+invents named endorsement copy and a different approval label. Correcting the
+stage directions to exact strings; no UI or fixture changes.
+
+Landed as `45e5114`. Beat 2/3 now uses the Apps tab, the actual badges and
+recommendation count, exact Get/Review and approval labels, and truthful
+take-up-versus-run language.
+
+## DONE: fix the demo's rendered Ana tag (2026-07-12, Codex root)
+
+Docs-only: `docs/product/demo-script.md`. Shipping rendering and
+`MotionTests.testRippleAttributionReadsAsTheDemoScriptSaysIt` both say
+`checked by Ana · a3f91122`; the script truncates it to `a3f9`. Correcting that
+single spoken string. No app or fixture changes.
+
+Landed as `bf6e6ea`.
+
+## DONE: fix Connect tab name in demo script (2026-07-12, Codex root)
+
+Docs-only: `docs/product/demo-script.md`. `RiotDestination.tabTitle` is
+`Connect`; the finale says to open a nonexistent `Connection` tab. Correcting
+that one stage direction.
+
+Landed as `18fb7bf`.
+
+## DONE: community-first product flow design (2026-07-13, Codex root)
+
+Docs-only product-design pass requested and visually approved by Rabble. Claiming
+NEW `docs/superpowers/specs/2026-07-13-community-first-navigation-design.md` only.
+The design starts from user goals: choose a community, understand what is
+happening, use a tool, contribute, and exchange changes. Spaces become container
+navigation; profile and organizer/app-review controls leave the everyday path.
+No Swift, Rust, fixture, Xcode-project, or transport edits in this design pass.
+Approved by the five-role design gate and landed as `578affb`; the file is free.
+
+## DONE: protocol comparison marketing design (2026-07-13, Codex root)
+
+Rabble approved a separate `/protocols/` comparison page, with the primary
+homepage remaining focused on Riot's human value proposition. Claiming NEW
+`docs/superpowers/specs/2026-07-13-protocol-comparison-marketing-design.md`
+only for the design pass. Landed as `1a9998e`; the file is free. No `marketing/`,
+Swift, Rust, fixture, Xcode-project, or transport edits occurred. Later
+implementation will re-claim the exact free `marketing/` paths before touching
+them.
+
+## REVIEW FAILED: demo-critical community tools implementation plan (2026-07-13, Codex root)
+
+Docs-only planning pass for the first independently shippable part of the
+approved community-first design. Claiming NEW
+`docs/superpowers/plans/2026-07-13-demo-community-tools-implementation.md` only.
+No Swift, Rust, fixture, Xcode-project, transport, coverage-config, or marketing
+edits in this planning pass.
+Draft is uncommitted at
+`docs/superpowers/plans/2026-07-13-demo-community-tools-implementation.md`.
+Rabble explicitly requested a fresh goal/dead-end review after the prior capped
+cycle. Re-claiming only this plan document for a new three-reviewer gate. The
+review contract is a clean community member entering Riverside, directly opening
+every available tool, completing its primary action, and receiving an honest
+recovery action for missing, invalid, or revoked packages. No implementation is
+authorized from this draft. The third frozen iteration passed Scope & Alignment
+but failed Feasibility and Completeness on the five blockers recorded at the top
+of the plan. The plan remains uncommitted and requires a new explicitly requested
+review cycle before execution.
+
+## Active claim: protocol comparison marketing implementation and publish (2026-07-13, Codex root)
+
+Rabble approved publishing the separate `/protocols/` comparison page. Claiming
+only `marketing/index.html`, NEW `marketing/protocols/index.html`,
+`marketing/public/index.html`, NEW `marketing/public/protocols/index.html`,
+`marketing/README.md`, NEW `scripts/marketing/protocol-page-contracts.mjs`, and
+NEW `docs/superpowers/plans/2026-07-13-protocol-comparison-marketing.md`, plus
+`docs/superpowers/specs/2026-07-13-protocol-comparison-marketing-design.md` for
+the approved link-prominence correction.
+No Swift, Rust, fixture, Xcode-project, transport, or coverage-config files.
+Will stage these paths explicitly, visually verify local desktop/mobile renders,
+and deploy only after contract and live-route checks pass.
+
+### Hero C refinement (same claim, 2026-07-13)
+
+Rabble approved screenshot Hero C from `.superpowers/brainstorm/41916-1783928642`.
+Also claiming `marketing/assets/screenshots/{spaces,apps,compose,checklist}.png`,
+their `marketing/public/assets/screenshots/` mirrors, and NEW
+`docs/superpowers/plans/2026-07-13-marketing-hero-c.md`. Scope remains static
+marketing only: replace the abstract hero mesh with real iPhone UI captures,
+phone chrome, top-aligned copy, miniapp support text, and responsive layout.
+
+### Builder and Indymedia lineage (same claim, 2026-07-13)
+
+Rabble approved a sourced homepage credit explaining who is building Riot and
+Riot's Willow implementation, plus why the government campaigns against
+Indymedia make seizure-resistant publishing concrete rather than theoretical.
+Also claiming NEW
+`docs/superpowers/specs/2026-07-13-builder-lineage-design.md` and NEW
+`docs/superpowers/plans/2026-07-13-builder-lineage.md`. The implementation is
+limited to the already-claimed marketing homepage/source mirror, marketing
+contract, and README; no app, protocol, transport, Xcode, or Rust files.
+
+## RESUMED: multi-space SQLite cutover (2026-07-13, Codex root)
+
+Rabble explicitly requested execution of the reviewed plan after the demo-day
+pause. Work remains isolated on `codex/sqlite-foundation`; nothing lands on
+`main` without the per-work-unit validation and adversarial gates.
+
+Current claim is Task 1 only: `Cargo.toml`, `Cargo.lock`,
+`crates/riot-core/Cargo.toml`, NEW
+`crates/riot-core/tests/sqlite_foundation.rs`, and
+`scripts/conference/build-native-core.sh`. Before expanding to Task 2, this
+session will release or replace this claim with Task 2's exact paths.
+## ACTIVE: multi-space SQLite Task 2 lifecycle (2026-07-13, Codex root)
+
+Working only in the isolated `codex/sqlite-foundation` worktree. Claiming new
+`crates/riot-core/src/store/{mod,database,schema,backup}.rs`, additive
+`crates/riot-core/src/lib.rs`, and new
+`crates/riot-core/tests/sqlite_{lifecycle,backup_restore}.rs`. Task 1 is
+committed as `e340194`. I will not touch the currently hot Xcode project files;
+their uncommitted macOS test-host Bluetooth keys remain a prerequisite for the
+repo-wide gate.
+
+## DONE: multi-space SQLite Task 2 lifecycle (2026-07-13, Codex root)
+
+Committed on the isolated branch as `7decf2b` after independent validation and
+adversarial approval. The focused lifecycle/backup suite is 17/17 green; the
+full Rust package, strict Clippy, iPhone build, Mac demo build and 92 Mac tests,
+and Android unit tests all passed through `scripts/green.sh`. The original Task
+1 commit rebased to `cd24f92`. All Task 2 paths, including
+`crates/riot-core/src/lib.rs`, are released. This proves the durable database
+lifecycle only; Willow evidence and app state are not wired to SQLite yet.
+
+## ACTIVE: multi-space SQLite Task 3 evidence store (2026-07-13, Codex root)
+
+Working only in the isolated `codex/sqlite-foundation` worktree. Claiming NEW
+`crates/riot-core/src/store/{memory,evidence}.rs`, additive
+`crates/riot-core/src/{session.rs,import/join.rs,store/mod.rs}`, and NEW
+`crates/riot-core/tests/sqlite_{evidence_store,evidence_differential}.rs`.
+Goal: preserve the current inspect/plan/commit behavior while SQLite becomes
+the durable authority for accepted entries, live selection, receipts, pruning,
+forgetting, namespace isolation, and restart. No Swift, Xcode project, radio,
+or app UI files are in scope.
+
+**Correctness scope amendment:** also claiming the now-free
+`crates/riot-core/src/store/schema.rs`. The approved design requires versioned
+`accepted_entries`, `live_entries`, receipt/disposition, and forgotten-entry
+tables; putting `CREATE TABLE` inside runtime store calls would bypass the
+transactional migration and structural-validation contract proved in Task 2.
+No other Task 2 lifecycle file is re-claimed.
+
+**Narrow API amendment:** also claiming an additive crate-private managed-read
+closure in `crates/riot-core/src/store/database.rs`. `RiotReadSnapshot`
+deliberately exposes no raw connection, so the sibling evidence module cannot
+query versioned evidence tables through the bounded reader pool otherwise.
+The closure must not expose a connection publicly or change lifecycle,
+checkpoint, lease, or restore behavior.
+
+## ACTIVE: newswire core slice 1 (2026-07-13, Codex root)
+
+Rabble approved execution of
+`docs/superpowers/plans/2026-07-13-newswire-core-slice-1.md` using the
+subagent-driven TDD/review workflow. Work is isolated on
+`codex/newswire-core-slice-1`; nothing lands on `main` during implementation.
+
+Task 1 is DONE and its paths are released after commits `c6a309e`, `d3a543e`,
+and `2794008`; independent spec review passed and independent quality review
+found no remaining issues. Focused Newswire tests are 9/9, default-feature model
+tests are 7/7, all-feature `riot-core` tests and strict all-target Clippy pass.
+
+Current claim is Task 2 only: NEW
+`crates/riot-core/src/newswire/{path,entry}.rs`, additive
+`crates/riot-core/src/newswire/mod.rs`, additive `crates/riot-core/Cargo.toml`,
+and NEW `crates/riot-core/tests/newswire_entry.rs`. This is isolated from the
+active SQLite Task 3 paths; no session, import, store, FFI, app, or project file
+is in scope. The branch remains `codex/newswire-core-slice-1` and will not
+cherry-pick SQLite or other concurrent feature work.
+
+## ACTIVE: Riot local-first PWA Task 1 parallel coverage wave (2026-07-13, Codex root)
+
+Rabble explicitly requested swarm execution of the approved
+`docs/superpowers/plans/2026-07-13-riot-local-first-pwa-implementation.md`.
+Task 0A landed on isolated branch `codex/riot-local-first-pwa` as `ba9e1da`.
+
+Current disjoint claims are:
+
+- coverage harness: adopted `.coverage-thresholds.json` plus NEW
+  `scripts/web/{bootstrap.sh,coverage.sh,validate-llvm-coverage.mjs}` and NEW
+  `scripts/web/test/validate-llvm-coverage.test.mjs`;
+- CLI coverage: `crates/riot-app-cli/src/{lib.rs,main.rs}` and
+  `crates/riot-app-cli/tests/**`, followed sequentially by
+  `crates/xtask/{Cargo.toml,src/main.rs}` within the same worker;
+- non-hot core app-codec coverage: `crates/riot-core/src/apps/{bundle.rs,endorse.rs,entry.rs,manifest.rs,starter.rs,mod.rs}` and focused tests
+  `crates/riot-core/tests/{apps_bundle.rs,apps_codec_hostile.rs,apps_endorse.rs,apps_entry_path.rs,apps_manifest.rs,apps_starter.rs}`.
+
+The active SQLite-owned `crates/riot-core/src/session.rs` and
+`crates/riot-core/src/import/join.rs`, Newswire files, all Apple project/
+transport files, and unrelated dirty paths remain untouched. This coordination
+file is never staged.
+
+## DONE: repair the physical-iPhone demo installer (2026-07-13, Codex root)
+
+The first live device run exposed a demo-path bug: `devicectl` reports the
+paired phone as `available (paired)`, but `scripts/demo-install-iphone.sh`
+assumes the state and identifier are the final two whitespace-delimited fields,
+so it rejects the reachable phone after successfully building the signed app.
+Claiming only `scripts/demo-install-iphone.sh`, NEW
+`scripts/lib/demo-device-list.sh`, and NEW
+`scripts/test-demo-install-iphone.sh`. The fix will consume `devicectl`'s JSON
+output (its documented scripting interface), be test-first, and touch no Swift,
+Xcode project, transport, Rust, or app UI files.
+
+TDD result: the JSON-selection test failed before the helper existed, then
+passed after the installer switched to `devicectl --json-output`. The live
+installer now selects device `79540291-44E6-5FB4-8788-5C8041DE04E9` and reaches
+the install call. The signed app builds with team `GZCZBKH7MY`; install is
+currently blocked because the physical phone is locked
+(`kAMDMobileImageMounterDeviceLocked`). `sh scripts/green.sh fast` is GREEN for
+iPhone build, Mac demo build, and Android unit tests. This is not BLE proof:
+only one physical iPhone is connected, and the app has not launched on it.
+
+## ACTIVE: friend-release posting language (2026-07-13, Codex root)
+
+Implementing the already-approved posting contract from
+`docs/superpowers/specs/2026-07-13-community-first-navigation-design.md` as one
+small TDD slice: people **Post an update**; they are not asked to understand
+"Compose & sign" or "sign locally," and optional model assistance starts off.
+Claiming only `apps/ios/Riot/AppModel.swift`,
+`apps/ios/Riot/ConferenceShellView.swift`,
+`apps/ios/RiotTests/ShellNavigationTests.swift`, and
+`apps/ios/RiotUITests/RiotTabNavigationUITests.swift`. These paths are clean and
+released in all earlier claims. No new Swift file, Xcode project, transport,
+Rust, fixture, storage, or app-runtime edit is in scope.

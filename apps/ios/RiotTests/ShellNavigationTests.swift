@@ -9,13 +9,13 @@ final class ShellNavigationTests: XCTestCase {
                 "Spaces",
                 "App directory",
                 "Incident board",
-                "Compose & sign",
+                "Post an update",
                 "Connection",
             ]
         )
         XCTAssertEqual(
             RiotDestination.phoneTabs.map(\.tabTitle),
-            ["Spaces", "Apps", "Board", "Compose", "Connect"]
+            ["Spaces", "Apps", "Board", "Post", "Connect"]
         )
     }
 

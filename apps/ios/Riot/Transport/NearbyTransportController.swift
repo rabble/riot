@@ -69,20 +69,52 @@ public final class NearbyTransportController: ObservableObject {
     private var pendingAdoption: RiotSpace?
     private var listenerGeneration: UUID?
 
+    /// Whether to run Bluetooth discovery alongside the local network.
+    ///
+    /// Off in tests, and only there. Two peers in ONE process can never meet over
+    /// the radio anyway — a single BLE controller does not hear its own
+    /// advertisement — and merely constructing `CBCentralManager` inside an xctest
+    /// host, which carries no Bluetooth usage string, aborts the process on a TCC
+    /// privacy violation. That crash, not any network problem, is why the two-peer
+    /// test has never once run to completion.
+    private let usesBluetooth: Bool
+
     /// Fired after this phone has joined a peer's space, so the app can re-read a
     /// profile that now has a space it did not have a moment ago.
     public var onSpaceJoined: (() -> Void)?
 
-    public init() {}
+    /// The Bonjour type discovery runs on. The app never sets it; a test passes a
+    /// unique one so its two peers meet each other and not every other Riot on the
+    /// machine. See `LocalNetworkNearbyService.serviceType`.
+    private let serviceType: String
+
+    public init(
+        usesBluetooth: Bool = true,
+        serviceType: String = LocalNetworkNearbyService.serviceType
+    ) {
+        self.usesBluetooth = usesBluetooth
+        self.serviceType = serviceType
+    }
 
     public func findNearby(host: NearbySpaceHost?) {
         resetSession()
         self.host = host
+        state = .looking
+        if usesBluetooth { startBluetooth() }
+
+        let localService = makeLocalService()
+        self.localService = localService
+        localService.startLooking()
+    }
+
+    /// Bluetooth discovery, plus the TCP listener a Bluetooth pairing upgrades onto.
+    /// Both belong to the radio path: a peer found over the local network arrives on
+    /// a channel that is already the session's, with nothing to upgrade to.
+    private func startBluetooth() {
         let service = makeService()
         self.service = service
         let generation = UUID()
         listenerGeneration = generation
-        state = .looking
         let listener = LocalNetworkListener()
         listener.onAccepted = { [weak self, weak service] channel in
             Task { @MainActor in
@@ -104,16 +136,27 @@ public final class NearbyTransportController: ObservableObject {
             Task { @MainActor in service?.setLocalEndpoint(endpoint) }
         }
         service.startLooking()
-
-        let localService = makeLocalService()
-        self.localService = localService
-        localService.startLooking()
     }
 
     public func requestConnection(to phone: DiscoveredPhone) {
+        let isLocal = localService?.canPair(with: phone) ?? false
+        // EXACTLY ONE SIDE DIALS — see `LocalNetworkNearbyService.shouldDial`.
+        //
+        // Both phones auto-connect the instant they see each other. Two dials open
+        // two sockets, each phone binds its session to whichever pairing landed
+        // first, and nothing makes them pick the SAME socket. When they pick
+        // opposite ones both announce into a socket the other has abandoned, no
+        // announce is ever read, and the space handshake never decides anything.
+        // That is what stopped a fresh phone from adopting the organizer's space.
+        //
+        // The phone that loses the tie-break does nothing here: the other's dial is
+        // already on its way and is auto-accepted when it lands. `selected` stays
+        // nil, so this is re-evaluated on the next discovery update rather than
+        // latching a peer it never dialled.
+        guard mayDial(phone) else { return }
         selected = phone
         isInboundRequest = false
-        selectedIsLocal = localService?.canPair(with: phone) ?? false
+        selectedIsLocal = isLocal
         // Auto-connect: connecting to a peer is not a decision worth a tap —
         // it moves no data by itself, and every byte still passes the review
         // gate before it lands. (Joining a SPACE is a real decision and keeps
@@ -206,7 +249,7 @@ public final class NearbyTransportController: ObservableObject {
     /// is already the session channel, so there is no route negotiation to do:
     /// it IS the local network.
     private func makeLocalService() -> LocalNetworkNearbyService {
-        let localService = LocalNetworkNearbyService()
+        let localService = LocalNetworkNearbyService(serviceType: serviceType)
         localService.onPhonesChanged = { [weak self] phones in
             Task { @MainActor in
                 guard let self else { return }
@@ -286,8 +329,25 @@ public final class NearbyTransportController: ObservableObject {
         case .idle, .looking: break
         default: return
         }
-        guard selected == nil, let peer = phones.first else { return }
+        guard selected == nil else { return }
+        // The first peer we may DIAL — not simply the first peer, which is a
+        // different thing the moment there are more than two phones in the room.
+        // `phones` is sorted by name, so "the first peer" is the alphabetically
+        // first one; if we lose the tie-break to that phone we must not stop there,
+        // or we sit waiting on a stranger's dial while the phone we could have
+        // called is two rows down. Losing to EVERY visible peer is fine and needs no
+        // dial: each of them will call us.
+        guard let peer = phones.first(where: { self.mayDial($0) }) else { return }
         requestConnection(to: peer)
+    }
+
+    /// Whether this phone is the one that dials `phone`, rather than the one that
+    /// waits to be dialled. Exactly one side of any pair says yes — see
+    /// `LocalNetworkNearbyService.shouldDial`. A Bluetooth peer is unchanged: the
+    /// radio's own pairing decides, and it is not this function's business.
+    private func mayDial(_ phone: DiscoveredPhone) -> Bool {
+        guard let localService, localService.canPair(with: phone) else { return true }
+        return localService.shouldDial(phone)
     }
 
     private func makeService() -> CoreBluetoothNearbyService {

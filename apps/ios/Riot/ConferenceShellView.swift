@@ -412,7 +412,7 @@ private struct ComposeReviewSignView: View {
     @Environment(\.colorScheme) private var colorScheme
     @State private var headline = "Water available at the east entrance"
     @State private var details = "Bring a bottle. Volunteers are refilling the tank."
-    @State private var aiAssisted = true
+    @State private var aiAssisted = false
 
     var body: some View {
         ScrollView {
@@ -435,15 +435,15 @@ private struct ComposeReviewSignView: View {
                 }
                 RiotCard {
                     VStack(alignment: .leading, spacing: 14) {
-                        Text("Review before signing")
+                        Text("Review before posting")
                             .font(.riot(.mono, size: 12, relativeTo: .caption))
                             .textCase(.uppercase)
                             .tracking(1)
                             .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
-                        Text("Signing publishes this alert into your local public space. A model cannot press this button or sync for you.")
+                        Text("Posting shares this update with \(model.space?.title ?? "this community"). Review it first; only you can post it.")
                             .font(.riot(.body, size: 15, relativeTo: .callout))
                             .foregroundStyle(RiotTheme.ink(for: colorScheme))
-                        Button("Review complete — sign locally") {
+                        Button("Post update") {
                             model.sign(headline: headline, description: details, aiAssisted: aiAssisted)
                         }
                         .buttonStyle(.riotPrimary)
@@ -453,7 +453,7 @@ private struct ComposeReviewSignView: View {
             }
             .padding(20)
         }
-        .riotHeader(eyebrow: "Draft, review, sign", "Compose & sign")
+        .riotHeader(eyebrow: "Share with your community", "Post an update")
     }
 }
 

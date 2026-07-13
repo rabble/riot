@@ -8,12 +8,10 @@
 
 **Tech Stack:** Rust 2021, `willow25 0.6.0-alpha.3` Drop Format, `ufotofu 0.12.4`, SQLite/`rusqlite`, UniFFI 0.32, Swift 6/SwiftUI/WebKit, Kotlin 2.2/Android WebView, canonical CBOR, XCTest/XCUITest, JUnit/instrumentation tests, Playwright for the starter miniapp, cargo-tarpaulin, cargo-llvm-cov.
 
-**Plan status:** **PLAN REVIEW ESCALATION REQUIRED.** Rabble authorized this
-revised implementation with a swarm, but the fresh three-iteration review
-cycle ended with Feasibility PASS, Completeness FAIL, and Scope & Alignment
-PASS. Do not execute production work unless Rabble authorizes another bounded
-revision cycle, explicitly overrides the remaining risks, simplifies scope, or
-cancels.
+**Plan status:** **REVISION AUTHORIZED; FRESH PLAN REVIEW GATE PENDING.** Rabble
+authorized another bounded revision cycle and implementation with a swarm. Do
+not execute production work until a fresh Feasibility, Completeness, and Scope
+& Alignment panel all return PASS.
 
 ---
 
@@ -77,13 +75,27 @@ declaration, viewer, or menu item.
 - Raw domain IDs, digests, signatures, and keys are complete in Details and
   absent from default cards. No UI, fixture, diagnostic, or test truncates an
   identifier.
+- Ordinary logs contain only internal correlation IDs, routes, lengths, and
+  stable error codes—never payload text or full protocol identifiers. A full
+  public SneakerWeb identifier may appear only in an explicitly confirmed,
+  expiring diagnostic export that excludes private-space identifiers and raw
+  OS paths/URIs and uses the protected temporary-file lifecycle.
 - A carrier or binding is a Riot recommendation record, not an authorship
   claim. Carrier attribution comes only from the verified outer Willow entry.
 - A synced carrier card never downloads automatically. `Get collection` is a
   separate native action.
+- macOS remains product-excluded, but its project compiles shared iOS RiotKit
+  sources by reference. Every task that changes `AppModel.swift`,
+  `ConferenceShellView.swift`, `Transport/`, or `Apps/` must keep new
+  SneakerWeb references inside `#if os(iOS)`/platform-neutral boundaries and
+  run both `RiotKit-macOS` tests and a `Riot-macOS` build before commit. No
+  `.snk` declaration, library route, card, or viewer is added to macOS.
 - `.coverage-thresholds.json` is the only threshold source. Every work unit
   follows RED, confirms the expected failure, implements the minimum GREEN,
-  runs focused and regression checks, passes adversarial review, then commits.
+  runs focused and regression checks, runs `scripts/coverage-gate.sh`, passes
+  adversarial review, then commits. A Task 1–13 commit is forbidden when that
+  work unit's fresh combined coverage run is missing or below any configured
+  100% line, branch, function, statement/region threshold.
 
 ### Mandatory source-by-destination matrix
 
@@ -122,13 +134,14 @@ Task 12; no matrix cell may remain dependency-gated at release.
 - Create `fixtures/sneakerweb/` — pinned official files, hostile corpus,
   oracle/checksum manifest, and reproducible generation instructions.
 - Create `scripts/sneakerweb-interop.sh`, `scripts/coverage-gate.sh`,
+  `scripts/test-coverage-gate.sh`,
   `scripts/sneakerweb-oracle.sh`,
   `scripts/verify-xcresult-tests.sh`, `scripts/android-sneakerweb-test-gate.sh`,
   and `scripts/sneakerweb-physical-rehearsal.sh`.
 
 ### Rust core and UniFFI
 
-- Create `crates/riot-core/src/sneakerweb/{mod,protocol,codec,collection,blob,viewer,nearby,carrier,social,tasks}.rs`.
+- Create `crates/riot-core/src/sneakerweb/{mod,protocol,codec,collection,blob,diagnostics,viewer,nearby,carrier,social,tasks}.rs`.
 - Modify the landed database migration/schema owner from P0-A. The current
   foundation path is `crates/riot-core/src/store/{database,schema}.rs`; Task 0
   must confirm the landed owner and re-gate this plan if that path changes.
@@ -184,7 +197,9 @@ Task 12; no matrix cell may remain dependency-gated at release.
 **Files:**
 - Execute under separate reviewed scopes: `docs/superpowers/plans/2026-07-12-multi-space-sqlite-store.md`
 - Execute under separate approved scope: `docs/superpowers/plans/2026-07-13-newswire-core-slice-1.md`
-- Add on the isolated integration branch: `.coverage-thresholds.json`
+- Modify on the isolated integration branch: `.coverage-thresholds.json`
+- Create on the isolated integration branch: `scripts/coverage-gate.sh`
+- Create on the isolated integration branch: `scripts/test-coverage-gate.sh`
 - Add on the isolated integration branch: `SERVICE-INVENTORY.md`
 - Read: `docs/superpowers/specs/2026-07-13-sneakerweb-view-share-design.md`
 - Read: `docs/superpowers/plans/2026-07-12-multi-space-sqlite-store.md`
@@ -192,16 +207,41 @@ Task 12; no matrix cell may remain dependency-gated at release.
 - Read: `.coverage-thresholds.json`
 - Test: existing repository state only
 
-- [ ] **Step 1: Complete and land the two prerequisite workstreams**
+- [ ] **Step 1: TDD and land the combined coverage infrastructure**
+
+Write `scripts/test-coverage-gate.sh` first and observe it fail because the
+wrapper is absent or the old tarpaulin-only command remains. The self-test uses
+stubbed tool reports to prove missing tarpaulin/llvm-cov, every individual
+dimension below 100, and statements/LLVM-regions threshold disagreement all
+fail. It also proves the wrapper reads, rather than duplicates, all four values
+from `.coverage-thresholds.json`.
+
+Create `scripts/coverage-gate.sh`, change the source-of-truth enforcement
+command to that script, map statements to LLVM regions explicitly, and run both
+real tools. Run the self-test and real wrapper, review the isolated diff, then
+commit only `.coverage-thresholds.json`, both scripts, and the already-reviewed
+`SERVICE-INVENTORY.md`. This infrastructure commit must precede P0-A and every
+production SneakerWeb change.
+
+```sh
+scripts/test-coverage-gate.sh
+scripts/coverage-gate.sh
+git add .coverage-thresholds.json scripts/coverage-gate.sh \
+  scripts/test-coverage-gate.sh SERVICE-INVENTORY.md
+git diff --cached --check
+git commit -m "test: enforce combined 100 percent coverage"
+```
+
+- [ ] **Step 2: Complete and land the two prerequisite workstreams**
 
 Execute P0-A first. Its isolated branch starts from current `main`, receives
-only the reviewed coverage/inventory infrastructure commit and the two
+only the coverage/inventory infrastructure commit and the two
 `codex/sqlite-foundation` commits, then completes the separately gated
 multi-space plan. Land it by ordinary non-force integration. Execute and land
 P0-B from the resulting integration head. Both prerequisite programs use the
 same swarm TDD/validate/fresh-review/commit discipline as the tasks below.
 
-- [ ] **Step 2: Create the SneakerWeb isolated implementation worktree**
+- [ ] **Step 3: Create the SneakerWeb isolated implementation worktree**
 
 Invoke `superpowers:using-git-worktrees` and choose a feature branch rooted at
 the latest shared integration commit that contains the approved design, this
@@ -218,7 +258,7 @@ Expected: no output from `git status --short`; a full 40-character commit ID
 that is a descendant of the two prerequisite release commits and this plan's
 approval commit.
 
-- [ ] **Step 3: Prove the SQLite dependency and exact schema owner are landed**
+- [ ] **Step 4: Prove the SQLite dependency and exact schema owner are landed**
 
 ```sh
 rg -n 'pub struct RiotDatabase|pub struct DatabaseSession|pub struct SpaceSession' crates/riot-core crates/riot-ffi
@@ -234,7 +274,7 @@ P0-A; do not scaffold substitute types here. If P0-A landed a different
 canonical migration owner, revise every Task 3 schema path and rerun a fresh
 plan-review gate before production code.
 
-- [ ] **Step 4: Prove the Newswire prerequisite is landed**
+- [ ] **Step 5: Prove the Newswire prerequisite is landed**
 
 ```sh
 rg -n 'struct NewsPostV1|pub mod (model|path|entry|projection|store)' crates/riot-core/src/newswire
@@ -245,7 +285,7 @@ Expected: Newswire core and app runtime matches are present. Task 12 owns
 creation of `PublicAttachmentRefV1`; it must not proceed if the Newswire core
 model/path/entry/projection/store owners from P0-B are absent.
 
-- [ ] **Step 5: Run the baseline contract and coverage commands**
+- [ ] **Step 6: Run the baseline contract and coverage commands**
 
 ```sh
 cargo xtask validate-contracts
@@ -253,6 +293,9 @@ cargo fmt --all -- --check
 cargo clippy --workspace --all-features -- -D warnings
 test -f .coverage-thresholds.json
 test -f SERVICE-INVENTORY.md
+test "$(jq -r '.enforcement.command' .coverage-thresholds.json)" = "scripts/coverage-gate.sh"
+scripts/test-coverage-gate.sh
+scripts/coverage-gate.sh
 ```
 
 Expected: PASS before any SneakerWeb change. Save command output in the work
@@ -372,6 +415,7 @@ cargo build -p riot-ffi --target x86_64-linux-android --locked
 scripts/sneakerweb-oracle.sh verify --offline --version 1.0.1
 scripts/sneakerweb-interop.sh --offline --version 1.0.1 \
   --cli build/tools/sneakerweb/bin/sneakerweb --contract-only
+scripts/coverage-gate.sh
 ```
 
 Expected: every command passes and `cargo tree` shows Drop Format only in a
@@ -529,6 +573,7 @@ xcodebuild test -project apps/ios/Riot.xcodeproj -scheme RiotKit \
 (cd apps/android && ./gradlew connectedDebugAndroidTest \
   -Pandroid.testInstrumentationRunnerArguments.class=org.riot.evidence.sneakerweb.SneakerWebInteropActivationTest)
 cargo clippy -p riot-core --all-features --all-targets -- -D warnings
+scripts/coverage-gate.sh
 ```
 
 Expected: Riot decodes official bytes; the official CLI accepts Riot's selected
@@ -623,6 +668,7 @@ timestamp, received source, and integrity labels. Mutation returns
 cargo test -p riot-core --features conformance --test sneakerweb_collection
 cargo test -p riot-core --features conformance --test sneakerweb_collection_races
 cargo test -p riot-core --all-features
+scripts/coverage-gate.sh
 ```
 
 Expected: all atomicity and deterministic barrier tests pass.
@@ -643,10 +689,12 @@ second migration boundary.
 
 **Files:**
 - Create: `crates/riot-core/src/sneakerweb/blob.rs`
+- Create: `crates/riot-core/src/sneakerweb/diagnostics.rs`
 - Create: `crates/riot-core/src/sneakerweb/tasks.rs`
 - Modify: `crates/riot-core/src/sneakerweb/{mod,codec,collection}.rs`
 - Create: `crates/riot-core/tests/sneakerweb_blob.rs`
 - Create: `crates/riot-core/tests/sneakerweb_export.rs`
+- Create: `crates/riot-core/tests/sneakerweb_diagnostics.rs`
 
 - [ ] **Step 1: Write RED lease/CAS/export tests**
 
@@ -656,6 +704,17 @@ idempotent close, post-close error, temporary cleanup after cancel/crash,
 retain-as-portable-blob, reference counting, same-digest thread/process
 contention, every fsync/install/transaction crash point, winner/loser startup
 reconciliation, unsupported filesystem mapping, and exact CLI cross-import.
+
+Diagnostic tests first prove ordinary log events expose only a random internal
+correlation ID, route, bounded lengths, and stable error code. They reject
+payload text, full namespace/domain/entry/digest/signature/key values, private
+space identifiers, and OS paths/URIs. The explicit export is bounded to the
+newest 10,000 structured events and 5 MiB of canonical UTF-8 JSON, names its
+schema and truncation state, may contain complete public SneakerWeb identifiers,
+and redacts private-space identifiers and raw paths/URIs even if a hostile event
+producer supplies them. Tests cover empty output, Unicode, malicious path/URI
+strings, exact size/event boundaries, cancellation, expiry, crash cleanup, and
+no export creation before confirmed consent.
 
 - [ ] **Step 2: Implement exact no-replace publication**
 
@@ -686,18 +745,31 @@ same lease identity or terminal error. Every read/retain rechecks selected
 domain block generations. Owner/database close makes noncommitted handles
 `OWNER_CLOSED`.
 
+Implement a bounded structured `SneakerDiagnosticSink` and
+`DiagnosticExportTask -> DiagnosticExportLease`. The sink keeps sensitive
+public protocol fields out of ordinary platform logging while retaining only
+the bounded structured values needed for an explicit export. Export generation
+requires an unexpired, single-use consent nonce bound to the displayed metadata
+disclosure; cancellation or replay is non-mutating. The lease uses the same
+protected, backup-excluded, 15-minute idle expiry and crash reconciliation as
+the `.snk` export lease, but it can never be retained as a portable collection
+blob.
+
 - [ ] **Step 4: Verify and commit**
 
 ```sh
 cargo test -p riot-core --features conformance --test sneakerweb_blob
 cargo test -p riot-core --features conformance --test sneakerweb_export
+cargo test -p riot-core --features conformance --test sneakerweb_diagnostics
 scripts/sneakerweb-interop.sh --offline --version 1.0.1 \
   --cli build/tools/sneakerweb/bin/sneakerweb --round-trip
+scripts/coverage-gate.sh
 ```
 
 ```sh
 git add crates/riot-core/src/sneakerweb crates/riot-core/tests/sneakerweb_blob.rs \
-  crates/riot-core/tests/sneakerweb_export.rs
+  crates/riot-core/tests/sneakerweb_export.rs \
+  crates/riot-core/tests/sneakerweb_diagnostics.rs
 git commit -m "feat(sneakerweb): add leased portable blob storage"
 ```
 
@@ -717,6 +789,14 @@ exactly 32 bytes, no namespace parameter, no filesystem path/URI, full typed
 errors, panic containment, stale cursors, repeated terminal results, and
 finish/cancel/block/owner-close race linearization.
 
+Require `prepare_sneaker_diagnostic_export` to return only fixed host-owned
+disclosure copy and a short-lived opaque preparation handle. Only
+`confirm_sneaker_diagnostic_export` consumes that handle and returns a
+single-use consent nonce; `begin_sneaker_diagnostic_export` consumes the nonce
+once. Tests cover cancel, expiry at 30 seconds, replay, wrong profile/session,
+owner close, confirm/begin races, and prove none of these methods are registered
+in the miniapp JavaScript dispatcher.
+
 - [ ] **Step 2: Implement the actor and worker boundary**
 
 One short-lived actor linearizes commands and submits bounded transactions to
@@ -731,6 +811,8 @@ ExportLease: metadata, read_range, retain_as_portable_blob, close
 PreparedBlobLease: metadata, retain, release
 PortableBlobLease: metadata, read_range, close
 ResourceLease: metadata, read_range, close
+DiagnosticExportTask: progress, finish, cancel
+DiagnosticExportLease: metadata, read_range, close
 ```
 
 Expose the exact factories and database calls `begin_snk_open`,
@@ -739,7 +821,9 @@ Expose the exact factories and database calls `begin_snk_open`,
 `get_sneaker_site`, `get_sneaker_details`, `get_received_sneak_details`,
 `resolve_sneaker_resource`, `block_sneaker_domain`,
 `unblock_sneaker_domain`, `remove_sneaker_source`, `remove_sneaker_site`,
-`remove_portable_blob`, and `create_snk_export`. Tasks 10 and 11 extend this
+`remove_portable_blob`, `create_snk_export`,
+`prepare_sneaker_diagnostic_export`, `confirm_sneaker_diagnostic_export`, and
+`begin_sneaker_diagnostic_export`. Tasks 10 and 11 extend this
 same file only after their corresponding core task types exist. Do not expose
 generic parser errors or raw handles.
 
@@ -749,8 +833,12 @@ generic parser errors or raw handles.
 cargo test -p riot-ffi --test sneakerweb_contract
 cargo test -p riot-ffi --test sneakerweb_races
 cargo xtask generate-bindings
-rg -n 'OpenSnkTask|SnkExportTask|ResourceLease' build/generated/riot-ffi
+rg -n 'OpenSnkTask|SnkExportTask|ResourceLease|DiagnosticExportTask' build/generated/riot-ffi
 ! rg -n 'PathBuf|file_path|content_uri|namespace_id.*begin_snk' build/generated/riot-ffi
+! rg -n 'prepare_sneaker_diagnostic_export|begin_sneaker_diagnostic_export' \
+  apps/ios/Riot/Apps/RiotJS.swift \
+  apps/android/app/src/main/kotlin/org/riot/evidence/apps/RiotJsShim.kt
+scripts/coverage-gate.sh
 ```
 
 Expected: tests pass, required generated types exist, forbidden types do not.
@@ -776,8 +864,10 @@ git commit -m "feat(ffi): expose SneakerWeb task contracts"
 - Create: `apps/ios/Riot/SneakerWeb/SneakerLibraryView.swift`
 - Create: `apps/ios/Riot/SneakerWeb/SneakerDetailsView.swift`
 - Create: `apps/ios/Riot/SneakerWeb/SneakerStorageView.swift`
+- Create: `apps/ios/Riot/SneakerWeb/SneakerAccessibility.swift`
 - Create: `apps/ios/RiotTests/SneakerWebCoreTests.swift`
 - Create: `apps/ios/RiotTests/SneakerLibraryViewModelTests.swift`
+- Create: `apps/ios/RiotTests/SneakerAccessibilityContractTests.swift`
 - Create: `apps/ios/RiotUITests/SneakerDocumentUITests.swift`
 
 - [ ] **Step 1: Write RED document and accessible-library tests**
@@ -809,6 +899,26 @@ hidden default raw IDs; complete copyable Details; no digest/domain IDs in a
 Received summary; stable two-word accessibility disambiguators; Dynamic Type,
 keyboard/focus restoration, 44-point targets, and non-color status.
 
+Add a shared native `SneakerAccessibility` contract used by Open, Export,
+nearby transfer, space-blob receive, and community share. Tests at a 320-point
+content width and every accessibility Dynamic Type size require reflow without
+horizontal clipping or hidden actions; keyboard/Switch Control traversal must
+show visible focus; Increase Contrast/high-contrast mode must preserve text,
+focus, and non-color state distinctions; Reduce Motion must replace decorative
+motion with static state changes while preserving semantic progress.
+
+The progress announcer emits the operation/stage at start, then at the less
+frequent of each new 10% bucket and ten active seconds, and exactly one terminal
+success, cancellation, or failure result. For determinate work this is an AND
+gate: both a new 10% bucket and ten active seconds since the last announcement
+must be satisfied. Indeterminate work announces every ten active seconds;
+pause/suspension does not advance the clock; resume does not duplicate the last
+bucket; regressions/retries start a newly named stage. Fake-clock tests cover
+0/9/10/19/20/100%, 9.999/10 seconds, percentage-only, time-only, both-thresholds,
+pause/resume, cancel, failure, retry, and terminal deduplication. Task-specific
+suites in Tasks 9–12 assert their visible stage names are routed through this
+contract rather than posting ad hoc announcements.
+
 - [ ] **Step 2: Register only `.snk` document intake**
 
 Add an imported `UTType` for `.snk` and route `onOpenURL` into
@@ -828,10 +938,16 @@ sidebar link to the same `SneakerLibraryView`.
 xcodebuild test -project apps/ios/Riot.xcodeproj -scheme RiotKit \
   -destination 'platform=iOS Simulator,name=iPhone 17 Pro,OS=26.2,arch=arm64' \
   -only-testing:RiotTests/SneakerWebCoreTests \
-  -only-testing:RiotTests/SneakerLibraryViewModelTests
+  -only-testing:RiotTests/SneakerLibraryViewModelTests \
+  -only-testing:RiotTests/SneakerAccessibilityContractTests
 xcodebuild test -project apps/ios/Riot.xcodeproj -scheme Riot \
   -destination 'platform=iOS Simulator,name=iPhone 17 Pro,OS=26.2,arch=arm64' \
   -only-testing:RiotUITests/SneakerDocumentUITests
+xcodebuild test -project apps/macos/Riot.xcodeproj -scheme RiotKit-macOS \
+  -destination 'platform=macOS'
+xcodebuild build -project apps/macos/Riot.xcodeproj -scheme Riot-macOS \
+  -destination 'platform=macOS'
+scripts/coverage-gate.sh
 ```
 
 ```sh
@@ -839,6 +955,7 @@ git add apps/ios/Riot/Info.plist apps/ios/Riot/RiotApp.swift apps/ios/Riot/AppMo
   apps/ios/Riot/ConferenceShellView.swift apps/ios/Riot/SneakerWeb \
   apps/ios/RiotTests/SneakerWebCoreTests.swift \
   apps/ios/RiotTests/SneakerLibraryViewModelTests.swift \
+  apps/ios/RiotTests/SneakerAccessibilityContractTests.swift \
   apps/ios/RiotUITests/SneakerDocumentUITests.swift apps/ios/Riot.xcodeproj/project.pbxproj
 git commit -m "feat(ios): open and manage SneakerWeb collections"
 ```
@@ -852,7 +969,9 @@ git commit -m "feat(ios): open and manage SneakerWeb collections"
 - Create: `apps/android/app/src/main/kotlin/org/riot/evidence/sneakerweb/SneakerDocumentIntake.kt`
 - Create: `apps/android/app/src/main/kotlin/org/riot/evidence/sneakerweb/SneakerLibraryViewModel.kt`
 - Create: `apps/android/app/src/main/kotlin/org/riot/evidence/sneakerweb/SneakerLibraryScreen.kt`
+- Create: `apps/android/app/src/main/kotlin/org/riot/evidence/sneakerweb/SneakerAccessibility.kt`
 - Create: `apps/android/app/src/test/kotlin/org/riot/evidence/sneakerweb/SneakerLibraryViewModelTest.kt`
+- Create: `apps/android/app/src/test/kotlin/org/riot/evidence/sneakerweb/SneakerAccessibilityContractTest.kt`
 - Create: `apps/android/app/src/androidTest/kotlin/org/riot/evidence/sneakerweb/SneakerDocumentOpenTest.kt`
 
 - [ ] **Step 1: Write RED Android parity tests**
@@ -865,6 +984,13 @@ display metadata, never a content URI or arbitrary path.
 Mirror the exact injected-clock Undo boundary cases from Task 6: 29.999
 seconds, exactly 30 seconds, intervening collection mutation, reconstruction,
 overlapping sources, expired no-op, focus, and announcement behavior.
+
+Mirror Task 6's full accessibility contract with Android font scale/display
+size and narrow-window reflow, visible keyboard/Switch Access focus, high-text-
+contrast/non-color semantics, animator-duration-scale/Reduce Motion behavior,
+and the identical fake-clock start/less-frequent-10%-and-ten-second/terminal
+announcement cadence. The Android announcer is the one shared path for Tasks 7
+and 9–12.
 
 - [ ] **Step 2: Register bounded VIEW intent handling**
 
@@ -884,10 +1010,13 @@ focus and back behavior.
 
 ```sh
 cd apps/android
-./gradlew testDebugUnitTest --tests '*SneakerLibraryViewModelTest'
+./gradlew testDebugUnitTest --tests '*SneakerLibraryViewModelTest' \
+  --tests '*SneakerAccessibilityContractTest'
 ./gradlew connectedDebugAndroidTest \
   -Pandroid.testInstrumentationRunnerArguments.class=org.riot.evidence.sneakerweb.SneakerDocumentOpenTest
 ./gradlew lintDebug
+cd ../..
+scripts/coverage-gate.sh
 ```
 
 ```sh
@@ -1027,6 +1156,7 @@ xcodebuild test -project apps/ios/Riot.xcodeproj -scheme RiotKit \
   -only-testing:RiotTests/SneakerWebViewIsolationTests
 (cd apps/android && ./gradlew connectedDebugAndroidTest \
   -Pandroid.testInstrumentationRunnerArguments.class=org.riot.evidence.sneakerweb.SneakerWebViewIsolationTest)
+scripts/coverage-gate.sh
 ```
 
 ```sh
@@ -1069,6 +1199,11 @@ For Received sharing, test `N blocked sites won't be included`, `Updated since
 received`, and disabled Share with a route to Blocked sites when no unblocked
 domain remains.
 
+Both native share suites inject the Task 6/7 accessibility announcer and assert
+Preparing starts, less-frequent-10%-and-ten-second updates, Ready, OS-sheet
+cancellation, and terminal failure/success announcements without duplicates. Review and sheet
+layouts rerun the reflow/focus/high-contrast/Reduce Motion contract.
+
 The exact file column of the mandatory matrix is exercised by
 `shareFile_oneSite`, `shareFile_multipleSites`, and
 `shareFile_receivedCollection` in both native test stacks. Each test asserts
@@ -1103,6 +1238,11 @@ xcodebuild test -project apps/ios/Riot.xcodeproj -scheme RiotKit \
 (cd apps/android && ./gradlew testDebugUnitTest --tests '*SneakerShareCoordinatorTest')
 (cd apps/android && ./gradlew connectedDebugAndroidTest \
   -Pandroid.testInstrumentationRunnerArguments.class=org.riot.evidence.sneakerweb.SneakerSystemShareReachabilityTest)
+xcodebuild test -project apps/macos/Riot.xcodeproj -scheme RiotKit-macOS \
+  -destination 'platform=macOS'
+xcodebuild build -project apps/macos/Riot.xcodeproj -scheme Riot-macOS \
+  -destination 'platform=macOS'
+scripts/coverage-gate.sh
 ```
 
 ```sh
@@ -1211,6 +1351,15 @@ not show the note, digest, raw IDs, or community relationships. Peer loss,
 session expiry, integrity failure, rejection, and cancellation restore the
 preserved review/focus exactly as specified.
 
+Both native nearby suites inject the Task 6/7 accessibility announcer for the
+sender and recipient state machines. They assert one start announcement for
+every new stage; determinate updates only after both a new 10% bucket and ten
+active seconds; no cadence while paused; no duplicate on resume; one terminal announcement for
+Sent, Received, Reject, Cancel, expiry, interruption, or integrity failure; and
+a new stage announcement on Retry or restart at zero. The UI suites repeat the
+narrow reflow, visible focus, high-contrast, and Reduce Motion assertions while
+transferring and while confirmation controls are visible.
+
 - [ ] **Step 4: Verify and commit**
 
 ```sh
@@ -1226,6 +1375,11 @@ xcodebuild test -project apps/ios/Riot.xcodeproj -scheme Riot \
   -only-testing:RiotUITests/SneakerNearbyFlowUITests
 (cd apps/android && ./gradlew connectedDebugAndroidTest \
   -Pandroid.testInstrumentationRunnerArguments.class=org.riot.evidence.sneakerweb.SneakerNearbyFlowTest)
+xcodebuild test -project apps/macos/Riot.xcodeproj -scheme RiotKit-macOS \
+  -destination 'platform=macOS'
+xcodebuild build -project apps/macos/Riot.xcodeproj -scheme Riot-macOS \
+  -destination 'platform=macOS'
+scripts/coverage-gate.sh
 ```
 
 ```sh
@@ -1267,6 +1421,7 @@ git commit -m "feat(nearby): carry SneakerWeb collections directly"
 - Create: `crates/riot-core/tests/sneakerweb_carrier.rs`
 - Create: `crates/riot-core/tests/apps_manifest_v2.rs`
 - Create: `crates/riot-core/tests/sneakerweb_social_host.rs`
+- Create: `crates/riot-core/tests/sneakerweb_space_blob_multi_peer.rs`
 - Modify: `crates/riot-ffi/src/{apps_ffi,sneakerweb_ffi}.rs`
 - Modify: `crates/riot-ffi/tests/{apps_contract,sneakerweb_contract}.rs`
 - Modify: `apps/ios/Riot/Apps/{AppBridgeController,AppBundleCodec,AppReviewSheet,AppRuntimeView,RiotJS}.swift`
@@ -1274,14 +1429,18 @@ git commit -m "feat(nearby): carry SneakerWeb collections directly"
 - Modify: `apps/ios/Riot/Directory/DirectoryModel.swift`
 - Modify: `apps/ios/RiotTests/{AppRepositoryTests,AppRuntimeHostTests}.swift`
 - Modify: `apps/ios/RiotTests/{DirectoryRepositoryTests,DirectoryStorefrontTests}.swift`
+- Modify: `apps/ios/RiotTests/AppSyncReplicationTests.swift`
 - Create: `apps/ios/Riot/SneakerWeb/SneakerCarrierCardView.swift`
 - Create: `apps/ios/RiotTests/SneakerCarrierCardTests.swift`
+- Create: `apps/ios/RiotTests/SneakerSpaceBlobMultiPeerTests.swift`
 - Modify: `apps/ios/Riot.xcodeproj/project.pbxproj`
 - Modify: `apps/android/app/src/main/kotlin/org/riot/evidence/apps/{AppBundleCodec,CanonicalCbor,RiotJsBridge,RiotJsShim,AppWebViewHost,RiotAppsController,InstalledAppsStore,DirectoryController,UniffiDirectoryPort}.kt`
 - Modify: `apps/android/app/src/test/kotlin/org/riot/evidence/apps/{AppBundleCodecTest,RiotJsBridgeTest,InstalledAppsStoreTest,DirectoryControllerTest}.kt`
+- Modify: `apps/android/app/src/androidTest/kotlin/org/riot/evidence/apps/AppRuntimeEndToEndTest.kt`
 - Modify: `apps/android/app/src/main/kotlin/org/riot/evidence/MainActivity.kt`
 - Create: `apps/android/app/src/main/kotlin/org/riot/evidence/sneakerweb/SneakerCarrierCard.kt`
 - Create: `apps/android/app/src/test/kotlin/org/riot/evidence/sneakerweb/SneakerCarrierCardTest.kt`
+- Create: `apps/android/app/src/test/kotlin/org/riot/evidence/sneakerweb/SneakerSpaceBlobMultiPeerTest.kt`
 
 - [ ] **Step 1: Write RED canonical carrier/binding/manifest tests**
 
@@ -1315,6 +1474,13 @@ Update every direct generated-record constructor in Android tests, including
 manifest version/capabilities survive repository retention, directory mapping,
 trust changes, and bridge registration rather than merely compiling with new
 default values.
+
+Update the shipping-host reproductions in iOS `AppSyncReplicationTests.swift`
+and Android `AppRuntimeEndToEndTest.kt`. Each must mount the real
+`AppBridgeController`/`RiotJsBridge` plus WebView host, prove a trusted v1 app
+still receives no `riot.collections`, prove a trusted v2 app gains the surface
+only with `portable_public_collections`, and prove revoke/profile/space changes
+remove it without breaking ordinary sync or legacy app methods.
 
 - [ ] **Step 2: Implement canonical carrier, binding, and manifest v2 codecs**
 
@@ -1410,6 +1576,33 @@ facts under the same key return `IDEMPOTENCY_CONFLICT`. Implement
 carrier. Add deterministic barriers for cancel/finish, owner-close/commit,
 block/commit, and trust-revocation/commit.
 
+The space-blob receive coordinator accepts bounded holder offers only from
+currently connected peers that independently prove the same active public
+space, full carrier entry, digest, expected length, and current authority. It
+never advertises or queries a global digest inventory. Try at most eight
+authorized offers sequentially; rejection, timeout, authority loss, or peer
+loss advances to the next offer. A new holder may resume only from the last
+locally verified 32 MiB checkpoint for the exact carrier/digest/length tuple;
+otherwise restart at zero. Each holder rechecks authority before every chunk.
+
+Three-peer deterministic tests use requester A, first holder B, and second
+holder C. B disconnects before data, mid-chunk, and after a verified checkpoint;
+C then serves the same carrier and completes with the exact digest. Also cover
+B authority revocation, C wrong carrier/digest/length, all holders unavailable,
+eight-offer exhaustion, cancellation during handoff, duplicate/late chunks,
+and a fourth unrelated/private-space peer that remains invisible. Native tests
+assert `Waiting for nearby holder`, handoff without a second Get gesture,
+checkpoint-resume progress, honest restart-at-zero, Retry after exhaustion,
+and one terminal Open lease with no automatic collection mutation.
+
+The carrier-card and multi-peer native suites inject the Task 6/7 accessibility
+announcer. They assert the shared less-frequent-10%-and-ten-active-second cadence
+and exactly one terminal announcement through waiting, holder handoff, checkpoint resume,
+restart at zero, transfer, verification, cancellation, exhaustion, failure,
+Retry, and ready-to-open. Card and progress layouts repeat narrow reflow,
+visible focus, high-contrast, and Reduce Motion checks; holder changes never
+expose or announce a raw peer, carrier, digest, domain, or key identifier.
+
 - [ ] **Step 6: Add the sharing FFI only after core carrier/social tasks exist**
 
 Extend `sneakerweb_ffi.rs` with `begin_space_sneaker_share`,
@@ -1470,15 +1663,26 @@ projects the signed binding.
 cargo test -p riot-core --features conformance --test apps_manifest_v2
 cargo test -p riot-core --features conformance --test sneakerweb_carrier
 cargo test -p riot-core --features conformance --test sneakerweb_social_host
+cargo test -p riot-core --features conformance --test sneakerweb_space_blob_multi_peer
 cargo test -p riot-ffi --test sneakerweb_contract
 scripts/conference/build-native-core.sh
 scripts/conference/test-native-core-package.sh
 xcodebuild test -project apps/ios/Riot.xcodeproj -scheme RiotKit \
   -destination 'platform=iOS Simulator,name=iPhone 17 Pro,OS=26.2,arch=arm64' \
-  -only-testing:RiotTests/SneakerCarrierCardTests
-(cd apps/android && ./gradlew testDebugUnitTest --tests '*SneakerCarrierCardTest')
+  -only-testing:RiotTests/SneakerCarrierCardTests \
+  -only-testing:RiotTests/SneakerSpaceBlobMultiPeerTests \
+  -only-testing:RiotTests/AppSyncReplicationTests
+(cd apps/android && ./gradlew testDebugUnitTest \
+  --tests '*SneakerCarrierCardTest' --tests '*SneakerSpaceBlobMultiPeerTest')
 (cd apps/android && ./gradlew testDebugUnitTest \
   --tests '*InstalledAppsStoreTest' --tests '*DirectoryControllerTest')
+(cd apps/android && ./gradlew connectedDebugAndroidTest \
+  -Pandroid.testInstrumentationRunnerArguments.class=org.riot.evidence.apps.AppRuntimeEndToEndTest)
+xcodebuild test -project apps/macos/Riot.xcodeproj -scheme RiotKit-macOS \
+  -destination 'platform=macOS'
+xcodebuild build -project apps/macos/Riot.xcodeproj -scheme Riot-macOS \
+  -destination 'platform=macOS'
+scripts/coverage-gate.sh
 ```
 
 ```sh
@@ -1486,7 +1690,9 @@ git add crates/riot-core/src/apps crates/riot-core/src/sneakerweb \
   crates/riot-core/src/import/bundle.rs crates/riot-core/src/session.rs \
   crates/riot-core/src/demo_fixture.rs crates/riot-core/examples \
   crates/riot-core/tests/apps_manifest_v2.rs crates/riot-core/tests/sneakerweb_carrier.rs \
-  crates/riot-core/tests/sneakerweb_social_host.rs crates/riot-core/tests/apps_*.rs \
+  crates/riot-core/tests/sneakerweb_social_host.rs \
+  crates/riot-core/tests/sneakerweb_space_blob_multi_peer.rs \
+  crates/riot-core/tests/apps_*.rs \
   crates/riot-core/tests/core_import_app_index_entries.rs \
   crates/riot-app-cli/src/lib.rs crates/riot-app-cli/tests/cli_pack.rs \
   crates/riot-ffi/src crates/riot-ffi/tests \
@@ -1494,15 +1700,20 @@ git add crates/riot-core/src/apps crates/riot-core/src/sneakerweb \
   apps/ios/Riot/Directory/DirectoryModel.swift \
   apps/ios/RiotTests/AppRepositoryTests.swift \
   apps/ios/RiotTests/AppRuntimeHostTests.swift \
+  apps/ios/RiotTests/AppSyncReplicationTests.swift \
   apps/ios/RiotTests/DirectoryRepositoryTests.swift \
   apps/ios/RiotTests/DirectoryStorefrontTests.swift \
   apps/ios/Riot/SneakerWeb/SneakerCarrierCardView.swift \
-  apps/ios/RiotTests/SneakerCarrierCardTests.swift apps/ios/Riot.xcodeproj/project.pbxproj \
+  apps/ios/RiotTests/SneakerCarrierCardTests.swift \
+  apps/ios/RiotTests/SneakerSpaceBlobMultiPeerTests.swift \
+  apps/ios/Riot.xcodeproj/project.pbxproj \
   apps/android/app/src/main/kotlin/org/riot/evidence/apps \
   apps/android/app/src/test/kotlin/org/riot/evidence/apps \
   apps/android/app/src/main/kotlin/org/riot/evidence/MainActivity.kt \
   apps/android/app/src/main/kotlin/org/riot/evidence/sneakerweb/SneakerCarrierCard.kt \
-  apps/android/app/src/test/kotlin/org/riot/evidence/sneakerweb/SneakerCarrierCardTest.kt
+  apps/android/app/src/test/kotlin/org/riot/evidence/sneakerweb/SneakerCarrierCardTest.kt \
+  apps/android/app/src/test/kotlin/org/riot/evidence/sneakerweb/SneakerSpaceBlobMultiPeerTest.kt \
+  apps/android/app/src/androidTest/kotlin/org/riot/evidence/apps/AppRuntimeEndToEndTest.kt
 git commit -m "feat(apps): host public SneakerWeb collection bindings"
 ```
 
@@ -1604,6 +1815,14 @@ cannot duplicate. One community failure never rolls back another.
 An organizer enabling Directory returns to the preserved share selection and
 destination row; a member sees `Ask an organizer to turn on Sneaker Directory.`
 
+The multi-community native suites inject the Task 6/7 accessibility announcer
+per child space rather than sharing one global timer. Each row announces its
+own stage start, determinate updates only after both a new 10% bucket and ten
+active seconds, and exactly one `Shared`, `Needs retry`, `No longer allowed`, cancelled, or
+failed terminal result. Retrying one child starts a new stage without replaying
+sibling announcements. Destination rows repeat narrow reflow, visible focus,
+high-contrast, and Reduce Motion checks.
+
 - [ ] **Step 4: Add the carrier attachment union to the landed Newswire core**
 
 Create the design-approved `PublicAttachmentRefV1` in the P0-B Newswire model,
@@ -1650,6 +1869,12 @@ open a named page, and exercise edit/hide/tombstone, blocked-all, invalid,
 retry, and focus/accessibility states. This is the receiver half of the
 Newswire route; sender-only destination tests are insufficient.
 
+Those Newswire receiver tests use the same accessibility announcer and cadence
+for not-downloaded, waiting-for-holder, transfer, verification, Retry, failure,
+and ready-to-open. The attachment card and per-community Newswire destination
+row repeat narrow reflow, visible focus, high-contrast, and Reduce Motion
+assertions without announcing hidden identifiers.
+
 - [ ] **Step 5: Verify and commit the available destination set**
 
 ```sh
@@ -1677,6 +1902,11 @@ xcodebuild test -project apps/ios/Riot.xcodeproj -scheme Riot \
   --tests '*SneakerNewswireAttachmentTest' \
   connectedDebugAndroidTest \
   -Pandroid.testInstrumentationRunnerArguments.class=org.riot.evidence.sneakerweb.SneakerCommunityShareTest)
+xcodebuild test -project apps/macos/Riot.xcodeproj -scheme RiotKit-macOS \
+  -destination 'platform=macOS'
+xcodebuild build -project apps/macos/Riot.xcodeproj -scheme Riot-macOS \
+  -destination 'platform=macOS'
+scripts/coverage-gate.sh
 ```
 
 ```sh
@@ -1712,8 +1942,8 @@ matrix cells are blocking dependencies.
 ## Task 13: Enforce coverage, platform freshness, interoperability, and field evidence
 
 **Files:**
-- Modify: `.coverage-thresholds.json`
-- Create: `scripts/coverage-gate.sh`
+- Read: `.coverage-thresholds.json`
+- Read: `scripts/{coverage-gate,test-coverage-gate}.sh`
 - Create: `scripts/verify-xcresult-tests.sh`
 - Create: `scripts/android-sneakerweb-test-gate.sh`
 - Create: `scripts/sneakerweb-physical-rehearsal.sh`
@@ -1722,37 +1952,43 @@ matrix cells are blocking dependencies.
 - Modify: `SERVICE-INVENTORY.md`
 - Create: `docs/quality/2026-07-13-sneakerweb-release-evidence.md`
 
-- [ ] **Step 1: Write RED gate self-tests**
+- [ ] **Step 1: Write RED native/rehearsal gate self-tests**
 
-Test that the coverage wrapper fails when tarpaulin or llvm-cov is absent,
-maps statements to LLVM regions only when configured thresholds agree, and
-fails any dimension below `.coverage-thresholds.json`. Test that iOS and
+Task 0 already froze and exercised the combined coverage wrapper before any
+production work; rerun its self-test and real gate here. Test that iOS and
 Android gate parsers delete old outputs, record run start, reject stale,
 missing, malformed, zero-test, and any ignored/skipped required result, and require every
 named SneakerWeb suite.
 
 The iOS core result must positively execute `SneakerWebCoreTests`,
 `SneakerWebInteropActivationTests`,
-`SneakerLibraryViewModelTests`, `SneakerWebViewIsolationTests`,
+`SneakerLibraryViewModelTests`, `SneakerAccessibilityContractTests`,
+`SneakerWebViewIsolationTests`,
 `SneakerShareTaskTests`, `SneakerNearbyTransferTests`,
-`SneakerCarrierCardTests`, `SneakerDirectoryPermissionTests`,
+`SneakerCarrierCardTests`, `SneakerSpaceBlobMultiPeerTests`,
+`AppSyncReplicationTests`, `SneakerDirectoryPermissionTests`,
 `SneakerShareMatrixTests`, and `SneakerNewswireAttachmentTests`; the UI result
 must execute `SneakerDocumentUITests`, `SneakerNearbyFlowUITests`, and
 `SneakerDirectoryPermissionUITests`, plus
 `SneakerSystemShareReachabilityTests` in its configured native test target.
 Android unit results must execute
-`SneakerLibraryViewModelTest`, `SneakerShareCoordinatorTest`,
+`SneakerLibraryViewModelTest`, `SneakerAccessibilityContractTest`,
+`SneakerShareCoordinatorTest`,
 `SneakerNearbyTransferTest`, `SneakerCarrierCardTest`,
+`SneakerSpaceBlobMultiPeerTest`,
 `SneakerDirectoryPermissionTest`, `SneakerShareMatrixTest`, and
 `SneakerNewswireAttachmentTest`; connected
 results must execute `SneakerWebInteropActivationTest` and
 `SneakerSystemShareReachabilityTest`,
 `SneakerDocumentOpenTest`, `SneakerWebViewIsolationTest`, and
-`SneakerNearbyFlowTest`, and `SneakerCommunityShareTest`.
+`SneakerNearbyFlowTest`, `SneakerCommunityShareTest`, and
+`AppRuntimeEndToEndTest`. The macOS gate must freshly test `RiotKit-macOS` and
+build `Riot-macOS` while confirming no `.snk` declaration or SneakerWeb route
+appears in the product.
 
-- [ ] **Step 2: Version the combined coverage command**
+- [ ] **Step 2: Reconfirm the frozen combined coverage command**
 
-Change only the source-of-truth enforcement command:
+Fail if the source-of-truth enforcement command is no longer:
 
 ```json
 {
@@ -1764,15 +2000,18 @@ Change only the source-of-truth enforcement command:
 }
 ```
 
-The script reads all four 100% thresholds, runs tarpaulin for its supported
-metrics and llvm-cov for lines/functions/regions/branches, and reports the
-statements-to-regions mapping explicitly.
+`scripts/test-coverage-gate.sh` must still prove that the script reads all four
+100% thresholds, runs tarpaulin for its supported metrics and llvm-cov for
+lines/functions/regions/branches, and reports the statements-to-regions mapping
+explicitly. Task 13 does not introduce or repair this infrastructure after the
+feature code; any drift is a release failure.
 
 - [ ] **Step 3: Run the full blocking automated matrix**
 
 ```sh
 cargo xtask validate-contracts
 cargo test --workspace --all-features
+scripts/test-coverage-gate.sh
 scripts/coverage-gate.sh
 cargo fmt --all -- --check
 cargo clippy --workspace --all-features -- -D warnings
@@ -1784,14 +2023,21 @@ xcodebuild test -project apps/ios/Riot.xcodeproj -scheme RiotKit \
 xcodebuild test -project apps/ios/Riot.xcodeproj -scheme Riot \
   -destination 'platform=iOS Simulator,name=iPhone 17 Pro,OS=26.2,arch=arm64' \
   -enableCodeCoverage YES -resultBundlePath build/snk-riot.xcresult
+xcodebuild test -project apps/macos/Riot.xcodeproj -scheme RiotKit-macOS \
+  -destination 'platform=macOS' -resultBundlePath build/snk-riotkit-macos.xcresult
+xcodebuild build -project apps/macos/Riot.xcodeproj -scheme Riot-macOS \
+  -destination 'platform=macOS'
 scripts/verify-xcresult-tests.sh build/snk-riotkit.xcresult --require-tests \
   --require-suite SneakerWebCoreTests \
   --require-suite SneakerWebInteropActivationTests \
   --require-suite SneakerLibraryViewModelTests \
+  --require-suite SneakerAccessibilityContractTests \
   --require-suite SneakerWebViewIsolationTests \
   --require-suite SneakerShareTaskTests \
   --require-suite SneakerNearbyTransferTests \
   --require-suite SneakerCarrierCardTests \
+  --require-suite SneakerSpaceBlobMultiPeerTests \
+  --require-suite AppSyncReplicationTests \
   --require-suite SneakerDirectoryPermissionTests \
   --require-suite SneakerShareMatrixTests \
   --require-suite SneakerNewswireAttachmentTests \
@@ -1800,6 +2046,9 @@ scripts/verify-xcresult-tests.sh build/snk-riot.xcresult --require-tests \
   --require-suite SneakerDocumentUITests \
   --require-suite SneakerNearbyFlowUITests \
   --require-suite SneakerDirectoryPermissionUITests
+scripts/verify-xcresult-tests.sh build/snk-riotkit-macos.xcresult --require-tests
+! /usr/libexec/PlistBuddy -c 'Print :CFBundleDocumentTypes' apps/macos/Riot/Info.plist 2>/dev/null | rg -i 'snk|sneaker'
+! rg -n 'SneakerLibraryView|SneakerReaderView|\.snk' apps/macos/Riot
 (cd apps/android && ../../scripts/android-sneakerweb-test-gate.sh)
 scripts/sneakerweb-oracle.sh verify --offline --version 1.0.1
 scripts/sneakerweb-interop.sh --offline --version 1.0.1 \
@@ -1848,8 +2097,7 @@ Update the service inventory with the new core modules, FFI task objects,
 native hosts, and Directory app.
 
 ```sh
-git add .coverage-thresholds.json scripts/coverage-gate.sh \
-  scripts/verify-xcresult-tests.sh scripts/android-sneakerweb-test-gate.sh \
+git add scripts/verify-xcresult-tests.sh scripts/android-sneakerweb-test-gate.sh \
   scripts/sneakerweb-physical-rehearsal.sh docs/product/product-brief.md README.md \
   SERVICE-INVENTORY.md docs/quality/2026-07-13-sneakerweb-release-evidence.md
 git diff --cached --check
@@ -1897,31 +2145,3 @@ Do not mark this plan complete, create a PR, or claim SneakerWeb support until
 Task 13 passes every automated and physical gate against the exact landed
 dependency graph. If file/open/direct/Directory increments are merged earlier,
 name their delivered subset precisely and keep the remaining tasks open.
-
-## Fresh plan-review gate record
-
-| Iteration | Feasibility | Completeness | Scope & Alignment |
-| --- | --- | --- | --- |
-| 1 | FAIL | FAIL | PASS |
-| 2 | FAIL | FAIL | FAIL |
-| 3 | PASS | FAIL | PASS |
-
-The final independent completeness review left four blocking issues:
-
-1. Accessibility implementation/tests do not yet enumerate reflow, visible
-   focus, high contrast, Reduce Motion, or the required start/every-10%-or-10s/
-   terminal progress-announcement cadence.
-2. Community attachment transfer lacks multi-peer authorized-holder selection,
-   holder loss/handoff, and verification that another current holder can resume
-   serving the same signed public carrier request.
-3. macOS compiles shared iOS RiotKit sources by reference, but the plan excludes
-   macOS without conditional-compilation work or a macOS build regression gate
-   for the shared files changed by Tasks 6–12.
-4. Existing end-to-end app-runtime consumers
-   `apps/ios/RiotTests/AppSyncReplicationTests.swift` and
-   `apps/android/app/src/androidTest/kotlin/org/riot/evidence/apps/AppRuntimeEndToEndTest.kt`
-   are outside Task 11's file scope and positive-execution allowlist even though
-   Task 11 changes their bridge and WebView host surfaces.
-
-Recommended decision: **Revise**. These are bounded integration and verification
-additions; they do not require changing the approved SneakerWeb product design.
