@@ -1,15 +1,18 @@
 # SneakerWeb view-and-share design
 
-Status: Product design approved on 2026-07-13. Metaswarm design review rounds
-1-3 returned NEEDS_REVISION; the mandatory gate is at human escalation before
-planning or implementation.
+Status: Product design and the human-directed post-escalation revision were
+approved on 2026-07-13. The revision is pending a fresh Metaswarm design review
+gate before planning or implementation.
 
 ## Purpose
 
 Riot will become a native viewer and carrier for standard SneakerWeb `.snk`
 files. A person opens a file as an ordinary document, immediately browses the
 sites it contains, keeps those sites in one local library, and can carry one
-site, several sites, or a received collection onward. Riot does not create
+site, several sites, or a received collection onward. Public Indymedia-style
+communities can use a signed Sneaker Directory miniapp alongside Polls, Tasks,
+and other social apps, or attach a collection to a normal Newswire post. Riot
+does not create
 SneakerWeb domains, hold SneakerWeb domain secrets, edit sites, or publish new
 site entries in this slice.
 
@@ -58,14 +61,19 @@ less constrained document type remains subject to preview-before-ingest.
    WANTS a clear card and on-demand download; SO THAT large content does not
    silently consume storage; WHEN at least one nearby participant still holds
    the attachment.
-4. **Careful verifier:** WHO needs to establish provenance; WANTS full public
+4. **Community publisher:** WHO has selected one or many useful sites; WANTS to
+   post the collection to a community Newswire or add it to that community's
+   enabled Sneaker Directory app; SO THAT the same public material can take
+   part in editorial publishing or a durable social directory; WHEN sharing
+   within one or several Indymedia-style communities.
+5. **Careful verifier:** WHO needs to establish provenance; WANTS full public
    keys, namespace IDs, entry metadata, integrity results, and source history;
    SO THAT cryptographic integrity is inspectable without being confused with
    publisher trust; WHEN they open Details.
-5. **Local moderator:** WHO encounters a domain they do not want; WANTS to
+6. **Local moderator:** WHO encounters a domain they do not want; WANTS to
    block it once; SO THAT later files cannot silently restore it to normal
    browsing; WHEN viewing a site or its Details.
-6. **Storage-limited reader:** WHO has filled the local collection; WANTS to see
+7. **Storage-limited reader:** WHO has filled the local collection; WANTS to see
    reclaimable bytes, remove a receipt/site/blob, and retry; SO THAT automatic
    persistence remains reversible; WHEN Open or Get collection reports that
    space is insufficient.
@@ -83,7 +91,10 @@ The first release succeeds when:
 - 100 distinct files carrying overlapping sites converge into one durable
   library without duplicate site cards or loss across relaunch;
 - a site, multi-site selection, and received collection can each be shared via
-  the system share sheet, nearby transfer, and a Riot space carrier card;
+  the system share sheet, nearby transfer, a public-community Newswire post,
+  and an enabled Sneaker Directory social app;
+- one reviewed multi-site collection can be shared to several communities with
+  per-destination success/retry results and no duplicate record on retry;
 - raw keys and IDs are absent from the default library and reader but fully
   visible and copyable through Details;
 - invalid, cancelled, oversized, or interrupted files leave the authoritative
@@ -99,7 +110,10 @@ open journey using 10 MiB and 100 MiB fixtures. At least 9/10 must complete the
 10 MiB journey without coaching within two minutes, at least 8/10 must complete
 the 100 MiB journey within five minutes over local Wi-Fi/system sharing, and
 19/20 attempted recipient deliveries across the cohort must arrive intact and
-open. Any lower completion or delivery result blocks the field-readiness claim
+open. The 20 attempts contain five each through file/system share, direct
+nearby, a Newswire attachment, and a Sneaker Directory listing; community
+routes include one two-community partial-failure/retry exercise. Any lower
+completion or delivery result blocks the field-readiness claim
 and requires a recorded UX/transport revision; install counts are not evidence.
 
 The slice fails if it accepts forged content, partially commits a rejected
@@ -122,6 +136,10 @@ space attachment, or creates/re-signs a SneakerWeb site entry.
 - system share sheet and nearby person transfer;
 - content-addressed, on-demand `.snk` attachments referenced by Riot space
   cards;
+- Newswire attachment references and app-scoped Sneaker Directory listings in
+  one or several public communities;
+- one explicit `portable_public_collections` miniapp capability and a bounded
+  host-mediated picker/open contract that exposes no `.snk` bytes to app code;
 - iOS and Android native surfaces over the shared Rust core.
 
 ### Excluded
@@ -130,7 +148,7 @@ space attachment, or creates/re-signs a SneakerWeb site entry.
 - publishing, editing, deleting, or signing SneakerWeb site entries;
 - treating cryptographic validity as identity, trust, accuracy, or safety;
 - private or encrypted SneakerWeb content;
-- automatic insertion of SneakerWeb pages into Riot spaces;
+- automatic insertion of SneakerWeb pages into Riot spaces or social apps;
 - automatic downloading of space attachments;
 - arbitrary Willow Drop Format namespaces;
 - incomplete/partial-payload drops. The MVP accepts complete payload-bearing
@@ -144,6 +162,10 @@ is not publishing: Riot preserves the original entries, capabilities,
 signatures, timestamps, and payloads exactly and adds no SneakerWeb signature.
 Sharing into a Riot space does create a separately signed Riot carrier record;
 that record says who recommended the package, not who authored its sites.
+The carrier can be referenced by a signed Newswire post or by data belonging to
+an enabled social miniapp. The miniapp supplies community meaning and
+organization; the native core retains ownership of bytes, verification, and
+viewing.
 
 ## User experience
 
@@ -252,27 +274,74 @@ Received exports the current complete versions of its currently unblocked
 domain set, not original file bytes. If blocked domains were present, review
 says `N blocked sites won't be included`; if none remain, Share is disabled
 with a path to Blocked sites. `Updated since received` prevents byte-identity
-confusion. Destinations are:
+confusion. Every share requires a human collection title of 1-80 Unicode
+scalars after safe-text normalization and accepts an optional 1,024-byte note.
+The selected sites, title, note, total size, and public-content disclosure are
+reviewed once before choosing destinations.
+
+Destinations are:
 
 - **Share file** through the platform share sheet;
-- **Send nearby** through the current public community's Nearby surface;
-- **Share to a space** through a selected public/open Riot space.
+- **Send to a person nearby** through bilateral confirmation, without requiring
+  a shared community;
+- **Post to Newswire** in one or more writable public communities; and
+- **Add to Sneaker Directory** in one or more public communities where a
+  trusted social app declaring the machine capability
+  `portable_public_collections` is enabled.
 
-The filename uses a sanitized title, or
-`sneakerweb-collection-YYYYMMDD-HHMMSS.snk` when no safe title remains; it never
-surfaces a shortened key or digest. Existing destination files receive the
-platform's normal collision suffix. Export streams to a protected temporary and deletes it
-after completion, cancellation, lease expiry, or startup recovery.
+Sneaker Directory is an ordinary signed miniapp beside Polls, Tasks, Wiki, and
+other community apps. Each space independently trusts/enables its bundle. The
+app owns directory presentation, categories, descriptions, and future social
+features in app-scoped storage. Its mutable annotations are separate from the
+immutable carrier title/note. It never receives `.snk` bytes, filesystem
+access, a database handle, block state, raw site IDs, blob digests, signing
+keys, or access to the global library. Its explicit capability adds only two
+host-mediated, user-gesture operations: open Riot's native collection picker,
+and open a validated opaque carrier reference in Riot's native collection
+card/viewer. Picker results exposed to JavaScript are bounded safe display
+metadata: opaque draft/reference handle, title, note, site count, encoded size,
+availability, and carrier display attribution.
 
-System share shows the public-content disclosure, then the OS sheet. Send
-nearby requires the existing bilateral confirmation on both phones and is
-disabled with guidance if permission, a selected public community, or an
-eligible confirmed person is absent. Share to a space lists only public/open
-spaces where the profile may write, then reviews title, site count, size,
-optional note, `You are sharing this collection; you did not author its sites`,
-and Publish/Cancel. Private/encrypted spaces are excluded from the MVP.
-Permission denial, peer disappearance, cancellation, and failure preserve the
-selection and offer Retry or another destination.
+The native share flow may write the same signed app-scoped listing record the
+miniapp would request at `collections/<listing-id>` under its existing
+`apps/<app-id>/<space-id>/` prefix. That closed record contains a full carrier
+entry reference, safe title/note, creation time, and the sharing profile's
+ordinary app attribution. It contains no blob bytes or site identifiers. The
+host accepts it only for the active space, exact trusted app ID, declared
+capability, and a carrier committed in the same operation. An app cannot mint,
+retarget, enumerate, or open another space's carrier reference.
+
+Post to Newswire creates an ordinary signed `NewsPostV1` whose attachment field
+references the carrier entry. The editable post headline defaults to the
+collection title; context/body is optional. It appears in the Open Wire and is
+subject to ordinary transparent feature, correction, hide, tombstone, and
+retraction actions. Those actions affect the Newswire projection, not the
+SneakerWeb entries or an independent Directory listing.
+
+The destination picker permits several community rows in one share. Each row
+chooses Newswire or an enabled Sneaker Directory; selecting both for the same
+community is allowed and both references share one carrier. A community without
+the Directory app is not a Directory destination: a recognized organizer may
+open its normal `Let everyone here use this` review, while other people see
+`Ask an organizer to turn on Sneaker Directory`. Private/encrypted groups are
+excluded because their public-content and metadata boundary requires the
+separate reviewed group bridge.
+
+The filename uses the sanitized required collection title. It never surfaces a
+shortened key or digest. Existing destination files receive the platform's
+normal collision suffix. Export streams to a protected temporary and deletes
+it after completion, cancellation, lease expiry, or startup recovery.
+
+System share shows the public-content disclosure, then the OS sheet. Nearby
+requires the existing bilateral confirmation on both phones and is disabled
+with guidance only when local permission or an eligible confirmed person is
+absent; the `.snk` and direct-transfer envelope contain no Riot-community
+membership, destination records, internal notes, or private metadata.
+Community rows list only public/open spaces where the active profile may create
+the selected record. Review says `You are sharing this collection; you did not
+author its sites` and shows Publish/Cancel. Permission denial, peer
+disappearance, cancellation, and failure preserve the selection and offer
+Retry or another destination.
 
 Every destination exposes preparation as an explicit native state before
 handoff: `Preparing collection` reports selecting/encoding byte and item
@@ -289,21 +358,31 @@ progress, Pause/Resume/Cancel, `Verifying`, and `Received/Open`. Peer loss is
 `Interrupted`; Resume is available only while the same confirmed session is
 alive and otherwise Retry starts fresh bilateral confirmation with a new
 one-shot capability. A failed integrity check restarts at zero rather than from
-an unverified checkpoint. Space share continues through `Preparing
-attachment`, `Posting`, and `Shared`; posting failure preserves the prepared
-lease and review fields for Retry until its bounded expiry. Cancel before the
-signed carrier commit leaves no card; once committed, success is final. All
-three flows use the accessibility progress announcement cadence below, and all
-failure/cancellation paths restore focus to the preserved review/selection.
+an unverified checkpoint.
 
-A space card reads `Street Medic Library · 4 sites · 18 MB`, shows identity
-derived from the outer signed entry, and repeats that the member carried rather
-than authored the sites. Its states are Available locally/Open; Not downloaded/
-Get collection; Waiting for nearby holder/Retry; Transferring with progress and
-Cancel; Interrupted/Resume; Verifying; Invalid/Remove card locally; Storage
-full/Manage storage; All domains blocked/View blocked sites; and Ready/Open.
-Cards never auto-download. Any currently authorised nearby holder of the public
-space attachment may serve it after an explicit request.
+Each selected community is an independent idempotent child operation with
+`Preparing attachment`, `Signing carrier`, `Signing destination`, `Committing`,
+and `Shared`. The carrier and all selected Newswire/Directory references for
+one community commit atomically, so no visible orphan is created. A native
+batch coordinator reports each row as Shared, Needs retry, or No longer allowed;
+one failure never rolls back another community. Retry uses the original
+128-bit idempotency key and returns the existing receipt after a prior commit
+rather than making duplicate posts/listings. Posting failure preserves the
+prepared lease and review fields until its visible 15-minute idle expiry.
+Cancel before one community's commit leaves no records there; after commit its
+success is final. All flows use the accessibility progress announcement
+cadence below, and all failure/cancellation paths restore focus to the
+preserved review/selection.
+
+A Newswire attachment and Directory listing both host the same native card. It
+reads `Street Medic Library · 4 sites · 18 MB`, shows identity derived from the
+outer signed carrier entry, and repeats that the member carried rather than
+authored the sites. Its states are Available locally/Open; Not downloaded/Get
+collection; Waiting for nearby holder/Retry; Transferring with progress and
+Cancel; Interrupted/Resume; Verifying; Invalid/Remove reference locally;
+Storage full/Manage storage; All domains blocked/View blocked sites; and
+Ready/Open. Cards never auto-download. Any currently authorised nearby holder
+of the public attachment may serve it after an explicit request.
 
 ### Block, undo, and storage recovery
 
@@ -361,6 +440,8 @@ fallback title, sharing/blocking, and failure recovery always remain accessible.
 | Site has no complete `/index.html` | `This site doesn't have a home page.` Details/Back |
 | Linked domain absent | `You don't have this site yet.` Copy full ID/Back |
 | Space attachment has no reachable authorised holder | `Find someone nearby who has this collection.` Retry |
+| Sneaker Directory is not enabled in a chosen community | Organizer: review/turn on app; member: `Ask an organizer to turn on Sneaker Directory.` |
+| Some community destinations commit and others fail | Keep successful receipts; list failed/no-longer-allowed rows; Retry failed rows with original idempotency keys |
 | Viewer process fails or exhausts its budget | `This site stopped working.` Retry/Close |
 | A previously accepted local payload fails its digest on read | `This local copy is damaged.` Remove local copy/Open another file |
 | Temporary export or destination fails | `This couldn't be shared.` Retry/Choose another |
@@ -373,7 +454,8 @@ payload text, secret material, raw OS URI/path, or a truncated identifier.
 ### Boundaries
 
 SneakerWeb is a distinct public-content collection in the shared Rust core,
-not a Riot mini-app and not an evidence-bundle variant:
+not an evidence-bundle variant. The protocol viewer is native; a community may
+organize carrier references through an ordinary social miniapp:
 
 ```text
 .snk / nearby blob / space attachment
@@ -385,16 +467,22 @@ not a Riot mini-app and not an evidence-bundle variant:
        atomic SneakerCollection merge
           /          |           \
      library      isolated       streaming Drop encoder
-      queries       viewer        /       |        \
-                               share    nearby    space blob
+      queries       viewer        /       |         \
+                               file    nearby   portable blob
+                                                  |
+                                     signed public carrier
+                                       /               \
+                                Newswire post    social-app listing
 ```
 
 Rust owns decoding, canonical verification, namespace enforcement, Willow join
 semantics, persistence, selection, Drop encoding, block policy, provenance,
 and attachment digests. Swift and Kotlin own platform document entry points,
 WebViews, OS sharing, and nearby lifecycle, calling versioned UniFFI types.
-HTML/JavaScript never receives a database, filesystem, namespace-selection, or
-native bridge API.
+Site HTML/JavaScript never receives a database, filesystem,
+namespace-selection, or native bridge API. A trusted social miniapp remains in
+the existing isolated app host and sees only its own signed listing records and
+the two bounded `portable_public_collections` host gestures described above.
 
 The fixed SneakerWeb namespace is permanently reserved with collection kind
 `sneakerweb-public`. `RiotDatabase` rejects creating/joining it as a Riot space,
@@ -425,7 +513,38 @@ projections.
   accounting, temporary export leases, chunk verification, and resumable
   reads;
 - `SneakerCarrier`: canonical Riot carrier-card payload validation and mapping
-  between a signed space entry and one portable blob digest.
+  between a signed space entry and one portable blob digest;
+- `SocialCollectionHost`: capability, active-space/app binding, opaque
+  draft/reference handles, closed app-listing codec, and native collection-card
+  handoff. It never enters the site renderer or exposes the SneakerCollection
+  query/resource API to miniapp JavaScript;
+- `SpaceSneakerShare`: atomic carrier plus Newswire/app-reference creation,
+  per-destination idempotency receipts, and prepared-blob lease ownership.
+
+#### Social-app capability activation
+
+Current `AppManifest` permissions are author-supplied human-readable strings;
+they are not machine-enforced scopes. This design must not compare security
+behavior to mutable display copy. The capability therefore activates through a
+versioned manifest contract before the Directory bundle ships:
+
+- legacy manifest/app-ID v1 remains byte-for-byte accepted and receives no new
+  host capability;
+- manifest v2 adds canonical key `9`, a definite, lexicographically sorted,
+  duplicate-free array of closed machine capability tokens, and derives its
+  app ID under domain `riot/app-id/v2`;
+- the only new token in this slice is exact ASCII
+  `portable_public_collections`; unknown tokens fail closed rather than grant a
+  partial capability;
+- the organizer review page renders host-owned copy for the token:
+  `Open and share public SneakerWeb collections you choose. It cannot read other
+  files, sites, or apps.` This copy is not supplied by the bundle author;
+- v1 apps, untrusted v2 apps, and a trusted app without the token receive no
+  picker/open handlers at all; and
+- manifest canonical vectors, old-client rejection/new-client acceptance, app
+  ID separation, trust revocation, and native bridge dispatch are blocking
+  tests. The starter Sneaker Directory is packaged and trusted through the same
+  ordinary app-index flow as Polls and Tasks, never as a privileged built-in.
 
 The codec uses upstream `willow25::drop_format::{DropDecoder, DropEncoder}`
 directly with Riot-owned bounded producers/consumers. It does **not** call
@@ -474,16 +593,35 @@ remove_sneaker_source(source_id) -> RemovalOutcome
 remove_sneaker_site(domain_id) -> RemovalOutcome
 remove_portable_blob(blob_id) -> RemovalOutcome
 create_snk_export(domain_ids) -> SnkExportTask
-create_space_sneaker_share(public_space_session, export_lease, note) -> CarrierReceipt
-request_space_blob(public_space_session, carrier_entry_id, peer) -> BlobTransferTask
-begin_direct_snk_send(confirmed_nearby_session, export_lease) -> BlobTransferTask
-accept_direct_snk_receive(confirmed_nearby_session, request_id) -> BlobTransferTask
+begin_space_sneaker_share(public_space_session, prepared_blob_lease,
+  title, note, destinations, idempotency_key) -> SpaceSneakerShareTask
+request_space_blob(public_space_session, carrier_entry_id, peer) -> SpaceBlobReceiveTask
+begin_direct_snk_send(confirmed_nearby_session, export_lease) -> DirectSnkSendTask
+accept_direct_snk_receive(confirmed_nearby_session, request_id) -> DirectSnkReceiveTask
 reject_direct_snk_receive(confirmed_nearby_session, request_id) -> RejectOutcome
+begin_app_collection_pick(active_app_session, genuine_gesture_token)
+  -> NativeCollectionPickerRequest
+open_app_collection_listing(active_app_session, listing_key, genuine_gesture_token)
+  -> NativeCarrierCard
 ```
 
 Every domain parameter is exactly 32 bytes at the FFI boundary; string parsing
 exists only for canonical URLs and Details copy/paste. No SneakerWeb API accepts
 a caller-supplied namespace.
+
+`destinations` is a closed non-empty set for one space: at most one
+`NewswireAttachment { headline, body }` and at most one
+`AppDirectoryListing { trusted_app_id, listing_id }`. The core verifies the
+NewsPost contract or exact trusted app/capability/active-space binding before
+signing. A native multi-community coordinator creates one task per selected
+space with independently generated 128-bit idempotency keys; there is no
+cross-space atomic transaction.
+
+Only native picker completion supplies domain IDs to
+`NativeCollectionPickerRequest`; miniapp JavaScript receives the resulting
+`AppCollectionDraft` opaque handle and safe display fields, never the selection
+IDs. The gesture token is single-use, bound to the active trusted app/space
+session, and expires after 30 seconds if no native picker is shown.
 
 The nearby multiplexer emits a bounded `IncomingPortableBlobRequest` DTO before
 either receive factory is legal; it contains request ID, safe peer handle,
@@ -505,22 +643,46 @@ Opaque objects have complete state machines and single terminal results:
   by a successful read or retain call and is owned by the database generation.
 - `ExportLease`: metadata plus `read_range(offset, max <= 1 MiB)`,
   `retain_as_portable_blob()`, and idempotent `close`. Retain fsyncs and promotes
-  the exact export into CAS; system share/native nearby may stream without
-  promotion. Every read and retain rechecks every selected domain's block
-  generation. Expiry or close makes reads `LEASE_CLOSED`; native owner teardown
-  closes all of its leases.
+  the exact export into CAS and returns a `PreparedBlobLease`; system
+  share/native nearby may stream without promotion. Every read and retain
+  rechecks every selected domain's block generation. Expiry or close makes
+  reads `LEASE_CLOSED`; native owner teardown closes all of its leases.
+- `PreparedBlobLease`: immutable digest/length/selected-domain block generations,
+  15-minute idle expiry, bounded retain/release, and no filesystem path. A
+  successful space task converts its temporary hold to durable carrier
+  references in the commit transaction. When the last task/lease expires before
+  commit, ordinary blob grace-period collection applies.
 - `ResourceLease`: immutable MIME/length/digest/block-generation metadata,
   bounded `read_range`, and idempotent `close`; every read rechecks its block
   generation.
-- `BlobTransferTask`: `Negotiating -> Transferring -> Verifying ->
-  Ready(PortableBlobLease)`, with `Paused | Cancelled | Failed`; it exposes
-  progress, pause/resume, cancel, and finish. The first `finish` starts/awaits
-  the transfer and repeated calls return the same lease identity or terminal
-  error. `PortableBlobLease` is read-only, has the same 15-minute idle expiry,
-  and must be passed explicitly to `begin_snk_open_from_blob`; the transfer
-  never mutates SneakerCollection. Closing/expiry releases the active lease but
-  retains a promoted blob only when a carrier or explicit retain reference
-  owns it.
+- `SpaceSneakerShareTask`: `Preparing -> SigningCarrier ->
+  SigningDestinations -> Committing -> Shared(CarrierReceipt)`, with terminal
+  `Cancelled | Failed | OwnerClosed`. It exposes monotonic progress, cancel,
+  and asynchronous finish; repeated finish returns the same receipt or terminal
+  error. Carrier and every selected destination record for
+  that one space commit atomically. Recreating a task with the same
+  `(space, signer, idempotency_key)` returns/continues the recorded operation;
+  after commit it returns the identical receipt and never signs a duplicate.
+  Reusing that key with different title, note, blob, or destinations returns
+  `IDEMPOTENCY_CONFLICT` without mutation.
+  A retryable pre-commit failure preserves its prepared lease/review fields
+  until the visible idle expiry; cancellation or expiry releases them.
+- `DirectSnkSendTask`: `Negotiating -> Sending -> WaitingForVerifiedAck ->
+  Sent(SendReceipt)`, with `Paused | Cancelled | Failed | OwnerClosed`. Sent is
+  legal only after the receiver acknowledges exact length/digest verification;
+  the first `finish` starts/awaits delivery and repeated calls return the same
+  receipt or terminal error. It never yields or promotes a local blob.
+  Pause/Resume is legal only while
+  the confirmed session remains alive. Retry after session loss requires new
+  bilateral confirmation and a new one-shot capability.
+- `DirectSnkReceiveTask` and `SpaceBlobReceiveTask`: `Negotiating -> Receiving
+  -> Verifying -> Ready(PortableBlobLease)`, with `Paused | Cancelled | Failed |
+  OwnerClosed`. The first `finish` starts/awaits the transfer and repeated calls
+  return the same lease identity or terminal error. `PortableBlobLease` is
+  read-only, has the same 15-minute idle expiry, and must be passed explicitly
+  to `begin_snk_open_from_blob`; receiving never mutates SneakerCollection.
+  Closing/expiry releases the active lease but retains a promoted blob only
+  while a carrier or explicit retain reference owns it.
 
 All tasks are owned by a database generation and, when relevant, a public
 `SpaceSession`/nearby-session generation. After a terminal result, cancellation
@@ -535,6 +697,9 @@ the next 256 KiB/10,000-step checkpoint even if the actor queue is busy.
 Progress snapshots are monotonic and may lag by at most one checkpoint.
 Deterministic barrier tests cover finish/cancel, block/read, block/retain,
 owner-close/commit, and task-drop during validation, encoding, and verification.
+A final native handle drop for any nonterminal task is an idempotent cancel:
+it sets the token, releases reservations/temporary leases, and may not continue
+detached in the background.
 A process death has no callable outcome; startup reconciliation performs the
 same cleanup before new tasks start.
 
@@ -548,12 +713,18 @@ The minimum DTO contracts are:
 | `ReceivedSneakDetailsPage` | version, source facts, exact original domain/entry membership, receipt dispositions, current contribution/difference, next cursor |
 | `TransferProgress` | version, phase, completed bytes/items, optional bounded total, resumable/cancellable booleans |
 | `OpenSnkOutcome` | version, receipt ID, added/updated/unchanged/blocked/older counts, retained/reclaimable bytes, undo generation, zero-change reason |
+| `CarrierReceipt` | version, full space ID, idempotency key, full carrier entry ID, ordered destination kind/full entry ID pairs, blob digest/length, committed time |
+| `CommunityShareBatchResult` | version, preserved selection/review ID, ordered per-space idempotency key and `shared/retryable/no-longer-allowed/cancelled` outcome, optional CarrierReceipt/stable error |
+| `SendReceipt` | version, transfer request ID, safe peer handle, blob digest/length, verified-ack time |
+| `AppCollectionDraft` | version, app/space-bound opaque handle, safe title/note/site count/encoded size, expiry; no site IDs/digest/bytes |
 
 Stable core errors are `INVALID_DROP`, `WRONG_NAMESPACE`,
 `INCOMPLETE_PAYLOAD`, `LIMIT_EXCEEDED`, `STORAGE_FULL`, `STALE_CURSOR`,
 `OWNER_CLOSED`, `BLOCKED`, `LEASE_CLOSED`, `INVALID_STATE`, `CANCELLED`,
 `TEMPORARY_IO`, `VIEWER_UNAVAILABLE`, `NO_AUTHORISED_HOLDER`, and
-`SECURITY_POLICY`. Raw parser/SQL/OS text never crosses FFI. Native maps only
+`SECURITY_POLICY`, plus destination errors `APP_NOT_TRUSTED`,
+`APP_PERMISSION_DENIED`, `DESTINATION_NOT_WRITABLE`, and
+`IDEMPOTENCY_CONFLICT`. Raw parser/SQL/OS text never crosses FFI. Native maps only
 these enums and typed fields to the user-state matrix above.
 
 ### Persistence
@@ -577,6 +748,7 @@ The SQLite design gains:
 | `storage_reservations` | Task owner, reserved staging/database/blob bytes, expiry, and recovery state. |
 | `portable_blobs` | SHA-256 digest, length, protected local path/blob handle, completeness, reference count, and last access. |
 | `space_blob_refs` | Space namespace, signed carrier entry, portable blob digest, state, and local availability. |
+| `space_sneaker_share_ops` | Full space/signer/idempotency key, task state, prepared-lease expiry, exact destination request, terminal carrier/destination IDs, and cleanup state. |
 | `blob_chunks` | Resumable chunk index, length, chunk digest, and completion state for in-flight nearby transfers. |
 
 The authoritative entry tables retain full canonical entry, capability,
@@ -602,15 +774,22 @@ complete entries. Space/direct-nearby exports become CAS blobs only when an
 
 CAS finalization is crash-consistent: reserve quota in SQLite; create a
 no-follow random file in the app-protected, backup-excluded CAS staging
-directory; stream while checking length/chunks; fsync the file; verify final
-SHA-256 and `.snk` length; atomically rename to the digest path; fsync the
-directory; then transactionally publish/attach the `portable_blobs` row and
-release the reservation. If the digest path already exists, the core opens it
-without following links, verifies regular-file type, exact length, and digest,
-deletes the new staged duplicate, transactionally increments/attaches the
-existing row, and releases the reservation. A mismatching existing path is
-quarantined as corruption and fails closed; it is never overwritten while a
-lease may exist. Startup runs before database service: delete expired
+directory; stream while checking length/chunks; fsync the file; and verify final
+SHA-256 and `.snk` length. A per-full-digest finalization lock serializes local
+contenders, and a platform `install_no_replace(staging, digest_path)` primitive
+must atomically succeed only when the destination did not exist (for example,
+`renameat2(RENAME_NOREPLACE)` or same-filesystem link/create-exclusive
+semantics). Ordinary replacing rename is forbidden.
+
+The winner installs the file, fsyncs the directory, transactionally
+publishes/attaches the `portable_blobs` row, and releases its reservation. A
+loser opens the winner without following links, verifies regular-file type,
+exact length, and digest, deletes its staged duplicate, transactionally
+attaches the existing row, and releases its reservation. A mismatching existing
+path is quarantined as corruption and fails closed; it is never overwritten
+while a lease may exist. Deterministic same-digest contenders are tested with
+barriers before install, after install, before/after row publication, and across
+process-death reconciliation. Startup runs before database service: delete expired
 staging/chunks/share temporaries, reconcile final files without rows and rows
 without files, expire leases/reservations, recompute references, and finish or
 roll back pending removals. A complete unreferenced file becomes a bounded
@@ -634,6 +813,12 @@ before allocations or integer conversions:
   source-entry associations: 1,000,000; database/CAS combined: 3 GiB;
 - concurrent tasks per device: one Open, one Export, two Blob transfers;
   aggregate staging/chunk reservations: 1 GiB;
+- community destinations per reviewed batch: 32, each with at most one Newswire
+  and one Directory reference; at most four child space-share tasks active at
+  once, with the remainder queued and cancellable;
+- Sneaker Directory listing values remain within the existing miniapp value,
+  entry-count, and per-space storage budgets; the new capability raises none of
+  those ceilings;
 - Details page: 100 entries; library page: 100 sites;
 - nearby blob chunk: 256 KiB with a SHA-256 digest and a 32 MiB checkpoint.
 
@@ -775,12 +960,13 @@ rejected. The complete version-1 schema is:
 | `0` | schema | text | Required; exact ASCII `org.riot.sneakerweb-carrier/1`. |
 | `1` | blob digest | byte string | Required; exactly 32 SHA-256 bytes. |
 | `2` | encoded length | unsigned integer | Required; `1..=1,073,741,824`, equal to the blob length. |
-| `3` | domains | array of byte strings | Required; `1..=1,024` elements, each exactly 32 bytes, lexicographically increasing and therefore unique. |
-| `4` | labels | array of text | Required; exactly as many elements as key `3`; label at index `i` describes domain at index `i`; each is valid UTF-8, contains no control/bidi-control scalar, and is at most 80 Unicode scalars after whitespace collapse. |
-| `5` | site count | unsigned integer | Required; exactly the array length at keys `3` and `4`. |
-| `6` | note | text | Optional; at most 1,024 UTF-8 bytes after the same control/bidi rejection. |
+| `3` | collection title | text | Required; valid UTF-8, no control/bidi-control scalar, `1..=80` Unicode scalars after whitespace collapse. |
+| `4` | domains | array of byte strings | Required; `1..=1,024` elements, each exactly 32 bytes, lexicographically increasing and therefore unique. |
+| `5` | labels | array of text | Required; exactly as many elements as key `4`; label at index `i` describes domain at index `i`; each is valid UTF-8, contains no control/bidi-control scalar, and is at most 80 Unicode scalars after whitespace collapse. |
+| `6` | site count | unsigned integer | Required; exactly the array length at keys `4` and `5`. |
+| `7` | note | text | Optional; at most 1,024 UTF-8 bytes after the same control/bidi rejection. |
 
-The top-level map therefore has exactly six pairs without a note or seven with
+The top-level map therefore has exactly seven pairs without a note or eight with
 one. It has no author/member/attribution field. The existing space signer
 creates an ordinary authorised Willow entry; its verified outer entry subspace
 and signer are the sole sharing attribution.
@@ -800,9 +986,41 @@ Each share ID is immutable in the MVP; the revision component prevents prefix
 collision with other shares and no edit/delete UI exists. The closed importer
 adds this path family explicitly and projects valid live entries into carrier
 cards keyed by full `(space namespace, entry_id)`. The projection derives the
-member profile from the entry signer, treats labels/note as inert native text,
+member profile from the entry signer, treats title/labels/note as inert native text,
 and checks current space authority on display/request. It never grants authority
 to or modifies embedded sites.
+
+A Newswire attachment extends the pending `NewsPostV1` contract with union member
+`PublicAttachmentRefV1 { media_type:
+"application/vnd.riot.sneakerweb-carrier+cbor", carrier_entry_id }`. The full
+entry ID must resolve to a valid carrier in the same public community; clients
+never follow a cross-space attachment reference. The NewsPost and carrier outer
+entries must have the same verified signer.
+
+An app-hosted directory reference is a closed JSON value at
+`collections/<32-lowercase-hex-listing-id>` inside the trusted app's ordinary
+space-scoped data prefix:
+
+```json
+{
+  "schema": "org.riot.sneaker-directory-listing/1",
+  "listing_id": "<16 random bytes as 32 lowercase hex>",
+  "carrier_entry_id": "<complete canonical carrier entry ID>",
+  "title": "<exact carrier title>",
+  "note": "<exact carrier note or empty>",
+  "created_at_micros": 0
+}
+```
+
+The host validates exact keys/types, the key/value listing-ID match, safe text,
+publisher timestamp bounds, same-space carrier resolution, exact title/note
+match, listing-entry/carrier signer equality, current app trust, and declared
+capability before returning a native
+card. The outer app-data entry signer supplies sharing attribution; the JSON has
+no member/profile field. Categories, reactions, or discussion are separate
+app-owned records keyed by listing ID and cannot retarget the carrier. Unknown
+or malformed listings remain inert app data and never reach the attachment
+resolver.
 
 The `.snk` bytes live in `PortableBlobStore`, deduplicated by SHA-256. Space
 entry reconciliation carries only the small record. Devices never advertise a
@@ -874,6 +1092,14 @@ and a site that attempts to probe other sites, Riot data, the LAN, or internet.
   `shared by` labels prevent trust/provenance conflation.
 - Space carrier records are accepted only through ordinary verified space
   entry rules; blob digest, length, and domain set are rechecked after transfer.
+- Newswire and app references resolve only same-space carriers with the same
+  verified signer. App references additionally require current app trust, the
+  exact declared capability, active app/space binding, a genuine user gesture,
+  and a short-lived opaque handle; revocation makes synced listing data inert.
+- The social-app bridge exposes bounded safe card metadata and native
+  picker/open gestures only. It cannot enumerate the global library, resolve
+  arbitrary carrier IDs, read resources, receive raw site IDs/digests/bytes, or
+  cause a download without the native Get collection action.
 - Block state has a monotonic generation checked at commit, query, every
   ResourceLease read, render, export finish/publication, carrier creation, and
   every nearby chunk; generation change revokes active work.
@@ -883,8 +1109,9 @@ and a site that attempts to probe other sites, Riot data, the LAN, or internet.
   public carrier/SpaceSession or one-shot bilateral direct-share capability.
 - Carrier attribution comes only from the verified outer Willow entry signer;
   payload labels/notes are bounded inert, bidi-isolated native text.
-- CAS staging, quota reservation, fsync/rename ordering, backup exclusion, and
-  startup reconciliation bound crash leftovers and filesystem races.
+- CAS staging, quota reservation, atomic no-replace installation, fsync
+  ordering, backup exclusion, and startup reconciliation bound crash leftovers
+  and filesystem races.
 - Logs contain route, lengths, stable error codes, and full IDs only in an
   explicit user-exported diagnostic; ordinary logs use internal correlation
   IDs and never payload text.
@@ -964,7 +1191,9 @@ Implementation follows small RED-GREEN-REFACTOR slices:
    tests; then streaming export with exact canonical-component preservation and
    cleanup.
 4. **FFI contracts:** failing lifecycle, pagination, cancellation, full-ID,
-   stale-handle, and panic-containment tests; then opaque tasks and typed DTOs.
+   stale-handle, send-versus-receive terminal result, per-space idempotency,
+   concurrent cancellation/progress, and panic-containment tests; then opaque
+   tasks and typed DTOs.
 5. **Renderer:** failing iOS and Android tests for canonical paths, MIME/CSP,
    absent home pages, external requests, forms, popups, permissions, service
    workers, cross-site reads, process failure, and absence of every Riot bridge;
@@ -972,26 +1201,32 @@ Implementation follows small RED-GREEN-REFACTOR slices:
 6. **Library UX:** failing UI/accessibility tests for zero-ceremony opening,
    Sites/Received deduplication, hidden-by-default identifiers, complete Details,
    loading, empty, block, missing-link, and failure states; then native views.
-7. **Sharing:** failing exact selection, temporary-file cleanup, carrier schema,
-   blob deduplication, unavailable-holder, chunk corruption, resume, cancel,
-   garbage-collection lease, and multi-peer handoff tests; then each route.
+7. **Sharing:** failing exact selection, required title, temporary-file cleanup,
+   carrier/Newswire/app-listing schemas, same-space/signer checks, trusted-app
+   capability, opaque host gestures, cross-app isolation, multi-community
+   partial success and duplicate-free retry, atomic same-space destinations,
+   no-replace same-digest contention, unavailable-holder, chunk corruption,
+   separate send/receive completion, resume, cancel, garbage-collection lease,
+   and multi-peer handoff tests; then each route.
 8. **End to end:** official CLI -> Riot -> selected export -> official CLI;
-   iOS -> Android and Android -> iOS document handoff; two-space carrier-card
-   isolation; process-death recovery; offline rendering; physical Files,
-   share-sheet, local TCP, and BLE rehearsal.
+   iOS -> Android and Android -> iOS document handoff; Newswire and Sneaker
+   Directory sharing across two communities; explicit recipient download;
+   cross-app/cross-space isolation; process-death recovery; offline rendering;
+   physical Files, share-sheet, local TCP, and BLE rehearsal.
 
 Test helpers include a pinned official `.snk`, deterministic domain authors,
 malformed/truncated/mutated corpus generators, a temporary SQLite database,
 fault-injecting staged storage, a fake clock and storage quota, an in-memory
 portable-blob peer, loopback HTTP requests, native WebView test pages, and a
 CLI harness. Fuzz/property tests cover Drop decoding, URL/path conversion,
-bounded native HTML title extraction, carrier CBOR, selection isolation,
-arbitrary merge order, pathological
+bounded native HTML title extraction, carrier CBOR, app listing/reference
+validation, selection isolation, arbitrary merge order, pathological
 capability depth, integer boundaries, block/read/export races, chunk resume,
 cross-space inventory leakage, absolute-form HTTP, malformed Host/cookies,
 synthetic external navigation, and port teardown/rebind. Deterministic barriers
 control finish/cancel/block/database-close races; fault injection covers every
-CAS fsync/rename/transaction crash point. No fixture contains a production or
+CAS fsync/no-replace-install/transaction crash point, including two contenders
+for one digest. No fixture contains a production or
 reusable private key.
 
 Blocking verification before completion:
@@ -1011,8 +1246,10 @@ xcodebuild test -project apps/ios/Riot.xcodeproj -scheme RiotKit \
 xcodebuild test -project apps/ios/Riot.xcodeproj -scheme Riot \
   -destination 'platform=iOS Simulator,name=iPhone 17 Pro,OS=26.2,arch=arm64' \
   -enableCodeCoverage YES -resultBundlePath build/snk-riot.xcresult
-scripts/verify-xcresult-tests.sh build/snk-riotkit.xcresult --require-tests
-scripts/verify-xcresult-tests.sh build/snk-riot.xcresult --require-tests
+scripts/verify-xcresult-tests.sh build/snk-riotkit.xcresult --require-tests \
+  --require-suite SneakerWebCoreTests --require-suite SneakerShareTaskTests
+scripts/verify-xcresult-tests.sh build/snk-riot.xcresult --require-tests \
+  --require-suite SneakerDocumentUITests --require-suite SneakerDirectoryPermissionUITests
 (cd apps/android && ../../scripts/android-sneakerweb-test-gate.sh)
 scripts/sneakerweb-interop.sh --offline --version 1.0.1
 scripts/sneakerweb-physical-rehearsal.sh --require-recorded-results
@@ -1029,10 +1266,11 @@ and connected-test result directories, records the run start time, executes
 `testDebugUnitTest connectedDebugAndroidTest lintDebug`, parses only fresh unit
 JUnit XML and connected-test result artifacts, requires positive executed-test
 counts in both categories, requires unit suites
-`SneakerLibraryViewModelTest` and `SneakerShareCoordinatorTest`, requires
+`SneakerLibraryViewModelTest`, `SneakerShareCoordinatorTest`, and
+`SneakerDirectoryPermissionTest`, requires
 connected suites `SneakerDocumentOpenTest` and
-`SneakerWebViewIsolationTest`, and fails on missing, stale, skipped-only, or
-malformed results.
+`SneakerWebViewIsolationTest` plus `SneakerCommunityShareTest`, and fails on
+missing, stale, skipped-only, or malformed results.
 Zero executed native tests on either platform is a gate failure.
 
 ## Delivery slices and dependencies
@@ -1042,6 +1280,10 @@ Zero executed native tests on either platform is a gate failure.
    release gate. Release construction must instantiate `RiotDatabase`; the
    current replayed `profile.json`/in-memory production path must be absent.
    Until those executable conditions pass, SneakerWeb schema work is blocked.
+   The Newswire destination additionally waits for the approved
+   multi-community open-newswire record/attachment contract; the Directory
+   destination reuses the landed signed-app trust/runtime contract and cannot
+   bypass it.
 2. Update the product brief's preview-before-ingest rule with a link to this
    fixed-public-namespace, user-opened, reversible exception; update
    `.coverage-thresholds.json` to the executable combined coverage wrapper; and
@@ -1051,12 +1293,16 @@ Zero executed native tests on either platform is a gate failure.
 4. Add FFI and platform document/library/storage-management surfaces.
 5. Add the isolated renderer and adversarial native tests.
 6. Add standard file sharing and direct nearby transfer/multiplexer.
-7. Add portable blob transfer and signed public-space carrier cards.
-8. Run cross-client, coverage, performance, accessibility, platform, cohort,
+7. Add portable blob transfer, type-complete per-space share/direct-transfer
+   tasks, and signed public-space carrier cards.
+8. Add Newswire attachment integration, the `portable_public_collections`
+   capability/host, and the signed Sneaker Directory miniapp with
+   multi-community native orchestration.
+9. Run cross-client, coverage, performance, accessibility, platform, cohort,
    and physical-device gates.
 
 Slices 2-5 produce useful open/browse capability. Slice 6 completes person-to-
-person carrying. Slice 7 completes public-space sharing. No slice may claim `.snk`
+person carrying. Slices 7-8 complete public-community sharing. No slice may claim `.snk`
 support until both import and export pass the official CLI round trip.
 
 ## Definition of done
@@ -1069,7 +1315,12 @@ support until both import and export pass the official CLI round trip.
   non-mutation.
 - The isolated renderer passes every network/bridge/permission adversarial test.
 - Full provenance is inspectable and identifiers are never truncated.
-- System, nearby, and Riot-space sharing preserve original site authority.
+- System, nearby, Newswire, and Sneaker Directory sharing preserve original
+  site authority; multi-community retry is duplicate-free and reports each
+  destination independently.
+- The Directory remains an ordinary trusted social app, and adversarial app
+  code cannot enumerate the library, obtain site/blob bytes, or cross app/space
+  boundaries through the collection host.
 - Blocking persists and is enforced at every ingress/egress/read boundary.
 - iOS and Android persist the same collection semantics across relaunch.
 - The repository's full test, lint, formatting, platform, coverage, performance,
