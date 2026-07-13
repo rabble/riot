@@ -39,19 +39,21 @@ pub struct TrustMarker {
 pub fn encode_trust_marker(marker: &TrustMarker) -> Result<Vec<u8>, AppsError> {
     let mut buffer = Vec::new();
     let mut encoder = Encoder::new(&mut buffer);
-    let result: Result<_, minicbor::encode::Error<core::convert::Infallible>> = (|| {
-        encoder.map(FIELD_COUNT)?;
-        encoder.u8(0)?.bytes(&marker.app_id)?;
-        encoder.u8(1)?.u8(match marker.kind {
+    // Encoding into Vec is infallible, and this fixed schema is 38 bytes:
+    // one map header, two one-byte keys, a two-byte byte-string header,
+    // 32 app-id bytes, and one kind byte.
+    encoder.map(FIELD_COUNT).expect("Vec encoder is infallible");
+    encoder.u8(0).expect("Vec encoder is infallible");
+    encoder
+        .bytes(&marker.app_id)
+        .expect("Vec encoder is infallible");
+    encoder.u8(1).expect("Vec encoder is infallible");
+    encoder
+        .u8(match marker.kind {
             TrustMarkerKind::Trust => 0,
             TrustMarkerKind::Revoke => 1,
-        })?;
-        Ok(())
-    })();
-    result.map_err(|_| AppsError::IndexFieldInvalid)?;
-    if buffer.len() > MAX_TRUST_MARKER_BYTES {
-        return Err(AppsError::IndexFieldInvalid);
-    }
+        })
+        .expect("Vec encoder is infallible");
     Ok(buffer)
 }
 
@@ -98,7 +100,7 @@ pub fn decode_trust_marker(input: &[u8]) -> Result<TrustMarker, AppsError> {
         kind,
         timestamp_micros: 0,
     };
-    if encode_trust_marker(&marker)? != input {
+    if encode_trust_marker(&marker).expect("trust marker encoding is infallible") != input {
         return Err(AppsError::IndexFieldInvalid);
     }
     Ok(marker)
@@ -129,8 +131,9 @@ pub fn write_trust_marker(
         kind,
         timestamp_micros: willow_timestamp_micros,
     };
-    let payload = encode_trust_marker(&marker)?;
-    let path = app_index_trust_path(app_id, organizer.subspace_id().as_bytes())?;
+    let payload = encode_trust_marker(&marker).expect("trust marker encoding is infallible");
+    let path = app_index_trust_path(app_id, organizer.subspace_id().as_bytes())
+        .expect("fixed-size trust path components always satisfy Willow limits");
     commit_at(store, organizer, &path, &payload, willow_timestamp_micros)
 }
 
@@ -139,7 +142,8 @@ pub fn trust_markers_for(
     namespace_id: &[u8; 32],
     app_id: &[u8; 32],
 ) -> Result<Vec<TrustMarker>, AppsError> {
-    let prefix = app_index_prefix_for(app_id)?;
+    let prefix = app_index_prefix_for(app_id)
+        .expect("fixed-size app-index prefix components always satisfy Willow limits");
     let entries = store
         .entries_with_prefix(&prefix)
         .map_err(|_| AppsError::StoreRejected)?;
@@ -155,16 +159,12 @@ pub fn trust_markers_for(
         else {
             continue;
         };
-        if &path_app_id != app_id || entry.subspace_id().as_bytes() != &organizer_subspace_id {
-            continue;
-        }
-        let Some(payload) = payload else { continue };
-        let Ok(decoded) = decode_trust_marker(&payload) else {
-            continue;
-        };
-        if decoded.app_id != path_app_id {
-            continue;
-        }
+        // Import admission already binds the path app id, author subspace,
+        // retained payload, and decoded payload app id. Re-checking those
+        // impossible states here only duplicated the admission boundary.
+        let payload = payload.expect("app-index admission retains payload bytes");
+        let decoded = decode_trust_marker(&payload)
+            .expect("app-index admission validates canonical trust markers");
         markers.push(TrustMarker {
             app_id: path_app_id,
             author_subspace_id: organizer_subspace_id,

@@ -12,7 +12,8 @@ use willow25::entry::EntrylikeExt;
 use willow25::groupings::Keylike;
 
 use crate::import::bundle::encode_bundle;
-use crate::session::{CommitOutcome, EvidenceStore, ImportContext, InspectOutcome, SessionError};
+use crate::import::join::PrefixedEntry;
+use crate::session::{commit_at, EvidenceStore, SessionError};
 use crate::willow::entry::SignedWillowEntry;
 use crate::willow::identity::EvidenceAuthor;
 use crate::willow::{authorise_entry, encode_capability, encode_entry, Entry};
@@ -49,7 +50,8 @@ impl AppDataBridge {
         value: &[u8],
     ) -> Result<Vec<u8>, AppsError> {
         let entry = build_app_data_entry(author, app_id, key, willow_timestamp_micros, value)?;
-        let authorised = authorise_entry(author, entry)?;
+        let authorised = authorise_entry(author, entry)
+            .expect("app-data entries are built in the signing author's subspace");
         let token = authorised.authorisation_token();
         let signature: Signature = token.signature().clone().into();
         let signed = SignedWillowEntry {
@@ -58,20 +60,18 @@ impl AppDataBridge {
             signature: signature.to_bytes(),
             payload_bytes: value.to_vec(),
         };
-        let bundle_bytes =
-            encode_bundle(std::slice::from_ref(&signed)).map_err(|_| AppsError::StoreRejected)?;
-
-        let preview = match store
-            .inspect(&bundle_bytes, ImportContext::new("app-write"))
-            .map_err(session_err)?
-        {
-            InspectOutcome::Preview(p) => p,
-            InspectOutcome::Rejected(_) => return Err(AppsError::StoreRejected),
-        };
-        let plan = preview.plan_all().map_err(session_err)?;
-        match plan.commit().map_err(session_err)? {
-            CommitOutcome::Committed(_) | CommitOutcome::NoChanges(_) => Ok(bundle_bytes),
-        }
+        encode_bundle(std::slice::from_ref(&signed))
+            .map_err(|_| AppsError::StoreRejected)
+            .and_then(|bundle_bytes| {
+                commit_at(
+                    store,
+                    author,
+                    authorised.entry().path(),
+                    value,
+                    willow_timestamp_micros,
+                )
+                .map(|()| bundle_bytes)
+            })
     }
 
     pub fn get(
@@ -100,47 +100,55 @@ impl AppDataBridge {
     ) -> Result<Vec<(String, Vec<u8>)>, AppsError> {
         let path = app_data_path(app_id, prefix)?;
         let matches = store.entries_with_prefix(&path).map_err(session_err)?;
-        // One winner per key across subspaces, same recency order as `get`.
-        let mut winners: Vec<(String, Entry, Vec<u8>)> = Vec::new();
-        for (_, entry, payload) in matches {
-            // Entries under an app prefix always retain their payload; a
-            // `None` here would mean a non-app entry somehow matched, which
-            // the admission shape check makes impossible — skip defensively
-            // rather than panic.
-            let Some(payload) = payload else { continue };
-            let key = relative_key(&entry)?;
-            match winners.iter_mut().find(|(existing, _, _)| *existing == key) {
-                Some((_, best, best_payload)) => {
-                    if entry.cmp_recency(best) == std::cmp::Ordering::Greater {
-                        *best = entry;
-                        *best_payload = payload;
-                    }
-                }
-                None => winners.push((key, entry, payload)),
-            }
-        }
-        let mut items: Vec<(String, Vec<u8>)> = winners
-            .into_iter()
-            .map(|(key, _, payload)| (key, payload))
-            .collect();
-        items.sort_unstable_by(|left, right| left.0.cmp(&right.0));
-        Ok(items)
+        collect_list_items(matches)
     }
+}
+
+fn collect_list_items(matches: Vec<PrefixedEntry>) -> Result<Vec<(String, Vec<u8>)>, AppsError> {
+    // One winner per key across subspaces, same recency order as `get`.
+    matches
+        .into_iter()
+        .filter_map(|(_, entry, payload)| payload.map(|payload| (entry, payload)))
+        .try_fold(
+            Vec::<(String, Entry, Vec<u8>)>::new(),
+            |mut winners, (entry, payload)| {
+                relative_key(&entry).map(|key| {
+                    match winners.iter_mut().find(|(existing, _, _)| *existing == key) {
+                        Some((_, best, best_payload)) => {
+                            if entry.cmp_recency(best) == std::cmp::Ordering::Greater {
+                                *best = entry;
+                                *best_payload = payload;
+                            }
+                        }
+                        None => winners.push((key, entry, payload)),
+                    }
+                    winners
+                })
+            },
+        )
+        .map(|winners| {
+            let mut items: Vec<(String, Vec<u8>)> = winners
+                .into_iter()
+                .map(|(key, _, payload)| (key, payload))
+                .collect();
+            items.sort_unstable_by(|left, right| left.0.cmp(&right.0));
+            items
+        })
 }
 
 /// The `items/abc` part of `apps/<app_id>/items/abc`. Admission guarantees
 /// app-data key segments are ASCII, so UTF-8 conversion cannot fail on a
 /// well-formed entry; a malformed one maps to `PathInvalid`.
 fn relative_key(entry: &Entry) -> Result<String, AppsError> {
-    let segments: Result<Vec<&str>, AppsError> = entry
+    entry
         .path()
         .components()
         .skip(2)
         .map(|component| {
             std::str::from_utf8(component.as_ref()).map_err(|_| AppsError::PathInvalid)
         })
-        .collect();
-    Ok(segments?.join("/"))
+        .collect::<Result<Vec<_>, _>>()
+        .map(|segments| segments.join("/"))
 }
 
 fn session_err(_: SessionError) -> AppsError {

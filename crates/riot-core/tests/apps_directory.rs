@@ -72,6 +72,19 @@ fn built_in_provenance_wins_over_carried_for_same_app_id() {
 }
 
 #[test]
+fn existing_built_in_provenance_ignores_later_duplicates() {
+    let m = manifest("Checklist", 1, "1.0.0");
+    let mut built_in = indexed([7u8; 32], m.clone(), [0u8; 32], 0);
+    built_in.provenance = AppProvenance::BuiltIn;
+    let mut inputs = empty_inputs();
+    inputs.apps = vec![built_in, indexed([7u8; 32], m, [3u8; 32], 20)];
+
+    let listings = assemble_directory(&inputs);
+    assert_eq!(listings.len(), 1);
+    assert_eq!(listings[0].provenance, AppProvenance::BuiltIn);
+}
+
+#[test]
 fn same_name_different_author_never_merges() {
     let mut inputs = empty_inputs();
     inputs.apps = vec![
@@ -111,6 +124,27 @@ fn newer_manifest_from_same_author_and_name_supersedes_older() {
         .expect("new");
     assert_eq!(old.superseded_by, Some([2u8; 32]));
     assert_eq!(new.superseded_by, None);
+}
+
+#[test]
+fn older_manifest_seen_later_does_not_replace_the_newest_version() {
+    let mut inputs = empty_inputs();
+    inputs.apps = vec![
+        indexed([1u8; 32], manifest("Checklist", 1, "2.0.0"), [9u8; 32], 20),
+        indexed([2u8; 32], manifest("Checklist", 1, "1.0.0"), [9u8; 32], 10),
+    ];
+
+    let listings = assemble_directory(&inputs);
+    let newest = listings
+        .iter()
+        .find(|listing| listing.app_id == [1u8; 32])
+        .expect("newest");
+    let older = listings
+        .iter()
+        .find(|listing| listing.app_id == [2u8; 32])
+        .expect("older");
+    assert_eq!(newest.superseded_by, None);
+    assert_eq!(older.superseded_by, Some([1u8; 32]));
 }
 
 #[test]

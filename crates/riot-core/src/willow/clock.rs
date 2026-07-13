@@ -26,14 +26,12 @@ pub(crate) fn snapshot_from_unix_seconds_internal(
     unix_seconds: i64,
     uncertainty_seconds: u32,
 ) -> Result<ClockSnapshot, WillowError> {
-    if unix_seconds < 0 {
-        return Err(WillowError::ClockUnavailable);
-    }
+    let unix_seconds = u64::try_from(unix_seconds).map_err(|_| WillowError::ClockUnavailable)?;
     let epoch = hifitime::Epoch::from_unix_seconds(unix_seconds as f64);
     let timestamp =
         willow25::entry::Timestamp::try_from(epoch).map_err(|_| WillowError::ClockUnavailable)?;
     Ok(ClockSnapshot {
-        unix_seconds: unix_seconds as u64,
+        unix_seconds,
         tai_j2000_micros: u64::from(timestamp),
         uncertainty_seconds,
     })
@@ -41,11 +39,17 @@ pub(crate) fn snapshot_from_unix_seconds_internal(
 
 /// Production reading: one `SystemTime` read, conservative uncertainty.
 pub fn system_snapshot() -> Result<ClockSnapshot, WillowError> {
-    let unix = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_err(|_| WillowError::ClockUnavailable)?;
-    let seconds = i64::try_from(unix.as_secs()).map_err(|_| WillowError::ClockUnavailable)?;
-    snapshot_from_unix_seconds_internal(seconds, 60)
+    snapshot_from_unix_duration(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH))
+}
+
+fn snapshot_from_unix_duration(
+    unix: Result<std::time::Duration, std::time::SystemTimeError>,
+) -> Result<ClockSnapshot, WillowError> {
+    unix.map_err(|_| WillowError::ClockUnavailable)
+        .and_then(|duration| {
+            i64::try_from(duration.as_secs()).map_err(|_| WillowError::ClockUnavailable)
+        })
+        .and_then(|seconds| snapshot_from_unix_seconds_internal(seconds, 60))
 }
 
 // ---------------------------------------------------------------------------
@@ -75,5 +79,25 @@ pub struct SystemClock;
 impl ClockSource for SystemClock {
     fn snapshot(&self) -> Result<ClockSnapshot, WillowError> {
         system_snapshot()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{Duration, UNIX_EPOCH};
+
+    #[test]
+    fn system_time_adapter_rejects_pre_epoch_and_i64_overflow() {
+        assert_eq!(
+            snapshot_from_unix_duration(
+                (UNIX_EPOCH - Duration::from_secs(1)).duration_since(UNIX_EPOCH)
+            ),
+            Err(WillowError::ClockUnavailable)
+        );
+        assert_eq!(
+            snapshot_from_unix_duration(Ok(Duration::from_secs(u64::MAX))),
+            Err(WillowError::ClockUnavailable)
+        );
     }
 }
