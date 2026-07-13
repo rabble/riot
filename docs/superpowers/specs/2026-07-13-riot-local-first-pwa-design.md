@@ -851,20 +851,31 @@ A versioned manifest is split into a fixed header
 512 bytes, all descriptors total at most 1 MiB, each bundle is at most 8 MiB,
 and staged canonical bundle bytes total at most 16 MiB.
 
-On open, one read-only IndexedDB transaction first validates the fixed header,
-then uses `openKeyCursor` (keys only) to bound and compare descriptor/bundle key
-counts without materializing their values. It streams descriptors in ordinal
-order and rejects before staging when any count, descriptor, declared object, or
-aggregate ceiling would be exceeded. For each referenced key it fetches exactly
-one bundle stored as a `Blob`, checks `Blob.size` before `arrayBuffer()`, hashes
-and validates it, appends it to the at-most-16-MiB staging log, then releases the
-individual buffer before advancing. Missing, duplicate, out-of-order,
-non-`Blob`, or unexpected unreferenced objects are `REPLAY_FAILED`. Browser/IDB
-may deserialize a malicious non-Blob value before JavaScript can reject its type;
-the design makes no claim against same-origin/browser memory exhaustion before
-JS control, but application code never intentionally accumulates unbounded
-manifest or bundle values. Unsupported but internally consistent schema versions
-enter read-only recovery and preserve bounded raw records for recovery export.
+The header and every descriptor value are stored as canonical CBOR `Blob`s, not
+structured-clone object graphs. Store keys are fixed: literal `header`, unsigned
+ordinal integers, and 64-character lowercase SHA-256 hex respectively. On open,
+one read-only IndexedDB transaction calls `count()` on the header, descriptor,
+and bundle stores without enumerating untrusted keys. It requires exactly one
+header, fetches only literal `header`, requires a `Blob`, checks `Blob.size <= 4
+KiB` before `arrayBuffer()`, and parses the bounded canonical header. It then
+requires descriptor count to equal bounded `record_count`, fetches only expected
+ordinal keys `0..record_count-1`, and size-checks each descriptor Blob before
+decoding. After collecting bounded expected unique hashes, it requires the
+bundle-store count to equal that set size and fetches only those exact bounded
+hash keys. Thus an attacker-sized unexpected key is never enumerated or
+materialized: it can only cause a count/missing-expected-key rejection.
+
+For each referenced bundle, the host requires a `Blob`, checks `Blob.size`
+before `arrayBuffer()`, hashes and validates it, appends it to the
+at-most-16-MiB staging log, then releases the individual buffer before
+advancing. Missing, duplicate, out-of-order, non-`Blob`, oversized, unexpected,
+or noncanonical metadata/objects are `REPLAY_FAILED`. Browser/IDB may deserialize
+a malicious non-Blob value returned at an exact expected key before JavaScript
+can reject its type; the design makes no claim against same-origin/browser
+memory exhaustion before JS control, but application code never enumerates
+unknown keys or intentionally accumulates unbounded manifest/bundle values.
+Unsupported but internally consistent schema versions enter read-only recovery
+and preserve bounded raw records for recovery export.
 Duplicate bundle hashes retain the first local receipt and do not grow storage;
 that receipt is informational and never changes record trust or projection.
 
@@ -1160,10 +1171,11 @@ a community mutation.
 
 1. Load one coherent content-versioned application release from network or the
    matching service-worker cache.
-2. Acquire the exclusive writer lock, then cursor-validate the fixed manifest
-   header, descriptor keys/rows, bundle keys, and one `Blob` bundle at a time in
-   one read-only IndexedDB transaction. Reject count, per-record, manifest, or
-   aggregate ceiling violations before adding bytes to the bounded staging log.
+2. Acquire the exclusive writer lock, use store `count()` plus only the exact
+   fixed header/ordinal/hash keys to validate size-checkable metadata Blobs and
+   one bundle Blob at a time in one read-only IndexedDB transaction. Reject
+   count, per-record, manifest, or aggregate ceiling violations before adding
+   bytes to the bounded staging log; never enumerate unknown keys.
 3. Pass the protected identity, community, and complete `RestoreLogV1` to the
    controller's atomic `restore_community` transition. It permits an empty
    organizer log and otherwise replays every bundle with its fixed admission route
@@ -1409,9 +1421,12 @@ TDD work proceeds in independently green slices:
 6. **BrowserVault, BundleLog, writer lock, and transport port:** tests begin with missing
    implementations and cover first creation, reopen, authenticated-decryption
    failure, duplicate bundle/first receipt, manifest hash/size/order/total/version,
-   keys-only cursor counts, 4-KiB header/512-byte descriptor/1-MiB manifest-row
-   ceilings, non-Blob values, hostile oversized count/object/aggregate rejection
-   before staging, missing/extra/rollback-limitation copy, atomic transaction abort, 16 MiB
+   store `count()` plus exact fixed-key lookup without key enumeration, 4-KiB
+   header/512-byte descriptor/1-MiB manifest-row ceilings, non-Blob values,
+   hostile oversized/unexpected keys never materialized, hostile oversized
+   header/descriptor/bundle values rejected by Blob size before `arrayBuffer()`,
+   count/object/aggregate rejection before staging,
+   missing/extra/rollback-limitation copy, atomic transaction abort, 16 MiB
    boundary, storage clear, corrupt replay, unsupported schema, exclusive writer,
    second-tab/no-community read-only behavior, post transaction interruption
    including hard page termination immediately before/after
