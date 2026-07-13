@@ -1,0 +1,20 @@
+{
+  "name": "riot-web-tooling",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "npm@11.17.0",
+  "engines": {
+    "node": "26.4.0",
+    "npm": "11.17.0"
+  },
+  "scripts": {
+    "test:web:unit": "node --test scripts/web/test/*.test.mjs",
+    "test:web:coverage": "c8 --100 --all --include='scripts/web/**/*.mjs' node --test scripts/web/test/*.test.mjs"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.61.1",
+    "c8": "11.0.0",
+    "selenium-webdriver": "4.46.0"
+  }
+}
