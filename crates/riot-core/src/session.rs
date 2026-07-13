@@ -472,8 +472,8 @@ impl EvidenceStore {
     }
 
     /// Live entries whose path is prefixed by `prefix`, with their canonical
-    /// ids and retained payload bytes (`Some` for app-data and app-index
-    /// entries).
+    /// ids and retained payload bytes (`Some` for typed consumers that must
+    /// rebuild values from the exact imported payload).
     /// Same typed boundary as `live_entry_ids`; the returned `Entry` carries
     /// the payload digest/length, never signer or capability state.
     pub fn entries_with_prefix(
@@ -698,6 +698,13 @@ impl EvidenceStore {
                 let profile_subspace = crate::profile::path::classify_profile_path(
                     willow25::groupings::Keylike::path(authorised.entry()),
                 );
+                let path = willow25::groupings::Keylike::path(authorised.entry());
+                let valid_newswire = crate::newswire::is_newswire_prefix(path)
+                    && crate::newswire::inspect_verified_components(
+                        authorised.entry(),
+                        item.frame.payload_bytes(),
+                    )
+                    .is_ok();
                 let path_matches = if is_app_data {
                     true
                 } else if let Some(slot) = app_index_slot {
@@ -727,6 +734,8 @@ impl EvidenceStore {
                     // someone else's slot.
                     *willow25::groupings::Keylike::subspace_id(authorised.entry()).as_bytes()
                         == subspace_id
+                } else if crate::newswire::is_newswire_prefix(path) {
+                    valid_newswire
                 } else {
                     decode_alert(item.frame.payload_bytes())
                         .ok()
@@ -741,14 +750,13 @@ impl EvidenceStore {
                         .unwrap_or(false)
                 };
                 if path_matches {
-                    // App-data, app-index, and profile payloads are retained
-                    // with the live entry (see `Stored::payload`): apps read
-                    // their values back, the directory scan reads manifests/
-                    // bundles/endorsements/trust markers back, and the profile
-                    // resolver reads display names back. Alert payloads stay
-                    // digest-only.
-                    let retain_payload =
-                        is_app_data || app_index_slot.is_some() || profile_subspace.is_some();
+                    // Typed consumers retain payloads with the live entry (see
+                    // `Stored::payload`) so they can reconstruct values from
+                    // the exact imported bytes. Alert payloads stay digest-only.
+                    let retain_payload = is_app_data
+                        || app_index_slot.is_some()
+                        || profile_subspace.is_some()
+                        || valid_newswire;
                     verified.push(VerifiedEntry {
                         authorised,
                         entry_id: valid.entry_id,

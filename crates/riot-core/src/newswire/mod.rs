@@ -4,6 +4,7 @@ mod entry;
 mod model;
 mod path;
 mod projection;
+mod store;
 
 /// Stable Newswire construction and inspection failures. Dependency-specific
 /// codec and cryptography errors never cross this boundary.
@@ -37,6 +38,20 @@ impl std::fmt::Display for NewswireError {
 
 impl std::error::Error for NewswireError {}
 
+/// Whether a path belongs to the reserved Newswire v1 family. This is a
+/// prefix reservation, not a structural classifier: additional malformed
+/// components remain Newswire and must not fall through to another schema.
+pub fn is_newswire_prefix(path: &crate::willow::Path) -> bool {
+    let mut components = path.components();
+    components
+        .next()
+        .is_some_and(|component| component.as_ref() == b"newswire")
+        && components
+            .next()
+            .is_some_and(|component| component.as_ref() == b"v1")
+}
+
+pub(crate) use entry::inspect_verified_components;
 pub use entry::{
     create_signed_editorial_action, create_signed_news_post, create_signed_space_descriptor,
     inspect_news_record, NewswirePayload, SignedNewswireRecord, VerifiedNewswireRecord,
@@ -53,6 +68,7 @@ pub use projection::{
     project, NewswireProjection, NewswireProjectionError, PostTreatment, ProjectedEditorialAction,
     ProjectedPost, ProjectionClockV1, MAX_FUTURE_SKEW_MICROS, MAX_PROJECTED_RECORDS,
 };
+pub use store::{load_space_descriptor, load_space_records, project_space, NewswireStoreError};
 
 #[cfg(feature = "conformance")]
 pub use entry::{

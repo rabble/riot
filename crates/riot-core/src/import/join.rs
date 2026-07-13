@@ -51,11 +51,10 @@ struct Stored {
     entry: Entry,
     entry_bytes: Vec<u8>,
     id: EntryId,
-    /// Payload bytes retained for app-data and app-index entries — apps must
-    /// be able to read their values and directory records back, whereas alert
-    /// payloads are served from the FFI layer's own retained bundles. Charged
-    /// into `live_entry_bytes` (live-only, freed on prune), never into the
-    /// permanent seen-index charge.
+    /// Payload bytes retained for typed consumers that must rebuild values
+    /// from exact imported bytes. Alert payloads are served from the FFI
+    /// layer's own retained bundles. Charged into `live_entry_bytes`
+    /// (live-only, freed on prune), never into the permanent seen-index charge.
     payload: Option<Vec<u8>>,
 }
 
@@ -79,7 +78,7 @@ impl Stored {
 }
 
 /// A live entry matched by a path-prefix query: canonical id, the entry,
-/// and its retained payload bytes (`Some` for app-data and app-index entries).
+/// and its retained payload bytes (`Some` for typed payload consumers).
 pub type PrefixedEntry = (EntryId, Entry, Option<Vec<u8>>);
 
 /// The per-entry outcome of a batch join, keyed by canonical entry id.
@@ -148,7 +147,7 @@ impl JoinState {
 
     /// Live entries whose path is prefixed by `prefix`, with their retained
     /// payload bytes (`None` for entries whose payload is not retained,
-    /// currently alerts).
+    /// currently alerts and other digest-only consumers).
     pub fn live_entries_with_prefix(&self, prefix: &crate::willow::Path) -> Vec<PrefixedEntry> {
         self.live
             .iter()
@@ -181,7 +180,7 @@ pub fn plan_join(pre: &JoinState, batch: Vec<AuthorisedEntry>) -> Result<JoinPla
 }
 
 /// `plan_join`, but each batch item may carry payload bytes to retain with
-/// the live entry (used for app-data and app-index entries; see
+/// the live entry (used by typed consumers that reconstruct from payload; see
 /// `Stored::payload`).
 pub fn plan_join_with_payloads(
     pre: &JoinState,
