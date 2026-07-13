@@ -14,5 +14,6 @@ pub mod model;
 pub mod newswire;
 pub mod profile;
 pub mod session;
+pub mod store;
 pub mod sync;
 pub mod willow;

@@ -152,7 +152,18 @@ public final class LocalNetworkNearbyService: @unchecked Sendable {
     /// A connection we opened that is waiting on the far side's human.
     private var pendingOutbound: LocalTCPFrameChannel?
 
-    public init(nonce: UInt64 = UInt64.random(in: 0...UInt64.max)) {
+    /// The Bonjour type this instance advertises and browses on. Always
+    /// ``serviceType`` in the app; a test passes a unique one so the two peers it
+    /// starts meet each other and NOT the Riot instances that happen to be running
+    /// on the same machine or the same LAN. Without that, a test's peers discover
+    /// every Riot in the room and auto-connect to a stranger.
+    private let serviceType: String
+
+    public init(
+        nonce: UInt64 = UInt64.random(in: 0...UInt64.max),
+        serviceType: String = LocalNetworkNearbyService.serviceType
+    ) {
+        self.serviceType = serviceType
         identity = NearbyPeerIdentity(
             instanceID: UUID().uuidString,
             friendlyName: FriendlyNameGenerator.name(sessionNonce: nonce),
@@ -188,7 +199,7 @@ public final class LocalNetworkNearbyService: @unchecked Sendable {
             // distinct per instance so two on one machine do not collide.
             listener.service = NWListener.Service(
                 name: identity.instanceID,
-                type: Self.serviceType,
+                type: serviceType,
                 txtRecord: NWTXTRecord(identity.txtRecord)
             )
             listener.newConnectionHandler = { [weak self] connection in
@@ -205,7 +216,7 @@ public final class LocalNetworkNearbyService: @unchecked Sendable {
 
     private func startBrowsing() {
         let browser = NWBrowser(
-            for: .bonjourWithTXTRecord(type: Self.serviceType, domain: nil),
+            for: .bonjourWithTXTRecord(type: serviceType, domain: nil),
             using: parameters()
         )
         browser.browseResultsChangedHandler = { [weak self] results, _ in
@@ -243,6 +254,33 @@ public final class LocalNetworkNearbyService: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return discovered[phone.id] != nil
+    }
+
+    /// Which of two phones dials the other. EXACTLY ONE MAY.
+    ///
+    /// Both phones auto-connect the instant they see each other, so without a rule
+    /// both dial, and each ends up holding TWO sockets to the same peer: the one it
+    /// opened and the one the peer opened. Each then binds its session to whichever
+    /// pairing completed first — and nothing makes the two phones choose the SAME
+    /// socket. When they choose opposite ones, each announces its space into a
+    /// socket the other has abandoned, the announce sits unread in a dead channel's
+    /// inbox, no decision is ever reached, and the space handshake dies. A fresh
+    /// phone never adopts the organizer's space.
+    ///
+    /// This is the tie-break the Bluetooth-to-TCP upgrade already uses, and it is
+    /// symmetric: of any two peers, exactly one sees `.attempt`. The other waits,
+    /// and the dial that is already on its way is auto-accepted.
+    public func shouldDial(_ phone: DiscoveredPhone) -> Bool {
+        lock.lock()
+        let peer = discovered[phone.id]?.identity
+        lock.unlock()
+        guard let peer else { return false }
+        return LocalNetworkRole.select(
+            localName: identity.friendlyName,
+            localToken: identity.tieBreaker,
+            remoteName: peer.friendlyName,
+            remoteToken: peer.tieBreaker
+        ) == .attempt
     }
 
     // MARK: - Pairing (outbound)

@@ -17,7 +17,7 @@ public enum RiotDestination: String, CaseIterable, Identifiable, Sendable {
         case .spaces: "Spaces"
         case .directory: "App directory"
         case .board: "Incident board"
-        case .compose: "Compose & sign"
+        case .compose: "Post an update"
         case .connection: "Connection"
         }
     }
@@ -27,7 +27,7 @@ public enum RiotDestination: String, CaseIterable, Identifiable, Sendable {
         case .spaces: "Spaces"
         case .directory: "Apps"
         case .board: "Board"
-        case .compose: "Compose"
+        case .compose: "Post"
         case .connection: "Connect"
         }
     }

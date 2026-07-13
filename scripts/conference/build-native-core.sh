@@ -15,6 +15,7 @@ NDK_HOST=darwin-x86_64
 TOOLCHAIN="$NDK_ROOT/toolchains/llvm/prebuilt/$NDK_HOST/bin"
 AARCH64_CLANG="$TOOLCHAIN/aarch64-linux-android${API_LEVEL}-clang"
 X86_64_CLANG="$TOOLCHAIN/x86_64-linux-android${API_LEVEL}-clang"
+LLVM_AR="$TOOLCHAIN/llvm-ar"
 
 test -x "$AARCH64_CLANG" || {
     echo "native-core-package: Android NDK clang absent at $AARCH64_CLANG" >&2
@@ -22,6 +23,10 @@ test -x "$AARCH64_CLANG" || {
 }
 test -x "$X86_64_CLANG" || {
     echo "native-core-package: Android NDK clang absent at $X86_64_CLANG" >&2
+    exit 1
+}
+test -x "$LLVM_AR" || {
+    echo "native-core-package: Android NDK archiver absent at $LLVM_AR" >&2
     exit 1
 }
 
@@ -40,9 +45,11 @@ cargo build -p riot-ffi --lib --release --locked --target aarch64-apple-darwin
 
 CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$AARCH64_CLANG" \
     CC_aarch64_linux_android="$AARCH64_CLANG" \
+    AR_aarch64_linux_android="$LLVM_AR" \
     cargo build -p riot-ffi --lib --release --locked --target aarch64-linux-android
 CARGO_TARGET_X86_64_LINUX_ANDROID_LINKER="$X86_64_CLANG" \
     CC_x86_64_linux_android="$X86_64_CLANG" \
+    AR_x86_64_linux_android="$LLVM_AR" \
     cargo build -p riot-ffi --lib --release --locked --target x86_64-linux-android
 
 rm -rf "$ROOT/build/native"
