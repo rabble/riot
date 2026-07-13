@@ -88,6 +88,23 @@ impl VerifiedNewswireRecord {
     pub fn payload(&self) -> &NewswirePayload {
         &self.payload
     }
+
+    #[cfg(test)]
+    pub(crate) fn new_for_projection_tests(
+        entry_id: EntryId,
+        namespace_id: [u8; 32],
+        signer_id: [u8; 32],
+        tai_j2000_micros: u64,
+        payload: NewswirePayload,
+    ) -> Self {
+        Self {
+            entry_id,
+            namespace_id,
+            signer_id,
+            tai_j2000_micros,
+            payload,
+        }
+    }
 }
 
 fn encode_payload(payload: &NewswirePayload) -> Result<Vec<u8>, NewswireError> {

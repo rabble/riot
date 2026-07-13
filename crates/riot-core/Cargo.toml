@@ -53,6 +53,10 @@ name = "newswire_entry"
 required-features = ["conformance"]
 
 [[test]]
+name = "newswire_projection"
+required-features = ["conformance"]
+
+[[test]]
 name = "core_import_join"
 required-features = ["conformance"]
 

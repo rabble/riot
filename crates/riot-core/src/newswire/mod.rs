@@ -3,6 +3,7 @@
 mod entry;
 mod model;
 mod path;
+mod projection;
 
 /// Stable Newswire construction and inspection failures. Dependency-specific
 /// codec and cryptography errors never cross this boundary.
@@ -48,6 +49,10 @@ pub use model::{
     SPACE_SCHEMA,
 };
 pub use path::{classify_newswire_path, newswire_path, NewswirePathKind};
+pub use projection::{
+    project, NewswireProjection, NewswireProjectionError, PostTreatment, ProjectedEditorialAction,
+    ProjectedPost, ProjectionClockV1, MAX_FUTURE_SKEW_MICROS, MAX_PROJECTED_RECORDS,
+};
 
 #[cfg(feature = "conformance")]
 pub use entry::{
