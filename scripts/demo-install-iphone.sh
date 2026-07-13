@@ -7,8 +7,11 @@
 # charge-only cable: unlock it, tap Trust, and try a data cable.
 set -eu
 
-ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$ROOT"
+
+# shellcheck source=scripts/lib/demo-device-list.sh
+. "$ROOT/scripts/lib/demo-device-list.sh"
 
 DD="$ROOT/build/ios-device-derived"
 
@@ -28,13 +31,11 @@ APP="$DD/Build/Products/Debug-iphoneos/Riot.app"
 [ -d "$APP" ] || { echo "no app at $APP" >&2; exit 1; }
 echo "    signed: $(codesign -dv "$APP" 2>&1 | grep -o 'TeamIdentifier=.*' || echo 'unsigned')"
 
-# Every device that is actually reachable right now.
-#
-# Match the STATE COLUMN exactly. A substring match is a trap: "unavailable"
-# contains "available", so a naive grep happily tries to install to a phone
-# that macOS cannot even see, and fails with an opaque CoreDevice error.
-DEVICES=$(xcrun devicectl list devices 2>/dev/null \
-    | awk '/iPhone|iPad/ && ($(NF-1) == "available" || $(NF-1) == "connected") {print $(NF-2)}')
+# Every physical iPhone/iPad that is actually reachable right now. devicectl's
+# human-readable table has variable-width name, state, and model columns, so it
+# must not be parsed by whitespace. Its JSON file is the supported scripting
+# interface; devicectl also applies the availability filter before writing it.
+DEVICES=$(list_reachable_ios_device_ids)
 
 if [ -z "$DEVICES" ]; then
     echo ""
