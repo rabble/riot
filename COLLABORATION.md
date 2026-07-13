@@ -1613,7 +1613,7 @@ currently blocked because the physical phone is locked
 iPhone build, Mac demo build, and Android unit tests. This is not BLE proof:
 only one physical iPhone is connected, and the app has not launched on it.
 
-## ACTIVE: friend-release posting language (2026-07-13, Codex root)
+## DONE: friend-release posting language (2026-07-13, Codex root)
 
 Implementing the already-approved posting contract from
 `docs/superpowers/specs/2026-07-13-community-first-navigation-design.md` as one
@@ -1625,3 +1625,10 @@ Claiming only `apps/ios/Riot/AppModel.swift`,
 `apps/ios/RiotUITests/RiotTabNavigationUITests.swift`. These paths are clean and
 released in all earlier claims. No new Swift file, Xcode project, transport,
 Rust, fixture, storage, or app-runtime edit is in scope.
+
+Proved on an iPhone 17 Pro iOS 26.2 simulator: all five tabs become selected;
+the posting screen exposes **Review before posting** and **Post update**; model
+assistance starts off. The focused shell-navigation unit test and focused tab
+UI test pass. `sh scripts/green.sh fast` is GREEN for the iPhone app, macOS demo
+rig, and Android unit tests. No physical-phone or radio behavior was exercised
+by this slice.

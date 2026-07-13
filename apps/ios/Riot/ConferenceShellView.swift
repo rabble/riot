@@ -440,6 +440,7 @@ private struct ComposeReviewSignView: View {
                             .textCase(.uppercase)
                             .tracking(1)
                             .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
+                            .accessibilityIdentifier("post-review")
                         Text("Posting shares this update with \(model.space?.title ?? "this community"). Review it first; only you can post it.")
                             .font(.riot(.body, size: 15, relativeTo: .callout))
                             .foregroundStyle(RiotTheme.ink(for: colorScheme))
@@ -447,6 +448,7 @@ private struct ComposeReviewSignView: View {
                             model.sign(headline: headline, description: details, aiAssisted: aiAssisted)
                         }
                         .buttonStyle(.riotPrimary)
+                        .accessibilityIdentifier("post-update")
                         .disabled(model.space == nil || headline.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     }
                 }
