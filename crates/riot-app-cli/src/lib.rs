@@ -23,13 +23,15 @@ use riot_core::apps::manifest::{
     MAX_APP_ENTRY_POINT_BYTES, MAX_APP_NAME_BYTES, MAX_APP_PERMISSIONS, MAX_APP_PERMISSION_BYTES,
     MAX_APP_VERSION_BYTES, MAX_MANIFEST_BYTES,
 };
+use riot_core::apps::AppsError;
 use riot_core::import::{
-    decode_bundle, encode_bundle, BundleDecodeOutcome, ItemStatus, MAX_BUNDLE_BYTES,
+    decode_bundle, encode_bundle, BundleDecodeOutcome, BundleEncodeError, ItemStatus,
+    MAX_BUNDLE_BYTES,
 };
-use riot_core::session::{ImportContext, InspectOutcome, RiotSession};
+use riot_core::session::{ImportContext, ImportPreview, InspectOutcome, RiotSession};
 use riot_core::willow::{
     authorise_entry, encode_capability, encode_entry, generate_communal_author, AuthorIdentity,
-    Entry, EvidenceAuthor, Path as WillowPath, SignedWillowEntry,
+    Entry, EvidenceAuthor, Path as WillowPath, SignedWillowEntry, WillowError,
 };
 use serde::de::{self, DeserializeSeed, Deserializer, MapAccess, SeqAccess, Visitor};
 use willow25::groupings::{Coordinatelike, Keylike, Namespaced};
@@ -179,7 +181,7 @@ pub struct InspectReport {
     pub resources: Vec<String>,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug)]
 pub enum InspectError {
     InvalidImportBundle { reason: &'static str },
     IncoherentPair { reason: &'static str },
@@ -273,18 +275,237 @@ struct ManifestInput {
 
 struct PinnedDir(File);
 
+trait PlatformFs {
+    fn open_path(&self, path: &Path) -> io::Result<PinnedDir>;
+    fn open_child(
+        &self,
+        directory: &PinnedDir,
+        name: &OsStr,
+        flags: libc::c_int,
+    ) -> io::Result<File>;
+    fn create_child(
+        &self,
+        directory: &PinnedDir,
+        name: &OsStr,
+        flags: libc::c_int,
+        mode: libc::mode_t,
+    ) -> io::Result<File>;
+    fn read_dir(&self, directory: &PinnedDir, total: &mut usize) -> io::Result<Vec<OsString>>;
+    fn metadata(&self, file: &File) -> io::Result<std::fs::Metadata>;
+    fn read_to_end(&self, file: &mut File, limit: u64, bytes: &mut Vec<u8>) -> io::Result<usize>;
+    fn write_all(&self, file: &mut File, bytes: &[u8]) -> io::Result<()>;
+    fn fsync(&self, file: &File) -> io::Result<()>;
+    fn mkdir(&self, directory: &PinnedDir, name: &OsStr, mode: libc::mode_t) -> io::Result<()>;
+    fn rename(
+        &self,
+        from_dir: &PinnedDir,
+        from: &OsStr,
+        to_dir: &PinnedDir,
+        to: &OsStr,
+    ) -> io::Result<()>;
+    fn unlink(&self, directory: &PinnedDir, name: &OsStr, flags: libc::c_int) -> io::Result<()>;
+}
+
+struct UnixPlatformFs;
+
+impl PlatformFs for UnixPlatformFs {
+    fn open_path(&self, path: &Path) -> io::Result<PinnedDir> {
+        PinnedDir::open_path(path)
+    }
+
+    fn open_child(
+        &self,
+        directory: &PinnedDir,
+        name: &OsStr,
+        flags: libc::c_int,
+    ) -> io::Result<File> {
+        openat_file(directory.0.as_raw_fd(), name, flags)
+    }
+
+    fn create_child(
+        &self,
+        directory: &PinnedDir,
+        name: &OsStr,
+        flags: libc::c_int,
+        mode: libc::mode_t,
+    ) -> io::Result<File> {
+        createat_file(directory.0.as_raw_fd(), name, flags, mode)
+    }
+
+    fn read_dir(&self, directory: &PinnedDir, total: &mut usize) -> io::Result<Vec<OsString>> {
+        directory.names(total)
+    }
+
+    fn metadata(&self, file: &File) -> io::Result<std::fs::Metadata> {
+        file.metadata()
+    }
+
+    fn read_to_end(&self, file: &mut File, limit: u64, bytes: &mut Vec<u8>) -> io::Result<usize> {
+        Read::by_ref(file).take(limit).read_to_end(bytes)
+    }
+
+    fn write_all(&self, file: &mut File, bytes: &[u8]) -> io::Result<()> {
+        file.write_all(bytes)
+    }
+
+    fn fsync(&self, file: &File) -> io::Result<()> {
+        file.sync_all()
+    }
+
+    fn mkdir(&self, directory: &PinnedDir, name: &OsStr, mode: libc::mode_t) -> io::Result<()> {
+        let name = CString::new(name.as_bytes())
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "NUL in path"))?;
+        if unsafe { libc::mkdirat(directory.0.as_raw_fd(), name.as_ptr(), mode) } == 0 {
+            Ok(())
+        } else {
+            Err(io::Error::last_os_error())
+        }
+    }
+
+    fn rename(
+        &self,
+        from_dir: &PinnedDir,
+        from: &OsStr,
+        to_dir: &PinnedDir,
+        to: &OsStr,
+    ) -> io::Result<()> {
+        rename_file_noreplace_at(from_dir, from, to_dir, to)
+    }
+
+    fn unlink(&self, directory: &PinnedDir, name: &OsStr, flags: libc::c_int) -> io::Result<()> {
+        let name = CString::new(name.as_bytes())
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "NUL in path"))?;
+        if unsafe { libc::unlinkat(directory.0.as_raw_fd(), name.as_ptr(), flags) } == 0 {
+            Ok(())
+        } else {
+            Err(io::Error::last_os_error())
+        }
+    }
+}
+
+trait EntropyPort {
+    fn generate_author(&mut self) -> Result<EvidenceAuthor, KeyError>;
+    fn fill(&mut self, bytes: &mut [u8]) -> Result<(), KeyError>;
+    fn seal_identity(
+        &mut self,
+        author: &EvidenceAuthor,
+        wrapping_key: &[u8; 32],
+    ) -> Result<Vec<u8>, KeyError>;
+}
+
+struct OsEntropyPort;
+
+impl EntropyPort for OsEntropyPort {
+    fn generate_author(&mut self) -> Result<EvidenceAuthor, KeyError> {
+        generate_communal_author().map_err(|_| KeyError::EntropyUnavailable)
+    }
+
+    fn fill(&mut self, bytes: &mut [u8]) -> Result<(), KeyError> {
+        OsRng
+            .try_fill_bytes(bytes)
+            .map_err(|_| KeyError::EntropyUnavailable)
+    }
+
+    fn seal_identity(
+        &mut self,
+        author: &EvidenceAuthor,
+        wrapping_key: &[u8; 32],
+    ) -> Result<Vec<u8>, KeyError> {
+        author
+            .seal_identity(wrapping_key)
+            .map_err(|_| KeyError::EntropyUnavailable)
+    }
+}
+
+trait PackCore {
+    fn encode_app_bundle(&self, bundle: &AppBundle) -> Result<Vec<u8>, AppsError>;
+    fn encode_manifest(&self, manifest: &AppManifest) -> Result<Vec<u8>, AppsError>;
+    fn app_id_for(
+        &self,
+        manifest: &AppManifest,
+        bundle_digest: &[u8; 32],
+    ) -> Result<AppId, AppsError>;
+    fn manifest_path(&self, app_id: &AppId) -> Result<WillowPath, AppsError>;
+    fn bundle_path(&self, app_id: &AppId) -> Result<WillowPath, AppsError>;
+    fn sign_at(
+        &self,
+        author: &EvidenceAuthor,
+        path: WillowPath,
+        payload: &[u8],
+        timestamp: u64,
+    ) -> Result<SignedWillowEntry, WillowError>;
+    fn encode_import_bundle(
+        &self,
+        entries: &[SignedWillowEntry],
+    ) -> Result<Vec<u8>, BundleEncodeError>;
+}
+
+struct RiotPackCore;
+
+impl PackCore for RiotPackCore {
+    fn encode_app_bundle(&self, bundle: &AppBundle) -> Result<Vec<u8>, AppsError> {
+        encode_app_bundle(bundle)
+    }
+
+    fn encode_manifest(&self, manifest: &AppManifest) -> Result<Vec<u8>, AppsError> {
+        encode_manifest(manifest)
+    }
+
+    fn app_id_for(
+        &self,
+        manifest: &AppManifest,
+        bundle_digest: &[u8; 32],
+    ) -> Result<AppId, AppsError> {
+        app_id_for(manifest, bundle_digest)
+    }
+
+    fn manifest_path(&self, app_id: &AppId) -> Result<WillowPath, AppsError> {
+        app_index_manifest_path(app_id)
+    }
+
+    fn bundle_path(&self, app_id: &AppId) -> Result<WillowPath, AppsError> {
+        app_index_bundle_path(app_id)
+    }
+
+    fn sign_at(
+        &self,
+        author: &EvidenceAuthor,
+        path: WillowPath,
+        payload: &[u8],
+        timestamp: u64,
+    ) -> Result<SignedWillowEntry, WillowError> {
+        sign_at(author, path, payload, timestamp)
+    }
+
+    fn encode_import_bundle(
+        &self,
+        entries: &[SignedWillowEntry],
+    ) -> Result<Vec<u8>, BundleEncodeError> {
+        encode_bundle(entries)
+    }
+}
+
 impl PinnedDir {
     fn open_path(path: &Path) -> Result<Self, io::Error> {
+        Self::open_path_with_fault(path, false)
+    }
+
+    fn open_path_with_fault(path: &Path, reject_start: bool) -> Result<Self, io::Error> {
         use std::os::unix::fs::OpenOptionsExt;
         let start = if path.is_absolute() {
             Path::new("/")
         } else {
             Path::new(".")
         };
-        let mut current = OpenOptions::new()
-            .read(true)
-            .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
-            .open(start)?;
+        let start_result = if reject_start {
+            Err(io::Error::other("injected start-directory failure"))
+        } else {
+            OpenOptions::new()
+                .read(true)
+                .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
+                .open(start)
+        };
+        let mut current = start_result?;
         for component in path.components() {
             match component {
                 Component::RootDir | Component::CurDir => continue,
@@ -306,22 +527,15 @@ impl PinnedDir {
         Ok(Self(current))
     }
 
-    fn open_child(&self, name: &OsStr) -> io::Result<File> {
-        openat_file(
-            self.0.as_raw_fd(),
-            name,
-            libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC,
-        )
-    }
-
     fn names(&self, total: &mut usize) -> io::Result<Vec<OsString>> {
-        self.names_with(total, |directory| unsafe { libc::readdir(directory) })
+        self.names_with(total, &mut |directory| unsafe { libc::readdir(directory) })
     }
 
-    fn names_with<F>(&self, total: &mut usize, mut next: F) -> io::Result<Vec<OsString>>
-    where
-        F: FnMut(*mut libc::DIR) -> *mut libc::dirent,
-    {
+    fn names_with(
+        &self,
+        total: &mut usize,
+        next: &mut dyn FnMut(*mut libc::DIR) -> *mut libc::dirent,
+    ) -> io::Result<Vec<OsString>> {
         let duplicate = self.duplicate_cloexec()?;
         let raw_directory = unsafe { libc::fdopendir(duplicate) };
         if raw_directory.is_null() {
@@ -355,7 +569,7 @@ impl PinnedDir {
             }
             names.push(OsString::from_vec(name.to_vec()));
         }
-        names.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
+        names.sort_by(compare_os_names);
         Ok(names)
     }
 
@@ -367,6 +581,10 @@ impl PinnedDir {
             Ok(duplicate)
         }
     }
+}
+
+fn compare_os_names(a: &OsString, b: &OsString) -> std::cmp::Ordering {
+    a.as_bytes().cmp(b.as_bytes())
 }
 
 struct OwnedDir(*mut libc::DIR);
@@ -424,38 +642,41 @@ fn createat_file(
 }
 
 pub fn pack(input: PackInput<'_>) -> Result<PackOutput, PackError> {
-    let root = PinnedDir::open_path(input.app_dir).map_err(|source| PackError::Io {
-        operation: "open app directory without following links",
-        path: input.app_dir.to_path_buf(),
-        source,
-    })?;
-    let manifest_file = root
-        .open_child(OsStr::new("riot-app.json"))
+    pack_with_fs(input, &UnixPlatformFs)
+}
+
+fn pack_with_fs(input: PackInput<'_>, fs: &dyn PlatformFs) -> Result<PackOutput, PackError> {
+    pack_with(input, fs, &RiotPackCore)
+}
+
+fn pack_with(
+    input: PackInput<'_>,
+    fs: &dyn PlatformFs,
+    core: &dyn PackCore,
+) -> Result<PackOutput, PackError> {
+    let root = fs
+        .open_path(input.app_dir)
+        .map_err(|source| PackError::Io {
+            operation: "open app directory without following links",
+            path: input.app_dir.to_path_buf(),
+            source,
+        })?;
+    let manifest_file = fs
+        .open_child(
+            &root,
+            OsStr::new("riot-app.json"),
+            libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC,
+        )
         .map_err(|source| PackError::Io {
             operation: "open riot-app.json beneath app root",
             path: input.app_dir.join("riot-app.json"),
             source,
         })?;
-    let raw = read_opened_bounded(manifest_file, MAX_MANIFEST_BYTES, "riot-app.json")?;
+    let raw = read_opened_bounded_with(fs, manifest_file, MAX_MANIFEST_BYTES, "riot-app.json")?;
     let meta = parse_manifest_input(&raw)?;
-    let mut resources = collect_resources(root)?;
+    let mut resources = collect_resources(fs, root)?;
     resources.sort_by(|a, b| a.path.as_bytes().cmp(b.path.as_bytes()));
 
-    let actual = resources
-        .iter()
-        .try_fold(0usize, |sum, resource| {
-            sum.checked_add(resource.bytes.len())
-        })
-        .ok_or(PackError::TooLarge {
-            actual: usize::MAX,
-            limit: MAX_BUNDLE_TOTAL_BYTES,
-        })?;
-    if actual > MAX_BUNDLE_TOTAL_BYTES {
-        return Err(PackError::TooLarge {
-            actual,
-            limit: MAX_BUNDLE_TOTAL_BYTES,
-        });
-    }
     if !resources
         .iter()
         .any(|resource| resource.path == meta.entry_point)
@@ -469,14 +690,16 @@ pub fn pack(input: PackInput<'_>) -> Result<PackOutput, PackError> {
         entry_point: meta.entry_point.clone(),
         resources,
     };
-    let bundle_bytes = encode_app_bundle(&app_bundle).map_err(|error| match error {
-        riot_core::apps::AppsError::BundleTooLarge => PackError::EncodedTooLarge {
-            limit: MAX_BUNDLE_TOTAL_BYTES,
-        },
-        _ => PackError::Core {
-            operation: "encode the resource bundle",
-        },
-    })?;
+    let bundle_bytes = core
+        .encode_app_bundle(&app_bundle)
+        .map_err(|error| match error {
+            AppsError::BundleTooLarge => PackError::EncodedTooLarge {
+                limit: MAX_BUNDLE_TOTAL_BYTES,
+            },
+            _ => PackError::Core {
+                operation: "encode the resource bundle",
+            },
+        })?;
     let manifest = AppManifest {
         name: meta.name,
         description: meta.description,
@@ -485,36 +708,47 @@ pub fn pack(input: PackInput<'_>) -> Result<PackOutput, PackError> {
         permissions: meta.permissions,
         entry_point: meta.entry_point,
     };
-    let manifest_bytes = encode_manifest(&manifest).map_err(|_| PackError::Core {
-        operation: "encode the app manifest",
-    })?;
-    let app_id =
-        app_id_for(&manifest, &app_bundle_digest(&bundle_bytes)).map_err(|_| PackError::Core {
+    let manifest_bytes = core
+        .encode_manifest(&manifest)
+        .map_err(|_| PackError::Core {
+            operation: "encode the app manifest",
+        })?;
+    let app_id = core
+        .app_id_for(&manifest, &app_bundle_digest(&bundle_bytes))
+        .map_err(|_| PackError::Core {
             operation: "derive the app ID",
         })?;
-    let manifest_path = app_index_manifest_path(&app_id).map_err(|_| PackError::Core {
+    let manifest_path = core.manifest_path(&app_id).map_err(|_| PackError::Core {
         operation: "build the manifest path",
     })?;
-    let bundle_path = app_index_bundle_path(&app_id).map_err(|_| PackError::Core {
+    let bundle_path = core.bundle_path(&app_id).map_err(|_| PackError::Core {
         operation: "build the bundle path",
     })?;
     let entries = [
-        sign_at(
+        core.sign_at(
             input.author,
             manifest_path,
             &manifest_bytes,
             input.timestamp_micros,
-        )?,
-        sign_at(
+        )
+        .map_err(|_| PackError::Core {
+            operation: "authorize an app-index entry",
+        })?,
+        core.sign_at(
             input.author,
             bundle_path,
             &bundle_bytes,
             input.timestamp_micros,
-        )?,
+        )
+        .map_err(|_| PackError::Core {
+            operation: "authorize an app-index entry",
+        })?,
     ];
-    let import_bundle_bytes = encode_bundle(&entries).map_err(|_| PackError::Core {
-        operation: "encode the import bundle",
-    })?;
+    let import_bundle_bytes = core
+        .encode_import_bundle(&entries)
+        .map_err(|_| PackError::Core {
+            operation: "encode the import bundle",
+        })?;
     Ok(PackOutput {
         app_id,
         manifest_bytes,
@@ -524,18 +758,34 @@ pub fn pack(input: PackInput<'_>) -> Result<PackOutput, PackError> {
 }
 
 fn parse_manifest_input(input: &[u8]) -> Result<ManifestInput, PackError> {
+    parse_manifest_input_with_end_fault(input, false)
+}
+
+fn parse_manifest_input_with_end_fault(
+    input: &[u8],
+    reject_end: bool,
+) -> Result<ManifestInput, PackError> {
     let mut deserializer = serde_json::Deserializer::from_slice(input);
     let manifest = deserializer
         .deserialize_map(ManifestInputVisitor)
         .map_err(|error| PackError::ManifestJsonInvalid {
             reason: error.to_string(),
         })?;
-    deserializer
-        .end()
-        .map_err(|error| PackError::ManifestJsonInvalid {
-            reason: error.to_string(),
-        })?;
+    let end = if reject_end {
+        Err(serde_json::Error::io(io::Error::other(
+            "injected trailing input",
+        )))
+    } else {
+        deserializer.end()
+    };
+    finish_manifest_parse(end)?;
     Ok(manifest)
+}
+
+fn finish_manifest_parse(result: serde_json::Result<()>) -> Result<(), PackError> {
+    result.map_err(|error| PackError::ManifestJsonInvalid {
+        reason: error.to_string(),
+    })
 }
 
 struct ManifestInputVisitor;
@@ -710,15 +960,15 @@ impl Visitor<'_> for PermissionVisitor {
     }
 }
 
-fn collect_resources(root: PinnedDir) -> Result<Vec<AppResource>, PackError> {
+fn collect_resources(fs: &dyn PlatformFs, root: PinnedDir) -> Result<Vec<AppResource>, PackError> {
     let mut out = Vec::new();
     let mut stack = vec![(root, Vec::<OsString>::new())];
     let mut total = 0usize;
     let mut examined = 0usize;
     let mut directory_count = 1usize;
     while let Some((directory, prefix)) = stack.pop() {
-        let names = directory
-            .names(&mut examined)
+        let names = fs
+            .read_dir(&directory, &mut examined)
             .map_err(|source| PackError::Io {
                 operation: "enumerate bounded app directory",
                 path: PathBuf::from("<app-root>"),
@@ -728,20 +978,26 @@ fn collect_resources(root: PinnedDir) -> Result<Vec<AppResource>, PackError> {
             let mut components = prefix.clone();
             components.push(name.clone());
             let relative = normalized_components(&components)?;
-            let opened = directory.open_child(&name).map_err(|source| {
-                if source.raw_os_error() == Some(libc::ELOOP) {
-                    PackError::Symlink {
-                        path: relative.clone(),
+            let opened = fs
+                .open_child(
+                    &directory,
+                    &name,
+                    libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC,
+                )
+                .map_err(|source| {
+                    if source.raw_os_error() == Some(libc::ELOOP) {
+                        PackError::Symlink {
+                            path: relative.clone(),
+                        }
+                    } else {
+                        PackError::Io {
+                            operation: "open app child without following links",
+                            path: PathBuf::from(&relative),
+                            source,
+                        }
                     }
-                } else {
-                    PackError::Io {
-                        operation: "open app child without following links",
-                        path: PathBuf::from(&relative),
-                        source,
-                    }
-                }
-            })?;
-            let metadata = opened.metadata().map_err(|source| PackError::Io {
+                })?;
+            let metadata = fs.metadata(&opened).map_err(|source| PackError::Io {
                 operation: "inspect opened app child",
                 path: PathBuf::from(&relative),
                 source,
@@ -766,7 +1022,7 @@ fn collect_resources(root: PinnedDir) -> Result<Vec<AppResource>, PackError> {
                 }
                 let content_type = content_type_for(&relative)?;
                 let remaining = MAX_BUNDLE_TOTAL_BYTES.saturating_sub(total);
-                let bytes = match read_opened_bounded(opened, remaining, &relative) {
+                let bytes = match read_opened_bounded_with(fs, opened, remaining, &relative) {
                     Err(PackError::TooLarge { actual, .. }) => {
                         return Err(PackError::TooLarge {
                             actual: total.saturating_add(actual),
@@ -775,10 +1031,7 @@ fn collect_resources(root: PinnedDir) -> Result<Vec<AppResource>, PackError> {
                     }
                     other => other?,
                 };
-                total = total.checked_add(bytes.len()).ok_or(PackError::TooLarge {
-                    actual: usize::MAX,
-                    limit: MAX_BUNDLE_TOTAL_BYTES,
-                })?;
+                total += bytes.len();
                 out.push(AppResource {
                     path: relative,
                     content_type: content_type.into(),
@@ -810,10 +1063,10 @@ fn normalized_components(components: &[OsString]) -> Result<String, PackError> {
     }
     let normalized = parts.join("/");
     if normalized.is_empty()
-        || normalized.len() > MAX_RESOURCE_PATH_BYTES
-        || normalized.starts_with('/')
-        || normalized.contains('\\')
-        || normalized.split('/').any(|part| {
+        | (normalized.len() > MAX_RESOURCE_PATH_BYTES)
+        | normalized.starts_with('/')
+        | normalized.contains('\\')
+        | normalized.split('/').any(|part| {
             part.is_empty()
                 || part == "."
                 || part == ".."
@@ -826,8 +1079,13 @@ fn normalized_components(components: &[OsString]) -> Result<String, PackError> {
     Ok(normalized)
 }
 
-fn read_opened_bounded(mut file: File, limit: usize, label: &str) -> Result<Vec<u8>, PackError> {
-    let metadata = file.metadata().map_err(|source| PackError::Io {
+fn read_opened_bounded_with(
+    fs: &dyn PlatformFs,
+    mut file: File,
+    limit: usize,
+    label: &str,
+) -> Result<Vec<u8>, PackError> {
+    let metadata = fs.metadata(&file).map_err(|source| PackError::Io {
         operation: "inspect opened resource",
         path: PathBuf::from(label),
         source,
@@ -836,25 +1094,24 @@ fn read_opened_bounded(mut file: File, limit: usize, label: &str) -> Result<Vec<
         return Err(PackError::NonRegularFile { path: label.into() });
     }
     let actual = usize::try_from(metadata.len()).unwrap_or(usize::MAX);
-    if actual > limit {
-        return Err(PackError::TooLarge { actual, limit });
-    }
+    ensure_pack_size(actual, limit)?;
     let mut bytes = Vec::with_capacity(actual);
-    Read::by_ref(&mut file)
-        .take((limit as u64).saturating_add(1))
-        .read_to_end(&mut bytes)
+    fs.read_to_end(&mut file, (limit as u64).saturating_add(1), &mut bytes)
         .map_err(|source| PackError::Io {
             operation: "read opened resource",
             path: PathBuf::from(label),
             source,
         })?;
-    if bytes.len() > limit {
-        return Err(PackError::TooLarge {
-            actual: bytes.len(),
-            limit,
-        });
-    }
+    ensure_pack_size(bytes.len(), limit)?;
     Ok(bytes)
+}
+
+fn ensure_pack_size(actual: usize, limit: usize) -> Result<(), PackError> {
+    if actual > limit {
+        Err(PackError::TooLarge { actual, limit })
+    } else {
+        Ok(())
+    }
 }
 
 fn content_type_for(path: &str) -> Result<&'static str, PackError> {
@@ -876,7 +1133,17 @@ fn sign_at(
     path: WillowPath,
     payload: &[u8],
     timestamp: u64,
-) -> Result<SignedWillowEntry, PackError> {
+) -> Result<SignedWillowEntry, WillowError> {
+    sign_at_with_fault(author, path, payload, timestamp, false)
+}
+
+fn sign_at_with_fault(
+    author: &EvidenceAuthor,
+    path: WillowPath,
+    payload: &[u8],
+    timestamp: u64,
+    reject_authorisation: bool,
+) -> Result<SignedWillowEntry, WillowError> {
     let entry = Entry::builder()
         .namespace_id(author.namespace_id().clone())
         .subspace_id(author.subspace_id())
@@ -884,9 +1151,11 @@ fn sign_at(
         .timestamp(timestamp)
         .payload(payload)
         .build();
-    let authorised = authorise_entry(author, entry).map_err(|_| PackError::Core {
-        operation: "authorize an app-index entry",
-    })?;
+    let authorised = if reject_authorisation {
+        Err(WillowError::DoesNotAuthorise)
+    } else {
+        authorise_entry(author, entry)
+    }?;
     let token = authorised.authorisation_token();
     let signature: Signature = token.signature().clone().into();
     Ok(SignedWillowEntry {
@@ -898,6 +1167,28 @@ fn sign_at(
 }
 
 pub fn inspect(bytes: &[u8]) -> Result<InspectReport, InspectError> {
+    inspect_with_fault(bytes, None)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum InspectStage {
+    AppId,
+    OpenSession,
+    CreateStore,
+    InspectImport,
+    RejectPreview,
+    Commit,
+    Scan,
+    CompletePair,
+    IndexedMatch,
+    Provenance,
+    UniqueResources,
+}
+
+fn inspect_with_fault(
+    bytes: &[u8],
+    fault: Option<InspectStage>,
+) -> Result<InspectReport, InspectError> {
     if bytes.len() > MAX_BUNDLE_BYTES {
         return Err(InspectError::InvalidImportBundle {
             reason: "artifact exceeds the import size limit",
@@ -918,6 +1209,7 @@ pub fn inspect(bytes: &[u8]) -> Result<InspectReport, InspectError> {
     }
     let mut manifest = None;
     let mut bundle = None;
+    let mut classified_kinds = 0_u8;
     for item in &decoded.items {
         let valid = match &item.status {
             ItemStatus::Valid(valid) => valid,
@@ -934,8 +1226,12 @@ pub fn inspect(bytes: &[u8]) -> Result<InspectReport, InspectError> {
         };
         let payload = item.frame.payload_bytes();
         match (decode_manifest(payload), decode_app_bundle(payload)) {
-            (Ok(value), Err(_)) if manifest.is_none() => manifest = Some((value, carrier)),
-            (Err(_), Ok(value)) if bundle.is_none() => {
+            (Ok(value), Err(_)) => {
+                classified_kinds = classified_kinds.saturating_add(1);
+                manifest = Some((value, carrier));
+            }
+            (Err(_), Ok(value)) => {
+                classified_kinds = classified_kinds.saturating_add(2);
                 bundle = Some((value, payload.to_vec(), carrier))
             }
             _ => {
@@ -945,15 +1241,19 @@ pub fn inspect(bytes: &[u8]) -> Result<InspectReport, InspectError> {
             }
         }
     }
-    let (manifest, manifest_carrier) = manifest.ok_or(InspectError::IncoherentPair {
-        reason: "manifest is missing",
-    })?;
-    let (bundle, bundle_bytes, bundle_carrier) = bundle.ok_or(InspectError::IncoherentPair {
-        reason: "resource bundle is missing",
-    })?;
+    ensure_inspect(
+        classified_kinds == 3,
+        false,
+        InspectError::IncoherentPair {
+            reason: "entries are not one manifest and one resource bundle",
+        },
+    )?;
+    let (manifest, manifest_carrier) = manifest.expect("two classified entries include a manifest");
+    let (bundle, bundle_bytes, bundle_carrier) =
+        bundle.expect("two classified entries include a resource bundle");
     if manifest.name.chars().any(char::is_control)
-        || manifest.version.chars().any(char::is_control)
-        || bundle
+        | manifest.version.chars().any(char::is_control)
+        | bundle
             .resources
             .iter()
             .any(|resource| resource.path.chars().any(char::is_control))
@@ -962,11 +1262,11 @@ pub fn inspect(bytes: &[u8]) -> Result<InspectReport, InspectError> {
             reason: "display fields contain control characters",
         });
     }
-    if manifest_carrier != bundle_carrier
-        || manifest.author.namespace_id != manifest_carrier.namespace_id
-        || manifest.author.subspace_id != manifest_carrier.subspace_id
-        || manifest.author.signing_key_id != manifest_carrier.subspace_id
-        || manifest.author.namespace_kind != riot_core::willow::NamespaceKind::Communal
+    if (manifest_carrier != bundle_carrier)
+        | (manifest.author.namespace_id != manifest_carrier.namespace_id)
+        | (manifest.author.subspace_id != manifest_carrier.subspace_id)
+        | (manifest.author.signing_key_id != manifest_carrier.subspace_id)
+        | (manifest.author.namespace_kind != riot_core::willow::NamespaceKind::Communal)
     {
         return Err(InspectError::IncoherentPair {
             reason: "manifest author, entry carrier, or timestamps do not agree",
@@ -977,72 +1277,87 @@ pub fn inspect(bytes: &[u8]) -> Result<InspectReport, InspectError> {
             reason: "manifest and bundle entry points differ",
         });
     }
-    let app_id = app_id_for(&manifest, &app_bundle_digest(&bundle_bytes)).map_err(|_| {
+    let app_id = inspect_result(
+        app_id_for(&manifest, &app_bundle_digest(&bundle_bytes)),
+        fault == Some(InspectStage::AppId),
         InspectError::IncoherentPair {
             reason: "canonical app ID cannot be derived",
-        }
-    })?;
+        },
+    )?;
 
     // Commit through the production import path, then use the app-index scanner
     // as the final path/payload/carrier coherence authority.
-    let session = RiotSession::open().map_err(|_| InspectError::InvalidImportBundle {
-        reason: "cannot open verification session",
-    })?;
-    let store = session
-        .create_store()
-        .map_err(|_| InspectError::InvalidImportBundle {
+    let session = inspect_result(
+        RiotSession::open(),
+        fault == Some(InspectStage::OpenSession),
+        InspectError::InvalidImportBundle {
+            reason: "cannot open verification session",
+        },
+    )?;
+    let store = inspect_result(
+        session.create_store(),
+        fault == Some(InspectStage::CreateStore),
+        InspectError::InvalidImportBundle {
             reason: "cannot create verification store",
-        })?;
-    let outcome = store
-        .inspect(bytes, ImportContext::new("riot-app inspect"))
-        .map_err(|_| InspectError::InvalidImportBundle {
+        },
+    )?;
+    let outcome = inspect_result(
+        store.inspect(bytes, ImportContext::new("riot-app inspect")),
+        fault == Some(InspectStage::InspectImport),
+        InspectError::InvalidImportBundle {
             reason: "import inspection failed",
-        })?;
-    let preview = match outcome {
-        InspectOutcome::Preview(preview) => preview,
-        InspectOutcome::Rejected(_) => {
-            return Err(InspectError::InvalidImportBundle {
-                reason: "production import inspection rejected it",
-            })
-        }
-    };
-    preview
-        .plan_all()
-        .and_then(|plan| plan.commit())
-        .map_err(|_| InspectError::InvalidImportBundle {
+        },
+    )?;
+    let preview = inspect_preview(outcome, fault == Some(InspectStage::RejectPreview))?;
+    inspect_result(
+        preview.plan_all().and_then(|plan| plan.commit()),
+        fault == Some(InspectStage::Commit),
+        InspectError::InvalidImportBundle {
             reason: "verified pair could not be committed",
-        })?;
-    let scanned = scan_app_index(&store).map_err(|_| InspectError::IncoherentPair {
-        reason: "app-index scan failed",
-    })?;
-    if !scanned.pending_manifests.is_empty() || scanned.apps.len() != 1 {
-        return Err(InspectError::IncoherentPair {
+        },
+    )?;
+    let scanned = inspect_result(
+        scan_app_index(&store),
+        fault == Some(InspectStage::Scan),
+        InspectError::IncoherentPair {
+            reason: "app-index scan failed",
+        },
+    )?;
+    ensure_inspect(
+        scanned.pending_manifests.is_empty() && scanned.apps.len() == 1,
+        fault == Some(InspectStage::CompletePair),
+        InspectError::IncoherentPair {
             reason: "paths do not form one complete app-index pair",
-        });
-    }
+        },
+    )?;
     let indexed = &scanned.apps[0];
-    if indexed.app_id != app_id || indexed.manifest != manifest || !indexed.bundle_present {
-        return Err(InspectError::IncoherentPair {
+    ensure_inspect(
+        (indexed.app_id == app_id) & (indexed.manifest == manifest) & indexed.bundle_present,
+        fault == Some(InspectStage::IndexedMatch),
+        InspectError::IncoherentPair {
             reason: "path, payload, and app ID do not agree",
-        });
-    }
-    if !matches!(indexed.provenance, AppProvenance::Carried { carrier_subspace_id } if carrier_subspace_id == manifest.author.subspace_id)
-    {
-        return Err(InspectError::IncoherentPair {
+        },
+    )?;
+    ensure_inspect(
+        carried_by(&indexed.provenance) == Some(manifest.author.subspace_id),
+        fault == Some(InspectStage::Provenance),
+        InspectError::IncoherentPair {
             reason: "manifest author does not match the signing carrier",
-        });
-    }
+        },
+    )?;
     let mut resources = bundle
         .resources
         .into_iter()
         .map(|resource| resource.path)
         .collect::<Vec<_>>();
     resources.sort_by(|a, b| a.as_bytes().cmp(b.as_bytes()));
-    if resources.iter().collect::<BTreeSet<_>>().len() != resources.len() {
-        return Err(InspectError::IncoherentPair {
+    ensure_inspect(
+        resources.iter().collect::<BTreeSet<_>>().len() == resources.len(),
+        fault == Some(InspectStage::UniqueResources),
+        InspectError::IncoherentPair {
             reason: "resource paths are duplicated",
-        });
-    }
+        },
+    )?;
     Ok(InspectReport {
         name: manifest.name,
         version: manifest.version,
@@ -1050,6 +1365,53 @@ pub fn inspect(bytes: &[u8]) -> Result<InspectReport, InspectError> {
         app_id,
         resources,
     })
+}
+
+fn carried_by(provenance: &AppProvenance) -> Option<[u8; 32]> {
+    match provenance {
+        AppProvenance::Carried {
+            carrier_subspace_id,
+        } => Some(*carrier_subspace_id),
+        AppProvenance::BuiltIn => None,
+    }
+}
+
+fn inspect_result<T, E>(
+    result: Result<T, E>,
+    injected: bool,
+    error: InspectError,
+) -> Result<T, InspectError> {
+    if injected {
+        Err(error)
+    } else {
+        result.map_err(|_| error)
+    }
+}
+
+fn inspect_preview(outcome: InspectOutcome, injected: bool) -> Result<ImportPreview, InspectError> {
+    if injected {
+        return Err(InspectError::InvalidImportBundle {
+            reason: "production import inspection rejected it",
+        });
+    }
+    match outcome {
+        InspectOutcome::Preview(preview) => Ok(preview),
+        InspectOutcome::Rejected(_) => Err(InspectError::InvalidImportBundle {
+            reason: "production import inspection rejected it",
+        }),
+    }
+}
+
+fn ensure_inspect(
+    condition: bool,
+    injected: bool,
+    error: InspectError,
+) -> Result<(), InspectError> {
+    if condition && !injected {
+        Ok(())
+    } else {
+        Err(error)
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -1060,7 +1422,7 @@ struct Carrier {
 }
 
 pub fn keygen(out: &Path) -> Result<KeygenOutput, KeyError> {
-    keygen_inner(out, |_| Ok(()))
+    keygen_inner(out, &mut |_| Ok(()))
 }
 
 #[derive(Clone, Copy)]
@@ -1071,61 +1433,64 @@ enum KeygenStage {
     CleanupParentSync,
 }
 
-fn keygen_inner<F>(out: &Path, mut checkpoint: F) -> Result<KeygenOutput, KeyError>
-where
-    F: FnMut(KeygenStage) -> Result<(), KeyError>,
-{
+fn keygen_inner(
+    out: &Path,
+    checkpoint: &mut dyn FnMut(KeygenStage) -> Result<(), KeyError>,
+) -> Result<KeygenOutput, KeyError> {
+    keygen_inner_with(out, checkpoint, &UnixPlatformFs, &mut OsEntropyPort)
+}
+
+fn keygen_inner_with(
+    out: &Path,
+    checkpoint: &mut dyn FnMut(KeygenStage) -> Result<(), KeyError>,
+    fs: &dyn PlatformFs,
+    entropy: &mut dyn EntropyPort,
+) -> Result<KeygenOutput, KeyError> {
     let final_name = out.file_name().ok_or(KeyError::InvalidOutputDirectory)?;
     CString::new(final_name.as_bytes()).map_err(|_| KeyError::InvalidOutputDirectory)?;
     let parent = match out.parent() {
         Some(parent) if !parent.as_os_str().is_empty() => parent,
         _ => Path::new("."),
     };
-    let parent_dir = PinnedDir::open_path(parent).map_err(|source| KeyError::Io {
+    let parent_dir = fs.open_path(parent).map_err(|source| KeyError::Io {
         operation: "open key output parent without following links",
         path: parent.to_path_buf(),
         source,
     })?;
-    let stage_name = OsString::from(format!(".riot-app-keygen-{}", random_hex_16()?));
-    let stage_c =
-        CString::new(stage_name.as_bytes()).map_err(|_| KeyError::InvalidOutputDirectory)?;
-    if unsafe { libc::mkdirat(parent_dir.0.as_raw_fd(), stage_c.as_ptr(), 0o700) } != 0 {
+    let stage_name = OsString::from(format!(".riot-app-keygen-{}", random_hex_16_with(entropy)?));
+    if let Err(source) = fs.mkdir(&parent_dir, &stage_name, 0o700) {
         return Err(KeyError::Io {
             operation: "create private key staging directory",
             path: PathBuf::from(&stage_name),
-            source: io::Error::last_os_error(),
+            source,
         });
     }
-    let stage = open_stage_or_cleanup(&parent_dir, &stage_name, "open key staging directory")?;
+    let stage = open_stage_or_cleanup(fs, &parent_dir, &stage_name, "open key staging directory")?;
     let mut published = false;
     let result = (|| {
-        let author = generate_communal_author().map_err(|_| KeyError::EntropyUnavailable)?;
+        let author = entropy.generate_author()?;
         let identity = author.identity();
         let mut wrapping_key = Zeroizing::new([0u8; 32]);
-        OsRng
-            .try_fill_bytes(&mut wrapping_key[..])
-            .map_err(|_| KeyError::EntropyUnavailable)?;
-        let sealed = author
-            .seal_identity(&wrapping_key)
-            .map_err(|_| KeyError::EntropyUnavailable)?;
+        entropy.fill(&mut wrapping_key[..])?;
+        let sealed = entropy.seal_identity(&author, &wrapping_key)?;
         let encoded_key = Zeroizing::new(hex_lower_bytes(&wrapping_key[..]));
 
-        write_private_at(&stage, OsStr::new("author.wrapkey"), &encoded_key)?;
+        write_private_at_with(fs, &stage, OsStr::new("author.wrapkey"), &encoded_key)?;
         checkpoint(KeygenStage::AfterWrapKey)?;
-        write_private_at(&stage, OsStr::new("author.sealed"), &sealed)?;
-        stage.0.sync_all().map_err(|source| KeyError::Io {
+        write_private_at_with(fs, &stage, OsStr::new("author.sealed"), &sealed)?;
+        fs.fsync(&stage.0).map_err(|source| KeyError::Io {
             operation: "sync key staging directory",
             path: PathBuf::from(&stage_name),
             source,
         })?;
-        parent_dir.0.sync_all().map_err(|source| KeyError::Io {
+        fs.fsync(&parent_dir.0).map_err(|source| KeyError::Io {
             operation: "sync key output parent",
             path: parent.to_path_buf(),
             source,
         })?;
         checkpoint(KeygenStage::BeforePublish)?;
-        rename_file_noreplace_at(&parent_dir, &stage_name, &parent_dir, final_name).map_err(
-            |source| {
+        fs.rename(&parent_dir, &stage_name, &parent_dir, final_name)
+            .map_err(|source| {
                 if source.kind() == io::ErrorKind::AlreadyExists
                     || matches!(
                         source.raw_os_error(),
@@ -1142,41 +1507,43 @@ where
                         source,
                     }
                 }
-            },
-        )?;
+            })?;
         published = true;
         let sync_result = checkpoint(KeygenStage::BeforeParentSync).and_then(|()| {
-            parent_dir.0.sync_all().map_err(|source| KeyError::Io {
+            fs.fsync(&parent_dir.0).map_err(|source| KeyError::Io {
                 operation: "sync published key parent",
                 path: parent.to_path_buf(),
                 source,
             })
         });
         if let Err(error) = sync_result {
-            unlinkat_checked(
+            unlinkat_checked_with(
+                fs,
                 &stage,
                 OsStr::new("author.wrapkey"),
                 0,
                 "rollback wrapping key",
             )?;
-            unlinkat_checked(
+            unlinkat_checked_with(
+                fs,
                 &stage,
                 OsStr::new("author.sealed"),
                 0,
                 "rollback sealed identity",
             )?;
-            stage.0.sync_all().map_err(|cleanup| KeyError::Io {
+            fs.fsync(&stage.0).map_err(|cleanup| KeyError::Io {
                 operation: "sync rolled-back key directory",
                 path: out.to_path_buf(),
                 source: cleanup,
             })?;
-            unlinkat_checked(
+            unlinkat_checked_with(
+                fs,
                 &parent_dir,
                 final_name,
                 libc::AT_REMOVEDIR,
                 "rollback published key directory",
             )?;
-            parent_dir.0.sync_all().map_err(|cleanup| KeyError::Io {
+            fs.fsync(&parent_dir.0).map_err(|cleanup| KeyError::Io {
                 operation: "sync key rollback parent",
                 path: parent.to_path_buf(),
                 source: cleanup,
@@ -1189,14 +1556,16 @@ where
         })
     })();
     if !published {
-        let cleanup = unlinkat_if_exists(
+        let cleanup = unlinkat_if_exists_with(
+            fs,
             &stage,
             OsStr::new("author.wrapkey"),
             0,
             "clean wrapping key",
         )
         .and_then(|()| {
-            unlinkat_if_exists(
+            unlinkat_if_exists_with(
+                fs,
                 &stage,
                 OsStr::new("author.sealed"),
                 0,
@@ -1205,7 +1574,8 @@ where
         });
         drop(stage);
         let cleanup = cleanup.and_then(|()| {
-            unlinkat_checked(
+            unlinkat_checked_with(
+                fs,
                 &parent_dir,
                 &stage_name,
                 libc::AT_REMOVEDIR,
@@ -1214,60 +1584,66 @@ where
         });
         cleanup?;
         checkpoint(KeygenStage::CleanupParentSync)?;
-        sync_cleanup_parent(&parent_dir, parent, "sync key parent after staging cleanup")?;
+        sync_cleanup_parent_with(
+            fs,
+            &parent_dir,
+            parent,
+            "sync key parent after staging cleanup",
+        )?;
     }
     result
 }
 
-fn unlinkat_checked(
+fn unlinkat_checked_with(
+    fs: &dyn PlatformFs,
     directory: &PinnedDir,
     name: &OsStr,
     flags: libc::c_int,
     operation: &'static str,
 ) -> Result<(), KeyError> {
-    let name_c = CString::new(name.as_bytes()).map_err(|_| KeyError::InvalidOutputDirectory)?;
-    if unsafe { libc::unlinkat(directory.0.as_raw_fd(), name_c.as_ptr(), flags) } == 0 {
-        Ok(())
-    } else {
-        Err(KeyError::Io {
+    fs.unlink(directory, name, flags)
+        .map_err(|source| KeyError::Io {
             operation,
             path: PathBuf::from(name),
-            source: io::Error::last_os_error(),
+            source,
         })
-    }
 }
 
-fn unlinkat_if_exists(
+fn unlinkat_if_exists_with(
+    fs: &dyn PlatformFs,
     directory: &PinnedDir,
     name: &OsStr,
     flags: libc::c_int,
     operation: &'static str,
 ) -> Result<(), KeyError> {
-    match unlinkat_checked(directory, name, flags, operation) {
+    match unlinkat_checked_with(fs, directory, name, flags, operation) {
         Err(KeyError::Io { source, .. }) if source.kind() == io::ErrorKind::NotFound => Ok(()),
         other => other,
     }
 }
 
 fn open_stage_or_cleanup(
+    fs: &dyn PlatformFs,
     parent: &PinnedDir,
     name: &OsStr,
     operation: &'static str,
 ) -> Result<PinnedDir, KeyError> {
-    match openat_file(
-        parent.0.as_raw_fd(),
+    match fs.open_child(
+        parent,
         name,
         libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
     ) {
         Ok(file) => Ok(PinnedDir(file)),
         Err(source) => {
-            unlinkat_checked(
+            unlinkat_checked_with(
+                fs,
                 parent,
                 name,
                 libc::AT_REMOVEDIR,
                 "clean unopened staging directory",
             )?;
-            sync_cleanup_parent(
+            sync_cleanup_parent_with(
+                fs,
                 parent,
                 Path::new("<staging-parent>"),
                 "sync parent after unopened staging cleanup",
@@ -1282,14 +1658,19 @@ fn open_stage_or_cleanup(
 }
 
 pub fn load_author(key_dir: &Path) -> Result<EvidenceAuthor, KeyError> {
-    let directory = PinnedDir::open_path(key_dir).map_err(|source| KeyError::Io {
+    load_author_with(key_dir, &UnixPlatformFs)
+}
+
+fn load_author_with(key_dir: &Path, fs: &dyn PlatformFs) -> Result<EvidenceAuthor, KeyError> {
+    let directory = fs.open_path(key_dir).map_err(|source| KeyError::Io {
         operation: "open key directory without following links",
         path: key_dir.to_path_buf(),
         source,
     })?;
-    let encoded = read_private_exact_at(&directory, OsStr::new("author.wrapkey"), 64)?;
+    let encoded = read_private_exact_at_with(fs, &directory, OsStr::new("author.wrapkey"), 64)?;
     let wrapping_key = decode_lower_hex_key(&encoded)?;
-    let sealed = read_private_exact_at(
+    let sealed = read_private_exact_at_with(
+        fs,
         &directory,
         OsStr::new("author.sealed"),
         riot_core::willow::SEALED_IDENTITY_BYTES,
@@ -1299,7 +1680,7 @@ pub fn load_author(key_dir: &Path) -> Result<EvidenceAuthor, KeyError> {
 }
 
 pub fn write_new_atomic(path: &Path, bytes: &[u8]) -> Result<(), KeyError> {
-    write_new_atomic_inner(path, bytes, |_| Ok(()))
+    write_new_atomic_inner(path, bytes, &mut |_| Ok(()))
 }
 
 #[derive(Clone, Copy)]
@@ -1311,56 +1692,68 @@ enum OutputStage {
     CleanupParentSync,
 }
 
-fn write_new_atomic_inner<F>(
+fn write_new_atomic_inner(
     path: &Path,
     bytes: &[u8],
-    mut before_publish: F,
-) -> Result<(), KeyError>
-where
-    F: FnMut(OutputStage) -> Result<(), KeyError>,
-{
+    before_publish: &mut dyn FnMut(OutputStage) -> Result<(), KeyError>,
+) -> Result<(), KeyError> {
+    write_new_atomic_inner_with(
+        path,
+        bytes,
+        before_publish,
+        &UnixPlatformFs,
+        &mut OsEntropyPort,
+    )
+}
+
+fn write_new_atomic_inner_with(
+    path: &Path,
+    bytes: &[u8],
+    before_publish: &mut dyn FnMut(OutputStage) -> Result<(), KeyError>,
+    fs: &dyn PlatformFs,
+    entropy: &mut dyn EntropyPort,
+) -> Result<(), KeyError> {
     let final_name = path.file_name().ok_or(KeyError::InvalidOutputDirectory)?;
     CString::new(final_name.as_bytes()).map_err(|_| KeyError::InvalidOutputDirectory)?;
     let parent = path
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
         .unwrap_or(Path::new("."));
-    let parent = PinnedDir::open_path(parent).map_err(|source| KeyError::Io {
+    let parent = fs.open_path(parent).map_err(|source| KeyError::Io {
         operation: "open output parent without following links",
         path: parent.to_path_buf(),
         source,
     })?;
-    let stage_name = OsString::from(format!(".riot-app-output-{}", random_hex_16()?));
-    let stage_c =
-        CString::new(stage_name.as_bytes()).map_err(|_| KeyError::InvalidOutputDirectory)?;
-    let made = unsafe { libc::mkdirat(parent.0.as_raw_fd(), stage_c.as_ptr(), 0o700) };
-    if made != 0 {
+    let stage_name = OsString::from(format!(".riot-app-output-{}", random_hex_16_with(entropy)?));
+    if let Err(source) = fs.mkdir(&parent, &stage_name, 0o700) {
         return Err(KeyError::Io {
             operation: "create private output staging directory",
             path: PathBuf::from(&stage_name),
-            source: io::Error::last_os_error(),
+            source,
         });
     }
-    let stage = open_stage_or_cleanup(&parent, &stage_name, "open output staging directory")?;
+    let stage = open_stage_or_cleanup(fs, &parent, &stage_name, "open output staging directory")?;
     let artifact = OsStr::new("artifact");
     if let Err(error) = before_publish(OutputStage::ArtifactCreate) {
         drop(stage);
-        unlinkat_checked(
+        unlinkat_checked_with(
+            fs,
             &parent,
             &stage_name,
             libc::AT_REMOVEDIR,
             "clean artifact staging after injected create failure",
         )?;
         before_publish(OutputStage::CleanupParentSync)?;
-        sync_cleanup_parent(
+        sync_cleanup_parent_with(
+            fs,
             &parent,
             Path::new("<output-parent>"),
             "sync output parent after create cleanup",
         )?;
         return Err(error);
     }
-    let mut file = match createat_file(
-        stage.0.as_raw_fd(),
+    let mut file = match fs.create_child(
+        &stage,
         artifact,
         libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW | libc::O_CLOEXEC,
         0o600,
@@ -1368,14 +1761,16 @@ where
         Ok(file) => file,
         Err(source) => {
             drop(stage);
-            unlinkat_checked(
+            unlinkat_checked_with(
+                fs,
                 &parent,
                 &stage_name,
                 libc::AT_REMOVEDIR,
                 "clean artifact staging after create failure",
             )?;
             before_publish(OutputStage::CleanupParentSync)?;
-            sync_cleanup_parent(
+            sync_cleanup_parent_with(
+                fs,
                 &parent,
                 Path::new("<output-parent>"),
                 "sync output parent after create cleanup",
@@ -1389,39 +1784,40 @@ where
     };
     let mut final_present = false;
     let result = (|| {
-        file.write_all(bytes)
-            .and_then(|()| file.sync_all())
+        fs.write_all(&mut file, bytes)
+            .and_then(|()| fs.fsync(&file))
             .map_err(|source| KeyError::Io {
                 operation: "write temporary file",
                 path: PathBuf::from("<staged-output>"),
                 source,
             })?;
         before_publish(OutputStage::Publish)?;
-        rename_file_noreplace_at(&stage, artifact, &parent, final_name).map_err(|source| {
-            if source.kind() == io::ErrorKind::AlreadyExists {
-                KeyError::AlreadyExists {
-                    path: path.to_path_buf(),
+        fs.rename(&stage, artifact, &parent, final_name)
+            .map_err(|source| {
+                if source.kind() == io::ErrorKind::AlreadyExists {
+                    KeyError::AlreadyExists {
+                        path: path.to_path_buf(),
+                    }
+                } else {
+                    KeyError::Io {
+                        operation: "publish",
+                        path: path.to_path_buf(),
+                        source,
+                    }
                 }
-            } else {
-                KeyError::Io {
-                    operation: "publish",
-                    path: path.to_path_buf(),
-                    source,
-                }
-            }
-        })?;
+            })?;
         final_present = true;
         let sync_result = before_publish(OutputStage::ParentSync).and_then(|()| {
-            parent.0.sync_all().map_err(|source| KeyError::Io {
+            fs.fsync(&parent.0).map_err(|source| KeyError::Io {
                 operation: "sync output parent",
                 path: PathBuf::from("<output-parent>"),
                 source,
             })
         });
         if let Err(error) = sync_result {
-            unlinkat_checked(&parent, final_name, 0, "rollback published artifact")?;
+            unlinkat_checked_with(fs, &parent, final_name, 0, "rollback published artifact")?;
             final_present = false;
-            parent.0.sync_all().map_err(|source| KeyError::Io {
+            fs.fsync(&parent.0).map_err(|source| KeyError::Io {
                 operation: "sync artifact rollback parent",
                 path: PathBuf::from("<output-parent>"),
                 source,
@@ -1430,7 +1826,7 @@ where
         }
         Ok(())
     })();
-    let cleanup = unlinkat_if_exists(&stage, artifact, 0, "clean staged artifact");
+    let cleanup = unlinkat_if_exists_with(fs, &stage, artifact, 0, "clean staged artifact");
     drop(stage);
     let injected_cleanup = if final_present {
         before_publish(OutputStage::StageCleanup).err()
@@ -1438,7 +1834,8 @@ where
         None
     };
     let cleanup = cleanup.and_then(|()| {
-        unlinkat_checked(
+        unlinkat_checked_with(
+            fs,
             &parent,
             &stage_name,
             libc::AT_REMOVEDIR,
@@ -1449,7 +1846,8 @@ where
     if cleanup_error.is_none() {
         cleanup_error = before_publish(OutputStage::CleanupParentSync)
             .and_then(|()| {
-                sync_cleanup_parent(
+                sync_cleanup_parent_with(
+                    fs,
                     &parent,
                     Path::new("<output-parent>"),
                     "sync output parent after staging cleanup",
@@ -1459,13 +1857,14 @@ where
     }
     if let Some(error) = cleanup_error {
         if final_present {
-            unlinkat_checked(
+            unlinkat_checked_with(
+                fs,
                 &parent,
                 final_name,
                 0,
                 "rollback artifact after staging cleanup failure",
             )?;
-            parent.0.sync_all().map_err(|source| KeyError::Io {
+            fs.fsync(&parent.0).map_err(|source| KeyError::Io {
                 operation: "sync cleanup rollback parent",
                 path: PathBuf::from("<output-parent>"),
                 source,
@@ -1476,12 +1875,13 @@ where
     result
 }
 
-fn sync_cleanup_parent(
+fn sync_cleanup_parent_with(
+    fs: &dyn PlatformFs,
     directory: &PinnedDir,
     path: &Path,
     operation: &'static str,
 ) -> Result<(), KeyError> {
-    directory.0.sync_all().map_err(|source| KeyError::Io {
+    fs.fsync(&directory.0).map_err(|source| KeyError::Io {
         operation,
         path: path.to_path_buf(),
         source,
@@ -1544,28 +1944,32 @@ fn rename_component(name: &OsStr) -> io::Result<CString> {
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "NUL in rename component"))
 }
 
-fn random_hex_16() -> Result<String, KeyError> {
+fn random_hex_16_with(entropy: &mut dyn EntropyPort) -> Result<String, KeyError> {
     let mut bytes = Zeroizing::new([0u8; 16]);
-    OsRng
-        .try_fill_bytes(&mut bytes[..])
-        .map_err(|_| KeyError::EntropyUnavailable)?;
+    entropy.fill(&mut bytes[..])?;
     Ok(hex_lower(&bytes[..]))
 }
 
-fn write_private_at(directory: &PinnedDir, name: &OsStr, bytes: &[u8]) -> Result<(), KeyError> {
-    let mut file = createat_file(
-        directory.0.as_raw_fd(),
-        name,
-        libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW | libc::O_CLOEXEC,
-        0o600,
-    )
-    .map_err(|source| KeyError::Io {
-        operation: "create private staged file",
-        path: PathBuf::from(name),
-        source,
-    })?;
-    file.write_all(bytes)
-        .and_then(|()| file.sync_all())
+fn write_private_at_with(
+    fs: &dyn PlatformFs,
+    directory: &PinnedDir,
+    name: &OsStr,
+    bytes: &[u8],
+) -> Result<(), KeyError> {
+    let mut file = fs
+        .create_child(
+            directory,
+            name,
+            libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+            0o600,
+        )
+        .map_err(|source| KeyError::Io {
+            operation: "create private staged file",
+            path: PathBuf::from(name),
+            source,
+        })?;
+    fs.write_all(&mut file, bytes)
+        .and_then(|()| fs.fsync(&file))
         .map_err(|source| KeyError::Io {
             operation: "write private staged file",
             path: PathBuf::from(name),
@@ -1573,26 +1977,33 @@ fn write_private_at(directory: &PinnedDir, name: &OsStr, bytes: &[u8]) -> Result
         })
 }
 
-fn read_private_exact_at(
+fn read_private_exact_at_with(
+    fs: &dyn PlatformFs,
     directory: &PinnedDir,
     name: &OsStr,
     expected: usize,
 ) -> Result<Zeroizing<Vec<u8>>, KeyError> {
     use std::os::unix::fs::PermissionsExt;
     let path = PathBuf::from(name);
-    let mut file = directory.open_child(name).map_err(|source| KeyError::Io {
-        operation: "open private key beneath pinned directory",
-        path: path.clone(),
-        source,
-    })?;
-    let metadata = file.metadata().map_err(|source| KeyError::Io {
+    let mut file = fs
+        .open_child(
+            directory,
+            name,
+            libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC,
+        )
+        .map_err(|source| KeyError::Io {
+            operation: "open private key beneath pinned directory",
+            path: path.clone(),
+            source,
+        })?;
+    let metadata = fs.metadata(&file).map_err(|source| KeyError::Io {
         operation: "inspect private key file",
         path: path.to_path_buf(),
         source,
     })?;
     if !metadata.is_file()
-        || metadata.permissions().mode() & 0o077 != 0
-        || usize::try_from(metadata.len()).ok() != Some(expected)
+        | (metadata.permissions().mode() & 0o077 != 0)
+        | (usize::try_from(metadata.len()).ok() != Some(expected))
     {
         return Err(if expected == 64 {
             KeyError::InvalidWrapKey
@@ -1601,9 +2012,7 @@ fn read_private_exact_at(
         });
     }
     let mut bytes = Zeroizing::new(Vec::with_capacity(expected));
-    Read::by_ref(&mut file)
-        .take((expected as u64) + 1)
-        .read_to_end(&mut bytes)
+    fs.read_to_end(&mut file, (expected as u64) + 1, &mut bytes)
         .map_err(|source| KeyError::Io {
             operation: "read private key file",
             path: path.to_path_buf(),
@@ -1620,8 +2029,8 @@ fn read_private_exact_at(
 }
 
 fn decode_lower_hex_key(input: &[u8]) -> Result<Zeroizing<[u8; 32]>, KeyError> {
-    if input.len() != 64
-        || !input
+    if (input.len() != 64)
+        | !input
             .iter()
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(byte))
     {
@@ -1629,7 +2038,8 @@ fn decode_lower_hex_key(input: &[u8]) -> Result<Zeroizing<[u8; 32]>, KeyError> {
     }
     let mut output = Zeroizing::new([0u8; 32]);
     for (index, slot) in output.iter_mut().enumerate() {
-        *slot = (hex_nibble(input[index * 2])? << 4) | hex_nibble(input[index * 2 + 1])?;
+        *slot = (hex_nibble(input[index * 2]).expect("validated hexadecimal") << 4)
+            | hex_nibble(input[index * 2 + 1]).expect("validated hexadecimal");
     }
     Ok(output)
 }
@@ -1663,267 +2073,12 @@ fn hex_lower_bytes(bytes: &[u8]) -> Vec<u8> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::{keygen_inner, KeyError, KeygenStage};
-    use std::os::unix::ffi::OsStringExt;
+#[path = "tests/unit.rs"]
+mod tests;
 
-    fn tempdir() -> tempfile::TempDir {
-        tempfile::tempdir_in(env!("CARGO_MANIFEST_DIR")).unwrap()
-    }
+#[cfg(test)]
+extern crate self as riot_app_cli;
 
-    #[test]
-    fn keygen_failure_after_first_temp_file_leaves_no_final_or_temp_directory() {
-        let parent = tempdir();
-        let output = parent.path().join("keys");
-        let error = keygen_inner(&output, |stage| match stage {
-            KeygenStage::AfterWrapKey => Err(KeyError::InvalidOutputDirectory),
-            KeygenStage::BeforePublish
-            | KeygenStage::BeforeParentSync
-            | KeygenStage::CleanupParentSync => Ok(()),
-        });
-        assert!(error.is_err());
-        assert!(!output.exists());
-        assert_eq!(
-            std::fs::read_dir(parent.path())
-                .expect("read parent")
-                .count(),
-            0
-        );
-    }
-
-    #[test]
-    fn keygen_cleanup_parent_sync_failure_is_surfaced_after_removal() {
-        let parent = tempdir();
-        let output = parent.path().join("keys");
-        let cleanup_error_path = parent.path().join("cleanup-sync");
-        let error = keygen_inner(&output, |stage| match stage {
-            KeygenStage::AfterWrapKey => Err(KeyError::InvalidOutputDirectory),
-            KeygenStage::CleanupParentSync => Err(KeyError::AlreadyExists {
-                path: cleanup_error_path.clone(),
-            }),
-            KeygenStage::BeforePublish | KeygenStage::BeforeParentSync => Ok(()),
-        });
-        assert!(matches!(
-            error,
-            Err(KeyError::AlreadyExists { path }) if path == cleanup_error_path
-        ));
-        assert!(!output.exists());
-        assert_eq!(std::fs::read_dir(parent.path()).unwrap().count(), 0);
-    }
-
-    #[test]
-    fn embedded_nul_output_names_do_not_panic_or_leave_staging() {
-        let parent = tempdir();
-        let hostile = parent.path().join(std::ffi::OsString::from_vec(
-            b"hostile\0bundle.riot".to_vec(),
-        ));
-
-        let output_result = std::panic::catch_unwind(|| super::write_new_atomic(&hostile, b"ours"));
-        assert!(matches!(
-            output_result,
-            Ok(Err(KeyError::InvalidOutputDirectory))
-        ));
-
-        let key_result = std::panic::catch_unwind(|| super::keygen(&hostile));
-        assert!(matches!(
-            key_result,
-            Ok(Err(KeyError::InvalidOutputDirectory))
-        ));
-        assert_eq!(std::fs::read_dir(parent.path()).unwrap().count(), 0);
-    }
-
-    #[test]
-    fn keygen_competing_destination_is_preserved_and_temp_is_cleaned() {
-        let parent = tempdir();
-        let output = parent.path().join("keys");
-        let error = keygen_inner(&output, |stage| {
-            if matches!(stage, KeygenStage::BeforePublish) {
-                std::fs::create_dir(&output).expect("attacker directory");
-                std::fs::write(output.join("marker"), b"attacker").expect("marker");
-            }
-            Ok(())
-        });
-        assert!(matches!(error, Err(KeyError::AlreadyExists { .. })));
-        assert_eq!(std::fs::read(output.join("marker")).unwrap(), b"attacker");
-        assert_eq!(std::fs::read_dir(parent.path()).unwrap().count(), 1);
-    }
-
-    #[test]
-    fn keygen_parent_sync_failure_removes_files_and_final_directory() {
-        let parent = tempdir();
-        let output = parent.path().join("keys");
-        let error = keygen_inner(&output, |stage| {
-            if matches!(stage, KeygenStage::BeforeParentSync) {
-                return Err(KeyError::InvalidOutputDirectory);
-            }
-            Ok(())
-        });
-        assert!(error.is_err());
-        assert!(!output.exists());
-        assert_eq!(std::fs::read_dir(parent.path()).unwrap().count(), 0);
-    }
-
-    #[test]
-    fn output_competing_destination_is_preserved_and_temp_is_cleaned() {
-        let parent = tempdir();
-        let output = parent.path().join("bundle.riot");
-        let error = super::write_new_atomic_inner(&output, b"ours", |stage| {
-            if matches!(stage, super::OutputStage::Publish) {
-                std::fs::write(&output, b"attacker").unwrap();
-            }
-            Ok(())
-        });
-        assert!(
-            matches!(error, Err(KeyError::AlreadyExists { .. })),
-            "{error:?}"
-        );
-        assert_eq!(std::fs::read(&output).unwrap(), b"attacker");
-        assert_eq!(std::fs::read_dir(parent.path()).unwrap().count(), 1);
-    }
-
-    #[test]
-    fn output_parent_sync_failure_removes_published_file() {
-        let parent = tempdir();
-        let output = parent.path().join("bundle.riot");
-        let error = super::write_new_atomic_inner(&output, b"ours", |stage| {
-            if matches!(stage, super::OutputStage::ParentSync) {
-                return Err(KeyError::InvalidOutputDirectory);
-            }
-            Ok(())
-        });
-        assert!(error.is_err());
-        assert!(!output.exists());
-        assert_eq!(std::fs::read_dir(parent.path()).unwrap().count(), 0);
-    }
-
-    #[test]
-    fn output_create_failure_removes_empty_staging_directory() {
-        let parent = tempdir();
-        let output = parent.path().join("bundle.riot");
-        let error = super::write_new_atomic_inner(&output, b"ours", |stage| {
-            if matches!(stage, super::OutputStage::ArtifactCreate) {
-                return Err(KeyError::InvalidOutputDirectory);
-            }
-            Ok(())
-        });
-        assert!(error.is_err());
-        assert!(!output.exists());
-        assert_eq!(std::fs::read_dir(parent.path()).unwrap().count(), 0);
-    }
-
-    #[test]
-    fn output_cleanup_parent_sync_failure_is_surfaced_after_removal() {
-        let parent = tempdir();
-        let output = parent.path().join("bundle.riot");
-        let cleanup_error_path = parent.path().join("cleanup-sync");
-        let error = super::write_new_atomic_inner(&output, b"ours", |stage| match stage {
-            super::OutputStage::Publish => Err(KeyError::InvalidOutputDirectory),
-            super::OutputStage::CleanupParentSync => Err(KeyError::AlreadyExists {
-                path: cleanup_error_path.clone(),
-            }),
-            _ => Ok(()),
-        });
-        assert!(matches!(
-            error,
-            Err(KeyError::AlreadyExists { path }) if path == cleanup_error_path
-        ));
-        assert!(!output.exists());
-        assert_eq!(std::fs::read_dir(parent.path()).unwrap().count(), 0);
-    }
-
-    #[test]
-    fn output_stage_cleanup_failure_rolls_back_final() {
-        let parent = tempdir();
-        let output = parent.path().join("bundle.riot");
-        let error = super::write_new_atomic_inner(&output, b"ours", |stage| {
-            if matches!(stage, super::OutputStage::StageCleanup) {
-                return Err(KeyError::InvalidOutputDirectory);
-            }
-            Ok(())
-        });
-        assert!(error.is_err());
-        assert!(!output.exists());
-        assert_eq!(std::fs::read_dir(parent.path()).unwrap().count(), 0);
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn descriptor_relative_read_rejects_ancestor_swapped_to_outside_symlink() {
-        use std::os::unix::fs::symlink;
-        let parent = tempdir();
-        let root = parent.path().join("root");
-        let outside = parent.path().join("outside");
-        std::fs::create_dir_all(root.join("nested")).unwrap();
-        std::fs::create_dir(&outside).unwrap();
-        std::fs::write(root.join("nested/file.js"), b"inside").unwrap();
-        std::fs::write(outside.join("file.js"), b"outside-secret").unwrap();
-        let pinned = super::PinnedDir::open_path(&root).unwrap();
-        let moved_root = parent.path().join("moved-root");
-        std::fs::rename(&root, &moved_root).unwrap();
-        symlink(&outside, &root).unwrap();
-        let resources = super::collect_resources(pinned).unwrap();
-        assert_eq!(resources.len(), 1);
-        assert_eq!(resources[0].bytes, b"inside");
-    }
-
-    #[test]
-    fn directory_enumeration_and_directory_count_are_bounded() {
-        let parent = tempdir();
-        let empty = parent.path().join("empty");
-        std::fs::create_dir(&empty).unwrap();
-        let pinned = super::PinnedDir::open_path(&empty).unwrap();
-        let duplicate = pinned.duplicate_cloexec().unwrap();
-        assert_ne!(
-            unsafe { libc::fcntl(duplicate, libc::F_GETFD) } & libc::FD_CLOEXEC,
-            0
-        );
-        unsafe {
-            libc::close(duplicate);
-        }
-        let mut count = 0;
-        assert!(pinned.names(&mut count).unwrap().is_empty());
-        let mut count = 0;
-        let error = pinned.names_with(&mut count, |_| {
-            super::set_errno(libc::EIO);
-            std::ptr::null_mut()
-        });
-        assert_eq!(error.unwrap_err().raw_os_error(), Some(libc::EIO));
-
-        let many_entries = parent.path().join("many-entries");
-        std::fs::create_dir(&many_entries).unwrap();
-        for index in 0..=super::MAX_TOTAL_ENTRIES {
-            std::fs::create_dir(many_entries.join(format!("entry-{index:04}"))).unwrap();
-        }
-        let pinned = super::PinnedDir::open_path(&many_entries).unwrap();
-        let mut total = 0;
-        assert!(pinned.names(&mut total).is_err());
-
-        let split_a = parent.path().join("split-a");
-        let split_b = parent.path().join("split-b");
-        std::fs::create_dir(&split_a).unwrap();
-        std::fs::create_dir(&split_b).unwrap();
-        for index in 0..(super::MAX_TOTAL_ENTRIES / 2) {
-            std::fs::write(split_a.join(format!("entry-{index:04}")), b"").unwrap();
-        }
-        for index in 0..=(super::MAX_TOTAL_ENTRIES / 2) {
-            std::fs::write(split_b.join(format!("entry-{index:04}")), b"").unwrap();
-        }
-        let mut total = 0;
-        super::PinnedDir::open_path(&split_a)
-            .unwrap()
-            .names(&mut total)
-            .unwrap();
-        assert!(super::PinnedDir::open_path(&split_b)
-            .unwrap()
-            .names(&mut total)
-            .is_err());
-
-        let many_dirs = parent.path().join("many-dirs");
-        std::fs::create_dir(&many_dirs).unwrap();
-        for index in 0..super::MAX_DIRECTORIES {
-            std::fs::create_dir(many_dirs.join(format!("dir-{index:03}"))).unwrap();
-        }
-        let pinned = super::PinnedDir::open_path(&many_dirs).unwrap();
-        assert!(super::collect_resources(pinned).is_err());
-    }
-}
+#[cfg(test)]
+#[path = "../tests/cli_pack.rs"]
+mod cli_pack_unit;

@@ -1,4 +1,5 @@
 use std::fs;
+use std::io;
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -9,12 +10,14 @@ use riot_app_cli::{
 use riot_core::apps::bundle::{
     decode_app_bundle, AppBundle, AppResource, MAX_BUNDLE_RESOURCES, MAX_BUNDLE_TOTAL_BYTES,
 };
+use riot_core::apps::entry::app_data_path;
 use riot_core::apps::index::{
     app_bundle_digest, app_index_bundle_path, app_index_manifest_path, scan_app_index,
 };
 use riot_core::apps::manifest::{
-    app_id_for, decode_manifest, encode_manifest, AppManifest, MAX_APP_PERMISSIONS,
-    MAX_MANIFEST_BYTES,
+    app_id_for, decode_manifest, encode_manifest, AppManifest, MAX_APP_DESCRIPTION_BYTES,
+    MAX_APP_ENTRY_POINT_BYTES, MAX_APP_NAME_BYTES, MAX_APP_PERMISSIONS, MAX_APP_PERMISSION_BYTES,
+    MAX_APP_VERSION_BYTES, MAX_MANIFEST_BYTES,
 };
 use riot_core::import::{decode_bundle, encode_bundle, BundleDecodeOutcome, BUNDLE_MAGIC};
 use riot_core::session::{CommitOutcome, ImportContext, RiotSession};
@@ -22,6 +25,10 @@ use riot_core::willow::{
     authorise_entry, encode_capability, encode_entry, generate_communal_author, Entry,
     EvidenceAuthor, NamespaceKind, Path as WillowPath, SignedWillowEntry,
 };
+
+fn cli_binary() -> Option<&'static str> {
+    option_env!("CARGO_BIN_EXE_riot-app")
+}
 
 fn fixture() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/hello-app")
@@ -47,6 +54,243 @@ fn pack_fixture(timestamp_micros: u64) -> riot_app_cli::PackOutput {
         timestamp_micros,
     })
     .unwrap()
+}
+
+fn assert_manifest_rejected(json: &str, expected: &str) {
+    let tmp = copy_fixture();
+    fs::write(tmp.path().join("riot-app.json"), json).unwrap();
+    let author = generate_communal_author().unwrap();
+    let error = pack(PackInput {
+        app_dir: tmp.path(),
+        author: &author,
+        timestamp_micros: 1,
+    })
+    .unwrap_err()
+    .to_string();
+    assert!(
+        error.contains(expected),
+        "expected {expected:?} in {error:?} for {json:?}"
+    );
+}
+
+#[test]
+fn public_errors_have_stable_safe_messages_and_sources() {
+    use std::error::Error;
+
+    let pack_cases = [
+        (
+            PackError::ManifestJsonInvalid {
+                reason: "bad\njson".into(),
+            },
+            "riot-app.json: bad\\njson",
+        ),
+        (
+            PackError::InvalidResourcePath {
+                path: "bad\npath".into(),
+            },
+            "invalid resource path 'bad\\npath'",
+        ),
+        (
+            PackError::UnsupportedResource {
+                path: "file.exe".into(),
+            },
+            "unsupported resource file 'file.exe'",
+        ),
+        (
+            PackError::MissingEntryPoint {
+                entry_point: "index.html".into(),
+            },
+            "entry_point 'index.html' is not a packed resource",
+        ),
+        (
+            PackError::Symlink {
+                path: "link.js".into(),
+            },
+            "symbolic link is not allowed: 'link.js'",
+        ),
+        (
+            PackError::NonRegularFile {
+                path: "pipe.js".into(),
+            },
+            "non-regular resource is not allowed: 'pipe.js'",
+        ),
+        (
+            PackError::TooLarge {
+                actual: 11,
+                limit: 10,
+            },
+            "app bundle is too large: 11 bytes (limit 10 bytes)",
+        ),
+        (
+            PackError::TooManyResources {
+                actual: 3,
+                limit: 2,
+            },
+            "app has too many resources: 3 files (limit 2 files)",
+        ),
+        (
+            PackError::EncodedTooLarge { limit: 99 },
+            "encoded app bundle exceeds its 99-byte limit",
+        ),
+        (
+            PackError::Core {
+                operation: "encode the import bundle",
+            },
+            "Riot rejected the app while trying to encode the import bundle",
+        ),
+    ];
+    for (error, expected) in pack_cases {
+        assert_eq!(error.to_string(), expected);
+        assert!(error.source().is_none());
+    }
+    let pack_io = PackError::Io {
+        operation: "read",
+        path: PathBuf::from("bad\npath"),
+        source: io::Error::other("boom"),
+    };
+    assert_eq!(pack_io.to_string(), "read 'bad\\npath': boom");
+    assert_eq!(pack_io.source().unwrap().to_string(), "boom");
+
+    let inspect_cases = [
+        (
+            InspectError::InvalidImportBundle {
+                reason: "bad frame",
+            },
+            "invalid Riot import bundle: bad frame",
+        ),
+        (
+            InspectError::IncoherentPair { reason: "mismatch" },
+            "incoherent app-index pair: mismatch",
+        ),
+    ];
+    for (error, expected) in inspect_cases {
+        assert_eq!(error.to_string(), expected);
+        assert!(error.source().is_none());
+    }
+
+    let key_cases = [
+        (
+            KeyError::AlreadyExists {
+                path: PathBuf::from("existing\nkey"),
+            },
+            "refusing to overwrite existing 'existing\\nkey': move or remove it first",
+        ),
+        (
+            KeyError::InvalidWrapKey,
+            "author.wrapkey must contain exactly 64 lowercase hexadecimal characters",
+        ),
+        (
+            KeyError::InvalidSealedIdentity,
+            "author.sealed is invalid, damaged, or does not match author.wrapkey",
+        ),
+        (
+            KeyError::EntropyUnavailable,
+            "operating-system randomness is unavailable",
+        ),
+        (
+            KeyError::InvalidOutputDirectory,
+            "key output must name a new directory below an existing parent",
+        ),
+    ];
+    for (error, expected) in key_cases {
+        assert_eq!(error.to_string(), expected);
+        assert!(error.source().is_none());
+    }
+    let key_io = KeyError::Io {
+        operation: "open",
+        path: PathBuf::from("bad\nkey"),
+        source: io::Error::other("denied"),
+    };
+    assert_eq!(key_io.to_string(), "open 'bad\\nkey': denied");
+    assert_eq!(key_io.source().unwrap().to_string(), "denied");
+}
+
+#[test]
+fn manifest_rejects_each_duplicate_missing_wrong_type_and_bounded_string() {
+    let valid = r#"{"name":"n","description":"d","version":"1","entry_point":"index.html","permissions":[]}"#;
+    let duplicate_cases = [
+        (
+            "\"name\":\"n\"",
+            "\"name\":\"n\",\"name\":\"again\"",
+            "name",
+        ),
+        (
+            "\"description\":\"d\"",
+            "\"description\":\"d\",\"description\":\"again\"",
+            "description",
+        ),
+        (
+            "\"version\":\"1\"",
+            "\"version\":\"1\",\"version\":\"2\"",
+            "version",
+        ),
+        (
+            "\"entry_point\":\"index.html\"",
+            "\"entry_point\":\"index.html\",\"entry_point\":\"other.html\"",
+            "entry_point",
+        ),
+        (
+            "\"permissions\":[]",
+            "\"permissions\":[],\"permissions\":[]",
+            "permissions",
+        ),
+    ];
+    for (needle, replacement, field) in duplicate_cases {
+        assert_manifest_rejected(
+            &valid.replacen(needle, replacement, 1),
+            &format!("duplicate field \\'{field}\\'"),
+        );
+    }
+
+    for field in [
+        "name",
+        "description",
+        "version",
+        "entry_point",
+        "permissions",
+    ] {
+        let mut value: serde_json::Value = serde_json::from_str(valid).unwrap();
+        value.as_object_mut().unwrap().remove(field);
+        assert_manifest_rejected(&value.to_string(), &format!("missing field `{field}`"));
+    }
+
+    for field in ["name", "description", "version", "entry_point"] {
+        let mut value: serde_json::Value = serde_json::from_str(valid).unwrap();
+        value[field] = serde_json::json!(7);
+        assert_manifest_rejected(
+            &value.to_string(),
+            &format!("\\'{field}\\' must be a string"),
+        );
+    }
+
+    for (field, limit) in [
+        ("name", MAX_APP_NAME_BYTES),
+        ("description", MAX_APP_DESCRIPTION_BYTES),
+        ("version", MAX_APP_VERSION_BYTES),
+        ("entry_point", MAX_APP_ENTRY_POINT_BYTES),
+    ] {
+        for rejected in [String::new(), "bad\nvalue".into(), "x".repeat(limit + 1)] {
+            let mut value: serde_json::Value = serde_json::from_str(valid).unwrap();
+            value[field] = serde_json::Value::String(rejected);
+            assert_manifest_rejected(
+                &value.to_string(),
+                &format!("\\'{field}\\' is empty, too long, or contains control characters"),
+            );
+        }
+    }
+
+    for rejected in [
+        String::new(),
+        "bad\npermission".into(),
+        "x".repeat(MAX_APP_PERMISSION_BYTES + 1),
+    ] {
+        let mut value: serde_json::Value = serde_json::from_str(valid).unwrap();
+        value["permissions"] = serde_json::json!([rejected]);
+        assert_manifest_rejected(
+            &value.to_string(),
+            "permission at index 0\\' is empty, too long, or contains control characters",
+        );
+    }
 }
 
 #[test]
@@ -162,6 +406,76 @@ fn validates_manifest_shape_and_resources() {
         pack(PackInput { app_dir: tmp.path(), author: &author, timestamp_micros: 1 }),
         Err(PackError::MissingEntryPoint { entry_point }) if entry_point == "index.html"
     ));
+}
+
+#[test]
+fn pack_reports_missing_unsafe_and_nonregular_inputs() {
+    let author = generate_communal_author().unwrap();
+    let missing = tempdir().path().join("absent");
+    assert!(matches!(
+        pack(PackInput {
+            app_dir: &missing,
+            author: &author,
+            timestamp_micros: 1,
+        }),
+        Err(PackError::Io {
+            operation: "open app directory without following links",
+            ..
+        })
+    ));
+
+    let empty = tempdir();
+    assert!(matches!(
+        pack(PackInput {
+            app_dir: empty.path(),
+            author: &author,
+            timestamp_micros: 1,
+        }),
+        Err(PackError::Io {
+            operation: "open riot-app.json beneath app root",
+            ..
+        })
+    ));
+
+    assert!(matches!(
+        pack(PackInput {
+            app_dir: PathBuf::from("..").as_path(),
+            author: &author,
+            timestamp_micros: 1,
+        }),
+        Err(PackError::Io { .. })
+    ));
+
+    let manifest_directory = copy_fixture();
+    fs::remove_file(manifest_directory.path().join("riot-app.json")).unwrap();
+    fs::create_dir(manifest_directory.path().join("riot-app.json")).unwrap();
+    assert!(matches!(
+        pack(PackInput {
+            app_dir: manifest_directory.path(),
+            author: &author,
+            timestamp_micros: 1,
+        }),
+        Err(PackError::NonRegularFile { path }) if path == "riot-app.json"
+    ));
+
+    #[cfg(unix)]
+    {
+        use std::ffi::CString;
+        use std::os::unix::ffi::OsStrExt;
+
+        let fifo_root = copy_fixture();
+        let fifo_path = fifo_root.path().join("stream.js");
+        let fifo = CString::new(fifo_path.as_os_str().as_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
+        assert!(matches!(
+            pack(PackInput {
+                app_dir: fifo_root.path(),
+                author: &author,
+                timestamp_micros: 1,
+            }),
+            Err(PackError::NonRegularFile { path }) if path == "stream.js"
+        ));
+    }
 }
 
 #[test]
@@ -421,6 +735,126 @@ fn inspect_rejects_partial_and_tampered_artifacts() {
 }
 
 #[test]
+fn inspect_rejects_size_count_duplicate_kind_and_entry_point_mismatch() {
+    assert!(matches!(
+        inspect(&vec![0; riot_core::import::MAX_BUNDLE_BYTES + 1]),
+        Err(InspectError::InvalidImportBundle {
+            reason: "artifact exceeds the import size limit"
+        })
+    ));
+
+    let packed = pack_fixture(7);
+    let items = signed_items(&packed.import_bundle_bytes);
+    let one = encode_bundle(&items[..1]).unwrap();
+    assert!(matches!(
+        inspect(&one),
+        Err(InspectError::IncoherentPair {
+            reason: "exactly two entries are required"
+        })
+    ));
+
+    let duplicate_author = generate_communal_author().unwrap();
+    let duplicate_manifest = AppManifest {
+        name: "duplicate".into(),
+        description: "duplicate".into(),
+        version: "1".into(),
+        author: duplicate_author.identity(),
+        permissions: vec![],
+        entry_point: "index.html".into(),
+    };
+    let duplicate_payload = encode_manifest(&duplicate_manifest).unwrap();
+    let duplicate_kind = encode_bundle(&[
+        signed_at(
+            &duplicate_author,
+            app_index_manifest_path(&[1; 32]).unwrap(),
+            &duplicate_payload,
+            7,
+        ),
+        signed_at(
+            &duplicate_author,
+            app_index_manifest_path(&[2; 32]).unwrap(),
+            &duplicate_payload,
+            8,
+        ),
+    ])
+    .unwrap();
+    let duplicate_result = inspect(&duplicate_kind);
+    assert!(
+        matches!(
+            duplicate_result,
+            Err(InspectError::IncoherentPair {
+                reason: "entries are not one manifest and one resource bundle"
+            })
+        ),
+        "{duplicate_result:?}"
+    );
+
+    let unclassifiable = encode_bundle(&[
+        signed_at(
+            &duplicate_author,
+            app_data_path(&[3; 32], "items/first").unwrap(),
+            b"neither manifest nor resource bundle",
+            7,
+        ),
+        signed_at(
+            &duplicate_author,
+            app_data_path(&[3; 32], "items/second").unwrap(),
+            b"also neither manifest nor resource bundle",
+            7,
+        ),
+    ])
+    .unwrap();
+    assert!(matches!(
+        inspect(&unclassifiable),
+        Err(InspectError::IncoherentPair {
+            reason: "entries are not one manifest and one resource bundle"
+        })
+    ));
+
+    let author = generate_communal_author().unwrap();
+    let bundle = AppBundle {
+        entry_point: "index.html".into(),
+        resources: vec![AppResource {
+            path: "index.html".into(),
+            content_type: "text/html".into(),
+            bytes: b"ok".to_vec(),
+        }],
+    };
+    let bundle_bytes = riot_core::apps::bundle::encode_app_bundle(&bundle).unwrap();
+    let manifest = AppManifest {
+        name: "mismatch".into(),
+        description: "mismatch".into(),
+        version: "1".into(),
+        author: author.identity(),
+        permissions: vec![],
+        entry_point: "other.html".into(),
+    };
+    let manifest_bytes = encode_manifest(&manifest).unwrap();
+    let app_id = app_id_for(&manifest, &app_bundle_digest(&bundle_bytes)).unwrap();
+    let artifact = encode_bundle(&[
+        signed_at(
+            &author,
+            app_index_manifest_path(&app_id).unwrap(),
+            &manifest_bytes,
+            7,
+        ),
+        signed_at(
+            &author,
+            app_index_bundle_path(&app_id).unwrap(),
+            &bundle_bytes,
+            7,
+        ),
+    ])
+    .unwrap();
+    assert!(matches!(
+        inspect(&artifact),
+        Err(InspectError::IncoherentPair {
+            reason: "manifest and bundle entry points differ"
+        })
+    ));
+}
+
+#[test]
 fn inspect_rejects_spoofed_full_author_identity_and_mixed_timestamps() {
     let attacker = generate_communal_author().unwrap();
     let victim = generate_communal_author().unwrap();
@@ -538,7 +972,10 @@ fn inspect_and_cli_reject_terminal_control_fields_without_echoing_them() {
     let tmp = tempdir();
     let path = tmp.path().join("hostile.riot");
     fs::write(&path, artifact).unwrap();
-    let output = Command::new(env!("CARGO_BIN_EXE_riot-app"))
+    let Some(binary) = cli_binary() else {
+        return;
+    };
+    let output = Command::new(binary)
         .arg("inspect")
         .arg(path)
         .output()
@@ -752,7 +1189,9 @@ fn command_line_keygen_pack_and_inspect_smoke() {
     let tmp = tempdir();
     let keys = tmp.path().join("keys");
     let artifact = tmp.path().join("hello.riot");
-    let binary = env!("CARGO_BIN_EXE_riot-app");
+    let Some(binary) = cli_binary() else {
+        return;
+    };
     assert!(Command::new(binary)
         .args(["keygen", "--out"])
         .arg(&keys)
