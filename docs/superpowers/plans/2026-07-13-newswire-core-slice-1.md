@@ -1,12 +1,12 @@
 # Newswire Core Slice 1 Implementation Plan
 
-Plan review gate: **REVISED AFTER ITERATION 1; PENDING. Do not execute until all three plan reviewers pass this exact text.**
+Plan review gate: **REVISED AFTER ITERATION 2; PENDING. Do not execute until all three plan reviewers pass this exact text.**
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Make Riot core create, import, retain, and deterministically project one community's signed open Newswire records end to end.
 
-**Architecture:** Add one focused `newswire` module beside the existing alert and app protocols. Canonical CBOR payloads and content-derived Willow paths are validated at import; the existing evidence store carries their exact bytes; a pure reducer derives the open wire, collective front page, editorial history, quarantine, and Earlier view from a descriptor-pinned record set. This is the first executable vertical slice: native UI, browser/WASM, gateway rendering, multi-space persistence, and media remain separate plans after the core contract is proven.
+**Architecture:** Add one focused `newswire` module beside the existing alert and app protocols. Canonical CBOR payloads and content-derived Willow paths are validated at import; the existing evidence store retains verified entry facts plus exact Newswire payload bytes for projection; a pure reducer derives the open wire, collective front page, editorial history, quarantine, and Earlier view from a descriptor-pinned record set. Complete signed bytes remain in the existing caller/transport inventory rather than being duplicated in `JoinState`. This is the first executable vertical slice: native UI, browser/WASM, gateway rendering, sync-inventory persistence, multi-space persistence, and media remain separate plans after the core contract is proven.
 
 **Tech Stack:** Rust 2021, `minicbor`, Willow'25/Meadowcap, SHA-256 Riot `EntryId`, WILLIAM3 payload digests, existing `RiotSession` evidence store, Rust integration tests, committed golden vectors.
 
@@ -28,6 +28,21 @@ This plan deliberately does not add Swift, Kotlin, JavaScript, WASM, HTTP,
 directory, governance, media, roster rotation, or gateway code. The next plan
 may expose this stable core through FFI/native UI without changing the wire
 format.
+
+The current store intentionally discards capability/signature evidence after
+verified admission. This slice does not change that ownership boundary:
+`SignedNewswireRecord` supplies complete bytes to the existing transport or
+mobile inventory, while `EvidenceStore` retains only the verified Willow entry
+and Newswire payload needed to rebuild projections. Both fresh-store rebuild
+tests import the same committed complete signed fixtures; they never claim the
+projection store can re-export evidence.
+
+Backward compatibility is one-way and explicit: no released record family
+currently owns the reserved `newswire/v1` prefix, so adding its closed schema
+branch cannot reinterpret a valid alert, app, app-index, or profile entry.
+Removing the module and its two admission branches restores the prior behavior;
+existing record codecs and path families are not rewritten. Newswire payload
+retention uses the store's existing payload-byte accounting and limits.
 
 ## Frozen wire limits
 
@@ -245,28 +260,11 @@ instructions; it requires post expiry and coarse location. No other profile
 tag is accepted. Export one `NewswireModelError` enum with stable variants
 naming every validation failure; do not return raw minicbor errors.
 
-Register every conformance test now so later tasks do not silently run without
-their required feature:
+Register only the test file created in this task:
 
 ```toml
 [[test]]
 name = "newswire_codec"
-required-features = ["conformance"]
-
-[[test]]
-name = "newswire_entry"
-required-features = ["conformance"]
-
-[[test]]
-name = "newswire_import"
-required-features = ["conformance"]
-
-[[test]]
-name = "newswire_projection"
-required-features = ["conformance"]
-
-[[test]]
-name = "newswire_end_to_end"
 required-features = ["conformance"]
 ```
 
@@ -296,6 +294,7 @@ git commit -m "feat(newswire): add canonical payload codecs"
 - Create: `crates/riot-core/src/newswire/path.rs`
 - Create: `crates/riot-core/src/newswire/entry.rs`
 - Modify: `crates/riot-core/src/newswire/mod.rs`
+- Modify: `crates/riot-core/Cargo.toml`
 - Test: `crates/riot-core/tests/newswire_entry.rs`
 
 - [ ] **Step 1: Write failing path, signature, and authority tests**
@@ -334,6 +333,14 @@ cargo test -p riot-core --features conformance --test newswire_entry
 ```
 
 Expected: FAIL because the path and factory APIs do not exist.
+
+Register `newswire_entry` only when its file exists:
+
+```toml
+[[test]]
+name = "newswire_entry"
+required-features = ["conformance"]
+```
 
 - [ ] **Step 2: Add exact path builders and a closed classifier**
 
@@ -415,7 +422,8 @@ post/action authority is checked later against the pinned descriptor.
 ```bash
 cargo test -p riot-core --features conformance --test newswire_entry
 cargo test -p riot-core --all-features
-git add crates/riot-core/src/newswire crates/riot-core/tests/newswire_entry.rs
+git add crates/riot-core/src/newswire crates/riot-core/tests/newswire_entry.rs \
+  crates/riot-core/Cargo.toml
 git diff --cached --check
 git commit -m "feat(newswire): sign descriptor-bound records"
 ```
@@ -431,6 +439,7 @@ record.
 - Modify: `crates/riot-core/src/import/join.rs`
 - Create: `crates/riot-core/src/newswire/store.rs`
 - Modify: `crates/riot-core/src/newswire/mod.rs`
+- Modify: `crates/riot-core/Cargo.toml`
 - Test: `crates/riot-core/tests/newswire_import.rs`
 
 - [ ] **Step 1: Write failing import tests**
@@ -453,6 +462,14 @@ cargo test -p riot-core --features conformance --test newswire_import
 
 Expected: FAIL because bundle schema verification rejects Newswire before
 session admission can recognize or retain it.
+
+Register `newswire_import` only when its file exists:
+
+```toml
+[[test]]
+name = "newswire_import"
+required-features = ["conformance"]
+```
 
 - [ ] **Step 2: Reserve Newswire at bundle verification, then retain it in `inspect_inner`**
 
@@ -575,7 +592,7 @@ cargo test -p riot-core --features conformance --test newswire_import
 cargo test -p riot-core --all-features
 git add crates/riot-core/src/session.rs crates/riot-core/src/import/join.rs \
   crates/riot-core/src/import/bundle.rs crates/riot-core/src/newswire \
-  crates/riot-core/tests/newswire_import.rs
+  crates/riot-core/tests/newswire_import.rs crates/riot-core/Cargo.toml
 git diff --cached --check
 git commit -m "feat(newswire): admit signed records into the evidence store"
 ```
@@ -586,6 +603,7 @@ git commit -m "feat(newswire): admit signed records into the evidence store"
 - Create: `crates/riot-core/src/newswire/projection.rs`
 - Modify: `crates/riot-core/src/newswire/store.rs`
 - Modify: `crates/riot-core/src/newswire/mod.rs`
+- Modify: `crates/riot-core/Cargo.toml`
 - Test: `crates/riot-core/tests/newswire_projection.rs`
 
 - [ ] **Step 1: Write the failing reducer matrix**
@@ -597,6 +615,9 @@ of this matrix in named tests:
 | --- | --- |
 | No posts | empty Open wire and Front page |
 | Eligible posts | descending `(TAI time, EntryId)` |
+| exact duplicate `EntryId` inputs | one logical record and one projection row |
+| exactly 1,024 distinct records | accepted |
+| 1,025 distinct records | stable `PROJECTION_LIMIT_EXCEEDED` error |
 | Expired post | Earlier only |
 | `time > clock.tai + 600_000_000` | quarantine only |
 | future-cutoff overflow | `CLOCK_OUT_OF_RANGE` |
@@ -618,6 +639,14 @@ cargo test -p riot-core --features conformance --test newswire_projection
 ```
 
 Expected: FAIL because the reducer does not exist.
+
+Register `newswire_projection` only when its file exists:
+
+```toml
+[[test]]
+name = "newswire_projection"
+required-features = ["conformance"]
+```
 
 The overflow case is a unit test inside `projection.rs`, where the test module
 can construct the private clock fields at `u64::MAX`; no production or
@@ -682,7 +711,9 @@ There is no constructor accepting independent Unix and TAI values.
 - [ ] **Step 3: Implement the reducer exactly once**
 
 The reducer takes the verified descriptor, records, and clock. It first rejects
-an inconsistent descriptor namespace/founder or more than 1,024 records. It
+an inconsistent descriptor namespace/founder, deduplicates exact `EntryId`
+inputs while requiring duplicate values to be structurally identical, and
+rejects more than 1,024 distinct records with `PROJECTION_LIMIT_EXCEEDED`. It
 filters records to the descriptor namespace and pinned descriptor ID; derives
 action actor from the verified entry signer; applies the fixed unique roster;
 uses checked TAI cutoff addition; orders eligible records by `(tai, EntryId)`;
@@ -716,7 +747,8 @@ pub fn project_space(
 ```bash
 cargo test -p riot-core --features conformance --test newswire_projection
 cargo test -p riot-core --all-features
-git add crates/riot-core/src/newswire crates/riot-core/tests/newswire_projection.rs
+git add crates/riot-core/src/newswire crates/riot-core/tests/newswire_projection.rs \
+  crates/riot-core/Cargo.toml
 git diff --cached --check
 git commit -m "feat(newswire): derive deterministic collective views"
 ```
@@ -769,6 +801,14 @@ cargo test -p riot-core --features conformance --test newswire_end_to_end
 ```
 
 Expected: FAIL because vectors and packer do not exist.
+
+Register `newswire_end_to_end` only when its file exists:
+
+```toml
+[[test]]
+name = "newswire_end_to_end"
+required-features = ["conformance"]
+```
 
 - [ ] **Step 2: Add deterministic vector generation**
 
@@ -855,7 +895,7 @@ scope without Rabble's direction.
 ```bash
 cargo test -p riot-core --test release_surface
 cargo xtask validate-contracts
-rg -n "EditorialAction|editorial.*key" crates/riot-ffi apps gateway web || true
+! rg -n "EditorialAction|editorial.*key" crates/riot-ffi apps/gateway
 ```
 
 Expected: release-surface and contract validation pass; the search finds no new
