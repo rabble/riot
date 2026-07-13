@@ -1,16 +1,18 @@
 # Multi-Community Open Newswire MVP Design
 
 Date: 2026-07-13
-Status: Approved in brainstorming; pending written-spec review and design review gate
+Status: Revised after written-spec review; pending approval and design review gate
 
 ## Purpose
 
 Build the smallest useful Indymedia-style publishing system inside Riot:
 open publishing, a collective editorial front page, transparent post-hoc
-moderation, offline-first distribution, and no authoritative publishing server.
+editorial stewardship, offline-first distribution, and no authoritative
+publishing server.
 
-The product is not one global newswire. Riot contains many independently run
-community spaces, such as Uganda, Germany, Uruguay, or Queers of Aotearoa. Each
+The product is not one global newswire. Riot contains many independently
+self-governed community spaces, such as Uganda, Germany, Uruguay, or Queers of
+Aotearoa. Each
 space can carry a Newswire alongside the community's other signed local-first
 apps.
 
@@ -20,15 +22,47 @@ This design narrows the Track A newswire in
 model from `2026-07-11-app-directory-design.md`, and the app isolation contract
 from `2026-07-12-community-miniapp-suite-design.md`.
 
+## Political Commitments
+
+Riot is a prefigurative political project: the infrastructure should practice
+the social relations it hopes to make possible. It does not merely help people
+post through a crisis. It helps communities build durable capacity to publish,
+deliberate, coordinate, remember, and act without asking a state or corporate
+platform for permission.
+
+This MVP therefore treats:
+
+- **communities as self-governing media institutions**, not audiences segmented
+  by a platform;
+- **editorial collectives as accountable participants**, not remote moderation
+  teams administering someone else's service;
+- **open publishing as a political commitment**, with curation happening after
+  publication rather than through a bureaucratic permission gate;
+- **signed editorial decisions as public acts**, so power remains legible,
+  attributable, reversible, and open to criticism;
+- **gateways as movement infrastructure**, replaceable utilities that serve a
+  community rather than landlords that own its identity or archive;
+- **replication as shared custody**, placing the means of distribution in the
+  hands of readers, contributors, and collectives; and
+- **community apps as instruments of collective agency**, moving people from
+  consuming a feed to meeting needs, making decisions, preserving knowledge,
+  and organizing together.
+
+The product rejects opaque ranking, hidden enforcement, engagement extraction,
+and the fiction that technical administration is politically neutral. The MVP
+is deliberately small, but its boundaries must point toward democratic control
+and community autonomy rather than recreating a centralized platform in
+miniature.
+
 ## Product Decision
 
 A Riot space is a community container, not a synonym for a feed. Each public
 community space has:
 
-- its own identity, descriptive metadata, and fixed MVP admin-key list;
+- its own identity, descriptive metadata, and fixed MVP editorial-key roster;
 - an open Newswire anyone can publish to;
-- a collective editorial front page derived from signed admin actions;
-- a raw chronological wire and inspectable moderation history;
+- a collective editorial front page derived from signed editorial actions;
+- a raw chronological wire and inspectable editorial-action history;
 - a set of community-approved signed apps with isolated data alongside the
   first-party Newswire surface;
 - a shareable link and QR code; and
@@ -49,10 +83,10 @@ The MVP is successful when:
    browser without a central account.
 4. The post is readable locally before any gateway accepts it and later merges
    idempotently from nearby, file, or gateway exchange.
-5. A configured admin can sign a feature, verification, correction, hide, or
-   safety-tombstone action.
+5. A recognized editor can sign a feature, verification, correction, hide, or
+   safety-tombstone action in the name of the space's editorial collective.
 6. Every client derives the same collective front page, open wire, and
-   moderation history from the same signed records.
+   editorial-action history from the same signed records.
 7. A space exposes its approved Checklist, Needs & Offers, Events, Decisions,
    Chat, Dispatches, Wiki, Photo Wall, and future signed apps alongside
    Newswire.
@@ -63,7 +97,7 @@ The MVP is successful when:
 
 ### Included
 
-- Multiple independently administered public community spaces.
+- Multiple independently self-governed public community spaces.
 - A responsive Newswire experience on Riot and the public web.
 - Persistent local pseudonymous signing identities by default.
 - Clearly labeled one-off ephemeral publishing identities.
@@ -71,8 +105,8 @@ The MVP is successful when:
 - Required stricter fields for operational alerts or requests when those
   existing Riot object profiles are selected.
 - A collective editorial front page plus a raw chronological wire.
-- A fixed list of admin public keys per space.
-- Independently signed, transparent post-hoc moderation actions.
+- A fixed roster of editorial public keys per space.
+- Individually signed, transparent post-hoc editorial actions.
 - A replaceable web gateway for rendering, directory discovery, submission
   transport, and public sync.
 - Existing per-space signed miniapp distribution, approval, and isolation.
@@ -80,7 +114,7 @@ The MVP is successful when:
 ### Explicitly deferred
 
 - Quorum enforcement and threshold signatures.
-- Admin rotation, recovery, and governance-management UI.
+- Editorial-roster rotation, recovery, and collective-governance UI.
 - Post editing or destructive deletion.
 - Ranking algorithms, reputation scores, ratings, and personalized feeds.
 - Competing or forked curation lenses within one named community.
@@ -89,8 +123,8 @@ The MVP is successful when:
 - A canonical global directory.
 - A promise to remove data from devices that already copied it.
 
-These are deferrals, not hidden placeholders. The MVP admin list is fixed when a
-space descriptor is created. A community that must change that list before
+These are deferrals, not hidden placeholders. The MVP editorial roster is fixed
+when a space descriptor is created. A community that must change that list before
 governance management exists creates a successor descriptor and links it from
 the old space where possible.
 
@@ -132,10 +166,11 @@ appear together.
 
 Newswire has two explicit views:
 
-- **Front page** presents posts featured by configured admin keys, including
+- **Front page** presents posts featured by the editorial collective's
+  recognized keys, including
   verification and correction state.
 - **Open wire** presents every valid, non-expired post in signed creation order,
-  subject to the display treatment of valid moderation actions.
+  subject to the display treatment of valid editorial actions.
 
 There is no opaque blended ranking. Readers always know whether they are seeing
 the collective's editorial selection or the open chronological wire.
@@ -205,7 +240,8 @@ community identity or its existing copies.
 
 Riot core owns canonical record encoding, signing and verification, schema and
 budget validation, deterministic Newswire projections, Willow admission, and
-merge behavior. UI code never decides whether an admin action is authoritative.
+merge behavior. UI code never decides whether an editorial action is
+authoritative.
 
 #### Newswire experience
 
@@ -213,7 +249,7 @@ Newswire is a first-party host surface backed by typed Riot-core commands and
 projections. It is not executed through the JavaScript miniapp bridge in the
 MVP. Mobile and desktop use native shell routes; the gateway uses a responsive
 web renderer over the same canonical records. Security-critical validation and
-admin recognition remain in core on every surface. A later extraction into a
+editorial-key recognition remain in core on every surface. A later extraction into a
 portable app requires a separate reviewed capability design.
 
 #### Community shell and app runtime
@@ -229,7 +265,8 @@ A gateway:
 
 - accepts bounded public signed records;
 - validates and deduplicates before caching;
-- renders a directory, front page, open wire, post form, and moderation history;
+- renders a directory, front page, open wire, post form, and editorial-action
+  history;
 - serves direct links, QR join data, and public exchange artifacts; and
 - can rebuild all community views from signed records.
 
@@ -246,15 +283,15 @@ but the logical MVP contract has four record families.
 
 `SpaceDescriptorV1` is an immutable bootstrap record. Its canonical digest is
 bound into the complete join/share reference, so a relay or gateway cannot
-silently substitute another name or admin list for the same community. It
+silently substitute another name or editorial roster for the same community. It
 contains:
 
 - complete public namespace/space identifier;
 - name and short description;
 - languages;
 - coarse geographic and topic tags;
-- fixed ordered set of admin public keys;
-- creation time and creator signature; and
+- fixed ordered roster of editorial public keys;
+- creation time and founding-signer signature; and
 - optional predecessor/successor space identifier.
 
 The descriptor never contains secret keys, precise member location, a complete
@@ -277,24 +314,25 @@ membership list, or an authoritative gateway URL.
 Posts are append-only. An author corrects a post through another signed record;
 the MVP does not overwrite or delete the original.
 
-### Admin annotation
+### Editorial action
 
-`AdminAnnotationV1` contains:
+`EditorialActionV1` contains:
 
-- stable annotation identifier;
-- target post identifier, or target annotation identifier for a retraction;
-- admin public key;
+- stable editorial-action identifier;
+- target post identifier, or target editorial-action identifier for a
+  retraction;
+- editor public key;
 - signed creation time;
 - action: `feature`, `verify`, `correct`, `hide`, `tombstone`, or `retract`;
 - required human-readable reason for `correct`, `hide`, `tombstone`, and
   `retract`; and
 - replacement or correction text where applicable.
 
-An annotation affects the collective projection only when its signature is
-valid and its signer occurs in that space descriptor's fixed admin list. Any
-configured admin acts independently in the MVP. `retract` targets one prior
-admin annotation and does not erase it. All valid actions and reversals remain
-inspectable.
+An action affects the collective projection only when its signature is valid
+and its signer occurs in that space descriptor's fixed editorial roster. Any
+recognized editor acts independently in the MVP. `retract` targets one prior
+editorial action and does not erase it. Every valid action and reversal remains
+inspectable as an act of the collective and an attributable act of its signer.
 
 ### Existing app records
 
@@ -307,7 +345,7 @@ cross-app read privilege or generic native bridge.
 - **Open wire:** valid posts ordered by signed creation time descending, with a
   deterministic full-ID tie-breaker. Expired posts move into an Earlier view.
 - **Front page:** non-expired posts with at least one current valid `feature`
-  annotation, ordered by feature time and full annotation ID.
+  action, ordered by feature time and full editorial-action ID.
 - **Verification:** display every current valid verification and its signer; do
   not collapse several human attestations into an unexplained score.
 - **Correction:** show the original plus the signed correction and reason.
@@ -317,9 +355,9 @@ cross-app read privilege or generic native bridge.
 - **Safety tombstone:** suppress the body and payload references from gateway and
   ordinary client projections. Retain only post ID, author key, timestamps,
   action signer, reason, and action history.
-- **Retraction:** a valid `retract` removes its target annotation from the
+- **Retraction:** a valid `retract` removes its target editorial action from the
   current collective projection while preserving both records in history.
-- **Unknown or invalid admin action:** retain only as unauthoritative raw data if
+- **Unknown or invalid editorial action:** retain only as unauthoritative raw data if
   local forensic policy permits; never alter the collective projection.
 
 The projection must define deterministic precedence for multiple actions and
@@ -332,7 +370,8 @@ order as authority.
 
 1. Riot creates and signs an immutable `SpaceDescriptorV1` locally and binds its
    canonical digest into the complete space reference.
-2. The creator chooses initial admin public keys and approved starter apps.
+2. The founding collective chooses its initial editorial public keys and
+   approved starter apps.
 3. The descriptor travels through nearby exchange, files, or a gateway.
 4. A gateway may list or feature it after local catalog review.
 5. Direct links and QR codes carry the complete space identifier and gateway
@@ -358,11 +397,11 @@ that this gateway declined to carry it.
 
 ### Moderate
 
-1. An admin chooses an action, supplies the required reason, and reviews the
-   target and acting identity.
-2. Core or the web signer creates an `AdminAnnotationV1`.
+1. An editor chooses an action, supplies the required reason, and reviews the
+   target, collective, and acting identity.
+2. Core or the web signer creates an `EditorialActionV1`.
 3. Clients and gateways verify both its signature and membership in the fixed
-   admin list.
+   editorial roster.
 4. Every implementation recomputes the same front page and wire projection.
 
 ## Failure Handling
@@ -373,8 +412,8 @@ that this gateway declined to carry it.
 | Duplicate record | Treat as idempotent success |
 | Invalid signature or malformed schema | Reject that record without poisoning valid siblings |
 | Path, size, count, or media budget exceeded | Reject before commit with a stable user-facing error |
-| Annotation signed by an unknown admin | Ignore for collective projection |
-| Conflicting valid annotations | Preserve all; apply deterministic precedence and show history |
+| Editorial action signed by an unknown editor | Ignore for collective projection |
+| Conflicting valid editorial actions | Preserve all; apply deterministic precedence and show history |
 | Incomplete or unapproved app | Never execute; offer organizer review only when authority permits |
 | Lost browser key | Explain unrecoverable pseudonym loss and create a new identity only with consent |
 | Gateway delists a space | Remove from that directory only; direct access and other copies remain |
@@ -391,8 +430,9 @@ existing no-network, navigation, CSP, path, and payload constraints.
   without treating those local policies as global deletion.
 - Signatures establish authorship, not truth. Verification is a named human
   attestation, not an automated fact score.
-- Moderator authority comes only from the space descriptor's full public keys.
-- No Nostr, Willow, post, annotation, or app identifier is truncated in
+- Editorial authority comes only from the full public keys in the space
+  descriptor's fixed collective roster.
+- No Nostr, Willow, post, editorial-action, or app identifier is truncated in
   protocol data, fixtures, diagnostics, or security decisions.
 - Public Newswire content is plaintext by design. Private-group state never
   enters a Newswire gateway.
@@ -415,7 +455,7 @@ Implementation follows TDD and the repository's coverage gate.
 - Front page and open-wire ordering.
 - Feature, verification, correction, ordinary hide, tombstone, reversal, and
   conflicting-action precedence.
-- Unknown-admin and forged-signature behavior.
+- Unknown-editor and forged-signature behavior.
 - Expiry and deterministic full-ID tie-breaking.
 
 ### End-to-end tests
@@ -432,7 +472,7 @@ Implementation follows TDD and the repository's coverage gate.
 - XSS, unsafe navigation, forged records, malicious packages, path traversal,
   and byte/count/rate limits.
 - Mobile and web screenshots for community chooser, Home, Newswire front page,
-  open wire, publishing, moderation history, and Tools.
+  open wire, publishing, editorial-action history, and Tools.
 - Keyboard, screen-reader, focus, touch-target, contrast, narrow-width, dynamic
   type, reduced-motion, and offline/error-state checks.
 - Coverage enforcement uses `.coverage-thresholds.json` as the sole threshold
@@ -443,7 +483,8 @@ Implementation follows TDD and the repository's coverage gate.
 The implementation plan should prefer end-to-end proof over subsystem breadth:
 
 1. **Canonical Newswire records and deterministic projection** in Riot core.
-2. **One-space Riot flow** for open publish, front page, wire, and admin action.
+2. **One-space Riot flow** for open publish, front page, wire, and editorial
+   action.
 3. **Gateway/web flow** using the same vectors and records.
 4. **Multiple-community selection and directory discovery.**
 5. **Existing signed-app integration** on the approved Home and Tools surfaces.
@@ -456,6 +497,7 @@ vertical path.
 ## Non-Goals
 
 This MVP does not solve every governance problem or promise universal
-censorship resistance. It proves a simpler claim: communities can openly
-publish, collectively curate, transparently moderate, carry useful local apps,
-and keep functioning when any one web server disappears.
+censorship resistance. It proves a simpler political and technical claim:
+communities can own the means to publish, collectively curate, make editorial
+power transparent, carry useful local apps, and keep organizing when any one web
+server disappears.
