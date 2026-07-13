@@ -180,8 +180,8 @@ the collective's editorial selection or the open chronological wire.
 Both Riot and the browser use the same review-before-signing flow:
 
 1. Enter a headline and report body.
-2. Optionally add event time, coarse location, sources, media references,
-   language, or expiry.
+2. Optionally add event time, coarse location, source claims, language, or
+   expiry.
 3. For an operational alert or request, complete the stricter fields required
    by that selected object profile.
 4. Review the exact destination community, content, and acting identity.
@@ -265,6 +265,11 @@ The signed community data is authoritative. A gateway is a cache, validator,
 renderer, index, and transport. Seizing or losing one gateway does not seize the
 community identity or its existing copies.
 
+A gateway-rendered view is advisory: it may be incomplete, censored, stale, or
+incorrect. Only locally verified signed records and the deterministic core
+projection carry protocol authority. Gateway-local carry or directory policy
+MUST NOT be presented as a signed editorial action.
+
 ### Components
 
 #### Riot core
@@ -322,21 +327,21 @@ contains:
 - languages;
 - coarse geographic and topic tags;
 - fixed ordered roster of editorial public keys;
-- creation time; and
+- creation time from the verified entry envelope; and
 - optional predecessor/successor space identifier.
 
 The descriptor never contains secret keys, precise member location, a complete
 membership list, or an authoritative gateway URL.
 
 For an MVP-created space, the descriptor is a signed Willow entry at
-`newswire/v1/descriptors/<random-16-byte-object-id>`. Its entry namespace MUST
-equal its declared complete namespace ID, and its verified entry subspace ID
-MUST equal that namespace ID. This bound signer is the founding organizer used
-by Riot's existing app-trust rules. The descriptor's complete canonical
-32-byte `EntryId` is the `space_descriptor_entry_id` pinned by join references
-and every Newswire record. A second descriptor in the same communal namespace
-is a different space definition, never an update or substitute for the pinned
-descriptor.
+`newswire/v1/descriptors/<u64be-entry-time>/<32-byte-payload-digest>`. Path
+components after `descriptors` are raw bytes. Its entry namespace MUST equal
+its declared complete namespace ID, and its verified entry subspace ID MUST
+equal that namespace ID. This bound signer is the founding organizer used by
+Riot's existing app-trust rules. The descriptor's complete Riot `EntryId` is
+the `space_descriptor_entry_id` pinned by join references and every Newswire
+record. A second descriptor in the same communal namespace is a different
+space definition, never an update or substitute for the pinned descriptor.
 
 ### News post
 
@@ -345,8 +350,8 @@ descriptor.
 - pinned `space_descriptor_entry_id`;
 - headline and plain-text body;
 - language;
-- optional event time, coarse location, source claims, media references, and
-  expiry;
+- optional event time and expiry as unsigned UTC Unix seconds, plus coarse
+  location and source claims;
 - optional existing Riot operational-object profile; and
 - the existing AI-assisted provenance flag.
 
@@ -355,19 +360,15 @@ editing; the MVP does not overwrite or delete the original.
 `EditorialActionV1.correct` is an editorial correction, not an author revision.
 
 A post entry uses
-`newswire/v1/<space-descriptor-entry-id>/posts/<random-16-byte-object-id>`.
-Its authoritative post identifier is the complete canonical 32-byte Willow
-`EntryId`, not the 16-byte object ID. The verified entry subspace ID is the
+`newswire/v1/<space-descriptor-entry-id>/posts/<u64be-entry-time>/<32-byte-payload-digest>`.
+Path components after `posts` are raw bytes. Its authoritative post identifier
+is the complete 32-byte Riot `EntryId`. The verified entry subspace ID is the
 author key and the checked Willow entry timestamp is the signed creation time.
 If an encoding duplicates either value in its payload, admission MUST require
-exact equality with the verified entry envelope.
-
-An optional `MediaRefV1` contains only a content digest, declared byte length,
-and allow-listed media type. Core verifies all three against bounded bytes
-before storage or rendering. A media reference MUST NOT be an arbitrary URL,
-and neither a client nor a gateway automatically fetches a publisher-supplied
-URL. Source URLs, when present as claims, render as inert text unless a person
-explicitly chooses to navigate to them; gateways never fetch them.
+exact equality with the verified entry envelope. Source URLs, when present as
+claims, render as inert text unless a person explicitly chooses to navigate to
+them; gateways never fetch them. Newswire media is deferred until a bounded
+content-addressed blob exchange contract exists.
 
 ### Editorial action
 
@@ -388,13 +389,13 @@ editorial action and does not erase it. Every valid action and reversal remains
 inspectable as an act of the collective and an attributable act of its signer.
 
 An editorial-action entry uses
-`newswire/v1/<space-descriptor-entry-id>/actions/<random-16-byte-object-id>`.
-Its authoritative action identifier is its complete canonical 32-byte Willow
-`EntryId`; its verified entry subspace ID is the editor key; and its checked
-Willow timestamp is the signed creation time. Payload duplicates, if any, MUST
-exactly equal those verified envelope values. A target outside the pinned
-descriptor, of the wrong record family, or absent from the accepted record set
-has no projection effect.
+`newswire/v1/<space-descriptor-entry-id>/actions/<u64be-entry-time>/<32-byte-payload-digest>`.
+Path components after `actions` are raw bytes. Its authoritative action
+identifier is its complete 32-byte Riot `EntryId`; its verified entry subspace
+ID is the editor key; and its checked Willow timestamp is the signed creation
+time. Payload duplicates, if any, MUST exactly equal those verified envelope
+values. A target outside the pinned descriptor, of the wrong record family, or
+absent from the accepted record set has no projection effect.
 
 ### Existing app records
 
@@ -411,31 +412,65 @@ authorizes Newswire projection. Neither grants the other authority.
 
 ### Envelope and scope invariants
 
+`PayloadDigest` is Willow'25 WILLIAM3 over the exact canonical payload bytes.
+`EntryId` is Riot's existing value identity:
+
+```text
+SHA-256("riot/willow-entry-id/v1" || u32be(len(canonical_entry_bytes)) || canonical_entry_bytes)
+```
+
+The length MUST fit `u32`; otherwise admission fails. Protocol fields and path
+components carry the raw 32 bytes. Textual join links and technical details use
+lowercase 64-character hexadecimal with no truncation.
+
 Admission MUST establish all of the following before a record can affect a
 projection:
 
 1. The Willow entry, capability, canonical encoding, and complete `EntryId`
    verify.
-2. The canonical path has the record-family form above and contains the exact
-   pinned descriptor `EntryId` where required.
+2. The canonical path has the record-family form above, contains the exact
+   pinned descriptor `EntryId` where required, and its raw timestamp and
+   payload-digest components exactly match the checked entry envelope.
 3. The payload's pinned descriptor `EntryId` equals the path binding and the
    descriptor in the complete join reference.
 4. Any duplicated namespace, actor, record ID, or timestamp exactly equals the
    authoritative verified entry-envelope value.
 5. An editorial action's actor occurs in the pinned descriptor's fixed roster.
 
-Exact duplicate `EntryId` values are one record. Object-ID reuse never
-identifies or targets a record and cannot make a target ambiguous.
+Exact duplicate `EntryId` values are one record. Caller-chosen short IDs never
+identify or target a Newswire record. For one signer, equal checked entry time
+and equal canonical payload are one logical record; any distinct payload
+occupies an incomparable path and cannot prune an earlier Newswire record.
+
+Editorial-roster members are unique complete 32-byte Willow `SubspaceId`
+values. Descriptor admission rejects malformed lengths and duplicates. The
+ordered representation is canonical metadata, not additional authority.
+
+Action fields are closed by type:
+
+| Action | Reason | Correction text |
+| --- | --- | --- |
+| `feature`, `verify` | forbidden | forbidden |
+| `correct` | required, non-empty | required, non-empty |
+| `hide`, `tombstone`, `retract` | required, non-empty | forbidden |
 
 ## Projection Rules
 
-The pure reducer is `project(accepted_records, as_of)`. Given identical
-accepted records and the same `as_of`, every implementation MUST return the
-same result. `MAX_FUTURE_SKEW_SECONDS` is the protocol constant `600`. A post or
-action whose checked entry time is greater than `as_of + 600 seconds` remains
-inspectable in a future-dated quarantine and has no current projection effect
-until it becomes eligible. Expiry and future eligibility use the supplied
-`as_of`, never arrival time.
+The pure reducer is `project(accepted_records, clock)`, where
+`ProjectionClockV1` contains `unix_seconds: u64` and
+`tai_j2000_micros: u64` derived from the same instant. Core constructs both
+through Riot's pinned `hifitime` to Willow `Timestamp` conversion; they are
+never interchanged or arithmetically converted by the reducer. Shared golden
+vectors pin that conversion for every implementation.
+
+Given identical accepted records and the same clock, every implementation MUST
+return the same result. `MAX_FUTURE_SKEW_MICROS` is the protocol constant
+`600_000_000`. If checked addition of that constant to
+`clock.tai_j2000_micros` overflows, projection fails with `CLOCK_OUT_OF_RANGE`.
+A post or action whose checked Willow entry time exceeds the resulting cutoff
+remains inspectable in a future-dated quarantine and has no current projection
+effect until eligible. A payload expiry is compared only to
+`clock.unix_seconds`. Neither rule uses arrival time.
 
 Eligible posts and actions have the total ascending order `(checked entry
 time, complete EntryId)`. Exact duplicate EntryIds are deduplicated. An eligible
@@ -447,9 +482,9 @@ or wrong-space targets have no effect. Arrival order is never an input.
 
 For each eligible post:
 
-- **Open wire:** order posts by `(checked entry time, complete post EntryId)`
-  descending. A post whose expiry is less than or equal to `as_of` moves into
-  Earlier using the same order.
+- **Open wire:** order posts by `(checked Willow entry time, complete post
+  EntryId)` descending. A post whose expiry is less than or equal to
+  `clock.unix_seconds` moves into Earlier using the same order.
 - **Safety tombstone:** if any active `tombstone` exists, suppress body and
   payload references from gateway and ordinary client projections. Retain only
   complete post ID, author key, timestamps, action signer, reason, and action
@@ -498,8 +533,9 @@ collective projection.
 
 1. The browser creates or loads a local signing identity.
 2. The browser renders the same review fields and signs the canonical post.
-3. A gateway validates and caches the record, then relays it to other sources.
-4. Riot clients receive and verify the same bytes through normal public sync.
+3. It commits the signed bytes and retry state to the durable local outbox.
+4. A gateway validates and caches the record, then relays it to other sources.
+5. Riot clients receive and verify the same bytes through normal public sync.
 
 Gateway rejection never invalidates the person's signed record; it means only
 that this gateway declined to carry it.
@@ -522,14 +558,14 @@ that this gateway declined to carry it.
 | Offline or gateway unavailable | Commit locally, show Pending exchange, retain retry and nearby/file paths |
 | Duplicate record | Treat as idempotent success |
 | Invalid signature or malformed schema | Reject that record without poisoning valid siblings |
-| Path, size, count, or media budget exceeded | Reject before commit with a stable user-facing error |
+| Path, size, count, or payload budget exceeded | Reject before commit with a stable user-facing error |
 | Editorial action signed by an unknown editor | Ignore for collective projection |
 | Conflicting valid editorial actions | Preserve all; apply deterministic precedence and show history |
-| Future-dated signed record | Keep inspectable in quarantine; exclude until `as_of + MAX_FUTURE_SKEW_SECONDS` admits it |
+| Future-dated signed record | Keep inspectable in quarantine; exclude until the `ProjectionClockV1` TAI cutoff admits it |
 | Incomplete or unapproved app | Never execute; offer organizer review only when authority permits |
 | Lost browser key | Explain unrecoverable pseudonym loss and create a new identity only with consent |
 | Gateway delists a space | Remove from that directory only; direct access and other copies remain |
-| Safety tombstone arrives after content copied | Suppress future ordinary display and redistribution without claiming remote erasure |
+| Safety tombstone arrives after content copied | Stop ordinary rendering and gateway/export offers where known; do not claim raw replicas erased or cannot exchange the immutable entry |
 
 Malformed user strings render only as text. Web and miniapp surfaces enforce the
 existing no-network, navigation, CSP, path, and payload constraints.
