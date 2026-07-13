@@ -1,7 +1,7 @@
 # Riot local-first PWA vertical slice design
 
 Date: 2026-07-13
-Status: Revision 5 after metaswarm design-review findings
+Status: Revision 6 after metaswarm design-review findings
 
 ## Purpose
 
@@ -308,10 +308,12 @@ remain in Technical details. Creating or editing display names is not part of
 this slice. `suggested_local_title` is the literal `Imported community`; it has
 no authority meaning and may be edited before join.
 
-The workspace pins `wasm-bindgen` exactly. `scripts/web/build.sh` verifies and
-uses the identical `wasm-bindgen-cli` version, runs the release WASM build, emits
-web-target glue into a generated directory, and creates the content-hashed
-service-worker asset manifest. A version mismatch is a hard build failure.
+The workspace pins `wasm-bindgen = 0.2.126`. `scripts/web/build.sh` verifies
+`wasm-bindgen-cli 0.2.126`, runs
+`cargo build --locked --release -p riot-web --target wasm32-unknown-unknown`,
+then invokes that exact CLI with `--target web` to emit glue into a generated
+directory and creates the content-hashed service-worker asset manifest. A
+version mismatch is a hard build failure.
 Generated glue/build output is not hand-edited. `package-lock.json` similarly
 pins Node test/build dependencies.
 
@@ -413,9 +415,10 @@ original normalized route so provenance and route-byte accounting are stable.
 
 The log detects corruption and internal omission relative to its manifest. It
 cannot detect same-origin deletion of both a manifest suffix and its objects,
-replacement by an older self-consistent database, or complete site-data
-clearing without an external anchor. Home therefore reports last local change
-time without claiming the browser holds a complete global history.
+replacement or reordering by an older/different self-consistent database, or
+complete site-data clearing without an external anchor. Home therefore reports
+last local change time without claiming the browser holds a complete global
+history.
 
 **Export community data** asks the shared controller to encode the current live
 single-namespace inventory as one canonical bundle, sorted by entry ID and
@@ -748,11 +751,17 @@ rendered in an `aria-live` region.
 
 `.coverage-thresholds.json` remains the source of truth: 100% lines, branches,
 functions, and statements. Before production implementation begins, its
-enforcement command changes to `scripts/web/coverage.sh`. That script runs
+enforcement command changes to `scripts/web/coverage.sh`. A non-interactive
+`scripts/web/bootstrap.sh` installs `nightly-2026-07-01` with
+`llvm-tools-preview` using
+`rustup toolchain install nightly-2026-07-01 --profile minimal --component llvm-tools-preview --no-self-update`.
+If the installed versions differ, it runs locked installs for
+`cargo-llvm-cov = 0.8.7`, `cargo-tarpaulin = 0.37.0`, and
+`wasm-bindgen-cli = 0.2.126`; the coverage/build scripts reject any other
+versions. The coverage script runs
 the existing `cargo tarpaulin --workspace --all-features --fail-under 100` line
-gate, verifies `cargo-llvm-cov 0.7.0`, runs
-`cargo llvm-cov clean --workspace`, and generates
-`cargo llvm-cov --workspace --all-features --branch --json --output-path target/llvm-cov/riot.json`.
+gate, runs `cargo +nightly-2026-07-01 llvm-cov clean --workspace`, and generates
+`cargo +nightly-2026-07-01 llvm-cov --workspace --all-features --branch --json --output-path target/llvm-cov/riot.json`.
 A checked-in
 validator fails unless LLVM totals report 100% lines, functions, regions, and
 branches; LLVM regions are the Rust executable-statement metric recorded under
@@ -775,12 +784,18 @@ the package-lock-pinned browser revisions with
 
 TDD work proceeds in independently green slices:
 
-1. **Coverage gate (RED first):** a fixture production branch absent from tests
-   makes `scripts/web/coverage.sh` fail; add the composite threshold command to
-   `.coverage-thresholds.json`, then separately prove missing Rust line,
-   function, region/statement, and branch coverage and missing JS coverage each
-   fail before removing the fixtures. The empty web baseline plus existing Rust
-   suite pass before feature code.
+1. **Coverage baseline remediation (existing RED):** the retained Tarpaulin
+   artifact records 4,177/5,010 traced lines (about 83.37%), so the repository is
+   not assumed green. First wire `.coverage-thresholds.json` to the composite
+   command and add `scripts/web/bootstrap.sh`, the pinned nightly LLVM report,
+   and its totals validator. Then add behavior-focused tests and only minimal
+   test seams for existing authored production Rust under `crates/*/src` until
+   Tarpaulin lines and LLVM lines/functions/regions/branches all reach 100%.
+   Generated UniFFI/wasm glue, `target/`, and vendored upstream sources are the
+   only exclusions; every exclusion is an exact checked-in path. Split this
+   bounded remediation into per-crate commits, with no product behavior or web
+   feature changes. Fixture omissions separately prove each metric fails. This
+   gate must pass before the WASM milestone.
 2. **WASM build contract (RED first):** a target check fails on the current
    `getrandom` configuration and, after a temporary entropy fix, at
    `lsm-tree`'s unsupported-platform guard. Vendor the exact allowlisted
@@ -842,6 +857,7 @@ cargo test --workspace --all-features
 cargo check --workspace --all-features
 cargo fmt --all -- --check
 cargo clippy --workspace --all-features -- -D warnings
+scripts/web/bootstrap.sh
 npm ci
 ./node_modules/.bin/playwright install --with-deps chromium webkit
 scripts/web/build.sh
