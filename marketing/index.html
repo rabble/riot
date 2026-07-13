@@ -353,6 +353,38 @@ section { padding: clamp(56px, 9vw, 100px) 0; }
 @media (max-width: 900px) { .lineage-strip { grid-template-columns: 1fr 1fr; gap: 26px 0; } }
 @media (max-width: 520px) { .lineage-strip { grid-template-columns: 1fr; gap: 22px 0; } }
 
+.builder-card {
+  scroll-margin-top: 90px;
+  margin-top: 64px;
+  padding: clamp(26px, 4vw, 44px);
+  border: 2px solid var(--paper);
+  background: color-mix(in srgb, var(--paper) 5%, transparent);
+  box-shadow: 8px 8px 0 var(--pink);
+}
+.builder-kicker {
+  margin: 0 0 12px;
+  color: var(--pink);
+  font-family: 'Space Mono', monospace;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+.builder-card > h2 { max-width: 16ch; margin: 0; color: var(--paper); font-size: clamp(34px, 5vw, 58px); }
+.builder-lede { max-width: 70ch; margin: 22px 0 0; color: color-mix(in srgb, var(--paper) 88%, transparent); font-size: 18px; }
+.builder-lede a { font-weight: 700; }
+.builder-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 34px; margin-top: 38px; padding-top: 32px; border-top: 2px solid color-mix(in srgb, var(--paper) 28%, transparent); }
+.builder-grid article + article { padding-left: 34px; border-left: 2px solid color-mix(in srgb, var(--paper) 28%, transparent); }
+.builder-grid h3 { margin: 0 0 12px; color: var(--paper); font-family: 'Anton', sans-serif; font-size: 24px; letter-spacing: -0.005em; text-transform: uppercase; }
+.builder-grid p { margin: 0; color: color-mix(in srgb, var(--paper) 76%, transparent); font-size: 15px; }
+.builder-sources { display: flex; flex-wrap: wrap; gap: 9px 18px; margin-top: 18px; }
+.builder-sources a { font-family: 'Space Mono', monospace; font-size: 10.5px; font-weight: 700; letter-spacing: 0.03em; text-transform: uppercase; }
+@media (max-width: 760px) {
+  .builder-card { margin-top: 48px; box-shadow: 5px 5px 0 var(--pink); }
+  .builder-grid { grid-template-columns: 1fr; gap: 28px; }
+  .builder-grid article + article { padding: 28px 0 0; border-top: 2px solid color-mix(in srgb, var(--paper) 28%, transparent); border-left: 0; }
+}
+
 /* ---------- evidence callout ---------- */
 .evidence-box { margin-top: 40px; border: 2px solid var(--ink); padding: clamp(24px, 4vw, 40px); display: grid; grid-template-columns: 1fr auto; gap: 28px; align-items: center; }
 .evidence-box p { margin: 0; font-size: 16.5px; color: var(--ink-soft); max-width: 60ch; }
@@ -402,6 +434,7 @@ footer.colophon {
       <a href="#for">Who it's for</a>
       <a href="#how">How it works</a>
       <a href="#evidence">Evidence</a>
+      <a href="#builder">Builder</a>
       <a href="#status">Status</a>
       <a href="/protocols/" class="protocol-nav">Protocols</a>
     </nav>
@@ -603,6 +636,29 @@ footer.colophon {
         <div class="ld">Subscriber devices as the distribution network — no server to seize.</div>
       </div>
     </div>
+    <section id="builder" class="builder-card">
+      <p class="builder-kicker">Built by @rabble</p>
+      <h2>Decades into the same unfinished work.</h2>
+      <p class="builder-lede">Riot and the Willow implementation inside it are being built by Evan Henshaw-Plath — <a href="https://github.com/rabble" target="_blank" rel="noopener">@rabble</a>. This is a new system, but it comes from a long practice of helping communities publish, coordinate, and keep control of their own infrastructure.</p>
+      <div class="builder-grid">
+        <article>
+          <h3>A long line of movement infrastructure</h3>
+          <p>Rabble created protest.net; helped found and grow Indymedia's technology network; helped build TXTMob; led Odeo engineering into the launch of Twitter; and later built Planetary, Nos, and Divine. Riot carries those lessons forward without pretending the centralized chapter ended well.</p>
+          <div class="builder-sources">
+            <a href="https://www.cjr.org/business_of_news/local-news-indymedia-network-25-anniversary.php" target="_blank" rel="noopener">Indymedia history ↗</a>
+            <a href="https://www.nos.social/team/rabble" target="_blank" rel="noopener">About Rabble ↗</a>
+          </div>
+        </article>
+        <article>
+          <h3>Seizure resistance is not theoretical</h3>
+          <p>In 2017, Germany's interior ministry banned Linksunten Indymedia and police raided spaces associated with its alleged operators. In June 2026, interior ministers from all 16 German states asked the federal government to examine a complete ban of de.indymedia.org, alongside seizures, hosting takedowns, and network blocks. Riot is being built in the shadow of that history.</p>
+          <div class="builder-sources">
+            <a href="https://theanarchistlibrary.org/mirror/c/cg/crimethinc-german-government-shuts-down-indymedia.bare.html" target="_blank" rel="noopener">2017 account ↗</a>
+            <a href="https://www.heise.de/en/news/Acute-threat-Interior-ministers-demand-complete-ban-of-Indymedia-11350956.html" target="_blank" rel="noopener">2026 report ↗</a>
+          </div>
+        </article>
+      </div>
+    </section>
   </div>
 </section>
 
@@ -650,7 +706,7 @@ footer.colophon {
 </section>
 
 <footer class="colophon">
-  <span>Riot — in development. No app has shipped.</span>
+  <span>Riot — in development. No app has shipped. Built by <a href="https://github.com/rabble" target="_blank" rel="noopener">@rabble</a>.</span>
   <span><a href="/protocols/">Protocol field guide</a> · A protest.net project.</span>
 </footer>
 

@@ -41,6 +41,20 @@ assert.match(home, /Real app screens[\s\S]*iPhone simulator build/i);
 assert.match(home, /More than a social feed[\s\S]*Communities carry their own tools[\s\S]*checklists, alerts, decisions, events/i);
 assert.match(home, /@media\s*\(max-width:\s*860px\)[\s\S]*\.device-scene/i, "Hero C needs a mobile device composition");
 
+assert.match(home, /<section\s+id="builder"\s+class="builder-card"[\s\S]*Built by @rabble/i, "homepage needs a visible builder section");
+assert.match(home, /Riot and the Willow implementation inside it are being built by Evan Henshaw-Plath/i, "credit Riot's Willow implementation precisely");
+assert.match(home, /2017[\s\S]*Linksunten[\s\S]*2026[\s\S]*complete ban/i, "distinguish the two Indymedia government actions");
+for (const href of [
+  "https://www.cjr.org/business_of_news/local-news-indymedia-network-25-anniversary.php",
+  "https://www.nos.social/team/rabble",
+  "https://theanarchistlibrary.org/mirror/c/cg/crimethinc-german-government-shuts-down-indymedia.bare.html",
+  "https://www.heise.de/en/news/Acute-threat-Interior-ministers-demand-complete-ban-of-Indymedia-11350956.html",
+]) {
+  assert.ok(home.includes(`href="${href}"`), `missing builder source: ${href}`);
+}
+assert.match(home, /<nav class="topnav">[\s\S]*href="#builder"[^>]*>Builder/i);
+assert.match(home, /<footer[\s\S]*Built by[\s\S]*@rabble/i);
+
 const homeLinks = home.match(/href="\/protocols\/"/g) ?? [];
 assert.equal(homeLinks.length, 4, "homepage must contain four visible and secondary /protocols/ paths");
 assert.match(home, /<nav class="topnav">[\s\S]*href="\/protocols\/"[^>]*>Protocols</i);
