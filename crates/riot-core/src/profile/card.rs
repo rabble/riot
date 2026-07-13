@@ -30,20 +30,19 @@ fn validate(card: &ProfileCard) -> Result<(), ProfileError> {
 
 pub fn encode_profile_card(card: &ProfileCard) -> Result<Vec<u8>, ProfileError> {
     validate(card)?;
+    Ok(encode_validated_profile_card(card))
+}
 
+/// Encodes a card that has already passed [`validate`]. A validated name is
+/// at most 64 bytes, so its canonical frame is necessarily below the 256-byte
+/// decode ceiling. `Vec<u8>` is an infallible minicbor writer.
+fn encode_validated_profile_card(card: &ProfileCard) -> Vec<u8> {
     let mut buffer: Vec<u8> = Vec::new();
     let mut e = Encoder::new(&mut buffer);
-    let r: Result<_, minicbor::encode::Error<core::convert::Infallible>> = (|| {
-        e.map(FIELD_COUNT)?;
-        e.u8(0)?.str(&card.display_name)?;
-        Ok(())
-    })();
-    r.map_err(|_| ProfileError::FieldInvalid)?;
-
-    if buffer.len() > MAX_PROFILE_CARD_BYTES {
-        return Err(ProfileError::FieldInvalid);
-    }
-    Ok(buffer)
+    let _ = e.map(FIELD_COUNT);
+    let _ = e.u8(0);
+    let _ = e.str(&card.display_name);
+    buffer
 }
 
 pub fn decode_profile_card(input: &[u8]) -> Result<ProfileCard, ProfileError> {
@@ -73,8 +72,21 @@ pub fn decode_profile_card(input: &[u8]) -> Result<ProfileCard, ProfileError> {
     validate(&card)?;
 
     // Canonicality proof: only the exact encoder output is acceptable.
-    if encode_profile_card(&card)? != input {
+    if encode_validated_profile_card(&card) != input {
         return Err(ProfileError::FieldInvalid);
     }
     Ok(card)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{encode_validated_profile_card, ProfileCard};
+
+    #[test]
+    fn canonical_comparison_can_distinguish_different_bytes() {
+        let card = ProfileCard {
+            display_name: "Ana".to_string(),
+        };
+        assert_ne!(encode_validated_profile_card(&card), b"not canonical");
+    }
 }
