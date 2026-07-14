@@ -32,6 +32,8 @@ Plan: `docs/superpowers/plans/2026-07-14-community-first-shell.md`
 
 A pre-existing `stash@{0}` ("WIP on main: 3215689") is **not mine and has been left untouched**. I briefly popped it by accident and reverted the one file it touched (`apps/ios/Riot/Transport/LocalNetworkNearby.swift`) back to HEAD. The stash entry is preserved. If it's yours, it's still there.
 
+| agent-0b-riverside | **0B — deterministic Riverside authority** | `crates/riot-core/src/demo_fixture.rs`, `fixtures/demo/riverside/**`, `crates/riot-core/tests/demo_fixture_drift.rs`, `crates/xtask/src/{sign_conference_fixture,verify_conference_export}.rs`, `crates/riot-ffi/tests/apps_contract.rs`, `apps/ios/RiotUITests/` (RiversideMemberToolUITests) | IN PROGRESS | 2026-07-15 |
+
 ## Do NOT claim (owned by later units)
 
 - `crates/riot-core/src/newswire/**`, `crates/riot-ffi/src/newswire_ffi.rs` → **Unit 1A**
