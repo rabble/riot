@@ -48,12 +48,12 @@ const MAX_APP_TRUST_MARKERS: usize = 256;
 const MAX_SYNC_INVENTORY_BYTES: usize = MAX_BUNDLE_BYTES;
 
 pub(crate) struct LocalProfile {
-    store: EvidenceStore,
-    author: EvidenceAuthor,
+    pub(crate) store: EvidenceStore,
+    pub(crate) author: EvidenceAuthor,
     space: Option<PublicSpace>,
     drafts: Vec<StoredDraft>,
-    preview: Option<StoredPreview>,
-    plan: Option<StoredPlan>,
+    pub(crate) preview: Option<StoredPreview>,
+    pub(crate) plan: Option<StoredPlan>,
     entries: Vec<CurrentEntry>,
     sync_inventory: Vec<SignedWillowEntry>,
     sync_session: Option<StoredSyncSession>,
@@ -115,14 +115,14 @@ struct StoredInstalledApp {
     bundle_bytes: Vec<u8>,
 }
 
-struct StoredPreview {
+pub(crate) struct StoredPreview {
     id: u64,
     preview: ImportPreview,
     entries: Vec<CurrentEntry>,
     sync_entries: Vec<SignedWillowEntry>,
 }
 
-struct StoredPlan {
+pub(crate) struct StoredPlan {
     id: u64,
     plan: ImportPlan,
     entries: Vec<CurrentEntry>,
@@ -1107,7 +1107,7 @@ fn outcome_without_import(
     })
 }
 
-fn with_active<T>(
+pub(crate) fn with_active<T>(
     inner: &Arc<Mutex<ProfileState>>,
     action: impl FnOnce(&mut LocalProfile) -> Result<T, MobileError>,
 ) -> Result<T, MobileError> {
@@ -1130,7 +1130,7 @@ fn lock_unpoisoned(inner: &Arc<Mutex<ProfileState>>) -> std::sync::MutexGuard<'_
     inner.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-fn inspect_core(
+pub(crate) fn inspect_core(
     store: &EvidenceStore,
     bytes: &[u8],
     route: &str,
@@ -1457,7 +1457,7 @@ fn exact_wrapping_key(value: &[u8]) -> Result<Zeroizing<[u8; 32]>, MobileError> 
         .map_err(|_| MobileError::InvalidInput)
 }
 
-fn hex(bytes: &[u8]) -> String {
+pub(crate) fn hex(bytes: &[u8]) -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";
     let mut value = String::with_capacity(bytes.len() * 2);
     for byte in bytes {
