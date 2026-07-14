@@ -21,7 +21,7 @@ Plan: `docs/superpowers/plans/2026-07-14-community-first-shell.md`
 | agent-p2-inflight | P2 — land in-flight iOS/Android work + tests | 20 files across `apps/ios` + `apps/android` | **DONE** — committed `cb90b14`. iOS 198 / Android 110, 0 new failures | 2026-07-14 |
 | agent-p3-coverage-2 | P3 — Rust coverage baseline | tests only | **DONE** — 94.60%→96.47% (`2040ccc`, `e43286c`). 121 lines remain, all unreachable; found 3 phantom guards | 2026-07-14 |
 | agent-1a-newswire | **1A — complete the newswire projection surface** | newswire projection.rs + newswire_ffi.rs + contract + iOS/Android call sites | **DONE** — committed `d150e79`. 746 Rust tests green (isolated), bindings+staticlibs rebuilt, macOS RiotKit compiles. iOS/Android app compile pending | 2026-07-15 |
-| agent-0a-catalog | **0A — canonical catalog & Apple artifacts** | `crates/riot-core/src/apps/starter.rs`, `crates/riot-core/tests/apps_starter.rs`, `apps/ios/Riot/AppModel.swift`, **both** `project.pbxproj`, `apps/ios/RiotTests/` (new `StarterResourceTests`) | IN PROGRESS | 2026-07-15 |
+| agent-0a-catalog | **0A — canonical catalog & Apple artifacts** | AppModel.swift, both pbxproj, apps_starter.rs, StarterResourceTests.swift | **DONE** — committed `09413e6`. Rust 8/8, iOS StarterResourceTests 7/7, iOS app builds with all 8 pairs | 2026-07-15 |
 
 ## Known-red (do NOT report as working)
 
