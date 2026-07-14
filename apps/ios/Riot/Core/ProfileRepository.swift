@@ -935,14 +935,16 @@ public extension RiotProfileRepository {
         summary: String,
         languages: [String] = [],
         geographicTags: [String] = [],
-        topicTags: [String] = []
+        topicTags: [String] = [],
+        editorialRoster: [String] = []
     ) throws -> NewswireSignedRecord {
         try profile.createNewswireSpace(input: NewswireSpaceInput(
             name: name,
             summary: summary,
             languages: languages,
             geographicTags: geographicTags,
-            topicTags: topicTags
+            topicTags: topicTags,
+            editorialRoster: editorialRoster
         ))
     }
 
@@ -955,8 +957,11 @@ public extension RiotProfileRepository {
         headline: String,
         body: String,
         language: String = "en",
+        eventTimeUnixSeconds: UInt64? = nil,
+        expiresAtUnixSeconds: UInt64? = nil,
         coarseLocation: String? = nil,
         sourceClaims: [String] = [],
+        operationalProfile: NewswireOperationalProfile? = nil,
         aiAssisted: Bool = false
     ) throws -> NewswireSignedRecord {
         try profile.createNewswirePost(input: NewswirePostInput(
@@ -964,8 +969,11 @@ public extension RiotProfileRepository {
             headline: headline,
             body: body,
             language: language,
+            eventTimeUnixSeconds: eventTimeUnixSeconds,
+            expiresAtUnixSeconds: expiresAtUnixSeconds,
             coarseLocation: coarseLocation,
             sourceClaims: sourceClaims,
+            operationalProfile: operationalProfile,
             aiAssisted: aiAssisted
         ))
     }

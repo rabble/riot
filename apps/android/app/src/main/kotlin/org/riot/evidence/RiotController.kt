@@ -10,6 +10,7 @@ import uniffi.riot_ffi.AlertUrgency
 import uniffi.riot_ffi.CurrentEntry
 import uniffi.riot_ffi.MobileImportPreview
 import uniffi.riot_ffi.MobileProfile
+import uniffi.riot_ffi.NewswireOperationalProfile
 import uniffi.riot_ffi.NewswirePostInput
 import uniffi.riot_ffi.NewswireProjectionView
 import uniffi.riot_ffi.NewswireSignedRecord
@@ -119,8 +120,9 @@ class RiotController(filesDir: File) : AutoCloseable {
         languages: List<String> = emptyList(),
         geographicTags: List<String> = emptyList(),
         topicTags: List<String> = emptyList(),
+        editorialRoster: List<String> = emptyList(),
     ): NewswireSignedRecord = profile.createNewswireSpace(
-        NewswireSpaceInput(name, summary, languages, geographicTags, topicTags),
+        NewswireSpaceInput(name, summary, languages, geographicTags, topicTags, editorialRoster),
     )
 
     fun createNewswirePost(
@@ -128,8 +130,11 @@ class RiotController(filesDir: File) : AutoCloseable {
         headline: String,
         body: String,
         language: String = "en",
+        eventTimeUnixSeconds: ULong? = null,
+        expiresAtUnixSeconds: ULong? = null,
         coarseLocation: String? = null,
         sourceClaims: List<String> = emptyList(),
+        operationalProfile: NewswireOperationalProfile? = null,
         aiAssisted: Boolean = false,
     ): NewswireSignedRecord = profile.createNewswirePost(
         NewswirePostInput(
@@ -137,8 +142,11 @@ class RiotController(filesDir: File) : AutoCloseable {
             headline,
             body,
             language,
+            eventTimeUnixSeconds,
+            expiresAtUnixSeconds,
             coarseLocation,
             sourceClaims,
+            operationalProfile,
             aiAssisted,
         ),
     )
