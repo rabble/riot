@@ -18,18 +18,22 @@ from typing import Mapping
 from urllib.parse import unquote, urlsplit
 
 
-EXPORT_SCHEMA = "riot-public-gateway-export/1"
+EXPORT_SCHEMA = "riot-public-gateway-export/2"
 EXPORT_REVISION = "conference-gateway-export-v1"
 RENDERER_PROFILE = "incident-board/1"
-VERIFICATION_STATUS = "fixture_unverified"
-PINNED_EXPORT_SHA256 = "22dce3552b1cea9162a50c448b951fd4d1ac10bb7e0ba3c8deec0284c5c58172"
-PINNED_QR_SVG_SHA256 = "e4f1489d8023f5913645b1c8119047b4197ee41ddec1ad07749ff2893fb71e0e"
-PUBLIC_NAMESPACE = "3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c"
+VERIFICATION_STATUS_VALID = "signature_verified"
+VERIFICATION_STATUS_INVALID = "signature_invalid"
+ALLOWED_VERIFICATION_STATUSES = frozenset(
+    {VERIFICATION_STATUS_VALID, VERIFICATION_STATUS_INVALID}
+)
+PINNED_EXPORT_SHA256 = "d41e95ae50500ff7fe3eecfaa8dd685ae9807be16e27982e40f5735fe9b5ecd1"
+PINNED_QR_SVG_SHA256 = "c53738a65751d96cdc855750211898a280d6411cc3dc21db431f6cb820b6a99e"
+PUBLIC_NAMESPACE = "ae5f04268d4d2a2f86df7a43e0afe1f26577ac58dcefe95bd9b6e634c5e0155c"
 INCIDENT_TITLE = "Harbor District Evacuation"
 SOURCE_FIXTURE = "fixtures/conference/incident-space-v1.json"
-SOURCE_FIXTURE_SHA256 = "b91350ff9b7cf05acbb895de5e7bf4b9aba26a63acaed075ec29f5b72bccbd64"
+SOURCE_FIXTURE_SHA256 = "b74f215796d958a8d9bcf554ad483afad6ab27fd194fd52202f38aebce5297de"
 SOURCE_MANIFEST = "fixtures/conference/package-manifest-v1.json"
-SOURCE_MANIFEST_SHA256 = "2863f1676ced91a2c90eb003662a532b0eefa38a0aabe747c3084b3e873d1fab"
+SOURCE_MANIFEST_SHA256 = "2ce667c53501cf3a25a20948f676f899399f0ba0da8558e2ed3283ebfb512060"
 ALLOWED_KINDS = frozenset({"alert", "observation", "resource", "request", "offer"})
 SITE_ROUTES = frozenset({"/site/", "/site/incident-board", "/site/incident-board/alerts"})
 
@@ -150,6 +154,20 @@ body {
 .kind--request { color: var(--flag); }
 .kind--offer { color: var(--anchor); }
 .kind--observation { color: var(--ink-muted); }
+.verify {
+  display: inline-block;
+  margin: 0 0 0.5rem 0.4rem;
+  padding: 0.1rem 0.5rem;
+  font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, sans-serif;
+  font-weight: 700;
+  font-size: 0.7rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  border-radius: 2px;
+  border: 1px solid currentColor;
+}
+.verify--valid { color: var(--anchor); }
+.verify--invalid { background: var(--hazard); border-color: var(--hazard); color: #fff; }
 .entry__title {
   margin: 0 0 0.35rem;
   font-family: Georgia, "Iowan Old Style", "Times New Roman", serif;
@@ -219,7 +237,6 @@ _TOP_LEVEL_FIELDS = frozenset(
         "schema",
         "export_revision",
         "renderer_profile",
-        "verification_status",
         "source_fixture",
         "source_fixture_sha256",
         "source_manifest",
@@ -232,7 +249,7 @@ _TOP_LEVEL_FIELDS = frozenset(
     }
 )
 _ENTRY_FIELDS = frozenset(
-    {"kind", "entry_id", "signer", "title", "body", "freshness", "ai_assisted"}
+    {"kind", "entry_id", "signer", "title", "body", "freshness", "ai_assisted", "verification_status"}
 )
 _RENDER_AUTHORITY = object()
 
@@ -250,13 +267,13 @@ class PublicEntry:
     body: str
     freshness: str
     ai_assisted: bool
+    verification_status: str
 
 
 @dataclass(frozen=True, init=False)
 class PublicGateway:
     namespace: str
     title: str
-    verification_status: str
     entries: tuple[PublicEntry, ...]
     _verified_export_sha256: str = field(repr=False)
     _render_authority: object = field(repr=False)
@@ -281,7 +298,6 @@ class PublicGateway:
         gateway = object.__new__(cls)
         object.__setattr__(gateway, "namespace", PUBLIC_NAMESPACE)
         object.__setattr__(gateway, "title", INCIDENT_TITLE)
-        object.__setattr__(gateway, "verification_status", VERIFICATION_STATUS)
         object.__setattr__(gateway, "entries", entries)
         object.__setattr__(gateway, "_verified_export_sha256", export_sha256)
         object.__setattr__(gateway, "_render_authority", _RENDER_AUTHORITY)
@@ -313,7 +329,6 @@ class PublicGateway:
         return _render_page(
             self.title,
             self.namespace,
-            self.verification_status,
             _load_qr_svg(),
             entries,
         )
@@ -323,8 +338,6 @@ def _validate_document(document: object) -> tuple[PublicEntry, ...]:
     _reject_forbidden_content(document)
     if not isinstance(document, Mapping):
         raise GatewayError("public export must be an object")
-    if document.get("verification_status") != VERIFICATION_STATUS:
-        raise GatewayError("fixture verification status is not permitted")
     if set(document) != _TOP_LEVEL_FIELDS:
         raise GatewayError("public export fields are not permitted")
     if document.get("schema") != EXPORT_SCHEMA or document.get("export_revision") != EXPORT_REVISION:
@@ -388,7 +401,10 @@ def _parse_entry(value: object) -> PublicEntry:
     ai_assisted = value.get("ai_assisted")
     if not isinstance(ai_assisted, bool):
         raise GatewayError("ai_assisted must be a boolean")
-    return PublicEntry(kind, entry_id, signer, title, body, freshness, ai_assisted)
+    verification_status = value.get("verification_status")
+    if verification_status not in ALLOWED_VERIFICATION_STATUSES:
+        raise GatewayError("entry verification status is not permitted")
+    return PublicEntry(kind, entry_id, signer, title, body, freshness, ai_assisted, verification_status)
 
 
 def _require_id(value: object, field: str) -> str:
@@ -412,11 +428,11 @@ def _require_timestamp(value: object, field: str) -> str:
 def _render_page(
     title: str,
     namespace: str,
-    verification_status: str,
     qr_svg: str,
     entries: tuple[PublicEntry, ...],
 ) -> str:
     escaped_title = escape(title)
+    verified_count = sum(1 for entry in entries if entry.verification_status == VERIFICATION_STATUS_VALID)
     cards = "".join(_render_entry(entry) for entry in entries)
     namespace_uri = f"riot://open?namespace={namespace}"
     return f"""<!doctype html>
@@ -425,7 +441,7 @@ def _render_page(
 <body>
 <main class=\"board\">
   <p class=\"eyebrow\">Public Riot export · renderer profile: {RENDERER_PROFILE}</p>
-  <p class=\"fixture-status\">Fixture verification: <span class=\"fixture-status__tag\">{escape(verification_status.replace("_", " "))}</span></p>
+  <p class=\"fixture-status\">Signature verification: <span class=\"fixture-status__tag\">{verified_count} of {len(entries)} entries signature-verified</span></p>
   <h1 class=\"headline\">{escaped_title}</h1>
   <p class=\"subhead\">Available offline from this local public export.</p>
   <div class=\"ticket\">
@@ -444,12 +460,16 @@ def _render_page(
 
 def _render_entry(entry: PublicEntry) -> str:
     assisted = "AI-assisted draft" if entry.ai_assisted else "Human-authored draft"
+    if entry.verification_status == VERIFICATION_STATUS_VALID:
+        verify_badge = '<span class="verify verify--valid">Signature verified</span>'
+    else:
+        verify_badge = '<span class="verify verify--invalid">Signature invalid</span>'
     return f"""
 <article class=\"entry entry--{entry.kind}\">
-  <span class=\"kind kind--{entry.kind}\">{escape(entry.kind.title())}</span>
+  <span class=\"kind kind--{entry.kind}\">{escape(entry.kind.title())}</span>{verify_badge}
   <h2 class=\"entry__title\">{escape(entry.title)}</h2>
   <p class=\"entry__body\">{escape(entry.body)}</p>
-  <p class=\"entry__meta\"><span>Claimed author (unverified fixture): <code>{entry.signer}</code></span><span>Freshness: <time datetime=\"{entry.freshness}\">{entry.freshness}</time></span><span>{assisted}</span></p>
+  <p class=\"entry__meta\"><span>Claimed author: <code>{entry.signer}</code></span><span>Freshness: <time datetime=\"{entry.freshness}\">{entry.freshness}</time></span><span>{assisted}</span></p>
 </article>"""
 
 

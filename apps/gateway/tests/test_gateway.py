@@ -23,7 +23,7 @@ EXPORT = GATEWAY_FIXTURE / "public-export-v1.json"
 QR_SVG = GATEWAY_FIXTURE / "open-in-riot-v1.svg"
 SOURCE_FIXTURE = REPO_ROOT / "fixtures" / "conference" / "incident-space-v1.json"
 SOURCE_MANIFEST = REPO_ROOT / "fixtures" / "conference" / "package-manifest-v1.json"
-QR_SVG_SHA256 = "e4f1489d8023f5913645b1c8119047b4197ee41ddec1ad07749ff2893fb71e0e"
+QR_SVG_SHA256 = "c53738a65751d96cdc855750211898a280d6411cc3dc21db431f6cb820b6a99e"
 sys.path.insert(0, str(ROOT))
 
 try:
@@ -84,19 +84,20 @@ class PublicGatewayTest(unittest.TestCase):
         self.assertIn("Ferry terminal access restricted", alerts)
         self.assertIn("incident-board/1", home)
 
-    def test_renders_unverified_fixture_provenance_freshness_ai_offline_and_open_in_riot(self) -> None:
+    def test_renders_signature_verification_provenance_freshness_ai_offline_and_open_in_riot(self) -> None:
         page = self.gateway.render("/site/incident-board")
 
-        self.assertIn("Claimed author (unverified fixture):", page)
-        self.assertIn("d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a", page)
+        self.assertIn("Claimed author:", page)
+        self.assertIn("Signature verified", page)
+        self.assertIn("2a7e8dc906828dec075dd1aa820e83b5ac3243026d8c4eade385e3e30e62a91d", page)
         self.assertIn("Freshness:", page)
         self.assertIn("2026-07-11T09:30:00Z", page)
         self.assertIn("AI-assisted draft", page)
         self.assertIn("Available offline from this local public export", page)
         self.assertIn("Open in Riot", page)
-        self.assertIn("riot://open?namespace=3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c", page)
+        self.assertIn("riot://open?namespace=ae5f04268d4d2a2f86df7a43e0afe1f26577ac58dcefe95bd9b6e634c5e0155c", page)
         self.assertIn("<svg", page)
-        self.assertIn('data-qr-value="riot://open?namespace=3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c"', page)
+        self.assertIn('data-qr-value="riot://open?namespace=ae5f04268d4d2a2f86df7a43e0afe1f26577ac58dcefe95bd9b6e634c5e0155c"', page)
 
     def test_every_page_embeds_the_checked_in_qr_matrix_and_full_value(self) -> None:
         svg = ElementTree.parse(QR_SVG).getroot()
@@ -139,19 +140,22 @@ class PublicGatewayTest(unittest.TestCase):
                 with self.assertRaisesRegex(GatewayError, "not permitted"):
                     PublicGateway.validate_document(candidate)
 
-    def test_rejects_missing_or_unknown_fixture_verification_status(self) -> None:
+    def test_renders_signature_invalid_entries_without_upgrading_or_dropping_them(self) -> None:
         document = json.loads(EXPORT.read_text())
-        document["verification_status"] = "fixture_unverified"
+        candidate = json.loads(json.dumps(document))
+        candidate["entries"][0]["verification_status"] = "signature_invalid"
+        self.assertIsNone(PublicGateway.validate_document(candidate))
 
-        missing_status = dict(document)
-        del missing_status["verification_status"]
-        with self.assertRaisesRegex(GatewayError, "verification status"):
-            PublicGateway.validate_document(missing_status)
+        entries = gateway_module._validate_document(candidate)
+        self.assertEqual(entries[0].verification_status, "signature_invalid")
+        self.assertEqual(entries[1].verification_status, "signature_verified")
 
-        unknown_status = dict(document)
-        unknown_status["verification_status"] = "signature_verified"
+    def test_rejects_unknown_verification_status(self) -> None:
+        document = json.loads(EXPORT.read_text())
+        candidate = json.loads(json.dumps(document))
+        candidate["entries"][0]["verification_status"] = "totally_trusted"
         with self.assertRaisesRegex(GatewayError, "verification status"):
-            PublicGateway.validate_document(unknown_status)
+            PublicGateway.validate_document(candidate)
 
     def test_rejects_arbitrary_profiles_and_external_urls_before_rendering(self) -> None:
         document = json.loads(EXPORT.read_text())
