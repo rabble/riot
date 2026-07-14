@@ -48,6 +48,29 @@ public enum RiotConnectionStatus: Equatable, Sendable {
     case nearby(String)
 }
 
+/// A missing or unreadable built-in starter pack. The starter catalog is a
+/// fixed set of eight tool pairs (`STARTER_CATALOG` in
+/// `crates/riot-core/src/apps/starter.rs`); a pair that is listed but not
+/// bundled is a build defect, never a silent drop.
+public struct StarterCatalogError: Error, Equatable {
+    public enum Pack: String, Sendable { case manifest, bundle }
+    public let slug: String
+    public let pack: Pack
+    public var technicalDetails: String {
+        "starter pack '\(slug).\(pack.rawValue)' is not bundled"
+    }
+}
+
+/// The surfaced recovery state for a catalog/package failure (nav design §4.7):
+/// a fixed error code plus technical details. The UI shows Retry and hides the
+/// details behind a "Technical details" disclosure — never a raw internal error.
+public struct StarterCatalogFailure: Equatable, Sendable {
+    /// Stable, user-reportable code for the catalog-unavailable state.
+    public static let catalogUnavailableCode = "RIOT-CATALOG-UNAVAILABLE"
+    public let code: String
+    public let technicalDetails: String
+}
+
 /// Which tab is on screen, on its own observable object.
 ///
 /// PERFORMANCE CONTRACT: this deliberately does NOT live on `RiotAppModel`. The
@@ -189,6 +212,20 @@ public final class RiotAppModel: ObservableObject {
     /// it exists to prevent.
     @Published public private(set) var isProfileOpen = false
 
+    /// Set when the built-in starter catalog could not be loaded on open. The
+    /// shell renders the §4.7 recovery state from this (Retry + Technical
+    /// details behind a disclosure); `nil` means the catalog loaded cleanly.
+    @Published public private(set) var starterCatalogFailure: StarterCatalogFailure?
+
+    /// The arguments of the last `bootstrap` call, retained so `retryStarterCatalog`
+    /// can re-attempt the one-time install after a catalog failure.
+    private var lastBootstrapArgs: (
+        storageDirectory: URL?,
+        keyStore: WrappingKeyStore,
+        starterPacks: [(manifest: Data, bundle: Data)]?,
+        starterPackResolver: ((String) -> Data?)?
+    )?
+
     /// Nil until the profile has been read once. That first read is the baseline,
     /// not an arrival — see ``arrivals``.
     private var knownEntryIDs: Set<String>?
@@ -327,9 +364,38 @@ public final class RiotAppModel: ObservableObject {
     public func bootstrap(
         storageDirectory: URL? = nil,
         keyStore: WrappingKeyStore = KeychainWrappingKeyStore(),
-        starterPacks: [(manifest: Data, bundle: Data)]? = nil
+        starterPacks: [(manifest: Data, bundle: Data)]? = nil,
+        starterPackResolver: ((String) -> Data?)? = nil
     ) {
         guard repository == nil else { return }
+        lastBootstrapArgs = (storageDirectory, keyStore, starterPacks, starterPackResolver)
+
+        // Resolve the starter catalog first. A missing/unreadable built-in is a
+        // loud, recoverable failure (§4.7 Catalog/package failed) — never a
+        // silently short Tools surface, and never a raw internal error string.
+        let resolvedPacks: [(manifest: Data, bundle: Data)]
+        if let starterPacks {
+            resolvedPacks = starterPacks
+        } else {
+            do {
+                resolvedPacks = try Self.loadStarterPacks(
+                    resolve: starterPackResolver ?? { Self.loadPackData(named: $0) }
+                )
+            } catch let error as StarterCatalogError {
+                starterCatalogFailure = StarterCatalogFailure(
+                    code: StarterCatalogFailure.catalogUnavailableCode,
+                    technicalDetails: error.technicalDetails
+                )
+                return
+            } catch {
+                starterCatalogFailure = StarterCatalogFailure(
+                    code: StarterCatalogFailure.catalogUnavailableCode,
+                    technicalDetails: String(describing: error)
+                )
+                return
+            }
+        }
+
         do {
             let base = try storageDirectory ?? Self.defaultStorageDirectory()
             let storage = try ProtectedProfileStorage(fileURL: base.appendingPathComponent("riot-profile.json"))
@@ -340,7 +406,7 @@ public final class RiotAppModel: ObservableObject {
             let repository = try RiotProfileRepository.open(
                 storage: storage,
                 keyStore: keyStore,
-                starterPacks: starterPacks ?? Self.loadStarterPacks(),
+                starterPacks: resolvedPacks,
                 databasePath: databasePath
             )
             self.repository = repository
@@ -363,6 +429,21 @@ public final class RiotAppModel: ObservableObject {
         } catch {
             errorMessage = String(describing: error)
         }
+    }
+
+    /// Recovery action for the §4.7 "Catalog/package failed" state: clears the
+    /// failure and re-attempts the one-time starter install with the same
+    /// arguments the last `bootstrap` used. Safe to call repeatedly —
+    /// `bootstrap` no-ops once the profile is open.
+    public func retryStarterCatalog() {
+        guard let args = lastBootstrapArgs else { return }
+        starterCatalogFailure = nil
+        bootstrap(
+            storageDirectory: args.storageDirectory,
+            keyStore: args.keyStore,
+            starterPacks: args.starterPacks,
+            starterPackResolver: args.starterPackResolver
+        )
     }
 
     /// Re-reads everything the screens draw from the open profile: the listed
@@ -617,21 +698,33 @@ public final class RiotAppModel: ObservableObject {
 
     // MARK: - Starter packs
 
-    /// The frozen starter catalog to install on open. A pair that cannot be read
-    /// is dropped (Rust remains the integrity oracle for the bytes we do read),
-    /// so a missing artifact leaves the Tools list empty rather than failing
-    /// `bootstrap`.
-    /// Mirrors `STARTER_APPS` in `crates/riot-core/src/apps/starter.rs`, in the
-    /// same order. Adding a starter app means adding it here AND adding its two
-    /// `.cbor` artifacts to the Riot target's Resources build phase — a pack
-    /// that is listed but not bundled is silently dropped below.
-    private static let starterAppNames = ["checklist", "supply-board", "roll-call", "quick-poll"]
+    /// The canonical starter catalog: the eight built-in tool slugs, in the
+    /// exact order of `STARTER_CATALOG` in `crates/riot-core/src/apps/starter.rs`.
+    /// Rust is the source of truth; `apps_starter.rs`'s ordered-catalog test and
+    /// `StarterResourceTests` both fail if this list drifts from it or from the
+    /// bundled resources. Adding a tool means adding it here AND registering its
+    /// two `.cbor` artifacts in both Apple app targets and the RiotTests bundle.
+    static let starterCatalog = [
+        "checklist", "supply-board", "roll-call", "quick-poll",
+        "chat", "dispatches", "wiki", "photo-wall",
+    ]
 
-    private static func loadStarterPacks() -> [(manifest: Data, bundle: Data)] {
-        starterAppNames.compactMap { app in
-            guard let manifest = loadPackData(named: "\(app).manifest"),
-                  let bundle = loadPackData(named: "\(app).bundle")
-            else { return nil }
+    /// Loads every pair in the starter catalog. Unlike the previous `compactMap`,
+    /// a pair that cannot be read is a **loud** failure: it throws rather than
+    /// silently shrinking the Tools surface. A built-in that is listed but not
+    /// bundled is a build defect, never a tool that quietly vanishes (§6 Unit 0A).
+    /// `resolve` is injectable so the failure path is testable without unbundling
+    /// a real artifact.
+    static func loadStarterPacks(
+        resolve: (String) -> Data? = { loadPackData(named: $0) }
+    ) throws -> [(manifest: Data, bundle: Data)] {
+        try starterCatalog.map { slug in
+            guard let manifest = resolve("\(slug).manifest") else {
+                throw StarterCatalogError(slug: slug, pack: .manifest)
+            }
+            guard let bundle = resolve("\(slug).bundle") else {
+                throw StarterCatalogError(slug: slug, pack: .bundle)
+            }
             return (manifest: manifest, bundle: bundle)
         }
     }
