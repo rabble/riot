@@ -343,7 +343,9 @@ pub fn scan_app_index(store: &EvidenceStore) -> Result<ScannedIndex, AppsError> 
                 carrier_subspace_id: subspace_id,
                 manifest_timestamp_micros: candidate.timestamp_micros,
             }),
-            Some(bundle_bytes) if verify_app_pair(&candidate.bytes, bundle_bytes).ok() == Some(app_id) => {
+            Some(bundle_bytes)
+                if verify_app_pair(&candidate.bytes, bundle_bytes).ok() == Some(app_id) =>
+            {
                 candidates.push((
                     namespace_id,
                     subspace_id,
@@ -457,10 +459,7 @@ mod tests {
         // Happy path: the derived id matches the starter catalog's own
         // verification of the same pair.
         let expected = verify_starter_catalog(STARTER_CATALOG)[0].app_id;
-        assert_eq!(
-            verify_app_pair(manifest_bytes, bundle_bytes),
-            Ok(expected)
-        );
+        assert_eq!(verify_app_pair(manifest_bytes, bundle_bytes), Ok(expected));
 
         // Entry-point mismatch between an otherwise-valid pair.
         let mut manifest = decode_manifest(manifest_bytes).expect("starter manifest");

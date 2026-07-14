@@ -1549,6 +1549,7 @@ dependencies = [
  "ed25519-dalek",
  "minicbor",
  "riot-core",
+ "tempfile",
  "uniffi",
  "willow25",
  "zeroize",

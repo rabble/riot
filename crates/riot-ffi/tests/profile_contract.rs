@@ -11,7 +11,9 @@
 //!   the name does not. Apps store the id — a stored name is a snapshot that a
 //!   later rename can never repair.
 
-use riot_ffi::{open_local_profile, MobileError, MobileProfile, MobileSyncSession, SyncOutcomeKind};
+use riot_ffi::{
+    open_local_profile, MobileError, MobileProfile, MobileSyncSession, SyncOutcomeKind,
+};
 use std::sync::Arc;
 
 use riot_core::profile::card::MAX_DISPLAY_NAME_BYTES;
@@ -258,7 +260,10 @@ fn app_display_name_is_the_rendered_name() {
     let tag = tag_of(&profile);
 
     // Before any claim: the same shape as everyone else, not a `member-<hex>` label.
-    assert_eq!(runtime.app_display_name().unwrap(), format!("member · {tag}"));
+    assert_eq!(
+        runtime.app_display_name().unwrap(),
+        format!("member · {tag}")
+    );
 
     profile
         .profile()
@@ -332,15 +337,14 @@ fn a_claimed_name_syncs_to_a_peer_and_resolves_there() {
     let rendered = format!("Ana · {}", key_tag(&subspace_id(&sender)));
     let names = receiver.profile().display_names().expect("display names");
     assert!(
-        names.iter().any(|row| row.subspace_id == ana_id && row.rendered == rendered),
+        names
+            .iter()
+            .any(|row| row.subspace_id == ana_id && row.rendered == rendered),
         "the peer's name is listed, rendered: {names:?}"
     );
 
     // The receiver's own name is untouched by someone else's card.
-    assert_eq!(
-        receiver.profile().whoami().unwrap().display_name,
-        "member"
-    );
+    assert_eq!(receiver.profile().whoami().unwrap().display_name, "member");
 }
 
 /// A profile card is a live entry that is not an alert. The alert listing must
@@ -351,7 +355,10 @@ fn claiming_a_name_does_not_brick_the_alert_listing() {
     let profile = open_local_profile().expect("profile");
     profile.create_public_space("Feed".into()).expect("space");
 
-    assert!(profile.list_current_entries().expect("listing before").is_empty());
+    assert!(profile
+        .list_current_entries()
+        .expect("listing before")
+        .is_empty());
 
     profile
         .profile()

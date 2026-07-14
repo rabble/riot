@@ -79,8 +79,8 @@ pub fn demo_bundle_path() -> PathBuf {
 /// bytes. Calling it twice must yield identical bytes — see the module note.
 pub fn build_demo_bundle_from_source() -> Result<Vec<u8>, String> {
     let path = demo_content_path();
-    let raw = std::fs::read_to_string(&path)
-        .map_err(|e| format!("read {}: {e}", path.display()))?;
+    let raw =
+        std::fs::read_to_string(&path).map_err(|e| format!("read {}: {e}", path.display()))?;
     let content: Value =
         serde_json::from_str(&raw).map_err(|e| format!("parse {}: {e}", path.display()))?;
     build_demo_bundle(&content)

@@ -137,7 +137,11 @@ fn a_bare_reserved_prefix_is_never_admissible() {
     let author = generate_communal_author().expect("author");
     let payload = alert_payload();
 
-    for prefix in [b"apps".as_slice(), b"app-index".as_slice(), b"profile".as_slice()] {
+    for prefix in [
+        b"apps".as_slice(),
+        b"app-index".as_slice(),
+        b"profile".as_slice(),
+    ] {
         let path = Path::from_slices(&[prefix]).expect("path");
         expect_unsupported_schema(
             signed_at_path(&author, path, &payload),

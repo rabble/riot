@@ -14,11 +14,14 @@ import uniffi.riot_ffi.ProfileSession
 import uniffi.riot_ffi.PublicSpace
 import uniffi.riot_ffi.PublicIdentity
 import uniffi.riot_ffi.openLocalProfile
+import uniffi.riot_ffi.openLocalProfileWithDatabase
 import uniffi.riot_ffi.openProfileFromSealedIdentity
+import uniffi.riot_ffi.openProfileFromSealedIdentityWithDatabase
 import org.riot.evidence.transport.GeneratedMobileSyncBridge
 import org.riot.evidence.transport.MobileSyncSessionBridge
 
 class RiotController(filesDir: File) : AutoCloseable {
+    private val databasePath = File(filesDir, "riot.db").absolutePath
     private val store = AndroidKeystoreProfileStore(
         "riot-conference-profile",
         File(filesDir, "conference-profile.bin"),
@@ -201,10 +204,10 @@ class RiotController(filesDir: File) : AutoCloseable {
         }
 
     private fun openProfile(snapshot: PersistedProfile?): MobileProfile {
-        val state = snapshot?.identityState ?: return openLocalProfile()
+        val state = snapshot?.identityState ?: return openLocalProfileWithDatabase(databasePath)
         return try {
             TemporaryKey.useCopy(state.wrappingKey) { temporary ->
-                openProfileFromSealedIdentity(temporary, state.sealedIdentity)
+                openProfileFromSealedIdentityWithDatabase(databasePath, temporary, state.sealedIdentity)
             }
         } finally {
             state.wrappingKey.fill(0)

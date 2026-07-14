@@ -24,8 +24,7 @@ use riot_core::sync::{ByteSyncOutcome, ByteSyncSession, SyncError, MAX_SYNC_IDS}
 use riot_core::willow::{
     alert_entry_path_matches_payload, create_signed_alert, entry_id,
     generate_communal_author_for_namespace, generate_space_organizer_author, system_snapshot,
-    AlertDraft, EvidenceAuthor,
-    SignedAlert as CoreSignedAlert, SignedWillowEntry, WillowError,
+    AlertDraft, EvidenceAuthor, SignedAlert as CoreSignedAlert, SignedWillowEntry, WillowError,
 };
 
 use crate::mobile_api::{
@@ -180,6 +179,68 @@ pub(crate) fn open_profile_from_sealed_identity(
         Ok(result) => result,
         Err(_) => Err(MobileError::Internal),
     }
+}
+
+/// Opens a local profile backed by a durable SQLite database at `db_path`.
+/// Spaces, entries, and accepted imports written through this profile
+/// survive the handle being dropped and the session being reopened.
+///
+/// The path must be a filesystem location the native host can read and
+/// write. `DatabaseConfig::default()` is used (WAL journaling, default
+/// busy timeout and reader pool).
+pub(crate) fn open_local_profile_with_database(
+    db_path: String,
+) -> Result<Arc<MobileProfile>, MobileError> {
+    match catch_unwind(AssertUnwindSafe(|| {
+        let database = riot_core::store::RiotDatabase::open(
+            &db_path,
+            riot_core::store::DatabaseConfig::default(),
+        )
+        .map_err(map_database_error)?;
+        let session = RiotSession::open_sqlite(database).map_err(|_| MobileError::Internal)?;
+        let store = session.create_store().map_err(|_| MobileError::Internal)?;
+        let author = generate_space_organizer_author().map_err(map_author_error)?;
+        Ok(profile_with_author(store, author))
+    })) {
+        Ok(result) => result,
+        Err(_) => Err(MobileError::Internal),
+    }
+}
+
+/// Restores a profile from a sealed identity, backed by a durable SQLite
+/// database at `db_path`. Combines `open_profile_from_sealed_identity`
+/// semantics with the durable store from `open_local_profile_with_database`.
+pub(crate) fn open_profile_from_sealed_identity_with_database(
+    db_path: String,
+    mut wrapping_key: Vec<u8>,
+    sealed_identity: Vec<u8>,
+) -> Result<Arc<MobileProfile>, MobileError> {
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        let database = riot_core::store::RiotDatabase::open(
+            &db_path,
+            riot_core::store::DatabaseConfig::default(),
+        )
+        .map_err(map_database_error)?;
+        let key = exact_wrapping_key(&wrapping_key)?;
+        let author = EvidenceAuthor::open_sealed_identity(&key, &sealed_identity)
+            .map_err(map_author_error)?;
+        let session = RiotSession::open_sqlite(database).map_err(|_| MobileError::Internal)?;
+        let store = session.create_store().map_err(|_| MobileError::Internal)?;
+        Ok(profile_with_author(store, author))
+    }));
+    wrapping_key.zeroize();
+    match result {
+        Ok(result) => result,
+        Err(_) => Err(MobileError::Internal),
+    }
+}
+
+/// Maps a `DatabaseError` to the FFI error enum. Database open failures
+/// (missing directory, locked file, corrupt schema) surface as a typed
+/// `Database` error rather than a generic `Internal`.
+fn map_database_error(error: riot_core::store::DatabaseError) -> MobileError {
+    let _ = error; // Avoid unused warnings if the variant is narrowed later.
+    MobileError::Database
 }
 
 fn profile_with_author(store: EvidenceStore, author: EvidenceAuthor) -> Arc<MobileProfile> {
@@ -1682,20 +1743,20 @@ pub(crate) fn is_app_trusted(
         // the store's Willow-resolved marker and the author's own cached copy must be
         // collapsed to one per (app, organizer) before asking. Newest wins, matching
         // Willow's own per-path resolution.
-        let scanned = riot_core::apps::index::scan_app_index(&profile.store)
-            .map_err(map_apps_error)?;
+        let scanned =
+            riot_core::apps::index::scan_app_index(&profile.store).map_err(map_apps_error)?;
         let mut markers: Vec<riot_core::apps::trust::TrustMarker> = Vec::new();
-        let mut push_resolved = |marker: riot_core::apps::trust::TrustMarker| {
-            match markers.iter_mut().find(|existing| {
+        let mut push_resolved = |marker: riot_core::apps::trust::TrustMarker| match markers
+            .iter_mut()
+            .find(|existing| {
                 existing.app_id == marker.app_id
                     && existing.author_subspace_id == marker.author_subspace_id
             }) {
-                Some(existing) if marker.timestamp_micros > existing.timestamp_micros => {
-                    *existing = marker;
-                }
-                Some(_) => {}
-                None => markers.push(marker),
+            Some(existing) if marker.timestamp_micros > existing.timestamp_micros => {
+                *existing = marker;
             }
+            Some(_) => {}
+            None => markers.push(marker),
         };
         for space in scanned.spaces {
             if space.space_namespace_id == own_namespace_id {
@@ -1708,7 +1769,11 @@ pub(crate) fn is_app_trusted(
             .copied()
             .for_each(&mut push_resolved);
 
-        Ok(riot_core::apps::trust::is_trusted(&app_id, &markers, &[organizer]))
+        Ok(riot_core::apps::trust::is_trusted(
+            &app_id,
+            &markers,
+            &[organizer],
+        ))
     })
 }
 
@@ -1952,12 +2017,14 @@ pub(crate) fn display_names(
         let names = resolve_display_names(&profile.store).map_err(map_profile_error)?;
         Ok(names
             .into_iter()
-            .map(|(subspace_id, name)| crate::profile_ffi::DisplayNameRecord {
-                subspace_id: subspace_id.to_vec(),
-                // Every name crossing the boundary is rendered. `resolve_display_names`
-                // hands back the raw claim; this is where it stops being raw.
-                rendered: render_display_name(Some(&name), &subspace_id),
-            })
+            .map(
+                |(subspace_id, name)| crate::profile_ffi::DisplayNameRecord {
+                    subspace_id: subspace_id.to_vec(),
+                    // Every name crossing the boundary is rendered. `resolve_display_names`
+                    // hands back the raw claim; this is where it stops being raw.
+                    rendered: render_display_name(Some(&name), &subspace_id),
+                },
+            )
             .collect())
     })
 }

@@ -1,14 +1,26 @@
 //! the community property — an organizer approves once, and every member
 //! (including one who joins later) gets the app, with no install step.
-use riot_ffi::{open_local_profile, MobileError, MobileProfile, MobileSyncSession, SyncOutcomeKind};
+use riot_ffi::{
+    open_local_profile, MobileError, MobileProfile, MobileSyncSession, SyncOutcomeKind,
+};
 use std::sync::Arc;
 
 fn checklist() -> (Vec<u8>, Vec<u8>) {
-    let m = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/../../fixtures/apps/checklist.manifest.cbor")).unwrap();
-    let b = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/../../fixtures/apps/checklist.bundle.cbor")).unwrap();
+    let m = std::fs::read(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../fixtures/apps/checklist.manifest.cbor"
+    ))
+    .unwrap();
+    let b = std::fs::read(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../fixtures/apps/checklist.bundle.cbor"
+    ))
+    .unwrap();
     (m, b)
 }
-fn take_frame(s: &MobileSyncSession) -> Vec<u8> { s.take_outbound_frame().unwrap().unwrap() }
+fn take_frame(s: &MobileSyncSession) -> Vec<u8> {
+    s.take_outbound_frame().unwrap().unwrap()
+}
 
 fn sync(receiver: &Arc<MobileProfile>, sender: &Arc<MobileProfile>) {
     let i = receiver.open_sync_session().expect("i");
@@ -24,38 +36,72 @@ fn sync(receiver: &Arc<MobileProfile>, sender: &Arc<MobileProfile>) {
         if !ro.terminal {
             i.receive_frame(take_frame(&r)).unwrap();
             let rev = r.receive_frame(take_frame(&i)).unwrap();
-            if rev.kind == SyncOutcomeKind::ReviewImport { r.accept_import().unwrap(); }
+            if rev.kind == SyncOutcomeKind::ReviewImport {
+                r.accept_import().unwrap();
+            }
             i.receive_frame(take_frame(&r)).unwrap();
         }
     }
-
-
 }
 
 #[test]
 fn organizer_approval_covers_a_member_who_joins_later() {
     let organizer = open_local_profile().expect("A");
-    let space = organizer.create_public_space("Berlin Mutual Aid".into()).expect("space");
+    let space = organizer
+        .create_public_space("Berlin Mutual Aid".into())
+        .expect("space");
     let (m, b) = checklist();
-    let app = organizer.app_runtime().install_app(m.clone(), b.clone()).expect("install");
-    organizer.app_runtime().trust_app(app.app_id.clone()).expect("organizer approves");
-    organizer.app_runtime().app_data_put(app.app_id.clone(), "items/a".into(), b"{\"text\":\"Bring water\"}".to_vec()).expect("put");
+    let app = organizer
+        .app_runtime()
+        .install_app(m.clone(), b.clone())
+        .expect("install");
+    organizer
+        .app_runtime()
+        .trust_app(app.app_id.clone())
+        .expect("organizer approves");
+    organizer
+        .app_runtime()
+        .app_data_put(
+            app.app_id.clone(),
+            "items/a".into(),
+            b"{\"text\":\"Bring water\"}".to_vec(),
+        )
+        .expect("put");
 
     // B joins the same space and installs the same built-in checklist.
     let member = open_local_profile().expect("B");
     member.join_public_space(space).expect("join");
-    let app_b = member.app_runtime().install_app(m, b).expect("install on B");
+    let app_b = member
+        .app_runtime()
+        .install_app(m, b)
+        .expect("install on B");
     assert_eq!(app_b.app_id, app.app_id);
 
     sync(&member, &organizer);
 
-    let trusted = member.app_runtime().is_app_trusted(app_b.app_id.clone()).unwrap();
+    let trusted = member
+        .app_runtime()
+        .is_app_trusted(app_b.app_id.clone())
+        .unwrap();
     println!("member_trusted_after_sync={trusted}");
-    assert!(trusted, "organizer's single approval must cover a member — no install step");
+    assert!(
+        trusted,
+        "organizer's single approval must cover a member — no install step"
+    );
 
-    let data = member.app_runtime().app_data_get(app_b.app_id, "items/a".into()).unwrap();
-    println!("member_sees_data={:?}", data.as_ref().map(|d| String::from_utf8_lossy(d).to_string()));
-    assert!(data.is_some(), "member must also see the organizer's checklist item");
+    let data = member
+        .app_runtime()
+        .app_data_get(app_b.app_id, "items/a".into())
+        .unwrap();
+    println!(
+        "member_sees_data={:?}",
+        data.as_ref()
+            .map(|d| String::from_utf8_lossy(d).to_string())
+    );
+    assert!(
+        data.is_some(),
+        "member must also see the organizer's checklist item"
+    );
 }
 
 /// A profile made BEFORE spaces had organizers, reconstructed the way the app
@@ -82,7 +128,9 @@ fn open_legacy_profile() -> Arc<MobileProfile> {
 #[test]
 fn a_legacy_profile_gets_a_distinct_error_never_invalid_input() {
     let legacy = open_legacy_profile();
-    legacy.create_public_space("Riverside Tenants".into()).expect("space");
+    legacy
+        .create_public_space("Riverside Tenants".into())
+        .expect("space");
     let (m, b) = checklist();
     let app = legacy.app_runtime().install_app(m, b).expect("install");
 
@@ -115,13 +163,18 @@ fn a_legacy_profile_gets_a_distinct_error_never_invalid_input() {
 #[test]
 fn an_organizer_shaped_profile_still_approves() {
     let organizer = open_local_profile().expect("A");
-    organizer.create_public_space("Berlin Mutual Aid".into()).expect("space");
+    organizer
+        .create_public_space("Berlin Mutual Aid".into())
+        .expect("space");
     let (m, b) = checklist();
     let app = organizer.app_runtime().install_app(m, b).expect("install");
 
     assert!(organizer.app_runtime().is_organizer().unwrap());
     assert!(organizer.app_runtime().can_organize().unwrap());
-    organizer.app_runtime().trust_app(app.app_id.clone()).expect("organizer still approves");
+    organizer
+        .app_runtime()
+        .trust_app(app.app_id.clone())
+        .expect("organizer still approves");
     assert!(organizer.app_runtime().is_app_trusted(app.app_id).unwrap());
 }
 
@@ -131,20 +184,28 @@ fn an_organizer_shaped_profile_still_approves() {
 #[test]
 fn a_member_is_told_they_are_not_the_organizer_not_that_they_are_legacy() {
     let organizer = open_local_profile().expect("A");
-    let space = organizer.create_public_space("Berlin Mutual Aid".into()).expect("space");
+    let space = organizer
+        .create_public_space("Berlin Mutual Aid".into())
+        .expect("space");
     let (m, b) = checklist();
     let member = open_local_profile().expect("B");
     member.join_public_space(space).expect("join");
     let app = member.app_runtime().install_app(m, b).expect("install");
 
-    let err = member.app_runtime().trust_app(app.app_id).expect_err("member cannot approve");
+    let err = member
+        .app_runtime()
+        .trust_app(app.app_id)
+        .expect_err("member cannot approve");
     println!("member_err={err:?}");
     assert!(
         matches!(err, MobileError::NotSpaceOrganizer),
         "a member is not a legacy profile — telling them to start a new profile is a lie, got {err:?}"
     );
 
-    assert!(!member.app_runtime().is_organizer().unwrap(), "button must not be offered");
+    assert!(
+        !member.app_runtime().is_organizer().unwrap(),
+        "button must not be offered"
+    );
     assert!(
         member.app_runtime().can_organize().unwrap(),
         "a member's profile is perfectly capable of organizing — just not THIS space"
@@ -157,15 +218,20 @@ fn a_member_is_told_they_are_not_the_organizer_not_that_they_are_legacy() {
 #[test]
 fn an_organizer_survives_the_relaunch_restore_path() {
     let organizer = open_local_profile().expect("A");
-    let space = organizer.create_public_space("Berlin Mutual Aid".into()).expect("space");
+    let space = organizer
+        .create_public_space("Berlin Mutual Aid".into())
+        .expect("space");
     let key = [3u8; 32];
     let sealed = organizer.seal_identity(key.to_vec()).expect("seal");
 
     // The relaunch: a fresh profile off the sealed identity, then the persisted
     // space restored the ONLY way ProfileRepository restores one — join_public_space,
     // for a space it CREATED just the same as for one it joined.
-    let relaunched = riot_ffi::open_profile_from_sealed_identity(key.to_vec(), sealed).expect("reopen");
-    relaunched.join_public_space(space).expect("restore own space");
+    let relaunched =
+        riot_ffi::open_profile_from_sealed_identity(key.to_vec(), sealed).expect("reopen");
+    relaunched
+        .join_public_space(space)
+        .expect("restore own space");
 
     let (m, b) = checklist();
     let app = relaunched.app_runtime().install_app(m, b).expect("install");
@@ -173,21 +239,35 @@ fn an_organizer_survives_the_relaunch_restore_path() {
         relaunched.app_runtime().is_organizer().unwrap(),
         "restoring your own space must not turn you into a member of it"
     );
-    relaunched.app_runtime().trust_app(app.app_id.clone()).expect("still the organizer after relaunch");
+    relaunched
+        .app_runtime()
+        .trust_app(app.app_id.clone())
+        .expect("still the organizer after relaunch");
     assert!(relaunched.app_runtime().is_app_trusted(app.app_id).unwrap());
 }
 
 #[test]
 fn a_member_cannot_self_approve_an_app() {
     let organizer = open_local_profile().expect("A");
-    let space = organizer.create_public_space("Berlin Mutual Aid".into()).expect("space");
+    let space = organizer
+        .create_public_space("Berlin Mutual Aid".into())
+        .expect("space");
     let (m, b) = checklist();
     let member = open_local_profile().expect("B");
     member.join_public_space(space).expect("join");
     let app = member.app_runtime().install_app(m, b).expect("install");
     let self_approve = member.app_runtime().trust_app(app.app_id.clone());
-    let trusted = member.app_runtime().is_app_trusted(app.app_id).unwrap_or(false);
-    println!("self_approve_err={:?} trusted={trusted}", self_approve.is_err());
-    assert!(self_approve.is_err(), "a member is not an organizer and must not be able to approve");
+    let trusted = member
+        .app_runtime()
+        .is_app_trusted(app.app_id)
+        .unwrap_or(false);
+    println!(
+        "self_approve_err={:?} trusted={trusted}",
+        self_approve.is_err()
+    );
+    assert!(
+        self_approve.is_err(),
+        "a member is not an organizer and must not be able to approve"
+    );
     assert!(!trusted, "self-approval must not grant trust");
 }

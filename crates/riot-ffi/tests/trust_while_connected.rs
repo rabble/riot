@@ -5,7 +5,9 @@ use riot_ffi::open_local_profile;
 #[test]
 fn organizer_can_approve_an_app_while_connected_to_a_peer() {
     let profile = open_local_profile().expect("profile");
-    profile.create_public_space("Riverside".into()).expect("space");
+    profile
+        .create_public_space("Riverside".into())
+        .expect("space");
     let runtime = profile.app_runtime();
     let app = runtime
         .directory_listings()

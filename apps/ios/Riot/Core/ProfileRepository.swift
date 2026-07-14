@@ -244,20 +244,33 @@ public final class RiotProfileRepository {
     public static func open(
         storage: ProtectedProfileStorage,
         keyStore: WrappingKeyStore = KeychainWrappingKeyStore(),
-        starterPacks: [(manifest: Data, bundle: Data)] = []
+        starterPacks: [(manifest: Data, bundle: Data)] = [],
+        databasePath: String? = nil
     ) throws -> RiotProfileRepository {
         var persisted = try storage.load()
         let profile: MobileProfile
         if let sealedIdentity = persisted.sealedIdentity {
             guard sealedIdentity.count == 112 else { throw RepositoryError.invalidSealedIdentity }
             profile = try withWrappingKey(from: keyStore) { wrappingKey in
-                try openProfileFromSealedIdentity(
-                    wrappingKey: wrappingKey,
-                    sealedIdentity: sealedIdentity
-                )
+                if let databasePath {
+                    try openProfileFromSealedIdentityWithDatabase(
+                        dbPath: databasePath,
+                        wrappingKey: wrappingKey,
+                        sealedIdentity: sealedIdentity
+                    )
+                } else {
+                    try openProfileFromSealedIdentity(
+                        wrappingKey: wrappingKey,
+                        sealedIdentity: sealedIdentity
+                    )
+                }
             }
         } else {
-            profile = try openLocalProfile()
+            if let databasePath {
+                profile = try openLocalProfileWithDatabase(dbPath: databasePath)
+            } else {
+                profile = try openLocalProfile()
+            }
         }
         if let space = persisted.space {
             if let demoBundle = persisted.demoBundle {

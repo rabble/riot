@@ -248,7 +248,8 @@ pub fn generate_space_organizer_author() -> Result<EvidenceAuthor, WillowError> 
         subspace_secret_bytes.zeroize();
         let subspace_secret = subspace_secret?;
 
-        let namespace_id = NamespaceId::from_bytes(subspace_secret.corresponding_subspace_id().as_bytes());
+        let namespace_id =
+            NamespaceId::from_bytes(subspace_secret.corresponding_subspace_id().as_bytes());
         if namespace_id.is_communal() {
             return Ok(EvidenceAuthor {
                 namespace_id,

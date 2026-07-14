@@ -129,7 +129,9 @@ fn loading_the_demo_bundle_lists_the_space_with_its_alerts_and_members() {
     let names = rendered_names(&profile);
     for member in ["Ana", "Marcus", "Priya", "Dee"] {
         assert!(
-            names.iter().any(|name| name.starts_with(&format!("{member} · "))),
+            names
+                .iter()
+                .any(|name| name.starts_with(&format!("{member} · "))),
             "{member} resolves to a rendered display name; got {names:?}"
         );
     }
@@ -170,7 +172,11 @@ fn a_corrupt_bundle_is_refused_and_leaves_a_real_space_untouched() {
         .expect_err("corrupt bytes are refused");
     assert!(matches!(error, MobileError::ImportRejected));
 
-    assert_eq!(live_entry_ids(&profile), before, "nothing was half-imported");
+    assert_eq!(
+        live_entry_ids(&profile),
+        before,
+        "nothing was half-imported"
+    );
 }
 
 #[test]

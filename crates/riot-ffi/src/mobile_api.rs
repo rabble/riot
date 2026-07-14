@@ -137,6 +137,10 @@ pub enum MobileError {
     /// member self-approve and would gut the one human review gate in the design.
     /// The only true remedy is a new profile, and the surface says exactly that.
     LegacyProfileCannotOrganize,
+    /// The durable SQLite database could not be opened or written. The path
+    /// may not exist, the file may be locked by another process, or the
+    /// schema may be corrupt.
+    Database,
 }
 
 impl std::fmt::Display for MobileError {
@@ -158,6 +162,7 @@ impl std::fmt::Display for MobileError {
             Self::AppRejected => "APP_REJECTED",
             Self::NotSpaceOrganizer => "NOT_SPACE_ORGANIZER",
             Self::LegacyProfileCannotOrganize => "LEGACY_PROFILE_CANNOT_ORGANIZE",
+            Self::Database => "DATABASE_ERROR",
         };
         f.write_str(code)
     }
@@ -199,6 +204,32 @@ pub fn open_profile_from_sealed_identity(
     sealed_identity: Vec<u8>,
 ) -> Result<Arc<MobileProfile>, MobileError> {
     crate::mobile_state::open_profile_from_sealed_identity(wrapping_key, sealed_identity)
+}
+
+/// Opens a local profile backed by a durable SQLite database at `db_path`.
+/// Spaces and accepted imports survive the handle being dropped and the
+/// database being reopened. Use this for production app launches; use
+/// `open_local_profile` for in-memory (demo/test) sessions.
+#[uniffi::export]
+pub fn open_local_profile_with_database(
+    db_path: String,
+) -> Result<Arc<MobileProfile>, MobileError> {
+    crate::mobile_state::open_local_profile_with_database(db_path)
+}
+
+/// Restores a profile from a sealed identity into a durable SQLite database
+/// at `db_path`. Combines identity restore with persistent storage.
+#[uniffi::export]
+pub fn open_profile_from_sealed_identity_with_database(
+    db_path: String,
+    wrapping_key: Vec<u8>,
+    sealed_identity: Vec<u8>,
+) -> Result<Arc<MobileProfile>, MobileError> {
+    crate::mobile_state::open_profile_from_sealed_identity_with_database(
+        db_path,
+        wrapping_key,
+        sealed_identity,
+    )
 }
 
 #[uniffi::export]

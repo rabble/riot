@@ -1322,7 +1322,9 @@ fn install_from_directory_refuses_a_bundle_that_is_still_arriving() {
     use riot_core::apps::index::{app_index_manifest_path, verify_app_pair};
 
     let receiver = open_local_profile().expect("receiver");
-    receiver.create_public_space("Partial arrival".into()).unwrap();
+    receiver
+        .create_public_space("Partial arrival".into())
+        .unwrap();
     let (manifest_bytes, bundle_bytes) = manifest_and_bundle();
     let app_id = verify_app_pair(&manifest_bytes, &bundle_bytes).expect("pair");
 
@@ -1376,9 +1378,8 @@ fn install_from_directory_refuses_a_bundle_that_is_still_arriving() {
 /// Every built-in, derived from the committed catalog — never a hard-coded id,
 /// which goes stale the moment anyone repacks an app.
 fn built_in_apps() -> Vec<riot_core::apps::directory::IndexedApp> {
-    let built_ins = riot_core::apps::starter::verify_starter_catalog(
-        riot_core::apps::starter::STARTER_CATALOG,
-    );
+    let built_ins =
+        riot_core::apps::starter::verify_starter_catalog(riot_core::apps::starter::STARTER_CATALOG);
     assert!(
         !built_ins.is_empty(),
         "the starter catalog must ship at least one verifiable built-in"
@@ -1462,7 +1463,8 @@ fn every_built_in_in_the_catalog_installs_and_serves_its_pages_unsynced() {
             app_id,
             "the served bytes are the ones the id was derived from"
         );
-        let served = riot_core::apps::bundle::decode_app_bundle(&pair.bundle_bytes).expect("bundle");
+        let served =
+            riot_core::apps::bundle::decode_app_bundle(&pair.bundle_bytes).expect("bundle");
         assert!(
             served
                 .resources
@@ -1482,7 +1484,9 @@ fn every_built_in_in_the_catalog_installs_and_serves_its_pages_unsynced() {
         assert_eq!(installed.app_id_bytes, app_id);
 
         // And once installed, serving still resolves to the same bytes.
-        let after = runtime.app_pair_bytes(app_id.clone()).expect("still serves");
+        let after = runtime
+            .app_pair_bytes(app_id.clone())
+            .expect("still serves");
         assert_eq!(after.manifest_bytes, pair.manifest_bytes);
         assert_eq!(after.bundle_bytes, pair.bundle_bytes);
     }

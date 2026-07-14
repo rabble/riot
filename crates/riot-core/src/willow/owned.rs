@@ -67,8 +67,7 @@ mod tests {
     fn communal_and_owned_are_disjoint() {
         // A communal author's namespace is never owned, and vice versa. The
         // kinds are distinguished by the namespace ID itself.
-        let communal =
-            crate::willow::generate_space_organizer_author().expect("entropy");
+        let communal = crate::willow::generate_space_organizer_author().expect("entropy");
         assert!(communal.namespace_id().is_communal());
         let owned = OwnedRoot::generate().expect("entropy");
         assert!(owned.namespace_id().is_owned());

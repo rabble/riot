@@ -333,10 +333,15 @@ public final class RiotAppModel: ObservableObject {
         do {
             let base = try storageDirectory ?? Self.defaultStorageDirectory()
             let storage = try ProtectedProfileStorage(fileURL: base.appendingPathComponent("riot-profile.json"))
+            // Durable SQLite store: spaces and accepted entries survive a
+            // relaunch without replaying bundles. Falls back to in-memory if
+            // the directory isn't writable.
+            let databasePath = base.appendingPathComponent("riot.db").path
             let repository = try RiotProfileRepository.open(
                 storage: storage,
                 keyStore: keyStore,
-                starterPacks: starterPacks ?? Self.loadStarterPacks()
+                starterPacks: starterPacks ?? Self.loadStarterPacks(),
+                databasePath: databasePath
             )
             self.repository = repository
             demoLoader = RiotDemoSpaceLoader(repository: repository, model: self)

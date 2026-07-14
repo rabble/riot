@@ -9,7 +9,9 @@
 use std::fs;
 use std::path::Path;
 
-use riot_core::willow::{decode_capability_canonic, decode_entry_canonic, verify_entry, AuthorisationToken};
+use riot_core::willow::{
+    decode_capability_canonic, decode_entry_canonic, verify_entry, AuthorisationToken,
+};
 use serde_json::{json, Value};
 use willow25::prelude::SubspaceSignature;
 
@@ -28,7 +30,11 @@ pub const EXPORT_SCHEMA: &str = "riot-public-gateway-export/2";
 /// actually describe the same Willow entry, so that positional pairing alone
 /// is never trusted to bind a proof to the wrong piece of public data.
 /// Pure and file-I/O-free, so it's directly unit-testable (see tests below).
-pub fn check_entry_identity(fixture_entry: &Value, export_entry: &Value, index: usize) -> Result<(), String> {
+pub fn check_entry_identity(
+    fixture_entry: &Value,
+    export_entry: &Value,
+    index: usize,
+) -> Result<(), String> {
     let fixture_entry_id = fixture_entry["willow_entry_id"]
         .as_str()
         .ok_or("incident entry: willow_entry_id must be a string")?;
@@ -50,9 +56,10 @@ pub fn verify_signed_entry(
     capability_bytes: &[u8],
     signature: &[u8; 64],
 ) -> Result<bool, String> {
-    let entry = decode_entry_canonic(entry_bytes).map_err(|error| format!("decode entry: {error}"))?;
-    let capability =
-        decode_capability_canonic(capability_bytes).map_err(|error| format!("decode capability: {error}"))?;
+    let entry =
+        decode_entry_canonic(entry_bytes).map_err(|error| format!("decode entry: {error}"))?;
+    let capability = decode_capability_canonic(capability_bytes)
+        .map_err(|error| format!("decode capability: {error}"))?;
     let token = AuthorisationToken::new(capability, SubspaceSignature::from(*signature));
     Ok(verify_entry(&entry, &token))
 }
@@ -173,8 +180,12 @@ mod tests {
     fn genuine_signature_verifies() {
         let author = generate_communal_author().unwrap();
         let signed = create_signed_alert(&author, draft()).unwrap().signed;
-        let valid = verify_signed_entry(&signed.entry_bytes, &signed.capability_bytes, &signed.signature)
-            .unwrap();
+        let valid = verify_signed_entry(
+            &signed.entry_bytes,
+            &signed.capability_bytes,
+            &signed.signature,
+        )
+        .unwrap();
         assert!(valid);
     }
 
@@ -185,8 +196,9 @@ mod tests {
         let mut tampered_entry = signed.entry_bytes.clone();
         let last = tampered_entry.len() - 1;
         tampered_entry[last] ^= 0xFF;
-        let valid = verify_signed_entry(&tampered_entry, &signed.capability_bytes, &signed.signature)
-            .unwrap();
+        let valid =
+            verify_signed_entry(&tampered_entry, &signed.capability_bytes, &signed.signature)
+                .unwrap();
         assert!(!valid);
     }
 
