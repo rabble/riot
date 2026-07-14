@@ -67,7 +67,7 @@ class MainActivity : Activity() {
             onChanged = {
                 if (currentSurface == ConferenceSurface.CONNECTION) show(ConferenceSurface.CONNECTION)
             },
-            onConnected = { phone, connection ->
+            onConnected = { phone, connection, incoming ->
                 syncCoordinator?.close()
                 lateinit var active: SyncCoordinator
                 active = SyncCoordinator(
@@ -87,7 +87,11 @@ class MainActivity : Activity() {
                 }
                 syncCoordinator = active
                 syncState = NearbyUiState.Connecting
-                active.start()
+                // EXACTLY ONE peer opens the protocol: the outgoing (dialing)
+                // peer calls start(), the incoming (answering) peer calls
+                // answer(). The core's ReconcileSession accepts a Hello only
+                // from an idle session; two initiators fail each other.
+                if (incoming) active.answer() else active.start()
             },
         )
         setContentView(buildShell())

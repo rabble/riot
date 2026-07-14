@@ -23,14 +23,16 @@ import XCTest
 /// simulator they cannot connect to each other at all. Everything from the
 /// frame codec upwards is the shipping code.
 ///
-/// One thing this file does NOT reproduce, deliberately: exactly one peer here
-/// calls `SyncCoordinator.start()`. It has to — the core's `ReconcileSession`
-/// accepts a Hello only while it is idle, so a peer that has begun cannot also
-/// answer one. `NearbyTransportController` starts the coordinator on BOTH peers
-/// (`startLocalSession` and `finishRouteSelection` each run on both sides of a
-/// pairing). Wired that way, these same two profiles go straight to `.failed`
-/// and nothing replicates. That is a bug in the controller, and fixing it is
-/// not this file's job.
+/// One thing this file does NOT reproduce: exactly one peer here calls
+/// `SyncCoordinator.start()` — the loopback path does not go through
+/// `NearbyTransportController`, so the role decision is made manually.
+/// The controller previously started the coordinator on BOTH peers,
+/// sending two `Hello` frames and failing both sessions. That is now
+/// fixed: `NearbyTransportController.adopt` uses a deterministic
+/// namespace-ID tiebreaker (`shouldStartSync`) to decide initiator vs
+/// responder, and Android passes an `incoming` flag through to the same
+/// decision. This test deliberately exercises the coordinator directly
+/// (not the controller) to keep the sync protocol itself honest.
 @MainActor
 final class AppSyncReplicationTests: XCTestCase {
 

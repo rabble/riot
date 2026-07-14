@@ -547,13 +547,13 @@ public final class NearbyTransportController: ObservableObject {
     /// Takes ownership of the session's coordinator and opens it from EXACTLY
     /// ONE side of the pairing.
     ///
-    /// Both `startLocalSession` and `finishRouteSelection` run on both peers, so
-    /// whichever of them built the coordinator, only one device may `start()`
-    /// it: the core accepts a `Hello` only from an idle session, so two
-    /// initiators fail each other and nothing replicates. `isInboundRequest` is
-    /// the asymmetry already on hand — the person who tapped the other phone's
-    /// name dialled, and the person who answered the prompt did not — and it is
-    /// true on exactly one side of every pairing, over either transport.
+    /// The core's `ReconcileSession` accepts a `Hello` only from an idle
+    /// session, so two initiators fail each other and nothing replicates.
+    /// The role (initiator vs responder) is decided deterministically from
+    /// the two namespace IDs both peers know after the space handshake: the
+    /// peer with the lexicographically smaller local namespace ID starts.
+    /// This does not depend on discovery timing (`isInboundRequest`), which
+    /// can race when both peers auto-connect simultaneously.
     private func adopt(_ coordinator: SyncCoordinator) {
         coordinator.onStateChanged = { [weak self] state in
             guard let self else { return }
@@ -572,6 +572,20 @@ public final class NearbyTransportController: ObservableObject {
         // receipt), so a live app re-reading now sees the imported items.
         coordinator.onImportAccepted = { AppRuntimeView.postDataChanged() }
         self.coordinator = coordinator
-        if isInboundRequest { coordinator.answer() } else { coordinator.start() }
+        if shouldStartSync { coordinator.start() } else { coordinator.answer() }
+    }
+
+    /// Deterministic sync-role tiebreaker: the peer whose local namespace ID
+    /// is lexicographically smaller is the initiator. Both peers compute the
+    /// same answer because both know both namespace IDs after the handshake.
+    /// Falls back to `isInboundRequest` (the dialer starts) when the remote
+    /// namespace is unknown (e.g. a spaceless peer adopting).
+    private var shouldStartSync: Bool {
+        let local = host?.currentSpace?.namespaceID ?? ""
+        let remote = pairing?.remoteSpace?.namespaceID ?? ""
+        if local.isEmpty && remote.isEmpty {
+            return !isInboundRequest
+        }
+        return local < remote
     }
 }

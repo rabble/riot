@@ -81,6 +81,10 @@ public final class SpacePairing {
     private var finished = false
     private var onDecision: ((SpaceDecision) -> Void)?
     private var onFailure: (() -> Void)?
+    /// The peer's announced space, captured during the handshake so `adopt`
+    /// can compute a deterministic sync role without depending on discovery
+    /// timing (`isInboundRequest`).
+    public private(set) var remoteSpace: RiotSpace?
 
     public init(connection: NearbyConnection, host: NearbySpaceHost, friendlyName: String) {
         self.connection = connection
@@ -158,6 +162,7 @@ public final class SpacePairing {
             fail()
             return
         }
+        remoteSpace = remote
         guard let decision else { return }
         decision(SpaceAdoption.decide(local: host.currentSpace, remote: remote))
     }

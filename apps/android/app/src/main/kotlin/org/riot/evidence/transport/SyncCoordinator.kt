@@ -36,6 +36,12 @@ class SyncCoordinator(
         safely { handle(bridge.begin()) }
     }
 
+    /// The answering half: ready to receive, but does NOT open the protocol.
+    /// The initiator's Hello lands in the one phase that accepts it. See start().
+    fun answer() {
+        update(NearbyUiState.GettingLatest(friendlyName))
+    }
+
     fun acceptImport() {
         safely {
             acceptedImport = true

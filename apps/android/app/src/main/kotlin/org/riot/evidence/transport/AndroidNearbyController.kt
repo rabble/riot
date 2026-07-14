@@ -9,7 +9,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 class AndroidNearbyController(
     private val activity: Activity,
     private val onChanged: () -> Unit,
-    private val onConnected: (DiscoveredPhone, NearbyConnection) -> Unit,
+    private val onConnected: (DiscoveredPhone, NearbyConnection, Boolean) -> Unit,
 ) : AutoCloseable {
     private val discovery by lazy { AndroidBleDiscovery(activity) }
     private val pairing by lazy { PairingController(AndroidGattBleConnector(activity)) }
@@ -110,7 +110,7 @@ class AndroidNearbyController(
                 }
                 activity.runOnUiThread {
                     update(NearbyUiState.Connecting)
-                    onConnected(phone, selected)
+                    onConnected(phone, selected, incoming)
                 }
             } catch (_: Exception) {
                 if (attempts.failed(attempt) && !winner.hasWinner) {
