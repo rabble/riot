@@ -169,6 +169,28 @@ If some line is genuinely unreachable: change `.coverage-thresholds.json` explic
 
 ---
 
+### ⚠️ P3 RESULT (2026-07-14): the 100% gate appears unreachable. **Owner decision required — I did not change the threshold.**
+
+Coverage moved **94.60% → 96.25%** (8214 → 8357 / 8683) via 52 real error-path tests (commit `2040ccc`). **141 lines remain, and roughly 120 of them are unreachable by construction.** Two real code defects were found in the process and fixed (commit `0e5c34c`).
+
+**The hard blocker — 6 lines no test can ever reach.** `riot-app-cli/src/lib.rs:819,830,841,852,866,952` are **executed but reported zero-hit**. Proof: `src/tests/unit.rs:476` asserts `parse_manifest_input(valid_manifest).is_ok()`, and `:866` (`Ok(ManifestInput {`) is the *only* `Ok`-return in that function. The test passes, so the line runs, and Tarpaulin still reports 0. They are trailing-arg lines of multi-line calls plus a multi-line struct literal — **Tarpaulin region mis-attribution**. Same class: `willow/identity.rs:189`. *Independently verified.* **No amount of testing fixes this. 100% Tarpaulin lines is not achievable on this codebase as configured.**
+
+**The rest, by category:**
+- **8** `apps/index.rs` — the import admission gate refuses *every* malformed app-index record, so the store can never hold one and the scanner's per-record error arms cannot fire. Proven by a new test that forges 9 records with raw CBOR (what a hostile peer actually sends) and shows admission rejects all of them. **Keep the guards — they are defence in depth — but they are not coverable.**
+- **33** `store/evidence.rs` — `CorruptDatabase` assertions that fire only if SQLite returns a row inconsistent with what this code itself wrote. Schema CHECK/FK constraints make most physically impossible.
+- **12** `store/database.rs`, **10** `session.rs`, **6** `store/backup.rs`, **4** `store/schema.rs`, **7** `import/join.rs`, **4** identity/owned (two are retry-exhaustion arms at ~2⁻¹²⁸ probability), **49** `riot-ffi/mobile_state.rs` (panic-catch arms, internal invariants, 256-marker caps needing 257 real commits).
+- **2** `xtask/main.rs` — the success arms of 0B's subcommands. **Should land with 0B.**
+- **9** `mobile_state.rs:921-935` — **the one genuinely reachable gap.** Sync import-rejection path; reassigned.
+
+**Your options (pick one — do not let an agent decide this):**
+1. **Lower the threshold** to a justified figure (e.g. 96–97% lines) with this inventory committed as the rationale. Honest, and unblocks every unit's COMMIT phase.
+2. **Keep 100% and switch the metric** — the gate also runs `cargo llvm-cov` (regions/branches/functions), which does not suffer Tarpaulin's line mis-attribution. Measure that first; it may already be attainable.
+3. **Keep 100% Tarpaulin lines** — then no unit can ever commit, because 6 lines are impossible. Not viable as written.
+
+**Nothing was silently excluded.** No `#[cfg(not(tarpaulin_include))]` was added, and `.coverage-thresholds.json` is untouched.
+
+---
+
 ## 6. Work units
 
 Each runs the metaswarm 4-phase loop (IMPLEMENT → VALIDATE → ADVERSARIAL REVIEW → COMMIT), TDD, RED first, and obeys §4.
