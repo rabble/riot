@@ -45,6 +45,22 @@ const MAX_INSTALLED_APPS: usize = 16;
 const MAX_APP_TRUST_MARKERS: usize = 256;
 /// The complete retained inventory must fit one protocol bundle. This caps
 /// aggregate proof/payload retention at 8 MiB before any session clones it.
+///
+/// CAUTION: this is currently an *alias* for `MAX_BUNDLE_BYTES`, so it bounds
+/// nothing on its own. `encode_bundle` already fails at exactly this threshold,
+/// which means both `if encoded.len() > MAX_SYNC_INVENTORY_BYTES` guards below
+/// (in `prospective_sync_inventory` and the inventory revalidation) are
+/// unreachable — the `encode_bundle(..)?` on the preceding line always fires
+/// first. Do not read this constant as a separate, tighter sync bound: it is
+/// not one today.
+///
+/// OPEN QUESTION (needs an owner decision, do not guess): was a tighter
+/// sync-specific inventory ceiling intended here? This is the bound on how much
+/// a peer can make us buffer during reconciliation, so the answer is
+/// security-relevant. Either give it a real value below `MAX_BUNDLE_BYTES` (a
+/// protocol change — the guards then become live and must be tested), or drop
+/// the constant and the two dead guards and rely on `encode_bundle` alone.
+/// Left as-is deliberately rather than silently changing peer-facing limits.
 const MAX_SYNC_INVENTORY_BYTES: usize = MAX_BUNDLE_BYTES;
 
 pub(crate) struct LocalProfile {
