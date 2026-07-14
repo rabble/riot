@@ -304,7 +304,6 @@ struct PlanTombstone {
 
 struct SessionState {
     session_id: u64,
-    closed: bool,
     store: Option<StoreState>,
     store_closed: bool,
     preview: Option<PreviewState>,
@@ -323,9 +322,6 @@ impl SessionState {
     }
 
     fn require_open_store(&self) -> Result<(), SessionError> {
-        if self.closed {
-            return Err(SessionError::ObjectClosed);
-        }
         if self.store_closed || self.store.is_none() {
             return Err(SessionError::ObjectClosed);
         }
@@ -373,7 +369,6 @@ impl RiotSession {
         Ok(Self {
             inner: Arc::new(Mutex::new(SessionState {
                 session_id,
-                closed: false,
                 store: None,
                 store_closed: false,
                 preview: None,
@@ -387,9 +382,6 @@ impl RiotSession {
 
     pub fn create_store(&self) -> Result<EvidenceStore, SessionError> {
         let mut st = self.inner.lock().map_err(|_| SessionError::Internal)?;
-        if st.closed {
-            return Err(SessionError::ObjectClosed);
-        }
         if st.store.is_some() {
             return Err(SessionError::SessionLimit);
         }
@@ -573,9 +565,6 @@ impl EvidenceStore {
 
     pub fn close(&self) -> Result<(), SessionError> {
         let mut st = self.inner.lock().map_err(|_| SessionError::Internal)?;
-        if st.closed {
-            return Err(SessionError::ObjectClosed);
-        }
         // Closing the store closes its preview and plan in the same section.
         st.store_closed = true;
         st.preview = None;
@@ -612,7 +601,7 @@ impl EvidenceStore {
         let mut st = self.inner.lock().map_err(|_| SessionError::Internal)?;
         // Closing a store/session already clears preview and plan state, so
         // cleanup after a successful commit is complete rather than failed.
-        if st.closed || st.store_closed || st.store.is_none() {
+        if st.store_closed || st.store.is_none() {
             return Ok(());
         }
         st.require_store(self.store_id)?;
