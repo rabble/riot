@@ -189,6 +189,22 @@ Coverage moved **94.60% → 96.25%** (8214 → 8357 / 8683) via 52 real error-pa
 
 **Nothing was silently excluded.** No `#[cfg(not(tarpaulin_include))]` was added, and `.coverage-thresholds.json` is untouched.
 
+**Update (`e43286c`):** the one reachable gap is now closed — the sync import-rejection path is covered by driving the real wire protocol as a hostile peer. **96.25% → 96.47%.** Remaining in P3 scope: **121**, all unreachable for the reasons above.
+
+### ⚠️ SECOND OWNER DECISION: `MAX_SYNC_INVENTORY_BYTES` bounds nothing
+
+`crates/riot-ffi/src/mobile_state.rs:48` declares `const MAX_SYNC_INVENTORY_BYTES: usize = MAX_BUNDLE_BYTES;` — a straight alias. `encode_bundle` already fails at exactly that threshold, so **both** guards behind it (`prospective_sync_inventory` and the inventory revalidation) are unreachable. A named constant that reads like a sync-specific ceiling enforces nothing.
+
+This governs **how much a peer can make us buffer during reconciliation**, so it is security-relevant. Two readings, and I deliberately did **not** guess:
+1. A tighter sync-specific bound *was* intended and got lazily aliased → give it a real value below `MAX_BUNDLE_BYTES`. This is a **protocol change**: the two guards become live and need tests.
+2. The alias is deliberate and the guards are belt-and-braces → delete both guards and the constant, and rely on `encode_bundle` alone.
+
+Behaviour is unchanged; the constant is now documented in place so nobody reads it as a live bound. **Pick one.**
+
+*(Related, same class — a second check standing behind an equally-strict first one: `store/backup.rs:102,132` and `store/backup.rs:350,354`. Worth a sweep for this pattern.)*
+
+**One more thing worth knowing about sync:** the **count** ceiling (`MAX_SYNC_IDS`) is enforced at the *Summary* step by `ReconcileSession::checked_missing` (`sync/state.rs:179`), two frames before admission — so it can never reach the admission check. The **byte** ceiling is enforced twice. Count once, bytes twice.
+
 ---
 
 ## 6. Work units
