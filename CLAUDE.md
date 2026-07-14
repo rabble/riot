@@ -50,9 +50,11 @@ Use the `visual-review` skill to take screenshots of web pages, presentations, o
 
 - **TDD is mandatory** — Write tests first, watch them fail, then implement
 - **100% test coverage required** — Lines, branches, functions, and statements. Enforced via `.coverage-thresholds.json` as a blocking gate before PR creation and task completion
-<!-- TODO: Update these commands for your project's test runner -->
-- Test command: `npm test`
-- Coverage command: `npm run test:coverage`
+- **Rust** (primary engine): `cargo test --workspace --all-features`
+- **Rust coverage**: `cargo tarpaulin --fail-under 100`
+- **Gateway** (Python): `cd apps/gateway && python3 -m unittest discover -s tests`
+- **iOS/macOS**: `xcodebuild test -project apps/ios/Riot.xcodeproj -scheme RiotKit -destination 'platform=iOS Simulator,name=iPhone 17 Pro,OS=26.2,arch=arm64'`
+- **Android**: `cd apps/android && ./gradlew :app:testDebugUnitTest`
 
 ## Coverage
 
@@ -191,20 +193,21 @@ Development patterns and standards are documented in `guides/`:
 
 ## Code Quality
 
-<!-- TODO: Update these for your project's language and tools -->
-- TypeScript strict mode, no `any` types
-- ESLint + Prettier
+- **Rust 2021** — `cargo fmt --all -- --check` and strict Clippy (`cargo clippy --workspace --all-features -- -D warnings`)
+- **Swift** — Swift 6 / SwiftUI; XCTest for unit and UI tests
+- **Kotlin** — Kotlin 2.2 / Jetpack Compose; JUnit for unit tests, instrumentation for device tests
 - All quality gates must pass before PR creation
 
 ## Key Decisions
 
-<!-- Document important architectural decisions here so agents have context.
-     These get loaded during knowledge priming (/prime).
-     Use `bd decision` to record decisions persistently in the beads database
-     with rationale tracking — these survive compaction and are available across sessions. -->
+- **Shared Rust core + native shells.** `riot-core` owns all protocol logic (Willow data model, signing, import, newswire, sync wire format). iOS/Android/macOS are native shells consuming `riot-ffi` (UniFFI) — no business logic in the apps.
+- **Preview-first atomic import.** Every external packet — sync, file, app bundle — passes through the same preview → plan → commit boundary in `session.rs`. Copy-on-write: a fault before the swap leaves state unchanged.
+- **Handle + arbiter FFI pattern.** All FFI handles (`MobileProfile`, `MobileImportPreview`, etc.) carry only an ID + `Arc<Mutex<SessionState>>`. Every method re-acquires the arbiter.
+- **Dependency pins are load-bearing.** `willow25` and `bab_rs` are alpha-pinned because stable releases compute incorrect WILLIAM3 digests (see `docs/research/2026-07-10-willow-implementation-audit.md`). The xtask `validate-contracts` command enforces this.
+- **Dual-mode architecture (in progress).** Open newswire (communal + publication spaces) and private groups (MLS + encrypted drops), joined by an explicit signed bridge. Newswire core is landed; groups are unbuilt. See `docs/superpowers/specs/2026-07-10-riot-dual-mode-design.md`.
 
 ## Notes
 
-<!-- Add project-specific notes, conventions, or constraints here.
-     Examples: "Always use server components for data fetching",
-     "The payments module is legacy — do not refactor without approval" -->
+- The gateway (`apps/gateway/`) renders newswire content only — it never touches private group data.
+- Release profile uses `panic = "unwind"` so the FFI boundary can catch panics and quarantine the session; do not change to abort.
+- Native apps persist nothing to disk yet (Phase 0A uses in-memory stores); durable SQLite persistence is wired in core but not yet surfaced through FFI.

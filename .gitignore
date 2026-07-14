@@ -1,4 +1,8 @@
 .superpowers/
+.beads/
+.claude/
+.metaswarm/
+.clearance-rendered-preview-*/
 target/
 .env
 .DS_Store

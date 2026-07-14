@@ -1,6 +1,6 @@
 # Phase 0A — WU2B Report: Session Arbiter and Atomic Import
 
-- **Status:** G2 CORE PASS / G2 FULL still INCOMPLETE, but narrower than before — transaction, explicit selection, bounded plan-lifecycle semantics, three arbiter concurrency races, and both hard byte budgets (store + preview) are now proven. Only the hostile-input/log-safety corpus and one specific untested race remain. **Do not claim full G2 or start WU3 on this report alone.**
+- **Status:** **COMPLETE (updated 2026-07-14).** G2 FULL has since been met: the concurrency races, charge-budget admission, hostile-input corpus, and the session-close race were all proven in subsequent commits. WU3 (native bindings, sync transport, app-entry sync surface) shipped and is merged to `main`. This report's original "do not claim full G2 or start WU3" gate is resolved. The report body below is preserved as historical record of the G2-core state as of 2026-07-10/11.
 - **Owning work unit:** WU2 (Task 5)
 - **Date:** 2026-07-10 (report body); concurrency and charge-admission evidence added 2026-07-11
 - **Elapsed agent-hours:** ~1.95 charged from the original Task 5 slice; a further 0.9h charged 2026-07-11 for concurrency evidence (0.2h) and charge-admission repair (0.4h + 0.3h); WU2 reserve now at 0.25h remaining (see `docs/decisions/phase0a-time-ledger.json`)

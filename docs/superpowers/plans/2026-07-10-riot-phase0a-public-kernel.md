@@ -10,7 +10,7 @@
 
 ---
 
-> **STATUS 2026-07-10:** Gate state **G0 PASS, G1 PASS**. WU2A (Task 4) join implemented, awaiting independent review (`docs/decisions/phase0a-wu2a-report.md`). **WU2B (Task 5) implemented to G2-CORE only**, at the product owner's explicit "keep going" (ahead of the WU2A review the prior banner asked to wait for): arbiter, copy-on-write transaction, receipts, and provenance — 13 core tests. The exhaustive lifecycle-race, plan-tombstone/16 MiB-charge, hostile-corpus, and per-entry-selection matrix is **not yet done**; see `docs/decisions/phase0a-wu2b-report.md`. **Full G2 is not claimed; WU3 must not start until the WU2A review PASSes and full G2 is met.** 80 tests green. Test commands require `--features conformance` (release-surface test runs without it).
+> **STATUS 2026-07-14 (updated):** Phase 0A is **COMPLETE**. All work units (WU0–WU3, including Tasks 4, 5, and 5b) are merged to `main`. The durable signer (Task 4), sync FFI bridge + nearby transport + sync protocol (Task 5), and app-entry sync surface (Task 5b) all landed. The earlier "WU3 must not start until full G2 passes" sequencing gate is resolved — full G2 evidence (concurrency, charge budgets, hostile corpus) was subsequently proven and the work shipped. 662+ tests green across the workspace. The newswire core, SQLite persistence, and conference gateway signature verification have since been merged as follow-on work.
 
 ---
 
