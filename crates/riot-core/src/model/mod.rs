@@ -158,7 +158,13 @@ fn check_text(name: &'static str, value: &str, min: usize, max: usize) -> Result
 /// Validates and encodes the canonical byte representation.
 pub fn encode_alert(alert: &AlertPayload) -> Result<Vec<u8>, AlertError> {
     validate(alert)?;
+    Ok(encode_validated_alert(alert))
+}
 
+/// Encodes an alert that has already passed [`validate`]. The validated field
+/// ceilings cap the document below [`MAX_PAYLOAD_BYTES`], and `Vec<u8>` is an
+/// infallible minicbor writer.
+fn encode_validated_alert(alert: &AlertPayload) -> Vec<u8> {
     let mut pairs: u64 = 13;
     if alert.valid_from.is_some() {
         pairs += 1;
@@ -169,36 +175,47 @@ pub fn encode_alert(alert: &AlertPayload) -> Result<Vec<u8>, AlertError> {
 
     let mut buffer: Vec<u8> = Vec::new();
     let mut e = Encoder::new(&mut buffer);
-    let r: Result<_, minicbor::encode::Error<core::convert::Infallible>> = (|| {
-        e.map(pairs)?;
-        e.u8(0)?.str(ALERT_SCHEMA)?;
-        e.u8(1)?.bytes(&alert.object_id)?;
-        e.u8(2)?.bytes(&alert.revision_id)?;
-        e.u8(3)?.u64(alert.created_at)?;
-        if let Some(valid_from) = alert.valid_from {
-            e.u8(4)?.u64(valid_from)?;
-        }
-        e.u8(5)?.u64(alert.expires_at)?;
-        e.u8(6)?.str(&alert.language)?;
-        e.u8(7)?.u8(alert.urgency as u8)?;
-        e.u8(8)?.u8(alert.severity as u8)?;
-        e.u8(9)?.u8(alert.certainty as u8)?;
-        e.u8(10)?.str(&alert.headline)?;
-        e.u8(11)?.str(&alert.description)?;
-        if let Some(area) = &alert.affected_area_claim {
-            e.u8(12)?.str(area)?;
-        }
-        e.u8(13)?.array(alert.source_claims.len() as u64)?;
-        for claim in &alert.source_claims {
-            e.str(claim)?;
-        }
-        e.u8(14)?.bool(alert.ai_assisted)?;
-        Ok(())
-    })();
-    r.map_err(|_| AlertError::Malformed)?;
+    let _ = e.map(pairs);
+    let _ = e.u8(0);
+    let _ = e.str(ALERT_SCHEMA);
+    let _ = e.u8(1);
+    let _ = e.bytes(&alert.object_id);
+    let _ = e.u8(2);
+    let _ = e.bytes(&alert.revision_id);
+    let _ = e.u8(3);
+    let _ = e.u64(alert.created_at);
+    if let Some(valid_from) = alert.valid_from {
+        let _ = e.u8(4);
+        let _ = e.u64(valid_from);
+    }
+    let _ = e.u8(5);
+    let _ = e.u64(alert.expires_at);
+    let _ = e.u8(6);
+    let _ = e.str(&alert.language);
+    let _ = e.u8(7);
+    let _ = e.u8(alert.urgency as u8);
+    let _ = e.u8(8);
+    let _ = e.u8(alert.severity as u8);
+    let _ = e.u8(9);
+    let _ = e.u8(alert.certainty as u8);
+    let _ = e.u8(10);
+    let _ = e.str(&alert.headline);
+    let _ = e.u8(11);
+    let _ = e.str(&alert.description);
+    if let Some(area) = &alert.affected_area_claim {
+        let _ = e.u8(12);
+        let _ = e.str(area);
+    }
+    let _ = e.u8(13);
+    let _ = e.array(alert.source_claims.len() as u64);
+    for claim in &alert.source_claims {
+        let _ = e.str(claim);
+    }
+    let _ = e.u8(14);
+    let _ = e.bool(alert.ai_assisted);
 
     debug_assert!(buffer.len() <= MAX_PAYLOAD_BYTES);
-    Ok(buffer)
+    buffer
 }
 
 /// Strict canonical decoder: rejects unknown/duplicate/misordered keys,
@@ -321,7 +338,7 @@ pub fn decode_alert(input: &[u8]) -> Result<AlertPayload, AlertError> {
     validate(&alert)?;
 
     // Canonicality proof: only the exact encoder output is acceptable.
-    let reencoded = encode_alert(&alert)?;
+    let reencoded = encode_validated_alert(&alert);
     if reencoded != input {
         return Err(AlertError::NonCanonical);
     }

@@ -3,12 +3,13 @@
 //! domains, and the fixed alert path layout.
 
 use riot_core::model::{encode_alert, Certainty, Severity, Urgency};
+use riot_core::willow::entry::expected_alert_path;
 use riot_core::willow::{
-    alert_path, authorise_entry, build_alert_entry, create_signed_alert_with,
+    alert_path, authorise_entry, build_alert_entry, create_signed_alert, create_signed_alert_with,
     decode_capability_canonic, decode_entry_canonic, encode_capability, encode_entry, entry_id,
-    evidence_digest, generate_communal_author_with, snapshot_from_unix_seconds, verify_entry,
-    william3_digest, AlertDraft, ClockSnapshot, ClockSource, EntropySource, EntryFacts,
-    EvidenceAuthor, NamespaceKind, OsEntropy, WillowError,
+    evidence_digest, generate_communal_author_with, snapshot_from_unix_seconds, system_snapshot,
+    verify_entry, william3_digest, AlertDraft, ClockSnapshot, ClockSource, EntropySource,
+    EntryFacts, EvidenceAuthor, NamespaceKind, OsEntropy, SystemClock, WillowError,
 };
 use willow25::entry::Entrylike;
 use willow25::groupings::{Coordinatelike, Keylike};
@@ -150,6 +151,17 @@ fn public_clock_rejects_pre_epoch_and_out_of_range() {
     ));
 }
 
+#[test]
+fn public_system_clock_and_clock_source_produce_valid_snapshots() {
+    let direct = system_snapshot().expect("system snapshot");
+    let injected = SystemClock.snapshot().expect("clock source snapshot");
+    assert!(direct.unix_seconds > 0);
+    assert!(direct.tai_j2000_micros > 0);
+    assert_eq!(direct.uncertainty_seconds, 60);
+    assert!(injected.unix_seconds >= direct.unix_seconds);
+    assert_eq!(injected.uncertainty_seconds, 60);
+}
+
 // ---------- signed alert entry factory ----------
 
 #[test]
@@ -182,6 +194,35 @@ fn public_signed_alert_uses_one_snapshot_for_both_time_views() {
 }
 
 #[test]
+fn public_production_signed_alert_uses_os_entropy_and_system_time() {
+    let author = author();
+    let mut input = draft();
+    input.expires_at = u64::MAX;
+
+    let signed = create_signed_alert(&author, input).expect("signed alert");
+    assert!(signed.snapshot.unix_seconds > 0);
+    assert_eq!(signed.payload.created_at, signed.snapshot.unix_seconds);
+    assert_ne!(signed.object_id, [0; 16]);
+    assert_ne!(signed.revision_id, [0; 16]);
+}
+
+#[test]
+fn expected_alert_path_accepts_exact_ids_and_rejects_wrong_lengths() {
+    assert_eq!(
+        expected_alert_path(&OBJECT_ID, &REVISION_ID).expect("valid path"),
+        alert_path(&OBJECT_ID, &REVISION_ID).expect("canonical path")
+    );
+    assert_eq!(
+        expected_alert_path(&OBJECT_ID[..15], &REVISION_ID),
+        Err(WillowError::PathInvalid)
+    );
+    assert_eq!(
+        expected_alert_path(&OBJECT_ID, &REVISION_ID[..15]),
+        Err(WillowError::PathInvalid)
+    );
+}
+
+#[test]
 fn public_signed_alert_fails_closed_on_clock_and_entropy() {
     let author = author();
     assert!(matches!(
@@ -197,9 +238,18 @@ fn public_signed_alert_fails_closed_on_clock_and_entropy() {
         ),
         Err(WillowError::EntropyUnavailable) | Err(WillowError::ClockUnavailable)
     ));
+    let snapshot = snapshot_from_unix_seconds(1_783_000_000, 60).unwrap();
+    assert!(matches!(
+        create_signed_alert_with(
+            &author,
+            &mut FailingEntropy { works_for: 0 },
+            &FixedClock(snapshot),
+            draft()
+        ),
+        Err(WillowError::EntropyUnavailable)
+    ));
     // Draft validity failure surfaces as InvalidAlert: expiry before the
     // snapshot-derived created_at.
-    let snapshot = snapshot_from_unix_seconds(1_783_000_000, 60).unwrap();
     let mut bad = draft();
     bad.expires_at = 1_000; // long before created_at
     assert!(matches!(

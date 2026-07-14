@@ -6,6 +6,7 @@ use std::fmt::Write as _;
 
 use willow25::groupings::Keylike;
 
+use crate::import::join::PrefixedEntry;
 use crate::session::{commit_at, EvidenceStore};
 use crate::willow::identity::EvidenceAuthor;
 
@@ -34,7 +35,8 @@ pub fn write_profile_card(
     willow_timestamp_micros: u64,
 ) -> Result<(), ProfileError> {
     let payload = encode_profile_card(card)?;
-    let path = profile_card_path(author.subspace_id().as_bytes())?;
+    let path = profile_card_path(author.subspace_id().as_bytes())
+        .expect("a fixed-size subspace always forms a valid profile path");
     commit_at(store, author, &path, &payload, willow_timestamp_micros)
         .map_err(|_| ProfileError::StoreRejected)
 }
@@ -51,11 +53,15 @@ pub fn write_profile_card(
 pub fn resolve_display_names(
     store: &EvidenceStore,
 ) -> Result<BTreeMap<[u8; SUBSPACE_ID_BYTES], String>, ProfileError> {
-    let prefix = profile_prefix()?;
+    let prefix = profile_prefix().expect("the fixed profile prefix is always a valid path");
     let entries = store
         .entries_with_prefix(&prefix)
         .map_err(|_| ProfileError::StoreRejected)?;
 
+    Ok(collect_display_names(entries))
+}
+
+fn collect_display_names(entries: Vec<PrefixedEntry>) -> BTreeMap<[u8; SUBSPACE_ID_BYTES], String> {
     let mut names = BTreeMap::new();
     for (_id, entry, payload) in entries {
         let Some(slot_subspace) = classify_profile_path(entry.path()) else {
@@ -70,7 +76,7 @@ pub fn resolve_display_names(
         };
         names.insert(slot_subspace, card.display_name);
     }
-    Ok(names)
+    names
 }
 
 /// The character that separates a name from its key tag in the rendered form.
@@ -232,4 +238,62 @@ pub fn key_tag(subspace_id: &[u8; SUBSPACE_ID_BYTES]) -> String {
         let _ = write!(tag, "{byte:02x}");
     }
     tag
+}
+
+#[cfg(test)]
+mod tests {
+    use super::collect_display_names;
+    use crate::profile::card::{encode_profile_card, ProfileCard};
+    use crate::profile::path::profile_card_path;
+    use crate::willow::{generate_communal_author, Entry, Path};
+
+    fn entry_at(
+        author: &crate::willow::identity::EvidenceAuthor,
+        path: Path,
+        payload: &[u8],
+    ) -> Entry {
+        Entry::builder()
+            .namespace_id(author.namespace_id().clone())
+            .subspace_id(author.subspace_id())
+            .path(path)
+            .timestamp(1u64)
+            .payload(payload)
+            .build()
+    }
+
+    #[test]
+    fn collector_skips_every_defensive_malformed_entry_case() {
+        let author = generate_communal_author().expect("author");
+        let foreign = generate_communal_author().expect("foreign author");
+        let valid_payload = encode_profile_card(&ProfileCard {
+            display_name: "Ana".to_string(),
+        })
+        .expect("payload");
+        let own_path = profile_card_path(author.subspace_id().as_bytes()).expect("path");
+        let foreign_path = profile_card_path(foreign.subspace_id().as_bytes()).expect("path");
+
+        let malformed_path = Path::from_slices(&[b"profile", b"short", b"card"])
+            .expect("malformed but representable path");
+        let malformed = entry_at(&author, malformed_path, &valid_payload);
+        let wrong_owner = entry_at(&author, foreign_path, &valid_payload);
+        let missing_payload = entry_at(&author, own_path.clone(), &valid_payload);
+        let invalid_payload = entry_at(&author, own_path.clone(), b"not a card");
+        let valid = entry_at(&author, own_path, &valid_payload);
+
+        let names = collect_display_names(vec![
+            ([1; 32], malformed, Some(valid_payload.clone())),
+            ([2; 32], wrong_owner, Some(valid_payload.clone())),
+            ([3; 32], missing_payload, None),
+            ([4; 32], invalid_payload, Some(b"not a card".to_vec())),
+            ([5; 32], valid, Some(valid_payload)),
+        ]);
+
+        assert_eq!(names.len(), 1);
+        assert_eq!(
+            names
+                .get(author.subspace_id().as_bytes())
+                .map(String::as_str),
+            Some("Ana")
+        );
+    }
 }

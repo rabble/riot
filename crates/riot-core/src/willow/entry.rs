@@ -59,51 +59,54 @@ where
     F: FnMut(&mut [u8]) -> Result<(), WillowError>,
 {
     let mut object_id = [0u8; 16];
-    fill(&mut object_id)?;
     let mut revision_id = [0u8; 16];
-    fill(&mut revision_id)?;
+    fill(&mut object_id)
+        .and_then(|()| fill(&mut revision_id))
+        .and_then(|()| {
+            let payload = AlertPayload {
+                object_id,
+                revision_id,
+                created_at: snapshot.unix_seconds,
+                valid_from: draft.valid_from,
+                expires_at: draft.expires_at,
+                language: draft.language,
+                urgency: draft.urgency,
+                severity: draft.severity,
+                certainty: draft.certainty,
+                headline: draft.headline,
+                description: draft.description,
+                affected_area_claim: draft.affected_area_claim,
+                source_claims: draft.source_claims,
+                ai_assisted: draft.ai_assisted,
+            };
+            let payload_bytes = encode_alert(&payload).map_err(WillowError::InvalidAlert)?;
 
-    let payload = AlertPayload {
-        object_id,
-        revision_id,
-        created_at: snapshot.unix_seconds,
-        valid_from: draft.valid_from,
-        expires_at: draft.expires_at,
-        language: draft.language,
-        urgency: draft.urgency,
-        severity: draft.severity,
-        certainty: draft.certainty,
-        headline: draft.headline,
-        description: draft.description,
-        affected_area_claim: draft.affected_area_claim,
-        source_claims: draft.source_claims,
-        ai_assisted: draft.ai_assisted,
-    };
-    let payload_bytes = encode_alert(&payload).map_err(WillowError::InvalidAlert)?;
+            let entry = super::build_alert_entry(
+                author,
+                &object_id,
+                &revision_id,
+                snapshot.tai_j2000_micros,
+                &payload_bytes,
+            )
+            .expect("fixed-length alert ids always form a valid path");
+            let authorised = super::authorise_entry(author, entry)
+                .expect("alert entries are built in the signing author's subspace");
+            let token = authorised.authorisation_token();
+            let signature: ed25519_dalek::Signature = token.signature().clone().into();
 
-    let entry = super::build_alert_entry(
-        author,
-        &object_id,
-        &revision_id,
-        snapshot.tai_j2000_micros,
-        &payload_bytes,
-    )?;
-    let authorised = super::authorise_entry(author, entry)?;
-    let token = authorised.authorisation_token();
-    let signature: ed25519_dalek::Signature = token.signature().clone().into();
-
-    Ok(SignedAlert {
-        signed: SignedWillowEntry {
-            entry_bytes: super::encode_entry(authorised.entry()),
-            capability_bytes: super::encode_capability(token.capability()),
-            signature: signature.to_bytes(),
-            payload_bytes,
-        },
-        snapshot,
-        payload,
-        object_id,
-        revision_id,
-    })
+            Ok(SignedAlert {
+                signed: SignedWillowEntry {
+                    entry_bytes: super::encode_entry(authorised.entry()),
+                    capability_bytes: super::encode_capability(token.capability()),
+                    signature: signature.to_bytes(),
+                    payload_bytes,
+                },
+                snapshot,
+                payload,
+                object_id,
+                revision_id,
+            })
+        })
 }
 
 fn os_fill(buf: &mut [u8]) -> Result<(), WillowError> {
@@ -118,8 +121,7 @@ pub fn create_signed_alert(
     author: &EvidenceAuthor,
     draft: AlertDraft,
 ) -> Result<SignedAlert, WillowError> {
-    let snapshot = super::clock::system_snapshot()?;
-    build(author, os_fill, snapshot, draft)
+    super::clock::system_snapshot().and_then(|snapshot| build(author, os_fill, snapshot, draft))
 }
 
 /// Injectable variant for deterministic/failing entropy and clocks in tests.
@@ -136,8 +138,12 @@ pub fn create_signed_alert_with(
 
 /// Path binding sanity used by tests.
 pub fn expected_alert_path(
-    object_id: &[u8; 16],
-    revision_id: &[u8; 16],
+    object_id: &[u8],
+    revision_id: &[u8],
 ) -> Result<willow25::paths::Path, WillowError> {
+    let object_id = object_id.try_into().map_err(|_| WillowError::PathInvalid)?;
+    let revision_id = revision_id
+        .try_into()
+        .map_err(|_| WillowError::PathInvalid)?;
     alert_path(object_id, revision_id)
 }

@@ -1,6 +1,8 @@
-use riot_core::apps::entry::{app_data_path, build_app_data_entry, APPS_COMPONENT};
+use riot_core::apps::entry::{
+    app_data_path, build_app_data_entry, is_app_data_entry, is_app_data_path, APPS_COMPONENT,
+};
 use riot_core::apps::AppsError;
-use riot_core::willow::{generate_communal_author, Path};
+use riot_core::willow::{generate_communal_author, Entry, Path, WillowError};
 use willow25::groupings::{Keylike, Namespaced};
 
 #[test]
@@ -89,4 +91,66 @@ fn build_app_data_entry_signs_under_authors_own_namespace_and_subspace() {
     let entry = build_app_data_entry(&author, &app_id, "items/x", 1, b"{}").expect("entry");
     assert_eq!(entry.namespace_id(), author.namespace_id());
     assert_eq!(*entry.subspace_id(), author.subspace_id());
+    assert!(is_app_data_entry(&entry));
+}
+
+#[test]
+fn app_data_classifier_rejects_every_malformed_path_family() {
+    let app_id = [7u8; 32];
+    let malformed = [
+        Path::from_slices(&[]).unwrap(),
+        Path::from_slices(&[b"objects"]).unwrap(),
+        Path::from_slices(&[APPS_COMPONENT]).unwrap(),
+        Path::from_slices(&[APPS_COMPONENT, &[7; 31], b"key"]).unwrap(),
+        Path::from_slices(&[APPS_COMPONENT, &app_id]).unwrap(),
+        Path::from_slices(&[APPS_COMPONENT, &app_id, b"Uppercase"]).unwrap(),
+        Path::from_slices(&[APPS_COMPONENT, &app_id, b""]).unwrap(),
+    ];
+    for path in malformed {
+        assert!(!is_app_data_path(&path), "accepted malformed path {path:?}");
+    }
+    assert!(is_app_data_path(
+        &Path::from_slices(&[APPS_COMPONENT, &app_id, b"items", b"abc-123"]).unwrap()
+    ));
+}
+
+#[test]
+fn app_data_entry_classifier_delegates_to_the_entry_path() {
+    let author = generate_communal_author().expect("author");
+    let entry = Entry::builder()
+        .namespace_id(author.namespace_id().clone())
+        .subspace_id(author.subspace_id())
+        .path(Path::from_slices(&[b"objects", b"not-app-data"]).unwrap())
+        .timestamp(1)
+        .payload(b"{}")
+        .build();
+    assert!(!is_app_data_entry(&entry));
+}
+
+#[test]
+fn apps_error_display_and_willow_conversion_preserve_exact_variants() {
+    let errors = [
+        AppsError::KeyEmpty,
+        AppsError::KeySegmentInvalid,
+        AppsError::TooManyPathComponents,
+        AppsError::PathComponentTooLong,
+        AppsError::PathTooLong,
+        AppsError::PathInvalid,
+        AppsError::ManifestFieldInvalid,
+        AppsError::BundleFieldInvalid,
+        AppsError::BundleTooLarge,
+        AppsError::StoreRejected,
+        AppsError::StoreBusy,
+        AppsError::StaleWrite,
+        AppsError::IndexFieldInvalid,
+        AppsError::EndorsementFieldInvalid,
+        AppsError::IndexEntryMismatch,
+    ];
+    for error in errors {
+        assert_eq!(error.to_string(), format!("{error:?}"));
+    }
+
+    let converted = AppsError::from(WillowError::PathInvalid);
+    assert_eq!(converted, AppsError::Willow(WillowError::PathInvalid));
+    assert_eq!(converted.to_string(), "Willow(PathInvalid)");
 }

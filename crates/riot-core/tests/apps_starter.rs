@@ -59,6 +59,28 @@ fn corrupted_built_in_is_silently_excluded() {
 }
 
 #[test]
+fn corrupt_manifest_is_silently_excluded() {
+    let (mut manifest, bundle) = pair("Checklist");
+    manifest[0] ^= 0xff;
+    assert!(verify_starter_catalog(&[(&manifest, &bundle)]).is_empty());
+}
+
+#[test]
+fn entry_point_mismatch_is_silently_excluded() {
+    let (manifest, _) = pair("Checklist");
+    let bundle = encode_app_bundle(&AppBundle {
+        entry_point: "other.html".to_string(),
+        resources: vec![AppResource {
+            path: "other.html".to_string(),
+            content_type: "text/html".to_string(),
+            bytes: b"<html></html>".to_vec(),
+        }],
+    })
+    .expect("bundle");
+    assert!(verify_starter_catalog(&[(&manifest, &bundle)]).is_empty());
+}
+
+#[test]
 fn the_shipped_catalog_verifies_completely() {
     // Guards the embedded catalog forever: every shipped pair must verify.
     let apps = verify_starter_catalog(STARTER_CATALOG);

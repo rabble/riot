@@ -3,7 +3,9 @@
 //! `conformance` for `RiotSession`/store construction.
 
 use riot_core::apps::bridge::AppDataBridge;
-use riot_core::session::RiotSession;
+use riot_core::apps::AppsError;
+use riot_core::import::{encode_bundle, MAX_ITEM_PAYLOAD_BYTES};
+use riot_core::session::{ImportContext, RiotSession, SessionError};
 use riot_core::willow::generate_communal_author;
 
 #[test]
@@ -45,6 +47,25 @@ fn list_only_returns_entries_for_the_requesting_app() {
 }
 
 #[test]
+fn list_returns_multiple_keys_in_deterministic_order() {
+    let session = RiotSession::open().expect("session");
+    let store = session.create_store().expect("store");
+    let author = generate_communal_author().expect("author");
+    let app_id = [7u8; 32];
+
+    AppDataBridge::put(&store, &author, &app_id, "items/z", 1, b"last").expect("put z");
+    AppDataBridge::put(&store, &author, &app_id, "items/a", 2, b"first").expect("put a");
+
+    assert_eq!(
+        AppDataBridge::list(&store, &app_id, "items").expect("list"),
+        vec![
+            ("items/a".to_string(), b"first".to_vec()),
+            ("items/z".to_string(), b"last".to_vec()),
+        ]
+    );
+}
+
+#[test]
 fn put_rejects_traversal_like_key_before_touching_willow() {
     let session = RiotSession::open().expect("session");
     let store = session.create_store().expect("store");
@@ -55,6 +76,22 @@ fn put_rejects_traversal_like_key_before_touching_willow() {
 
     let listed = AppDataBridge::list(&store, &[7u8; 32], "items").unwrap_or_default();
     assert!(listed.is_empty());
+}
+
+#[test]
+fn get_and_list_reject_traversal_like_keys_before_store_access() {
+    let session = RiotSession::open().expect("session");
+    let store = session.create_store().expect("store");
+    let app_id = [7u8; 32];
+
+    assert_eq!(
+        AppDataBridge::get(&store, &app_id, "../escape"),
+        Err(AppsError::KeySegmentInvalid)
+    );
+    assert_eq!(
+        AppDataBridge::list(&store, &app_id, "../escape"),
+        Err(AppsError::KeySegmentInvalid)
+    );
 }
 
 #[test]
@@ -128,4 +165,103 @@ fn get_and_list_resolve_one_lww_winner_across_subspaces() {
     let listed = AppDataBridge::list(&store, &app_id, "items").expect("list");
     assert_eq!(listed.len(), 1);
     assert_eq!(listed[0].1, b"newer");
+}
+
+#[test]
+fn list_replaces_an_older_cross_subspace_winner() {
+    use riot_core::willow::generate_communal_author_for_namespace;
+
+    let session = RiotSession::open().expect("session");
+    let store = session.create_store().expect("store");
+    let alice = generate_communal_author().expect("alice");
+    let bob =
+        generate_communal_author_for_namespace(*alice.namespace_id().as_bytes()).expect("bob");
+    let app_id = [7u8; 32];
+
+    AppDataBridge::put(&store, &alice, &app_id, "items/a", 100, b"older").expect("put older");
+    AppDataBridge::put(&store, &bob, &app_id, "items/a", 200, b"newer").expect("put newer");
+
+    assert_eq!(
+        AppDataBridge::list(&store, &app_id, "items").expect("list"),
+        vec![("items/a".to_string(), b"newer".to_vec())]
+    );
+}
+
+#[test]
+fn closed_store_failures_map_to_store_rejected() {
+    let session = RiotSession::open().expect("session");
+    let store = session.create_store().expect("store");
+    let author = generate_communal_author().expect("author");
+    let app_id = [7u8; 32];
+    store.close().expect("close");
+
+    assert_eq!(
+        AppDataBridge::put(&store, &author, &app_id, "items/a", 1, b"value"),
+        Err(AppsError::StoreRejected)
+    );
+    assert_eq!(
+        AppDataBridge::get(&store, &app_id, "items/a"),
+        Err(AppsError::StoreRejected)
+    );
+    assert_eq!(
+        AppDataBridge::list(&store, &app_id, "items"),
+        Err(AppsError::StoreRejected)
+    );
+}
+
+#[test]
+fn oversized_payload_returns_store_rejected_without_panicking_or_mutating() {
+    let session = RiotSession::open().expect("session");
+    let store = session.create_store().expect("store");
+    let author = generate_communal_author().expect("author");
+    let app_id = [7u8; 32];
+    let oversized = vec![0u8; MAX_ITEM_PAYLOAD_BYTES + 1];
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        AppDataBridge::put(&store, &author, &app_id, "items/a", 1, &oversized)
+    }));
+    assert!(matches!(result, Ok(Err(AppsError::StoreRejected))));
+    assert_eq!(store.live_count().expect("live count"), 0);
+}
+
+#[test]
+fn local_write_preserves_an_active_review_and_reports_store_busy() {
+    let session = RiotSession::open().expect("session");
+    let store = session.create_store().expect("store");
+    let author = generate_communal_author().expect("author");
+    let app_id = [7u8; 32];
+    let empty_bundle = encode_bundle(&[]).expect("bundle");
+    let preview = store
+        .inspect(&empty_bundle, ImportContext::new("active-review"))
+        .expect("inspect")
+        .expect_preview();
+
+    assert_eq!(
+        AppDataBridge::put(&store, &author, &app_id, "items/a", 1, b"value"),
+        Err(AppsError::StoreBusy)
+    );
+    assert!(matches!(
+        preview.plan_all(),
+        Err(SessionError::NoEligibleEntries)
+    ));
+    assert_eq!(store.live_count().expect("live count"), 0);
+}
+
+#[test]
+fn older_same_coordinate_write_reports_stale_and_preserves_the_live_value() {
+    let session = RiotSession::open().expect("session");
+    let store = session.create_store().expect("store");
+    let author = generate_communal_author().expect("author");
+    let app_id = [7u8; 32];
+
+    AppDataBridge::put(&store, &author, &app_id, "items/a", 2, b"newer").expect("newer");
+    assert_eq!(
+        AppDataBridge::put(&store, &author, &app_id, "items/a", 1, b"older"),
+        Err(AppsError::StaleWrite)
+    );
+    assert_eq!(
+        AppDataBridge::get(&store, &app_id, "items/a").expect("get"),
+        Some(b"newer".to_vec())
+    );
+    assert_eq!(store.live_count().expect("live count"), 1);
 }

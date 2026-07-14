@@ -1,4 +1,5 @@
-use riot_core::apps::index::app_index_trust_path;
+use riot_core::apps::index::{app_index_manifest_path, app_index_trust_path};
+use riot_core::apps::manifest::{encode_manifest, AppManifest};
 use riot_core::apps::trust::{
     decode_trust_marker, encode_trust_marker, trust_markers_for, write_trust_marker, TrustMarker,
     TrustMarkerKind,
@@ -10,6 +11,7 @@ use riot_core::willow::{
     authorise_entry, encode_capability, encode_entry, generate_communal_author, Entry,
     EvidenceAuthor, SignedWillowEntry,
 };
+use riot_core::willow::{AuthorIdentity, NamespaceKind};
 use willow25::entry::EntrylikeExt;
 
 fn payload_marker(app_id: [u8; 32], kind: TrustMarkerKind) -> TrustMarker {
@@ -102,6 +104,131 @@ fn trust_marker_codec_rejects_unknown_kind() {
         encode_trust_marker(&payload_marker([7u8; 32], TrustMarkerKind::Trust)).expect("encode");
     *encoded.last_mut().expect("kind byte") = 2;
     assert!(decode_trust_marker(&encoded).is_err());
+}
+
+#[test]
+fn trust_marker_codec_rejects_every_structural_and_canonicality_error() {
+    let encoded =
+        encode_trust_marker(&payload_marker([7u8; 32], TrustMarkerKind::Trust)).expect("encode");
+
+    let mut oversized = vec![0u8; 65];
+    oversized[..encoded.len()].copy_from_slice(&encoded);
+    assert_eq!(
+        decode_trust_marker(&oversized),
+        Err(AppsError::IndexFieldInvalid)
+    );
+
+    let mut wrong_pair_count = encoded.clone();
+    wrong_pair_count[0] = 0xa1;
+    assert_eq!(
+        decode_trust_marker(&wrong_pair_count),
+        Err(AppsError::IndexFieldInvalid)
+    );
+
+    let mut wrong_second_key = encoded.clone();
+    wrong_second_key[36] = 2;
+    assert_eq!(
+        decode_trust_marker(&wrong_second_key),
+        Err(AppsError::IndexFieldInvalid)
+    );
+
+    let mut noncanonical_first_key = Vec::with_capacity(encoded.len() + 1);
+    noncanonical_first_key.push(encoded[0]);
+    noncanonical_first_key.extend_from_slice(&[0x18, 0]);
+    noncanonical_first_key.extend_from_slice(&encoded[2..]);
+    assert_eq!(
+        decode_trust_marker(&noncanonical_first_key),
+        Err(AppsError::IndexFieldInvalid)
+    );
+
+    for malformed in [
+        vec![],
+        vec![0xbf, 0xff],
+        vec![0xa2, 0x60],
+        vec![0xa2, 0, 0],
+        {
+            let mut short_app_id = vec![0xa2, 0, 0x58, 31];
+            short_app_id.extend_from_slice(&[7; 31]);
+            short_app_id.extend_from_slice(&[1, 0]);
+            short_app_id
+        },
+        {
+            let mut wrong_second_key_type = encoded.clone();
+            wrong_second_key_type[36] = 0x60;
+            wrong_second_key_type
+        },
+    ] {
+        assert_eq!(
+            decode_trust_marker(&malformed),
+            Err(AppsError::IndexFieldInvalid),
+            "malformed bytes: {malformed:02x?}"
+        );
+    }
+}
+
+#[test]
+fn trust_scan_ignores_other_slots_under_the_same_app_prefix() {
+    let session = RiotSession::open().expect("session");
+    let store = session.create_store().expect("store");
+    let organizer = generate_communal_author().expect("organizer");
+    let app_id = [21u8; 32];
+    let manifest = AppManifest {
+        name: "Checklist".into(),
+        description: "A shared checklist.".into(),
+        version: "1.0.0".into(),
+        author: AuthorIdentity {
+            namespace_id: *organizer.namespace_id().as_bytes(),
+            subspace_id: *organizer.subspace_id().as_bytes(),
+            namespace_kind: NamespaceKind::Communal,
+            signing_key_id: *organizer.subspace_id().as_bytes(),
+        },
+        permissions: vec!["own-app-data".into()],
+        entry_point: "index.html".into(),
+    };
+    let payload = encode_manifest(&manifest).expect("manifest");
+    let path = app_index_manifest_path(&app_id).expect("path");
+    let entry = Entry::builder()
+        .namespace_id(organizer.namespace_id().clone())
+        .subspace_id(organizer.subspace_id())
+        .path(path)
+        .timestamp(1)
+        .payload(&payload)
+        .build();
+    let authorised = authorise_entry(&organizer, entry).expect("authorise");
+    let token = authorised.authorisation_token();
+    let signature: ed25519_dalek::Signature = token.signature().clone().into();
+    import_signed(
+        &store,
+        &SignedWillowEntry {
+            entry_bytes: encode_entry(authorised.entry()),
+            capability_bytes: encode_capability(token.capability()),
+            signature: signature.to_bytes(),
+            payload_bytes: payload,
+        },
+    );
+
+    assert!(
+        trust_markers_for(&store, organizer.namespace_id().as_bytes(), &app_id)
+            .expect("scan")
+            .is_empty()
+    );
+}
+
+#[test]
+fn trust_scan_maps_a_closed_store_to_store_rejected() {
+    let session = RiotSession::open().expect("session");
+    let store = session.create_store().expect("store");
+    let organizer = generate_communal_author().expect("organizer");
+    store.close().expect("close");
+
+    assert_eq!(
+        trust_markers_for(&store, organizer.namespace_id().as_bytes(), &[7u8; 32]),
+        Err(AppsError::StoreRejected)
+    );
+    assert_eq!(
+        write_trust_marker(&store, &organizer, &[7u8; 32], TrustMarkerKind::Trust, 1),
+        Err(AppsError::StoreRejected)
+    );
 }
 
 #[test]

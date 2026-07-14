@@ -59,9 +59,9 @@ fn validate(bundle: &AppBundle) -> Result<(), AppsError> {
         if resource.path == bundle.entry_point {
             entry_point_found = true;
         }
-        total_bytes = total_bytes
-            .checked_add(resource.bytes.len())
-            .ok_or(AppsError::BundleTooLarge)?;
+        // Saturation preserves the public `BundleTooLarge` outcome even if a
+        // caller could somehow hold allocations whose lengths overflow usize.
+        total_bytes = total_bytes.saturating_add(resource.bytes.len());
     }
 
     if !entry_point_found {
@@ -89,26 +89,34 @@ pub fn app_bundle_digest(encoded_bundle: &[u8]) -> [u8; 32] {
 pub fn encode_app_bundle(bundle: &AppBundle) -> Result<Vec<u8>, AppsError> {
     validate(bundle)?;
 
-    let mut buffer: Vec<u8> = Vec::new();
-    let mut e = Encoder::new(&mut buffer);
-    let r: Result<_, minicbor::encode::Error<core::convert::Infallible>> = (|| {
-        e.map(2)?;
-        e.u8(0)?.str(&bundle.entry_point)?;
-        e.u8(1)?.array(bundle.resources.len() as u64)?;
-        for resource in &bundle.resources {
-            e.map(3)?;
-            e.u8(0)?.str(&resource.path)?;
-            e.u8(1)?.str(&resource.content_type)?;
-            e.u8(2)?.bytes(&resource.bytes)?;
-        }
-        Ok(())
-    })();
-    r.map_err(|_| AppsError::BundleFieldInvalid)?;
-
+    let buffer = encode_validated_app_bundle(bundle);
     if buffer.len() > MAX_BUNDLE_TOTAL_BYTES {
         return Err(AppsError::BundleTooLarge);
     }
     Ok(buffer)
+}
+
+/// Encodes a bundle that has already passed [`validate`]. `Vec<u8>`'s
+/// minicbor writer is infallible; primitive CBOR writes therefore cannot
+/// produce an application error.
+fn encode_validated_app_bundle(bundle: &AppBundle) -> Vec<u8> {
+    let mut buffer: Vec<u8> = Vec::new();
+    let mut e = Encoder::new(&mut buffer);
+    let _ = e.map(2);
+    let _ = e.u8(0);
+    let _ = e.str(&bundle.entry_point);
+    let _ = e.u8(1);
+    let _ = e.array(bundle.resources.len() as u64);
+    for resource in &bundle.resources {
+        let _ = e.map(3);
+        let _ = e.u8(0);
+        let _ = e.str(&resource.path);
+        let _ = e.u8(1);
+        let _ = e.str(&resource.content_type);
+        let _ = e.u8(2);
+        let _ = e.bytes(&resource.bytes);
+    }
+    buffer
 }
 
 /// Strict canonical decoder: rejects unknown/duplicate/misordered keys,
@@ -194,7 +202,7 @@ pub fn decode_app_bundle(input: &[u8]) -> Result<AppBundle, AppsError> {
     validate(&bundle)?;
 
     // Canonicality proof: only the exact encoder output is acceptable.
-    let reencoded = encode_app_bundle(&bundle)?;
+    let reencoded = encode_validated_app_bundle(&bundle);
     if reencoded != input {
         return Err(AppsError::BundleFieldInvalid);
     }
@@ -218,8 +226,7 @@ fn decode_bytes(d: &mut Decoder<'_>) -> Result<Vec<u8>, AppsError> {
         return Err(AppsError::BundleFieldInvalid);
     }
     let bytes = d.bytes().map_err(|_| AppsError::BundleFieldInvalid)?;
-    if bytes.len() > MAX_BUNDLE_TOTAL_BYTES {
-        return Err(AppsError::BundleTooLarge);
-    }
+    // `decode_app_bundle` rejects an input larger than this ceiling before
+    // parsing, so a byte string borrowed from that input cannot exceed it.
     Ok(bytes.to_vec())
 }

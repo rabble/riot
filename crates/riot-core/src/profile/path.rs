@@ -31,7 +31,8 @@ pub fn profile_prefix() -> Result<Path, ProfileError> {
 /// that is not exactly `profile/<32-byte subspace>/card`.
 pub fn classify_profile_path(path: &Path) -> Option<[u8; SUBSPACE_ID_BYTES]> {
     let mut components = path.components();
-    if components.next()?.as_ref() != PROFILE_COMPONENT {
+    let first = components.next()?;
+    if first.as_ref() != PROFILE_COMPONENT {
         return None;
     }
     let subspace_id: [u8; SUBSPACE_ID_BYTES] = components.next()?.as_ref().try_into().ok()?;

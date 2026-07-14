@@ -8,8 +8,9 @@ mod hex_codec;
 mod sign_conference_fixture;
 mod verify_conference_export;
 
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
-use std::process::ExitCode;
+use std::process::{ExitCode, ExitStatus, Output};
 
 use camino::Utf8PathBuf;
 use sha2::{Digest, Sha256};
@@ -60,42 +61,151 @@ const EXPECTED_CEILINGS: &[(&str, u64)] = &[
 ];
 
 fn main() -> ExitCode {
-    let mut args = std::env::args().skip(1);
-    match args.next().as_deref() {
+    let mut runner = OsCommandRunner;
+    let mut stdout = std::io::stdout().lock();
+    let mut stderr = std::io::stderr().lock();
+    main_with_manifest_dir(
+        Path::new(env!("CARGO_MANIFEST_DIR")),
+        &std::env::args().skip(1).collect::<Vec<_>>(),
+        &mut runner,
+        &mut stdout,
+        &mut stderr,
+    )
+}
+
+fn main_with_manifest_dir(
+    manifest_dir: &Path,
+    args: &[String],
+    command_runner: &mut dyn CommandRunner,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) -> ExitCode {
+    match workspace_root_from(manifest_dir) {
+        Ok(root) => run(&root, args, command_runner, out, err),
+        Err(error) => {
+            let _ = writeln!(err, "xtask: {error}").is_ok();
+            ExitCode::FAILURE
+        }
+    }
+}
+
+trait CommandRunner {
+    fn output(&mut self, program: &str, args: &[&str], root: &Path) -> io::Result<Output>;
+    fn status(&mut self, program: &str, args: &[&str], root: &Path) -> io::Result<ExitStatus>;
+}
+
+trait BindingGenerator {
+    fn generate(&mut self, source: Utf8PathBuf, out_dir: Utf8PathBuf) -> Result<(), String>;
+}
+
+struct UniFfiBindingGenerator;
+
+impl BindingGenerator for UniFfiBindingGenerator {
+    fn generate(&mut self, source: Utf8PathBuf, out_dir: Utf8PathBuf) -> Result<(), String> {
+        uniffi::generate(GenerateOptions {
+            languages: vec![TargetLanguage::Swift, TargetLanguage::Kotlin],
+            source,
+            out_dir,
+            config_override: None,
+            format: false,
+            crate_filter: None,
+            metadata_no_deps: false,
+        })
+        .map_err(|error| format!("UniFFI generation failed: {error:#}"))
+    }
+}
+
+struct OsCommandRunner;
+
+impl CommandRunner for OsCommandRunner {
+    fn output(&mut self, program: &str, args: &[&str], root: &Path) -> io::Result<Output> {
+        std::process::Command::new(program)
+            .args(args)
+            .current_dir(root)
+            .output()
+    }
+
+    fn status(&mut self, program: &str, args: &[&str], root: &Path) -> io::Result<ExitStatus> {
+        std::process::Command::new(program)
+            .args(args)
+            .current_dir(root)
+            .status()
+    }
+}
+
+fn run(
+    root: &Path,
+    args: &[String],
+    command_runner: &mut dyn CommandRunner,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) -> ExitCode {
+    run_with(
+        root,
+        args,
+        command_runner,
+        &mut UniFfiBindingGenerator,
+        out,
+        err,
+    )
+}
+
+fn run_with(
+    root: &Path,
+    args: &[String],
+    command_runner: &mut dyn CommandRunner,
+    binding_generator: &mut dyn BindingGenerator,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) -> ExitCode {
+    match args.first().map(String::as_str) {
         Some("validate-contracts") => {
-            let root = workspace_root();
-            let mut failures = validate_contents(&root);
-            failures.extend(check_resolved_feature_graph(&root));
+            let mut failures = validate_contents(root);
+            failures.extend(check_resolved_feature_graph_with(root, command_runner));
             if failures.is_empty() {
-                println!("validate-contracts: PASS (structural + resolved feature graph)");
-                ExitCode::SUCCESS
-            } else {
-                eprintln!("validate-contracts: FAIL");
-                for failure in &failures {
-                    eprintln!("  {failure}");
+                if writeln!(
+                    out,
+                    "validate-contracts: PASS (structural + resolved feature graph)"
+                )
+                .is_ok()
+                {
+                    ExitCode::SUCCESS
+                } else {
+                    ExitCode::FAILURE
                 }
-                eprintln!("{} contract violation(s)", failures.len());
+            } else {
+                let mut wrote_all = writeln!(err, "validate-contracts: FAIL").is_ok();
+                for failure in &failures {
+                    wrote_all &= writeln!(err, "  {failure}").is_ok();
+                }
+                wrote_all &= writeln!(err, "{} contract violation(s)", failures.len()).is_ok();
+                let _ = wrote_all;
                 ExitCode::FAILURE
             }
         }
-        Some("generate-bindings") => match generate_mobile_bindings(&workspace_root()) {
-            Ok(out_dir) => {
-                println!("generate-bindings: PASS ({})", out_dir.display());
-                ExitCode::SUCCESS
+        Some("generate-bindings") => {
+            match generate_mobile_bindings_with(root, command_runner, binding_generator) {
+                Ok(out_dir) => {
+                    if writeln!(out, "generate-bindings: PASS ({})", out_dir.display()).is_ok() {
+                        ExitCode::SUCCESS
+                    } else {
+                        ExitCode::FAILURE
+                    }
+                }
+                Err(error) => {
+                    let _ = writeln!(err, "generate-bindings: FAIL: {error}").is_ok();
+                    ExitCode::FAILURE
+                }
             }
-            Err(error) => {
-                eprintln!("generate-bindings: FAIL: {error}");
-                ExitCode::FAILURE
-            }
-        },
-        Some("sign-conference-fixture") => match sign_conference_fixture::run(&workspace_root()) {
+        }
+        Some("sign-conference-fixture") => match sign_conference_fixture::run(root) {
             Ok(()) => ExitCode::SUCCESS,
             Err(error) => {
                 eprintln!("sign-conference-fixture: FAIL: {error}");
                 ExitCode::FAILURE
             }
         },
-        Some("verify-conference-export") => match verify_conference_export::run(&workspace_root()) {
+        Some("verify-conference-export") => match verify_conference_export::run(root) {
             Ok(()) => ExitCode::SUCCESS,
             Err(error) => {
                 eprintln!("verify-conference-export: FAIL: {error}");
@@ -103,13 +213,13 @@ fn main() -> ExitCode {
             }
         },
         Some(other) => {
-            eprintln!("unknown xtask command: {other}");
-            eprintln!("available: {}", available_commands().join(", "));
+            let _ = writeln!(err, "unknown xtask command: {other}").is_ok();
+            let _ = writeln!(err, "available: {}", available_commands().join(", ")).is_ok();
             ExitCode::FAILURE
         }
         None => {
-            eprintln!("usage: cargo xtask <command>");
-            eprintln!("available: {}", available_commands().join(", "));
+            let _ = writeln!(err, "usage: cargo xtask <command>").is_ok();
+            let _ = writeln!(err, "available: {}", available_commands().join(", ")).is_ok();
             ExitCode::FAILURE
         }
     }
@@ -124,53 +234,49 @@ fn available_commands() -> &'static [&'static str] {
     ]
 }
 
-fn generate_mobile_bindings(root: &Path) -> Result<PathBuf, String> {
-    let status = std::process::Command::new("cargo")
-        .args(["build", "-p", "riot-ffi", "--lib", "--locked"])
-        .current_dir(root)
-        .status()
+fn generate_mobile_bindings_with(
+    root: &Path,
+    command_runner: &mut dyn CommandRunner,
+    binding_generator: &mut dyn BindingGenerator,
+) -> Result<PathBuf, String> {
+    let status = command_runner
+        .status(
+            "cargo",
+            &["build", "-p", "riot-ffi", "--lib", "--locked"],
+            root,
+        )
         .map_err(|error| format!("could not build riot-ffi: {error}"))?;
     if !status.success() {
         return Err("cargo build -p riot-ffi --lib --locked failed".into());
     }
 
-    let library = root.join("target").join("debug").join(format!(
+    let root_utf8 = utf8_path(root.to_path_buf(), "workspace")?;
+    let library = root_utf8.join("target").join("debug").join(format!(
         "{}riot_ffi{}",
         std::env::consts::DLL_PREFIX,
         std::env::consts::DLL_SUFFIX
     ));
     if !library.is_file() {
-        return Err(format!(
-            "host riot-ffi library absent: {}",
-            library.display()
-        ));
+        return Err(format!("host riot-ffi library absent: {library}"));
     }
 
-    let out_dir = root.join("build/generated/riot-ffi");
+    let out_dir = root_utf8.join("build/generated/riot-ffi");
     if out_dir.exists() {
         std::fs::remove_dir_all(&out_dir)
-            .map_err(|error| format!("could not clean {}: {error}", out_dir.display()))?;
+            .map_err(|error| format!("could not clean {out_dir}: {error}"))?;
     }
     std::fs::create_dir_all(&out_dir)
-        .map_err(|error| format!("could not create {}: {error}", out_dir.display()))?;
+        .map_err(|error| format!("could not create {out_dir}: {error}"))?;
 
-    let source = Utf8PathBuf::from_path_buf(library)
-        .map_err(|path| format!("non-UTF-8 library path: {}", path.display()))?;
-    let bindgen_out = Utf8PathBuf::from_path_buf(out_dir.clone())
-        .map_err(|path| format!("non-UTF-8 output path: {}", path.display()))?;
-    uniffi::generate(GenerateOptions {
-        languages: vec![TargetLanguage::Swift, TargetLanguage::Kotlin],
-        source,
-        out_dir: bindgen_out,
-        config_override: None,
-        format: false,
-        crate_filter: None,
-        metadata_no_deps: false,
-    })
-    .map_err(|error| format!("UniFFI generation failed: {error:#}"))?;
-    validate_generated_bindings(&out_dir)?;
+    binding_generator.generate(library, out_dir.clone())?;
+    validate_generated_bindings(out_dir.as_std_path())?;
 
-    Ok(out_dir)
+    Ok(out_dir.into_std_path_buf())
+}
+
+fn utf8_path(path: PathBuf, label: &str) -> Result<Utf8PathBuf, String> {
+    Utf8PathBuf::from_path_buf(path)
+        .map_err(|path| format!("non-UTF-8 {label} path: {}", path.display()))
 }
 
 fn validate_generated_bindings(out_dir: &Path) -> Result<(), String> {
@@ -194,12 +300,17 @@ fn validate_generated_bindings(out_dir: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn workspace_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
+fn workspace_root_from(manifest_dir: &Path) -> Result<PathBuf, String> {
+    manifest_dir
         .ancestors()
         .nth(2)
-        .expect("workspace root")
-        .to_path_buf()
+        .map(Path::to_path_buf)
+        .ok_or_else(|| {
+            format!(
+                "could not discover workspace root from {}",
+                manifest_dir.display()
+            )
+        })
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {
@@ -276,11 +387,19 @@ fn check_crate_manifests(root: &Path, failures: &mut Vec<String>) {
 /// structural manifest checks cannot see. Runs `cargo tree` with the locked
 /// graph and rejects forbidden features/crates in the riot-ffi closure.
 pub fn check_resolved_feature_graph(root: &Path) -> Vec<String> {
+    check_resolved_feature_graph_with(root, &mut OsCommandRunner)
+}
+
+fn check_resolved_feature_graph_with(
+    root: &Path,
+    command_runner: &mut dyn CommandRunner,
+) -> Vec<String> {
     let mut failures = Vec::new();
-    let output = std::process::Command::new("cargo")
-        .args(["tree", "-p", "riot-ffi", "-e", "features", "--locked"])
-        .current_dir(root)
-        .output();
+    let output = command_runner.output(
+        "cargo",
+        &["tree", "-p", "riot-ffi", "-e", "features", "--locked"],
+        root,
+    );
     let Ok(output) = output else {
         failures.push("feature graph: cargo tree could not run".into());
         return failures;
@@ -585,6 +704,851 @@ fn check_schema(root: &Path, failures: &mut Vec<String>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::RefCell;
+    use std::io;
+    #[cfg(unix)]
+    use std::os::unix::process::ExitStatusExt;
+    #[cfg(windows)]
+    use std::os::windows::process::ExitStatusExt;
+    use std::process::{ExitStatus, Output};
+
+    struct ScriptedBindingGenerator {
+        result: Result<(), String>,
+        write_required: bool,
+        calls: Vec<(Utf8PathBuf, Utf8PathBuf)>,
+    }
+
+    impl ScriptedBindingGenerator {
+        fn new(result: Result<(), String>, write_required: bool) -> Self {
+            Self {
+                result,
+                write_required,
+                calls: Vec::new(),
+            }
+        }
+    }
+
+    struct FailingWriter;
+
+    impl Write for FailingWriter {
+        fn write(&mut self, _buf: &[u8]) -> io::Result<usize> {
+            Err(io::Error::new(io::ErrorKind::BrokenPipe, "injected"))
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Err(io::Error::new(io::ErrorKind::BrokenPipe, "injected"))
+        }
+    }
+
+    impl BindingGenerator for ScriptedBindingGenerator {
+        fn generate(&mut self, source: Utf8PathBuf, out_dir: Utf8PathBuf) -> Result<(), String> {
+            self.calls.push((source, out_dir.clone()));
+            self.result.clone()?;
+            if self.write_required {
+                for relative in [
+                    "riot_ffi.swift",
+                    "riot_ffiFFI.h",
+                    "riot_ffiFFI.modulemap",
+                    "uniffi/riot_ffi/riot_ffi.kt",
+                ] {
+                    let path = out_dir.join(relative);
+                    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+                    std::fs::write(path, b"generated").unwrap();
+                }
+            }
+            Ok(())
+        }
+    }
+
+    struct ScriptedRunner {
+        output: Option<io::Result<Output>>,
+        status: Option<io::Result<ExitStatus>>,
+    }
+
+    #[derive(Debug, PartialEq, Eq)]
+    enum RecordedCommand {
+        Output {
+            program: String,
+            args: Vec<String>,
+            root: PathBuf,
+        },
+        Status {
+            program: String,
+            args: Vec<String>,
+            root: PathBuf,
+        },
+    }
+
+    thread_local! {
+        static SCRIPTED_CALLS: RefCell<Vec<RecordedCommand>> = const { RefCell::new(Vec::new()) };
+    }
+
+    impl ScriptedRunner {
+        fn with_status(status: io::Result<ExitStatus>) -> Self {
+            SCRIPTED_CALLS.with(|calls| calls.borrow_mut().clear());
+            Self {
+                output: None,
+                status: Some(status),
+            }
+        }
+
+        fn take_calls(&self) -> Vec<RecordedCommand> {
+            SCRIPTED_CALLS.with(|calls| std::mem::take(&mut *calls.borrow_mut()))
+        }
+    }
+
+    impl CommandRunner for ScriptedRunner {
+        fn output(&mut self, program: &str, args: &[&str], root: &Path) -> io::Result<Output> {
+            SCRIPTED_CALLS.with(|calls| {
+                calls.borrow_mut().push(RecordedCommand::Output {
+                    program: program.into(),
+                    args: args.iter().map(|arg| (*arg).into()).collect(),
+                    root: root.to_path_buf(),
+                });
+            });
+            self.output.take().expect("unexpected output command")
+        }
+
+        fn status(&mut self, program: &str, args: &[&str], root: &Path) -> io::Result<ExitStatus> {
+            SCRIPTED_CALLS.with(|calls| {
+                calls.borrow_mut().push(RecordedCommand::Status {
+                    program: program.into(),
+                    args: args.iter().map(|arg| (*arg).into()).collect(),
+                    root: root.to_path_buf(),
+                });
+            });
+            self.status.take().expect("unexpected status command")
+        }
+    }
+
+    fn command_output(code: i32, stdout: &str) -> Output {
+        Output {
+            status: command_status(code),
+            stdout: stdout.as_bytes().to_vec(),
+            stderr: Vec::new(),
+        }
+    }
+
+    #[cfg(unix)]
+    fn command_status(code: i32) -> ExitStatus {
+        ExitStatus::from_raw(code << 8)
+    }
+
+    #[cfg(windows)]
+    fn command_status(code: i32) -> ExitStatus {
+        ExitStatus::from_raw(code as u32)
+    }
+
+    #[test]
+    fn run_dispatches_validation_and_reports_usage_errors() {
+        let dir = temp_dir("run-dispatch");
+        good_scaffold(&dir);
+        let mut runner = ScriptedRunner {
+            output: Some(Ok(command_output(0, "clean graph"))),
+            status: None,
+        };
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        assert_eq!(
+            run(
+                &dir,
+                &["validate-contracts".into()],
+                &mut runner,
+                &mut stdout,
+                &mut stderr,
+            ),
+            ExitCode::SUCCESS
+        );
+        assert_eq!(
+            String::from_utf8(stdout).unwrap(),
+            "validate-contracts: PASS (structural + resolved feature graph)\n"
+        );
+        assert!(stderr.is_empty());
+        assert_eq!(
+            runner.take_calls(),
+            [RecordedCommand::Output {
+                program: "cargo".into(),
+                args: vec![
+                    "tree".into(),
+                    "-p".into(),
+                    "riot-ffi".into(),
+                    "-e".into(),
+                    "features".into(),
+                    "--locked".into(),
+                ],
+                root: dir.clone(),
+            }]
+        );
+
+        let mut runner = ScriptedRunner {
+            output: Some(Ok(command_output(0, "clean graph"))),
+            status: None,
+        };
+        assert_eq!(
+            run(
+                &dir,
+                &["validate-contracts".into()],
+                &mut runner,
+                &mut FailingWriter,
+                &mut Vec::new(),
+            ),
+            ExitCode::FAILURE
+        );
+
+        for args in [Vec::new(), vec!["unknown".into()]] {
+            let mut runner = ScriptedRunner {
+                output: None,
+                status: None,
+            };
+            let mut stdout = Vec::new();
+            let mut stderr = Vec::new();
+            assert_eq!(
+                run(&dir, &args, &mut runner, &mut stdout, &mut stderr),
+                ExitCode::FAILURE
+            );
+            assert!(stdout.is_empty());
+            assert!(String::from_utf8(stderr).unwrap().contains("available:"));
+        }
+    }
+
+    #[test]
+    fn run_reports_validation_and_binding_build_failures() {
+        let dir = temp_dir("run-failures");
+        good_scaffold(&dir);
+        std::fs::remove_file(dir.join("schemas/alert.cddl")).unwrap();
+        let mut runner = ScriptedRunner {
+            output: Some(Err(io::Error::other("cargo unavailable"))),
+            status: None,
+        };
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        assert_eq!(
+            run(
+                &dir,
+                &["validate-contracts".into()],
+                &mut runner,
+                &mut stdout,
+                &mut stderr,
+            ),
+            ExitCode::FAILURE
+        );
+        let stderr = String::from_utf8(stderr).unwrap();
+        assert!(stderr.contains("schemas/alert.cddl: file absent"));
+        assert!(stderr.contains("cargo tree could not run"));
+
+        let mut runner = ScriptedRunner {
+            output: None,
+            status: Some(Ok(command_status(1))),
+        };
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        assert_eq!(
+            run(
+                &dir,
+                &["generate-bindings".into()],
+                &mut runner,
+                &mut stdout,
+                &mut stderr,
+            ),
+            ExitCode::FAILURE
+        );
+        assert!(String::from_utf8(stderr)
+            .unwrap()
+            .contains("cargo build -p riot-ffi --lib --locked failed"));
+    }
+
+    #[test]
+    fn resolved_graph_reports_status_and_every_forbidden_component() {
+        let dir = temp_dir("resolved-graph");
+        let mut runner = ScriptedRunner {
+            output: Some(Ok(command_output(1, "ignored"))),
+            status: None,
+        };
+        assert_eq!(
+            check_resolved_feature_graph_with(&dir, &mut runner),
+            vec!["feature graph: cargo tree --locked failed (lock drift?)"]
+        );
+
+        let graph = r#"
+willow25 feature "drop_format"
+openmls v1.0.0
+riot-core feature "conformance"
+bab_rs v0.7.0
+"#;
+        let mut runner = ScriptedRunner {
+            output: Some(Ok(command_output(0, graph))),
+            status: None,
+        };
+        let failures = check_resolved_feature_graph_with(&dir, &mut runner);
+        assert_eq!(failures.len(), 4, "{failures:?}");
+        for expected in ["drop_format", "openmls", "conformance", "wrong bab_rs"] {
+            assert!(failures.iter().any(|failure| failure.contains(expected)));
+        }
+    }
+
+    #[test]
+    fn binding_build_reports_spawn_and_missing_library_failures() {
+        let dir = temp_dir("binding-build-failures");
+        let mut runner = ScriptedRunner {
+            output: None,
+            status: Some(Err(io::Error::other("cargo missing"))),
+        };
+        assert_eq!(
+            generate_mobile_bindings_with(&dir, &mut runner, &mut UniFfiBindingGenerator)
+                .unwrap_err(),
+            "could not build riot-ffi: cargo missing"
+        );
+
+        let mut runner = ScriptedRunner {
+            output: None,
+            status: Some(Ok(command_status(0))),
+        };
+        assert!(
+            generate_mobile_bindings_with(&dir, &mut runner, &mut UniFfiBindingGenerator)
+                .unwrap_err()
+                .contains("host riot-ffi library absent")
+        );
+    }
+
+    #[test]
+    fn binding_generation_seam_covers_success_generation_and_validation_failures() {
+        let dir = temp_dir("binding-generation-success");
+        let library = dir.join("target/debug").join(format!(
+            "{}riot_ffi{}",
+            std::env::consts::DLL_PREFIX,
+            std::env::consts::DLL_SUFFIX
+        ));
+        std::fs::create_dir_all(library.parent().unwrap()).unwrap();
+        std::fs::write(&library, b"fixture library").unwrap();
+        let stale = dir.join("build/generated/riot-ffi/stale");
+        std::fs::create_dir_all(stale.parent().unwrap()).unwrap();
+        std::fs::write(stale, b"stale").unwrap();
+        let mut runner = ScriptedRunner {
+            output: None,
+            status: Some(Ok(command_status(0))),
+        };
+        let mut generator = ScriptedBindingGenerator::new(Ok(()), true);
+        let generated = generate_mobile_bindings_with(&dir, &mut runner, &mut generator).unwrap();
+        assert_eq!(generated, dir.join("build/generated/riot-ffi"));
+        assert!(generated.join("riot_ffi.swift").is_file());
+        assert!(!generated.join("stale").exists());
+
+        let mut runner = ScriptedRunner {
+            output: None,
+            status: Some(Ok(command_status(0))),
+        };
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        assert_eq!(
+            run_with(
+                &dir,
+                &["generate-bindings".into()],
+                &mut runner,
+                &mut generator,
+                &mut stdout,
+                &mut stderr,
+            ),
+            ExitCode::SUCCESS
+        );
+        assert!(String::from_utf8(stdout)
+            .unwrap()
+            .contains("generate-bindings: PASS"));
+        assert!(stderr.is_empty());
+
+        let mut runner = ScriptedRunner {
+            output: None,
+            status: Some(Ok(command_status(0))),
+        };
+        assert_eq!(
+            run_with(
+                &dir,
+                &["generate-bindings".into()],
+                &mut runner,
+                &mut generator,
+                &mut FailingWriter,
+                &mut Vec::new(),
+            ),
+            ExitCode::FAILURE
+        );
+
+        let dir = temp_dir("binding-generation-error");
+        let library = dir.join("target/debug").join(format!(
+            "{}riot_ffi{}",
+            std::env::consts::DLL_PREFIX,
+            std::env::consts::DLL_SUFFIX
+        ));
+        std::fs::create_dir_all(library.parent().unwrap()).unwrap();
+        std::fs::write(&library, b"fixture library").unwrap();
+        let mut runner = ScriptedRunner {
+            output: None,
+            status: Some(Ok(command_status(0))),
+        };
+        let mut generator =
+            ScriptedBindingGenerator::new(Err("injected generator failure".into()), false);
+        assert_eq!(
+            generate_mobile_bindings_with(&dir, &mut runner, &mut generator).unwrap_err(),
+            "injected generator failure"
+        );
+
+        let dir = temp_dir("binding-validation-through-command");
+        let library = dir.join("target/debug").join(format!(
+            "{}riot_ffi{}",
+            std::env::consts::DLL_PREFIX,
+            std::env::consts::DLL_SUFFIX
+        ));
+        std::fs::create_dir_all(library.parent().unwrap()).unwrap();
+        std::fs::write(&library, b"fixture library").unwrap();
+        let mut runner = ScriptedRunner {
+            output: None,
+            status: Some(Ok(command_status(0))),
+        };
+        let mut generator = ScriptedBindingGenerator::new(Ok(()), false);
+        assert!(
+            generate_mobile_bindings_with(&dir, &mut runner, &mut generator)
+                .unwrap_err()
+                .contains("generated binding absent")
+        );
+
+        let dir = temp_dir("binding-validation-error");
+        std::fs::create_dir_all(&dir).unwrap();
+        assert!(validate_generated_bindings(&dir)
+            .unwrap_err()
+            .contains("generated binding absent"));
+        std::fs::write(dir.join("riot_ffi.swift"), b"").unwrap();
+        assert!(validate_generated_bindings(&dir)
+            .unwrap_err()
+            .contains("not a non-empty file"));
+        std::fs::remove_file(dir.join("riot_ffi.swift")).unwrap();
+        std::fs::create_dir(dir.join("riot_ffi.swift")).unwrap();
+        assert!(validate_generated_bindings(&dir)
+            .unwrap_err()
+            .contains("not a non-empty file"));
+    }
+
+    #[test]
+    fn binding_generation_reports_output_directory_filesystem_errors() {
+        let prepare = |label: &str| {
+            let dir = temp_dir(label);
+            let library = dir.join("target/debug").join(format!(
+                "{}riot_ffi{}",
+                std::env::consts::DLL_PREFIX,
+                std::env::consts::DLL_SUFFIX
+            ));
+            std::fs::create_dir_all(library.parent().unwrap()).unwrap();
+            std::fs::write(library, b"fixture library").unwrap();
+            dir
+        };
+
+        let dir = prepare("binding-clean-error");
+        std::fs::create_dir_all(dir.join("build/generated")).unwrap();
+        std::fs::write(dir.join("build/generated/riot-ffi"), b"not a directory").unwrap();
+        let mut runner = ScriptedRunner {
+            output: None,
+            status: Some(Ok(command_status(0))),
+        };
+        let mut generator = ScriptedBindingGenerator::new(Ok(()), false);
+        assert!(
+            generate_mobile_bindings_with(&dir, &mut runner, &mut generator)
+                .unwrap_err()
+                .contains("could not clean")
+        );
+
+        let dir = prepare("binding-create-error");
+        std::fs::create_dir_all(dir.join("build")).unwrap();
+        std::fs::write(dir.join("build/generated"), b"not a directory").unwrap();
+        let mut runner = ScriptedRunner {
+            output: None,
+            status: Some(Ok(command_status(0))),
+        };
+        assert!(
+            generate_mobile_bindings_with(&dir, &mut runner, &mut generator)
+                .unwrap_err()
+                .contains("could not create")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn binding_generation_rejects_non_utf8_paths() {
+        use std::ffi::OsString;
+        use std::os::unix::ffi::OsStringExt;
+
+        let path = PathBuf::from(OsString::from_vec(vec![b'r', 0xff]));
+        assert!(utf8_path(path.clone(), "library")
+            .unwrap_err()
+            .contains("non-UTF-8 library path"));
+        assert!(utf8_path(path, "output")
+            .unwrap_err()
+            .contains("non-UTF-8 output path"));
+
+        let root = PathBuf::from(OsString::from_vec(vec![b'r', 0xff]));
+        let mut runner = ScriptedRunner {
+            output: None,
+            status: Some(Ok(command_status(0))),
+        };
+        let mut generator = ScriptedBindingGenerator::new(Ok(()), false);
+        assert!(
+            generate_mobile_bindings_with(&root, &mut runner, &mut generator)
+                .unwrap_err()
+                .contains("non-UTF-8 workspace path")
+        );
+    }
+
+    #[test]
+    fn real_runner_workspace_root_and_entry_point_are_exercised() {
+        let root = workspace_root_from(Path::new(env!("CARGO_MANIFEST_DIR"))).unwrap();
+        assert!(root.join("Cargo.toml").is_file());
+        let mut runner = OsCommandRunner;
+        let output = runner.output("rustc", &["--version"], &root).unwrap();
+        assert!(output.status.success());
+        assert!(String::from_utf8(output.stdout)
+            .unwrap()
+            .starts_with("rustc "));
+        assert!(runner
+            .status("rustc", &["--version"], &root)
+            .unwrap()
+            .success());
+        assert!(check_resolved_feature_graph(&root).is_empty());
+        let status = main();
+        assert!([ExitCode::SUCCESS, ExitCode::FAILURE].contains(&status));
+
+        let mut runner = ScriptedRunner {
+            output: None,
+            status: None,
+        };
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        assert_eq!(
+            main_with_manifest_dir(Path::new("/"), &[], &mut runner, &mut stdout, &mut stderr,),
+            ExitCode::FAILURE
+        );
+        assert!(String::from_utf8(stderr)
+            .unwrap()
+            .contains("could not discover workspace root"));
+    }
+
+    #[test]
+    fn real_generator_and_test_adapters_cover_failure_and_flush_paths() {
+        let temp = temp_dir("real-generator-error");
+        let mut generator = UniFfiBindingGenerator;
+        let error = generator
+            .generate(
+                Utf8PathBuf::from("/definitely/missing/libriot_ffi"),
+                Utf8PathBuf::from_path_buf(temp).unwrap(),
+            )
+            .unwrap_err();
+        assert!(error.contains("UniFFI generation failed"));
+
+        let mut writer = FailingWriter;
+        assert_eq!(
+            writer.flush().unwrap_err().kind(),
+            io::ErrorKind::BrokenPipe
+        );
+
+        let out = Utf8PathBuf::from_path_buf(temp_dir("scripted-empty")).unwrap();
+        let mut scripted = ScriptedBindingGenerator::new(Ok(()), false);
+        scripted
+            .generate(Utf8PathBuf::from("ignored"), out)
+            .unwrap();
+    }
+
+    #[test]
+    fn validators_cover_unreadable_crate_manifest_untyped_dependency_and_missing_lock() {
+        let unreadable = temp_dir("unreadable-crate-manifest");
+        good_scaffold(&unreadable);
+        std::fs::create_dir_all(unreadable.join("crates/bad/Cargo.toml")).unwrap();
+        std::fs::create_dir_all(unreadable.join("crates/unrelated")).unwrap();
+        std::fs::write(
+            unreadable.join("crates/unrelated/Cargo.toml"),
+            "[package]\nname = \"unrelated\"\nversion = \"0.0.0\"\n[dependencies]\nserde = \"1\"\n",
+        )
+        .unwrap();
+        assert!(validate_contents(&unreadable).is_empty());
+
+        let untyped = temp_dir("untyped-dependency");
+        good_scaffold(&untyped);
+        let workspace = good_workspace_toml().replace(
+            "willow25 = { version = \"=0.6.0-alpha.3\", default-features = false, features = [\"std\"] }",
+            "willow25 = 42",
+        );
+        std::fs::write(untyped.join("Cargo.toml"), workspace).unwrap();
+        let failures = validate_contents(&untyped);
+        let willow_failure = failures
+            .iter()
+            .find(|failure| failure.contains("willow25"))
+            .unwrap();
+        assert!(willow_failure.contains("found None"));
+
+        let missing_lock = temp_dir("missing-lock-with-manifest");
+        good_scaffold(&missing_lock);
+        std::fs::remove_file(missing_lock.join("Cargo.lock")).unwrap();
+        let failures = validate_contents(&missing_lock);
+        assert!(failures
+            .iter()
+            .any(|failure| failure.contains("Cargo.lock: file absent")));
+        assert!(failures
+            .iter()
+            .any(|failure| failure.contains("cargo_lock_sha256 missing or Cargo.lock unreadable")));
+
+        let empty_vector_hash = temp_dir("empty-vector-hash");
+        good_scaffold(&empty_vector_hash);
+        let lock_hash = sha256_hex(good_lock().as_bytes());
+        std::fs::write(
+            empty_vector_hash.join("fixtures/manifest.json"),
+            manifest_with(&lock_hash, ""),
+        )
+        .unwrap();
+        assert!(validate_contents(&empty_vector_hash)
+            .iter()
+            .any(|failure| failure.contains("missing/empty")));
+
+        let mut direct = Vec::new();
+        let deps: toml::Value = "dep = { version = \"1\", default-features = true }"
+            .parse::<toml::Table>()
+            .unwrap()
+            .into();
+        check_dep(&deps, "dep", "1", Some((true, &[], &[])), &mut direct);
+        assert_eq!(
+            direct,
+            ["Cargo.toml: `dep` must set default-features = false"]
+        );
+
+        let mut direct = Vec::new();
+        let deps: toml::Value = "dep = { version = \"1\", default-features = false }"
+            .parse::<toml::Table>()
+            .unwrap()
+            .into();
+        check_dep(&deps, "dep", "1", Some((true, &[], &[])), &mut direct);
+        assert!(direct.is_empty());
+    }
+
+    #[test]
+    fn records_exact_binding_build_and_generator_contracts_and_root_discovery() {
+        let dir = temp_dir("recorded-binding-contract");
+        let library = dir.join("target/debug").join(format!(
+            "{}riot_ffi{}",
+            std::env::consts::DLL_PREFIX,
+            std::env::consts::DLL_SUFFIX
+        ));
+        std::fs::create_dir_all(library.parent().unwrap()).unwrap();
+        std::fs::write(&library, b"fixture library").unwrap();
+        let mut runner = ScriptedRunner::with_status(Ok(command_status(0)));
+        let mut generator = ScriptedBindingGenerator::new(Ok(()), true);
+        generate_mobile_bindings_with(&dir, &mut runner, &mut generator).unwrap();
+        assert_eq!(
+            runner.take_calls(),
+            [RecordedCommand::Status {
+                program: "cargo".into(),
+                args: vec![
+                    "build".into(),
+                    "-p".into(),
+                    "riot-ffi".into(),
+                    "--lib".into(),
+                    "--locked".into()
+                ],
+                root: dir.clone(),
+            }]
+        );
+        assert_eq!(generator.calls.len(), 1);
+        assert_eq!(
+            generator.calls[0].0,
+            Utf8PathBuf::from_path_buf(library).unwrap()
+        );
+        assert_eq!(
+            generator.calls[0].1,
+            Utf8PathBuf::from_path_buf(dir.join("build/generated/riot-ffi")).unwrap()
+        );
+
+        assert_eq!(
+            workspace_root_from(Path::new("/workspace/crates/xtask")),
+            Ok(PathBuf::from("/workspace"))
+        );
+        assert_eq!(
+            workspace_root_from(Path::new("/")),
+            Err("could not discover workspace root from /".into())
+        );
+    }
+
+    #[test]
+    fn dependency_predicates_cover_complete_name_feature_and_default_truth_tables() {
+        let cases = [
+            (
+                "unrelated",
+                "serde = { version = \"1\", features = [\"drop_format\"] }",
+                Vec::<&str>::new(),
+            ),
+            (
+                "willow-clean",
+                "willow25 = { workspace = true, features = [\"std\"] }",
+                vec![],
+            ),
+            (
+                "willow-drop",
+                "willow25 = { workspace = true, features = [\"drop_format\"] }",
+                vec!["drop_format"],
+            ),
+            (
+                "willow-version",
+                "willow25 = \"0.6\"",
+                vec!["workspace = true"],
+            ),
+            ("bab-clean", "bab_rs = { workspace = true }", vec![]),
+            (
+                "bab-version",
+                "bab_rs = \"0.8.1\"",
+                vec!["workspace = true"],
+            ),
+        ];
+        for (label, dependency, expected) in cases {
+            let root = temp_dir(label);
+            std::fs::create_dir_all(root.join("crates/example")).unwrap();
+            std::fs::write(
+                root.join("crates/example/Cargo.toml"),
+                format!(
+                    "[package]\nname = \"example\"\nversion = \"0.0.0\"\n[dependencies]\n{dependency}\n"
+                ),
+            )
+            .unwrap();
+            let mut failures = Vec::new();
+            check_crate_manifests(&root, &mut failures);
+            assert_eq!(failures.len(), expected.len(), "{label}: {failures:?}");
+            for expected_text in expected {
+                assert!(
+                    failures
+                        .iter()
+                        .any(|failure| failure.contains(expected_text)),
+                    "{label}: missing {expected_text:?} in {failures:?}"
+                );
+            }
+        }
+
+        for (default_off, default_features, expect_failure) in [
+            (false, false, false),
+            (false, true, false),
+            (true, false, false),
+            (true, true, true),
+        ] {
+            let deps: toml::Value =
+                format!("dep = {{ version = \"1\", default-features = {default_features} }}")
+                    .parse::<toml::Table>()
+                    .unwrap()
+                    .into();
+            let mut failures = Vec::new();
+            check_dep(
+                &deps,
+                "dep",
+                "1",
+                Some((default_off, &[], &[])),
+                &mut failures,
+            );
+            assert_eq!(
+                failures
+                    .iter()
+                    .any(|failure| failure.contains("default-features = false")),
+                expect_failure,
+                "default_off={default_off}, default_features={default_features}: {failures:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn validators_report_missing_malformed_and_mismatched_artifacts() {
+        let empty = temp_dir("validator-empty");
+        let failures = validate_contents(&empty);
+        for expected in [
+            "Cargo.toml: file absent",
+            "Cargo.lock: file absent",
+            "fixtures/manifest.json: file absent",
+            "schemas/alert.cddl: file absent",
+        ] {
+            assert!(failures.iter().any(|failure| failure.contains(expected)));
+        }
+
+        let malformed = temp_dir("validator-malformed");
+        good_scaffold(&malformed);
+        std::fs::write(malformed.join("Cargo.toml"), "not = [toml").unwrap();
+        std::fs::write(malformed.join("Cargo.lock"), "not = [toml").unwrap();
+        std::fs::write(malformed.join("fixtures/manifest.json"), "not json").unwrap();
+        std::fs::write(malformed.join("schemas/alert.cddl"), "wrong schema").unwrap();
+        let failures = validate_contents(&malformed);
+        for expected in [
+            "Cargo.toml: not valid TOML",
+            "Cargo.lock: not valid TOML",
+            "fixtures/manifest.json: not valid JSON",
+            "missing schema id",
+        ] {
+            assert!(failures.iter().any(|failure| failure.contains(expected)));
+        }
+
+        let dependencies = temp_dir("validator-dependencies");
+        good_scaffold(&dependencies);
+        let workspace = good_workspace_toml()
+            .replace("hifitime = \"=4.3.0\"", "")
+            .replace("features = [\"std\"]", "features = []")
+            .replace("features = [\"william3\"]", "features = []");
+        std::fs::write(dependencies.join("Cargo.toml"), workspace).unwrap();
+        let failures = validate_contents(&dependencies);
+        for expected in [
+            "dependency `hifitime` absent",
+            "enable feature `std`",
+            "enable feature `william3`",
+        ] {
+            assert!(failures.iter().any(|failure| failure.contains(expected)));
+        }
+
+        let crate_manifest = temp_dir("validator-crate-manifest");
+        good_scaffold(&crate_manifest);
+        std::fs::create_dir_all(crate_manifest.join("crates/bad")).unwrap();
+        std::fs::write(crate_manifest.join("crates/bad/Cargo.toml"), "not = [toml").unwrap();
+        let failures = validate_contents(&crate_manifest);
+        assert!(failures
+            .iter()
+            .any(|failure| failure.contains("not valid TOML")));
+
+        let lock = temp_dir("validator-lock-contents");
+        good_scaffold(&lock);
+        let bad_lock = r#"version = 4
+[[package]]
+name = "willow25"
+version = "0.5.0"
+[[package]]
+name = "bab_rs"
+version = "0.8.1"
+[[package]]
+name = "openmls"
+version = "1.0.0"
+"#;
+        std::fs::write(lock.join("Cargo.lock"), bad_lock).unwrap();
+        std::fs::write(
+            lock.join("fixtures/manifest.json"),
+            manifest_with(
+                &sha256_hex(bad_lock.as_bytes()),
+                &sha256_hex(b"{\"vectors\":[]}"),
+            ),
+        )
+        .unwrap();
+        let failures = validate_contents(&lock);
+        assert!(failures.iter().any(|failure| failure.contains("willow25")));
+        assert!(failures.iter().any(|failure| failure.contains("openmls")));
+
+        let fixture = temp_dir("validator-fixture-details");
+        good_scaffold(&fixture);
+        let lock_hash = sha256_hex(good_lock().as_bytes());
+        let bad_manifest = manifest_with(&lock_hash, &"f".repeat(64))
+            .replace("1:1 - compression forbidden", "2:1")
+            .replace("\"objects\": \"WU1\",", "")
+            .replace("\"status\",", "");
+        std::fs::write(fixture.join("fixtures/manifest.json"), bad_manifest).unwrap();
+        let failures = validate_contents(&fixture);
+        for expected in [
+            "william3_vectors_sha256 mismatch",
+            "expansion_ratio",
+            "fixture_ownership.objects",
+            "report_fields missing `status`",
+        ] {
+            assert!(failures.iter().any(|failure| failure.contains(expected)));
+        }
+    }
 
     #[test]
     fn exposes_locked_binding_generation_command() {
@@ -703,10 +1667,12 @@ version = "0.8.1"
         )
         .unwrap();
         let failures = validate_contents(&dir);
+        let failure = failures
+            .iter()
+            .find(|failure| failure.contains("willow25"))
+            .unwrap();
         assert!(
-            failures
-                .iter()
-                .any(|f| f.contains("willow25") && f.contains(WILLOW25_PIN)),
+            failure.contains(WILLOW25_PIN),
             "must name the willow25 pin violation: {failures:?}"
         );
     }
@@ -727,10 +1693,12 @@ version = "0.8.1"
         )
         .unwrap();
         let failures = validate_contents(&dir);
+        let failure = failures
+            .iter()
+            .find(|failure| failure.contains("bab_rs"))
+            .unwrap();
         assert!(
-            failures
-                .iter()
-                .any(|f| f.contains("bab_rs") && f.contains("incorrect WILLIAM3")),
+            failure.contains("incorrect WILLIAM3"),
             "must name the bab_rs basis violation: {failures:?}"
         );
     }
@@ -763,10 +1731,12 @@ version = "0.8.1"
         )
         .unwrap();
         let failures = validate_contents(&dir);
+        let failure = failures
+            .iter()
+            .find(|failure| failure.contains("panic"))
+            .unwrap();
         assert!(
-            failures
-                .iter()
-                .any(|f| f.contains("panic") && f.contains("unwind")),
+            failure.contains("unwind"),
             "must name the panic strategy violation: {failures:?}"
         );
     }
@@ -799,10 +1769,12 @@ version = "0.8.1"
             .replace("\"artifact_bytes\": 8388608", "\"artifact_bytes\": 1");
         std::fs::write(dir.join("fixtures/manifest.json"), mutated).unwrap();
         let failures = validate_contents(&dir);
+        let failure = failures
+            .iter()
+            .find(|failure| failure.contains("artifact_bytes"))
+            .unwrap();
         assert!(
-            failures
-                .iter()
-                .any(|f| f.contains("artifact_bytes") && f.contains("exactly 8388608")),
+            failure.contains("exactly 8388608"),
             "mutated ceiling must be named exactly: {failures:?}"
         );
     }
@@ -825,10 +1797,12 @@ willow25 = { workspace = true, features = ["drop_format"] }
         )
         .unwrap();
         let failures = validate_contents(&dir);
+        let failure = failures
+            .iter()
+            .find(|failure| failure.contains("riot-core"))
+            .unwrap();
         assert!(
-            failures
-                .iter()
-                .any(|f| f.contains("riot-core") && f.contains("drop_format")),
+            failure.contains("drop_format"),
             "crate-level drop_format must be named: {failures:?}"
         );
     }

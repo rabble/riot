@@ -4,8 +4,9 @@
 
 use minicbor::Encoder;
 use riot_core::import::{
-    decode_bundle, encode_bundle, BundleDecodeOutcome, DiagnosticCode, ItemComponent, ItemStatus,
-    RejectionCode, BUNDLE_CODEC_ID, BUNDLE_MAGIC,
+    decode_bundle, encode_bundle, BundleDecodeOutcome, BundleEncodeError, DiagnosticCode,
+    ItemComponent, ItemStatus, RejectionCode, BUNDLE_CODEC_ID, BUNDLE_MAGIC,
+    MAX_AUTH_BYTES_PER_BUNDLE, MAX_CAPABILITY_BYTES, MAX_ITEM_PAYLOAD_BYTES,
 };
 use riot_core::model::{Certainty, Severity, Urgency};
 use riot_core::willow::{
@@ -649,5 +650,221 @@ fn public_bundle_flags_unsupported_schema() {
     assert!(
         !rendered.contains("HOSTILE-MARKER"),
         "diagnostics must not embed untrusted bytes"
+    );
+}
+
+#[test]
+fn public_bundle_empty_bundle_and_all_frame_accessors_round_trip() {
+    let empty = encode_bundle(&[]).expect("zero entries are valid");
+    let BundleDecodeOutcome::Decoded(decoded) = decode_bundle(&empty) else {
+        panic!("empty canonical bundle rejected");
+    };
+    assert!(decoded.items.is_empty());
+
+    let one = random_signed_alert("accessors");
+    let encoded = encode_bundle(std::slice::from_ref(&one)).unwrap();
+    let BundleDecodeOutcome::Decoded(decoded) = decode_bundle(&encoded) else {
+        panic!("valid bundle rejected");
+    };
+    let frame = &decoded.items[0].frame;
+    assert_eq!(frame.capability_bytes(), one.capability_bytes);
+    assert_eq!(frame.signature_bytes(), one.signature);
+}
+
+#[test]
+fn public_bundle_encode_reports_each_preflight_and_framed_size_error() {
+    let one = random_signed_alert("encode failures");
+
+    let mut invalid = one.clone();
+    invalid.signature[0] ^= 1;
+    assert!(matches!(
+        encode_bundle(&[invalid]),
+        Err(BundleEncodeError::InvalidItem(_))
+    ));
+
+    let mut excessive_authorization = one.clone();
+    excessive_authorization.capability_bytes = vec![0; MAX_AUTH_BYTES_PER_BUNDLE + 1];
+    assert_eq!(
+        encode_bundle(&[excessive_authorization]),
+        Err(BundleEncodeError::AuthorizationBudgetExceeded)
+    );
+
+    use riot_core::apps::entry::app_data_path;
+    use riot_core::willow::{authorise_entry, encode_capability, encode_entry, Entry};
+    let author = deterministic_author();
+    let payload = vec![0x5a; MAX_ITEM_PAYLOAD_BYTES];
+    let mut large_items = Vec::new();
+    for index in 0..9u8 {
+        let path = app_data_path(&[0x55; 32], &format!("large/{index}")).unwrap();
+        let entry = Entry::builder()
+            .namespace_id(author.namespace_id().clone())
+            .subspace_id(author.subspace_id())
+            .path(path)
+            .timestamp(index as u64)
+            .payload(&payload)
+            .build();
+        let authorised = authorise_entry(&author, entry).unwrap();
+        let token = authorised.authorisation_token();
+        let signature: ed25519_dalek::Signature = token.signature().clone().into();
+        large_items.push(SignedWillowEntry {
+            entry_bytes: encode_entry(authorised.entry()),
+            capability_bytes: encode_capability(token.capability()),
+            signature: signature.to_bytes(),
+            payload_bytes: payload.clone(),
+        });
+    }
+    assert_eq!(
+        encode_bundle(&large_items),
+        Err(BundleEncodeError::BundleTooLarge)
+    );
+}
+
+#[test]
+fn public_bundle_capability_and_payload_ceilings_accept_exact_reject_one_over() {
+    let one = random_signed_alert("field ceilings");
+    let (entry, _cap, sig, payload) = parts(&one);
+
+    let capability_at_limit = vec![0; MAX_CAPABILITY_BYTES];
+    assert!(matches!(
+        decode_bundle(&frame_raw(&[(entry, &capability_at_limit, sig, payload)])),
+        BundleDecodeOutcome::Decoded(_)
+    ));
+    let capability_over = vec![0; MAX_CAPABILITY_BYTES + 1];
+    expect_rejected(
+        &frame_raw(&[(entry, &capability_over, sig, payload)]),
+        RejectionCode::CapabilityBytesExceeded,
+    );
+
+    let payload_at_limit = vec![0; MAX_ITEM_PAYLOAD_BYTES];
+    assert!(matches!(
+        decode_bundle(&frame_raw(&[(
+            entry,
+            one.capability_bytes.as_slice(),
+            sig,
+            &payload_at_limit
+        )])),
+        BundleDecodeOutcome::Decoded(_)
+    ));
+    let payload_over = vec![0; MAX_ITEM_PAYLOAD_BYTES + 1];
+    expect_rejected(
+        &frame_raw(&[(entry, one.capability_bytes.as_slice(), sig, &payload_over)]),
+        RejectionCode::PayloadBytesExceeded,
+    );
+}
+
+#[test]
+fn public_bundle_rejects_every_remaining_outer_shape_error() {
+    let bodies: Vec<Vec<u8>> = vec![
+        vec![],
+        vec![0xa1, 0x00, 0x60],
+        vec![0xa2, 0x02],
+        vec![0xa2, 0x00, 0x60, 0x01, 0x9a, 0x00, 0x80, 0x00, 0x01],
+        vec![0xa2, 0x00, 0x60, 0x01, 0x81, 0xbf, 0xff],
+        vec![0xa2, 0x00, 0x60, 0x01, 0x81, 0xa3],
+    ];
+    for body in bodies {
+        let mut bytes = BUNDLE_MAGIC.to_vec();
+        bytes.extend_from_slice(&body);
+        expect_rejected(&bytes, RejectionCode::MalformedFrame);
+    }
+}
+
+#[test]
+fn public_bundle_rejects_non_byte_values_in_each_early_item_field() {
+    let one = random_signed_alert("wrong field types");
+    let fields = [
+        one.entry_bytes.as_slice(),
+        one.capability_bytes.as_slice(),
+        one.signature.as_slice(),
+        one.payload_bytes.as_slice(),
+    ];
+    for wrong_index in 0..3usize {
+        let mut bytes = BUNDLE_MAGIC.to_vec();
+        let mut encoder = Encoder::new(&mut bytes);
+        encoder.map(2).unwrap();
+        encoder.u8(0).unwrap().str(BUNDLE_CODEC_ID).unwrap();
+        encoder.u8(1).unwrap().array(1).unwrap();
+        encoder.map(4).unwrap();
+        for (index, field) in fields.iter().enumerate() {
+            encoder.u8(index as u8).unwrap();
+            if index == wrong_index {
+                encoder.u8(7).unwrap();
+            } else {
+                encoder.bytes(field).unwrap();
+            }
+        }
+        expect_rejected(&bytes, RejectionCode::MalformedFrame);
+    }
+}
+
+#[test]
+fn public_bundle_rejects_each_unsupported_capability_form() {
+    use riot_core::willow::{encode_capability, encode_entry, Entry, Path};
+    use willow25::prelude::{Area, NamespaceSecret, SubspaceSecret, WriteCapability};
+
+    let author = deterministic_author();
+    let valid = random_signed_alert("capability forms");
+
+    let mut owned_seed = [0x33; 32];
+    let (owned_secret, owned_namespace) = loop {
+        let secret = NamespaceSecret::from_bytes(&owned_seed);
+        let namespace = secret.corresponding_namespace_id();
+        if namespace.is_owned() {
+            break (secret, namespace);
+        }
+        owned_seed[0] = owned_seed[0].wrapping_add(1);
+    };
+    let owned = WriteCapability::new_owned(&owned_secret, author.subspace_id());
+    expect_item_diagnostic(
+        &frame_raw(&[(
+            &valid.entry_bytes,
+            &encode_capability(&owned),
+            &valid.signature,
+            &valid.payload_bytes,
+        )]),
+        0,
+        DiagnosticCode::UnsupportedCapability,
+        ItemComponent::Authorization,
+    );
+
+    let mut delegated = author.write_capability();
+    let signer = SubspaceSecret::from_bytes(b"riot-golden-subspace-secret-01!!");
+    let receiver = SubspaceSecret::from_bytes(&[0x77; 32]).corresponding_subspace_id();
+    delegated.delegate(
+        &signer,
+        Area::new_subspace_area(author.subspace_id()),
+        receiver,
+    );
+    expect_item_diagnostic(
+        &frame_raw(&[(
+            &valid.entry_bytes,
+            &encode_capability(&delegated),
+            &valid.signature,
+            &valid.payload_bytes,
+        )]),
+        0,
+        DiagnosticCode::UnsupportedCapability,
+        ItemComponent::Authorization,
+    );
+
+    let path = Path::from_slices(&[b"objects", b"alert", &[1; 16], &[2; 16]]).unwrap();
+    let foreign_entry = Entry::builder()
+        .namespace_id(owned_namespace)
+        .subspace_id(author.subspace_id())
+        .path(path)
+        .timestamp(1u64)
+        .payload(&valid.payload_bytes)
+        .build();
+    let communal = author.write_capability();
+    expect_item_diagnostic(
+        &frame_raw(&[(
+            &encode_entry(&foreign_entry),
+            &encode_capability(&communal),
+            &[0; 64],
+            &valid.payload_bytes,
+        )]),
+        0,
+        DiagnosticCode::UnsupportedCapability,
+        ItemComponent::Authorization,
     );
 }

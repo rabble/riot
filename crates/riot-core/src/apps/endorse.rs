@@ -40,10 +40,9 @@ pub fn write_endorsement(
     willow_timestamp_micros: u64,
 ) -> Result<(), AppsError> {
     let payload = encode_endorsement(marker)?;
-    let path = super::index::app_index_endorsement_path(
-        &marker.app_id,
-        endorser.subspace_id().as_bytes(),
-    )?;
+    let path =
+        super::index::app_index_endorsement_path(&marker.app_id, endorser.subspace_id().as_bytes())
+            .expect("fixed-size app-index endorsement path is always valid");
     commit_at(store, endorser, &path, &payload, willow_timestamp_micros)
 }
 
@@ -57,22 +56,23 @@ fn validate(marker: &EndorsementMarker) -> Result<(), AppsError> {
 /// Validates and encodes the canonical byte representation.
 pub fn encode_endorsement(marker: &EndorsementMarker) -> Result<Vec<u8>, AppsError> {
     validate(marker)?;
+    Ok(encode_validated_endorsement(marker))
+}
 
+/// Encodes a marker that has already passed [`validate`]. Its maximum encoded
+/// size is well below `MAX_ENDORSEMENT_BYTES`, and `Vec<u8>` is an infallible
+/// minicbor writer.
+fn encode_validated_endorsement(marker: &EndorsementMarker) -> Vec<u8> {
     let mut buffer: Vec<u8> = Vec::new();
     let mut e = Encoder::new(&mut buffer);
-    let r: Result<_, minicbor::encode::Error<core::convert::Infallible>> = (|| {
-        e.map(FIELD_COUNT)?;
-        e.u8(0)?.bytes(&marker.app_id)?;
-        e.u8(1)?.str(&marker.note)?;
-        e.u8(2)?.u8(u8::from(marker.retracted))?;
-        Ok(())
-    })();
-    r.map_err(|_| AppsError::EndorsementFieldInvalid)?;
-
-    if buffer.len() > MAX_ENDORSEMENT_BYTES {
-        return Err(AppsError::EndorsementFieldInvalid);
-    }
-    Ok(buffer)
+    let _ = e.map(FIELD_COUNT);
+    let _ = e.u8(0);
+    let _ = e.bytes(&marker.app_id);
+    let _ = e.u8(1);
+    let _ = e.str(&marker.note);
+    let _ = e.u8(2);
+    let _ = e.u8(u8::from(marker.retracted));
+    buffer
 }
 
 /// Strict canonical decoder: rejects unknown/duplicate/misordered keys,
@@ -91,49 +91,37 @@ pub fn decode_endorsement(input: &[u8]) -> Result<EndorsementMarker, AppsError> 
         return Err(AppsError::EndorsementFieldInvalid);
     }
 
-    let mut app_id: Option<AppId> = None;
-    let mut note: Option<String> = None;
-    let mut retracted: Option<bool> = None;
-
-    let mut last_key: Option<u64> = None;
-    for _ in 0..pairs {
-        let key = d.u64().map_err(|_| AppsError::EndorsementFieldInvalid)?;
-        if let Some(previous) = last_key {
-            if key <= previous {
-                return Err(AppsError::EndorsementFieldInvalid);
-            }
-        }
-        last_key = Some(key);
-
-        match key {
-            0 => app_id = Some(decode_id32(&mut d)?),
-            1 => note = Some(decode_text(&mut d, MAX_ENDORSEMENT_NOTE_BYTES)?),
-            2 => {
-                let raw = d.u8().map_err(|_| AppsError::EndorsementFieldInvalid)?;
-                retracted = Some(match raw {
-                    0 => false,
-                    1 => true,
-                    _ => return Err(AppsError::EndorsementFieldInvalid),
-                });
-            }
-            _ => return Err(AppsError::EndorsementFieldInvalid),
-        }
+    if d.u64().map_err(|_| AppsError::EndorsementFieldInvalid)? != 0 {
+        return Err(AppsError::EndorsementFieldInvalid);
     }
+    let app_id = decode_id32(&mut d)?;
+    if d.u64().map_err(|_| AppsError::EndorsementFieldInvalid)? != 1 {
+        return Err(AppsError::EndorsementFieldInvalid);
+    }
+    let note = decode_text(&mut d, MAX_ENDORSEMENT_NOTE_BYTES)?;
+    if d.u64().map_err(|_| AppsError::EndorsementFieldInvalid)? != 2 {
+        return Err(AppsError::EndorsementFieldInvalid);
+    }
+    let retracted = match d.u8().map_err(|_| AppsError::EndorsementFieldInvalid)? {
+        0 => false,
+        1 => true,
+        _ => return Err(AppsError::EndorsementFieldInvalid),
+    };
 
     if d.position() != input.len() {
         return Err(AppsError::EndorsementFieldInvalid);
     }
 
     let marker = EndorsementMarker {
-        app_id: app_id.ok_or(AppsError::EndorsementFieldInvalid)?,
-        note: note.ok_or(AppsError::EndorsementFieldInvalid)?,
-        retracted: retracted.ok_or(AppsError::EndorsementFieldInvalid)?,
+        app_id,
+        note,
+        retracted,
     };
 
-    validate(&marker)?;
-
     // Canonicality proof: only the exact encoder output is acceptable.
-    let reencoded = encode_endorsement(&marker)?;
+    // `decode_text` already enforces the sole marker invariant (note length),
+    // so no second validation pass is needed here.
+    let reencoded = encode_validated_endorsement(&marker);
     if reencoded != input {
         return Err(AppsError::EndorsementFieldInvalid);
     }

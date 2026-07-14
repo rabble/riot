@@ -29,8 +29,9 @@ pub use digest::{
 };
 pub use entry::{create_signed_alert, AlertDraft, SignedAlert, SignedWillowEntry};
 pub use identity::{
-    generate_communal_author, generate_communal_author_for_namespace, generate_space_organizer_author, AuthorIdentity,
-    EvidenceAuthor, NamespaceKind, SEALED_IDENTITY_BYTES,
+    generate_communal_author, generate_communal_author_for_namespace,
+    generate_space_organizer_author, AuthorIdentity, EvidenceAuthor, NamespaceKind,
+    SEALED_IDENTITY_BYTES,
 };
 pub use owned::OwnedRoot;
 
@@ -91,7 +92,8 @@ pub fn build_alert_entry(
     willow_timestamp_micros: u64,
     payload: &[u8],
 ) -> Result<Entry, WillowError> {
-    let path = alert_path(object_id, revision_id)?;
+    let path = alert_path(object_id, revision_id)
+        .expect("fixed-width alert identifiers always form a valid path");
     Ok(Entry::builder()
         .namespace_id(author.namespace_id().clone())
         .subspace_id(author.subspace_id())
@@ -150,7 +152,8 @@ pub fn alert_entry_path_matches_payload(
     use willow25::groupings::Keylike;
 
     let entry = decode_entry_canonic(entry_bytes)?;
-    let expected = alert_path(object_id, revision_id)?;
+    let expected = alert_path(object_id, revision_id)
+        .expect("fixed-width alert identifiers always form a valid path");
     Ok(entry.path() == &expected)
 }
 

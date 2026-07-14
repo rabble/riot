@@ -51,48 +51,56 @@ pub enum SyncFrame {
 
 pub fn encode_frame(frame: &SyncFrame) -> Result<Vec<u8>, SyncError> {
     validate(frame)?;
+    Ok(encode_validated_frame(frame))
+}
+
+/// Encodes a frame that has passed [`validate`]. All frame variants are
+/// bounded below [`MAX_SYNC_FRAME_BYTES`], and `Vec<u8>` is an infallible
+/// minicbor writer.
+fn encode_validated_frame(frame: &SyncFrame) -> Vec<u8> {
     let mut bytes = Vec::new();
     let mut encoder = Encoder::new(&mut bytes);
-    let encoded: Result<_, minicbor::encode::Error<core::convert::Infallible>> = (|| {
-        encoder.map(3)?;
-        encoder.u8(0)?.str(SYNC_CODEC)?;
-        encoder.u8(1)?.u8(kind(frame))?;
-        encoder.u8(2)?;
-        match frame {
-            SyncFrame::Hello { namespace_id } | SyncFrame::Complete { namespace_id } => {
-                encoder.bytes(namespace_id)?;
-            }
-            SyncFrame::Summary {
-                namespace_id,
-                entry_ids,
-            }
-            | SyncFrame::Request {
-                namespace_id,
-                entry_ids,
-            } => {
-                encoder.array(2)?.bytes(namespace_id)?;
-                encoder.array(entry_ids.len() as u64)?;
-                for entry_id in entry_ids {
-                    encoder.bytes(entry_id)?;
-                }
-            }
-            SyncFrame::Entries {
-                namespace_id,
-                bundle_bytes,
-            } => {
-                encoder.array(2)?.bytes(namespace_id)?.bytes(bundle_bytes)?;
-            }
-            SyncFrame::Reject { namespace_id, code } => {
-                encoder.array(2)?.bytes(namespace_id)?.u8(*code)?;
+    let _ = encoder.map(3);
+    let _ = encoder.u8(0);
+    let _ = encoder.str(SYNC_CODEC);
+    let _ = encoder.u8(1);
+    let _ = encoder.u8(kind(frame));
+    let _ = encoder.u8(2);
+    match frame {
+        SyncFrame::Hello { namespace_id } | SyncFrame::Complete { namespace_id } => {
+            let _ = encoder.bytes(namespace_id);
+        }
+        SyncFrame::Summary {
+            namespace_id,
+            entry_ids,
+        }
+        | SyncFrame::Request {
+            namespace_id,
+            entry_ids,
+        } => {
+            let _ = encoder.array(2);
+            let _ = encoder.bytes(namespace_id);
+            let _ = encoder.array(entry_ids.len() as u64);
+            for entry_id in entry_ids {
+                let _ = encoder.bytes(entry_id);
             }
         }
-        Ok(())
-    })();
-    debug_assert!(encoded.is_ok());
-    if bytes.len() > MAX_SYNC_FRAME_BYTES {
-        return Err(SyncError::FrameTooLarge);
+        SyncFrame::Entries {
+            namespace_id,
+            bundle_bytes,
+        } => {
+            let _ = encoder.array(2);
+            let _ = encoder.bytes(namespace_id);
+            let _ = encoder.bytes(bundle_bytes);
+        }
+        SyncFrame::Reject { namespace_id, code } => {
+            let _ = encoder.array(2);
+            let _ = encoder.bytes(namespace_id);
+            let _ = encoder.u8(*code);
+        }
     }
-    Ok(bytes)
+    debug_assert!(bytes.len() <= MAX_SYNC_FRAME_BYTES);
+    bytes
 }
 
 pub fn decode_frame(bytes: &[u8]) -> Result<SyncFrame, SyncError> {
@@ -100,7 +108,7 @@ pub fn decode_frame(bytes: &[u8]) -> Result<SyncFrame, SyncError> {
         return Err(SyncError::FrameTooLarge);
     }
     let frame = parse_frame(bytes)?;
-    let canonical = encode_frame(&frame)?;
+    let canonical = encode_validated_frame(&frame);
     if canonical != bytes {
         return Err(SyncError::NonCanonicalFrame);
     }
