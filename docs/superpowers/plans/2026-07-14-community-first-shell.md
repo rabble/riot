@@ -1,6 +1,27 @@
 # Community-First Shell — Implementation Plan
 
-**Status:** AWAITING USER DECISION — plan review gate ran its full 3 iterations (9 independent adversarial reviewers, all fresh instances).
+## Execution progress (2026-07-15)
+
+| Unit | State | Commit | Evidence |
+|---|---|---|---|
+| P1 native rebuild | ✅ done | — | 5 staticlibs, `nm` confirms symbols |
+| P2 in-flight app work | ✅ done | `cb90b14` | iOS 198 / Android 110 |
+| P3 coverage baseline | ✅ done | `2040ccc`, `e43286c` | 94.60%→96.47%; 121 lines unreachable; **100% gate is unreachable — owner decision open** |
+| dead-code cleanup | ✅ done | `0e5c34c` | phantom `closed` guard + orphaned oracle helpers deleted |
+| **1A newswire projection** | ✅ done | `d150e79` | 746 Rust tests (isolated); bindings+staticlibs rebuilt; macOS RiotKit compiles. **This is the CurrentEntryV2 deviation — owner ratification open** |
+| **0A canonical catalog** | ✅ done | `09413e6` | Rust 8/8; iOS StarterResourceTests 7/7; iOS app builds with all 8 pairs |
+
+Combined tree after both: 74 Rust suites green, clippy 0, fmt clean.
+
+**Next up:** 0B (deterministic Riverside authority — now unblocked by 1A, since the fixture regenerates onto the completed newswire record shape), then 0C (security), 1B/1C/1E, 2A (the shell), 2B, 2C, 3.
+
+**Two owner decisions still open** (see the P3 escalation block below): (1) the coverage threshold — the 100% Tarpaulin gate cannot be met; (2) ratify 1A's projection-completion in place of the gate-approved `CurrentEntryV2`.
+
+**Two flagged code questions** (non-blocking, in the P3 block): `MAX_SYNC_INVENTORY_BYTES` is a no-op bound; the `store/backup.rs` double-checks.
+
+---
+
+**Status:** IN EXECUTION — plan review gate ran its full 3 iterations (9 independent adversarial reviewers, all fresh instances).
 
 | Iteration | Feasibility | Completeness | Scope & Alignment |
 |---|---|---|---|
