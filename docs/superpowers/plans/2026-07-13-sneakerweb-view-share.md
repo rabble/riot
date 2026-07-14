@@ -8,10 +8,9 @@
 
 **Tech Stack:** Rust 2021, `willow25 0.6.0-alpha.3` Drop Format, `ufotofu 0.12.4`, SQLite/`rusqlite`, UniFFI 0.32, Swift 6/SwiftUI/WebKit, Kotlin 2.2/Android WebView, canonical CBOR, XCTest/XCUITest, JUnit/instrumentation tests, Playwright for the starter miniapp, cargo-tarpaulin, cargo-llvm-cov.
 
-**Plan status:** **REVISION AUTHORIZED; FRESH PLAN REVIEW GATE PENDING.** Rabble
-authorized another bounded revision cycle and implementation with a swarm. Do
-not execute production work until a fresh Feasibility, Completeness, and Scope
-& Alignment panel all return PASS.
+**Plan status:** **ESCALATION REQUIRED; 3/3 FRESH REVIEW ITERATIONS EXHAUSTED.**
+Implementation remains blocked pending Rabble's explicit choice to override,
+manually revise, simplify, or cancel after the final gate findings below.
 
 ---
 
@@ -96,6 +95,11 @@ declaration, viewer, or menu item.
   adversarial review, then commits. A Task 1–13 commit is forbidden when that
   work unit's fresh combined coverage run is missing or below any configured
   100% line, branch, function, statement/region threshold.
+- Every asynchronous task added by this plan joins the shared lifecycle harness:
+  final native-handle drop while nonterminal is an idempotent cancel, sets the
+  worker token immediately, releases reservations/temporary leases, cannot run
+  detached, and is covered during validation, encoding, transfer, commit, and
+  verification. Task-specific work cannot rely only on explicit `cancel()`.
 
 ### Mandatory source-by-destination matrix
 
@@ -137,7 +141,8 @@ Task 12; no matrix cell may remain dependency-gated at release.
   `scripts/test-coverage-gate.sh`,
   `scripts/sneakerweb-oracle.sh`,
   `scripts/verify-xcresult-tests.sh`, `scripts/android-sneakerweb-test-gate.sh`,
-  and `scripts/sneakerweb-physical-rehearsal.sh`.
+  `scripts/sneakerweb-physical-rehearsal.sh`, and their `scripts/test-*.sh`
+  gate self-tests.
 
 ### Rust core and UniFFI
 
@@ -197,7 +202,7 @@ Task 12; no matrix cell may remain dependency-gated at release.
 **Files:**
 - Execute under separate reviewed scopes: `docs/superpowers/plans/2026-07-12-multi-space-sqlite-store.md`
 - Execute under separate approved scope: `docs/superpowers/plans/2026-07-13-newswire-core-slice-1.md`
-- Modify on the isolated integration branch: `.coverage-thresholds.json`
+- Add unchanged, then modify on the isolated integration branch: `.coverage-thresholds.json`
 - Create on the isolated integration branch: `scripts/coverage-gate.sh`
 - Create on the isolated integration branch: `scripts/test-coverage-gate.sh`
 - Add on the isolated integration branch: `SERVICE-INVENTORY.md`
@@ -207,7 +212,31 @@ Task 12; no matrix cell may remain dependency-gated at release.
 - Read: `.coverage-thresholds.json`
 - Test: existing repository state only
 
-- [ ] **Step 1: TDD and land the combined coverage infrastructure**
+- [ ] **Step 1: Track the current threshold, then land both prerequisites**
+
+On an isolated integration branch, first add the existing
+`.coverage-thresholds.json` unchanged together with the reviewed
+`SERVICE-INVENTORY.md`. Prove its current command is the tarpaulin command
+hardcoded by the already-approved prerequisite plans, then commit only those
+two files:
+
+```sh
+test "$(jq -r '.enforcement.command' .coverage-thresholds.json)" = \
+  "cargo tarpaulin --fail-under 100"
+git add .coverage-thresholds.json SERVICE-INVENTORY.md
+git diff --cached --check
+git commit -m "chore: track repository quality contracts"
+```
+
+Execute P0-A first from that integration commit plus the two
+`codex/sqlite-foundation` commits, then complete its separately gated
+multi-space plan and land by ordinary non-force integration. Execute P0-B from
+that integration head. Each prerequisite reads and runs the exact current
+`.coverage-thresholds.json` command required by its own approved plan; at this
+point that command is still the existing tarpaulin command. Both programs use
+the same swarm TDD/validate/fresh-review/commit discipline as the tasks below.
+
+- [ ] **Step 2: TDD and land the combined coverage infrastructure**
 
 Write `scripts/test-coverage-gate.sh` first and observe it fail because the
 wrapper is absent or the old tarpaulin-only command remains. The self-test uses
@@ -219,27 +248,19 @@ from `.coverage-thresholds.json`.
 Create `scripts/coverage-gate.sh`, change the source-of-truth enforcement
 command to that script, map statements to LLVM regions explicitly, and run both
 real tools. Run the self-test and real wrapper, review the isolated diff, then
-commit only `.coverage-thresholds.json`, both scripts, and the already-reviewed
-`SERVICE-INVENTORY.md`. This infrastructure commit must precede P0-A and every
-production SneakerWeb change.
+commit only `.coverage-thresholds.json` and both scripts. This infrastructure commit lands on the prerequisite
+integration head and must precede Task 1 and every SneakerWeb production
+change. P0-B's already-executed hardcoded tarpaulin release command is therefore
+never run after the source of truth changes.
 
 ```sh
 scripts/test-coverage-gate.sh
 scripts/coverage-gate.sh
 git add .coverage-thresholds.json scripts/coverage-gate.sh \
-  scripts/test-coverage-gate.sh SERVICE-INVENTORY.md
+  scripts/test-coverage-gate.sh
 git diff --cached --check
 git commit -m "test: enforce combined 100 percent coverage"
 ```
-
-- [ ] **Step 2: Complete and land the two prerequisite workstreams**
-
-Execute P0-A first. Its isolated branch starts from current `main`, receives
-only the coverage/inventory infrastructure commit and the two
-`codex/sqlite-foundation` commits, then completes the separately gated
-multi-space plan. Land it by ordinary non-force integration. Execute and land
-P0-B from the resulting integration head. Both prerequisite programs use the
-same swarm TDD/validate/fresh-review/commit discipline as the tasks below.
 
 - [ ] **Step 3: Create the SneakerWeb isolated implementation worktree**
 
@@ -299,7 +320,9 @@ scripts/coverage-gate.sh
 ```
 
 Expected: PASS before any SneakerWeb change. Save command output in the work
-unit evidence, not in a new product file.
+unit evidence, not in a new product file. If the inherited repository misses
+any configured 100% dimension, stop before Task 1 and close that baseline gap
+as a separately reviewed TDD prerequisite; never lower or bypass the threshold.
 
 ## Task 1: Activate Willow Drop Format with pinned official evidence
 
@@ -630,7 +653,8 @@ Budget tests also cover 2 GiB retained SneakerWeb payload/blob storage while
 leaving 512 MiB device free, 250,000 accepted entries, 10,000 receipts,
 1,000,000 source-entry associations, 3 GiB combined database/CAS, one Open,
 one Export, two transfers, 1 GiB aggregate reservations, 100-row library and
-Details pages, 32 community destinations, and four active space-share children.
+Details pages. Task 12 owns community-batch concurrency because its coordinator
+does not exist in this persistence task.
 
 - [ ] **Step 2: Implement the collection transaction boundary**
 
@@ -789,6 +813,15 @@ exactly 32 bytes, no namespace parameter, no filesystem path/URI, full typed
 errors, panic containment, stale cursors, repeated terminal results, and
 finish/cancel/block/owner-close race linearization.
 
+Create one parameterized lifecycle harness for `OpenSnkTask`, `SnkExportTask`,
+and `DiagnosticExportTask` plus every task type added later. For each available
+type, deterministically drop the final native handle during validation,
+encoding, commit, transfer, and verification states that apply; assert the
+cancellation token is visible by the next checkpoint, repeated cleanup is
+idempotent, reservations/staging/leases are released, no callback or commit
+appears late, and startup reconciliation finds no detached work. Tasks 10 and
+11 must register their new types in this same harness before their commits.
+
 Require `prepare_sneaker_diagnostic_export` to return only fixed host-owned
 disclosure copy and a short-lived opaque preparation handle. Only
 `confirm_sneaker_diagnostic_export` consumes that handle and returns a
@@ -864,10 +897,12 @@ git commit -m "feat(ffi): expose SneakerWeb task contracts"
 - Create: `apps/ios/Riot/SneakerWeb/SneakerLibraryView.swift`
 - Create: `apps/ios/Riot/SneakerWeb/SneakerDetailsView.swift`
 - Create: `apps/ios/Riot/SneakerWeb/SneakerStorageView.swift`
+- Create: `apps/ios/Riot/SneakerWeb/SneakerDiagnosticExport.swift`
 - Create: `apps/ios/Riot/SneakerWeb/SneakerAccessibility.swift`
 - Create: `apps/ios/RiotTests/SneakerWebCoreTests.swift`
 - Create: `apps/ios/RiotTests/SneakerLibraryViewModelTests.swift`
 - Create: `apps/ios/RiotTests/SneakerAccessibilityContractTests.swift`
+- Create: `apps/ios/RiotTests/SneakerDiagnosticExportTests.swift`
 - Create: `apps/ios/RiotUITests/SneakerDocumentUITests.swift`
 
 - [ ] **Step 1: Write RED document and accessible-library tests**
@@ -919,6 +954,17 @@ pause/resume, cancel, failure, retry, and terminal deduplication. Task-specific
 suites in Tasks 9–12 assert their visible stage names are routed through this
 contract rather than posting ad hoc announcements.
 
+Diagnostic export tests begin from the global Storage screen and prove the
+core preparation handle is not confirmed or consumed until a genuine native
+confirmation action. The confirmation names full public identifiers, digests,
+signatures, timestamps, route names, lengths, and stable error codes as exposed
+metadata, and states that payload text, private-space identifiers, and device
+paths are excluded. Test Cancel, confirmation expiry/replay, protected and
+backup-excluded temporary creation, system-sheet success/cancel, 15-minute
+expiry, relaunch cleanup, focus restoration, and exact exported redactions.
+An injected native logging seam also proves ordinary iOS logs never receive
+payload text or a full namespace/domain/entry/digest/signature/key value.
+
 - [ ] **Step 2: Register only `.snk` document intake**
 
 Add an imported `UTType` for `.snk` and route `onOpenURL` into
@@ -932,14 +978,24 @@ undo, block/unblock, and storage recovery. It stores no raw SQL and never turns
 full byte IDs into shortened display strings. The profile menu and large-screen
 sidebar link to the same `SneakerLibraryView`.
 
-- [ ] **Step 4: Verify iOS model/UI and commit**
+- [ ] **Step 4: Implement confirmed diagnostic export**
+
+Add `SneakerDiagnosticExport` to the global Storage surface, hidden behind the
+explicit disclosure confirmation. It streams `DiagnosticExportLease` into the
+same protected temporary-file coordinator as standard file sharing, uses the
+system share sheet, and destroys the native file and lease on completion,
+cancel, expiry, relaunch, or owner close. It is not a `.snk` file, cannot be
+opened as a collection, and never appears in Sites or Received.
+
+- [ ] **Step 5: Verify iOS model/UI and commit**
 
 ```sh
 xcodebuild test -project apps/ios/Riot.xcodeproj -scheme RiotKit \
   -destination 'platform=iOS Simulator,name=iPhone 17 Pro,OS=26.2,arch=arm64' \
   -only-testing:RiotTests/SneakerWebCoreTests \
   -only-testing:RiotTests/SneakerLibraryViewModelTests \
-  -only-testing:RiotTests/SneakerAccessibilityContractTests
+  -only-testing:RiotTests/SneakerAccessibilityContractTests \
+  -only-testing:RiotTests/SneakerDiagnosticExportTests
 xcodebuild test -project apps/ios/Riot.xcodeproj -scheme Riot \
   -destination 'platform=iOS Simulator,name=iPhone 17 Pro,OS=26.2,arch=arm64' \
   -only-testing:RiotUITests/SneakerDocumentUITests
@@ -956,6 +1012,7 @@ git add apps/ios/Riot/Info.plist apps/ios/Riot/RiotApp.swift apps/ios/Riot/AppMo
   apps/ios/RiotTests/SneakerWebCoreTests.swift \
   apps/ios/RiotTests/SneakerLibraryViewModelTests.swift \
   apps/ios/RiotTests/SneakerAccessibilityContractTests.swift \
+  apps/ios/RiotTests/SneakerDiagnosticExportTests.swift \
   apps/ios/RiotUITests/SneakerDocumentUITests.swift apps/ios/Riot.xcodeproj/project.pbxproj
 git commit -m "feat(ios): open and manage SneakerWeb collections"
 ```
@@ -969,9 +1026,11 @@ git commit -m "feat(ios): open and manage SneakerWeb collections"
 - Create: `apps/android/app/src/main/kotlin/org/riot/evidence/sneakerweb/SneakerDocumentIntake.kt`
 - Create: `apps/android/app/src/main/kotlin/org/riot/evidence/sneakerweb/SneakerLibraryViewModel.kt`
 - Create: `apps/android/app/src/main/kotlin/org/riot/evidence/sneakerweb/SneakerLibraryScreen.kt`
+- Create: `apps/android/app/src/main/kotlin/org/riot/evidence/sneakerweb/SneakerDiagnosticExport.kt`
 - Create: `apps/android/app/src/main/kotlin/org/riot/evidence/sneakerweb/SneakerAccessibility.kt`
 - Create: `apps/android/app/src/test/kotlin/org/riot/evidence/sneakerweb/SneakerLibraryViewModelTest.kt`
 - Create: `apps/android/app/src/test/kotlin/org/riot/evidence/sneakerweb/SneakerAccessibilityContractTest.kt`
+- Create: `apps/android/app/src/test/kotlin/org/riot/evidence/sneakerweb/SneakerDiagnosticExportTest.kt`
 - Create: `apps/android/app/src/androidTest/kotlin/org/riot/evidence/sneakerweb/SneakerDocumentOpenTest.kt`
 
 - [ ] **Step 1: Write RED Android parity tests**
@@ -992,6 +1051,14 @@ and the identical fake-clock start/less-frequent-10%-and-ten-second/terminal
 announcement cadence. The Android announcer is the one shared path for Tasks 7
 and 9–12.
 
+Mirror the Task 6 diagnostic disclosure, genuine-confirmation boundary,
+single-use consent/expiry, protected cache file, backup exclusion where the
+platform supports it, share-sheet completion/cancel, relaunch/15-minute
+cleanup, focus restoration, and byte-for-byte redaction assertions. The test
+must prove no export task begins when the user cancels the disclosure. An
+injected Android logging seam proves ordinary Logcat output never receives
+payload text or a full namespace/domain/entry/digest/signature/key value.
+
 - [ ] **Step 2: Register bounded VIEW intent handling**
 
 Declare `.snk` VIEW/OPENABLE handling with the narrow MIME/extension contract,
@@ -1004,14 +1071,17 @@ failure, cancellation, and Activity destruction.
 Use the existing Android presentation style rather than adding a new framework.
 The global navigation placement, semantics, messages, recovery actions, and
 identifier policy must match iOS and the design, while preserving platform
-focus and back behavior.
+focus and back behavior. Add the same confirmed diagnostic export to global
+Storage; it shares a non-`.snk` protected temporary file and never inserts a
+Sites or Received record.
 
 - [ ] **Step 4: Verify and commit**
 
 ```sh
 cd apps/android
 ./gradlew testDebugUnitTest --tests '*SneakerLibraryViewModelTest' \
-  --tests '*SneakerAccessibilityContractTest'
+  --tests '*SneakerAccessibilityContractTest' \
+  --tests '*SneakerDiagnosticExportTest'
 ./gradlew connectedDebugAndroidTest \
   -Pandroid.testInstrumentationRunnerArguments.class=org.riot.evidence.sneakerweb.SneakerDocumentOpenTest
 ./gradlew lintDebug
@@ -1102,6 +1172,17 @@ that same fallback; body/visible text, the full domain key, script, CSS,
 subresource, and `sneakerweb.html` values may never become the native or
 accessibility title.
 
+Preview tests require a separate offscreen host with an opaque origin and a
+single-use capability bound to the exact reader/domain/block/session generation.
+Wrong, expired, replayed, or cross-reader capabilities render no preview. Fix
+the viewport and scale in both platforms, cap input/decoded raster bytes,
+terminate on the injected time and memory watchdogs, flatten the successful
+result to a native image, then prove the preview WebView/process and capability
+are gone before the library displays it. Cover hostile oversized images/fonts,
+network attempts, memory termination, process crash, repeated main-thread
+stall, backgrounding, and block/reader close. No test may find a live iframe,
+WebView, cookie, bridge, or navigable element in the library card afterward.
+
 - [ ] **Step 2: Implement the native loopback capability boundary**
 
 Bind only to `127.0.0.1`/`::1` on exact port `1312`; if neither loopback family
@@ -1124,9 +1205,14 @@ materialize a whole resource to answer a range.
 iOS uses ephemeral `WKWebsiteDataStore`, app-bound navigation/content rules,
 and loopback-only ATS. Android permits only the loopback origin and disables
 external resource access, service workers, permissions, file/content access,
-and bridge injection. Render `sneakerweb.html` offscreen in a scriptless
-sandbox with strict byte/time/node limits as a decorative visual preview only.
-Use the bounded `/index.html` extractor for the native and accessibility title.
+and bridge injection. Render `sneakerweb.html` in a disposable, offscreen,
+scriptless, sandboxed opaque-origin host authorized by a single-use
+reader/domain/block/session capability. Use a fixed viewport/scale plus strict
+input, decoded-raster, node, two-active-second, and 64 MiB watchdog limits;
+crash, stall, background, or memory termination closes the host. On success,
+snapshot to a bounded native bitmap, tear down the WebView/process/cookie and
+capability, and give only the inert image to the library—never a live site
+iframe or view. Use the bounded `/index.html` extractor for the native and accessibility title.
 Implement the reader toolbar/history contract in `SneakerReaderView` and
 `SneakerReaderScreen` with the state restoration tested in Step 1.
 
@@ -1266,6 +1352,7 @@ git commit -m "feat(mobile): share standard SneakerWeb files"
 - Create: `fixtures/sneakerweb/nearby-envelope-v2.json`
 - Modify: `crates/riot-ffi/src/sneakerweb_ffi.rs`
 - Modify: `crates/riot-ffi/tests/sneakerweb_contract.rs`
+- Modify: `crates/riot-ffi/tests/sneakerweb_races.rs`
 - Modify: `apps/ios/Riot/Transport/{FrameCodec,SyncCoordinator,NearbyTransportController}.swift`
 - Create: `apps/ios/Riot/Transport/RiotNearbyEnvelopeV2.swift`
 - Create: `apps/ios/Riot/SneakerWeb/SneakerNearbyChannel.swift`
@@ -1314,6 +1401,15 @@ The direct-nearby column of the mandatory matrix is exercised by
 preparation through verified receiver acknowledgement and asserts that the
 receiver's portable lease decodes to the exact expected unblocked domain set.
 
+Register `DirectSnkSendTask` and `DirectSnkReceiveTask` in Task 5's shared
+final-handle-drop harness. Add deterministic block-generation barriers before
+the first chunk, between two 256 KiB chunks, immediately before/after a verified
+32 MiB checkpoint, and during final verification/ack. A newly blocked selected
+domain cancels sender and receiver work before the next chunk publication,
+publishes no verified ack or portable lease, releases reservations/staging,
+and returns the preserved selection with the blocked site excluded. Repeated
+cancel/drop and late frames remain non-mutating.
+
 - [ ] **Step 2: Implement separate send and receive task outcomes**
 
 Expose and test:
@@ -1326,6 +1422,11 @@ DirectSnkReceiveTask -> PortableBlobLease
 Receiving never mutates `SneakerCollection`; native must explicitly pass the
 lease to `begin_snk_open_from_blob`. Local TCP is preferred; BLE is an honest
 resumable public-content fallback, not confidentiality.
+
+Both direct tasks carry the frozen selected-domain block generations and
+recheck them before publishing or accepting every chunk and before verified
+ack/lease publication. A mismatch sets cancellation immediately, discards
+unverified staging, and cannot be resumed by the old one-shot capability.
 
 Extend `sneakerweb_ffi.rs` only now with factories `begin_direct_snk_send`,
 `accept_direct_snk_receive`, and
@@ -1364,6 +1465,8 @@ transferring and while confirmation controls are visible.
 
 ```sh
 cargo test -p riot-core --features conformance --test sneakerweb_nearby
+cargo test -p riot-ffi --test sneakerweb_contract
+cargo test -p riot-ffi --test sneakerweb_races
 scripts/conference/build-native-core.sh
 scripts/conference/test-native-core-package.sh
 xcodebuild test -project apps/ios/Riot.xcodeproj -scheme RiotKit \
@@ -1386,6 +1489,7 @@ scripts/coverage-gate.sh
 git add crates/riot-core/src/sneakerweb crates/riot-core/tests/sneakerweb_nearby.rs \
   fixtures/sneakerweb/nearby-envelope-v2.json \
   crates/riot-ffi/src/sneakerweb_ffi.rs crates/riot-ffi/tests/sneakerweb_contract.rs \
+  crates/riot-ffi/tests/sneakerweb_races.rs \
   apps/ios/Riot/Transport apps/ios/Riot/SneakerWeb/SneakerNearbyChannel.swift \
   apps/ios/Riot/SneakerWeb/SneakerShareCoordinator.swift \
   apps/ios/Riot/SneakerWeb/SneakerShareView.swift apps/ios/Riot/AppModel.swift \
@@ -1423,7 +1527,7 @@ git commit -m "feat(nearby): carry SneakerWeb collections directly"
 - Create: `crates/riot-core/tests/sneakerweb_social_host.rs`
 - Create: `crates/riot-core/tests/sneakerweb_space_blob_multi_peer.rs`
 - Modify: `crates/riot-ffi/src/{apps_ffi,sneakerweb_ffi}.rs`
-- Modify: `crates/riot-ffi/tests/{apps_contract,sneakerweb_contract}.rs`
+- Modify: `crates/riot-ffi/tests/{apps_contract,sneakerweb_contract,sneakerweb_races}.rs`
 - Modify: `apps/ios/Riot/Apps/{AppBridgeController,AppBundleCodec,AppReviewSheet,AppRuntimeView,RiotJS}.swift`
 - Modify: `apps/ios/Riot/Core/ProfileRepository.swift`
 - Modify: `apps/ios/Riot/Directory/DirectoryModel.swift`
@@ -1437,6 +1541,7 @@ git commit -m "feat(nearby): carry SneakerWeb collections directly"
 - Modify: `apps/android/app/src/main/kotlin/org/riot/evidence/apps/{AppBundleCodec,CanonicalCbor,RiotJsBridge,RiotJsShim,AppWebViewHost,RiotAppsController,InstalledAppsStore,DirectoryController,UniffiDirectoryPort}.kt`
 - Modify: `apps/android/app/src/test/kotlin/org/riot/evidence/apps/{AppBundleCodecTest,RiotJsBridgeTest,InstalledAppsStoreTest,DirectoryControllerTest}.kt`
 - Modify: `apps/android/app/src/androidTest/kotlin/org/riot/evidence/apps/AppRuntimeEndToEndTest.kt`
+- Modify: `apps/android/app/src/androidTest/kotlin/org/riot/evidence/apps/AppPersistenceRestartTest.kt`
 - Modify: `apps/android/app/src/main/kotlin/org/riot/evidence/MainActivity.kt`
 - Create: `apps/android/app/src/main/kotlin/org/riot/evidence/sneakerweb/SneakerCarrierCard.kt`
 - Create: `apps/android/app/src/test/kotlin/org/riot/evidence/sneakerweb/SneakerCarrierCardTest.kt`
@@ -1458,6 +1563,13 @@ key `9` present even empty; definite sorted duplicate-free closed tokens; exact
 `portable_public_collections`; unknown-token rejection; and
 `riot/app-id/v2` separation. Generic app writes to the reserved binding family
 must fail before signing.
+
+Keep the exact pre-v2 parser as a version-specific `decode_manifest_v1` path,
+not a permissive fallback. Feed one canonical v2 manifest byte vector to both
+paths: the v1 path must reject the unknown version/key without installation or
+trust mutation, while the new version-dispatching decoder accepts it and
+derives the v2 app ID. Run the same old-client-reject/new-client-accept vector
+through Rust and both native manifest decoders; v1 vectors remain byte-identical.
 
 Update every ordinary manifest consumer, not only the codec: app-index pair
 validation, directory projection, starter catalog, mobile installation/state,
@@ -1481,6 +1593,12 @@ and Android `AppRuntimeEndToEndTest.kt`. Each must mount the real
 still receives no `riot.collections`, prove a trusted v2 app gains the surface
 only with `portable_public_collections`, and prove revoke/profile/space changes
 remove it without breaking ordinary sync or legacy app methods.
+
+Extend Android `AppPersistenceRestartTest.kt` with process reconstruction of
+trusted v1, trusted-capable v2, untrusted v2, and revoked v2 records. Manifest
+version and closed capabilities must survive durable restart, but bridge
+registration is recomputed from current per-space trust/session state; stale
+pre-restart capability handlers never survive revocation or space change.
 
 - [ ] **Step 2: Implement canonical carrier, binding, and manifest v2 codecs**
 
@@ -1576,6 +1694,12 @@ facts under the same key return `IDEMPOTENCY_CONFLICT`. Implement
 carrier. Add deterministic barriers for cancel/finish, owner-close/commit,
 block/commit, and trust-revocation/commit.
 
+Register `SpaceSneakerShareTask`, `SpaceBlobReceiveTask`, and
+`AppCollectionPickerTask` in the shared final-handle-drop lifecycle harness.
+Drop each task during every applicable prepare/sign/commit/receive/verify
+state, proving idempotent cancellation, no late native/app callback, no orphan
+carrier/binding, and complete reservation/staging/lease cleanup.
+
 The space-blob receive coordinator accepts bounded holder offers only from
 currently connected peers that independently prove the same active public
 space, full carrier entry, digest, expected length, and current authority. It
@@ -1584,6 +1708,8 @@ authorized offers sequentially; rejection, timeout, authority loss, or peer
 loss advances to the next offer. A new holder may resume only from the last
 locally verified 32 MiB checkpoint for the exact carrier/digest/length tuple;
 otherwise restart at zero. Each holder rechecks authority before every chunk.
+Requester and holder also recheck every selected domain's frozen block
+generation before each chunk and before ready-lease publication.
 
 Three-peer deterministic tests use requester A, first holder B, and second
 holder C. B disconnects before data, mid-chunk, and after a verified checkpoint;
@@ -1594,6 +1720,14 @@ and a fourth unrelated/private-space peer that remains invisible. Native tests
 assert `Waiting for nearby holder`, handoff without a second Get gesture,
 checkpoint-resume progress, honest restart-at-zero, Retry after exhaustion,
 and one terminal Open lease with no automatic collection mutation.
+
+For space-blob transfer, add the same deterministic block-generation barriers
+as direct transfer before a chunk, between chunks, around a verified checkpoint,
+and during verification. A requester-side block or a holder-side generation
+change cancels publication before the next chunk, invalidates handoff/resume,
+emits no ready lease, and cannot be bypassed by a later authorized holder or a
+late frame. Unblocking never resumes the old task; Retry starts a fresh request
+against the new generation.
 
 The carrier-card and multi-peer native suites inject the Task 6/7 accessibility
 announcer. They assert the shared less-frequent-10%-and-ten-active-second cadence
@@ -1665,19 +1799,27 @@ cargo test -p riot-core --features conformance --test sneakerweb_carrier
 cargo test -p riot-core --features conformance --test sneakerweb_social_host
 cargo test -p riot-core --features conformance --test sneakerweb_space_blob_multi_peer
 cargo test -p riot-ffi --test sneakerweb_contract
+cargo test -p riot-ffi --test sneakerweb_races
 scripts/conference/build-native-core.sh
 scripts/conference/test-native-core-package.sh
 xcodebuild test -project apps/ios/Riot.xcodeproj -scheme RiotKit \
   -destination 'platform=iOS Simulator,name=iPhone 17 Pro,OS=26.2,arch=arm64' \
   -only-testing:RiotTests/SneakerCarrierCardTests \
   -only-testing:RiotTests/SneakerSpaceBlobMultiPeerTests \
-  -only-testing:RiotTests/AppSyncReplicationTests
+  -only-testing:RiotTests/AppSyncReplicationTests \
+  -only-testing:RiotTests/AppRepositoryTests \
+  -only-testing:RiotTests/AppRuntimeHostTests \
+  -only-testing:RiotTests/DirectoryRepositoryTests \
+  -only-testing:RiotTests/DirectoryStorefrontTests
 (cd apps/android && ./gradlew testDebugUnitTest \
   --tests '*SneakerCarrierCardTest' --tests '*SneakerSpaceBlobMultiPeerTest')
 (cd apps/android && ./gradlew testDebugUnitTest \
-  --tests '*InstalledAppsStoreTest' --tests '*DirectoryControllerTest')
+  --tests '*InstalledAppsStoreTest' --tests '*DirectoryControllerTest' \
+  --tests '*AppBundleCodecTest' --tests '*RiotJsBridgeTest')
 (cd apps/android && ./gradlew connectedDebugAndroidTest \
   -Pandroid.testInstrumentationRunnerArguments.class=org.riot.evidence.apps.AppRuntimeEndToEndTest)
+(cd apps/android && ./gradlew connectedDebugAndroidTest \
+  -Pandroid.testInstrumentationRunnerArguments.class=org.riot.evidence.apps.AppPersistenceRestartTest)
 xcodebuild test -project apps/macos/Riot.xcodeproj -scheme RiotKit-macOS \
   -destination 'platform=macOS'
 xcodebuild build -project apps/macos/Riot.xcodeproj -scheme Riot-macOS \
@@ -1713,7 +1855,8 @@ git add crates/riot-core/src/apps crates/riot-core/src/sneakerweb \
   apps/android/app/src/main/kotlin/org/riot/evidence/sneakerweb/SneakerCarrierCard.kt \
   apps/android/app/src/test/kotlin/org/riot/evidence/sneakerweb/SneakerCarrierCardTest.kt \
   apps/android/app/src/test/kotlin/org/riot/evidence/sneakerweb/SneakerSpaceBlobMultiPeerTest.kt \
-  apps/android/app/src/androidTest/kotlin/org/riot/evidence/apps/AppRuntimeEndToEndTest.kt
+  apps/android/app/src/androidTest/kotlin/org/riot/evidence/apps/AppRuntimeEndToEndTest.kt \
+  apps/android/app/src/androidTest/kotlin/org/riot/evidence/apps/AppPersistenceRestartTest.kt
 git commit -m "feat(apps): host public SneakerWeb collection bindings"
 ```
 
@@ -1794,6 +1937,25 @@ P0-B guarantees the Newswire owners exist before this task. All 12 cells must
 be registered and pass in Task 12; Task 13 independently rejects any missing,
 ignored, or skipped matrix cell.
 
+Add fake-clock/scheduler batch tests in both native stacks here, where the
+coordinator exists. Accept at most 32 reviewed community destinations, keep at
+most four `SpaceSneakerShareTask` children active, and leave the remainder in
+an ordered cancellable queue with zero reservation, signature, or record before
+start. Cover 0/1/4/5/31/32/33 destinations, cancel queued child, cancel all,
+active completion starting exactly one next child, active failure starting the
+next child, final-handle drop, and late callback suppression.
+
+For every failed child, preserve its prepared lease, review fields, focus, and
+original idempotency key through 14:59.999 of idle time and expire them at
+exactly 15:00.000. Only a successful lease read or explicit Retry refreshes the
+idle clock; screen observation and accessibility announcements do not. Test
+retry before expiry, expiry racing retry/cancel, app background/foreground,
+process death/startup reconciliation, and per-child expiry without disturbing
+active or queued siblings. Process death releases the lease and reconstructs a
+safe `Preparation interrupted` review rather than pretending the old timer
+survived. Expiry releases reservations and requires fresh preparation; it never
+silently posts or duplicates a prior unknown commit.
+
 - [ ] **Step 2: Build the Directory source and packed artifacts**
 
 The source uses framework-free HTML/CSS/JS and the existing shared token/accessibility
@@ -1807,10 +1969,19 @@ drift hashes.
 - [ ] **Step 3: Implement multi-community native orchestration**
 
 The initial destination picker lists writable public spaces with an enabled
-Directory only. Generate one 128-bit idempotency key per space. Each
+Directory only and rejects a 33rd reviewed destination before creating any
+child. Generate one 128-bit idempotency key per space. Start at most four child
+tasks and keep the rest in stable review order in a native cancellable queue;
+queued rows own no core reservation or signing authority until promoted. Each
 child atomically commits its carrier and Directory binding, reporting
 `Shared`, `Needs retry`, or `No longer allowed`. Retry reuses the same key and
 cannot duplicate. One community failure never rolls back another.
+
+A failed row retains the prepared lease and review state only for its visible
+15-minute idle lease. Show the remaining lifetime, release it exactly on expiry,
+and route post-expiry Retry through fresh preparation while preserving safe
+review text. Cancelling a queued row or dropping the batch never starts it;
+dropping an active child uses the shared idempotent task-drop contract.
 
 An organizer enabling Directory returns to the preserved share selection and
 destination row; a member sees `Ask an organizer to turn on Sneaker Directory.`
@@ -1945,8 +2116,11 @@ matrix cells are blocking dependencies.
 - Read: `.coverage-thresholds.json`
 - Read: `scripts/{coverage-gate,test-coverage-gate}.sh`
 - Create: `scripts/verify-xcresult-tests.sh`
+- Create: `scripts/test-verify-xcresult-tests.sh`
 - Create: `scripts/android-sneakerweb-test-gate.sh`
+- Create: `scripts/test-android-sneakerweb-test-gate.sh`
 - Create: `scripts/sneakerweb-physical-rehearsal.sh`
+- Create: `scripts/test-sneakerweb-physical-rehearsal.sh`
 - Modify: `docs/product/product-brief.md`
 - Modify: `README.md`
 - Modify: `SERVICE-INVENTORY.md`
@@ -1955,36 +2129,53 @@ matrix cells are blocking dependencies.
 - [ ] **Step 1: Write RED native/rehearsal gate self-tests**
 
 Task 0 already froze and exercised the combined coverage wrapper before any
-production work; rerun its self-test and real gate here. Test that iOS and
-Android gate parsers delete old outputs, record run start, reject stale,
-missing, malformed, zero-test, and any ignored/skipped required result, and require every
-named SneakerWeb suite.
+production work; rerun its self-test and real gate here. The iOS helper has a
+two-phase `prepare`/`verify` contract: `prepare` deletes the named result bundle,
+creates an unguessable run token plus monotonic start record outside that
+bundle, and returns the token; only then may `xcodebuild` run. `verify` requires
+that token, consumes it once, and rejects stale, pre-start, missing, malformed,
+zero-test, ignored, or skipped required results. Tests cover token replay,
+wrong bundle/token, clock equality, failed build with no result, and an old
+bundle planted between prepare and build. The Android runner owns the same
+delete/start/run/verify sequence around Gradle. Require every named SneakerWeb
+suite.
 
 The iOS core result must positively execute `SneakerWebCoreTests`,
 `SneakerWebInteropActivationTests`,
 `SneakerLibraryViewModelTests`, `SneakerAccessibilityContractTests`,
+`SneakerDiagnosticExportTests`,
 `SneakerWebViewIsolationTests`,
 `SneakerShareTaskTests`, `SneakerNearbyTransferTests`,
 `SneakerCarrierCardTests`, `SneakerSpaceBlobMultiPeerTests`,
-`AppSyncReplicationTests`, `SneakerDirectoryPermissionTests`,
+`AppSyncReplicationTests`, `AppRepositoryTests`, `AppRuntimeHostTests`,
+`DirectoryRepositoryTests`, `DirectoryStorefrontTests`, `SneakerDirectoryPermissionTests`,
 `SneakerShareMatrixTests`, and `SneakerNewswireAttachmentTests`; the UI result
 must execute `SneakerDocumentUITests`, `SneakerNearbyFlowUITests`, and
 `SneakerDirectoryPermissionUITests`, plus
 `SneakerSystemShareReachabilityTests` in its configured native test target.
 Android unit results must execute
 `SneakerLibraryViewModelTest`, `SneakerAccessibilityContractTest`,
+`SneakerDiagnosticExportTest`,
 `SneakerShareCoordinatorTest`,
 `SneakerNearbyTransferTest`, `SneakerCarrierCardTest`,
 `SneakerSpaceBlobMultiPeerTest`,
+`AppBundleCodecTest`, `RiotJsBridgeTest`, `InstalledAppsStoreTest`,
+`DirectoryControllerTest`,
 `SneakerDirectoryPermissionTest`, `SneakerShareMatrixTest`, and
 `SneakerNewswireAttachmentTest`; connected
 results must execute `SneakerWebInteropActivationTest` and
 `SneakerSystemShareReachabilityTest`,
 `SneakerDocumentOpenTest`, `SneakerWebViewIsolationTest`, and
 `SneakerNearbyFlowTest`, `SneakerCommunityShareTest`, and
-`AppRuntimeEndToEndTest`. The macOS gate must freshly test `RiotKit-macOS` and
+`AppRuntimeEndToEndTest`, and `AppPersistenceRestartTest`. The macOS gate must freshly test `RiotKit-macOS` and
 build `Riot-macOS` while confirming no `.snk` declaration or SneakerWeb route
 appears in the product.
+
+The physical-rehearsal gate self-test rejects missing or same-platform-only
+system-file evidence. It requires distinct `ios_to_android_system_file` and
+`android_to_ios_system_file` records, each with sender export digest, receiver
+open digest, exact full-domain-set digest, named-page open, device/OS, and
+fresh timestamp.
 
 - [ ] **Step 2: Reconfirm the frozen combined coverage command**
 
@@ -2013,40 +2204,54 @@ cargo xtask validate-contracts
 cargo test --workspace --all-features
 scripts/test-coverage-gate.sh
 scripts/coverage-gate.sh
+scripts/test-verify-xcresult-tests.sh
+scripts/test-android-sneakerweb-test-gate.sh
+scripts/test-sneakerweb-physical-rehearsal.sh
 cargo fmt --all -- --check
 cargo clippy --workspace --all-features -- -D warnings
 scripts/conference/build-native-core.sh
 scripts/conference/test-native-core-package.sh
+IOS_CORE_RUN=$(scripts/verify-xcresult-tests.sh prepare build/snk-riotkit.xcresult)
 xcodebuild test -project apps/ios/Riot.xcodeproj -scheme RiotKit \
   -destination 'platform=iOS Simulator,name=iPhone 17 Pro,OS=26.2,arch=arm64' \
   -enableCodeCoverage YES -resultBundlePath build/snk-riotkit.xcresult
+IOS_UI_RUN=$(scripts/verify-xcresult-tests.sh prepare build/snk-riot.xcresult)
 xcodebuild test -project apps/ios/Riot.xcodeproj -scheme Riot \
   -destination 'platform=iOS Simulator,name=iPhone 17 Pro,OS=26.2,arch=arm64' \
   -enableCodeCoverage YES -resultBundlePath build/snk-riot.xcresult
+MAC_CORE_RUN=$(scripts/verify-xcresult-tests.sh prepare build/snk-riotkit-macos.xcresult)
 xcodebuild test -project apps/macos/Riot.xcodeproj -scheme RiotKit-macOS \
   -destination 'platform=macOS' -resultBundlePath build/snk-riotkit-macos.xcresult
 xcodebuild build -project apps/macos/Riot.xcodeproj -scheme Riot-macOS \
   -destination 'platform=macOS'
-scripts/verify-xcresult-tests.sh build/snk-riotkit.xcresult --require-tests \
+scripts/verify-xcresult-tests.sh verify build/snk-riotkit.xcresult \
+  --run-token "$IOS_CORE_RUN" --require-tests \
   --require-suite SneakerWebCoreTests \
   --require-suite SneakerWebInteropActivationTests \
   --require-suite SneakerLibraryViewModelTests \
   --require-suite SneakerAccessibilityContractTests \
+  --require-suite SneakerDiagnosticExportTests \
   --require-suite SneakerWebViewIsolationTests \
   --require-suite SneakerShareTaskTests \
   --require-suite SneakerNearbyTransferTests \
   --require-suite SneakerCarrierCardTests \
   --require-suite SneakerSpaceBlobMultiPeerTests \
   --require-suite AppSyncReplicationTests \
+  --require-suite AppRepositoryTests \
+  --require-suite AppRuntimeHostTests \
+  --require-suite DirectoryRepositoryTests \
+  --require-suite DirectoryStorefrontTests \
   --require-suite SneakerDirectoryPermissionTests \
   --require-suite SneakerShareMatrixTests \
   --require-suite SneakerNewswireAttachmentTests \
   --require-suite SneakerSystemShareReachabilityTests
-scripts/verify-xcresult-tests.sh build/snk-riot.xcresult --require-tests \
+scripts/verify-xcresult-tests.sh verify build/snk-riot.xcresult \
+  --run-token "$IOS_UI_RUN" --require-tests \
   --require-suite SneakerDocumentUITests \
   --require-suite SneakerNearbyFlowUITests \
   --require-suite SneakerDirectoryPermissionUITests
-scripts/verify-xcresult-tests.sh build/snk-riotkit-macos.xcresult --require-tests
+scripts/verify-xcresult-tests.sh verify build/snk-riotkit-macos.xcresult \
+  --run-token "$MAC_CORE_RUN" --require-tests
 ! /usr/libexec/PlistBuddy -c 'Print :CFBundleDocumentTypes' apps/macos/Riot/Info.plist 2>/dev/null | rg -i 'snk|sneaker'
 ! rg -n 'SneakerLibraryView|SneakerReaderView|\.snk' apps/macos/Riot
 (cd apps/android && ../../scripts/android-sneakerweb-test-gate.sh)
@@ -2080,6 +2285,17 @@ destination, sender result, receiver/projection result, resolved full-domain-set
 digest, blocked exclusions, retry/idempotency result, device/OS, and timestamp.
 All 12 rows must be present and digest-equal before the gate can pass.
 
+The system-file column additionally requires two physical cross-client
+handoffs. iOS exports the standard `.snk` through its real system share sheet
+to a Files/provider artifact that Android receives through its declared
+VIEW/OPENABLE intent; Android exports through its real share sheet to a
+provider artifact that iOS receives through its registered document-open path.
+Each direction uses a fresh 100 MiB multi-site fixture, records the exported
+file digest and frozen full-domain-set digest, proves the receiver creates the
+expected Received record, opens a named page offline, and preserves exact
+domains/signatures/payload digests. Simulator-only, seam-only, same-platform,
+or one-direction evidence cannot satisfy this gate.
+
 The nearby rows additionally require four live cross-client transcripts:
 iOS sender → Android receiver and Android sender → iOS receiver over preferred
 local TCP, then both directions with local TCP disabled so BLE fallback is
@@ -2097,8 +2313,10 @@ Update the service inventory with the new core modules, FFI task objects,
 native hosts, and Directory app.
 
 ```sh
-git add scripts/verify-xcresult-tests.sh scripts/android-sneakerweb-test-gate.sh \
-  scripts/sneakerweb-physical-rehearsal.sh docs/product/product-brief.md README.md \
+git add scripts/verify-xcresult-tests.sh scripts/test-verify-xcresult-tests.sh \
+  scripts/android-sneakerweb-test-gate.sh scripts/test-android-sneakerweb-test-gate.sh \
+  scripts/sneakerweb-physical-rehearsal.sh scripts/test-sneakerweb-physical-rehearsal.sh \
+  docs/product/product-brief.md README.md \
   SERVICE-INVENTORY.md docs/quality/2026-07-13-sneakerweb-release-evidence.md
 git diff --cached --check
 git commit -m "test(sneakerweb): record mobile release evidence"
@@ -2113,15 +2331,16 @@ git commit -m "test(sneakerweb): record mobile release evidence"
 | Browse offline with safe fallback and isolated renderer | 8 |
 | IDs/keys hidden by default, complete in Details | 3, 6, 7 |
 | Sites, Received, blocked sites, storage, undo/removal | 3, 6, 7 |
+| Confirmed redacted diagnostic export and ordinary-log boundary | 4–7, 13 |
 | Select/share one, many, or a Received collection | 4, 9 |
-| Standard system file sharing | 9 |
+| Standard system file sharing and bidirectional physical handoff | 9, 13 |
 | Direct nearby sharing without a shared community | 10 |
 | On-demand public-space blobs and carrier attribution | 4, 10, 11 |
 | Ordinary signed Sneaker Directory miniapp | 11, 12 |
 | Newswire attachment using ordinary editorial semantics | 12, 13 dependency gate |
 | Multiple public communities and duplicate-free retry | 11, 12 |
 | App cannot access bytes/raw IDs/global library/cross-space data | 11, 12 |
-| Block revokes reads/exports/transfers | 3, 4, 8, 9, 10 |
+| Block revokes reads/exports/direct and carrier transfers | 3, 4, 8–11 |
 | iOS and Android parity; macOS excluded | 6–10, 12, 13 |
 | Accessibility, performance, cohort, physical-device evidence | 6–10, 12, 13 |
 
@@ -2145,3 +2364,50 @@ Do not mark this plan complete, create a PR, or claim SneakerWeb support until
 Task 13 passes every automated and physical gate against the exact landed
 dependency graph. If file/open/direct/Directory increments are merged earlier,
 name their delivered subset precisely and keep the remaining tasks open.
+
+## Plan Review Gate: ESCALATION REQUIRED (3/3 iterations exhausted)
+
+### Remaining blocking issues
+
+#### Feasibility
+
+- Task 1's bare Android-target Cargo commands do not supply the NDK `CC_*` and
+  `AR_*` environment required by `libsqlite3-sys`; P0-A's native build script
+  supplies those variables, while `.cargo/config.toml` supplies only Rust
+  linkers.
+- Xcode 26.2 WebKit does not expose a dedicated per-`WKWebView` process, a
+  per-view 64 MiB memory cap, or reliable process termination. Task 8 therefore
+  cannot prove the specified iOS preview-process isolation with its selected
+  API.
+
+#### Completeness
+
+- Task 12 initially filters community candidates by Directory availability and
+  does not explicitly include/test a writable public Newswire-only community.
+- Task 11 does not compare the signed carrier's ordered domain set with the
+  completed valid `.snk` domain set before decode/open.
+- Tasks 6/7 omit the exact accessibility collision behavior: deterministic
+  full-key phrase, visual phrase only for duplicate titles, and stable
+  `item N of M` fallback when both title and phrase collide.
+- Task 13 does not require the 100 MiB performance fixture to contain 1,000
+  entries, report median and worst case, or record the UX/transport revision
+  required after a cohort threshold failure.
+
+#### Scope & Alignment
+
+- None; the final scope reviewer passed.
+
+### Iteration history
+
+| Iteration | Feasibility | Completeness | Scope & Alignment |
+| --- | --- | --- | --- |
+| 1 | PASS | FAIL | FAIL |
+| 2 | FAIL | FAIL | PASS |
+| 3 | FAIL | FAIL | PASS |
+
+### User decision required
+
+1. **Override** — proceed as-is and accept the six remaining issues as known risks.
+2. **Revise** — authorize a new manual revision/review cycle.
+3. **Simplify** — reduce scope to remove the disputed contracts.
+4. **Cancel** — abandon this plan and start fresh.

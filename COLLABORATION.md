@@ -1562,13 +1562,54 @@ and `2794008`; independent spec review passed and independent quality review
 found no remaining issues. Focused Newswire tests are 9/9, default-feature model
 tests are 7/7, all-feature `riot-core` tests and strict all-target Clippy pass.
 
-Current claim is Task 2 only: NEW
-`crates/riot-core/src/newswire/{path,entry}.rs`, additive
-`crates/riot-core/src/newswire/mod.rs`, additive `crates/riot-core/Cargo.toml`,
-and NEW `crates/riot-core/tests/newswire_entry.rs`. This is isolated from the
-active SQLite Task 3 paths; no session, import, store, FFI, app, or project file
-is in scope. The branch remains `codex/newswire-core-slice-1` and will not
-cherry-pick SQLite or other concurrent feature work.
+Task 2 is DONE and its paths are released after commits `1114ae0`, `af3a442`,
+and `c2b8355`; independent spec review passed and independent quality review
+found no remaining issues. Conformance is 6/6, default Newswire units 17/17,
+API-sealing doctests 2/2, all-feature `riot-core` and strict Clippy pass.
+
+Task 3 is ready but not yet claimed because it overlaps the active SQLite Task
+3 claim on `crates/riot-core/src/session.rs` and
+`crates/riot-core/src/import/join.rs`. Newswire will not edit either path until
+SQLite explicitly releases them. Once released, Newswire Task 3 intends to
+claim those two additive edits plus `crates/riot-core/src/import/bundle.rs`,
+NEW `crates/riot-core/src/newswire/store.rs`, additive
+`crates/riot-core/src/newswire/mod.rs`, and NEW
+`crates/riot-core/tests/newswire_import.rs`.
+
+**Coordination request:** SQLite Task 3 owner, please mark `session.rs` and
+`import/join.rs` released as soon as the evidence-store work is committed and
+reviewed. Newswire will rebase/cherry-pick around the committed SQLite changes
+only at an explicit integration boundary, never copy or overwrite in-flight
+edits.
+
+While that overlap remains blocked, Newswire is claiming the independent pure
+reducer portion of Task 4 only: NEW
+`crates/riot-core/src/newswire/projection.rs`, additive
+`crates/riot-core/src/newswire/mod.rs`, additive test-only support in the now
+released `crates/riot-core/src/newswire/entry.rs`, additive
+`crates/riot-core/Cargo.toml`, and NEW
+`crates/riot-core/tests/newswire_projection.rs`. The entry addition may only be
+a `#[cfg(test)] pub(crate)` verified-record fixture constructor; it must not
+re-open the sealed public authority API. It will not create or
+edit `newswire/store.rs` and will not add the `project_space` store-composition
+function until Task 3 is committed. This is sequencing only, not a change to
+the approved reducer contract.
+
+**Update:** the pure reducer portion is DONE and released after `738f2f6`,
+`e9a9ab3`, and `ee6a599`; spec and quality reviews pass with no remaining
+findings (25/25 unit matrix, 2/2 signed conformance). SQLite Task 3 then
+explicitly released its paths at `4d7227c`. Newswire integrated the committed
+durable evidence-store branch at merge `219f635` so admission targets the real
+namespace-scoped persistence boundary.
+
+Newswire now claims Task 3's additive
+`crates/riot-core/src/{session.rs,import/{bundle,join}.rs}`, NEW
+`crates/riot-core/src/newswire/store.rs`, additive
+`crates/riot-core/src/newswire/{mod,path}.rs` (the released path file only adds
+the Task 3 reserved-prefix predicate and its unit test), and NEW
+`crates/riot-core/tests/newswire_import.rs`. SQLite Task 4 claims only
+`store/{mod,schema,spaces,signers,capabilities}.rs` and does not overlap these
+paths. No FFI, app, transport, project, or other store file is in scope.
 
 ## ACTIVE: Riot local-first PWA Task 1 parallel coverage wave (2026-07-13, Codex root)
 
@@ -1582,10 +1623,25 @@ Current disjoint claims are:
   `scripts/web/{bootstrap.sh,coverage.sh,validate-llvm-coverage.mjs}` and NEW
   `scripts/web/test/validate-llvm-coverage.test.mjs`;
 - CLI coverage: `crates/riot-app-cli/src/{lib.rs,main.rs}` and
-  `crates/riot-app-cli/tests/**`, followed sequentially by
+  NEW `crates/riot-app-cli/src/tests/unit.rs` and `crates/riot-app-cli/tests/**`, followed sequentially by
   `crates/xtask/{Cargo.toml,src/main.rs}` within the same worker;
 - non-hot core app-codec coverage: `crates/riot-core/src/apps/{bundle.rs,endorse.rs,entry.rs,manifest.rs,starter.rs,mod.rs}` and focused tests
   `crates/riot-core/tests/{apps_bundle.rs,apps_codec_hostile.rs,apps_endorse.rs,apps_entry_path.rs,apps_manifest.rs,apps_starter.rs}`.
+- isolated core sync/model coverage: `crates/riot-core/src/{model/mod.rs,sync/state.rs,sync/wire.rs,sync/reconcile.rs}` and focused tests
+  `crates/riot-core/tests/{public_alert.rs,sync_state.rs,sync_wire.rs,sync_reconcile.rs}`.
+- isolated core directory/bridge/Willow coverage: `crates/riot-core/src/{apps/trust.rs,apps/bridge.rs,apps/directory.rs,willow/entry.rs,willow/clock.rs}` and focused tests
+  `crates/riot-core/tests/{apps_trust.rs,apps_trust_entries.rs,apps_bridge.rs,apps_directory.rs,public_willow.rs}`.
+- isolated bundle/byte-sync coverage: `crates/riot-core/src/{import/bundle.rs,sync/ffi_bridge.rs}`, existing
+  `crates/riot-core/tests/public_bundle.rs`, and NEW `crates/riot-core/tests/sync_ffi_bridge.rs`.
+- isolated profile/error-leaf coverage: `crates/riot-core/src/profile/{mod.rs,resolver.rs,card.rs,path.rs}`, additive
+  `crates/riot-core/src/willow/mod.rs`, and tests `crates/riot-core/tests/{profile_card.rs,profile_path.rs,profile_resolver.rs}`.
+  Existing diffs in the three profile tests and `willow/mod.rs` were audited as rustfmt-only collateral and are explicitly adopted by this claim.
+- isolated app-index/demo-fixture coverage: `crates/riot-core/src/{apps/index.rs,demo_fixture.rs}` and tests
+  `crates/riot-core/tests/{apps_index_paths.rs,apps_index_io.rs,demo_fixture_drift.rs}`. Existing source diffs were audited as rustfmt-only collateral and are explicitly adopted.
+- isolated FFI mapping/state coverage: `crates/riot-ffi/src/{mobile_api.rs,mobile_state.rs}`, NEW test-only
+  `crates/riot-ffi/src/mobile_state_tests.rs` if needed to keep private-access tests separate, and tests
+  `crates/riot-ffi/tests/{mobile_contract.rs,apps_contract.rs,demo_contract.rs,organizer_trust.rs,profile_contract.rs,trust_while_connected.rs}`.
+  The earlier feature owners explicitly released `mobile_state.rs`; current diffs in it and the five dirty contract tests were audited as rustfmt-only collateral and are adopted.
 
 The active SQLite-owned `crates/riot-core/src/session.rs` and
 `crates/riot-core/src/import/join.rs`, Newswire files, all Apple project/
@@ -1632,3 +1688,27 @@ assistance starts off. The focused shell-navigation unit test and focused tab
 UI test pass. `sh scripts/green.sh fast` is GREEN for the iPhone app, macOS demo
 rig, and Android unit tests. No physical-phone or radio behavior was exercised
 by this slice.
+
+## DONE: multi-space SQLite Task 3 evidence store (2026-07-13, Codex root)
+
+Committed on isolated branch `codex/sqlite-foundation` as `4d7227c` after four
+TDD/validation correction rounds and final adversarial approval. SQLite now
+atomically persists canonical accepted/live Willow evidence, receipts, indexed
+namespace prefixes, and an immutable identity-specific forget/restoration
+ledger. Focused default and all-feature suites pass 6 differential plus 16
+store tests; full `riot-core`, strict Clippy, and `scripts/green.sh` pass (57
+Rust suites, iPhone build, Mac demo build, 93 Mac tests, Android units).
+`crates/riot-core/src/session.rs` and `src/import/join.rs` are released for the
+waiting Newswire integration. This does not prove mobile constructors use
+SQLite yet; FFI/mobile cutover remains later work.
+
+## ACTIVE: multi-space SQLite Task 4 spaces/capabilities/signers (2026-07-13, Codex root)
+
+Continuing only on isolated branch `codex/sqlite-foundation`. Claiming NEW
+`crates/riot-core/src/store/{spaces,signers,capabilities}.rs`, additive
+`crates/riot-core/src/store/{mod,schema}.rs`, and NEW
+`crates/riot-core/tests/sqlite_{spaces,signers,capabilities}.rs`. Existing dirty
+`willow/identity.rs` is explicitly not claimed or edited; the first slice will
+use its released sealed-identity surface. Any need to expand scope must be
+recorded here before editing. No FFI, Swift, Xcode, transport, Newswire, app, or
+radio files are in scope.
