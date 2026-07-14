@@ -36,6 +36,9 @@ zeroize = "=1.9.0"
 # Mature RustCrypto AEAD pin for versioned local signer-state sealing. 0.11.0
 # is newer, but 0.10.1 is the established stable line used for this boundary.
 chacha20poly1305 = { version = "=0.10.1", default-features = false, features = ["alloc"] }
+# Physical database for the multi-space store. Bundling fixes SQLite and JSON
+# behavior across iOS, Android, and macOS instead of inheriting each OS build.
+rusqlite = { version = "=0.40.1", default-features = false, features = ["backup", "blob", "bundled", "hooks", "limits", "serde_json"] }
 
 # Evidence profile must unwind: the FFI boundary catches panics and
 # quarantines the session; abort would make that contract impossible.

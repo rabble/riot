@@ -10,10 +10,10 @@ publish = false
 # riot-ffi never enables it, and `cargo xtask validate-contracts` fails if it
 # appears in the riot-ffi feature closure.
 #
-# It pulls in serde_json for exactly one reason: `demo_fixture` reads the demo
-# space's human-editable `content.json`. serde_json is therefore optional and
-# reachable ONLY through this feature — the release riot-ffi closure, which never
-# enables `conformance`, does not gain a JSON parser.
+# It enables riot-core's direct serde_json dependency for exactly one reason:
+# `demo_fixture` reads the demo space's human-editable `content.json`.
+# rusqlite independently enables its serde_json integration in the production
+# graph for document projections; this feature gates only the demo-fixture API.
 conformance = ["dep:serde_json"]
 
 [dependencies]
@@ -29,6 +29,9 @@ rand_core = { workspace = true }
 hifitime = { workspace = true }
 zeroize = { workspace = true }
 chacha20poly1305 = { workspace = true }
+# This is a production dependency so every native target compiles the same
+# bundled SQLite before the store lifecycle and schema are introduced.
+rusqlite = { workspace = true }
 
 [dev-dependencies]
 willow25 = { workspace = true, features = ["dev"] }
@@ -46,6 +49,14 @@ required-features = ["conformance"]
 
 [[test]]
 name = "public_bundle"
+required-features = ["conformance"]
+
+[[test]]
+name = "newswire_entry"
+required-features = ["conformance"]
+
+[[test]]
+name = "newswire_projection"
 required-features = ["conformance"]
 
 [[test]]

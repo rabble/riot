@@ -439,7 +439,7 @@ fn read_bytes_field(d: &mut Decoder<'_>, expected_key: u8) -> Result<Vec<u8>, Bu
 /// Full component verification of one isolated frame, in the frozen order:
 /// canonical Entry → canonical WriteCapability → 64-byte signature →
 /// payload length/corrected WILLIAM3 → Meadowcap authorization (communal,
-/// zero-delegation only) → Riot alert schema.
+/// zero-delegation only) → reserved typed schema or Riot alert schema.
 fn verify_frame(frame: &BundleItemFrame) -> Result<ValidItem, BundleDiagnostic> {
     let entry = decode_entry_canonic(&frame.entry_bytes).map_err(|_| BundleDiagnostic {
         code: DiagnosticCode::NonCanonicalEntry,
@@ -527,10 +527,11 @@ fn verify_frame(frame: &BundleItemFrame) -> Result<ValidItem, BundleDiagnostic> 
     // `profile::path::classify_profile_path`) must carry a canonical
     // `ProfileCard`; card-slot ownership is likewise bound at `inspect`.
     //
-    // Both `app-index/` and `profile/` are RESERVED prefixes: a path under
-    // either that is not exactly a recognized slot shape is UnsupportedSchema
-    // outright and must never fall through to the alert schema check below —
-    // otherwise a valid alert payload could rescue a malformed reserved path.
+    // `app-index/`, `profile/`, and `newswire/v1` are RESERVED prefixes: a
+    // path under one that is not exactly a recognized slot shape is
+    // UnsupportedSchema outright and must never fall through to the alert
+    // schema check below — otherwise a valid alert payload could rescue a
+    // malformed reserved path.
     // Admission stays policy-free: shape and schema only (and slot ownership
     // at `inspect`), never whether a name/marker is "allowed".
     // Everything else is UnsupportedSchema.
@@ -555,29 +556,35 @@ fn verify_frame(frame: &BundleItemFrame) -> Result<ValidItem, BundleDiagnostic> 
                     .unwrap_or(false)
             }
             None => {
-                // Reaching here under `apps/` or `app-index/` means the path
-                // is malformed for its own family (a valid one would have been
-                // claimed above). Both are RESERVED prefixes, so refuse them
-                // outright — otherwise a valid alert payload rescues a
-                // malformed reserved path and lands an "alert" at a path no
-                // alert can own. `apps/` was previously missing from this rule.
-                let is_malformed_reserved_path =
-                    entry.path().components().next().is_some_and(|component| {
-                        let component = component.as_ref();
-                        component == crate::apps::index::APP_INDEX_COMPONENT
-                            || component == crate::apps::entry::APPS_COMPONENT
-                    });
-                if is_malformed_reserved_path {
-                    false
-                } else if crate::profile::path::is_profile_prefixed(entry.path()) {
-                    // Reserved prefix: only the exact card slot carrying a
-                    // canonical card payload is admissible. A malformed
-                    // profile path can NEVER fall through to the alert schema
-                    // below — otherwise a valid alert payload would rescue it.
-                    crate::profile::path::classify_profile_path(entry.path()).is_some()
-                        && crate::profile::card::decode_profile_card(&frame.payload_bytes).is_ok()
+                if crate::newswire::is_newswire_prefix(entry.path()) {
+                    crate::newswire::inspect_verified_components(&entry, &frame.payload_bytes)
+                        .is_ok()
                 } else {
-                    crate::model::decode_alert(&frame.payload_bytes).is_ok()
+                    // Reaching here under `apps/` or `app-index/` means the
+                    // path is malformed for its own family (a valid one would
+                    // have been claimed above). Both are RESERVED prefixes,
+                    // so refuse them outright — otherwise a valid alert
+                    // payload rescues a malformed reserved path and lands an
+                    // "alert" at a path no alert can own.
+                    let is_malformed_reserved_path =
+                        entry.path().components().next().is_some_and(|component| {
+                            let component = component.as_ref();
+                            component == crate::apps::index::APP_INDEX_COMPONENT
+                                || component == crate::apps::entry::APPS_COMPONENT
+                        });
+                    if is_malformed_reserved_path {
+                        false
+                    } else if crate::profile::path::is_profile_prefixed(entry.path()) {
+                        // Reserved prefix: only the exact card slot carrying a
+                        // canonical card payload is admissible. A malformed
+                        // profile path can NEVER fall through to the alert
+                        // schema below.
+                        crate::profile::path::classify_profile_path(entry.path()).is_some()
+                            && crate::profile::card::decode_profile_card(&frame.payload_bytes)
+                                .is_ok()
+                    } else {
+                        crate::model::decode_alert(&frame.payload_bytes).is_ok()
+                    }
                 }
             }
         }

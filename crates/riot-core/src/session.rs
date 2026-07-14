@@ -15,6 +15,7 @@ use crate::import::join::{
     plan_join_with_payloads, JoinEffect, JoinState, STORE_CHARGE_ENTRY_BYTES,
 };
 use crate::model::decode_alert;
+use crate::store::evidence::{AcceptedEvidence, EvidenceMutation, EvidenceRepository};
 use crate::willow::{
     alert_entry_path_matches_payload, decode_capability_canonic, decode_entry_canonic,
     AuthorisationToken, EntryId,
@@ -270,6 +271,8 @@ struct VerifiedEntry {
     /// preview owns the allocation and plans share it immutably, so the
     /// preview-output budget charges these bytes exactly once.
     payload: Option<Arc<[u8]>>,
+    capability_bytes: Arc<[u8]>,
+    signature_bytes: [u8; 64],
 }
 
 struct PreviewState {
@@ -310,6 +313,7 @@ struct SessionState {
     /// budget bounds this vector at `MAX_PLANS_PER_PREVIEW`.
     plan_tombstones: Vec<PlanTombstone>,
     next_id: u64,
+    evidence_repository: EvidenceRepository,
 }
 
 impl SessionState {
@@ -352,6 +356,16 @@ impl RiotSession {
     /// Opens a session. Phase 0A needs no configuration; a fuller build would
     /// take a `CoreConfig` and could fail on entropy.
     pub fn open() -> Result<Self, SessionError> {
+        Self::open_with_repository(EvidenceRepository::memory())
+    }
+
+    /// Opens a session whose accepted/live evidence authority is the managed
+    /// SQLite database. No history replay is performed by the caller.
+    pub fn open_sqlite(database: crate::store::RiotDatabase) -> Result<Self, SessionError> {
+        Self::open_with_repository(EvidenceRepository::sqlite(database))
+    }
+
+    fn open_with_repository(evidence_repository: EvidenceRepository) -> Result<Self, SessionError> {
         // Deterministic per-process session id from a monotonic counter kept
         // behind the arbiter; distinct sessions get distinct ids.
         static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
@@ -366,6 +380,7 @@ impl RiotSession {
                 plan: None,
                 plan_tombstones: Vec::new(),
                 next_id: 0,
+                evidence_repository,
             })),
         })
     }
@@ -379,15 +394,16 @@ impl RiotSession {
             return Err(SessionError::SessionLimit);
         }
         let store_id = st.alloc_id();
+        let snapshot = st.evidence_repository.load()?;
         st.store = Some(StoreState {
             store_id,
-            generation: 0,
-            join: JoinState::new(),
-            receipts: Vec::new(),
-            first_receipt: Vec::new(),
-            next_receipt_id: 1,
-            retained_receipt_charge_bytes: 0,
-            seen_namespaces: Vec::new(),
+            generation: snapshot.generation,
+            join: snapshot.join,
+            receipts: snapshot.receipts,
+            first_receipt: snapshot.first_receipt,
+            next_receipt_id: snapshot.next_receipt_id,
+            retained_receipt_charge_bytes: snapshot.retained_receipt_charge_bytes,
+            seen_namespaces: snapshot.seen_namespaces,
         });
         st.store_closed = false;
         Ok(EvidenceStore {
@@ -456,8 +472,8 @@ impl EvidenceStore {
     }
 
     /// Live entries whose path is prefixed by `prefix`, with their canonical
-    /// ids and retained payload bytes (`Some` for app-data and app-index
-    /// entries).
+    /// ids and retained payload bytes (`Some` for typed consumers that must
+    /// rebuild values from the exact imported payload).
     /// Same typed boundary as `live_entry_ids`; the returned `Entry` carries
     /// the payload digest/length, never signer or capability state.
     pub fn entries_with_prefix(
@@ -472,6 +488,59 @@ impl EvidenceStore {
             .unwrap()
             .join
             .live_entries_with_prefix(prefix))
+    }
+
+    /// Namespace-scoped prefix lookup used by durable multi-space callers.
+    /// The namespace is part of the lookup boundary, not a post-query filter.
+    pub fn entries_with_prefix_in_namespace(
+        &self,
+        namespace_id: &[u8; 32],
+        prefix: &crate::willow::Path,
+    ) -> Result<Vec<crate::import::join::PrefixedEntry>, SessionError> {
+        let st = self.inner.lock().map_err(|_| SessionError::Internal)?;
+        st.require_store(self.store_id)?;
+        if let Some(entries) = st
+            .evidence_repository
+            .entries_with_prefix_in_namespace(namespace_id, prefix)?
+        {
+            return Ok(entries);
+        }
+        Ok(st
+            .store
+            .as_ref()
+            .unwrap()
+            .join
+            .live_entries_with_prefix_in_namespace(namespace_id, prefix))
+    }
+
+    /// Intentionally removes one accepted entry from the live/query view.
+    /// The accepted identity and receipts remain; exact re-import may restore
+    /// it through the ordinary admission pipeline.
+    pub fn forget_entry(&self, entry_id: &EntryId) -> Result<(), SessionError> {
+        let mut st = self.inner.lock().map_err(|_| SessionError::Internal)?;
+        st.require_store(self.store_id)?;
+        let store = st.store.as_ref().unwrap();
+        let mut next_join = store.join.clone();
+        if !next_join.forget_entry(entry_id) {
+            return Err(SessionError::Internal);
+        }
+        let generation = store.generation.saturating_add(1);
+        let mutation = EvidenceMutation {
+            expected_generation: store.generation,
+            generation,
+            next_receipt_id: store.next_receipt_id,
+            retained_receipt_charge_bytes: store.retained_receipt_charge_bytes,
+            accepted: Vec::new(),
+            live: next_join.live_records(),
+            forgotten: next_join.forgotten_ids().to_vec(),
+            receipt: None,
+            disposition_namespaces: Vec::new(),
+        };
+        st.evidence_repository.persist(&mutation)?;
+        let store = st.store.as_mut().unwrap();
+        store.join = next_join;
+        store.generation = generation;
+        Ok(())
     }
 
     pub fn receipt_count(&self) -> Result<usize, SessionError> {
@@ -629,6 +698,13 @@ impl EvidenceStore {
                 let profile_subspace = crate::profile::path::classify_profile_path(
                     willow25::groupings::Keylike::path(authorised.entry()),
                 );
+                let path = willow25::groupings::Keylike::path(authorised.entry());
+                let valid_newswire = crate::newswire::is_newswire_prefix(path)
+                    && crate::newswire::inspect_verified_components(
+                        authorised.entry(),
+                        item.frame.payload_bytes(),
+                    )
+                    .is_ok();
                 let path_matches = if is_app_data {
                     true
                 } else if let Some(slot) = app_index_slot {
@@ -658,6 +734,8 @@ impl EvidenceStore {
                     // someone else's slot.
                     *willow25::groupings::Keylike::subspace_id(authorised.entry()).as_bytes()
                         == subspace_id
+                } else if crate::newswire::is_newswire_prefix(path) {
+                    valid_newswire
                 } else {
                     decode_alert(item.frame.payload_bytes())
                         .ok()
@@ -672,20 +750,21 @@ impl EvidenceStore {
                         .unwrap_or(false)
                 };
                 if path_matches {
-                    // App-data, app-index, and profile payloads are retained
-                    // with the live entry (see `Stored::payload`): apps read
-                    // their values back, the directory scan reads manifests/
-                    // bundles/endorsements/trust markers back, and the profile
-                    // resolver reads display names back. Alert payloads stay
-                    // digest-only.
-                    let retain_payload =
-                        is_app_data || app_index_slot.is_some() || profile_subspace.is_some();
+                    // Typed consumers retain payloads with the live entry (see
+                    // `Stored::payload`) so they can reconstruct values from
+                    // the exact imported bytes. Alert payloads stay digest-only.
+                    let retain_payload = is_app_data
+                        || app_index_slot.is_some()
+                        || profile_subspace.is_some()
+                        || valid_newswire;
                     verified.push(VerifiedEntry {
                         authorised,
                         entry_id: valid.entry_id,
                         entry_bytes_len: item.frame.entry_bytes().len(),
                         payload: retain_payload
                             .then(|| Arc::<[u8]>::from(item.frame.payload_bytes())),
+                        capability_bytes: Arc::<[u8]>::from(item.frame.capability_bytes()),
+                        signature_bytes: sig,
                     });
                 }
             }
@@ -1113,7 +1192,7 @@ impl ImportPlan {
 
         // Commit: one pointer swap installs the new live set, generation,
         // receipt, and first-receipt records.
-        let store = st.store.as_mut().unwrap();
+        let store = st.store.as_ref().unwrap();
         if store.receipts.len() >= MAX_RECEIPTS {
             terminate_plan(&mut st, self.plan_id, PlanTerminal::Consumed);
             return Err(SessionError::StoreFull);
@@ -1172,9 +1251,55 @@ impl ImportPlan {
             terminate_plan(&mut st, self.plan_id, PlanTerminal::Consumed);
             return Err(SessionError::StoreFull);
         }
+
+        let accepted = entries
+            .iter()
+            .zip(join_plan.effects.iter())
+            .filter_map(|(verified, (_, effect))| {
+                if matches!(effect, JoinEffect::AlreadyPresent) {
+                    return None;
+                }
+                let dominated_on_arrival = matches!(effect, JoinEffect::NotLive { .. });
+                Some(AcceptedEvidence {
+                    entry_id: verified.entry_id,
+                    entry_bytes: crate::willow::encode_entry(verified.authorised.entry()),
+                    capability_bytes: verified.capability_bytes.to_vec(),
+                    signature_bytes: verified.signature_bytes,
+                    first_receipt_id: receipt_id,
+                    dominated_on_arrival,
+                })
+            })
+            .collect();
+        let disposition_namespaces = entries
+            .iter()
+            .map(|verified| {
+                use willow25::groupings::Namespaced;
+                *verified.authorised.entry().namespace_id().as_bytes()
+            })
+            .collect();
+        let retained_receipt_charge_bytes = store
+            .retained_receipt_charge_bytes
+            .saturating_add(receipt_charge_delta);
+        let mutation = EvidenceMutation {
+            expected_generation: before_generation,
+            generation: after_generation,
+            next_receipt_id: store.next_receipt_id.saturating_add(1),
+            retained_receipt_charge_bytes,
+            accepted,
+            live: join_plan.next.live_records(),
+            forgotten: join_plan.next.forgotten_ids().to_vec(),
+            receipt: Some(receipt.clone()),
+            disposition_namespaces,
+        };
+        if let Err(error) = st.evidence_repository.persist(&mutation) {
+            terminate_plan(&mut st, self.plan_id, PlanTerminal::Consumed);
+            return Err(error);
+        }
+
+        let store = st.store.as_mut().unwrap();
         store.join = join_plan.next;
         store.generation = after_generation;
-        store.retained_receipt_charge_bytes += receipt_charge_delta;
+        store.retained_receipt_charge_bytes = retained_receipt_charge_bytes;
         store.seen_namespaces.extend(new_namespaces);
         for rec in newly_first {
             if !store.first_receipt.iter().any(|(id, _, _)| *id == rec.0) {

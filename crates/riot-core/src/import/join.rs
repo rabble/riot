@@ -51,11 +51,10 @@ struct Stored {
     entry: Entry,
     entry_bytes: Vec<u8>,
     id: EntryId,
-    /// Payload bytes retained for app-data and app-index entries — apps must
-    /// be able to read their values and directory records back, whereas alert
-    /// payloads are served from the FFI layer's own retained bundles. Charged
-    /// into `live_entry_bytes` (live-only, freed on prune), never into the
-    /// permanent seen-index charge.
+    /// Payload bytes retained for typed consumers that must rebuild values
+    /// from exact imported bytes. Alert payloads are served from the FFI
+    /// layer's own retained bundles. Charged into `live_entry_bytes`
+    /// (live-only, freed on prune), never into the permanent seen-index charge.
     payload: Option<Vec<u8>>,
 }
 
@@ -79,7 +78,7 @@ impl Stored {
 }
 
 /// A live entry matched by a path-prefix query: canonical id, the entry,
-/// and its retained payload bytes (`Some` for app-data and app-index entries).
+/// and its retained payload bytes (`Some` for typed payload consumers).
 pub type PrefixedEntry = (EntryId, Entry, Option<Vec<u8>>);
 
 /// The per-entry outcome of a batch join, keyed by canonical entry id.
@@ -103,6 +102,22 @@ pub struct JoinState {
     live: Vec<Stored>,
     /// Every canonical entry id ever accepted, for AlreadyPresent detection.
     seen: Vec<EntryId>,
+    /// Accepted entries explicitly forgotten locally. Exact re-import may
+    /// restore one; ordinary historical duplicates remain non-live.
+    forgotten: Vec<EntryId>,
+}
+
+pub(crate) struct PersistedJoinEntry {
+    pub(crate) entry_bytes: Vec<u8>,
+    pub(crate) payload: Option<Vec<u8>>,
+    pub(crate) live: bool,
+    pub(crate) forgotten: bool,
+}
+
+pub(crate) struct LiveJoinEntry {
+    pub(crate) entry_id: EntryId,
+    pub(crate) entry_bytes: Vec<u8>,
+    pub(crate) payload: Option<Vec<u8>>,
 }
 
 /// The result of planning a batch join without mutating the pre-state: the
@@ -132,12 +147,28 @@ impl JoinState {
 
     /// Live entries whose path is prefixed by `prefix`, with their retained
     /// payload bytes (`None` for entries whose payload is not retained,
-    /// currently alerts).
+    /// currently alerts and other digest-only consumers).
     pub fn live_entries_with_prefix(&self, prefix: &crate::willow::Path) -> Vec<PrefixedEntry> {
         self.live
             .iter()
             .filter(|s| prefix.is_prefix_of(s.entry.path()))
             .map(|s| (s.id, s.entry.clone(), s.payload.clone()))
+            .collect()
+    }
+
+    pub fn live_entries_with_prefix_in_namespace(
+        &self,
+        namespace_id: &[u8; 32],
+        prefix: &crate::willow::Path,
+    ) -> Vec<PrefixedEntry> {
+        use willow25::groupings::Namespaced;
+        self.live
+            .iter()
+            .filter(|stored| {
+                stored.entry.namespace_id().as_bytes() == namespace_id
+                    && prefix.is_prefix_of(stored.entry.path())
+            })
+            .map(|stored| (stored.id, stored.entry.clone(), stored.payload.clone()))
             .collect()
     }
 }
@@ -149,7 +180,7 @@ pub fn plan_join(pre: &JoinState, batch: Vec<AuthorisedEntry>) -> Result<JoinPla
 }
 
 /// `plan_join`, but each batch item may carry payload bytes to retain with
-/// the live entry (used for app-data and app-index entries; see
+/// the live entry (used by typed consumers that reconstruct from payload; see
 /// `Stored::payload`).
 pub fn plan_join_with_payloads(
     pre: &JoinState,
@@ -173,7 +204,10 @@ pub fn plan_join_with_payloads(
 
     let mut union: Vec<Stored> = pre.live.clone();
     for candidate in &batch {
-        if !union.iter().any(|s| s.id == candidate.id) {
+        if pre.forgotten.contains(&candidate.id) {
+            union.retain(|stored| stored.id != candidate.id);
+            union.push(candidate.clone());
+        } else if !pre.seen.contains(&candidate.id) && !union.iter().any(|s| s.id == candidate.id) {
             union.push(candidate.clone());
         }
     }
@@ -195,7 +229,18 @@ pub fn plan_join_with_payloads(
     let effects = batch
         .iter()
         .map(|item| {
-            let effect = if pre.seen.contains(&item.id) {
+            let effect = if pre.forgotten.contains(&item.id) && final_ids.contains(&item.id) {
+                let pruned = checked_reference_ids(pre_live.iter().copied().filter(|pid| {
+                    union
+                        .iter()
+                        .find(|stored| &stored.id == pid)
+                        .map(|victim| item.prunes(victim))
+                        .unwrap_or(false)
+                }))?;
+                JoinEffect::Winner {
+                    pruned_entry_ids: pruned,
+                }
+            } else if pre.seen.contains(&item.id) {
                 JoinEffect::AlreadyPresent
             } else if final_ids.contains(&item.id) {
                 let pruned = checked_reference_ids(pre_live.iter().copied().filter(|pid| {
@@ -227,6 +272,12 @@ pub fn plan_join_with_payloads(
         next: JoinState {
             live: final_live,
             seen: next_seen,
+            forgotten: pre
+                .forgotten
+                .iter()
+                .copied()
+                .filter(|id| !final_ids.contains(id) || !batch.iter().any(|item| item.id == *id))
+                .collect(),
         },
         effects,
     })
@@ -252,6 +303,57 @@ impl JoinState {
 
     pub fn live_count(&self) -> usize {
         self.live.len()
+    }
+
+    pub(crate) fn from_persisted(
+        records: Vec<PersistedJoinEntry>,
+    ) -> Result<Self, crate::session::SessionError> {
+        let mut state = Self::new();
+        for record in records {
+            let entry = crate::willow::decode_entry_canonic(&record.entry_bytes)
+                .map_err(|_| crate::session::SessionError::Internal)?;
+            let id = entry_id(&record.entry_bytes);
+            state.seen.push(id);
+            if record.forgotten {
+                state.forgotten.push(id);
+            }
+            if record.live {
+                state.live.push(Stored {
+                    entry,
+                    entry_bytes: record.entry_bytes,
+                    id,
+                    payload: record.payload,
+                });
+            }
+        }
+        Ok(state)
+    }
+
+    pub(crate) fn live_records(&self) -> Vec<LiveJoinEntry> {
+        self.live
+            .iter()
+            .map(|stored| LiveJoinEntry {
+                entry_id: stored.id,
+                entry_bytes: stored.entry_bytes.clone(),
+                payload: stored.payload.clone(),
+            })
+            .collect()
+    }
+
+    pub(crate) fn forget_entry(&mut self, id: &EntryId) -> bool {
+        let before = self.live.len();
+        self.live.retain(|stored| &stored.id != id);
+        if self.live.len() == before {
+            return false;
+        }
+        if !self.forgotten.contains(id) {
+            self.forgotten.push(*id);
+        }
+        true
+    }
+
+    pub(crate) fn forgotten_ids(&self) -> &[EntryId] {
+        &self.forgotten
     }
 
     /// Permanent per-seen-entry index charge: `seen` and `first_receipt`
