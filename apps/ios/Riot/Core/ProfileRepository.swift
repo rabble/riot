@@ -525,6 +525,19 @@ public final class RiotProfileRepository {
         }
     }
 
+    /// Revokes trust for an app in Rust and drops the persisted decision so the
+    /// revoke survives a relaunch (Rust's trust state is in-memory, so without
+    /// this the `open` path would re-trust it). Mirrors `trustApp`: Rust first,
+    /// disk second — a revoke Rust refuses never reaches disk.
+    public func untrustApp(appID: String) throws {
+        try appRuntime.untrustApp(appId: appID)
+        let lowered = appID.lowercased()
+        if persisted.trustedAppIDs.contains(where: { $0.lowercased() == lowered }) {
+            persisted.trustedAppIDs.removeAll { $0.lowercased() == lowered }
+            try storage.save(persisted)
+        }
+    }
+
     /// Serves one of an installed app's resources by exact path. Unknown app id
     /// or path throws — the resolver does no path interpretation, so "../x"
     /// simply matches nothing.
@@ -818,6 +831,12 @@ extension RiotProfileRepository: DirectoryPorting {
         try appRuntime.directoryListings()
     }
 
+    /// The lowercase-hex app ids this profile has endorsed — the source of the
+    /// "Take back recommendation" affordance on each directory row.
+    public var endorsedAppIDs: Set<String> {
+        Set(persisted.endorsements.map { $0.appIDHex.lowercased() })
+    }
+
     /// Writes (or withdraws) this profile's recommendation of an app. Endorsing
     /// an app whose bytes have not arrived yet is allowed by design — the marker
     /// composes with the app's later arrival.
@@ -832,6 +851,13 @@ extension RiotProfileRepository: DirectoryPorting {
             )
         }
         try storage.save(persisted)
+    }
+
+    /// Withdraws this profile's recommendation of an app. A named view of
+    /// `endorseApp(...retract: true)` for call-site clarity; drops the persisted
+    /// endorsement so the take-back survives a relaunch.
+    public func retractEndorsement(appID: Data) throws {
+        try endorseApp(appID: appID, note: "", retract: true)
     }
 
     /// Takes up an app this profile carries but has not run: Rust admits it from
@@ -887,6 +913,68 @@ extension RiotProfileRepository: DirectoryPorting {
                 isPublic: true
             )
         )
+    }
+}
+
+// MARK: - Newswire hosting
+
+/// The open newswire — a separate signed space for community publishing. Unlike
+/// the private `PublicSpace`, a newswire space is its own signed descriptor in
+/// the same namespace, and these calls go straight to `MobileProfile` (the
+/// newswire functions live on that object, not on `AppRuntimeSession`). The
+/// space descriptor's entry id is the handle the rest of the surface threads
+/// through every later call, so `createNewswireSpace` returns it for the model
+/// to keep.
+public extension RiotProfileRepository {
+    /// Creates and signs a newswire space descriptor, importing it into the
+    /// store. The signer becomes the founding editor in the roster, so only this
+    /// profile can act editorially on its posts until others are added.
+    @discardableResult
+    func createNewswireSpace(
+        name: String,
+        summary: String,
+        languages: [String] = [],
+        geographicTags: [String] = [],
+        topicTags: [String] = []
+    ) throws -> NewswireSignedRecord {
+        try profile.createNewswireSpace(input: NewswireSpaceInput(
+            name: name,
+            summary: summary,
+            languages: languages,
+            geographicTags: geographicTags,
+            topicTags: topicTags
+        ))
+    }
+
+    /// Publishes a freeform news post under an existing newswire space. The
+    /// space descriptor must already be in the store (its entry id is the
+    /// parent). Returns the signed record carrying the post's own entry id.
+    @discardableResult
+    func createNewswirePost(
+        spaceDescriptorEntryID: String,
+        headline: String,
+        body: String,
+        language: String = "en",
+        coarseLocation: String? = nil,
+        sourceClaims: [String] = [],
+        aiAssisted: Bool = false
+    ) throws -> NewswireSignedRecord {
+        try profile.createNewswirePost(input: NewswirePostInput(
+            spaceDescriptorEntryId: spaceDescriptorEntryID,
+            headline: headline,
+            body: body,
+            language: language,
+            coarseLocation: coarseLocation,
+            sourceClaims: sourceClaims,
+            aiAssisted: aiAssisted
+        ))
+    }
+
+    /// The collective view of a newswire space: the open wire (all non-expired
+    /// posts, newest-first) and the front page (ordinary posts with an active
+    /// Feature action). `Hidden`/`Tombstoned` posts arrive with `body == nil`.
+    func projectNewswire(spaceDescriptorEntryID: String) throws -> NewswireProjectionView {
+        try profile.projectNewswireSpace(spaceDescriptorEntryId: spaceDescriptorEntryID)
     }
 }
 

@@ -563,6 +563,21 @@ public final class RiotAppModel: ObservableObject {
         refreshOrganizerState()
     }
 
+    /// Revokes trust for an app in the current space. Organizer-gated like
+    /// `trustApp` (a member turning an app off has the same organizer gate as
+    /// turning one on).
+    public func untrustApp(appID: String) {
+        guard let repository else { return }
+        do {
+            try repository.untrustApp(appID: appID)
+            errorMessage = nil
+            refreshApps()
+        } catch {
+            errorMessage = Self.approvalFailureMessage(error)
+        }
+        refreshOrganizerState()
+    }
+
     private func refreshApps() {
         apps = (try? repository?.spaceApps()) ?? []
     }
@@ -688,5 +703,54 @@ public final class RiotDemoSpaceLoader: DemoSpaceLoading {
     private func reloadModel() {
         let model = model
         Task { @MainActor in model?.reload() }
+    }
+}
+
+/// What the signed-alert detail shows, as a value rather than a view — the
+/// board's rows are read-only, so this is the whole product decision behind
+/// tapping one, and it is pinned by tests without rendering anything.
+///
+/// The split is the point. A person who opens an alert sees the headline, the
+/// AI-assistance flag and the validity window: the parts they can act on. The
+/// 64-hex identifiers are evidence, not reading material, so they live behind a
+/// **Technical details** disclosure that starts closed — full ids never lead a
+/// surface (navigation design's accessibility contract).
+public struct AlertDetail: Equatable, Sendable {
+    public struct Row: Equatable, Sendable {
+        public let label: String
+        public let value: String
+    }
+
+    /// The disclosure a person has to open before any full identifier is shown.
+    public static let technicalDisclosureTitle = "Technical details"
+
+    public let headline: String
+    public let aiAssisted: Bool
+    /// Shown as soon as the sheet opens.
+    public let summary: [Row]
+    /// Shown only once **Technical details** is opened.
+    public let technical: [Row]
+
+    public init(entry: RiotEntry) {
+        headline = entry.headline
+        aiAssisted = entry.aiAssisted
+
+        var visible = [Row(label: "Created", value: Self.timestamp(entry.createdAt))]
+        if let validFrom = entry.validFrom {
+            visible.append(Row(label: "Valid from", value: Self.timestamp(validFrom)))
+        }
+        visible.append(Row(label: "Expires", value: Self.timestamp(entry.expiresAt)))
+        summary = visible
+
+        technical = [
+            Row(label: "Entry", value: entry.entryID),
+            Row(label: "Namespace", value: entry.namespaceID),
+            Row(label: "Signer", value: entry.signerID),
+        ]
+    }
+
+    static func timestamp(_ epochSeconds: UInt64) -> String {
+        Date(timeIntervalSince1970: TimeInterval(epochSeconds))
+            .formatted(.dateTime.year().month().day().hour().minute())
     }
 }

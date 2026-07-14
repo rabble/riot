@@ -244,6 +244,44 @@ final class SpaceAdoptionTests: XCTestCase {
         )
     }
 
+    // MARK: - What the peer sheet offers, and what it must never claim
+
+    /// The bug this pins: a peer sheet opened for a SYNCED identity — someone
+    /// already carrying your space, not a phone in range — has no invite route,
+    /// and it used to fall through to "No space to invite them to yet". That
+    /// sentence is false: the space plainly exists, they are already in it.
+    ///
+    /// The two empty states are different claims and must stay different.
+    func testASyncedPeerIsToldTheyAreAlreadyInYourNetworkNotThatThereIsNoSpace() {
+        let space = RiotSpace(namespaceID: String(repeating: "a", count: 64), title: "Fire Watch")
+
+        // A space exists, but there is no invite route here: a synced identity.
+        let synced = PeerCollaboration(space: space, canInvite: false)
+        XCTAssertEqual(synced, .nothingToOffer(.alreadyInNetwork))
+        XCTAssertEqual(synced.emptyState?.title, "Already in your network")
+        XCTAssertEqual(
+            synced.emptyState?.message,
+            "You’ve synced with this person — they’re carrying your space’s latest."
+        )
+
+        // Genuinely no space: the only case where that sentence is true.
+        let spaceless = PeerCollaboration(space: nil, canInvite: false)
+        XCTAssertEqual(spaceless, .nothingToOffer(.noSpace))
+        XCTAssertEqual(spaceless.emptyState?.title, "No space to invite them to yet")
+
+        XCTAssertNotEqual(
+            synced.emptyState?.title,
+            spaceless.emptyState?.title,
+            "the two states make opposite claims about whether a space exists"
+        )
+
+        // And a peer in range, with a space to bring them into, still gets the invite.
+        XCTAssertEqual(PeerCollaboration(space: space, canInvite: true), .invite(space))
+
+        // A spaceless phone is never offered an invite, route or not.
+        XCTAssertEqual(PeerCollaboration(space: nil, canInvite: true), .nothingToOffer(.noSpace))
+    }
+
     // MARK: - The rule, on its own
 
     func testAdoptionRules() {

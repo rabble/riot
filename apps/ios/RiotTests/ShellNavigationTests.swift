@@ -45,6 +45,72 @@ final class ShellNavigationTests: XCTestCase {
         XCTAssertNil(model.errorMessage)
     }
 
+    // MARK: - Looking closer at a board entry
+
+    private static func entry(
+        headline: String = "Medic tent moved to the north gate",
+        validFrom: UInt64? = 1_720_000_500,
+        aiAssisted: Bool = false
+    ) -> RiotEntry {
+        RiotEntry(
+            entryID: String(repeating: "a", count: 64),
+            namespaceID: String(repeating: "b", count: 64),
+            signerID: String(repeating: "c", count: 64),
+            headline: headline,
+            createdAt: 1_720_000_000,
+            validFrom: validFrom,
+            expiresAt: 1_720_003_600,
+            aiAssisted: aiAssisted
+        )
+    }
+
+    /// Tapping a board row opens the signed detail. What that sheet may show
+    /// WITHOUT being asked is the product decision: the alert's words and the
+    /// window it is good for. The 64-hex identifiers are evidence, not reading
+    /// material — they stay behind **Technical details** (accessibility contract:
+    /// full ids never lead a surface).
+    func testTheAlertDetailKeepsFullIdentifiersBehindTechnicalDetails() {
+        let entry = Self.entry()
+        let detail = AlertDetail(entry: entry)
+
+        XCTAssertEqual(detail.headline, "Medic tent moved to the north gate")
+
+        // Nothing shown on open is a raw identifier.
+        let onOpen = detail.summary.map(\.value).joined(separator: " ")
+        for identifier in [entry.entryID, entry.namespaceID, entry.signerID] {
+            XCTAssertFalse(
+                onOpen.contains(identifier),
+                "a full identifier must not be shown before Technical details is opened"
+            )
+        }
+        XCTAssertEqual(detail.summary.map(\.label), ["Created", "Valid from", "Expires"])
+
+        // And they are all reachable behind the disclosure, in full — hidden by
+        // default is not the same as withheld.
+        XCTAssertEqual(AlertDetail.technicalDisclosureTitle, "Technical details")
+        XCTAssertEqual(detail.technical.map(\.label), ["Entry", "Namespace", "Signer"])
+        XCTAssertEqual(
+            detail.technical.map(\.value),
+            [entry.entryID, entry.namespaceID, entry.signerID],
+            "the ids are shown whole — a truncated id proves nothing"
+        )
+    }
+
+    /// An alert with no start time has no "Valid from" row at all, rather than a
+    /// row printing an epoch zero.
+    func testAnAlertWithNoStartTimeShowsNoValidFromRow() {
+        let detail = AlertDetail(entry: Self.entry(validFrom: nil))
+
+        XCTAssertEqual(detail.summary.map(\.label), ["Created", "Expires"])
+    }
+
+    /// The AI-assistance flag reaches the detail, because it changes how a
+    /// person reads the alert.
+    func testTheAIAssistanceFlagReachesTheDetail() {
+        XCTAssertFalse(AlertDetail(entry: Self.entry()).aiAssisted)
+        XCTAssertTrue(AlertDetail(entry: Self.entry(aiAssisted: true)).aiAssisted)
+    }
+
     // MARK: - Discovery must not start before there is anything to announce
 
     /// The Connection screen is built at launch like every other tab, so its

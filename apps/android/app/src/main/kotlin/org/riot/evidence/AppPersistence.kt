@@ -41,6 +41,14 @@ internal fun recordAppTrust(profile: PersistedProfile, appId: String): Persisted
         },
     )
 
+/** Drops a held app's trust decision so restore() does not re-trust it. */
+internal fun recordAppUntrust(profile: PersistedProfile, appId: String): PersistedProfile =
+    profile.copy(
+        installedApps = profile.installedApps.map { app ->
+            if (app.appId == appId && app.trusted) app.copy(trusted = false) else app
+        },
+    )
+
 /**
  * Records a committed app-data write, keeping only the latest bundle per
  * `(appId, key)` so growth is bounded by the number of live keys.

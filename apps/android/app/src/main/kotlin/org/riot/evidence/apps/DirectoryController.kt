@@ -8,6 +8,13 @@ interface DirectoryPort {
     fun listings(): List<DirectoryListing>
     fun endorse(appId: ByteArray, note: String, retract: Boolean)
     fun share(appId: ByteArray, space: PublicSpace)
+
+    /**
+     * This profile's own 32-byte subspace id — the id it signs endorsements
+     * with, and the one to look for among a listing's endorsers to know whether
+     * a recommendation is this person's to take back.
+     */
+    fun mySubspaceId(): ByteArray
 }
 
 /**
@@ -108,13 +115,41 @@ class DirectoryController(
     /**
      * Whether this profile may recommend the app: endorsement speaks for a
      * space that already trusts the app (design spec), so it is offered only
-     * where the app is on in the current space.
+     * where the app is on in the current space — and not on a row this person
+     * has already recommended, which offers the take-back instead. The two
+     * controls are exclusive HERE rather than in the surface, so no view can
+     * draw both by getting its branches wrong.
      */
     fun canRecommend(listing: DirectoryListing, space: PublicSpace?): Boolean =
-        trustedInCurrentSpace(listing, space)
+        trustedInCurrentSpace(listing, space) && !endorsedByMe(listing)
 
     fun recommend(listing: DirectoryListing, note: String) =
         port.endorse(listing.appId, note, false)
+
+    /**
+     * True when THIS profile is among the app's endorsers.
+     *
+     * There is no local list of what this device recommended, and there does not
+     * need to be: an endorsement is a signed entry, so the directory already
+     * knows. Asking it — rather than mirroring the decision on the side — means
+     * the answer is right after a relaunch, and a recommendation withdrawn
+     * anywhere stops being offered for take-back here.
+     */
+    fun endorsedByMe(listing: DirectoryListing): Boolean {
+        val me = port.mySubspaceId()
+        return listing.endorsingMetSubspaces.any { it.contentEquals(me) }
+    }
+
+    /**
+     * Whether to offer the take-back. Exclusive with [canRecommend]: you either
+     * recommended this app or you did not, and only one of the two controls can
+     * be true of a row at a time.
+     */
+    fun canRetract(listing: DirectoryListing): Boolean = endorsedByMe(listing)
+
+    /** Withdraws this profile's recommendation of an app. */
+    fun retractRecommendation(listing: DirectoryListing) =
+        port.endorse(listing.appId, "", true)
 
     fun share(listing: DirectoryListing, space: PublicSpace) =
         port.share(listing.appId, space)

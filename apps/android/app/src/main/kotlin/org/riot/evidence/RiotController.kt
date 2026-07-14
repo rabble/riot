@@ -10,6 +10,10 @@ import uniffi.riot_ffi.AlertUrgency
 import uniffi.riot_ffi.CurrentEntry
 import uniffi.riot_ffi.MobileImportPreview
 import uniffi.riot_ffi.MobileProfile
+import uniffi.riot_ffi.NewswirePostInput
+import uniffi.riot_ffi.NewswireProjectionView
+import uniffi.riot_ffi.NewswireSignedRecord
+import uniffi.riot_ffi.NewswireSpaceInput
 import uniffi.riot_ffi.ProfileSession
 import uniffi.riot_ffi.PublicSpace
 import uniffi.riot_ffi.PublicIdentity
@@ -80,6 +84,10 @@ class RiotController(filesDir: File) : AutoCloseable {
     fun onAppTrusted(appId: String) =
         mutatePersistedIfPresent { recordAppTrust(it, appId) }
 
+    /** Records a revoke so `restore()` does not re-trust the app. */
+    fun onAppUntrusted(appId: String) =
+        mutatePersistedIfPresent { recordAppUntrust(it, appId) }
+
     /**
      * Records the committed app-data bundle bytes so `restore()` can re-admit
      * them via `replay_app_data_bundle`. Runs on the WebView bridge thread, so
@@ -98,6 +106,45 @@ class RiotController(filesDir: File) : AutoCloseable {
      * instead of leaving a snapshot behind forever.
      */
     fun profileSession(): ProfileSession = profile.profile()
+
+    /**
+     * The open newswire: a signed community-publishing space. These go straight
+     * to [MobileProfile] (the newswire functions live there, not on the app
+     * runtime session). The space descriptor's entry id is the handle every
+     * later call threads through, so the UI keeps it after creating a space.
+     */
+    fun createNewswireSpace(
+        name: String,
+        summary: String,
+        languages: List<String> = emptyList(),
+        geographicTags: List<String> = emptyList(),
+        topicTags: List<String> = emptyList(),
+    ): NewswireSignedRecord = profile.createNewswireSpace(
+        NewswireSpaceInput(name, summary, languages, geographicTags, topicTags),
+    )
+
+    fun createNewswirePost(
+        spaceDescriptorEntryId: String,
+        headline: String,
+        body: String,
+        language: String = "en",
+        coarseLocation: String? = null,
+        sourceClaims: List<String> = emptyList(),
+        aiAssisted: Boolean = false,
+    ): NewswireSignedRecord = profile.createNewswirePost(
+        NewswirePostInput(
+            spaceDescriptorEntryId,
+            headline,
+            body,
+            language,
+            coarseLocation,
+            sourceClaims,
+            aiAssisted,
+        ),
+    )
+
+    fun projectNewswire(spaceDescriptorEntryId: String): NewswireProjectionView =
+        profile.projectNewswireSpace(spaceDescriptorEntryId)
 
     fun entries(): List<CurrentEntry> = profile.listCurrentEntries()
 

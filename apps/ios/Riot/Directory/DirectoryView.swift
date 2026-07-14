@@ -176,8 +176,15 @@ public struct DirectoryView: View {
         }
 
         // Recommending speaks for a space that already trusts the app (design
-        // spec), so it appears only once the app is on in this space.
-        if row.canRecommend {
+        // spec), so it appears only once the app is on in this space. A row this
+        // profile already endorsed offers the take-back instead.
+        if row.endorsedByMe {
+            Button("Take back recommendation") {
+                directory.retract(row)
+            }
+            .buttonStyle(.riotSecondary)
+            .accessibilityIdentifier("directory-retract-\(row.name)")
+        } else if row.canRecommend {
             TextField("Why you recommend it (optional)", text: note(for: row))
                 .font(.riot(.body, size: 15, relativeTo: .body))
             Button("Recommend") {

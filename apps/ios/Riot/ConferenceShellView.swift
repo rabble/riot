@@ -162,6 +162,8 @@ private struct SpacesView: View {
         .sheet(item: $reviewing) { app in
             AppReviewSheet(
                 app: app,
+                canApprove: model.canApproveApps,
+                isLegacyProfile: model.isLegacyProfile,
                 onApprove: {
                     model.trustApp(appID: app.appIDHex)
                     reviewing = nil
@@ -329,6 +331,14 @@ private struct SpacesView: View {
                             Button("Open") { running = app }
                                 .buttonStyle(.riotPrimary)
                                 .accessibilityIdentifier("open-\(app.name)")
+                            // Turning an app off is the organizer's call, the
+                            // same gate as turning it on. A member sees no way
+                            // to revoke (they couldn't grant it either).
+                            if model.canApproveApps {
+                                Button("Turn off") { model.untrustApp(appID: app.appIDHex) }
+                                    .buttonStyle(.riotSecondary)
+                                    .accessibilityIdentifier("untrust-\(app.name)")
+                            }
                         } else {
                             RiotBadge("New")
                             Button("Review") { reviewing = app }
@@ -370,6 +380,7 @@ private struct AppDirectoryTab: View {
 private struct IncidentBoardView: View {
     @ObservedObject var model: RiotAppModel
     @Environment(\.colorScheme) private var colorScheme
+    @State private var inspecting: RiotEntry?
 
     var body: some View {
         Group {
@@ -382,21 +393,31 @@ private struct IncidentBoardView: View {
                 ScrollView {
                     VStack(spacing: 12) {
                         ForEach(model.entries) { entry in
-                            RiotCard {
-                                VStack(alignment: .leading, spacing: 10) {
-                                    Text(entry.headline)
-                                        .font(.riot(.body, size: 17, relativeTo: .headline))
-                                        .foregroundStyle(RiotTheme.ink(for: colorScheme))
-                                    if entry.aiAssisted {
-                                        RiotBadge("AI-assisted · human reviewed and signed")
+                            // The whole card is the tap target: a board entry is
+                            // the read-only climax of the app, and tapping it
+                            // opens the full signed detail (ids, validity window,
+                            // AI flag) instead of leaving the row inert.
+                            Button {
+                                inspecting = entry
+                            } label: {
+                                RiotCard {
+                                    VStack(alignment: .leading, spacing: 10) {
+                                        Text(entry.headline)
+                                            .font(.riot(.body, size: 17, relativeTo: .headline))
+                                            .foregroundStyle(RiotTheme.ink(for: colorScheme))
+                                        if entry.aiAssisted {
+                                            RiotBadge("AI-assisted · human reviewed and signed")
+                                        }
+                                        Text("Created \(Date(timeIntervalSince1970: TimeInterval(entry.createdAt)), style: .relative)")
+                                            .font(.riot(.mono, size: 11, relativeTo: .caption2))
+                                            .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
+                                        IdentifierRow(label: "Entry", value: entry.entryID)
+                                        IdentifierRow(label: "Signer", value: entry.signerID)
                                     }
-                                    Text("Created \(Date(timeIntervalSince1970: TimeInterval(entry.createdAt)), style: .relative)")
-                                        .font(.riot(.mono, size: 11, relativeTo: .caption2))
-                                        .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
-                                    IdentifierRow(label: "Entry", value: entry.entryID)
-                                    IdentifierRow(label: "Signer", value: entry.signerID)
                                 }
                             }
+                            .buttonStyle(.plain)
+                            .accessibilityIdentifier("board-entry-\(entry.entryID)")
                         }
                     }
                     .padding(20)
@@ -404,6 +425,69 @@ private struct IncidentBoardView: View {
             }
         }
         .riotHeader(eyebrow: "Public incident space", model.space?.title ?? "Incident board")
+        .sheet(item: $inspecting) { entry in
+            AlertDetailView(entry: entry, onClose: { inspecting = nil })
+        }
+    }
+}
+
+/// The full signed detail behind a board entry: what the alert says, when it is
+/// good for, and — only if asked — the identifiers that prove it. Reached by
+/// tapping a row; the board itself is read-only, so this is where a person looks
+/// closer at an alert.
+///
+/// `AlertDetail` (RiotKit) owns what appears where, so the rule that full ids
+/// stay behind **Technical details** is pinned by tests rather than by this view.
+private struct AlertDetailView: View {
+    let entry: RiotEntry
+    let onClose: () -> Void
+    @Environment(\.colorScheme) private var colorScheme
+    @State private var showingTechnical = false
+
+    private var detail: AlertDetail { AlertDetail(entry: entry) }
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                Text(detail.headline)
+                    .font(.riot(.body, size: 22, relativeTo: .largeTitle))
+                    .foregroundStyle(RiotTheme.ink(for: colorScheme))
+                if detail.aiAssisted {
+                    RiotBadge("AI-assisted · human reviewed and signed")
+                }
+                RiotCard {
+                    VStack(alignment: .leading, spacing: 10) {
+                        ForEach(detail.summary, id: \.label) { row in
+                            IdentifierRow(label: row.label, value: row.value)
+                        }
+                    }
+                }
+                // The ids are evidence, not reading material. They stay closed
+                // until someone asks for them.
+                DisclosureGroup(isExpanded: $showingTechnical) {
+                    RiotCard {
+                        VStack(alignment: .leading, spacing: 10) {
+                            ForEach(detail.technical, id: \.label) { row in
+                                IdentifierRow(label: row.label, value: row.value)
+                            }
+                        }
+                    }
+                    .padding(.top, 10)
+                } label: {
+                    Text(AlertDetail.technicalDisclosureTitle)
+                        .font(.riot(.mono, size: 12, relativeTo: .caption))
+                        .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
+                }
+                .accessibilityIdentifier("alert-technical-details")
+            }
+            .padding(20)
+        }
+        .riotHeader(eyebrow: "Signed alert", detail.headline)
+        .toolbar {
+            ToolbarItem(placement: .confirmationAction) {
+                Button("Close", action: onClose)
+            }
+        }
     }
 }
 

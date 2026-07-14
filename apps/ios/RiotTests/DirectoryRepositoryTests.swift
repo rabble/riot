@@ -274,6 +274,85 @@ final class DirectoryRepositoryTests: XCTestCase {
         XCTAssertTrue(try XCTUnwrap(model.apps.first).trusted, "the app is now on for the space")
     }
 
+    /// Turning an app OFF is the organizer's call, exactly like turning it on —
+    /// the "Turn off" control is drawn only when `canApproveApps`. But a hidden
+    /// control is not an authorization check: the core must refuse a member's
+    /// revoke even if the button is somehow reached.
+    func testOnlyAnOrganizerCanTurnAnAppOff() throws {
+        let host = try openRepository()
+        let space = try host.createPublicSpace(title: "Berlin Mutual Aid")
+        let appID = try host.spaceApps()[0].appIDHex
+        try host.trustApp(appID: appID)
+        XCTAssertTrue(try host.isOrganizer(), "the space's creator is its organizer")
+
+        // A second profile that JOINS the space is a member, not its organizer.
+        let member = try openRepository()
+        try member.joinSpace(space)
+
+        XCTAssertFalse(
+            try member.isOrganizer(),
+            "a joiner is a member — `canApproveApps` is false, so no Turn off control is drawn"
+        )
+        XCTAssertThrowsError(
+            try member.untrustApp(appID: appID),
+            "and the core refuses the revoke regardless of what the UI drew"
+        )
+    }
+
+    // MARK: - Taking a recommendation back
+
+    /// The take-back round-trips through the real core: the endorsement this
+    /// profile wrote is the one it can withdraw, and withdrawing it clears the
+    /// affordance the row switches on.
+    func testTakingBackARecommendationClearsItInTheCore() throws {
+        let repository = try openRepository()
+        _ = try repository.createPublicSpace(title: "Berlin Mutual Aid")
+        let app = try repository.spaceApps()[0]
+        try repository.trustApp(appID: app.appIDHex)
+        let appID = try XCTUnwrap(RiotDirectoryRow.bytes(hex: app.appIDHex))
+        let hex = app.appIDHex.lowercased()
+
+        XCTAssertFalse(repository.endorsedAppIDs.contains(hex), "nothing recommended yet")
+
+        try repository.endorseApp(appID: appID, note: "We used it all weekend", retract: false)
+        XCTAssertTrue(repository.endorsedAppIDs.contains(hex), "the row now offers the take-back")
+
+        try repository.retractEndorsement(appID: appID)
+        XCTAssertFalse(repository.endorsedAppIDs.contains(hex), "and the take-back cleared it")
+    }
+
+    /// The signal ANDROID's take-back affordance reads. iOS keeps its own
+    /// persisted list of what it endorsed, but Android has no such list — it asks
+    /// the signed directory instead: "is my subspace among this app's endorsers?"
+    /// That only works if a profile's OWN endorsement is visible in its own
+    /// directory state, and disappears when retracted. This pins that.
+    func testAProfilesOwnEndorsementIsVisibleInTheSignedDirectoryStateAndRetractionRemovesIt() throws {
+        let repository = try openRepository()
+        _ = try repository.createPublicSpace(title: "Berlin Mutual Aid")
+        let app = try repository.spaceApps()[0]
+        try repository.trustApp(appID: app.appIDHex)
+        let appID = try XCTUnwrap(RiotDirectoryRow.bytes(hex: app.appIDHex))
+
+        func endorsers() throws -> [Data] {
+            let listing = try XCTUnwrap(
+                try repository.directoryListings().first { $0.appId == appID }
+            )
+            return listing.endorsingMetSubspaces
+        }
+
+        XCTAssertEqual(try endorsers().count, 0, "nobody has recommended it yet")
+
+        try repository.endorseApp(appID: appID, note: "We used it all weekend", retract: false)
+        XCTAssertEqual(
+            try endorsers().count,
+            1,
+            "a profile's own endorsement is visible in its own signed directory state"
+        )
+
+        try repository.retractEndorsement(appID: appID)
+        XCTAssertEqual(try endorsers().count, 0, "and the retraction removes it from the signed state")
+    }
+
     /// The sheet must not offer a button that cannot succeed, and the sentence it
     /// shows instead has to be true for the person reading it. A member is told to
     /// ask the organizer; only a pre-organizer profile is told to start a new one.

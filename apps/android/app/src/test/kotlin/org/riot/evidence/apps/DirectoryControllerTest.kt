@@ -48,7 +48,10 @@ private fun hexToBytes(hex: String) = ByteArray(hex.length / 2) {
     hex.substring(it * 2, it * 2 + 2).toInt(16).toByte()
 }
 
-private class FakePort(private val rows: List<DirectoryListing> = emptyList()) : DirectoryPort {
+private class FakePort(
+    private val rows: List<DirectoryListing> = emptyList(),
+    private val subspaceId: ByteArray = MY_SUBSPACE,
+) : DirectoryPort {
     val endorsed = mutableListOf<Triple<ByteArray, String, Boolean>>()
     val shared = mutableListOf<Pair<ByteArray, PublicSpace>>()
     override fun listings(): List<DirectoryListing> = rows
@@ -58,7 +61,14 @@ private class FakePort(private val rows: List<DirectoryListing> = emptyList()) :
     override fun share(appId: ByteArray, space: PublicSpace) {
         shared += appId to space
     }
+    override fun mySubspaceId(): ByteArray = subspaceId
 }
+
+/** This profile's own 32-byte subspace id — the one it signs endorsements with. */
+private val MY_SUBSPACE = ByteArray(32) { 0x11 }
+
+/** Somebody else's. */
+private val OTHER_SUBSPACE = ByteArray(32) { 0x22 }
 
 private class FakeInstalledApps : InstalledAppsAccess {
     var installCount = 0
@@ -226,6 +236,63 @@ class DirectoryControllerTest {
         assertTrue(appId.contentEquals(id))
         assertEquals("we use this every action", note)
         assertFalse(retract)
+    }
+
+    /**
+     * The signal the take-back affordance is drawn from. Android keeps no local
+     * list of what it recommended — it asks the signed directory: "is my own
+     * subspace among this app's endorsers?" An endorsement by somebody else is
+     * not mine to withdraw.
+     */
+    @Test
+    fun onlyMyOwnEndorsementMakesTheTakeBackAvailable() {
+        val controller = DirectoryController(FakePort(), FakeInstalledApps(), FakeStarter(null))
+        val id = byteArrayOf(9, 9)
+
+        assertTrue(controller.endorsedByMe(listing(id, endorsingMet = listOf(MY_SUBSPACE))))
+        assertFalse(
+            "somebody else's recommendation is not mine to take back",
+            controller.endorsedByMe(listing(id, endorsingMet = listOf(OTHER_SUBSPACE))),
+        )
+        assertFalse(controller.endorsedByMe(listing(id, endorsingMet = emptyList())))
+        // Mine among several still counts.
+        assertTrue(
+            controller.endorsedByMe(listing(id, endorsingMet = listOf(OTHER_SUBSPACE, MY_SUBSPACE))),
+        )
+    }
+
+    /**
+     * The two controls are exclusive, mirroring iOS: a row this profile endorsed
+     * offers the take-back, and only an un-endorsed row offers "Recommend".
+     */
+    @Test
+    fun aRowIOfferedARecommendationForOffersTheTakeBackInstead() {
+        val controller = DirectoryController(FakePort(), FakeInstalledApps(), FakeStarter(null))
+        val nsBytes = ByteArray(32) { 0x11 }
+        val space = PublicSpace(namespaceId = "11".repeat(32), title = "Berlin", isPublic = true)
+        val mine = listing(byteArrayOf(1), listOf(nsBytes), endorsingMet = listOf(MY_SUBSPACE))
+        val notMine = listing(byteArrayOf(1), listOf(nsBytes))
+
+        assertTrue(controller.canRetract(mine))
+        assertFalse(controller.canRecommend(mine, space))
+
+        assertFalse(controller.canRetract(notMine))
+        assertTrue(controller.canRecommend(notMine, space))
+    }
+
+    @Test
+    fun retractRecommendationWithdrawsTheEndorsementWithNoNote() {
+        val port = FakePort()
+        val controller = DirectoryController(port, FakeInstalledApps(), FakeStarter(null))
+        val id = byteArrayOf(9, 9)
+
+        controller.retractRecommendation(listing(id))
+
+        assertEquals(1, port.endorsed.size)
+        val (appId, note, retract) = port.endorsed.single()
+        assertTrue(appId.contentEquals(id))
+        assertTrue("a take-back is an endorsement marked retracted", retract)
+        assertEquals("a retraction carries no note to explain", "", note)
     }
 
     @Test
