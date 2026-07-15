@@ -8,6 +8,7 @@ import uniffi.riot_ffi.AppExecutionSession
 import uniffi.riot_ffi.AppRuntimeSession
 import uniffi.riot_ffi.AlertSeverity
 import uniffi.riot_ffi.AlertUrgency
+import uniffi.riot_ffi.CommunityRow
 import uniffi.riot_ffi.CurrentEntry
 import uniffi.riot_ffi.MobileImportPreview
 import uniffi.riot_ffi.MobileProfile
@@ -297,6 +298,47 @@ class RiotController(filesDir: File) : AutoCloseable {
             state.wrappingKey.fill(0)
         }
     }
+
+    // --- Multiple communities (Unit 3) ---------------------------------------
+
+    /** Every held community for the chooser. Reads metadata only — no unseal. */
+    fun listCommunities(): List<CommunityRow> = profile.listCommunities()
+
+    /** The active community, or null before one is chosen (returning-last-available). */
+    fun activeCommunity(): CommunityRow? = profile.activeCommunity()
+
+    /**
+     * Switches the active community. Seals/unseals per-community authors, so it
+     * routes through the SAME Keystore-protected wrapping key as the primary
+     * sealed identity — the key is loaded transiently and zeroized after use. No
+     * raw secret is exposed and no new key or store is introduced.
+     */
+    fun switchToCommunity(namespaceId: String): CommunityRow =
+        withWrappingKey { key -> profile.switchCommunity(namespaceId, key) }
+
+    fun archiveCommunity(namespaceId: String) = profile.archiveCommunity(namespaceId)
+
+    fun restoreCommunity(namespaceId: String): CommunityRow =
+        profile.restoreCommunity(namespaceId)
+
+    /** Seals every held community's author so they survive a reopen. */
+    fun persistCommunities() = withWrappingKey { key -> profile.persistCommunities(key) }
+
+    fun communityRegistryQuarantined(): Boolean = profile.communityRegistryQuarantined()
+
+    /**
+     * Runs [operation] with the profile wrapping key from the Keystore-protected
+     * store (minted on first use, as for identity sealing), zeroized after use.
+     */
+    private inline fun <T> withWrappingKey(operation: (ByteArray) -> T): T =
+        synchronized(persistLock) {
+            val state = store.load()?.identityState ?: createIdentityState()
+            try {
+                TemporaryKey.useCopy(state.wrappingKey) { key -> operation(key) }
+            } finally {
+                state.wrappingKey.fill(0)
+            }
+        }
 
     /**
      * Serializes a persisted-profile read-modify-write against every other
