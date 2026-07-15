@@ -10,10 +10,13 @@
 | dead-code cleanup | ✅ done | `0e5c34c` | phantom `closed` guard + orphaned oracle helpers deleted |
 | **1A newswire projection** | ✅ done | `d150e79` | 746 Rust tests (isolated); bindings+staticlibs rebuilt; macOS RiotKit compiles. **This is the CurrentEntryV2 deviation — owner ratification open** |
 | **0A canonical catalog** | ✅ done | `09413e6` | Rust 8/8; iOS StarterResourceTests 7/7; iOS app builds with all 8 pairs |
+| **0B Riverside authority** | ✅ done | `1276024` | 75 Rust suites; iOS RiversideMemberToolUITests SUCCEEDED; full iOS 205 (only 2 known-red). **Also fixed a real 1A bug:** the FFI list/inspect path never handled newswire entries (`is_newswire_prefix` missing from `inspectable_entries` + `list_current_entries`) — closed with a demo-independent regression test |
 
-Combined tree after both: 74 Rust suites green, clippy 0, fmt clean.
+Combined tree after all: 75 Rust suites green, clippy 0, fmt clean; full iOS 205 (2 known-red only).
 
-**Next up:** 0B (deterministic Riverside authority — now unblocked by 1A, since the fixture regenerates onto the completed newswire record shape), then 0C (security), 1B/1C/1E, 2A (the shell), 2B, 2C, 3.
+**Next up:** 0C (security — hostile-page containment with CSP stripped), then 1B/1C/1E (content views, parallelizable after 1A but must serialize on shared ProfileRepository.swift + pbxproj), 2A (the shell — the payoff), 2B, 2C, 3.
+
+**Recurring finding across 1A/0A/0B:** four times now a subsystem looked finished from one entry point but had an unhandled path from another (newswire write-vs-read, catalog Rust-vs-Apple, session guard that never fired, newswire create-vs-list). Verify both directions.
 
 **Two owner decisions still open** (see the P3 escalation block below): (1) the coverage threshold — the 100% Tarpaulin gate cannot be met; (2) ratify 1A's projection-completion in place of the gate-approved `CurrentEntryV2`.
 
