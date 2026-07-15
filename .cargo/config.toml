@@ -1,9 +1,8 @@
 [alias]
 xtask = "run --package xtask --"
 
-# NDK 28.2.13676358 linkers; minSdk 26 per fixtures/manifest.json.
-[target.aarch64-linux-android]
-linker = "/Users/rabble/Library/Android/sdk/ndk/28.2.13676358/toolchains/llvm/prebuilt/darwin-x86_64/bin/aarch64-linux-android26-clang"
-
-[target.x86_64-linux-android]
-linker = "/Users/rabble/Library/Android/sdk/ndk/28.2.13676358/toolchains/llvm/prebuilt/darwin-x86_64/bin/x86_64-linux-android26-clang"
+# Android target linkers are NOT hardcoded here — an absolute NDK path only works
+# on one machine. scripts/conference/build-native-core.sh is the sanctioned way
+# to build the Android staticlibs; it derives the NDK toolchain from
+# $ANDROID_SDK_ROOT / $ANDROID_HOME / $ANDROID_NDK_HOME and sets
+# CARGO_TARGET_*_LINUX_ANDROID_LINKER itself, so it works on any host and in CI.
