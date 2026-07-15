@@ -26,6 +26,7 @@ class SyncCoordinator(
     var state: NearbyUiState = NearbyUiState.Connecting
         private set
     private var acceptedImport = false
+    private var closed = false
 
     init {
         connection.onReceive(::receive)
@@ -43,6 +44,13 @@ class SyncCoordinator(
     }
 
     fun acceptImport() {
+        // A stopped session never commits. A community switch stops the old
+        // coordinator; a racing "Add them" that lands after must not push a pending
+        // import into the store — the wrong-community race, failing closed.
+        // A stopped session never commits. A community switch stops the old
+        // coordinator; a racing "Add them" that lands after must not push a pending
+        // import into the store — the wrong-community race, failing closed.
+        if (closed) return
         safely {
             acceptedImport = true
             update(NearbyUiState.GettingLatest(friendlyName))
@@ -51,17 +59,20 @@ class SyncCoordinator(
     }
 
     fun rejectImport() {
+        if (closed) return
         safely {
             handle(bridge.rejectImport(), terminalState = NearbyUiState.Idle)
         }
     }
 
     override fun close() {
+        closed = true
         runCatching(bridge::close)
         connection.disconnect()
     }
 
     private fun receive(frame: ByteArray) {
+        if (closed) return
         safely {
             handle(bridge.receive(frame))
         }
@@ -72,6 +83,7 @@ class SyncCoordinator(
             is SyncBridgeOutcome.SendMore -> {
                 sendOutboundFrame()
                 if (outcome.terminal) {
+                    closed = true
                     runCatching(bridge::close)
                     update(terminalState ?: if (acceptedImport) {
                         NearbyUiState.CaughtUp
@@ -86,6 +98,7 @@ class SyncCoordinator(
             }
             SyncBridgeOutcome.Done -> {
                 update(if (acceptedImport) NearbyUiState.CaughtUp else NearbyUiState.AlreadyCurrent)
+                closed = true
                 runCatching(bridge::close)
                 connection.disconnect()
             }
@@ -106,6 +119,7 @@ class SyncCoordinator(
     }
 
     private fun fail() {
+        closed = true
         runCatching(bridge::close)
         connection.disconnect()
         update(NearbyUiState.Failed)

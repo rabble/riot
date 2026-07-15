@@ -545,6 +545,7 @@ final class TransportContractTests: XCTestCase {
 
 private final class FakeSyncBoundary: MobileSyncSessionBoundary {
     var didBegin = false
+    var acceptCalls = 0
     var outboundCalls = 0
     var closeCalls = 0
     private var outbound: [Data]
@@ -579,9 +580,60 @@ private final class FakeSyncBoundary: MobileSyncSessionBoundary {
         return outbound.isEmpty ? nil : outbound.removeFirst()
     }
     func receive(_ frame: Data) throws -> NearbySyncOutcome { receiveOutcome }
-    func acceptImport() throws -> NearbySyncOutcome { acceptOutcome }
+    func acceptImport() throws -> NearbySyncOutcome { acceptCalls += 1; return acceptOutcome }
     func rejectImport() throws -> NearbySyncOutcome { rejectOutcome }
     func close() throws { closeCalls += 1; if let closeError { throw closeError } }
+}
+
+/// Wraps a channel and records every frame sent through it, so a test can read
+/// exactly what one device puts on the wire — the disclosure surface — while the
+/// frame still travels to the peer.
+private final class TappingChannel: FrameChannel {
+    private let inner: FrameChannel
+    private(set) var sent: [Data] = []
+
+    init(inner: FrameChannel) { self.inner = inner }
+
+    var onReceive: ((Data) -> Void)? {
+        get { inner.onReceive }
+        set { inner.onReceive = newValue }
+    }
+    var onFailure: (() -> Void)? {
+        get { inner.onFailure }
+        set { inner.onFailure = newValue }
+    }
+    func send(_ frame: Data) throws {
+        sent.append(frame)
+        try inner.send(frame)
+    }
+    func disconnect() { inner.disconnect() }
+}
+
+/// A pairing host with a fixed space and an inert sync boundary — enough to drive
+/// `SpacePairing`'s confirmation and announce phases without a real repository.
+private final class FakeNearbyHost: NearbySpaceHost {
+    var currentSpace: RiotSpace?
+    private let boundary: MobileSyncSessionBoundary
+
+    init(space: RiotSpace?, boundary: MobileSyncSessionBoundary = FakeSyncBoundary(outbound: [])) {
+        self.currentSpace = space
+        self.boundary = boundary
+    }
+    func joinSpace(_ space: RiotSpace) throws { currentSpace = space }
+    func openSyncBoundary() throws -> MobileSyncSessionBoundary { boundary }
+}
+
+extension TransportContractTests {
+    fileprivate func makePairing(
+        over channel: FrameChannel,
+        host: NearbySpaceHost,
+        peerName: String
+    ) throws -> SpacePairing {
+        let connection = NearbyConnection(bluetooth: channel, localAttempt: { nil })
+        connection.confirmPairing()
+        try connection.activate()
+        return SpacePairing(connection: connection, host: host, friendlyName: peerName)
+    }
 }
 
 private final class LockedBytes: @unchecked Sendable {
@@ -606,6 +658,156 @@ private final class LockedCounter: @unchecked Sendable {
     private var count = 0
     func increment() { lock.lock(); count += 1; lock.unlock() }
     var value: Int { lock.lock(); defer { lock.unlock() }; return count }
+}
+
+// MARK: - Unit 2B: metadata opacity, bilateral confirmation, fail-closed
+
+extension TransportContractTests {
+
+    /// The confirmation token that crosses the wire BEFORE any metadata is a pure
+    /// consent marker: it carries no community title, no namespace, no identity —
+    /// nothing a listener could learn a community from — and it is not, and cannot
+    /// be mistaken for, a space announce.
+    func testConfirmTokenCarriesNoCommunityMetadataAndIsNotAnAnnounce() throws {
+        let token = PairConfirmCodec.encode()
+        XCTAssertTrue(PairConfirmCodec.isConfirmation(token))
+
+        // A space announce and a confirm token are never confusable in either
+        // direction: the strict announce decoder rejects the token, and the token
+        // check rejects a real announce.
+        XCTAssertThrowsError(try SpaceAnnounceCodec.decode(token))
+        let announce = try SpaceAnnounceCodec.encode(
+            RiotSpace(namespaceID: String(repeating: "3f", count: 32), title: "Riverside Tenants Union")
+        )
+        XCTAssertFalse(PairConfirmCodec.isConfirmation(announce))
+
+        // The token is fixed-shape and content-free: it embeds none of a community's
+        // bytes, whatever community this device is in.
+        XCTAssertFalse(token.range(of: Data("Riverside Tenants Union".utf8)) != nil)
+        XCTAssertFalse(token.range(of: Data(String(repeating: "3f", count: 32).utf8)) != nil)
+    }
+
+    /// The rule, on its own: metadata may be disclosed only once BOTH sides have
+    /// confirmed. One side's confirmation is never enough.
+    func testMutualConfirmationGateWithholdsUntilBothConfirm() {
+        XCTAssertFalse(MutualConfirmationGate.mayDiscloseMetadata(localConfirmed: false, remoteConfirmed: false))
+        XCTAssertFalse(MutualConfirmationGate.mayDiscloseMetadata(localConfirmed: true, remoteConfirmed: false))
+        XCTAssertFalse(MutualConfirmationGate.mayDiscloseMetadata(localConfirmed: false, remoteConfirmed: true))
+        XCTAssertTrue(MutualConfirmationGate.mayDiscloseMetadata(localConfirmed: true, remoteConfirmed: true))
+    }
+
+    /// THE SECURITY GATE. Two devices in different communities pair. This asserts
+    /// the load-bearing property: a device discloses NOTHING about its community —
+    /// not the name, not the namespace, not the announce frame itself — until the
+    /// OTHER device has also confirmed. Before that, the only thing on the wire is
+    /// the content-free consent token. "UI visibility is never an authorization
+    /// check": this reads the actual bytes each side emits, not the screen.
+    func testSpacePairingWithholdsCommunityMetadataUntilBothDevicesConfirm() throws {
+        let (aInner, bInner) = LoopbackFrameChannel.pair()
+        let aTap = TappingChannel(inner: aInner)
+        let bTap = TappingChannel(inner: bInner)
+
+        let aSpace = RiotSpace(namespaceID: String(repeating: "aa", count: 32), title: "Riverside Tenants Union")
+        let bSpace = RiotSpace(namespaceID: String(repeating: "bb", count: 32), title: "Eastside Mutual Aid")
+        let aPairing = try makePairing(over: aTap, host: FakeNearbyHost(space: aSpace), peerName: "Copper Heron")
+        let bPairing = try makePairing(over: bTap, host: FakeNearbyHost(space: bSpace), peerName: "Amber Kite")
+
+        // Only device A's human has confirmed so far.
+        aPairing.begin(onDecision: { _ in }, onFailure: {})
+
+        // A has put a single frame on the wire and it is the opaque consent token.
+        // No announce, and nothing carrying A's community name or namespace.
+        XCTAssertEqual(aTap.sent.count, 1, "A disclosed more than a bare consent token before B confirmed")
+        XCTAssertTrue(PairConfirmCodec.isConfirmation(aTap.sent[0]))
+        for frame in aTap.sent {
+            XCTAssertThrowsError(try SpaceAnnounceCodec.decode(frame), "A leaked a decodable announce pre-confirmation")
+            XCTAssertNil(frame.range(of: Data(aSpace.title.utf8)), "A leaked its community name pre-confirmation")
+            XCTAssertNil(frame.range(of: Data(aSpace.namespaceID.utf8)), "A leaked its namespace pre-confirmation")
+        }
+        // B has confirmed nothing, so B has disclosed nothing at all.
+        XCTAssertTrue(bTap.sent.isEmpty, "B disclosed something before its own human confirmed")
+
+        // Now B's human confirms. Only now may either announce cross.
+        bPairing.begin(onDecision: { _ in }, onFailure: {})
+
+        XCTAssertTrue(
+            aTap.sent.contains { (try? SpaceAnnounceCodec.decode($0)) == aSpace },
+            "after mutual confirmation A must disclose its announce"
+        )
+        XCTAssertTrue(
+            bTap.sent.contains { (try? SpaceAnnounceCodec.decode($0)) == bSpace },
+            "after mutual confirmation B must disclose its announce"
+        )
+    }
+
+    /// A non-consent frame arriving in the confirmation phase is refused, never
+    /// interpreted — the same fail-closed strictness the announce decoder has.
+    func testSpacePairingFailsClosedOnANonConfirmationFrameBeforeDisclosure() throws {
+        let (aInner, bInner) = LoopbackFrameChannel.pair()
+        let aPairing = try makePairing(
+            over: TappingChannel(inner: aInner),
+            host: FakeNearbyHost(space: RiotSpace(namespaceID: String(repeating: "aa", count: 32), title: "A")),
+            peerName: "Copper Heron"
+        )
+        var failed = false
+        aPairing.begin(onDecision: { _ in XCTFail("must not decide before confirmation") }, onFailure: { failed = true })
+
+        // A hostile peer sends a real announce where a consent token is required.
+        let announce = try SpaceAnnounceCodec.encode(RiotSpace(namespaceID: String(repeating: "bb", count: 32), title: "B"))
+        try bInner.send(announce)
+
+        XCTAssertTrue(failed, "an announce in the confirmation phase must fail closed, not disclose or decide")
+    }
+
+    /// A sync session that has been stopped — the exact thing a community switch
+    /// does to the old coordinator — must NEVER commit a pending import. Today's
+    /// `addPreviewedContent` calls straight into `acceptImport`; this pins the
+    /// guard that makes a stopped session inert.
+    func testStoppedSyncSessionRefusesToCommitAPendingImport() throws {
+        let channels = LoopbackFrameChannel.pair()
+        let connection = NearbyConnection(bluetooth: channels.first, localAttempt: { nil })
+        connection.confirmPairing()
+        try connection.activate()
+        let session = FakeSyncBoundary(outbound: [], beginOutcome: .readyToPreview(count: 1))
+        let coordinator = SyncCoordinator(session: session, connection: connection, friendlyName: "Copper Heron")
+        coordinator.start()
+        XCTAssertEqual(coordinator.state, .preview(count: 1, name: "Copper Heron"))
+
+        // The community switches away: the owner stops the coordinator.
+        coordinator.stop()
+        // A racing "Add them" tap lands after the stop.
+        coordinator.addPreviewedContent()
+
+        XCTAssertEqual(session.acceptCalls, 0, "a stopped session committed a pending import — the wrong-community race")
+    }
+
+    /// The import-admission rule, on its own: an import may commit only into the
+    /// community whose session produced it. If the selected community has changed
+    /// (or gone) since the session opened, the import is refused, not repointed.
+    func testNearbyImportAdmissionFailsClosedWhenCommunityChanged() {
+        let owned = String(repeating: "aa", count: 32)
+        XCTAssertTrue(NearbyImportAdmission.permits(owned: owned, current: owned))
+        XCTAssertTrue(
+            NearbyImportAdmission.permits(owned: owned, current: owned.uppercased()),
+            "the same namespace in a different case is the same community"
+        )
+        XCTAssertFalse(
+            NearbyImportAdmission.permits(owned: owned, current: String(repeating: "bb", count: 32)),
+            "an import must never commit into a community it did not come from"
+        )
+        XCTAssertFalse(NearbyImportAdmission.permits(owned: owned, current: nil), "no selected community: refuse")
+        XCTAssertFalse(NearbyImportAdmission.permits(owned: nil, current: owned), "no owning session: refuse")
+    }
+
+    /// Denied Bluetooth / local-network permission offers a Settings deep link
+    /// (§4.7), and the link points at this app's own settings page.
+    func testDeniedNearbyPermissionOffersASettingsDeepLink() {
+        // A real, openable settings deep link — the §4.7 "Open Settings" action.
+        XCTAssertNotNil(NearbyPermissionRecovery.settingsURL)
+        XCTAssertFalse(NearbyPermissionRecovery.message.isEmpty)
+        // The copy explains what still works offline, never a raw permission error.
+        XCTAssertFalse(NearbyPermissionRecovery.message.lowercased().contains("error"))
+    }
 }
 
 private final class RecordingFrameChannel: FrameChannel {

@@ -256,6 +256,14 @@ private struct CommunityShellView: View {
     @StateObject private var composer: PostUpdateViewModel
     @StateObject private var people: PeopleSurfaceModel
 
+    /// The one community-scoped Nearby coordinator (nav design §"Nearby security
+    /// and lifecycle": "The selected community owns one community-scoped Nearby
+    /// coordinator"). It lives HERE, above the four routes, not inside the Nearby
+    /// route — so it survives Home/Tools/People/Nearby routing. When the shell is
+    /// recreated for a different community, this instance is torn down (its
+    /// callbacks cancelled on disappear) and the new community gets its own.
+    @StateObject private var nearby = NearbyTransportController()
+
     /// The tool running in the detail pane (macOS) / full-screen (iPhone), and
     /// the card that opened it, so focus returns there on close.
     @State private var runningTool: RiotSpaceApp?
@@ -299,6 +307,10 @@ private struct CommunityShellView: View {
     var body: some View {
         adaptiveShell
             .background(keyboardShortcuts)
+            // Leaving/switching this community cancels the old coordinator's
+            // pairing, transfer, and callbacks before the shell is rebuilt for the
+            // next community (nav design §"Nearby security and lifecycle").
+            .onDisappear { nearby.stop() }
             .sheet(item: $identitySheet) { destination in
                 switch destination {
                 case .yourProfile:
@@ -495,7 +507,7 @@ private struct CommunityShellView: View {
         case .people:
             PeopleView(model: people, onPostUpdate: { changeRoute(to: .home) })
         case .nearby:
-            ConnectionStatusView(model: model)
+            ConnectionStatusView(model: model, nearby: nearby)
         }
     }
 
@@ -796,8 +808,11 @@ private struct UnavailableProjector: NewswireContributorProjecting {
 
 private struct ConnectionStatusView: View {
     @ObservedObject var model: RiotAppModel
-    @StateObject private var nearby = NearbyTransportController()
+    /// Owned by `CommunityShellView` (community-scoped, survives routing); this
+    /// route only observes it.
+    @ObservedObject var nearby: NearbyTransportController
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.openURL) private var openURL
     @State private var inspecting: DiscoveredPhone?
     @State private var inspectingPerson: RiotPerson?
 
@@ -840,6 +855,34 @@ private struct ConnectionStatusView: View {
         }
     }
 
+    /// The §4.7 "Bluetooth/local-network denied" recovery: what still works
+    /// offline plus an Open Settings deep link — never a raw permission error.
+    private var permissionRecoveryCard: some View {
+        RiotCard {
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Nearby needs permission")
+                    .font(.riot(.body, size: 17, relativeTo: .headline))
+                    .foregroundStyle(RiotTheme.ink(for: colorScheme))
+                    .accessibilityAddTraits(.isHeader)
+                Text(NearbyPermissionRecovery.message)
+                    .font(.riot(.body, size: 14, relativeTo: .callout))
+                    .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
+                if let url = NearbyPermissionRecovery.settingsURL {
+                    Button("Open Settings") { openURL(url) }
+                        .buttonStyle(.riotPrimary)
+                        .frame(minHeight: 44)
+                        .accessibilityIdentifier("nearby-open-settings")
+                }
+            }
+        }
+        .accessibilityIdentifier("nearby-permission-denied")
+    }
+
+    private var inboundConfirmTitle: String {
+        if case let .confirm(name) = nearby.state { return "Accept connection from \(name)?" }
+        return ""
+    }
+
     @ViewBuilder
     private var connectedCard: some View {
         if let peer = nearby.connectedPeer {
@@ -867,6 +910,7 @@ private struct ConnectionStatusView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 RiotBadge(nearby.state.message, stamped: true)
+                if nearby.permissionDenied { permissionRecoveryCard }
                 connectedCard
                 RiotCard {
                     VStack(alignment: .leading, spacing: 14) {
@@ -969,6 +1013,19 @@ private struct ConnectionStatusView: View {
         .onChange(of: nearby.state) { _, state in
             guard case .nothingToShare = state, model.space != nil else { return }
             nearby.findNearby(host: model.nearbySpaceHost)
+        }
+        // A peer asked to pair. Discovery never auto-accepts — the human here must
+        // say yes before the connection is made or any community disclosed.
+        .confirmationDialog(
+            inboundConfirmTitle,
+            isPresented: Binding(
+                get: { if case .confirm = nearby.state { return true }; return false },
+                set: { if !$0 { nearby.cancelConnection() } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("Accept") { nearby.confirmConnection() }
+            Button("Decline", role: .cancel) { nearby.cancelConnection() }
         }
         .confirmationDialog(
             nearby.state.message,

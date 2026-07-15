@@ -106,6 +106,25 @@ class SyncCoordinatorTest {
     }
 
     @Test
+    fun stoppedCoordinatorRefusesToCommitAPendingImport() {
+        val channel = CoordinatorFrameChannel()
+        val bridge = RecordingSyncBridge(
+            receiveResults = ArrayDeque(listOf(SyncBridgeOutcome.ReadyToPreview(1))),
+        )
+        val coordinator = SyncCoordinator(NearbyConnection(channel, TransportKind.BLE), bridge, "Blue Kite")
+        coordinator.start()
+        channel.deliver(byteArrayOf(9))
+        assertEquals(NearbyUiState.UpdatesReady(1, "Blue Kite"), coordinator.state)
+
+        // A community switch stops the coordinator; a racing "Add them" lands after.
+        // A stopped session must never commit a pending import — fail closed.
+        coordinator.close()
+        coordinator.acceptImport()
+
+        assertTrue("a stopped session committed a pending import", !bridge.accepted)
+    }
+
+    @Test
     fun protocolFailureCollapsesToPlainLanguageAndDisconnects() {
         val channel = CoordinatorFrameChannel()
         val bridge = RecordingSyncBridge(receiveFailure = IllegalArgumentException("raw protocol detail"))
