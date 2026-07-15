@@ -139,7 +139,8 @@ class BindingSemanticsTest {
 
         val saved = store.load()!!
         val secondProfile = openLocalProfile()
-        secondProfile.joinPublicSpace(saved.space.toPublicSpace())
+        // Keyless in-memory reload: first join, no outgoing author to seal.
+        secondProfile.joinPublicSpace(saved.space.toPublicSpace(), ByteArray(0))
         saved.alerts.forEach { alert ->
             val preview = secondProfile.inspectBytes(alert.bundleBytes, "android://encrypted-reload")
             val eligibleIds = preview.eligibleEntries().map { it.entryId }

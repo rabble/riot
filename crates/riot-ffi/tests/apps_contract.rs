@@ -215,7 +215,7 @@ fn nearby_sync_carries_app_data_and_shared_app_without_fake_alert_rows() {
         .expect("share app");
 
     let receiver = open_local_profile().expect("receiver");
-    receiver.join_public_space(space).expect("join");
+    receiver.join_public_space(space, Vec::new()).expect("join");
     let (initiator, responder, review) = sync_to_review(&receiver, &sender);
     assert_eq!(review.kind, SyncOutcomeKind::ReviewImport);
     assert!(review.entries.is_empty(), "app entries are not fake alerts");
@@ -264,7 +264,7 @@ fn nearby_sync_mixes_alert_ui_with_app_entries_and_commits_both() {
         .expect("put");
 
     let receiver = open_local_profile().expect("receiver");
-    receiver.join_public_space(space).expect("join");
+    receiver.join_public_space(space, Vec::new()).expect("join");
     let (initiator, responder, review) = sync_to_review(&receiver, &sender);
     assert_eq!(review.kind, SyncOutcomeKind::ReviewImport);
     assert_eq!(review.entries, vec![signed_alert.entry.clone()]);
@@ -294,7 +294,7 @@ fn portable_app_only_review_can_plan_hidden_entries_without_fake_rows() {
         .unwrap();
 
     let receiver = open_local_profile().unwrap();
-    receiver.join_public_space(space).unwrap();
+    receiver.join_public_space(space, Vec::new()).unwrap();
     let preview = receiver.inspect_bytes(receipt, "portable".into()).unwrap();
     assert!(preview.eligible_entries().unwrap().is_empty());
     let accepted = preview.create_plan(Vec::new()).unwrap().accept().unwrap();
@@ -319,7 +319,7 @@ fn nearby_sync_reconciles_trust_and_revoke_for_the_same_organizer_identity() {
         .seal_identity(wrapping_key.clone())
         .expect("seal identity");
     let receiver = open_profile_from_sealed_identity(wrapping_key, sealed).expect("restore");
-    receiver.join_public_space(space).expect("join");
+    receiver.join_public_space(space, Vec::new()).expect("join");
 
     let starter =
         riot_core::apps::starter::verify_starter_catalog(riot_core::apps::starter::STARTER_CATALOG)
@@ -364,7 +364,9 @@ fn rejected_app_only_sync_never_commits_app_data() {
         .app_data_put(app.app_id.clone(), "items/a".into(), b"no".to_vec())
         .unwrap();
     let cancelled_receiver = open_local_profile().unwrap();
-    cancelled_receiver.join_public_space(space.clone()).unwrap();
+    cancelled_receiver
+        .join_public_space(space.clone(), Vec::new())
+        .unwrap();
     let (cancelled, cancelled_responder, review) = sync_to_review(&cancelled_receiver, &sender);
     assert!(review.entries.is_empty());
     cancelled.cancel().unwrap();
@@ -378,7 +380,7 @@ fn rejected_app_only_sync_never_commits_app_data() {
     );
 
     let receiver = open_local_profile().unwrap();
-    receiver.join_public_space(space).unwrap();
+    receiver.join_public_space(space, Vec::new()).unwrap();
     let (initiator, responder, review) = sync_to_review(&receiver, &sender);
     assert!(review.entries.is_empty());
     assert!(initiator.reject_import(9).unwrap().terminal);
@@ -436,7 +438,7 @@ fn app_overwrite_prunes_old_proof_and_exact_sync_id_limit_is_enforced() {
     ));
 
     let receiver = open_local_profile().unwrap();
-    receiver.join_public_space(space).unwrap();
+    receiver.join_public_space(space, Vec::new()).unwrap();
     let (initiator, responder, _) = sync_to_review(&receiver, &sender);
     accept_and_finish(&initiator, &responder);
     assert_eq!(
@@ -464,7 +466,7 @@ fn app_prefix_write_prunes_descendant_proofs_before_sync() {
     sender.open_sync_session().unwrap().cancel().unwrap();
 
     let receiver = open_local_profile().unwrap();
-    receiver.join_public_space(space).unwrap();
+    receiver.join_public_space(space, Vec::new()).unwrap();
     let (initiator, responder, _) = sync_to_review(&receiver, &sender);
     accept_and_finish(&initiator, &responder);
     assert_eq!(
@@ -669,6 +671,32 @@ fn install_returns_a_deterministic_app_id_and_rejects_garbage() {
         runtime.install_app(vec![0xff; 8], vec![0xff; 8]),
         Err(MobileError::AppRejected)
     ));
+}
+
+#[test]
+fn install_refuses_a_bundle_that_references_webrtc() {
+    // Risk 9: WebRTC egress bypasses the runtime URL-loader backstop, so a
+    // bundle that references it is refused at import — before it can ever be
+    // hosted or served. The refusal is by CONTENT: the script is hidden in a
+    // resource that names itself a stylesheet, and it is still refused.
+    let profile = open_local_profile().expect("profile");
+    let runtime = profile.app_runtime();
+
+    let (clean_manifest, clean_bundle) = manifest_and_bundle();
+    runtime
+        .install_app(clean_manifest, clean_bundle)
+        .expect("a clean bundle installs");
+
+    let (manifest_bytes, hostile_bundle) = manifest_and_bundle_with_resource(
+        b"body{color:red} /* new RTCPeerConnection({iceServers:[]}) */".to_vec(),
+    );
+    assert!(
+        matches!(
+            runtime.install_app(manifest_bytes, hostile_bundle),
+            Err(MobileError::AppRejected)
+        ),
+        "a WebRTC-referencing bundle must not install, regardless of resource labeling",
+    );
 }
 
 #[test]
@@ -892,7 +920,9 @@ fn app_write_never_replaces_an_active_portable_review() {
         .sign_draft(sender.create_draft_alert(alert_input()).unwrap().draft_id)
         .unwrap();
     let receiver = open_local_profile().unwrap();
-    receiver.join_public_space(space.clone()).unwrap();
+    receiver
+        .join_public_space(space.clone(), Vec::new())
+        .unwrap();
     let preview = receiver
         .inspect_bytes(signed.bundle_bytes, "portable".into())
         .unwrap();
@@ -1239,7 +1269,9 @@ fn app_data_persists_across_a_fresh_profile_via_replay() {
     assert!(!receipt.is_empty(), "receipt carries the committed bundle");
 
     let reopened = open_local_profile().expect("fresh profile");
-    reopened.join_public_space(space).expect("join same space");
+    reopened
+        .join_public_space(space, Vec::new())
+        .expect("join same space");
     let reopened_runtime = reopened.app_runtime();
     reopened_runtime
         .replay_app_data_bundle(receipt)
@@ -1332,7 +1364,7 @@ fn a_carried_app_installs_from_the_store_exactly_as_a_direct_install_would() {
 
     // The app arrives at a neighbour who has never held its manifest or bundle.
     let receiver = open_local_profile().expect("receiver");
-    receiver.join_public_space(space).expect("join");
+    receiver.join_public_space(space, Vec::new()).expect("join");
     let (initiator, responder, review) = sync_to_review(&receiver, &sender);
     assert_eq!(review.kind, SyncOutcomeKind::ReviewImport);
     accept_and_finish(&initiator, &responder);
@@ -1791,7 +1823,9 @@ fn namespace_replacement_fails_stale_app_execution_access() {
     let other_space = other
         .create_public_space("Elsewhere".into())
         .expect("space");
-    profile.join_public_space(other_space).expect("join");
+    profile
+        .join_public_space(other_space, Vec::new())
+        .expect("join");
 
     assert!(
         matches!(

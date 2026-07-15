@@ -315,7 +315,7 @@ fn a_claimed_name_syncs_to_a_peer_and_resolves_there() {
     let ana_id = subspace_id(&sender).to_vec();
 
     let receiver = open_local_profile().expect("receiver");
-    receiver.join_public_space(space).expect("join");
+    receiver.join_public_space(space, Vec::new()).expect("join");
 
     // Before sync the receiver has never heard of Ana — and still renders her.
     let unknown = receiver

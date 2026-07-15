@@ -195,7 +195,7 @@ final class CommunityChooserTests: XCTestCase {
         // A second namespace, minted by a throwaway profile, joined as a member.
         let other = try openLocalProfile()
         let b = try other.createPublicSpace(title: "Community B")
-        _ = try profile.joinPublicSpace(space: b)
+        _ = try profile.joinPublicSpace(space: b, wrappingKey: key)
         try profile.persistCommunities(wrappingKey: key)
 
         // Both communities are now cached in the registry. Measure a round-trip

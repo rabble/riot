@@ -284,9 +284,13 @@ public final class RiotProfileRepository {
                 // is idempotent because the entries are content-addressed.
                 _ = try profile.loadDemoSpace(bytes: demoBundle)
             } else {
-                _ = try profile.joinPublicSpace(
-                    space: PublicSpace(namespaceId: space.namespaceID, title: space.title, isPublic: true)
-                )
+                _ = try withWrappingKey(from: keyStore) { wrappingKey in
+                    try profile.joinPublicSpace(
+                        space: PublicSpace(
+                            namespaceId: space.namespaceID, title: space.title, isPublic: true),
+                        wrappingKey: wrappingKey
+                    )
+                }
             }
             for alert in persisted.alerts {
                 let preview = try profile.inspectBytes(bytes: alert.bundle, route: "protected-local-reload")
@@ -418,14 +422,23 @@ public final class RiotProfileRepository {
             }
             return
         }
-        let joined = try profile.joinPublicSpace(
-            space: PublicSpace(namespaceId: space.namespaceID, title: space.title, isPublic: true)
-        )
+        // ALWAYS the 32-byte Keychain wrapping key (never an empty/keyless key):
+        // `withWrappingKey` loads-or-creates it and guards `count == 32`, so a
+        // real shipping user's join seals the displaced author INLINE and never
+        // reaches core's keyless unsealed-parking fallback (Risk 13). The keyless
+        // path exists only for ephemeral `open_local_profile()` test/demo builds.
+        let joined = try Self.withWrappingKey(from: keyStore) { wrappingKey in
+            try profile.joinPublicSpace(
+                space: PublicSpace(
+                    namespaceId: space.namespaceID, title: space.title, isPublic: true),
+                wrappingKey: wrappingKey
+            )
+        }
         persisted.space = RiotSpace(namespaceID: joined.namespaceId, title: joined.title)
         persisted.sealedIdentity = try sealCurrentIdentity()
         try storage.save(persisted)
-        // Join parks the joined community's author unsealed in the registry; seal
-        // it now so the unsealed-in-RAM window is minimal (Risk 13).
+        // The join already sealed any displaced author inline; this flush then
+        // seals the active author and persists the registry for durability.
         try? persistCommunities()
         // The join just REGENERATED the author (see above), so the profile card
         // written under the old subspace is orphaned: this person would appear to
