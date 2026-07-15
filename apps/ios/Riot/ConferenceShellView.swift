@@ -255,6 +255,7 @@ private struct CommunityShellView: View {
     /// switches. Rebuilt only when the shell is recreated for a new community.
     @StateObject private var composer: PostUpdateViewModel
     @StateObject private var people: PeopleSurfaceModel
+    @StateObject private var newswire: NewswireSurfaceModel
 
     /// The one community-scoped Nearby coordinator (nav design §"Nearby security
     /// and lifecycle": "The selected community owns one community-scoped Nearby
@@ -297,6 +298,17 @@ private struct CommunityShellView: View {
         _people = StateObject(wrappedValue: PeopleSurfaceModel(
             projector: projector,
             spaceDescriptorEntryID: community.newswireDescriptorEntryID ?? ""
+        ))
+
+        let wireProjector: NewswireProjecting = model.profileRepository ?? UnavailableWireProjector()
+        let editor: NewswireEditorialActing = model.profileRepository ?? UnavailableEditor()
+        _newswire = StateObject(wrappedValue: NewswireSurfaceModel(
+            projector: wireProjector,
+            editor: editor,
+            spaceDescriptorEntryID: community.newswireDescriptorEntryID ?? "",
+            communityName: community.name,
+            myKeyHex: me.id,
+            roster: community.editorialRoster
         ))
     }
 
@@ -500,6 +512,7 @@ private struct CommunityShellView: View {
             HomeRouteView(
                 model: model,
                 composer: composer,
+                newswire: newswire,
                 onOpenTool: openTool
             )
         case .tools:
@@ -569,9 +582,9 @@ private struct CommunityShellView: View {
 private struct HomeRouteView: View {
     @ObservedObject var model: RiotAppModel
     @ObservedObject var composer: PostUpdateViewModel
+    @ObservedObject var newswire: NewswireSurfaceModel
     let onOpenTool: (RiotSpaceApp, String) -> Void
     @Environment(\.colorScheme) private var colorScheme
-    @State private var inspecting: RiotEntry?
 
     private var shortcuts: [RiotSpaceApp] { HomeShortcuts.deterministic(from: model.apps) }
 
@@ -579,15 +592,16 @@ private struct HomeRouteView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 shortcutsCard
-                updatesSection
+                // The collective newswire — Front page, Open wire, and the
+                // always-public Editorial history — is the answer to "what is
+                // happening here?" It reads the same core projection every platform
+                // does, so a reader sees the identical front page as its peers.
+                NewswireSurfaceView(model: newswire)
                 PostUpdateView(model: composer)
             }
             .padding(20)
         }
         .riotHeader(eyebrow: "Community", model.space?.title ?? "Home")
-        .sheet(item: $inspecting) { entry in
-            AlertDetailView(entry: entry, onClose: { inspecting = nil })
-        }
     }
 
     @ViewBuilder
@@ -608,37 +622,6 @@ private struct HomeRouteView: View {
                         }
                         .buttonStyle(.riotSecondary)
                         .accessibilityIdentifier("home-shortcut-\(app.name)")
-                    }
-                }
-            }
-        }
-    }
-
-    @ViewBuilder
-    private var updatesSection: some View {
-        if model.entries.isEmpty {
-            ShellRecoveryInline(state: .noUpdates, onPrimary: {}, onSecondary: { model.select(.nearby) })
-        } else {
-            RiotCard {
-                VStack(alignment: .leading, spacing: 12) {
-                    eyebrow("What is happening")
-                    ForEach(model.entries) { entry in
-                        Button { inspecting = entry } label: {
-                            VStack(alignment: .leading, spacing: 6) {
-                                Text(entry.headline)
-                                    .font(.riot(.body, size: 17, relativeTo: .headline))
-                                    .foregroundStyle(RiotTheme.ink(for: colorScheme))
-                                if entry.aiAssisted {
-                                    RiotBadge("AI-assisted · human reviewed and signed")
-                                }
-                                Text("Created \(Date(timeIntervalSince1970: TimeInterval(entry.createdAt)), style: .relative)")
-                                    .font(.riot(.mono, size: 11, relativeTo: .caption2))
-                                    .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
-                            }
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityIdentifier("update-\(entry.entryID)")
                     }
                 }
             }
@@ -800,6 +783,24 @@ private struct UnavailablePublisher: NewswirePostPublishing {
 
 private struct UnavailableProjector: NewswireContributorProjecting {
     func projectNewswireContributors(spaceDescriptorEntryID: String) throws -> [NewswireContributor] {
+        throw RepositoryError.profileClosed
+    }
+}
+
+private struct UnavailableWireProjector: NewswireProjecting {
+    func projectNewswire(spaceDescriptorEntryID: String) throws -> NewswireProjectionView {
+        throw RepositoryError.profileClosed
+    }
+}
+
+private struct UnavailableEditor: NewswireEditorialActing {
+    func createNewswireEditorialAction(
+        spaceDescriptorEntryID: String,
+        targetEntryID: String,
+        kind: NewswireEditorialActionKind,
+        reason: String?,
+        correctionText: String?
+    ) throws -> NewswireSignedRecord {
         throw RepositoryError.profileClosed
     }
 }
@@ -1041,63 +1042,6 @@ private struct ConnectionStatusView: View {
             if case .joinSpace = state,
                ProcessInfo.processInfo.environment["RIOT_AUTO_CONFIRM"] == "1" {
                 nearby.confirmJoinSpace()
-            }
-        }
-    }
-}
-
-// MARK: - Update detail
-
-/// The full signed detail behind a Home update: what it says, when it is good
-/// for, and — only if asked — the identifiers that prove it. `AlertDetail`
-/// (RiotKit) owns what appears where, so the rule that full ids stay behind
-/// **Technical details** is pinned by tests rather than by this view.
-private struct AlertDetailView: View {
-    let entry: RiotEntry
-    let onClose: () -> Void
-    @Environment(\.colorScheme) private var colorScheme
-    @State private var showingTechnical = false
-
-    private var detail: AlertDetail { AlertDetail(entry: entry) }
-
-    var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
-                Text(detail.headline)
-                    .font(.riot(.body, size: 22, relativeTo: .largeTitle))
-                    .foregroundStyle(RiotTheme.ink(for: colorScheme))
-                if detail.aiAssisted {
-                    RiotBadge("AI-assisted · human reviewed and signed")
-                }
-                RiotCard {
-                    VStack(alignment: .leading, spacing: 10) {
-                        ForEach(detail.summary, id: \.label) { row in
-                            IdentifierRow(label: row.label, value: row.value)
-                        }
-                    }
-                }
-                DisclosureGroup(isExpanded: $showingTechnical) {
-                    RiotCard {
-                        VStack(alignment: .leading, spacing: 10) {
-                            ForEach(detail.technical, id: \.label) { row in
-                                IdentifierRow(label: row.label, value: row.value)
-                            }
-                        }
-                    }
-                    .padding(.top, 10)
-                } label: {
-                    Text(AlertDetail.technicalDisclosureTitle)
-                        .font(.riot(.mono, size: 12, relativeTo: .caption))
-                        .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
-                }
-                .accessibilityIdentifier("alert-technical-details")
-            }
-            .padding(20)
-        }
-        .riotHeader(eyebrow: "Signed update", detail.headline)
-        .toolbar {
-            ToolbarItem(placement: .confirmationAction) {
-                Button("Close", action: onClose)
             }
         }
     }

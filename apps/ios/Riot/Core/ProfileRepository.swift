@@ -988,6 +988,30 @@ public extension RiotProfileRepository {
         ))
     }
 
+    /// Signs an editorial action (feature, verify, correct, hide, tombstone,
+    /// retract) on an existing post, importing it into the store. Core is the
+    /// authorization boundary: it REFUSES to sign an action whose signer is not in
+    /// the descriptor's editorial roster, so this THROWS for a non-editor — UI
+    /// visibility is never the gate. The reason/replacement text must already obey
+    /// the closed field table (the surface validates first, and core validates
+    /// again).
+    @discardableResult
+    func createNewswireEditorialAction(
+        spaceDescriptorEntryID: String,
+        targetEntryID: String,
+        kind: NewswireEditorialActionKind,
+        reason: String?,
+        correctionText: String?
+    ) throws -> NewswireSignedRecord {
+        try profile.createNewswireEditorialAction(input: NewswireEditorialActionInput(
+            spaceDescriptorEntryId: spaceDescriptorEntryID,
+            targetEntryId: targetEntryID,
+            kind: kind,
+            reason: reason,
+            correctionText: correctionText
+        ))
+    }
+
     /// The collective view of a newswire space: the open wire (all non-expired
     /// posts, newest-first) and the front page (ordinary posts with an active
     /// Feature action). `Hidden`/`Tombstoned` posts arrive with `body == nil`.
@@ -1043,6 +1067,10 @@ extension RiotProfileRepository: NewswireSpaceCreating {
 }
 
 extension RiotProfileRepository: NewswireProjecting {}
+
+/// The live signer for the editorial surface — it hands the action straight to
+/// core, whose roster check (not any UI state) is what actually authorizes it.
+extension RiotProfileRepository: NewswireEditorialActing {}
 
 private extension RiotEntry {
     init(_ entry: CurrentEntry) {

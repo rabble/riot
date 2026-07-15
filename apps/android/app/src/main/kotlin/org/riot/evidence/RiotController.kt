@@ -11,6 +11,8 @@ import uniffi.riot_ffi.AlertUrgency
 import uniffi.riot_ffi.CurrentEntry
 import uniffi.riot_ffi.MobileImportPreview
 import uniffi.riot_ffi.MobileProfile
+import uniffi.riot_ffi.NewswireEditorialActionInput
+import uniffi.riot_ffi.NewswireEditorialActionKind
 import uniffi.riot_ffi.NewswireOperationalProfile
 import uniffi.riot_ffi.NewswirePostInput
 import uniffi.riot_ffi.NewswireProjectionView
@@ -158,6 +160,24 @@ class RiotController(filesDir: File) : AutoCloseable {
             operationalProfile,
             aiAssisted,
         ),
+    )
+
+    /**
+     * Signs an editorial action (feature, verify, correct, hide, tombstone,
+     * retract) on an existing post. Core is the authorization boundary: it REFUSES
+     * to sign an action whose signer is not in the descriptor's editorial roster,
+     * so this THROWS for a non-editor — UI visibility is never the gate. The
+     * reason/replacement text must obey the closed field table (see
+     * [EditorialActionValidator]); core validates it again.
+     */
+    fun createNewswireEditorialAction(
+        spaceDescriptorEntryId: String,
+        targetEntryId: String,
+        kind: NewswireEditorialActionKind,
+        reason: String?,
+        correctionText: String?,
+    ): NewswireSignedRecord = profile.createNewswireEditorialAction(
+        NewswireEditorialActionInput(spaceDescriptorEntryId, targetEntryId, kind, reason, correctionText),
     )
 
     fun projectNewswire(spaceDescriptorEntryId: String): NewswireProjectionView =

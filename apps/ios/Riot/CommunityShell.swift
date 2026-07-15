@@ -25,6 +25,14 @@ public struct CommunityContext: Equatable, Sendable, Identifiable {
     /// appear at all.
     public let isOrganizer: Bool
 
+    /// The founding editorial roster this device knows for the community, as hex
+    /// subspace ids — exactly what was passed to `createNewswireSpace`. It is known
+    /// only for a community created on this device; a joined or loaded community
+    /// carries `nil` (Risk 11: no descriptor re-hydration), so the editorial
+    /// control stays hidden and any attempt fails closed at signing. This drives
+    /// UI VISIBILITY only — core's roster check is the authorization boundary.
+    public let editorialRoster: [String]?
+
     /// Communities are addressed by their namespace; a re-render keyed on this
     /// stays stable across a name edit.
     public var id: String { namespaceID }
@@ -33,12 +41,14 @@ public struct CommunityContext: Equatable, Sendable, Identifiable {
         name: String,
         namespaceID: String,
         newswireDescriptorEntryID: String?,
-        isOrganizer: Bool
+        isOrganizer: Bool,
+        editorialRoster: [String]? = nil
     ) {
         self.name = name
         self.namespaceID = namespaceID
         self.newswireDescriptorEntryID = newswireDescriptorEntryID
         self.isOrganizer = isOrganizer
+        self.editorialRoster = editorialRoster
     }
 }
 
@@ -395,7 +405,11 @@ public struct CommunityCreationCoordinator {
             newswireDescriptorEntryID: record.entryId,
             // The founder signs the descriptor under their own namespace, so they
             // are the recognized organizer of the community they just created.
-            isOrganizer: true
+            isOrganizer: true,
+            // The founding roster is known here (this device just chose it), so
+            // Home can offer the editorial control to a founder who kept editorial
+            // authority. An empty roster is core's "founder alone" default.
+            editorialRoster: request.editorialRoster
         )
     }
 }
