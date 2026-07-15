@@ -25,7 +25,7 @@ Plan: `docs/superpowers/plans/2026-07-14-community-first-shell.md`
 
 ## Known-red (do NOT report as working)
 
-- **`TwoPeerNearbySyncTests` — 2 failures on `main`.** Bonjour two-peer sync: "Bob did not receive the item Alice added," 60s timeout. Reproduces identically at clean HEAD in an isolated worktree, so it predates `cb90b14`. Note `5d021de` is titled "fix(sync): resolve two-device double-start bug" — that fix did **not** make two-peer sync pass. Per the plan's physical-radio honesty rule: state proven vs assumed paths separately, and never claim two-peer sync works.
+- **`TwoPeerNearbySyncTests` — FIXED 2026-07-15 (`7242a0d`).** Was a 60s deadlock, now passes ~2.4s (3/3 runs, not flaky); full iOS RiotKit is **297/0 — no more known-red**. Root cause was a real sync deadlock, not a radio limit: `NearbyTransportController.shouldStartSync` chose the initiator by `local < remote` namespace comparison, but two peers in the SAME community have EQUAL namespaces → both `answer()`, both hang in `gettingLatest`. Fixed by breaking the tie on connection role when namespaces are equal (dialer starts, accepter answers) — matching what Android already did (`MainActivity.kt:100`). **Honesty caveat retained:** this proves the sync LOGIC over two controllers on one Mac via Bonjour; it does NOT prove BLE between two physical iPhones (no device rig). State proven (logic / on-Mac Bonjour) vs assumed (physical BLE radio) separately.
 - **Rust coverage gate is RED** (94.60% vs required 100%). P3 is closing the 283-line baseline; the other 186 lines are deliberately deferred to the units that rewrite those files (0B, 1A).
 
 ## Note for other sessions
