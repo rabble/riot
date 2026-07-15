@@ -20,7 +20,7 @@
 
 ## File Structure
 
-- **Create** `crates/riot-core/src/willow/masthead.rs` — `OwnedMasthead` (owned root + owner subspace secret): generate, `owner_write_capability`, `delegate_section`, seal/open. One responsibility: owner-side owned-namespace identity + capability issuance.
+- **Create** `crates/riot-core/src/willow/masthead.rs` — `OwnedMasthead` (owned root + owner subspace secret): generate, `owner_write_capability`, `delegate_section`, `authorise_owner_entry`, seal/open. One responsibility: owner-side owned-namespace identity + capability issuance + owner signing.
 - **Create** `crates/riot-core/src/willow/site_paths.rs` — reserved path constants + helpers (`articles_prefix`, `manifest_path`, `mod_prefix`, `is_under_articles`). Shared by Units 0–4.
 - **Modify** `crates/riot-core/src/willow/mod.rs` — declare the two new modules; re-export `OwnedMasthead` and the path helpers; add new `WillowError` variants.
 - **Modify** `crates/riot-core/src/willow/owned.rs` — add a `pub(crate) fn into_parts` / accessor so `OwnedMasthead` can consume the root secret to mint caps (today `namespace_secret` is private and `#[allow(dead_code)]`).
@@ -59,18 +59,20 @@ pub const MOD_COMPONENT: &[u8] = b"mod";
 mod tests {
     use super::*;
 
+    // NOTE: `Path::from_slices` returns `Result<Path, PathError>` in willow25
+    // 0.6.0-alpha.3 — every call site `.expect(...)`s it.
     #[test]
     fn articles_path_is_under_articles_but_manifest_is_not() {
-        let article = Path::from_slices(&[ARTICLES_COMPONENT, b"news", b"post-1"]);
-        let manifest = Path::from_slices(&[MANIFEST_COMPONENT]);
+        let article = Path::from_slices(&[ARTICLES_COMPONENT, b"news", b"post-1"]).expect("path");
+        let manifest = Path::from_slices(&[MANIFEST_COMPONENT]).expect("path");
         assert!(is_under_articles(&article), "article path must be under /articles");
         assert!(!is_under_articles(&manifest), "manifest path must NOT be under /articles");
     }
 
     #[test]
     fn empty_and_mod_paths_are_not_under_articles() {
-        let empty = Path::from_slices(&[]);
-        let moderation = Path::from_slices(&[MOD_COMPONENT, b"revoke-1"]);
+        let empty = Path::from_slices(&[]).expect("path");
+        let moderation = Path::from_slices(&[MOD_COMPONENT, b"revoke-1"]).expect("path");
         assert!(!is_under_articles(&empty));
         assert!(!is_under_articles(&moderation));
     }
@@ -239,7 +241,7 @@ pub fn generate() -> Result<Self, WillowError> {
     let root = OwnedRoot::generate()?;
     let mut seed = [0u8; 32];
     os_fill(&mut seed).map_err(|_| WillowError::EntropyUnavailable)?;
-    let owner_subspace_secret = SubspaceSecret::from_bytes(seed);
+    let owner_subspace_secret = SubspaceSecret::from_bytes(&seed); // takes &[u8;32]
     seed.iter_mut().for_each(|b| *b = 0);
     Ok(Self { root, owner_subspace_secret })
 }
@@ -328,22 +330,22 @@ git commit -m "feat(willow): OwnedMasthead::owner_write_capability (new_owned)"
 Add to `masthead.rs` tests:
 ```rust
 use willow25::groupings::area::Area;
-use willow25::groupings::range::Range; // TimeRange = Range<Timestamp>; match the real path
+use willow25::prelude::TimeRange; // TimeRange = WillowRange<Timestamp>, flat-exported; verify path
 use willow25::paths::Path;
 use crate::willow::site_paths::ARTICLES_COMPONENT;
 
-fn a_time_range() -> Range<u64> {
-    Range::new(0, u64::MAX) // [now, expiry] stand-in; real callers pass a bounded window
+fn a_time_range() -> TimeRange {
+    TimeRange::new(0, u64::MAX) // [now, expiry] stand-in; real callers pass a bounded window
 }
 
 #[test]
 fn delegate_section_under_articles_succeeds_and_scopes_receiver() {
     let m = OwnedMasthead::generate().unwrap();
-    let editor = SubspaceSecret::from_bytes([7u8; 32]);
+    let editor = SubspaceSecret::from_bytes(&[7u8; 32]);
     let editor_id = editor.corresponding_subspace_id();
     let area = Area::new(
         Some(editor_id),
-        Path::from_slices(&[ARTICLES_COMPONENT, b"news"]),
+        Path::from_slices(&[ARTICLES_COMPONENT, b"news"]).expect("path"),
         a_time_range(),
     );
     let cap = m.delegate_section(editor_id, area).expect("delegation under /articles must succeed");
@@ -355,12 +357,12 @@ fn delegate_section_under_articles_succeeds_and_scopes_receiver() {
 #[test]
 fn delegate_escaping_articles_is_refused() {
     let m = OwnedMasthead::generate().unwrap();
-    let editor = SubspaceSecret::from_bytes([9u8; 32]);
+    let editor = SubspaceSecret::from_bytes(&[9u8; 32]);
     let editor_id = editor.corresponding_subspace_id();
     // path targets /manifest — MUST be refused at issuance (belt).
     let bad_area = Area::new(
         Some(editor_id),
-        Path::from_slices(&[crate::willow::site_paths::MANIFEST_COMPONENT]),
+        Path::from_slices(&[crate::willow::site_paths::MANIFEST_COMPONENT]).expect("path"),
         a_time_range(),
     );
     assert!(
@@ -422,7 +424,103 @@ git commit -m "feat(willow): OwnedMasthead::delegate_section with reserved-path 
 
 ---
 
-## Task 6: Seal / open the owned masthead root secret
+## Task 6: Sign/verify round-trip — owner authorises; delegated cap is scope-restricted
+
+This is the spec §8.1 Unit 0 RED case "sign/verify round-trip" and §7 bullet 3 ("sign records with the owned root or a delegated cap"). It proves the minted caps actually *authorise* — not just that they have the right shape — and that a delegated `/articles` editor cap **cryptographically cannot** author a `/manifest` entry (the reserved-path model enforced at the cap level, complementing the issuance belt in Task 5). Uses the raw willow25 `entry.into_authorised_entry(&cap, &subspace_secret)` path (the repo's `authorise_entry` helper hard-codes a *communal* cap, so it can't be reused here) and the reusable `verify_entry` verifier (`mod.rs:122`).
+
+**Files:**
+- Modify: `crates/riot-core/src/willow/masthead.rs` (add `authorise_owner_entry` + tests)
+
+- [ ] **Step 1: Write the failing test**
+
+Add to `masthead.rs` tests (imports at top of the test module):
+```rust
+use crate::willow::{verify_entry, MANIFEST_COMPONENT};
+use willow25::entry::Entry;
+
+fn entry_in(namespace: &willow25::namespace::NamespaceId, subspace: SubspaceId, path: &[&[u8]]) -> Entry {
+    Entry::builder()
+        .namespace_id(namespace.clone())
+        .subspace_id(subspace)
+        .path(Path::from_slices(path).expect("path"))
+        .timestamp(1_000u64)
+        .payload(b"payload-bytes")
+        .build()
+}
+
+#[test]
+fn owner_capability_authorises_and_verifies() {
+    let m = OwnedMasthead::generate().unwrap();
+    // owner may write anywhere, including /manifest (owner cap area == full)
+    let entry = entry_in(m.namespace_id(), m.owner_subspace_id(), &[MANIFEST_COMPONENT]);
+    let authorised = m.authorise_owner_entry(entry.clone()).expect("owner authorises");
+    assert!(verify_entry(&entry, authorised.authorisation_token()), "owner-signed entry must verify");
+}
+
+#[test]
+fn delegated_editor_can_write_articles_but_not_manifest() {
+    let m = OwnedMasthead::generate().unwrap();
+    let editor = SubspaceSecret::from_bytes(&[11u8; 32]);
+    let editor_id = editor.corresponding_subspace_id();
+    let area = Area::new(
+        Some(editor_id),
+        Path::from_slices(&[ARTICLES_COMPONENT, b"news"]).expect("path"),
+        a_time_range(),
+    );
+    let editor_cap = m.delegate_section(editor_id, area).expect("delegate");
+
+    // POSITIVE: an entry under /articles/news, signed by the editor, authorises.
+    let good = entry_in(m.namespace_id(), editor_id, &[ARTICLES_COMPONENT, b"news", b"post-1"]);
+    let authorised = good.clone()
+        .into_authorised_entry(&editor_cap, &editor)
+        .expect("editor authorises under /articles");
+    assert!(verify_entry(&good, authorised.authorisation_token()));
+
+    // NEGATIVE: the SAME editor cap cannot author a /manifest entry (outside granted area).
+    let bad = entry_in(m.namespace_id(), editor_id, &[MANIFEST_COMPONENT]);
+    assert!(
+        bad.into_authorised_entry(&editor_cap, &editor).is_err(),
+        "a delegated /articles cap must NOT authorise a /manifest write"
+    );
+}
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `cargo test -p riot-core willow::masthead::tests -- --nocapture`
+Expected: FAIL — `no method authorise_owner_entry`.
+
+- [ ] **Step 3: Write minimal implementation**
+
+Add to `impl OwnedMasthead` (and `use willow25::authorisation::AuthorisedEntry;` + `use willow25::entry::Entry;` at the top of `masthead.rs`):
+```rust
+/// Sign an entry as the site owner (owner cap, granted `Area::full()`).
+/// The signer is the owner's SubspaceSecret — the namespace secret is only used
+/// when *minting* the cap, never when authorising an entry.
+pub fn authorise_owner_entry(&self, entry: Entry) -> Result<AuthorisedEntry, WillowError> {
+    entry
+        .into_authorised_entry(&self.owner_write_capability(), &self.owner_subspace_secret)
+        .map_err(|_| WillowError::DoesNotAuthorise)
+}
+```
+
+> Confirm the `AuthorisedEntry` / `Entry` import paths against how `mod.rs` re-exports them (`pub use willow25::...`), and that `authorised.authorisation_token()` is the accessor `verify_entry` expects (`mod.rs:122` + `entry.rs:94`). The negative case relies on `into_authorised_entry` returning `Err(DoesNotAuthorise)` when the path is outside the cap's granted area — confirmed against willow25 `entry.rs:190` + `does_authorise` (`authorisation_token.rs:231`).
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Run: `cargo test -p riot-core willow::masthead::tests -- --nocapture`
+Expected: PASS (both new tests).
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add crates/riot-core/src/willow/masthead.rs
+git commit -m "feat(willow): owner entry signing + sign/verify round-trip (editor scope-restricted)"
+```
+
+---
+
+## Task 7: Seal / open the owned masthead root secret
 
 **Files:**
 - Modify: `crates/riot-core/src/willow/masthead.rs`
@@ -511,7 +609,7 @@ git commit -m "feat(willow): seal/open OwnedMasthead root secret (owned envelope
 
 ---
 
-## Task 7: Integration test — full owner lifecycle
+## Task 8: Integration test — full owner lifecycle
 
 **Files:**
 - Create: `crates/riot-core/tests/owned_masthead.rs`
@@ -548,6 +646,14 @@ fn owner_lifecycle_mint_delegate_seal_restore() {
     let editor_cap = m.delegate_section(editor_id, area).expect("delegate");
     assert_eq!(editor_cap.receiver(), &editor_id);
 
+    // sign/verify: owner authorises a manifest write; editor cap does not
+    let owner_entry = Entry::builder()
+        .namespace_id(m.namespace_id().clone())
+        .subspace_id(m.owner_subspace_id())
+        .path(Path::from_slices(&[MANIFEST_COMPONENT]).expect("path"))
+        .timestamp(1u64).payload(b"manifest-bytes").build();
+    assert!(m.authorise_owner_entry(owner_entry).is_ok(), "owner authorises /manifest");
+
     // seal + restore
     let key = [0x77; 32];
     let sealed = m.seal(&key).unwrap();
@@ -556,13 +662,14 @@ fn owner_lifecycle_mint_delegate_seal_restore() {
     assert_eq!(restored.owner_subspace_id(), m.owner_subspace_id());
 }
 ```
+(Add imports: `use riot_core::willow::MANIFEST_COMPONENT;` and `use willow25::entry::Entry;`.)
 
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `cargo test -p riot-core --test owned_masthead -- --nocapture`
-Expected: FAIL until all prior tasks are merged (should PASS once Tasks 1–6 are in; this test is the guard that they compose).
+Expected: FAIL until all prior tasks are merged (should PASS once Tasks 1–7 are in; this test is the guard that they compose).
 
-- [ ] **Step 3: (no new impl)** — this task is a composition guard; if it fails, the defect is in Tasks 1–6, fix there.
+- [ ] **Step 3: (no new impl)** — this task is a composition guard; if it fails, the defect is in Tasks 1–7, fix there.
 
 - [ ] **Step 4: Run test to verify it passes**
 
@@ -578,7 +685,7 @@ git commit -m "test(willow): owner lifecycle integration (mint/delegate/seal/res
 
 ---
 
-## Task 8: FFI surface — create site, issue delegation, restore
+## Task 9: FFI surface — create site, restore
 
 **Files:**
 - Create: `crates/riot-ffi/src/site_ffi.rs`
@@ -689,7 +796,7 @@ git commit -m "feat(ffi): create/restore owned site (sealed root, no secrets acr
 
 ---
 
-## Task 9: Workspace gates
+## Task 10: Workspace gates
 
 - [ ] **Step 1: fmt + clippy + full test**
 
@@ -716,10 +823,10 @@ git add -A && git commit -m "test(willow): coverage top-up for owned masthead"
 
 ## Self-Review
 
-**Spec coverage (§7 Owner-side capability plumbing):** mint owned write cap ✅ Task 4; issue section-scoped delegations ✅ Task 5; hard-refuse areas escaping `/articles/` ✅ Task 5 (belt) + noted suspenders in Units 1–2; sign records with owned root ✅ (owner cap + owner subspace secret in place; entry-signing is exercised by Unit 1/2 which consume `OwnedMasthead`); FFI ✅ Task 8; root secret at-rest sealed (keystore-backed via native wrapping key), never plaintext, never crosses FFI unsealed ✅ Task 6 + Task 8. Delegation-issuance FFI explicitly deferred to Unit 6 with rationale.
+**Spec coverage (§7 Owner-side capability plumbing + §8.1 Unit 0 RED cases):** mint owned write cap ✅ Task 4; issue section-scoped delegations ✅ Task 5; hard-refuse areas escaping `/articles/` (issuance belt) ✅ Task 5; **sign/verify round-trip** ✅ **Task 6** (`authorise_owner_entry` signs with the owner cap and `verify_entry` confirms it authorises; a delegated `/articles` editor cap is proven to authorise a `/articles` write and to be *rejected* for a `/manifest` write — the reserved-path model enforced cryptographically, the suspenders to Task 5's belt); FFI create/restore ✅ Task 9 (delegation-issuance FFI deferred to Unit 6 with rationale: needs the UI-driven invite handshake); root secret at-rest sealed (keystore-backed via native wrapping key), never plaintext, never crosses FFI unsealed ✅ Task 7 + Task 9.
 
-**Placeholder scan:** one intentional deferral — the `todo_seal` prose in Task 6 Step 3 points at the concrete `identity.rs` crypto to copy; flagged "do not leave in committed code." All other steps carry real code.
+**Placeholder scan:** one intentional deferral — the `todo_seal` prose in Task 7 Step 3 points at the concrete `identity.rs` crypto to copy; flagged "do not leave in committed code." All other steps carry real code.
 
-**Type consistency:** `OwnedMasthead` methods (`namespace_id`, `owner_subspace_id`, `owner_write_capability`, `delegate_section`, `seal`, `open_sealed`) are used consistently across Tasks 3–8 and the integration test. `is_under_articles(&Path)` (Task 1) is the single gate reused in Task 5 and the integration test. New `WillowError` variants (`DelegationAreaEscapesArticles`, `SealedMastheadInvalid`) are defined before use.
+**Type consistency:** `OwnedMasthead` methods (`namespace_id`, `owner_subspace_id`, `owner_write_capability`, `delegate_section`, `authorise_owner_entry`, `seal`, `open_sealed`) are used consistently across Tasks 3–9 and the integration test. `is_under_articles(&Path)` (Task 1) is the single gate reused in Task 5 and the integration test. New `WillowError` variants (`DelegationAreaEscapesArticles`, `SealedMastheadInvalid`) are defined before use. `authorise_owner_entry` (Task 6) is exercised again in the Task 8 integration test.
 
-**Open verification points for the implementer (willow25 accessor names — pinned by tests, adjust impl if the crate differs):** `Path::components()` / `.as_ref()` (Task 1); `SubspaceSecret::from_bytes` + `corresponding_subspace_id()` (Tasks 3,5); `Area::new` / `Area::path()` + `Range::new` (Tasks 5,7); `granted_namespace()`/`receiver()` deref shapes (Task 4). All are pinned by assertions from the investigation report; if an accessor name differs, the test stays and the impl line adjusts.
+**Open verification points for the implementer (willow25 accessor names — pinned by tests, adjust impl if the crate differs):** `Path::from_slices` returns `Result` (→ `.expect(...)`, all test call sites); `SubspaceSecret::from_bytes(&[u8;32])` + `corresponding_subspace_id()` (Tasks 3,5,6); `Path::components()`/`.as_ref()` (Task 1); `Area::new` / `Area::path()` + `TimeRange::new` (Tasks 5,6); `granted_namespace()`/`receiver()` deref shapes (Task 4); `Entry::builder()` chain + `into_authorised_entry(&cap, &SubspaceSecret)` + `authorisation_token()` (Task 6, verified against the entry-fixture flow in `crates/riot-core/tests/public_willow.rs` and `public_bundle.rs`). If an accessor name differs, the test stays and the impl line adjusts.
