@@ -448,7 +448,7 @@ fn a_durable_reopen_restores_the_last_active_community_and_switches_between_seal
 }
 
 #[test]
-fn a_sealed_community_is_un_loadable_without_the_key_and_a_bad_key_quarantines_it() {
+fn a_sealed_community_is_un_loadable_without_the_key_and_recovers_from_quarantine_on_retry() {
     let dir = tempfile::tempdir().expect("temp dir");
     let db_path = dir.path().join("atrest.db").to_string_lossy().to_string();
     let (a_ns, b_ns, sealed) = {
@@ -490,12 +490,22 @@ fn a_sealed_community_is_un_loadable_without_the_key_and_a_bad_key_quarantines_i
         b.quarantined && !b.available,
         "B is quarantined for recovery"
     );
-    // Even the correct key is now refused until recovery — the row and its
-    // sealed bytes remain for a recovery tool.
-    assert!(matches!(
-        reopened.switch_community(b_ns, REGISTRY_KEY.to_vec()),
-        Err(MobileError::CommunityUnavailable)
-    ));
+    // Recovery: a Retry with the CORRECT key re-attempts the unseal, succeeds,
+    // clears the quarantine, and switches. A transient read that once quarantined
+    // a community must never leave it permanently dead.
+    let recovered = reopened
+        .switch_community(b_ns.clone(), REGISTRY_KEY.to_vec())
+        .expect("a Retry with the correct key recovers the community from quarantine");
+    assert_eq!(recovered.relationship, CommunityRelationship::Member);
+    assert!(
+        !recovered.quarantined && recovered.available,
+        "recovery clears the quarantine"
+    );
+    assert_eq!(
+        reopened.active_community().unwrap().unwrap().namespace_id,
+        b_ns,
+        "the recovery switch landed on B"
+    );
 }
 
 #[test]

@@ -125,8 +125,17 @@ pub(crate) struct LocalProfile {
     /// Inactive per-community authors, unsealed and parked by namespace. The
     /// ACTIVE community's author is `self.author`, never duplicated here (the
     /// author is deliberately not `Clone`). A community's sealed author is
-    /// un-loadable EXCEPT by a deliberate `switch_community` with the wrapping
-    /// key; listing never unseals. This is the isolation the registry guarantees.
+    /// un-loadable from at rest EXCEPT by a deliberate `switch_community` with the
+    /// wrapping key; listing never unseals. This is the isolation the registry
+    /// guarantees.
+    ///
+    /// AT REST (on disk) only sealed authors are ever written. IN RAM this map may
+    /// briefly hold MORE than one unsealed author: a keyless `join_public_space`
+    /// parks the OUTGOING author here unsealed until `persist_communities` seals it
+    /// and drops it. So "only the active author is ever unsealed" is an ON-DISK
+    /// claim; native minimizes the in-RAM window by calling `persist_communities`
+    /// immediately after a create/join (Risk 13; seal-inline-on-join is a tracked
+    /// residual that would need `join` to take the wrapping key — an FFI change).
     community_authors: std::collections::HashMap<[u8; 32], EvidenceAuthor>,
     /// Bumped on every community switch. Every in-flight preview/plan/sync handle
     /// captures it at creation and revalidates before commit, so a write or import
@@ -1580,6 +1589,13 @@ fn active_namespace_live_ids(
         // No community is listed yet — e.g. mid-`load_demo_space`, which installs
         // the inventory before it lists the demo space. The store is single
         // namespace at that point, so the whole store is the right inventory.
+        //
+        // ⚠️ LOAD-BEARING for isolation: this whole-store fallback is only safe
+        // because `space == None` occurs solely in single-namespace contexts (a
+        // switch always sets `space`). If a future flow ever holds MULTI-community
+        // data while `space` is `None`, this silently WIDENS the sync inventory to
+        // the whole store — leaking one community's entries to another's peers.
+        // Any such flow must set `space` first (or scope this call explicitly).
         return profile.store.live_entry_ids().map_err(map_core_error);
     };
     let namespace_id = parse_entry_id(&space.namespace_id)?;
@@ -1606,6 +1622,11 @@ fn install_sync_inventory(
         .iter()
         .map(|signed| entry_id(&signed.entry_bytes))
         .collect();
+    // ⚠️ LOAD-BEARING for isolation: the inventory (which is unstamped, unlike the
+    // generation-guarded handles) MUST equal exactly the active namespace's live
+    // ids before it can reach a peer. This equality is what keeps a switch's
+    // re-scoping the sole thing standing between one community's inventory and
+    // another's peers — do not relax it to a subset/superset check.
     if inventory_ids != live_ids {
         return Err(MobileError::Internal);
     }
@@ -2207,7 +2228,13 @@ pub(crate) fn switch_community(
             .registry
             .find(&target_ns)
             .ok_or(MobileError::CommunityUnavailable)?;
-        if record.archived || record.quarantined {
+        // Archived communities are not selectable (restore first). A QUARANTINED
+        // community IS switchable, because this switch is exactly the recovery
+        // attempt: it re-tries the unseal, clears the quarantine on success, and
+        // re-quarantines only if it still fails. So a transient read failure that
+        // once quarantined a community can never leave it permanently dead — a
+        // Retry (another switch) recovers it.
+        if record.archived {
             return Err(MobileError::CommunityUnavailable);
         }
 
@@ -2221,15 +2248,20 @@ pub(crate) fn switch_community(
             match EvidenceAuthor::open_sealed_identity(&key, &sealed) {
                 Ok(author) => {
                     // A stale parked copy is now redundant; drop it so only the
-                    // active author is ever held unsealed.
+                    // active author is ever held unsealed. Recovery succeeded, so
+                    // clear any quarantine — the community is openable again.
                     profile.community_authors.remove(&target_ns);
+                    if let Some(record) = profile.registry.find_mut(&target_ns) {
+                        record.quarantined = false;
+                    }
                     author
                 }
                 Err(_) => {
                     // The wrapping key is a profile invariant, so a failure to
-                    // open means the bytes are corrupt. Quarantine (retain the
-                    // bytes for recovery), stay on the current community, fail
-                    // closed — never drop the community, never leak a partial key.
+                    // open means the bytes are corrupt (or a transient read handed
+                    // us a wrong key). Quarantine (retain the bytes for recovery),
+                    // stay on the current community, fail closed — never drop the
+                    // community, never leak a partial key. A later switch retries.
                     if let Some(record) = profile.registry.find_mut(&target_ns) {
                         record.quarantined = true;
                     }
@@ -2239,6 +2271,10 @@ pub(crate) fn switch_community(
             }
         } else if let Some(author) = profile.community_authors.remove(&target_ns) {
             // Not sealed yet (a keyless join this session): take the parked author.
+            // A parked author loaded fine, so clear any quarantine.
+            if let Some(record) = profile.registry.find_mut(&target_ns) {
+                record.quarantined = false;
+            }
             author
         } else {
             // No author to load: a public-reader, or an author neither sealed nor
@@ -2247,9 +2283,11 @@ pub(crate) fn switch_community(
         };
 
         // Seal the outgoing active author into its row and DROP it: with the key
-        // it is fully recoverable from the registry, so at most the ACTIVE
-        // community's author is ever held unsealed. A keyless seal failure
-        // (entropy) falls back to parking so the author is not lost.
+        // it is fully recoverable from the registry. On the keyed switch path this
+        // keeps at most the active author unsealed in RAM; the separate keyless
+        // `join` path can transiently hold an extra parked author until
+        // `persist_communities` (see the `community_authors` field doc). A keyless
+        // seal failure (entropy) falls back to parking so the author is not lost.
         let outgoing_ns = profile.registry.active;
         let outgoing = std::mem::replace(&mut profile.author, target_author);
         if let Some(active_ns) = outgoing_ns {

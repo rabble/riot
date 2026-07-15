@@ -59,6 +59,9 @@ class RiotController(filesDir: File) : AutoCloseable {
         currentSpace = space
         persisted = PersistedProfile(PersistedSpace(space.namespaceId, space.title), emptyList())
         persist(persisted!!)
+        // Seal the new community's author now, minimizing the unsealed-in-RAM
+        // window (Risk 13) rather than leaving it until app background.
+        persistCommunities()
         return space
     }
 
@@ -67,6 +70,8 @@ class RiotController(filesDir: File) : AutoCloseable {
         currentSpace = joined
         persisted = PersistedProfile(PersistedSpace(joined.namespaceId, joined.title), emptyList())
         persist(persisted!!)
+        // Join parks the outgoing author unsealed; seal immediately (Risk 13).
+        persistCommunities()
         return joined
     }
 
@@ -133,9 +138,14 @@ class RiotController(filesDir: File) : AutoCloseable {
         geographicTags: List<String> = emptyList(),
         topicTags: List<String> = emptyList(),
         editorialRoster: List<String> = emptyList(),
-    ): NewswireSignedRecord = profile.createNewswireSpace(
-        NewswireSpaceInput(name, summary, languages, geographicTags, topicTags, editorialRoster),
-    )
+    ): NewswireSignedRecord {
+        val record = profile.createNewswireSpace(
+            NewswireSpaceInput(name, summary, languages, geographicTags, topicTags, editorialRoster),
+        )
+        // Seal the new community's author now (Risk 13: minimize the RAM window).
+        persistCommunities()
+        return record
+    }
 
     fun createNewswirePost(
         spaceDescriptorEntryId: String,

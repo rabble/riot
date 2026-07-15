@@ -228,31 +228,41 @@ struct CommunityChooserRowView: View {
     let onSelect: () -> Void
 
     var body: some View {
-        Button(action: onSelect) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(row.name)
-                    .font(.headline)
-                HStack(spacing: 8) {
-                    Text(row.relationshipLabel)
-                    Text("·")
-                    Text(row.recentActivity)
-                }
-                .font(.subheadline)
+        VStack(alignment: .leading, spacing: 4) {
+            Text(row.name)
+                .font(.headline)
+            HStack(spacing: 8) {
+                Text(row.relationshipLabel)
+                Text("·")
+                Text(row.recentActivity)
+            }
+            .font(.subheadline)
+            .foregroundStyle(.secondary)
+            Text(row.syncFreshness)
+                .font(.caption)
                 .foregroundStyle(.secondary)
-                Text(row.syncFreshness)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                if !row.available {
+            if !row.available {
+                // Recovery in place — never a dead row. Retry re-attempts the
+                // switch, which re-tries the unseal and recovers a community that a
+                // transient read once quarantined (it is never permanently dead).
+                HStack {
                     Text(row.quarantined
                         ? "Needs recovery before it can open."
                         : "Not available on this device yet.")
                         .font(.caption)
                         .foregroundStyle(.orange)
                         .accessibilityIdentifier("community-row-recovery-\(row.namespaceID)")
+                    Spacer()
+                    Button("Retry", action: onSelect)
+                        .font(.caption)
+                        .accessibilityIdentifier("community-row-retry-\(row.namespaceID)")
                 }
             }
         }
-        .disabled(!row.available)
+        // An available row switches on tap; an unavailable row is not tappable as a
+        // whole (its Retry button is the only action), so a stray tap can't switch.
+        .contentShape(Rectangle())
+        .onTapGesture { if row.available { onSelect() } }
         .accessibilityIdentifier(row.accessibilityID)
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(row.name), \(row.relationshipLabel), \(row.recentActivity)")

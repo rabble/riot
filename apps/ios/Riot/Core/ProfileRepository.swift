@@ -424,6 +424,9 @@ public final class RiotProfileRepository {
         persisted.space = RiotSpace(namespaceID: joined.namespaceId, title: joined.title)
         persisted.sealedIdentity = try sealCurrentIdentity()
         try storage.save(persisted)
+        // Join parks the joined community's author unsealed in the registry; seal
+        // it now so the unsealed-in-RAM window is minimal (Risk 13).
+        try? persistCommunities()
         // The join just REGENERATED the author (see above), so the profile card
         // written under the old subspace is orphaned: this person would appear to
         // the space they just joined as `member · <new tag>`, nameless, on every
