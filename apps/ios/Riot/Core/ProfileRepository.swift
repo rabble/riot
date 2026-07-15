@@ -994,7 +994,19 @@ public extension RiotProfileRepository {
     func projectNewswire(spaceDescriptorEntryID: String) throws -> NewswireProjectionView {
         try profile.projectNewswireSpace(spaceDescriptorEntryId: spaceDescriptorEntryID)
     }
+
+    /// The Known-contributors (People) surface of a newswire space: every
+    /// distinct author of a signed record it holds, each rendered as `name ·
+    /// tag`, with the recognized organizer marked by the namespace coordinate.
+    /// Derived from the community's records — not a membership roster.
+    func projectNewswireContributors(spaceDescriptorEntryID: String) throws -> [NewswireContributor] {
+        try profile.projectNewswireContributors(spaceDescriptorEntryId: spaceDescriptorEntryID)
+    }
 }
+
+/// `RiotProfileRepository` is the live source of the People surface — it hands
+/// the FFI-projected contributors straight to `PeopleSurfaceModel`.
+extension RiotProfileRepository: NewswireContributorProjecting {}
 
 private extension RiotEntry {
     init(_ entry: CurrentEntry) {

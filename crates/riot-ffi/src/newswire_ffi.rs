@@ -179,6 +179,23 @@ pub struct NewswireProjectedEditorialAction {
     pub active: bool,
 }
 
+/// A known contributor to a community newswire space: a rendered author, whether
+/// they are the space's recognized organizer, and how many signed records they
+/// are behind. This is the People surface — derived from the community's signed
+/// records, NOT a membership roster and NOT presence.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct NewswireContributor {
+    /// The rendered author — `{display_name, tag}` plus the pre-rendered
+    /// string, never a raw key posing as a name.
+    pub author: NewswireAuthor,
+    /// True iff this author is the recognized organizer — the single coordinate
+    /// where the author id equals the space's namespace id. Never a self-claim.
+    pub is_organizer: bool,
+    /// How many signed records (news posts plus editorial actions) this author
+    /// is behind in the current projection.
+    pub contribution_count: u32,
+}
+
 /// The full collective projection of a newswire space: everything a client
 /// needs to derive the identical front page, open wire, and editorial history
 /// as its peers.
@@ -341,6 +358,33 @@ impl MobileProfile {
                     .map(|entry_id| hex(entry_id))
                     .collect(),
             })
+        })
+    }
+
+    /// Projects the Known-contributors (People) surface for a newswire space:
+    /// every distinct author of a signed record it holds, each rendered by the
+    /// same sanctioned name path as a post author, with the recognized organizer
+    /// marked by the namespace coordinate. Derived from the community's records,
+    /// so every client sees the identical surface — not a roster, not presence.
+    pub fn project_newswire_contributors(
+        &self,
+        space_descriptor_entry_id: String,
+    ) -> Result<Vec<NewswireContributor>, MobileError> {
+        with_active(&self.inner, |profile| {
+            let descriptor_id = parse_entry_id(&space_descriptor_entry_id)?;
+            let clock = ProjectionClockV1::system().map_err(|_| MobileError::ClockUnavailable)?;
+            let rows =
+                riot_core::newswire::contributors_for_space(&profile.store, descriptor_id, clock)
+                    .map_err(map_newswire_store_error)?;
+            let names = resolve_display_names(&profile.store).map_err(|_| MobileError::Internal)?;
+            Ok(rows
+                .iter()
+                .map(|row| NewswireContributor {
+                    author: render_author(&names, &row.author_id),
+                    is_organizer: row.is_organizer,
+                    contribution_count: row.contribution_count,
+                })
+                .collect())
         })
     }
 }

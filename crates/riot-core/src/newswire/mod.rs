@@ -1,5 +1,6 @@
 //! Closed, canonical payloads for community Newswire spaces.
 
+mod contributors;
 mod entry;
 mod model;
 mod path;
@@ -51,6 +52,7 @@ pub fn is_newswire_prefix(path: &crate::willow::Path) -> bool {
             .is_some_and(|component| component.as_ref() == b"v1")
 }
 
+pub use contributors::{contributors, ContributorRowV1};
 pub(crate) use entry::inspect_verified_components;
 pub use entry::{
     create_signed_editorial_action, create_signed_news_post, create_signed_space_descriptor,
@@ -68,7 +70,10 @@ pub use projection::{
     project, NewswireProjection, NewswireProjectionError, PostTreatment, ProjectedEditorialAction,
     ProjectedPost, ProjectionClockV1, MAX_FUTURE_SKEW_MICROS, MAX_PROJECTED_RECORDS,
 };
-pub use store::{load_space_descriptor, load_space_records, project_space, NewswireStoreError};
+pub use store::{
+    contributors_for_space, load_space_descriptor, load_space_records, project_space,
+    NewswireStoreError,
+};
 
 #[cfg(feature = "conformance")]
 pub use entry::{

@@ -5,8 +5,9 @@ use crate::session::EvidenceStore;
 use crate::willow::{encode_entry, EntryId, Path};
 
 use super::{
-    inspect_verified_components, project, NewswirePayload, NewswireProjection,
-    NewswireProjectionError, ProjectionClockV1, VerifiedNewswireRecord, MAX_PROJECTED_RECORDS,
+    contributors, inspect_verified_components, project, ContributorRowV1, NewswirePayload,
+    NewswireProjection, NewswireProjectionError, ProjectionClockV1, VerifiedNewswireRecord,
+    MAX_PROJECTED_RECORDS,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -112,6 +113,22 @@ pub fn project_space(
     let descriptor = load_space_descriptor(store, descriptor_id)?;
     let records = load_space_records(store, descriptor_id)?;
     project(&descriptor, &records, clock).map_err(Into::into)
+}
+
+/// The Known-contributors surface for a space: every distinct author of a
+/// signed record it holds, with the recognized organizer marked by the
+/// namespace coordinate. Derived from the same descriptor + records the
+/// collective projection uses, so it is deterministic across clients.
+pub fn contributors_for_space(
+    store: &EvidenceStore,
+    descriptor_id: EntryId,
+    clock: ProjectionClockV1,
+) -> Result<Vec<ContributorRowV1>, NewswireStoreError> {
+    let descriptor = load_space_descriptor(store, descriptor_id)?;
+    let namespace_id = descriptor.namespace_id();
+    let records = load_space_records(store, descriptor_id)?;
+    let projection = project(&descriptor, &records, clock)?;
+    Ok(contributors(&projection, namespace_id))
 }
 
 fn decode_scanned_entries(
