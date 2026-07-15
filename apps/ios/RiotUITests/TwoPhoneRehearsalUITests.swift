@@ -1,9 +1,9 @@
 import XCTest
 
 /// Drives ONE phone of a two-phone rehearsal. Run this concurrently against two
-/// simulators: ROLE=organizer creates the space and approves the checklist;
-/// ROLE=member starts fresh and just searches. Both then tap "Find nearby
-/// devices" and we capture what each phone actually shows.
+/// simulators: ROLE=organizer creates the community and approves the checklist;
+/// ROLE=member starts fresh and just searches. Both then open Nearby and tap
+/// "Find nearby devices"; we capture what each phone actually shows.
 final class TwoPhoneRehearsalUITests: XCTestCase {
     private func shot(_ app: XCUIApplication, _ name: String) {
         let s = XCTAttachment(screenshot: app.screenshot())
@@ -23,11 +23,18 @@ final class TwoPhoneRehearsalUITests: XCTestCase {
         }
 
         if role == "organizer" {
-            let create = app.buttons["CREATE PUBLIC SPACE"]
-            if create.waitForExistence(timeout: 5) { create.tap() }
+            if !app.buttons["Tools"].waitForExistence(timeout: 3) {
+                let name = app.textFields["community-name-field"]
+                if name.waitForExistence(timeout: 5) {
+                    name.tap()
+                    name.typeText("Berlin Mutual Aid")
+                }
+                let create = app.buttons["create-community"]
+                if create.waitForExistence(timeout: 5) { create.tap() }
+            }
             // Approve the checklist so the member can inherit it.
-            app.buttons["Spaces"].tap()
-            let review = app.buttons["review-Checklist"]
+            app.buttons["Tools"].tap()
+            let review = app.buttons["directory-review-Checklist"]
             if review.waitForExistence(timeout: 5) {
                 review.tap()
                 let approve = app.buttons["approve-app"]
@@ -38,16 +45,21 @@ final class TwoPhoneRehearsalUITests: XCTestCase {
             shot(app, "member-fresh")
         }
 
-        // Both phones: search for each other.
-        app.buttons["Connect"].tap()
-        let buttons = app.buttons.allElementsBoundByIndex.prefix(12).map { $0.label }
-        let labels = app.staticTexts.allElementsBoundByIndex.prefix(12).map { $0.label }
-        print("REHEARSAL[\(role)] connect-screen buttons: \(buttons)")
-        print("REHEARSAL[\(role)] connect-screen texts: \(labels)")
+        // Both phones: search for each other on the Nearby route.
+        let nearby = app.buttons["Nearby"]
+        guard nearby.waitForExistence(timeout: 5) else {
+            shot(app, "\(role)-no-nearby-route")
+            // A member with no community has Find one nearby on the launch screen.
+            if app.buttons["find-nearby"].waitForExistence(timeout: 3) {
+                app.buttons["find-nearby"].tap()
+            }
+            return
+        }
+        nearby.tap()
         let find = app.buttons["FIND NEARBY DEVICES"]
         guard find.waitForExistence(timeout: 5) else {
             shot(app, "\(role)-no-find-button")
-            XCTFail("\(role): no Find nearby devices button — buttons were \(buttons)")
+            XCTFail("\(role): no Find nearby devices button")
             return
         }
         find.tap()

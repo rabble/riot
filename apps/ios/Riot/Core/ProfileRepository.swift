@@ -1016,6 +1016,34 @@ public extension RiotProfileRepository {
 /// the FFI-projected contributors straight to `PeopleSurfaceModel`.
 extension RiotProfileRepository: NewswireContributorProjecting {}
 
+/// The live sources for the 2A community shell. Create-community signs both the
+/// app-trust backing space (`createBackingSpace`) and the newswire descriptor
+/// (`createNewswireCommunity`); Home projects the community's wire
+/// (`NewswireProjecting`). Each just forwards to a method that already exists.
+extension RiotProfileRepository: CommunityBackingSpaceCreating {
+    @discardableResult
+    public func createBackingSpace(name: String) throws -> RiotSpace {
+        try createPublicSpace(title: name)
+    }
+}
+
+extension RiotProfileRepository: NewswireSpaceCreating {
+    @discardableResult
+    public func createNewswireCommunity(
+        name: String,
+        summary: String,
+        editorialRoster: [String]
+    ) throws -> NewswireSignedRecord {
+        try createNewswireSpace(
+            name: name,
+            summary: summary,
+            editorialRoster: editorialRoster
+        )
+    }
+}
+
+extension RiotProfileRepository: NewswireProjecting {}
+
 private extension RiotEntry {
     init(_ entry: CurrentEntry) {
         self.init(

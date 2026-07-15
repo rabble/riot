@@ -50,10 +50,10 @@ public struct DirectoryView: View {
             }
             .padding(20)
         }
-        .riotHeader(eyebrow: "From your communities", "Apps")
+        .riotHeader(eyebrow: "From your communities", "Tools")
         .onAppear(perform: sync)
         .onChange(of: navigation.destination) { _, destination in
-            if destination == .directory { sync() } else { directory.clearConfirmation() }
+            if destination == .tools { sync() } else { directory.clearConfirmation() }
         }
         .onChange(of: model.apps) { _, _ in directory.refresh() }
         .onChange(of: model.space) { _, _ in directory.refresh() }

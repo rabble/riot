@@ -1,12 +1,18 @@
 import Foundation
 import SwiftUI
 
+/// The four destinations inside a selected community (community-first
+/// navigation design §"Navigation and platform behavior"). This replaces the
+/// old five debug-shaped surfaces (Spaces/Apps/Board/Post/Connect): Riot is now
+/// organized around a community, and a person answers "what is happening here?"
+/// (Home) and "what can we do together?" (Tools/People/Nearby). Order is
+/// canonical — it is the tab-bar order on iPhone and the sidebar order on macOS,
+/// and it is what `Command-1…4` select.
 public enum RiotDestination: String, CaseIterable, Identifiable, Sendable {
-    case spaces
-    case directory
-    case board
-    case compose
-    case connection
+    case home
+    case tools
+    case people
+    case nearby
 
     public var id: Self { self }
 
@@ -14,32 +20,47 @@ public enum RiotDestination: String, CaseIterable, Identifiable, Sendable {
 
     public var title: String {
         switch self {
-        case .spaces: "Spaces"
-        case .directory: "App directory"
-        case .board: "Incident board"
-        case .compose: "Post an update"
-        case .connection: "Connection"
+        case .home: "Home"
+        case .tools: "Tools"
+        case .people: "People"
+        case .nearby: "Nearby"
         }
     }
 
     public var tabTitle: String {
         switch self {
-        case .spaces: "Spaces"
-        case .directory: "Apps"
-        case .board: "Board"
-        case .compose: "Post"
-        case .connection: "Connect"
+        case .home: "Home"
+        case .tools: "Tools"
+        case .people: "People"
+        case .nearby: "Nearby"
         }
     }
 
     public var systemImage: String {
         switch self {
-        case .spaces: "square.stack.3d.up"
-        case .directory: "square.grid.2x2"
-        case .board: "exclamationmark.bubble"
-        case .compose: "square.and.pencil"
-        case .connection: "antenna.radiowaves.left.and.right"
+        case .home: "house"
+        case .tools: "square.grid.2x2"
+        case .people: "person.2"
+        case .nearby: "antenna.radiowaves.left.and.right"
         }
+    }
+
+    /// The `Command-N` accelerator that selects this destination (nav design:
+    /// "Command-1…4 select destinations"). Home is 1, and the number follows
+    /// canonical order, so the shortcut is stable no matter the platform.
+    public var commandNumber: Int {
+        switch self {
+        case .home: 1
+        case .tools: 2
+        case .people: 3
+        case .nearby: 4
+        }
+    }
+
+    /// The destination a `Command-N` press selects, or `nil` for an out-of-range
+    /// number. Pure so the keyboard map is provable without a live window.
+    public static func forCommandNumber(_ number: Int) -> RiotDestination? {
+        allCases.first { $0.commandNumber == number }
     }
 }
 
@@ -85,7 +106,7 @@ public struct StarterCatalogFailure: Equatable, Sendable {
 /// syncs when it becomes visible).
 @MainActor
 public final class RiotNavigationModel: ObservableObject {
-    @Published public var destination: RiotDestination = .spaces
+    @Published public var destination: RiotDestination = .home
 
     public init() {}
 }
@@ -144,6 +165,19 @@ public final class RiotAppModel: ObservableObject {
     }
 
     @Published public private(set) var space: RiotSpace?
+
+    /// The signed newswire `SpaceDescriptorV1` entry id of the selected
+    /// community, when this device knows it. It is captured from
+    /// `createNewswireSpace` on create; a loaded or joined community carries
+    /// `nil` (there is no descriptor-discovery accessor in the MVP FFI), and
+    /// Home then shows the honest no-updates recovery state. See
+    /// ``CommunityContext/newswireDescriptorEntryID``.
+    @Published public private(set) var newswireDescriptorEntryID: String?
+
+    /// Set when a retained community cannot be opened, so the shell can render
+    /// the §4.7 community-unavailable recovery in place rather than a blank
+    /// screen. `nil` on the ordinary paths.
+    @Published public private(set) var communityUnavailable: CommunityUnavailable?
     @Published public private(set) var entries: [RiotEntry] = []
     @Published public private(set) var apps: [RiotSpaceApp] = []
     @Published public private(set) var connectionStatus: RiotConnectionStatus = .offline
@@ -592,7 +626,78 @@ public final class RiotAppModel: ObservableObject {
             refreshApps()
             // Creating a space is what makes you its organizer.
             refreshOrganizerState()
-            destination = .board
+            destination = .home
+        }
+    }
+
+    /// The selected community as the shell reads it: name + namespace from the
+    /// backing space, the newswire descriptor id when known, and organizer
+    /// status from core. `nil` when there is no selected community. Views bind to
+    /// this — never to `space` directly — so Unit 3 can swap the selection
+    /// source without touching a route view.
+    public var community: CommunityContext? {
+        guard let space else { return nil }
+        return CommunityContext(
+            name: space.title,
+            namespaceID: space.namespaceID,
+            newswireDescriptorEntryID: newswireDescriptorEntryID,
+            isOrganizer: canApproveApps
+        )
+    }
+
+    /// The launch state the shell renders before any route: loading while the
+    /// profile opens, no-community when there is none, the community's Home when
+    /// there is one, or in-place recovery when a retained one cannot open. Never
+    /// a blank screen (nav design §4.7).
+    public var launchState: ShellLaunchState {
+        if let communityUnavailable { return .unavailable(communityUnavailable) }
+        guard isProfileOpen else { return .loading }
+        guard let community else { return .noCommunity }
+        return .community(community)
+    }
+
+    /// Creates a community: the founding collective's initial choices become a
+    /// signed, immutable `SpaceDescriptorV1` (via `createNewswireSpace`, carrying
+    /// the chosen editorial roster) plus the app-trust backing space that carries
+    /// its tools and nearby coordinator. The creator is the founding organizer +
+    /// editor by construction. Lands on Home.
+    /// Marks the selected community unavailable, so the shell renders the §4.7
+    /// community-unavailable recovery in place. The remembered name and a fixed
+    /// code drive the recovery view; nothing is erased.
+    public func markCommunityUnavailable(_ unavailable: CommunityUnavailable) {
+        communityUnavailable = unavailable
+    }
+
+    /// Clears the community-unavailable state — the Retry recovery action, which
+    /// re-attempts opening the community context that is already in memory.
+    public func retryCommunity() {
+        communityUnavailable = nil
+    }
+
+    /// Leaves the selected community, returning the shell to the no-community
+    /// launch state. In Slices 0–2 this is a session-scoped view change (the
+    /// signed records stay in the store); Unit 3 replaces it with real
+    /// multi-community removal. Callers gate this on the dirty-draft
+    /// Stay-or-Discard confirmation (``CommunityChangeGuard``) so unsaved work is
+    /// never lost silently.
+    public func leaveCommunity() {
+        space = nil
+        newswireDescriptorEntryID = nil
+        communityUnavailable = nil
+        destination = .home
+    }
+
+    public func createCommunity(_ request: CommunityCreationRequest) {
+        guard let repository else { return }
+        let coordinator = CommunityCreationCoordinator(backing: repository, descriptor: repository)
+        perform {
+            let context = try coordinator.create(request)
+            space = repository.currentSpace
+            newswireDescriptorEntryID = context.newswireDescriptorEntryID
+            communityUnavailable = nil
+            refreshApps()
+            refreshOrganizerState()
+            destination = .home
         }
     }
 
@@ -661,30 +766,6 @@ public final class RiotAppModel: ObservableObject {
 
     private func refreshApps() {
         apps = (try? repository?.spaceApps()) ?? []
-    }
-
-    public func sign(headline: String, description: String, aiAssisted: Bool) {
-        perform {
-            guard let repository, let space else { return }
-            let expiry = UInt64(Date().timeIntervalSince1970) + 3_600
-            _ = try repository.signAlert(
-                in: space,
-                draft: AlertDraft(
-                    expiresAt: expiry,
-                    headline: headline,
-                    description: description,
-                    sourceClaims: ["Local conference participant"],
-                    aiAssisted: aiAssisted
-                )
-            )
-            entries = try repository.currentEntries()
-            // An alert you signed yourself did not arrive from anyone: it stamps
-            // onto the board like any other entry, but it must not buzz in your
-            // hand as though someone else had posted it.
-            noteArrivals()
-            arrivals = []
-            destination = .board
-        }
     }
 
     private func perform(_ operation: () throws -> Void) {
@@ -762,6 +843,10 @@ public final class RiotAppModel: ObservableObject {
             .appendingPathComponent("fixtures/apps")
     }
 }
+
+/// The shell reads its launch state through this seam; Unit 3 swaps the
+/// conformer for a multi-community registry without touching a route view.
+extension RiotAppModel: CommunitySelecting {}
 
 /// Demo mode's port, wired to the live profile AND to the screens.
 ///

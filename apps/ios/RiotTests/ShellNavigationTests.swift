@@ -1,33 +1,347 @@
 import XCTest
 @testable import RiotKit
 
+/// The community-first shell (Unit 2A): four routes — Home, Tools, People,
+/// Nearby — with deterministic Home shortcuts, a relocated profile/settings
+/// split, keyboard navigation, focus restoration, a dirty-draft guard, launch +
+/// recovery states, and a create-community flow that signs a `SpaceDescriptorV1`
+/// with a founding editorial roster. The old five debug-shaped surfaces
+/// (Spaces/Apps/Board/Post/Connect) are gone.
 final class ShellNavigationTests: XCTestCase {
-    func testConferenceShellExposesOnlyWorkingSurfaces() {
+    // MARK: - The four community routes
+
+    func testTheShellExposesExactlyTheFourCommunityRoutes() {
+        XCTAssertEqual(
+            RiotDestination.phoneTabs,
+            [.home, .tools, .people, .nearby],
+            "the community shell has exactly Home, Tools, People, Nearby — in canonical order"
+        )
         XCTAssertEqual(
             RiotDestination.phoneTabs.map(\.title),
-            [
-                "Spaces",
-                "App directory",
-                "Incident board",
-                "Post an update",
-                "Connection",
-            ]
+            ["Home", "Tools", "People", "Nearby"]
         )
         XCTAssertEqual(
             RiotDestination.phoneTabs.map(\.tabTitle),
-            ["Spaces", "Apps", "Board", "Post", "Connect"]
+            ["Home", "Tools", "People", "Nearby"]
         )
+        // Each route has its own distinct icon (selection is never by color alone,
+        // §4.6 — icon + label + shape all differ).
+        let images = RiotDestination.phoneTabs.map(\.systemImage)
+        XCTAssertEqual(Set(images).count, images.count, "each route has a distinct icon")
+    }
+
+    // MARK: - Command-1…4 and Escape
+
+    func testCommandNumbersSelectTheFourDestinationsInCanonicalOrder() {
+        XCTAssertEqual(RiotDestination.home.commandNumber, 1)
+        XCTAssertEqual(RiotDestination.tools.commandNumber, 2)
+        XCTAssertEqual(RiotDestination.people.commandNumber, 3)
+        XCTAssertEqual(RiotDestination.nearby.commandNumber, 4)
+
+        XCTAssertEqual(RiotDestination.forCommandNumber(1), .home)
+        XCTAssertEqual(RiotDestination.forCommandNumber(2), .tools)
+        XCTAssertEqual(RiotDestination.forCommandNumber(3), .people)
+        XCTAssertEqual(RiotDestination.forCommandNumber(4), .nearby)
+        // Out of range selects nothing rather than wrapping.
+        XCTAssertNil(RiotDestination.forCommandNumber(0))
+        XCTAssertNil(RiotDestination.forCommandNumber(5))
+    }
+
+    func testEscapeReturnsFromAToolOnlyWhenSafe() {
+        // No tool open: Escape is not the shell's to handle.
+        XCTAssertEqual(ShellEscapeAction.action(isToolOpen: false, hasUnsavedWork: false), .ignore)
+        XCTAssertEqual(ShellEscapeAction.action(isToolOpen: false, hasUnsavedWork: true), .ignore)
+        // A tool open with no unsaved work: Escape returns.
+        XCTAssertEqual(ShellEscapeAction.action(isToolOpen: true, hasUnsavedWork: false), .returnFromTool)
+        // A tool open with unsaved work: Escape must confirm, never discard silently.
+        XCTAssertEqual(ShellEscapeAction.action(isToolOpen: true, hasUnsavedWork: true), .confirmDiscard)
     }
 
     @MainActor
-    func testEveryPhoneTabCanBecomeTheVisibleDestination() {
+    func testEveryRouteCanBecomeTheVisibleDestination() {
         let model = RiotAppModel()
-
         for destination in RiotDestination.phoneTabs {
             model.select(destination)
             XCTAssertEqual(model.destination, destination)
         }
     }
+
+    // MARK: - Performance contract: selection lives off the app model
+
+    /// The tab-lifecycle performance contract (nav design): route selection lives
+    /// on its own observable object, NOT on `RiotAppModel`, so a tab tap does not
+    /// re-evaluate every route body. A fresh model starts on Home.
+    @MainActor
+    func testRouteSelectionLivesOnItsOwnObjectAndStartsOnHome() {
+        let model = RiotAppModel()
+        XCTAssertEqual(model.navigation.destination, .home)
+        XCTAssertEqual(model.destination, .home, "the model passes through to the navigation object")
+
+        model.navigation.destination = .tools
+        XCTAssertEqual(model.destination, .tools, "writing the navigation object is what moves the route")
+    }
+
+    // MARK: - Deterministic Home shortcuts
+
+    private static func app(_ name: String, id: String, trusted: Bool) -> RiotSpaceApp {
+        RiotSpaceApp(
+            appIDHex: id,
+            name: name,
+            description: "",
+            version: "1",
+            permissions: [],
+            trusted: trusted
+        )
+    }
+
+    /// Walk canonical catalog order and take the first four APPROVED tools,
+    /// continuing past unapproved ones rather than leaving a hole.
+    func testHomeShortcutsAreTheFirstFourApprovedToolsInOrderNeverLeavingAHole() {
+        // Canonical order with unapproved tools interleaved at positions 1 and 3.
+        let catalog = [
+            Self.app("Checklist", id: "a1", trusted: true),
+            Self.app("Needs & Offers", id: "a2", trusted: false), // unapproved — skipped
+            Self.app("Events", id: "a3", trusted: true),
+            Self.app("Decisions", id: "a4", trusted: false), // unapproved — skipped
+            Self.app("Chat", id: "a5", trusted: true),
+            Self.app("Dispatches", id: "a6", trusted: true),
+            Self.app("Wiki", id: "a7", trusted: true),
+        ]
+
+        let shortcuts = HomeShortcuts.deterministic(from: catalog)
+
+        XCTAssertEqual(
+            shortcuts.map(\.name),
+            ["Checklist", "Events", "Chat", "Dispatches"],
+            "the unapproved tools are skipped and the order is preserved — never a hole"
+        )
+        XCTAssertEqual(shortcuts.count, HomeShortcuts.count)
+        XCTAssertTrue(shortcuts.allSatisfy(\.trusted), "a shortcut is only ever an approved tool")
+    }
+
+    func testHomeShortcutsAreShorterThanFourWhenFewerToolsAreApproved() {
+        let catalog = [
+            Self.app("Checklist", id: "a1", trusted: true),
+            Self.app("Needs & Offers", id: "a2", trusted: false),
+        ]
+        let shortcuts = HomeShortcuts.deterministic(from: catalog)
+        XCTAssertEqual(shortcuts.map(\.name), ["Checklist"], "never padded with an unapproved tool")
+    }
+
+    // MARK: - Profile / community settings relocation
+
+    /// The header keeps two separate labeled paths: the avatar opens Your
+    /// profile; a distinct gear opens Community settings. They are never one
+    /// combined menu.
+    func testProfileAndCommunitySettingsAreTwoDistinctLabeledPaths() {
+        XCTAssertEqual(ShellIdentityDestination.yourProfile.label, "Your profile")
+        XCTAssertEqual(ShellIdentityDestination.communitySettings.label, "Community settings")
+        XCTAssertNotEqual(
+            ShellIdentityDestination.yourProfile.label,
+            ShellIdentityDestination.communitySettings.label
+        )
+        // Distinct triggers (avatar vs gear) and distinct accessibility handles.
+        XCTAssertNotEqual(
+            ShellIdentityDestination.yourProfile.systemImage,
+            ShellIdentityDestination.communitySettings.systemImage
+        )
+        XCTAssertEqual(ShellIdentityDestination.yourProfile.accessibilityID, "your-profile")
+        XCTAssertEqual(ShellIdentityDestination.communitySettings.accessibilityID, "community-settings")
+    }
+
+    // MARK: - Focus restoration
+
+    /// Opening a tool records the invoking card; closing hands that id back so
+    /// focus returns to it (§4.6 "focus returns to the invoking tool card").
+    func testFocusReturnsToTheInvokingToolCard() {
+        var focus = ToolFocusRestoration()
+        XCTAssertNil(focus.invokingToolID)
+
+        focus.open(toolID: "checklist-card")
+        XCTAssertEqual(focus.invokingToolID, "checklist-card")
+
+        XCTAssertEqual(focus.close(), "checklist-card", "closing restores focus to the opener")
+        XCTAssertNil(focus.invokingToolID, "and the tool is no longer open")
+        XCTAssertNil(focus.close(), "closing again restores nothing")
+    }
+
+    // MARK: - Dirty-draft guard before a community change
+
+    func testChangingCommunityWithAnUnsavedDraftMustConfirmStayOrDiscard() {
+        XCTAssertEqual(CommunityChangeGuard.decision(hasUnsavedDraft: false), .proceed)
+        XCTAssertEqual(
+            CommunityChangeGuard.decision(hasUnsavedDraft: true),
+            .confirm(StayOrDiscardPrompt())
+        )
+        XCTAssertEqual(StayOrDiscardPrompt.stayLabel, "Stay")
+        XCTAssertEqual(StayOrDiscardPrompt.discardLabel, "Discard draft")
+    }
+
+    // MARK: - Launch states
+
+    @MainActor
+    func testLaunchStartsLoadingUntilTheProfileIsOpen() {
+        let model = RiotAppModel()
+        XCTAssertEqual(model.launchState, .loading, "no fake empty state before the profile opens")
+    }
+
+    @MainActor
+    func testAnOpenProfileWithNoCommunityLaunchesToTheNoCommunityState() throws {
+        let directory = try Self.temporaryProfileDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let model = RiotAppModel()
+        model.bootstrap(storageDirectory: directory, keyStore: TestWrappingKeyStore(), starterPacks: [])
+
+        XCTAssertTrue(model.isProfileOpen)
+        XCTAssertEqual(model.launchState, .noCommunity)
+        XCTAssertNil(model.community)
+    }
+
+    @MainActor
+    func testOneRetainedCommunityLaunchesDirectlyToItsHome() throws {
+        let directory = try Self.temporaryProfileDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let model = RiotAppModel()
+        model.bootstrap(storageDirectory: directory, keyStore: TestWrappingKeyStore(), starterPacks: [])
+
+        model.createSpace(title: "Riverside Tenants Union")
+
+        let community = try XCTUnwrap(model.community)
+        XCTAssertEqual(community.name, "Riverside Tenants Union")
+        XCTAssertEqual(model.launchState, .community(community))
+        XCTAssertEqual(model.destination, .home, "a community opens to its Home")
+    }
+
+    @MainActor
+    func testAnUnavailableCommunityRecoversInPlaceAndIsNeverBlank() throws {
+        let directory = try Self.temporaryProfileDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let model = RiotAppModel()
+        model.bootstrap(storageDirectory: directory, keyStore: TestWrappingKeyStore(), starterPacks: [])
+        model.createSpace(title: "Fire Watch")
+
+        model.markCommunityUnavailable(CommunityUnavailable(name: "Fire Watch"))
+        XCTAssertEqual(
+            model.launchState,
+            .unavailable(CommunityUnavailable(name: "Fire Watch"))
+        )
+
+        // Retry clears the unavailable state and returns to the community in place.
+        model.retryCommunity()
+        XCTAssertNotNil(model.community)
+        if case .unavailable = model.launchState {
+            XCTFail("Retry must leave the community-unavailable state")
+        }
+    }
+
+    // MARK: - Create a community signs a descriptor with a founding roster
+
+    /// Create-community signs an immutable `SpaceDescriptorV1` via
+    /// `createNewswireSpace`, threading the founding collective's chosen editorial
+    /// roster — an empty roster would make every user-created community
+    /// permanently single-editor. The backing app-trust space is created too.
+    func testCreatingACommunitySignsADescriptorCarryingTheFoundingEditorialRoster() throws {
+        let backing = StubBackingSpaceCreator(namespaceID: "ns-fire")
+        let descriptor = StubNewswireSpaceCreator(entryID: "descriptor-entry-1")
+        let coordinator = CommunityCreationCoordinator(backing: backing, descriptor: descriptor)
+
+        let roster = ["editor-key-a", "editor-key-b"]
+        let context = try coordinator.create(
+            CommunityCreationRequest(name: "Fire Watch", summary: "east side", editorialRoster: roster)
+        )
+
+        // The backing space was created…
+        XCTAssertEqual(backing.createdNames, ["Fire Watch"])
+        // …and the descriptor was signed with the chosen roster, not a defaulted one.
+        XCTAssertEqual(descriptor.receivedRosters, [roster])
+        XCTAssertEqual(descriptor.receivedNames, ["Fire Watch"])
+
+        // The resulting context carries the descriptor id (so Home can project)
+        // and marks the founder the organizer.
+        XCTAssertEqual(context.name, "Fire Watch")
+        XCTAssertEqual(context.namespaceID, "ns-fire")
+        XCTAssertEqual(context.newswireDescriptorEntryID, "descriptor-entry-1")
+        XCTAssertTrue(context.isOrganizer, "the founder signs under their own namespace, so they organize")
+    }
+
+    func testAnEmptyRosterStillThreadsThroughAsTheSingleEditorDefault() throws {
+        let backing = StubBackingSpaceCreator(namespaceID: "ns")
+        let descriptor = StubNewswireSpaceCreator(entryID: "d")
+        let coordinator = CommunityCreationCoordinator(backing: backing, descriptor: descriptor)
+        _ = try coordinator.create(CommunityCreationRequest(name: "Solo"))
+        XCTAssertEqual(descriptor.receivedRosters, [[]], "an empty roster is passed through verbatim")
+    }
+
+    func testACommunityCreationRequestRequiresANameButNotADisplayName() {
+        XCTAssertTrue(CommunityCreationRequest(name: "Uganda").hasName)
+        XCTAssertFalse(CommunityCreationRequest(name: "   ").hasName)
+        XCTAssertFalse(CommunityCreationRequest(name: "").hasName)
+    }
+
+    // MARK: - Recovery-state contract (§4.7)
+
+    func testEveryRecoveryStateHasAUsefulPrimaryActionAndIsNeverBlank() {
+        // No community.
+        XCTAssertEqual(ShellRecoveryState.noCommunity.primaryActionLabel, "Create a community")
+        XCTAssertEqual(ShellRecoveryState.noCommunity.secondaryActionLabel, "Find one nearby")
+        // No updates.
+        XCTAssertEqual(ShellRecoveryState.noUpdates.primaryActionLabel, "Post the first update")
+        XCTAssertEqual(ShellRecoveryState.noUpdates.secondaryActionLabel, "Find nearby")
+        // Profile/store loading — accessible progress + Retry, no fake empty.
+        XCTAssertEqual(ShellRecoveryState.profileStoreLoading.primaryActionLabel, "Retry")
+        // Community unavailable — Retry + Find nearby, never blank.
+        let unavailable = ShellRecoveryState.communityUnavailable(CommunityUnavailable(name: "Fire Watch"))
+        XCTAssertEqual(unavailable.primaryActionLabel, "Retry")
+        XCTAssertEqual(unavailable.secondaryActionLabel, "Find nearby")
+        XCTAssertTrue(unavailable.message.contains("Fire Watch"))
+
+        // Every state has a non-empty message and a stable a11y id.
+        for state in [
+            ShellRecoveryState.profileStoreLoading,
+            .noUpdates,
+            .noTools(isOrganizer: true),
+            .noCommunity,
+            unavailable,
+        ] {
+            XCTAssertFalse(state.message.isEmpty)
+            XCTAssertFalse(state.accessibilityID.isEmpty)
+        }
+    }
+
+    /// The no-tools state explains the role and never renders a dead button: an
+    /// organizer is told to Add a tool; a member is told to Find nearby.
+    func testTheNoToolsStateExplainsTheRoleAndNeverShowsADeadButton() {
+        XCTAssertEqual(ShellRecoveryState.noTools(isOrganizer: true).primaryActionLabel, "Add a tool")
+        XCTAssertEqual(ShellRecoveryState.noTools(isOrganizer: false).primaryActionLabel, "Find nearby")
+        XCTAssertNotEqual(
+            ShellRecoveryState.noTools(isOrganizer: true).message,
+            ShellRecoveryState.noTools(isOrganizer: false).message,
+            "the role is explained differently, never a generic dead end"
+        )
+    }
+
+    // MARK: - Performance: a starter tool opens under 500 ms (simulator-relative)
+
+    /// The <500 ms starter-tool-open gate, measured with `measure(metrics:)` on
+    /// the model path a tap triggers — resolving the deterministic Home shortcut
+    /// and building the focus/route to open it. Recorded SIMULATOR-RELATIVE on the
+    /// iPhone 17 Pro sim (OS 26.2, arm64); physical-device timing is
+    /// assumed-not-proven, since this repo's harness is the simulator (§8.3).
+    func testAStarterToolOpensUnderHalfASecondSimRelative() {
+        let apps = (0..<8).map { Self.app("Tool \($0)", id: "id-\($0)", trusted: true) }
+        measure(metrics: [XCTClockMetric()]) {
+            for _ in 0..<1_000 {
+                let shortcuts = HomeShortcuts.deterministic(from: apps)
+                var focus = ToolFocusRestoration()
+                if let first = shortcuts.first {
+                    focus.open(toolID: first.id)
+                    _ = focus.close()
+                }
+            }
+        }
+    }
+
+    // MARK: - Retained behaviours that still hold
 
     @MainActor
     func testConnectionStartsExplicitlyOffline() {
@@ -39,13 +353,11 @@ final class ShellNavigationTests: XCTestCase {
     @MainActor
     func testDismissingAnAlertClearsItsBackingError() {
         let model = RiotAppModel(testError: "InvalidInput")
-
         model.dismissError()
-
         XCTAssertNil(model.errorMessage)
     }
 
-    // MARK: - Looking closer at a board entry
+    // MARK: - Looking closer at an update (AlertDetail still backs Home update detail)
 
     private static func entry(
         headline: String = "Medic tent moved to the north gate",
@@ -64,18 +376,11 @@ final class ShellNavigationTests: XCTestCase {
         )
     }
 
-    /// Tapping a board row opens the signed detail. What that sheet may show
-    /// WITHOUT being asked is the product decision: the alert's words and the
-    /// window it is good for. The 64-hex identifiers are evidence, not reading
-    /// material — they stay behind **Technical details** (accessibility contract:
-    /// full ids never lead a surface).
     func testTheAlertDetailKeepsFullIdentifiersBehindTechnicalDetails() {
         let entry = Self.entry()
         let detail = AlertDetail(entry: entry)
 
         XCTAssertEqual(detail.headline, "Medic tent moved to the north gate")
-
-        // Nothing shown on open is a raw identifier.
         let onOpen = detail.summary.map(\.value).joined(separator: " ")
         for identifier in [entry.entryID, entry.namespaceID, entry.signerID] {
             XCTAssertFalse(
@@ -84,9 +389,6 @@ final class ShellNavigationTests: XCTestCase {
             )
         }
         XCTAssertEqual(detail.summary.map(\.label), ["Created", "Valid from", "Expires"])
-
-        // And they are all reachable behind the disclosure, in full — hidden by
-        // default is not the same as withheld.
         XCTAssertEqual(AlertDetail.technicalDisclosureTitle, "Technical details")
         XCTAssertEqual(detail.technical.map(\.label), ["Entry", "Namespace", "Signer"])
         XCTAssertEqual(
@@ -96,71 +398,40 @@ final class ShellNavigationTests: XCTestCase {
         )
     }
 
-    /// An alert with no start time has no "Valid from" row at all, rather than a
-    /// row printing an epoch zero.
     func testAnAlertWithNoStartTimeShowsNoValidFromRow() {
         let detail = AlertDetail(entry: Self.entry(validFrom: nil))
-
         XCTAssertEqual(detail.summary.map(\.label), ["Created", "Expires"])
     }
 
-    /// The AI-assistance flag reaches the detail, because it changes how a
-    /// person reads the alert.
     func testTheAIAssistanceFlagReachesTheDetail() {
         XCTAssertFalse(AlertDetail(entry: Self.entry()).aiAssisted)
         XCTAssertTrue(AlertDetail(entry: Self.entry(aiAssisted: true)).aiAssisted)
     }
 
-    // MARK: - Discovery must not start before there is anything to announce
+    // MARK: - Discovery readiness (unchanged: a phone must not advertise a nil space)
 
-    /// The Connection screen is built at launch like every other tab, so its
-    /// `onAppear` runs while `bootstrap` is still opening the profile. It may not
-    /// advertise in that window: a phone that pairs with no repository behind it
-    /// announces a nil space, and a peer cannot adopt a space it was never told
-    /// about. This is the readiness the screen gates on.
     @MainActor
     func testAPhoneIsNotReadyToAdvertiseUntilItsProfileIsOpen() throws {
         let directory = try Self.temporaryProfileDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
         let model = RiotAppModel()
 
-        // Before bootstrap there is no repository, so there is nothing a pairing
-        // could even announce with.
         XCTAssertFalse(model.isProfileOpen)
         XCTAssertNil(model.nearbySpaceHost)
 
-        model.bootstrap(
-            storageDirectory: directory,
-            keyStore: TestWrappingKeyStore(),
-            starterPacks: []
-        )
+        model.bootstrap(storageDirectory: directory, keyStore: TestWrappingKeyStore(), starterPacks: [])
 
         XCTAssertTrue(model.isProfileOpen)
         XCTAssertNotNil(model.nearbySpaceHost)
     }
 
-    /// The demo flow, and the bug: the organizer opens the app — which starts
-    /// discovery immediately, with NO space — and only then taps "Create space".
-    ///
-    /// The handshake announces `host.currentSpace`, read live at pairing time, so
-    /// the phone that started looking spaceless is holding the very host that will
-    /// answer with the new space a moment later. Nothing needs to be re-captured;
-    /// the announce just has to happen AGAIN, which is what `reannounceSpace` is
-    /// for. If this test's second assertion ever fails, re-announcing cannot help
-    /// and the space would have to travel some other way.
     @MainActor
     func testASpaceCreatedAfterLookingBeganIsVisibleToTheHostDiscoveryIsHolding() throws {
         let directory = try Self.temporaryProfileDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
         let model = RiotAppModel()
-        model.bootstrap(
-            storageDirectory: directory,
-            keyStore: TestWrappingKeyStore(),
-            starterPacks: []
-        )
+        model.bootstrap(storageDirectory: directory, keyStore: TestWrappingKeyStore(), starterPacks: [])
 
-        // What `findNearby` captures at launch. The nil is the bug in the flesh:
-        // pair now and this phone announces "I have no space".
         let host = try XCTUnwrap(model.nearbySpaceHost)
         XCTAssertNil(host.currentSpace)
 
@@ -170,24 +441,10 @@ final class ShellNavigationTests: XCTestCase {
         XCTAssertEqual(model.space?.title, "Fire Watch")
     }
 
-    /// A space arriving later has to reach the peer — but a restart is only
-    /// warranted where the handshake has ALREADY run and settled without sharing.
-    /// Anywhere else it is either unnecessary (the handshake reads the space live)
-    /// or destructive (it would tear down a running session).
     func testASpaceArrivingLaterIsReannouncedOnlyWhereAHandshakeIsAlreadyStuck() {
-        // The bug, exactly: two spaceless phones settle here, the session ends, and
-        // auto-connect can never re-dial. The organizer's new space reaches the peer
-        // beside them ONLY if this restarts.
         XCTAssertTrue(NearbyReannounceGate.needsReannounce(state: .nothingToShare))
         XCTAssertTrue(NearbyReannounceGate.needsReannounce(state: .failed))
-
-        // Still looking: no restart needed and none wanted. `SpacePairing` reads
-        // `currentSpace` when it shakes hands, so the peer who turns up next will be
-        // told about the space then. Restarting would only churn discovery.
         XCTAssertFalse(NearbyReannounceGate.needsReannounce(state: .looking))
-
-        // Never mid-session: adopting a peer's space is itself a nil -> space change
-        // and it lands in the middle of the sync that carries it over.
         XCTAssertFalse(
             NearbyReannounceGate.needsReannounce(state: .joinSpace(title: "Fire Watch", name: "PATIENT BROOM"))
         )
@@ -195,10 +452,6 @@ final class ShellNavigationTests: XCTestCase {
         XCTAssertFalse(NearbyReannounceGate.needsReannounce(state: .preview(count: 6, name: "PATIENT BROOM")))
         XCTAssertFalse(NearbyReannounceGate.needsReannounce(state: .connecting))
         XCTAssertFalse(NearbyReannounceGate.needsReannounce(state: .caughtUp))
-
-        // And never onto a phone that is not looking: `.idle` is a phone that never
-        // started, or one whose person tapped "Stop looking". A space appearing must
-        // not put it on the air behind their back.
         XCTAssertFalse(NearbyReannounceGate.needsReannounce(state: .idle))
     }
 
@@ -207,6 +460,42 @@ final class ShellNavigationTests: XCTestCase {
             .appendingPathComponent("riot-shell-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         return directory
+    }
+}
+
+// MARK: - Create-community stubs
+
+/// Records the backing-space creations so the two-step create is provable
+/// without a live store.
+private final class StubBackingSpaceCreator: CommunityBackingSpaceCreating {
+    private let namespaceID: String
+    private(set) var createdNames: [String] = []
+
+    init(namespaceID: String) { self.namespaceID = namespaceID }
+
+    func createBackingSpace(name: String) throws -> RiotSpace {
+        createdNames.append(name)
+        return RiotSpace(namespaceID: namespaceID, title: name)
+    }
+}
+
+/// Records the roster passed to `createNewswireSpace`, so the RED test proves the
+/// founding editorial selection is threaded through rather than defaulted away.
+private final class StubNewswireSpaceCreator: NewswireSpaceCreating {
+    private let entryID: String
+    private(set) var receivedRosters: [[String]] = []
+    private(set) var receivedNames: [String] = []
+
+    init(entryID: String) { self.entryID = entryID }
+
+    func createNewswireCommunity(
+        name: String,
+        summary: String,
+        editorialRoster: [String]
+    ) throws -> NewswireSignedRecord {
+        receivedNames.append(name)
+        receivedRosters.append(editorialRoster)
+        return NewswireSignedRecord(entryId: entryID, signedBytes: Data())
     }
 }
 

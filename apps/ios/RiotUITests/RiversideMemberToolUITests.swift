@@ -7,6 +7,9 @@ import XCTest
 /// the demo could not demo. Now the founding collective's signed Trust markers
 /// travel in the bundle, so a member evaluates every tool as organizer-trusted
 /// and opens it directly — no Review, no dead end.
+///
+/// Community-first shell (2A): the demo is loaded from the no-community launch
+/// screen; its tools live on the Tools route.
 final class RiversideMemberToolUITests: XCTestCase {
     func testDemoMemberOpensAnOrganizerTrustedToolWithoutAReviewGate() {
         let app = XCUIApplication()
@@ -15,16 +18,22 @@ final class RiversideMemberToolUITests: XCTestCase {
             app.alerts.firstMatch.buttons.firstMatch.tap()
         }
 
-        // Load the seeded Riverside space. Offered only when the profile has no
-        // space of its own; on a clean launch that is the case.
+        // Load the seeded Riverside space from the launch screen. Offered only
+        // when the profile has no community of its own; on a clean launch that is
+        // the case.
         let demoLoad = app.buttons["demo-load"]
         if demoLoad.waitForExistence(timeout: 5) {
             demoLoad.tap()
         }
 
-        // The tool the demo script actually opens. As a member of an
-        // organizer-shaped space, the Checklist must be OPENABLE straight away…
-        let open = app.buttons["open-Checklist"]
+        // Loading a community opens its Home; the tools live on the Tools route.
+        let tools = app.buttons["Tools"]
+        XCTAssertTrue(tools.waitForExistence(timeout: 10), "a loaded community shows the four routes")
+        tools.tap()
+
+        // As a member of an organizer-shaped space, the Checklist must be OPENABLE
+        // straight away…
+        let open = app.buttons["directory-open-Checklist"]
         XCTAssertTrue(
             open.waitForExistence(timeout: 10),
             "an organizer-trusted tool must be openable by a demo member"
@@ -33,7 +42,7 @@ final class RiversideMemberToolUITests: XCTestCase {
         // …and there must be NO Review gate. A member cannot approve, so a
         // Review affordance here would be the exact dead end 0B removes.
         XCTAssertFalse(
-            app.buttons["review-Checklist"].exists,
+            app.buttons["directory-review-Checklist"].exists,
             "a demo member must never be sent to a Review gate they cannot pass"
         )
 
