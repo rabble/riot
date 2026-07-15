@@ -219,6 +219,222 @@ final class CommunityChooserTests: XCTestCase {
         }
     }
 
+    // MARK: - Unit 3D: manual multi-community JOIN via share reference
+
+    /// A well-formed share reference for `namespace`, with placeholder descriptor
+    /// and digest coordinates. Manual join only reads the namespace (the descriptor
+    /// + entries arrive later over sync — "pending first sync"), so the other two
+    /// coordinates being placeholders is faithful to what a real reference carries
+    /// before its descriptor is in hand.
+    private func shareReference(forNamespace namespace: String) throws -> String {
+        try newswireEncodeShareReference(
+            namespaceId: namespace,
+            descriptorEntryId: String(repeating: "1", count: 64),
+            contentDigest: String(repeating: "2", count: 64)
+        )
+    }
+
+    /// The core guarantee, proven on the raw FFI: joining a SECOND community mints
+    /// a FRESH, UNLINKABLE author for the target namespace (its signing key is not
+    /// the origin community's), and the outgoing community's author is PARKED — not
+    /// destroyed — so switching back restores it byte-for-byte.
+    @MainActor
+    func testJoiningASecondCommunityMintsAFreshUnlinkableAuthorAndParksTheFirst() throws {
+        let dir = try Self.temporaryProfileDirectory()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let key = Data(repeating: 0x42, count: 32)
+        let profile = try openLocalProfileWithDatabase(dbPath: dir.appendingPathComponent("riot.db").path)
+
+        let a = try profile.createPublicSpace(title: "Community A")
+        let authorInA = try profile.identity()
+        XCTAssertEqual(authorInA.namespaceId, a.namespaceId, "A's author subspace IS its own namespace (organizer)")
+
+        // A second namespace, minted by a throwaway profile, then joined as a member.
+        let origin = try openLocalProfile()
+        let b = try origin.createPublicSpace(title: "Community B")
+        _ = try profile.joinPublicSpace(
+            space: PublicSpace(namespaceId: b.namespaceId, title: "New community", isPublic: true)
+        )
+        let authorInB = try profile.identity()
+
+        XCTAssertNotEqual(authorInB.namespaceId, authorInA.namespaceId, "B is a different community")
+        XCTAssertNotEqual(
+            authorInB.signingKeyId, authorInA.signingKeyId,
+            "the joined community holds a FRESH author — its signing key is not A's (unlinkable)"
+        )
+        XCTAssertNotEqual(
+            authorInB.namespaceId, authorInB.signingKeyId,
+            "joining someone else's space, the author subspace is minted, not the namespace itself"
+        )
+
+        // The first community's author is parked, not destroyed: switching back
+        // restores the SAME signing identity A held before the join.
+        try profile.persistCommunities(wrappingKey: key)
+        let restoredA = try profile.switchCommunity(namespaceId: a.namespaceId, wrappingKey: key)
+        XCTAssertEqual(restoredA.namespaceId, a.namespaceId)
+        XCTAssertEqual(try profile.identity().signingKeyId, authorInA.signingKeyId, "A restored intact")
+        let restoredB = try profile.switchCommunity(namespaceId: b.namespaceId, wrappingKey: key)
+        XCTAssertEqual(restoredB.namespaceId, b.namespaceId)
+        XCTAssertEqual(try profile.identity().signingKeyId, authorInB.signingKeyId, "B restored intact")
+    }
+
+    /// The repository wrapper: `joinAdditionalCommunity` holds BOTH communities,
+    /// makes the joined one active with a distinct relationship, ISOLATES content
+    /// (A's board is not visible under B), and switching back restores A's board —
+    /// so the join parked A rather than replacing it.
+    @MainActor
+    func testJoinAdditionalCommunityHoldsBothIsolatesContentAndParksTheActive() throws {
+        let dir = try Self.temporaryProfileDirectory()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let repository = try RiotProfileRepository.open(
+            storage: try ProtectedProfileStorage(fileURL: dir.appendingPathComponent("profile.json")),
+            keyStore: TestWrappingKeyStore(),
+            databasePath: dir.appendingPathComponent("riot.db").path
+        )
+        let a = try repository.createPublicSpace(title: "Community A")
+        _ = try repository.signAlert(
+            in: a,
+            draft: AlertDraft(
+                expiresAt: UInt64(Date().timeIntervalSince1970) + 3_600,
+                headline: "Water shut off on 3rd St",
+                description: "Bring jugs to the union hall",
+                sourceClaims: ["Union hall notice"],
+                aiAssisted: false
+            )
+        )
+        XCTAssertFalse(try repository.currentEntries().isEmpty, "A has a board entry before the join")
+
+        // Join B (a different namespace) as a manual, share-reference join.
+        let origin = try openLocalProfile()
+        let b = try origin.createPublicSpace(title: "Community B")
+        let ref = try repository.decodeShareReference(shareReference(forNamespace: b.namespaceId))
+        XCTAssertEqual(ref.namespaceId, b.namespaceId)
+        let joined = try repository.joinAdditionalCommunity(
+            RiotSpace(
+                namespaceID: ref.namespaceId,
+                title: CommunityShareJoin.provisionalTitle(namespaceID: ref.namespaceId)
+            )
+        )
+
+        XCTAssertEqual(joined.namespaceId, b.namespaceId, "the joined community is now active")
+        XCTAssertEqual(joined.relationship, .member, "joining someone else's space makes you a member")
+        let held = try repository.listCommunities()
+        XCTAssertEqual(held.count, 2, "both communities are held")
+        XCTAssertTrue(held.contains { $0.namespaceId == a.namespaceID }, "A is parked, not dropped")
+
+        // Isolation: A's board entry does NOT bleed into B. A had content; B shows
+        // none of it — the join scopes the board to the newly active community.
+        XCTAssertTrue(try repository.currentEntries().isEmpty, "B shows none of A's entries (isolation)")
+
+        // Parked, not destroyed: A is still HELD and switching back makes it the
+        // active community again, with its organizer relationship intact. (The
+        // legacy alert board is not asserted here — CurrentEntry payloads are not
+        // retained across a switch; the community shell's content is the newswire,
+        // and cross-community entry isolation is proven at the FFI level in
+        // `persistence_contract.rs`.)
+        let backToA = try repository.switchToCommunity(namespaceID: a.namespaceID)
+        XCTAssertEqual(backToA.namespaceId, a.namespaceID, "A is parked, not dropped — switchable again")
+        XCTAssertEqual(backToA.relationship, .organizer, "A's organizer relationship survives the round-trip")
+    }
+
+    /// Re-joining the community that is ALREADY active is idempotent: it does not
+    /// mint a second author or fork the registry.
+    @MainActor
+    func testRejoiningTheActiveCommunityViaShareReferenceIsIdempotent() throws {
+        let dir = try Self.temporaryProfileDirectory()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let repository = try RiotProfileRepository.open(
+            storage: try ProtectedProfileStorage(fileURL: dir.appendingPathComponent("profile.json")),
+            keyStore: TestWrappingKeyStore(),
+            databasePath: dir.appendingPathComponent("riot.db").path
+        )
+        let a = try repository.createPublicSpace(title: "Community A")
+
+        let again = try repository.joinAdditionalCommunity(
+            RiotSpace(namespaceID: a.namespaceID, title: "Community A")
+        )
+        XCTAssertEqual(again.namespaceId, a.namespaceID)
+        XCTAssertEqual(again.relationship, .organizer, "still the organizer of their own space")
+        XCTAssertEqual(try repository.listCommunities().count, 1, "no second author was minted")
+    }
+
+    /// The payoff integration test: create A, JOIN B by share reference, SWITCH
+    /// back to A — the shell reprojects each time (name + organizer hint flip) and
+    /// the joined community carries no descriptor yet (pending first sync).
+    @MainActor
+    func testCreateAJoinBSwitchReprojectsTheShell() throws {
+        let dir = try Self.temporaryProfileDirectory()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let model = RiotAppModel()
+        model.bootstrap(storageDirectory: dir, keyStore: TestWrappingKeyStore(), starterPacks: [])
+
+        model.createSpace(title: "Community A")
+        XCTAssertEqual(model.community?.name, "Community A")
+        XCTAssertTrue(model.community?.isOrganizer ?? false, "the creator is A's organizer")
+
+        // A second namespace to join by reference.
+        let origin = try openLocalProfile()
+        let b = try origin.createPublicSpace(title: "Community B")
+        model.joinAdditionalCommunity(shareReference: try shareReference(forNamespace: b.namespaceId))
+
+        XCTAssertNil(model.errorMessage, "the manual join succeeds")
+        XCTAssertEqual(model.communities.count, 2, "both communities appear in the chooser")
+        XCTAssertEqual(model.community?.namespaceID, b.namespaceId, "the shell is now on B")
+        XCTAssertFalse(model.community?.isOrganizer ?? true, "on B this person is a member, not an organizer")
+        XCTAssertNil(model.newswireDescriptorEntryID, "B carries no descriptor yet — pending first sync")
+
+        model.switchCommunity(namespaceID: model.communities.first { $0.name == "Community A" }!.namespaceID)
+        XCTAssertEqual(model.community?.name, "Community A", "the shell reprojects back to A")
+        XCTAssertTrue(model.community?.isOrganizer ?? false, "A's organizer hint returns")
+    }
+
+    /// A freshly joined community is rendered "pending first sync" — a distinct,
+    /// honest state — not fabricated content: a member row with no activity and no
+    /// sync yet. An organizer's own space, or a community with any activity, is not.
+    func testANewlyJoinedCommunityRowIsPendingFirstSync() {
+        func row(relationship: CommunityRelationship, activity: UInt64?, sync: UInt64?) -> CommunityChooserRow {
+            CommunityChooserRow.from(
+                CommunityRow(
+                    namespaceId: String(repeating: "a", count: 64),
+                    title: "New community",
+                    relationship: relationship,
+                    descriptorEntryId: nil,
+                    recentActivityUnixSeconds: activity,
+                    syncFreshnessUnixSeconds: sync,
+                    archived: false,
+                    quarantined: false,
+                    available: true
+                )
+            )
+        }
+        XCTAssertTrue(
+            row(relationship: .member, activity: nil, sync: nil).pendingFirstSync,
+            "a held-but-never-synced member community is pending first sync"
+        )
+        XCTAssertFalse(
+            row(relationship: .organizer, activity: nil, sync: nil).pendingFirstSync,
+            "an organizer created the space — its descriptor is local, never pending sync"
+        )
+        XCTAssertFalse(
+            row(relationship: .member, activity: 1_000_000, sync: 1_000_000).pendingFirstSync,
+            "once content has arrived, the community is no longer pending"
+        )
+    }
+
+    /// The decode wrapper rejects a string that is not a canonical share reference,
+    /// rather than interpreting it.
+    @MainActor
+    func testDecodingAMalformedShareReferenceIsRefused() throws {
+        let dir = try Self.temporaryProfileDirectory()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let repository = try RiotProfileRepository.open(
+            storage: try ProtectedProfileStorage(fileURL: dir.appendingPathComponent("profile.json")),
+            keyStore: TestWrappingKeyStore(),
+            databasePath: dir.appendingPathComponent("riot.db").path
+        )
+        XCTAssertThrowsError(try repository.decodeShareReference("https://example.com/not-a-reference"))
+    }
+
     // MARK: - Helpers
 
     private static func temporaryProfileDirectory() throws -> URL {

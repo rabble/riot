@@ -460,6 +460,47 @@ public final class RiotProfileRepository {
         try? profile.profile().setDisplayName(name: claimed)
     }
 
+    /// Joins a SECOND (or further) public community while already holding one — the
+    /// MANUAL, share-reference path only, and deliberately SEPARATE from
+    /// ``joinSpace``.
+    ///
+    /// `joinSpace` stays single-community on purpose: the nearby-adopt flow calls
+    /// it (`SpacePairing` → `host.joinSpace`), so relaxing it would silently make
+    /// the NEARBY path multi-community too — a distinct, independently-reviewed
+    /// security surface. This method is the only multi-community door, opened by an
+    /// explicit paste-a-reference action, never by a peer on the wire.
+    ///
+    /// It routes to core's multi-community `join_public_space`, which PARKS the
+    /// currently-active community's author in the registry and mints a FRESH,
+    /// unlinkable communal author for the target namespace. Re-joining the
+    /// community that is already active is idempotent (core returns early without
+    /// minting). Exactly like `joinSpace`, a join that regenerates the author
+    /// RE-SEALS the identity — otherwise the next launch restores the pre-join
+    /// identity and mints a different subspace on every relaunch (see `joinSpace`)
+    /// — and re-claims the display name the regenerated author orphaned. The
+    /// freshly parked author is sealed IMMEDIATELY via ``persistCommunities`` so
+    /// the unsealed-in-RAM window is minimal (Risk 13).
+    @discardableResult
+    public func joinAdditionalCommunity(_ space: RiotSpace) throws -> CommunityRow {
+        let joined = try profile.joinPublicSpace(
+            space: PublicSpace(namespaceId: space.namespaceID, title: space.title, isPublic: true)
+        )
+        persisted.space = RiotSpace(namespaceID: joined.namespaceId, title: joined.title)
+        persisted.sealedIdentity = try sealCurrentIdentity()
+        try storage.save(persisted)
+        try persistCommunities()
+        reclaimDisplayName()
+        guard let active = try activeCommunity() else { throw RepositoryError.noCurrentSpace }
+        return active
+    }
+
+    /// Decodes a pasted `riot://newswire/join/v1/...` share reference to its
+    /// coordinates (namespace + descriptor entry + digest). A thin, testable seam
+    /// over the core codec; it refuses anything that is not a canonical reference.
+    public func decodeShareReference(_ encoded: String) throws -> NewswireShareReference {
+        try newswireDecodeShareReference(encoded: encoded)
+    }
+
     public func signAlert(in space: RiotSpace, draft: AlertDraft) throws -> RiotEntry {
         guard persisted.space == space else { throw RepositoryError.spaceMismatch }
         let record = try profile.createDraftAlert(
@@ -711,9 +752,16 @@ extension RiotProfileRepository: CommunityRegistry {
 
     @discardableResult
     public func switchToCommunity(namespaceID: String) throws -> CommunityRow {
-        try Self.withWrappingKey(from: keyStore) { wrappingKey in
+        let row = try Self.withWrappingKey(from: keyStore) { wrappingKey in
             try profile.switchCommunity(namespaceId: namespaceID, wrappingKey: wrappingKey)
         }
+        // The registry is now on `row`; mirror it into the persisted single-slot so
+        // `currentSpace` (and the reprojection that reads it) reflects the community
+        // just switched to, not the one we came from. Without this a switch leaves
+        // the previous community's title on screen.
+        persisted.space = RiotSpace(namespaceID: row.namespaceId, title: row.title)
+        try storage.save(persisted)
+        return row
     }
 
     public func archiveCommunity(namespaceID: String) throws {
