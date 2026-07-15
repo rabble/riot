@@ -1002,6 +1002,14 @@ public extension RiotProfileRepository {
     func projectNewswireContributors(spaceDescriptorEntryID: String) throws -> [NewswireContributor] {
         try profile.projectNewswireContributors(spaceDescriptorEntryId: spaceDescriptorEntryID)
     }
+
+    /// The digest-bound share/join reference for a newswire space this profile
+    /// holds. `encoded` is the canonical `riot://newswire/join/v1/...` string
+    /// (link or QR payload); `contentDigest` binds the descriptor's canonical
+    /// bytes, so a substituted community name or roster is detectable on import.
+    func newswireShareReference(spaceDescriptorEntryID: String) throws -> NewswireShareReference {
+        try profile.newswireShareReference(spaceDescriptorEntryId: spaceDescriptorEntryID)
+    }
 }
 
 /// `RiotProfileRepository` is the live source of the People surface — it hands
