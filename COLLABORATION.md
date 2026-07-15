@@ -34,6 +34,8 @@ A pre-existing `stash@{0}` ("WIP on main: 3215689") is **not mine and has been l
 
 | agent-0b-riverside | **0B — deterministic Riverside authority** | demo_fixture + fixture + drift + apps_contract + mobile_state.rs (1A list/inspect fix) + regression test + xtask coverage + RiversideMemberToolUITests | **DONE** — committed `1276024`. 75 Rust suites / 0 fail; native rebuilt; iOS RiversideMemberToolUITests SUCCEEDED; full iOS 205 (only 2 known-red). Also closed 1A's FFI list/inspect newswire bug | 2026-07-15 |
 
+| agent-0c-containment | **0C — runtime containment & invalidation (SECURITY)** | `crates/riot-ffi/tests/apps_contract.rs`, new Rust `AppExecutionSession` (likely `crates/riot-core/src/apps/` + `crates/riot-ffi/src/`), `apps/ios/Riot/Apps/{AppRuntimeView,AppBridgeController,AppSchemeHandler,RiotJS}.swift`, `apps/ios/RiotTests/AppRuntimeHostTests.swift`, `apps/android/.../apps/{AppWebViewHost,RiotJsBridge}.kt`, `scripts/apps/miniapp-browser.spec.mjs`, hostile-page fixtures | IN PROGRESS | 2026-07-15 |
+
 ## Do NOT claim (owned by later units)
 
 - `crates/riot-core/src/newswire/**`, `crates/riot-ffi/src/newswire_ffi.rs` → **Unit 1A**
