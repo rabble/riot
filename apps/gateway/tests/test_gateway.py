@@ -29,12 +29,13 @@ sys.path.insert(0, str(ROOT))
 try:
     import riot_gateway as gateway_module
     from riot_gateway import GatewayError, PublicGateway
-    from server import make_handler
+    from server import dump_site, make_handler
 except ModuleNotFoundError:
     gateway_module = None
     GatewayError = RuntimeError
     PublicGateway = None
     make_handler = None
+    dump_site = None
 
 
 class PublicGatewayTest(unittest.TestCase):
@@ -248,6 +249,38 @@ class ServerHeadersTest(unittest.TestCase):
                     self.assertEqual(headers["Referrer-Policy"], "no-referrer")
                 finally:
                     error.close()
+
+
+class StaticDumpTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.assertIsNotNone(dump_site, "the static dump entrypoint does not exist")
+        self.gateway = PublicGateway.from_file(EXPORT)
+
+    def test_dumps_every_site_route_to_a_mirrorable_index_html(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            out = Path(directory)
+            written = dump_site(self.gateway, out)
+
+            expected = {
+                "/site/": out / "site" / "index.html",
+                "/site/incident-board": out / "site" / "incident-board" / "index.html",
+                "/site/incident-board/alerts": out / "site" / "incident-board" / "alerts" / "index.html",
+            }
+            self.assertEqual(set(written), set(expected.values()))
+            for route, path in expected.items():
+                with self.subTest(route=route):
+                    self.assertTrue(path.is_file())
+                    self.assertEqual(path.read_text(encoding="utf-8"), self.gateway.render(route))
+
+    def test_dumped_pages_are_self_contained_and_carry_the_open_in_riot_deep_link(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            out = Path(directory)
+            dump_site(self.gateway, out)
+
+            home = (out / "site" / "index.html").read_text(encoding="utf-8")
+            self.assertIn("Harbor District Evacuation", home)
+            self.assertIn(f"riot://open?namespace={self.gateway.namespace}", home)
+            self.assertIn("<svg", home)
 
 
 class TestModuleLayoutTest(unittest.TestCase):

@@ -8,7 +8,13 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from riot_gateway import CONTENT_SECURITY_POLICY, DEFAULT_EXPORT_PATH, GatewayError, PublicGateway
+from riot_gateway import (
+    CONTENT_SECURITY_POLICY,
+    DEFAULT_EXPORT_PATH,
+    GatewayError,
+    PublicGateway,
+    SITE_ROUTES,
+)
 
 
 SECURITY_HEADERS = (
@@ -52,13 +58,40 @@ def make_handler(gateway: PublicGateway) -> type[BaseHTTPRequestHandler]:
     return GatewayHandler
 
 
+def dump_site(gateway: PublicGateway, out_dir: Path) -> list[Path]:
+    """Render every public site route to a static, mirrorable HTML tree.
+
+    Each route lands at ``<out_dir>/<route>/index.html`` so absolute-path links
+    resolve on any static host. The output is plain HTML — no server, no trust:
+    the mirror is reach, the Riot app is the source of truth.
+    """
+    written: list[Path] = []
+    for route in sorted(SITE_ROUTES):
+        page = gateway.render(route)
+        path = out_dir / route.strip("/") / "index.html"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(page, encoding="utf-8")
+        written.append(path)
+    return written
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Serve the fixed Riot public export")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8080)
     parser.add_argument("--export", type=Path, default=DEFAULT_EXPORT_PATH)
+    parser.add_argument(
+        "--dump",
+        type=Path,
+        metavar="DIR",
+        help="render the site to static HTML in DIR and exit (mirror it anywhere)",
+    )
     args = parser.parse_args()
     gateway = PublicGateway.from_file(args.export)
+    if args.dump is not None:
+        for path in dump_site(gateway, args.dump):
+            print(f"wrote {path}")
+        return
     server = ThreadingHTTPServer((args.host, args.port), make_handler(gateway))
     print(f"Riot public gateway serving http://{args.host}:{args.port}/site/")
     try:
