@@ -597,12 +597,20 @@ public final class NearbyTransportController: ObservableObject {
     /// Deterministic sync-role tiebreaker: the peer whose local namespace ID
     /// is lexicographically smaller is the initiator. Both peers compute the
     /// same answer because both know both namespace IDs after the handshake.
-    /// Falls back to `isInboundRequest` (the dialer starts) when the remote
-    /// namespace is unknown (e.g. a spaceless peer adopting).
+    ///
+    /// When the two namespace IDs are EQUAL the comparison cannot pick a single
+    /// initiator — `local < remote` is false on both sides, so both peers would
+    /// `answer()` and each wait idle for a `Hello` that never comes, deadlocking
+    /// in `gettingLatest`. This is the common case: two people in the SAME
+    /// community syncing (and the both-spaceless case, where both are `""`). Break
+    /// the tie by connection role instead — the dialer starts, the accepter
+    /// answers. `isInboundRequest` differs by construction now that discovery no
+    /// longer auto-connects (Unit 2B): exactly one side dials, so the roles are
+    /// unambiguous and no longer race on discovery timing.
     private var shouldStartSync: Bool {
         let local = host?.currentSpace?.namespaceID ?? ""
         let remote = pairing?.remoteSpace?.namespaceID ?? ""
-        if local.isEmpty && remote.isEmpty {
+        if local == remote {
             return !isInboundRequest
         }
         return local < remote
