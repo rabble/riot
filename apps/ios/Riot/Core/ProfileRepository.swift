@@ -676,6 +676,53 @@ public final class RiotProfileRepository {
     }
 }
 
+// MARK: - Multiple communities (Unit 3)
+
+/// The registry seam over the Unit-3 FFI. Switch and persist seal/unseal
+/// per-community authors, so they route through the SAME profile wrapping key
+/// this device already holds in the platform secure store (iOS Keychain) for the
+/// primary sealed identity — the key is loaded transiently and reset after use.
+/// Real shipping users therefore get durable SEALED per-community identity; no
+/// raw secret is ever exposed, and no new key or secure store is introduced.
+extension RiotProfileRepository: CommunityRegistry {
+    public func listCommunities() throws -> [CommunityRow] {
+        try profile.listCommunities()
+    }
+
+    public func activeCommunity() throws -> CommunityRow? {
+        try profile.activeCommunity()
+    }
+
+    @discardableResult
+    public func switchToCommunity(namespaceID: String) throws -> CommunityRow {
+        try Self.withWrappingKey(from: keyStore) { wrappingKey in
+            try profile.switchCommunity(namespaceId: namespaceID, wrappingKey: wrappingKey)
+        }
+    }
+
+    public func archiveCommunity(namespaceID: String) throws {
+        try profile.archiveCommunity(namespaceId: namespaceID)
+    }
+
+    @discardableResult
+    public func restoreCommunity(namespaceID: String) throws -> CommunityRow {
+        try profile.restoreCommunity(namespaceId: namespaceID)
+    }
+
+    /// Seals every session-held community author under the secure-store wrapping
+    /// key so the held communities survive a reopen. Called after create/join,
+    /// alongside identity sealing.
+    public func persistCommunities() throws {
+        try Self.withWrappingKey(from: keyStore) { wrappingKey in
+            try profile.persistCommunities(wrappingKey: wrappingKey)
+        }
+    }
+
+    public func communityRegistryQuarantined() throws -> Bool {
+        try profile.communityRegistryQuarantined()
+    }
+}
+
 public enum RepositoryError: Error {
     case spaceMismatch
     case invalidSealedIdentity

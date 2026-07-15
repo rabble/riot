@@ -499,7 +499,53 @@ public final class RiotAppModel: ObservableObject {
             refreshApps()
             refreshDisplayNames()
             refreshOrganizerState()
+            refreshCommunities()
         }
+    }
+
+    /// Re-reads the held communities for the chooser. A failure leaves the last
+    /// list rather than blanking the chooser.
+    private func refreshCommunities() {
+        guard let repository else { return }
+        if let rows = try? repository.listCommunities() {
+            communities = rows.map { CommunityChooserRow.from($0) }
+        }
+    }
+
+    /// Opens the Level-1 community chooser (Command-K / the community-name control).
+    public func openCommunityChooser() { isCommunityChooserPresented = true }
+
+    /// Dismisses the chooser without changing communities.
+    public func dismissCommunityChooser() { isCommunityChooserPresented = false }
+
+    /// Switches to another held community. The switch cancels in-flight work and
+    /// fails closed in core; here we reload everything the screens draw so the
+    /// board, tools, people, and organizer state all reflect the new community,
+    /// then land on Home. A community that cannot open surfaces the §4.7
+    /// community-unavailable recovery in place rather than a blank screen.
+    public func switchCommunity(namespaceID: String) {
+        guard let repository else { return }
+        do {
+            let row = try repository.switchToCommunity(namespaceID: namespaceID)
+            communityUnavailable = nil
+            isCommunityChooserPresented = false
+            destination = .home
+            reload()
+            _ = row
+        } catch {
+            // A row that could not open (archived / quarantined / no author) is
+            // preserved with recovery, never dropped or shown as a raw error.
+            let name = communities.first { $0.namespaceID == namespaceID }?.name ?? "This community"
+            markCommunityUnavailable(CommunityUnavailable(name: name))
+            isCommunityChooserPresented = false
+        }
+    }
+
+    /// Seals every held community's author under the secure-store wrapping key so
+    /// the communities survive a reopen. Best-effort — called after create; a
+    /// failure does not block the create.
+    private func persistCommunitiesQuietly() {
+        try? repository?.persistCommunities()
     }
 
     /// Claims a name for this person — the one thing on this screen that decides
@@ -626,6 +672,8 @@ public final class RiotAppModel: ObservableObject {
             refreshApps()
             // Creating a space is what makes you its organizer.
             refreshOrganizerState()
+            persistCommunitiesQuietly()
+            refreshCommunities()
             destination = .home
         }
     }
@@ -644,6 +692,15 @@ public final class RiotAppModel: ObservableObject {
             isOrganizer: canApproveApps
         )
     }
+
+    /// The "Your communities" chooser rows (Unit 3), most-recently-active first,
+    /// in plain language. Refreshed by `reload()` from the registry; empty on a
+    /// single-community device, which the chooser reads as "no switcher needed".
+    @Published public private(set) var communities: [CommunityChooserRow] = []
+
+    /// Whether the Level-1 community chooser is presented. `Command-K` opens it;
+    /// selecting or dismissing closes it.
+    @Published public var isCommunityChooserPresented = false
 
     /// The launch state the shell renders before any route: loading while the
     /// profile opens, no-community when there is none, the community's Home when
@@ -697,6 +754,10 @@ public final class RiotAppModel: ObservableObject {
             communityUnavailable = nil
             refreshApps()
             refreshOrganizerState()
+            // Seal the new community's author so it survives a reopen, then refresh
+            // the chooser so it appears in "Your communities".
+            persistCommunitiesQuietly()
+            refreshCommunities()
             destination = .home
         }
     }

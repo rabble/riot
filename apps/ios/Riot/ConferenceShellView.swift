@@ -344,6 +344,12 @@ private struct CommunityShellView: View {
                 Button(StayOrDiscardPrompt.discardLabel, role: .destructive) { model.leaveCommunity() }
                 Button(StayOrDiscardPrompt.stayLabel, role: .cancel) {}
             }
+            // Level-1 "Your communities" — one action away via Command-K or the
+            // community-name control; selecting a row switches, an unavailable row
+            // recovers in place.
+            .sheet(isPresented: $model.isCommunityChooserPresented) {
+                CommunityChooserView(model: model)
+            }
     }
 
     // MARK: Adaptive presentation
@@ -462,11 +468,17 @@ private struct CommunityShellView: View {
             .accessibilityLabel(ShellIdentityDestination.yourProfile.label)
             .accessibilityIdentifier(ShellIdentityDestination.yourProfile.accessibilityID)
 
-            Text(community.name)
-                .font(.riot(.body, size: 18, relativeTo: .headline))
-                .foregroundStyle(RiotTheme.ink(for: colorScheme))
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .accessibilityAddTraits(.isHeader)
+            // The community name is the chooser's entry point — "Your communities"
+            // is one action away here (nav design Slice 3).
+            Button { model.openCommunityChooser() } label: {
+                Text(community.name)
+                    .font(.riot(.body, size: 18, relativeTo: .headline))
+                    .foregroundStyle(RiotTheme.ink(for: colorScheme))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .accessibilityAddTraits(.isHeader)
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("community-name")
 
             Button { identitySheet = .communitySettings } label: {
                 Image(systemName: ShellIdentityDestination.communitySettings.systemImage)
@@ -557,18 +569,29 @@ private struct CommunityShellView: View {
         }
     }
 
-    // MARK: Keyboard: Command-1…4
+    // MARK: Keyboard: Command-1…4 and Command-K
 
     private var keyboardShortcuts: some View {
-        ForEach(RiotDestination.phoneTabs) { destination in
-            Button("") { changeRoute(to: destination) }
+        Group {
+            ForEach(RiotDestination.phoneTabs) { destination in
+                Button("") { changeRoute(to: destination) }
+                    .keyboardShortcut(
+                        KeyEquivalent(Character("\(destination.commandNumber)")),
+                        modifiers: .command
+                    )
+                    .frame(width: 0, height: 0)
+                    .opacity(0)
+                    .accessibilityHidden(true)
+            }
+            // Command-K focuses community selection (nav design Slice 3).
+            Button("") { model.openCommunityChooser() }
                 .keyboardShortcut(
-                    KeyEquivalent(Character("\(destination.commandNumber)")),
+                    KeyEquivalent(CommunitySelectionShortcut.keyEquivalent),
                     modifiers: .command
                 )
                 .frame(width: 0, height: 0)
                 .opacity(0)
-                .accessibilityHidden(true)
+                .accessibilityIdentifier(CommunitySelectionShortcut.accessibilityID)
         }
     }
 }
