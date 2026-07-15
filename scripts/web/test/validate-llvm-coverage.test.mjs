@@ -312,7 +312,7 @@ test("coverage runs the composite gates in fail-fast order at the JSON tarpaulin
   const result = runShellScript(fixture.root, "coverage.sh", fixture.environment);
   assert.equal(result.status, 0, result.stderr);
   assert.equal(readFileSync(fixture.environment.FAKE_LOG, "utf8"), [
-    "cargo tarpaulin --workspace --all-features --fail-under 94",
+    "cargo tarpaulin --workspace --all-features --timeout 300 --fail-under 94",
     "cargo +nightly-2026-07-01 llvm-cov clean --workspace",
     "cargo +nightly-2026-07-01 llvm-cov --workspace --all-features --branch --json --output-path target/llvm-cov/riot.json",
     "node scripts/web/validate-llvm-coverage.mjs target/llvm-cov/riot.json",

@@ -74,7 +74,7 @@ tarpaulin_floor=$(node --input-type=module --eval \
 case "$tarpaulin_floor" in
   ''|*[!0-9]*) fail ".coverage-thresholds.json thresholds.tarpaulin.lines must be an integer percent" ;;
 esac
-cargo tarpaulin --workspace --all-features --fail-under "$tarpaulin_floor"
+cargo tarpaulin --workspace --all-features --timeout 300 --fail-under "$tarpaulin_floor"
 cargo +nightly-2026-07-01 llvm-cov clean --workspace
 cargo +nightly-2026-07-01 llvm-cov --workspace --all-features --branch \
   --json --output-path target/llvm-cov/riot.json

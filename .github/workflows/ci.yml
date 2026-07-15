@@ -72,7 +72,10 @@ jobs:
         run: |
           floor=$(jq -r '.thresholds.tarpaulin.lines' .coverage-thresholds.json)
           echo "Enforcing tarpaulin line-coverage floor: ${floor}%"
-          cargo tarpaulin --workspace --all-features --fail-under "$floor"
+          # --timeout 300: under ptrace instrumentation on the CI runner some
+          # tests run far slower than locally and exceed tarpaulin's default 60s
+          # per-test timeout ("Timed out waiting for test response").
+          cargo tarpaulin --workspace --all-features --timeout 300 --fail-under "$floor"
 
   gateway:
     name: Gateway (Python unittest)
