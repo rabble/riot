@@ -175,6 +175,50 @@ final class CommunityChooserTests: XCTestCase {
         XCTAssertEqual(model.community?.name, "Germany")
     }
 
+    // MARK: - Performance: a cached community switch is under 300 ms (sim-relative)
+
+    /// The <300 ms cached-switch gate (nav design), measured with `measure` on the
+    /// iPhone 17 Pro simulator, OS 26.2 — sim-relative; physical-device timing is
+    /// assumed-not-proven (§8.3 honesty rule). "Cached" means both communities are
+    /// already held in the registry, so a switch is an author unseal + reproject,
+    /// not a fresh join or sync. Uses the raw FFI profile to hold two communities
+    /// (a member community via the core multi-community join).
+    @MainActor
+    func testACachedCommunitySwitchIsUnder300msSimRelative() throws {
+        let dir = try Self.temporaryProfileDirectory()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let key = Data(repeating: 0x42, count: 32)
+        let profile = try openLocalProfileWithDatabase(
+            dbPath: dir.appendingPathComponent("riot.db").path
+        )
+        let a = try profile.createPublicSpace(title: "Community A")
+        // A second namespace, minted by a throwaway profile, joined as a member.
+        let other = try openLocalProfile()
+        let b = try other.createPublicSpace(title: "Community B")
+        _ = try profile.joinPublicSpace(space: b)
+        try profile.persistCommunities(wrappingKey: key)
+
+        // Both communities are now cached in the registry. Measure a round-trip
+        // switch and assert the per-switch time is under the 300 ms gate.
+        let iterations = 10
+        let start = Date()
+        for _ in 0..<iterations {
+            _ = try profile.switchCommunity(namespaceId: a.namespaceId, wrappingKey: key)
+            _ = try profile.switchCommunity(namespaceId: b.namespaceId, wrappingKey: key)
+        }
+        let perSwitch = Date().timeIntervalSince(start) / Double(iterations * 2)
+        XCTAssertLessThan(
+            perSwitch, 0.300,
+            "a cached community switch must be under 300 ms (sim-relative); was \(perSwitch)s"
+        )
+
+        // Also record the standard XCTClockMetric baseline, matching 2A's harness.
+        measure(metrics: [XCTClockMetric()]) {
+            _ = try? profile.switchCommunity(namespaceId: a.namespaceId, wrappingKey: key)
+            _ = try? profile.switchCommunity(namespaceId: b.namespaceId, wrappingKey: key)
+        }
+    }
+
     // MARK: - Helpers
 
     private static func temporaryProfileDirectory() throws -> URL {
