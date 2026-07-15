@@ -176,6 +176,10 @@ struct StoredInstalledApp {
 
 pub(crate) struct StoredPreview {
     id: u64,
+    /// The community generation when this handle was created. A switch advances
+    /// the generation, so a preview created before a switch fails its generation
+    /// check and cannot commit into the wrong community (the fail-closed guard).
+    community_generation: u64,
     preview: ImportPreview,
     entries: Vec<CurrentEntry>,
     sync_entries: Vec<SignedWillowEntry>,
@@ -183,6 +187,7 @@ pub(crate) struct StoredPreview {
 
 pub(crate) struct StoredPlan {
     id: u64,
+    community_generation: u64,
     plan: ImportPlan,
     entries: Vec<CurrentEntry>,
     sync_entries: Vec<SignedWillowEntry>,
@@ -190,6 +195,7 @@ pub(crate) struct StoredPlan {
 
 struct StoredSyncSession {
     id: u64,
+    community_generation: u64,
     bridge: ByteSyncSession,
     pending: Option<StoredSyncImport>,
 }
@@ -203,6 +209,47 @@ struct StoredSyncImport {
 struct InspectableEntry {
     current: Option<CurrentEntry>,
     signed: SignedWillowEntry,
+}
+
+/// The community-generation guard (Unit 3): a preview/plan/sync handle captured
+/// in one community must never act on another. A switch advances
+/// `community_generation`, so a handle whose captured generation no longer
+/// matches is stale — its operation fails closed rather than committing into,
+/// or reading from, the wrong community's store. This is the mechanism that
+/// makes a switch/write race safe even for a handle that outlives the switch;
+/// the profile `Mutex` already serializes the operations themselves.
+fn handle_generation_is_current(profile: &LocalProfile, captured_generation: u64) -> bool {
+    captured_generation == profile.community_generation
+}
+
+/// Drop any preview/plan/sync handle left over from a previous community (its
+/// captured generation no longer matches the current one). A direct use of such
+/// a handle already fails closed via its generation check; this clears a dead
+/// handle out of the way so it cannot block a fresh operation in the new
+/// community. Never masks a live handle — only a stale one is dropped.
+fn drop_stale_handles(profile: &mut LocalProfile) {
+    let generation = profile.community_generation;
+    if profile
+        .preview
+        .as_ref()
+        .is_some_and(|preview| preview.community_generation != generation)
+    {
+        profile.preview = None;
+    }
+    if profile
+        .plan
+        .as_ref()
+        .is_some_and(|plan| plan.community_generation != generation)
+    {
+        profile.plan = None;
+    }
+    if profile
+        .sync_session
+        .as_ref()
+        .is_some_and(|session| session.community_generation != generation)
+    {
+        profile.sync_session = None;
+    }
 }
 
 pub(crate) fn open_local_profile() -> Result<Arc<MobileProfile>, MobileError> {
@@ -871,6 +918,7 @@ pub(crate) fn inspect_bytes(
         let preview_id = profile.alloc_handle_id()?;
         profile.preview = Some(StoredPreview {
             id: preview_id,
+            community_generation: profile.community_generation,
             preview,
             entries,
             sync_entries,
@@ -887,12 +935,18 @@ pub(crate) fn eligible_entries(
     preview_id: u64,
 ) -> Result<Vec<CurrentEntry>, MobileError> {
     with_active(inner, |profile| {
-        profile
+        let found = profile
             .preview
             .as_ref()
             .filter(|preview| preview.id == preview_id)
-            .map(|preview| preview.entries.clone())
-            .ok_or(MobileError::PreviewConsumed)
+            .map(|preview| (preview.community_generation, preview.entries.clone()))
+            .ok_or(MobileError::PreviewConsumed)?;
+        if !handle_generation_is_current(profile, found.0) {
+            // Created in another community, before a switch — fail closed.
+            profile.preview = None;
+            return Err(MobileError::ObjectClosed);
+        }
+        Ok(found.1)
     })
 }
 
@@ -913,6 +967,19 @@ pub(crate) fn create_plan(
             return Err(MobileError::InvalidInput);
         }
         profile.ensure_handle_capacity()?;
+        // A preview created before a community switch is stale — planning from it
+        // would carry another community's selection into this one. Fail closed.
+        let preview_generation = profile
+            .preview
+            .as_ref()
+            .filter(|preview| preview.id == preview_id)
+            .map(|preview| preview.community_generation);
+        if let Some(generation) = preview_generation {
+            if !handle_generation_is_current(profile, generation) {
+                profile.preview = None;
+                return Err(MobileError::ObjectClosed);
+            }
+        }
         let (selection, selected_entries, selected_sync_entries, plan) = {
             let preview = profile
                 .preview
@@ -965,6 +1032,7 @@ pub(crate) fn create_plan(
         let plan_id = profile.alloc_handle_id()?;
         profile.plan = Some(StoredPlan {
             id: plan_id,
+            community_generation: profile.community_generation,
             plan,
             entries: selected_entries,
             sync_entries: selected_sync_entries,
@@ -981,12 +1049,26 @@ pub(crate) fn accept_plan(
     plan_id: u64,
 ) -> Result<ImportAcceptance, MobileError> {
     with_active(inner, |profile| {
-        let (entries, sync_entries) = profile
+        let (plan_generation, entries, sync_entries) = profile
             .plan
             .as_ref()
             .filter(|plan| plan.id == plan_id)
-            .map(|plan| (plan.entries.clone(), plan.sync_entries.clone()))
+            .map(|plan| {
+                (
+                    plan.community_generation,
+                    plan.entries.clone(),
+                    plan.sync_entries.clone(),
+                )
+            })
             .ok_or(MobileError::PlanConsumed)?;
+        // The community-generation guard: a plan created before a switch must
+        // never commit into the current community. Drop it and fail closed —
+        // this is what makes a write in flight across a switch land nowhere.
+        if !handle_generation_is_current(profile, plan_generation) {
+            profile.plan = None;
+            profile.preview = None;
+            return Err(MobileError::ObjectClosed);
+        }
         let next_inventory = prospective_sync_inventory(profile, &sync_entries)?;
         let outcome = profile
             .plan
@@ -1020,6 +1102,9 @@ pub(crate) fn open_sync_session(
     inner: &Arc<Mutex<ProfileState>>,
 ) -> Result<Arc<MobileSyncSession>, MobileError> {
     with_active(inner, |profile| {
+        // Clear any handle left behind by a previous community so a stale preview,
+        // plan, or coordinator cannot block opening one here.
+        drop_stale_handles(profile);
         if profile.preview.is_some() || profile.plan.is_some() {
             return Err(MobileError::InvalidInput);
         }
@@ -1039,6 +1124,7 @@ pub(crate) fn open_sync_session(
         let sync_id = profile.alloc_handle_id()?;
         profile.sync_session = Some(StoredSyncSession {
             id: sync_id,
+            community_generation: profile.community_generation,
             bridge,
             pending: None,
         });
@@ -1233,6 +1319,21 @@ fn active_sync_mut(
     profile: &mut LocalProfile,
     sync_id: u64,
 ) -> Result<&mut StoredSyncSession, MobileError> {
+    // A sync coordinator created before a community switch is stale: the
+    // generation guard drops it and reports it closed, so no sync operation
+    // (and no buffered import review) can act across a switch. This is the
+    // "coordinator bound to A does not carry into B" isolation, enforced at the
+    // one accessor every sync operation goes through.
+    let captured = match profile.sync_session.as_ref() {
+        Some(session) if session.id == sync_id => Some(session.community_generation),
+        _ => None,
+    };
+    if let Some(generation) = captured {
+        if !handle_generation_is_current(profile, generation) {
+            profile.sync_session = None;
+            return Err(MobileError::ObjectClosed);
+        }
+    }
     profile
         .sync_session
         .as_mut()
@@ -1241,7 +1342,18 @@ fn active_sync_mut(
 }
 
 fn sync_session_is_active(profile: &LocalProfile) -> bool {
-    profile.sync_session.is_some()
+    // A sync coordinator from a previous community (stale generation) is not
+    // active here — it has been left behind by a switch and will be dropped on
+    // the next access. Treating it as active would wrongly block operations in
+    // the newly selected community.
+    let Some(generation) = profile
+        .sync_session
+        .as_ref()
+        .map(|session| session.community_generation)
+    else {
+        return false;
+    };
+    handle_generation_is_current(profile, generation)
 }
 
 fn outcome_without_import(
@@ -2163,14 +2275,15 @@ pub(crate) fn switch_community(
                 .insert(active_ns, std::mem::take(&mut profile.sync_inventory));
         }
 
-        // Isolation: cancel in-flight work and drop the outgoing community's
-        // in-memory caches so none of it can be observed under, or commit into,
-        // the new community.
-        profile.preview = None;
-        profile.plan = None;
-        profile.sync_session = None;
+        // Isolation: the community generation is advanced below, which makes every
+        // preview/plan/sync coordinator captured in the OUTGOING community stale.
+        // Its next use fails closed — it can neither read from nor commit into this
+        // community — and `drop_stale_handles` clears it out of the way of a fresh
+        // operation. This is the community-generation guard doing the fail-closed
+        // work; the profile `Mutex` already serializes the operations themselves.
+        // Drafts and the trust cache carry no generation stamp, so drop them now.
+        // (The outgoing sync inventory was parked above.)
         profile.drafts.clear();
-        profile.sync_inventory.clear();
         // The trust cache is a projection of the active namespace's markers;
         // clearing it reconciles it to the new community (store markers are
         // namespace-scoped, so this can only tighten, never widen, authority).

@@ -313,8 +313,8 @@ fn communities_are_isolated_entries_approvals_and_coordinator_do_not_leak() {
     );
     assert!(!board_has(&profile, &entry_id), "A's entry is ABSENT in B");
     assert!(
-        a_coordinator.begin().is_err(),
-        "A's coordinator cannot act after switching to B"
+        matches!(a_coordinator.begin(), Err(MobileError::ObjectClosed)),
+        "A's coordinator is stale after the switch (generation guard) and cannot act in B"
     );
     profile
         .open_sync_session()
@@ -359,10 +359,12 @@ fn a_write_in_flight_across_a_switch_fails_closed_and_commits_to_neither_communi
         .switch_community(b_ns.clone(), REGISTRY_KEY.to_vec())
         .expect("switch B");
 
-    // The stale plan cannot commit — fail closed.
+    // The stale plan cannot commit — the community-generation guard fails it
+    // closed with ObjectClosed (the handle captured the pre-switch generation).
+    // This is the guard FIRING, not merely a handle that was cleared away.
     assert!(
-        plan.accept().is_err(),
-        "an import in flight across a switch fails closed"
+        matches!(plan.accept(), Err(MobileError::ObjectClosed)),
+        "an import in flight across a switch fails closed via the generation guard"
     );
     assert!(
         !board_has(&profile, &foreign_id),
