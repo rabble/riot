@@ -251,6 +251,9 @@ impl MobileProfile {
         with_active(&self.inner, |profile| {
             let namespace_id = profile.author.identity().namespace_id;
             let signer_id = *profile.author.subspace_id().as_bytes();
+            // Title for the community registry — captured before the name is
+            // moved into the descriptor.
+            let title = input.name.clone();
             // An empty founding roster keeps the historical default — the
             // founder alone. A caller-supplied roster is used verbatim, so the
             // founding collective chooses its own editors.
@@ -276,7 +279,19 @@ impl MobileProfile {
             };
             let signed = create_signed_space_descriptor(&profile.author, descriptor)
                 .map_err(map_newswire_error)?;
-            import_signed_newswire(profile, &signed)
+            let descriptor_entry_id = signed.entry_id;
+            let record = import_signed_newswire(profile, &signed)?;
+            // This descriptor defines the active community. Its namespace equals
+            // the founder's subspace, so the person is its organizer. List it and
+            // register it with the descriptor handle so a reopen/switch can
+            // reproject its newswire Home (closes Risk 11).
+            profile.space = Some(crate::mobile_api::PublicSpace {
+                namespace_id: crate::mobile_state::hex(&namespace_id),
+                title,
+                is_public: true,
+            });
+            crate::mobile_state::register_active_community(profile, Some(descriptor_entry_id))?;
+            Ok(record)
         })
     }
 

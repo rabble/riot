@@ -9,6 +9,7 @@ crate-type = ["lib", "staticlib", "cdylib"]
 
 [dependencies]
 ed25519-dalek = { workspace = true }
+minicbor = { workspace = true }
 riot-core = { path = "../riot-core" }
 uniffi = { workspace = true }
 willow25 = { workspace = true }

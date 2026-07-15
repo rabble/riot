@@ -13,6 +13,43 @@ pub struct PublicSpace {
     pub is_public: bool,
 }
 
+/// The person's relationship to a community, in plain product terms. Derived
+/// from the held author, never caller-asserted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum CommunityRelationship {
+    /// Their subspace key is the community namespace — they can approve tools.
+    Organizer,
+    /// They hold a distinct author in the community and can post.
+    Member,
+    /// They carry the community but hold no author — read only.
+    PublicReader,
+}
+
+/// One row in the community chooser. Plain-language fields only; the full
+/// namespace and descriptor identifiers are technical disclosure the chooser
+/// does not lead with.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct CommunityRow {
+    pub namespace_id: String,
+    pub title: String,
+    pub relationship: CommunityRelationship,
+    /// Pinned `SpaceDescriptorV1` EntryId (hex) — the handle Home uses to
+    /// reproject a loaded/joined community's newswire. `None` for a legacy space.
+    pub descriptor_entry_id: Option<String>,
+    /// Most recent local content time; drives the chooser's "recent activity".
+    pub recent_activity_unix_seconds: Option<u64>,
+    /// Most recent exchange time; drives the chooser's "sync freshness".
+    pub sync_freshness_unix_seconds: Option<u64>,
+    pub archived: bool,
+    /// A corrupt/incompatible at-rest author was preserved for recovery; the
+    /// community is shown but cannot be opened until repaired.
+    pub quarantined: bool,
+    /// True when the community can be opened right now (loadable author, not
+    /// archived, not quarantined). False → the chooser offers recovery, never
+    /// silently drops the row.
+    pub available: bool,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
 pub enum AlertUrgency {
     Immediate,
@@ -141,6 +178,11 @@ pub enum MobileError {
     /// may not exist, the file may be locked by another process, or the
     /// schema may be corrupt.
     Database,
+    /// A community could not be opened: it is unknown, archived, holds no
+    /// loadable author, or its at-rest author failed to open and was quarantined
+    /// for recovery. The chooser preserves the row and offers recovery — it is
+    /// never dropped, and a switch never silently lands on a different community.
+    CommunityUnavailable,
 }
 
 impl std::fmt::Display for MobileError {
@@ -163,6 +205,7 @@ impl std::fmt::Display for MobileError {
             Self::NotSpaceOrganizer => "NOT_SPACE_ORGANIZER",
             Self::LegacyProfileCannotOrganize => "LEGACY_PROFILE_CANNOT_ORGANIZE",
             Self::Database => "DATABASE_ERROR",
+            Self::CommunityUnavailable => "COMMUNITY_UNAVAILABLE",
         };
         f.write_str(code)
     }
@@ -277,6 +320,57 @@ impl MobileProfile {
 
     pub fn open_sync_session(&self) -> Result<Arc<MobileSyncSession>, MobileError> {
         crate::mobile_state::open_sync_session(&self.inner)
+    }
+
+    // --- Multiple communities (Unit 3) ---------------------------------------
+
+    /// Every held community for the chooser, most-recently-active first. Reads
+    /// metadata only — it never unseals any community's author.
+    pub fn list_communities(&self) -> Result<Vec<CommunityRow>, MobileError> {
+        crate::mobile_state::list_communities(&self.inner)
+    }
+
+    /// The currently selected community, or `None` before any is chosen. This is
+    /// what "returning opens the last available community directly" reads.
+    pub fn active_community(&self) -> Result<Option<CommunityRow>, MobileError> {
+        crate::mobile_state::active_community(&self.inner)
+    }
+
+    /// Switches the active community: re-seals the outgoing author, cancels
+    /// in-flight work, unseals the target with `wrapping_key`, and reprojects.
+    /// A write or import in flight across this call fails closed. If the target's
+    /// at-rest author fails to open it is quarantined (never dropped) and this
+    /// returns `CommunityUnavailable` without leaving the old community.
+    pub fn switch_community(
+        &self,
+        namespace_id: String,
+        wrapping_key: Vec<u8>,
+    ) -> Result<CommunityRow, MobileError> {
+        crate::mobile_state::switch_community(&self.inner, namespace_id, wrapping_key)
+    }
+
+    /// Archives a community: it stays in the registry (never dropped) but leaves
+    /// the primary chooser until restored.
+    pub fn archive_community(&self, namespace_id: String) -> Result<(), MobileError> {
+        crate::mobile_state::archive_community(&self.inner, namespace_id)
+    }
+
+    /// Restores an archived community to the chooser. Does not switch to it.
+    pub fn restore_community(&self, namespace_id: String) -> Result<CommunityRow, MobileError> {
+        crate::mobile_state::restore_community(&self.inner, namespace_id)
+    }
+
+    /// Seals every session-held community author under `wrapping_key` and flushes
+    /// the registry, so the held communities survive a reopen. The native host
+    /// calls this whenever it has the wrapping key (alongside `seal_identity`).
+    pub fn persist_communities(&self, wrapping_key: Vec<u8>) -> Result<(), MobileError> {
+        crate::mobile_state::persist_communities(&self.inner, wrapping_key)
+    }
+
+    /// True when the persisted registry failed to decode and was quarantined for
+    /// recovery — the chooser shows a recovery state rather than an empty list.
+    pub fn community_registry_quarantined(&self) -> Result<bool, MobileError> {
+        crate::mobile_state::community_registry_quarantined(&self.inner)
     }
 }
 

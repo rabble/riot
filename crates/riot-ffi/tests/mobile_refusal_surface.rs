@@ -187,10 +187,12 @@ fn every_alert_enum_crosses_the_boundary_intact() {
     }
 }
 
-/// A space needs a real title, and a profile may hold only one. Both refusals
-/// are `InvalidInput`, and neither leaves a half-listed space behind.
+/// A space needs a real title, an unusable candidate is refused with
+/// `InvalidInput` and leaves no half-listed space behind, and — since Unit 3 a
+/// profile may hold several communities — re-selecting the active one is
+/// idempotent rather than a refusal.
 #[test]
-fn a_space_needs_a_title_and_a_profile_holds_only_one() {
+fn a_space_needs_a_title_and_rejoining_the_active_community_is_idempotent() {
     let profile = open_local_profile().expect("profile");
     for title in ["", "   ", &"t".repeat(513)] {
         assert!(
@@ -212,12 +214,14 @@ fn a_space_needs_a_title_and_a_profile_holds_only_one() {
         .create_public_space("Real space".into())
         .expect("space");
 
-    // Joining is refused once a space is listed, and refused outright for a
-    // space that is not public or has no title.
-    assert!(matches!(
-        profile.join_public_space(space.clone()),
-        Err(MobileError::InvalidInput)
-    ));
+    // Re-selecting the already-active community is idempotent — it returns that
+    // community rather than forking a second author for the same namespace.
+    assert_eq!(
+        profile
+            .join_public_space(space.clone())
+            .expect("re-joining the active community is idempotent"),
+        space
+    );
 
     let fresh = open_local_profile().expect("profile");
     for candidate in [
