@@ -335,7 +335,8 @@ use willow25::paths::Path;
 use crate::willow::site_paths::ARTICLES_COMPONENT;
 
 fn a_time_range() -> TimeRange {
-    TimeRange::new(0, u64::MAX) // [now, expiry] stand-in; real callers pass a bounded window
+    // TimeRange::new(start: Timestamp, end: Option<Timestamp>) — None would be open-ended.
+    TimeRange::new(0u64.into(), Some(u64::MAX.into())) // [now, expiry] stand-in
 }
 
 #[test]
@@ -619,9 +620,10 @@ git commit -m "feat(willow): seal/open OwnedMasthead root secret (owned envelope
 ```rust
 //! Integration: an owner generates a masthead, mints its cap, delegates a section
 //! editor cap under /articles, and seals/restores the root.
-use riot_core::willow::{is_under_articles, OwnedMasthead, ARTICLES_COMPONENT};
+use riot_core::willow::{is_under_articles, OwnedMasthead, ARTICLES_COMPONENT, MANIFEST_COMPONENT};
+use willow25::entry::Entry;
 use willow25::groupings::area::Area;
-use willow25::groupings::range::Range;
+use willow25::prelude::TimeRange;
 use willow25::keys::SubspaceSecret;
 use willow25::paths::Path;
 
@@ -635,12 +637,12 @@ fn owner_lifecycle_mint_delegate_seal_restore() {
     assert!(owner_cap.is_owned() && owner_cap.delegations().is_empty());
 
     // delegate a Culture-section editor
-    let editor = SubspaceSecret::from_bytes([3u8; 32]);
+    let editor = SubspaceSecret::from_bytes(&[3u8; 32]);
     let editor_id = editor.corresponding_subspace_id();
     let area = Area::new(
         Some(editor_id),
-        Path::from_slices(&[ARTICLES_COMPONENT, b"culture"]),
-        Range::new(0, u64::MAX),
+        Path::from_slices(&[ARTICLES_COMPONENT, b"culture"]).expect("path"),
+        TimeRange::new(0u64.into(), Some(u64::MAX.into())),
     );
     assert!(is_under_articles(area.path()));
     let editor_cap = m.delegate_section(editor_id, area).expect("delegate");
@@ -662,7 +664,6 @@ fn owner_lifecycle_mint_delegate_seal_restore() {
     assert_eq!(restored.owner_subspace_id(), m.owner_subspace_id());
 }
 ```
-(Add imports: `use riot_core::willow::MANIFEST_COMPONENT;` and `use willow25::entry::Entry;`.)
 
 - [ ] **Step 2: Run test to verify it fails**
 
