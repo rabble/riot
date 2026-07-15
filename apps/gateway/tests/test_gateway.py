@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 from http.server import ThreadingHTTPServer
@@ -259,6 +260,33 @@ class ServerHeadersTest(unittest.TestCase):
                     self.assertEqual(headers["Referrer-Policy"], "no-referrer")
                 finally:
                     error.close()
+
+
+class VendoredScriptTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.gateway = PublicGateway.from_file(EXPORT)
+
+    def test_client_filter_is_inline_vendored_and_hash_pinned_never_external(self) -> None:
+        # Vendored, not hotlinked: the script ships inside the page (no CDN =
+        # no reader-IP leak, no choke point). CSP pins its exact bytes.
+        page = self.gateway.render("/site/incident-board")
+        self.assertNotRegex(page, r"<script[^>]*\ssrc=")
+        scripts = re.findall(r"<script>(.*?)</script>", page, re.S)
+        self.assertEqual(len(scripts), 1, "expected exactly one inline vendored script")
+
+        digest = base64.b64encode(hashlib.sha256(scripts[0].encode("utf-8")).digest()).decode("ascii")
+        # The pinned hash must equal the shipped bytes, else the browser's own
+        # CSP blocks the script. This is the security invariant, not a nicety.
+        self.assertIn(f"script-src 'sha256-{digest}'", gateway_module.CONTENT_SECURITY_POLICY)
+
+    def test_network_stays_fenced_so_vendored_js_cannot_phone_home(self) -> None:
+        self.assertIn("connect-src 'none'", gateway_module.CONTENT_SECURITY_POLICY)
+        self.assertNotIn("script-src 'none'", gateway_module.CONTENT_SECURITY_POLICY)
+
+    def test_filter_is_progressive_enhancement_with_a_js_built_mount(self) -> None:
+        # No-JS readers see no dead input; JS populates the mount.
+        page = self.gateway.render("/site/incident-board")
+        self.assertIn('id="filter"', page)
 
 
 class StaticDumpTest(unittest.TestCase):

@@ -132,6 +132,18 @@ body {
 .ticket__namespace code { font: inherit; color: inherit; }
 .ticket__qr { flex: none; line-height: 0; }
 .ticket__qr svg { width: 100px; height: 100px; display: block; }
+.filter:empty { display: none; }
+.filter { margin: 0 0 1.5rem; }
+.filter__input {
+  width: 100%;
+  padding: 0.5rem 0.65rem;
+  font: inherit;
+  color: var(--ink);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 3px;
+}
+.filter__status { margin: 0.4rem 0 0; font-size: 0.8rem; color: var(--ink-muted); }
 .entries { display: flex; flex-direction: column; gap: 1.5rem; }
 .entry { margin: 0; padding: 0.1rem 0 0.1rem 1rem; border-left: 4px solid var(--ink-muted); }
 .entry--alert { border-left-color: var(--hazard); }
@@ -190,11 +202,46 @@ a { color: inherit; }
 }
 """.strip()
 
+# Vendored, self-contained client filter — NO external lib, NO network. Ships
+# inline inside every page so a mirror is a complete folder (no CDN choke point,
+# no reader-IP leak). connect-src 'none' fences it: it can filter, never fetch.
+# Progressive enhancement: builds its own UI into #filter, so no-JS readers see
+# no dead controls and every entry stays visible.
+SEARCH_JS = """
+(function () {
+  var entries = Array.prototype.slice.call(document.querySelectorAll('.entry'));
+  var mount = document.getElementById('filter');
+  if (!entries.length || !mount) { return; }
+  var input = document.createElement('input');
+  input.type = 'search';
+  input.className = 'filter__input';
+  input.placeholder = 'Filter entries\\u2026';
+  input.setAttribute('aria-label', 'Filter entries');
+  var status = document.createElement('p');
+  status.className = 'filter__status';
+  status.setAttribute('aria-live', 'polite');
+  mount.appendChild(input);
+  mount.appendChild(status);
+  input.addEventListener('input', function () {
+    var q = input.value.trim().toLowerCase();
+    var shown = 0;
+    entries.forEach(function (el) {
+      var hit = !q || el.textContent.toLowerCase().indexOf(q) !== -1;
+      el.hidden = !hit;
+      if (hit) { shown++; }
+    });
+    status.textContent = q ? shown + ' of ' + entries.length + ' shown' : '';
+  });
+})();
+""".strip()
+
 _STYLE_CSS_HASH = base64.b64encode(hashlib.sha256(STYLE_CSS.encode("utf-8")).digest()).decode("ascii")
+_SEARCH_JS_HASH = base64.b64encode(hashlib.sha256(SEARCH_JS.encode("utf-8")).digest()).decode("ascii")
 CONTENT_SECURITY_POLICY = (
     "default-src 'none'; "
     f"style-src 'sha256-{_STYLE_CSS_HASH}'; "
-    "script-src 'none'; connect-src 'none'; base-uri 'none'; form-action 'none'"
+    f"script-src 'sha256-{_SEARCH_JS_HASH}'; "
+    "connect-src 'none'; base-uri 'none'; form-action 'none'"
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -452,8 +499,10 @@ def _render_page(
     <div class=\"ticket__qr\">{qr_svg}</div>
   </div>
   <h2 class=\"entries-label\">Incident entries</h2>
+  <div class=\"filter\" id=\"filter\"></div>
   <section aria-label=\"Incident entries\" class=\"entries\">{cards}</section>
 </main>
+<script>{SEARCH_JS}</script>
 </body>
 </html>"""
 
