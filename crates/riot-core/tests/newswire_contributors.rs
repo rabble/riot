@@ -179,8 +179,8 @@ fn each_distinct_author_becomes_exactly_one_row() {
         3
     );
     assert!(ids.contains(&community.namespace_id));
-    assert!(ids.contains(&*member_one.subspace_id().as_bytes()));
-    assert!(ids.contains(&*member_two.subspace_id().as_bytes()));
+    assert!(ids.contains(member_one.subspace_id().as_bytes()));
+    assert!(ids.contains(member_two.subspace_id().as_bytes()));
 
     // Content-derived, not a roster: the count reflects the signed records.
     let member_one_row = rows
