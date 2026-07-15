@@ -108,4 +108,44 @@ class CommunityChooserTest {
             CommunityReturnOutcome.decide(null, listOf(row("ns-a", archived = true))),
         )
     }
+
+    // Unit 3D — manual multi-community join: the "pending first sync" state and the
+    // provisional label. (The native join/decode themselves are FFI and assumed
+    // off-device — Risk 10, same as 1E/2C; this proves the shared derivation that
+    // mirrors iOS, so both platforms render the joined-not-yet-synced state alike.)
+
+    @Test
+    fun aFreshlyJoinedMemberCommunityIsPendingFirstSync() {
+        val joined = row("ns-b", title = "New community · ns-b", relationship = CommunityRelationship.MEMBER)
+        assertTrue(CommunityChooserRow.isPendingFirstSync(joined))
+        assertTrue(CommunityChooserRow.from(joined, nowUnixSeconds = 1_000_000L).pendingFirstSync)
+    }
+
+    @Test
+    fun anOrganizerOrAnActiveCommunityIsNotPendingFirstSync() {
+        // An organizer's own space has its descriptor locally — never pending.
+        assertFalse(
+            CommunityChooserRow.isPendingFirstSync(row("ns-a", relationship = CommunityRelationship.ORGANIZER)),
+        )
+        // Any recorded activity clears the pending state.
+        assertFalse(
+            CommunityChooserRow.isPendingFirstSync(
+                row("ns-b", relationship = CommunityRelationship.MEMBER, recentActivityUnixSeconds = 5uL),
+            ),
+        )
+        // A sync exchange clears it too.
+        assertFalse(
+            CommunityChooserRow.isPendingFirstSync(
+                row("ns-c", relationship = CommunityRelationship.MEMBER, syncFreshnessUnixSeconds = 5uL),
+            ),
+        )
+    }
+
+    @Test
+    fun theProvisionalTitleLeadsWithoutAFullTechnicalId() {
+        val ns = "abcdef0123456789".repeat(4)
+        val title = CommunityShareJoin.provisionalTitle(ns)
+        assertEquals("New community · abcdef", title)
+        assertFalse("the full namespace id is never the label", title.contains(ns))
+    }
 }

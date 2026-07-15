@@ -17,6 +17,7 @@ import uniffi.riot_ffi.NewswireEditorialActionKind
 import uniffi.riot_ffi.NewswireOperationalProfile
 import uniffi.riot_ffi.NewswirePostInput
 import uniffi.riot_ffi.NewswireProjectionView
+import uniffi.riot_ffi.NewswireShareReference
 import uniffi.riot_ffi.NewswireSignedRecord
 import uniffi.riot_ffi.NewswireSpaceInput
 import uniffi.riot_ffi.ProfileSession
@@ -74,6 +75,29 @@ class RiotController(filesDir: File) : AutoCloseable {
         persistCommunities()
         return joined
     }
+
+    /**
+     * Follows a SECOND community from a pasted share reference (Unit 3D — manual
+     * multi-community join). Routes through the multi-community core join (parks
+     * the current author, mints a fresh UNLINKABLE one) and reprojects onto the
+     * joined community. Kept SEPARATE from any nearby-adopt path so that flow's
+     * ownership/confirmation contract is untouched. The reference carries only
+     * coordinates, so the community is "pending first sync" until its descriptor
+     * and content arrive over sync. Seals immediately (Risk 13).
+     */
+    fun joinAdditionalCommunity(space: PublicSpace): CommunityRow {
+        val joined = profile.joinPublicSpace(space)
+        currentSpace = joined
+        persisted = PersistedProfile(PersistedSpace(joined.namespaceId, joined.title), emptyList())
+        persist(persisted!!)
+        persistCommunities()
+        return activeCommunity() ?: throw IllegalStateException("no active community after join")
+    }
+
+    /** Decodes a pasted `riot://newswire/join/v1/...` share reference to its
+     *  namespace + descriptor + digest coordinates. Refuses a non-canonical one. */
+    fun decodeShareReference(encoded: String): NewswireShareReference =
+        uniffi.riot_ffi.newswireDecodeShareReference(encoded)
 
     fun identity(): PublicIdentity = profile.identity()
 

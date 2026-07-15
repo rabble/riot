@@ -54,6 +54,13 @@ data class CommunityChooserRow(
     val available: Boolean,
     val archived: Boolean,
     val quarantined: Boolean,
+    /**
+     * Joined but never synced (Unit 3D, manual share-reference join): a held
+     * member community with no activity and no sync exchange yet — its descriptor
+     * and content arrive on the first sync. A distinct HONEST state; the row says
+     * so rather than fabricating a name or a feed. Mirrors iOS `pendingFirstSync`.
+     */
+    val pendingFirstSync: Boolean,
 ) {
     companion object {
         fun from(row: CommunityRow, nowUnixSeconds: Long): CommunityChooserRow =
@@ -66,8 +73,41 @@ data class CommunityChooserRow(
                 available = row.available,
                 archived = row.archived,
                 quarantined = row.quarantined,
+                pendingFirstSync = isPendingFirstSync(row),
             )
+
+        /**
+         * A community is "pending first sync" when it is a held, openable MEMBER
+         * space that has received nothing yet — no local activity and no sync
+         * exchange. An organizer's own space is never pending (its descriptor is
+         * local from creation); any recorded activity or sync clears the state.
+         * Derived entirely from core's [CommunityRow], never from a UI guess.
+         */
+        fun isPendingFirstSync(row: CommunityRow): Boolean =
+            row.available &&
+                !row.archived &&
+                !row.quarantined &&
+                row.relationship != CommunityRelationship.ORGANIZER &&
+                row.recentActivityUnixSeconds == null &&
+                row.syncFreshnessUnixSeconds == null
     }
+}
+
+/**
+ * The manual, share-reference join path (Unit 3D). A person pastes a
+ * `riot://newswire/join/v1/...` reference; Riot decodes it, joins the named
+ * community as a fresh unlinkable member, and shows it "pending first sync" until
+ * its descriptor and content arrive over sync. Mirrors iOS `CommunityShareJoin`.
+ */
+object CommunityShareJoin {
+    /**
+     * The provisional local label a joined community carries BEFORE its signed
+     * descriptor arrives over sync and supplies the real name. The reference
+     * carries only coordinates, never a name, so this is the honest placeholder;
+     * a short namespace prefix keeps two pending joins distinguishable without
+     * leading with a full technical id.
+     */
+    fun provisionalTitle(namespaceId: String): String = "New community · ${namespaceId.take(6)}"
 }
 
 /**
