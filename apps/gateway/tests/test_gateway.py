@@ -77,6 +77,16 @@ class PublicGatewayTest(unittest.TestCase):
             )
             forged.render("/site/")
 
+    def test_every_page_bakes_the_csp_into_the_head_so_mirrors_stay_fenced(self) -> None:
+        # A dump lands on a dumb static host that sets no headers. The CSP must
+        # travel inside the HTML or every fence (no-script, no-network) evaporates.
+        expected = (
+            f'<meta http-equiv="Content-Security-Policy" content="{gateway_module.CONTENT_SECURITY_POLICY}">'
+        )
+        for route in gateway_module.SITE_ROUTES:
+            with self.subTest(route=route):
+                self.assertIn(expected, self.gateway.render(route))
+
     def test_renders_the_fixed_public_incident_board_at_site_routes(self) -> None:
         home = self.gateway.render("/site/")
         alerts = self.gateway.render("/site/incident-board/alerts")

@@ -437,7 +437,7 @@ def _render_page(
     namespace_uri = f"riot://open?namespace={namespace}"
     return f"""<!doctype html>
 <html lang=\"en\">
-<head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>{escaped_title} · Riot</title><style>{STYLE_CSS}</style></head>
+<head><meta charset=\"utf-8\"><meta http-equiv=\"Content-Security-Policy\" content=\"{CONTENT_SECURITY_POLICY}\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>{escaped_title} · Riot</title><style>{STYLE_CSS}</style></head>
 <body>
 <main class=\"board\">
   <p class=\"eyebrow\">Public Riot export · renderer profile: {RENDERER_PROFILE}</p>
