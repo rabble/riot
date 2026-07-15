@@ -45,3 +45,5 @@ A pre-existing `stash@{0}` ("WIP on main: 3215689") is **not mine and has been l
 - `crates/riot-core/src/newswire/**`, `crates/riot-ffi/src/newswire_ffi.rs` → **Unit 1A**
 - `crates/riot-core/src/demo_fixture.rs`, `crates/xtask/src/{sign_conference_fixture,verify_conference_export}.rs` → **Unit 0B** (it rewrites them; covering them now is wasted work)
 - `crates/riot-core/src/apps/starter.rs` → **Unit 0A**
+
+| agent-1e-share | **1E — Newswire merge & share** | Rust `crates/riot-core/src/newswire/` (import/merge + digest-bound share reference), `crates/riot-core/tests/newswire_import.rs`, NEW cross-platform golden-vector fixture + harness (Rust generator + iOS/Android test resources), NEW iOS share view + `apps/ios/RiotTests/NewswireShareTests.swift`, Android `NewswireImportTest.kt`, `apps/ios/Riot/Core/ProfileRepository.swift` (if wrapper needed), **both** `project.pbxproj`. FFI TBD — agent reports if surface changes. | IN PROGRESS | 2026-07-15 |
