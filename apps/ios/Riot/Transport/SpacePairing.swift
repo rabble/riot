@@ -42,6 +42,19 @@ public enum SpaceAdoption {
     }
 }
 
+/// Whether a device may disclose its community metadata yet.
+///
+/// The whole rule in one place, so the security boundary can be read and tested
+/// without a radio: a device announces its community — name, namespace, the
+/// announce frame itself — ONLY once both it and its peer have confirmed. One
+/// side's confirmation is never enough. Before that, the only thing on the wire
+/// is the content-free `PairConfirmCodec` token.
+public enum MutualConfirmationGate {
+    public static func mayDiscloseMetadata(localConfirmed: Bool, remoteConfirmed: Bool) -> Bool {
+        localConfirmed && remoteConfirmed
+    }
+}
+
 /// The profile a pairing acts on. `RiotProfileRepository` is the real one; the
 /// protocol exists so the transport does not reach into storage, and so a test
 /// can pair two real repositories over a real socket.
@@ -77,6 +90,15 @@ public final class SpacePairing {
     /// attach-while-delivering race are already solved.
     private let inbox = BoundedFrameInbox()
     private let lock = NSLock()
+    /// This device's human has consented to pair (by initiating or accepting the
+    /// connection). `begin` is reached only on that human action — discovery never
+    /// auto-connects or auto-accepts — so reaching `begin` IS the local consent.
+    private var localConfirmed = false
+    /// A `PairConfirmCodec` token has arrived from the peer: their human consented.
+    private var remoteConfirmed = false
+    /// This device has put its space announce on the wire. Guards against a second
+    /// disclosure and marks the transition out of the confirmation phase.
+    private var disclosed = false
     private var announced = false
     private var finished = false
     private var onDecision: ((SpaceDecision) -> Void)?
@@ -92,22 +114,34 @@ public final class SpacePairing {
         self.friendlyName = friendlyName
     }
 
-    /// Announces this phone's space and waits for the peer's. `onDecision` fires
-    /// exactly once, on the thread the peer's frame arrived on; `onFailure` fires
-    /// if the connection breaks or the peer's announce is malformed.
+    /// Records this device's consent, sends the opaque confirmation token, and
+    /// waits for the peer's. The space announce is withheld until BOTH sides have
+    /// confirmed — reaching this method is the local human's consent (discovery
+    /// never auto-connects or auto-accepts), and the announce goes out only once
+    /// the peer's token has arrived. `onDecision` fires exactly once, after mutual
+    /// confirmation and the announce exchange; `onFailure` fires if the connection
+    /// breaks, a non-consent frame arrives before disclosure, or the peer's
+    /// announce is malformed.
     public func begin(
         onDecision: @escaping (SpaceDecision) -> Void,
         onFailure: @escaping () -> Void
     ) {
+        lock.lock()
         self.onDecision = onDecision
         self.onFailure = onFailure
-        connection.onReceive = { [weak self] frame in self?.receive(frame) }
+        localConfirmed = true
+        lock.unlock()
         connection.onFailure = { [weak self] in self?.fail() }
         do {
-            try connection.send(SpaceAnnounceCodec.encode(host.currentSpace))
+            // Consent first; the community stays opaque until the peer consents too.
+            try connection.send(PairConfirmCodec.encode())
         } catch {
             fail()
+            return
         }
+        // Wire receive AFTER our token is out, so a peer token already buffered on
+        // the channel drains into a fully-armed receiver and can trigger disclosure.
+        connection.onReceive = { [weak self] frame in self?.receive(frame) }
     }
 
     /// Opens the sync session, joining `space` first when the person has agreed
@@ -144,6 +178,35 @@ public final class SpacePairing {
 
     private func receive(_ frame: Data) {
         lock.lock()
+        if finished {
+            lock.unlock()
+            return
+        }
+        // Confirmation phase: the only frame allowed before disclosure is the
+        // peer's consent token. Anything else — including a real announce from a
+        // peer trying to skip the gate — fails closed rather than being interpreted.
+        guard remoteConfirmed else {
+            guard PairConfirmCodec.isConfirmation(frame) else {
+                lock.unlock()
+                fail()
+                return
+            }
+            remoteConfirmed = true
+            let discloseNow = MutualConfirmationGate.mayDiscloseMetadata(
+                localConfirmed: localConfirmed,
+                remoteConfirmed: remoteConfirmed
+            ) && !disclosed
+            if discloseNow { disclosed = true }
+            lock.unlock()
+            if discloseNow {
+                do {
+                    try connection.send(SpaceAnnounceCodec.encode(host.currentSpace))
+                } catch {
+                    fail()
+                }
+            }
+            return
+        }
         guard !announced else {
             lock.unlock()
             // Anything after the announce belongs to the sync session: hold it

@@ -104,6 +104,23 @@ fn to_hex(bytes: &[u8]) -> String {
 }
 
 #[test]
+fn shipped_catalog_is_exactly_eight_pairs() {
+    // The Tools surface's whole premise ("what can we do together") depends on
+    // the full suite shipping, not a subset. Both the count and the fact that
+    // every pair verifies are part of the contract the Apple targets mirror.
+    assert_eq!(
+        STARTER_CATALOG.len(),
+        8,
+        "the starter catalog must ship eight pairs"
+    );
+    assert_eq!(
+        verify_starter_catalog(STARTER_CATALOG).len(),
+        8,
+        "every shipped pair must verify — a dropped pair is a nearly-empty Tools surface"
+    );
+}
+
+#[test]
 fn shipped_catalog_contains_the_community_suite_in_demo_order() {
     let apps = verify_starter_catalog(STARTER_CATALOG);
     let names: Vec<&str> = apps.iter().map(|app| app.manifest.name.as_str()).collect();

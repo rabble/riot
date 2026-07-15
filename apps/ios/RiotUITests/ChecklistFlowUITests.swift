@@ -1,32 +1,35 @@
 import XCTest
 
+/// Community-first shell (2A): create a community from the launch screen, then
+/// approve and open the Checklist on the Tools route, add an item, and prove it
+/// survives a relaunch.
 final class ChecklistFlowUITests: XCTestCase {
-    func testCreateSpaceApproveChecklistAddItemAndSurviveRelaunch() {
+    func testCreateCommunityApproveChecklistAddItemAndSurviveRelaunch() {
         let app = XCUIApplication()
         app.launch()
         if app.alerts.firstMatch.waitForExistence(timeout: 2) {
             app.alerts.firstMatch.buttons.firstMatch.tap()
         }
 
-        // Create the space if this run starts fresh. The primary button style
-        // uppercases its label ("CREATE PUBLIC SPACE"), so match case-insensitively.
-        // Creating a space navigates to the Board tab, so return to Spaces where
-        // the Tools list lives.
-        let createButton = app.buttons.matching(
-            NSPredicate(format: "label ==[c] %@", "Create public space")
-        ).firstMatch
-        if createButton.waitForExistence(timeout: 3) {
-            createButton.tap()
-            app.buttons["Spaces"].tap()
+        // Create the community if this run starts fresh; a re-run against leftover
+        // state already has one, in which case the Tools route is present.
+        if !app.buttons["Tools"].waitForExistence(timeout: 3) {
+            let name = app.textFields["community-name-field"]
+            if name.waitForExistence(timeout: 5) {
+                name.tap()
+                name.typeText("Berlin Mutual Aid")
+            }
+            let create = app.buttons["create-community"]
+            if create.waitForExistence(timeout: 3) { create.tap() }
         }
 
-        // The checklist starter tool must be installed. On a fresh space it is
-        // untrusted and needs the organizer's approval; if a previous run on
-        // this simulator already trusted it, it opens directly. Asserting on
-        // either "review" or "open" keeps a clean run exercising the approval
-        // path while letting the test survive a re-run against leftover state.
-        let review = app.buttons["review-Checklist"]
-        let open = app.buttons["open-Checklist"]
+        app.buttons["Tools"].tap()
+
+        // The checklist starter tool must be installed. On a fresh community it is
+        // untrusted and needs the organizer's approval; if a previous run already
+        // trusted it, it opens directly.
+        let review = app.buttons["directory-review-Checklist"]
+        let open = app.buttons["directory-open-Checklist"]
         XCTAssertTrue(
             review.waitForExistence(timeout: 5) || open.waitForExistence(timeout: 5),
             "checklist tool must be installed"
@@ -49,22 +52,21 @@ final class ChecklistFlowUITests: XCTestCase {
         webView.buttons["Add"].tap()
         XCTAssertTrue(webView.staticTexts["Bring water"].waitForExistence(timeout: 10))
 
-        // Check it off. Use firstMatch: a re-run against leftover state may have
-        // more than one "Bring water" row.
         let checkbox = webView.checkBoxes["Bring water"].firstMatch
         if checkbox.waitForExistence(timeout: 5) {
             checkbox.tap()
         } else {
-            webView.switches["Bring water"].firstMatch.tap() // WebKit may expose <input type=checkbox> as a switch
+            webView.switches["Bring water"].firstMatch.tap()
         }
 
-        // Relaunch: trust and the item must survive.
+        // Relaunch: the community, trust, and the item must survive.
         app.terminate()
         app.launch()
         if app.alerts.firstMatch.waitForExistence(timeout: 2) {
             app.alerts.firstMatch.buttons.firstMatch.tap()
         }
-        let reopen = app.buttons["open-Checklist"]
+        app.buttons["Tools"].tap()
+        let reopen = app.buttons["directory-open-Checklist"]
         XCTAssertTrue(reopen.waitForExistence(timeout: 10), "trust must persist across relaunch")
         reopen.tap()
         XCTAssertTrue(app.webViews.firstMatch.staticTexts["Bring water"].waitForExistence(timeout: 10),

@@ -4,12 +4,21 @@ import java.io.File
 import java.security.SecureRandom
 import uniffi.riot_ffi.AlertCertainty
 import uniffi.riot_ffi.AlertDraftInput
+import uniffi.riot_ffi.AppExecutionSession
 import uniffi.riot_ffi.AppRuntimeSession
 import uniffi.riot_ffi.AlertSeverity
 import uniffi.riot_ffi.AlertUrgency
+import uniffi.riot_ffi.CommunityRow
 import uniffi.riot_ffi.CurrentEntry
 import uniffi.riot_ffi.MobileImportPreview
 import uniffi.riot_ffi.MobileProfile
+import uniffi.riot_ffi.NewswireEditorialActionInput
+import uniffi.riot_ffi.NewswireEditorialActionKind
+import uniffi.riot_ffi.NewswireOperationalProfile
+import uniffi.riot_ffi.NewswirePostInput
+import uniffi.riot_ffi.NewswireProjectionView
+import uniffi.riot_ffi.NewswireSignedRecord
+import uniffi.riot_ffi.NewswireSpaceInput
 import uniffi.riot_ffi.ProfileSession
 import uniffi.riot_ffi.PublicSpace
 import uniffi.riot_ffi.PublicIdentity
@@ -50,6 +59,9 @@ class RiotController(filesDir: File) : AutoCloseable {
         currentSpace = space
         persisted = PersistedProfile(PersistedSpace(space.namespaceId, space.title), emptyList())
         persist(persisted!!)
+        // Seal the new community's author now, minimizing the unsealed-in-RAM
+        // window (Risk 13) rather than leaving it until app background.
+        persistCommunities()
         return space
     }
 
@@ -58,12 +70,22 @@ class RiotController(filesDir: File) : AutoCloseable {
         currentSpace = joined
         persisted = PersistedProfile(PersistedSpace(joined.namespaceId, joined.title), emptyList())
         persist(persisted!!)
+        // Join parks the outgoing author unsealed; seal immediately (Risk 13).
+        persistCommunities()
         return joined
     }
 
     fun identity(): PublicIdentity = profile.identity()
 
     fun openAppRuntime(): AppRuntimeSession = profile.appRuntime()
+
+    /**
+     * Open a gated execution session for a trusted app (Unit 0C). This IS the
+     * launch gate — Rust refuses an untrusted app — and it captures the approval
+     * generation + namespace so a later revoke / re-approval / namespace swap
+     * fails the running app's next read or commit before it touches data.
+     */
+    fun openAppExecution(appIdHex: String): AppExecutionSession = profile.openAppExecution(appIdHex)
 
     /** The persisted apps to re-admit into a fresh [RiotAppsController] on open. */
     fun installedAppsSnapshot(): List<PersistedApp> = persisted?.installedApps ?: emptyList()
@@ -79,6 +101,10 @@ class RiotController(filesDir: File) : AutoCloseable {
     /** Records a trust decision so `restore()` can re-apply it via `trust_app`. */
     fun onAppTrusted(appId: String) =
         mutatePersistedIfPresent { recordAppTrust(it, appId) }
+
+    /** Records a revoke so `restore()` does not re-trust the app. */
+    fun onAppUntrusted(appId: String) =
+        mutatePersistedIfPresent { recordAppUntrust(it, appId) }
 
     /**
      * Records the committed app-data bundle bytes so `restore()` can re-admit
@@ -98,6 +124,75 @@ class RiotController(filesDir: File) : AutoCloseable {
      * instead of leaving a snapshot behind forever.
      */
     fun profileSession(): ProfileSession = profile.profile()
+
+    /**
+     * The open newswire: a signed community-publishing space. These go straight
+     * to [MobileProfile] (the newswire functions live there, not on the app
+     * runtime session). The space descriptor's entry id is the handle every
+     * later call threads through, so the UI keeps it after creating a space.
+     */
+    fun createNewswireSpace(
+        name: String,
+        summary: String,
+        languages: List<String> = emptyList(),
+        geographicTags: List<String> = emptyList(),
+        topicTags: List<String> = emptyList(),
+        editorialRoster: List<String> = emptyList(),
+    ): NewswireSignedRecord {
+        val record = profile.createNewswireSpace(
+            NewswireSpaceInput(name, summary, languages, geographicTags, topicTags, editorialRoster),
+        )
+        // Seal the new community's author now (Risk 13: minimize the RAM window).
+        persistCommunities()
+        return record
+    }
+
+    fun createNewswirePost(
+        spaceDescriptorEntryId: String,
+        headline: String,
+        body: String,
+        language: String = "en",
+        eventTimeUnixSeconds: ULong? = null,
+        expiresAtUnixSeconds: ULong? = null,
+        coarseLocation: String? = null,
+        sourceClaims: List<String> = emptyList(),
+        operationalProfile: NewswireOperationalProfile? = null,
+        aiAssisted: Boolean = false,
+    ): NewswireSignedRecord = profile.createNewswirePost(
+        NewswirePostInput(
+            spaceDescriptorEntryId,
+            headline,
+            body,
+            language,
+            eventTimeUnixSeconds,
+            expiresAtUnixSeconds,
+            coarseLocation,
+            sourceClaims,
+            operationalProfile,
+            aiAssisted,
+        ),
+    )
+
+    /**
+     * Signs an editorial action (feature, verify, correct, hide, tombstone,
+     * retract) on an existing post. Core is the authorization boundary: it REFUSES
+     * to sign an action whose signer is not in the descriptor's editorial roster,
+     * so this THROWS for a non-editor — UI visibility is never the gate. The
+     * reason/replacement text must obey the closed field table (see
+     * [EditorialActionValidator]); core validates it again.
+     */
+    fun createNewswireEditorialAction(
+        spaceDescriptorEntryId: String,
+        targetEntryId: String,
+        kind: NewswireEditorialActionKind,
+        reason: String?,
+        correctionText: String?,
+    ): NewswireSignedRecord = profile.createNewswireEditorialAction(
+        NewswireEditorialActionInput(spaceDescriptorEntryId, targetEntryId, kind, reason, correctionText),
+    )
+
+    fun projectNewswire(spaceDescriptorEntryId: String): NewswireProjectionView =
+        profile.projectNewswireSpace(spaceDescriptorEntryId)
 
     fun entries(): List<CurrentEntry> = profile.listCurrentEntries()
 
@@ -213,6 +308,47 @@ class RiotController(filesDir: File) : AutoCloseable {
             state.wrappingKey.fill(0)
         }
     }
+
+    // --- Multiple communities (Unit 3) ---------------------------------------
+
+    /** Every held community for the chooser. Reads metadata only — no unseal. */
+    fun listCommunities(): List<CommunityRow> = profile.listCommunities()
+
+    /** The active community, or null before one is chosen (returning-last-available). */
+    fun activeCommunity(): CommunityRow? = profile.activeCommunity()
+
+    /**
+     * Switches the active community. Seals/unseals per-community authors, so it
+     * routes through the SAME Keystore-protected wrapping key as the primary
+     * sealed identity — the key is loaded transiently and zeroized after use. No
+     * raw secret is exposed and no new key or store is introduced.
+     */
+    fun switchToCommunity(namespaceId: String): CommunityRow =
+        withWrappingKey { key -> profile.switchCommunity(namespaceId, key) }
+
+    fun archiveCommunity(namespaceId: String) = profile.archiveCommunity(namespaceId)
+
+    fun restoreCommunity(namespaceId: String): CommunityRow =
+        profile.restoreCommunity(namespaceId)
+
+    /** Seals every held community's author so they survive a reopen. */
+    fun persistCommunities() = withWrappingKey { key -> profile.persistCommunities(key) }
+
+    fun communityRegistryQuarantined(): Boolean = profile.communityRegistryQuarantined()
+
+    /**
+     * Runs [operation] with the profile wrapping key from the Keystore-protected
+     * store (minted on first use, as for identity sealing), zeroized after use.
+     */
+    private inline fun <T> withWrappingKey(operation: (ByteArray) -> T): T =
+        synchronized(persistLock) {
+            val state = store.load()?.identityState ?: createIdentityState()
+            try {
+                TemporaryKey.useCopy(state.wrappingKey) { key -> operation(key) }
+            } finally {
+                state.wrappingKey.fill(0)
+            }
+        }
 
     /**
      * Serializes a persisted-profile read-modify-write against every other

@@ -47,6 +47,24 @@ struct FrameDecoder {
 /// interpreted: unknown magic, unknown flag, a namespace that is not 32 bytes, a
 /// title that is empty or over Rust's own 512-byte cap, invalid UTF-8, or so
 /// much as one trailing byte.
+/// The consent token two phones exchange BEFORE either says anything about its
+/// community.
+///
+/// It is deliberately content-free: a fixed magic and nothing else. It answers
+/// exactly one question — "a human on this device agreed to pair with you" — and
+/// carries no community title, no namespace, no identity, nothing a listener
+/// could learn a community from. It is a distinct magic from `SpaceAnnounceCodec`
+/// so the two can never be confused on the wire: a consent token never decodes as
+/// an announce, and an announce never reads as consent. The bilateral gate in
+/// `SpacePairing` withholds the announce until BOTH sides have sent this.
+enum PairConfirmCodec {
+    static let magic = Data("RIOTCF01".utf8)
+
+    static func encode() -> Data { magic }
+
+    static func isConfirmation(_ frame: Data) -> Bool { frame == magic }
+}
+
 enum SpaceAnnounceCodec {
     static let magic = Data("RIOTSP01".utf8)
     static let maxTitleBytes = 512

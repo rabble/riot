@@ -1856,4 +1856,37 @@ willow25 = { version = "=0.5.0" }
         assert!(failures.iter().any(|f| f.contains("plans_per_preview")));
         assert!(failures.iter().any(|f| f.contains("report_fields missing")));
     }
+
+    /// The two fixture subcommands report a failing run as a non-zero exit
+    /// status rather than panicking or, worse, exiting zero. Pointed at a root
+    /// with no workspace in it, each has nothing to read and must say so.
+    ///
+    /// This exercises the dispatch arms, not the fixture logic: `root` is a
+    /// temporary directory, so neither command can touch the repository's real
+    /// fixtures.
+    #[test]
+    fn a_failing_fixture_subcommand_exits_non_zero() {
+        for command in ["sign-conference-fixture", "verify-conference-export"] {
+            let dir = temp_dir(&format!("fixture-dispatch-{command}"));
+            let mut runner = ScriptedRunner {
+                output: None,
+                status: Some(Ok(command_status(0))),
+            };
+            let mut generator = ScriptedBindingGenerator::new(Ok(()), false);
+            let mut stdout = Vec::new();
+            let mut stderr = Vec::new();
+            assert_eq!(
+                run_with(
+                    &dir,
+                    &[command.to_string()],
+                    &mut runner,
+                    &mut generator,
+                    &mut stdout,
+                    &mut stderr,
+                ),
+                ExitCode::FAILURE,
+                "{command} must fail when it has no workspace to read"
+            );
+        }
+    }
 }

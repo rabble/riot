@@ -138,6 +138,10 @@ public final class SyncCoordinator {
     /// the store, so redrawing then would show them content they never accepted.
     /// By the time `acceptImport()` returns, the core has committed the plan.
     public func addPreviewedContent() {
+        // A stopped session never commits. A community switch stops the old
+        // coordinator; a racing "Add them" that lands after that must not push a
+        // pending import into the store — the wrong-community race, failing closed.
+        guard !sessionClosed else { return }
         do {
             acceptedImport = true
             try process(try session.acceptImport(), terminalState: .caughtUp)
@@ -151,6 +155,7 @@ public final class SyncCoordinator {
     }
 
     public func rejectPreviewedContent() {
+        guard !sessionClosed else { return }
         do {
             try process(try session.rejectImport(), terminalState: .idle)
         } catch { fail() }

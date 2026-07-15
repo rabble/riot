@@ -1,0 +1,81 @@
+name: CI
+
+# Fast quality gate. Everything here runs on Ubuntu — none of these jobs need
+# the generated `build/` tree (UniFFI bindings + native staticlibs) that the
+# iOS/Android app builds depend on, so no cross-compile is required. Native app
+# CI is tracked separately (see docs/ci/native-ci-requirements.md).
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust:
+    name: Rust (fmt, clippy, test, contracts)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # rust-toolchain.toml pins channel 1.95.0; rustup honours it on first use.
+      # The pinned toolchain has no components declared, so add them explicitly.
+      - name: Install pinned toolchain components
+        run: |
+          rustup show active-toolchain || rustup toolchain install
+          rustup component add clippy rustfmt
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-${{ runner.os }}-
+
+      - name: rustfmt
+        run: cargo fmt --all -- --check
+
+      - name: clippy
+        run: cargo clippy --workspace --all-features -- -D warnings
+
+      - name: test
+        run: cargo test --workspace --all-features
+
+      # Enforces the willow25 / bab_rs alpha pins. Stable releases compute
+      # incorrect WILLIAM3 digests; this is the only automated check of that.
+      - name: validate contracts
+        run: cargo run -p xtask -- validate-contracts
+
+  gateway:
+    name: Gateway (Python unittest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      # Tests are standard-library only — no pip install step needed.
+      - name: unittest
+        working-directory: apps/gateway
+        run: python3 -m unittest discover -s tests
+
+  web:
+    name: Web tooling (node --test)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '26.4.0'
+      # Unit tests import only node builtins + local .mjs files. --ignore-scripts
+      # skips the Playwright browser download (unused by the unit suite).
+      - name: install
+        run: npm ci --ignore-scripts
+      - name: unit tests
+        run: npm run test:web:unit

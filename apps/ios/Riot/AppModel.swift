@@ -1,12 +1,18 @@
 import Foundation
 import SwiftUI
 
+/// The four destinations inside a selected community (community-first
+/// navigation design §"Navigation and platform behavior"). This replaces the
+/// old five debug-shaped surfaces (Spaces/Apps/Board/Post/Connect): Riot is now
+/// organized around a community, and a person answers "what is happening here?"
+/// (Home) and "what can we do together?" (Tools/People/Nearby). Order is
+/// canonical — it is the tab-bar order on iPhone and the sidebar order on macOS,
+/// and it is what `Command-1…4` select.
 public enum RiotDestination: String, CaseIterable, Identifiable, Sendable {
-    case spaces
-    case directory
-    case board
-    case compose
-    case connection
+    case home
+    case tools
+    case people
+    case nearby
 
     public var id: Self { self }
 
@@ -14,38 +20,76 @@ public enum RiotDestination: String, CaseIterable, Identifiable, Sendable {
 
     public var title: String {
         switch self {
-        case .spaces: "Spaces"
-        case .directory: "App directory"
-        case .board: "Incident board"
-        case .compose: "Post an update"
-        case .connection: "Connection"
+        case .home: "Home"
+        case .tools: "Tools"
+        case .people: "People"
+        case .nearby: "Nearby"
         }
     }
 
     public var tabTitle: String {
         switch self {
-        case .spaces: "Spaces"
-        case .directory: "Apps"
-        case .board: "Board"
-        case .compose: "Post"
-        case .connection: "Connect"
+        case .home: "Home"
+        case .tools: "Tools"
+        case .people: "People"
+        case .nearby: "Nearby"
         }
     }
 
     public var systemImage: String {
         switch self {
-        case .spaces: "square.stack.3d.up"
-        case .directory: "square.grid.2x2"
-        case .board: "exclamationmark.bubble"
-        case .compose: "square.and.pencil"
-        case .connection: "antenna.radiowaves.left.and.right"
+        case .home: "house"
+        case .tools: "square.grid.2x2"
+        case .people: "person.2"
+        case .nearby: "antenna.radiowaves.left.and.right"
         }
+    }
+
+    /// The `Command-N` accelerator that selects this destination (nav design:
+    /// "Command-1…4 select destinations"). Home is 1, and the number follows
+    /// canonical order, so the shortcut is stable no matter the platform.
+    public var commandNumber: Int {
+        switch self {
+        case .home: 1
+        case .tools: 2
+        case .people: 3
+        case .nearby: 4
+        }
+    }
+
+    /// The destination a `Command-N` press selects, or `nil` for an out-of-range
+    /// number. Pure so the keyboard map is provable without a live window.
+    public static func forCommandNumber(_ number: Int) -> RiotDestination? {
+        allCases.first { $0.commandNumber == number }
     }
 }
 
 public enum RiotConnectionStatus: Equatable, Sendable {
     case offline
     case nearby(String)
+}
+
+/// A missing or unreadable built-in starter pack. The starter catalog is a
+/// fixed set of eight tool pairs (`STARTER_CATALOG` in
+/// `crates/riot-core/src/apps/starter.rs`); a pair that is listed but not
+/// bundled is a build defect, never a silent drop.
+public struct StarterCatalogError: Error, Equatable {
+    public enum Pack: String, Sendable { case manifest, bundle }
+    public let slug: String
+    public let pack: Pack
+    public var technicalDetails: String {
+        "starter pack '\(slug).\(pack.rawValue)' is not bundled"
+    }
+}
+
+/// The surfaced recovery state for a catalog/package failure (nav design §4.7):
+/// a fixed error code plus technical details. The UI shows Retry and hides the
+/// details behind a "Technical details" disclosure — never a raw internal error.
+public struct StarterCatalogFailure: Equatable, Sendable {
+    /// Stable, user-reportable code for the catalog-unavailable state.
+    public static let catalogUnavailableCode = "RIOT-CATALOG-UNAVAILABLE"
+    public let code: String
+    public let technicalDetails: String
 }
 
 /// Which tab is on screen, on its own observable object.
@@ -62,7 +106,7 @@ public enum RiotConnectionStatus: Equatable, Sendable {
 /// syncs when it becomes visible).
 @MainActor
 public final class RiotNavigationModel: ObservableObject {
-    @Published public var destination: RiotDestination = .spaces
+    @Published public var destination: RiotDestination = .home
 
     public init() {}
 }
@@ -121,6 +165,19 @@ public final class RiotAppModel: ObservableObject {
     }
 
     @Published public private(set) var space: RiotSpace?
+
+    /// The signed newswire `SpaceDescriptorV1` entry id of the selected
+    /// community, when this device knows it. It is captured from
+    /// `createNewswireSpace` on create; a loaded or joined community carries
+    /// `nil` (there is no descriptor-discovery accessor in the MVP FFI), and
+    /// Home then shows the honest no-updates recovery state. See
+    /// ``CommunityContext/newswireDescriptorEntryID``.
+    @Published public private(set) var newswireDescriptorEntryID: String?
+
+    /// Set when a retained community cannot be opened, so the shell can render
+    /// the §4.7 community-unavailable recovery in place rather than a blank
+    /// screen. `nil` on the ordinary paths.
+    @Published public private(set) var communityUnavailable: CommunityUnavailable?
     @Published public private(set) var entries: [RiotEntry] = []
     @Published public private(set) var apps: [RiotSpaceApp] = []
     @Published public private(set) var connectionStatus: RiotConnectionStatus = .offline
@@ -188,6 +245,20 @@ public final class RiotAppModel: ObservableObject {
     /// the time this opens the gate, or the gate opens onto the same nil announce
     /// it exists to prevent.
     @Published public private(set) var isProfileOpen = false
+
+    /// Set when the built-in starter catalog could not be loaded on open. The
+    /// shell renders the §4.7 recovery state from this (Retry + Technical
+    /// details behind a disclosure); `nil` means the catalog loaded cleanly.
+    @Published public private(set) var starterCatalogFailure: StarterCatalogFailure?
+
+    /// The arguments of the last `bootstrap` call, retained so `retryStarterCatalog`
+    /// can re-attempt the one-time install after a catalog failure.
+    private var lastBootstrapArgs: (
+        storageDirectory: URL?,
+        keyStore: WrappingKeyStore,
+        starterPacks: [(manifest: Data, bundle: Data)]?,
+        starterPackResolver: ((String) -> Data?)?
+    )?
 
     /// Nil until the profile has been read once. That first read is the baseline,
     /// not an arrival — see ``arrivals``.
@@ -327,9 +398,38 @@ public final class RiotAppModel: ObservableObject {
     public func bootstrap(
         storageDirectory: URL? = nil,
         keyStore: WrappingKeyStore = KeychainWrappingKeyStore(),
-        starterPacks: [(manifest: Data, bundle: Data)]? = nil
+        starterPacks: [(manifest: Data, bundle: Data)]? = nil,
+        starterPackResolver: ((String) -> Data?)? = nil
     ) {
         guard repository == nil else { return }
+        lastBootstrapArgs = (storageDirectory, keyStore, starterPacks, starterPackResolver)
+
+        // Resolve the starter catalog first. A missing/unreadable built-in is a
+        // loud, recoverable failure (§4.7 Catalog/package failed) — never a
+        // silently short Tools surface, and never a raw internal error string.
+        let resolvedPacks: [(manifest: Data, bundle: Data)]
+        if let starterPacks {
+            resolvedPacks = starterPacks
+        } else {
+            do {
+                resolvedPacks = try Self.loadStarterPacks(
+                    resolve: starterPackResolver ?? { Self.loadPackData(named: $0) }
+                )
+            } catch let error as StarterCatalogError {
+                starterCatalogFailure = StarterCatalogFailure(
+                    code: StarterCatalogFailure.catalogUnavailableCode,
+                    technicalDetails: error.technicalDetails
+                )
+                return
+            } catch {
+                starterCatalogFailure = StarterCatalogFailure(
+                    code: StarterCatalogFailure.catalogUnavailableCode,
+                    technicalDetails: String(describing: error)
+                )
+                return
+            }
+        }
+
         do {
             let base = try storageDirectory ?? Self.defaultStorageDirectory()
             let storage = try ProtectedProfileStorage(fileURL: base.appendingPathComponent("riot-profile.json"))
@@ -340,7 +440,7 @@ public final class RiotAppModel: ObservableObject {
             let repository = try RiotProfileRepository.open(
                 storage: storage,
                 keyStore: keyStore,
-                starterPacks: starterPacks ?? Self.loadStarterPacks(),
+                starterPacks: resolvedPacks,
                 databasePath: databasePath
             )
             self.repository = repository
@@ -365,6 +465,21 @@ public final class RiotAppModel: ObservableObject {
         }
     }
 
+    /// Recovery action for the §4.7 "Catalog/package failed" state: clears the
+    /// failure and re-attempts the one-time starter install with the same
+    /// arguments the last `bootstrap` used. Safe to call repeatedly —
+    /// `bootstrap` no-ops once the profile is open.
+    public func retryStarterCatalog() {
+        guard let args = lastBootstrapArgs else { return }
+        starterCatalogFailure = nil
+        bootstrap(
+            storageDirectory: args.storageDirectory,
+            keyStore: args.keyStore,
+            starterPacks: args.starterPacks,
+            starterPackResolver: args.starterPackResolver
+        )
+    }
+
     /// Re-reads everything the screens draw from the open profile: the listed
     /// space, its board, its tools, and the names of the people on both.
     ///
@@ -384,7 +499,53 @@ public final class RiotAppModel: ObservableObject {
             refreshApps()
             refreshDisplayNames()
             refreshOrganizerState()
+            refreshCommunities()
         }
+    }
+
+    /// Re-reads the held communities for the chooser. A failure leaves the last
+    /// list rather than blanking the chooser.
+    private func refreshCommunities() {
+        guard let repository else { return }
+        if let rows = try? repository.listCommunities() {
+            communities = rows.map { CommunityChooserRow.from($0) }
+        }
+    }
+
+    /// Opens the Level-1 community chooser (Command-K / the community-name control).
+    public func openCommunityChooser() { isCommunityChooserPresented = true }
+
+    /// Dismisses the chooser without changing communities.
+    public func dismissCommunityChooser() { isCommunityChooserPresented = false }
+
+    /// Switches to another held community. The switch cancels in-flight work and
+    /// fails closed in core; here we reload everything the screens draw so the
+    /// board, tools, people, and organizer state all reflect the new community,
+    /// then land on Home. A community that cannot open surfaces the §4.7
+    /// community-unavailable recovery in place rather than a blank screen.
+    public func switchCommunity(namespaceID: String) {
+        guard let repository else { return }
+        do {
+            let row = try repository.switchToCommunity(namespaceID: namespaceID)
+            communityUnavailable = nil
+            isCommunityChooserPresented = false
+            destination = .home
+            reload()
+            _ = row
+        } catch {
+            // A row that could not open (archived / quarantined / no author) is
+            // preserved with recovery, never dropped or shown as a raw error.
+            let name = communities.first { $0.namespaceID == namespaceID }?.name ?? "This community"
+            markCommunityUnavailable(CommunityUnavailable(name: name))
+            isCommunityChooserPresented = false
+        }
+    }
+
+    /// Seals every held community's author under the secure-store wrapping key so
+    /// the communities survive a reopen. Best-effort — called after create; a
+    /// failure does not block the create.
+    private func persistCommunitiesQuietly() {
+        try? repository?.persistCommunities()
     }
 
     /// Claims a name for this person — the one thing on this screen that decides
@@ -511,7 +672,93 @@ public final class RiotAppModel: ObservableObject {
             refreshApps()
             // Creating a space is what makes you its organizer.
             refreshOrganizerState()
-            destination = .board
+            persistCommunitiesQuietly()
+            refreshCommunities()
+            destination = .home
+        }
+    }
+
+    /// The selected community as the shell reads it: name + namespace from the
+    /// backing space, the newswire descriptor id when known, and organizer
+    /// status from core. `nil` when there is no selected community. Views bind to
+    /// this — never to `space` directly — so Unit 3 can swap the selection
+    /// source without touching a route view.
+    public var community: CommunityContext? {
+        guard let space else { return nil }
+        return CommunityContext(
+            name: space.title,
+            namespaceID: space.namespaceID,
+            newswireDescriptorEntryID: newswireDescriptorEntryID,
+            isOrganizer: canApproveApps
+        )
+    }
+
+    /// The "Your communities" chooser rows (Unit 3), most-recently-active first,
+    /// in plain language. Refreshed by `reload()` from the registry; empty on a
+    /// single-community device, which the chooser reads as "no switcher needed".
+    @Published public private(set) var communities: [CommunityChooserRow] = []
+
+    /// Whether the Level-1 community chooser is presented. `Command-K` opens it;
+    /// selecting or dismissing closes it.
+    @Published public var isCommunityChooserPresented = false
+
+    /// The launch state the shell renders before any route: loading while the
+    /// profile opens, no-community when there is none, the community's Home when
+    /// there is one, or in-place recovery when a retained one cannot open. Never
+    /// a blank screen (nav design §4.7).
+    public var launchState: ShellLaunchState {
+        if let communityUnavailable { return .unavailable(communityUnavailable) }
+        guard isProfileOpen else { return .loading }
+        guard let community else { return .noCommunity }
+        return .community(community)
+    }
+
+    /// Creates a community: the founding collective's initial choices become a
+    /// signed, immutable `SpaceDescriptorV1` (via `createNewswireSpace`, carrying
+    /// the chosen editorial roster) plus the app-trust backing space that carries
+    /// its tools and nearby coordinator. The creator is the founding organizer +
+    /// editor by construction. Lands on Home.
+    /// Marks the selected community unavailable, so the shell renders the §4.7
+    /// community-unavailable recovery in place. The remembered name and a fixed
+    /// code drive the recovery view; nothing is erased.
+    public func markCommunityUnavailable(_ unavailable: CommunityUnavailable) {
+        communityUnavailable = unavailable
+    }
+
+    /// Clears the community-unavailable state — the Retry recovery action, which
+    /// re-attempts opening the community context that is already in memory.
+    public func retryCommunity() {
+        communityUnavailable = nil
+    }
+
+    /// Leaves the selected community, returning the shell to the no-community
+    /// launch state. In Slices 0–2 this is a session-scoped view change (the
+    /// signed records stay in the store); Unit 3 replaces it with real
+    /// multi-community removal. Callers gate this on the dirty-draft
+    /// Stay-or-Discard confirmation (``CommunityChangeGuard``) so unsaved work is
+    /// never lost silently.
+    public func leaveCommunity() {
+        space = nil
+        newswireDescriptorEntryID = nil
+        communityUnavailable = nil
+        destination = .home
+    }
+
+    public func createCommunity(_ request: CommunityCreationRequest) {
+        guard let repository else { return }
+        let coordinator = CommunityCreationCoordinator(backing: repository, descriptor: repository)
+        perform {
+            let context = try coordinator.create(request)
+            space = repository.currentSpace
+            newswireDescriptorEntryID = context.newswireDescriptorEntryID
+            communityUnavailable = nil
+            refreshApps()
+            refreshOrganizerState()
+            // Seal the new community's author so it survives a reopen, then refresh
+            // the chooser so it appears in "Your communities".
+            persistCommunitiesQuietly()
+            refreshCommunities()
+            destination = .home
         }
     }
 
@@ -563,32 +810,23 @@ public final class RiotAppModel: ObservableObject {
         refreshOrganizerState()
     }
 
-    private func refreshApps() {
-        apps = (try? repository?.spaceApps()) ?? []
+    /// Revokes trust for an app in the current space. Organizer-gated like
+    /// `trustApp` (a member turning an app off has the same organizer gate as
+    /// turning one on).
+    public func untrustApp(appID: String) {
+        guard let repository else { return }
+        do {
+            try repository.untrustApp(appID: appID)
+            errorMessage = nil
+            refreshApps()
+        } catch {
+            errorMessage = Self.approvalFailureMessage(error)
+        }
+        refreshOrganizerState()
     }
 
-    public func sign(headline: String, description: String, aiAssisted: Bool) {
-        perform {
-            guard let repository, let space else { return }
-            let expiry = UInt64(Date().timeIntervalSince1970) + 3_600
-            _ = try repository.signAlert(
-                in: space,
-                draft: AlertDraft(
-                    expiresAt: expiry,
-                    headline: headline,
-                    description: description,
-                    sourceClaims: ["Local conference participant"],
-                    aiAssisted: aiAssisted
-                )
-            )
-            entries = try repository.currentEntries()
-            // An alert you signed yourself did not arrive from anyone: it stamps
-            // onto the board like any other entry, but it must not buzz in your
-            // hand as though someone else had posted it.
-            noteArrivals()
-            arrivals = []
-            destination = .board
-        }
+    private func refreshApps() {
+        apps = (try? repository?.spaceApps()) ?? []
     }
 
     private func perform(_ operation: () throws -> Void) {
@@ -602,21 +840,33 @@ public final class RiotAppModel: ObservableObject {
 
     // MARK: - Starter packs
 
-    /// The frozen starter catalog to install on open. A pair that cannot be read
-    /// is dropped (Rust remains the integrity oracle for the bytes we do read),
-    /// so a missing artifact leaves the Tools list empty rather than failing
-    /// `bootstrap`.
-    /// Mirrors `STARTER_APPS` in `crates/riot-core/src/apps/starter.rs`, in the
-    /// same order. Adding a starter app means adding it here AND adding its two
-    /// `.cbor` artifacts to the Riot target's Resources build phase — a pack
-    /// that is listed but not bundled is silently dropped below.
-    private static let starterAppNames = ["checklist", "supply-board", "roll-call", "quick-poll"]
+    /// The canonical starter catalog: the eight built-in tool slugs, in the
+    /// exact order of `STARTER_CATALOG` in `crates/riot-core/src/apps/starter.rs`.
+    /// Rust is the source of truth; `apps_starter.rs`'s ordered-catalog test and
+    /// `StarterResourceTests` both fail if this list drifts from it or from the
+    /// bundled resources. Adding a tool means adding it here AND registering its
+    /// two `.cbor` artifacts in both Apple app targets and the RiotTests bundle.
+    static let starterCatalog = [
+        "checklist", "supply-board", "roll-call", "quick-poll",
+        "chat", "dispatches", "wiki", "photo-wall",
+    ]
 
-    private static func loadStarterPacks() -> [(manifest: Data, bundle: Data)] {
-        starterAppNames.compactMap { app in
-            guard let manifest = loadPackData(named: "\(app).manifest"),
-                  let bundle = loadPackData(named: "\(app).bundle")
-            else { return nil }
+    /// Loads every pair in the starter catalog. Unlike the previous `compactMap`,
+    /// a pair that cannot be read is a **loud** failure: it throws rather than
+    /// silently shrinking the Tools surface. A built-in that is listed but not
+    /// bundled is a build defect, never a tool that quietly vanishes (§6 Unit 0A).
+    /// `resolve` is injectable so the failure path is testable without unbundling
+    /// a real artifact.
+    static func loadStarterPacks(
+        resolve: (String) -> Data? = { loadPackData(named: $0) }
+    ) throws -> [(manifest: Data, bundle: Data)] {
+        try starterCatalog.map { slug in
+            guard let manifest = resolve("\(slug).manifest") else {
+                throw StarterCatalogError(slug: slug, pack: .manifest)
+            }
+            guard let bundle = resolve("\(slug).bundle") else {
+                throw StarterCatalogError(slug: slug, pack: .bundle)
+            }
             return (manifest: manifest, bundle: bundle)
         }
     }
@@ -655,6 +905,10 @@ public final class RiotAppModel: ObservableObject {
     }
 }
 
+/// The shell reads its launch state through this seam; Unit 3 swaps the
+/// conformer for a multi-community registry without touching a route view.
+extension RiotAppModel: CommunitySelecting {}
+
 /// Demo mode's port, wired to the live profile AND to the screens.
 ///
 /// The import itself is the repository's (which is what persists it). All this
@@ -688,5 +942,54 @@ public final class RiotDemoSpaceLoader: DemoSpaceLoading {
     private func reloadModel() {
         let model = model
         Task { @MainActor in model?.reload() }
+    }
+}
+
+/// What the signed-alert detail shows, as a value rather than a view — the
+/// board's rows are read-only, so this is the whole product decision behind
+/// tapping one, and it is pinned by tests without rendering anything.
+///
+/// The split is the point. A person who opens an alert sees the headline, the
+/// AI-assistance flag and the validity window: the parts they can act on. The
+/// 64-hex identifiers are evidence, not reading material, so they live behind a
+/// **Technical details** disclosure that starts closed — full ids never lead a
+/// surface (navigation design's accessibility contract).
+public struct AlertDetail: Equatable, Sendable {
+    public struct Row: Equatable, Sendable {
+        public let label: String
+        public let value: String
+    }
+
+    /// The disclosure a person has to open before any full identifier is shown.
+    public static let technicalDisclosureTitle = "Technical details"
+
+    public let headline: String
+    public let aiAssisted: Bool
+    /// Shown as soon as the sheet opens.
+    public let summary: [Row]
+    /// Shown only once **Technical details** is opened.
+    public let technical: [Row]
+
+    public init(entry: RiotEntry) {
+        headline = entry.headline
+        aiAssisted = entry.aiAssisted
+
+        var visible = [Row(label: "Created", value: Self.timestamp(entry.createdAt))]
+        if let validFrom = entry.validFrom {
+            visible.append(Row(label: "Valid from", value: Self.timestamp(validFrom)))
+        }
+        visible.append(Row(label: "Expires", value: Self.timestamp(entry.expiresAt)))
+        summary = visible
+
+        technical = [
+            Row(label: "Entry", value: entry.entryID),
+            Row(label: "Namespace", value: entry.namespaceID),
+            Row(label: "Signer", value: entry.signerID),
+        ]
+    }
+
+    static func timestamp(_ epochSeconds: UInt64) -> String {
+        Date(timeIntervalSince1970: TimeInterval(epochSeconds))
+            .formatted(.dateTime.year().month().day().hour().minute())
     }
 }

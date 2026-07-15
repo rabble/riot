@@ -1,5 +1,39 @@
 import Foundation
 import SwiftUI
+#if canImport(UIKit)
+import UIKit
+#endif
+
+/// Whether a previewed nearby import may commit into the currently selected
+/// community.
+///
+/// The rule, in one place, so the wrong-community race is provable without a
+/// radio: an import may land only in the community whose session produced it. If
+/// the selected community has changed (or gone) since the session opened, the
+/// import is refused — never repointed at whatever community is selected now.
+public enum NearbyImportAdmission {
+    public static func permits(owned: String?, current: String?) -> Bool {
+        guard let owned, let current else { return false }
+        return owned.lowercased() == current.lowercased()
+    }
+}
+
+/// The §4.7 recovery when Bluetooth or local-network access is denied: a
+/// plain-language explanation of what still works offline and a deep link into
+/// Settings — never a raw permission error.
+public enum NearbyPermissionRecovery {
+    public static var settingsURL: URL? {
+        #if canImport(UIKit)
+        return URL(string: UIApplication.openSettingsURLString)
+        #else
+        return URL(string: "x-apple.systempreferences:")
+        #endif
+    }
+
+    public static let message =
+        "Riot needs Bluetooth or local-network access to find nearby devices. "
+        + "You can still read and post updates offline. Open Settings to turn access on."
+}
 
 enum LocalNetworkRole: Equatable {
     case attempt
@@ -32,6 +66,11 @@ public final class NearbyTransportController: ObservableObject {
     /// Set once a connection is live and held through sync, so the answer survives
     /// the states that forget it. Cleared the moment the session ends.
     @Published public private(set) var connectedPeer: String?
+
+    /// True once Bluetooth or local-network access has been denied. The Nearby
+    /// route reads it to render the §4.7 Settings recovery in place of the device
+    /// list. Never surfaces a raw permission error.
+    @Published public private(set) var permissionDenied = false
 
     /// How many things came over in this session's last accepted import — the
     /// concrete number behind "Synced". Nil until something has actually arrived,
@@ -68,6 +107,10 @@ public final class NearbyTransportController: ObservableObject {
     /// they say so.
     private var pendingAdoption: RiotSpace?
     private var listenerGeneration: UUID?
+    /// The namespace of the community this session's coordinator belongs to,
+    /// captured when the coordinator is adopted. A previewed import is admitted
+    /// only while the host is still in this community — see `NearbyImportAdmission`.
+    private var ownedNamespace: String?
 
     /// Whether to run Bluetooth discovery alongside the local network.
     ///
@@ -138,30 +181,33 @@ public final class NearbyTransportController: ObservableObject {
         service.startLooking()
     }
 
+    /// A human tapped this device and chose to connect. This is the outbound
+    /// half of "a human confirms every connection": discovery never dials on its
+    /// own, so reaching here is always a deliberate human action, and it is that
+    /// human's consent that `SpacePairing` carries as the confirmation token. The
+    /// peer's own human must accept before either community is disclosed.
     public func requestConnection(to phone: DiscoveredPhone) {
-        let isLocal = localService?.canPair(with: phone) ?? false
-        // EXACTLY ONE SIDE DIALS — see `LocalNetworkNearbyService.shouldDial`.
-        //
-        // Both phones auto-connect the instant they see each other. Two dials open
-        // two sockets, each phone binds its session to whichever pairing landed
-        // first, and nothing makes them pick the SAME socket. When they pick
-        // opposite ones both announce into a socket the other has abandoned, no
-        // announce is ever read, and the space handshake never decides anything.
-        // That is what stopped a fresh phone from adopting the organizer's space.
-        //
-        // The phone that loses the tie-break does nothing here: the other's dial is
-        // already on its way and is auto-accepted when it lands. `selected` stays
-        // nil, so this is re-evaluated on the next discovery update rather than
-        // latching a peer it never dialled.
-        guard mayDial(phone) else { return }
         selected = phone
         isInboundRequest = false
-        selectedIsLocal = isLocal
-        // Auto-connect: connecting to a peer is not a decision worth a tap —
-        // it moves no data by itself, and every byte still passes the review
-        // gate before it lands. (Joining a SPACE is a real decision and keeps
-        // its confirmation.) Go straight to what the confirm tap used to do.
+        selectedIsLocal = localService?.canPair(with: phone) ?? false
         confirmConnection()
+    }
+
+    /// A peer is asking to pair with this device. Discovery never auto-accepts
+    /// (nav design §"Nearby security and lifecycle"): this records the request and
+    /// moves to a confirmation the human must accept. Nothing is dialled, and no
+    /// community is disclosed, until they call `confirmConnection`.
+    func receiveInboundPairingRequest(name: String, isLocal: Bool) {
+        isInboundRequest = true
+        selectedIsLocal = isLocal
+        selected = DiscoveredPhone(id: UUID(), friendlyName: name)
+        state = .confirm(name: name)
+    }
+
+    /// Records that Bluetooth or local-network access was denied, so the Nearby
+    /// route can offer the §4.7 Settings recovery instead of an empty list.
+    func notePermissionDenied() {
+        permissionDenied = true
     }
 
     public func confirmConnection() {
@@ -234,9 +280,18 @@ public final class NearbyTransportController: ObservableObject {
         connectedPeer = nil
         itemsBroughtOver = nil
         offeredCount = nil
+        ownedNamespace = nil
     }
 
     public func addPreviewedContent() {
+        // Fail closed on the wrong-community race: a previewed import may commit
+        // only while the host is still in the community whose session produced it.
+        // If the selected community changed (or went) since the coordinator was
+        // adopted, refuse — never repaint another community with this import.
+        guard NearbyImportAdmission.permits(owned: ownedNamespace, current: host?.currentSpace?.namespaceID) else {
+            coordinator?.rejectPreviewedContent()
+            return
+        }
         coordinator?.addPreviewedContent()
     }
 
@@ -259,12 +314,7 @@ public final class NearbyTransportController: ObservableObject {
         }
         localService.onInboundPairingRequested = { [weak self] name in
             Task { @MainActor in
-                guard let self else { return }
-                self.isInboundRequest = true
-                self.selectedIsLocal = true
-                self.selected = DiscoveredPhone(id: UUID(), friendlyName: name)
-                // Auto-accept: a peer reaching us is not a decision worth a tap.
-                self.confirmConnection()
+                self?.receiveInboundPairingRequest(name: name, isLocal: true)
             }
         }
         localService.onPaired = { [weak self] channel, peer in
@@ -307,47 +357,14 @@ public final class NearbyTransportController: ObservableObject {
 
     /// The UI sees one list; the two discovery paths never see the same peer, so
     /// a plain concatenation is correct.
+    ///
+    /// Discovery NEVER auto-connects (nav design §"Nearby security and lifecycle":
+    /// "Discovery never auto-connects or auto-accepts"). Seeing a peer only lists
+    /// it — a human taps a device and confirms before any connection is dialled,
+    /// and the space announce that would disclose this community stays withheld
+    /// until BOTH devices have confirmed (`SpacePairing`'s bilateral gate).
     private func republishPhones() {
         phones = bluetoothPhones + localPhones
-        autoConnectToFirstPeer()
-    }
-
-    /// Auto-connect: a peer we can see is a peer we connect to. Nobody should
-    /// have to tap "connect" to a phone standing next to them — and connecting
-    /// moves no data on its own; the review gate still stands between a peer
-    /// and this store. Only dials while idle, so an in-flight session is never
-    /// interrupted, and never re-dials a peer already selected.
-    private func autoConnectToFirstPeer() {
-        // Auto-connect fires while actively looking — which is the state
-        // `findNearby` leaves us in, and the only state in which `phones` is ever
-        // non-empty. Guarding on `.idle` (the pre-`findNearby` state) meant this
-        // never fired: a peer is only ever discovered AFTER we start looking, by
-        // which point the state is `.looking`, so the guard was always false and
-        // nobody auto-connected. Any state past `.looking` is an in-flight or
-        // finished session, which must not be interrupted.
-        switch state {
-        case .idle, .looking: break
-        default: return
-        }
-        guard selected == nil else { return }
-        // The first peer we may DIAL — not simply the first peer, which is a
-        // different thing the moment there are more than two phones in the room.
-        // `phones` is sorted by name, so "the first peer" is the alphabetically
-        // first one; if we lose the tie-break to that phone we must not stop there,
-        // or we sit waiting on a stranger's dial while the phone we could have
-        // called is two rows down. Losing to EVERY visible peer is fine and needs no
-        // dial: each of them will call us.
-        guard let peer = phones.first(where: { self.mayDial($0) }) else { return }
-        requestConnection(to: peer)
-    }
-
-    /// Whether this phone is the one that dials `phone`, rather than the one that
-    /// waits to be dialled. Exactly one side of any pair says yes — see
-    /// `LocalNetworkNearbyService.shouldDial`. A Bluetooth peer is unchanged: the
-    /// radio's own pairing decides, and it is not this function's business.
-    private func mayDial(_ phone: DiscoveredPhone) -> Bool {
-        guard let localService, localService.canPair(with: phone) else { return true }
-        return localService.shouldDial(phone)
     }
 
     private func makeService() -> CoreBluetoothNearbyService {
@@ -370,14 +387,11 @@ public final class NearbyTransportController: ObservableObject {
         }
         service.onInboundPairingRequested = { [weak self] name in
             Task { @MainActor in
-                guard let self else { return }
-                self.isInboundRequest = true
-                let phone = DiscoveredPhone(id: UUID(), friendlyName: name)
-                self.selected = phone
-                self.selectedIsLocal = false
-                // Auto-accept: a peer reaching us is not a decision worth a tap.
-                self.confirmConnection()
+                self?.receiveInboundPairingRequest(name: name, isLocal: false)
             }
+        }
+        service.onAuthorizationDenied = { [weak self] in
+            Task { @MainActor in self?.notePermissionDenied() }
         }
         service.onDisconnected = { [weak self] in
             Task { @MainActor in
@@ -542,6 +556,7 @@ public final class NearbyTransportController: ObservableObject {
         connectedPeer = nil
         itemsBroughtOver = nil
         offeredCount = nil
+        ownedNamespace = nil
     }
 
     /// Takes ownership of the session's coordinator and opens it from EXACTLY
@@ -555,6 +570,10 @@ public final class NearbyTransportController: ObservableObject {
     /// This does not depend on discovery timing (`isInboundRequest`), which
     /// can race when both peers auto-connect simultaneously.
     private func adopt(_ coordinator: SyncCoordinator) {
+        // Bind this session's imports to the community it opened against. By the
+        // time we adopt, any join has completed, so the host's current namespace
+        // IS the session's community — captured here and enforced on accept.
+        ownedNamespace = host?.currentSpace?.namespaceID
         coordinator.onStateChanged = { [weak self] state in
             guard let self else { return }
             // Carry the offered count across to the accepted state, which does not

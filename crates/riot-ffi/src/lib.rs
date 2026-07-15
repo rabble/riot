@@ -5,6 +5,7 @@
 //! crate.
 
 mod apps_ffi;
+mod community_registry;
 mod demo_ffi;
 mod mobile_api;
 mod mobile_state;

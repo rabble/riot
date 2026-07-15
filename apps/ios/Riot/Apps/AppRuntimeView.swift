@@ -40,6 +40,18 @@ public struct AppRuntimeView: View {
     /// accept) to re-run the page's `watch` callbacks.
     public static let dataChangedNotification = Notification.Name("RiotAppDataChanged")
 
+    /// Posted when a running app's execution session is invalidated mid-use
+    /// (trust revoked, namespace swapped, approval changed). The host closes the
+    /// app to its named destination — "Return to Tools" (§4.7) — instead of
+    /// leaving it looping against a dead session.
+    public static let appInvalidatedNotification = Notification.Name("RiotAppInvalidated")
+
+    /// Fire the invalidation route. Called from the bridge when a read/commit
+    /// fails because the session is no longer valid.
+    public static func postAppInvalidated() {
+        NotificationCenter.default.post(name: appInvalidatedNotification, object: nil)
+    }
+
     /// Tells every app mounted right now that the store changed underneath it.
     ///
     /// The one call a refresh source makes, so that the sources — foregrounding
@@ -87,6 +99,10 @@ public struct AppRuntimeView: View {
                 .onChange(of: scenePhase) { _, phase in
                     if phase == .active { Self.postDataChanged() }
                 }
+                .onReceive(NotificationCenter.default.publisher(for: Self.appInvalidatedNotification)) { _ in
+                    // §4.7: access was revoked/invalidated mid-use — return to Tools.
+                    onClose()
+                }
             } else {
                 // Trust was revoked between the Tools row rendering "Open" and
                 // this view constructing. Per the HARD CONTRACT we must not
@@ -133,14 +149,22 @@ struct AppWebView {
             AppSchemeHandler(resolver: launch.resolver),
             forURLScheme: AppSchemeHandler.scheme
         )
+        // Independent, CSP-agnostic egress hardening applied at CONFIG time,
+        // before the WebView exists (WebRTC preference is read at creation).
+        AppNetworkBackstop.harden(configuration)
         let webView = WKWebView(frame: .zero, configuration: configuration)
         webView.navigationDelegate = coordinator
         webView.uiDelegate = coordinator
         coordinator.bridge.webView = webView
+        // When a bridge call fails because the session was invalidated (§4.7),
+        // close the app to Tools rather than showing a generic per-op error.
+        coordinator.bridge.onInvalidated = { AppRuntimeView.postAppInvalidated() }
         coordinator.observeDataChanges()
-        if let url = coordinator.entryURL {
-            webView.load(URLRequest(url: url))
-        }
+        // Fail closed: the entry point is NOT loaded until the block-all content
+        // rule list has been compiled and attached. If it cannot be applied, no
+        // app page ever runs in this WebView. This is what makes the network
+        // backstop independent of the page's (strippable) CSP.
+        coordinator.applyEgressBackstopThenLoad()
         return webView
     }
 }
@@ -152,6 +176,13 @@ extension AppWebView: NSViewRepresentable {
     }
 
     func updateNSView(_ webView: WKWebView, context: Context) {}
+
+    /// When SwiftUI removes the hosted app (Close, a community switch, navigating
+    /// away), tear the runtime down so no watch callback fires after the UI is
+    /// gone and no zombie session keeps reading.
+    static func dismantleNSView(_ webView: WKWebView, coordinator: AppRuntimeCoordinator) {
+        coordinator.tearDown(webView)
+    }
 }
 #else
 extension AppWebView: UIViewRepresentable {
@@ -160,6 +191,11 @@ extension AppWebView: UIViewRepresentable {
     }
 
     func updateUIView(_ webView: WKWebView, context: Context) {}
+
+    /// See `dismantleNSView` — the same teardown on the UIKit side.
+    static func dismantleUIView(_ webView: WKWebView, coordinator: AppRuntimeCoordinator) {
+        coordinator.tearDown(webView)
+    }
 }
 #endif
 
@@ -173,6 +209,10 @@ final class AppRuntimeCoordinator: NSObject, WKNavigationDelegate, WKUIDelegate 
     /// Mutated only on the main actor; read once from the nonisolated `deinit`,
     /// where `NotificationCenter.removeObserver` is itself thread-safe.
     private nonisolated(unsafe) var observer: NSObjectProtocol?
+    /// Set once the runtime has been torn down. After this, no data-changed post
+    /// re-runs the page's watchers — a callback that fired after teardown would
+    /// be reading for a UI that is already gone.
+    private var tornDown = false
 
     init(bridge: AppBridgeController, appIDHex: String, entryPoint: String) {
         self.bridge = bridge
@@ -187,17 +227,60 @@ final class AppRuntimeCoordinator: NSObject, WKNavigationDelegate, WKUIDelegate 
         URL(string: "\(AppSchemeHandler.scheme)://\(appIDHex)/\(entryPoint)")
     }
 
+    /// Compile and attach the block-all egress content rule list, THEN load the
+    /// entry point. Fail closed: if the backstop cannot be applied the page is
+    /// never loaded, so no app code runs without the network wall in place.
+    func applyEgressBackstopThenLoad() {
+        Task { @MainActor [weak self] in
+            guard let self, !self.tornDown else { return }
+            guard let webView = self.bridge.webView else { return }
+            guard let ruleList = await AppNetworkBackstop.compiledBlockAll() else {
+                // Compilation failed: do not load the app. Report closed.
+                return
+            }
+            guard !self.tornDown else { return }
+            webView.configuration.userContentController.add(ruleList)
+            if let url = self.entryURL {
+                webView.load(URLRequest(url: url))
+            }
+        }
+    }
+
     /// Subscribes to `AppRuntimeView.dataChangedNotification` and re-runs the
     /// page's watchers when it fires. Posts arrive on `.main`; the block hops to
-    /// the main actor to touch the WebView.
+    /// the main actor to touch the WebView. A post that arrives after teardown is
+    /// ignored — the observer is removed on teardown, and this guard is the belt
+    /// to that suspenders.
     func observeDataChanges() {
         observer = NotificationCenter.default.addObserver(
             forName: AppRuntimeView.dataChangedNotification,
             object: nil,
             queue: .main
-        ) { [weak bridge] _ in
-            MainActor.assumeIsolated { bridge?.notifyDataChanged() }
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self, !self.tornDown else { return }
+                self.bridge.notifyDataChanged()
+            }
         }
+    }
+
+    /// Tear the runtime down on invalidation (Close, revoke, community switch,
+    /// navigate away). Removes the change observer so no watcher re-runs, drops
+    /// the WebView reference so `notifyDataChanged` becomes a no-op, and halts the
+    /// page by loading `about:blank` (local, no network). Idempotent.
+    func tearDown(_ webView: WKWebView) {
+        guard !tornDown else { return }
+        tornDown = true
+        if let observer {
+            NotificationCenter.default.removeObserver(observer)
+            self.observer = nil
+        }
+        // Destroy the Rust execution session so any in-flight or later bridge
+        // call fails closed — the session cannot outlive the UI.
+        bridge.teardown()
+        bridge.webView = nil
+        webView.stopLoading()
+        webView.loadHTMLString("", baseURL: nil)
     }
 
     /// The security-load-bearing navigation lock: CSP does not constrain
@@ -228,5 +311,73 @@ final class AppRuntimeCoordinator: NSObject, WKNavigationDelegate, WKUIDelegate 
 
     deinit {
         if let observer { NotificationCenter.default.removeObserver(observer) }
+    }
+}
+
+/// The independent, CSP-agnostic network egress backstop for hosted apps
+/// (Unit 0C — SECURITY-CRITICAL).
+///
+/// The WKWebView navigation delegate (`decidePolicyFor navigationAction`) only
+/// sees FRAME navigations. It never sees `fetch`, `XMLHttpRequest`, `WebSocket`,
+/// `EventSource`, `sendBeacon`, remote `<img>/<script>/<link>/<iframe>`
+/// subresources, CSS `url()`, DNS-prefetch/preconnect, or a favicon request.
+/// Before Unit 0C those were blocked ONLY by the strict CSP the scheme handler
+/// serves — and an attacker who controls the page can strip that CSP. So the CSP
+/// cannot be the containment.
+///
+/// This is the containment: a compiled `WKContentRuleList` that BLOCKS every URL
+/// and then re-permits only the app's own `riot-app` scheme. Content rule lists
+/// are enforced at WebKit's network layer, completely independent of page
+/// content, so egress is denied even with the page's CSP removed. `AppWebView`
+/// fails closed — it never loads an app page until this list is attached.
+///
+/// LIMIT (see the 0C report): a content rule list governs the URL-loading
+/// system. `RTCPeerConnection` (WebRTC) does NOT flow through it, so a content
+/// rule list cannot block STUN/TURN egress. `harden` disables WebRTC via the
+/// only lever WKWebView exposes; where that lever is unavailable WebRTC is a
+/// documented residual risk to threat-model, not something CSP or the rule list
+/// closes.
+enum AppNetworkBackstop {
+    static let identifier = "riot-app-egress-block-v1"
+
+    /// Block every URL; then lift the block for the app's own scheme so its
+    /// bundle (served by the custom scheme handler) still loads. `url-filter` is
+    /// a regex over the full URL string.
+    static let ruleListJSON = """
+    [
+      { "trigger": { "url-filter": ".*" }, "action": { "type": "block" } },
+      { "trigger": { "url-filter": "^riot-app://" }, "action": { "type": "ignore-previous-rules" } }
+    ]
+    """
+
+    /// Compile (or reuse the store-cached) block-all rule list. Returns nil on
+    /// failure so the caller can fail closed. WebKit caches by identifier, so the
+    /// compile cost is paid once per process.
+    @MainActor
+    static func compiledBlockAll() async -> WKContentRuleList? {
+        guard let store = WKContentRuleListStore.default() else { return nil }
+        return await withCheckedContinuation { continuation in
+            store.compileContentRuleList(
+                forIdentifier: identifier,
+                encodedContentRuleList: ruleListJSON
+            ) { list, _ in
+                continuation.resume(returning: list)
+            }
+        }
+    }
+
+    /// Config-time hardening applied before the WebView is created. Closes the
+    /// non-URL egress channels a content rule list cannot: WebRTC. Best-effort —
+    /// the WebRTC preference is private, so this is defensive and its absence is a
+    /// documented residual, never a silent assumption of safety.
+    @MainActor
+    static func harden(_ configuration: WKWebViewConfiguration) {
+        // WKWebpagePreferences / WKPreferences do not expose a public switch for
+        // WebRTC. `peerConnectionEnabled` is the historical private key; guard the
+        // KVC so an OS that renamed or removed it cannot crash the host.
+        let preferences = configuration.preferences
+        if preferences.responds(to: NSSelectorFromString("peerConnectionEnabled")) {
+            preferences.setValue(false, forKey: "peerConnectionEnabled")
+        }
     }
 }

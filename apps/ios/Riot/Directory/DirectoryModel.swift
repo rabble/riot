@@ -11,11 +11,15 @@ public protocol DirectoryPorting: AnyObject {
     func installedApps() throws -> [RiotSpaceApp]
     func endorseApp(appID: Data, note: String, retract: Bool) throws
     func shareApp(appID: Data) throws
-    /// Takes an app this profile already carries — one that arrived from a
+    /// Takes up an app this profile already carries — one that arrived from a
     /// neighbour — and admits it to this device's runtime, so it can be reviewed
     /// and then opened. Throws when its bytes have not all arrived, which is the
     /// only reason the person is ever told no.
     func getCarriedApp(appID: Data) throws -> RiotSpaceApp
+    /// The lowercase-hex app ids this profile has endorsed. Drives the
+    /// "Take back recommendation" affordance: a row whose id is in this set was
+    /// recommended by this person and can be retracted.
+    var endorsedAppIDs: Set<String> { get }
 }
 
 /// One app as the directory shows it: what it is, what it can do, who vouches
@@ -50,6 +54,9 @@ public struct RiotDirectoryRow: Identifiable, Equatable, Sendable {
     public let availability: Availability
     public let canRecommend: Bool
     public let canShare: Bool
+    /// True when this profile has endorsed the app — the signal that offers
+    /// "Take back recommendation" instead of "Recommend".
+    public let endorsedByMe: Bool
 
     public var id: String { appIDHex }
 }
@@ -115,7 +122,8 @@ public extension RiotDirectoryRow {
     static func make(
         listing: DirectoryListing,
         installed: RiotSpaceApp?,
-        space: RiotSpace?
+        space: RiotSpace?,
+        endorsedByMe: Bool = false
     ) -> RiotDirectoryRow {
         let trusted = trustedInCurrentSpace(listing: listing, space: space)
 
@@ -149,7 +157,8 @@ public extension RiotDirectoryRow {
             ),
             availability: availability,
             canRecommend: canRecommend(listing: listing, space: space),
-            canShare: space != nil
+            canShare: space != nil,
+            endorsedByMe: endorsedByMe
         )
     }
 
@@ -161,7 +170,7 @@ public extension RiotDirectoryRow {
     /// the profile's own copy of its bytes — so it is genuinely held and openable
     /// while no listing speaks for it. Without this row it would silently
     /// disappear from the surface that offered it in the first place.
-    static func held(_ app: RiotSpaceApp, space: RiotSpace?) -> RiotDirectoryRow {
+    static func held(_ app: RiotSpaceApp, space: RiotSpace?, endorsedByMe: Bool = false) -> RiotDirectoryRow {
         RiotDirectoryRow(
             appID: bytes(hex: app.appIDHex) ?? Data(),
             appIDHex: app.appIDHex.lowercased(),
@@ -175,7 +184,8 @@ public extension RiotDirectoryRow {
             endorsement: nil,
             availability: app.trusted ? .open(app) : .review(app),
             canRecommend: app.trusted && space != nil,
-            canShare: space != nil
+            canShare: space != nil,
+            endorsedByMe: endorsedByMe
         )
     }
 }
@@ -216,12 +226,14 @@ public final class RiotDirectoryModel: ObservableObject {
         do {
             let installed = try port.installedApps()
             let space = port.currentSpace
+            let endorsed = port.endorsedAppIDs
             let listed = try port.directoryListings().map { listing in
                 let hex = RiotDirectoryRow.hex(listing.appId)
                 return RiotDirectoryRow.make(
                     listing: listing,
                     installed: installed.first { $0.appIDHex.lowercased() == hex },
-                    space: space
+                    space: space,
+                    endorsedByMe: endorsed.contains(hex)
                 )
             }
             // Apps this device holds that no listing speaks for — see
@@ -230,7 +242,7 @@ public final class RiotDirectoryModel: ObservableObject {
             let listedIDs = Set(listed.map(\.appIDHex))
             let unlisted = installed
                 .filter { !listedIDs.contains($0.appIDHex.lowercased()) }
-                .map { RiotDirectoryRow.held($0, space: space) }
+                .map { RiotDirectoryRow.held($0, space: space, endorsedByMe: endorsed.contains($0.appIDHex.lowercased())) }
             rows = listed + unlisted
             errorMessage = nil
         } catch {
@@ -267,6 +279,14 @@ public final class RiotDirectoryModel: ObservableObject {
     public func recommend(_ row: RiotDirectoryRow, note: String) {
         perform(confirming: "Recommended \(row.name)") { port in
             try port.endorseApp(appID: row.appID, note: note, retract: false)
+        }
+    }
+
+    /// Withdraws this profile's recommendation of an app. Surfaces a receipt so
+    /// the person sees the take-back landed, mirroring `recommend`.
+    public func retract(_ row: RiotDirectoryRow) {
+        perform(confirming: "Took back recommendation of \(row.name)") { port in
+            try port.endorseApp(appID: row.appID, note: "", retract: true)
         }
     }
 

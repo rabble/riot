@@ -424,6 +424,9 @@ public final class RiotProfileRepository {
         persisted.space = RiotSpace(namespaceID: joined.namespaceId, title: joined.title)
         persisted.sealedIdentity = try sealCurrentIdentity()
         try storage.save(persisted)
+        // Join parks the joined community's author unsealed in the registry; seal
+        // it now so the unsealed-in-RAM window is minimal (Risk 13).
+        try? persistCommunities()
         // The join just REGENERATED the author (see above), so the profile card
         // written under the old subspace is orphaned: this person would appear to
         // the space they just joined as `member · <new tag>`, nameless, on every
@@ -525,6 +528,19 @@ public final class RiotProfileRepository {
         }
     }
 
+    /// Revokes trust for an app in Rust and drops the persisted decision so the
+    /// revoke survives a relaunch (Rust's trust state is in-memory, so without
+    /// this the `open` path would re-trust it). Mirrors `trustApp`: Rust first,
+    /// disk second — a revoke Rust refuses never reaches disk.
+    public func untrustApp(appID: String) throws {
+        try appRuntime.untrustApp(appId: appID)
+        let lowered = appID.lowercased()
+        if persisted.trustedAppIDs.contains(where: { $0.lowercased() == lowered }) {
+            persisted.trustedAppIDs.removeAll { $0.lowercased() == lowered }
+            try storage.save(persisted)
+        }
+    }
+
     /// Serves one of an installed app's resources by exact path. Unknown app id
     /// or path throws — the resolver does no path interpretation, so "../x"
     /// simply matches nothing.
@@ -546,28 +562,38 @@ public final class RiotProfileRepository {
     /// for an app that is trusted in the current profile.
     public func appDataBridge(appID: String) -> AppDataBridging? {
         guard installedApp(appID: appID) != nil else { return nil }
-        guard (try? appRuntime.isAppTrusted(appId: appID)) == true else { return nil }
-        // Route the bridge's writes through `appDataPut` so every put from the
-        // page is committed with a receipt and persisted for replay on the next
-        // open; reads/list/name still go straight to the session.
+        // Opening the gated execution session IS the trust gate — Rust refuses an
+        // untrusted app (Unit 0C) — and it captures the approval generation +
+        // namespace, so a later revoke / re-approval / namespace swap fails the
+        // running app's next read or commit BEFORE it touches data. The bridge
+        // performs its write through this session and hands back the committed
+        // bytes to persist for replay; reads/list go straight through it too.
+        guard let execution = try? profile.openAppExecution(appId: appID) else { return nil }
         return AppRuntimeDataBridge(
-            session: appRuntime,
-            profiles: profile.profile(),
-            appIDHex: appID
-        ) { [weak self] key, valueJSON in
-            try self?.appDataPut(appID: appID, key: key, valueJSON: valueJSON)
+            execution: execution,
+            profiles: profile.profile()
+        ) { [weak self] _, bundleBytes in
+            try self?.persistAppDataBundle(bundleBytes)
         }
     }
 
-    /// Commits an app-data write with a receipt and persists the returned signed
-    /// bundle so the value survives a process restart (replayed on `open`). This
-    /// is the single write path; the WebView bridge delegates here.
+    /// Persists a committed app-data bundle (the receipt from the gated write) so
+    /// the value survives a process restart (replayed on `open`). A durable-write
+    /// failure propagates so the page hears "couldn't save".
+    public func persistAppDataBundle(_ bundleBytes: Data) throws {
+        persisted.appDataBundles.append(bundleBytes)
+        try storage.save(persisted)
+    }
+
+    /// Host-side convenience write (not the page path): commits with a receipt
+    /// and persists it. The security-critical page path goes through the gated
+    /// `AppExecutionSession` in `appDataBridge`; this direct method is used by the
+    /// host and tests to seed/inspect an app's data.
     public func appDataPut(appID: String, key: String, valueJSON: String) throws {
         let receipt = try appRuntime.appDataPutWithReceipt(
             appId: appID, key: key, value: Data(valueJSON.utf8)
         )
-        persisted.appDataBundles.append(receipt)
-        try storage.save(persisted)
+        try persistAppDataBundle(receipt)
     }
 
     /// Reads an app-data value as the JSON text the page stored, or nil if the
@@ -650,6 +676,53 @@ public final class RiotProfileRepository {
         defer { key.resetBytes(in: key.startIndex..<key.endIndex) }
         guard key.count == 32 else { throw RepositoryError.invalidWrappingKey }
         return try operation(key)
+    }
+}
+
+// MARK: - Multiple communities (Unit 3)
+
+/// The registry seam over the Unit-3 FFI. Switch and persist seal/unseal
+/// per-community authors, so they route through the SAME profile wrapping key
+/// this device already holds in the platform secure store (iOS Keychain) for the
+/// primary sealed identity — the key is loaded transiently and reset after use.
+/// Real shipping users therefore get durable SEALED per-community identity; no
+/// raw secret is ever exposed, and no new key or secure store is introduced.
+extension RiotProfileRepository: CommunityRegistry {
+    public func listCommunities() throws -> [CommunityRow] {
+        try profile.listCommunities()
+    }
+
+    public func activeCommunity() throws -> CommunityRow? {
+        try profile.activeCommunity()
+    }
+
+    @discardableResult
+    public func switchToCommunity(namespaceID: String) throws -> CommunityRow {
+        try Self.withWrappingKey(from: keyStore) { wrappingKey in
+            try profile.switchCommunity(namespaceId: namespaceID, wrappingKey: wrappingKey)
+        }
+    }
+
+    public func archiveCommunity(namespaceID: String) throws {
+        try profile.archiveCommunity(namespaceId: namespaceID)
+    }
+
+    @discardableResult
+    public func restoreCommunity(namespaceID: String) throws -> CommunityRow {
+        try profile.restoreCommunity(namespaceId: namespaceID)
+    }
+
+    /// Seals every session-held community author under the secure-store wrapping
+    /// key so the held communities survive a reopen. Called after create/join,
+    /// alongside identity sealing.
+    public func persistCommunities() throws {
+        try Self.withWrappingKey(from: keyStore) { wrappingKey in
+            try profile.persistCommunities(wrappingKey: wrappingKey)
+        }
+    }
+
+    public func communityRegistryQuarantined() throws -> Bool {
+        try profile.communityRegistryQuarantined()
     }
 }
 
@@ -818,6 +891,12 @@ extension RiotProfileRepository: DirectoryPorting {
         try appRuntime.directoryListings()
     }
 
+    /// The lowercase-hex app ids this profile has endorsed — the source of the
+    /// "Take back recommendation" affordance on each directory row.
+    public var endorsedAppIDs: Set<String> {
+        Set(persisted.endorsements.map { $0.appIDHex.lowercased() })
+    }
+
     /// Writes (or withdraws) this profile's recommendation of an app. Endorsing
     /// an app whose bytes have not arrived yet is allowed by design — the marker
     /// composes with the app's later arrival.
@@ -832,6 +911,13 @@ extension RiotProfileRepository: DirectoryPorting {
             )
         }
         try storage.save(persisted)
+    }
+
+    /// Withdraws this profile's recommendation of an app. A named view of
+    /// `endorseApp(...retract: true)` for call-site clarity; drops the persisted
+    /// endorsement so the take-back survives a relaunch.
+    public func retractEndorsement(appID: Data) throws {
+        try endorseApp(appID: appID, note: "", retract: true)
     }
 
     /// Takes up an app this profile carries but has not run: Rust admits it from
@@ -889,6 +975,152 @@ extension RiotProfileRepository: DirectoryPorting {
         )
     }
 }
+
+// MARK: - Newswire hosting
+
+/// The open newswire — a separate signed space for community publishing. Unlike
+/// the private `PublicSpace`, a newswire space is its own signed descriptor in
+/// the same namespace, and these calls go straight to `MobileProfile` (the
+/// newswire functions live on that object, not on `AppRuntimeSession`). The
+/// space descriptor's entry id is the handle the rest of the surface threads
+/// through every later call, so `createNewswireSpace` returns it for the model
+/// to keep.
+public extension RiotProfileRepository {
+    /// Creates and signs a newswire space descriptor, importing it into the
+    /// store. The signer becomes the founding editor in the roster, so only this
+    /// profile can act editorially on its posts until others are added.
+    @discardableResult
+    func createNewswireSpace(
+        name: String,
+        summary: String,
+        languages: [String] = [],
+        geographicTags: [String] = [],
+        topicTags: [String] = [],
+        editorialRoster: [String] = []
+    ) throws -> NewswireSignedRecord {
+        try profile.createNewswireSpace(input: NewswireSpaceInput(
+            name: name,
+            summary: summary,
+            languages: languages,
+            geographicTags: geographicTags,
+            topicTags: topicTags,
+            editorialRoster: editorialRoster
+        ))
+    }
+
+    /// Publishes a freeform news post under an existing newswire space. The
+    /// space descriptor must already be in the store (its entry id is the
+    /// parent). Returns the signed record carrying the post's own entry id.
+    @discardableResult
+    func createNewswirePost(
+        spaceDescriptorEntryID: String,
+        headline: String,
+        body: String,
+        language: String = "en",
+        eventTimeUnixSeconds: UInt64? = nil,
+        expiresAtUnixSeconds: UInt64? = nil,
+        coarseLocation: String? = nil,
+        sourceClaims: [String] = [],
+        operationalProfile: NewswireOperationalProfile? = nil,
+        aiAssisted: Bool = false
+    ) throws -> NewswireSignedRecord {
+        try profile.createNewswirePost(input: NewswirePostInput(
+            spaceDescriptorEntryId: spaceDescriptorEntryID,
+            headline: headline,
+            body: body,
+            language: language,
+            eventTimeUnixSeconds: eventTimeUnixSeconds,
+            expiresAtUnixSeconds: expiresAtUnixSeconds,
+            coarseLocation: coarseLocation,
+            sourceClaims: sourceClaims,
+            operationalProfile: operationalProfile,
+            aiAssisted: aiAssisted
+        ))
+    }
+
+    /// Signs an editorial action (feature, verify, correct, hide, tombstone,
+    /// retract) on an existing post, importing it into the store. Core is the
+    /// authorization boundary: it REFUSES to sign an action whose signer is not in
+    /// the descriptor's editorial roster, so this THROWS for a non-editor — UI
+    /// visibility is never the gate. The reason/replacement text must already obey
+    /// the closed field table (the surface validates first, and core validates
+    /// again).
+    @discardableResult
+    func createNewswireEditorialAction(
+        spaceDescriptorEntryID: String,
+        targetEntryID: String,
+        kind: NewswireEditorialActionKind,
+        reason: String?,
+        correctionText: String?
+    ) throws -> NewswireSignedRecord {
+        try profile.createNewswireEditorialAction(input: NewswireEditorialActionInput(
+            spaceDescriptorEntryId: spaceDescriptorEntryID,
+            targetEntryId: targetEntryID,
+            kind: kind,
+            reason: reason,
+            correctionText: correctionText
+        ))
+    }
+
+    /// The collective view of a newswire space: the open wire (all non-expired
+    /// posts, newest-first) and the front page (ordinary posts with an active
+    /// Feature action). `Hidden`/`Tombstoned` posts arrive with `body == nil`.
+    func projectNewswire(spaceDescriptorEntryID: String) throws -> NewswireProjectionView {
+        try profile.projectNewswireSpace(spaceDescriptorEntryId: spaceDescriptorEntryID)
+    }
+
+    /// The Known-contributors (People) surface of a newswire space: every
+    /// distinct author of a signed record it holds, each rendered as `name ·
+    /// tag`, with the recognized organizer marked by the namespace coordinate.
+    /// Derived from the community's records — not a membership roster.
+    func projectNewswireContributors(spaceDescriptorEntryID: String) throws -> [NewswireContributor] {
+        try profile.projectNewswireContributors(spaceDescriptorEntryId: spaceDescriptorEntryID)
+    }
+
+    /// The digest-bound share/join reference for a newswire space this profile
+    /// holds. `encoded` is the canonical `riot://newswire/join/v1/...` string
+    /// (link or QR payload); `contentDigest` binds the descriptor's canonical
+    /// bytes, so a substituted community name or roster is detectable on import.
+    func newswireShareReference(spaceDescriptorEntryID: String) throws -> NewswireShareReference {
+        try profile.newswireShareReference(spaceDescriptorEntryId: spaceDescriptorEntryID)
+    }
+}
+
+/// `RiotProfileRepository` is the live source of the People surface — it hands
+/// the FFI-projected contributors straight to `PeopleSurfaceModel`.
+extension RiotProfileRepository: NewswireContributorProjecting {}
+
+/// The live sources for the 2A community shell. Create-community signs both the
+/// app-trust backing space (`createBackingSpace`) and the newswire descriptor
+/// (`createNewswireCommunity`); Home projects the community's wire
+/// (`NewswireProjecting`). Each just forwards to a method that already exists.
+extension RiotProfileRepository: CommunityBackingSpaceCreating {
+    @discardableResult
+    public func createBackingSpace(name: String) throws -> RiotSpace {
+        try createPublicSpace(title: name)
+    }
+}
+
+extension RiotProfileRepository: NewswireSpaceCreating {
+    @discardableResult
+    public func createNewswireCommunity(
+        name: String,
+        summary: String,
+        editorialRoster: [String]
+    ) throws -> NewswireSignedRecord {
+        try createNewswireSpace(
+            name: name,
+            summary: summary,
+            editorialRoster: editorialRoster
+        )
+    }
+}
+
+extension RiotProfileRepository: NewswireProjecting {}
+
+/// The live signer for the editorial surface — it hands the action straight to
+/// core, whose roster check (not any UI state) is what actually authorizes it.
+extension RiotProfileRepository: NewswireEditorialActing {}
 
 private extension RiotEntry {
     init(_ entry: CurrentEntry) {

@@ -93,6 +93,9 @@ public final class CoreBluetoothNearbyService: NSObject, @unchecked Sendable {
     }
     public var onConnected: ((LocalEndpoint?, String) -> Void)?
     public var onDisconnected: (() -> Void)?
+    /// Fired when Bluetooth access is denied, so the Nearby route can offer the
+    /// §4.7 Settings recovery rather than silently finding no one.
+    public var onAuthorizationDenied: (() -> Void)?
 
     public let friendlyName: String
     public let tieBreaker: String
@@ -323,7 +326,11 @@ public final class CoreBluetoothNearbyService: NSObject, @unchecked Sendable {
 
 extension CoreBluetoothNearbyService: CBCentralManagerDelegate, CBPeripheralDelegate {
     public func centralManagerDidUpdateState(_ central: CBCentralManager) {
-        if central.state == .poweredOn { startLooking() }
+        switch central.state {
+        case .poweredOn: startLooking()
+        case .unauthorized: onAuthorizationDenied?()
+        default: break
+        }
     }
 
     public func centralManager(_ central: CBCentralManager, didDiscover peripheral: CBPeripheral, advertisementData: [String: Any], rssi RSSI: NSNumber) {

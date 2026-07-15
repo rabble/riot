@@ -50,10 +50,10 @@ public struct DirectoryView: View {
             }
             .padding(20)
         }
-        .riotHeader(eyebrow: "From your communities", "Apps")
+        .riotHeader(eyebrow: "From your communities", "Tools")
         .onAppear(perform: sync)
         .onChange(of: navigation.destination) { _, destination in
-            if destination == .directory { sync() } else { directory.clearConfirmation() }
+            if destination == .tools { sync() } else { directory.clearConfirmation() }
         }
         .onChange(of: model.apps) { _, _ in directory.refresh() }
         .onChange(of: model.space) { _, _ in directory.refresh() }
@@ -176,8 +176,15 @@ public struct DirectoryView: View {
         }
 
         // Recommending speaks for a space that already trusts the app (design
-        // spec), so it appears only once the app is on in this space.
-        if row.canRecommend {
+        // spec), so it appears only once the app is on in this space. A row this
+        // profile already endorsed offers the take-back instead.
+        if row.endorsedByMe {
+            Button("Take back recommendation") {
+                directory.retract(row)
+            }
+            .buttonStyle(.riotSecondary)
+            .accessibilityIdentifier("directory-retract-\(row.name)")
+        } else if row.canRecommend {
             TextField("Why you recommend it (optional)", text: note(for: row))
                 .font(.riot(.body, size: 15, relativeTo: .body))
             Button("Recommend") {

@@ -672,6 +672,105 @@ fn install_returns_a_deterministic_app_id_and_rejects_garbage() {
 }
 
 #[test]
+fn only_the_recognized_organizer_grants_app_authority() {
+    // The demo (Unit 0B) makes tools openable by shipping the ORGANIZER's
+    // signed Trust markers in the space, not by a bypass. This pins the other
+    // half of that guarantee: a Trust marker signed by anyone who is NOT the
+    // recognized organizer is admitted as a well-formed entry but grants no
+    // authority. Only the organizer coordinate (subspace == namespace) counts.
+    use riot_core::apps::index::app_index_trust_path;
+    use riot_core::apps::trust::{encode_trust_marker, TrustMarker, TrustMarkerKind};
+    use riot_core::willow::generate_communal_author_for_namespace;
+
+    // A locally opened profile is organizer-shaped, so it is the recognized
+    // organizer of its own space.
+    let profile = open_local_profile().expect("profile");
+    profile
+        .create_public_space("Authority".into())
+        .expect("space");
+    let runtime = profile.app_runtime();
+
+    let starter =
+        riot_core::apps::starter::verify_starter_catalog(riot_core::apps::starter::STARTER_CATALOG)
+            .pop()
+            .expect("starter");
+    let app_id_hex: String = starter.app_id.iter().map(|b| format!("{b:02x}")).collect();
+    assert!(!runtime
+        .is_app_trusted(app_id_hex.clone())
+        .expect("starts untrusted"));
+
+    // A member of the same space — a fresh subspace, which is NOT the namespace
+    // coordinate — signs a Trust marker for the app at its own trust slot. The
+    // slot is well formed and ownership binds (signer == the slot's subspace),
+    // so import admits it. It must still grant nothing.
+    let namespace_id: [u8; 32] = unhex(&profile.identity().expect("identity").namespace_id)
+        .try_into()
+        .expect("namespace id");
+    let member = generate_communal_author_for_namespace(namespace_id).expect("member");
+    assert_ne!(
+        *member.subspace_id().as_bytes(),
+        namespace_id,
+        "the member is deliberately not the organizer coordinate"
+    );
+    let marker = TrustMarker {
+        app_id: starter.app_id,
+        author_subspace_id: *member.subspace_id().as_bytes(),
+        kind: TrustMarkerKind::Trust,
+        timestamp_micros: 0,
+    };
+    let payload = encode_trust_marker(&marker).expect("encode marker");
+    let path =
+        app_index_trust_path(&starter.app_id, member.subspace_id().as_bytes()).expect("trust path");
+    let bundle = signed_bundle_at(&member, path, &payload);
+    let preview = profile
+        .inspect_bytes(bundle, "nearby".into())
+        .expect("inspect");
+    preview
+        .create_plan(Vec::new())
+        .expect("plan")
+        .accept()
+        .expect("accept");
+
+    // The member's marker is now live in the store, yet the app is still
+    // untrusted: only the recognized organizer's decision carries authority.
+    assert!(
+        !runtime
+            .is_app_trusted(app_id_hex.clone())
+            .expect("member marker ignored"),
+        "a non-organizer's Trust marker grants no authority — no bypass"
+    );
+
+    // Airtight no-bypass: a marker forged AT the organizer's own coordinate but
+    // signed by someone else is REFUSED at import. Authority follows the
+    // organizer's verified signature, never mere presence at the coordinate —
+    // this is exactly what separates "deterministic admission" from a bypass.
+    let spoof_path =
+        app_index_trust_path(&starter.app_id, &namespace_id).expect("organizer coordinate path");
+    let spoof = signed_bundle_at(&member, spoof_path, &payload);
+    assert!(
+        matches!(
+            profile.inspect_bytes(spoof, "nearby".into()),
+            Err(MobileError::ImportRejected)
+        ),
+        "a Trust marker at the organizer coordinate signed by a non-organizer is refused at import"
+    );
+    assert!(
+        !runtime
+            .is_app_trusted(app_id_hex.clone())
+            .expect("spoof granted nothing"),
+        "a forged organizer-coordinate marker never reaches the store, so it grants nothing"
+    );
+
+    // The organizer's own decision does grant it — real, verified authority.
+    runtime
+        .trust_app(app_id_hex.clone())
+        .expect("organizer trusts");
+    assert!(runtime
+        .is_app_trusted(app_id_hex)
+        .expect("organizer marker honored"));
+}
+
+#[test]
 fn trust_lifecycle_is_lww_per_app() {
     let profile = open_local_profile().expect("profile");
     let runtime = profile.app_runtime();
@@ -1517,4 +1616,268 @@ fn an_app_that_is_neither_built_in_nor_carried_is_still_refused() {
         runtime.app_pair_bytes(stranger),
         Err(MobileError::AppRejected)
     ));
+}
+
+// ===========================================================================
+// Unit 0C — Runtime containment & invalidation (SECURITY-CRITICAL)
+//
+// The signed-JS-apps runtime hands a WebView a data bridge. Before Unit 0C the
+// bridge called `app_data_put/get/list` directly on the profile, and those
+// calls trust-gated NOTHING: an app whose approval was revoked, whose namespace
+// was swapped out from under it, or that had been explicitly torn down could
+// still read and write. Containment lived entirely in the native host "not
+// calling" — a policy, not a mechanism.
+//
+// `AppExecutionSession` is the mechanism. A session is opened for exactly one
+// app id, captures the approval GENERATION and the NAMESPACE at open, and
+// revalidates BOTH — plus a live trust check and a destruction flag — on every
+// single read and commit. Four independent ways an app can be invalidated must
+// each make the very next op fail *before* it touches data:
+//
+//   1. revoke                 — trust withdrawn
+//   2. namespace replacement  — the profile's namespace is swapped
+//   3. explicit destruction   — the host tears the session down
+//   4. stale approval-generation — the app is re-approved (generation bumped),
+//                                   so an op carrying the OLD generation fails
+//                                   even though trust is TRUE and namespace
+//                                   matches. This is the airtight no-bypass
+//                                   proof: a check that only asked "is it
+//                                   trusted now?" would wrongly succeed here.
+// ===========================================================================
+
+/// A fresh organizer-shaped profile with one installed, trusted app. Mirrors
+/// `trust_lifecycle_is_lww_per_app`: a locally opened profile is the recognized
+/// organizer of its own space, so `trust_app` grants real authority.
+fn organizer_with_trusted_app() -> (Arc<MobileProfile>, Arc<riot_ffi::AppRuntimeSession>, String) {
+    let profile = open_local_profile().expect("profile");
+    let runtime = profile.app_runtime();
+    let (manifest_bytes, bundle_bytes) = manifest_and_bundle();
+    let app = runtime
+        .install_app(manifest_bytes, bundle_bytes)
+        .expect("install");
+    runtime.trust_app(app.app_id.clone()).expect("trust");
+    (profile, runtime, app.app_id)
+}
+
+#[test]
+fn app_execution_reads_and_commits_only_while_valid() {
+    // Positive control: the guard is not a blanket refusal. A live session with
+    // current trust, matching namespace, current generation, not destroyed
+    // reads, writes, and lists normally.
+    let (profile, _runtime, app_id) = organizer_with_trusted_app();
+    let session = profile
+        .open_app_execution(app_id)
+        .expect("open a live execution session for a trusted app");
+
+    session
+        .app_data_put("items/a".to_string(), b"{\"done\":false}".to_vec())
+        .expect("commit while valid");
+    assert_eq!(
+        session.app_data_get("items/a".to_string()).expect("read"),
+        Some(b"{\"done\":false}".to_vec())
+    );
+    let listed = session.app_data_list("items".to_string()).expect("list");
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].key, "items/a");
+}
+
+#[test]
+fn open_app_execution_refuses_an_untrusted_app_at_the_gate() {
+    // The launch gate is now in Rust, not a native-host policy: a session cannot
+    // even be opened for an app that is not currently trusted.
+    let profile = open_local_profile().expect("profile");
+    let runtime = profile.app_runtime();
+    let (manifest_bytes, bundle_bytes) = manifest_and_bundle();
+    let app = runtime
+        .install_app(manifest_bytes, bundle_bytes)
+        .expect("install");
+    assert!(
+        matches!(
+            profile.open_app_execution(app.app_id),
+            Err(MobileError::AppRejected)
+        ),
+        "opening an execution session for an untrusted app is refused before any data access"
+    );
+}
+
+#[test]
+fn app_execution_is_valid_distinguishes_invalidation_from_a_per_op_rejection() {
+    // §4.7 disambiguator. A malformed key and a revoked session both surface as
+    // `AppRejected` from a data call. `is_valid()` is how the host tells them
+    // apart: a per-op rejection leaves the session valid (stay open, inline
+    // error); an invalidation makes it invalid (close to "Return to Tools").
+    let (profile, runtime, app_id) = organizer_with_trusted_app();
+    let session = profile.open_app_execution(app_id.clone()).expect("open");
+
+    // A traversal-shaped key is rejected, but the SESSION is still valid.
+    assert!(matches!(
+        session.app_data_put("../escape".to_string(), b"x".to_vec()),
+        Err(MobileError::AppRejected)
+    ));
+    assert!(
+        session.is_valid(),
+        "a malformed-key rejection must leave the session valid — it is not an invalidation"
+    );
+
+    // Revoke: now the SAME AppRejected means the session is gone.
+    runtime.untrust_app(app_id).expect("revoke");
+    assert!(matches!(
+        session.app_data_get("k".to_string()),
+        Err(MobileError::AppRejected)
+    ));
+    assert!(
+        !session.is_valid(),
+        "a revoked session must report invalid so the host closes to Return to Tools"
+    );
+
+    // Destruction also reads invalid.
+    let (profile2, _r2, app2) = organizer_with_trusted_app();
+    let s2 = profile2.open_app_execution(app2).expect("open");
+    assert!(s2.is_valid());
+    s2.invalidate();
+    assert!(!s2.is_valid(), "a destroyed session reports invalid");
+}
+
+#[test]
+fn revoke_fails_the_next_app_execution_read_and_commit() {
+    let (profile, runtime, app_id) = organizer_with_trusted_app();
+    let session = profile.open_app_execution(app_id.clone()).expect("open");
+    session
+        .app_data_put("k1".to_string(), b"v1".to_vec())
+        .expect("commit while trusted");
+
+    // Trust is revoked out from under the running app.
+    runtime.untrust_app(app_id.clone()).expect("revoke");
+
+    // The SAME session must now fail both read and commit — before touching data.
+    assert!(
+        matches!(
+            session.app_data_get("k1".to_string()),
+            Err(MobileError::AppRejected)
+        ),
+        "a revoked app cannot read even a key it wrote while trusted"
+    );
+    assert!(
+        matches!(
+            session.app_data_put("k2".to_string(), b"v2".to_vec()),
+            Err(MobileError::AppRejected)
+        ),
+        "a revoked app cannot commit"
+    );
+
+    // Prove the blocked commit never touched data: re-approve, open a fresh
+    // session, and confirm k2 was never written.
+    runtime.trust_app(app_id.clone()).expect("re-approve");
+    let fresh = profile.open_app_execution(app_id).expect("reopen");
+    assert_eq!(
+        fresh.app_data_get("k2".to_string()).expect("read"),
+        None,
+        "the commit blocked by revocation must not have reached the store"
+    );
+}
+
+#[test]
+fn namespace_replacement_fails_stale_app_execution_access() {
+    let (profile, _runtime, app_id) = organizer_with_trusted_app();
+    let session = profile.open_app_execution(app_id).expect("open");
+    session
+        .app_data_put("k1".to_string(), b"v1".to_vec())
+        .expect("commit in the original namespace");
+
+    // Another profile's space; joining it regenerates our author into a
+    // different namespace (`join_public_space`), invalidating the session that
+    // was bound to the original namespace.
+    let other = open_local_profile().expect("other profile");
+    let other_space = other
+        .create_public_space("Elsewhere".into())
+        .expect("space");
+    profile.join_public_space(other_space).expect("join");
+
+    assert!(
+        matches!(
+            session.app_data_get("k1".to_string()),
+            Err(MobileError::AppRejected)
+        ),
+        "a session bound to the replaced namespace cannot read"
+    );
+    assert!(
+        matches!(
+            session.app_data_put("k2".to_string(), b"v2".to_vec()),
+            Err(MobileError::AppRejected)
+        ),
+        "a session bound to the replaced namespace cannot commit"
+    );
+}
+
+#[test]
+fn explicit_destruction_fails_subsequent_app_execution_ops() {
+    let (profile, _runtime, app_id) = organizer_with_trusted_app();
+    let session = profile.open_app_execution(app_id).expect("open");
+    session
+        .app_data_put("k1".to_string(), b"v1".to_vec())
+        .expect("commit while live");
+
+    session.invalidate();
+
+    assert!(
+        matches!(
+            session.app_data_get("k1".to_string()),
+            Err(MobileError::AppRejected)
+        ),
+        "a destroyed session cannot read"
+    );
+    assert!(
+        matches!(
+            session.app_data_put("k2".to_string(), b"v2".to_vec()),
+            Err(MobileError::AppRejected)
+        ),
+        "a destroyed session cannot commit"
+    );
+}
+
+#[test]
+fn stale_approval_generation_fails_an_op_carrying_the_old_generation() {
+    // The airtight no-bypass proof. After re-approval the app is trusted again
+    // and the namespace is unchanged and the session is not destroyed — the ONLY
+    // thing wrong is the stale generation. A guard that merely re-asked "trusted
+    // now?" would wrongly let this through. The generation check must fail it.
+    let (profile, runtime, app_id) = organizer_with_trusted_app();
+    let session = profile
+        .open_app_execution(app_id.clone())
+        .expect("open at gen N");
+    session
+        .app_data_put("k1".to_string(), b"v1".to_vec())
+        .expect("commit at gen N");
+
+    // Re-approval: withdraw then grant again. Trust ends TRUE, but the approval
+    // generation has advanced past what the session captured.
+    runtime.untrust_app(app_id.clone()).expect("revoke");
+    runtime.trust_app(app_id.clone()).expect("re-approve");
+
+    assert!(
+        matches!(
+            session.app_data_get("k1".to_string()),
+            Err(MobileError::AppRejected)
+        ),
+        "an op carrying a stale approval generation must fail even though trust is TRUE"
+    );
+    assert!(
+        matches!(
+            session.app_data_put("k2".to_string(), b"v2".to_vec()),
+            Err(MobileError::AppRejected)
+        ),
+        "a stale-generation commit must fail even though trust is TRUE"
+    );
+
+    // A session opened at the NEW generation works and still sees the earlier
+    // write — proving the block is generation-specific, not a blanket refusal.
+    let fresh = profile.open_app_execution(app_id).expect("open at gen N+1");
+    assert_eq!(
+        fresh.app_data_get("k1".to_string()).expect("read"),
+        Some(b"v1".to_vec()),
+        "a current-generation session reads normally"
+    );
+    fresh
+        .app_data_put("k2".to_string(), b"v2".to_vec())
+        .expect("a current-generation session commits normally");
 }

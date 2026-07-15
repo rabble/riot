@@ -231,19 +231,12 @@ final class TwoPeerNearbySyncTests: XCTestCase {
         // endpoint is handed to anyone here.
         _ = try await firstDiscoveredPhone(on: bobNearby)
 
-        // NOBODY TAPS "CONNECT". Both phones auto-connect on sight, which is what
-        // they do on a table at a conference, and it is what broke this: both dialled,
-        // each bound its session to a different socket, and the space handshake on
-        // each side then talked into a socket the other had abandoned. Which phone
-        // dials is the transport's business — the point is that exactly one does.
-        //
-        // This used to be hand-driven (`bobNearby.requestConnection` /
-        // `confirmConnection`, then Alice confirming) and skipped when the dial did
-        // not land, which is why it never caught any of this.
-
-        // From here both people just tap "Add them" when their phone offers. The
-        // sync — who begins, who answers — is the controller's business, not the
-        // test's.
+        // A human connects: `settle` has exactly one side dial the peer it sees and
+        // the other accept the inbound request — discovery no longer auto-connects
+        // or auto-accepts (Unit 2B: a person confirms every connection, and neither
+        // community is disclosed until both have). From there both people tap "Add
+        // them" when their phone offers. Which side opens the sync — who begins, who
+        // answers — is still the controller's business, not the test's.
         try await settle(
             until: { (try? bob.repository.appDataGet(appID: bob.appID, key: key)) == added },
             failing: "Alice's item never reached Bob over the local network",
@@ -290,13 +283,12 @@ final class TwoPeerNearbySyncTests: XCTestCase {
             freshNearby.stop()
         }
 
-        // Two phones on a table. Nobody taps "connect" on either one.
+        // Two phones on a table, both looking. `settle` drives the human taps: one
+        // side dials, the other accepts the inbound request, and then the fresh
+        // phone is asked whether to join and says yes. Discovery connects nobody on
+        // its own (Unit 2B) — every connection and the space join is a person's tap.
         organizerNearby.findNearby(host: organizer.repository)
         freshNearby.findNearby(host: fresh)
-
-        // The only tap in the whole flow: the fresh phone asks whether to join, and
-        // the person says yes. Joining a space IS a real decision and keeps its
-        // confirmation — `settle` taps it, below.
         try await settle(
             until: { fresh.currentSpace != nil },
             failing: "the fresh phone never joined the organizer's space",
@@ -345,14 +337,15 @@ final class TwoPeerNearbySyncTests: XCTestCase {
         )
     }
 
-    /// Runs both phones until `until` holds, tapping "Add them" for whoever is being
-    /// shown a preview and "Join" for whoever is being offered a space.
+    /// Runs both phones until `until` holds, driving the human-in-the-loop taps
+    /// the product now requires: exactly ONE side dials the peer it discovered,
+    /// the other ACCEPTS the inbound request (discovery no longer auto-connects or
+    /// auto-accepts), then "Add them" for a preview and "Join" for a space offer.
     ///
-    /// Those are the only two taps in the product, and they are the two decisions
-    /// that are actually the person's: content only lands in the store because
-    /// someone said yes, and a space is never joined silently. Everything else —
-    /// who dials, who opens the sync — the controller decides, exactly as it does
-    /// on a real phone. Each side is tapped at most once per offer it is shown.
+    /// Those are the decisions that are the person's: a connection is made only
+    /// because someone tapped, content lands only because someone said yes, and a
+    /// space is never joined silently. Which side opens the sync the controller
+    /// still decides. Each side is tapped at most once per offer it is shown.
     private func settle(
         until done: () -> Bool,
         failing message: String,
@@ -362,10 +355,23 @@ final class TwoPeerNearbySyncTests: XCTestCase {
         let deadline = Date().addingTimeInterval(timeout)
         var accepted = Set<ObjectIdentifier>()
         var joined = Set<ObjectIdentifier>()
+        var confirmedInbound = Set<ObjectIdentifier>()
+        var dialed = false
         while Date() < deadline {
             if done() { return }
-            for controller in controllers {
+            for (index, controller) in controllers.enumerated() {
                 switch controller.state {
+                case .looking:
+                    // Exactly one human taps "connect": the first controller dials
+                    // the peer it can see; the other waits to be asked.
+                    if index == 0, !dialed, let peer = controller.phones.first {
+                        controller.requestConnection(to: peer)
+                        dialed = true
+                    }
+                case .confirm:
+                    // The inbound side's human accepts the connection.
+                    guard confirmedInbound.insert(ObjectIdentifier(controller)).inserted else { continue }
+                    controller.confirmConnection()
                 case .preview:
                     guard accepted.insert(ObjectIdentifier(controller)).inserted else { continue }
                     controller.addPreviewedContent()
@@ -460,6 +466,70 @@ final class TwoPeerNearbySyncTests: XCTestCase {
             ),
             as: UTF8.self
         )
+    }
+}
+
+/// Unit 2B: the community-scoped coordinator's lifecycle and the human-in-the-loop
+/// connection rules, proven at the controller level without a live radio.
+@MainActor
+final class NearbyOwnershipAndConfirmationTests: XCTestCase {
+
+    /// Discovery never auto-accepts: an inbound pairing request waits at a
+    /// confirmation the human must accept. Nothing connects, and — because
+    /// `SpacePairing` withholds the announce until both confirm — nothing about
+    /// this community is disclosed, until they say yes.
+    func testInboundPairingRequestWaitsForHumanConfirmationInsteadOfAutoAccepting() {
+        let controller = NearbyTransportController(usesBluetooth: false)
+
+        controller.receiveInboundPairingRequest(name: "Copper Heron", isLocal: false)
+
+        XCTAssertEqual(controller.state, .confirm(name: "Copper Heron"))
+        XCTAssertNil(controller.connectedPeer, "no connection may exist before the human accepts")
+
+        // Declining returns to looking without ever connecting.
+        controller.cancelConnection()
+        XCTAssertEqual(controller.state, .looking)
+        XCTAssertNil(controller.connectedPeer)
+    }
+
+    /// Starting discovery does not connect to anyone: `findNearby` advertises and
+    /// browses, and stays in `.looking` with no peer, until a human acts.
+    func testStartingDiscoveryLooksWithoutConnecting() {
+        let controller = NearbyTransportController(usesBluetooth: false)
+
+        controller.findNearby(host: nil)
+
+        XCTAssertEqual(controller.state, .looking)
+        XCTAssertNil(controller.connectedPeer)
+        controller.stop()
+    }
+
+    /// Stopping — what a community switch does to the old coordinator — cancels
+    /// the session and its callbacks: state resets and the join callback can no
+    /// longer fire into a torn-down context.
+    func testStopCancelsTheSessionAndItsCallbacks() {
+        let controller = NearbyTransportController(usesBluetooth: false)
+        var joinedFired = false
+        controller.onSpaceJoined = { joinedFired = true }
+        controller.findNearby(host: nil)
+        controller.receiveInboundPairingRequest(name: "Amber Kite", isLocal: false)
+
+        controller.stop()
+
+        XCTAssertEqual(controller.state, .idle)
+        XCTAssertNil(controller.connectedPeer)
+        XCTAssertFalse(joinedFired, "a stopped coordinator must not fire the join callback")
+    }
+
+    /// Denied Bluetooth/local-network access raises the §4.7 recovery flag the
+    /// Nearby route reads to offer Settings.
+    func testDeniedPermissionRaisesTheRecoveryFlag() {
+        let controller = NearbyTransportController(usesBluetooth: false)
+        XCTAssertFalse(controller.permissionDenied)
+
+        controller.notePermissionDenied()
+
+        XCTAssertTrue(controller.permissionDenied)
     }
 }
 

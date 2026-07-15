@@ -256,6 +256,65 @@ final class DirectoryStorefrontTests: XCTestCase {
         XCTAssertNil(model.errorMessage)
     }
 
+    // MARK: - Taking a recommendation back
+
+    /// The affordance is exclusive: a row this person recommended offers the
+    /// take-back, and only a row they have NOT recommended offers "Recommend".
+    /// `endorsedByMe` is what the view switches on, so it is the contract.
+    func testOnlyARowThisProfileRecommendedOffersTheTakeBack() {
+        let on = listing(appID: appID, name: "Checklist", trustedInSpaces: [spaceID])
+        let port = FakeDirectoryPort(
+            listings: [on],
+            installed: [heldApp(appID: appID, name: "Checklist", trusted: true)],
+            space: space,
+            endorsedByMe: [appID]
+        )
+        let model = RiotDirectoryModel(port: port)
+        model.refresh()
+
+        XCTAssertTrue(model.rows[0].endorsedByMe, "this profile recommended it, so the row offers the take-back")
+
+        // The same row, unendorsed, offers the recommend path instead.
+        let fresh = RiotDirectoryModel(
+            port: FakeDirectoryPort(
+                listings: [on],
+                installed: [heldApp(appID: appID, name: "Checklist", trusted: true)],
+                space: space
+            )
+        )
+        fresh.refresh()
+        XCTAssertFalse(fresh.rows[0].endorsedByMe)
+        XCTAssertTrue(fresh.rows[0].canRecommend)
+    }
+
+    /// Taking it back writes a RETRACTION (an endorsement with `retract: true`
+    /// and no note), confirms it in plain language, and — the part that matters —
+    /// the row stops offering the take-back once the directory is re-read.
+    func testRetractingWithdrawsTheRecommendationAndClearsTheRow() {
+        let port = FakeDirectoryPort(
+            listings: [listing(appID: appID, name: "Checklist", trustedInSpaces: [spaceID])],
+            installed: [heldApp(appID: appID, name: "Checklist", trusted: true)],
+            space: space,
+            endorsedByMe: [appID]
+        )
+        let model = RiotDirectoryModel(port: port)
+        model.refresh()
+        XCTAssertTrue(model.rows[0].endorsedByMe)
+
+        model.retract(model.rows[0])
+
+        XCTAssertEqual(port.endorsed.count, 1)
+        XCTAssertEqual(port.endorsed[0].appID, appID)
+        XCTAssertTrue(port.endorsed[0].retract, "a take-back is an endorsement marked retracted")
+        XCTAssertEqual(port.endorsed[0].note, "", "a retraction carries no note to explain")
+        XCTAssertEqual(model.confirmation, "Took back recommendation of Checklist")
+        XCTAssertNil(model.errorMessage)
+
+        model.refresh()
+        XCTAssertFalse(model.rows[0].endorsedByMe, "the take-back actually cleared it")
+        XCTAssertTrue(model.rows[0].canRecommend, "and the row can be recommended again")
+    }
+
     // MARK: - Who else recommends it
 
     func testEndorsementSummaryCountsGroupsMetAndUnmet() {
@@ -455,14 +514,22 @@ private final class FakeDirectoryPort: DirectoryPorting {
     private(set) var shared: [Data] = []
     private(set) var gotten: [Data] = []
 
+    /// The ids this profile has recommended. Held as real state rather than a
+    /// call log, so a retract actually CLEARS the affordance the way the
+    /// repository's persisted endorsements do — a fake that only recorded the
+    /// call would let "take back" pass while leaving the row still endorsed.
+    private(set) var endorsedAppIDs: Set<String> = []
+
     init(
         listings: [DirectoryListing] = [],
         installed: [RiotSpaceApp] = [],
-        space: RiotSpace? = nil
+        space: RiotSpace? = nil,
+        endorsedByMe: [Data] = []
     ) {
         self.listings = listings
         self.installed = installed
         self.currentSpace = space
+        self.endorsedAppIDs = Set(endorsedByMe.map { RiotDirectoryRow.hex($0).lowercased() })
     }
 
     /// Mirrors the repository: the app joins the held apps UNTRUSTED, built from
@@ -498,6 +565,12 @@ private final class FakeDirectoryPort: DirectoryPorting {
     func endorseApp(appID: Data, note: String, retract: Bool) throws {
         if let failure { throw failure }
         endorsed.append((appID: appID, note: note, retract: retract))
+        let hex = RiotDirectoryRow.hex(appID).lowercased()
+        if retract {
+            endorsedAppIDs.remove(hex)
+        } else {
+            endorsedAppIDs.insert(hex)
+        }
     }
 
     func shareApp(appID: Data) throws {

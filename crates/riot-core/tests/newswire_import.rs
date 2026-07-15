@@ -12,11 +12,13 @@ use riot_core::import::{
 };
 use riot_core::model::{encode_alert, AlertPayload, Certainty, Severity, Urgency};
 use riot_core::newswire::{
-    create_signed_editorial_action, create_signed_news_post, create_signed_space_descriptor,
-    inspect_news_record, is_newswire_prefix, load_space_descriptor, load_space_records,
-    newswire_path, project, project_space, EditorialActionKind, EditorialActionV1, NewsPostV1,
-    NewswirePathKind, NewswireStoreError, ProjectionClockV1, SpaceDescriptorV1,
-    VerifiedNewswireRecord,
+    build_share_reference, create_signed_editorial_action, create_signed_news_post,
+    create_signed_space_descriptor, decode_share_reference, encode_share_reference,
+    encode_space_descriptor, inspect_news_record, is_newswire_prefix, load_space_descriptor,
+    load_space_records, newswire_path, project, project_space, verify_descriptor_matches,
+    EditorialActionKind, EditorialActionV1, NewsPostV1, NewswirePathKind, NewswirePayload,
+    NewswireShareReferenceV1, NewswireStoreError, ProjectionClockV1, ShareReferenceError,
+    SpaceDescriptorV1, VerifiedNewswireRecord,
 };
 use riot_core::session::{CommitOutcome, EvidenceStore, ImportContext, RiotSession};
 use riot_core::store::{DatabaseConfig, RiotDatabase};
@@ -458,4 +460,273 @@ fn sqlite_reopen_preserves_typed_namespace_scoped_scans() {
         .entries_with_prefix_in_namespace(&second.namespace_id, &first_posts)
         .expect("wrong namespace query")
         .is_empty());
+}
+
+/// The same signed record, framed as a file import and then re-offered as a
+/// nearby-sync bundle, must merge to a single entry — the import boundary is
+/// content-addressed by entry id, so the transport it arrived on is irrelevant.
+#[test]
+fn one_record_from_file_then_nearby_merges_to_a_single_entry() {
+    let fixture = fixture("Merge");
+    let session = RiotSession::open().expect("session");
+    let store = session.create_store().expect("store");
+
+    // "File" import: the descriptor + its first post as a saved bundle blob.
+    let from_file = vec![fixture.signed[0].clone(), fixture.signed[1].clone()];
+    assert!(matches!(
+        commit(&store, &from_file),
+        CommitOutcome::Committed(ref receipt) if receipt.dispositions.len() == 2
+    ));
+
+    // "Nearby" re-offer of the identical record set is a no-op: no second copy.
+    let from_nearby = frame_raw(&from_file);
+    let preview = store
+        .inspect(&from_nearby, ImportContext::new("nearby-newswire"))
+        .expect("inspect")
+        .expect_preview();
+    assert_eq!(preview.eligible_count().expect("eligible"), 2);
+    assert!(matches!(
+        preview.plan_all().expect("plan").commit().expect("commit"),
+        CommitOutcome::NoChanges(_)
+    ));
+    assert_eq!(store.generation().expect("generation"), 1);
+    let live = store.live_entry_ids().expect("live");
+    assert_eq!(live.len(), 2);
+}
+
+/// The share/join reference binds the descriptor's WILLIAM3 content digest, its
+/// entry id, and its namespace — so a peer can prove a received descriptor is
+/// the one the reference named, not a substitute.
+#[test]
+fn share_reference_binds_the_descriptor_content_digest() {
+    let fixture = fixture("Bind");
+    let reference = build_share_reference(&fixture.descriptor).expect("build reference");
+    assert_eq!(reference.namespace_id, fixture.descriptor.namespace_id());
+    assert_eq!(reference.descriptor_entry_id, fixture.descriptor.entry_id());
+    let NewswirePayload::SpaceDescriptor(descriptor) = fixture.descriptor.payload() else {
+        panic!("descriptor payload");
+    };
+    let expected =
+        william3_digest(&encode_space_descriptor(descriptor).expect("encode descriptor"));
+    assert_eq!(reference.content_digest, expected);
+    assert!(verify_descriptor_matches(&reference, &fixture.descriptor));
+}
+
+/// Anti-substitution: a descriptor with different content (name/roster) does not
+/// match a reference minted for the genuine one, and the digest field is
+/// load-bearing — corrupting it alone flips verification to false.
+#[test]
+fn a_substituted_descriptor_fails_share_reference_verification() {
+    let genuine = fixture("Genuine");
+    let reference = build_share_reference(&genuine.descriptor).expect("reference");
+    assert!(verify_descriptor_matches(&reference, &genuine.descriptor));
+
+    let substitute = fixture("Substitute");
+    assert!(!verify_descriptor_matches(
+        &reference,
+        &substitute.descriptor
+    ));
+
+    let tampered = NewswireShareReferenceV1 {
+        content_digest: [0xEE; 32],
+        ..reference.clone()
+    };
+    assert!(!verify_descriptor_matches(&tampered, &genuine.descriptor));
+}
+
+/// A non-descriptor record cannot mint a community share reference.
+#[test]
+fn share_reference_requires_a_descriptor_payload() {
+    let fixture = fixture("Post");
+    let post = fixture
+        .records
+        .iter()
+        .find(|record| matches!(record.payload(), NewswirePayload::NewsPost(_)))
+        .expect("a news post record");
+    assert_eq!(
+        build_share_reference(post),
+        Err(ShareReferenceError::NotADescriptor)
+    );
+}
+
+/// The encoded reference round-trips exactly, and a malformed string is rejected
+/// rather than silently decoded into partial coordinates.
+#[test]
+fn share_reference_encodes_and_decodes_round_trip() {
+    let fixture = fixture("Round");
+    let reference = build_share_reference(&fixture.descriptor).expect("reference");
+    let encoded = encode_share_reference(&reference);
+    assert!(encoded.starts_with("riot://newswire/join/v1/"));
+    assert_eq!(decode_share_reference(&encoded).expect("decode"), reference);
+    assert_eq!(
+        decode_share_reference("riot://newswire/join/v1/abc"),
+        Err(ShareReferenceError::Malformed)
+    );
+    assert_eq!(
+        decode_share_reference("https://example.com/not-a-reference"),
+        Err(ShareReferenceError::Malformed)
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Cross-platform golden vector. This committed fixture is the byte-identity
+// anchor for the Rust, iOS, and Android encoders: every platform reconstructs
+// the same SpaceDescriptorV1 from the declared fields and must reproduce the
+// canonical CBOR, its WILLIAM3 digest, and the share-reference string. The
+// entry id / namespace are fixed test coordinates, not a signed entry — the
+// harness proves encoding identity, not signing.
+// ---------------------------------------------------------------------------
+
+fn hex_encode(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn hex32(value: &serde_json::Value) -> [u8; 32] {
+    let text = value.as_str().expect("hex string");
+    let bytes = (0..text.len())
+        .step_by(2)
+        .map(|index| u8::from_str_radix(&text[index..index + 2], 16).expect("hex byte"))
+        .collect::<Vec<_>>();
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&bytes);
+    out
+}
+
+fn str_vec(value: &serde_json::Value) -> Vec<String> {
+    value
+        .as_array()
+        .expect("array")
+        .iter()
+        .map(|item| item.as_str().expect("string").to_string())
+        .collect()
+}
+
+fn golden_fixture_path() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/newswire/newswire-golden-1.json")
+}
+
+fn golden_descriptor(doc: &serde_json::Value) -> SpaceDescriptorV1 {
+    let d = &doc["descriptor"];
+    SpaceDescriptorV1 {
+        namespace_id: hex32(&d["namespace_id_hex"]),
+        name: d["name"].as_str().expect("name").to_string(),
+        summary: d["summary"].as_str().expect("summary").to_string(),
+        languages: str_vec(&d["languages"]),
+        geographic_tags: str_vec(&d["geographic_tags"]),
+        topic_tags: str_vec(&d["topic_tags"]),
+        editorial_roster: d["editorial_roster_hex"]
+            .as_array()
+            .expect("roster")
+            .iter()
+            .map(hex32)
+            .collect(),
+        predecessor: None,
+        successor: None,
+    }
+}
+
+/// Regenerates the committed golden fixture from the canonical field definition
+/// below. Guarded by an env flag so it never runs in the normal suite; the
+/// assertion test that follows is the one that runs everywhere. Regenerate with:
+///   REGEN_NEWSWIRE_GOLDEN=1 cargo test -p riot-core --test newswire_import \
+///     regenerate_newswire_golden_fixture -- --ignored
+#[test]
+#[ignore = "regenerator; run explicitly with REGEN_NEWSWIRE_GOLDEN=1"]
+fn regenerate_newswire_golden_fixture() {
+    if std::env::var("REGEN_NEWSWIRE_GOLDEN").is_err() {
+        return;
+    }
+    let namespace_id = [0x11u8; 32];
+    let descriptor_entry_id = [0x44u8; 32];
+    let editors = [[0x22u8; 32], [0x33u8; 32]];
+    let descriptor = SpaceDescriptorV1 {
+        namespace_id,
+        name: "Harbor Commons Newswire".into(),
+        summary: "Human-published neighborhood reporting for the Harbor Commons.".into(),
+        languages: vec!["en".into()],
+        geographic_tags: vec!["harbor-commons".into()],
+        topic_tags: vec!["local".into(), "mutual-aid".into()],
+        editorial_roster: editors.to_vec(),
+        predecessor: None,
+        successor: None,
+    };
+    let cbor = encode_space_descriptor(&descriptor).expect("encode descriptor");
+    let content_digest = william3_digest(&cbor);
+    let reference = NewswireShareReferenceV1 {
+        namespace_id,
+        descriptor_entry_id,
+        content_digest,
+    };
+    let doc = serde_json::json!({
+        "contract": "riot-newswire-golden/1",
+        "provenance_note": "Deterministic canonical encodings produced by riot-core's \
+            encode_space_descriptor + WILLIAM3 + share-reference encoder. namespace_id and \
+            descriptor_entry_id are fixed test coordinates, not a signed entry: this vector \
+            proves cross-platform ENCODING identity (Rust/iOS/Android), not signing. \
+            Regenerate with REGEN_NEWSWIRE_GOLDEN=1.",
+        "descriptor": {
+            "namespace_id_hex": hex_encode(&namespace_id),
+            "name": descriptor.name,
+            "summary": descriptor.summary,
+            "languages": descriptor.languages,
+            "geographic_tags": descriptor.geographic_tags,
+            "topic_tags": descriptor.topic_tags,
+            "editorial_roster_hex": editors.iter().map(|e| hex_encode(e)).collect::<Vec<_>>(),
+            "canonical_cbor_hex": hex_encode(&cbor),
+            "content_digest_hex": hex_encode(&content_digest),
+        },
+        "share_reference": {
+            "namespace_id_hex": hex_encode(&namespace_id),
+            "descriptor_entry_id_hex": hex_encode(&descriptor_entry_id),
+            "content_digest_hex": hex_encode(&content_digest),
+            "encoded": encode_share_reference(&reference),
+        }
+    });
+    let path = golden_fixture_path();
+    fs::create_dir_all(path.parent().expect("fixture dir")).expect("create fixture dir");
+    fs::write(
+        &path,
+        format!("{}\n", serde_json::to_string_pretty(&doc).expect("json")),
+    )
+    .expect("write golden fixture");
+}
+
+#[test]
+fn newswire_golden_fixture_reproduces_canonical_encoding() {
+    let raw = fs::read_to_string(golden_fixture_path()).expect("read golden fixture");
+    let doc: serde_json::Value = serde_json::from_str(&raw).expect("valid golden JSON");
+    assert_eq!(doc["contract"], "riot-newswire-golden/1");
+
+    // The descriptor body encodes to exactly the committed canonical CBOR, and
+    // its WILLIAM3 digest is exactly the committed content digest.
+    let descriptor = golden_descriptor(&doc);
+    let cbor = encode_space_descriptor(&descriptor).expect("encode descriptor");
+    assert_eq!(
+        hex_encode(&cbor),
+        doc["descriptor"]["canonical_cbor_hex"]
+            .as_str()
+            .expect("cbor hex")
+    );
+    let digest = william3_digest(&cbor);
+    assert_eq!(
+        hex_encode(&digest),
+        doc["descriptor"]["content_digest_hex"]
+            .as_str()
+            .expect("digest hex")
+    );
+
+    // The share reference encodes to exactly the committed string and decodes
+    // back to the committed coordinates.
+    let share = &doc["share_reference"];
+    let reference = NewswireShareReferenceV1 {
+        namespace_id: hex32(&share["namespace_id_hex"]),
+        descriptor_entry_id: hex32(&share["descriptor_entry_id_hex"]),
+        content_digest: hex32(&share["content_digest_hex"]),
+    };
+    let encoded = share["encoded"].as_str().expect("encoded");
+    assert_eq!(encode_share_reference(&reference), encoded);
+    assert_eq!(decode_share_reference(encoded).expect("decode"), reference);
+    // The reference's content digest is the descriptor's own digest — the
+    // binding the whole harness exists to prove.
+    assert_eq!(reference.content_digest, digest);
 }

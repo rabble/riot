@@ -7,8 +7,13 @@
 //! `objects/alert/<object_id>/<revision_id>`, so distinct revisions are
 //! incomparable and pruning reduces to same-coordinate replacement — but this
 //! join is written against the general predicate (via willow25's
-//! `EntrylikeExt::prunes`) so it stays correct if the path scheme grows, and
-//! it is differentially checked against `willow25::storage::MemoryStore`.
+//! `EntrylikeExt::prunes`) so it stays correct if the path scheme grows.
+//!
+//! NOTE: a differential oracle against `willow25::storage::MemoryStore` was
+//! intended but never wired up — the `live_ids_sorted`/`contains_live` helpers
+//! that existed for it had no caller anywhere in the workspace, so they are
+//! gone. If that oracle is wanted, build it in `riot-conformance` with a real
+//! test driving it; do not reintroduce unused helpers that claim to be used.
 //!
 //! Batches join order-independently: the live set and every entry's
 //! disposition are derived from (pre-state ∪ batch) as one set, never from
@@ -390,22 +395,6 @@ pub fn join_batch(
     let plan = plan_join(state, batch)?;
     *state = plan.next;
     Ok(plan.effects.into_iter().map(|(_, effect)| effect).collect())
-}
-
-impl JoinState {
-    /// Test helper: does this state's live set match a willow25 MemoryStore
-    /// fed the same authorised entries? Used as a differential oracle.
-    #[cfg(feature = "conformance")]
-    pub fn live_ids_sorted(&self) -> Vec<EntryId> {
-        let mut ids: Vec<EntryId> = self.live.iter().map(|s| s.id).collect();
-        ids.sort();
-        ids
-    }
-
-    #[cfg(feature = "conformance")]
-    pub fn contains_live(&self, id: &EntryId) -> bool {
-        self.live.iter().any(|s| &s.id == id)
-    }
 }
 
 #[cfg(test)]

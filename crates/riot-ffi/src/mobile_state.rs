@@ -27,11 +27,12 @@ use riot_core::willow::{
     AlertDraft, EvidenceAuthor, SignedAlert as CoreSignedAlert, SignedWillowEntry, WillowError,
 };
 
+use crate::community_registry::{CommunityRecord, Relationship, REGISTRY_KEY};
 use crate::mobile_api::{
     AlertCertainty, AlertDraftInput, AlertDraftRecord, AlertFreshness, AlertSeverity, AlertUrgency,
-    CurrentEntry, ImportAcceptance, MobileError, MobileImportPlan, MobileImportPreview,
-    MobileProfile, MobileSyncSession, PublicIdentity, PublicSpace, SignedAlert, SyncOutcome,
-    SyncOutcomeKind,
+    CommunityRelationship, CommunityRow, CurrentEntry, ImportAcceptance, MobileError,
+    MobileImportPlan, MobileImportPreview, MobileProfile, MobileSyncSession, PublicIdentity,
+    PublicSpace, SignedAlert, SyncOutcome, SyncOutcomeKind,
 };
 
 pub(crate) enum ProfileState {
@@ -45,12 +46,28 @@ const MAX_INSTALLED_APPS: usize = 16;
 const MAX_APP_TRUST_MARKERS: usize = 256;
 /// The complete retained inventory must fit one protocol bundle. This caps
 /// aggregate proof/payload retention at 8 MiB before any session clones it.
+///
+/// CAUTION: this is currently an *alias* for `MAX_BUNDLE_BYTES`, so it bounds
+/// nothing on its own. `encode_bundle` already fails at exactly this threshold,
+/// which means both `if encoded.len() > MAX_SYNC_INVENTORY_BYTES` guards below
+/// (in `prospective_sync_inventory` and the inventory revalidation) are
+/// unreachable — the `encode_bundle(..)?` on the preceding line always fires
+/// first. Do not read this constant as a separate, tighter sync bound: it is
+/// not one today.
+///
+/// OPEN QUESTION (needs an owner decision, do not guess): was a tighter
+/// sync-specific inventory ceiling intended here? This is the bound on how much
+/// a peer can make us buffer during reconciliation, so the answer is
+/// security-relevant. Either give it a real value below `MAX_BUNDLE_BYTES` (a
+/// protocol change — the guards then become live and must be tested), or drop
+/// the constant and the two dead guards and rely on `encode_bundle` alone.
+/// Left as-is deliberately rather than silently changing peer-facing limits.
 const MAX_SYNC_INVENTORY_BYTES: usize = MAX_BUNDLE_BYTES;
 
 pub(crate) struct LocalProfile {
     pub(crate) store: EvidenceStore,
     pub(crate) author: EvidenceAuthor,
-    space: Option<PublicSpace>,
+    pub(crate) space: Option<PublicSpace>,
     drafts: Vec<StoredDraft>,
     pub(crate) preview: Option<StoredPreview>,
     pub(crate) plan: Option<StoredPlan>,
@@ -91,6 +108,57 @@ pub(crate) struct LocalProfile {
     /// the wording is wrong, the refusal is not. Fixing that means persisting
     /// provenance in the profile record, which is iOS's side of the boundary.
     joined_others_space: bool,
+    /// Monotonic app-execution generation. Bumped on any app-trust change and
+    /// any namespace swap. `AppExecutionSession` (Unit 0C) captures this at open
+    /// and revalidates it on every read/commit, so a re-approval — which returns
+    /// trust to TRUE — still invalidates every session opened before it. This is
+    /// what makes containment a mechanism, not a native-host policy: a stale
+    /// session fails *before* it can touch data, with no way to assume authority.
+    app_execution_generation: u64,
+    /// The durable database handle — a cheap `Arc` clone; the session owns a twin
+    /// sharing the same connection, lease, and reader pool. `None` for in-memory
+    /// profiles, whose registry then lives only in this struct for the session.
+    db: Option<riot_core::store::RiotDatabase>,
+    /// The held communities and which one is active (Unit 3). Source of truth in
+    /// memory; mirrored to `local_state` on every mutation when `db` is `Some`.
+    registry: crate::community_registry::CommunityRegistry,
+    /// Inactive per-community authors, unsealed and parked by namespace. The
+    /// ACTIVE community's author is `self.author`, never duplicated here (the
+    /// author is deliberately not `Clone`). A community's sealed author is
+    /// un-loadable from at rest EXCEPT by a deliberate `switch_community` with the
+    /// wrapping key; listing never unseals. This is the isolation the registry
+    /// guarantees.
+    ///
+    /// AT REST (on disk) only sealed authors are ever written. IN RAM this map may
+    /// briefly hold MORE than one unsealed author: a keyless `join_public_space`
+    /// parks the OUTGOING author here unsealed until `persist_communities` seals it
+    /// and drops it. So "only the active author is ever unsealed" is an ON-DISK
+    /// claim; native minimizes the in-RAM window by calling `persist_communities`
+    /// immediately after a create/join (Risk 13; seal-inline-on-join is a tracked
+    /// residual that would need `join` to take the wrapping key — an FFI change).
+    community_authors: std::collections::HashMap<[u8; 32], EvidenceAuthor>,
+    /// Bumped on every community switch. Every in-flight preview/plan/sync handle
+    /// captures it at creation and revalidates before commit, so a write or import
+    /// in flight across a switch fails closed rather than landing in the wrong
+    /// community's store.
+    community_generation: u64,
+    /// Parked board projections for inactive communities, keyed by namespace. The
+    /// store retains payloads only for IMPORTED entries, so a locally-signed alert
+    /// cannot be rebuilt from the store after a switch; parking the projection
+    /// preserves it in-session. A freshly loaded/joined community has no parked
+    /// projection and is reprojected from the store's imported content instead.
+    community_entries: std::collections::HashMap<[u8; 32], Vec<CurrentEntry>>,
+    /// Parked sync inventories for inactive communities, keyed by namespace. The
+    /// sync inventory is what the active community offers peers; it MUST stay
+    /// scoped to the active community (a shared inventory would leak one
+    /// community's entries to another's peers), so a switch parks the outgoing
+    /// one and restores the target's rather than reusing it.
+    community_sync_inventory: std::collections::HashMap<[u8; 32], Vec<SignedWillowEntry>>,
+    /// True when the persisted registry blob failed to decode and was quarantined
+    /// for recovery (a bad migration): the session runs with an empty registry,
+    /// but the raw undecodable bytes are preserved under the quarantine key and
+    /// never discarded.
+    registry_quarantined: bool,
 }
 
 /// What the profile was before demo mode was switched on.
@@ -117,6 +185,10 @@ struct StoredInstalledApp {
 
 pub(crate) struct StoredPreview {
     id: u64,
+    /// The community generation when this handle was created. A switch advances
+    /// the generation, so a preview created before a switch fails its generation
+    /// check and cannot commit into the wrong community (the fail-closed guard).
+    community_generation: u64,
     preview: ImportPreview,
     entries: Vec<CurrentEntry>,
     sync_entries: Vec<SignedWillowEntry>,
@@ -124,6 +196,7 @@ pub(crate) struct StoredPreview {
 
 pub(crate) struct StoredPlan {
     id: u64,
+    community_generation: u64,
     plan: ImportPlan,
     entries: Vec<CurrentEntry>,
     sync_entries: Vec<SignedWillowEntry>,
@@ -131,6 +204,7 @@ pub(crate) struct StoredPlan {
 
 struct StoredSyncSession {
     id: u64,
+    community_generation: u64,
     bridge: ByteSyncSession,
     pending: Option<StoredSyncImport>,
 }
@@ -144,6 +218,47 @@ struct StoredSyncImport {
 struct InspectableEntry {
     current: Option<CurrentEntry>,
     signed: SignedWillowEntry,
+}
+
+/// The community-generation guard (Unit 3): a preview/plan/sync handle captured
+/// in one community must never act on another. A switch advances
+/// `community_generation`, so a handle whose captured generation no longer
+/// matches is stale — its operation fails closed rather than committing into,
+/// or reading from, the wrong community's store. This is the mechanism that
+/// makes a switch/write race safe even for a handle that outlives the switch;
+/// the profile `Mutex` already serializes the operations themselves.
+fn handle_generation_is_current(profile: &LocalProfile, captured_generation: u64) -> bool {
+    captured_generation == profile.community_generation
+}
+
+/// Drop any preview/plan/sync handle left over from a previous community (its
+/// captured generation no longer matches the current one). A direct use of such
+/// a handle already fails closed via its generation check; this clears a dead
+/// handle out of the way so it cannot block a fresh operation in the new
+/// community. Never masks a live handle — only a stale one is dropped.
+fn drop_stale_handles(profile: &mut LocalProfile) {
+    let generation = profile.community_generation;
+    if profile
+        .preview
+        .as_ref()
+        .is_some_and(|preview| preview.community_generation != generation)
+    {
+        profile.preview = None;
+    }
+    if profile
+        .plan
+        .as_ref()
+        .is_some_and(|plan| plan.community_generation != generation)
+    {
+        profile.plan = None;
+    }
+    if profile
+        .sync_session
+        .as_ref()
+        .is_some_and(|session| session.community_generation != generation)
+    {
+        profile.sync_session = None;
+    }
 }
 
 pub(crate) fn open_local_profile() -> Result<Arc<MobileProfile>, MobileError> {
@@ -197,10 +312,13 @@ pub(crate) fn open_local_profile_with_database(
             riot_core::store::DatabaseConfig::default(),
         )
         .map_err(map_database_error)?;
+        // Keep a cheap Arc-clone handle for registry persistence; the session
+        // owns a twin sharing the same connection, lease, and reader pool.
+        let db_handle = database.clone();
         let session = RiotSession::open_sqlite(database).map_err(|_| MobileError::Internal)?;
         let store = session.create_store().map_err(|_| MobileError::Internal)?;
         let author = generate_space_organizer_author().map_err(map_author_error)?;
-        Ok(profile_with_author(store, author))
+        Ok(profile_with_author_and_db(store, author, Some(db_handle)))
     })) {
         Ok(result) => result,
         Err(_) => Err(MobileError::Internal),
@@ -221,12 +339,18 @@ pub(crate) fn open_profile_from_sealed_identity_with_database(
             riot_core::store::DatabaseConfig::default(),
         )
         .map_err(map_database_error)?;
+        let db_handle = database.clone();
         let key = exact_wrapping_key(&wrapping_key)?;
         let author = EvidenceAuthor::open_sealed_identity(&key, &sealed_identity)
             .map_err(map_author_error)?;
         let session = RiotSession::open_sqlite(database).map_err(|_| MobileError::Internal)?;
         let store = session.create_store().map_err(|_| MobileError::Internal)?;
-        Ok(profile_with_author(store, author))
+        let profile = profile_with_author_and_db(store, author, Some(db_handle));
+        // Durable multi-community restore: swap the active community's own sealed
+        // author in over the just-restored primary identity, and reproject its
+        // content, so a reopen lands on the same community with the same Home.
+        restore_active_community(&profile, &key)?;
+        Ok(profile)
     }));
     wrapping_key.zeroize();
     match result {
@@ -244,6 +368,15 @@ fn map_database_error(error: riot_core::store::DatabaseError) -> MobileError {
 }
 
 fn profile_with_author(store: EvidenceStore, author: EvidenceAuthor) -> Arc<MobileProfile> {
+    profile_with_author_and_db(store, author, None)
+}
+
+fn profile_with_author_and_db(
+    store: EvidenceStore,
+    author: EvidenceAuthor,
+    db: Option<riot_core::store::RiotDatabase>,
+) -> Arc<MobileProfile> {
+    let (registry, registry_quarantined) = load_registry(db.as_ref());
     Arc::new(MobileProfile {
         inner: Arc::new(Mutex::new(ProfileState::Active(Box::new(LocalProfile {
             store,
@@ -261,8 +394,45 @@ fn profile_with_author(store: EvidenceStore, author: EvidenceAuthor) -> Arc<Mobi
             app_data_timestamp_floor_micros: 0,
             demo_mode: None,
             joined_others_space: false,
+            app_execution_generation: 0,
+            db,
+            registry,
+            community_authors: std::collections::HashMap::new(),
+            community_generation: 0,
+            community_entries: std::collections::HashMap::new(),
+            community_sync_inventory: std::collections::HashMap::new(),
+            registry_quarantined,
         })))),
     })
+}
+
+/// Loads the persisted community registry from `local_state`. A blob that fails
+/// to decode is a bad migration: its raw bytes are copied to the quarantine key
+/// (never overwritten, never discarded) and an empty registry is returned with
+/// the quarantine flag set, so the person can recover rather than losing every
+/// community. An in-memory profile (`db` is `None`) starts with an empty registry.
+fn load_registry(
+    db: Option<&riot_core::store::RiotDatabase>,
+) -> (crate::community_registry::CommunityRegistry, bool) {
+    use crate::community_registry::{CommunityRegistry, REGISTRY_KEY, REGISTRY_QUARANTINE_KEY};
+    let Some(db) = db else {
+        return (CommunityRegistry::default(), false);
+    };
+    let Ok(Some(bytes)) = db.local_state(REGISTRY_KEY) else {
+        return (CommunityRegistry::default(), false);
+    };
+    match CommunityRegistry::decode(&bytes) {
+        Ok(registry) => (registry, false),
+        Err(_) => {
+            // Preserve the undecodable blob for recovery before anything can
+            // overwrite the primary key. Only copy if a prior quarantine is not
+            // already present, so repeated opens do not clobber the first capture.
+            if matches!(db.local_state(REGISTRY_QUARANTINE_KEY), Ok(None)) {
+                let _ = db.set_local_state(REGISTRY_QUARANTINE_KEY, &bytes);
+            }
+            (CommunityRegistry::default(), true)
+        }
+    }
 }
 
 pub(crate) fn identity(inner: &Arc<Mutex<ProfileState>>) -> Result<PublicIdentity, MobileError> {
@@ -304,6 +474,9 @@ pub(crate) fn create_public_space(
             is_public: true,
         };
         profile.space = Some(space.clone());
+        // Register this as the active community (organizer): the author's own
+        // namespace, so `is_space_organizer` is true.
+        register_active_community(profile, None)?;
         Ok(space)
     })
 }
@@ -316,39 +489,67 @@ pub(crate) fn join_public_space(
         if sync_session_is_active(profile) {
             return Err(MobileError::InvalidInput);
         }
-        if !space.is_public
-            || space.title.trim().is_empty()
-            || space.title.len() > 512
-            || profile.space.is_some()
-            || !profile.drafts.is_empty()
-            || !profile.entries.is_empty()
-            || profile.preview.is_some()
-            || profile.plan.is_some()
-        {
+        if !space.is_public || space.title.trim().is_empty() || space.title.len() > 512 {
             return Err(MobileError::InvalidInput);
         }
         let namespace_id = parse_entry_id(&space.namespace_id)?;
-        // Moving namespaces is the ONLY moment we learn, for certain, that this
-        // space belongs to someone else: we had to mint a fresh communal author
-        // inside their namespace to write in it at all.
-        //
-        // The test is "was the author regenerated", NOT "was join_public_space
-        // called". On relaunch iOS restores EVERY persisted space through this
-        // function — a created one exactly like a joined one — and an organizer
-        // restoring their own space arrives here with the namespace already
-        // matching. Keying off the call would demote a real organizer to a member
-        // on their second launch; keying off the regeneration does not.
-        if profile.author.identity().namespace_id != namespace_id {
-            profile.author =
-                generate_communal_author_for_namespace(namespace_id).map_err(map_author_error)?;
-            profile.joined_others_space = true;
-        }
         let joined = PublicSpace {
             namespace_id: hex(&namespace_id),
             title: space.title,
             is_public: true,
         };
+
+        // Re-selecting the already-active community is idempotent.
+        if profile.registry.active == Some(namespace_id) {
+            return Ok(joined);
+        }
+
+        // Adopting or restoring the person's OWN space (namespace already matches
+        // the current author): keep the author — an organizer restoring their own
+        // space must stay the organizer — do not mint or park. On relaunch iOS
+        // restores every persisted space through this function, a created one
+        // exactly like a joined one, and this branch keeps a creator a creator.
+        if profile.author.identity().namespace_id == namespace_id {
+            profile.space = Some(joined.clone());
+            register_active_community(profile, None)?;
+            return Ok(joined);
+        }
+
+        // Joining SOMEONE ELSE'S space as a member. A held-but-inactive community
+        // must be re-entered through `switch_community` (which has the wrapping
+        // key to unseal its own author); minting a second author here would fork
+        // an unlinkable pseudonym and orphan the first.
+        if profile.registry.find(&namespace_id).is_some() {
+            return Err(MobileError::CommunityUnavailable);
+        }
+
+        // Cancel any in-flight work bound to the outgoing community.
+        profile.preview = None;
+        profile.plan = None;
+        profile.sync_session = None;
+        profile.drafts.clear();
+        profile.sync_inventory.clear();
+        profile.app_trust_markers.clear();
+
+        // Mint a fresh, unlinkable communal author for the target namespace — the
+        // only moment we learn for certain this space belongs to someone else.
+        let joined_author =
+            generate_communal_author_for_namespace(namespace_id).map_err(map_author_error)?;
+        // Park the outgoing active author (it is not `Clone`); a fresh profile
+        // with no active community simply drops its bootstrap author.
+        let outgoing_ns = profile.registry.active;
+        let outgoing = std::mem::replace(&mut profile.author, joined_author);
+        if let Some(active_ns) = outgoing_ns {
+            profile.community_authors.insert(active_ns, outgoing);
+        }
+        profile.joined_others_space = true;
         profile.space = Some(joined.clone());
+        // The namespace moved: every app-execution session and any in-flight
+        // handle bound to the old namespace is now stale and must fail closed.
+        bump_app_execution_generation(profile);
+        profile.community_generation = profile.community_generation.wrapping_add(1);
+        register_active_community(profile, None)?;
+        reproject_active(profile)?;
         Ok(joined)
     })
 }
@@ -464,6 +665,9 @@ pub(crate) fn load_demo_space(
             let previous_author =
                 demo_author.map(|author| std::mem::replace(&mut profile.author, author));
             profile.demo_mode = Some(Box::new(DemoModeState { previous_author }));
+            // Entering demo mode may swap the author's namespace; invalidate any
+            // app-execution session bound to the pre-demo namespace.
+            bump_app_execution_generation(profile);
         }
 
         let space = PublicSpace {
@@ -499,6 +703,9 @@ pub(crate) fn hide_demo_space(inner: &Arc<Mutex<ProfileState>>) -> Result<(), Mo
         };
         if let Some(author) = state.previous_author {
             profile.author = author;
+            // Leaving demo mode restores the pre-demo author, another namespace
+            // swap; invalidate any session bound to the demo namespace.
+            bump_app_execution_generation(profile);
         }
         profile.space = None;
         profile.preview = None;
@@ -627,18 +834,26 @@ pub(crate) fn list_current_entries(
             .ok_or(MobileError::InvalidInput)?
             .namespace_id;
         // Alerts only. App-data (`apps/<app_id>/...`), app-index
-        // (`app-index/<app_id>/...`), and profile (`profile/<subspace>/card`)
-        // entries share this store but are not alerts, so exclude them the same
-        // way `ensure_complete_sync_inventory` does — otherwise a single local
-        // `app_data_put` or `set_display_name`, or its replay on the next open,
-        // leaves a live non-alert entry with no match in `profile.entries` and
-        // bricks this listing with `Internal`.
+        // (`app-index/<app_id>/...`), profile (`profile/<subspace>/card`), and
+        // newswire (`newswire/v1/...`) entries share this store but are not
+        // alerts, so exclude them the same way `ensure_complete_sync_inventory`
+        // does — otherwise a single local `app_data_put`, `set_display_name`, or
+        // `create_newswire_post`, or its replay on the next open, leaves a live
+        // non-alert entry with no match in `profile.entries` and bricks this
+        // listing with `Internal`.
+        // Scope the whole listing to the ACTIVE namespace. One store holds every
+        // held community's entries (Unit 3), so an unscoped scan would surface
+        // another community's alert — which has no row in this community's cache
+        // and would brick the board with `Internal`. Namespace-scoping is the
+        // isolation boundary for the board: a switch reprojects the active
+        // namespace's cache, and this only ever consults that namespace.
+        let active_namespace = parse_entry_id(namespace_id)?;
         let app_index_prefix =
             riot_core::willow::Path::from_slices(&[riot_core::apps::index::APP_INDEX_COMPONENT])
                 .map_err(|_| MobileError::Internal)?;
         let app_index_ids: std::collections::BTreeSet<_> = profile
             .store
-            .entries_with_prefix(&app_index_prefix)
+            .entries_with_prefix_in_namespace(&active_namespace, &app_index_prefix)
             .map_err(map_core_error)?
             .into_iter()
             .map(|(id, _, _)| id)
@@ -647,35 +862,32 @@ pub(crate) fn list_current_entries(
             riot_core::willow::Path::from_slices(&[]).map_err(|_| MobileError::Internal)?;
         let alert_ids: Vec<_> = profile
             .store
-            .entries_with_prefix(&all_prefix)
+            .entries_with_prefix_in_namespace(&active_namespace, &all_prefix)
             .map_err(map_core_error)?
             .into_iter()
             .filter(|(id, entry, _)| {
                 !riot_core::apps::entry::is_app_data_entry(entry)
                     && !app_index_ids.contains(id)
                     && !is_profile_prefixed(entry.path())
+                    && !riot_core::newswire::is_newswire_prefix(entry.path())
             })
             .map(|(id, _, _)| id)
             .collect();
         let mut entries = Vec::with_capacity(alert_ids.len());
         for live_id in alert_ids {
             let live_id = hex(&live_id);
-            let entry = profile
+            // The store retains payloads only for imported entries, so a
+            // locally-authored alert from a previous session cannot be rebuilt
+            // after a reopen and simply has no projected row. Skip it rather than
+            // bricking the whole board — the alert families are already excluded
+            // above, so a miss here is unretained payload, not a leaked non-alert.
+            if let Some(entry) = profile
                 .entries
                 .iter()
                 .find(|entry| entry.entry_id == live_id)
-                .cloned()
-                .ok_or(MobileError::Internal)?;
-            // One store can hold entries from more than one Willow namespace —
-            // loading the demo space and then hiding it again leaves exactly
-            // that (Willow is append-only; un-listing is not deleting). An entry
-            // outside the listed space is simply not part of THIS board, so skip
-            // it. Failing the whole listing here would brick the board for every
-            // space the profile lists afterwards.
-            if entry.namespace_id != *namespace_id {
-                continue;
+            {
+                entries.push(entry.clone());
             }
-            entries.push(entry);
         }
         entries.sort_unstable_by(|left, right| left.entry_id.cmp(&right.entry_id));
         Ok(entries)
@@ -715,6 +927,7 @@ pub(crate) fn inspect_bytes(
         let preview_id = profile.alloc_handle_id()?;
         profile.preview = Some(StoredPreview {
             id: preview_id,
+            community_generation: profile.community_generation,
             preview,
             entries,
             sync_entries,
@@ -731,12 +944,18 @@ pub(crate) fn eligible_entries(
     preview_id: u64,
 ) -> Result<Vec<CurrentEntry>, MobileError> {
     with_active(inner, |profile| {
-        profile
+        let found = profile
             .preview
             .as_ref()
             .filter(|preview| preview.id == preview_id)
-            .map(|preview| preview.entries.clone())
-            .ok_or(MobileError::PreviewConsumed)
+            .map(|preview| (preview.community_generation, preview.entries.clone()))
+            .ok_or(MobileError::PreviewConsumed)?;
+        if !handle_generation_is_current(profile, found.0) {
+            // Created in another community, before a switch — fail closed.
+            profile.preview = None;
+            return Err(MobileError::ObjectClosed);
+        }
+        Ok(found.1)
     })
 }
 
@@ -757,6 +976,19 @@ pub(crate) fn create_plan(
             return Err(MobileError::InvalidInput);
         }
         profile.ensure_handle_capacity()?;
+        // A preview created before a community switch is stale — planning from it
+        // would carry another community's selection into this one. Fail closed.
+        let preview_generation = profile
+            .preview
+            .as_ref()
+            .filter(|preview| preview.id == preview_id)
+            .map(|preview| preview.community_generation);
+        if let Some(generation) = preview_generation {
+            if !handle_generation_is_current(profile, generation) {
+                profile.preview = None;
+                return Err(MobileError::ObjectClosed);
+            }
+        }
         let (selection, selected_entries, selected_sync_entries, plan) = {
             let preview = profile
                 .preview
@@ -809,6 +1041,7 @@ pub(crate) fn create_plan(
         let plan_id = profile.alloc_handle_id()?;
         profile.plan = Some(StoredPlan {
             id: plan_id,
+            community_generation: profile.community_generation,
             plan,
             entries: selected_entries,
             sync_entries: selected_sync_entries,
@@ -825,12 +1058,26 @@ pub(crate) fn accept_plan(
     plan_id: u64,
 ) -> Result<ImportAcceptance, MobileError> {
     with_active(inner, |profile| {
-        let (entries, sync_entries) = profile
+        let (plan_generation, entries, sync_entries) = profile
             .plan
             .as_ref()
             .filter(|plan| plan.id == plan_id)
-            .map(|plan| (plan.entries.clone(), plan.sync_entries.clone()))
+            .map(|plan| {
+                (
+                    plan.community_generation,
+                    plan.entries.clone(),
+                    plan.sync_entries.clone(),
+                )
+            })
             .ok_or(MobileError::PlanConsumed)?;
+        // The community-generation guard: a plan created before a switch must
+        // never commit into the current community. Drop it and fail closed —
+        // this is what makes a write in flight across a switch land nowhere.
+        if !handle_generation_is_current(profile, plan_generation) {
+            profile.plan = None;
+            profile.preview = None;
+            return Err(MobileError::ObjectClosed);
+        }
         let next_inventory = prospective_sync_inventory(profile, &sync_entries)?;
         let outcome = profile
             .plan
@@ -864,6 +1111,9 @@ pub(crate) fn open_sync_session(
     inner: &Arc<Mutex<ProfileState>>,
 ) -> Result<Arc<MobileSyncSession>, MobileError> {
     with_active(inner, |profile| {
+        // Clear any handle left behind by a previous community so a stale preview,
+        // plan, or coordinator cannot block opening one here.
+        drop_stale_handles(profile);
         if profile.preview.is_some() || profile.plan.is_some() {
             return Err(MobileError::InvalidInput);
         }
@@ -883,6 +1133,7 @@ pub(crate) fn open_sync_session(
         let sync_id = profile.alloc_handle_id()?;
         profile.sync_session = Some(StoredSyncSession {
             id: sync_id,
+            community_generation: profile.community_generation,
             bridge,
             pending: None,
         });
@@ -1077,6 +1328,21 @@ fn active_sync_mut(
     profile: &mut LocalProfile,
     sync_id: u64,
 ) -> Result<&mut StoredSyncSession, MobileError> {
+    // A sync coordinator created before a community switch is stale: the
+    // generation guard drops it and reports it closed, so no sync operation
+    // (and no buffered import review) can act across a switch. This is the
+    // "coordinator bound to A does not carry into B" isolation, enforced at the
+    // one accessor every sync operation goes through.
+    let captured = match profile.sync_session.as_ref() {
+        Some(session) if session.id == sync_id => Some(session.community_generation),
+        _ => None,
+    };
+    if let Some(generation) = captured {
+        if !handle_generation_is_current(profile, generation) {
+            profile.sync_session = None;
+            return Err(MobileError::ObjectClosed);
+        }
+    }
     profile
         .sync_session
         .as_mut()
@@ -1085,7 +1351,18 @@ fn active_sync_mut(
 }
 
 fn sync_session_is_active(profile: &LocalProfile) -> bool {
-    profile.sync_session.is_some()
+    // A sync coordinator from a previous community (stale generation) is not
+    // active here — it has been left behind by a switch and will be dropped on
+    // the next access. Treating it as active would wrongly block operations in
+    // the newly selected community.
+    let Some(generation) = profile
+        .sync_session
+        .as_ref()
+        .map(|session| session.community_generation)
+    else {
+        return false;
+    };
+    handle_generation_is_current(profile, generation)
 }
 
 fn outcome_without_import(
@@ -1165,9 +1442,9 @@ fn inspectable_entries(
         if namespace_id != expected_namespace_id {
             return Err(MobileError::ImportRejected);
         }
-        // App and profile entries sync and commit like any other, but they are
-        // not alerts and carry no alert row. Anything else must decode AS an
-        // alert — so a payload that is not one is rejected outright.
+        // App, profile, and newswire entries sync and commit like any other, but
+        // they are not alerts and carry no alert row. Anything else must decode
+        // AS an alert — so a payload that is not one is rejected outright.
         //
         // Profile cards must be listed here explicitly. Without it a synced card
         // falls into the alert branch below, `decode_alert` fails on a
@@ -1175,7 +1452,8 @@ fn inspectable_entries(
         // mean a display name could never reach another device at all.
         let is_non_alert = riot_core::apps::entry::is_app_data_entry(&decoded_entry)
             || riot_core::apps::index::classify_app_index_path(decoded_entry.path()).is_some()
-            || is_profile_prefixed(decoded_entry.path());
+            || is_profile_prefixed(decoded_entry.path())
+            || riot_core::newswire::is_newswire_prefix(decoded_entry.path());
         let current = if is_non_alert {
             None
         } else {
@@ -1300,11 +1578,43 @@ fn prospective_sync_inventory(
     Ok(candidates)
 }
 
+/// The live entry ids in the ACTIVE community's namespace. The store holds every
+/// held community's entries (Unit 3), but sync — like the board — is scoped to
+/// the selected community, so the inventory is built and checked against exactly
+/// this namespace, never the whole store.
+fn active_namespace_live_ids(
+    profile: &LocalProfile,
+) -> Result<Vec<riot_core::willow::EntryId>, MobileError> {
+    let Some(space) = profile.space.as_ref() else {
+        // No community is listed yet — e.g. mid-`load_demo_space`, which installs
+        // the inventory before it lists the demo space. The store is single
+        // namespace at that point, so the whole store is the right inventory.
+        //
+        // ⚠️ LOAD-BEARING for isolation: this whole-store fallback is only safe
+        // because `space == None` occurs solely in single-namespace contexts (a
+        // switch always sets `space`). If a future flow ever holds MULTI-community
+        // data while `space` is `None`, this silently WIDENS the sync inventory to
+        // the whole store — leaking one community's entries to another's peers.
+        // Any such flow must set `space` first (or scope this call explicitly).
+        return profile.store.live_entry_ids().map_err(map_core_error);
+    };
+    let namespace_id = parse_entry_id(&space.namespace_id)?;
+    let all_prefix =
+        riot_core::willow::Path::from_slices(&[]).map_err(|_| MobileError::Internal)?;
+    Ok(profile
+        .store
+        .entries_with_prefix_in_namespace(&namespace_id, &all_prefix)
+        .map_err(map_core_error)?
+        .into_iter()
+        .map(|(id, _, _)| id)
+        .collect())
+}
+
 fn install_sync_inventory(
     profile: &mut LocalProfile,
     mut inventory: Vec<SignedWillowEntry>,
 ) -> Result<(), MobileError> {
-    let mut live_ids = profile.store.live_entry_ids().map_err(map_core_error)?;
+    let mut live_ids = active_namespace_live_ids(profile)?;
     live_ids.sort_unstable();
     inventory.retain(|signed| live_ids.contains(&entry_id(&signed.entry_bytes)));
     inventory.sort_unstable_by_key(|signed| entry_id(&signed.entry_bytes));
@@ -1312,6 +1622,11 @@ fn install_sync_inventory(
         .iter()
         .map(|signed| entry_id(&signed.entry_bytes))
         .collect();
+    // ⚠️ LOAD-BEARING for isolation: the inventory (which is unstamped, unlike the
+    // generation-guarded handles) MUST equal exactly the active namespace's live
+    // ids before it can reach a peer. This equality is what keeps a switch's
+    // re-scoping the sole thing standing between one community's inventory and
+    // another's peers — do not relax it to a subset/superset check.
     if inventory_ids != live_ids {
         return Err(MobileError::Internal);
     }
@@ -1346,7 +1661,7 @@ fn advance_app_write_floor(
 }
 
 fn ensure_complete_sync_inventory(profile: &LocalProfile) -> Result<(), MobileError> {
-    let mut live_ids = profile.store.live_entry_ids().map_err(map_core_error)?;
+    let mut live_ids = active_namespace_live_ids(profile)?;
     live_ids.sort_unstable();
     if live_ids.len() > MAX_SYNC_IDS {
         return Err(MobileError::SessionLimit);
@@ -1661,6 +1976,482 @@ pub(crate) fn can_organize(inner: &Arc<Mutex<ProfileState>>) -> Result<bool, Mob
     })
 }
 
+// ===========================================================================
+// Multiple communities (Unit 3): a durable, isolated, per-community-identity
+// registry. Each community keeps its OWN author (unlinkable), sealed at rest
+// through the existing `seal_identity` mechanism; a deliberate switch is the
+// only path that unseals another community, and it re-seals the outgoing one
+// and reprojects on the way. Communities are isolated: an entry, an approval,
+// or in-flight work in one never leaks into another, and a write or import in
+// flight across a switch fails closed.
+// ===========================================================================
+
+fn relationship_to_ffi(relationship: Relationship) -> CommunityRelationship {
+    match relationship {
+        Relationship::Organizer => CommunityRelationship::Organizer,
+        Relationship::Member => CommunityRelationship::Member,
+        Relationship::PublicReader => CommunityRelationship::PublicReader,
+    }
+}
+
+/// Build the FFI row for one community. `available` answers "can this open right
+/// now": not archived, not quarantined, and its author is loadable (sealed at
+/// rest, parked in this session, or currently active). Listing never unseals.
+fn community_row(profile: &LocalProfile, record: &CommunityRecord) -> CommunityRow {
+    let loadable = record.sealed_author.is_some()
+        || profile.community_authors.contains_key(&record.namespace_id)
+        || profile.registry.active == Some(record.namespace_id);
+    CommunityRow {
+        namespace_id: hex(&record.namespace_id),
+        title: record.title.clone(),
+        relationship: relationship_to_ffi(record.relationship),
+        descriptor_entry_id: record.descriptor_entry_id.as_ref().map(|id| hex(id)),
+        recent_activity_unix_seconds: record.last_activity_unix_seconds,
+        sync_freshness_unix_seconds: record.last_sync_unix_seconds,
+        archived: record.archived,
+        quarantined: record.quarantined,
+        available: !record.archived && !record.quarantined && loadable,
+    }
+}
+
+/// Encode and flush the registry to durable `local_state`. A no-op for an
+/// in-memory profile, whose registry lives only for the session.
+fn persist_registry(profile: &LocalProfile) -> Result<(), MobileError> {
+    if let Some(db) = profile.db.as_ref() {
+        db.set_local_state(REGISTRY_KEY, &profile.registry.encode())
+            .map_err(map_database_error)?;
+    }
+    Ok(())
+}
+
+/// Register (or refresh the metadata of) the ACTIVE community from the current
+/// author + listed space, and mark it active. Called after create/join. The
+/// sealed author is added later by `persist_communities`/`switch_community`
+/// when the wrapping key is available; metadata persists eagerly so the chooser
+/// survives a reopen even before the author is sealed.
+pub(crate) fn register_active_community(
+    profile: &mut LocalProfile,
+    descriptor_entry_id: Option<[u8; 32]>,
+) -> Result<(), MobileError> {
+    let Some(space) = profile.space.clone() else {
+        return Ok(());
+    };
+    let namespace_id = parse_entry_id(&space.namespace_id)?;
+    let relationship = if is_space_organizer(profile) {
+        Relationship::Organizer
+    } else {
+        Relationship::Member
+    };
+    profile.registry.upsert(CommunityRecord {
+        namespace_id,
+        title: space.title,
+        relationship,
+        sealed_author: None,
+        descriptor_entry_id,
+        archived: false,
+        quarantined: false,
+        last_activity_unix_seconds: None,
+        last_sync_unix_seconds: None,
+    });
+    profile.registry.active = Some(namespace_id);
+    persist_registry(profile)?;
+    Ok(())
+}
+
+/// Rebuild the active community's in-memory alert projection from the store,
+/// scoped to exactly the active namespace. This is the rehydration that closes
+/// Risk 11 for the legacy board — after a switch or reopen `list_current_entries`
+/// reflects the active community and NOTHING from any other — and it is the
+/// isolation guarantee for alert content across a switch.
+fn reproject_active(profile: &mut LocalProfile) -> Result<(), MobileError> {
+    use willow25::groupings::{Keylike, Namespaced};
+    profile.entries.clear();
+    let Some(space) = profile.space.clone() else {
+        return Ok(());
+    };
+    let namespace_id = parse_entry_id(&space.namespace_id)?;
+    let all_prefix =
+        riot_core::willow::Path::from_slices(&[]).map_err(|_| MobileError::Internal)?;
+    let prefixed = profile
+        .store
+        .entries_with_prefix_in_namespace(&namespace_id, &all_prefix)
+        .map_err(map_core_error)?;
+    let mut newest_activity: Option<u64> = None;
+    for (id, entry, payload) in prefixed {
+        // Alerts only; app-data, app-index, profile, and newswire entries share
+        // the store but carry no alert row (mirrors `list_current_entries`).
+        if riot_core::apps::entry::is_app_data_entry(&entry)
+            || riot_core::apps::index::classify_app_index_path(entry.path()).is_some()
+            || is_profile_prefixed(entry.path())
+            || riot_core::newswire::is_newswire_prefix(entry.path())
+        {
+            continue;
+        }
+        let Some(payload) = payload else {
+            continue;
+        };
+        let Ok(alert) = decode_alert(&payload) else {
+            continue;
+        };
+        newest_activity =
+            Some(newest_activity.map_or(alert.created_at, |m| m.max(alert.created_at)));
+        profile.entries.push(CurrentEntry {
+            entry_id: hex(&id),
+            namespace_id: hex(entry.namespace_id().as_bytes()),
+            signer_id: hex(entry.subspace_id().as_bytes()),
+            headline: alert.headline,
+            freshness: AlertFreshness {
+                created_at: alert.created_at,
+                valid_from: alert.valid_from,
+                expires_at: alert.expires_at,
+            },
+            ai_assisted: alert.ai_assisted,
+        });
+    }
+    if let Some(active) = profile.registry.active {
+        if let Some(record) = profile.registry.find_mut(&active) {
+            if newest_activity.is_some() {
+                record.last_activity_unix_seconds = newest_activity;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// On a durable reopen, swap the active community's OWN sealed author in over
+/// the just-restored primary identity and reproject its content, so a reopen
+/// lands on the same community with the same Home. A corrupt at-rest author is
+/// quarantined (retained for recovery), never dropped.
+fn restore_active_community(
+    profile_arc: &Arc<MobileProfile>,
+    key: &[u8; 32],
+) -> Result<(), MobileError> {
+    with_active(&profile_arc.inner, |profile| {
+        let Some(active_ns) = profile.registry.active else {
+            return Ok(());
+        };
+        let Some(record) = profile.registry.find(&active_ns) else {
+            return Ok(());
+        };
+        if record.archived || record.quarantined {
+            return Ok(());
+        }
+        let Some(sealed) = record.sealed_author.clone() else {
+            return Ok(());
+        };
+        match EvidenceAuthor::open_sealed_identity(key, &sealed) {
+            Ok(author) => {
+                let title = record.title.clone();
+                profile.author = author;
+                profile.space = Some(PublicSpace {
+                    namespace_id: hex(&active_ns),
+                    title,
+                    is_public: true,
+                });
+                profile.joined_others_space = !is_space_organizer(profile);
+                reproject_active(profile)?;
+            }
+            Err(_) => {
+                if let Some(record) = profile.registry.find_mut(&active_ns) {
+                    record.quarantined = true;
+                }
+                persist_registry(profile)?;
+            }
+        }
+        Ok(())
+    })
+}
+
+pub(crate) fn list_communities(
+    inner: &Arc<Mutex<ProfileState>>,
+) -> Result<Vec<CommunityRow>, MobileError> {
+    with_active(inner, |profile| {
+        let active = profile.registry.active;
+        let mut rows: Vec<CommunityRow> = profile
+            .registry
+            .communities
+            .iter()
+            .map(|record| community_row(profile, record))
+            .collect();
+        let active_hex = active.map(|ns| hex(&ns));
+        // Active community first, then most recent activity, then title — a
+        // stable, plain-language order for the chooser.
+        rows.sort_by(|a, b| {
+            let a_active = active_hex.as_deref() == Some(a.namespace_id.as_str());
+            let b_active = active_hex.as_deref() == Some(b.namespace_id.as_str());
+            b_active
+                .cmp(&a_active)
+                .then_with(|| {
+                    b.recent_activity_unix_seconds
+                        .cmp(&a.recent_activity_unix_seconds)
+                })
+                .then_with(|| a.title.cmp(&b.title))
+        });
+        Ok(rows)
+    })
+}
+
+pub(crate) fn active_community(
+    inner: &Arc<Mutex<ProfileState>>,
+) -> Result<Option<CommunityRow>, MobileError> {
+    with_active(inner, |profile| {
+        let Some(active) = profile.registry.active else {
+            return Ok(None);
+        };
+        let Some(record) = profile.registry.find(&active) else {
+            return Ok(None);
+        };
+        Ok(Some(community_row(profile, record)))
+    })
+}
+
+pub(crate) fn switch_community(
+    inner: &Arc<Mutex<ProfileState>>,
+    namespace_id: String,
+    mut wrapping_key: Vec<u8>,
+) -> Result<CommunityRow, MobileError> {
+    let result = with_active(inner, |profile| {
+        let key = exact_wrapping_key(&wrapping_key)?;
+        let target_ns = parse_entry_id(&namespace_id)?;
+
+        // Re-selecting the active community is a no-op: no cancellation, no
+        // generation bump, so in-flight work is not disturbed.
+        if profile.registry.active == Some(target_ns) {
+            let record = profile
+                .registry
+                .find(&target_ns)
+                .ok_or(MobileError::CommunityUnavailable)?;
+            return Ok(community_row(profile, record));
+        }
+
+        let record = profile
+            .registry
+            .find(&target_ns)
+            .ok_or(MobileError::CommunityUnavailable)?;
+        // Archived communities are not selectable (restore first). A QUARANTINED
+        // community IS switchable, because this switch is exactly the recovery
+        // attempt: it re-tries the unseal, clears the quarantine on success, and
+        // re-quarantines only if it still fails. So a transient read failure that
+        // once quarantined a community can never leave it permanently dead — a
+        // Retry (another switch) recovers it.
+        if record.archived {
+            return Err(MobileError::CommunityUnavailable);
+        }
+
+        // Obtain the target author WITHOUT mutating any state, so a failure to
+        // load it leaves the current community fully intact (fail closed — a
+        // switch never silently lands on a different community). The sealed
+        // at-rest author is preferred: unsealing it (the ONLY path that unseals
+        // a community, and it needs the key) means the target is loaded from
+        // durable bytes rather than a session cache.
+        let target_author = if let Some(sealed) = record.sealed_author.clone() {
+            match EvidenceAuthor::open_sealed_identity(&key, &sealed) {
+                Ok(author) => {
+                    // A stale parked copy is now redundant; drop it so only the
+                    // active author is ever held unsealed. Recovery succeeded, so
+                    // clear any quarantine — the community is openable again.
+                    profile.community_authors.remove(&target_ns);
+                    if let Some(record) = profile.registry.find_mut(&target_ns) {
+                        record.quarantined = false;
+                    }
+                    author
+                }
+                Err(_) => {
+                    // The wrapping key is a profile invariant, so a failure to
+                    // open means the bytes are corrupt (or a transient read handed
+                    // us a wrong key). Quarantine (retain the bytes for recovery),
+                    // stay on the current community, fail closed — never drop the
+                    // community, never leak a partial key. A later switch retries.
+                    if let Some(record) = profile.registry.find_mut(&target_ns) {
+                        record.quarantined = true;
+                    }
+                    persist_registry(profile)?;
+                    return Err(MobileError::CommunityUnavailable);
+                }
+            }
+        } else if let Some(author) = profile.community_authors.remove(&target_ns) {
+            // Not sealed yet (a keyless join this session): take the parked author.
+            // A parked author loaded fine, so clear any quarantine.
+            if let Some(record) = profile.registry.find_mut(&target_ns) {
+                record.quarantined = false;
+            }
+            author
+        } else {
+            // No author to load: a public-reader, or an author neither sealed nor
+            // held this session. Cannot post here; the chooser offers recovery.
+            return Err(MobileError::CommunityUnavailable);
+        };
+
+        // Seal the outgoing active author into its row and DROP it: with the key
+        // it is fully recoverable from the registry. On the keyed switch path this
+        // keeps at most the active author unsealed in RAM; the separate keyless
+        // `join` path can transiently hold an extra parked author until
+        // `persist_communities` (see the `community_authors` field doc). A keyless
+        // seal failure (entropy) falls back to parking so the author is not lost.
+        let outgoing_ns = profile.registry.active;
+        let outgoing = std::mem::replace(&mut profile.author, target_author);
+        if let Some(active_ns) = outgoing_ns {
+            match outgoing.seal_identity(&key) {
+                Ok(sealed) => {
+                    if let Some(record) = profile.registry.find_mut(&active_ns) {
+                        record.sealed_author = Some(sealed);
+                    }
+                }
+                Err(_) => {
+                    profile.community_authors.insert(active_ns, outgoing);
+                }
+            }
+            // Park the outgoing community's board projection and sync inventory so
+            // a locally-authored alert (whose payload the store does not retain)
+            // survives the round trip, and the community can still sync when
+            // reselected — without either leaking into the new community.
+            profile
+                .community_entries
+                .insert(active_ns, std::mem::take(&mut profile.entries));
+            profile
+                .community_sync_inventory
+                .insert(active_ns, std::mem::take(&mut profile.sync_inventory));
+        }
+
+        // Isolation: the community generation is advanced below, which makes every
+        // preview/plan/sync coordinator captured in the OUTGOING community stale.
+        // Its next use fails closed — it can neither read from nor commit into this
+        // community — and `drop_stale_handles` clears it out of the way of a fresh
+        // operation. This is the community-generation guard doing the fail-closed
+        // work; the profile `Mutex` already serializes the operations themselves.
+        // Drafts and the trust cache carry no generation stamp, so drop them now.
+        // (The outgoing sync inventory was parked above.)
+        profile.drafts.clear();
+        // The trust cache is a projection of the active namespace's markers;
+        // clearing it reconciles it to the new community (store markers are
+        // namespace-scoped, so this can only tighten, never widen, authority).
+        profile.app_trust_markers.clear();
+
+        let record = profile
+            .registry
+            .find(&target_ns)
+            .ok_or(MobileError::CommunityUnavailable)?;
+        profile.space = Some(PublicSpace {
+            namespace_id: hex(&target_ns),
+            title: record.title.clone(),
+            is_public: true,
+        });
+        profile.joined_others_space = !is_space_organizer(profile);
+        profile.registry.active = Some(target_ns);
+
+        // Fail closed: any preview/plan/sync/app-execution handle captured before
+        // this bump can no longer commit into either community.
+        bump_app_execution_generation(profile);
+        profile.community_generation = profile.community_generation.wrapping_add(1);
+
+        // Restore the target's parked projection (in-session round trip) or, for a
+        // freshly loaded/joined community, reproject its imported content.
+        if let Some(cached) = profile.community_entries.remove(&target_ns) {
+            profile.entries = cached;
+        } else {
+            reproject_active(profile)?;
+        }
+        // Restore the target's parked sync inventory (empty for a freshly loaded
+        // community until its content is re-imported this session).
+        profile.sync_inventory = profile
+            .community_sync_inventory
+            .remove(&target_ns)
+            .unwrap_or_default();
+        persist_registry(profile)?;
+
+        let record = profile
+            .registry
+            .find(&target_ns)
+            .ok_or(MobileError::CommunityUnavailable)?;
+        Ok(community_row(profile, record))
+    });
+    wrapping_key.zeroize();
+    result
+}
+
+pub(crate) fn archive_community(
+    inner: &Arc<Mutex<ProfileState>>,
+    namespace_id: String,
+) -> Result<(), MobileError> {
+    with_active(inner, |profile| {
+        let target_ns = parse_entry_id(&namespace_id)?;
+        let record = profile
+            .registry
+            .find_mut(&target_ns)
+            .ok_or(MobileError::CommunityUnavailable)?;
+        record.archived = true;
+        // An archived community is not the active selection; native then opens
+        // the chooser. The row (and its sealed author) is retained, never dropped.
+        if profile.registry.active == Some(target_ns) {
+            profile.registry.active = None;
+        }
+        persist_registry(profile)?;
+        Ok(())
+    })
+}
+
+pub(crate) fn restore_community(
+    inner: &Arc<Mutex<ProfileState>>,
+    namespace_id: String,
+) -> Result<CommunityRow, MobileError> {
+    with_active(inner, |profile| {
+        let target_ns = parse_entry_id(&namespace_id)?;
+        let record = profile
+            .registry
+            .find_mut(&target_ns)
+            .ok_or(MobileError::CommunityUnavailable)?;
+        record.archived = false;
+        persist_registry(profile)?;
+        let record = profile
+            .registry
+            .find(&target_ns)
+            .ok_or(MobileError::CommunityUnavailable)?;
+        Ok(community_row(profile, record))
+    })
+}
+
+pub(crate) fn persist_communities(
+    inner: &Arc<Mutex<ProfileState>>,
+    mut wrapping_key: Vec<u8>,
+) -> Result<(), MobileError> {
+    let result = with_active(inner, |profile| {
+        let key = exact_wrapping_key(&wrapping_key)?;
+        // Seal the active author into its row.
+        if let Some(active_ns) = profile.registry.active {
+            let sealed = profile.author.seal_identity(&key).ok();
+            if let (Some(sealed), Some(record)) = (sealed, profile.registry.find_mut(&active_ns)) {
+                record.sealed_author = Some(sealed);
+            }
+        }
+        // Seal every parked author into its row, then drop the plaintext copy —
+        // once sealed it is recoverable from the registry, so nothing but the
+        // active author remains unsealed in memory.
+        let parked: Vec<[u8; 32]> = profile.community_authors.keys().copied().collect();
+        for ns in parked {
+            let sealed = profile
+                .community_authors
+                .get(&ns)
+                .and_then(|author| author.seal_identity(&key).ok());
+            if let Some(sealed) = sealed {
+                if let Some(record) = profile.registry.find_mut(&ns) {
+                    record.sealed_author = Some(sealed);
+                }
+                profile.community_authors.remove(&ns);
+            }
+        }
+        persist_registry(profile)?;
+        Ok(())
+    });
+    wrapping_key.zeroize();
+    result
+}
+
+pub(crate) fn community_registry_quarantined(
+    inner: &Arc<Mutex<ProfileState>>,
+) -> Result<bool, MobileError> {
+    with_active(inner, |profile| Ok(profile.registry_quarantined))
+}
+
 pub(crate) fn set_app_trust(
     inner: &Arc<Mutex<ProfileState>>,
     app_id: String,
@@ -1720,8 +2511,20 @@ pub(crate) fn set_app_trust(
             .map_err(map_apps_error)?;
         let signed = sign_local_app_entry(profile, path, &payload, timestamp)?;
         commit_local_app_entries(profile, vec![signed])?;
+        // Any trust change — grant OR revoke — advances the execution
+        // generation, invalidating every `AppExecutionSession` opened before it.
+        // Re-approval therefore does not silently re-authorize a session that was
+        // live across the revoke: a re-approved app runs in a *new* session.
+        bump_app_execution_generation(profile);
         Ok(())
     })
+}
+
+/// Advance the app-execution generation. Called on every app-trust change and
+/// every namespace swap, so a stale `AppExecutionSession` (Unit 0C) fails
+/// revalidation on its next read/commit.
+fn bump_app_execution_generation(profile: &mut LocalProfile) {
+    profile.app_execution_generation = profile.app_execution_generation.wrapping_add(1);
 }
 
 pub(crate) fn is_app_trusted(
@@ -1730,50 +2533,192 @@ pub(crate) fn is_app_trusted(
 ) -> Result<bool, MobileError> {
     with_active(inner, |profile| {
         let app_id = parse_entry_id(&app_id)?;
-        let organizer = space_organizer_subspace_id(profile);
-        let own_namespace_id = profile.author.identity().namespace_id;
+        resolve_is_trusted(profile, &app_id)
+    })
+}
 
-        // Trust must be read from the STORE, not just the profile-local cache: an
-        // organizer's approval reaches a member as a synced trust-marker entry.
-        // Reading only the local cache (which `set_app_trust` fills for the author)
-        // meant an organizer's decision could never reach anyone else — that is the
-        // "one decision covers everyone, no install step" property.
-        //
-        // `is_trusted` fails closed if given two markers for the same coordinate, so
-        // the store's Willow-resolved marker and the author's own cached copy must be
-        // collapsed to one per (app, organizer) before asking. Newest wins, matching
-        // Willow's own per-path resolution.
-        let scanned =
-            riot_core::apps::index::scan_app_index(&profile.store).map_err(map_apps_error)?;
-        let mut markers: Vec<riot_core::apps::trust::TrustMarker> = Vec::new();
-        let mut push_resolved = |marker: riot_core::apps::trust::TrustMarker| match markers
-            .iter_mut()
-            .find(|existing| {
-                existing.app_id == marker.app_id
-                    && existing.author_subspace_id == marker.author_subspace_id
-            }) {
+/// Resolve, from the STORE plus the author's cache, whether `app_id` is trusted
+/// by the recognized organizer of the profile's CURRENT namespace. The single
+/// trust-evaluation point shared by `is_app_trusted` (the UI query) and
+/// `AppExecutionSession` revalidation (the security gate), so a running app and
+/// a "Turn off" button can never disagree about whether it is authorized.
+///
+/// Trust must be read from the STORE, not just the profile-local cache: an
+/// organizer's approval reaches a member as a synced trust-marker entry. Reading
+/// only the local cache (which `set_app_trust` fills for the author) meant an
+/// organizer's decision could never reach anyone else — that is the "one
+/// decision covers everyone, no install step" property.
+///
+/// `is_trusted` fails closed if given two markers for the same coordinate, so the
+/// store's Willow-resolved marker and the author's own cached copy are collapsed
+/// to one per (app, organizer) before asking. Newest wins, matching Willow's own
+/// per-path resolution.
+fn resolve_is_trusted(profile: &LocalProfile, app_id: &[u8; 32]) -> Result<bool, MobileError> {
+    let organizer = space_organizer_subspace_id(profile);
+    let own_namespace_id = profile.author.identity().namespace_id;
+
+    let scanned = riot_core::apps::index::scan_app_index(&profile.store).map_err(map_apps_error)?;
+    let mut markers: Vec<riot_core::apps::trust::TrustMarker> = Vec::new();
+    let mut push_resolved =
+        |marker: riot_core::apps::trust::TrustMarker| match markers.iter_mut().find(|existing| {
+            existing.app_id == marker.app_id
+                && existing.author_subspace_id == marker.author_subspace_id
+        }) {
             Some(existing) if marker.timestamp_micros > existing.timestamp_micros => {
                 *existing = marker;
             }
             Some(_) => {}
             None => markers.push(marker),
         };
-        for space in scanned.spaces {
-            if space.space_namespace_id == own_namespace_id {
-                space.markers.into_iter().for_each(&mut push_resolved);
-            }
+    for space in scanned.spaces {
+        if space.space_namespace_id == own_namespace_id {
+            space.markers.into_iter().for_each(&mut push_resolved);
         }
-        profile
-            .app_trust_markers
-            .iter()
-            .copied()
-            .for_each(&mut push_resolved);
+    }
+    profile
+        .app_trust_markers
+        .iter()
+        .copied()
+        .for_each(&mut push_resolved);
 
-        Ok(riot_core::apps::trust::is_trusted(
-            &app_id,
-            &markers,
-            &[organizer],
-        ))
+    Ok(riot_core::apps::trust::is_trusted(
+        app_id,
+        &markers,
+        &[organizer],
+    ))
+}
+
+/// The immutable snapshot an `AppExecutionSession` (Unit 0C) captures at open
+/// and presents on every read/commit. The three fields are exactly the state a
+/// stale session must be caught disagreeing with: the app it was opened for, the
+/// approval generation live at open, and the namespace it was bound to.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct AppExecutionSnapshot {
+    pub(crate) app_id: [u8; 32],
+    pub(crate) generation: u64,
+    pub(crate) namespace_id: [u8; 32],
+}
+
+/// Open an execution session for a currently-trusted app. This is the launch
+/// gate, now enforced in Rust rather than trusted to the native host: an
+/// untrusted app cannot obtain a session at all.
+pub(crate) fn app_execution_open(
+    inner: &Arc<Mutex<ProfileState>>,
+    app_id: String,
+) -> Result<AppExecutionSnapshot, MobileError> {
+    with_active(inner, |profile| {
+        let app_id = parse_entry_id(&app_id)?;
+        if !resolve_is_trusted(profile, &app_id)? {
+            return Err(MobileError::AppRejected);
+        }
+        Ok(AppExecutionSnapshot {
+            app_id,
+            generation: profile.app_execution_generation,
+            namespace_id: profile.author.identity().namespace_id,
+        })
+    })
+}
+
+/// The security gate run before EVERY execution-session read and commit, under
+/// the same lock that then performs the op — no window between check and use.
+/// Each clause is an independent invalidation vector; all three are checked
+/// (defence in depth), and each on its own denies closed.
+fn revalidate_execution(
+    profile: &LocalProfile,
+    snap: &AppExecutionSnapshot,
+) -> Result<(), MobileError> {
+    // (2) Namespace replacement: a join/demo swap strands the session in a
+    // namespace it can no longer write to. The captured namespace must still be
+    // the live one.
+    if profile.author.identity().namespace_id != snap.namespace_id {
+        return Err(MobileError::AppRejected);
+    }
+    // (4) Stale approval-generation: trust changes AND namespace swaps advance
+    // the generation, so a re-approval — which returns trust to TRUE — still
+    // fails a session opened before it. This is the clause a trust-only guard
+    // would miss, and the reason (1)/(4) are distinct.
+    if profile.app_execution_generation != snap.generation {
+        return Err(MobileError::AppRejected);
+    }
+    // (1) Revoke: the app must STILL be trusted right now, verified against the
+    // store, never assumed. Redundant with the generation check by construction,
+    // and deliberately kept — the gate VERIFIES authority, it does not assume it.
+    if !resolve_is_trusted(profile, &snap.app_id)? {
+        return Err(MobileError::AppRejected);
+    }
+    Ok(())
+}
+
+/// Whether the session is still valid RIGHT NOW — the same revalidation the
+/// read/commit path runs, exposed as a plain bool so the native bridge can tell
+/// an INVALIDATION (revoked / namespace-swapped / stale generation) apart from an
+/// ordinary per-op rejection (a malformed key). Both surface as `AppRejected`
+/// from a data call; only an invalidation must close the app to a named
+/// destination (§4.7). A dead profile or any revalidation failure reads false.
+pub(crate) fn app_execution_is_valid(
+    inner: &Arc<Mutex<ProfileState>>,
+    snap: &AppExecutionSnapshot,
+) -> bool {
+    with_active(inner, |profile| {
+        Ok(revalidate_execution(profile, snap).is_ok())
+    })
+    .unwrap_or(false)
+}
+
+/// Execution-session read: revalidate, then read, under one lock.
+pub(crate) fn app_execution_get(
+    inner: &Arc<Mutex<ProfileState>>,
+    snap: &AppExecutionSnapshot,
+    key: String,
+) -> Result<Option<Vec<u8>>, MobileError> {
+    with_active(inner, |profile| {
+        revalidate_execution(profile, snap)?;
+        riot_core::apps::bridge::AppDataBridge::get(&profile.store, &snap.app_id, &key)
+            .map_err(map_apps_error)
+    })
+}
+
+/// Execution-session list: revalidate, then list, under one lock.
+pub(crate) fn app_execution_list(
+    inner: &Arc<Mutex<ProfileState>>,
+    snap: &AppExecutionSnapshot,
+    prefix: String,
+) -> Result<Vec<crate::apps_ffi::AppDataItem>, MobileError> {
+    with_active(inner, |profile| {
+        revalidate_execution(profile, snap)?;
+        let items =
+            riot_core::apps::bridge::AppDataBridge::list(&profile.store, &snap.app_id, &prefix)
+                .map_err(map_apps_error)?;
+        Ok(items
+            .into_iter()
+            .map(|(key, value)| crate::apps_ffi::AppDataItem { key, value })
+            .collect())
+    })
+}
+
+/// Execution-session commit: revalidate, then commit, under one lock. Returns
+/// the canonical signed bundle bytes so a host can persist app data for replay.
+/// A committed write does NOT advance the generation — an app writing its own
+/// data must not invalidate its own session; only trust and namespace changes do.
+pub(crate) fn app_execution_put_with_receipt(
+    inner: &Arc<Mutex<ProfileState>>,
+    snap: &AppExecutionSnapshot,
+    key: String,
+    value: Vec<u8>,
+) -> Result<Vec<u8>, MobileError> {
+    with_active(inner, |profile| {
+        revalidate_execution(profile, snap)?;
+        // Same preview-slot discipline as `app_data_put_with_receipt`: a
+        // store.inspect during an in-flight sync review would clobber it.
+        if sync_session_is_active(profile) {
+            return Err(MobileError::InvalidInput);
+        }
+        let timestamp = next_app_write_timestamp(profile)?;
+        let path =
+            riot_core::apps::entry::app_data_path(&snap.app_id, &key).map_err(map_apps_error)?;
+        let signed = sign_local_app_entry(profile, path, &value, timestamp)?;
+        let bundle_bytes = commit_local_app_entries(profile, vec![signed])?;
+        Ok(bundle_bytes)
     })
 }
 

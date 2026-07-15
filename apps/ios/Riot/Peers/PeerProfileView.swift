@@ -147,22 +147,79 @@ public struct PeerProfileView: View {
             .tracking(1)
             .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
 
-        if let space = model.space, let onInvite {
+        switch PeerCollaboration(space: model.space, canInvite: onInvite != nil) {
+        case let .invite(space):
             RiotCard {
                 VStack(alignment: .leading, spacing: 10) {
                     Text("Bring them into a space you organize. They choose whether to accept — an invite is a door, not a push.")
                         .font(.riot(.body, size: 14, relativeTo: .callout))
                         .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
-                    Button("Invite to \(space.title)") { onInvite(space) }
+                    Button("Invite to \(space.title)") { onInvite?(space) }
                         .buttonStyle(.riotPrimary)
                         .accessibilityIdentifier("peer-invite-to-space")
                 }
             }
-        } else {
-            RiotEmptyState(
-                title: "No space to invite them to yet",
-                message: "Create or open a space first, then you can invite the people near you into it."
-            )
+        case let .nothingToOffer(state):
+            RiotEmptyState(title: state.title, message: state.message)
+        }
+    }
+}
+
+/// What the Collaborate section can honestly offer about this person.
+///
+/// The distinction this type exists to keep straight: a peer with no invite
+/// route is NOT always a peer with nowhere to go. When there is no space at all,
+/// there is genuinely nothing to invite them to. But when a space exists and the
+/// invite route is simply absent, this is a **synced identity** — someone already
+/// carrying this space's latest, not a phone in range — and telling them "no
+/// space to invite them to" is a lie about their own space. Those two are
+/// different sentences, which is why the decision is a value the tests can read
+/// rather than a chain of `if let`s inside a view body.
+public enum PeerCollaboration: Equatable, Sendable {
+    /// A space of ours, and a route to bring them into it.
+    case invite(RiotSpace)
+    /// No invite to offer — for one of two quite different reasons.
+    case nothingToOffer(EmptyState)
+
+    public enum EmptyState: Equatable, Sendable {
+        /// There is no space yet, so there is nothing to invite anyone to.
+        case noSpace
+        /// A space exists and they are already part of its network.
+        case alreadyInNetwork
+
+        public var title: String {
+            switch self {
+            case .noSpace: "No space to invite them to yet"
+            case .alreadyInNetwork: "Already in your network"
+            }
+        }
+
+        public var message: String {
+            switch self {
+            case .noSpace:
+                "Create or open a space first, then you can invite the people near you into it."
+            case .alreadyInNetwork:
+                "You’ve synced with this person — they’re carrying your space’s latest."
+            }
+        }
+    }
+
+    public init(space: RiotSpace?, canInvite: Bool) {
+        switch (space, canInvite) {
+        case let (.some(space), true):
+            self = .invite(space)
+        case (.none, _):
+            self = .nothingToOffer(.noSpace)
+        case (.some, false):
+            self = .nothingToOffer(.alreadyInNetwork)
+        }
+    }
+
+    /// The empty state to draw, or nil when there is an invite to offer instead.
+    public var emptyState: EmptyState? {
+        switch self {
+        case .invite: nil
+        case let .nothingToOffer(state): state
         }
     }
 }

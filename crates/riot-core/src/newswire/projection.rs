@@ -5,7 +5,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::willow::{system_snapshot, ClockSnapshot, EntryId};
 
 use super::{
-    EditorialActionKind, EditorialActionV1, NewsPostV1, NewswirePayload, VerifiedNewswireRecord,
+    EditorialActionKind, EditorialActionV1, NewsPostV1, NewswirePayload, OperationalProfileV1,
+    VerifiedNewswireRecord,
 };
 
 pub const MAX_PROJECTED_RECORDS: usize = 1_024;
@@ -83,8 +84,21 @@ pub struct ProjectedPost {
     pub entry_id: EntryId,
     pub author_id: [u8; 32],
     pub tai_j2000_micros: u64,
+    /// The plaintext content half. `headline`, `body`, `coarse_location`,
+    /// `source_claims` and `operational_profile` are all REDACTED — set to
+    /// `None`/empty — when the post is Hidden or Tombstoned. `language`,
+    /// `event_time_unix_seconds`, `expires_at_unix_seconds` and `ai_assisted`
+    /// survive redaction: they are metadata, not the content a hide suppresses,
+    /// and the expiry is what buckets a row into `earlier` versus the open wire.
+    pub headline: Option<String>,
     pub body: Option<String>,
+    pub language: String,
+    pub coarse_location: Option<String>,
+    pub event_time_unix_seconds: Option<u64>,
+    pub expires_at_unix_seconds: Option<u64>,
     pub source_claims: Vec<String>,
+    pub operational_profile: Option<OperationalProfileV1>,
+    pub ai_assisted: bool,
     pub verification_ids: Vec<EntryId>,
     pub correction_ids: Vec<EntryId>,
     pub treatment: PostTreatment,
@@ -112,6 +126,40 @@ pub struct NewswireProjection {
 }
 
 type ProjectionKey = (u64, EntryId);
+
+/// The plaintext half of a projected post, either carried through verbatim or
+/// wholly redacted when the post is Hidden or Tombstoned. Keeping this in one
+/// place means an ordinary row and a redacted one differ in exactly these
+/// fields and nothing else — a hide can never accidentally leave one behind.
+struct ProjectedContent {
+    headline: Option<String>,
+    body: Option<String>,
+    coarse_location: Option<String>,
+    source_claims: Vec<String>,
+    operational_profile: Option<OperationalProfileV1>,
+}
+
+impl ProjectedContent {
+    fn from(post: &NewsPostV1, is_ordinary: bool) -> Self {
+        if is_ordinary {
+            Self {
+                headline: Some(post.headline.clone()),
+                body: Some(post.body.clone()),
+                coarse_location: post.coarse_location.clone(),
+                source_claims: post.source_claims.clone(),
+                operational_profile: post.operational_profile.clone(),
+            }
+        } else {
+            Self {
+                headline: None,
+                body: None,
+                coarse_location: None,
+                source_claims: Vec::new(),
+                operational_profile: None,
+            }
+        }
+    }
+}
 
 struct EligiblePost<'a> {
     key: ProjectionKey,
@@ -322,34 +370,32 @@ pub fn project(
             .map(|action| action.key)
             .max();
 
-        let (body, source_claims, treatment) = if !tombstone_ids.is_empty() {
-            (
-                None,
-                Vec::new(),
-                PostTreatment::Tombstoned {
-                    actions: tombstone_ids,
-                },
-            )
+        let treatment = if !tombstone_ids.is_empty() {
+            PostTreatment::Tombstoned {
+                actions: tombstone_ids,
+            }
         } else if !hide_ids.is_empty() {
-            (
-                None,
-                Vec::new(),
-                PostTreatment::Hidden { actions: hide_ids },
-            )
+            PostTreatment::Hidden { actions: hide_ids }
         } else {
-            (
-                Some(eligible.post.body.clone()),
-                eligible.post.source_claims.clone(),
-                PostTreatment::Ordinary,
-            )
+            PostTreatment::Ordinary
         };
         let is_ordinary = treatment == PostTreatment::Ordinary;
+        // Redacted rows keep their identity, ordering, and freshness metadata
+        // but surrender every plaintext field a hide is meant to suppress.
+        let content = ProjectedContent::from(eligible.post, is_ordinary);
         let projected = ProjectedPost {
             entry_id: eligible.record.entry_id(),
             author_id: eligible.record.signer_id(),
             tai_j2000_micros: eligible.record.tai_j2000_micros(),
-            body,
-            source_claims,
+            headline: content.headline,
+            body: content.body,
+            language: eligible.post.language.clone(),
+            coarse_location: content.coarse_location,
+            event_time_unix_seconds: eligible.post.event_time_unix_seconds,
+            expires_at_unix_seconds: eligible.post.expires_at_unix_seconds,
+            source_claims: content.source_claims,
+            operational_profile: content.operational_profile,
+            ai_assisted: eligible.post.ai_assisted,
             verification_ids,
             correction_ids,
             treatment,
@@ -807,6 +853,89 @@ mod tests {
                 format!("Correction {:?}", id(11))
             ]
         );
+    }
+
+    #[test]
+    fn ordinary_post_carries_every_signed_content_and_metadata_field() {
+        let mut signed = NewsPostV1 {
+            space_descriptor_entry_id: id(1),
+            headline: "Assembly at the pier".into(),
+            body: "Full witness account.".into(),
+            language: "en".into(),
+            event_time_unix_seconds: Some(1_700_000_000),
+            expires_at_unix_seconds: Some(clock().unix_seconds + 10),
+            coarse_location: Some("north pier".into()),
+            source_claims: vec!["eyewitness".into(), "organizer".into()],
+            operational_profile: None,
+            ai_assisted: true,
+        };
+        signed.operational_profile = Some(super::OperationalProfileV1::Request(
+            crate::newswire::RequestProfileV1 {
+                kind: crate::newswire::RequestKind::Need,
+                needed_by_unix_seconds: Some(clock().unix_seconds + 5),
+                contact_instructions: "Ask at the desk.".into(),
+            },
+        ));
+        let view = projection(&[record(
+            id(2),
+            NAMESPACE,
+            AUTHOR,
+            100,
+            NewswirePayload::NewsPost(signed.clone()),
+        )]);
+        let row = &view.open_wire[0];
+        assert_eq!(row.headline.as_deref(), Some("Assembly at the pier"));
+        assert_eq!(row.body.as_deref(), Some("Full witness account."));
+        assert_eq!(row.language, "en");
+        assert_eq!(row.coarse_location.as_deref(), Some("north pier"));
+        assert_eq!(row.event_time_unix_seconds, Some(1_700_000_000));
+        assert_eq!(row.expires_at_unix_seconds, Some(clock().unix_seconds + 10));
+        assert_eq!(row.source_claims, vec!["eyewitness", "organizer"]);
+        assert_eq!(row.operational_profile, signed.operational_profile);
+        assert!(row.ai_assisted);
+    }
+
+    #[test]
+    fn redaction_clears_headline_location_and_profile_but_keeps_metadata() {
+        let mut signed = NewsPostV1 {
+            space_descriptor_entry_id: id(1),
+            headline: "Doxxing headline".into(),
+            body: "Private content.".into(),
+            language: "en".into(),
+            event_time_unix_seconds: Some(1_700_000_000),
+            expires_at_unix_seconds: None,
+            coarse_location: Some("a private address".into()),
+            source_claims: vec!["leak".into()],
+            operational_profile: None,
+            ai_assisted: true,
+        };
+        signed.operational_profile = Some(super::OperationalProfileV1::Request(
+            crate::newswire::RequestProfileV1 {
+                kind: crate::newswire::RequestKind::Need,
+                needed_by_unix_seconds: None,
+                contact_instructions: "Call this private number.".into(),
+            },
+        ));
+        let view = projection(&[
+            record(
+                id(2),
+                NAMESPACE,
+                AUTHOR,
+                100,
+                NewswirePayload::NewsPost(signed),
+            ),
+            action(id(10), 200, id(2), EditorialActionKind::Hide),
+        ]);
+        let row = &view.open_wire[0];
+        assert_eq!(row.headline, None);
+        assert_eq!(row.body, None);
+        assert_eq!(row.coarse_location, None);
+        assert!(row.source_claims.is_empty());
+        assert_eq!(row.operational_profile, None);
+        // Metadata that a hide does not suppress survives.
+        assert_eq!(row.language, "en");
+        assert_eq!(row.event_time_unix_seconds, Some(1_700_000_000));
+        assert!(row.ai_assisted);
     }
 
     #[test]

@@ -45,50 +45,70 @@ public protocol AppDataBridging: AnyObject {
     /// profile has not synced yet still draws. `nil` means the id itself was
     /// malformed (not 32 bytes of hex), which is a caller bug.
     func profile(idHex: String) -> BridgeProfile?
+    /// Tear the underlying Rust execution session down (Unit 0C). After this,
+    /// every read/commit through this bridge fails. Called when the app view is
+    /// dismissed so no in-flight bridge call outlives the UI.
+    func teardownSession()
+    /// Whether the underlying execution session is still valid RIGHT NOW — used
+    /// to tell a §4.7 invalidation (revoked / namespace-swapped / stale
+    /// generation → close to "Return to Tools") apart from an ordinary per-op
+    /// rejection (a malformed key → inline error). Both throw the same error.
+    func isSessionValid() -> Bool
 }
 
-/// Adapter over the landed `AppRuntimeSession` FFI for one app id. Values
+public extension AppDataBridging {
+    // Test doubles and non-session bridges have nothing to tear down and are
+    // always "valid"; only the real `AppRuntimeDataBridge` overrides these.
+    func teardownSession() {}
+    func isSessionValid() -> Bool { true }
+}
+
+/// Adapter over the Rust-owned `AppExecutionSession` (Unit 0C) for one app.
+/// Every read and commit goes through the gated session, which revalidates the
+/// app's authority (trust / namespace / generation / not-destroyed) BEFORE it
+/// touches data — so a revoked, namespace-swapped, re-approved, or torn-down app
+/// cannot read or write even though this bridge object still exists. Values
 /// cross the FFI boundary as UTF-8 `Data`.
 public final class AppRuntimeDataBridge: AppDataBridging {
-    private let session: AppRuntimeSession
+    private let execution: AppExecutionSession
     /// The display-name surface. Names are resolved on EVERY call rather than
     /// cached: a cached name would go stale the moment someone renames or a
     /// peer's profile card finally syncs in, which is precisely the staleness
     /// storing the id exists to eliminate. Each call is a mutex + a store read.
     private let profiles: ProfileSession
-    private let appIDHex: String
-    /// The host's persisting write path (`RiotProfileRepository.appDataPut`).
-    /// When absent (e.g. an isolated host test that has no repository), writes
-    /// go straight to the session and are not persisted for replay.
-    private let onPut: ((_ key: String, _ valueJSON: String) throws -> Void)?
+    /// The host's persistence hook. The bridge performs the gated write itself
+    /// (through the execution session) and hands the resulting signed bundle
+    /// bytes here so the host can persist them for replay. Absent for isolated
+    /// host tests that have no repository — the write still commits, it is just
+    /// not persisted across relaunch.
+    private let onCommitted: ((_ key: String, _ bundleBytes: Data) throws -> Void)?
 
     public init(
-        session: AppRuntimeSession,
+        execution: AppExecutionSession,
         profiles: ProfileSession,
-        appIDHex: String,
-        onPut: ((_ key: String, _ valueJSON: String) throws -> Void)? = nil
+        onCommitted: ((_ key: String, _ bundleBytes: Data) throws -> Void)? = nil
     ) {
-        self.session = session
+        self.execution = execution
         self.profiles = profiles
-        self.appIDHex = appIDHex
-        self.onPut = onPut
+        self.onCommitted = onCommitted
     }
 
     public func put(key: String, valueJSON: String) throws {
-        if let onPut {
-            try onPut(key, valueJSON)
-        } else {
-            try session.appDataPut(appId: appIDHex, key: key, value: Data(valueJSON.utf8))
-        }
+        // The gated write returns the canonical committed bytes; hand them to the
+        // host to persist. The revalidation happens inside `appDataPutWithReceipt`
+        // BEFORE any store mutation, so a revoked app never commits. A persistence
+        // failure propagates (same as before), so the page hears "couldn't save".
+        let receipt = try execution.appDataPutWithReceipt(key: key, value: Data(valueJSON.utf8))
+        try onCommitted?(key, receipt)
     }
 
     public func get(key: String) throws -> String? {
-        guard let data = try session.appDataGet(appId: appIDHex, key: key) else { return nil }
+        guard let data = try execution.appDataGet(key: key) else { return nil }
         return String(decoding: data, as: UTF8.self)
     }
 
     public func list(prefix: String) throws -> [(key: String, valueJSON: String)] {
-        try session.appDataList(appId: appIDHex, prefix: prefix).map {
+        try execution.appDataList(prefix: prefix).map {
             (key: $0.key, valueJSON: String(decoding: $0.value, as: UTF8.self))
         }
     }
@@ -108,6 +128,10 @@ public final class AppRuntimeDataBridge: AppDataBridging {
         guard let who = try? profiles.profileFor(id: id) else { return nil }
         return BridgeProfile(from: who)
     }
+
+    public func teardownSession() { execution.invalidate() }
+
+    public func isSessionValid() -> Bool { execution.isValid() }
 }
 
 extension BridgeProfile {
@@ -167,13 +191,42 @@ public final class AppBridgeController: NSObject, WKScriptMessageHandler {
     /// Total message budget; individual values are further capped in Rust.
     public static let maxMessageBytes = 262_144
 
+    /// Fixed §4.7 copy shown once when a running app's access is invalidated
+    /// (trust revoked, namespace swapped, approval changed). The page is closed to
+    /// its named destination — it never keeps trying against a dead session.
+    public static let revokedMessage = "Your access to this tool was turned off. Return to Tools."
+
     private let bridge: AppDataBridging
     public weak var webView: WKWebView?
     /// Called after a successful put from this page.
     public var onLocalWrite: (() -> Void)?
+    /// Called when a read/commit fails BECAUSE the execution session was
+    /// invalidated (§4.7), so the host can close the app to "Return to Tools"
+    /// rather than leaving it showing a generic per-op error. Distinct from an
+    /// ordinary failure (a malformed key), which leaves the session valid.
+    public var onInvalidated: (() -> Void)?
 
     public init(bridge: AppDataBridging) {
         self.bridge = bridge
+    }
+
+    /// Tear the underlying execution session down. The host calls this when the
+    /// app view is dismissed; after it, every read/commit fails closed.
+    public func teardown() {
+        bridge.teardownSession()
+    }
+
+    /// Route a caught bridge error. If the session is no longer valid this is a
+    /// §4.7 invalidation: reply with the fixed revoked copy and fire
+    /// `onInvalidated` so the host closes to Tools. Otherwise it is an ordinary
+    /// per-op failure and the page stays open with the caller's message.
+    private func replyForError(id: Int, fallback: String) {
+        if !bridge.isSessionValid() {
+            reply(id: id, ok: false, payloadJSON: jsonString(Self.revokedMessage))
+            onInvalidated?()
+        } else {
+            reply(id: id, ok: false, payloadJSON: jsonString(fallback))
+        }
     }
 
     public func userContentController(
@@ -207,7 +260,7 @@ public final class AppBridgeController: NSObject, WKScriptMessageHandler {
                 let value = try bridge.get(key: key)
                 reply(id: id, ok: true, payloadJSON: value.map(jsonString) ?? "null")
             } catch {
-                reply(id: id, ok: false, payloadJSON: jsonString("Couldn't load that"))
+                replyForError(id: id, fallback: "Couldn't load that")
             }
         case "put":
             guard let key = dict["key"] as? String, let value = dict["value"] as? String else { return false }
@@ -217,7 +270,7 @@ public final class AppBridgeController: NSObject, WKScriptMessageHandler {
                 onLocalWrite?()
                 notifyDataChanged()
             } catch {
-                reply(id: id, ok: false, payloadJSON: jsonString("Couldn't save that — try again"))
+                replyForError(id: id, fallback: "Couldn't save that — try again")
             }
         case "list":
             guard let prefix = dict["prefix"] as? String else { return false }
@@ -226,7 +279,7 @@ public final class AppBridgeController: NSObject, WKScriptMessageHandler {
                 let encoded = rows.map { #"{"key":\#(jsonString($0.key)),"value":\#(jsonString($0.valueJSON))}"# }
                 reply(id: id, ok: true, payloadJSON: "[\(encoded.joined(separator: ","))]")
             } catch {
-                reply(id: id, ok: false, payloadJSON: jsonString("Couldn't load that"))
+                replyForError(id: id, fallback: "Couldn't load that")
             }
         case "whoami":
             // The id is what the app STORES; displayName/tag are only what it

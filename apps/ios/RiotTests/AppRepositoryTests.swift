@@ -89,6 +89,70 @@ final class AppRepositoryTests: XCTestCase {
         XCTAssertTrue(try second.spaceApps()[0].trusted)
     }
 
+    // MARK: - Turning an app off
+
+    /// The mirror of `testTrustSurvivesReopen`, and the reason a revoke has to
+    /// reach DISK: Rust's trust is in-memory, so `open` re-applies whatever the
+    /// snapshot still lists. A revoke that never left the session would be
+    /// silently undone by the next launch — the app would come back on.
+    func testUntrustDropsTheAppFromDiskAndItStaysOffAcrossARelaunch() throws {
+        let snapshotURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("app-repo-untrust-\(UUID().uuidString).json")
+        let keyStore = TestWrappingKeyStore()
+        let packs = try starterPacks()
+
+        let first = try RiotProfileRepository.open(
+            storage: try ProtectedProfileStorage(fileURL: snapshotURL),
+            keyStore: keyStore,
+            starterPacks: packs
+        )
+        _ = try first.createPublicSpace(title: "Berlin Mutual Aid")
+        let appID = try first.spaceApps()[0].appIDHex
+        try first.trustApp(appID: appID)
+        XCTAssertEqual(
+            try trustedAppIDs(in: snapshotURL).map { $0.lowercased() },
+            [appID.lowercased()],
+            "the trust decision is on disk — the premise of this test"
+        )
+
+        try first.untrustApp(appID: appID)
+
+        XCTAssertFalse(try first.spaceApps()[0].trusted, "the live session sees it off at once")
+        XCTAssertEqual(try trustedAppIDs(in: snapshotURL), [], "and the decision left the disk")
+        XCTAssertNil(
+            first.appDataBridge(appID: appID),
+            "a revoked app loses its data bridge — the launch gate closes with it"
+        )
+
+        // A fresh Rust profile. If the revoke had not reached disk, `open` would
+        // re-trust the app here and it would be back on.
+        let reopened = try RiotProfileRepository.open(
+            storage: try ProtectedProfileStorage(fileURL: snapshotURL),
+            keyStore: keyStore,
+            starterPacks: packs
+        )
+        XCTAssertFalse(try reopened.spaceApps()[0].trusted, "a revoked app stays off across a relaunch")
+    }
+
+    /// Revoking an app nobody ever turned on is a no-op, not a write and not a
+    /// throw: the snapshot is left exactly as it was.
+    func testUntrustingAnAppThatWasNeverTrustedChangesNothing() throws {
+        let snapshotURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("app-repo-untrust-noop-\(UUID().uuidString).json")
+        let repository = try RiotProfileRepository.open(
+            storage: try ProtectedProfileStorage(fileURL: snapshotURL),
+            keyStore: TestWrappingKeyStore(),
+            starterPacks: try starterPacks()
+        )
+        _ = try repository.createPublicSpace(title: "Berlin Mutual Aid")
+        let appID = try repository.spaceApps()[0].appIDHex
+
+        try repository.untrustApp(appID: appID)
+
+        XCTAssertFalse(try repository.spaceApps()[0].trusted)
+        XCTAssertEqual(try trustedAppIDs(in: snapshotURL), [])
+    }
+
     // MARK: - Resource serving
 
     func testAppResourceServesEntryPointAndRefusesEscapes() throws {
@@ -407,6 +471,16 @@ final class AppRepositoryTests: XCTestCase {
 
     private func removeTrustedAppIDs(from snapshotURL: URL) throws {
         try removeKey("trustedAppIDs", from: snapshotURL)
+    }
+
+    /// The trust decisions as they actually sit on disk — read from the snapshot
+    /// rather than from the repository, so a revoke that only cleared memory
+    /// cannot pass.
+    private func trustedAppIDs(in snapshotURL: URL) throws -> [String] {
+        let object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(contentsOf: snapshotURL)) as? [String: Any]
+        )
+        return object["trustedAppIDs"] as? [String] ?? []
     }
 
     private func removeKey(_ key: String, from snapshotURL: URL) throws {

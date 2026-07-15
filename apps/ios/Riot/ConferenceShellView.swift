@@ -1,52 +1,36 @@
 import SwiftUI
 import RiotKit
 
-extension View {
-    /// Mounts a running app over the shell. `fullScreenCover` is a UIKit-era API
-    /// that does not exist on macOS, where a sheet is the platform's equivalent
-    /// for taking over the window; the app itself (`AppRuntimeView`) is the same
-    /// RiotKit view on both.
-    @ViewBuilder
-    func riotAppCover<Item: Identifiable, Content: View>(
-        item: Binding<Item?>,
-        @ViewBuilder content: @escaping (Item) -> Content
-    ) -> some View {
-        #if os(macOS)
-        sheet(item: item, content: content)
-        #else
-        fullScreenCover(item: item, content: content)
-        #endif
-    }
-}
-
+/// The community-first shell (Unit 2A). Riot is organized around a community:
+/// once one is selected, a person answers "what is happening here?" (Home) and
+/// "what can we do together?" (Tools / People / Nearby). Before a community
+/// exists — or while the profile opens, or when a retained community cannot be
+/// opened — the shell shows a launch or in-place recovery surface, never a blank
+/// screen. The old five debug-shaped surfaces are gone.
 struct ConferenceShellView: View {
     @ObservedObject var model: RiotAppModel
-    /// Observed separately from `model` so a tab tap re-renders this shell only,
-    /// and not the four other destination views kept alive in the ZStack below.
-    /// See the performance contract on `RiotNavigationModel`.
-    @ObservedObject private var navigation: RiotNavigationModel
-    @Environment(\.colorScheme) private var colorScheme
-
-    init(model: RiotAppModel) {
-        _model = ObservedObject(wrappedValue: model)
-        _navigation = ObservedObject(wrappedValue: model.navigation)
-    }
 
     var body: some View {
-        VStack(spacing: 0) {
-            ZStack {
-                ForEach(RiotDestination.phoneTabs) { destination in
-                    NavigationStack {
-                        destinationView(destination)
-                    }
-                    .opacity(navigation.destination == destination ? 1 : 0)
-                    .allowsHitTesting(navigation.destination == destination)
+        Group {
+            if let failure = model.starterCatalogFailure {
+                CatalogFailureView(failure: failure, onRetry: model.retryStarterCatalog)
+            } else {
+                switch model.launchState {
+                case .loading:
+                    ShellRecoveryView(state: .profileStoreLoading, onPrimary: {}, onSecondary: nil)
+                case .noCommunity:
+                    LaunchView(model: model)
+                case let .unavailable(unavailable):
+                    ShellRecoveryView(
+                        state: .communityUnavailable(unavailable),
+                        onPrimary: model.retryCommunity,
+                        onSecondary: { model.select(.nearby) }
+                    )
+                case let .community(community):
+                    CommunityShellView(model: model, community: community)
                 }
             }
-            connectionDisclosureBar
-            RiotTabBar(selection: $navigation.destination)
         }
-        .background(RiotTheme.paper(for: colorScheme).ignoresSafeArea())
         .alert("Riot couldn’t finish that", isPresented: errorBinding) {
             Button("OK") { model.dismissError() }
         } message: {
@@ -54,12 +38,462 @@ struct ConferenceShellView: View {
         }
     }
 
+    private var errorBinding: Binding<Bool> {
+        Binding(
+            get: { model.errorMessage != nil },
+            set: { if !$0 { model.dismissError() } }
+        )
+    }
+}
+
+// MARK: - Launch (no community)
+
+/// The no-community launch surface: Create a community / Find one nearby, with
+/// the display name offered inline and skippable, plus the demo space. The
+/// community name is required to create; the display name is not.
+private struct LaunchView: View {
+    @ObservedObject var model: RiotAppModel
+    @Environment(\.colorScheme) private var colorScheme
+    @State private var communityName = ""
+    @State private var displayName = ""
+    @State private var demoFailure: String?
+
+    private var trimmedCommunity: String {
+        communityName.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                RiotCard {
+                    VStack(alignment: .leading, spacing: 12) {
+                        eyebrow("Get started")
+                        Text("You’re not in a community yet.")
+                            .font(.riot(.body, size: 20, relativeTo: .title3))
+                            .foregroundStyle(RiotTheme.ink(for: colorScheme))
+                            .accessibilityAddTraits(.isHeader)
+
+                        // Display name — offered inline, skippable.
+                        TextField("Your name (optional)", text: $displayName)
+                            .font(.riot(.body, size: 17, relativeTo: .body))
+                            .accessibilityIdentifier("launch-display-name")
+                        Button("Save name") { model.setDisplayName(displayName.trimmingCharacters(in: .whitespacesAndNewlines)) }
+                            .buttonStyle(.riotSecondary)
+                            .disabled(displayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                            .accessibilityIdentifier("launch-save-display-name")
+
+                        Divider().overlay(RiotTheme.line(for: colorScheme))
+
+                        TextField("Community name", text: $communityName)
+                            .font(.riot(.body, size: 17, relativeTo: .body))
+                            .accessibilityIdentifier("community-name-field")
+                        Button("Create a community") {
+                            model.createCommunity(
+                                CommunityCreationRequest(
+                                    name: trimmedCommunity,
+                                    // The founding collective's initial editorial
+                                    // selection: the founder, threaded explicitly
+                                    // so the community is not silently pinned to
+                                    // core's single-editor default.
+                                    editorialRoster: model.me.map { [$0.id] } ?? []
+                                )
+                            )
+                        }
+                        .buttonStyle(.riotPrimary)
+                        .disabled(trimmedCommunity.isEmpty)
+                        .accessibilityIdentifier("create-community")
+
+                        Button("Find one nearby") { model.select(.nearby) }
+                            .buttonStyle(.riotSecondary)
+                            .accessibilityIdentifier("find-nearby")
+                    }
+                }
+
+                loadDemoCard
+                if let demoFailure {
+                    Text(demoFailure)
+                        .font(.riot(.body, size: 13, relativeTo: .caption))
+                        .foregroundStyle(RiotTheme.pink(for: colorScheme))
+                        .accessibilityIdentifier("demo-failure")
+                }
+            }
+            .padding(20)
+        }
+        .riotHeader(eyebrow: "Riot", "Welcome")
+        .onAppear { displayName = model.claimedName ?? "" }
+    }
+
+    /// The seeded Riverside space, offered where a person will find it — right
+    /// where they are deciding what to do with no community of their own.
+    private var loadDemoCard: some View {
+        RiotCard {
+            VStack(alignment: .leading, spacing: 12) {
+                eyebrow("Or try it out")
+                Text("Start from a community that already has people in it — alerts, a part-done checklist, and a tool to open.")
+                    .font(.riot(.body, size: 13, relativeTo: .caption))
+                    .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
+                Button("Load the demo space (Riverside Tenants Union)") { loadDemoSpace() }
+                    .buttonStyle(.riotSecondary)
+                    .accessibilityIdentifier("demo-load")
+            }
+        }
+    }
+
+    private func loadDemoSpace() {
+        demoFailure = nil
+        guard let loader = model.demoLoader, let bytes = DemoFixture.bytes() else {
+            demoFailure = DemoModeCopy.missingFixture
+            return
+        }
+        do {
+            _ = try loader.loadDemoSpace(bytes: bytes)
+        } catch {
+            demoFailure = DemoModeCopy.loadFailed
+        }
+    }
+
+    private func eyebrow(_ text: String) -> some View {
+        Text(text)
+            .font(.riot(.mono, size: 12, relativeTo: .caption))
+            .textCase(.uppercase)
+            .tracking(1)
+            .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
+    }
+}
+
+// MARK: - Recovery surfaces (§4.7)
+
+/// The generic §4.7 recovery surface: a plain-language message, a primary action
+/// that is always useful, and an optional secondary — never a blank screen, and
+/// never a raw internal error. `ShellRecoveryState` owns the copy so the tests
+/// pin it.
+private struct ShellRecoveryView: View {
+    let state: ShellRecoveryState
+    let onPrimary: () -> Void
+    let onSecondary: (() -> Void)?
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
+        VStack(spacing: 16) {
+            if case .profileStoreLoading = state {
+                ProgressView()
+                    .accessibilityLabel("Opening your profile")
+            }
+            Text(state.message)
+                .font(.riot(.body, size: 17, relativeTo: .headline))
+                .multilineTextAlignment(.center)
+                .foregroundStyle(RiotTheme.ink(for: colorScheme))
+                .accessibilityAddTraits(.isHeader)
+            Button(state.primaryActionLabel, action: onPrimary)
+                .buttonStyle(.riotPrimary)
+                .frame(minHeight: 44)
+            if let secondary = state.secondaryActionLabel, let onSecondary {
+                Button(secondary, action: onSecondary)
+                    .buttonStyle(.riotSecondary)
+                    .frame(minHeight: 44)
+            }
+        }
+        .padding(24)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .accessibilityIdentifier(state.accessibilityID)
+    }
+}
+
+/// The §4.7 catalog/package-failure recovery: Retry plus a fixed error code
+/// behind a Technical-details disclosure — never a raw internal error.
+private struct CatalogFailureView: View {
+    let failure: StarterCatalogFailure
+    let onRetry: () -> Void
+    @Environment(\.colorScheme) private var colorScheme
+    @State private var showingTechnical = false
+
+    var body: some View {
+        VStack(spacing: 16) {
+            Text("Riot couldn’t load its built-in tools.")
+                .font(.riot(.body, size: 17, relativeTo: .headline))
+                .multilineTextAlignment(.center)
+                .foregroundStyle(RiotTheme.ink(for: colorScheme))
+                .accessibilityAddTraits(.isHeader)
+            Button("Retry", action: onRetry)
+                .buttonStyle(.riotPrimary)
+                .frame(minHeight: 44)
+            DisclosureGroup(isExpanded: $showingTechnical) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(failure.code).font(.riot(.mono, size: 12, relativeTo: .caption))
+                    Text(failure.technicalDetails)
+                        .font(.riot(.mono, size: 12, relativeTo: .caption))
+                        .textSelection(.enabled)
+                }
+            } label: {
+                Text("Technical details")
+                    .font(.riot(.mono, size: 12, relativeTo: .caption))
+                    .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
+            }
+            .accessibilityIdentifier("catalog-technical-details")
+        }
+        .padding(24)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .accessibilityIdentifier("recovery-catalog-failed")
+    }
+}
+
+// MARK: - The community shell (adaptive)
+
+/// The selected-community shell. On iPhone it is a bottom tab bar over the four
+/// routes; on macOS it is a `NavigationSplitView` whose detail pane shows the
+/// selected route or a running tool — a tool never opens as a modal sheet on the
+/// Mac. Route selection lives on `RiotNavigationModel` (the performance
+/// contract); the running tool, its focus restoration, and the identity sheets
+/// live here.
+private struct CommunityShellView: View {
+    @ObservedObject var model: RiotAppModel
+    @ObservedObject private var navigation: RiotNavigationModel
+    let community: CommunityContext
+
+    /// The composer and People projection are built once from the selected
+    /// community, so a post draft and the resolved contributors survive route
+    /// switches. Rebuilt only when the shell is recreated for a new community.
+    @StateObject private var composer: PostUpdateViewModel
+    @StateObject private var people: PeopleSurfaceModel
+    @StateObject private var newswire: NewswireSurfaceModel
+
+    /// The one community-scoped Nearby coordinator (nav design §"Nearby security
+    /// and lifecycle": "The selected community owns one community-scoped Nearby
+    /// coordinator"). It lives HERE, above the four routes, not inside the Nearby
+    /// route — so it survives Home/Tools/People/Nearby routing. When the shell is
+    /// recreated for a different community, this instance is torn down (its
+    /// callbacks cancelled on disappear) and the new community gets its own.
+    @StateObject private var nearby = NearbyTransportController()
+
+    /// The tool running in the detail pane (macOS) / full-screen (iPhone), and
+    /// the card that opened it, so focus returns there on close.
+    @State private var runningTool: RiotSpaceApp?
+    @State private var focus = ToolFocusRestoration()
+
+    @State private var identitySheet: ShellIdentityDestination?
+    /// Presented when a community-change is requested with an unsaved draft.
+    @State private var confirmingLeave = false
+
+    @Environment(\.colorScheme) private var colorScheme
+
+    init(model: RiotAppModel, community: CommunityContext) {
+        _model = ObservedObject(wrappedValue: model)
+        _navigation = ObservedObject(wrappedValue: model.navigation)
+        self.community = community
+
+        let me = model.me ?? RiotPerson(id: "", displayName: "member", tag: "")
+        let publisher: NewswirePostPublishing = model.profileRepository ?? UnavailablePublisher()
+        let postingCommunity = PostingCommunity(
+            name: community.name,
+            spaceDescriptorEntryID: community.newswireDescriptorEntryID ?? ""
+        )
+        _composer = StateObject(wrappedValue: PostUpdateViewModel(
+            identity: .persistent(me),
+            community: postingCommunity,
+            publisher: publisher,
+            draftStore: UserDefaultsPostDraftStore(communityID: community.id)
+        ))
+
+        let projector: NewswireContributorProjecting = model.profileRepository ?? UnavailableProjector()
+        _people = StateObject(wrappedValue: PeopleSurfaceModel(
+            projector: projector,
+            spaceDescriptorEntryID: community.newswireDescriptorEntryID ?? ""
+        ))
+
+        let wireProjector: NewswireProjecting = model.profileRepository ?? UnavailableWireProjector()
+        let editor: NewswireEditorialActing = model.profileRepository ?? UnavailableEditor()
+        _newswire = StateObject(wrappedValue: NewswireSurfaceModel(
+            projector: wireProjector,
+            editor: editor,
+            spaceDescriptorEntryID: community.newswireDescriptorEntryID ?? "",
+            communityName: community.name,
+            myKeyHex: me.id,
+            roster: community.editorialRoster
+        ))
+    }
+
+    /// Whether there is unsaved work that must be confirmed before a community
+    /// change (nav design + §4.6). A non-empty post draft is unsaved work.
+    private var hasUnsavedDraft: Bool { !composer.currentDraft.isEmpty }
+
+    var body: some View {
+        adaptiveShell
+            .background(keyboardShortcuts)
+            // Leaving/switching this community cancels the old coordinator's
+            // pairing, transfer, and callbacks before the shell is rebuilt for the
+            // next community (nav design §"Nearby security and lifecycle").
+            .onDisappear { nearby.stop() }
+            .sheet(item: $identitySheet) { destination in
+                switch destination {
+                case .yourProfile:
+                    YourProfileSheet(model: model, onClose: { identitySheet = nil })
+                case .communitySettings:
+                    CommunitySettingsSheet(
+                        model: model,
+                        community: community,
+                        onLeave: requestLeaveCommunity,
+                        onClose: { identitySheet = nil }
+                    )
+                }
+            }
+            .confirmationDialog(
+                StayOrDiscardPrompt.title,
+                isPresented: $confirmingLeave,
+                titleVisibility: .visible
+            ) {
+                Button(StayOrDiscardPrompt.discardLabel, role: .destructive) { model.leaveCommunity() }
+                Button(StayOrDiscardPrompt.stayLabel, role: .cancel) {}
+            }
+            // Level-1 "Your communities" — one action away via Command-K or the
+            // community-name control; selecting a row switches, an unavailable row
+            // recovers in place.
+            .sheet(isPresented: $model.isCommunityChooserPresented) {
+                CommunityChooserView(model: model)
+            }
+    }
+
+    // MARK: Adaptive presentation
+
+    @ViewBuilder
+    private var adaptiveShell: some View {
+        #if os(macOS)
+        macShell
+        #else
+        phoneShell
+        #endif
+    }
+
+    #if os(macOS)
+    /// macOS: sidebar of the four routes + identity footer; the detail pane shows
+    /// the selected route or the running tool. A tool is NEVER a modal sheet.
+    private var macShell: some View {
+        NavigationSplitView {
+            VStack(spacing: 0) {
+                List(RiotDestination.phoneTabs, selection: sidebarSelection) { destination in
+                    Label(destination.title, systemImage: destination.systemImage)
+                        .tag(destination)
+                        .accessibilityIdentifier("route-\(destination.rawValue)")
+                }
+                Divider()
+                identityFooter
+                    .padding(12)
+            }
+            .navigationTitle(community.name)
+        } detail: {
+            if let tool = runningTool, let repository = model.profileRepository {
+                AppRuntimeView(
+                    repository: repository,
+                    appIDHex: tool.appIDHex,
+                    appName: tool.name,
+                    onClose: closeTool
+                )
+                .onExitCommand(perform: escape)
+            } else {
+                routeView(navigation.destination)
+            }
+        }
+    }
+
+    private var sidebarSelection: Binding<RiotDestination?> {
+        Binding(
+            get: { navigation.destination },
+            set: { if let value = $0 { changeRoute(to: value) } }
+        )
+    }
+
+    private var identityFooter: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Button { identitySheet = .yourProfile } label: {
+                Label(ShellIdentityDestination.yourProfile.label,
+                      systemImage: ShellIdentityDestination.yourProfile.systemImage)
+            }
+            .accessibilityIdentifier(ShellIdentityDestination.yourProfile.accessibilityID)
+            Button { identitySheet = .communitySettings } label: {
+                Label(ShellIdentityDestination.communitySettings.label,
+                      systemImage: ShellIdentityDestination.communitySettings.systemImage)
+            }
+            .accessibilityIdentifier(ShellIdentityDestination.communitySettings.accessibilityID)
+        }
+        .buttonStyle(.plain)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+    #else
+    /// iPhone: a header with the community name and the two identity controls,
+    /// the four routes kept alive in a ZStack (the tab-lifecycle performance
+    /// contract), a connection bar, and the bottom tab bar. Opening a tool
+    /// presents it full-screen — never the phone's card sheet for a tool.
+    private var phoneShell: some View {
+        VStack(spacing: 0) {
+            communityHeader
+            ZStack {
+                ForEach(RiotDestination.phoneTabs) { destination in
+                    NavigationStack {
+                        routeView(destination)
+                    }
+                    .opacity(navigation.destination == destination ? 1 : 0)
+                    .allowsHitTesting(navigation.destination == destination)
+                }
+            }
+            connectionDisclosureBar
+            RiotTabBar(selection: tabSelection)
+        }
+        .background(RiotTheme.paper(for: colorScheme).ignoresSafeArea())
+        .fullScreenCover(item: $runningTool) { tool in
+            if let repository = model.profileRepository {
+                AppRuntimeView(
+                    repository: repository,
+                    appIDHex: tool.appIDHex,
+                    appName: tool.name,
+                    onClose: closeTool
+                )
+            } else {
+                Color.clear.onAppear { closeTool() }
+            }
+        }
+    }
+
+    private var tabSelection: Binding<RiotDestination> {
+        Binding(
+            get: { navigation.destination },
+            set: { changeRoute(to: $0) }
+        )
+    }
+
+    private var communityHeader: some View {
+        HStack(spacing: 12) {
+            Button { identitySheet = .yourProfile } label: {
+                Image(systemName: ShellIdentityDestination.yourProfile.systemImage)
+                    .font(.system(size: 22))
+            }
+            .accessibilityLabel(ShellIdentityDestination.yourProfile.label)
+            .accessibilityIdentifier(ShellIdentityDestination.yourProfile.accessibilityID)
+
+            // The community name is the chooser's entry point — "Your communities"
+            // is one action away here (nav design Slice 3).
+            Button { model.openCommunityChooser() } label: {
+                Text(community.name)
+                    .font(.riot(.body, size: 18, relativeTo: .headline))
+                    .foregroundStyle(RiotTheme.ink(for: colorScheme))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .accessibilityAddTraits(.isHeader)
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("community-name")
+
+            Button { identitySheet = .communitySettings } label: {
+                Image(systemName: ShellIdentityDestination.communitySettings.systemImage)
+                    .font(.system(size: 20))
+            }
+            .accessibilityLabel(ShellIdentityDestination.communitySettings.label)
+            .accessibilityIdentifier(ShellIdentityDestination.communitySettings.accessibilityID)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .background(RiotTheme.paper2(for: colorScheme))
+    }
+
     private var connectionDisclosureBar: some View {
         VStack(spacing: 3) {
-            // Who this person is, on every screen. The name is not printed bare —
-            // `rendered` is the sanctioned `Ana · a3f91122` — and it is NOT
-            // uppercased with the rest of the bar, because the half after the dot
-            // is lowercase hex off their key and has to read as what it is.
             if let me = model.me {
                 Text("You are \(me.rendered)")
                     .font(.riot(.mono, size: 11, relativeTo: .caption2))
@@ -79,196 +513,197 @@ struct ConferenceShellView: View {
             Rectangle().fill(RiotTheme.line(for: colorScheme)).frame(height: 1)
         }
     }
+    #endif
+
+    // MARK: Routes
 
     @ViewBuilder
-    private func destinationView(_ destination: RiotDestination) -> some View {
+    private func routeView(_ destination: RiotDestination) -> some View {
         switch destination {
-        case .spaces: SpacesView(model: model)
-        case .directory: AppDirectoryTab(model: model)
-        case .board: IncidentBoardView(model: model)
-        case .compose: ComposeReviewSignView(model: model)
-        case .connection: ConnectionStatusView(model: model)
+        case .home:
+            HomeRouteView(
+                model: model,
+                composer: composer,
+                newswire: newswire,
+                onOpenTool: openTool
+            )
+        case .tools:
+            DirectoryView(model: model, onOpen: { openTool($0, fromCardID: "tool-\($0.appIDHex)") })
+        case .people:
+            PeopleView(model: people, onPostUpdate: { changeRoute(to: .home) })
+        case .nearby:
+            ConnectionStatusView(model: model, nearby: nearby)
         }
     }
 
-    private var errorBinding: Binding<Bool> {
-        Binding(
-            get: { model.errorMessage != nil },
-            set: { isPresented in
-                if !isPresented { model.dismissError() }
+    // MARK: Tool lifecycle + focus
+
+    private func openTool(_ app: RiotSpaceApp, fromCardID cardID: String) {
+        focus.open(toolID: cardID)
+        runningTool = app
+    }
+
+    private func closeTool() {
+        _ = focus.close()
+        runningTool = nil
+    }
+
+    private func escape() {
+        switch ShellEscapeAction.action(isToolOpen: runningTool != nil, hasUnsavedWork: false) {
+        case .returnFromTool: closeTool()
+        case .ignore, .confirmDiscard: break
+        }
+    }
+
+    // MARK: Community change guard
+
+    private func changeRoute(to destination: RiotDestination) {
+        model.select(destination)
+    }
+
+    private func requestLeaveCommunity() {
+        identitySheet = nil
+        switch CommunityChangeGuard.decision(hasUnsavedDraft: hasUnsavedDraft) {
+        case .proceed: model.leaveCommunity()
+        case .confirm: confirmingLeave = true
+        }
+    }
+
+    // MARK: Keyboard: Command-1…4 and Command-K
+
+    private var keyboardShortcuts: some View {
+        Group {
+            ForEach(RiotDestination.phoneTabs) { destination in
+                Button("") { changeRoute(to: destination) }
+                    .keyboardShortcut(
+                        KeyEquivalent(Character("\(destination.commandNumber)")),
+                        modifiers: .command
+                    )
+                    .frame(width: 0, height: 0)
+                    .opacity(0)
+                    .accessibilityHidden(true)
             }
-        )
+            // Command-K focuses community selection (nav design Slice 3).
+            Button("") { model.openCommunityChooser() }
+                .keyboardShortcut(
+                    KeyEquivalent(CommunitySelectionShortcut.keyEquivalent),
+                    modifiers: .command
+                )
+                .frame(width: 0, height: 0)
+                .opacity(0)
+                .accessibilityIdentifier(CommunitySelectionShortcut.accessibilityID)
+        }
     }
 }
 
-private struct SpacesView: View {
-    @ObservedObject var model: RiotAppModel
-    @Environment(\.colorScheme) private var colorScheme
-    @State private var title = "Berlin Mutual Aid"
-    @State private var reviewing: RiotSpaceApp?
-    @State private var running: RiotSpaceApp?
-    /// The name being typed, seeded from the claim this person last made so
-    /// editing starts where they left off rather than from an empty field.
-    @State private var name = ""
-    /// Why loading or removing the seeded space did not work, in one sentence.
-    @State private var demoFailure: String?
+// MARK: - Home route
 
-    private var trimmedName: String {
-        name.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
+/// Home answers "what is happening here?" and "what can we do together?": the
+/// community's updates, Post an update as a primary action, and four
+/// deterministic tool shortcuts. An empty updates feed shows the actionable
+/// no-updates recovery, never a blank list.
+private struct HomeRouteView: View {
+    @ObservedObject var model: RiotAppModel
+    @ObservedObject var composer: PostUpdateViewModel
+    @ObservedObject var newswire: NewswireSurfaceModel
+    let onOpenTool: (RiotSpaceApp, String) -> Void
+    @Environment(\.colorScheme) private var colorScheme
+
+    private var shortcuts: [RiotSpaceApp] { HomeShortcuts.deterministic(from: model.apps) }
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
-                youCard
-                RiotCard {
-                    VStack(alignment: .leading, spacing: 12) {
-                        Text("Public incident space")
-                            .font(.riot(.mono, size: 12, relativeTo: .caption))
-                            .textCase(.uppercase)
-                            .tracking(1)
-                            .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
-                        if let space = model.space {
-                            LabeledContent("Title", value: space.title)
-                            IdentifierRow(label: "Namespace", value: space.namespaceID)
-                            Text("Public content · fixed incident-board/1 renderer")
-                                .font(.riot(.body, size: 13, relativeTo: .caption))
-                                .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
-                            if model.isDemoMode {
-                                removeDemoSection
-                            }
-                        } else {
-                            TextField("Space title", text: $title)
-                                .font(.riot(.body, size: 17, relativeTo: .body))
-                            Button("Create public space") { model.createSpace(title: title) }
-                                .buttonStyle(.riotPrimary)
-                            loadDemoSection
-                        }
-                        if let demoFailure {
-                            Text(demoFailure)
-                                .font(.riot(.body, size: 13, relativeTo: .caption))
-                                .foregroundStyle(RiotTheme.pink(for: colorScheme))
-                                .accessibilityIdentifier("demo-failure")
-                        }
-                    }
-                }
-                if model.space != nil {
-                    toolsCard
-                }
+                shortcutsCard
+                // The collective newswire — Front page, Open wire, and the
+                // always-public Editorial history — is the answer to "what is
+                // happening here?" It reads the same core projection every platform
+                // does, so a reader sees the identical front page as its peers.
+                NewswireSurfaceView(model: newswire)
+                PostUpdateView(model: composer)
             }
             .padding(20)
         }
-        .riotHeader(eyebrow: "Riot", "Spaces")
-        .sheet(item: $reviewing) { app in
-            AppReviewSheet(
-                app: app,
-                onApprove: {
-                    model.trustApp(appID: app.appIDHex)
-                    reviewing = nil
-                },
-                onCancel: { reviewing = nil }
-            )
-        }
-        .riotAppCover(item: $running) { app in
-            if let repository = model.profileRepository {
-                AppRuntimeView(
-                    repository: repository,
-                    appIDHex: app.appIDHex,
-                    appName: app.name,
-                    onClose: { running = nil }
-                )
-            } else {
-                Color.clear.onAppear { running = nil }
+        .riotHeader(eyebrow: "Community", model.space?.title ?? "Home")
+    }
+
+    @ViewBuilder
+    private var shortcutsCard: some View {
+        if !shortcuts.isEmpty {
+            RiotCard {
+                VStack(alignment: .leading, spacing: 12) {
+                    eyebrow("Do useful work")
+                    ForEach(shortcuts) { app in
+                        Button {
+                            onOpenTool(app, "home-shortcut-\(app.appIDHex)")
+                        } label: {
+                            HStack {
+                                Image(systemName: "square.grid.2x2")
+                                Text(app.name).font(.riot(.body, size: 17, relativeTo: .body))
+                                Spacer()
+                            }
+                        }
+                        .buttonStyle(.riotSecondary)
+                        .accessibilityIdentifier("home-shortcut-\(app.name)")
+                    }
+                }
             }
         }
     }
 
-    /// The seeded Riverside Tenants Union space, offered where a person will
-    /// actually find it: right under "create a space", at the moment they have
-    /// none and are deciding what to do.
-    ///
-    /// It used to be reachable only by long-pressing a version string, which is
-    /// the kind of thing you can only find if you already know it is there.
-    /// Discoverable beats clever: this is a stage prop, but a stage prop nobody
-    /// can pick up is just a missing feature.
-    ///
-    /// Offered ONLY when there is no space, because the import is additive and
-    /// refuses to displace a space the person already has — a button that could
-    /// only fail is not an offer.
-    @ViewBuilder
-    private var loadDemoSection: some View {
-        Divider().overlay(RiotTheme.line(for: colorScheme))
-        Text("Or start from a space that already has people in it — six alerts, a part-done checklist, and a tool in the directory.")
-            .font(.riot(.body, size: 13, relativeTo: .caption))
+    private func eyebrow(_ text: String) -> some View {
+        Text(text)
+            .font(.riot(.mono, size: 12, relativeTo: .caption))
+            .textCase(.uppercase)
+            .tracking(1)
             .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
-        Button("Load the demo space (Riverside Tenants Union)") { loadDemoSpace() }
-            .buttonStyle(.riotSecondary)
-            .accessibilityIdentifier("demo-load")
     }
+}
 
-    /// The way back out, so a rehearsal can be run twice.
-    ///
-    /// The copy says "hiding is not erasing" because that is the truth — the
-    /// store is append-only and the entries stay in it, inert — and a presenter
-    /// who expects a wipe and gets a hide will find out on stage.
-    @ViewBuilder
-    private var removeDemoSection: some View {
-        Divider().overlay(RiotTheme.line(for: colorScheme))
-        RiotBadge("Demo space")
-        Text(DemoModeCopy.hideExplanation)
-            .font(.riot(.body, size: 13, relativeTo: .caption))
-            .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
-        Button(DemoModeCopy.hide) { hideDemoSpace() }
-            .buttonStyle(.riotSecondary)
-            .accessibilityIdentifier("demo-hide")
-    }
+/// The §4.7 recovery rows rendered inline inside a route (Home's no-updates, no
+/// tools), rather than as a full-screen surface. Same copy source, so the tests
+/// pin it once.
+private struct ShellRecoveryInline: View {
+    let state: ShellRecoveryState
+    let onPrimary: () -> Void
+    let onSecondary: (() -> Void)?
+    @Environment(\.colorScheme) private var colorScheme
 
-    /// Imports the seeded bundle through the ORDINARY import path — the same
-    /// `inspect → plan → commit` a bundle from a phone across the room takes. A
-    /// missing resource and a refused import say the same sentence, because the
-    /// difference matters to us and not to the person holding the phone.
-    private func loadDemoSpace() {
-        demoFailure = nil
-        guard let loader = model.demoLoader, let bytes = DemoFixture.bytes() else {
-            demoFailure = DemoModeCopy.missingFixture
-            return
-        }
-        do {
-            _ = try loader.loadDemoSpace(bytes: bytes)
-        } catch {
-            demoFailure = DemoModeCopy.loadFailed
-        }
-    }
-
-    private func hideDemoSpace() {
-        demoFailure = nil
-        do {
-            try model.demoLoader?.hideDemoSpace()
-        } catch {
-            demoFailure = "Couldn’t hide the demo space."
-        }
-    }
-
-    /// "This is me." The one place a person says who they are.
-    ///
-    /// It leads the first screen deliberately: everything else here — a space, an
-    /// alert, an app someone carried over — is signed BY someone, and until this
-    /// is filled in that someone is `member · a3f91122` to every device in the
-    /// room.
-    ///
-    /// What is echoed back is core's rendering, not what they typed. Seeing
-    /// `Ana · a3f91122` (and not just "Ana") is the point: the tag is the part
-    /// that actually comes from their key, and it is what keeps them apart from
-    /// the second Ana in the room.
-    private var youCard: some View {
+    var body: some View {
         RiotCard {
-            VStack(alignment: .leading, spacing: 12) {
-                Text("You")
-                    .font(.riot(.mono, size: 12, relativeTo: .caption))
-                    .textCase(.uppercase)
-                    .tracking(1)
-                    .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
+            VStack(alignment: .leading, spacing: 10) {
+                Text(state.message)
+                    .font(.riot(.body, size: 15, relativeTo: .callout))
+                    .foregroundStyle(RiotTheme.ink(for: colorScheme))
+                Button(state.primaryActionLabel, action: onPrimary)
+                    .buttonStyle(.riotPrimary)
+                    .frame(minHeight: 44)
+                if let secondary = state.secondaryActionLabel, let onSecondary {
+                    Button(secondary, action: onSecondary)
+                        .buttonStyle(.riotSecondary)
+                        .frame(minHeight: 44)
+                }
+            }
+        }
+        .accessibilityIdentifier(state.accessibilityID)
+    }
+}
 
+// MARK: - Identity sheets
+
+/// "Your profile" — editing this person's identity, moved out of the way of
+/// everyday community content (nav design: manage identity in context).
+private struct YourProfileSheet: View {
+    @ObservedObject var model: RiotAppModel
+    let onClose: () -> Void
+    @Environment(\.colorScheme) private var colorScheme
+    @State private var name = ""
+
+    private var trimmed: String { name.trimmingCharacters(in: .whitespacesAndNewlines) }
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
                 if let me = model.me {
                     Text(me.rendered)
                         .font(.riot(.body, size: 20, relativeTo: .title3))
@@ -279,19 +714,13 @@ private struct SpacesView: View {
                         .font(.riot(.body, size: 13, relativeTo: .caption))
                         .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
                 }
-
                 TextField("Your name", text: $name)
                     .font(.riot(.body, size: 17, relativeTo: .body))
-                    .textFieldStyle(.plain)
                     .accessibilityIdentifier("my-name-field")
-
-                Button("Save name") { model.setDisplayName(trimmedName) }
+                Button("Save name") { model.setDisplayName(trimmed) }
                     .buttonStyle(.riotPrimary)
-                    .disabled(trimmedName.isEmpty)
+                    .disabled(trimmed.isEmpty)
                     .accessibilityIdentifier("save-my-name")
-
-                // Core is the only thing that judges a name, so this is core's
-                // refusal put into words, not a rule re-implemented up here.
                 if let nameError = model.nameError {
                     Text(nameError)
                         .font(.riot(.body, size: 13, relativeTo: .caption))
@@ -299,182 +728,118 @@ private struct SpacesView: View {
                         .accessibilityIdentifier("my-name-error")
                 }
             }
+            .padding(20)
+        }
+        .riotHeader(eyebrow: "You", ShellIdentityDestination.yourProfile.label)
+        .toolbar {
+            ToolbarItem(placement: .confirmationAction) { Button("Done", action: onClose) }
         }
         .onAppear { name = model.claimedName ?? "" }
-        // Only fires when the stored claim actually changes — saving a name sets it
-        // to what is already typed, so this never yanks the field out from under
-        // someone mid-edit.
-        .onChange(of: model.claimedName) { _, claimed in name = claimed ?? "" }
-    }
-
-    private var toolsCard: some View {
-        RiotCard {
-            VStack(alignment: .leading, spacing: 12) {
-                Text("Tools")
-                    .font(.riot(.mono, size: 12, relativeTo: .caption))
-                    .textCase(.uppercase)
-                    .tracking(1)
-                    .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
-                if model.apps.isEmpty {
-                    Text("No tools yet.")
-                        .font(.riot(.body, size: 13, relativeTo: .caption))
-                        .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
-                }
-                ForEach(model.apps) { app in
-                    HStack {
-                        Text(app.name)
-                            .font(.riot(.body, size: 17, relativeTo: .body))
-                        Spacer()
-                        if app.trusted {
-                            Button("Open") { running = app }
-                                .buttonStyle(.riotPrimary)
-                                .accessibilityIdentifier("open-\(app.name)")
-                        } else {
-                            RiotBadge("New")
-                            Button("Review") { reviewing = app }
-                                .buttonStyle(.riotSecondary)
-                                .accessibilityIdentifier("review-\(app.name)")
-                        }
-                    }
-                }
-            }
-        }
     }
 }
 
-/// Hosts the app directory and, on top of it, the runtime for an app opened from
-/// there. `AppRuntimeView` re-checks trust as it mounts, so an "Open" the
-/// directory offered a moment ago still cannot run an app whose trust was
-/// withdrawn in between.
-private struct AppDirectoryTab: View {
+/// "Community settings" — About, sync health, and Technical details for members;
+/// organizer-only governance (leaving the community here in 2A) appears only when
+/// core says this profile organizes.
+private struct CommunitySettingsSheet: View {
     @ObservedObject var model: RiotAppModel
-    @State private var running: RiotSpaceApp?
-
-    var body: some View {
-        DirectoryView(model: model, onOpen: { running = $0 })
-            .riotAppCover(item: $running) { app in
-                if let repository = model.profileRepository {
-                    AppRuntimeView(
-                        repository: repository,
-                        appIDHex: app.appIDHex,
-                        appName: app.name,
-                        onClose: { running = nil }
-                    )
-                } else {
-                    Color.clear.onAppear { running = nil }
-                }
-            }
-    }
-}
-
-private struct IncidentBoardView: View {
-    @ObservedObject var model: RiotAppModel
+    let community: CommunityContext
+    let onLeave: () -> Void
+    let onClose: () -> Void
     @Environment(\.colorScheme) private var colorScheme
-
-    var body: some View {
-        Group {
-            if model.entries.isEmpty {
-                RiotEmptyState(
-                    title: "No alerts yet",
-                    message: "Create and review an alert on this device. It stays local until you explicitly sync it."
-                )
-            } else {
-                ScrollView {
-                    VStack(spacing: 12) {
-                        ForEach(model.entries) { entry in
-                            RiotCard {
-                                VStack(alignment: .leading, spacing: 10) {
-                                    Text(entry.headline)
-                                        .font(.riot(.body, size: 17, relativeTo: .headline))
-                                        .foregroundStyle(RiotTheme.ink(for: colorScheme))
-                                    if entry.aiAssisted {
-                                        RiotBadge("AI-assisted · human reviewed and signed")
-                                    }
-                                    Text("Created \(Date(timeIntervalSince1970: TimeInterval(entry.createdAt)), style: .relative)")
-                                        .font(.riot(.mono, size: 11, relativeTo: .caption2))
-                                        .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
-                                    IdentifierRow(label: "Entry", value: entry.entryID)
-                                    IdentifierRow(label: "Signer", value: entry.signerID)
-                                }
-                            }
-                        }
-                    }
-                    .padding(20)
-                }
-            }
-        }
-        .riotHeader(eyebrow: "Public incident space", model.space?.title ?? "Incident board")
-    }
-}
-
-private struct ComposeReviewSignView: View {
-    @ObservedObject var model: RiotAppModel
-    @Environment(\.colorScheme) private var colorScheme
-    @State private var headline = "Water available at the east entrance"
-    @State private var details = "Bring a bottle. Volunteers are refilling the tank."
-    @State private var aiAssisted = false
+    @State private var showingTechnical = false
 
     var body: some View {
         ScrollView {
-            VStack(spacing: 16) {
+            VStack(alignment: .leading, spacing: 16) {
                 RiotCard {
-                    VStack(alignment: .leading, spacing: 14) {
-                        Text("Draft")
-                            .font(.riot(.mono, size: 12, relativeTo: .caption))
-                            .textCase(.uppercase)
-                            .tracking(1)
-                            .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
-                        TextField("Headline", text: $headline, axis: .vertical)
-                            .font(.riot(.body, size: 17, relativeTo: .body))
-                        TextField("What people need to know", text: $details, axis: .vertical)
-                            .font(.riot(.body, size: 15, relativeTo: .body))
-                            .lineLimit(4...8)
-                        Toggle("Started with model assistance", isOn: $aiAssisted)
-                            .tint(RiotTheme.pink(for: colorScheme))
+                    VStack(alignment: .leading, spacing: 10) {
+                        eyebrow("About")
+                        LabeledContent("Community", value: community.name)
+                        LabeledContent("Your role", value: community.isOrganizer ? "Organizer" : "Member")
+                        LabeledContent("Connection", value: model.connectionDisclosure)
                     }
                 }
-                RiotCard {
-                    VStack(alignment: .leading, spacing: 14) {
-                        Text("Review before posting")
-                            .font(.riot(.mono, size: 12, relativeTo: .caption))
-                            .textCase(.uppercase)
-                            .tracking(1)
-                            .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
-                            .accessibilityIdentifier("post-review")
-                        Text("Posting shares this update with \(model.space?.title ?? "this community"). Review it first; only you can post it.")
-                            .font(.riot(.body, size: 15, relativeTo: .callout))
-                            .foregroundStyle(RiotTheme.ink(for: colorScheme))
-                        Button("Post update") {
-                            model.sign(headline: headline, description: details, aiAssisted: aiAssisted)
-                        }
-                        .buttonStyle(.riotPrimary)
-                        .accessibilityIdentifier("post-update")
-                        .disabled(model.space == nil || headline.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                DisclosureGroup(isExpanded: $showingTechnical) {
+                    RiotCard {
+                        IdentifierRow(label: "Namespace", value: community.namespaceID)
                     }
+                    .padding(.top, 8)
+                } label: {
+                    Text("Technical details")
+                        .font(.riot(.mono, size: 12, relativeTo: .caption))
+                        .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
                 }
+                .accessibilityIdentifier("community-technical-details")
+
+                Button("Leave this community", role: .destructive, action: onLeave)
+                    .buttonStyle(.riotSecondary)
+                    .accessibilityIdentifier("leave-community")
             }
             .padding(20)
         }
-        .riotHeader(eyebrow: "Share with your community", "Post an update")
+        .riotHeader(eyebrow: "Community", ShellIdentityDestination.communitySettings.label)
+        .toolbar {
+            ToolbarItem(placement: .confirmationAction) { Button("Done", action: onClose) }
+        }
+    }
+
+    private func eyebrow(_ text: String) -> some View {
+        Text(text)
+            .font(.riot(.mono, size: 12, relativeTo: .caption))
+            .textCase(.uppercase)
+            .tracking(1)
+            .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
     }
 }
 
+// MARK: - Unavailable seams (never reached with an open profile)
+
+/// A publisher used only if the profile is somehow closed when the shell builds
+/// — it fails closed rather than force-unwrapping. The live conformer is the
+/// repository.
+private struct UnavailablePublisher: NewswirePostPublishing {
+    func publishNewswirePost(_ request: PostUpdateRequest) throws -> NewswireSignedRecord {
+        throw RepositoryError.profileClosed
+    }
+}
+
+private struct UnavailableProjector: NewswireContributorProjecting {
+    func projectNewswireContributors(spaceDescriptorEntryID: String) throws -> [NewswireContributor] {
+        throw RepositoryError.profileClosed
+    }
+}
+
+private struct UnavailableWireProjector: NewswireProjecting {
+    func projectNewswire(spaceDescriptorEntryID: String) throws -> NewswireProjectionView {
+        throw RepositoryError.profileClosed
+    }
+}
+
+private struct UnavailableEditor: NewswireEditorialActing {
+    func createNewswireEditorialAction(
+        spaceDescriptorEntryID: String,
+        targetEntryID: String,
+        kind: NewswireEditorialActionKind,
+        reason: String?,
+        correctionText: String?
+    ) throws -> NewswireSignedRecord {
+        throw RepositoryError.profileClosed
+    }
+}
+
+// MARK: - Nearby (existing surface, now the Nearby route)
+
 private struct ConnectionStatusView: View {
     @ObservedObject var model: RiotAppModel
-    @StateObject private var nearby = NearbyTransportController()
+    /// Owned by `CommunityShellView` (community-scoped, survives routing); this
+    /// route only observes it.
+    @ObservedObject var nearby: NearbyTransportController
     @Environment(\.colorScheme) private var colorScheme
-    /// The peer whose profile is open. Tapping a device opens their profile;
-    /// inviting them from there starts the connection that shares your space.
+    @Environment(\.openURL) private var openURL
     @State private var inspecting: DiscoveredPhone?
-    /// A person you have already synced with, opened from the People list — this
-    /// one carries a real profile identity, so their collection populates.
     @State private var inspectingPerson: RiotPerson?
 
-    /// Everyone this device can now name except yourself: the people you have
-    /// synced with. Distinct from "Devices" (a transport-level friendly name you
-    /// can connect to) — these are real profile identities whose collections are
-    /// attributable. Resolved from the published name map so the list updates as
-    /// profiles arrive.
     private var syncedPeople: [RiotPerson] {
         guard let repository = model.profileRepository,
               let me = try? repository.me() else { return [] }
@@ -484,37 +849,16 @@ private struct ConnectionStatusView: View {
             .sorted { $0.rendered < $1.rendered }
     }
 
-    /// Begin looking for peers, but only once the profile is open — a phone with
-    /// no repository behind it would advertise and pair with nothing to announce.
-    /// Safe to call more than once; it no-ops unless idle and ready.
-    ///
-    /// Gated on ``RiotAppModel/isProfileOpen`` rather than on `me`: the thing a
-    /// pairing needs is the REPOSITORY (it is what answers `currentSpace`), and
-    /// that flag is published only after the space is readable.
     private func startDiscoveryWhenReady() {
         guard model.isProfileOpen, nearby.state == .idle else { return }
         nearby.findNearby(host: model.nearbySpaceHost)
     }
 
-    /// This phone has a space it did not have when it started looking — the
-    /// organizer opens the app and only THEN taps "Create space". If its one
-    /// handshake with the phone beside it has already settled "nothing to share",
-    /// that space can never reach them; look again, so the two of them shake hands
-    /// afresh with a space in hand this time.
-    ///
-    /// `findNearby` resets the session before it restarts, which is what clears the
-    /// still-selected peer that was blocking auto-connect from re-dialling.
     private func reannounceSpaceIfStuck() {
         guard model.space != nil, NearbyReannounceGate.needsReannounce(state: nearby.state) else { return }
         nearby.findNearby(host: model.nearbySpaceHost)
     }
 
-    /// What is happening with the person on the other end, in words. Reached only
-    /// when there IS someone on the other end, so it never has to describe "no
-    /// one" — that is the empty state's job.
-    ///
-    /// The count comes from the import that actually landed, so "6 things" means
-    /// six things arrived, not six things were offered.
     private var syncSentence: String {
         switch nearby.state {
         case .connecting: "Connecting…"
@@ -535,11 +879,34 @@ private struct ConnectionStatusView: View {
         }
     }
 
-    /// Who this device is connected to RIGHT NOW, said plainly.
-    ///
-    /// The badge above can only ever describe a STATE ("All caught up"); this is
-    /// the only thing on the screen that answers the question a person actually
-    /// has, which is *caught up with whom*.
+    /// The §4.7 "Bluetooth/local-network denied" recovery: what still works
+    /// offline plus an Open Settings deep link — never a raw permission error.
+    private var permissionRecoveryCard: some View {
+        RiotCard {
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Nearby needs permission")
+                    .font(.riot(.body, size: 17, relativeTo: .headline))
+                    .foregroundStyle(RiotTheme.ink(for: colorScheme))
+                    .accessibilityAddTraits(.isHeader)
+                Text(NearbyPermissionRecovery.message)
+                    .font(.riot(.body, size: 14, relativeTo: .callout))
+                    .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
+                if let url = NearbyPermissionRecovery.settingsURL {
+                    Button("Open Settings") { openURL(url) }
+                        .buttonStyle(.riotPrimary)
+                        .frame(minHeight: 44)
+                        .accessibilityIdentifier("nearby-open-settings")
+                }
+            }
+        }
+        .accessibilityIdentifier("nearby-permission-denied")
+    }
+
+    private var inboundConfirmTitle: String {
+        if case let .confirm(name) = nearby.state { return "Accept connection from \(name)?" }
+        return ""
+    }
+
     @ViewBuilder
     private var connectedCard: some View {
         if let peer = nearby.connectedPeer {
@@ -567,6 +934,7 @@ private struct ConnectionStatusView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 RiotBadge(nearby.state.message, stamped: true)
+                if nearby.permissionDenied { permissionRecoveryCard }
                 connectedCard
                 RiotCard {
                     VStack(alignment: .leading, spacing: 14) {
@@ -639,15 +1007,13 @@ private struct ConnectionStatusView: View {
             }
             .padding(20)
         }
-        .riotHeader(eyebrow: "Transport", "Connection")
+        .riotHeader(eyebrow: "Transport", "Nearby")
         .sheet(item: $inspecting) { phone in
             PeerProfileView(
                 model: model,
                 peerName: phone.friendlyName,
                 isConnected: nearby.connectedPeer == phone.friendlyName,
                 onInvite: { _ in
-                    // Inviting = connect to them, which shares your space so their
-                    // device can join it. They still confirm on their side.
                     nearby.requestConnection(to: phone)
                     inspecting = nil
                 },
@@ -655,8 +1021,6 @@ private struct ConnectionStatusView: View {
             )
         }
         .sheet(item: $inspectingPerson) { person in
-            // A real synced identity: their rendered name is what the directory
-            // attributes their apps to, so their collection actually populates.
             PeerProfileView(
                 model: model,
                 peerName: person.rendered,
@@ -665,50 +1029,28 @@ private struct ConnectionStatusView: View {
             )
         }
         .onAppear {
-            // A phone that joins a peer's space gains a space, a board, and a set
-            // of apps it did not have a moment ago — none of which this screen is
-            // the source of. Re-read the profile when that happens.
             nearby.onSpaceJoined = { model.refreshFromStore() }
             startDiscoveryWhenReady()
         }
-        // The profile opens asynchronously (`bootstrap` runs off the window's
-        // `.task`), and this screen can appear first — every tab is built at
-        // launch, so this `onAppear` fires even while the person is looking at
-        // Spaces. Starting discovery before the profile is open makes a phone
-        // advertise and pair with no identity and no space to announce — so wait
-        // until it is ready, and start the moment it becomes ready.
         .onChange(of: model.isProfileOpen) { _, _ in startDiscoveryWhenReady() }
-        // A space this phone did not have when it started looking: the organizer
-        // opens the app, and only THEN taps "Create space". Discovery has been
-        // running since launch, announcing "no space" to everyone who paired — so
-        // announce the real one now, or the phone next to them can never hear
-        // about the space they just made.
-        //
-        // This also fires on a joiner the moment it adopts a peer's space, which
-        // is mid-sync and must NOT restart anything; `reannounceSpace` refuses
-        // while a session is live.
-        // A space this phone did not have when it started looking: the organizer
-        // opens the app, and only THEN taps "Create space".
         .onChange(of: model.space) { _, _ in reannounceSpaceIfStuck() }
         .onChange(of: nearby.state) { _, state in
-            // The other order: the space landed while a handshake was already in
-            // flight, so that handshake announced nothing and settled — and the
-            // space change above fired mid-session, where it was rightly refused.
-            // Catch it here, as the session settles.
-            //
-            // Only `.nothingToShare`, and only with a space in hand. That is what
-            // makes this terminate: it takes TWO spaceless phones to reach this
-            // state, so with a space to announce the next handshake cannot land
-            // back here. A `.failed` handshake is deliberately NOT retried from
-            // here — it would fail, restart, and fail again, and the two phones
-            // would spin against each other.
             guard case .nothingToShare = state, model.space != nil else { return }
             nearby.findNearby(host: model.nearbySpaceHost)
         }
-        // This phone has no space and the one it just connected to does. Joining
-        // is how a fresh phone becomes part of a community — but it is the
-        // person's decision, named plainly, and nothing is joined until they make
-        // it.
+        // A peer asked to pair. Discovery never auto-accepts — the human here must
+        // say yes before the connection is made or any community disclosed.
+        .confirmationDialog(
+            inboundConfirmTitle,
+            isPresented: Binding(
+                get: { if case .confirm = nearby.state { return true }; return false },
+                set: { if !$0 { nearby.cancelConnection() } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("Accept") { nearby.confirmConnection() }
+            Button("Decline", role: .cancel) { nearby.cancelConnection() }
+        }
         .confirmationDialog(
             nearby.state.message,
             isPresented: Binding(
@@ -720,10 +1062,6 @@ private struct ConnectionStatusView: View {
             Button("Not now", role: .cancel) { nearby.declineJoinSpace() }
         }
         .onChange(of: nearby.state) { _, state in
-            // Headless bring-up: with RIOT_AUTO_CONFIRM=1 a phone accepts the
-            // join-space step without a tap, so two instances can be driven all
-            // the way through pair -> join -> sync from a script. Off by default;
-            // joining a space is a deliberate act for a real person.
             if case .joinSpace = state,
                ProcessInfo.processInfo.environment["RIOT_AUTO_CONFIRM"] == "1" {
                 nearby.confirmJoinSpace()

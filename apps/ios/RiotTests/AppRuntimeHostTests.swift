@@ -1,3 +1,4 @@
+import Network
 import WebKit
 import XCTest
 @testable import RiotKit
@@ -57,14 +58,19 @@ final class AppRuntimeHostTests: XCTestCase {
     private func trustedRuntime(
         appID: String
     ) throws -> (bridge: AppRuntimeDataBridge, profiles: ProfileSession) {
+        // The bridge now runs on a gated AppExecutionSession (Unit 0C), which
+        // only opens for a TRUSTED app — so install and trust a real app first.
+        // The passed `appID` is the resolver's scheme host (page origin) and is
+        // independent of the data app id, which is the real installed one.
         let profile = try openLocalProfile()
         _ = try profile.createPublicSpace(title: "Berlin Mutual Aid")
+        let runtime = profile.appRuntime()
+        let packs = try starterPacks()
+        let record = try runtime.installApp(manifestBytes: packs[0].manifest, bundleBytes: packs[0].bundle)
+        try runtime.trustApp(appId: record.appId)
+        let execution = try profile.openAppExecution(appId: record.appId)
         let profiles = profile.profile()
-        let bridge = AppRuntimeDataBridge(
-            session: profile.appRuntime(),
-            profiles: profiles,
-            appIDHex: appID
-        )
+        let bridge = AppRuntimeDataBridge(execution: execution, profiles: profiles)
         return (bridge, profiles)
     }
 
@@ -559,6 +565,246 @@ extension AppRuntimeHostTests {
         XCTAssertNotEqual(
             values["bodyBackground"], body,
             "\(scheme) page background must contrast with its text: \(seen)"
+        )
+    }
+}
+
+// MARK: - Unit 0C: runtime containment & invalidation (SECURITY-CRITICAL)
+
+extension AppRuntimeHostTests {
+    /// The shared hostile-page fixture (scripts/apps/fixtures/hostile-egress.html)
+    /// — the SAME attacker artifact the JS and Android suites use. It carries no
+    /// CSP on purpose.
+    private func hostileFixtureURL() -> URL {
+        URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent() // RiotTests
+            .deletingLastPathComponent() // ios
+            .deletingLastPathComponent() // apps
+            .deletingLastPathComponent() // repo root
+            .appendingPathComponent("scripts/apps/fixtures/hostile-egress.html")
+    }
+
+    /// A loopback TCP listener that counts inbound connections. It exists so the
+    /// backstop test has a target that is ALWAYS reachable (127.0.0.1): a fetch to
+    /// an unresolvable host would "fail" with or without the backstop and prove
+    /// nothing. If any egress vector escapes, this sentinel sees a connection —
+    /// so `connections == 0` is a real proof that FAILS the moment the backstop
+    /// is removed.
+    /// A lock-guarded connection counter, split out so the listener's
+    /// `@Sendable` connection handler captures only THIS (Sendable by its lock
+    /// invariant) and never the sentinel/`self` — which keeps the sentinel off
+    /// the Sendable hook and avoids a listener→closure→self retain cycle.
+    private final class ConnectionCounter: @unchecked Sendable {
+        private let lock = NSLock()
+        private var value = 0
+        func increment() { lock.lock(); value += 1; lock.unlock() }
+        var current: Int { lock.lock(); defer { lock.unlock() }; return value }
+    }
+
+    private final class LoopbackSentinel {
+        private let listener: NWListener
+        private let counter = ConnectionCounter()
+        let port: UInt16
+
+        init() throws {
+            let parameters = NWParameters.tcp
+            parameters.allowLocalEndpointReuse = true
+            let listener = try NWListener(using: parameters)
+            self.listener = listener
+            let ready = DispatchSemaphore(value: 0)
+            listener.stateUpdateHandler = { state in
+                if case .ready = state { ready.signal() }
+            }
+            listener.newConnectionHandler = { [counter] connection in
+                counter.increment()
+                connection.cancel()
+            }
+            listener.start(queue: .global())
+            _ = ready.wait(timeout: .now() + 5)
+            guard let assigned = listener.port?.rawValue else {
+                listener.cancel()
+                throw NSError(domain: "LoopbackSentinel", code: 1)
+            }
+            self.port = assigned
+        }
+
+        var connections: Int { counter.current }
+        func stop() { listener.cancel() }
+    }
+
+    /// A hostile page with its CSP stripped, loaded into a WebView configured
+    /// exactly like the runtime's, must reach the loopback sentinel ZERO times
+    /// through ANY resource-load egress vector. The block can only be the
+    /// content-rule-list backstop — CSP is absent here.
+    func testNetworkBackstopBlocksEveryEgressVectorWithCSPStripped() async throws {
+        let sentinel = try LoopbackSentinel()
+        defer { sentinel.stop() }
+
+        guard let ruleList = await AppNetworkBackstop.compiledBlockAll() else {
+            return XCTFail("backstop content rule list failed to compile — runtime fails closed")
+        }
+        let configuration = WKWebViewConfiguration()
+        configuration.websiteDataStore = .nonPersistent()
+        AppNetworkBackstop.harden(configuration)
+        configuration.userContentController.add(ruleList)
+        let webView = WKWebView(frame: .zero, configuration: configuration)
+        let probe = NavProbe()
+        webView.navigationDelegate = probe
+
+        let fixture = try String(contentsOf: hostileFixtureURL(), encoding: .utf8)
+        webView.loadHTMLString(fixture, baseURL: URL(string: "https://hostile.local/"))
+        await fulfillment(of: [probe.done], timeout: 30)
+        XCTAssertTrue(probe.finished, "hostile fixture failed to load: \(probe.failure ?? "unknown")")
+
+        // Fire every vector at the sentinel. Skip the top-level-navigation vectors
+        // (proven by the navigation lock test); they would navigate this harness
+        // away. Everything else is a resource load the backstop must swallow.
+        let target = "http://127.0.0.1:\(sentinel.port)/exfil"
+        _ = try await callAsync(webView, """
+            await window.__attemptEgress('\(target)', {
+                skip: ['location-assign', 'location-replace', 'window-open']
+            });
+            return 'done';
+        """)
+        // Grace period for any escaping connection to actually land.
+        try await Task.sleep(nanoseconds: 500_000_000)
+
+        XCTAssertEqual(
+            sentinel.connections, 0,
+            "a hostile page with CSP stripped reached the network — the egress backstop failed"
+        )
+
+        // Direct fetch as a second, explicit signal that the page sees a block.
+        let fetchResult = try await callAsync(webView, """
+            try { await fetch('\(target)', { mode: 'no-cors' }); return 'REACHED'; }
+            catch (e) { return 'blocked'; }
+        """)
+        XCTAssertEqual(fetchResult as? String, "blocked")
+        XCTAssertEqual(sentinel.connections, 0, "fetch reached the sentinel after the block")
+    }
+
+    /// Counts every `evaluateJavaScript` the bridge makes into the page, so a
+    /// teardown that failed to cancel the change observer would show up as a
+    /// watcher re-run after teardown.
+    private final class EvalSpyWebView: WKWebView {
+        var evalCount = 0
+        override func evaluateJavaScript(
+            _ javaScriptString: String,
+            completionHandler: ((Any?, Error?) -> Void)? = nil
+        ) {
+            evalCount += 1
+            completionHandler?(nil, nil)
+        }
+    }
+
+    /// On invalidation the runtime coordinator must cancel its data-changed
+    /// observer and drop the WebView, so no watch callback fires after the UI is
+    /// gone. A zombie session re-running watchers after teardown is exactly the
+    /// leak this proves closed.
+    func testRuntimeTeardownCancelsWatchersSoNoCallbackFiresAfterwards() async throws {
+        let appID = String(repeating: "a", count: 64)
+        let bridge = AppBridgeController(bridge: SpyDataBridge())
+        let spy = EvalSpyWebView()
+        bridge.webView = spy // `webView` is weak; `spy` (a local let) keeps it alive.
+        let coordinator = AppRuntimeCoordinator(bridge: bridge, appIDHex: appID, entryPoint: "index.html")
+        coordinator.observeDataChanges()
+
+        // A data-changed post while live re-runs the watchers (one evaluate).
+        AppRuntimeView.postDataChanged()
+        for _ in 0..<20 where spy.evalCount == 0 { try await Task.sleep(nanoseconds: 25_000_000) }
+        XCTAssertGreaterThanOrEqual(spy.evalCount, 1, "a live runtime must re-run watchers on data change")
+
+        coordinator.tearDown(spy)
+        XCTAssertNil(bridge.webView, "teardown must drop the WebView reference")
+        let afterTeardown = spy.evalCount
+
+        // A post AFTER teardown must reach no watcher.
+        AppRuntimeView.postDataChanged()
+        try await Task.sleep(nanoseconds: 200_000_000)
+        XCTAssertEqual(
+            spy.evalCount, afterTeardown,
+            "a watch callback fired after teardown — the observer was not cancelled"
+        )
+    }
+}
+
+// MARK: - Unit 0C: end-to-end containment through the REAL bridge
+
+extension AppRuntimeHostTests {
+    /// A trusted repository with the checklist starter installed, trusted, and
+    /// its real app id — the setup the running app actually uses.
+    private func trustedRepositoryWithApp() throws -> (RiotProfileRepository, String) {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("app-runtime-revoke-\(UUID().uuidString).json")
+        let repository = try RiotProfileRepository.open(
+            storage: try ProtectedProfileStorage(fileURL: url),
+            keyStore: FixedWrappingKeyStore(),
+            starterPacks: try starterPacks()
+        )
+        _ = try repository.createPublicSpace(title: "Berlin Mutual Aid")
+        let appID = try repository.spaceApps()[0].appIDHex
+        try repository.trustApp(appID: appID)
+        return (repository, appID)
+    }
+
+    /// THE load-bearing test: drive the ACTUAL bridge the running app is handed
+    /// (`appDataBridge`), revoke trust through the repository, and prove the next
+    /// read AND commit through that same live bridge fail — i.e. the Rust
+    /// generation gate reaches the page path, not just the Rust unit test.
+    func testRevokingTrustFailsTheNextReadAndCommitThroughTheLiveBridge() throws {
+        let (repository, appID) = try trustedRepositoryWithApp()
+        let bridge = try XCTUnwrap(repository.appDataBridge(appID: appID))
+
+        try bridge.put(key: "note", valueJSON: "\"hi\"")
+        XCTAssertEqual(try bridge.get(key: "note"), "\"hi\"")
+        XCTAssertTrue(bridge.isSessionValid())
+
+        // Revoke through the repository — the SAME live bridge must now fail.
+        try repository.untrustApp(appID: appID)
+
+        XCTAssertThrowsError(
+            try bridge.get(key: "note"),
+            "a revoked app must not read through the live bridge it already holds"
+        )
+        XCTAssertThrowsError(
+            try bridge.put(key: "note2", valueJSON: "\"x\""),
+            "a revoked app must not commit through the live bridge"
+        )
+        XCTAssertFalse(
+            bridge.isSessionValid(),
+            "a revoked session reports invalid so the host routes to Return to Tools"
+        )
+
+        // And the blocked write never landed: a fresh bridge after re-approval
+        // does not see note2.
+        try repository.trustApp(appID: appID)
+        let fresh = try XCTUnwrap(repository.appDataBridge(appID: appID))
+        XCTAssertNil(try fresh.get(key: "note2"), "the revoked commit must not have reached the store")
+    }
+
+    /// §4.7: a bridge failure caused by an INVALIDATED session routes to Return to
+    /// Tools (onInvalidated fires, fixed copy), while an ordinary per-op rejection
+    /// (a malformed key on a still-valid session) does NOT — it stays inline.
+    func testInvalidatedSessionRoutesToReturnToToolsButAPerOpRejectionDoesNot() throws {
+        let (repository, appID) = try trustedRepositoryWithApp()
+        let bridge = try XCTUnwrap(repository.appDataBridge(appID: appID))
+        let controller = AppBridgeController(bridge: bridge)
+        var invalidatedFired = false
+        controller.onInvalidated = { invalidatedFired = true }
+
+        // A malformed key on a VALID session: rejected, but NOT an invalidation.
+        _ = controller.handleForTesting(body: [
+            "id": 1, "op": "put", "key": "../escape", "value": "\"x\"",
+        ])
+        XCTAssertFalse(invalidatedFired, "a per-op rejection must not route to Return to Tools")
+        XCTAssertTrue(bridge.isSessionValid())
+
+        // Now revoke; the same op class is an invalidation and MUST route.
+        try repository.untrustApp(appID: appID)
+        _ = controller.handleForTesting(body: ["id": 2, "op": "get", "key": "note"])
+        XCTAssertTrue(
+            invalidatedFired,
+            "a read that fails because the session was revoked must route to Return to Tools"
         )
     }
 }

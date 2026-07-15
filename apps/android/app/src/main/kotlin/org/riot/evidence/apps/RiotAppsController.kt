@@ -1,16 +1,23 @@
 package org.riot.evidence.apps
 
-import uniffi.riot_ffi.AppRuntimeSession
+import uniffi.riot_ffi.AppRuntimeSessionInterface
 import uniffi.riot_ffi.InstalledAppRecord
 
-/** Install/trust/launch decisions for signed JS apps in this profile. */
+/**
+ * Install/trust/launch decisions for signed JS apps in this profile.
+ *
+ * Takes the session as its INTERFACE, not the concrete UniFFI object, so the
+ * trust decisions below can be driven in JVM tests with no FFI behind them —
+ * the same shape as [DirectoryController]'s ports.
+ */
 class RiotAppsController(
-    private val session: AppRuntimeSession,
+    private val session: AppRuntimeSessionInterface,
     // Persistence hooks: fired only on live user actions so RiotController can
     // record the manifest/bundle bytes and trust decision. Left as no-ops in
     // JVM tests and during restore (see [restore], which must not re-persist).
     private val onInstalled: (appId: String, manifestBytes: ByteArray, bundleBytes: ByteArray) -> Unit = { _, _, _ -> },
     private val onTrusted: (appId: String) -> Unit = {},
+    private val onUntrusted: (appId: String) -> Unit = {},
 ) : InstalledAppsAccess {
     private val store = InstalledAppsStore()
 
@@ -51,9 +58,21 @@ class RiotAppsController(
 
     fun isTrusted(app: InstalledApp): Boolean = session.isAppTrusted(app.record.appId)
 
+    /** Whether this profile is the organizer of the current space (the trust gate). */
+    fun isOrganizer(): Boolean = session.isOrganizer()
+
     fun trust(app: InstalledApp) {
         session.trustApp(app.record.appId)
         onTrusted(app.record.appId)
+    }
+
+    /**
+     * Revokes trust in Rust and records the decision so `restore()` does not
+     * re-trust the app. Mirrors [trust]: Rust first, persistence second.
+     */
+    fun untrust(app: InstalledApp) {
+        session.untrustApp(app.record.appId)
+        onUntrusted(app.record.appId)
     }
 
     /**

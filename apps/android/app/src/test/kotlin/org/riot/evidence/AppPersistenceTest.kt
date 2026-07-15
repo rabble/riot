@@ -56,6 +56,51 @@ class AppPersistenceTest {
         assertFalse(trusted.installedApps.first { it.appId == appB }.trusted)
     }
 
+    /**
+     * The revoke has to survive a relaunch, and `restore()` re-trusts whatever
+     * the snapshot still marks trusted — so dropping the flag IS the revoke. The
+     * app stays installed: turning a tool off is not uninstalling it.
+     */
+    @Test
+    fun recordAppUntrustClearsOnlyMatchingAppAndKeepsItInstalled() {
+        val profile = base(
+            installedApps = listOf(
+                PersistedApp(appA, byteArrayOf(1), byteArrayOf(2), trusted = true),
+                PersistedApp(appB, byteArrayOf(3), byteArrayOf(4), trusted = true),
+            ),
+        )
+
+        val untrusted = recordAppUntrust(profile, appA)
+
+        assertFalse(untrusted.installedApps.first { it.appId == appA }.trusted)
+        assertTrue("a revoke of one app never touches another", untrusted.installedApps.first { it.appId == appB }.trusted)
+        assertEquals("turning a tool off is not uninstalling it", 2, untrusted.installedApps.size)
+        assertArrayEquals(byteArrayOf(2), untrusted.installedApps.first { it.appId == appA }.bundleBytes)
+    }
+
+    /** A revoke replayed onto an app nobody trusted is a no-op, not a corruption. */
+    @Test
+    fun recordAppUntrustOnAnUntrustedOrUnknownAppChangesNothing() {
+        val profile = base(
+            installedApps = listOf(PersistedApp(appA, byteArrayOf(1), byteArrayOf(2), trusted = false)),
+        )
+
+        assertEquals(profile, recordAppUntrust(profile, appA))
+        assertEquals(profile, recordAppUntrust(profile, appB))
+    }
+
+    /** Trust, revoke, and the app is exactly where it started: off, but still held. */
+    @Test
+    fun trustThenUntrustRoundTripsBackToUntrusted() {
+        val profile = base(
+            installedApps = listOf(PersistedApp(appA, byteArrayOf(1), byteArrayOf(2), trusted = false)),
+        )
+
+        val roundTripped = recordAppUntrust(recordAppTrust(profile, appA), appA)
+
+        assertEquals(profile, roundTripped)
+    }
+
     @Test
     fun recordAppDataKeepsLatestPerKey() {
         val first = recordAppData(base(), appA, "items", byteArrayOf(1))

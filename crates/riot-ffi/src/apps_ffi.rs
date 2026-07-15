@@ -77,6 +77,120 @@ pub struct AppRuntimeSession {
     pub(crate) inner: std::sync::Arc<std::sync::Mutex<crate::mobile_state::ProfileState>>,
 }
 
+/// A Rust-owned, generation-bound handle for RUNNING one trusted app (Unit 0C).
+///
+/// Unlike `AppRuntimeSession` — a stateless bridge whose `app_data_*` calls
+/// trust-gate nothing and take an arbitrary `app_id` — an `AppExecutionSession`
+/// is scoped to exactly one app and revalidates its authority on every read and
+/// commit. It is opened only for a currently-trusted app and captures the
+/// approval generation and namespace at that instant. Four ways an app can be
+/// invalidated each make the very next op fail *before* it touches data:
+///
+///   - **revoke** — trust withdrawn;
+///   - **namespace replacement** — the profile's namespace is swapped;
+///   - **explicit destruction** — the host calls `destroy`;
+///   - **stale approval-generation** — the app is re-approved, so a session
+///     opened before the re-approval fails even though trust is now TRUE.
+///
+/// This is the mechanism that lets the WebView host stop being the sole
+/// enforcement point: containment holds even if the host keeps calling.
+/// Every failure surfaces as `AppRejected` — the host's cue to tear the app
+/// down and return to a named destination (recovery-state contract §4.7).
+#[derive(uniffi::Object)]
+pub struct AppExecutionSession {
+    inner: std::sync::Arc<std::sync::Mutex<crate::mobile_state::ProfileState>>,
+    snapshot: crate::mobile_state::AppExecutionSnapshot,
+    destroyed: std::sync::atomic::AtomicBool,
+}
+
+#[uniffi::export]
+impl MobileProfile {
+    /// Open an execution session for `app_id`, which must be trusted right now.
+    /// Returns `AppRejected` if it is not — the launch gate, enforced in Rust.
+    pub fn open_app_execution(
+        &self,
+        app_id: String,
+    ) -> Result<Arc<AppExecutionSession>, MobileError> {
+        let snapshot = crate::mobile_state::app_execution_open(&self.inner, app_id)?;
+        Ok(Arc::new(AppExecutionSession {
+            inner: std::sync::Arc::clone(&self.inner),
+            snapshot,
+            destroyed: std::sync::atomic::AtomicBool::new(false),
+        }))
+    }
+}
+
+impl AppExecutionSession {
+    /// True once the host has torn this session down. Read before every op so a
+    /// destroyed session denies closed without reaching the store.
+    fn is_destroyed(&self) -> bool {
+        self.destroyed.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+#[uniffi::export]
+impl AppExecutionSession {
+    /// Read one key of this app's data, after revalidating the session.
+    pub fn app_data_get(&self, key: String) -> Result<Option<Vec<u8>>, MobileError> {
+        if self.is_destroyed() {
+            return Err(MobileError::AppRejected);
+        }
+        crate::mobile_state::app_execution_get(&self.inner, &self.snapshot, key)
+    }
+
+    /// List this app's data under `prefix`, after revalidating the session.
+    pub fn app_data_list(&self, prefix: String) -> Result<Vec<AppDataItem>, MobileError> {
+        if self.is_destroyed() {
+            return Err(MobileError::AppRejected);
+        }
+        crate::mobile_state::app_execution_list(&self.inner, &self.snapshot, prefix)
+    }
+
+    /// Commit one key of this app's data, after revalidating the session.
+    pub fn app_data_put(&self, key: String, value: Vec<u8>) -> Result<(), MobileError> {
+        self.app_data_put_with_receipt(key, value).map(|_| ())
+    }
+
+    /// `app_data_put` that also returns the signed bundle bytes it committed, for
+    /// a host that persists app data across relaunch.
+    pub fn app_data_put_with_receipt(
+        &self,
+        key: String,
+        value: Vec<u8>,
+    ) -> Result<Vec<u8>, MobileError> {
+        if self.is_destroyed() {
+            return Err(MobileError::AppRejected);
+        }
+        crate::mobile_state::app_execution_put_with_receipt(&self.inner, &self.snapshot, key, value)
+    }
+
+    /// Whether this session is still valid right now: not destroyed, and passing
+    /// the same revocation / namespace / generation revalidation the data path
+    /// runs. The native bridge calls this after an `AppRejected` from a read or
+    /// commit to tell an INVALIDATION (revoked / namespace-swapped / stale
+    /// generation → close the app to "Return to Tools", §4.7) apart from an
+    /// ordinary per-op rejection (a malformed key → inline error, stay open).
+    /// Because both surface as the same `AppRejected`, this is the disambiguator.
+    pub fn is_valid(&self) -> bool {
+        if self.is_destroyed() {
+            return false;
+        }
+        crate::mobile_state::app_execution_is_valid(&self.inner, &self.snapshot)
+    }
+
+    /// Tear this session down. Idempotent. Every subsequent read/commit fails
+    /// with `AppRejected`. The host calls this when it closes the app view or
+    /// navigates away, so no in-flight bridge call can outlive the UI.
+    ///
+    /// NOT named `destroy`: UniFFI reserves `destroy()` on every object for its
+    /// Kotlin `Disposable` handle-release, and an exported `destroy` collides
+    /// with it in the generated binding. `invalidate` is the containment verb.
+    pub fn invalidate(&self) {
+        self.destroyed
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
 #[uniffi::export]
 impl MobileProfile {
     /// The app-runtime surface for this profile. Stateless handle over the

@@ -52,13 +52,19 @@ class MainActivity : Activity() {
             controller.openAppRuntime(),
             onInstalled = controller::onAppInstalled,
             onTrusted = controller::onAppTrusted,
+            onUntrusted = controller::onAppUntrusted,
         )
         // Re-admit apps persisted across a relaunch (install + serving-decode +
         // trust) before anything reads the installed list. App data was already
         // replayed into the store by RiotController's restore.
         apps.restore(controller.installedAppsSnapshot())
         directory = DirectoryController(
-            UniffiDirectoryPort(controller.openAppRuntime()),
+            // The subspace id is read fresh on each ask, not captured: joining a
+            // space regenerates this profile's author, and a stale id would have
+            // the directory looking for the wrong person's recommendations.
+            UniffiDirectoryPort(controller.openAppRuntime()) {
+                controller.profileSession().whoami().id
+            },
             apps,
             AssetStarterCatalog(assets),
         )
@@ -207,9 +213,20 @@ class MainActivity : Activity() {
         if (apps.apps().isEmpty()) {
             content.addView(body("No tools yet. Add a signed tool to this space."))
         }
+        // Turning an app on or off is the organizer's call, so the revoke
+        // affordance is gated the same way as the approve one.
+        val canApprove = runCatching { apps.isOrganizer() }.getOrDefault(false)
         apps.apps().forEach { app ->
             if (apps.isTrusted(app)) {
                 content.addView(action("Open ${app.record.name}") { openApp(app) })
+                if (canApprove) {
+                    content.addView(action("Turn off ${app.record.name}") {
+                        runAction("Turned off ${app.record.name}") {
+                            apps.untrust(app)
+                            show(ConferenceSurface.SPACES)
+                        }
+                    })
+                }
             } else {
                 content.addView(action("${app.record.name} — New — Review") { showAppReview(app) })
             }
@@ -286,8 +303,17 @@ class MainActivity : Activity() {
 
             // Endorsement is an organizer speaking for a space that already
             // trusts the app (design spec), so Recommend only appears once the
-            // app is on in the current space.
-            if (directory.canRecommend(listing, space)) {
+            // app is on in the current space. A row this person already
+            // recommended offers the take-back instead — the two are exclusive,
+            // and the controller, not this branch, decides which.
+            if (directory.canRetract(listing)) {
+                content.addView(action("Take back recommendation") {
+                    runAction("Took back recommendation of ${listing.name}") {
+                        directory.retractRecommendation(listing)
+                        show(ConferenceSurface.APP_DIRECTORY)
+                    }
+                })
+            } else if (directory.canRecommend(listing, space)) {
                 val note = EditText(this).apply {
                     hint = "Why you recommend it (optional)"
                 }
@@ -331,16 +357,22 @@ class MainActivity : Activity() {
         runAction("Opened ${app.record.name}") {
             val gated = apps.requireTrusted(app)
             val resolver = AppResourceResolver(gated.record.appId, gated.bundle)
+            // Open the gated execution session (Unit 0C): this IS the launch gate
+            // and it captures the approval generation + namespace, so a later
+            // revoke / re-approval / namespace swap fails the running app's reads.
             val bridge = RiotJsBridge(
                 UniffiAppDataPort(
-                    controller.openAppRuntime(),
-                    gated.record.appId,
+                    controller.openAppExecution(gated.record.appId),
                     onCommitted = { key, bundle ->
                         controller.onAppDataCommitted(gated.record.appId, key, bundle)
                     },
                 ),
                 UniffiProfilePort(controller.profileSession()),
             )
+            // §4.7: if a read/commit fails because access was invalidated
+            // mid-use, close the app to its named destination rather than looping
+            // against a dead session. The bridge fires this on the JS thread.
+            bridge.onInvalidated = { runOnUiThread { closeApp() } }
             val host = AppWebViewHost(this, resolver, bridge)
             runningApp = gated to host
             content.removeAllViews()
