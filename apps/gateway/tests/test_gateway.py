@@ -289,6 +289,44 @@ class VendoredScriptTest(unittest.TestCase):
         self.assertIn('id="filter"', page)
 
 
+class SkinTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.assertIsNotNone(PublicGateway)
+        self.gateway = PublicGateway.from_file(EXPORT)
+
+    def test_ships_two_default_skins_defaulting_to_newsprint(self) -> None:
+        self.assertEqual(set(gateway_module.SKINS), {"newsprint", "zine"})
+        self.assertEqual(gateway_module.DEFAULT_SKIN, "newsprint")
+        # Default render is byte-identical to the newsprint skin: no behaviour change.
+        self.assertEqual(self.gateway.render("/site/"), self.gateway.render("/site/", "newsprint"))
+
+    def test_each_skin_bakes_a_csp_whose_style_hash_matches_its_own_stylesheet(self) -> None:
+        # The reusable invariant owner-CSS will rely on: swap the stylesheet and
+        # the pinned style-src follows, so the browser never blocks the page's
+        # own <style>. Verified per skin against the actually-shipped bytes.
+        for skin in gateway_module.SKINS:
+            with self.subTest(skin=skin):
+                page = self.gateway.render("/site/incident-board", skin)
+                styles = re.findall(r"<style>(.*?)</style>", page, re.S)
+                self.assertEqual(len(styles), 1)
+                digest = base64.b64encode(hashlib.sha256(styles[0].encode("utf-8")).digest()).decode("ascii")
+                csp = gateway_module.content_security_policy(skin)
+                self.assertIn(f"style-src 'sha256-{digest}'", csp)
+                self.assertIn(f'content="{csp}"', page)
+
+    def test_the_two_skins_are_visually_distinct_stylesheets(self) -> None:
+        self.assertNotEqual(
+            gateway_module.content_security_policy("newsprint"),
+            gateway_module.content_security_policy("zine"),
+        )
+
+    def test_unknown_skin_is_rejected(self) -> None:
+        with self.assertRaisesRegex(GatewayError, "skin"):
+            self.gateway.render("/site/", "totally_custom")
+        with self.assertRaisesRegex(GatewayError, "skin"):
+            gateway_module.content_security_policy("totally_custom")
+
+
 class StaticDumpTest(unittest.TestCase):
     def setUp(self) -> None:
         self.assertIsNotNone(dump_site, "the static dump entrypoint does not exist")
