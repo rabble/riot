@@ -643,12 +643,13 @@ pub(crate) fn list_current_entries(
             .ok_or(MobileError::InvalidInput)?
             .namespace_id;
         // Alerts only. App-data (`apps/<app_id>/...`), app-index
-        // (`app-index/<app_id>/...`), and profile (`profile/<subspace>/card`)
-        // entries share this store but are not alerts, so exclude them the same
-        // way `ensure_complete_sync_inventory` does — otherwise a single local
-        // `app_data_put` or `set_display_name`, or its replay on the next open,
-        // leaves a live non-alert entry with no match in `profile.entries` and
-        // bricks this listing with `Internal`.
+        // (`app-index/<app_id>/...`), profile (`profile/<subspace>/card`), and
+        // newswire (`newswire/v1/...`) entries share this store but are not
+        // alerts, so exclude them the same way `ensure_complete_sync_inventory`
+        // does — otherwise a single local `app_data_put`, `set_display_name`, or
+        // `create_newswire_post`, or its replay on the next open, leaves a live
+        // non-alert entry with no match in `profile.entries` and bricks this
+        // listing with `Internal`.
         let app_index_prefix =
             riot_core::willow::Path::from_slices(&[riot_core::apps::index::APP_INDEX_COMPONENT])
                 .map_err(|_| MobileError::Internal)?;
@@ -670,6 +671,7 @@ pub(crate) fn list_current_entries(
                 !riot_core::apps::entry::is_app_data_entry(entry)
                     && !app_index_ids.contains(id)
                     && !is_profile_prefixed(entry.path())
+                    && !riot_core::newswire::is_newswire_prefix(entry.path())
             })
             .map(|(id, _, _)| id)
             .collect();
@@ -1181,9 +1183,9 @@ fn inspectable_entries(
         if namespace_id != expected_namespace_id {
             return Err(MobileError::ImportRejected);
         }
-        // App and profile entries sync and commit like any other, but they are
-        // not alerts and carry no alert row. Anything else must decode AS an
-        // alert — so a payload that is not one is rejected outright.
+        // App, profile, and newswire entries sync and commit like any other, but
+        // they are not alerts and carry no alert row. Anything else must decode
+        // AS an alert — so a payload that is not one is rejected outright.
         //
         // Profile cards must be listed here explicitly. Without it a synced card
         // falls into the alert branch below, `decode_alert` fails on a
@@ -1191,7 +1193,8 @@ fn inspectable_entries(
         // mean a display name could never reach another device at all.
         let is_non_alert = riot_core::apps::entry::is_app_data_entry(&decoded_entry)
             || riot_core::apps::index::classify_app_index_path(decoded_entry.path()).is_some()
-            || is_profile_prefixed(decoded_entry.path());
+            || is_profile_prefixed(decoded_entry.path())
+            || riot_core::newswire::is_newswire_prefix(decoded_entry.path());
         let current = if is_non_alert {
             None
         } else {

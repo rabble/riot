@@ -231,4 +231,68 @@ mod tests {
         .unwrap();
         assert!(!valid);
     }
+
+    fn repo_fixture(rel: &str) -> std::path::PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../fixtures/conference")
+            .join(rel)
+    }
+
+    /// The full `run` success path against copies of the committed fixtures,
+    /// which are already in a mutually consistent signed state: every entry's
+    /// signature verifies, each entry's `verification_status` is stamped, the
+    /// stale document-level status is dropped, and the export schema is set.
+    /// The committed files are never touched — everything happens in a temp root.
+    #[test]
+    fn run_writes_per_entry_verification_status_for_consistent_fixtures() {
+        let root = std::env::temp_dir().join(format!("riot-verify-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("fixtures/conference/gateway-space")).unwrap();
+        fs::copy(
+            repo_fixture("incident-space-v1.json"),
+            root.join("fixtures/conference/incident-space-v1.json"),
+        )
+        .unwrap();
+        fs::copy(
+            repo_fixture("gateway-space/public-export-v1.json"),
+            root.join("fixtures/conference/gateway-space/public-export-v1.json"),
+        )
+        .unwrap();
+
+        run(&root).expect("verify succeeds against the consistent committed fixtures");
+
+        let export: Value = serde_json::from_str(
+            &fs::read_to_string(
+                root.join("fixtures/conference/gateway-space/public-export-v1.json"),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(export["schema"].as_str().unwrap(), EXPORT_SCHEMA);
+        assert!(
+            export.get("verification_status").is_none(),
+            "the stale document-level status is dropped"
+        );
+        let entries = export["entries"].as_array().unwrap();
+        assert!(!entries.is_empty());
+        for entry in entries {
+            assert_eq!(
+                entry["verification_status"].as_str().unwrap(),
+                VERIFICATION_STATUS_VALID,
+                "every committed entry's real signature verifies"
+            );
+        }
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// A root with no fixtures fails loudly rather than panicking.
+    #[test]
+    fn run_reports_a_missing_fixture() {
+        let root = std::env::temp_dir().join(format!("riot-verify-missing-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        assert!(run(&root).is_err());
+        let _ = fs::remove_dir_all(&root);
+    }
 }

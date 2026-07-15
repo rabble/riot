@@ -141,3 +141,94 @@ pub fn run(root: &Path) -> Result<(), String> {
     );
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::Value;
+
+    fn repo_fixture(rel: &str) -> std::path::PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../fixtures/conference")
+            .join(rel)
+    }
+
+    fn temp_root(name: &str) -> std::path::PathBuf {
+        let root = std::env::temp_dir().join(format!("riot-sign-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("fixtures/conference")).unwrap();
+        fs::copy(
+            repo_fixture("incident-space-v1.json"),
+            root.join("fixtures/conference/incident-space-v1.json"),
+        )
+        .unwrap();
+        fs::copy(
+            repo_fixture("package-manifest-v1.json"),
+            root.join("fixtures/conference/package-manifest-v1.json"),
+        )
+        .unwrap();
+        root
+    }
+
+    /// The whole success path, against a copy of the real fixtures in a temp
+    /// root (the committed files are never touched): every entry is really
+    /// signed, the illustrative placeholder is stripped, and the manifest's
+    /// namespace is stamped to match the freshly generated one.
+    #[test]
+    fn run_signs_every_entry_and_strips_the_placeholder() {
+        let root = temp_root("sign");
+        run(&root).expect("sign succeeds against the real fixtures");
+
+        let doc: Value = serde_json::from_str(
+            &fs::read_to_string(root.join("fixtures/conference/incident-space-v1.json")).unwrap(),
+        )
+        .unwrap();
+        let namespace = doc["namespace"]["id"].as_str().unwrap();
+        assert_eq!(namespace.len(), 64, "namespace id is 32 bytes of hex");
+        for author in doc["authors"].as_array().unwrap() {
+            assert_eq!(author["willow_subspace_id"].as_str().unwrap().len(), 64);
+            assert_eq!(author["nostr_pubkey"].as_str().unwrap().len(), 64);
+        }
+        for entry in doc["entries"].as_array().unwrap() {
+            assert_eq!(
+                entry["signature"].as_str().unwrap().len(),
+                128,
+                "64-byte Ed25519 signature as hex"
+            );
+            assert!(!entry["willow_entry_bytes"].as_str().unwrap().is_empty());
+            assert!(!entry["willow_capability_bytes"]
+                .as_str()
+                .unwrap()
+                .is_empty());
+            assert_eq!(entry["willow_entry_id"].as_str().unwrap().len(), 64);
+            assert!(
+                entry
+                    .get("opaque_package_shape_placeholder_not_a_signature")
+                    .is_none(),
+                "the illustrative placeholder is removed once a real signature lands"
+            );
+        }
+
+        let manifest: Value = serde_json::from_str(
+            &fs::read_to_string(root.join("fixtures/conference/package-manifest-v1.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            manifest["namespace"].as_str().unwrap(),
+            namespace,
+            "the manifest namespace is stamped to match the signed fixture"
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// A root with no fixtures in it fails loudly rather than panicking.
+    #[test]
+    fn run_reports_a_missing_fixture() {
+        let root = std::env::temp_dir().join(format!("riot-sign-missing-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        assert!(run(&root).is_err());
+        let _ = fs::remove_dir_all(&root);
+    }
+}

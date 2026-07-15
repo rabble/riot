@@ -15,7 +15,61 @@
 
   "space": {
     "title": "Riverside Tenants Union",
-    "namespace_secret_seed": "75e730b2fa9866ee898783be8abf68ba56c6c66f6f9fcaba8858a89327159efa"
+    "_comment_organizer_secret_seed": [
+      "The founding collective's subspace SECRET. Its corresponding subspace",
+      "public key IS the namespace id (organizer-shaped), so every member",
+      "derives the recognized-organizer coordinate from the space itself. The",
+      "seed was ground so that subspace key is communal (even final byte),",
+      "which a namespace id must be. Derived namespace/organizer subspace id:",
+      "1b050d1133d08c98a905977b78207d7739fff94a11939355380cf78bca88e756."
+    ],
+    "organizer_secret_seed": "7269766572736964652d74656e616e74732d756e696f6e2d6f72676100000000"
+  },
+
+  "organizer": {
+    "_comment": [
+      "The organizer signs the app Trust markers and the newswire",
+      "SpaceDescriptor. It is the space's founding authority, not a person on",
+      "the board, so it carries no profile card — it never renders as a member."
+    ],
+    "trust_at_unix": 1783029600
+  },
+
+  "newswire": {
+    "_comment": [
+      "The open newswire the demo Home reads (Units 1A/2A). The organizer signs",
+      "one SpaceDescriptorV1 naming the founding editorial roster; members write",
+      "ordinary open-wire posts. This is additive to the six alerts, which still",
+      "back the incident board and sync."
+    ],
+    "summary": "Neighbors keeping each other posted — court support, supply drops, and know-your-rights, published by the people who show up.",
+    "languages": ["en"],
+    "geographic_tags": ["riverside"],
+    "topic_tags": ["tenant-organizing", "mutual-aid"],
+    "editorial_roster": ["ana", "marcus"],
+    "descriptor_at_unix": 1782863900,
+    "posts": [
+      {
+        "author": "ana",
+        "headline": "Hearing support is holding — thank you",
+        "body": "Every seat in the gallery was filled this morning, and the judge noticed. Same plan Thursday: gather at the laundromat by 8:25, bring a folding chair if you can.",
+        "language": "en",
+        "event_time_unix": 1783108800,
+        "source_claims": ["Riverside Tenants Union"],
+        "ai_assisted": false,
+        "at_unix": 1783036800
+      },
+      {
+        "author": "marcus",
+        "headline": "Supply drop restocked — formula and sizes 4–5 back in",
+        "body": "The Elm St lot table is full again after Saturday. Take what you need, no sign-in. If you can spare a pack, leave it and we'll pass it on.",
+        "language": "en",
+        "coarse_location": "Elm St lot",
+        "source_claims": ["Riverside Tenants Union"],
+        "ai_assisted": false,
+        "at_unix": 1783044000
+      }
+    ]
   },
 
   "members": [

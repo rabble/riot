@@ -38,19 +38,25 @@ use crate::apps::bundle::{encode_app_bundle, AppBundle, AppResource};
 use crate::apps::endorse::{encode_endorsement, EndorsementMarker};
 use crate::apps::entry::app_data_path;
 use crate::apps::index::{
-    app_index_bundle_path, app_index_endorsement_path, app_index_manifest_path, verify_app_pair,
+    app_index_bundle_path, app_index_endorsement_path, app_index_manifest_path,
+    app_index_trust_path, verify_app_pair,
 };
 use crate::apps::manifest::{encode_manifest, AppManifest};
 use crate::apps::starter::{verify_starter_catalog, STARTER_CATALOG};
+use crate::apps::trust::{encode_trust_marker, TrustMarker, TrustMarkerKind};
 use crate::import::bundle::encode_bundle;
 use crate::model::{encode_alert, AlertPayload, Certainty, Severity, Urgency};
+use crate::newswire::{
+    create_signed_news_post_with_clock, create_signed_space_descriptor_with_clock,
+    inspect_news_record, NewsPostV1, SpaceDescriptorV1,
+};
 use crate::profile::card::{encode_profile_card, ProfileCard};
 use crate::profile::path::profile_card_path;
 use crate::willow::clock::snapshot_from_unix_seconds;
 use crate::willow::identity::{AuthorIdentity, EvidenceAuthor, NamespaceKind};
 use crate::willow::{
-    authorise_entry, build_alert_entry, encode_capability, encode_entry, Entry, NamespaceId, Path,
-    SignedWillowEntry,
+    authorise_entry, build_alert_entry, encode_capability, encode_entry, ClockSnapshot,
+    ClockSource, Entry, NamespaceId, Path, SignedWillowEntry, WillowError,
 };
 
 /// The committed bundle's file name inside [`demo_dir`].
@@ -90,7 +96,15 @@ pub fn build_demo_bundle_from_source() -> Result<Vec<u8>, String> {
 /// [`build_demo_bundle_from_source`] so the file read is the only I/O.
 pub fn build_demo_bundle(content: &Value) -> Result<Vec<u8>, String> {
     let space = field(content, "space")?;
-    let namespace_id = namespace_from_seed(text(space, "namespace_secret_seed")?)?;
+    // The demo space is ORGANIZER-SHAPED: its namespace id is the founding
+    // collective's own subspace public key (`organizer.subspace_id() ==
+    // namespace_id`), so every member derives the recognized-organizer
+    // coordinate from the space itself. That binding is what lets the
+    // organizer's signed Trust markers (below) reach a member as real authority
+    // — without it, the demo has no organizer and its tools can only ever be
+    // inspected, never approved or opened.
+    let organizer = organizer_from_seed(text(space, "organizer_secret_seed")?)?;
+    let namespace_id = organizer.namespace_id().clone();
 
     // Everyone who signs anything in this space, keyed by the short id the rest
     // of the content file refers to them by. A BTreeMap, not a HashMap: nothing
@@ -282,6 +296,96 @@ pub fn build_demo_bundle(content: &Value) -> Result<Vec<u8>, String> {
         )?);
     }
 
+    // --- Nine organizer Trust markers --------------------------------------
+    // The founding collective approves every tool the demo shows: the eight
+    // starter apps compiled into the binary, plus Shift Signup. Each marker
+    // sits at the organizer's own trust coordinate
+    // (`app-index/<app_id>/trust/<organizer_subspace>`) and is signed by the
+    // organizer, so a member reading the space evaluates `is_trusted == true`
+    // and can OPEN each tool instead of hitting a Review gate no member can
+    // pass. This is authority carried by a signed marker — never a bypass.
+    let organizer_obj = field(content, "organizer")?;
+    let trust_at = willow_micros(number(organizer_obj, "trust_at_unix")?)?;
+    let mut trusted_app_ids: Vec<[u8; 32]> = verify_starter_catalog(STARTER_CATALOG)
+        .iter()
+        .map(|indexed| indexed.app_id)
+        .collect();
+    trusted_app_ids.push(app_id); // Shift Signup, content-derived above.
+    for trusted in &trusted_app_ids {
+        let marker = TrustMarker {
+            app_id: *trusted,
+            author_subspace_id: *organizer.subspace_id().as_bytes(),
+            kind: TrustMarkerKind::Trust,
+            timestamp_micros: trust_at,
+        };
+        let payload =
+            encode_trust_marker(&marker).map_err(|e| format!("encode trust marker: {e}"))?;
+        let path = app_index_trust_path(trusted, organizer.subspace_id().as_bytes())
+            .map_err(|e| format!("trust path: {e}"))?;
+        entries.push(sign_at(&organizer, &path, &payload, trust_at)?);
+    }
+
+    // --- Newswire: one signed SpaceDescriptor + a few human posts -----------
+    // The demo's Home is the open newswire (Units 1A/2A). Only an
+    // organizer-shaped author may sign a `SpaceDescriptorV1` — the same binding
+    // established above — and it names the founding editorial roster. The posts
+    // are ordinary members writing to the open wire: any member of the namespace
+    // may post (editorial ACTIONS, not posts, are what the roster gates).
+    let newswire = field(content, "newswire")?;
+    let roster: Vec<[u8; 32]> = list(newswire, "editorial_roster")?
+        .iter()
+        .map(|value| {
+            let id = value.as_str().ok_or_else(|| {
+                "content.json: every 'editorial_roster' item must be a string".to_string()
+            })?;
+            Ok(*person(&people, id)?.subspace_id().as_bytes())
+        })
+        .collect::<Result<_, String>>()?;
+    let descriptor = SpaceDescriptorV1 {
+        namespace_id: *namespace_id.as_bytes(),
+        name: text(space, "title")?.to_string(),
+        summary: text(newswire, "summary")?.to_string(),
+        languages: strings(newswire, "languages")?,
+        geographic_tags: strings(newswire, "geographic_tags")?,
+        topic_tags: strings(newswire, "topic_tags")?,
+        editorial_roster: roster,
+        predecessor: None,
+        successor: None,
+    };
+    let descriptor_record = create_signed_space_descriptor_with_clock(
+        &organizer,
+        &fixed_clock(number(newswire, "descriptor_at_unix")?)?,
+        descriptor,
+    )
+    .map_err(|e| format!("sign space descriptor: {e:?}"))?;
+    let verified_descriptor = inspect_news_record(&descriptor_record.signed)
+        .map_err(|e| format!("inspect space descriptor: {e:?}"))?;
+    entries.push(descriptor_record.signed);
+
+    for post in list(newswire, "posts")? {
+        let author = person(&people, text(post, "author")?)?;
+        let news = NewsPostV1 {
+            space_descriptor_entry_id: verified_descriptor.entry_id(),
+            headline: text(post, "headline")?.to_string(),
+            body: text(post, "body")?.to_string(),
+            language: text(post, "language")?.to_string(),
+            event_time_unix_seconds: optional_number(post, "event_time_unix")?,
+            expires_at_unix_seconds: optional_number(post, "expires_at_unix")?,
+            coarse_location: optional_text(post, "coarse_location")?,
+            source_claims: strings(post, "source_claims")?,
+            operational_profile: None,
+            ai_assisted: boolean(post, "ai_assisted")?,
+        };
+        let record = create_signed_news_post_with_clock(
+            author,
+            &verified_descriptor,
+            &fixed_clock(number(post, "at_unix")?)?,
+            news,
+        )
+        .map_err(|e| format!("sign news post: {e:?}"))?;
+        entries.push(record.signed);
+    }
+
     encode_bundle(&entries).map_err(|e| format!("encode RIOTE1 bundle: {e:?}"))
 }
 
@@ -310,17 +414,43 @@ fn checklist_app_id(pinned_hex: &str) -> Result<[u8; 32], String> {
 // Deterministic identities.
 // ---------------------------------------------------------------------------
 
-/// The demo namespace, derived from a fixed seed. A namespace id must be
-/// communal (even final byte); the seed in `content.json` was chosen so it is.
-fn namespace_from_seed(seed_hex: &str) -> Result<NamespaceId, String> {
+/// The demo's organizer identity, derived from a fixed seed so the whole space
+/// is byte-reproducible. Organizer-shaped means the author's SUBSPACE public key
+/// is reused as the namespace id (`subspace_id() == namespace_id`), exactly as
+/// `generate_space_organizer_author` does at runtime — the only difference is
+/// that the key comes from a committed seed instead of the OS RNG. The seed in
+/// `content.json` was ground so that subspace key is communal (even final byte),
+/// which a namespace id must be; if a future edit breaks that, this fails loudly
+/// with the offending seed rather than emitting a space no member can read.
+fn organizer_from_seed(seed_hex: &str) -> Result<EvidenceAuthor, String> {
     let seed = hex32(seed_hex)?;
-    let namespace_id = NamespaceSecret::from_bytes(&seed).corresponding_namespace_id();
+    let subspace_secret = SubspaceSecret::from_bytes(&seed);
+    let namespace_id =
+        NamespaceId::from_bytes(subspace_secret.corresponding_subspace_id().as_bytes());
     if !namespace_id.is_communal() {
         return Err(format!(
-            "namespace_secret_seed {seed_hex} derives a non-communal namespace id; pick another"
+            "organizer_secret_seed {seed_hex} derives a non-communal subspace id; pick another"
         ));
     }
-    Ok(namespace_id)
+    Ok(EvidenceAuthor::from_parts_for_tests(namespace_id, &seed))
+}
+
+/// A [`ClockSource`] pinned to one fixed instant, so the conformance newswire
+/// factories sign at a committed timestamp instead of reading the wall clock —
+/// the same determinism `willow_micros` gives the alert entries.
+struct FixedClock(ClockSnapshot);
+
+impl ClockSource for FixedClock {
+    fn snapshot(&self) -> Result<ClockSnapshot, WillowError> {
+        Ok(self.0)
+    }
+}
+
+fn fixed_clock(unix_seconds: u64) -> Result<FixedClock, String> {
+    let seconds = i64::try_from(unix_seconds).map_err(|_| "timestamp out of range".to_string())?;
+    let snapshot =
+        snapshot_from_unix_seconds(seconds, 0).map_err(|e| format!("clock {unix_seconds}: {e}"))?;
+    Ok(FixedClock(snapshot))
 }
 
 fn author_from_seed(namespace_id: &NamespaceId, seed_hex: &str) -> Result<EvidenceAuthor, String> {
@@ -421,6 +551,29 @@ fn boolean(value: &Value, key: &str) -> Result<bool, String> {
         .ok_or_else(|| format!("content.json: '{key}' must be a boolean"))
 }
 
+/// A newswire post's optional numeric fields (event time, expiry). Absent is a
+/// legitimate value here, unlike [`number`]; a present-but-wrong-typed value
+/// still fails loudly by key.
+fn optional_number(value: &Value, key: &str) -> Result<Option<u64>, String> {
+    match value.get(key) {
+        None => Ok(None),
+        Some(item) => item
+            .as_u64()
+            .map(Some)
+            .ok_or_else(|| format!("content.json: '{key}' must be a non-negative integer")),
+    }
+}
+
+fn optional_text(value: &Value, key: &str) -> Result<Option<String>, String> {
+    match value.get(key) {
+        None => Ok(None),
+        Some(item) => item
+            .as_str()
+            .map(|text| Some(text.to_string()))
+            .ok_or_else(|| format!("content.json: '{key}' must be a string")),
+    }
+}
+
 fn strings(value: &Value, key: &str) -> Result<Vec<String>, String> {
     list(value, key)?
         .iter()
@@ -511,4 +664,65 @@ pub(crate) fn to_hex(bytes: &[u8]) -> String {
         out.push(HEX[(b & 0x0f) as usize] as char);
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn optional_accessors_accept_absent_and_reject_wrong_types() {
+        let present = json!({ "n": 5u64, "t": "hi" });
+        assert_eq!(optional_number(&present, "n").unwrap(), Some(5));
+        assert_eq!(optional_number(&present, "missing").unwrap(), None);
+        assert_eq!(
+            optional_text(&present, "t").unwrap(),
+            Some("hi".to_string())
+        );
+        assert_eq!(optional_text(&present, "missing").unwrap(), None);
+
+        let wrong = json!({ "n": "not a number", "t": 5u64 });
+        assert!(optional_number(&wrong, "n").is_err());
+        assert!(optional_text(&wrong, "t").is_err());
+    }
+
+    #[test]
+    fn organizer_from_seed_is_organizer_shaped_and_rejects_a_non_communal_subspace() {
+        // The committed seed is organizer-shaped: its subspace public key IS the
+        // namespace id, and that key is communal.
+        let organizer =
+            organizer_from_seed("7269766572736964652d74656e616e74732d756e696f6e2d6f72676100000000")
+                .expect("the committed organizer seed is valid");
+        assert_eq!(
+            organizer.subspace_id().as_bytes(),
+            organizer.namespace_id().as_bytes(),
+            "organizer-shaped means subspace id == namespace id"
+        );
+        assert!(organizer.namespace_id().is_communal());
+
+        // Grind the opposite so the guard's error arm is exercised, not merely
+        // asserted about: a seed whose subspace public key is non-communal
+        // (odd final byte) must be refused.
+        let mut seed = [0x11u8; 32];
+        let bad = (0u32..100_000)
+            .find_map(|n| {
+                seed[28..32].copy_from_slice(&n.to_be_bytes());
+                let subspace_id = SubspaceSecret::from_bytes(&seed).corresponding_subspace_id();
+                (subspace_id.as_bytes()[31] % 2 == 1).then_some(seed)
+            })
+            .expect("a non-communal subspace seed exists");
+        match organizer_from_seed(&to_hex(&bad)) {
+            Err(error) => assert!(error.contains("non-communal"), "got: {error}"),
+            Ok(_) => panic!("a non-communal subspace seed must be refused"),
+        }
+    }
+
+    #[test]
+    fn fixed_clock_reads_a_committed_instant() {
+        let clock = fixed_clock(1_782_863_900).expect("a valid instant");
+        let snapshot = clock.snapshot().expect("snapshot");
+        assert_eq!(snapshot.unix_seconds, 1_782_863_900);
+        assert_eq!(snapshot.uncertainty_seconds, 0);
+    }
 }

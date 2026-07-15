@@ -672,6 +672,105 @@ fn install_returns_a_deterministic_app_id_and_rejects_garbage() {
 }
 
 #[test]
+fn only_the_recognized_organizer_grants_app_authority() {
+    // The demo (Unit 0B) makes tools openable by shipping the ORGANIZER's
+    // signed Trust markers in the space, not by a bypass. This pins the other
+    // half of that guarantee: a Trust marker signed by anyone who is NOT the
+    // recognized organizer is admitted as a well-formed entry but grants no
+    // authority. Only the organizer coordinate (subspace == namespace) counts.
+    use riot_core::apps::index::app_index_trust_path;
+    use riot_core::apps::trust::{encode_trust_marker, TrustMarker, TrustMarkerKind};
+    use riot_core::willow::generate_communal_author_for_namespace;
+
+    // A locally opened profile is organizer-shaped, so it is the recognized
+    // organizer of its own space.
+    let profile = open_local_profile().expect("profile");
+    profile
+        .create_public_space("Authority".into())
+        .expect("space");
+    let runtime = profile.app_runtime();
+
+    let starter =
+        riot_core::apps::starter::verify_starter_catalog(riot_core::apps::starter::STARTER_CATALOG)
+            .pop()
+            .expect("starter");
+    let app_id_hex: String = starter.app_id.iter().map(|b| format!("{b:02x}")).collect();
+    assert!(!runtime
+        .is_app_trusted(app_id_hex.clone())
+        .expect("starts untrusted"));
+
+    // A member of the same space — a fresh subspace, which is NOT the namespace
+    // coordinate — signs a Trust marker for the app at its own trust slot. The
+    // slot is well formed and ownership binds (signer == the slot's subspace),
+    // so import admits it. It must still grant nothing.
+    let namespace_id: [u8; 32] = unhex(&profile.identity().expect("identity").namespace_id)
+        .try_into()
+        .expect("namespace id");
+    let member = generate_communal_author_for_namespace(namespace_id).expect("member");
+    assert_ne!(
+        *member.subspace_id().as_bytes(),
+        namespace_id,
+        "the member is deliberately not the organizer coordinate"
+    );
+    let marker = TrustMarker {
+        app_id: starter.app_id,
+        author_subspace_id: *member.subspace_id().as_bytes(),
+        kind: TrustMarkerKind::Trust,
+        timestamp_micros: 0,
+    };
+    let payload = encode_trust_marker(&marker).expect("encode marker");
+    let path =
+        app_index_trust_path(&starter.app_id, member.subspace_id().as_bytes()).expect("trust path");
+    let bundle = signed_bundle_at(&member, path, &payload);
+    let preview = profile
+        .inspect_bytes(bundle, "nearby".into())
+        .expect("inspect");
+    preview
+        .create_plan(Vec::new())
+        .expect("plan")
+        .accept()
+        .expect("accept");
+
+    // The member's marker is now live in the store, yet the app is still
+    // untrusted: only the recognized organizer's decision carries authority.
+    assert!(
+        !runtime
+            .is_app_trusted(app_id_hex.clone())
+            .expect("member marker ignored"),
+        "a non-organizer's Trust marker grants no authority — no bypass"
+    );
+
+    // Airtight no-bypass: a marker forged AT the organizer's own coordinate but
+    // signed by someone else is REFUSED at import. Authority follows the
+    // organizer's verified signature, never mere presence at the coordinate —
+    // this is exactly what separates "deterministic admission" from a bypass.
+    let spoof_path =
+        app_index_trust_path(&starter.app_id, &namespace_id).expect("organizer coordinate path");
+    let spoof = signed_bundle_at(&member, spoof_path, &payload);
+    assert!(
+        matches!(
+            profile.inspect_bytes(spoof, "nearby".into()),
+            Err(MobileError::ImportRejected)
+        ),
+        "a Trust marker at the organizer coordinate signed by a non-organizer is refused at import"
+    );
+    assert!(
+        !runtime
+            .is_app_trusted(app_id_hex.clone())
+            .expect("spoof granted nothing"),
+        "a forged organizer-coordinate marker never reaches the store, so it grants nothing"
+    );
+
+    // The organizer's own decision does grant it — real, verified authority.
+    runtime
+        .trust_app(app_id_hex.clone())
+        .expect("organizer trusts");
+    assert!(runtime
+        .is_app_trusted(app_id_hex)
+        .expect("organizer marker honored"));
+}
+
+#[test]
 fn trust_lifecycle_is_lww_per_app() {
     let profile = open_local_profile().expect("profile");
     let runtime = profile.app_runtime();

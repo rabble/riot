@@ -9,15 +9,27 @@
 //!    anywhere, so if a peer's bundle would be admitted, so is this one — and if
 //!    the demo would be empty on stage, this test is red first.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use riot_core::apps::directory::{assemble_directory, DirectoryInputs};
 use riot_core::apps::index::scan_app_index;
 use riot_core::apps::starter::{verify_starter_catalog, STARTER_CATALOG};
+use riot_core::apps::trust::{is_trusted, TrustMarkerKind};
 use riot_core::demo_fixture::{build_demo_bundle_from_source, demo_bundle_path};
+use riot_core::newswire::{
+    classify_newswire_path, decode_news_post, decode_space_descriptor, NewswirePathKind,
+};
 use riot_core::profile::resolver::{render_display_name, resolve_display_names};
 use riot_core::session::{ImportContext, RiotSession};
 use riot_core::willow::{Path, ALERT_COMPONENT, OBJECTS_COMPONENT};
+use willow25::groupings::Keylike;
+
+/// The committed organizer-shaped namespace id: the founding collective's own
+/// subspace public key, reused as the space's namespace id. Ground for
+/// communality in `content.json`; pinned here so a silent reseed is a loud
+/// failure rather than a demo that quietly loses its organizer.
+const ORGANIZER_COORDINATE_HEX: &str =
+    "1b050d1133d08c98a905977b78207d7739fff94a11939355380cf78bca88e756";
 
 #[test]
 fn committed_demo_bundle_equals_a_fresh_deterministic_rebuild() {
@@ -152,6 +164,115 @@ fn the_demo_bundle_imports_cleanly_and_yields_the_expected_shape() {
             .starts_with("Ana · a3f9"),
         "the demo script reads Ana's tag out loud as a3f9"
     );
+
+    // --- Beat 5: the organizer coordinate and its nine Trust markers --------
+    // The space is organizer-shaped: its namespace id IS the founding
+    // collective's own subspace key, so the recognized-organizer coordinate is
+    // derivable from the space itself. The organizer has signed a Trust marker
+    // for every tool the demo shows. Without these markers a member could
+    // inspect the tools but never open them — the bug this unit fixes.
+    assert_eq!(
+        scanned.spaces.len(),
+        1,
+        "the demo is one communal space with one organizer"
+    );
+    let space_trust = &scanned.spaces[0];
+    let organizer_coordinate = space_trust.space_namespace_id;
+    let organizer_hex: String = organizer_coordinate
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    assert_eq!(
+        organizer_hex, ORGANIZER_COORDINATE_HEX,
+        "the recognized-organizer coordinate is the committed organizer-shaped namespace id"
+    );
+
+    assert_eq!(
+        space_trust.markers.len(),
+        9,
+        "eight starter apps plus Shift Signup are organizer-trusted"
+    );
+    for marker in &space_trust.markers {
+        assert_eq!(
+            marker.author_subspace_id, organizer_coordinate,
+            "every Trust marker sits at the recognized-organizer coordinate (subspace == namespace)"
+        );
+        assert_eq!(
+            marker.kind,
+            TrustMarkerKind::Trust,
+            "the demo approves its tools, it never revokes"
+        );
+    }
+
+    // The organizer's markers grant authority; a coordinate that is not the
+    // recognized organizer grants nothing — the admission verifies, it never
+    // shortcuts.
+    let starter_ids: BTreeSet<[u8; 32]> = verify_starter_catalog(STARTER_CATALOG)
+        .iter()
+        .map(|indexed| indexed.app_id)
+        .collect();
+    let marker_ids: BTreeSet<[u8; 32]> = space_trust.markers.iter().map(|m| m.app_id).collect();
+    assert!(
+        starter_ids.is_subset(&marker_ids),
+        "every starter app the Tools surface shows is organizer-trusted"
+    );
+    assert_eq!(
+        marker_ids.difference(&starter_ids).count(),
+        1,
+        "the ninth trusted app is the demo's own Shift Signup"
+    );
+    for app_id in &marker_ids {
+        assert!(
+            is_trusted(app_id, &space_trust.markers, &[organizer_coordinate]),
+            "the organizer's marker makes the tool openable for every member"
+        );
+        assert!(
+            !is_trusted(app_id, &space_trust.markers, &[[0x77; 32]]),
+            "authority is honored only from the recognized organizer, never anyone else"
+        );
+    }
+
+    // --- Beat 6: the open newswire — one signed descriptor, two posts -------
+    // Home reads the newswire. Only an organizer-shaped author may sign the
+    // SpaceDescriptor; it pins the descriptor path family and this namespace,
+    // and names the founding editorial roster. Members write ordinary open-wire
+    // posts beneath it. This is additive to the six alerts above.
+    let newswire_entries = store
+        .entries_with_prefix(&Path::from_slices(&[b"newswire", b"v1"]).unwrap())
+        .expect("newswire entries");
+    let mut descriptor_paths = 0usize;
+    let mut post_paths = 0usize;
+    for (_, entry, payload) in &newswire_entries {
+        let payload = payload.as_ref().expect("newswire payloads are retained");
+        match classify_newswire_path(entry.path()) {
+            Some((NewswirePathKind::Descriptor, _, _)) => {
+                descriptor_paths += 1;
+                let descriptor =
+                    decode_space_descriptor(payload).expect("the descriptor payload decodes");
+                assert_eq!(
+                    descriptor.namespace_id, organizer_coordinate,
+                    "the descriptor names this space's namespace"
+                );
+                assert_eq!(
+                    *entry.subspace_id().as_bytes(),
+                    organizer_coordinate,
+                    "only the organizer signs the SpaceDescriptor"
+                );
+                assert_eq!(
+                    descriptor.editorial_roster.len(),
+                    2,
+                    "a real founding editorial roster of two editors"
+                );
+            }
+            Some((NewswirePathKind::Post { .. }, _, _)) => {
+                post_paths += 1;
+                decode_news_post(payload).expect("the post payload decodes");
+            }
+            other => panic!("unexpected newswire path shape: {other:?}"),
+        }
+    }
+    assert_eq!(descriptor_paths, 1, "exactly one signed SpaceDescriptor");
+    assert_eq!(post_paths, 2, "two open-wire posts under it");
 }
 
 fn subspace_from_hex(hex: &str) -> [u8; 32] {
