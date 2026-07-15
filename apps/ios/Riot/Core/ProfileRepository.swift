@@ -559,28 +559,38 @@ public final class RiotProfileRepository {
     /// for an app that is trusted in the current profile.
     public func appDataBridge(appID: String) -> AppDataBridging? {
         guard installedApp(appID: appID) != nil else { return nil }
-        guard (try? appRuntime.isAppTrusted(appId: appID)) == true else { return nil }
-        // Route the bridge's writes through `appDataPut` so every put from the
-        // page is committed with a receipt and persisted for replay on the next
-        // open; reads/list/name still go straight to the session.
+        // Opening the gated execution session IS the trust gate — Rust refuses an
+        // untrusted app (Unit 0C) — and it captures the approval generation +
+        // namespace, so a later revoke / re-approval / namespace swap fails the
+        // running app's next read or commit BEFORE it touches data. The bridge
+        // performs its write through this session and hands back the committed
+        // bytes to persist for replay; reads/list go straight through it too.
+        guard let execution = try? profile.openAppExecution(appId: appID) else { return nil }
         return AppRuntimeDataBridge(
-            session: appRuntime,
-            profiles: profile.profile(),
-            appIDHex: appID
-        ) { [weak self] key, valueJSON in
-            try self?.appDataPut(appID: appID, key: key, valueJSON: valueJSON)
+            execution: execution,
+            profiles: profile.profile()
+        ) { [weak self] _, bundleBytes in
+            try self?.persistAppDataBundle(bundleBytes)
         }
     }
 
-    /// Commits an app-data write with a receipt and persists the returned signed
-    /// bundle so the value survives a process restart (replayed on `open`). This
-    /// is the single write path; the WebView bridge delegates here.
+    /// Persists a committed app-data bundle (the receipt from the gated write) so
+    /// the value survives a process restart (replayed on `open`). A durable-write
+    /// failure propagates so the page hears "couldn't save".
+    public func persistAppDataBundle(_ bundleBytes: Data) throws {
+        persisted.appDataBundles.append(bundleBytes)
+        try storage.save(persisted)
+    }
+
+    /// Host-side convenience write (not the page path): commits with a receipt
+    /// and persists it. The security-critical page path goes through the gated
+    /// `AppExecutionSession` in `appDataBridge`; this direct method is used by the
+    /// host and tests to seed/inspect an app's data.
     public func appDataPut(appID: String, key: String, valueJSON: String) throws {
         let receipt = try appRuntime.appDataPutWithReceipt(
             appId: appID, key: key, value: Data(valueJSON.utf8)
         )
-        persisted.appDataBundles.append(receipt)
-        try storage.save(persisted)
+        try persistAppDataBundle(receipt)
     }
 
     /// Reads an app-data value as the JSON text the page stored, or nil if the

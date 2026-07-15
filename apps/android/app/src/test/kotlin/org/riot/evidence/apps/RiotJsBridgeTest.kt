@@ -7,13 +7,25 @@ import org.junit.Test
 private class FakeAppDataPort : AppDataPort {
     val stored = mutableMapOf<String, ByteArray>()
     var failNext: Boolean = false
+    // Unit 0C: drive the §4.7 branch. `valid` is what the port reports for
+    // `isValid()`; `failReads` makes get/list throw like a revoked read would.
+    var valid: Boolean = true
+    var failReads: Boolean = false
+    var destroyed: Boolean = false
     override fun put(key: String, value: ByteArray) {
         if (failNext) throw IllegalStateException("boom")
         stored[key] = value
     }
-    override fun get(key: String): ByteArray? = stored[key]
-    override fun list(prefix: String): List<Pair<String, ByteArray>> =
-        stored.filterKeys { it.startsWith(prefix) }.map { it.key to it.value }.sortedBy { it.first }
+    override fun get(key: String): ByteArray? {
+        if (failReads) throw IllegalStateException("boom")
+        return stored[key]
+    }
+    override fun list(prefix: String): List<Pair<String, ByteArray>> {
+        if (failReads) throw IllegalStateException("boom")
+        return stored.filterKeys { it.startsWith(prefix) }.map { it.key to it.value }.sortedBy { it.first }
+    }
+    override fun destroy() { destroyed = true }
+    override fun isValid(): Boolean = valid
 }
 
 /**
@@ -130,5 +142,39 @@ class RiotJsBridgeTest {
         assertEquals("""{"ok":false,"error":"Couldn't load that"}""", bridge.riotProfile("not-hex"))
         assertEquals("""{"ok":false,"error":"Couldn't load that"}""", bridge.riotProfile("abcd"))
         assertEquals("""{"ok":false,"error":"Couldn't load that"}""", bridge.riotProfile(null))
+    }
+
+    // Unit 0C — §4.7: an invalidated-session failure routes to Return to Tools;
+    // an ordinary per-op failure stays inline.
+
+    @Test
+    fun anInvalidatedSessionFailureRoutesToReturnToTools() {
+        var invalidated = false
+        bridge.onInvalidated = { invalidated = true }
+        port.failReads = true
+        port.valid = false // the session was revoked out from under the app
+
+        val result = bridge.riotGet("items/x")
+        assertEquals("""{"ok":false,"error":"${RiotJsBridge.REVOKED_MESSAGE}"}""", result)
+        assertTrue("an invalidated session must route to Return to Tools", invalidated)
+    }
+
+    @Test
+    fun aPerOpFailureOnAValidSessionStaysInlineAndDoesNotRoute() {
+        var invalidated = false
+        bridge.onInvalidated = { invalidated = true }
+        port.failNext = true
+        port.valid = true // the session is fine; this write just failed
+
+        val result = bridge.riotPut("items/x", "{}")
+        assertEquals("""{"ok":false,"error":"Couldn't save that — try again"}""", result)
+        assertTrue("a per-op failure must not route to Return to Tools", !invalidated)
+    }
+
+    @Test
+    fun teardownDestroysTheUnderlyingSession() {
+        assertTrue(!port.destroyed)
+        bridge.teardown()
+        assertTrue("teardown must destroy the execution session", port.destroyed)
     }
 }

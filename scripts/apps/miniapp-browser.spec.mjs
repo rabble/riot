@@ -1,4 +1,4 @@
-import { realpathSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
 import { createRequire } from "node:module";
 
 // Run with the exact command recorded in playwright.config.mjs. Anchoring a
@@ -733,4 +733,76 @@ test("Wiki and Photo Wall refresh author profiles after shared data changes", as
     return riot.put("photos/10-existing", { caption: "Courtyard tables ready for supper", data_url: "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==", created_at: 22, author_id: "a".repeat(64) });
   });
   await expect(page.locator(".photo .meta")).toContainText("Alex Morgan");
+});
+
+// ===========================================================================
+// Unit 0C — hostile-page containment (browser layer).
+//
+// The load-bearing "CSP stripped, zero egress" proof lives in the NATIVE tests
+// (iOS AppRuntimeHostTests, Android) because only the real WKWebView /
+// android.webkit.WebView carry the independent network backstop (WKContentRuleList
+// / blockNetworkLoads) — Chromium cannot exercise those. What this browser layer
+// CAN prove, and does here, is complementary and still worth pinning:
+//   1. the shared hostile fixture actually FIRES every enumerated vector without
+//      the runner throwing (so the native tests are exercising a real attacker);
+//   2. under a blanket egress-abort policy — the same "block everything at the
+//      resource-load layer" posture the native content-rule-list takes — no
+//      HTTP(S) resource-load vector reaches the sentinel origin.
+// WebSocket and WebRTC are deliberately NOT asserted here: page.route does not
+// intercept them, which mirrors the native reality that they need their own
+// mechanisms (documented in the 0C report), not the resource-load backstop.
+// ===========================================================================
+const hostileFixture = readFileSync(
+  new URL("./fixtures/hostile-egress.html", import.meta.url),
+  "utf8",
+);
+
+test("hostile page with CSP stripped reaches no sentinel origin under an egress block", async ({ page }) => {
+  const sentinelHost = "sentinel.riot.invalid";
+  const reachedSentinel = [];
+  const blocked = [];
+
+  // The backstop posture: abort every request bound for the sentinel origin.
+  await page.route("**/*", (route) => {
+    let hostname = "";
+    try {
+      hostname = new URL(route.request().url()).hostname;
+    } catch {
+      hostname = "";
+    }
+    if (hostname === sentinelHost) {
+      blocked.push(route.request().url());
+      return route.abort();
+    }
+    return route.continue();
+  });
+  page.on("response", (response) => {
+    try {
+      if (new URL(response.url()).hostname === sentinelHost) {
+        reachedSentinel.push(response.url());
+      }
+    } catch {
+      /* ignore un-parseable */
+    }
+  });
+
+  await page.setContent(hostileFixture, { waitUntil: "domcontentloaded" });
+  const vectorCount = await page.evaluate(() => window.__RIOT_EGRESS_VECTORS.length);
+  // Skip the top-level-navigation vectors here: a real cross-origin navigation
+  // destroys Playwright's execution context. Those are proven natively by the
+  // navigation lock (testNavigationLockAllowsOnlyRiotAppScheme). This layer is
+  // the resource-load egress proof.
+  const report = await page.evaluate(
+    (target) => window.__attemptEgress(target, {
+      skip: ["location-assign", "location-replace", "window-open"],
+    }),
+    `http://${sentinelHost}/exfil`,
+  );
+
+  // The fixture fired every enumerated vector without the runner throwing out.
+  expect(report.length).toBe(vectorCount);
+  // The blanket egress block actually engaged for the resource-load vectors...
+  expect(blocked.length).toBeGreaterThan(0);
+  // ...and NOTHING reached the sentinel origin.
+  expect(reachedSentinel).toEqual([]);
 });

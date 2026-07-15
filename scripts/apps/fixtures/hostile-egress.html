@@ -1,0 +1,219 @@
+<!doctype html>
+<!--
+  Unit 0C — hostile-page exfiltration fixture (SECURITY-CRITICAL).
+
+  This page is the ATTACKER. It carries NO Content-Security-Policy on purpose:
+  an attacker who controls the page can strip the CSP the runtime tries to serve,
+  so every containment claim in Unit 0C must hold with this page's CSP absent.
+  If containment depended on CSP, this fixture would walk right through it.
+
+  The page exposes `window.__attemptEgress(target)` which fires EVERY known
+  browser exfiltration/escape vector at `target` and resolves with a per-vector
+  report. It does not — and cannot — decide for itself whether a vector was
+  blocked: the only trustworthy oracle is a network sentinel that counts inbound
+  connections. The host test points `target` at a local sentinel and asserts the
+  sentinel received ZERO connections. That is a test that FAILS the moment the
+  independent network backstop (WKContentRuleList on iOS, blockNetworkLoads on
+  Android) is removed — CSP alone, stripped here, would let these through.
+
+  `window.__RIOT_EGRESS_VECTORS` is the canonical vector list, asserted complete
+  by scripts/apps/test/hostile-egress-fixture.test.mjs so the enumeration cannot
+  silently lose a vector.
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>hostile egress fixture</title>
+</head>
+<body>
+<h1>hostile</h1>
+<script>
+"use strict";
+
+// The complete set of egress/escape vectors this fixture exercises. Kept as a
+// frozen, self-describing list so a unit test can assert none was dropped.
+const VECTORS = Object.freeze([
+  "fetch",
+  "xhr",
+  "websocket",
+  "eventsource",
+  "sendbeacon",
+  "img",
+  "script",
+  "stylesheet-link",
+  "iframe",
+  "form-action",
+  "window-open",
+  "location-assign",
+  "location-replace",
+  "webrtc",
+  "css-url",
+  "dns-prefetch",
+  "preconnect",
+  "favicon",
+]);
+window.__RIOT_EGRESS_VECTORS = VECTORS;
+
+function toWs(target) {
+  return target.replace(/^http/, "ws");
+}
+
+// Each attempt is best-effort and MUST NOT throw out of the runner: a vector
+// that throws synchronously (e.g. a blocked constructor) is still "attempted".
+// The report records that we fired it; the sentinel decides if anything escaped.
+async function runVector(name, target) {
+  const record = { vector: name, fired: true, threw: false, note: "" };
+  try {
+    switch (name) {
+      case "fetch":
+        await fetch(target, { mode: "no-cors" }).catch(() => {});
+        break;
+      case "xhr": {
+        const xhr = new XMLHttpRequest();
+        xhr.open("GET", target, true);
+        xhr.send();
+        break;
+      }
+      case "websocket":
+        // eslint-disable-next-line no-new
+        new WebSocket(toWs(target));
+        break;
+      case "eventsource":
+        // eslint-disable-next-line no-new
+        new EventSource(target);
+        break;
+      case "sendbeacon":
+        record.note = String(navigator.sendBeacon ? navigator.sendBeacon(target, "x") : "unsupported");
+        break;
+      case "img": {
+        const img = document.createElement("img");
+        img.src = target + "?img";
+        document.body.appendChild(img);
+        break;
+      }
+      case "script": {
+        const s = document.createElement("script");
+        s.src = target + "?script";
+        document.body.appendChild(s);
+        break;
+      }
+      case "stylesheet-link": {
+        const link = document.createElement("link");
+        link.rel = "stylesheet";
+        link.href = target + "?css";
+        document.head.appendChild(link);
+        break;
+      }
+      case "iframe": {
+        const frame = document.createElement("iframe");
+        frame.src = target + "?iframe";
+        document.body.appendChild(frame);
+        break;
+      }
+      case "form-action": {
+        const form = document.createElement("form");
+        form.action = target;
+        form.method = "POST";
+        // A hidden iframe target keeps the submit from navigating the top frame.
+        const sink = document.createElement("iframe");
+        sink.name = "riot-form-sink";
+        sink.style.display = "none";
+        document.body.appendChild(sink);
+        form.target = "riot-form-sink";
+        document.body.appendChild(form);
+        form.submit();
+        break;
+      }
+      case "window-open":
+        window.open(target + "?open", "_blank");
+        break;
+      case "location-assign":
+        // The navigation lock must cancel this; if it doesn't, the backstop must.
+        window.location.assign(target + "?assign");
+        break;
+      case "location-replace":
+        window.location.replace(target + "?replace");
+        break;
+      case "webrtc": {
+        if (typeof RTCPeerConnection === "undefined") {
+          record.note = "RTCPeerConnection undefined";
+          break;
+        }
+        const stun = "stun:" + target.replace(/^https?:\/\//, "").replace(/\/.*$/, "");
+        const pc = new RTCPeerConnection({ iceServers: [{ urls: stun }] });
+        pc.createDataChannel("exfil");
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+        break;
+      }
+      case "css-url": {
+        const style = document.createElement("style");
+        style.textContent = "body{background-image:url('" + target + "?cssurl')}";
+        document.head.appendChild(style);
+        break;
+      }
+      case "dns-prefetch": {
+        const link = document.createElement("link");
+        link.rel = "dns-prefetch";
+        link.href = target + "?dns";
+        document.head.appendChild(link);
+        break;
+      }
+      case "preconnect": {
+        const link = document.createElement("link");
+        link.rel = "preconnect";
+        link.href = target + "?preconnect";
+        document.head.appendChild(link);
+        break;
+      }
+      case "favicon": {
+        const link = document.createElement("link");
+        link.rel = "icon";
+        link.href = target + "?favicon";
+        document.head.appendChild(link);
+        break;
+      }
+      default:
+        record.fired = false;
+        record.note = "unknown vector";
+    }
+  } catch (error) {
+    record.threw = true;
+    record.note = String(error && error.message ? error.message : error);
+  }
+  return record;
+}
+
+// Fire every vector at `target` and resolve with the full report. A short grace
+// period lets asynchronous resource loads (img/script/link/iframe/css) reach the
+// network before the caller inspects the sentinel.
+//
+// `options.skip` names vectors to record as not-fired instead of firing them.
+// The native host tests pass NOTHING here — they fire the whole set against a
+// real WebView + backstop. Only the Chromium browser-layer test skips the
+// top-level-navigation vectors (location-assign/replace, window-open), because a
+// real cross-origin navigation destroys Playwright's execution context; those
+// are a navigation-policy concern proven separately by the native navigation
+// lock, not a resource-load concern. The report still carries one record per
+// vector so completeness is unchanged.
+window.__attemptEgress = async function attemptEgress(target, options) {
+  if (typeof target !== "string" || !target) {
+    throw new TypeError("egress target must be a non-empty URL string");
+  }
+  const skip = new Set((options && options.skip) || []);
+  const results = [];
+  for (const name of VECTORS) {
+    if (skip.has(name)) {
+      results.push({ vector: name, fired: false, threw: false, note: "skipped" });
+      continue;
+    }
+    // eslint-disable-next-line no-await-in-loop
+    results.push(await runVector(name, target));
+  }
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  window.__RIOT_EGRESS_REPORT = results;
+  return results;
+};
+</script>
+</body>
+</html>

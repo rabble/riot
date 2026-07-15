@@ -126,5 +126,10 @@ class AppWebViewHost(
 
     fun load() = webView.loadUrl(resolver.entryUrl)
 
-    fun destroy() = webView.destroy()
+    fun destroy() {
+        // Tear the Rust execution session down first (Unit 0C) so no in-flight or
+        // later bridge call outlives the UI, then destroy the WebView.
+        bridge.teardown()
+        webView.destroy()
+    }
 }

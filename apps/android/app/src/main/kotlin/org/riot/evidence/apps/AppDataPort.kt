@@ -1,43 +1,64 @@
 package org.riot.evidence.apps
 
-import uniffi.riot_ffi.AppRuntimeSession
+import uniffi.riot_ffi.AppExecutionSession
 import uniffi.riot_ffi.ProfileSession
 import uniffi.riot_ffi.WhoAmI
 
 /**
  * The bridge's only I/O surface. Kept as a plain interface so JVM tests
  * drive the bridge without Android or the FFI. The real security boundary
- * — prefix scoping, value caps, key validation — lives in Rust's
- * `AppDataBridge`, not here.
+ * — prefix scoping, value caps, key validation, AND (Unit 0C) revocation /
+ * namespace / generation revalidation — lives in Rust, not here.
  */
 interface AppDataPort {
     fun put(key: String, value: ByteArray)
     fun get(key: String): ByteArray?
     fun list(prefix: String): List<Pair<String, ByteArray>>
+
+    /**
+     * Tear the underlying Rust execution session down (Unit 0C). After this,
+     * every read/commit fails closed. Default is a no-op for the test doubles
+     * and non-session ports; only [UniffiAppDataPort] overrides it.
+     */
+    fun destroy() {}
+
+    /**
+     * Whether the underlying execution session is still valid RIGHT NOW — used
+     * to tell a §4.7 invalidation (revoked / namespace-swapped / stale
+     * generation → close to "Return to Tools") apart from an ordinary per-op
+     * rejection (a malformed key → inline error). Both throw the same error.
+     */
+    fun isValid(): Boolean = true
 }
 
 /**
- * Thin adapter; prefix scoping, value caps, and key validation live in Rust.
+ * Thin adapter over the Rust-owned [AppExecutionSession] (Unit 0C). Every read
+ * and commit goes through the gated session, which revalidates the app's
+ * authority (trust / namespace / generation / not-destroyed) BEFORE it touches
+ * data — so a revoked, namespace-swapped, re-approved, or torn-down app cannot
+ * read or write even though this port still exists.
  *
- * `put` uses the receipt-returning FFI variant so the host can persist the
- * committed signed bundle bytes and replay them on the next open — `onCommitted`
- * hands those bytes to the persistence layer. A persistence failure surfaces to
- * the caller (the bridge reports "couldn't save"), matching how the alert and
- * trust paths propagate a failed durable write.
+ * `put` uses the receipt-returning variant so the host can persist the committed
+ * signed bundle bytes and replay them on the next open — `onCommitted` hands
+ * those bytes to the persistence layer. A persistence failure surfaces to the
+ * caller (the bridge reports "couldn't save"), matching how the alert and trust
+ * paths propagate a failed durable write.
  */
 class UniffiAppDataPort(
-    private val session: AppRuntimeSession,
-    private val appIdHex: String,
+    private val execution: AppExecutionSession,
     private val onCommitted: (key: String, bundleBytes: ByteArray) -> Unit = { _, _ -> },
 ) : AppDataPort {
     override fun put(key: String, value: ByteArray) {
-        val bundle = session.appDataPutWithReceipt(appIdHex, key, value)
+        val bundle = execution.appDataPutWithReceipt(key, value)
         onCommitted(key, bundle)
     }
 
-    override fun get(key: String): ByteArray? = session.appDataGet(appIdHex, key)
+    override fun get(key: String): ByteArray? = execution.appDataGet(key)
     override fun list(prefix: String): List<Pair<String, ByteArray>> =
-        session.appDataList(appIdHex, prefix).map { it.key to it.value }
+        execution.appDataList(prefix).map { it.key to it.value }
+
+    override fun destroy() = execution.invalidate()
+    override fun isValid(): Boolean = execution.isValid()
 }
 
 /**

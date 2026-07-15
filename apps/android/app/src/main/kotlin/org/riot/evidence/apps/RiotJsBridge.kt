@@ -20,7 +20,39 @@ class RiotJsBridge(private val port: AppDataPort, private val profiles: ProfileP
         const val MAX_MESSAGE_BYTES = 262_144
         private const val SAVE_ERROR = "Couldn't save that — try again"
         private const val LOAD_ERROR = "Couldn't load that"
+
+        /**
+         * Fixed §4.7 copy shown once when a running app's access is invalidated
+         * (trust revoked, namespace swapped, approval changed). Identical intent
+         * to iOS's `AppBridgeController.revokedMessage`.
+         */
+        const val REVOKED_MESSAGE = "Your access to this tool was turned off. Return to Tools."
     }
+
+    /**
+     * Called on the WebView's JS thread when a read/commit fails BECAUSE the
+     * execution session was invalidated (§4.7). The host posts to the UI thread
+     * and closes the app to "Return to Tools" — it never keeps trying against a
+     * dead session. Distinct from an ordinary per-op failure (a malformed key),
+     * which leaves the session valid and stays inline.
+     */
+    var onInvalidated: (() -> Unit)? = null
+
+    /** Tear the underlying execution session down. After this every op fails. */
+    fun teardown() = port.destroy()
+
+    /**
+     * Route a caught bridge failure: if the session is no longer valid this is a
+     * §4.7 invalidation — fire [onInvalidated] and return the fixed revoked copy;
+     * otherwise return the caller's inline message and leave the app open.
+     */
+    private fun errorOrInvalidate(fallback: String): String =
+        if (!port.isValid()) {
+            onInvalidated?.invoke()
+            error(REVOKED_MESSAGE)
+        } else {
+            error(fallback)
+        }
 
     @JavascriptInterface
     fun riotPut(key: String?, valueJson: String?): String {
@@ -29,7 +61,7 @@ class RiotJsBridge(private val port: AppDataPort, private val profiles: ProfileP
             return error(SAVE_ERROR)
         }
         return runCatching { port.put(key, valueJson.toByteArray()) }
-            .fold({ """{"ok":true,"value":null}""" }, { error(SAVE_ERROR) })
+            .fold({ """{"ok":true,"value":null}""" }, { errorOrInvalidate(SAVE_ERROR) })
     }
 
     @JavascriptInterface
@@ -40,7 +72,7 @@ class RiotJsBridge(private val port: AppDataPort, private val profiles: ProfileP
                 if (value == null) """{"ok":true,"value":null}"""
                 else """{"ok":true,"value":${jsonQuote(value.decodeToString())}}"""
             },
-            { error(LOAD_ERROR) },
+            { errorOrInvalidate(LOAD_ERROR) },
         )
     }
 
@@ -54,7 +86,7 @@ class RiotJsBridge(private val port: AppDataPort, private val profiles: ProfileP
                 }
                 """{"ok":true,"value":[$encoded]}"""
             },
-            { error(LOAD_ERROR) },
+            { errorOrInvalidate(LOAD_ERROR) },
         )
     }
 

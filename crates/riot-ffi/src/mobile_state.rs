@@ -107,6 +107,13 @@ pub(crate) struct LocalProfile {
     /// the wording is wrong, the refusal is not. Fixing that means persisting
     /// provenance in the profile record, which is iOS's side of the boundary.
     joined_others_space: bool,
+    /// Monotonic app-execution generation. Bumped on any app-trust change and
+    /// any namespace swap. `AppExecutionSession` (Unit 0C) captures this at open
+    /// and revalidates it on every read/commit, so a re-approval — which returns
+    /// trust to TRUE — still invalidates every session opened before it. This is
+    /// what makes containment a mechanism, not a native-host policy: a stale
+    /// session fails *before* it can touch data, with no way to assume authority.
+    app_execution_generation: u64,
 }
 
 /// What the profile was before demo mode was switched on.
@@ -277,6 +284,7 @@ fn profile_with_author(store: EvidenceStore, author: EvidenceAuthor) -> Arc<Mobi
             app_data_timestamp_floor_micros: 0,
             demo_mode: None,
             joined_others_space: false,
+            app_execution_generation: 0,
         })))),
     })
 }
@@ -358,6 +366,9 @@ pub(crate) fn join_public_space(
             profile.author =
                 generate_communal_author_for_namespace(namespace_id).map_err(map_author_error)?;
             profile.joined_others_space = true;
+            // The namespace moved: every app-execution session bound to the old
+            // namespace is now stale and must fail its next op.
+            bump_app_execution_generation(profile);
         }
         let joined = PublicSpace {
             namespace_id: hex(&namespace_id),
@@ -480,6 +491,9 @@ pub(crate) fn load_demo_space(
             let previous_author =
                 demo_author.map(|author| std::mem::replace(&mut profile.author, author));
             profile.demo_mode = Some(Box::new(DemoModeState { previous_author }));
+            // Entering demo mode may swap the author's namespace; invalidate any
+            // app-execution session bound to the pre-demo namespace.
+            bump_app_execution_generation(profile);
         }
 
         let space = PublicSpace {
@@ -515,6 +529,9 @@ pub(crate) fn hide_demo_space(inner: &Arc<Mutex<ProfileState>>) -> Result<(), Mo
         };
         if let Some(author) = state.previous_author {
             profile.author = author;
+            // Leaving demo mode restores the pre-demo author, another namespace
+            // swap; invalidate any session bound to the demo namespace.
+            bump_app_execution_generation(profile);
         }
         profile.space = None;
         profile.preview = None;
@@ -1739,8 +1756,20 @@ pub(crate) fn set_app_trust(
             .map_err(map_apps_error)?;
         let signed = sign_local_app_entry(profile, path, &payload, timestamp)?;
         commit_local_app_entries(profile, vec![signed])?;
+        // Any trust change — grant OR revoke — advances the execution
+        // generation, invalidating every `AppExecutionSession` opened before it.
+        // Re-approval therefore does not silently re-authorize a session that was
+        // live across the revoke: a re-approved app runs in a *new* session.
+        bump_app_execution_generation(profile);
         Ok(())
     })
+}
+
+/// Advance the app-execution generation. Called on every app-trust change and
+/// every namespace swap, so a stale `AppExecutionSession` (Unit 0C) fails
+/// revalidation on its next read/commit.
+fn bump_app_execution_generation(profile: &mut LocalProfile) {
+    profile.app_execution_generation = profile.app_execution_generation.wrapping_add(1);
 }
 
 pub(crate) fn is_app_trusted(
@@ -1749,50 +1778,192 @@ pub(crate) fn is_app_trusted(
 ) -> Result<bool, MobileError> {
     with_active(inner, |profile| {
         let app_id = parse_entry_id(&app_id)?;
-        let organizer = space_organizer_subspace_id(profile);
-        let own_namespace_id = profile.author.identity().namespace_id;
+        resolve_is_trusted(profile, &app_id)
+    })
+}
 
-        // Trust must be read from the STORE, not just the profile-local cache: an
-        // organizer's approval reaches a member as a synced trust-marker entry.
-        // Reading only the local cache (which `set_app_trust` fills for the author)
-        // meant an organizer's decision could never reach anyone else — that is the
-        // "one decision covers everyone, no install step" property.
-        //
-        // `is_trusted` fails closed if given two markers for the same coordinate, so
-        // the store's Willow-resolved marker and the author's own cached copy must be
-        // collapsed to one per (app, organizer) before asking. Newest wins, matching
-        // Willow's own per-path resolution.
-        let scanned =
-            riot_core::apps::index::scan_app_index(&profile.store).map_err(map_apps_error)?;
-        let mut markers: Vec<riot_core::apps::trust::TrustMarker> = Vec::new();
-        let mut push_resolved = |marker: riot_core::apps::trust::TrustMarker| match markers
-            .iter_mut()
-            .find(|existing| {
-                existing.app_id == marker.app_id
-                    && existing.author_subspace_id == marker.author_subspace_id
-            }) {
+/// Resolve, from the STORE plus the author's cache, whether `app_id` is trusted
+/// by the recognized organizer of the profile's CURRENT namespace. The single
+/// trust-evaluation point shared by `is_app_trusted` (the UI query) and
+/// `AppExecutionSession` revalidation (the security gate), so a running app and
+/// a "Turn off" button can never disagree about whether it is authorized.
+///
+/// Trust must be read from the STORE, not just the profile-local cache: an
+/// organizer's approval reaches a member as a synced trust-marker entry. Reading
+/// only the local cache (which `set_app_trust` fills for the author) meant an
+/// organizer's decision could never reach anyone else — that is the "one
+/// decision covers everyone, no install step" property.
+///
+/// `is_trusted` fails closed if given two markers for the same coordinate, so the
+/// store's Willow-resolved marker and the author's own cached copy are collapsed
+/// to one per (app, organizer) before asking. Newest wins, matching Willow's own
+/// per-path resolution.
+fn resolve_is_trusted(profile: &LocalProfile, app_id: &[u8; 32]) -> Result<bool, MobileError> {
+    let organizer = space_organizer_subspace_id(profile);
+    let own_namespace_id = profile.author.identity().namespace_id;
+
+    let scanned = riot_core::apps::index::scan_app_index(&profile.store).map_err(map_apps_error)?;
+    let mut markers: Vec<riot_core::apps::trust::TrustMarker> = Vec::new();
+    let mut push_resolved =
+        |marker: riot_core::apps::trust::TrustMarker| match markers.iter_mut().find(|existing| {
+            existing.app_id == marker.app_id
+                && existing.author_subspace_id == marker.author_subspace_id
+        }) {
             Some(existing) if marker.timestamp_micros > existing.timestamp_micros => {
                 *existing = marker;
             }
             Some(_) => {}
             None => markers.push(marker),
         };
-        for space in scanned.spaces {
-            if space.space_namespace_id == own_namespace_id {
-                space.markers.into_iter().for_each(&mut push_resolved);
-            }
+    for space in scanned.spaces {
+        if space.space_namespace_id == own_namespace_id {
+            space.markers.into_iter().for_each(&mut push_resolved);
         }
-        profile
-            .app_trust_markers
-            .iter()
-            .copied()
-            .for_each(&mut push_resolved);
+    }
+    profile
+        .app_trust_markers
+        .iter()
+        .copied()
+        .for_each(&mut push_resolved);
 
-        Ok(riot_core::apps::trust::is_trusted(
-            &app_id,
-            &markers,
-            &[organizer],
-        ))
+    Ok(riot_core::apps::trust::is_trusted(
+        app_id,
+        &markers,
+        &[organizer],
+    ))
+}
+
+/// The immutable snapshot an `AppExecutionSession` (Unit 0C) captures at open
+/// and presents on every read/commit. The three fields are exactly the state a
+/// stale session must be caught disagreeing with: the app it was opened for, the
+/// approval generation live at open, and the namespace it was bound to.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct AppExecutionSnapshot {
+    pub(crate) app_id: [u8; 32],
+    pub(crate) generation: u64,
+    pub(crate) namespace_id: [u8; 32],
+}
+
+/// Open an execution session for a currently-trusted app. This is the launch
+/// gate, now enforced in Rust rather than trusted to the native host: an
+/// untrusted app cannot obtain a session at all.
+pub(crate) fn app_execution_open(
+    inner: &Arc<Mutex<ProfileState>>,
+    app_id: String,
+) -> Result<AppExecutionSnapshot, MobileError> {
+    with_active(inner, |profile| {
+        let app_id = parse_entry_id(&app_id)?;
+        if !resolve_is_trusted(profile, &app_id)? {
+            return Err(MobileError::AppRejected);
+        }
+        Ok(AppExecutionSnapshot {
+            app_id,
+            generation: profile.app_execution_generation,
+            namespace_id: profile.author.identity().namespace_id,
+        })
+    })
+}
+
+/// The security gate run before EVERY execution-session read and commit, under
+/// the same lock that then performs the op — no window between check and use.
+/// Each clause is an independent invalidation vector; all three are checked
+/// (defence in depth), and each on its own denies closed.
+fn revalidate_execution(
+    profile: &LocalProfile,
+    snap: &AppExecutionSnapshot,
+) -> Result<(), MobileError> {
+    // (2) Namespace replacement: a join/demo swap strands the session in a
+    // namespace it can no longer write to. The captured namespace must still be
+    // the live one.
+    if profile.author.identity().namespace_id != snap.namespace_id {
+        return Err(MobileError::AppRejected);
+    }
+    // (4) Stale approval-generation: trust changes AND namespace swaps advance
+    // the generation, so a re-approval — which returns trust to TRUE — still
+    // fails a session opened before it. This is the clause a trust-only guard
+    // would miss, and the reason (1)/(4) are distinct.
+    if profile.app_execution_generation != snap.generation {
+        return Err(MobileError::AppRejected);
+    }
+    // (1) Revoke: the app must STILL be trusted right now, verified against the
+    // store, never assumed. Redundant with the generation check by construction,
+    // and deliberately kept — the gate VERIFIES authority, it does not assume it.
+    if !resolve_is_trusted(profile, &snap.app_id)? {
+        return Err(MobileError::AppRejected);
+    }
+    Ok(())
+}
+
+/// Whether the session is still valid RIGHT NOW — the same revalidation the
+/// read/commit path runs, exposed as a plain bool so the native bridge can tell
+/// an INVALIDATION (revoked / namespace-swapped / stale generation) apart from an
+/// ordinary per-op rejection (a malformed key). Both surface as `AppRejected`
+/// from a data call; only an invalidation must close the app to a named
+/// destination (§4.7). A dead profile or any revalidation failure reads false.
+pub(crate) fn app_execution_is_valid(
+    inner: &Arc<Mutex<ProfileState>>,
+    snap: &AppExecutionSnapshot,
+) -> bool {
+    with_active(inner, |profile| {
+        Ok(revalidate_execution(profile, snap).is_ok())
+    })
+    .unwrap_or(false)
+}
+
+/// Execution-session read: revalidate, then read, under one lock.
+pub(crate) fn app_execution_get(
+    inner: &Arc<Mutex<ProfileState>>,
+    snap: &AppExecutionSnapshot,
+    key: String,
+) -> Result<Option<Vec<u8>>, MobileError> {
+    with_active(inner, |profile| {
+        revalidate_execution(profile, snap)?;
+        riot_core::apps::bridge::AppDataBridge::get(&profile.store, &snap.app_id, &key)
+            .map_err(map_apps_error)
+    })
+}
+
+/// Execution-session list: revalidate, then list, under one lock.
+pub(crate) fn app_execution_list(
+    inner: &Arc<Mutex<ProfileState>>,
+    snap: &AppExecutionSnapshot,
+    prefix: String,
+) -> Result<Vec<crate::apps_ffi::AppDataItem>, MobileError> {
+    with_active(inner, |profile| {
+        revalidate_execution(profile, snap)?;
+        let items =
+            riot_core::apps::bridge::AppDataBridge::list(&profile.store, &snap.app_id, &prefix)
+                .map_err(map_apps_error)?;
+        Ok(items
+            .into_iter()
+            .map(|(key, value)| crate::apps_ffi::AppDataItem { key, value })
+            .collect())
+    })
+}
+
+/// Execution-session commit: revalidate, then commit, under one lock. Returns
+/// the canonical signed bundle bytes so a host can persist app data for replay.
+/// A committed write does NOT advance the generation — an app writing its own
+/// data must not invalidate its own session; only trust and namespace changes do.
+pub(crate) fn app_execution_put_with_receipt(
+    inner: &Arc<Mutex<ProfileState>>,
+    snap: &AppExecutionSnapshot,
+    key: String,
+    value: Vec<u8>,
+) -> Result<Vec<u8>, MobileError> {
+    with_active(inner, |profile| {
+        revalidate_execution(profile, snap)?;
+        // Same preview-slot discipline as `app_data_put_with_receipt`: a
+        // store.inspect during an in-flight sync review would clobber it.
+        if sync_session_is_active(profile) {
+            return Err(MobileError::InvalidInput);
+        }
+        let timestamp = next_app_write_timestamp(profile)?;
+        let path =
+            riot_core::apps::entry::app_data_path(&snap.app_id, &key).map_err(map_apps_error)?;
+        let signed = sign_local_app_entry(profile, path, &value, timestamp)?;
+        let bundle_bytes = commit_local_app_entries(profile, vec![signed])?;
+        Ok(bundle_bytes)
     })
 }
 

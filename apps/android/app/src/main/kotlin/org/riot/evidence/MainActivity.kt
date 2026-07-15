@@ -357,16 +357,22 @@ class MainActivity : Activity() {
         runAction("Opened ${app.record.name}") {
             val gated = apps.requireTrusted(app)
             val resolver = AppResourceResolver(gated.record.appId, gated.bundle)
+            // Open the gated execution session (Unit 0C): this IS the launch gate
+            // and it captures the approval generation + namespace, so a later
+            // revoke / re-approval / namespace swap fails the running app's reads.
             val bridge = RiotJsBridge(
                 UniffiAppDataPort(
-                    controller.openAppRuntime(),
-                    gated.record.appId,
+                    controller.openAppExecution(gated.record.appId),
                     onCommitted = { key, bundle ->
                         controller.onAppDataCommitted(gated.record.appId, key, bundle)
                     },
                 ),
                 UniffiProfilePort(controller.profileSession()),
             )
+            // §4.7: if a read/commit fails because access was invalidated
+            // mid-use, close the app to its named destination rather than looping
+            // against a dead session. The bridge fires this on the JS thread.
+            bridge.onInvalidated = { runOnUiThread { closeApp() } }
             val host = AppWebViewHost(this, resolver, bridge)
             runningApp = gated to host
             content.removeAllViews()

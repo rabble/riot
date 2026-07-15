@@ -4,6 +4,7 @@ import java.io.File
 import java.security.SecureRandom
 import uniffi.riot_ffi.AlertCertainty
 import uniffi.riot_ffi.AlertDraftInput
+import uniffi.riot_ffi.AppExecutionSession
 import uniffi.riot_ffi.AppRuntimeSession
 import uniffi.riot_ffi.AlertSeverity
 import uniffi.riot_ffi.AlertUrgency
@@ -69,6 +70,14 @@ class RiotController(filesDir: File) : AutoCloseable {
     fun identity(): PublicIdentity = profile.identity()
 
     fun openAppRuntime(): AppRuntimeSession = profile.appRuntime()
+
+    /**
+     * Open a gated execution session for a trusted app (Unit 0C). This IS the
+     * launch gate — Rust refuses an untrusted app — and it captures the approval
+     * generation + namespace so a later revoke / re-approval / namespace swap
+     * fails the running app's next read or commit before it touches data.
+     */
+    fun openAppExecution(appIdHex: String): AppExecutionSession = profile.openAppExecution(appIdHex)
 
     /** The persisted apps to re-admit into a fresh [RiotAppsController] on open. */
     fun installedAppsSnapshot(): List<PersistedApp> = persisted?.installedApps ?: emptyList()
