@@ -1,8 +1,10 @@
 # Composite Site / Namespace-Manifest Design
 
 **Date:** 2026-07-15
-**Status:** Design — revised after design-review gate round 1 (pending round 2)
+**Status:** Design — revised after design-review gate round 2 (4/5 approved; addressing the single Security blocker + medium risks below)
 **Scope:** v1 "indymedia site" as a composite of typed Willow namespaces bound by an owner-signed manifest, with delegated editorial write, dual moderation, and policy-driven transport (iroh built, arti parked).
+
+**Revision note (round 2 gate):** the ticket transport floor is now **root-signed and verified pre-dial** (§5.1) — a bare digest was only checkable post-connection, so an unsigned floor could be stripped to re-open the bootstrap IP-leak (Security blocker); added a signed `mod_epoch` **moderation heartbeat** (§4) that makes the render guarantee detectable against a withholding provider and gives the freshness window a concrete non-gameable definition; elevated the single-root seizure limitation to a **mandatory user-facing disclosure** (§9.3, Unit 6); restored the consolidated per-unit test checklist + coverage ratchet-floor + UniFFI-rebuild gate (§8.1); manifest validation now independently requires an owned zero-delegation cap (§8 Unit 2); root secret is keystore-backed (§8 Unit 0).
 
 **Revision note (round 1 gate):** collapsed editorial + moderation into a single owned "masthead" namespace (was two, which made the moderation trust-root incoherent); moved the transport floor into the signed ticket (bootstrap leak defeated fail-closed); added a durable monotonic manifest-version floor (rollback downgrade); made `capability.is_owned()` a load-bearing admission **invariant** rather than a test (a communal cap can name an owned namespace); enumerated the full admission-gate surface (a 4th gate exists); added Unit 0 for owner-side cap minting/signing/delegation-issuance (was unbuilt and unassigned); added a resolved view-model contract with honest degradation states; scoped person-ban honestly (inert in communal namespaces).
 
@@ -133,10 +135,11 @@ A **cross-gate consistency test** asserts an owned-namespace editorial entry adm
 
 ## 4. Moderation (dual mechanism)
 
-Moderation records live at `O:/mod/` (owned; only owner + explicitly delegated moderators write them — moderator caps are `/mod/`-scoped and **cannot target `/manifest` or the root**). Two owner-signed record types, **two ban targets**:
+Moderation records live at `O:/mod/` (owned; only owner + explicitly delegated moderators write them — moderator caps are `/mod/`-scoped and **cannot target `/manifest` or the root**). Owner-signed record types, **two ban targets** plus a **freshness heartbeat**:
 
 - **Ban a PERSON** — `revoke { author_key, effective_ts }`
 - **Ban CONTENT** — `tombstone { target_ns, target_entry }`
+- **Freshness heartbeat** — `mod_epoch { seq: monotonic u64, ts }` (owner-signed). The owner advances `seq` on a schedule (and on every revoke/tombstone). A client's `/mod/` is **current** iff it holds a heartbeat whose `ts` is within the freshness window AND no `seq` gap is visible; a missing/stale heartbeat or a `seq` gap ⇒ `moderation-loading` (open namespaces held), never falsely "current." This makes the §4.3 guarantee **detectable** against a withholding provider (a coerced seed that suppresses the latest revoke also cannot forge the next heartbeat `seq`, so suppression shows up as a gap), and gives "moderation-current" a **concrete, testable, non-gameable definition** (resolves §10 Q3). New owned record family ⇒ register in both `mobile_state.rs` classification sites (§3.1).
 
 ### 4.1 Honest scope (round-1 gate correction)
 
@@ -157,9 +160,11 @@ Moderation records live at `O:/mod/` (owned; only owner + explicitly delegated m
 
 ### 4.3 The guarantee, stated honestly
 
-A banned person or post may still exist in *some peer's store* — you cannot delete bytes from others' disks, nor force global sync order. But **on any honest client that has synced `/mod/` (see freshness, below), it is invisible.** The guarantee is scoped to honest clients with moderation synced; a forked build that strips the filter is outside the trust model.
+A banned person or post may still exist in *some peer's store* — you cannot delete bytes from others' disks, nor force global sync order. But **on any honest client whose `/mod/` is current (heartbeat within window, no `seq` gap), it is invisible.** The guarantee is scoped to honest clients with current moderation; a forked build that strips the filter is outside the trust model.
 
-**"Moderation synced" is a positive freshness signal, not an absence.** Willow reconcile gives no completeness guarantee, so the fail-safe cannot rest on "haven't seen M." Define: moderation is *current* if a reconcile round with a provider completed within a freshness window; the resolved view model carries this as a state (§6), distinguishing *moderation-loading* from *moderation-current-and-empty*.
+**"Moderation current" is a positive, signed freshness signal, not an absence** (the `mod_epoch` heartbeat, §4). Willow reconcile gives no completeness guarantee, so the fail-safe cannot rest on "haven't seen a revoke." The heartbeat makes staleness *detectable*: the resolved view model distinguishes *moderation-loading* (no current heartbeat / `seq` gap) from *moderation-current-and-empty* (current heartbeat, no bans).
+
+**Withholding-provider bound (round-2 security).** A dishonest/coerced provider (the §9.4 gateway-seed focal point) cannot *forge* bans (that needs caps) — it can only try to *suppress* the latest revoke/tombstone to un-hide content. Because the owner advances the heartbeat `seq` on every moderation write, suppression opens a `seq` gap the client sees ⇒ `moderation-loading`, not a false "current." The reseed mesh routes around a single withholder; **full suppression requires an eclipse** of every provider. Honest scope of the guarantee: *holds against any reconcile that reaches at least one uncensored provider; a total eclipse can suppress moderation and is a documented residual (§9.5).*
 
 **Timestamp reality:** Willow enforces last-writer-wins only at the same coordinate; there is **no global per-author monotonic clock**, so a determined revoked editor can backdate a new article within its cap window. This is why the *guarantee* rests on **identity at render**, not the clock at admission.
 
@@ -181,16 +186,18 @@ FrameChannel family:
 
 **Placement:** the concrete iroh transport + its tokio runtime live in **`riot-ffi` (or a dedicated transport crate), NOT `riot-core`** — the reconcile core stays transport-agnostic and headless-testable. Only a thin adapter feeds `SyncFrame` bytes: `iroh Connection ⇄ ByteSyncSession ⇄ ReconcileSession`.
 
-### 5.1 Ticket carries the transport floor (bootstrap fix)
+### 5.1 Ticket carries a ROOT-SIGNED transport floor (bootstrap fix)
 
-The `require` floor is duplicated into the **signed ticket / share-ref**, out-of-band, so the client knows the floor **before opening any connection**:
+The `require` floor is carried in the ticket **and signed by the site root key**, so the client can authenticate the floor **before opening any connection**. A bare digest is insufficient — the existing `NewswireShareReference.content_digest` (`newswire/share.rs`) is an *unsigned* digest checkable only *after* fetching, i.e. post-connection; relying on it would let an attacker strip `require:arti`→`none` (keeping root+digest) and leak a first-time follower's IP over iroh before the real floor is ever read (round-2 security blocker). The ticket therefore carries an explicit signature:
 
 ```
-riot://site/v1/<O-namespace>?root=<owner-key>&require=<none|arti>&digest=<content_digest>&node=<NodeAddr>
+riot://site/v1/<O-namespace>?root=<owner-key>&require=<none|arti>&digest=<content_digest>&node=<NodeAddr>&sig=<root-sig>
+sig = root-key signature over canonical(root, O-namespace, require, digest)
 ```
-- `require` in the ticket is the **authoritative pre-connection floor** — a `require:arti` site is never dialed over iroh even for the first manifest fetch (this defeats the bootstrap IP-leak the round-1 gate found).
-- `digest` binds the site identity/manifest (parity with `NewswireShareReference.content_digest`) so a substituted root/manifest is detectable.
+- **The client MUST verify `sig` against `root` BEFORE opening any `FrameChannel`.** Unverifiable signature, or a `require` that fails verification, ⇒ `transport-blocked` state, no dial. This is what makes `require` the authoritative pre-connection floor — a `require:arti` site is never dialed over iroh even for the first manifest fetch.
+- `digest` additionally binds the manifest for post-connection substitution detection (parity with newswire, but now *inside* the signed payload).
 - `node` is an **untrusted seeding hint**, never site identity.
+- **Residual (documented, §9.5):** the signature defeats *downgrade-in-place* (real root kept, floor flipped). It cannot defeat whole-ticket substitution (attacker mints an entirely different `root`+`require`+`sig` so the victim follows a *different* site) — that is inherent to out-of-band ticket distribution (TOFU), narrowed by the `digest` and by any out-of-band root confirmation.
 
 ### 5.2 Anti-rollback (manifest downgrade fix)
 
@@ -263,15 +270,29 @@ Composition/overlay logic lives in **Rust core** (`riot-core`, headless-testable
 
 | # | Unit | Touches | Depends |
 |---|---|---|---|
-| **0** | Owner-side owned-cap minting + delegation issuance + owned-root signing + FFI | `willow/owned.rs`, `riot-core` new, `riot-ffi` | — |
-| **1** | Owned-namespace admission: `is_owned()` invariant + root binding; enumerate & unify ALL gates + FFI classification; cross-gate consistency test | `import/bundle.rs:496` (policy), `session.rs:658`, `sync/state.rs:277`, `newswire/entry.rs:326`, `mobile_state.rs` (×2) | 0 |
-| **2** | Site manifest record (reserved `/manifest`, owned-zero-deleg): schema, sign, validate (invariants 1–3), durable version floor | `riot-core` new module, FFI, durable profile | 0,1 |
-| **3** | Moderation: `/mod/` revoke + tombstone records + admission best-effort + moderator-cap containment + moderation-current freshness signal | `riot-core` moderation module, `sync/state.rs` | 0,1,2 |
+| **0** | Owner-side owned-cap minting + delegation issuance (hard-refuse any cap whose Area escapes `/articles/`) + owned-root signing + FFI; **root secret at-rest protection (keychain/keystore-backed, never plaintext SQLite)** | `willow/owned.rs`, `riot-core` new, `riot-ffi` | — |
+| **1** | Owned-namespace admission: `is_owned()` invariant + root binding; relax only `is_owned`/`delegations` in the compound gates (preserve namespace/receiver/includes); confirm `receiver()` = final delegatee; enumerate & unify ALL gates + FFI classification; cross-gate consistency test (both accept AND reject directions) | `import/bundle.rs:496` (policy), `session.rs:658`, `sync/state.rs:277`, `newswire/entry.rs:326`, `mobile_state.rs` (×2) | 0 |
+| **2** | Site manifest record (reserved `/manifest`): schema, sign, **validate independently of admission — require an owned zero-delegation cap whose receiver == root (NOT assumed by area-scoping; a broad `Area::full` cap would pass admission)**, invariants 1–3, durable version floor | `riot-core` new module, FFI, durable profile | 0,1 |
+| **3** | Moderation: `/mod/` revoke + tombstone + **`mod_epoch` heartbeat** records + admission best-effort + moderator-cap containment + signed moderation-current freshness signal | `riot-core` moderation module, `sync/state.rs` | 0,1,2 |
 | **4** | Composite resolver + resolved view-model contract (§6): trust-tier tags, treatment, degradation enum, transport-status; consumes Unit 3's overlay data | `riot-core` render module, FFI view model | 2,3 |
-| **5** | iroh `FrameChannel` adapter (in riot-ffi/transport crate) + ticket transport floor + fail-closed + ephemeral NodeId + gateway seed | `riot-ffi`/transport, share-ref, `apps/gateway/` | 2 |
-| **6** | Native UI: follow-site, composite surface, trust-tier styling, degradation/transport states, editor-invite handshake, **QR gen + camera scan (iOS + Android)**, writer expired-cap warning | iOS + Android | 4,5 |
+| **5** | iroh `FrameChannel` adapter (in riot-ffi/transport crate) + **root-signed ticket floor (sig verified pre-dial)** + fail-closed + ephemeral NodeId + gateway seed | `riot-ffi`/transport, share-ref, `apps/gateway/` | 2 |
+| **6** | Native UI: follow-site (**incl. iOS follow/join view — close the Android-only share-join asymmetry**), composite surface, trust-tier styling, degradation/transport states (**designed copy + next-step for alarm/rollback states**), editor-invite handshake, **QR gen + camera scan (iOS + Android)**, writer expired-cap warning, **mandatory seizure disclosure + compose-time "unfollowable (require:arti)" notice** | iOS + Android | 4,5 |
 
 Unit 1 is the critical-path security unlock; Unit 0 unblocks everything.
+
+### 8.1 Testing (TDD — per-unit RED cases)
+
+TDD is mandatory (CLAUDE.md). Coverage honors the **`.coverage-thresholds.json` ratchet floor** (not 100% — that was fiction; the Rust line floor is CI-enforced via `tarpaulin --fail-under`). Each unit enters TDD with its RED cases enumerated:
+
+- **Unit 0:** mint owned cap; issue `/articles/`-scoped delegation; **issuance refuses an over-broad Area (escapes `/articles/`)**; sign/verify round-trip; root secret is keystore-backed, not plaintext.
+- **Unit 1 (adversarial, security core):** forged delegation chain; over-broad area; expired cap; wrong root; **communal-cap-naming-an-owned-namespace** (the marker-bit forgery); cross-namespace cap reuse; delegation loops; **cross-gate consistency in BOTH directions** — a valid owned editorial entry is accepted/classified identically at every gate, AND a forgery is rejected identically at every gate (no gate stricter than another).
+- **Unit 2:** manifest `root != owner` reject; **delegated (non-zero-delegation) cap on `/manifest` reject** (independent of admission); rule/key-structure mismatch → member-unverified; version-rollback reject (durable floor); same-version equivocation → alarm; unsigned reject.
+- **Unit 3:** revoke hides cap-holder **even with backdated timestamp** (identity-guarantee); tombstone hides entry; **heartbeat `seq` gap ⇒ moderation-loading** (withholding detection); root exempt from revoke; moderator cap cannot write `/manifest`; re-endorse allow-list survives.
+- **Unit 4:** partial-sync degradation states; dangling soft-link collapse; trust-tier separation (W never tagged editorial); moderation-loading-timeout fallback (no permanent spinner on a slow provider).
+- **Unit 5:** **ticket-downgrade test** — `require` stripped/flipped but root intact ⇒ signature verification fails ⇒ fail closed, **no iroh dial**; ephemeral NodeId rotation; loopback + iroh carry identical frames.
+- **Unit 6:** editor-invite two-way handshake; QR round-trip both platforms; writer expired-cap warning at compose; mandatory seizure disclosure present at creation.
+
+**Per-unit UniFFI gate (Units 2/3/4/6):** every new `uniffi::Record`/`Enum` requires regenerating the binding AND rebuilding the native staticlib **in the same commit** — the failure mode is a runtime checksum abort in the apps, not a compile error (documented recurring defect). A smoke test loads the FFI on iOS + Android.
 
 ---
 
@@ -279,9 +300,9 @@ Unit 1 is the critical-path security unlock; Unit 0 unblocks everything.
 
 1. **Admission-core edit (Unit 1).** The copy-on-write preview boundary is load-bearing; a bug admits forgeries or corrupts state. *Verified:* admission verification runs on the verify side, outside state mutation (`session.rs:632`), so the CoW boundary is unchanged — but the `is_owned()` invariant and the multi-gate enumeration are the failure modes. Mitigation: adversarial tests first (forged chain, over-broad area, expired cap, wrong root, **communal-cap-in-owned-namespace**, cross-namespace cap reuse, delegation loops), isolated unit, cross-gate consistency test.
 2. **Anonymous flooding of C / W.** The historical indymedia killer. v1 has **no automated anti-flood** — person-ban is inert against rotating communal keys; only per-entry tombstone. Explicitly parked; owner-tombstone is the v1 lever. Automated anti-flood (rate-limit / PoW / accumulation) is a future slice.
-3. **Owner-key loss / compromise / seizure (single root).** v1 = single root key, **no rotation or recovery**: key loss → site unpublishable; device seizure → attacker can publish as the site, revoke real editors, tombstone real reporting. Accepted v1 limitation; successor-keys / rotation / threshold-multisig is a named future slice. Document prominently in user-facing material.
+3. **Owner-key loss / compromise / seizure (single root).** v1 = single root key, **no rotation or recovery**: key loss → site unpublishable; device seizure → attacker can publish as the site, revoke real editors, tombstone real reporting. Accepted v1 limitation; successor-keys / rotation / threshold-multisig is a named future slice. **MANDATORY user-facing disclosure (Unit 6 acceptance item):** at site creation, a required in-app string must spell out that device seizure = full site takeover — the captor can *impersonate the site and revoke the real editors* — not merely "key loss." An activist must be able to make an informed threat decision before minting a masthead on a phone.
 4. **Gateway-seed centralization/liability.** An always-on seed is a subpoena/takedown/metadata focal point. Deliberate tradeoff: follower-reseed means origin-offline ≠ site-dead, but the seed observes follow-graph metadata. State plainly.
-5. **Manifest rollback / equivocation.** Mitigated by the durable version floor + ticket floor + equivocation alarm (§5.2). Residual: a brand-new follower with no floor takes what it's first served — the ticket `require`/`digest` narrows this.
+5. **Ticket / manifest downgrade + residuals.** *Downgrade-in-place* of the transport floor (strip `require:arti`→`none`, keep root) is **closed** by the root-signed ticket (§5.1) — verified before the first dial. *Manifest rollback / equivocation* is mitigated by the durable version floor + equivocation alarm (§5.2). Documented residuals: (a) **whole-ticket substitution / TOFU** — an attacker mints an entirely different `root`+`require`+`sig`, so a first-time follower follows a *different* site; inherent to out-of-band distribution, narrowed by `digest` + any out-of-band root confirmation. (b) **Moderation eclipse** — a total eclipse of every provider can suppress the latest bans; a single withholder is detected via the heartbeat `seq` gap and routed around by the reseed mesh (§4.3).
 6. **arti maturity.** Parked; onion-service hosting may be immature on mobile. De-risked by fail-closed (no false privacy meanwhile) + declarable-but-unfollowable sites.
 7. **Timestamp backdating.** Unsolved at admission by design; render-identity guarantee is the backstop. Documented.
 8. **Member-namespace reframing (residual).** A manifest can reference a victim's communal namespace as its "comments," reframing it under this masthead (display-only; owner-signed). v1 accepts this as display-only; member opt-in cross-attestation is a future option.
@@ -290,9 +311,10 @@ Unit 1 is the critical-path security unlock; Unit 0 unblocks everything.
 
 ---
 
-## 10. Open questions for the design-review gate (round 2)
+## 10. Open questions (post round-2)
 
-- Is the single-owned-masthead-namespace collapse (O = manifest + articles + moderation by path) the right call vs. keeping moderation a separate owned namespace with its owner key bound in the manifest? (Design picks collapse; simpler trust root.)
-- Is `is_owned()` (marker bit) + `capability.is_owned()` + root-binding a sufficient basis for the rule-intrinsic invariant, or is a canonical namespace-type tag still wanted for defense-in-depth?
-- Does "moderation-current freshness window" have a defensible concrete definition (round count / provider / time) that is testable without being gameable by a withholding provider?
-- Is "narrow now / universal-ready / migrate nothing" holding, given the manifest's open `role`/`rule` enums — is a rule needed that v1 only *serializes* the site shape even though the enum space is open?
+- **RESOLVED (round 1):** single-owned-masthead collapse — Architect + Security verified path-prefix containment enforces it; adopted.
+- **RESOLVED (round 2):** moderation-current freshness — the signed `mod_epoch` heartbeat (§4) gives a concrete, testable, non-gameable definition (last heartbeat within window + no `seq` gap) and detects withholding. Remaining residual is total eclipse (§9.5).
+- Is `is_owned()` (marker bit) + `capability.is_owned()` + root-binding a sufficient basis for the rule-intrinsic invariant, or is a canonical namespace-type tag still wanted for defense-in-depth? (Design: sufficient; tag deferred.)
+- Editor-invite two-way handshake assumes the invitee can round-trip a key (co-present QR/paste). Is an **async / remote pseudonymous editor invite** an in-scope use case, or is co-presence an accepted v1 constraint? (Design: co-presence assumed for v1; async invite is a follow-on.)
+- Is "narrow now / universal-ready / migrate nothing" holding, given the manifest's open `role`/`rule` enums — v1 only *serializes* the site shape even though the enum space is open.
