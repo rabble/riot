@@ -279,12 +279,22 @@ struct CommunityJoinSheet: View {
     @Binding var pastedReference: String
     let onDone: () -> Void
 
+    /// A share reference is never capitalized; the auto-capitalization modifier is
+    /// iOS-only, so it is applied only there — macOS shares this source.
+    private var joinReferenceField: some View {
+        let field = TextField("Paste a community link", text: $pastedReference, axis: .vertical)
+        #if os(iOS)
+        return field.textInputAutocapitalization(.never)
+        #else
+        return field
+        #endif
+    }
+
     var body: some View {
         NavigationStack {
             Form {
                 Section {
-                    TextField("Paste a community link", text: $pastedReference, axis: .vertical)
-                        .textInputAutocapitalization(.never)
+                    joinReferenceField
                         .autocorrectionDisabled()
                         .accessibilityIdentifier("join-reference-field")
                 } footer: {
