@@ -210,4 +210,4 @@ Development patterns and standards are documented in `guides/`:
 
 - The gateway (`apps/gateway/`) renders newswire content only — it never touches private group data.
 - Release profile uses `panic = "unwind"` so the FFI boundary can catch panics and quarantine the session; do not change to abort.
-- Native apps persist nothing to disk yet (Phase 0A uses in-memory stores); durable SQLite persistence is wired in core but not yet surfaced through FFI.
+- Native apps persist to a durable SQLite database via `open_local_profile_with_database(db_path)` / `restore_local_profile_with_database(...)` in `riot-ffi`. In-memory profiles still exist (`open_local_profile()`) and are what the tests and fixtures use.

@@ -2,6 +2,7 @@
 .beads/
 .claude/
 .metaswarm/
+.zcode/
 .clearance-rendered-preview-*/
 target/
 .env
