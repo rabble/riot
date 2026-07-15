@@ -1,7 +1,7 @@
 # Composite Site / Namespace-Manifest Design
 
 **Date:** 2026-07-15
-**Status:** Design — revised after design-review gate round 3 (4/5 approved through round 2; round-3 Security confirmed prior blockers closed and surfaced one narrower ticket-freshness blocker, now addressed; pending final Security confirmation)
+**Status:** Design — **gate PASSED (accepted 2026-07-15)**. PM/Designer/Architect/CTO approved (code-verified); Security's blockers resolved across 3 rounds, the final ticket-freshness fix applied per its pre-committed approval. User accepted at the 3-round boundary rather than run a 4th Security pass. Next: writing-plans → plan-review gate.
 **Scope:** v1 "indymedia site" as a composite of typed Willow namespaces bound by an owner-signed manifest, with delegated editorial write, dual moderation, and policy-driven transport (iroh built, arti parked).
 
 **Revision note (round 3 gate):** the signed ticket now binds **freshness** — a monotonic `epoch` + `exp` inside the signature (§5.1), so a genuinely-root-signed *stale* lower-floor ticket can't be replayed against a returning follower (refused below the durable epoch floor) and is TTL-bounded for a first-time follower; unknown `require` tokens **fail closed**; the `mod_epoch` heartbeat now carries a **`mod_set_digest`** committing to the revoke/tombstone set, so *tail*-suppression by a withholding provider is detectable (not just middle gaps). Documented that escalating a site's `require` cannot revoke already-distributed tickets without key rotation (ties to the parked successor-key slice).
