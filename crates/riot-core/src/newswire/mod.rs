@@ -5,6 +5,7 @@ mod entry;
 mod model;
 mod path;
 mod projection;
+mod share;
 mod store;
 
 /// Stable Newswire construction and inspection failures. Dependency-specific
@@ -69,6 +70,11 @@ pub use path::{classify_newswire_path, newswire_path, NewswirePathKind};
 pub use projection::{
     project, NewswireProjection, NewswireProjectionError, PostTreatment, ProjectedEditorialAction,
     ProjectedPost, ProjectionClockV1, MAX_FUTURE_SKEW_MICROS, MAX_PROJECTED_RECORDS,
+};
+pub use share::{
+    build_share_reference, decode_share_reference, encode_share_reference,
+    verify_descriptor_matches, NewswireShareReferenceV1, ShareReferenceError,
+    SHARE_REFERENCE_PREFIX,
 };
 pub use store::{
     contributors_for_space, load_space_descriptor, load_space_records, project_space,

@@ -10,8 +10,10 @@
 use std::collections::BTreeMap;
 
 use riot_core::newswire::{
-    create_signed_editorial_action, create_signed_news_post, create_signed_space_descriptor,
-    project_space, AlertProfileV1, EditorialActionKind, EditorialActionV1, NewsPostV1,
+    build_share_reference, create_signed_editorial_action, create_signed_news_post,
+    create_signed_space_descriptor, decode_share_reference, encode_share_reference,
+    encode_space_descriptor, load_space_descriptor, project_space, AlertProfileV1,
+    EditorialActionKind, EditorialActionV1, NewsPostV1, NewswireShareReferenceV1,
     OperationalProfileV1, ProjectionClockV1, RequestKind, RequestProfileV1, SignedNewswireRecord,
     SpaceDescriptorV1,
 };
@@ -211,6 +213,31 @@ pub struct NewswireProjectionView {
     pub future_quarantine: Vec<String>,
 }
 
+/// A digest-bound reference to a community newswire space, suitable for a share
+/// link or QR payload. `encoded` is the canonical `riot://newswire/join/v1/...`
+/// string; the three hex coordinates are surfaced alongside it so a native
+/// caller can display or pin them without re-parsing. The `content_digest` binds
+/// the descriptor's canonical bytes, so a substituted community name or roster
+/// is detectable on import.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct NewswireShareReference {
+    pub namespace_id: String,
+    pub descriptor_entry_id: String,
+    pub content_digest: String,
+    pub encoded: String,
+}
+
+impl NewswireShareReference {
+    fn from_core(reference: &NewswireShareReferenceV1) -> Self {
+        NewswireShareReference {
+            namespace_id: hex(&reference.namespace_id),
+            descriptor_entry_id: hex(&reference.descriptor_entry_id),
+            content_digest: hex(&reference.content_digest),
+            encoded: encode_share_reference(reference),
+        }
+    }
+}
+
 #[uniffi::export]
 impl MobileProfile {
     /// Creates and signs a newswire space descriptor using this profile's
@@ -387,6 +414,80 @@ impl MobileProfile {
                 .collect())
         })
     }
+
+    /// Builds the digest-bound share/join reference for a space descriptor this
+    /// profile holds. The descriptor must already be in the store (created or
+    /// imported); the content digest is recomputed from its canonical payload,
+    /// so the reference always reflects the descriptor's real content.
+    pub fn newswire_share_reference(
+        &self,
+        space_descriptor_entry_id: String,
+    ) -> Result<NewswireShareReference, MobileError> {
+        with_active(&self.inner, |profile| {
+            let descriptor_id = parse_entry_id(&space_descriptor_entry_id)?;
+            let descriptor = load_space_descriptor(&profile.store, descriptor_id)
+                .map_err(map_newswire_store_error)?;
+            let reference =
+                build_share_reference(&descriptor).map_err(|_| MobileError::Internal)?;
+            Ok(NewswireShareReference::from_core(&reference))
+        })
+    }
+}
+
+/// The WILLIAM3 content digest (hex) of a space descriptor built from the given
+/// input and namespace. Deterministic and profile-independent: the cross-platform
+/// golden vector uses it to prove Rust, iOS, and Android encode identical
+/// descriptor bytes (a shared digest implies shared canonical CBOR).
+#[uniffi::export]
+pub fn newswire_descriptor_content_digest(
+    input: NewswireSpaceInput,
+    namespace_id: String,
+) -> Result<String, MobileError> {
+    let namespace = parse_entry_id(&namespace_id)?;
+    let editorial_roster = input
+        .editorial_roster
+        .iter()
+        .map(|key| parse_entry_id(key))
+        .collect::<Result<Vec<_>, _>>()?;
+    let descriptor = SpaceDescriptorV1 {
+        namespace_id: namespace,
+        name: input.name,
+        summary: input.summary,
+        languages: input.languages,
+        geographic_tags: input.geographic_tags,
+        topic_tags: input.topic_tags,
+        editorial_roster,
+        predecessor: None,
+        successor: None,
+    };
+    let canonical = encode_space_descriptor(&descriptor).map_err(|_| MobileError::InvalidInput)?;
+    Ok(hex(&riot_core::willow::william3_digest(&canonical)))
+}
+
+/// Encodes a share reference from its three hex coordinates to the canonical
+/// `riot://newswire/join/v1/...` string. Deterministic across platforms.
+#[uniffi::export]
+pub fn newswire_encode_share_reference(
+    namespace_id: String,
+    descriptor_entry_id: String,
+    content_digest: String,
+) -> Result<String, MobileError> {
+    let reference = NewswireShareReferenceV1 {
+        namespace_id: parse_entry_id(&namespace_id)?,
+        descriptor_entry_id: parse_entry_id(&descriptor_entry_id)?,
+        content_digest: parse_entry_id(&content_digest)?,
+    };
+    Ok(encode_share_reference(&reference))
+}
+
+/// Parses a canonical share-reference string back into its coordinates. Rejects
+/// any string that is not the exact scheme with three 32-byte hex components.
+#[uniffi::export]
+pub fn newswire_decode_share_reference(
+    encoded: String,
+) -> Result<NewswireShareReference, MobileError> {
+    let reference = decode_share_reference(&encoded).map_err(|_| MobileError::InvalidInput)?;
+    Ok(NewswireShareReference::from_core(&reference))
 }
 
 /// Imports a signed newswire record into the store via the standard

@@ -16,4 +16,5 @@ zeroize = { workspace = true }
 
 [dev-dependencies]
 minicbor = { workspace = true }
+serde_json = { workspace = true }
 tempfile = { workspace = true }
