@@ -1,107 +1,131 @@
 # Composite Site / Namespace-Manifest Design
 
 **Date:** 2026-07-15
-**Status:** Design — pending design-review gate
-**Scope:** v1 "indymedia site" as a composite of typed Willow namespaces bound by a signed manifest, with delegated editorial write, dual moderation, and policy-driven transport (iroh built, arti parked).
+**Status:** Design — revised after design-review gate round 1 (pending round 2)
+**Scope:** v1 "indymedia site" as a composite of typed Willow namespaces bound by an owner-signed manifest, with delegated editorial write, dual moderation, and policy-driven transport (iroh built, arti parked).
+
+**Revision note (round 1 gate):** collapsed editorial + moderation into a single owned "masthead" namespace (was two, which made the moderation trust-root incoherent); moved the transport floor into the signed ticket (bootstrap leak defeated fail-closed); added a durable monotonic manifest-version floor (rollback downgrade); made `capability.is_owned()` a load-bearing admission **invariant** rather than a test (a communal cap can name an owned namespace); enumerated the full admission-gate surface (a 4th gate exists); added Unit 0 for owner-side cap minting/signing/delegation-issuance (was unbuilt and unassigned); added a resolved view-model contract with honest degradation states; scoped person-ban honestly (inert in communal namespaces).
 
 ---
 
 ## 1. Problem & Motivation
 
-Today in Riot, joining a space is fully **open**: `join_public_space(namespace_ref)` starts reconciling someone's public namespace and mints a per-community author — no gate, no approval, no request. willow25 ships the capability machinery (owned namespaces, meadowcap delegation, read/write caps, `PrivateInterest`) but Riot uses **only** self-minted communal write caps and explicitly *rejects* owned caps and delegations at admission (`import/bundle.rs:496`). Remote reach doesn't exist — discovery is nearby (BLE/LAN) or an out-of-band share link.
+Today in Riot, joining a space is fully **open**: `join_public_space(namespace_ref)` starts reconciling someone's public namespace and mints a per-community author — no gate, no approval, no request. willow25 ships the capability machinery (owned namespaces, meadowcap delegation, read/write caps, `PrivateInterest`) but Riot uses **only** self-minted communal write caps and explicitly *rejects* owned caps and delegations at admission. Remote reach doesn't exist — discovery is nearby (BLE/LAN) or an out-of-band share link.
 
 We want the **indymedia model**: public "sites" you find and follow by syncing, with a real editorial gate (who may publish articles), open participation (comments, open-publishing wire), moderation (ban a person, hide content), remote reach over the internet, and honest privacy properties for an activist user base.
 
-This spec designs that as a **composite site**: one logical entity presented as a single surface, composed of several typed namespaces each with its own rule, bound by an owner-signed manifest.
+This spec designs that as a **composite site**: one logical entity presented as a single surface, composed of typed namespaces each with its own rule, bound by an owner-signed manifest.
 
-### Scope decisions (locked in brainstorming)
+### Scope decisions (locked in brainstorming + round-1 gate)
 
-- **Narrow now, universal-ready.** v1 designs *only* the indymedia site type. The manifest schema is generic enough to later describe `community`/`page`, but v1 **migrates nothing**.
+- **Narrow now, universal-ready.** v1 designs *only* the indymedia site type. The manifest schema is generic enough to later describe `community`/`page`, but v1 **migrates nothing** and serializes only the site shape.
 - **Write gate = owned namespace + meadowcap delegation.** Multi-editor from v1 (owner delegates section-scoped write caps).
-- **Transport = policy-driven, iroh built / arti parked / fail-closed.** The manifest declares reachability policy; the client obeys.
-- **Moderation = full: revoke (person) + tombstone (content), dual-tier (admission best-effort + render guarantee).**
-- **Binding model = Approach A:** manifest is an owner-signed record inside the editorial namespace E. Single root of trust = E's owner key.
+- **Transport = policy-driven, iroh built / arti parked / fail-closed**, with the transport floor carried in the **signed ticket** (not only inside the namespace).
+- **Moderation = revoke (person, cap-holders only) + tombstone (content), dual-tier (admission best-effort + render guarantee).**
+- **Binding model = Approach A:** manifest is an owner-signed record at a reserved, non-delegatable path inside the owned masthead namespace. Single root of trust = the masthead owner key.
+- **Key recovery:** v1 has a **single root key, no rotation/recovery** — documented limitation (§9). Successor-key/rotation is a named future slice.
+- **`require:arti` sites:** creatable in v1 but **unfollowable** until the arti channel lands; clients fail closed.
+- **QR:** generation + camera scanning built on iOS + Android in v1 (Unit 6).
 
 ### Out of scope (parked, dependent slices)
 
 - Gated-**read** spaces / private groups (`PrivateInterest` / MLS). v1 sites are read-open.
 - Gossip site-directory discovery. v1 discovery = handed ticket/QR/share-ref.
-- The **arti/Tor** transport channel (embedding + onion-service hosting). Policy ships; channel is a follow-on.
+- The **arti/Tor** transport channel (embedding + onion-service hosting). Policy + fail-closed ship; channel is a follow-on.
 - **nym** mixnet transport — research only.
+- **Owner-key rotation / successor keys / threshold multisig** — future slice.
+- **Automated anti-flood** (rate-limit / proof-of-work / per-author accumulation) for the open communal namespaces — future slice.
 - Redefining `community`/`page` as composites (the universal model). Schema is ready; migration is a later decision.
 
 ---
 
 ## 2. Architecture
 
-**One composite site = 4 typed namespaces + a manifest record.**
+**One composite site = 3 typed namespaces + a manifest record.**
 
 ```
-Site  (identity = E owner key)
-├─ E  editorial   OWNED     only owner + delegates write   → articles, masthead, MANIFEST
-├─ C  comments    COMMUNAL  open, own-subspace, unlinkable  → threads
-├─ W  open-wire   COMMUNAL  open publishing                 → tips / wire column
-└─ M  moderation  OWNED (E key)  owner (+ deleg mods) write → tombstones, revocations
+Site  (identity = O owner key)
+├─ O  masthead   OWNED    single owner keypair = root of trust
+│    ├─ /manifest       reserved, NON-DELEGATABLE — owner (owned, zero-deleg cap) only
+│    ├─ /articles/<section>/…   delegatable to editors (section-scoped write caps)
+│    └─ /mod/           reserved, NON-DELEGATABLE by editors — owner (+ deleg moderators)
+├─ C  comments   COMMUNAL open, own-subspace, unlinkable  → threads
+└─ W  open-wire  COMMUNAL open publishing                 → tips / wire column
 ```
 
-- **E / M are owned** namespaces (rooted in a namespace keypair). Only the owner key — and keys it delegates to — may write.
-- **C / W are communal** — today's open publishing, unchanged: any key writes its own subspace, authors unlinkable by design.
-- Read is **open** on all four (public site). Follow = sync.
+- **O is one owned namespace** rooted in a single namespace keypair. Editorial articles, the manifest, and moderation records all live in O, separated by **path region**. This makes "root of trust = O owner key" literally true for all three, and lets moderation sync *with* editorial (no cross-namespace "did M arrive?" gap on the owned side).
+- The **manifest** and **moderation** paths are **reserved and never delegated** — the owner only ever mints editor caps whose `path_prefix` is under `/articles/…`, so a delegated editor can never write the manifest or a revoke/tombstone.
+- **C / W are separate communal** namespaces — today's open publishing, unchanged: any key writes its own subspace, authors unlinkable by design. (They must be separate namespaces because the *rule class* differs from O — see invariant 1.)
+- Read is **open** on all three (public site). Follow = sync.
 
 ### 2.1 Manifest record (Approach A)
 
-Lives in **E**, signed by E's owner key:
+Lives at `O:/manifest`, signed by O's owner (an **owned, zero-delegation** cap whose receiver == O owner key):
 
 ```
 site-manifest v1 {
-  root:            <E owner pubkey>          # self-attesting: == E namespace owner
+  root:            <O owner pubkey>          # self-attesting: == O namespace owner key
   members: [
-    { ns: E, role: editorial,  rule: owned-write,   display: front/articles },
-    { ns: C, role: comments,   rule: communal-open, display: under-articles },
-    { ns: W, role: open-wire,  rule: communal-open, display: wire-column },
-    { ns: M, role: moderation, rule: owned-write,   display: none/overlay },
+    { ns: O, role: masthead,  rule: owned-write,   display: front/articles },
+    { ns: C, role: comments,  rule: communal-open, display: under-articles },
+    { ns: W, role: open-wire, rule: communal-open, display: wire-column },
   ]
-  moderation_ns:   M
+  moderation_path: /mod/                     # where clients read revoke/tombstone (in O)
   transport_policy: { allow: [iroh, arti], require: none | arti }
-  version:         <monotonic>               # latest owner-signed wins
-  layout:          { ... }                   # render hints
+  version:         <monotonic u64>           # durable highest-seen floor; see §5.2
+  layout:          <closed enum>             # resolved section order; NOT free-form hints
 }
 ```
 
-`role` / `rule` / `display` are **open enums** so a future `community`/`page` is describable by the same schema. v1 emits only the site shape.
+`role` / `rule` / `display` are **open enums** so a future `community`/`page` is describable by the same schema; v1 emits only the site shape. `layout` is a **closed enum** resolved by core into a section order the shells render verbatim (no owner-authored render blob parsed in the apps).
 
-### 2.2 Two load-bearing invariants
+### 2.2 Load-bearing invariants
 
-1. **Rule is intrinsic; the manifest only references.** The client derives each member's rule from its namespace **key structure** (`is_owned()` / `is_communal()`) and the manifest's declared `rule` **must agree** — mismatch ⇒ member dropped. A manifest can never relabel a gated namespace as open (or vice versa).
-2. **Root self-attests.** `manifest.root` must equal the owner key of the namespace hosting it (E) and must sign the manifest. A manifest whose root ≠ its hosting-namespace owner ⇒ rejected.
+1. **Rule is intrinsic to key structure; the manifest only references.** The client derives each member's rule class from its namespace **key structure** — `NamespaceId::is_owned()` / `is_communal()` (the marker bit) — and the manifest's declared `rule` **must agree** or the member is **dropped** (with a resolved "unverified member" state, §6). A manifest can never relabel a communal namespace as gated. *Note:* this binds the two **rule classes**, not roles; role-confusion within a class (e.g. swapping which communal ns is "comments" vs "wire") is only producible by the legitimate signer and is display-only — see §9 residual risk.
+2. **Root self-attests.** `manifest.root` must equal the owner key of the namespace hosting it (O) and must sign the manifest with an **owned, zero-delegation** cap. A manifest whose root ≠ its hosting-namespace owner, or carried by a delegated cap, is rejected.
+3. **Site identity binds the root.** A follower follows a specific site root (from the ticket, §5). On admission, O's namespace owner key must equal the followed root — a different owned namespace is a different site, never silently accepted as this one.
 
 ---
 
 ## 3. Editorial write & delegation
 
-**E is owned. Two write paths:**
+**O is owned. Two write paths:**
 
-- **Owner** — `WriteCapability::new_owned(ns_keypair, owner_subspace)`, grants `Area::full()`. Writes masthead, manifest, any article.
-- **Editors** — owner runs `WriteCapability::try_delegate(owner_kp, area, editor_key)` where
-  `area = { subspace: editor's, path_prefix: /section/*, time_range: [now, expiry] }`.
-  Section-scoped (path prefix), per-editor (subspace), **time-boxed** (expiry = soft-revoke lever). Columnist = narrower path; guest = short expiry.
+- **Owner** — `WriteCapability::new_owned(O_keypair, owner_subspace)`, grants `Area::full()`. Writes manifest (`/manifest`), moderation (`/mod/`), any article.
+- **Editors** — owner runs `WriteCapability::try_delegate(O_owner_kp, area, editor_key)` where
+  `area = { subspace: editor's, path_prefix: /articles/<section>/*, time_range: [now, expiry] }`.
+  Section-scoped (path prefix **under `/articles/`only** — never `/manifest` or `/mod/`), per-editor (subspace), **time-boxed** (expiry = soft-revoke lever). Columnist = narrower path; guest = short expiry.
 
-**The delegated cap IS the editorial invite.** The delegation artifact travels via iroh / QR / share-ref. Holding it = you can write E; peers accept your entries because the chain verifies to E's owner. No pending-request server — the capability is the grant.
+**The delegated cap IS the editorial invite** — but it is a **two-way handshake**, not a one-way handoff: `try_delegate` binds the invitee's subspace, so the owner needs the **invitee's author key first**. Flow: invitee presents key (QR/paste) → owner mints section-scoped cap → returns cap (QR/paste). Peers then accept the editor's entries because the chain verifies to O's owner. No pending-request server.
 
 ### 3.1 Admission change (the load-bearing edit)
 
-Today `import/bundle.rs:496` rejects `is_owned() || !delegations().is_empty() || !namespace.is_communal()`. New logic for **owned** namespaces:
+**Do not hand-roll chain verification.** willow25's validated capability decode (`is_valid()` — checks the owned genesis root signature, every delegation link's signature + strict area nesting) plus `does_authorise` (checks `includes(entry)` over namespace + subspace + path + **time_range**, and the receiver signature) already perform the full cryptographic chain check correctly. The Riot-side edit is **minimal**:
+
+Today the admission gate rejects `capability.is_owned() || !capability.delegations().is_empty() || !namespace.is_communal()`. Replace with:
 
 ```
-if namespace.is_owned():
-    verify cap chain roots at namespace owner key       # genesis == manifest.root
-    verify each delegation link (area containment + correct signer)  # try_delegate rules
-    verify entry ∈ final granted area                   # includes(entry)
-    verify entry timestamp ∈ cap time_range
-    then existing checks: WILLIAM3 digest + subspace sig  # does_authorise
+if namespace_id.is_owned():
+    REQUIRE capability.is_owned()                 # INVARIANT — a communal genesis is
+                                                  # unconditionally is_valid() and can name
+                                                  # an owned namespace_id; without this,
+                                                  # anyone forges masthead writes
+    REQUIRE genesis.namespace_key == namespace_id == followed_site_root   # invariant 3
+    then let verify_entry / does_authorise run    # willow25 validates the rest
+else:  # communal
+    existing communal rule, unchanged             # C, W
 ```
 
-Applied at all three admission mirrors: `import/bundle.rs:496`, `session.rs:658`, `sync/state.rs:277`. **Communal namespaces (C, W) keep today's rule unchanged.**
+**`capability.is_owned()` is a stated invariant, not merely a test.** (Verified: `NamespaceId::is_owned()` is only the LSB marker bit and is not bound to the cap's genesis variant.)
+
+**Enumerate the ENTIRE admission/inspection surface — this is one atomic change.** Grep for every gate that branches on `is_owned()` / `is_communal()`. Known gates:
+- `crates/riot-core/src/import/bundle.rs:496` — `verify_frame` (the single policy chokepoint; edit the policy **here only**).
+- `crates/riot-core/src/session.rs:658` — `into_authorised_entry` (routes through `decode_bundle`→`verify_frame`; add a test seam, do **not** duplicate the policy).
+- `crates/riot-core/src/sync/state.rs:277` — namespace-id equality (routes through the same; test seam).
+- `crates/riot-core/src/newswire/entry.rs:326` — **4th gate**, newswire inspection/projection path, also rejects owned caps. Editorial articles hit this; must be updated consistently.
+- FFI **alert/non-alert classification** splits records in **two** places (`mobile_state.rs`: `inspectable_entries` + `list_current_entries`); new owned record families (article, manifest, revoke, tombstone) must be added to **both** or bundles reject / the board bricks (prior art: newswire 0B).
+
+A **cross-gate consistency test** asserts an owned-namespace editorial entry admitted at `verify_frame` is also accepted/classified at every other gate.
 
 **Retire the string-roster.** The app-level `editorial_roster` (`newswire_ffi.rs:43`) is replaced/backed by the cap check — cryptographic, not a name-compare.
 
@@ -109,36 +133,43 @@ Applied at all three admission mirrors: `import/bundle.rs:496`, `session.rs:658`
 
 ## 4. Moderation (dual mechanism)
 
-M is owned (E key); only owner (+ optionally delegated moderators, same delegation machinery) writes it. Two owner-signed record types, **two ban targets**:
+Moderation records live at `O:/mod/` (owned; only owner + explicitly delegated moderators write them — moderator caps are `/mod/`-scoped and **cannot target `/manifest` or the root**). Two owner-signed record types, **two ban targets**:
 
 - **Ban a PERSON** — `revoke { author_key, effective_ts }`
 - **Ban CONTENT** — `tombstone { target_ns, target_entry }`
 
-### 4.1 Two-tier enforcement (belt + suspenders)
+### 4.1 Honest scope (round-1 gate correction)
+
+- **Person-ban only bites capability-holders** (editors in O). In **C / W**, authors are deliberately unlinkable, disposable self-minted subspaces — a flooder mints a fresh key per post, so `revoke{author_key}` is **inert** there. The real lever for C/W is **content-tombstone** (per-entry, whack-a-mole). **Automated anti-flood is parked** (§9 risk). The design does not claim to solve anonymous flooding in v1.
+- **Root is exempt from revocation.** Render hard-ignores any `revoke{author_key == manifest.root}`; a rogue delegated moderator cannot brick the site by revoking the owner, and cannot tombstone `/manifest`. Owner records take precedence over moderator records on conflict.
+
+### 4.2 Two-tier enforcement (belt + suspenders)
 
 **Tier 1 — admission, best-effort (shrinks the leak):**
 - Cap **expiry** (`time_range`) — self-enforcing, airtight for routine offboarding.
-- **Timestamp-monotonic** reject (entry ts < max-seen-for-author) — stops *lazy* backdating. **Not airtight:** an attacker controlling delivery order can seed a backdated entry to a fresh peer before the higher-timestamp entries arrive. Accepted limitation.
-- Deny-list check against M's revocations where M is synced.
+- **Timestamp-monotonic** reject (entry ts < max-seen-for-author). Stops *lazy* backdating; **not airtight** — an attacker controlling delivery order can seed a backdated entry to a fresh peer first. Accepted limitation.
+- Deny-list check against `/mod/` revocations where synced.
 
 **Tier 2 — render, the guarantee (closes the leak):**
-- **Hide by author-key:** any entry whose cap-receiver ∈ revoked keys ⇒ not rendered. Identity is signed and unforgeable — holds regardless of timestamp lies or delivery order.
-- **Hide by entry-id:** tombstoned entries ⇒ not rendered.
-- Applied as a filter over the whole composite (E/C/W) every render.
+- **Hide by author-key** (cap-holders): any O entry whose cap-receiver ∈ revoked keys → rendered as a **`Tombstoned`/`Hidden` placeholder row** (content nulled, identity + ordering + freshness preserved — **not vanished**, per Riot's accountable-degradation convention).
+- **Hide by entry-id:** tombstoned entries → same placeholder treatment.
+- Applied as a filter over the whole composite every render.
 
-### 4.2 The guarantee, stated honestly
+### 4.3 The guarantee, stated honestly
 
-A banned person or post may still exist in *some peer's store* — you cannot delete bytes from others' disks, nor force global sync order. But **on any client rendering the site with M synced, it is invisible.** Publication = what is shown. Admission shrinks the window; render closes it.
+A banned person or post may still exist in *some peer's store* — you cannot delete bytes from others' disks, nor force global sync order. But **on any honest client that has synced `/mod/` (see freshness, below), it is invisible.** The guarantee is scoped to honest clients with moderation synced; a forked build that strips the filter is outside the trust model.
 
-**Timestamp reality:** Willow enforces last-writer-wins only *at the same coordinate*; there is **no global per-author monotonic clock**. A new article at a new path may carry any timestamp within the cap's `time_range`, so a determined revoked editor can backdate. This is why the *guarantee* rests on **identity at render**, not on the clock at admission.
+**"Moderation synced" is a positive freshness signal, not an absence.** Willow reconcile gives no completeness guarantee, so the fail-safe cannot rest on "haven't seen M." Define: moderation is *current* if a reconcile round with a provider completed within a freshness window; the resolved view model carries this as a state (§6), distinguishing *moderation-loading* from *moderation-current-and-empty*.
 
-**Keep pre-ban good work:** owner may maintain an explicit **re-endorse allow-list** so a fired editor's earlier articles are not auto-hidden unless intended.
+**Timestamp reality:** Willow enforces last-writer-wins only at the same coordinate; there is **no global per-author monotonic clock**, so a determined revoked editor can backdate a new article within its cap window. This is why the *guarantee* rests on **identity at render**, not the clock at admission.
+
+**Keep pre-ban good work:** owner may maintain an explicit **re-endorse allow-list**. Expiry vs revoke: a lapsed cap does **not** retroactively hide already-accepted in-window articles (they stay rendered); revoke + allow-list is the lever for hiding past work selectively.
 
 ---
 
 ## 5. Transport (policy-driven)
 
-Transport is a `FrameChannel` family; every channel carries the same `SyncFrame` bytes through the existing `ByteSyncSession` bridge; the transport-agnostic reconcile FSM (`sync/state.rs`) never learns which channel it's on.
+Transport is a `FrameChannel` family; every channel carries the same `SyncFrame` bytes through the existing `ByteSyncSession` bridge; the transport-agnostic reconcile FSM (`sync/state.rs`, explicitly "owns no transport") never learns which channel it's on.
 
 ```
 FrameChannel family:
@@ -148,97 +179,120 @@ FrameChannel family:
   nym                      research — not v1/v2
 ```
 
-### 5.1 Manifest-declared policy → client obeys
+**Placement:** the concrete iroh transport + its tokio runtime live in **`riot-ffi` (or a dedicated transport crate), NOT `riot-core`** — the reconcile core stays transport-agnostic and headless-testable. Only a thin adapter feeds `SyncFrame` bytes: `iroh Connection ⇄ ByteSyncSession ⇄ ReconcileSession`.
+
+### 5.1 Ticket carries the transport floor (bootstrap fix)
+
+The `require` floor is duplicated into the **signed ticket / share-ref**, out-of-band, so the client knows the floor **before opening any connection**:
 
 ```
-transport_policy: { allow: [iroh, arti], require: none | arti }
+riot://site/v1/<O-namespace>?root=<owner-key>&require=<none|arti>&digest=<content_digest>&node=<NodeAddr>
 ```
-- Public newswire → `require:none` → client uses fast iroh.
-- Dissident site → `require: arti` → onion only.
+- `require` in the ticket is the **authoritative pre-connection floor** — a `require:arti` site is never dialed over iroh even for the first manifest fetch (this defeats the bootstrap IP-leak the round-1 gate found).
+- `digest` binds the site identity/manifest (parity with `NewswireShareReference.content_digest`) so a substituted root/manifest is detectable.
+- `node` is an **untrusted seeding hint**, never site identity.
 
-### 5.2 FAIL CLOSED (critical security property)
+### 5.2 Anti-rollback (manifest downgrade fix)
 
-If a site's `require` names a transport the client cannot provide, the client **refuses to connect and warns** — it MUST NEVER silently fall back to iroh and leak the follower's IP. Downgrade-to-leak is the bug that gets an activist hurt. The policy floor is a hard gate, not a preference. **Consequence in v1:** a `require: arti` site cannot be served until the arti channel lands — clients correctly fail closed rather than offer false privacy.
+The client persists, in the durable profile, the **highest manifest `version` seen per site**, and **refuses any lower version** (Willow LWW only protects same-coordinate writes, so this floor is Riot-side). Two conflicting owner signatures at the same version = **equivocation alarm surfaced to the user** (itself a compromise signal), never a silent pick. `require` may never be lowered below the durably-seen floor **or** the ticket floor, whichever is stricter.
 
-### 5.3 iroh channel (v1)
+### 5.3 FAIL CLOSED (critical security property)
 
-- iroh is a Rust crate ⇒ integrate in `riot-core`/`riot-ffi`, not per-app. An iroh `Connection` stream ⇄ `ByteSyncSession` ⇄ `ReconcileSession`.
-- **Node keypair** stored in the durable profile; **transport identity ≠ content identity** (NodeId never reveals authorship).
-- **Ticket / share-ref:** `riot://site/v1/<E-namespace>/<manifest-hint>?node=<NodeAddr>`. NodeId→address via iroh discovery (pkarr/DNS/DHT).
-- **Seeding:** the gateway (`apps/gateway/`) runs an always-on iroh node seeding the site's namespaces; any follower who holds data reseeds others (Willow set-reconcile). Origin offline ≠ site dead while ≥1 provider is reachable.
+If a site's floor names a transport the client cannot provide, the client **refuses to connect and shows a resolved warning state** (§6) — it MUST NEVER silently fall back to iroh and leak the follower's IP. **v1 consequence (chosen):** `require:arti` sites are **creatable but unfollowable** until the arti channel lands; every follower correctly fails closed with a clear "this site requires Tor, unavailable in this version" state. No false privacy.
 
-### 5.4 iroh privacy properties (documented, not solved)
+### 5.4 iroh channel (v1)
 
-iroh gives **confidentiality (encrypted content), not anonymity.** Relays see NodeId ↔ NodeId, IP, timing, volume; peers learn each other's IP; the follow-graph is inferable. Fine for public sites (content isn't secret; metadata is the residual risk). Metadata privacy is the **arti** channel's job (parked). v1 cheap mitigations: **ephemeral follower NodeId** (clients rotate; only seeds need stable identity), transport-identity ≠ content-identity, self-hosted-relay option.
+- Node keypair stored in the durable profile; **transport identity ≠ content identity** (NodeId never reveals authorship). **Follower NodeId is ephemeral** (rotates; only seeds need stable identity) to reduce cross-session linkability.
+- NodeId→address via iroh discovery (pkarr/DNS/DHT).
+- **Seeding:** the gateway (`apps/gateway/`) runs an always-on iroh node seeding the site's namespaces; any follower who holds data reseeds others (Willow set-reconcile). Origin offline ≠ site dead while ≥1 provider is reachable. (Centralization/liability tradeoff — §9.)
+- **panic=unwind interaction:** detached async iroh tasks are **not** on the FFI call stack; the adapter must catch task panics and route them to session quarantine, and must **never hold the arbiter mutex across an `await`** (would deadlock/serialize the FSM). New FFI handles follow the handle+arbiter pattern (ID + `Arc<Mutex<SessionState>>`, re-acquire per method).
+
+### 5.5 iroh privacy properties (documented, not solved)
+
+iroh gives **confidentiality (encrypted content), not anonymity.** Relays + the always-on gateway seed learn follower IP ↔ NodeId + timing; ephemeral NodeId does **not** hide IP from the seed. For public sites the residual harm is the **follow-graph** (following == exposing your IP to a seed). Honestly stated; metadata privacy is the parked **arti** channel's job.
 
 ---
 
-## 6. Composite render
+## 6. Composite render + resolved view-model contract
 
-Composition/overlay logic lives in **Rust core** (`riot-core`, headless-testable), exposed via FFI as a resolved **view model**; native apps render the view model with no business logic (per CLAUDE.md shared-core rule).
+Composition/overlay logic lives in **Rust core** (`riot-core`, headless-testable), exposed via FFI as a **resolved view model** (like `NewswireProjectionView`); native apps render it with **no business logic** (shared-core rule). The contract MUST enumerate (so iOS + Android don't diverge):
 
-**Pipeline:**
+- **Per-item trust-tier tag, resolved by core** — `editorial | open-wire | comment`. Core owns "W never masquerades as editorial"; the shells only style what core tagged. (Today there is no first-class trust flag — this is new.)
+- **Moderation treatment per item** — reuse `NewswirePostTreatment` (`Visible | Hidden | Tombstoned`); moderated rows stay as accountable placeholders, never dropped.
+- **Composite degradation enum** (named, plain-language, honest — matching `CommunityUnavailable` / `pendingFirstSync` convention). At minimum:
+  - `moderation-loading` — `/mod/` not yet current; open namespaces held (not blank) with "posts appear once moderation syncs."
+  - `editorial-only` — O synced, C/W pending ("comments loading").
+  - `transport-blocked` — required transport unavailable ("this site requires Tor, unavailable in this version").
+  - `manifest-invalid` / `manifest-rollback-alarm` — bad or downgraded manifest.
+  - `member-unverified` — a member dropped for rule/key-structure mismatch (§2.2 inv 1); shown as "this section couldn't be verified," never a silent disappearance.
+- **Transport status field** carrying the fail-closed reason.
+- **Writer-side state (critical):** an editor whose time-boxed cap has **expired** must be warned **at compose** ("your editorial access expired on <date>"), and a local-but-peer-rejected entry must surface as **failed/pending**, never as "published." Silent write-rejection is the worst publishing UX.
+
+**Render pipeline:**
 ```
-1. Follow site → sync E → read latest site-manifest (owner-signed, highest version wins)
-2. Validate members: key-structure must match declared rule, else DROP member
-3. Sync M FIRST (moderation must be present before showing anything)
-4. Sync E, C, W per transport_policy
-5. Build view:
-     E → articles / masthead   (trusted: cap-chain verified at admission)
-     C → threads under articles (open; author = subspace, unlinkable)
-     W → wire column           (open publishing)
-6. Apply moderation overlay (M):
-     drop entries whose author_key ∈ revoked
-     drop entries whose id ∈ tombstoned
-     keep owner re-endorsed allow-list
-7. Resolve soft links (comment → article parent); tolerate dangling
+1. From ticket: know site root + transport floor. Fail closed if floor unmet (§5.3).
+2. Sync O → read /manifest (owner-signed, owned-zero-deleg; version ≥ durable floor, §5.2).
+3. Validate members: key-structure must match declared rule, else member-unverified.
+4. Sync C, W per transport_policy.  (O carries /mod/, so moderation arrives with editorial.)
+5. Build view, core-resolving trust-tier tags:
+     O:/articles → editorial (cap-chain verified at admission)
+     C           → comment (open; author = subspace, unlinkable)
+     W           → open-wire (open publishing)
+6. Apply moderation overlay from O:/mod/ once moderation-current (freshness, §4.3):
+     revoked cap-holder entries → Tombstoned/Hidden placeholder
+     tombstoned ids            → Tombstoned/Hidden placeholder
+     root exempt; owner-precedence; re-endorse allow-list honored
+7. Resolve soft links (comment → article parent) at render; tolerate dangling (collapse).
 ```
-
-- **Progressive degradation:** have E not C ⇒ articles render, comments "loading." **M-not-synced ⇒ fail-safe: do not render open namespaces** (blank beats un-moderated). Owner-authored E always safe (root never revoked/tombstoned).
-- **Trust tiers legible in UI:** E editorial = full trust, front page; W open-wire = visibly "unverified/open submission," never masquerading as editorial; C comments = open, unlinkable.
-- **Soft links** across namespaces resolved at render only (C is open — no referential-integrity constraint at admission); dangling ref ⇒ collapse gracefully.
+- **Soft links** across namespaces resolved at render only (C is open — no admission-time referential integrity); dangling ref → graceful collapse.
 
 ---
 
-## 7. Work units (decomposition)
+## 7. Owner-side capability plumbing (was unbuilt — round-1 gate)
+
+`crates/riot-core/src/willow/owned.rs` is currently **generation-only** (mints the namespace; its comments defer the owned write-capability, owned author, and sealed owned-root envelope to "later tasks"). Nothing yet **mints** an owned write cap, **issues** section-scoped delegations, or **signs** records with the owned-root secret. Units 2/3/6 cannot reach green without this, so it is an explicit unit (Unit 0), ordered first:
+
+- Mint the owner's owned `WriteCapability` (`new_owned`) + persist the O keypair in the durable profile.
+- Issue section-scoped, time-boxed delegations (`try_delegate`) — the editorial-invite artifact.
+- Sign manifest / revoke / tombstone / article records with the owned root or a delegated cap.
+- FFI surface for all of the above (handle+arbiter pattern).
+
+---
+
+## 8. Work units (decomposition)
 
 | # | Unit | Touches | Depends |
 |---|---|---|---|
-| **1** | Owned-namespace admission + delegation-chain verify | `import/bundle.rs:496`, `session.rs:658`, `sync/state.rs:277`, `willow/identity.rs` | — |
-| **2** | Site manifest record: schema, sign, validate (root self-attest + rule-intrinsic invariant) | `riot-core` new module, FFI | 1 |
-| **3** | Moderation: revoke + tombstone records; admission best-effort + render filter | `riot-core` moderation module, `sync/state.rs` | 1, 2 |
-| **4** | Composite resolver + view model (per-ns rules, overlay, progressive, soft links) | `riot-core` render module, FFI view model | 2, 3 |
-| **5** | iroh `FrameChannel` + transport-policy + fail-closed gate + ephemeral NodeId | `riot-core`/`riot-ffi` transport, share-ref, gateway seed | 2 |
-| **6** | Native UI: follow-site, composite surface, trust-tier styling, editor-invite (cap handoff) | iOS + Android | 4, 5 |
+| **0** | Owner-side owned-cap minting + delegation issuance + owned-root signing + FFI | `willow/owned.rs`, `riot-core` new, `riot-ffi` | — |
+| **1** | Owned-namespace admission: `is_owned()` invariant + root binding; enumerate & unify ALL gates + FFI classification; cross-gate consistency test | `import/bundle.rs:496` (policy), `session.rs:658`, `sync/state.rs:277`, `newswire/entry.rs:326`, `mobile_state.rs` (×2) | 0 |
+| **2** | Site manifest record (reserved `/manifest`, owned-zero-deleg): schema, sign, validate (invariants 1–3), durable version floor | `riot-core` new module, FFI, durable profile | 0,1 |
+| **3** | Moderation: `/mod/` revoke + tombstone records + admission best-effort + moderator-cap containment + moderation-current freshness signal | `riot-core` moderation module, `sync/state.rs` | 0,1,2 |
+| **4** | Composite resolver + resolved view-model contract (§6): trust-tier tags, treatment, degradation enum, transport-status; consumes Unit 3's overlay data | `riot-core` render module, FFI view model | 2,3 |
+| **5** | iroh `FrameChannel` adapter (in riot-ffi/transport crate) + ticket transport floor + fail-closed + ephemeral NodeId + gateway seed | `riot-ffi`/transport, share-ref, `apps/gateway/` | 2 |
+| **6** | Native UI: follow-site, composite surface, trust-tier styling, degradation/transport states, editor-invite handshake, **QR gen + camera scan (iOS + Android)**, writer expired-cap warning | iOS + Android | 4,5 |
 
-Each unit ships independently behind the shared core. Unit 1 is the critical-path unlock (admission core).
-
----
-
-## 8. Testing (TDD)
-
-- **Unit 1 = adversarial-heavy (security core, most test weight):** forged delegation chain, over-broad area, expired cap, wrong root, cross-namespace cap reuse, communal cap used in an owned namespace.
-- **Manifest:** root≠owner reject; rule/key-structure mismatch reject; version rollback reject; unsigned reject.
-- **Moderation:** render hides revoked-author **even with a backdated timestamp** (the identity-guarantee test); tombstone hides entry; M-not-synced fails safe; re-endorse allow-list survives.
-- **Transport:** **fail-closed test** — `require:arti`, arti absent ⇒ refuse, no iroh fallback (the activist-safety test); ephemeral NodeId rotation; loopback + iroh carry identical frames.
-- **Render:** partial-sync degradation; dangling soft-link collapse; trust-tier separation.
-- **Coverage:** honor `.coverage-thresholds.json` ratchet floor (per CLAUDE.md — not 100%, but must not regress; Rust line floor is CI-enforced).
+Unit 1 is the critical-path security unlock; Unit 0 unblocks everything.
 
 ---
 
 ## 9. Risks
 
-1. **Admission-core edit (Unit 1).** The copy-on-write preview boundary is load-bearing; a bug admits forgeries or corrupts state. Mitigation: adversarial tests first, isolated unit, no other changes bundled.
-2. **arti maturity.** Parked; onion-service *hosting* may be immature on mobile. De-risked by parking + fail-closed (no false privacy meanwhile).
-3. **Timestamp backdating.** Unsolved at admission by design; render-identity guarantee is the backstop. Documented, not hidden.
-4. **Namespace sprawl / sync cost.** 4 namespaces × N sites. Lifecycle: unfollow drops members; monitor sync state growth.
-5. **Universal-model scope-creep.** Schema is generic but v1 migrates nothing; resist redefining `community` now.
+1. **Admission-core edit (Unit 1).** The copy-on-write preview boundary is load-bearing; a bug admits forgeries or corrupts state. *Verified:* admission verification runs on the verify side, outside state mutation (`session.rs:632`), so the CoW boundary is unchanged — but the `is_owned()` invariant and the multi-gate enumeration are the failure modes. Mitigation: adversarial tests first (forged chain, over-broad area, expired cap, wrong root, **communal-cap-in-owned-namespace**, cross-namespace cap reuse, delegation loops), isolated unit, cross-gate consistency test.
+2. **Anonymous flooding of C / W.** The historical indymedia killer. v1 has **no automated anti-flood** — person-ban is inert against rotating communal keys; only per-entry tombstone. Explicitly parked; owner-tombstone is the v1 lever. Automated anti-flood (rate-limit / PoW / accumulation) is a future slice.
+3. **Owner-key loss / compromise / seizure (single root).** v1 = single root key, **no rotation or recovery**: key loss → site unpublishable; device seizure → attacker can publish as the site, revoke real editors, tombstone real reporting. Accepted v1 limitation; successor-keys / rotation / threshold-multisig is a named future slice. Document prominently in user-facing material.
+4. **Gateway-seed centralization/liability.** An always-on seed is a subpoena/takedown/metadata focal point. Deliberate tradeoff: follower-reseed means origin-offline ≠ site-dead, but the seed observes follow-graph metadata. State plainly.
+5. **Manifest rollback / equivocation.** Mitigated by the durable version floor + ticket floor + equivocation alarm (§5.2). Residual: a brand-new follower with no floor takes what it's first served — the ticket `require`/`digest` narrows this.
+6. **arti maturity.** Parked; onion-service hosting may be immature on mobile. De-risked by fail-closed (no false privacy meanwhile) + declarable-but-unfollowable sites.
+7. **Timestamp backdating.** Unsolved at admission by design; render-identity guarantee is the backstop. Documented.
+8. **Member-namespace reframing (residual).** A manifest can reference a victim's communal namespace as its "comments," reframing it under this masthead (display-only; owner-signed). v1 accepts this as display-only; member opt-in cross-attestation is a future option.
+9. **Namespace sprawl / sync cost.** 3 namespaces × N sites. Lifecycle: unfollow drops members; monitor sync-state growth.
+10. **Universal-model scope-creep.** Schema is generic but v1 migrates nothing and serializes only the site shape; resist redefining `community` now.
 
 ---
 
-## 10. Open questions for the design-review gate
+## 10. Open questions for the design-review gate (round 2)
 
-- Is the **manifest a first-class Willow record** or a distinguished path within E? (Assumed: distinguished owner-signed record at a reserved path in E.)
-- Should **delegated moderators** exist in v1, or owner-only moderation to start? (Assumed: delegation machinery reused, owner-only is the common case.)
-- Does the **rule-intrinsic invariant** need a canonical namespace-type tag, or is `is_owned()`/`is_communal()` sufficient to bind role↔rule?
-- Is **"narrow now, universal-ready"** actually buildable without accidentally committing to the universal model in the manifest schema?
+- Is the single-owned-masthead-namespace collapse (O = manifest + articles + moderation by path) the right call vs. keeping moderation a separate owned namespace with its owner key bound in the manifest? (Design picks collapse; simpler trust root.)
+- Is `is_owned()` (marker bit) + `capability.is_owned()` + root-binding a sufficient basis for the rule-intrinsic invariant, or is a canonical namespace-type tag still wanted for defense-in-depth?
+- Does "moderation-current freshness window" have a defensible concrete definition (round count / provider / time) that is testable without being gameable by a withholding provider?
+- Is "narrow now / universal-ready / migrate nothing" holding, given the manifest's open `role`/`rule` enums — is a rule needed that v1 only *serializes* the site shape even though the enum space is open?
