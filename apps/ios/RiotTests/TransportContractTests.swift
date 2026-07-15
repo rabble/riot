@@ -682,9 +682,11 @@ extension TransportContractTests {
         XCTAssertFalse(PairConfirmCodec.isConfirmation(announce))
 
         // The token is fixed-shape and content-free: it embeds none of a community's
-        // bytes, whatever community this device is in.
-        XCTAssertFalse(token.range(of: Data("Riverside Tenants Union".utf8)) != nil)
-        XCTAssertFalse(token.range(of: Data(String(repeating: "3f", count: 32).utf8)) != nil)
+        // bytes, whatever community this device is in — neither the title (UTF-8 on
+        // the wire) nor the namespace (32 RAW bytes on the wire; `3f` × 32 hex is
+        // `0x3f` × 32, which is what a leak would actually look like).
+        XCTAssertNil(token.range(of: Data("Riverside Tenants Union".utf8)))
+        XCTAssertNil(token.range(of: Data(repeating: 0x3f, count: SpaceAnnounceCodec.namespaceBytes)))
     }
 
     /// The rule, on its own: metadata may be disclosed only once BOTH sides have
@@ -719,10 +721,15 @@ extension TransportContractTests {
         // No announce, and nothing carrying A's community name or namespace.
         XCTAssertEqual(aTap.sent.count, 1, "A disclosed more than a bare consent token before B confirmed")
         XCTAssertTrue(PairConfirmCodec.isConfirmation(aTap.sent[0]))
+        // The namespace travels as 32 RAW bytes, not as its hex text
+        // (`FrameCodec.hexBytes`), so the check must look for the raw bytes the wire
+        // actually carries — `aa` × 32 hex is `0xaa` × 32. Asserting absence of the
+        // hex STRING would be a phantom: that encoding never appears on the wire.
+        let aNamespaceWireBytes = Data(repeating: 0xaa, count: SpaceAnnounceCodec.namespaceBytes)
         for frame in aTap.sent {
             XCTAssertThrowsError(try SpaceAnnounceCodec.decode(frame), "A leaked a decodable announce pre-confirmation")
             XCTAssertNil(frame.range(of: Data(aSpace.title.utf8)), "A leaked its community name pre-confirmation")
-            XCTAssertNil(frame.range(of: Data(aSpace.namespaceID.utf8)), "A leaked its namespace pre-confirmation")
+            XCTAssertNil(frame.range(of: aNamespaceWireBytes), "A leaked its RAW namespace bytes pre-confirmation")
         }
         // B has confirmed nothing, so B has disclosed nothing at all.
         XCTAssertTrue(bTap.sent.isEmpty, "B disclosed something before its own human confirmed")
@@ -807,6 +814,44 @@ extension TransportContractTests {
         XCTAssertFalse(NearbyPermissionRecovery.message.isEmpty)
         // The copy explains what still works offline, never a raw permission error.
         XCTAssertFalse(NearbyPermissionRecovery.message.lowercased().contains("error"))
+    }
+
+    /// The ephemeral discovery handle must be per-construction random and NOT
+    /// derived from any community or identity. A handle seeded from the namespace
+    /// or profile would be a stable, passive fingerprint that links a device
+    /// across sessions before anyone confirms anything — a linkability leak the
+    /// opacity gate would not catch, because the handle is advertised openly by
+    /// design. This guards the CALL SITE (`LocalNetworkNearbyService.init`'s random
+    /// nonce), not merely the pure name generator: reseeding the nonce from a
+    /// space or profile would reintroduce the fingerprint and fail here.
+    ///
+    /// `LocalNetworkNearbyService` is the constructor reachable in a unit test —
+    /// its init only builds the identity (advertising/browsing start in
+    /// `startLooking`), so it touches no radio. `CoreBluetoothNearbyService` draws
+    /// its handle from the same random-nonce `FriendlyNameGenerator`, but merely
+    /// constructing it spins up `CBCentralManager` and aborts the xctest host on a
+    /// TCC violation, so its call site is asserted by structural equivalence, not
+    /// exercised here.
+    func testDiscoveryHandleIsPerConstructionRandomAndNotDerivedFromACommunity() {
+        let names = (0..<8).map { _ in LocalNetworkNearbyService().friendlyName }
+
+        // Distinct handles across constructions ⇒ the nonce is per-session random,
+        // not a constant or a function of a fixed input. (16,384-name space over 8
+        // draws: an all-identical run is ~10⁻³⁰, not a real flake.)
+        XCTAssertGreaterThan(
+            Set(names).count, 1,
+            "the discovery handle is identical across constructions — derived from a constant/fixed input, not a per-session nonce"
+        )
+
+        // The service takes no community, and its handle must carry none of one:
+        // not the title (UTF-8 on the wire) nor the 32 RAW namespace bytes.
+        let space = RiotSpace(namespaceID: String(repeating: "cc", count: 32), title: "Riverside Tenants Union")
+        let namespaceWireBytes = Data(repeating: 0xcc, count: SpaceAnnounceCodec.namespaceBytes)
+        for name in names {
+            let handle = Data(name.utf8)
+            XCTAssertNil(handle.range(of: Data(space.title.utf8)), "the discovery handle carried a community title")
+            XCTAssertNil(handle.range(of: namespaceWireBytes), "the discovery handle carried raw namespace bytes")
+        }
     }
 }
 
