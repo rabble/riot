@@ -522,6 +522,12 @@ fn import_signed_newswire(
     match plan.commit().map_err(map_core_error_inner)? {
         CommitOutcome::Committed(_) | CommitOutcome::NoChanges(_) => {}
     }
+    // Risk 16: track the committed newswire entry in the active community's sync
+    // inventory so it can traverse the nearby bridge — without this, newswire
+    // content could never be shared (a followed community's Home stayed empty
+    // forever). A newswire entry is a live entry in this namespace, so this keeps
+    // the inventory complete exactly as the alert sign/import paths do.
+    crate::mobile_state::track_committed_entry(profile, &signed.signed)?;
     Ok(NewswireSignedRecord {
         entry_id: hex(&signed.entry_id),
         signed_bytes: bundle_bytes,

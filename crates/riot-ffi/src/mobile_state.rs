@@ -1601,6 +1601,23 @@ fn remember_entry(entries: &mut Vec<CurrentEntry>, entry: CurrentEntry) {
     }
 }
 
+/// Track a locally-committed signed entry in the ACTIVE community's sync
+/// inventory so it can traverse the nearby bridge (Risk 16 — the newswire
+/// create/post path, which previously committed without tracking, so newswire
+/// content could never be shared). Mirrors how the alert sign/import paths keep
+/// the inventory complete. A newswire entry IS a live entry in the active
+/// namespace, so this PRESERVES the load-bearing
+/// `inventory == active_namespace_live_ids` invariant (the isolation guarantee):
+/// it only ever adds an entry that already belongs to the active namespace, and
+/// `install_sync_inventory` re-checks that equality and fails closed otherwise.
+pub(crate) fn track_committed_entry(
+    profile: &mut LocalProfile,
+    signed: &SignedWillowEntry,
+) -> Result<(), MobileError> {
+    let next = prospective_sync_inventory(profile, std::slice::from_ref(signed))?;
+    install_sync_inventory(profile, next)
+}
+
 fn prospective_sync_inventory(
     profile: &LocalProfile,
     incoming: &[SignedWillowEntry],
