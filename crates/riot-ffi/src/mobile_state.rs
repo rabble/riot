@@ -522,6 +522,36 @@ fn seal_or_park_outgoing(
 pub(crate) fn join_public_space(
     inner: &Arc<Mutex<ProfileState>>,
     space: PublicSpace,
+    wrapping_key: Vec<u8>,
+) -> Result<PublicSpace, MobileError> {
+    join_community_impl(inner, space, None, wrapping_key)
+}
+
+/// Join a newswire community by the descriptor handle a 1E share reference
+/// supplies, so the joined community's registry row CARRIES that handle (Risk
+/// 15). Without it a joined community is a "dead follow" — Home can never
+/// reproject its newswire even after sync delivers the descriptor + posts,
+/// because there is no descriptor id to project from and no discovery accessor.
+pub(crate) fn join_newswire_community(
+    inner: &Arc<Mutex<ProfileState>>,
+    space: PublicSpace,
+    descriptor_entry_id: String,
+    mut wrapping_key: Vec<u8>,
+) -> Result<PublicSpace, MobileError> {
+    let descriptor = match parse_entry_id(&descriptor_entry_id) {
+        Ok(descriptor) => Some(descriptor),
+        Err(error) => {
+            wrapping_key.zeroize();
+            return Err(error);
+        }
+    };
+    join_community_impl(inner, space, descriptor, wrapping_key)
+}
+
+fn join_community_impl(
+    inner: &Arc<Mutex<ProfileState>>,
+    space: PublicSpace,
+    descriptor_entry_id: Option<[u8; 32]>,
     mut wrapping_key: Vec<u8>,
 ) -> Result<PublicSpace, MobileError> {
     let result = with_active(inner, |profile| {
@@ -553,7 +583,7 @@ pub(crate) fn join_public_space(
         // exactly like a joined one, and this branch keeps a creator a creator.
         if profile.author.identity().namespace_id == namespace_id {
             profile.space = Some(joined.clone());
-            register_active_community(profile, None)?;
+            register_active_community(profile, descriptor_entry_id)?;
             return Ok(joined);
         }
 
@@ -593,7 +623,7 @@ pub(crate) fn join_public_space(
         // handle bound to the old namespace is now stale and must fail closed.
         bump_app_execution_generation(profile);
         profile.community_generation = profile.community_generation.wrapping_add(1);
-        register_active_community(profile, None)?;
+        register_active_community(profile, descriptor_entry_id)?;
         reproject_active(profile)?;
         Ok(joined)
     });
