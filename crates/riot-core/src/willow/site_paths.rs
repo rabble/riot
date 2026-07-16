@@ -32,8 +32,14 @@ mod tests {
     fn articles_path_is_under_articles_but_manifest_is_not() {
         let article = Path::from_slices(&[ARTICLES_COMPONENT, b"news", b"post-1"]).expect("path");
         let manifest = Path::from_slices(&[MANIFEST_COMPONENT]).expect("path");
-        assert!(is_under_articles(&article), "article path must be under /articles");
-        assert!(!is_under_articles(&manifest), "manifest path must NOT be under /articles");
+        assert!(
+            is_under_articles(&article),
+            "article path must be under /articles"
+        );
+        assert!(
+            !is_under_articles(&manifest),
+            "manifest path must NOT be under /articles"
+        );
     }
 
     #[test]

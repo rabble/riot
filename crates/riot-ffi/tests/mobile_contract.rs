@@ -132,7 +132,7 @@ fn mobile_profile_runs_the_public_space_alert_and_selected_import_flow() {
 
     let receiver = open_local_profile().expect("open receiving profile");
     let joined = receiver
-        .join_public_space(space.clone())
+        .join_public_space(space.clone(), Vec::new())
         .expect("join sender public space");
     let receiver_identity = receiver.identity().expect("receiver public identity");
     assert_eq!(joined.namespace_id, space.namespace_id);
@@ -166,7 +166,7 @@ fn mobile_profile_rejects_imports_outside_the_joined_public_namespace() {
     let foreign = second.sign_draft(draft.draft_id).unwrap();
 
     let receiver = open_local_profile().expect("receiver");
-    receiver.join_public_space(first_space).unwrap();
+    receiver.join_public_space(first_space, Vec::new()).unwrap();
     assert!(matches!(
         receiver.inspect_bytes(foreign.bundle_bytes, "nearby-device".into()),
         Err(riot_ffi::MobileError::ImportRejected)
@@ -238,7 +238,7 @@ fn mobile_import_selection_is_bounded_and_rejects_duplicates_before_planning() {
     let signed = sender.sign_draft(draft.draft_id).unwrap();
 
     let receiver = open_local_profile().unwrap();
-    receiver.join_public_space(space).unwrap();
+    receiver.join_public_space(space, Vec::new()).unwrap();
     let preview = receiver
         .inspect_bytes(signed.bundle_bytes, "nearby-device".into())
         .unwrap();
@@ -265,7 +265,7 @@ fn accepting_a_plan_consumes_both_mobile_plan_and_preview_handles() {
     let signed = sender.sign_draft(draft.draft_id).unwrap();
 
     let receiver = open_local_profile().unwrap();
-    receiver.join_public_space(space).unwrap();
+    receiver.join_public_space(space, Vec::new()).unwrap();
     let preview = receiver
         .inspect_bytes(signed.bundle_bytes, "nearby-device".into())
         .unwrap();
@@ -294,7 +294,7 @@ fn rejected_invalid_only_inspect_preserves_the_prior_preview_and_plan() {
     *invalid_only.last_mut().expect("non-empty bundle") ^= 1;
 
     let receiver = open_local_profile().unwrap();
-    receiver.join_public_space(space).unwrap();
+    receiver.join_public_space(space, Vec::new()).unwrap();
     let preview = receiver
         .inspect_bytes(signed.bundle_bytes, "nearby-device".into())
         .unwrap();
@@ -314,7 +314,7 @@ fn rejected_invalid_only_inspect_preserves_the_prior_preview_and_plan() {
 fn correctly_signed_alert_with_payload_ids_mismatched_to_entry_path_is_rejected() {
     let (space, bundle) = signed_mismatched_path_bundle();
     let receiver = open_local_profile().unwrap();
-    receiver.join_public_space(space).unwrap();
+    receiver.join_public_space(space, Vec::new()).unwrap();
 
     assert!(matches!(
         receiver.inspect_bytes(bundle, "nearby-device".into()),
@@ -336,12 +336,14 @@ fn current_entries_are_identical_after_opposite_import_orders() {
     let second = sender.sign_draft(second_draft.draft_id).unwrap();
 
     let receiver_a = open_local_profile().unwrap();
-    receiver_a.join_public_space(space.clone()).unwrap();
+    receiver_a
+        .join_public_space(space.clone(), Vec::new())
+        .unwrap();
     import_one(&receiver_a, &first);
     import_one(&receiver_a, &second);
 
     let receiver_b = open_local_profile().unwrap();
-    receiver_b.join_public_space(space).unwrap();
+    receiver_b.join_public_space(space, Vec::new()).unwrap();
     import_one(&receiver_b, &second);
     import_one(&receiver_b, &first);
 
@@ -391,7 +393,7 @@ fn sealed_identity_restores_the_same_signer_and_keeps_it_when_reattaching_its_sp
     let sealed = profile.seal_identity(wrapping_key.clone()).unwrap();
     let restored = open_profile_from_sealed_identity(wrapping_key, sealed).unwrap();
     assert_eq!(restored.identity().unwrap(), before);
-    restored.join_public_space(space).unwrap();
+    restored.join_public_space(space, Vec::new()).unwrap();
     assert_eq!(restored.identity().unwrap(), before);
 
     let second_draft = restored.create_draft_alert(draft()).unwrap();
@@ -445,7 +447,9 @@ fn restored_identity_gets_a_fresh_author_when_joining_another_communal_namespace
 
     let other = open_local_profile().unwrap();
     let other_space = other.create_public_space("Another space".into()).unwrap();
-    restored.join_public_space(other_space.clone()).unwrap();
+    restored
+        .join_public_space(other_space.clone(), Vec::new())
+        .unwrap();
     let after = restored.identity().unwrap();
     assert_eq!(after.namespace_id, other_space.namespace_id);
     assert_ne!(after.signing_key_id, before.signing_key_id);
@@ -481,7 +485,7 @@ fn mobile_sync_bridge_transfers_a_missing_entry_through_review_and_commit() {
     let signed = sender.sign_draft(draft.draft_id).unwrap();
 
     let receiver = open_local_profile().unwrap();
-    receiver.join_public_space(space).unwrap();
+    receiver.join_public_space(space, Vec::new()).unwrap();
     let initiator = receiver.open_sync_session().unwrap();
     let responder = sender.open_sync_session().unwrap();
 
@@ -536,7 +540,7 @@ fn mobile_sync_rejection_never_commits_and_notifies_the_peer() {
     let draft = sender.create_draft_alert(draft()).unwrap();
     sender.sign_draft(draft.draft_id).unwrap();
     let receiver = open_local_profile().unwrap();
-    receiver.join_public_space(space).unwrap();
+    receiver.join_public_space(space, Vec::new()).unwrap();
     let initiator = receiver.open_sync_session().unwrap();
     let responder = sender.open_sync_session().unwrap();
 
@@ -571,7 +575,7 @@ fn mobile_sync_cancel_discards_pending_review_without_store_mutation() {
     let draft = sender.create_draft_alert(draft()).unwrap();
     sender.sign_draft(draft.draft_id).unwrap();
     let receiver = open_local_profile().unwrap();
-    receiver.join_public_space(space).unwrap();
+    receiver.join_public_space(space, Vec::new()).unwrap();
     let initiator = receiver.open_sync_session().unwrap();
     let responder = sender.open_sync_session().unwrap();
     initiator.begin().unwrap();
@@ -598,7 +602,7 @@ fn mobile_sync_rejects_malformed_bytes_without_advancing_or_dropping_queued_fram
     let first = profile_with_space();
     let space = first.create_public_space("Canonical sync".into()).unwrap();
     let second = open_local_profile().unwrap();
-    second.join_public_space(space).unwrap();
+    second.join_public_space(space, Vec::new()).unwrap();
     let initiator = first.open_sync_session().unwrap();
     let responder = second.open_sync_session().unwrap();
     initiator.begin().unwrap();
@@ -676,10 +680,10 @@ fn mobile_sync_retains_a_regularly_accepted_public_bundle_for_the_next_peer() {
     let draft = sender.create_draft_alert(draft()).unwrap();
     let signed = sender.sign_draft(draft.draft_id).unwrap();
     let relay = open_local_profile().unwrap();
-    relay.join_public_space(space.clone()).unwrap();
+    relay.join_public_space(space.clone(), Vec::new()).unwrap();
     import_one(&relay, &signed);
     let receiver = open_local_profile().unwrap();
-    receiver.join_public_space(space).unwrap();
+    receiver.join_public_space(space, Vec::new()).unwrap();
     let initiator = receiver.open_sync_session().unwrap();
     let responder = relay.open_sync_session().unwrap();
 

@@ -70,7 +70,7 @@ fn organizer_approval_covers_a_member_who_joins_later() {
 
     // B joins the same space and installs the same built-in checklist.
     let member = open_local_profile().expect("B");
-    member.join_public_space(space).expect("join");
+    member.join_public_space(space, Vec::new()).expect("join");
     let app_b = member
         .app_runtime()
         .install_app(m, b)
@@ -189,7 +189,7 @@ fn a_member_is_told_they_are_not_the_organizer_not_that_they_are_legacy() {
         .expect("space");
     let (m, b) = checklist();
     let member = open_local_profile().expect("B");
-    member.join_public_space(space).expect("join");
+    member.join_public_space(space, Vec::new()).expect("join");
     let app = member.app_runtime().install_app(m, b).expect("install");
 
     let err = member
@@ -230,7 +230,7 @@ fn an_organizer_survives_the_relaunch_restore_path() {
     let relaunched =
         riot_ffi::open_profile_from_sealed_identity(key.to_vec(), sealed).expect("reopen");
     relaunched
-        .join_public_space(space)
+        .join_public_space(space, Vec::new())
         .expect("restore own space");
 
     let (m, b) = checklist();
@@ -254,7 +254,7 @@ fn a_member_cannot_self_approve_an_app() {
         .expect("space");
     let (m, b) = checklist();
     let member = open_local_profile().expect("B");
-    member.join_public_space(space).expect("join");
+    member.join_public_space(space, Vec::new()).expect("join");
     let app = member.app_runtime().install_app(m, b).expect("install");
     let self_approve = member.app_runtime().trust_app(app.app_id.clone());
     let trusted = member

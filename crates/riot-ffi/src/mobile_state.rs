@@ -129,13 +129,14 @@ pub(crate) struct LocalProfile {
     /// wrapping key; listing never unseals. This is the isolation the registry
     /// guarantees.
     ///
-    /// AT REST (on disk) only sealed authors are ever written. IN RAM this map may
-    /// briefly hold MORE than one unsealed author: a keyless `join_public_space`
-    /// parks the OUTGOING author here unsealed until `persist_communities` seals it
-    /// and drops it. So "only the active author is ever unsealed" is an ON-DISK
-    /// claim; native minimizes the in-RAM window by calling `persist_communities`
-    /// immediately after a create/join (Risk 13; seal-inline-on-join is a tracked
-    /// residual that would need `join` to take the wrapping key — an FFI change).
+    /// AT REST (on disk) only sealed authors are ever written. IN RAM, with a
+    /// wrapping key present, ONLY THE ACTIVE author is ever unsealed: both
+    /// `switch_community` and `join_public_space` seal the outgoing author inline
+    /// into its registry row (Risk 13 closed — seal-inline-on-join) rather than
+    /// parking it here unsealed. This map holds an unsealed author only on the
+    /// keyless path — an ephemeral `open_local_profile()` profile that carries no
+    /// key — or transiently if a seal fails (entropy) and the author is parked
+    /// rather than lost.
     community_authors: std::collections::HashMap<[u8; 32], EvidenceAuthor>,
     /// Bumped on every community switch. Every in-flight preview/plan/sync handle
     /// captures it at creation and revalidates before commit, so a write or import
@@ -481,11 +482,52 @@ pub(crate) fn create_public_space(
     })
 }
 
+/// A wrapping key that MAY be absent: an empty slice means keyless (an ephemeral
+/// in-memory/test profile that carries no secure-store key), 32 bytes is a real
+/// key, any other length is malformed. Callers on real devices always pass a
+/// key; the keyless arm exists only so `open_local_profile()` profiles keep
+/// working without one.
+fn optional_wrapping_key(value: &[u8]) -> Result<Option<Zeroizing<[u8; 32]>>, MobileError> {
+    if value.is_empty() {
+        Ok(None)
+    } else {
+        exact_wrapping_key(value).map(Some)
+    }
+}
+
+/// Seal the OUTGOING community's author into its registry row and drop the
+/// plaintext copy — or, keyless / seal failure / no row to seal into, park it
+/// unsealed so the author is never lost. Sealing inline is what keeps a
+/// joined-away or switched-away author from lingering unsealed in RAM (Risk 13);
+/// with the key its row is fully recoverable, so nothing but the ACTIVE author
+/// stays unsealed. Shared by `join_public_space` and `switch_community` so the
+/// two paths seal identically.
+fn seal_or_park_outgoing(
+    profile: &mut LocalProfile,
+    active_ns: [u8; 32],
+    outgoing: EvidenceAuthor,
+    key: Option<&[u8; 32]>,
+) {
+    if let Some(key) = key {
+        if let Ok(sealed) = outgoing.seal_identity(key) {
+            if let Some(record) = profile.registry.find_mut(&active_ns) {
+                record.sealed_author = Some(sealed);
+                return;
+            }
+        }
+    }
+    profile.community_authors.insert(active_ns, outgoing);
+}
+
 pub(crate) fn join_public_space(
     inner: &Arc<Mutex<ProfileState>>,
     space: PublicSpace,
+    mut wrapping_key: Vec<u8>,
 ) -> Result<PublicSpace, MobileError> {
-    with_active(inner, |profile| {
+    let result = with_active(inner, |profile| {
+        // Validate the key shape up front so a malformed key fails the join
+        // before any author is minted or moved.
+        let key = optional_wrapping_key(&wrapping_key)?;
         if sync_session_is_active(profile) {
             return Err(MobileError::InvalidInput);
         }
@@ -535,12 +577,15 @@ pub(crate) fn join_public_space(
         // only moment we learn for certain this space belongs to someone else.
         let joined_author =
             generate_communal_author_for_namespace(namespace_id).map_err(map_author_error)?;
-        // Park the outgoing active author (it is not `Clone`); a fresh profile
-        // with no active community simply drops its bootstrap author.
+        // Seal-inline-on-join (Risk 13): the outgoing active author (not `Clone`)
+        // is sealed into its registry row immediately, so no author is ever
+        // parked unsealed in RAM when a real key is present. Keyless profiles
+        // fall back to parking. A fresh profile with no active community simply
+        // drops its bootstrap author.
         let outgoing_ns = profile.registry.active;
         let outgoing = std::mem::replace(&mut profile.author, joined_author);
         if let Some(active_ns) = outgoing_ns {
-            profile.community_authors.insert(active_ns, outgoing);
+            seal_or_park_outgoing(profile, active_ns, outgoing, key.as_deref());
         }
         profile.joined_others_space = true;
         profile.space = Some(joined.clone());
@@ -551,7 +596,9 @@ pub(crate) fn join_public_space(
         register_active_community(profile, None)?;
         reproject_active(profile)?;
         Ok(joined)
-    })
+    });
+    wrapping_key.zeroize();
+    result
 }
 
 /// The title the seeded demo space is listed under. A bundle carries signed
@@ -1808,9 +1855,9 @@ fn map_author_error(error: WillowError) -> MobileError {
     match error {
         WillowError::EntropyUnavailable => MobileError::EntropyUnavailable,
         WillowError::ClockUnavailable => MobileError::ClockUnavailable,
-        WillowError::InvalidAlert(_) | WillowError::NamespaceNotCommunal => {
-            MobileError::InvalidInput
-        }
+        WillowError::InvalidAlert(_)
+        | WillowError::NamespaceNotCommunal
+        | WillowError::DelegationAreaEscapesArticles => MobileError::InvalidInput,
         WillowError::SealedIdentityInvalid => MobileError::InvalidInput,
         WillowError::IdentitySealFailed => MobileError::Internal,
         WillowError::PathInvalid
@@ -2283,24 +2330,15 @@ pub(crate) fn switch_community(
         };
 
         // Seal the outgoing active author into its row and DROP it: with the key
-        // it is fully recoverable from the registry. On the keyed switch path this
-        // keeps at most the active author unsealed in RAM; the separate keyless
-        // `join` path can transiently hold an extra parked author until
-        // `persist_communities` (see the `community_authors` field doc). A keyless
-        // seal failure (entropy) falls back to parking so the author is not lost.
+        // it is fully recoverable from the registry, so at most the ACTIVE author
+        // is ever unsealed in RAM. `join_public_space` now seals inline the same
+        // way (Risk 13 closed), so no path leaves a parked author unsealed when a
+        // key is present. A seal failure (entropy) falls back to parking so the
+        // author is not lost.
         let outgoing_ns = profile.registry.active;
         let outgoing = std::mem::replace(&mut profile.author, target_author);
         if let Some(active_ns) = outgoing_ns {
-            match outgoing.seal_identity(&key) {
-                Ok(sealed) => {
-                    if let Some(record) = profile.registry.find_mut(&active_ns) {
-                        record.sealed_author = Some(sealed);
-                    }
-                }
-                Err(_) => {
-                    profile.community_authors.insert(active_ns, outgoing);
-                }
-            }
+            seal_or_park_outgoing(profile, active_ns, outgoing, Some(&key));
             // Park the outgoing community's board projection and sync inventory so
             // a locally-authored alert (whose payload the store does not retain)
             // survives the round trip, and the community can still sync when
@@ -3384,6 +3422,81 @@ mod tests {
         }
     }
 
+    /// Risk 13: a keyed join must leave NO unsealed author parked in RAM. The
+    /// outgoing author is sealed inline into its registry row; only the active
+    /// (joined) author stays unsealed.
+    #[test]
+    fn a_keyed_join_seals_the_outgoing_author_inline_and_parks_nothing_unsealed() {
+        const KEY: [u8; 32] = [0x5a; 32];
+
+        // Organizer of A.
+        let profile = open_local_profile().unwrap();
+        let a = create_public_space(&profile.inner, "Community A".into()).unwrap();
+        let a_ns = parse_entry_id(&a.namespace_id).unwrap();
+
+        // A second namespace, minted by a throwaway profile, joined WITH a key.
+        let other = open_local_profile().unwrap();
+        let b = create_public_space(&other.inner, "Community B".into()).unwrap();
+        join_public_space(
+            &profile.inner,
+            crate::mobile_api::PublicSpace {
+                namespace_id: b.namespace_id.clone(),
+                title: "Community B".into(),
+                is_public: true,
+            },
+            KEY.to_vec(),
+        )
+        .unwrap();
+
+        let state = lock_unpoisoned(&profile.inner);
+        let ProfileState::Active(local) = &*state else {
+            panic!("profile active");
+        };
+        assert!(
+            local.community_authors.is_empty(),
+            "no author may sit unsealed in RAM after a keyed join (Risk 13)",
+        );
+        let a_record = local
+            .registry
+            .find(&a_ns)
+            .expect("A is still a registered community");
+        assert!(
+            a_record.sealed_author.is_some(),
+            "A's outgoing author was sealed inline into its row, not parked",
+        );
+    }
+
+    /// The keyless join path (ephemeral profiles with no wrapping key) still
+    /// parks the outgoing author unsealed — it has no key to seal with, and the
+    /// author must not be lost.
+    #[test]
+    fn a_keyless_join_still_parks_the_outgoing_author() {
+        let profile = open_local_profile().unwrap();
+        create_public_space(&profile.inner, "Community A".into()).unwrap();
+        let other = open_local_profile().unwrap();
+        let b = create_public_space(&other.inner, "Community B".into()).unwrap();
+        join_public_space(
+            &profile.inner,
+            crate::mobile_api::PublicSpace {
+                namespace_id: b.namespace_id.clone(),
+                title: "Community B".into(),
+                is_public: true,
+            },
+            Vec::new(),
+        )
+        .unwrap();
+
+        let state = lock_unpoisoned(&profile.inner);
+        let ProfileState::Active(local) = &*state else {
+            panic!("profile active");
+        };
+        assert_eq!(
+            local.community_authors.len(),
+            1,
+            "keyless join parks the outgoing author (no key to seal it with)",
+        );
+    }
+
     #[test]
     fn exhausted_handle_counter_returns_session_limit_without_retention() {
         let profile = open_local_profile().unwrap();
@@ -3452,9 +3565,10 @@ mod tests {
         )
         .unwrap();
 
-        // Fresh profile joins the same space and replays the receipt.
+        // Fresh profile joins the same space and replays the receipt. Keyless
+        // (ephemeral in-memory profile): no outgoing author to seal.
         let fresh = open_local_profile().unwrap();
-        join_public_space(&fresh.inner, space).unwrap();
+        join_public_space(&fresh.inner, space, Vec::new()).unwrap();
         replay_app_data_bundle(&fresh.inner, receipt).unwrap();
         assert_eq!(
             app_data_get(&fresh.inner, app_id.clone(), "items/a".into()).unwrap(),

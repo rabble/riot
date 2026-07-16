@@ -34,6 +34,24 @@ pub enum AppsError {
     IndexFieldInvalid,
     EndorsementFieldInvalid,
     IndexEntryMismatch,
+    /// The bundle's bytes reference a WebRTC API. `RTCPeerConnection` (and its
+    /// `webkit`/`moz` prefixes) and `RTCDataChannel` are the EGRESS vector Risk 9
+    /// names: a peer connection does NOT flow through the WebView URL loader, so
+    /// the hosted-app egress backstop (`WKContentRuleList`) cannot see or block
+    /// it — a hostile app could exfiltrate over STUN/TURN. `getUserMedia` /
+    /// `navigator.mediaDevices` are bonus camera/mic CAPTURE blocking, not egress.
+    /// We refuse to host any bundle referencing them at the content-scan gate
+    /// rather than rely on the best-effort runtime preference alone.
+    ///
+    /// DENY-CLOSED BY DESIGN: the scan is a substring match over resource bytes,
+    /// so it refuses a bundle that merely MENTIONS a token — a comment, a
+    /// feature-detect polyfill, a vendored lib that names but never calls the API.
+    /// For an activist tool that should not host WebRTC-capable code at all, that
+    /// is the correct tradeoff. It is also evadable in the other direction (an
+    /// obfuscated or dynamically-assembled identifier passes), so it raises the
+    /// bar without being a guarantee; the runtime backstops remain the net. See
+    /// `bundle::scan_bundle_egress`.
+    BundleUsesWebRtc,
 }
 
 impl std::fmt::Display for AppsError {
