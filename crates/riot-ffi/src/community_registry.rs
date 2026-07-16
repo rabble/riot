@@ -377,4 +377,53 @@ mod tests {
         assert_eq!(stored.descriptor_entry_id, Some([4; 32]));
         assert_eq!(registry.communities.len(), 1);
     }
+
+    #[test]
+    fn a_structurally_valid_blob_with_a_wrong_header_is_corrupt() {
+        // Outer arity other than three: syntactically fine CBOR, semantically not
+        // a registry.
+        let mut wrong_arity = Vec::new();
+        let mut e = Encoder::new(&mut wrong_arity);
+        e.array(2)
+            .unwrap()
+            .u8(REGISTRY_VERSION)
+            .unwrap()
+            .null()
+            .unwrap();
+        assert!(CommunityRegistry::decode(&wrong_arity).is_err());
+
+        // Correct shape, unsupported version byte.
+        let mut wrong_version = CommunityRegistry::default().encode();
+        wrong_version[1] = REGISTRY_VERSION + 1;
+        assert!(CommunityRegistry::decode(&wrong_version).is_err());
+    }
+
+    #[test]
+    fn upsert_overwrites_optional_fields_when_the_incoming_record_supplies_them() {
+        let mut registry = CommunityRegistry::default();
+        let mut initial = record(3);
+        initial.sealed_author = Some(vec![3; 8]);
+        initial.descriptor_entry_id = Some([30; 32]);
+        initial.last_activity_unix_seconds = Some(100);
+        initial.last_sync_unix_seconds = Some(200);
+        registry.upsert(initial);
+
+        let mut refreshed = record(3);
+        refreshed.title = "Refreshed".into();
+        refreshed.relationship = Relationship::Member;
+        refreshed.sealed_author = Some(vec![9; 12]);
+        refreshed.descriptor_entry_id = Some([31; 32]);
+        refreshed.last_activity_unix_seconds = Some(300);
+        refreshed.last_sync_unix_seconds = Some(400);
+        registry.upsert(refreshed);
+
+        let stored = registry.find(&[3; 32]).expect("present");
+        assert_eq!(stored.title, "Refreshed");
+        assert_eq!(stored.relationship, Relationship::Member);
+        assert_eq!(stored.sealed_author, Some(vec![9; 12]));
+        assert_eq!(stored.descriptor_entry_id, Some([31; 32]));
+        assert_eq!(stored.last_activity_unix_seconds, Some(300));
+        assert_eq!(stored.last_sync_unix_seconds, Some(400));
+        assert_eq!(registry.communities.len(), 1);
+    }
 }
