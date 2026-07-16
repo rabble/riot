@@ -41,6 +41,11 @@ impl OwnedMasthead {
     pub fn owner_subspace_id(&self) -> SubspaceId {
         self.owner_subspace_secret.corresponding_subspace_id()
     }
+
+    /// Mint the owner's owned write capability (grants `Area::full()` over the site namespace).
+    pub fn owner_write_capability(&self) -> WriteCapability {
+        WriteCapability::new_owned(self.root.namespace_secret_ref(), self.owner_subspace_id())
+    }
 }
 
 #[cfg(test)]
@@ -55,5 +60,15 @@ mod tests {
             "masthead namespace must be owned"
         );
         assert_eq!(m.owner_subspace_id(), m.owner_subspace_id());
+    }
+
+    #[test]
+    fn owner_capability_is_owned_full_area_zero_delegation() {
+        let m = OwnedMasthead::generate().unwrap();
+        let cap = m.owner_write_capability();
+        assert!(cap.is_owned(), "owner cap must be owned-rooted");
+        assert!(cap.delegations().is_empty(), "owner cap must have zero delegations");
+        assert_eq!(cap.granted_namespace(), m.namespace_id(), "cap namespace must be the site root");
+        assert_eq!(cap.receiver(), &m.owner_subspace_id(), "cap receiver must be the owner subspace");
     }
 }
