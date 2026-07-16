@@ -65,15 +65,86 @@ impl OwnedMasthead {
             .map_err(|_| WillowError::DoesNotAuthorise)?;
         Ok(cap)
     }
+
+    /// Sign an entry as the site owner (owner cap, granted `Area::full()`).
+    /// The signer is the owner's SubspaceSecret — the namespace secret is used only
+    /// when *minting* the cap, never when authorising an entry.
+    pub fn authorise_owner_entry(&self, entry: Entry) -> Result<AuthorisedEntry, WillowError> {
+        entry
+            .into_authorised_entry(&self.owner_write_capability(), &self.owner_subspace_secret)
+            .map_err(|_| WillowError::DoesNotAuthorise)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::willow::site_paths::ARTICLES_COMPONENT;
+    use crate::willow::{verify_entry, MANIFEST_COMPONENT};
 
     fn a_time_range() -> TimeRange {
         TimeRange::new(0u64.into(), Some(u64::MAX.into()))
+    }
+
+    fn entry_in(namespace: &NamespaceId, subspace: SubspaceId, path: &[&[u8]]) -> Entry {
+        Entry::builder()
+            .namespace_id(namespace.clone())
+            .subspace_id(subspace)
+            .path(Path::from_slices(path).expect("path"))
+            .timestamp(1_000u64)
+            .payload(b"payload-bytes")
+            .build()
+    }
+
+    #[test]
+    fn owner_capability_authorises_and_verifies() {
+        let m = OwnedMasthead::generate().unwrap();
+        let entry = entry_in(
+            m.namespace_id(),
+            m.owner_subspace_id(),
+            &[MANIFEST_COMPONENT],
+        );
+        let authorised = m
+            .authorise_owner_entry(entry.clone())
+            .expect("owner authorises");
+        assert!(
+            verify_entry(&entry, authorised.authorisation_token()),
+            "owner-signed entry must verify"
+        );
+    }
+
+    #[test]
+    fn delegated_editor_can_write_articles_but_not_manifest() {
+        let m = OwnedMasthead::generate().unwrap();
+        let editor = SubspaceSecret::from_bytes(&[11u8; 32]);
+        let editor_id = editor.corresponding_subspace_id();
+        let area = Area::new(
+            Some(editor_id.clone()),
+            Path::from_slices(&[ARTICLES_COMPONENT, b"news"]).expect("path"),
+            a_time_range(),
+        );
+        let editor_cap = m
+            .delegate_section(editor_id.clone(), area)
+            .expect("delegate");
+
+        // POSITIVE: entry under /articles/news signed by the editor authorises.
+        let good = entry_in(
+            m.namespace_id(),
+            editor_id.clone(),
+            &[ARTICLES_COMPONENT, b"news", b"post-1"],
+        );
+        let authorised = good
+            .clone()
+            .into_authorised_entry(&editor_cap, &editor)
+            .expect("editor authorises");
+        assert!(verify_entry(&good, authorised.authorisation_token()));
+
+        // NEGATIVE: same editor cap cannot author a /manifest entry (outside granted area).
+        let bad = entry_in(m.namespace_id(), editor_id, &[MANIFEST_COMPONENT]);
+        assert!(
+            bad.into_authorised_entry(&editor_cap, &editor).is_err(),
+            "a delegated /articles cap must NOT authorise a /manifest write"
+        );
     }
 
     #[test]
