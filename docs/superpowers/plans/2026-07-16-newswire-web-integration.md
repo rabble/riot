@@ -17,8 +17,8 @@
 | App: create newswire community + post + editorial | ✅ on `main` (units 1A/1B/1C/1E/2C) |
 | App: cross-device publishing (posts reach a second DEVICE) | 🔧 **WS0 — in flight** on `feat/join-descriptor` (Risk 15 + 16 + recovered iOS join) |
 | Gateway renders a signed export (BOARD) | ✅ `riot_gateway.PublicGateway.from_file()` renders `public-export-v1.json` |
-| Gateway renders the NEWSWIRE | ⚠️ `newswire.sample_view()` — **DEMO data, not signed** |
-| Signed NEWSWIRE export (app records → gateway JSON) | ❌ **does not exist** — only the conference/board export does |
+| Gateway renders the NEWSWIRE | ⚠️ **on origin/main:** `newswire.sample_view()` (DEMO). **on `design/composite-site-manifest` (live sibling, unmerged):** already renders real projected signed records via `riot.newswire.export/1` — but random keys, no proof bytes, no reverification |
+| Signed NEWSWIRE export with board-grade rigor (proof bytes + independent reverification, unified `riot-public-gateway-export/2`) | ❌ **does not exist on any branch** — the sibling's interim export is `riot.newswire.export/1`, not reverifiable. This is WS1. |
 | Web mirror (cf-mirror worker) | ✅ deployed; renders whatever the gateway emits; footer flags "demo · not signed" |
 | "Open in Riot →" verify deep link | ⚠️ present in markup; not wired to app open + digest verify |
 | Owned-namespace signed site manifest | 🔧 composite-site Unit 1/2 — separate session, Unit 1 landing on `main` |
@@ -33,7 +33,7 @@
 Publishing reaches a second DEVICE. Risk 15 (`join_newswire_community` carries the descriptor) + Risk 16 (`import_signed_newswire` enters the sync inventory so `open_sync_session` works for newswire) + the recovered iOS join UI. Branch `feat/join-descriptor`. **DoD:** the end-to-end test — create A → publish → follower joins by share-ref → sync → follower's Home shows the post. Ships as TF v2. *(Owned by coordinator; nearly done.)*
 
 ### WS1 — Signed newswire gateway export (THE core link) — Rust/xtask
-Produce a `riot-public-gateway-export/2` **newswire** export from real signed newswire records, exactly as the board does for the conference.
+**Detailed TDD plan written: `docs/superpowers/plans/2026-07-16-newswire-gateway-export.md`** (verified against real code; full code bodies). Produce a `riot-public-gateway-export/2` **newswire** export from real signed newswire records, exactly as the board does for the conference. Two new xtask commands `export-newswire` + `verify-newswire-export`, a proof-bytes signed fixture, and independent Ed25519 reverification. **Note the live-sibling fork** (design branch has an interim `riot.newswire.export/1` render path without proof bytes/reverification) — WS1 uses new file paths and unifies onto the board schema; the renderer rewire (WS1-b) is coordinated with the `newswire.py` owner.
 - **Files:** new `crates/xtask/src/export_newswire.rs` (mirror `sign_conference_fixture.rs` + `verify_conference_export.rs`); register in `crates/xtask/src/main.rs`; a golden fixture `fixtures/newswire/gateway-space/newswire-export-v1.json`; a signing input (real signed E/W records from a newswire store or the composite site — see WS4).
 - **Interface (the contract the gateway consumes):** `{ "schema": "riot-public-gateway-export/2", "export_revision": "newswire-gateway-export-v1", "entries": [ { …record…, "verification_status": … } ] }` — an `entries[]` array with a per-entry `verification_status` the gateway stamps (proof-free, per the conference pattern). Editorial (E, `signed by the collective`) and open-wire (W, `unverified`) are distinguished by an entry field the gateway reads.
 - **DoD:** `cargo run -p xtask -- export-newswire` writes a valid export; a new `verify-newswire-export` xtask validates it (entry count, digests, verification_status) exactly as `verify-conference-export` does for the board; golden fixture committed; workspace green.
