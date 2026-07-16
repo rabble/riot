@@ -378,6 +378,7 @@ impl RiotSession {
 
     /// Opens a session whose accepted/live evidence authority is the managed
     /// SQLite database. No history replay is performed by the caller.
+    #[cfg(feature = "sqlite")]
     pub fn open_sqlite(database: crate::store::RiotDatabase) -> Result<Self, SessionError> {
         Self::open_with_repository(EvidenceRepository::sqlite(database))
     }
