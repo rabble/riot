@@ -275,6 +275,38 @@ boundary (`verify_conference_export.rs:1-7`), which rejects any public field nam
 
 ## TDD Tasks
 
+> **⚠️ EXECUTION SEQUENCING — READ FIRST (supersedes the per-task commit boundaries below).**
+> `crates/xtask` is a **bin crate** and the clippy gate (both the plan's `cargo clippy -p xtask
+> -- -D warnings` and CI's `cargo clippy --workspace -- -D warnings`) runs WITHOUT
+> `--all-targets`, so `#[cfg(test)]` code does NOT count as a use. Committing a module whose
+> `pub fn run` / `build_signed_newswire` / `index_signed_records` / etc. are referenced only by
+> tests → `error: function is never used` under `-D warnings` → the commit's clippy gate FAILS.
+> Therefore each subcommand's **dispatch registration must land in the SAME commit as its
+> module** (that `main`-side `match` arm + `available_commands()` entry is what makes the
+> module's `run` reachable from non-test code). Concretely, override the commit grouping to:
+>
+> 1. **Commit 1 (export):** `export_newswire.rs` (build + run + tests) **+** in `main.rs`:
+>    `mod export_newswire;`, the `Some("export-newswire") => …` dispatch arm, the
+>    `available_commands()` entry, and `fn sha256_hex → pub(crate)`. (Folds Task 1 + the
+>    export half of Task 3 into one commit.) Now `export_newswire::run` is reachable from
+>    `main` → clippy clean.
+> 2. **Commit 2 (verify):** `verify_newswire_export.rs` (module + the `proof_for`/binding unit
+>    tests only — NOT yet the golden-consuming tests) **+** in `main.rs`: `mod
+>    verify_newswire_export;`, the `Some("verify-newswire-export") => …` arm, the
+>    `available_commands()` entry. Reachable from `main` → clippy clean.
+> 3. **Commit 3 (goldens):** run `cargo run -p xtask -- export-newswire` (both subcommands now
+>    exist), then `verify-newswire-export`; commit the two golden fixtures (old Task 4).
+> 4. **Commit 4 (golden-consuming tests + dispatch test):** NOW add the tests that
+>    `copy_dir_recursive` from `repo_root().join("fixtures/newswire")` (2.5
+>    `run_stamps_signature_verified…`, 2.6b `run_stamps_signature_invalid…`) and the
+>    `newswire_fixture_commands_report_success_and_failure` dispatch test — the real-tree
+>    goldens they read now exist (from Commit 3), so their GREEN is achievable. `read_dir` no
+>    longer panics on an empty dir.
+>
+> The task bodies below are correct as written; only their COMMIT grouping/order changes per
+> this override. Follow the RED→GREEN steps within each; just don't commit a module before its
+> dispatch arm, and don't run a golden-consuming test before Commit 3 generates the goldens.
+
 Effort/coverage: `.coverage-thresholds.json` is the source of truth. **Real floors (verified
 2026-07-16):** `tarpaulin.lines = 97`, `llvm.lines = 95`, `llvm.functions = 95`,
 `llvm.regions = 92`, `llvm.branches = 83`. New xtask modules must clear those floors — mirror
