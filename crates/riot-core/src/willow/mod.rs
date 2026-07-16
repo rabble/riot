@@ -72,6 +72,9 @@ pub enum WillowError {
     SealedIdentityInvalid,
     /// The AEAD could not seal an otherwise valid identity.
     IdentitySealFailed,
+    /// A sealed owned-masthead envelope was malformed, corrupted, opened with
+    /// the wrong wrapping key, or decoded to a non-owned namespace.
+    SealedMastheadInvalid,
     /// A section delegation was requested for an area whose path escapes `/articles/`.
     DelegationAreaEscapesArticles,
 }

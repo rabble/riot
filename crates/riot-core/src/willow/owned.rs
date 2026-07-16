@@ -45,6 +45,22 @@ impl OwnedRoot {
         Err(WillowError::EntropyUnavailable)
     }
 
+    /// Reconstruct an owned root from its namespace secret (used when opening a
+    /// sealed masthead). Errors if the derived namespace id is not owned, which
+    /// only occurs on a corrupt or forged sealed blob.
+    pub(crate) fn from_namespace_secret(
+        namespace_secret: NamespaceSecret,
+    ) -> Result<Self, WillowError> {
+        let namespace_id = namespace_secret.corresponding_namespace_id();
+        if !namespace_id.is_owned() {
+            return Err(WillowError::SealedMastheadInvalid);
+        }
+        Ok(Self {
+            namespace_id,
+            namespace_secret,
+        })
+    }
+
     /// The owned namespace's public identity — the root public key.
     pub fn namespace_id(&self) -> &NamespaceId {
         &self.namespace_id
