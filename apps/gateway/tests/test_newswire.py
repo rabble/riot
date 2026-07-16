@@ -60,6 +60,25 @@ class NewswireRenderTest(unittest.TestCase):
         # xmlns / riot:// are identifiers, not fetches; nothing else may reach out.
         self.assertNotRegex(self.page, r'(src|href)="https?://(?!www\.w3\.org)')
 
+    def test_headlines_link_to_article_pages(self) -> None:
+        # Reader can click through to the full article.
+        for entry in self.view.editorial:
+            href = f'/article/{entry.slug}/'
+            self.assertIn(href, self.page, f"headline for {entry.slug!r} is not a link")
+
+    def test_article_page_renders_full_body_and_a_way_back(self) -> None:
+        from html import escape
+
+        entry = self.view.editorial[0]
+        article = nw.render_article(self.view, entry)
+        self.assertIn(entry.title, article)
+        for paragraph in entry.body:
+            self.assertIn(escape(paragraph), article)  # render escapes; expect escaped
+        self.assertIn('href="/"', article)  # back to the front page
+        # Same fences as the front page.
+        self.assertIn("connect-src 'none'", article)
+        self.assertIn('http-equiv="Content-Security-Policy"', article)
+
 
 if __name__ == "__main__":
     unittest.main()
