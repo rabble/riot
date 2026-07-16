@@ -26,7 +26,7 @@ This is what makes "community + PUBLISHING" actually distribute to a second devi
 1. **Land v2** (above) — critical path; makes publishing distribute + restores iOS join. In flight.
 2. **Physical two-device test** — validate nearby sync + publishing between two real iPhones via TF v2. Needs hardware (the owner's).
 3. **Owner ratifications (decisions, not builds):** 1A `CurrentEntryV2` deviation (Risk 2); per-community sealed-identity model (Risk 12).
-4. **Web/gateway half** — the public read/publish-to-the-world surface (the indymedia mission half). Deferred; net-new; big.
+4. **Web/gateway half** — the public read/publish-to-the-world surface (the indymedia mission half). **Now planned:** see `docs/superpowers/plans/2026-07-16-newswire-web-integration.md` (program roadmap WS1–WS4). The true missing link is WS1 (signed newswire gateway export in Rust/xtask) — the board already proves the pattern; the newswire home is the only surface still on demo `sample_view()`. WS1 → WS2 (gateway renders real) → WS3 ("Open in Riot" verify).
 5. **Composite-site / owned namespaces + personal pages** — a separate live session's track (Unit 1 landing on `main`).
 6. **Residuals:** Risk 10 (Android digest instrumentation test); Risk 9 obfuscation (documented, bar-raising); Risk 14 (nearby-adopt a SECOND community — reopens 2B, needs its own security pass).
 7. **Deferred by owner:** MLS / private groups; the §8.3 whole-product human trial.
