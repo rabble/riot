@@ -13,8 +13,10 @@ use minicbor::{Decoder, Encoder};
 
 use crate::willow::{
     decode_capability_canonic, decode_entry_canonic, entry_id, evidence_digest, object_digest,
-    verify_entry, william3_digest, AuthorisationToken, Entry, EntryId, SignedWillowEntry,
+    verify_entry, william3_digest, AuthorisationToken, Entry, EntryId, NamespaceId,
+    SignedWillowEntry,
 };
+use willow25::authorisation::WriteCapability;
 use willow25::entry::{Entrylike, SubspaceSignature};
 use willow25::groupings::{Keylike, Namespaced};
 
@@ -192,7 +194,14 @@ pub fn encode_bundle(items: &[SignedWillowEntry]) -> Result<Vec<u8>, BundleEncod
             signature_bytes: item.signature.to_vec(),
             payload_bytes: item.payload_bytes.clone(),
         };
-        if let Err(diagnostic) = verify_frame(&frame) {
+        // Producer-side self-consistency check: an owned item must be rooted at
+        // its OWN namespace (a malformed entry surfaces its own diagnostic in
+        // `verify_frame`). This is not admission — the follow binding is
+        // enforced on the receiving side by `decode_bundle_with_root`.
+        let item_root = decode_entry_canonic(&item.entry_bytes)
+            .ok()
+            .map(|entry| *entry.namespace_id().as_bytes());
+        if let Err(diagnostic) = verify_frame(&frame, item_root.as_ref()) {
             return Err(BundleEncodeError::InvalidItem(diagnostic));
         }
     }
@@ -261,7 +270,24 @@ struct RawOuter {
 /// codec → cumulative limits (entry count, per-field ceilings, authorization
 /// budget) in encounter order → duplicate entry ID. Only after all global
 /// gates pass are items verified independently, with siblings isolated.
+/// Decode with NO followed-site root. Owned-namespace entries fail closed:
+/// used by every non-admission inspector (CLI pack, FFI listing surfaces) that
+/// has no site-follow context. Exactly `decode_bundle_with_root(input, None)`.
 pub fn decode_bundle(input: &[u8]) -> BundleDecodeOutcome {
+    decode_bundle_with_root(input, None)
+}
+
+/// Decode for an admission gate that knows which owned site the caller follows.
+///
+/// `followed_site_root` is the owned-namespace root (its 32-byte id) the caller
+/// is importing/syncing FOR. An owned-namespace editorial entry is admitted
+/// only when its capability is owned and rooted at exactly this key (see
+/// [`admissible_capability`]); `None` fails closed. Communal admission ignores
+/// this argument and is byte-for-byte unchanged.
+pub fn decode_bundle_with_root(
+    input: &[u8],
+    followed_site_root: Option<[u8; 32]>,
+) -> BundleDecodeOutcome {
     // 1. Size, before any parsing (bounds all later reads to <= 8 MiB).
     if input.len() > MAX_BUNDLE_BYTES {
         return reject(RejectionCode::TooLarge, "artifact exceeds 8 MiB ceiling");
@@ -346,7 +372,7 @@ pub fn decode_bundle(input: &[u8]) -> BundleDecodeOutcome {
         .frames
         .into_iter()
         .map(|frame| {
-            let status = match verify_frame(&frame) {
+            let status = match verify_frame(&frame, followed_site_root.as_ref()) {
                 Ok(valid) => ItemStatus::Valid(Box::new(valid)),
                 Err(diagnostic) => ItemStatus::Invalid(diagnostic),
             };
@@ -438,11 +464,51 @@ fn read_bytes_field(d: &mut Decoder<'_>, expected_key: u8) -> Result<Vec<u8>, Bu
     Ok(bytes.to_vec())
 }
 
+/// The owned-vs-communal admission decision, shared by every admission gate so
+/// they cannot drift. This is the AUTH-POLICY layer ONLY — it does NOT run the
+/// willow25 cryptographic chain check; the caller runs `verify_entry` /
+/// `does_authorise` afterwards. Returns `true` iff `capability` is admissible
+/// for an entry in `entry_namespace` under `followed_site_root`.
+///
+/// Owned namespaces REQUIRE an explicit `capability.is_owned()`: a *communal*
+/// genesis cap is unconditionally `is_valid()` and can NAME an owned namespace
+/// id (`NamespaceId::is_owned()` is only the LSB marker bit, not bound to the
+/// cap's genesis variant), so without this an attacker forges masthead writes
+/// with a communal cap pointed at the owned id. The followed root then binds
+/// the entry to the exact site the user follows — `None` fails closed, and a
+/// different owned root is a different site, never silently this one. The
+/// communal branch is unchanged: a zero-delegation communal cap only.
+pub(crate) fn admissible_capability(
+    capability: &WriteCapability,
+    entry_namespace: &NamespaceId,
+    followed_site_root: Option<&[u8; 32]>,
+) -> bool {
+    if entry_namespace.is_owned() {
+        if !capability.is_owned() {
+            return false;
+        }
+        let Some(root) = followed_site_root else {
+            return false;
+        };
+        entry_namespace.as_bytes() == root
+            && capability.genesis().namespace_key().as_bytes() == root
+    } else {
+        !capability.is_owned()
+            && capability.delegations().is_empty()
+            && entry_namespace.is_communal()
+    }
+}
+
 /// Full component verification of one isolated frame, in the frozen order:
 /// canonical Entry → canonical WriteCapability → 64-byte signature →
-/// payload length/corrected WILLIAM3 → Meadowcap authorization (communal,
-/// zero-delegation only) → reserved typed schema or Riot alert schema.
-fn verify_frame(frame: &BundleItemFrame) -> Result<ValidItem, BundleDiagnostic> {
+/// payload length/corrected WILLIAM3 → admission policy
+/// ([`admissible_capability`]) → Meadowcap authorization → reserved typed
+/// schema or Riot alert schema. `followed_site_root` binds owned-namespace
+/// admission to the followed site; `None` fails owned entries closed.
+fn verify_frame(
+    frame: &BundleItemFrame,
+    followed_site_root: Option<&[u8; 32]>,
+) -> Result<ValidItem, BundleDiagnostic> {
     let entry = decode_entry_canonic(&frame.entry_bytes).map_err(|_| BundleDiagnostic {
         code: DiagnosticCode::NonCanonicalEntry,
         component: ItemComponent::Entry,
@@ -491,12 +557,12 @@ fn verify_frame(frame: &BundleItemFrame) -> Result<ValidItem, BundleDiagnostic> 
         });
     }
 
-    // Phase 0A accepts only a communal namespace with a zero-delegation
-    // communal capability for the entry's own subspace.
-    if capability.is_owned()
-        || !capability.delegations().is_empty()
-        || !entry.namespace_id().is_communal()
-    {
+    // Admission policy (the single chokepoint): a communal namespace still
+    // requires a zero-delegation communal cap for the entry's own subspace; an
+    // owned (composite-site) namespace requires an owned cap rooted at the
+    // followed site. `admissible_capability` is the shared predicate every
+    // gate routes through so they can never diverge.
+    if !admissible_capability(&capability, entry.namespace_id(), followed_site_root) {
         return Err(BundleDiagnostic {
             code: DiagnosticCode::UnsupportedCapability,
             component: ItemComponent::Authorization,
@@ -537,7 +603,16 @@ fn verify_frame(frame: &BundleItemFrame) -> Result<ValidItem, BundleDiagnostic> 
     // Admission stays policy-free: shape and schema only (and slot ownership
     // at `inspect`), never whether a name/marker is "allowed".
     // Everything else is UnsupportedSchema.
-    let schema_ok = if crate::apps::entry::is_app_data_path(entry.path()) {
+    let schema_ok = if entry.namespace_id().is_owned() {
+        // Owned composite-site namespace: Unit 1 admits ONLY the delegatable
+        // `/articles/` region, with an OPAQUE payload — integrity is the
+        // digest/length checks above and the path is the identity (mirrors
+        // app-data). The reserved `/manifest` and `/mod/` regions carry no
+        // schema here and are refused (Units 2/3). Admission for owned entries
+        // already required a cap rooted at the followed site above, so nothing
+        // communal can reach this branch.
+        crate::willow::site_paths::is_under_articles(entry.path())
+    } else if crate::apps::entry::is_app_data_path(entry.path()) {
         true
     } else {
         match crate::apps::index::classify_app_index_path(entry.path()) {
