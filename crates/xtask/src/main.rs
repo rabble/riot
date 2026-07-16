@@ -8,6 +8,7 @@ mod export_newswire;
 mod hex_codec;
 mod sign_conference_fixture;
 mod verify_conference_export;
+mod verify_newswire_export;
 
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -220,6 +221,13 @@ fn run_with(
                 ExitCode::FAILURE
             }
         },
+        Some("verify-newswire-export") => match verify_newswire_export::run(root) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("verify-newswire-export: FAIL: {error}");
+                ExitCode::FAILURE
+            }
+        },
         Some(other) => {
             let _ = writeln!(err, "unknown xtask command: {other}").is_ok();
             let _ = writeln!(err, "available: {}", available_commands().join(", ")).is_ok();
@@ -240,6 +248,7 @@ fn available_commands() -> &'static [&'static str] {
         "sign-conference-fixture",
         "verify-conference-export",
         "export-newswire",
+        "verify-newswire-export",
     ]
 }
 
