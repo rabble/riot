@@ -1,14 +1,28 @@
 {
+  "contributors": [
+    {
+      "author_id": "afc6c354c72670350715e3ed911a25405f1d28d1624761976863915f9c6a3ebc",
+      "contribution_count": 7,
+      "display_name": "RIOT Editorial Desk",
+      "is_organizer": true
+    },
+    {
+      "author_id": "cbb2a84de1ecbed5479056cc725504525c743ebfbe125bc3c16c5ed616a0293f",
+      "contribution_count": 6,
+      "display_name": "Harbor Desk",
+      "is_organizer": false
+    }
+  ],
   "entries": [
     {
       "ai_assisted": false,
       "body": "The wildcat action began at the night shift. Cranes idle, 6,000 boxes stranded. Dockers hold the gate until the fired stewards are reinstated.",
       "editorially_verified": true,
-      "entry_id": "849681d055fcfb8234702d4fb68ca4079144825879511e2fbbf449aaecc7b9e1",
+      "entry_id": "1b3359b6bcc9dba34e9d3d4ca2c4992a122f680f13c268b22c31d718bb74fbb8",
       "featured": true,
       "kind": "post",
-      "signer": "be0fa92091e09e529c007c15e8f1710f31040264f9109c23d59043a78f6e112e",
-      "tai_j2000_micros": 837423648000000,
+      "signer": "afc6c354c72670350715e3ed911a25405f1d28d1624761976863915f9c6a3ebc",
+      "tai_j2000_micros": 837425926000000,
       "title": "Port workers walk out in solidarity; container terminal at a standstill",
       "verification_status": "signature_verified"
     },
@@ -16,47 +30,47 @@
       "ai_assisted": false,
       "body": "Four hundred households on Sonnenallee are now withholding rent — the largest coordinated tenant action since the 2023 deposit fight. The union answered eviction filings with a block-by-block watch.",
       "editorially_verified": true,
-      "entry_id": "79a777603fe83d36a0945e66341b3ecf0d34396a281764d751c837cfe9ce46f1",
+      "entry_id": "08a9596164234992e136790a93dd2a1b27671ed28dd92bbdcb5d35c24e9af5fe",
       "featured": true,
       "kind": "post",
-      "signer": "be0fa92091e09e529c007c15e8f1710f31040264f9109c23d59043a78f6e112e",
-      "tai_j2000_micros": 837423648000000,
+      "signer": "afc6c354c72670350715e3ed911a25405f1d28d1624761976863915f9c6a3ebc",
+      "tai_j2000_micros": 837425926000000,
       "title": "Rent strike jumps three more blocks as tenants tear up eviction notices",
-      "verification_status": "signature_verified"
-    },
-    {
-      "ai_assisted": false,
-      "body": "Four unmarked units, invoiced under \"traffic safety.\" The contract and vendor spec sheet are published in full.",
-      "editorially_verified": true,
-      "entry_id": "b6045a3afb2b31fc2d1bb8b56f0dc44b28b9e5dabfff93cd6c2045e1e209aafe",
-      "featured": false,
-      "kind": "post",
-      "signer": "be0fa92091e09e529c007c15e8f1710f31040264f9109c23d59043a78f6e112e",
-      "tai_j2000_micros": 837423648000000,
-      "title": "Leaked procurement docs show the city quietly bought facial-recognition vans",
       "verification_status": "signature_verified"
     },
     {
       "ai_assisted": false,
       "body": "Eyewitness report from the strike blocks. Bring water and legal-observer numbers.",
       "editorially_verified": false,
-      "entry_id": "5debe0897403bf5404f5264d468a4d7f3327c0bca7a014739226ad8541167a9e",
+      "entry_id": "d62d1c32302cb919825569eade6088bf730e3dd310602b4d766719b6a20623f6",
       "featured": false,
       "kind": "post",
-      "signer": "be0fa92091e09e529c007c15e8f1710f31040264f9109c23d59043a78f6e112e",
-      "tai_j2000_micros": 837423648000000,
+      "signer": "afc6c354c72670350715e3ed911a25405f1d28d1624761976863915f9c6a3ebc",
+      "tai_j2000_micros": 837425926000000,
       "title": "Cops massing at the north gate, roughly forty vans",
+      "verification_status": "signature_verified"
+    },
+    {
+      "ai_assisted": false,
+      "body": "Four unmarked units, invoiced under \"traffic safety.\" The contract and vendor spec sheet are published in full.",
+      "editorially_verified": true,
+      "entry_id": "d0db27122cb94c0613983cdb7559a1ebc1056546f028198e7289150defaa2fd3",
+      "featured": false,
+      "kind": "post",
+      "signer": "afc6c354c72670350715e3ed911a25405f1d28d1624761976863915f9c6a3ebc",
+      "tai_j2000_micros": 837425926000000,
+      "title": "Leaked procurement docs show the city quietly bought facial-recognition vans",
       "verification_status": "signature_verified"
     },
     {
       "ai_assisted": false,
       "body": "Volunteers are staffing a first-aid point at the west entrance. Water and shade available.",
       "editorially_verified": false,
-      "entry_id": "591fe79a00b950caecf6b66c68b9c866b2d1bb27abe5271a020d48715877da0e",
+      "entry_id": "cfaad9e6ebb4239589b41cb362b11e11bcb05eb2e56f2f633f15aa7d03d145ac",
       "featured": false,
       "kind": "post",
-      "signer": "be0fa92091e09e529c007c15e8f1710f31040264f9109c23d59043a78f6e112e",
-      "tai_j2000_micros": 837423648000000,
+      "signer": "afc6c354c72670350715e3ed911a25405f1d28d1624761976863915f9c6a3ebc",
+      "tai_j2000_micros": 837425926000000,
       "title": "Medic station open at the old library, side entrance",
       "verification_status": "signature_verified"
     },
@@ -64,22 +78,22 @@
       "ai_assisted": false,
       "body": "Low-altitude drone seen over the rent-strike blocks for the past twenty minutes.",
       "editorially_verified": false,
-      "entry_id": "214b4a96d54c17bb14d54f4feb59581c78aadd8c9a7f300e2458c2fed08d525e",
+      "entry_id": "8a85be4dd443aa7351913a71eba7d35607c103912aa4d8a7c3af1a4990bacf92",
       "featured": false,
       "kind": "post",
-      "signer": "be0fa92091e09e529c007c15e8f1710f31040264f9109c23d59043a78f6e112e",
-      "tai_j2000_micros": 837423648000000,
+      "signer": "afc6c354c72670350715e3ed911a25405f1d28d1624761976863915f9c6a3ebc",
+      "tai_j2000_micros": 837425926000000,
       "title": "Drone overhead on Sonnenallee, circling the strike blocks",
       "verification_status": "signature_verified"
     }
   ],
   "export_revision": "newswire-gateway-export-v1",
-  "generated_at": "2026-07-16T21:40:16Z",
-  "namespace": "be0fa92091e09e529c007c15e8f1710f31040264f9109c23d59043a78f6e112e",
+  "generated_at": "2026-07-16T22:18:14Z",
+  "namespace": "afc6c354c72670350715e3ed911a25405f1d28d1624761976863915f9c6a3ebc",
   "renderer_profile": "newswire-front/1",
   "schema": "riot-public-gateway-export/2",
   "source_fixture": "fixtures/newswire/signed-space-v1.json",
-  "source_fixture_sha256": "e0eee6fa56309617f545d768439e47398bc9b03be88609d2b4b6e11263e90cb3",
+  "source_fixture_sha256": "69e781754a7e74b7dcaf803ec9ad9cd3e41eb68c155c2328459025c90ef6e06e",
   "title": "RIOT · Independent Newswire",
   "visibility": "public"
 }

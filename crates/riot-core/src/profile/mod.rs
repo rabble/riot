@@ -9,8 +9,11 @@
 //! `resolver::render_display_name` is the only sanctioned way to display one.
 
 pub mod card;
+pub mod card_entry;
 pub mod path;
 pub mod resolver;
+
+pub use card_entry::create_signed_profile_card;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProfileError {

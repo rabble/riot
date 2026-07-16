@@ -127,6 +127,36 @@ pub fn run(root: &Path) -> Result<(), String> {
     }
     export["schema"] = json!(EXPORT_SCHEMA);
 
+    // Re-verify the profile-card records too (WS1-b). A card is an integrity
+    // record in the signed fixture ONLY — it never appears in the public
+    // entries[], so there is no per-entry status to stamp. Unlike a public entry
+    // (which is stamped `signature_invalid` and kept), a card whose signature
+    // does not verify is a corrupt fixture and hard-fails the whole verification.
+    // The check is kind-agnostic — the same `verify_signed_entry` the posts use,
+    // bound by `willow_entry_id`.
+    let mut card_verified = 0usize;
+    for record in signed["records"].as_array().into_iter().flatten() {
+        if record["record_kind"] != "profile_card" {
+            continue;
+        }
+        let id = record["willow_entry_id"]
+            .as_str()
+            .ok_or("signed profile_card: willow_entry_id must be a string")?;
+        let proof = index
+            .get(id)
+            .ok_or_else(|| format!("profile_card {id} is not in the signed-record index"))?;
+        if !verify_signed_entry(
+            &proof.entry_bytes,
+            &proof.capability_bytes,
+            &proof.signature,
+        )? {
+            return Err(format!(
+                "profile-card {id} signature failed to verify — corrupt signed fixture"
+            ));
+        }
+        card_verified += 1;
+    }
+
     fs::write(
         &export_path,
         serde_json::to_string_pretty(&export).map_err(|e| format!("serialize export: {e}"))? + "\n",
@@ -134,7 +164,7 @@ pub fn run(root: &Path) -> Result<(), String> {
     .map_err(|e| format!("write {}: {e}", export_path.display()))?;
 
     println!(
-        "verify-newswire-export: PASS ({verified_count}/{} entries signature-verified)",
+        "verify-newswire-export: PASS ({verified_count}/{} entries + {card_verified} profile cards signature-verified)",
         export_entries.len()
     );
     Ok(())
@@ -271,6 +301,75 @@ mod tests {
         assert_eq!(
             stamped["entries"][1]["verification_status"],
             VERIFICATION_STATUS_VALID
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn run_verifies_the_profile_card_records_against_a_freshly_produced_export() {
+        // Produce fixtures that carry profile-card records (WS1-b), then verify —
+        // the card re-verification path succeeds on a consistent export.
+        let root =
+            std::env::temp_dir().join(format!("riot-verify-nw-cards-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        crate::export_newswire::run(&root).expect("produce an export carrying cards");
+
+        let signed: Value = serde_json::from_str(
+            &fs::read_to_string(root.join("fixtures/newswire/signed-space-v1.json")).unwrap(),
+        )
+        .unwrap();
+        let card_count = signed["records"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|r| r["record_kind"] == "profile_card")
+            .count();
+        assert!(
+            card_count >= 2,
+            "the fixture carries profile-card records to verify"
+        );
+
+        run(&root).expect("verify succeeds — posts and cards both re-verify");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn run_hard_fails_when_a_profile_card_signature_is_tampered() {
+        let root =
+            std::env::temp_dir().join(format!("riot-verify-nw-badcard-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        crate::export_newswire::run(&root).expect("produce an export carrying cards");
+
+        // Break the entry_bytes of a profile_card record, keeping its
+        // willow_entry_id so it still indexes — its signature must now fail.
+        let signed_path = root.join("fixtures/newswire/signed-space-v1.json");
+        let mut signed: Value =
+            serde_json::from_str(&fs::read_to_string(&signed_path).unwrap()).unwrap();
+        let mut tampered = false;
+        for record in signed["records"].as_array_mut().unwrap() {
+            if record["record_kind"] == "profile_card" {
+                let bytes = record["willow_entry_bytes"].as_str().unwrap();
+                let flipped = if bytes.starts_with('0') {
+                    format!("1{}", &bytes[1..])
+                } else {
+                    format!("0{}", &bytes[1..])
+                };
+                record["willow_entry_bytes"] = Value::from(flipped);
+                tampered = true;
+                break;
+            }
+        }
+        assert!(tampered, "there is a profile_card record to tamper");
+        fs::write(
+            &signed_path,
+            serde_json::to_string_pretty(&signed).unwrap() + "\n",
+        )
+        .unwrap();
+
+        let error = run(&root).expect_err("a tampered card signature fails verification");
+        assert!(
+            error.contains("profile-card") && error.contains("failed to verify"),
+            "the failure names the corrupt card: {error}"
         );
         let _ = fs::remove_dir_all(&root);
     }
