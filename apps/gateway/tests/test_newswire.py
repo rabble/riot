@@ -97,6 +97,17 @@ class NewswireRenderTest(unittest.TestCase):
         self.assertNotIn("Should be hidden", page)
         self.assertNotIn("Should be tombstoned", page)
 
+    def test_publish_link_goes_to_a_how_to_page_not_a_dead_deep_link(self) -> None:
+        # You can't publish from the web — Publish must lead to app instructions.
+        self.assertIn('href="/publish/"', self.page)
+
+    def test_publish_page_explains_publishing_from_the_app(self) -> None:
+        page = nw.render_publish(self.export)
+        self.assertIn("Publish from the Riot app", page)
+        self.assertIn("read-only", page.lower())
+        self.assertIn("riot://open", page)  # the open-in-app deep link
+        self.assertIn("connect-src 'none'", page)  # same fences
+
     def test_csp_baked_in_and_no_external_fetches(self) -> None:
         styles = re.findall(r"<style>(.*?)</style>", self.page, re.S)
         digest = base64.b64encode(hashlib.sha256(styles[0].encode("utf-8")).digest()).decode("ascii")
