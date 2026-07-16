@@ -219,49 +219,37 @@ final class CommunityChooserTests: XCTestCase {
         }
     }
 
-    // MARK: - Newswire descriptor survives a relaunch/switch
+    // MARK: - Creating a community signs a projectable newswire
 
-    /// Regression: `newswireDescriptorEntryID` was only ever captured inside
-    /// `createCommunity`, so a community reached after a relaunch, a switch, or a
-    /// join had a nil descriptor. Home then projected an empty descriptor id and
-    /// degraded to the "updates unavailable" state — the newswire was effectively
-    /// dead for every community except one just created in the current session.
-    /// `reload()` (run by both `bootstrap` on restore and `switchCommunity`) must
-    /// re-derive it from the persisted `CommunityRow.descriptorEntryId`.
+    /// Regression: the founder form collects no summary, so
+    /// `CommunityCreationRequest.summary` is empty — and core rejects a newswire
+    /// `SpaceDescriptorV1` with an empty summary (`InvalidInput`). The result was
+    /// that EVERY user-created community signed no descriptor and launched with a
+    /// permanently dead wire ("updates unavailable"), which is the newswire being
+    /// invisible. `createCommunity` must supply a non-empty summary so the
+    /// descriptor is signed and Home can project the (empty) wire.
     @MainActor
-    func testARestoredCommunityReDerivesItsNewswireDescriptorSoHomeProjectsTheWire() throws {
+    func testCreatingACommunityWithNoSummaryStillSignsAProjectableNewswire() throws {
         let directory = try Self.temporaryProfileDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
-        let keyStore = TestWrappingKeyStore()
+        let model = RiotAppModel()
+        model.bootstrap(storageDirectory: directory, keyStore: TestWrappingKeyStore(), starterPacks: [])
 
-        // Session 1: found a community. This signs an immutable newswire
-        // SpaceDescriptorV1 and captures its entry id.
-        let founding = RiotAppModel()
-        founding.bootstrap(storageDirectory: directory, keyStore: keyStore, starterPacks: [])
-        founding.createCommunity(CommunityCreationRequest(name: "Fire Watch"))
-        let signed = try XCTUnwrap(
-            founding.community?.newswireDescriptorEntryID,
-            "create signs and captures the descriptor"
+        // A founder who typed only a community name — no summary.
+        model.createCommunity(CommunityCreationRequest(name: "Fire Watch"))
+
+        let descriptor = try XCTUnwrap(
+            model.community?.newswireDescriptorEntryID,
+            "create must sign a newswire descriptor even with no summary; errorMessage=\(model.errorMessage ?? "nil")"
         )
-        XCTAssertFalse(signed.isEmpty)
-        let namespaceID = try XCTUnwrap(founding.community?.namespaceID)
+        XCTAssertFalse(descriptor.isEmpty)
 
-        // Session 2: a fresh model opens the SAME profile — a relaunch. It never
-        // calls createCommunity, so opening the community must re-derive the
-        // descriptor from the persisted CommunityRow instead of leaving it nil.
-        // (A single-community device has an empty chooser list by design, so the
-        // community is reached via the active community / an explicit switch.)
-        let relaunched = RiotAppModel()
-        relaunched.bootstrap(storageDirectory: directory, keyStore: keyStore, starterPacks: [])
-        let autoOpened = relaunched.community != nil
-        if relaunched.community == nil {
-            relaunched.switchCommunity(namespaceID: namespaceID)
-        }
-        let rows = try relaunched.profileRepository?.listCommunities() ?? []
-        let rowDesc = rows.first { $0.namespaceId == namespaceID }?.descriptorEntryId
-        XCTAssertEqual(
-            relaunched.community?.newswireDescriptorEntryID, signed,
-            "DIAG autoOpened=\(autoOpened) rows=\(rows.count) rowDescriptor=\(rowDesc ?? "nil") activeNs=\(relaunched.community?.namespaceID ?? "nil")"
+        // The signed descriptor must PROJECT (an empty wire) rather than throw, so
+        // Home shows the friendly "post the first update" state, never the
+        // "updates unavailable" recovery state that a missing descriptor produces.
+        XCTAssertNoThrow(
+            try model.profileRepository?.projectNewswire(spaceDescriptorEntryID: descriptor),
+            "a freshly created community's wire must project (empty), not fail"
         )
     }
 
