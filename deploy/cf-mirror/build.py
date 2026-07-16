@@ -34,6 +34,11 @@ def main() -> None:
     export = nw.load_export()
     (dist / "index.html").write_text(nw.render_newswire(export), encoding="utf-8")
 
+    # /publish = how to publish (from the app; the web is read-only by design).
+    pub = dist / "publish"
+    pub.mkdir(parents=True, exist_ok=True)
+    (pub / "index.html").write_text(nw.render_publish(export), encoding="utf-8")
+
     # Post permalinks — keyed by real entry_id (content hash).
     for post in nw.all_posts(export):
         page = dist / "post" / post["entry_id"]

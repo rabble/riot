@@ -106,6 +106,16 @@ a { color: inherit; }
 .feed a { text-decoration: none; }
 .feed a:hover { color: var(--red); }
 .feed .feed__title { font-family: Georgia, "Times New Roman", serif; font-weight: 700; font-size: 1.15rem; }
+.lead { font-size: 1.15rem; margin: 0.5rem 0 1.5rem; max-width: 40rem; }
+.why { border-left: 3px solid var(--wire); padding: 0.2rem 0 0.2rem 1rem; margin: 0 0 1.75rem; color: var(--muted); font-size: 0.95rem; max-width: 40rem; }
+.steps { counter-reset: step; list-style: none; margin: 0; padding: 0; max-width: 42rem; }
+.steps li { position: relative; padding: 0 0 1.4rem 3rem; border-left: 1px solid var(--line); margin-left: 1rem; }
+.steps li:last-child { border-left-color: transparent; }
+.steps li::before { counter-increment: step; content: counter(step); position: absolute; left: -1rem; top: -0.1rem; width: 2rem; height: 2rem; display: grid; place-items: center; background: var(--red); color: var(--paper); border-radius: 50%; font-family: ui-monospace, Menlo, monospace; font-weight: 700; font-size: 0.9rem; }
+.steps h3 { font-family: Georgia, "Times New Roman", serif; font-size: 1.2rem; margin: 0 0 0.3rem; }
+.steps p { margin: 0; font-size: 0.98rem; }
+.cta { display: inline-block; margin: 0.4rem 0 0; font-family: ui-monospace, Menlo, monospace; font-weight: 600; text-decoration: none; color: var(--paper); background: var(--ink); padding: 0.35rem 0.7rem; }
+.cta:hover { background: var(--red); }
 .foot { max-width: 78rem; margin: 0 auto; padding: 1.4rem 1.25rem 3rem; border-top: 1px solid var(--line); font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 0.68rem; color: var(--muted); line-height: 1.6; display: flex; gap: 0.6rem 1.5rem; flex-wrap: wrap; align-items: baseline; }
 .foot a { color: var(--ink); }
 .foot .sample { color: var(--red); }
@@ -212,7 +222,7 @@ def render_newswire(export: dict, css: str = NEWSPRINT_CSS) -> str:
     <div class="wire__head"><strong>Open Newswire</strong><span>open publishing · anyone can post</span></div>
     <p class="wire__note">Unverified unless an editor signed a verification. Posted over the p2p network. Read with care.</p>
     <ol>{rows}</ol>
-    <p class="wire__foot"><a href="{uri}">+ Publish to the wire →</a></p>
+    <p class="wire__foot"><a href="/publish/">+ Publish to the wire →</a></p>
   </aside>
 </main>
 {_footer(export)}
@@ -272,6 +282,31 @@ def render_author(export: dict, author_id: str, css: str = NEWSPRINT_CSS) -> str
   <div class="profile__handle">{escape(contributor['id'])} · {role} · {contributor.get('contribution_count', 0)} signed records</div>
   <p class="section-label">Published</p>
   <ul class="feed">{items}</ul>
+</main>
+{_footer(export)}
+</body>
+</html>"""
+
+
+def render_publish(export: dict, css: str = NEWSPRINT_CSS) -> str:
+    uri = f"riot://open?descriptor={export['space']['descriptor_entry_id']}"
+    return f"""<!doctype html>
+<html lang="en">
+{_head(f"Publish · {export['space']['name']}", css)}
+<body>
+{_masthead(export)}
+<main class="narrow">
+  <a class="back" href="/">← {escape(export['space']['name'])}</a>
+  <span class="kicker">Publishing</span>
+  <h1 class="profile__name">Publish from the Riot app</h1>
+  <p class="lead">You can read this newswire on the web, but you publish from the Riot app — never from a web page.</p>
+  <p class="why">By design. Your signing key never touches a browser or this mirror, and web readers stay out of the peer-to-peer graph. The app holds the keys and does the signing; the web is a read-only window. That separation is what keeps publishers safer.</p>
+  <ol class="steps">
+    <li><h3>Get Riot</h3><p>Install the Riot app on your phone or desktop. It carries your keys and joins the peer-to-peer network directly.</p></li>
+    <li><h3>Open this newswire</h3><p>Open the share link in the app, or scan its QR from a poster or another device.</p><a class="cta" href="{uri}">Open this newswire in Riot →</a></li>
+    <li><h3>Write and publish</h3><p>Post to the open wire, or — if you're an editor — publish an article. The app signs it with your key.</p></li>
+    <li><h3>It syncs to the mirrors</h3><p>Your signed post travels peer-to-peer to seeds and mirrors. Minutes later it appears on every copy of this newswire, including this web one.</p></li>
+  </ol>
 </main>
 {_footer(export)}
 </body>
