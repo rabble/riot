@@ -11,6 +11,7 @@ pub mod clock;
 pub mod digest;
 pub mod entry;
 pub mod identity;
+mod masthead;
 mod owned;
 mod site_paths;
 
@@ -34,6 +35,7 @@ pub use identity::{
     generate_space_organizer_author, AuthorIdentity, EvidenceAuthor, NamespaceKind,
     SEALED_IDENTITY_BYTES,
 };
+pub use masthead::OwnedMasthead;
 pub use owned::OwnedRoot;
 pub use site_paths::{is_under_articles, ARTICLES_COMPONENT, MANIFEST_COMPONENT, MOD_COMPONENT};
 
