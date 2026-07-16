@@ -10,21 +10,15 @@ ranked backlog. Supersedes `2026-07-15-multi-session-state.md` for the live pict
 - **Two-peer nearby sync — FIXED** (`7242a0d`): was a same-community sync-role deadlock, not a radio limit. Proven over on-Mac Bonjour; physical BLE between two phones still assumed (no device rig — testable via v2 on two TestFlight phones).
 - **Security residuals — on `main`** (PR #5): Risk 9 (WebRTC bundle-scan, deny-closed, at `verify_app_pair`) + Risk 13 (seal-inline-on-join). Both independently re-verified.
 - **Coverage gate is now REAL** (PR #3/#4): honest per-tool ratchet floors that the scripts + CI read; CI enforces the line floor via `cargo llvm-cov --fail-under-lines` (tarpaulin's ptrace engine hangs in CI). Resolves the old fiction / Risk 6.
+- **v2 distributed publishing — MERGED** (PR #12, `feat/newswire-sync`): follow multiple communities + SEE published newswire on a second device. Risk 15 (`join_newswire_community` carries the descriptor, no dead follow) + Risk 16 (`track_committed_entry` puts newswire into the sync inventory so publishing traverses the nearby bridge) + the recovered iOS 3D join UI (`d0194b8`, cleanly reconciled onto a moved main — took main's keyed `switchToCommunity`, layered the join UI). **Isolation independently ratified:** adversarial audit returned HOLDS — `install_sync_inventory`'s total `retain` + `inventory_ids != live_ids → Err` re-check (`mobile_state.rs:1713,1724`) fails closed on any foreign-namespace entry; 16/16 persistence_contract incl. isolation + write-race + newswire e2e; CI 4/4. **TF v2 ready to archive from clean main.** Fast-follow requested: a direct newswire cross-community isolation regression test (mechanism proven; just wants a durable guard).
 
-## In flight — v2 (the distributed-publishing build)
+## In flight — WS1 (the web missing link)
 
-Branch `feat/join-descriptor` (worktree `riot-wt-3e`, agent-3-registry). ONE PR delivers:
-- **Recover the dropped iOS 3D** — the iOS manual-join UI (`d0194b8`) was silently dropped from `main` during a history rewrite (Android half survived, iOS didn't). Cherry-picking `d0194b8` + `ac7c81e` back.
-- **Risk 15 (descriptor carry)** — `join_newswire_community` registers the share-ref's descriptor id so a *joined* community's Home can reproject (not a dead follow). Rust done (`bef0c48`), persistence_contract 15/15.
-- **Risk 16 (newswire enters the sync inventory)** — `import_signed_newswire` now tracks its committed entry in `sync_inventory` (like the alert/app-data paths), so a newswire profile can open a sync session and **publishing traverses the nearby bridge**. Rust done (`4bc4d09`). Guardrail: the `inventory == active-namespace-live-ids` isolation invariant must still hold (namespace-scoped) — coordinator runs an adversarial isolation pass.
-- **End-to-end proof:** create A → publish → follower joins by share-ref → sync → follower's Home shows the post.
-
-This is what makes "community + PUBLISHING" actually distribute to a second device. When it merges, cut TF v2.
+The distributed-publishing half is done (v1 + v2 shipped). The remaining mission half is the public web loop — see the program roadmap `docs/superpowers/plans/2026-07-16-newswire-web-integration.md`. WS1 (signed newswire gateway export, Rust/xtask) has a detailed TDD plan (`2026-07-16-newswire-gateway-export.md`) through the plan-review gate (Feasibility + Scope PASS; Completeness FAIL→revised→re-review in flight). **Branch reality:** origin/main newswire is still demo (`sample_view`); a live sibling (`design/composite-site-manifest`) already renders real records on an interim schema (`riot.newswire.export/1`, no proof bytes/reverification). WS1 unifies onto the board's `riot-public-gateway-export/2` with proof bytes + independent Ed25519 reverification, writing NEW file paths (non-conflicting); the renderer rewire (WS1-b) is coordinated with the newswire.py owner.
 
 ## Ranked backlog / what needs doing
 
-1. **Land v2** (above) — critical path; makes publishing distribute + restores iOS join. In flight.
-2. **Physical two-device test** — validate nearby sync + publishing between two real iPhones via TF v2. Needs hardware (the owner's).
+1. **Physical two-device test** — validate nearby sync + publishing between two real iPhones via TF v2. Needs hardware (the owner's).
 3. **Owner ratifications (decisions, not builds):** 1A `CurrentEntryV2` deviation (Risk 2); per-community sealed-identity model (Risk 12).
 4. **Web/gateway half** — the public read/publish-to-the-world surface (the indymedia mission half). **Now planned:** see `docs/superpowers/plans/2026-07-16-newswire-web-integration.md` (program roadmap WS1–WS4). The true missing link is WS1 (signed newswire gateway export in Rust/xtask) — the board already proves the pattern; the newswire home is the only surface still on demo `sample_view()`. WS1 → WS2 (gateway renders real) → WS3 ("Open in Riot" verify).
 5. **Composite-site / owned namespaces + personal pages** — a separate live session's track (Unit 1 landing on `main`).
