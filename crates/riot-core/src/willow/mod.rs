@@ -11,7 +11,9 @@ pub mod clock;
 pub mod digest;
 pub mod entry;
 pub mod identity;
+mod masthead;
 mod owned;
+mod site_paths;
 
 use ufotofu::codec_prelude::{DecodableCanonic, EncodableExt};
 use ufotofu::producer::clone_from_slice;
@@ -33,7 +35,9 @@ pub use identity::{
     generate_space_organizer_author, AuthorIdentity, EvidenceAuthor, NamespaceKind,
     SEALED_IDENTITY_BYTES,
 };
+pub use masthead::OwnedMasthead;
 pub use owned::OwnedRoot;
+pub use site_paths::{is_under_articles, ARTICLES_COMPONENT, MANIFEST_COMPONENT, MOD_COMPONENT};
 
 // Conformance-only injection surface: absent from the release riot-ffi graph.
 #[cfg(feature = "conformance")]
@@ -68,6 +72,8 @@ pub enum WillowError {
     SealedIdentityInvalid,
     /// The AEAD could not seal an otherwise valid identity.
     IdentitySealFailed,
+    /// A section delegation was requested for an area whose path escapes `/articles/`.
+    DelegationAreaEscapesArticles,
 }
 
 impl std::fmt::Display for WillowError {
