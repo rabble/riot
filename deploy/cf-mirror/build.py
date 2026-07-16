@@ -9,6 +9,7 @@ render change: `python3 build.py`.
 from __future__ import annotations
 
 from pathlib import Path
+import shutil
 import sys
 
 HERE = Path(__file__).resolve().parent
@@ -22,25 +23,29 @@ import server  # noqa: E402
 
 def main() -> None:
     dist = HERE / "dist"
-    dist.mkdir(exist_ok=True)
+    if dist.exists():
+        shutil.rmtree(dist)  # no stale pages from a previous build
+    dist.mkdir(parents=True)
 
-    # Home = the two-column newswire (E features + W open-wire), demo content.
-    view = nw.sample_view()
-    (dist / "index.html").write_text(nw.render_newswire(view), encoding="utf-8")
+    # Newswire = a REAL projection of signed Willow records
+    # (fixtures/newswire/newswire-export-v1.json, minted by the riot-ffi
+    # generator). Regenerate it with:
+    #   cargo test -p riot-ffi --test generate_newswire_export -- --ignored
+    export = nw.load_export()
+    (dist / "index.html").write_text(nw.render_newswire(export), encoding="utf-8")
 
-    # Per-article detail pages (headlines link here).
-    for entry in view.editorial:
-        page = dist / "article" / entry.slug
+    # Post permalinks — keyed by real entry_id (content hash).
+    for post in nw.all_posts(export):
+        page = dist / "post" / post["entry_id"]
         page.mkdir(parents=True, exist_ok=True)
-        (page / "index.html").write_text(nw.render_article(view, entry), encoding="utf-8")
+        (page / "index.html").write_text(nw.render_post(export, post), encoding="utf-8")
 
-    # Per-category listings (nav links here).
-    for category in view.categories:
-        if category == "Latest":
-            continue
-        page = dist / "c" / nw._slug(category)
+    # Author profiles — one per real contributor (signer). Everything they've
+    # published aggregates here.
+    for contributor in export.get("contributors", []):
+        page = dist / "author" / contributor["id"]
         page.mkdir(parents=True, exist_ok=True)
-        (page / "index.html").write_text(nw.render_category(view, category), encoding="utf-8")
+        (page / "index.html").write_text(nw.render_author(export, contributor["id"]), encoding="utf-8")
 
     # /board = the incident-board dump, both skins, to exercise the vendored
     # client filter and the skin/CSP seam on a live host.

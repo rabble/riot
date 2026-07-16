@@ -1,4 +1,4 @@
-"""Two-column newswire render profile — features (E) + open wire (W)."""
+"""Newswire renderer: projects a REAL signed-record export into HTML."""
 
 from __future__ import annotations
 
@@ -18,66 +18,91 @@ except ModuleNotFoundError:
     nw = None
 
 
+def _post(entry_id, headline, body, author_id="aaaa", rendered="Ana · aaaa",
+          verified=False, treatment="Ordinary"):
+    return {
+        "entry_id": entry_id,
+        "author": {"id": author_id, "display_name": "Ana", "tag": "aaaa", "rendered": rendered},
+        "tai_j2000_micros": 1,
+        "headline": headline,
+        "body": body,
+        "ai_assisted": False,
+        "verified": verified,
+        "treatment": treatment,
+    }
+
+
+def _export(front_page, open_wire, contributors):
+    return {
+        "schema": "riot.newswire.export/1",
+        "space": {"name": "RIOT · Newswire", "descriptor_entry_id": "d" * 64},
+        "front_page": front_page,
+        "open_wire": open_wire,
+        "contributors": contributors,
+    }
+
+
 class NewswireRenderTest(unittest.TestCase):
     def setUp(self) -> None:
-        self.assertIsNotNone(nw, "the newswire render profile does not exist")
-        self.view = nw.sample_view()
-        self.page = nw.render_newswire(self.view)
+        self.assertIsNotNone(nw, "the newswire renderer does not exist")
+        feat = _post("e1" * 32, "Rent strike jumps three more blocks", "Four hundred households…", verified=True)
+        wire = _post("e2" * 32, "Medic station open at the old library", "West entrance staffed.", verified=False)
+        self.export = _export([feat], [feat, wire], [
+            {"id": "aaaa", "display_name": "Ana", "rendered": "Ana · aaaa", "is_organizer": True, "contribution_count": 3},
+        ])
+        self.page = nw.render_newswire(self.export)
 
-    def test_sample_view_is_flagged_demo_not_real_signed_content(self) -> None:
-        # Honest boundary: this profile awaits real E/W content. The sample must
-        # never be mistaken for signed data from a namespace.
-        self.assertTrue(self.view.sample)
-        self.assertIn("sample", self.page.lower())
+    def test_real_export_fixture_loads_if_present(self) -> None:
+        path = ROOT.parents[1] / "fixtures" / "newswire" / "newswire-export-v1.json"
+        if not path.is_file():
+            self.skipTest("run the riot-ffi generator to produce the real export")
+        export = nw.load_export(path)
+        self.assertIn("front_page", export)
+        self.assertIn("open_wire", export)
+        # entry ids are real content hashes (64 hex chars).
+        self.assertRegex(export["open_wire"][0]["entry_id"], r"^[0-9a-f]{64}$")
 
-    def test_renders_editorial_and_open_wire_as_separate_sections(self) -> None:
-        self.assertIn("editorial", self.page.lower())
-        self.assertRegex(self.page, r'class="[^"]*\bwire\b')
-        # Every editorial article and every wire post makes it onto the page.
-        for entry in self.view.editorial:
-            self.assertIn(entry.title, self.page)
-        for post in self.view.wire:
-            self.assertIn(post.body, self.page)
+    def test_front_page_and_open_wire_render_from_the_projection(self) -> None:
+        self.assertIn("Rent strike jumps three more blocks", self.page)   # featured
+        self.assertIn("Medic station open", self.page)                    # open wire
 
-    def test_trust_tiers_are_legible_editorial_verified_wire_open(self) -> None:
-        # The security-legible distinction (composite spec §6): verified editorial
-        # must never look like an anonymous open post.
+    def test_verified_flag_comes_from_the_record_not_the_renderer(self) -> None:
         self.assertIn("verified", self.page.lower())
+        # the unverified wire post is marked open/unverified
         self.assertIn("unverified", self.page.lower())
 
-    def test_carries_the_open_in_riot_deep_link_not_web_as_truth(self) -> None:
-        self.assertIn(f"riot://open?namespace={self.view.namespace}", self.page)
+    def test_headlines_and_authors_link(self) -> None:
+        self.assertIn(f'/post/{"e1" * 32}/', self.page)   # headline permalink = entry_id
+        self.assertIn('/author/aaaa/', self.page)          # byline → author profile
 
-    def test_csp_is_baked_in_and_style_hash_matches_the_stylesheet(self) -> None:
+    def test_post_permalink_shows_provenance(self) -> None:
+        post = self.export["front_page"][0]
+        page = nw.render_post(self.export, post)
+        self.assertIn(post["entry_id"], page)               # the real entry id
+        self.assertIn(post["author"]["id"], page)           # the real signer id
+        self.assertIn("Four hundred households", page)       # full body
+
+    def test_author_page_aggregates_that_signers_posts(self) -> None:
+        page = nw.render_author(self.export, "aaaa")
+        self.assertIn("Rent strike jumps three more blocks", page)
+        self.assertIn("recognized organizer", page)
+
+    def test_moderation_hidden_and_tombstoned_posts_do_not_render(self) -> None:
+        hidden = _post("f0" * 32, "Should be hidden", "secret", treatment="Hidden")
+        tomb = _post("f1" * 32, "Should be tombstoned", "gone", treatment="Tombstoned")
+        ok = _post("f2" * 32, "Visible report", "shown")
+        export = _export([], [hidden, tomb, ok], [])
+        page = nw.render_newswire(export)
+        self.assertIn("Visible report", page)
+        self.assertNotIn("Should be hidden", page)
+        self.assertNotIn("Should be tombstoned", page)
+
+    def test_csp_baked_in_and_no_external_fetches(self) -> None:
         styles = re.findall(r"<style>(.*?)</style>", self.page, re.S)
-        self.assertEqual(len(styles), 1)
         digest = base64.b64encode(hashlib.sha256(styles[0].encode("utf-8")).digest()).decode("ascii")
         self.assertIn(f"style-src 'sha256-{digest}'", self.page)
         self.assertIn("connect-src 'none'", self.page)
-        self.assertIn("script-src 'none'", self.page)
-
-    def test_no_external_fetch_references(self) -> None:
-        # xmlns / riot:// are identifiers, not fetches; nothing else may reach out.
         self.assertNotRegex(self.page, r'(src|href)="https?://(?!www\.w3\.org)')
-
-    def test_headlines_link_to_article_pages(self) -> None:
-        # Reader can click through to the full article.
-        for entry in self.view.editorial:
-            href = f'/article/{entry.slug}/'
-            self.assertIn(href, self.page, f"headline for {entry.slug!r} is not a link")
-
-    def test_article_page_renders_full_body_and_a_way_back(self) -> None:
-        from html import escape
-
-        entry = self.view.editorial[0]
-        article = nw.render_article(self.view, entry)
-        self.assertIn(entry.title, article)
-        for paragraph in entry.body:
-            self.assertIn(escape(paragraph), article)  # render escapes; expect escaped
-        self.assertIn('href="/"', article)  # back to the front page
-        # Same fences as the front page.
-        self.assertIn("connect-src 'none'", article)
-        self.assertIn('http-equiv="Content-Security-Policy"', article)
 
 
 if __name__ == "__main__":

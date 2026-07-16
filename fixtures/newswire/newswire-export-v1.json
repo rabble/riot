@@ -1,0 +1,141 @@
+{
+  "contributors": [
+    {
+      "contribution_count": 11,
+      "display_name": "Harbor Desk",
+      "id": "b79ff88f5cf1b4068d304ab5e25fb29216b3fead183fd7927e62bf8cb1b2b05a",
+      "is_organizer": true,
+      "rendered": "Harbor Desk · b79ff88f"
+    }
+  ],
+  "front_page": [
+    {
+      "ai_assisted": false,
+      "author": {
+        "display_name": "Harbor Desk",
+        "id": "b79ff88f5cf1b4068d304ab5e25fb29216b3fead183fd7927e62bf8cb1b2b05a",
+        "rendered": "Harbor Desk · b79ff88f",
+        "tag": "b79ff88f"
+      },
+      "body": "The wildcat action began at the night shift. Cranes idle, 6,000 boxes stranded. Dockers hold the gate until the fired stewards are reinstated.",
+      "entry_id": "9f1e8a28151909d609ba4a09d3b398e3d269887f73a5ca398a1b1dd3ff78a801",
+      "headline": "Port workers walk out in solidarity; container terminal at a standstill",
+      "tai_j2000_micros": 837420622000000,
+      "treatment": "Ordinary",
+      "verified": true
+    },
+    {
+      "ai_assisted": false,
+      "author": {
+        "display_name": "Harbor Desk",
+        "id": "b79ff88f5cf1b4068d304ab5e25fb29216b3fead183fd7927e62bf8cb1b2b05a",
+        "rendered": "Harbor Desk · b79ff88f",
+        "tag": "b79ff88f"
+      },
+      "body": "Four hundred households on Sonnenallee are now withholding rent — the largest coordinated tenant action since the 2023 deposit fight. The union answered eviction filings with a block-by-block watch.",
+      "entry_id": "0dfdeaff2e455d5214fcd61b4a405b35793796af8a38da580e33afd8c65d9fa0",
+      "headline": "Rent strike jumps three more blocks as tenants tear up eviction notices",
+      "tai_j2000_micros": 837420622000000,
+      "treatment": "Ordinary",
+      "verified": true
+    }
+  ],
+  "note": "REAL projected view of signed Willow newswire records — not hand-authored.",
+  "open_wire": [
+    {
+      "ai_assisted": false,
+      "author": {
+        "display_name": "Harbor Desk",
+        "id": "b79ff88f5cf1b4068d304ab5e25fb29216b3fead183fd7927e62bf8cb1b2b05a",
+        "rendered": "Harbor Desk · b79ff88f",
+        "tag": "b79ff88f"
+      },
+      "body": "The wildcat action began at the night shift. Cranes idle, 6,000 boxes stranded. Dockers hold the gate until the fired stewards are reinstated.",
+      "entry_id": "9f1e8a28151909d609ba4a09d3b398e3d269887f73a5ca398a1b1dd3ff78a801",
+      "headline": "Port workers walk out in solidarity; container terminal at a standstill",
+      "tai_j2000_micros": 837420622000000,
+      "treatment": "Ordinary",
+      "verified": true
+    },
+    {
+      "ai_assisted": false,
+      "author": {
+        "display_name": "Harbor Desk",
+        "id": "b79ff88f5cf1b4068d304ab5e25fb29216b3fead183fd7927e62bf8cb1b2b05a",
+        "rendered": "Harbor Desk · b79ff88f",
+        "tag": "b79ff88f"
+      },
+      "body": "Low-altitude drone seen over the rent-strike blocks for the past twenty minutes.",
+      "entry_id": "9a265fb77b45c70e7f81e9a94be9d7a82eec853f8eac0a98909343983edf5960",
+      "headline": "Drone overhead on Sonnenallee, circling the strike blocks",
+      "tai_j2000_micros": 837420622000000,
+      "treatment": "Ordinary",
+      "verified": false
+    },
+    {
+      "ai_assisted": false,
+      "author": {
+        "display_name": "Harbor Desk",
+        "id": "b79ff88f5cf1b4068d304ab5e25fb29216b3fead183fd7927e62bf8cb1b2b05a",
+        "rendered": "Harbor Desk · b79ff88f",
+        "tag": "b79ff88f"
+      },
+      "body": "Four unmarked units, invoiced under \"traffic safety.\" The contract and vendor spec sheet are published in full.",
+      "entry_id": "984ce4064f7e9c00b7b4d6731b203f5fd43b49faab91729efe2f5c03103bab59",
+      "headline": "Leaked procurement docs show the city quietly bought facial-recognition vans",
+      "tai_j2000_micros": 837420622000000,
+      "treatment": "Ordinary",
+      "verified": true
+    },
+    {
+      "ai_assisted": false,
+      "author": {
+        "display_name": "Harbor Desk",
+        "id": "b79ff88f5cf1b4068d304ab5e25fb29216b3fead183fd7927e62bf8cb1b2b05a",
+        "rendered": "Harbor Desk · b79ff88f",
+        "tag": "b79ff88f"
+      },
+      "body": "Volunteers are staffing a first-aid point at the west entrance. Water and shade available.",
+      "entry_id": "2afcf13bc987ade514aa7a329b7f757a2d0728bc5748e9345991a29624a591fe",
+      "headline": "Medic station open at the old library, side entrance",
+      "tai_j2000_micros": 837420622000000,
+      "treatment": "Ordinary",
+      "verified": false
+    },
+    {
+      "ai_assisted": false,
+      "author": {
+        "display_name": "Harbor Desk",
+        "id": "b79ff88f5cf1b4068d304ab5e25fb29216b3fead183fd7927e62bf8cb1b2b05a",
+        "rendered": "Harbor Desk · b79ff88f",
+        "tag": "b79ff88f"
+      },
+      "body": "Eyewitness report from the strike blocks. Bring water and legal-observer numbers.",
+      "entry_id": "1e2b17011f322c4ae52f1fd3b8b8ea3afda61bce8527bf64f5ee7cd9fbc661fa",
+      "headline": "Cops massing at the north gate, roughly forty vans",
+      "tai_j2000_micros": 837420622000000,
+      "treatment": "Ordinary",
+      "verified": false
+    },
+    {
+      "ai_assisted": false,
+      "author": {
+        "display_name": "Harbor Desk",
+        "id": "b79ff88f5cf1b4068d304ab5e25fb29216b3fead183fd7927e62bf8cb1b2b05a",
+        "rendered": "Harbor Desk · b79ff88f",
+        "tag": "b79ff88f"
+      },
+      "body": "Four hundred households on Sonnenallee are now withholding rent — the largest coordinated tenant action since the 2023 deposit fight. The union answered eviction filings with a block-by-block watch.",
+      "entry_id": "0dfdeaff2e455d5214fcd61b4a405b35793796af8a38da580e33afd8c65d9fa0",
+      "headline": "Rent strike jumps three more blocks as tenants tear up eviction notices",
+      "tai_j2000_micros": 837420622000000,
+      "treatment": "Ordinary",
+      "verified": true
+    }
+  ],
+  "schema": "riot.newswire.export/1",
+  "space": {
+    "descriptor_entry_id": "6f758a459503a1d01ffdb55f345dcf32cbd45978d88ec34eb29b7eeaf9d21ca3",
+    "name": "RIOT · Independent Newswire"
+  }
+}
