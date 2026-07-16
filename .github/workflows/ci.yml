@@ -48,6 +48,36 @@ jobs:
       - name: validate contracts
         run: cargo run -p xtask -- validate-contracts
 
+  coverage:
+    name: Rust coverage (llvm-cov line floor)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pinned toolchain + llvm-tools
+        run: |
+          rustup show active-toolchain || rustup toolchain install
+          rustup component add llvm-tools-preview
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install cargo-llvm-cov
+        run: cargo install cargo-llvm-cov --version 0.8.7 --locked
+
+      # Enforce the ratchet floor from the single source of truth. Before this
+      # job the documented 100% gate was fiction (nothing read the file, no
+      # automated context ran it). Uses cargo-llvm-cov (source-based LLVM
+      # instrumentation) rather than tarpaulin: tarpaulin's ptrace engine
+      # hangs on this workspace under CI (the job ran >25min without completing).
+      # llvm-cov measures line coverage reliably. The floor is just below the
+      # measured value (llvm lines 97.75%) — green today, blocks regression.
+      - name: Enforce line-coverage floor
+        run: |
+          floor=$(jq -r '.thresholds.llvm.lines' .coverage-thresholds.json)
+          echo "Enforcing llvm-cov line-coverage floor: ${floor}%"
+          cargo llvm-cov --workspace --all-features --fail-under-lines "$floor"
+
   gateway:
     name: Gateway (Python unittest)
     runs-on: ubuntu-latest
