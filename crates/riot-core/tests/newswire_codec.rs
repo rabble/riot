@@ -3,7 +3,8 @@ use riot_core::newswire::{
     decode_editorial_action, decode_news_post, decode_space_descriptor, encode_editorial_action,
     encode_news_post, encode_space_descriptor, AlertProfileV1, EditorialActionKind,
     EditorialActionV1, NewsPostV1, NewswireModelError, OperationalProfileV1, RequestKind,
-    RequestProfileV1, SpaceDescriptorV1, MAX_NEWSWIRE_PAYLOAD_BYTES, SPACE_SCHEMA,
+    RequestProfileV1, SpaceDescriptorV1, ACTION_SCHEMA, MAX_NEWSWIRE_PAYLOAD_BYTES, POST_SCHEMA,
+    SPACE_SCHEMA,
 };
 
 const SPACE_ID: [u8; 32] = [0x11; 32];
@@ -598,5 +599,95 @@ fn hostile_cbor_is_rejected_fail_closed() {
     assert_ne!(
         decode_space_descriptor(&exact_limit),
         Err(NewswireModelError::InputTooLarge)
+    );
+}
+
+/// Overwrites the trailing byte of a schema string in-place so the CBOR stays
+/// structurally valid (same length, still UTF-8) but carries the wrong schema.
+fn corrupt_schema_byte(bytes: &mut [u8], schema: &str) {
+    let needle = schema.as_bytes();
+    let pos = bytes
+        .windows(needle.len())
+        .position(|window| window == needle)
+        .expect("schema string present in encoding");
+    bytes[pos + needle.len() - 1] ^= 0x01;
+}
+
+#[test]
+fn space_optional_predecessor_and_successor_round_trip() {
+    let mut value = space();
+    value.predecessor = Some([0x30; 32]);
+    value.successor = Some([0x31; 32]);
+    let bytes = encode_space_descriptor(&value).unwrap();
+    assert_eq!(
+        bytes[0], 0xaa,
+        "both optional keys widen the map to ten pairs"
+    );
+    assert_eq!(decode_space_descriptor(&bytes).unwrap(), value);
+}
+
+#[test]
+fn operational_profiles_without_optional_times_round_trip() {
+    let mut alert_post = post();
+    alert_post.expires_at_unix_seconds = Some(1_800_000_900);
+    alert_post.operational_profile = Some(OperationalProfileV1::Alert(AlertProfileV1 {
+        urgency: Urgency::Immediate,
+        severity: Severity::Severe,
+        certainty: Certainty::Observed,
+        valid_from_unix_seconds: None,
+    }));
+    let bytes = encode_news_post(&alert_post).unwrap();
+    assert_eq!(decode_news_post(&bytes).unwrap(), alert_post);
+
+    let mut request_post = post();
+    request_post.expires_at_unix_seconds = Some(1_800_000_900);
+    request_post.operational_profile = Some(OperationalProfileV1::Request(RequestProfileV1 {
+        kind: RequestKind::Offer,
+        needed_by_unix_seconds: None,
+        contact_instructions: "Drop supplies at the depot.".into(),
+    }));
+    let bytes = encode_news_post(&request_post).unwrap();
+    assert_eq!(decode_news_post(&bytes).unwrap(), request_post);
+}
+
+#[test]
+fn wrong_schema_is_rejected_for_every_record() {
+    let mut space_bytes = encode_space_descriptor(&space()).unwrap();
+    corrupt_schema_byte(&mut space_bytes, SPACE_SCHEMA);
+    assert_eq!(
+        decode_space_descriptor(&space_bytes),
+        Err(NewswireModelError::WrongSchema)
+    );
+
+    let mut post_bytes = encode_news_post(&post()).unwrap();
+    corrupt_schema_byte(&mut post_bytes, POST_SCHEMA);
+    assert_eq!(
+        decode_news_post(&post_bytes),
+        Err(NewswireModelError::WrongSchema)
+    );
+
+    let mut action_bytes = encode_editorial_action(&action()).unwrap();
+    corrupt_schema_byte(&mut action_bytes, ACTION_SCHEMA);
+    assert_eq!(
+        decode_editorial_action(&action_bytes),
+        Err(NewswireModelError::WrongSchema)
+    );
+}
+
+#[test]
+fn map_arity_beyond_the_schema_maximum_is_rejected() {
+    // A definite-length map header alone declares more pairs than the schema
+    // permits; decoding rejects it before reading any entry.
+    assert_eq!(
+        decode_space_descriptor(&[0xab]),
+        Err(NewswireModelError::Malformed)
+    );
+    assert_eq!(
+        decode_news_post(&[0xac]),
+        Err(NewswireModelError::Malformed)
+    );
+    assert_eq!(
+        decode_editorial_action(&[0xa7]),
+        Err(NewswireModelError::Malformed)
     );
 }

@@ -19,8 +19,8 @@
     }
   },
   "enforcement": {
-    "ci": "cargo tarpaulin --workspace --all-features --fail-under <thresholds.tarpaulin.lines> — enforced in .github/workflows/ci.yml (the primary product-coverage gate).",
-    "localComposite": "scripts/web/coverage.sh — tarpaulin (thresholds.tarpaulin.lines) + llvm-cov floors (thresholds.llvm.*) + JS-tooling self-coverage (thresholds.jsTooling.* via c8). Requires the pinned toolchain; runs locally, not yet in CI.",
+    "ci": "cargo llvm-cov --workspace --all-features --fail-under-lines <thresholds.llvm.lines> — enforced in .github/workflows/ci.yml (the primary product-coverage gate). Uses llvm-cov (source-based), NOT tarpaulin: tarpaulin's ptrace engine hangs on this workspace under CI.",
+    "localComposite": "scripts/web/coverage.sh — tarpaulin (thresholds.tarpaulin.lines, --timeout 300) + llvm-cov floors (thresholds.llvm.*) + JS-tooling self-coverage (thresholds.jsTooling.* via c8). Requires the pinned toolchain; runs locally.",
     "blockPRCreation": true,
     "blockTaskCompletion": true,
     "ratchet": "A floor MUST NOT be lowered without a written justification committed alongside the change. Prefer raising floors toward the measured values as coverage improves.",
