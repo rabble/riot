@@ -1855,9 +1855,9 @@ fn map_author_error(error: WillowError) -> MobileError {
     match error {
         WillowError::EntropyUnavailable => MobileError::EntropyUnavailable,
         WillowError::ClockUnavailable => MobileError::ClockUnavailable,
-        WillowError::InvalidAlert(_) | WillowError::NamespaceNotCommunal => {
-            MobileError::InvalidInput
-        }
+        WillowError::InvalidAlert(_)
+        | WillowError::NamespaceNotCommunal
+        | WillowError::DelegationAreaEscapesArticles => MobileError::InvalidInput,
         WillowError::SealedIdentityInvalid => MobileError::InvalidInput,
         WillowError::IdentitySealFailed => MobileError::Internal,
         WillowError::PathInvalid
