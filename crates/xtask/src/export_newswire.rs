@@ -7,17 +7,22 @@
 //! producing command. Signature RE-verification lives in
 //! `verify_newswire_export`, mirroring `verify-conference-export`.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::Path;
 
 use riot_core::newswire::{
     contributors, create_signed_editorial_action, create_signed_news_post,
-    create_signed_space_descriptor, inspect_news_record, project, EditorialActionKind,
-    EditorialActionV1, NewsPostV1, NewswirePayload, PostTreatment, ProjectionClockV1,
-    SignedNewswireRecord, SpaceDescriptorV1,
+    create_signed_space_descriptor, inspect_news_record, project, ContributorRowV1,
+    EditorialActionKind, EditorialActionV1, NewsPostV1, NewswirePayload, PostTreatment,
+    ProjectionClockV1, SignedNewswireRecord, SpaceDescriptorV1,
 };
-use riot_core::willow::{generate_communal_author_for_namespace, generate_space_organizer_author};
+use riot_core::profile::card::ProfileCard;
+use riot_core::profile::create_signed_profile_card;
+use riot_core::willow::{
+    entry_id, generate_communal_author_for_namespace, generate_space_organizer_author,
+    system_snapshot, SignedWillowEntry,
+};
 use serde_json::{json, Value};
 
 use crate::hex_codec;
@@ -36,12 +41,28 @@ pub struct PublicEntry {
     pub editorially_verified: bool,
 }
 
+/// A signed profile card the producer minted for one of its named authors. The
+/// display name is carried alongside so the public export's `contributors[]`
+/// can be built without re-reading the card payload.
+pub struct SignedProfileCard {
+    pub signer: [u8; 32],
+    pub display_name: String,
+    pub signed: SignedWillowEntry,
+}
+
 /// The full in-memory result of minting + projecting the newswire.
 pub struct BuiltNewswire {
     pub namespace: [u8; 32],
     pub descriptor_entry_id: [u8; 32],
     pub records: Vec<SignedNewswireRecord>,
     pub public_entries: Vec<PublicEntry>,
+    /// Signed display-name cards for the named authors (organizer + roster
+    /// editor). Communal/anonymous authors get no card and are absent here.
+    pub profile_cards: Vec<SignedProfileCard>,
+    /// The content-derived contributor set (`contributors()` of the projection).
+    pub contributors: Vec<ContributorRowV1>,
+    /// `author_id → display_name` for the authors that carry a card.
+    pub display_names: BTreeMap<[u8; 32], String>,
 }
 
 /// The activist content the gateway already renders (kept identical in spirit
@@ -212,15 +233,45 @@ pub fn build_signed_newswire() -> Result<BuiltNewswire, String> {
         });
     }
 
-    // Touch contributors so the derivation is exercised (parity with the ffi
-    // generator; not serialized into the public export in WS1).
-    let _ = contributors(&projection, namespace);
+    // Mint a signed display-name card for each NAMED author — the organizer desk
+    // and the roster editor. A card is a signed Willow record at
+    // `profile/<subspace>/card` that SYNCs, so carrying the name in the export is
+    // honest, not fabricated. Communal/anonymous authors get no card and stay
+    // nameless (absent from `contributors[]`; the gateway renders them as open
+    // contributors). This fixture's posts are all organizer-signed, so both
+    // contributors are named here.
+    let card_micros = system_snapshot()
+        .map_err(|e| format!("card clock: {e}"))?
+        .tai_j2000_micros;
+    let mut profile_cards = Vec::new();
+    let mut display_names: BTreeMap<[u8; 32], String> = BTreeMap::new();
+    for (author, name) in [(&founder, "RIOT Editorial Desk"), (&editor, "Harbor Desk")] {
+        let card = ProfileCard {
+            display_name: name.to_string(),
+        };
+        let signed = create_signed_profile_card(author, &card, card_micros)
+            .map_err(|e| format!("mint card {name}: {e}"))?;
+        let signer = *author.subspace_id().as_bytes();
+        display_names.insert(signer, name.to_string());
+        profile_cards.push(SignedProfileCard {
+            signer,
+            display_name: name.to_string(),
+            signed,
+        });
+    }
+
+    // The content-derived contributor set: every author of a projected post plus
+    // every editorial signer, with the organizer marked by `author_id == namespace`.
+    let contributor_rows = contributors(&projection, namespace);
 
     Ok(BuiltNewswire {
         namespace,
         descriptor_entry_id,
         records,
         public_entries,
+        profile_cards,
+        contributors: contributor_rows,
+        display_names,
     })
 }
 
@@ -258,6 +309,40 @@ fn signed_record_json(record: &SignedNewswireRecord) -> Result<Value, String> {
         value["target_entry_id"] = json!(hex_codec::encode(&action.target_entry_id));
     }
     Ok(value)
+}
+
+/// A minted profile card as a proof-bearing signed-space record. `record_kind`
+/// is `"profile_card"`; the display name rides along so the verifier and any
+/// reader can bind the name to its author without re-decoding the payload.
+fn signed_card_json(card: &SignedProfileCard) -> Value {
+    json!({
+        "record_kind": "profile_card",
+        "willow_entry_id": hex_codec::encode(&entry_id(&card.signed.entry_bytes)),
+        "signer": hex_codec::encode(&card.signer),
+        "willow_entry_bytes": hex_codec::encode(&card.signed.entry_bytes),
+        "willow_capability_bytes": hex_codec::encode(&card.signed.capability_bytes),
+        "signature": hex_codec::encode(&card.signed.signature),
+        "display_name": card.display_name,
+    })
+}
+
+/// The public `contributors[]` block: one row per content-derived contributor
+/// that carries a display-name card. An author with NO card is OMITTED — a
+/// communal/anonymous poster is legitimately nameless and the gateway renders it
+/// as an open contributor, never a fabricated name.
+fn contributors_block(rows: &[ContributorRowV1], names: &BTreeMap<[u8; 32], String>) -> Vec<Value> {
+    rows.iter()
+        .filter_map(|row| {
+            names.get(&row.author_id).map(|display_name| {
+                json!({
+                    "author_id": hex_codec::encode(&row.author_id),
+                    "display_name": display_name,
+                    "is_organizer": row.is_organizer,
+                    "contribution_count": row.contribution_count,
+                })
+            })
+        })
+        .collect()
 }
 
 fn rfc3339_utc(unix_seconds: u64) -> String {
@@ -306,15 +391,20 @@ fn rfc3339_utc(unix_seconds: u64) -> String {
 pub fn run(root: &Path) -> Result<(), String> {
     let built = build_signed_newswire()?;
 
+    // Newswire records first, then the profile-card records (same array, mixed
+    // `record_kind`); the verifier re-verifies every record's signature the same
+    // way, keyed by `willow_entry_id`.
+    let mut signed_records = built
+        .records
+        .iter()
+        .map(signed_record_json)
+        .collect::<Result<Vec<_>, _>>()?;
+    signed_records.extend(built.profile_cards.iter().map(signed_card_json));
     let signed_doc = json!({
         "schema": "riot.newswire.signed-space/1",
         "namespace": hex_codec::encode(&built.namespace),
         "descriptor_entry_id": hex_codec::encode(&built.descriptor_entry_id),
-        "records": built
-            .records
-            .iter()
-            .map(signed_record_json)
-            .collect::<Result<Vec<_>, _>>()?,
+        "records": signed_records,
     });
     let signed_dir = root.join("fixtures/newswire");
     fs::create_dir_all(&signed_dir).map_err(|e| format!("mkdir {}: {e}", signed_dir.display()))?;
@@ -347,6 +437,9 @@ pub fn run(root: &Path) -> Result<(), String> {
             "featured": entry.featured,
             "editorially_verified": entry.editorially_verified,
         })).collect::<Vec<_>>(),
+        // Additive display-identity block (WS1-b): who the named authors are.
+        // `entries[]` above is unchanged and forward-compatible.
+        "contributors": contributors_block(&built.contributors, &built.display_names),
     });
     let export_dir = signed_dir.join("gateway-space");
     fs::create_dir_all(&export_dir).map_err(|e| format!("mkdir {}: {e}", export_dir.display()))?;
@@ -423,8 +516,8 @@ mod tests {
         let signed_records = signed["records"].as_array().unwrap();
         assert_eq!(
             signed_records.len(),
-            1 + 7 + 6,
-            "descriptor + 7 posts + 6 actions (2 Feature + 3 Verify + 1 Hide)"
+            1 + 7 + 6 + 2,
+            "descriptor + 7 posts + 6 actions (2 Feature + 3 Verify + 1 Hide) + 2 profile cards"
         );
         for record in signed_records {
             assert_eq!(record["signature"].as_str().unwrap().len(), 128);
@@ -434,6 +527,15 @@ mod tests {
                 .as_str()
                 .unwrap()
                 .is_empty());
+        }
+        // WS1-b: the two named authors carry signed profile-card records.
+        let cards: Vec<&Value> = signed_records
+            .iter()
+            .filter(|r| r["record_kind"] == "profile_card")
+            .collect();
+        assert_eq!(cards.len(), 2, "organizer + roster editor each have a card");
+        for card in &cards {
+            assert!(!card["display_name"].as_str().unwrap().is_empty());
         }
 
         let export: Value = serde_json::from_str(
@@ -460,6 +562,73 @@ mod tests {
             crate::sha256_hex(&signed_bytes)
         );
 
+        // WS1-b: the additive contributors[] block names the desks and marks the
+        // organizer. entries[] stays proof-free (asserted above), unchanged.
+        let contributors = export["contributors"].as_array().unwrap();
+        assert_eq!(contributors.len(), 2, "organizer + roster editor");
+        let organizer = contributors
+            .iter()
+            .find(|c| c["is_organizer"] == true)
+            .expect("an organizer contributor");
+        assert_eq!(organizer["display_name"], "RIOT Editorial Desk");
+        assert!(organizer["contribution_count"].as_u64().unwrap() > 0);
+        assert!(
+            contributors
+                .iter()
+                .any(|c| c["display_name"] == "Harbor Desk" && c["is_organizer"] == false),
+            "the roster editor is a named, non-organizer contributor"
+        );
+        // Display-only boundary: a contributor row carries no key material.
+        for contributor in contributors {
+            assert!(contributor.get("signature").is_none());
+            assert!(contributor.get("willow_capability_bytes").is_none());
+        }
+
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn contributors_block_names_the_carded_and_omits_the_nameless() {
+        let organizer = [0x11u8; 32];
+        let editor = [0x22u8; 32];
+        let anon = [0x33u8; 32]; // a communal poster with no card
+        let rows = vec![
+            ContributorRowV1 {
+                author_id: organizer,
+                is_organizer: true,
+                contribution_count: 6,
+            },
+            ContributorRowV1 {
+                author_id: editor,
+                is_organizer: false,
+                contribution_count: 4,
+            },
+            ContributorRowV1 {
+                author_id: anon,
+                is_organizer: false,
+                contribution_count: 1,
+            },
+        ];
+        let mut names = BTreeMap::new();
+        names.insert(organizer, "RIOT Editorial Desk".to_string());
+        names.insert(editor, "Harbor Desk".to_string());
+
+        let block = contributors_block(&rows, &names);
+
+        assert_eq!(block.len(), 2, "the card-less communal author is omitted");
+        assert!(block
+            .iter()
+            .any(|c| c["display_name"] == "RIOT Editorial Desk"
+                && c["is_organizer"] == true
+                && c["contribution_count"] == 6));
+        assert!(block
+            .iter()
+            .any(|c| c["display_name"] == "Harbor Desk" && c["is_organizer"] == false));
+        assert!(
+            !block
+                .iter()
+                .any(|c| c["author_id"] == hex_codec::encode(&anon)),
+            "a nameless author never appears in contributors[]"
+        );
     }
 }
