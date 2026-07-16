@@ -19,8 +19,7 @@ use super::WillowError;
 pub struct OwnedRoot {
     namespace_id: NamespaceId,
     // Retained root authority; consumed by owned write-capability minting in
-    // Slice 1 Task 2. Unused in Task 1's generation-only scope.
-    #[allow(dead_code)]
+    // Slice 1 Task 2.
     namespace_secret: NamespaceSecret,
 }
 
@@ -50,6 +49,12 @@ impl OwnedRoot {
     pub fn namespace_id(&self) -> &NamespaceId {
         &self.namespace_id
     }
+
+    /// Borrow the retained owned-namespace root secret for capability minting.
+    /// `pub(crate)` — the secret never leaves the crate and never crosses FFI.
+    pub(crate) fn namespace_secret_ref(&self) -> &NamespaceSecret {
+        &self.namespace_secret
+    }
 }
 
 #[cfg(test)]
@@ -61,6 +66,13 @@ mod tests {
         let root = OwnedRoot::generate().expect("entropy");
         assert!(root.namespace_id().is_owned());
         assert!(!root.namespace_id().is_communal());
+    }
+
+    #[test]
+    fn owned_root_exposes_secret_ref_for_minting() {
+        let root = OwnedRoot::generate().expect("owned root");
+        let secret = root.namespace_secret_ref();
+        assert_eq!(secret.corresponding_namespace_id(), *root.namespace_id());
     }
 
     #[test]
