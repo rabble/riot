@@ -953,6 +953,17 @@ mod tests {
         );
     }
 
+    /// Copies the committed newswire goldens into a private root so
+    /// verify-newswire-export can be dispatched successfully without re-stamping
+    /// the real repository files.
+    fn copy_newswire_fixtures(dest_root: &Path) {
+        let real_root = workspace_root_from(Path::new(env!("CARGO_MANIFEST_DIR"))).unwrap();
+        copy_dir_recursive(
+            &real_root.join("fixtures/newswire"),
+            &dest_root.join("fixtures/newswire"),
+        );
+    }
+
     #[test]
     fn conference_fixture_commands_report_success_and_failure() {
         // Success arms: each command runs against a faithful private copy of the
@@ -1003,6 +1014,66 @@ mod tests {
                 "{command} against an empty root should fail"
             );
         }
+    }
+
+    #[test]
+    fn newswire_fixture_commands_report_success_and_failure() {
+        // export-newswire needs no on-disk input (it mints records), so a fresh
+        // root suffices for its success arm; verify needs the committed goldens.
+        let export_root = temp_dir("newswire-export-ok");
+        let mut runner = ScriptedRunner {
+            output: None,
+            status: None,
+        };
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        assert_eq!(
+            run(
+                &export_root,
+                &["export-newswire".into()],
+                &mut runner,
+                &mut out,
+                &mut err
+            ),
+            ExitCode::SUCCESS
+        );
+        assert!(err.is_empty());
+
+        let verify_root = temp_dir("newswire-verify-ok");
+        copy_newswire_fixtures(&verify_root);
+        let mut runner = ScriptedRunner {
+            output: None,
+            status: None,
+        };
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        assert_eq!(
+            run(
+                &verify_root,
+                &["verify-newswire-export".into()],
+                &mut runner,
+                &mut out,
+                &mut err
+            ),
+            ExitCode::SUCCESS
+        );
+        assert!(err.is_empty());
+
+        // Failure arm: verify against an empty root has no fixtures.
+        let missing = temp_dir("newswire-verify-missing");
+        let mut runner = ScriptedRunner {
+            output: None,
+            status: None,
+        };
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        assert_eq!(
+            run(
+                &missing,
+                &["verify-newswire-export".into()],
+                &mut runner,
+                &mut out,
+                &mut err
+            ),
+            ExitCode::FAILURE
+        );
     }
 
     #[test]

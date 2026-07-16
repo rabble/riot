@@ -165,4 +165,113 @@ mod tests {
         assert!(error.contains("index 2"));
         assert!(error.contains("bb"));
     }
+
+    fn repo_root() -> std::path::PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .canonicalize()
+            .unwrap()
+    }
+
+    fn copy_dir_recursive(source: &std::path::Path, dest: &std::path::Path) {
+        std::fs::create_dir_all(dest).unwrap();
+        for entry in std::fs::read_dir(source).unwrap() {
+            let entry = entry.unwrap();
+            let target = dest.join(entry.file_name());
+            if entry.file_type().unwrap().is_dir() {
+                copy_dir_recursive(&entry.path(), &target);
+            } else {
+                std::fs::copy(entry.path(), &target).unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn run_stamps_signature_verified_for_the_consistent_committed_goldens() {
+        let root = std::env::temp_dir().join(format!("riot-verify-nw-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        copy_dir_recursive(
+            &repo_root().join("fixtures/newswire"),
+            &root.join("fixtures/newswire"),
+        );
+
+        run(&root).expect("verify succeeds against the consistent committed goldens");
+
+        let export: Value = serde_json::from_str(
+            &fs::read_to_string(root.join("fixtures/newswire/gateway-space/public-export-v1.json"))
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(export["schema"], EXPORT_SCHEMA);
+        assert!(export.get("verification_status").is_none());
+        for entry in export["entries"].as_array().unwrap() {
+            assert_eq!(entry["verification_status"], VERIFICATION_STATUS_VALID);
+        }
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn run_reports_a_missing_fixture() {
+        let root =
+            std::env::temp_dir().join(format!("riot-verify-nw-missing-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        assert!(run(&root).is_err());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn run_stamps_signature_invalid_when_a_bound_records_entry_bytes_are_tampered() {
+        let root = std::env::temp_dir().join(format!("riot-verify-nw-bad-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        copy_dir_recursive(
+            &repo_root().join("fixtures/newswire"),
+            &root.join("fixtures/newswire"),
+        );
+
+        // Corrupt the entry_bytes of the signed record that backs the FIRST public
+        // entry, keeping its willow_entry_id so the public row still binds to it.
+        let export_path = root.join("fixtures/newswire/gateway-space/public-export-v1.json");
+        let signed_path = root.join("fixtures/newswire/signed-space-v1.json");
+        let export: Value =
+            serde_json::from_str(&fs::read_to_string(&export_path).unwrap()).unwrap();
+        let target_id = export["entries"][0]["entry_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let mut signed: Value =
+            serde_json::from_str(&fs::read_to_string(&signed_path).unwrap()).unwrap();
+        for record in signed["records"].as_array_mut().unwrap() {
+            if record["willow_entry_id"] == Value::from(target_id.clone()) {
+                // Flip the first byte of the hex entry_bytes to break the signature.
+                let bytes = record["willow_entry_bytes"].as_str().unwrap();
+                let flipped = if bytes.starts_with('0') {
+                    format!("1{}", &bytes[1..])
+                } else {
+                    format!("0{}", &bytes[1..])
+                };
+                record["willow_entry_bytes"] = Value::from(flipped);
+            }
+        }
+        fs::write(
+            &signed_path,
+            serde_json::to_string_pretty(&signed).unwrap() + "\n",
+        )
+        .unwrap();
+
+        run(&root).expect("verify still completes — it stamps, it does not hard-error");
+
+        let stamped: Value =
+            serde_json::from_str(&fs::read_to_string(&export_path).unwrap()).unwrap();
+        assert_eq!(
+            stamped["entries"][0]["verification_status"], VERIFICATION_STATUS_INVALID,
+            "the tampered entry is stamped signature_invalid"
+        );
+        // The other entries still verify — stamping is per-entry, not all-or-nothing.
+        assert_eq!(
+            stamped["entries"][1]["verification_status"],
+            VERIFICATION_STATUS_VALID
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
 }
