@@ -33,6 +33,44 @@ fn read_or(path: &Path, fallback: &str) -> Vec<u8> {
     fs::read(path).unwrap_or_else(|_| fallback.as_bytes().to_vec())
 }
 
+/// The other half: OPEN the drop. Decode the committed bundle and reconstitute
+/// the runnable site from the bundle bytes ALONE — proving the drop is a working
+/// web app, not just bytes that round-trip. Writes /tmp/newswire-from-drop.
+#[test]
+#[ignore = "prototype: unpacks the drop to /tmp; run with --ignored"]
+fn open_the_drop_and_reconstitute_the_web_app() {
+    let root = repo_root();
+    let bytes = fs::read(root.join("fixtures/newswire/newswire.bundle"))
+        .expect("run package_newswire_viewer_as_app_drop first to write the bundle");
+    let bundle = decode_app_bundle(&bytes).expect("decode the drop");
+
+    let entry = bundle
+        .resources
+        .iter()
+        .find(|r| r.path == bundle.entry_point)
+        .expect("entry point resource present");
+    assert_eq!(entry.content_type, "text/html");
+    assert!(
+        entry.bytes.windows(9).any(|w| w == b"<!doctype"),
+        "entry point is real HTML"
+    );
+
+    // Reconstitute the whole site from the drop and nothing else.
+    let out = Path::new("/tmp/newswire-from-drop");
+    let _ = fs::remove_dir_all(out);
+    for r in &bundle.resources {
+        let dest = out.join(&r.path);
+        fs::create_dir_all(dest.parent().unwrap()).unwrap();
+        fs::write(&dest, &r.bytes).unwrap();
+    }
+    eprintln!(
+        "opened drop: {} resources → {} (entry_point {})",
+        bundle.resources.len(),
+        out.display(),
+        bundle.entry_point
+    );
+}
+
 #[test]
 #[ignore = "prototype: writes an app-drop; run with --ignored"]
 fn package_newswire_viewer_as_app_drop() {
