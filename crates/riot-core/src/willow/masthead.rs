@@ -7,6 +7,7 @@
 //! issuance (reserved-path enforced), and sealed persistence.
 
 use willow25::prelude::*;
+use zeroize::Zeroize;
 
 use super::identity::os_fill;
 use super::owned::OwnedRoot;
@@ -26,7 +27,7 @@ impl OwnedMasthead {
         let mut seed = [0u8; 32];
         os_fill(&mut seed)?;
         let owner_subspace_secret = SubspaceSecret::from_bytes(&seed);
-        seed.iter_mut().for_each(|b| *b = 0);
+        seed.zeroize();
         Ok(Self {
             root,
             owner_subspace_secret,
@@ -92,7 +93,11 @@ mod tests {
             !cap.delegations().is_empty(),
             "delegated cap must carry a delegation link"
         );
-        assert_eq!(cap.receiver(), &editor_id, "final receiver must be the editor");
+        assert_eq!(
+            cap.receiver(),
+            &editor_id,
+            "final receiver must be the editor"
+        );
         assert_eq!(cap.granted_namespace(), m.namespace_id());
     }
 
@@ -130,8 +135,20 @@ mod tests {
         let m = OwnedMasthead::generate().unwrap();
         let cap = m.owner_write_capability();
         assert!(cap.is_owned(), "owner cap must be owned-rooted");
-        assert!(cap.delegations().is_empty(), "owner cap must have zero delegations");
-        assert_eq!(cap.granted_namespace(), m.namespace_id(), "cap namespace must be the site root");
-        assert_eq!(cap.receiver(), &m.owner_subspace_id(), "cap receiver must be the owner subspace");
+        assert!(
+            cap.delegations().is_empty(),
+            "owner cap must have zero delegations"
+        );
+        assert_eq!(
+            cap.granted_namespace(),
+            m.namespace_id(),
+            "cap namespace must be the site root"
+        );
+        assert_eq!(
+            cap.receiver(),
+            &m.owner_subspace_id(),
+            "cap receiver must be the owner subspace"
+        );
+        assert_eq!(cap.granted_area(), willow25::prelude::Area::full());
     }
 }
