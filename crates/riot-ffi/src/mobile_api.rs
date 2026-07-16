@@ -305,6 +305,25 @@ impl MobileProfile {
         crate::mobile_state::join_public_space(&self.inner, space, wrapping_key)
     }
 
+    /// Join a newswire community by the descriptor handle from a 1E share
+    /// reference, so the joined community's registry row carries that handle and
+    /// its Home reprojects once sync delivers the descriptor + posts (Risk 15).
+    /// Distinct from `join_public_space` so the nearby-adopt path stays
+    /// single-community and untouched.
+    pub fn join_newswire_community(
+        &self,
+        space: PublicSpace,
+        descriptor_entry_id: String,
+        wrapping_key: Vec<u8>,
+    ) -> Result<PublicSpace, MobileError> {
+        crate::mobile_state::join_newswire_community(
+            &self.inner,
+            space,
+            descriptor_entry_id,
+            wrapping_key,
+        )
+    }
+
     pub fn create_draft_alert(
         &self,
         input: AlertDraftInput,

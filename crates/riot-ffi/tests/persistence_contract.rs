@@ -765,3 +765,46 @@ fn a_newswire_communitys_descriptor_handle_survives_a_reopen() {
         "a reopened community reprojects its published newswire content from the store"
     );
 }
+
+/// Risk 15 — a JOINED newswire community must carry its descriptor handle, or it
+/// is a "dead follow": before this fix `join_public_space` registered
+/// `descriptor_entry_id = None`, so Home could never reproject even after sync.
+/// `join_newswire_community` (fed by a 1E share reference) carries the handle.
+#[test]
+fn a_joined_newswire_community_carries_its_descriptor_handle_not_a_dead_follow() {
+    let origin = open_local_profile().expect("origin");
+    let descriptor = origin
+        .create_newswire_space(NewswireSpaceInput {
+            name: "Uganda".into(),
+            summary: "Kampala".into(),
+            languages: vec!["en".into()],
+            geographic_tags: vec![],
+            topic_tags: vec![],
+            editorial_roster: vec![],
+        })
+        .expect("create newswire space");
+    let origin_namespace = origin.identity().unwrap().namespace_id;
+
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("follow.db").to_string_lossy().to_string();
+    let follower = open_local_profile_with_database(db).expect("follower");
+    follower
+        .join_newswire_community(
+            PublicSpace {
+                namespace_id: origin_namespace,
+                title: "Uganda (pending sync)".into(),
+                is_public: true,
+            },
+            descriptor.entry_id.clone(),
+            REGISTRY_KEY.to_vec(),
+        )
+        .expect("join by descriptor handle");
+
+    let row = follower.active_community().unwrap().unwrap();
+    assert_eq!(
+        row.descriptor_entry_id.as_deref(),
+        Some(descriptor.entry_id.as_str()),
+        "a joined community carries its descriptor handle — not a dead follow"
+    );
+    assert_eq!(row.relationship, CommunityRelationship::Member);
+}
