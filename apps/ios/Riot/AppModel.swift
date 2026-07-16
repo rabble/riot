@@ -554,6 +554,40 @@ public final class RiotAppModel: ObservableObject {
         }
     }
 
+    /// Follows a SECOND community from a pasted `riot://newswire/join/v1/...`
+    /// share reference (Unit 3D — manual multi-community join). Decodes the
+    /// reference to its namespace, joins as a fresh unlinkable member (parking the
+    /// current community, never replacing it), and reprojects the shell onto the
+    /// joined community. The reference carries only coordinates, so the community
+    /// is "pending first sync" — its descriptor and content arrive over sync; the
+    /// shell shows that honestly rather than fabricating a feed. A malformed or
+    /// incomplete reference is refused into ``errorMessage`` and changes nothing.
+    public func joinAdditionalCommunity(shareReference: String) {
+        guard let repository else { return }
+        do {
+            let reference = try repository.decodeShareReference(shareReference)
+            _ = try repository.joinAdditionalCommunity(
+                RiotSpace(
+                    namespaceID: reference.namespaceId,
+                    title: CommunityShareJoin.provisionalTitle(namespaceID: reference.namespaceId)
+                ),
+                descriptorEntryID: reference.descriptorEntryId
+            )
+            errorMessage = nil
+            communityUnavailable = nil
+            isCommunityChooserPresented = false
+            destination = .home
+            reload()
+        } catch {
+            errorMessage = Self.joinRefusal
+        }
+    }
+
+    /// Core and the codec both answer a bad paste with the same opaque error, so
+    /// the sentence names the likely causes rather than guessing at one.
+    private static let joinRefusal =
+        "Riot couldn’t join from that link. It may be incomplete or not a Riot community reference — check you pasted the whole thing and try again."
+
     /// Seals every held community's author under the secure-store wrapping key so
     /// the communities survive a reopen. Best-effort — called after create; a
     /// failure does not block the create.
