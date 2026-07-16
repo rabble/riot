@@ -17,6 +17,8 @@ use riot_core::apps::bundle::{
     app_bundle_digest, decode_app_bundle, encode_app_bundle, scan_bundle_egress, AppBundle,
     AppResource,
 };
+use riot_core::apps::manifest::{app_id_for, decode_manifest, encode_manifest, AppManifest};
+use riot_core::willow::identity::generate_space_organizer_author;
 
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -71,8 +73,32 @@ fn package_newswire_viewer_as_app_drop() {
     let out = root.join("fixtures/newswire/newswire.bundle");
     fs::write(&out, &encoded).expect("write bundle");
 
-    let hex: String = digest.iter().map(|b| format!("{b:02x}")).collect();
+    // Wrap the drop in a signed manifest → a launchable app. The manifest names
+    // a real author identity; app_id_for binds manifest + bundle_digest into the
+    // content-addressed AppId a space grants its per-app trust decision to.
+    let author = generate_space_organizer_author().expect("author identity");
+    let manifest = AppManifest {
+        name: "RIOT Newswire".into(),
+        description: "Independent newswire — projected from signed Willow records.".into(),
+        version: "1".into(),
+        author: author.identity(),
+        permissions: vec![],
+        entry_point: "index.html".into(),
+    };
+    assert_eq!(manifest.entry_point, bundle.entry_point, "manifest must point at the bundle's entry");
+
+    let manifest_bytes = encode_manifest(&manifest).expect("encode manifest");
+    let app_id = app_id_for(&manifest, &digest).expect("app id");
+    assert_eq!(decode_manifest(&manifest_bytes).expect("decode manifest"), manifest, "manifest round-trips");
+
+    let manifest_out = root.join("fixtures/newswire/newswire.manifest.cbor");
+    fs::write(&manifest_out, &manifest_bytes).expect("write manifest");
+
+    let hex = |b: &[u8]| b.iter().map(|x| format!("{x:02x}")).collect::<String>();
     eprintln!("wrote {} ({} bytes)", out.display(), encoded.len());
+    eprintln!("wrote {} ({} bytes)", manifest_out.display(), manifest_bytes.len());
     eprintln!("entry_point = index.html · resources = index.html + newswire-export.json");
-    eprintln!("app_bundle_digest = {hex}");
+    eprintln!("app_bundle_digest = {}", hex(&digest));
+    eprintln!("author           = {}", hex(&author.identity().signing_key_id));
+    eprintln!("app_id           = {}", hex(&app_id));
 }
