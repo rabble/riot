@@ -1,11 +1,14 @@
 //! Durable evidence authority layered on the managed SQLite lifecycle.
 
+#[cfg(feature = "sqlite")]
 use super::database::{map_sqlite_error, WriteEstimate};
 use super::memory::MemoryEvidenceStore;
+#[cfg(feature = "sqlite")]
 use super::RiotDatabase;
 use crate::import::join::{JoinState, LiveJoinEntry, PersistedJoinEntry};
 use crate::session::{DispositionRow, EntryDisposition, ImportReceipt, SessionError};
 use crate::willow::{decode_capability_canonic, decode_entry_canonic, AuthorisationToken, EntryId};
+#[cfg(feature = "sqlite")]
 use rusqlite::{params, OptionalExtension, Transaction};
 use std::collections::{BTreeMap, BTreeSet};
 use willow25::authorisation::PossiblyAuthorisedEntry;
@@ -67,6 +70,7 @@ pub(crate) struct EvidenceMutation {
 
 pub(crate) enum EvidenceRepository {
     Memory(MemoryEvidenceStore),
+    #[cfg(feature = "sqlite")]
     Sqlite(SqliteEvidenceStore),
 }
 
@@ -75,6 +79,7 @@ impl EvidenceRepository {
         Self::Memory(MemoryEvidenceStore)
     }
 
+    #[cfg(feature = "sqlite")]
     pub(crate) fn sqlite(database: RiotDatabase) -> Self {
         Self::Sqlite(SqliteEvidenceStore { database })
     }
@@ -82,6 +87,7 @@ impl EvidenceRepository {
     pub(crate) fn load(&self) -> Result<EvidenceSnapshot, SessionError> {
         match self {
             Self::Memory(memory) => memory.load(),
+            #[cfg(feature = "sqlite")]
             Self::Sqlite(sqlite) => sqlite.load(),
         }
     }
@@ -89,6 +95,7 @@ impl EvidenceRepository {
     pub(crate) fn persist(&self, mutation: &EvidenceMutation) -> Result<(), SessionError> {
         match self {
             Self::Memory(memory) => memory.persist(mutation),
+            #[cfg(feature = "sqlite")]
             Self::Sqlite(sqlite) => sqlite.persist(mutation),
         }
     }
@@ -100,6 +107,7 @@ impl EvidenceRepository {
     ) -> Result<Option<Vec<crate::import::join::PrefixedEntry>>, SessionError> {
         match self {
             Self::Memory(_) => Ok(None),
+            #[cfg(feature = "sqlite")]
             Self::Sqlite(sqlite) => sqlite
                 .entries_with_prefix_in_namespace(namespace_id, prefix)
                 .map(Some),
@@ -107,10 +115,12 @@ impl EvidenceRepository {
     }
 }
 
+#[cfg(feature = "sqlite")]
 pub(crate) struct SqliteEvidenceStore {
     database: RiotDatabase,
 }
 
+#[cfg(feature = "sqlite")]
 impl SqliteEvidenceStore {
     fn load(&self) -> Result<EvidenceSnapshot, SessionError> {
         self.database
@@ -371,6 +381,7 @@ impl SqliteEvidenceStore {
     }
 }
 
+#[cfg(feature = "sqlite")]
 fn current_projection_cost(
     connection: &rusqlite::Connection,
 ) -> Result<(usize, usize), super::DatabaseError> {
@@ -416,6 +427,7 @@ fn current_projection_cost(
     Ok((bytes, rows))
 }
 
+#[cfg(feature = "sqlite")]
 fn persist_transaction(
     transaction: &Transaction<'_>,
     mutation: &EvidenceMutation,
@@ -553,6 +565,7 @@ fn persist_transaction(
     Ok(())
 }
 
+#[cfg(feature = "sqlite")]
 fn sync_forget_ledger(
     transaction: &Transaction<'_>,
     mutation: &EvidenceMutation,
@@ -689,6 +702,7 @@ fn sync_forget_ledger(
     Ok(())
 }
 
+#[cfg(feature = "sqlite")]
 fn insert_receipt(
     transaction: &Transaction<'_>,
     receipt: &ImportReceipt,
@@ -766,6 +780,7 @@ fn insert_receipt(
     Ok(())
 }
 
+#[cfg(feature = "sqlite")]
 fn load_receipts(
     connection: &rusqlite::Connection,
 ) -> Result<Vec<ImportReceipt>, super::DatabaseError> {
@@ -847,6 +862,7 @@ fn load_receipts(
     Ok(receipts)
 }
 
+#[cfg(feature = "sqlite")]
 fn load_references(
     connection: &rusqlite::Connection,
     receipt_id: i64,
@@ -873,6 +889,7 @@ fn load_references(
     references
 }
 
+#[cfg(feature = "sqlite")]
 fn insert_prefixes(
     transaction: &Transaction<'_>,
     entry: &crate::willow::Entry,
@@ -902,6 +919,7 @@ fn insert_prefixes(
     Ok(())
 }
 
+#[cfg(feature = "sqlite")]
 fn encode_path(path: &crate::willow::Path) -> Vec<u8> {
     let mut encoded = Vec::new();
     for component in path.components() {
@@ -913,12 +931,14 @@ fn encode_path(path: &crate::willow::Path) -> Vec<u8> {
 }
 
 #[derive(Clone)]
+#[cfg(feature = "sqlite")]
 struct AcceptedInfo {
     entry: crate::willow::Entry,
     first_receipt_id: u64,
     dominated_on_arrival: bool,
 }
 
+#[cfg(feature = "sqlite")]
 struct ReceiptReplayRow {
     key: AcceptedKey,
     kind: i64,
@@ -926,12 +946,14 @@ struct ReceiptReplayRow {
 }
 
 #[derive(Clone, Copy)]
+#[cfg(feature = "sqlite")]
 struct ForgetEvent {
     key: AcceptedKey,
     forgotten_generation: u64,
     restored_generation: Option<u64>,
 }
 
+#[cfg(feature = "sqlite")]
 fn validate_relational_state(
     connection: &rusqlite::Connection,
     generation: u64,
@@ -1193,6 +1215,7 @@ fn validate_relational_state(
 type AcceptedKey = ([u8; 32], EntryId);
 type RawDisposition = ([u8; 32], EntryId, i64, Option<u64>);
 
+#[cfg(feature = "sqlite")]
 fn replay_final_live(
     pre_live: &BTreeSet<AcceptedKey>,
     batch: &BTreeSet<AcceptedKey>,
@@ -1217,6 +1240,7 @@ fn replay_final_live(
         .collect()
 }
 
+#[cfg(feature = "sqlite")]
 fn apply_forget_events(
     after_generation: u64,
     through_generation: u64,
@@ -1240,6 +1264,7 @@ fn apply_forget_events(
     Ok(())
 }
 
+#[cfg(feature = "sqlite")]
 fn load_accepted_info(
     connection: &rusqlite::Connection,
 ) -> Result<BTreeMap<AcceptedKey, AcceptedInfo>, super::DatabaseError> {
@@ -1293,6 +1318,7 @@ fn load_accepted_info(
     Ok(accepted)
 }
 
+#[cfg(feature = "sqlite")]
 fn raw_dispositions(
     connection: &rusqlite::Connection,
     receipt_id: u64,
@@ -1343,6 +1369,7 @@ fn raw_dispositions(
         .collect()
 }
 
+#[cfg(feature = "sqlite")]
 fn raw_references(
     connection: &rusqlite::Connection,
     receipt_id: u64,
@@ -1386,6 +1413,7 @@ fn raw_references(
         .collect()
 }
 
+#[cfg(feature = "sqlite")]
 fn raw_forget_events(
     connection: &rusqlite::Connection,
     generation: u64,
@@ -1444,6 +1472,7 @@ fn raw_forget_events(
         .collect()
 }
 
+#[cfg(feature = "sqlite")]
 fn raw_forgotten(
     connection: &rusqlite::Connection,
     generation: u64,
@@ -1488,6 +1517,7 @@ fn raw_forgotten(
     Ok(forgotten)
 }
 
+#[cfg(feature = "sqlite")]
 fn validate_live_and_prefix_projection(
     connection: &rusqlite::Connection,
     accepted: &BTreeMap<AcceptedKey, AcceptedInfo>,
@@ -1606,6 +1636,7 @@ fn validate_live_and_prefix_projection(
 }
 
 #[allow(clippy::too_many_arguments)]
+#[cfg(feature = "sqlite")]
 fn validate_stored_entry(
     stored_id: &EntryId,
     stored_namespace: &[u8; 32],
@@ -1650,6 +1681,7 @@ fn validate_stored_entry(
     Ok(())
 }
 
+#[cfg(feature = "sqlite")]
 fn session_error(error: super::DatabaseError) -> SessionError {
     match error {
         super::DatabaseError::StorageFull => SessionError::StoreFull,

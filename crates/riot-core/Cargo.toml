@@ -16,6 +16,12 @@ publish = false
 # graph for document projections; this feature gates only the demo-fixture API.
 conformance = ["dep:serde_json"]
 
+# The durable SQLite store. Default-on, so every existing build is unchanged.
+# Disable (`--no-default-features`) to compile the verify+project core for
+# wasm32, where SQLite's C library cannot build — the in-memory store remains.
+default = ["sqlite"]
+sqlite = ["dep:rusqlite"]
+
 [dependencies]
 willow25 = { workspace = true }
 serde_json = { workspace = true, optional = true }
@@ -29,9 +35,14 @@ rand_core = { workspace = true }
 hifitime = { workspace = true }
 zeroize = { workspace = true }
 chacha20poly1305 = { workspace = true }
-# This is a production dependency so every native target compiles the same
-# bundled SQLite before the store lifecycle and schema are introduced.
-rusqlite = { workspace = true }
+# Native targets compile the bundled SQLite via the default `sqlite` feature.
+# Optional so a `--no-default-features` wasm build can drop the C library.
+rusqlite = { workspace = true, optional = true }
+
+# wasm32 has no OS entropy source; route getrandom through the JS crypto API.
+# Native targets are unaffected.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom = { version = "0.2", features = ["js"] }
 
 [dev-dependencies]
 willow25 = { workspace = true, features = ["dev"] }
