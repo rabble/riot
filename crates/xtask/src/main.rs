@@ -4,6 +4,7 @@
 //! catch/quarantine contract depends on. Substring matching is not trusted
 //! for anything a TOML/JSON parser can check.
 
+mod export_newswire;
 mod hex_codec;
 mod sign_conference_fixture;
 mod verify_conference_export;
@@ -212,6 +213,13 @@ fn run_with(
                 ExitCode::FAILURE
             }
         },
+        Some("export-newswire") => match export_newswire::run(root) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("export-newswire: FAIL: {error}");
+                ExitCode::FAILURE
+            }
+        },
         Some(other) => {
             let _ = writeln!(err, "unknown xtask command: {other}").is_ok();
             let _ = writeln!(err, "available: {}", available_commands().join(", ")).is_ok();
@@ -231,6 +239,7 @@ fn available_commands() -> &'static [&'static str] {
         "generate-bindings",
         "sign-conference-fixture",
         "verify-conference-export",
+        "export-newswire",
     ]
 }
 
@@ -313,7 +322,7 @@ fn workspace_root_from(manifest_dir: &Path) -> Result<PathBuf, String> {
         })
 }
 
-fn sha256_hex(bytes: &[u8]) -> String {
+pub(crate) fn sha256_hex(bytes: &[u8]) -> String {
     Sha256::digest(bytes)
         .iter()
         .map(|b| format!("{b:02x}"))
