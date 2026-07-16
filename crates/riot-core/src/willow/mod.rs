@@ -72,6 +72,8 @@ pub enum WillowError {
     SealedIdentityInvalid,
     /// The AEAD could not seal an otherwise valid identity.
     IdentitySealFailed,
+    /// A section delegation was requested for an area whose path escapes `/articles/`.
+    DelegationAreaEscapesArticles,
 }
 
 impl std::fmt::Display for WillowError {
