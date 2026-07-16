@@ -26,6 +26,7 @@ use riot_core::import::{
     decode_bundle, decode_bundle_with_root, encode_bundle, BundleDecodeOutcome, DiagnosticCode,
     ItemStatus, BUNDLE_CODEC_ID, BUNDLE_MAGIC,
 };
+use riot_core::newswire::{inspect_news_record, NewswireError};
 use riot_core::session::{CommitOutcome, ImportContext, InspectOutcome, RiotSession};
 use riot_core::sync::{ReconcileSession, SyncAction, SyncFrame};
 use riot_core::willow::site_paths::{ARTICLES_COMPONENT, MANIFEST_COMPONENT};
@@ -706,4 +707,45 @@ fn is_owned_editorial_entry_recognises_only_owned_articles() {
     .unwrap();
     let alert_entry = decode_entry_canonic(&alert.signed.entry_bytes).unwrap();
     assert!(!is_owned_editorial_entry(&alert_entry));
+}
+
+// ---------- gate 4 stays closed (newswire left unchanged, opens no hole) ----------
+//
+// Owned composite-site editorial NEVER reaches the newswire inspection path in
+// production (it is gated on `is_newswire_prefix`, and `/articles/` is not a
+// newswire prefix). Newswire is communal-only by data model. This proves that
+// leaving that gate unchanged does not open a hole: presented DIRECTLY with an
+// owned cap or a marker-bit forgery, `inspect_news_record` still rejects.
+
+#[test]
+fn unchanged_newswire_gate_still_rejects_owned_and_forged_caps() {
+    let site = manual_owned_site(0x61, 0x12);
+
+    // An owner-signed owned article: the newswire gate rejects owned caps
+    // outright (its `capability.is_owned()` clause is unchanged).
+    let owned_article = owned_article_item(&site, b"news", b"post-1", b"body");
+    assert_eq!(
+        inspect_news_record(&owned_article),
+        Err(NewswireError::CapabilityInvalid),
+        "the newswire gate must still reject an owned capability"
+    );
+
+    // A marker-bit forgery (communal cap naming the owned namespace): rejected
+    // at the non-communal-namespace check, exactly as before this unit.
+    let attacker = SubspaceSecret::from_bytes(&[0x23; 32]);
+    let attacker_id = attacker.corresponding_subspace_id();
+    let communal = WriteCapability::new_communal(site.namespace_id.clone(), attacker_id.clone());
+    let forged_entry = build_entry(
+        site.namespace_id.clone(),
+        attacker_id,
+        article_path(b"news", b"forged"),
+        100,
+        b"forged body",
+    );
+    let forgery = sign_into(forged_entry, &communal, &attacker, b"forged body");
+    assert_eq!(
+        inspect_news_record(&forgery),
+        Err(NewswireError::NonCommunalNamespace),
+        "the newswire gate must still reject a communal cap in an owned namespace"
+    );
 }
