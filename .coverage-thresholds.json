@@ -1,16 +1,39 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$comment": "Coverage thresholds for orchestrator agents and CI. Portable across projects — adjust values per-repo.",
+  "$comment": "RATCHET FLOORS, not aspirational 100%. Each floor is set just below the last measured value (see enforcement.measured) so the gate is GREEN today and BLOCKS regression. This is the single source of truth: scripts/web/coverage.sh (tarpaulin), scripts/web/validate-llvm-coverage.mjs (llvm-cov), and .github/workflows/ci.yml (CI tarpaulin gate) all READ it. Raise floors as coverage improves; never lower a floor without a documented justification (that is the ratchet). The old 100% values were fiction — nothing read this file and no automated context ran the gate (see docs/ci/coverage-gate-findings.md).",
   "thresholds": {
-    "lines": 100,
-    "branches": 100,
-    "functions": 100,
-    "statements": 100
+    "tarpaulin": {
+      "lines": 97
+    },
+    "llvm": {
+      "lines": 95,
+      "functions": 95,
+      "regions": 92,
+      "branches": 83
+    },
+    "jsTooling": {
+      "lines": 100,
+      "branches": 100,
+      "functions": 100,
+      "statements": 100
+    }
   },
   "enforcement": {
-    "command": "scripts/web/coverage.sh",
+    "ci": "cargo tarpaulin --workspace --all-features --fail-under <thresholds.tarpaulin.lines> — enforced in .github/workflows/ci.yml (the primary product-coverage gate).",
+    "localComposite": "scripts/web/coverage.sh — tarpaulin (thresholds.tarpaulin.lines) + llvm-cov floors (thresholds.llvm.*) + JS-tooling self-coverage (thresholds.jsTooling.* via c8). Requires the pinned toolchain; runs locally, not yet in CI.",
     "blockPRCreation": true,
     "blockTaskCompletion": true,
-    "description": "Orchestrator agents MUST run the composite command and require 100% Tarpaulin lines, LLVM lines/functions/statements (enforced as regions)/branches, and authored JavaScript coverage before marking any task complete or creating a PR. If any configured threshold is missed, the task fails."
+    "ratchet": "A floor MUST NOT be lowered without a written justification committed alongside the change. Prefer raising floors toward the measured values as coverage improves.",
+    "measured": {
+      "date": "2026-07-15",
+      "tarpaulinLines": 97.26,
+      "tarpaulinLinesNote": "9309/9571 lines; up from 94.60 at the audit as later units added tests. Floor tracks it.",
+      "llvmLines": 95.96,
+      "llvmFunctions": 95.35,
+      "llvmRegions": 92.60,
+      "llvmBranches": 83.24,
+      "llvmNote": "llvm.* floors are from the 2026-07-15 audit and may now be loose (not re-measured with tarpaulin); tighten after a fresh cargo llvm-cov run."
+    },
+    "description": "jsTooling covers the scripts/web/**/*.mjs tooling's OWN tests (c8 --all), orthogonal to product coverage; it stays at 100 because that tooling is small and fully tested. Product coverage is Rust: tarpaulin lines + llvm lines/functions/regions/branches."
   }
 }
