@@ -64,6 +64,10 @@ name = "core_import_join"
 required-features = ["conformance"]
 
 [[test]]
+name = "core_fail_closed"
+required-features = ["conformance"]
+
+[[test]]
 name = "core_import_transaction"
 required-features = ["conformance"]
 

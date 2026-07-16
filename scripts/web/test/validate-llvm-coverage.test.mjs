@@ -6,13 +6,20 @@ import { spawnSync } from "node:child_process";
 import { after, test } from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { validateCoverageReport } from "../validate-llvm-coverage.mjs";
+import { loadLlvmThresholds, validateCoverageReport } from "../validate-llvm-coverage.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const validatorPath = path.resolve(here, "../validate-llvm-coverage.mjs");
 const webScriptsDirectory = path.resolve(here, "..");
+const repositoryRoot = path.resolve(here, "../../..");
 const temporaryDirectory = mkdtempSync(path.join(os.tmpdir(), "riot-llvm-cov-"));
 const metricNames = ["lines", "functions", "regions", "branches"];
+
+// The floors the committed `.coverage-thresholds.json` (thresholds.llvm) sets,
+// which the validator reads when the script runs from the real repo root.
+const FLOORS = loadLlvmThresholds(
+  JSON.parse(readFileSync(path.join(repositoryRoot, ".coverage-thresholds.json"), "utf8")),
+);
 
 after(() => rmSync(temporaryDirectory, { force: true, recursive: true }));
 
@@ -57,6 +64,14 @@ function createFakeToolRepository() {
   writeFileSync(path.join(root, "package.json"), JSON.stringify({
     engines: { node: "26.4.0", npm: "11.17.0" },
   }));
+  // coverage.sh reads the tarpaulin floor from this file (the source of truth).
+  writeFileSync(path.join(root, ".coverage-thresholds.json"), JSON.stringify({
+    thresholds: {
+      tarpaulin: { lines: 94 },
+      llvm: { lines: 95, functions: 95, regions: 92, branches: 83 },
+      jsTooling: { lines: 100, branches: 100, functions: 100, statements: 100 },
+    },
+  }));
 
   const fakeTool = String.raw`#!/bin/sh
 set -eu
@@ -88,6 +103,7 @@ case "$name:$*" in
   "node:--version") echo "@{FAKE_NODE_VERSION:-v26.4.0}" ;;
   node:*engines.node*) echo 26.4.0 ;;
   node:*engines.npm*) echo 11.17.0 ;;
+  node:*tarpaulin.lines*) echo 94 ;;
   node:*validate-llvm-coverage.mjs*) printf 'node %s\n' "$*" >> "$log" ;;
   "npm:--version") echo "@{FAKE_NPM_VERSION:-11.17.0}" ;;
   npm:*engines.npm*) echo 11.17.0 ;;
@@ -118,33 +134,62 @@ function runShellScript(root, script, environment) {
   });
 }
 
-test("accepts exact integer equality for all four LLVM totals", () => {
+test("loadLlvmThresholds returns the four per-metric floors", () => {
+  const floors = loadLlvmThresholds({
+    thresholds: { llvm: { lines: 95, functions: 95, regions: 92, branches: 83 } },
+  });
+  assert.deepEqual(floors, { lines: 95, functions: 95, regions: 92, branches: 83 });
+});
+
+test("loadLlvmThresholds fails closed on missing or malformed floors", () => {
+  assert.throws(() => loadLlvmThresholds(null), /coverage thresholds must be an object/);
+  assert.throws(() => loadLlvmThresholds({}), /must define thresholds\.llvm/);
+  assert.throws(() => loadLlvmThresholds({ thresholds: {} }), /must define thresholds\.llvm/);
+  assert.throws(
+    () => loadLlvmThresholds({ thresholds: { llvm: { lines: 95, functions: 95, regions: 92 } } }),
+    /thresholds\.llvm\.branches must be a percentage/,
+  );
+  assert.throws(
+    () => loadLlvmThresholds({ thresholds: { llvm: { lines: 101, functions: 95, regions: 92, branches: 83 } } }),
+    /thresholds\.llvm\.lines must be a percentage/,
+  );
+});
+
+test("accepts coverage at or above the committed floors", () => {
   const result = runValidator(JSON.stringify(report()));
   assert.equal(result.status, 0);
-  assert.equal(result.stdout, "LLVM coverage is exactly 100% for lines, functions, regions, and branches.\n");
+  assert.equal(
+    result.stdout,
+    `LLVM coverage meets the floors (lines>=${FLOORS.lines}%, functions>=${FLOORS.functions}%, `
+    + `regions>=${FLOORS.regions}%, branches>=${FLOORS.branches}%).\n`,
+  );
   assert.equal(result.stderr, "");
 });
 
 for (const metricName of metricNames) {
-  test(`rejects 99.99 percent ${metricName} coverage and names the metric`, () => {
+  test(`rejects ${metricName} coverage below its floor and names the metric`, () => {
+    // 80% is below every floor (95/95/92/83), so any metric at 80% is a deficit.
     const result = runValidator(JSON.stringify(report({
-      [metricName]: metric(9_999, 10_000, 99.99),
+      [metricName]: metric(8_000, 10_000, 80),
     })), `${metricName}.json`);
     assert.equal(result.status, 1);
-    assert.match(result.stderr, new RegExp(`^${metricName}: covered 9999 of 10000; exact 100% is required\\.`, "m"));
+    assert.match(
+      result.stderr,
+      new RegExp(`^${metricName}: covered 8000 of 10000 \\(80\\.00%\\); floor is ${FLOORS[metricName]}%\\.`, "m"),
+    );
   });
 }
 
-test("uses covered/count equality rather than a forged rounded percentage", () => {
+test("uses covered/count rather than a forged percentage field", () => {
   const result = runValidator(JSON.stringify(report({
-    lines: metric(9_999, 10_000, 100),
+    lines: metric(9_000, 10_000, 100),
   })), "forged-percent.json");
   assert.equal(result.status, 1);
   assert.match(result.stderr, /^lines:/m);
 });
 
-test("zero covered of zero count is exact equality", () => {
-  assert.doesNotThrow(() => validateCoverageReport(report({ branches: metric(0, 0, 0) })));
+test("zero covered of zero count is vacuously full coverage", () => {
+  assert.doesNotThrow(() => validateCoverageReport(report({ branches: metric(0, 0, 0) }), FLOORS));
 });
 
 test("reports every deficient metric in one invocation", () => {
@@ -182,17 +227,17 @@ test("rejects malformed LLVM report containers", () => {
     [{ data: [{ totals: [] }] }, "totals must be an object"],
   ];
   for (const [value, message] of malformed) {
-    assert.throws(() => validateCoverageReport(value), new RegExp(message));
+    assert.throws(() => validateCoverageReport(value, FLOORS), new RegExp(message));
   }
 });
 
 test("rejects missing and malformed required metrics", () => {
   const absent = report();
   delete absent.data[0].totals.lines;
-  assert.throws(() => validateCoverageReport(absent), /lines must be an object/);
+  assert.throws(() => validateCoverageReport(absent, FLOORS), /lines must be an object/);
 
   const malformed = report({ lines: [] });
-  assert.throws(() => validateCoverageReport(malformed), /lines must be an object/);
+  assert.throws(() => validateCoverageReport(malformed, FLOORS), /lines must be an object/);
 });
 
 test("rejects non-safe, negative, and inconsistent counts", () => {
@@ -209,10 +254,17 @@ test("rejects non-safe, negative, and inconsistent counts", () => {
   ];
   for (const [count, covered] of invalidPairs) {
     assert.throws(
-      () => validateCoverageReport(report({ lines: metric(covered, count) })),
+      () => validateCoverageReport(report({ lines: metric(covered, count) }), FLOORS),
       /lines (?:count|covered|covered cannot exceed count)/,
     );
   }
+});
+
+test("validateCoverageReport fails closed on a malformed floor", () => {
+  assert.throws(
+    () => validateCoverageReport(report(), { lines: 95, functions: 95, regions: 92, branches: 200 }),
+    /branches floor must be a percentage/,
+  );
 });
 
 test("coverage shell entry points are portable sh syntax", () => {
@@ -255,12 +307,12 @@ test("coverage rejects version drift before running any gate", () => {
   assert.equal(readFileSync(fixture.environment.FAKE_LOG, "utf8"), "");
 });
 
-test("coverage runs the exact composite gates in fail-fast order", () => {
+test("coverage runs the composite gates in fail-fast order at the JSON tarpaulin floor", () => {
   const fixture = createFakeToolRepository();
   const result = runShellScript(fixture.root, "coverage.sh", fixture.environment);
   assert.equal(result.status, 0, result.stderr);
   assert.equal(readFileSync(fixture.environment.FAKE_LOG, "utf8"), [
-    "cargo tarpaulin --workspace --all-features --fail-under 100",
+    "cargo tarpaulin --workspace --all-features --fail-under 94",
     "cargo +nightly-2026-07-01 llvm-cov clean --workspace",
     "cargo +nightly-2026-07-01 llvm-cov --workspace --all-features --branch --json --output-path target/llvm-cov/riot.json",
     "node scripts/web/validate-llvm-coverage.mjs target/llvm-cov/riot.json",

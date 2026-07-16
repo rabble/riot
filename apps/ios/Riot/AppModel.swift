@@ -759,9 +759,23 @@ public final class RiotAppModel: ObservableObject {
 
     public func createCommunity(_ request: CommunityCreationRequest) {
         guard let repository else { return }
+        // A newswire SpaceDescriptorV1 requires a non-empty summary; core rejects
+        // an empty one with InvalidInput. The founder form does not collect a
+        // summary, so default it to the community name. Without this, create signs
+        // no descriptor and the community launches with a permanently dead wire
+        // ("updates unavailable"), which is exactly the newswire being invisible.
+        let trimmedSummary = request.summary.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalized = trimmedSummary.isEmpty
+            ? CommunityCreationRequest(
+                name: request.name,
+                summary: request.name,
+                editorialRoster: request.editorialRoster,
+                approvedStarterAppIDs: request.approvedStarterAppIDs
+            )
+            : request
         let coordinator = CommunityCreationCoordinator(backing: repository, descriptor: repository)
         perform {
-            let context = try coordinator.create(request)
+            let context = try coordinator.create(normalized)
             space = repository.currentSpace
             newswireDescriptorEntryID = context.newswireDescriptorEntryID
             communityUnavailable = nil

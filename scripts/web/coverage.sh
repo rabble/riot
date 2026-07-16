@@ -66,7 +66,15 @@ require_exact_output "$(node --version)" "v$expected_node" "Node $expected_node 
 require_exact_output "$(npm --version)" "$expected_npm" "npm $expected_npm is required"
 
 mkdir -p target/llvm-cov
-cargo tarpaulin --workspace --all-features --fail-under 100
+# The tarpaulin line floor is read from the single source of truth
+# .coverage-thresholds.json (thresholds.tarpaulin.lines), not hardcoded, so this
+# gate and CI cannot drift. The llvm-cov floors are read by validate-llvm-coverage.mjs.
+tarpaulin_floor=$(node --input-type=module --eval \
+  'import t from "./.coverage-thresholds.json" with { type: "json" }; process.stdout.write(String(t.thresholds.tarpaulin.lines))')
+case "$tarpaulin_floor" in
+  ''|*[!0-9]*) fail ".coverage-thresholds.json thresholds.tarpaulin.lines must be an integer percent" ;;
+esac
+cargo tarpaulin --workspace --all-features --fail-under "$tarpaulin_floor"
 cargo +nightly-2026-07-01 llvm-cov clean --workspace
 cargo +nightly-2026-07-01 llvm-cov --workspace --all-features --branch \
   --json --output-path target/llvm-cov/riot.json

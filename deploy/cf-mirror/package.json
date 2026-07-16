@@ -1,0 +1,13 @@
+{
+  "name": "riot-newswire-dev-mirror",
+  "private": true,
+  "description": "Cloudflare Worker: hosted dev mirror of a Riot site's reach-layer view",
+  "scripts": {
+    "build": "python3 build.py",
+    "dev": "npm run build && wrangler dev",
+    "deploy": "npm run build && wrangler deploy"
+  },
+  "devDependencies": {
+    "wrangler": "^4.50.0"
+  }
+}

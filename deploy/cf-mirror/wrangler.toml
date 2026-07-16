@@ -1,0 +1,19 @@
+# Cloudflare Worker: a hosted dev MIRROR of a Riot site's reach-layer view.
+#
+# This is NOT a publisher. Publishing stays p2p/hidden. This worker is a dumb
+# host serving the self-contained static dump (see
+# docs/superpowers/specs/2026-07-16-web-viewer-reach-layer-design.md). It gives
+# dev a stable URL to point at; the same bytes could sit on any other mirror.
+#
+# Deploy: `npm run build && npx wrangler deploy` (needs your Cloudflare login).
+name = "riot-newswire-dev"
+main = "src/worker.js"
+compatibility_date = "2025-06-01"
+
+# Static assets = the rendered dump. run_worker_first routes every request
+# through the worker first so it can add security headers before serving the
+# asset (otherwise assets are served directly and the wrapper never runs).
+[assets]
+directory = "./dist"
+binding = "ASSETS"
+run_worker_first = true

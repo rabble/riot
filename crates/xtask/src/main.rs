@@ -911,6 +911,82 @@ mod tests {
         }
     }
 
+    fn copy_dir_recursive(source: &Path, dest: &Path) {
+        std::fs::create_dir_all(dest).unwrap();
+        for entry in std::fs::read_dir(source).unwrap() {
+            let entry = entry.unwrap();
+            let target = dest.join(entry.file_name());
+            if entry.file_type().unwrap().is_dir() {
+                copy_dir_recursive(&entry.path(), &target);
+            } else {
+                std::fs::copy(entry.path(), &target).unwrap();
+            }
+        }
+    }
+
+    /// Copies the committed conference fixtures into a private root so the two
+    /// fixture commands can be dispatched successfully without the sign command
+    /// rewriting (or the verify command re-stamping) the real repository files.
+    fn copy_conference_fixtures(dest_root: &Path) {
+        let real_root = workspace_root_from(Path::new(env!("CARGO_MANIFEST_DIR"))).unwrap();
+        copy_dir_recursive(
+            &real_root.join("fixtures/conference"),
+            &dest_root.join("fixtures/conference"),
+        );
+    }
+
+    #[test]
+    fn conference_fixture_commands_report_success_and_failure() {
+        // Success arms: each command runs against a faithful private copy of the
+        // committed fixtures, so the dispatch's Ok branch is taken and returns
+        // SUCCESS while the real repository fixtures are never touched.
+        for command in ["sign-conference-fixture", "verify-conference-export"] {
+            let root = temp_dir(&format!("conference-ok-{command}"));
+            copy_conference_fixtures(&root);
+            let mut runner = ScriptedRunner {
+                output: None,
+                status: None,
+            };
+            let mut stdout = Vec::new();
+            let mut stderr = Vec::new();
+            assert_eq!(
+                run(
+                    &root,
+                    &[command.into()],
+                    &mut runner,
+                    &mut stdout,
+                    &mut stderr
+                ),
+                ExitCode::SUCCESS,
+                "{command} against a valid fixture copy should succeed"
+            );
+            assert!(stderr.is_empty());
+        }
+
+        // Failure arms: an empty root has no fixtures, so each command's run()
+        // returns Err and the dispatch reports FAILURE.
+        for command in ["sign-conference-fixture", "verify-conference-export"] {
+            let root = temp_dir(&format!("conference-missing-{command}"));
+            let mut runner = ScriptedRunner {
+                output: None,
+                status: None,
+            };
+            let mut stdout = Vec::new();
+            let mut stderr = Vec::new();
+            assert_eq!(
+                run(
+                    &root,
+                    &[command.into()],
+                    &mut runner,
+                    &mut stdout,
+                    &mut stderr
+                ),
+                ExitCode::FAILURE,
+                "{command} against an empty root should fail"
+            );
+        }
+    }
+
     #[test]
     fn run_reports_validation_and_binding_build_failures() {
         let dir = temp_dir("run-failures");
