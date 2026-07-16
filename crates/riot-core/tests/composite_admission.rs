@@ -23,9 +23,10 @@
 
 use minicbor::Encoder;
 use riot_core::import::{
-    decode_bundle, decode_bundle_with_root, BundleDecodeOutcome, DiagnosticCode, ItemStatus,
-    BUNDLE_CODEC_ID, BUNDLE_MAGIC,
+    decode_bundle, decode_bundle_with_root, encode_bundle, BundleDecodeOutcome, DiagnosticCode,
+    ItemStatus, BUNDLE_CODEC_ID, BUNDLE_MAGIC,
 };
+use riot_core::session::{CommitOutcome, ImportContext, InspectOutcome, RiotSession};
 use riot_core::willow::site_paths::{ARTICLES_COMPONENT, MANIFEST_COMPONENT};
 use riot_core::willow::{
     encode_capability, encode_entry, Entry, NamespaceId, OwnedMasthead, Path, SignedWillowEntry,
@@ -461,4 +462,77 @@ fn gate_still_runs_willow25_verification_for_admitted_owned_shape() {
     let mut item = sign_into(entry, &site.owner_cap, &site.owner_secret, b"body");
     item.signature[0] ^= 0x01;
     assert_rejected_code(&item, Some(site.root), DiagnosticCode::DoesNotAuthorise);
+}
+
+// ---------- session import path (Task 2 — the followed-root carrier) ----------
+
+/// An owner-signed article item for a manually-controlled owned site.
+fn owned_article_item(
+    site: &OwnedSite,
+    section: &[u8],
+    slug: &[u8],
+    payload: &[u8],
+) -> SignedWillowEntry {
+    let entry = build_entry(
+        site.namespace_id.clone(),
+        site.owner_secret.corresponding_subspace_id(),
+        article_path(section, slug),
+        100,
+        payload,
+    );
+    sign_into(entry, &site.owner_cap, &site.owner_secret, payload)
+}
+
+#[test]
+fn owned_editorial_is_committed_and_live_via_followed_root_import() {
+    let session = RiotSession::open().expect("session");
+    let store = session.create_store().expect("store");
+    let site = manual_owned_site(0x40, 0x0d);
+    let item = owned_article_item(&site, b"news", b"post-1", b"editorial body");
+    let bundle = encode_bundle(std::slice::from_ref(&item)).expect("encode");
+
+    let preview = match store
+        .inspect(
+            &bundle,
+            ImportContext::with_followed_root("follow-site", site.root),
+        )
+        .expect("inspect")
+    {
+        InspectOutcome::Preview(p) => p,
+        InspectOutcome::Rejected(r) => panic!("owned editorial rejected: {r:?}"),
+    };
+    let plan = preview.plan_all().expect("plan_all");
+    match plan.commit().expect("commit") {
+        CommitOutcome::Committed(_) => {}
+        CommitOutcome::NoChanges(_) => panic!("owned editorial entry was dropped, not committed"),
+    }
+    assert_eq!(store.live_count().expect("live_count"), 1);
+}
+
+#[test]
+fn owned_editorial_import_without_followed_root_admits_nothing() {
+    // Fail-closed at the session boundary: a plain import with no site-follow
+    // context must not admit or commit owned content.
+    let session = RiotSession::open().expect("session");
+    let store = session.create_store().expect("store");
+    let site = manual_owned_site(0x41, 0x0e);
+    let item = owned_article_item(&site, b"news", b"post-1", b"editorial body");
+    let bundle = encode_bundle(std::slice::from_ref(&item)).expect("encode");
+
+    match store
+        .inspect(&bundle, ImportContext::new("plain-file-import"))
+        .expect("inspect")
+    {
+        // The owned item is rejected at `verify_frame`, so it never becomes an
+        // eligible entry — `plan_all` reports there is nothing to plan, and
+        // nothing can commit. A whole-bundle rejection is equally fail-closed.
+        InspectOutcome::Preview(p) => {
+            assert!(
+                p.plan_all().is_err(),
+                "no owned entry may be eligible without a followed root"
+            );
+        }
+        InspectOutcome::Rejected(_) => {}
+    }
+    assert_eq!(store.live_count().expect("live_count"), 0);
 }
