@@ -27,6 +27,7 @@ use riot_core::import::{
     ItemStatus, BUNDLE_CODEC_ID, BUNDLE_MAGIC,
 };
 use riot_core::session::{CommitOutcome, ImportContext, InspectOutcome, RiotSession};
+use riot_core::sync::{ReconcileSession, SyncAction, SyncFrame};
 use riot_core::willow::site_paths::{ARTICLES_COMPONENT, MANIFEST_COMPONENT};
 use riot_core::willow::{
     encode_capability, encode_entry, Entry, NamespaceId, OwnedMasthead, Path, SignedWillowEntry,
@@ -535,4 +536,39 @@ fn owned_editorial_import_without_followed_root_admits_nothing() {
         InspectOutcome::Rejected(_) => {}
     }
     assert_eq!(store.live_count().expect("live_count"), 0);
+}
+
+// ---------- sync admission path (Task 2 — gate 3) ----------
+
+fn outbound(action: SyncAction) -> SyncFrame {
+    match action {
+        SyncAction::Send(frame) => frame,
+        other => panic!("expected outbound frame, got {other:?}"),
+    }
+}
+
+#[test]
+fn owned_editorial_is_admitted_over_sync_under_the_session_namespace_root() {
+    // The reconcile session's namespace is the locally-chosen followed site.
+    // For an owned namespace it IS the followed root, so a received bundle of
+    // owned editorial entries authored under that root's cap passes gate 3.
+    let site = manual_owned_site(0x42, 0x0f);
+    let owned_entry = owned_article_item(&site, b"news", b"post-1", b"editorial body");
+    let bundle = encode_bundle(std::slice::from_ref(&owned_entry)).expect("encode");
+
+    let mut receiver = ReconcileSession::new(site.root, vec![]).unwrap();
+    let mut sender = ReconcileSession::new(site.root, vec![owned_entry.clone()]).unwrap();
+    let hello = outbound(receiver.begin().unwrap());
+    let summary = outbound(sender.receive(hello).unwrap());
+    let _request = outbound(receiver.receive(summary).unwrap());
+
+    // The receiver requested the missing owned entry; delivering it must be
+    // accepted for import (gate 3 admits owned editorial under the root).
+    match receiver.receive(SyncFrame::Entries {
+        namespace_id: site.root,
+        bundle_bytes: bundle,
+    }) {
+        Ok(SyncAction::ImportBundle(_)) => {}
+        other => panic!("owned editorial rejected at the sync gate: {other:?}"),
+    }
 }
