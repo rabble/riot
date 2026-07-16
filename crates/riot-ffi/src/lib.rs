@@ -11,10 +11,12 @@ mod mobile_api;
 mod mobile_state;
 mod newswire_ffi;
 mod profile_ffi;
+mod site_ffi;
 
 pub use apps_ffi::*;
 pub use mobile_api::*;
 pub use newswire_ffi::*;
 pub use profile_ffi::*;
+pub use site_ffi::*;
 
 uniffi::setup_scaffolding!();
