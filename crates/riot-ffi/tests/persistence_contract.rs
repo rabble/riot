@@ -904,3 +904,147 @@ fn a_followed_communitys_home_materializes_published_content_after_the_first_syn
         "a followed community's Home materializes published content after the first sync"
     );
 }
+
+/// Risk 16 regression guard — the newswire-specific cross-community isolation
+/// conjunction, asserted directly on the code Risk 16 changed
+/// (`track_committed_entry` → `install_sync_inventory`). The isolation suite
+/// proves ALERT entries do not leak across a switch, and the e2e proves newswire
+/// DOES sync; this proves BOTH at once for newswire: a post published in A is
+/// never offered once the active community is B. The invariant
+/// `sync_inventory == active-namespace live ids` is enforced fail-closed inside
+/// `install_sync_inventory` — a foreign-namespace entry makes `open_sync_session`
+/// return `Err`, so a green sync from B whose peer materializes B's post but
+/// never A's is the behavioral proof the invariant holds after Risk 16.
+#[test]
+fn a_newswire_post_stays_in_its_community_and_is_never_offered_after_a_switch() {
+    // Organizer of A publishes a post that must never leave A.
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("news-iso.db").to_string_lossy().to_string();
+    let profile = open_local_profile_with_database(db).expect("open");
+    let desc_a = profile
+        .create_newswire_space(NewswireSpaceInput {
+            name: "Community A".into(),
+            summary: "A".into(),
+            languages: vec!["en".into()],
+            geographic_tags: vec![],
+            topic_tags: vec![],
+            editorial_roster: vec![],
+        })
+        .expect("create A");
+    let a_post = profile
+        .create_newswire_post(riot_ffi::NewswirePostInput {
+            space_descriptor_entry_id: desc_a.entry_id.clone(),
+            headline: "Organizers meet at dawn".into(),
+            body: "Private to A.".into(),
+            language: "en".into(),
+            event_time_unix_seconds: None,
+            expires_at_unix_seconds: None,
+            coarse_location: None,
+            source_claims: vec![],
+            operational_profile: None,
+            ai_assisted: false,
+        })
+        .expect("post in A");
+
+    // A separate origin owns B and publishes B's own post.
+    let origin_b = open_local_profile().expect("origin B");
+    let desc_b = origin_b
+        .create_newswire_space(NewswireSpaceInput {
+            name: "Community B".into(),
+            summary: "B".into(),
+            languages: vec!["en".into()],
+            geographic_tags: vec![],
+            topic_tags: vec![],
+            editorial_roster: vec![],
+        })
+        .expect("create B");
+    origin_b
+        .create_newswire_post(riot_ffi::NewswirePostInput {
+            space_descriptor_entry_id: desc_b.entry_id.clone(),
+            headline: "Depot blockade at six".into(),
+            body: "Public to B.".into(),
+            language: "en".into(),
+            event_time_unix_seconds: None,
+            expires_at_unix_seconds: None,
+            coarse_location: None,
+            source_claims: vec![],
+            operational_profile: None,
+            ai_assisted: false,
+        })
+        .expect("post in B");
+    let b_namespace = origin_b.identity().unwrap().namespace_id;
+
+    // Joining B switches the active community to B (organizer of A → member of B).
+    profile
+        .join_newswire_community(
+            PublicSpace {
+                namespace_id: b_namespace.clone(),
+                title: "Community B (pending sync)".into(),
+                is_public: true,
+            },
+            desc_b.entry_id.clone(),
+            REGISTRY_KEY.to_vec(),
+        )
+        .expect("join B");
+    assert_eq!(
+        profile.active_community().unwrap().unwrap().namespace_id,
+        b_namespace,
+        "the active community is B after the join"
+    );
+
+    // The first sync from B's origin succeeds — had A's post leaked into B's sync
+    // inventory, install_sync_inventory's fail-closed re-check would have made
+    // open_sync_session `Err` and this would panic.
+    deliver_all_via_sync(&origin_b, &profile);
+
+    // On B, this profile's OWN newswire Home shows B's post, never A's.
+    let b_home = profile
+        .project_newswire_space(desc_b.entry_id.clone())
+        .expect("project B Home");
+    assert!(
+        b_home
+            .open_wire
+            .iter()
+            .any(|post| post.headline.as_deref() == Some("Depot blockade at six")),
+        "B's Home shows B's own post after the first sync"
+    );
+    assert!(
+        !b_home
+            .open_wire
+            .iter()
+            .any(|post| post.entry_id == a_post.entry_id),
+        "A's post entry-id is absent from B's Home — no cross-community leak"
+    );
+
+    // And a fresh peer that follows B and syncs FROM this profile (now active on
+    // B) is offered B's post and NEVER A's — the direct "never offered" assertion.
+    let peer = open_local_profile().expect("peer follows B");
+    peer.join_newswire_community(
+        PublicSpace {
+            namespace_id: b_namespace,
+            title: "Community B".into(),
+            is_public: true,
+        },
+        desc_b.entry_id.clone(),
+        Vec::new(),
+    )
+    .expect("peer joins B");
+    deliver_all_via_sync(&profile, &peer);
+    let peer_home = peer
+        .project_newswire_space(desc_b.entry_id)
+        .expect("peer projects B");
+    assert!(
+        peer_home
+            .open_wire
+            .iter()
+            .any(|post| post.headline.as_deref() == Some("Depot blockade at six")),
+        "the peer receives B's post over the bridge from a profile active on B"
+    );
+    assert!(
+        !peer_home
+            .open_wire
+            .iter()
+            .any(|post| post.entry_id == a_post.entry_id),
+        "A's post was NEVER offered across B's sync session"
+    );
+}
