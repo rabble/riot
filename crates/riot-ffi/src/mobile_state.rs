@@ -881,9 +881,10 @@ pub(crate) fn list_current_entries(
             .ok_or(MobileError::InvalidInput)?
             .namespace_id;
         // Alerts only. App-data (`apps/<app_id>/...`), app-index
-        // (`app-index/<app_id>/...`), profile (`profile/<subspace>/card`), and
-        // newswire (`newswire/v1/...`) entries share this store but are not
-        // alerts, so exclude them the same way `ensure_complete_sync_inventory`
+        // (`app-index/<app_id>/...`), profile (`profile/<subspace>/card`),
+        // newswire (`newswire/v1/...`), and owned editorial (`/articles/...`)
+        // entries share this store but are not alerts, so exclude them the same
+        // way `ensure_complete_sync_inventory`
         // does — otherwise a single local `app_data_put`, `set_display_name`, or
         // `create_newswire_post`, or its replay on the next open, leaves a live
         // non-alert entry with no match in `profile.entries` and bricks this
@@ -917,6 +918,7 @@ pub(crate) fn list_current_entries(
                     && !app_index_ids.contains(id)
                     && !is_profile_prefixed(entry.path())
                     && !riot_core::newswire::is_newswire_prefix(entry.path())
+                    && !riot_core::willow::is_under_articles(entry.path())
             })
             .map(|(id, _, _)| id)
             .collect();
@@ -1489,9 +1491,13 @@ fn inspectable_entries(
         if namespace_id != expected_namespace_id {
             return Err(MobileError::ImportRejected);
         }
-        // App, profile, and newswire entries sync and commit like any other, but
-        // they are not alerts and carry no alert row. Anything else must decode
-        // AS an alert — so a payload that is not one is rejected outright.
+        // App, profile, newswire, and owned editorial (`/articles/...`) entries
+        // sync and commit like any other, but they are not alerts and carry no
+        // alert row. Anything else must decode AS an alert — so a payload that is
+        // not one is rejected outright. Owned editorial entries carry an
+        // alert-shaped payload (admission is schema-only), so WITHOUT the
+        // `/articles/` family here they would decode as an alert but then fail the
+        // alert-path binding and reject the WHOLE bundle (the board-brick class).
         //
         // Profile cards must be listed here explicitly. Without it a synced card
         // falls into the alert branch below, `decode_alert` fails on a
@@ -1500,7 +1506,8 @@ fn inspectable_entries(
         let is_non_alert = riot_core::apps::entry::is_app_data_entry(&decoded_entry)
             || riot_core::apps::index::classify_app_index_path(decoded_entry.path()).is_some()
             || is_profile_prefixed(decoded_entry.path())
-            || riot_core::newswire::is_newswire_prefix(decoded_entry.path());
+            || riot_core::newswire::is_newswire_prefix(decoded_entry.path())
+            || riot_core::willow::is_under_articles(decoded_entry.path());
         let current = if is_non_alert {
             None
         } else {
@@ -2127,12 +2134,16 @@ fn reproject_active(profile: &mut LocalProfile) -> Result<(), MobileError> {
         .map_err(map_core_error)?;
     let mut newest_activity: Option<u64> = None;
     for (id, entry, payload) in prefixed {
-        // Alerts only; app-data, app-index, profile, and newswire entries share
-        // the store but carry no alert row (mirrors `list_current_entries`).
+        // Alerts only; app-data, app-index, profile, newswire, and owned
+        // editorial (`/articles/...`) entries share the store but carry no alert
+        // row (mirrors `list_current_entries`). Excluding `/articles/` here keeps
+        // an owned editorial entry's alert-shaped payload from being projected as
+        // a phantom alert once the owned-editorial commit path is wired.
         if riot_core::apps::entry::is_app_data_entry(&entry)
             || riot_core::apps::index::classify_app_index_path(entry.path()).is_some()
             || is_profile_prefixed(entry.path())
             || riot_core::newswire::is_newswire_prefix(entry.path())
+            || riot_core::willow::is_under_articles(entry.path())
         {
             continue;
         }
@@ -3722,5 +3733,122 @@ mod tests {
             Ok(())
         })
         .unwrap();
+    }
+
+    /// A valid, canonical Riot alert payload. Owned editorial admission is
+    /// schema-only: an owned `/articles/...` entry must still carry a decodable
+    /// alert payload to pass `verify_frame`, even though its path is not an
+    /// alert path. Reused so the fixture commits through the real bundle gate.
+    fn owned_editorial_alert_payload() -> Vec<u8> {
+        encode_alert(&AlertPayload {
+            object_id: [7; 16],
+            revision_id: [9; 16],
+            created_at: 1_600_000_000,
+            valid_from: None,
+            expires_at: u64::MAX - 1,
+            language: "en".into(),
+            urgency: Urgency::Immediate,
+            severity: Severity::Severe,
+            certainty: Certainty::Observed,
+            headline: "Owned editorial".into(),
+            description: "Editorial body.".into(),
+            affected_area_claim: None,
+            source_claims: vec!["fixture".into()],
+            ai_assisted: false,
+        })
+        .expect("alert payload encodes")
+    }
+
+    /// An owner-authored owned editorial entry at `/articles/news/post-1`, framed
+    /// into a real RIOTE1 bundle exactly as `verify_frame` admits it (owned cap +
+    /// owner signature + alert-shaped payload). Returns the owned namespace hex id
+    /// (the followed site root, as `inspectable_entries` expects) and the bundle
+    /// bytes. Mirrors `public_bundle.rs`'s owner-authored owned-entry fixture.
+    fn owned_articles_bundle() -> (String, Vec<u8>) {
+        use riot_core::willow::{
+            encode_capability, encode_entry, Entry, OwnedMasthead, Path, ARTICLES_COMPONENT,
+        };
+        let masthead = OwnedMasthead::generate().expect("masthead");
+        let payload = owned_editorial_alert_payload();
+        let entry = Entry::builder()
+            .namespace_id(masthead.namespace_id().clone())
+            .subspace_id(masthead.owner_subspace_id())
+            .path(Path::from_slices(&[ARTICLES_COMPONENT, b"news", b"post-1"]).expect("path"))
+            .timestamp(1_000_000u64)
+            .payload(&payload)
+            .build();
+        let authorised = masthead
+            .authorise_owner_entry(entry)
+            .expect("owner authorises its own /articles entry");
+        let token = authorised.authorisation_token();
+        let sig: Signature = token.signature().clone().into();
+        let signed = SignedWillowEntry {
+            entry_bytes: encode_entry(authorised.entry()),
+            capability_bytes: encode_capability(token.capability()),
+            signature: sig.to_bytes(),
+            payload_bytes: payload,
+        };
+        let ns_hex = hex(masthead.namespace_id().as_bytes());
+        let bytes = encode_bundle(std::slice::from_ref(&signed)).expect("bundle encodes");
+        (ns_hex, bytes)
+    }
+
+    /// Unit 1 Task 4 — FFI classification, site #1 (`inspectable_entries`).
+    ///
+    /// An owned `/articles/...` editorial entry carries an alert-shaped payload
+    /// (schema-only admission) but its path is NOT an alert path. Before
+    /// `/articles/` joined the non-alert families here, such an entry fell through
+    /// to the alert branch: `decode_alert` succeeds on the alert-shaped payload,
+    /// then the alert-path binding fails (an `/articles/` path is never
+    /// `objects/alert/..`), so the WHOLE bundle was rejected — the board-brick
+    /// class (prior art: newswire "0B"). It must now be admitted as a hidden,
+    /// non-alert entry (`current == None`), exactly like a newswire record.
+    ///
+    /// NOTE (realizability): the end-to-end FFI *commit* path for owned editorial
+    /// entries is not wired yet — the session `path_matches` gate drops any
+    /// `/articles/` entry (its alert-shaped payload's object/revision can never
+    /// match an `/articles/` path) and would not retain its payload. So this
+    /// exercises `inspectable_entries` directly with a synthesized-but-real owned
+    /// bundle, which is the only classifier of the two that is reachable today
+    /// (it works on bundle bytes via `verify_frame`, bypassing the session gate).
+    #[test]
+    fn inspectable_entries_admits_owned_editorial_articles_entry() {
+        let (ns_hex, bytes) = owned_articles_bundle();
+        let entries = inspectable_entries(&bytes, &ns_hex)
+            .expect("an owned /articles/ editorial entry must be admitted, not rejected");
+        assert_eq!(
+            entries.len(),
+            1,
+            "the one owned editorial entry survives classification and is present",
+        );
+        assert!(
+            entries[0].current.is_none(),
+            "an owned editorial entry is a hidden, non-alert entry — never an alert row",
+        );
+    }
+
+    /// Unit 1 Task 4 — the classification predicate the three sites now share
+    /// (`is_under_articles`) selects exactly the owned editorial family and no
+    /// other: an alert path and a newswire path stay OUTSIDE it, so adding the
+    /// `/articles/` clause to `list_current_entries` and `reproject_active`
+    /// cannot swallow an alert or a newswire record.
+    #[test]
+    fn owned_articles_is_a_distinct_family_from_alert_and_newswire() {
+        use riot_core::willow::{alert_path, is_under_articles, Path, ARTICLES_COMPONENT};
+        let article = Path::from_slices(&[ARTICLES_COMPONENT, b"news", b"post-1"]).unwrap();
+        assert!(
+            is_under_articles(&article),
+            "an /articles/ editorial path is the owned editorial family",
+        );
+        let alert = alert_path(&[1; 16], &[2; 16]).unwrap();
+        assert!(
+            !is_under_articles(&alert),
+            "an alert path (objects/alert/..) is NOT the editorial family",
+        );
+        let newswire = Path::from_slices(&[b"newswire", b"v1", b"post"]).unwrap();
+        assert!(
+            !is_under_articles(&newswire),
+            "a newswire path is NOT the editorial family",
+        );
     }
 }
