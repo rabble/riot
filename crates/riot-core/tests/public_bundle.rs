@@ -797,6 +797,184 @@ fn public_bundle_rejects_non_byte_values_in_each_early_item_field() {
     }
 }
 
+// ---------- owned-namespace admission (Unit 1 Task 1) ----------
+
+/// Encoded component bytes for one hand-framed item, owned so `frame_raw`'s
+/// borrowed `RawParts` can reference them.
+struct OwnedFrameParts {
+    entry: Vec<u8>,
+    capability: Vec<u8>,
+    signature: [u8; 64],
+    payload: Vec<u8>,
+}
+
+impl OwnedFrameParts {
+    fn as_parts(&self) -> RawParts<'_> {
+        (
+            &self.entry,
+            &self.capability,
+            &self.signature,
+            &self.payload,
+        )
+    }
+}
+
+/// A valid, canonical Riot alert payload (reused so a non-alert-path owned
+/// entry still satisfies the schema check — admission is schema-only, and any
+/// path that is not a reserved prefix must carry a decodable alert).
+fn alert_payload_bytes() -> Vec<u8> {
+    random_signed_alert("owned editorial payload").payload_bytes
+}
+
+/// Frame an entry authorised by `cap`/`secret` into hand-framed component bytes.
+fn owned_frame(
+    entry: riot_core::willow::Entry,
+    cap: &willow25::prelude::WriteCapability,
+    secret: &willow25::prelude::SubspaceSecret,
+    payload: Vec<u8>,
+) -> OwnedFrameParts {
+    use riot_core::willow::{encode_capability, encode_entry};
+    let authorised = entry
+        .into_authorised_entry(cap, secret)
+        .expect("cap authorises the entry");
+    let token = authorised.authorisation_token();
+    let signature: ed25519_dalek::Signature = token.signature().clone().into();
+    OwnedFrameParts {
+        entry: encode_entry(authorised.entry()),
+        capability: encode_capability(token.capability()),
+        signature: signature.to_bytes(),
+        payload,
+    }
+}
+
+fn owned_entry_at(
+    namespace: &willow25::prelude::NamespaceId,
+    subspace: willow25::prelude::SubspaceId,
+    path: &[&[u8]],
+    payload: &[u8],
+) -> riot_core::willow::Entry {
+    use riot_core::willow::{Entry, Path};
+    Entry::builder()
+        .namespace_id(namespace.clone())
+        .subspace_id(subspace)
+        .path(Path::from_slices(path).expect("path"))
+        .timestamp(1_000_000u64)
+        .payload(payload)
+        .build()
+}
+
+#[test]
+fn public_bundle_admits_valid_owned_editorial_and_owner_entries() {
+    use riot_core::willow::{OwnedMasthead, ARTICLES_COMPONENT};
+    use willow25::prelude::{Area, Path, SubspaceSecret, TimeRange};
+
+    let masthead = OwnedMasthead::generate().expect("masthead");
+
+    // --- Editor-delegated entry under /articles/news ---
+    let editor = SubspaceSecret::from_bytes(&[0x2b; 32]);
+    let editor_id = editor.corresponding_subspace_id();
+    let area = Area::new(
+        Some(editor_id.clone()),
+        Path::from_slices(&[ARTICLES_COMPONENT, b"news"]).expect("path"),
+        TimeRange::new(0u64.into(), Some(u64::MAX.into())),
+    );
+    let editor_cap = masthead
+        .delegate_section(editor_id.clone(), area)
+        .expect("delegate section");
+
+    let article_payload = alert_payload_bytes();
+    let article = owned_entry_at(
+        masthead.namespace_id(),
+        editor_id,
+        &[ARTICLES_COMPONENT, b"news", b"post-1"],
+        &article_payload,
+    );
+    let editorial = owned_frame(article, &editor_cap, &editor, article_payload.clone());
+
+    let bytes = frame_raw(&[editorial.as_parts()]);
+    let BundleDecodeOutcome::Decoded(decoded) = decode_bundle(&bytes) else {
+        panic!("valid owned editorial entry must not reject the artifact");
+    };
+    assert!(
+        matches!(decoded.items[0].status, ItemStatus::Valid(_)),
+        "valid owned editorial (delegated) entry must be ADMITTED"
+    );
+
+    // --- Owner-authored entry under the owner's own subspace ---
+    let owner_payload = alert_payload_bytes();
+    let owner_entry = owned_entry_at(
+        masthead.namespace_id(),
+        masthead.owner_subspace_id(),
+        &[ARTICLES_COMPONENT, b"news", b"owner-post"],
+        &owner_payload,
+    );
+    let owner_authorised = masthead
+        .authorise_owner_entry(owner_entry)
+        .expect("owner authorises");
+    let owner_token = owner_authorised.authorisation_token();
+    let owner_sig: ed25519_dalek::Signature = owner_token.signature().clone().into();
+    let owner_parts = OwnedFrameParts {
+        entry: riot_core::willow::encode_entry(owner_authorised.entry()),
+        capability: riot_core::willow::encode_capability(owner_token.capability()),
+        signature: owner_sig.to_bytes(),
+        payload: owner_payload,
+    };
+    let bytes = frame_raw(&[owner_parts.as_parts()]);
+    let BundleDecodeOutcome::Decoded(decoded) = decode_bundle(&bytes) else {
+        panic!("valid owner-authored owned entry must not reject the artifact");
+    };
+    assert!(
+        matches!(decoded.items[0].status, ItemStatus::Valid(_)),
+        "valid owner-authored owned entry must be ADMITTED"
+    );
+}
+
+#[test]
+fn public_bundle_rejects_communal_marker_bit_forgery_over_owned_namespace() {
+    // The load-bearing invariant: `NamespaceId::is_owned()` is only the LSB
+    // marker bit. A COMMUNAL genesis capability is unconditionally valid and
+    // can NAME an owned namespace id — willow25 would happily verify it. Only
+    // the `capability.is_owned()` gate stops the forgery. Build the hostile
+    // cap the raw willow25 way, exactly as a malicious peer would.
+    use willow25::prelude::{NamespaceSecret, SubspaceSecret, WriteCapability};
+
+    // An owned namespace id the attacker does NOT control the root secret for.
+    let mut owned_seed = [0x44; 32];
+    let owned_namespace = loop {
+        let candidate = NamespaceSecret::from_bytes(&owned_seed).corresponding_namespace_id();
+        if candidate.is_owned() {
+            break candidate;
+        }
+        owned_seed[0] = owned_seed[0].wrapping_add(1);
+    };
+
+    let attacker = SubspaceSecret::from_bytes(&[0x99; 32]);
+    let attacker_id = attacker.corresponding_subspace_id();
+    // A communal genesis cap that NAMES the owned namespace — is_owned() == false.
+    let forged = WriteCapability::new_communal(owned_namespace.clone(), attacker_id.clone());
+    assert!(
+        !forged.is_owned(),
+        "a communal genesis cap is never is_owned(), even naming an owned namespace"
+    );
+
+    let payload = alert_payload_bytes();
+    let entry = owned_entry_at(
+        &owned_namespace,
+        attacker_id,
+        &[riot_core::willow::ARTICLES_COMPONENT, b"news", b"forged"],
+        &payload,
+    );
+    let forged_parts = owned_frame(entry, &forged, &attacker, payload);
+
+    let bytes = frame_raw(&[forged_parts.as_parts()]);
+    expect_item_diagnostic(
+        &bytes,
+        0,
+        DiagnosticCode::UnsupportedCapability,
+        ItemComponent::Authorization,
+    );
+}
+
 #[test]
 fn public_bundle_rejects_each_unsupported_capability_form() {
     use riot_core::willow::{encode_capability, encode_entry, Entry, Path};

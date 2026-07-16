@@ -15,6 +15,7 @@ use crate::willow::{
     decode_capability_canonic, decode_entry_canonic, entry_id, evidence_digest, object_digest,
     verify_entry, william3_digest, AuthorisationToken, Entry, EntryId, SignedWillowEntry,
 };
+use willow25::authorisation::WriteCapability;
 use willow25::entry::{Entrylike, SubspaceSignature};
 use willow25::groupings::{Keylike, Namespaced};
 
@@ -438,6 +439,35 @@ fn read_bytes_field(d: &mut Decoder<'_>, expected_key: u8) -> Result<Vec<u8>, Bu
     Ok(bytes.to_vec())
 }
 
+/// Shared owned-vs-communal admission predicate for the entry/capability
+/// pair — the single policy chokepoint reused by every import gate (this
+/// bundle-frame gate and the newswire entry gate) so the two never drift.
+///
+/// It decides only whether the capability's *form* is admissible for the
+/// entry's namespace; the willow25 chain verification (`verify_entry` /
+/// `does_authorise`) — genesis root signature, every delegation link, strict
+/// area nesting, `includes(entry)`, and the receiver signature — is the
+/// caller's separate, subsequent step and is never re-implemented here.
+///
+/// - Owned namespace: admit iff `capability.is_owned()`.
+///   INVARIANT — this `is_owned()` check is load-bearing, NOT just a test.
+///   `NamespaceId::is_owned()` is only the LSB marker bit; a COMMUNAL genesis
+///   cap is unconditionally `is_valid()` and can name an owned `namespace_id`,
+///   so without this gate a hostile peer could forge authority over an owned
+///   site by minting a communal cap that merely names it.
+/// - Communal namespace: UNCHANGED — a zero-delegation communal cap for the
+///   entry's own communal namespace only (the negation of the historical
+///   `is_owned || has delegations || non-communal namespace` rejection).
+pub(crate) fn capability_form_admissible(entry: &Entry, capability: &WriteCapability) -> bool {
+    if entry.namespace_id().is_owned() {
+        capability.is_owned()
+    } else {
+        !capability.is_owned()
+            && capability.delegations().is_empty()
+            && entry.namespace_id().is_communal()
+    }
+}
+
 /// Full component verification of one isolated frame, in the frozen order:
 /// canonical Entry → canonical WriteCapability → 64-byte signature →
 /// payload length/corrected WILLIAM3 → Meadowcap authorization (communal,
@@ -491,12 +521,11 @@ fn verify_frame(frame: &BundleItemFrame) -> Result<ValidItem, BundleDiagnostic> 
         });
     }
 
-    // Phase 0A accepts only a communal namespace with a zero-delegation
-    // communal capability for the entry's own subspace.
-    if capability.is_owned()
-        || !capability.delegations().is_empty()
-        || !entry.namespace_id().is_communal()
-    {
+    // Admission-form gate: which capability SHAPES may reach the willow25
+    // chain verification below. Owned namespaces now admit valid owned caps
+    // (any owned root); communal namespaces are unchanged. Cryptographic
+    // verification is the separate step that follows.
+    if !capability_form_admissible(&entry, &capability) {
         return Err(BundleDiagnostic {
             code: DiagnosticCode::UnsupportedCapability,
             component: ItemComponent::Authorization,
