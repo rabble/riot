@@ -132,6 +132,18 @@ body {
 .ticket__namespace code { font: inherit; color: inherit; }
 .ticket__qr { flex: none; line-height: 0; }
 .ticket__qr svg { width: 100px; height: 100px; display: block; }
+.filter:empty { display: none; }
+.filter { margin: 0 0 1.5rem; }
+.filter__input {
+  width: 100%;
+  padding: 0.5rem 0.65rem;
+  font: inherit;
+  color: var(--ink);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 3px;
+}
+.filter__status { margin: 0.4rem 0 0; font-size: 0.8rem; color: var(--ink-muted); }
 .entries { display: flex; flex-direction: column; gap: 1.5rem; }
 .entry { margin: 0; padding: 0.1rem 0 0.1rem 1rem; border-left: 4px solid var(--ink-muted); }
 .entry--alert { border-left-color: var(--hazard); }
@@ -190,12 +202,117 @@ a { color: inherit; }
 }
 """.strip()
 
-_STYLE_CSS_HASH = base64.b64encode(hashlib.sha256(STYLE_CSS.encode("utf-8")).digest()).decode("ascii")
-CONTENT_SECURITY_POLICY = (
-    "default-src 'none'; "
-    f"style-src 'sha256-{_STYLE_CSS_HASH}'; "
-    "script-src 'none'; connect-src 'none'; base-uri 'none'; form-action 'none'"
-)
+# Vendored, self-contained client filter — NO external lib, NO network. Ships
+# inline inside every page so a mirror is a complete folder (no CDN choke point,
+# no reader-IP leak). connect-src 'none' fences it: it can filter, never fetch.
+# Progressive enhancement: builds its own UI into #filter, so no-JS readers see
+# no dead controls and every entry stays visible.
+SEARCH_JS = """
+(function () {
+  var entries = Array.prototype.slice.call(document.querySelectorAll('.entry'));
+  var mount = document.getElementById('filter');
+  if (!entries.length || !mount) { return; }
+  var input = document.createElement('input');
+  input.type = 'search';
+  input.className = 'filter__input';
+  input.placeholder = 'Filter entries\\u2026';
+  input.setAttribute('aria-label', 'Filter entries');
+  var status = document.createElement('p');
+  status.className = 'filter__status';
+  status.setAttribute('aria-live', 'polite');
+  mount.appendChild(input);
+  mount.appendChild(status);
+  input.addEventListener('input', function () {
+    var q = input.value.trim().toLowerCase();
+    var shown = 0;
+    entries.forEach(function (el) {
+      var hit = !q || el.textContent.toLowerCase().indexOf(q) !== -1;
+      el.hidden = !hit;
+      if (hit) { shown++; }
+    });
+    status.textContent = q ? shown + ' of ' + entries.length + ' shown' : '';
+  });
+})();
+""".strip()
+
+# Second shipped default: a loud risograph/protest-poster skin over the same
+# markup. Site owners pick a default at setup; later, owner-published CSS swaps
+# in the exact same way (stylesheet in -> style-src hash follows).
+ZINE_CSS = """
+:root {
+  --paper: #f6f1e2; --ink: #14110c; --blue: #2233e0; --pink: #ff2e6e;
+  --amber: #ffb200; --muted: #6d6656; color-scheme: light dark;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --paper: #100f0c; --ink: #f3ecd9; --blue: #5f6bff; --pink: #ff5b8c; --muted: #9a9280; }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--paper); color: var(--ink); font-family: "Helvetica Neue", Arial, sans-serif; line-height: 1.42; }
+a { color: inherit; }
+.board { max-width: 46rem; margin: 0 auto; padding: 0 1.1rem 4rem; }
+.eyebrow { font-weight: 900; font-size: 0.72rem; letter-spacing: 0.12em; text-transform: uppercase; color: var(--blue); margin: 1.4rem 0 0.6rem; }
+.fixture-status { font-size: 0.72rem; font-weight: 700; color: var(--muted); margin: 0 0 1.2rem; }
+.fixture-status__tag { display: inline-block; background: var(--blue); color: var(--paper); padding: 0.1rem 0.45rem; text-transform: uppercase; letter-spacing: 0.04em; }
+.headline { font-weight: 900; font-size: clamp(2.4rem, 7vw, 4rem); line-height: 0.94; letter-spacing: -0.035em; text-transform: uppercase; margin: 0.4rem 0 0.6rem; color: var(--blue); text-shadow: 3px 3px 0 var(--pink); }
+.subhead { font-size: 1.05rem; font-weight: 500; margin: 0 0 1.6rem; }
+.ticket { display: flex; gap: 1rem; align-items: center; border: 3px solid var(--ink); padding: 0.9rem; margin: 0 0 1.8rem; }
+.ticket__main { flex: 1; min-width: 0; }
+.ticket__action { margin: 0 0 0.4rem; }
+.ticket__link { font-weight: 900; text-transform: uppercase; letter-spacing: 0.04em; text-decoration: none; color: var(--paper); background: var(--pink); padding: 0.15rem 0.5rem; display: inline-block; }
+.ticket__namespace { margin: 0; font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 0.7rem; color: var(--muted); word-break: break-all; }
+.ticket__namespace code { font: inherit; color: inherit; }
+.ticket__qr { flex: none; line-height: 0; }
+.ticket__qr svg { width: 96px; height: 96px; display: block; }
+.entries-label { font-weight: 900; font-size: 0.72rem; letter-spacing: 0.12em; text-transform: uppercase; color: var(--blue); margin: 0 0 1rem; border-top: 3px solid var(--ink); padding-top: 0.8rem; }
+.filter:empty { display: none; }
+.filter { margin: 0 0 1.4rem; }
+.filter__input { width: 100%; padding: 0.55rem 0.7rem; font: inherit; font-weight: 600; color: var(--ink); background: var(--paper); border: 3px solid var(--ink); }
+.filter__status { margin: 0.4rem 0 0; font-size: 0.78rem; font-weight: 700; color: var(--muted); }
+.entries { display: flex; flex-direction: column; gap: 1.2rem; }
+.entry { border: 3px solid var(--ink); padding: 0.9rem; }
+.entry--alert { border-color: var(--pink); }
+.kind { display: inline-block; font-weight: 900; font-size: 0.68rem; letter-spacing: 0.08em; text-transform: uppercase; background: var(--ink); color: var(--paper); padding: 0.12rem 0.5rem; }
+.kind--alert { background: var(--pink); }
+.verify { display: inline-block; margin-left: 0.4rem; font-weight: 900; font-size: 0.68rem; letter-spacing: 0.06em; text-transform: uppercase; color: var(--blue); }
+.verify--valid::before { content: "\\2713 "; }
+.verify--invalid { color: var(--pink); }
+.entry__title { font-weight: 900; font-size: 1.3rem; line-height: 1.1; text-transform: uppercase; letter-spacing: -0.02em; margin: 0.5rem 0; }
+.entry__body { font-size: 0.96rem; margin: 0 0 0.6rem; }
+.entry__meta { margin: 0; font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 0.72rem; color: var(--muted); }
+.entry__meta span + span::before { content: " \\00b7 "; }
+:focus-visible { outline: 3px solid var(--blue); outline-offset: 2px; }
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
+""".strip()
+
+# Skins are the CSS-injection point. A skin is just a stylesheet; the CSP's
+# style-src hash is derived from whichever one is active, so a swapped-in
+# stylesheet stays fenced with no code change. This is exactly the seam
+# owner-published CSS will use once the signed manifest lands.
+SKINS = {"newsprint": STYLE_CSS, "zine": ZINE_CSS}
+DEFAULT_SKIN = "newsprint"
+
+
+def _sri_sha256(text: str) -> str:
+    return base64.b64encode(hashlib.sha256(text.encode("utf-8")).digest()).decode("ascii")
+
+
+_SEARCH_JS_HASH = _sri_sha256(SEARCH_JS)
+
+
+def content_security_policy(skin: str = DEFAULT_SKIN) -> str:
+    """CSP for a skin: same fences, style-src pinned to that skin's stylesheet."""
+    css = SKINS.get(skin)
+    if css is None:
+        raise GatewayError(f"unknown site skin: {skin!r}")
+    return (
+        "default-src 'none'; "
+        f"style-src 'sha256-{_sri_sha256(css)}'; "
+        f"script-src 'sha256-{_SEARCH_JS_HASH}'; "
+        "connect-src 'none'; base-uri 'none'; form-action 'none'"
+    )
+
+
+CONTENT_SECURITY_POLICY = content_security_policy(DEFAULT_SKIN)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 GATEWAY_FIXTURE_DIR = REPO_ROOT / "fixtures" / "conference" / "gateway-space"
@@ -308,12 +425,14 @@ class PublicGateway:
         """Validate boundary rejection without creating a renderable gateway."""
         _validate_document(document)
 
-    def render(self, route: str) -> str:
+    def render(self, route: str, skin: str = DEFAULT_SKIN) -> str:
         if (
             self._render_authority is not _RENDER_AUTHORITY
             or self._verified_export_sha256 != PINNED_EXPORT_SHA256
         ):
             raise GatewayError("public export SHA-256 must be verified before rendering")
+        if skin not in SKINS:
+            raise GatewayError(f"unknown site skin: {skin!r}")
         parsed = urlsplit(route)
         if (
             parsed.scheme
@@ -331,6 +450,7 @@ class PublicGateway:
             self.namespace,
             _load_qr_svg(),
             entries,
+            skin,
         )
 
 
@@ -430,14 +550,17 @@ def _render_page(
     namespace: str,
     qr_svg: str,
     entries: tuple[PublicEntry, ...],
+    skin: str = DEFAULT_SKIN,
 ) -> str:
     escaped_title = escape(title)
     verified_count = sum(1 for entry in entries if entry.verification_status == VERIFICATION_STATUS_VALID)
     cards = "".join(_render_entry(entry) for entry in entries)
     namespace_uri = f"riot://open?namespace={namespace}"
+    css = SKINS[skin]
+    csp = content_security_policy(skin)
     return f"""<!doctype html>
 <html lang=\"en\">
-<head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>{escaped_title} · Riot</title><style>{STYLE_CSS}</style></head>
+<head><meta charset=\"utf-8\"><meta http-equiv=\"Content-Security-Policy\" content=\"{csp}\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>{escaped_title} · Riot</title><style>{css}</style></head>
 <body>
 <main class=\"board\">
   <p class=\"eyebrow\">Public Riot export · renderer profile: {RENDERER_PROFILE}</p>
@@ -452,8 +575,10 @@ def _render_page(
     <div class=\"ticket__qr\">{qr_svg}</div>
   </div>
   <h2 class=\"entries-label\">Incident entries</h2>
+  <div class=\"filter\" id=\"filter\"></div>
   <section aria-label=\"Incident entries\" class=\"entries\">{cards}</section>
 </main>
+<script>{SEARCH_JS}</script>
 </body>
 </html>"""
 

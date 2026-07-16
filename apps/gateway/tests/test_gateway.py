@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 from http.server import ThreadingHTTPServer
@@ -29,12 +30,13 @@ sys.path.insert(0, str(ROOT))
 try:
     import riot_gateway as gateway_module
     from riot_gateway import GatewayError, PublicGateway
-    from server import make_handler
+    from server import dump_site, make_handler
 except ModuleNotFoundError:
     gateway_module = None
     GatewayError = RuntimeError
     PublicGateway = None
     make_handler = None
+    dump_site = None
 
 
 class PublicGatewayTest(unittest.TestCase):
@@ -75,6 +77,16 @@ class PublicGatewayTest(unittest.TestCase):
                 _verified_export_sha256=gateway_module.PINNED_EXPORT_SHA256,
             )
             forged.render("/site/")
+
+    def test_every_page_bakes_the_csp_into_the_head_so_mirrors_stay_fenced(self) -> None:
+        # A dump lands on a dumb static host that sets no headers. The CSP must
+        # travel inside the HTML or every fence (no-script, no-network) evaporates.
+        expected = (
+            f'<meta http-equiv="Content-Security-Policy" content="{gateway_module.CONTENT_SECURITY_POLICY}">'
+        )
+        for route in gateway_module.SITE_ROUTES:
+            with self.subTest(route=route):
+                self.assertIn(expected, self.gateway.render(route))
 
     def test_renders_the_fixed_public_incident_board_at_site_routes(self) -> None:
         home = self.gateway.render("/site/")
@@ -248,6 +260,103 @@ class ServerHeadersTest(unittest.TestCase):
                     self.assertEqual(headers["Referrer-Policy"], "no-referrer")
                 finally:
                     error.close()
+
+
+class VendoredScriptTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.gateway = PublicGateway.from_file(EXPORT)
+
+    def test_client_filter_is_inline_vendored_and_hash_pinned_never_external(self) -> None:
+        # Vendored, not hotlinked: the script ships inside the page (no CDN =
+        # no reader-IP leak, no choke point). CSP pins its exact bytes.
+        page = self.gateway.render("/site/incident-board")
+        self.assertNotRegex(page, r"<script[^>]*\ssrc=")
+        scripts = re.findall(r"<script>(.*?)</script>", page, re.S)
+        self.assertEqual(len(scripts), 1, "expected exactly one inline vendored script")
+
+        digest = base64.b64encode(hashlib.sha256(scripts[0].encode("utf-8")).digest()).decode("ascii")
+        # The pinned hash must equal the shipped bytes, else the browser's own
+        # CSP blocks the script. This is the security invariant, not a nicety.
+        self.assertIn(f"script-src 'sha256-{digest}'", gateway_module.CONTENT_SECURITY_POLICY)
+
+    def test_network_stays_fenced_so_vendored_js_cannot_phone_home(self) -> None:
+        self.assertIn("connect-src 'none'", gateway_module.CONTENT_SECURITY_POLICY)
+        self.assertNotIn("script-src 'none'", gateway_module.CONTENT_SECURITY_POLICY)
+
+    def test_filter_is_progressive_enhancement_with_a_js_built_mount(self) -> None:
+        # No-JS readers see no dead input; JS populates the mount.
+        page = self.gateway.render("/site/incident-board")
+        self.assertIn('id="filter"', page)
+
+
+class SkinTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.assertIsNotNone(PublicGateway)
+        self.gateway = PublicGateway.from_file(EXPORT)
+
+    def test_ships_two_default_skins_defaulting_to_newsprint(self) -> None:
+        self.assertEqual(set(gateway_module.SKINS), {"newsprint", "zine"})
+        self.assertEqual(gateway_module.DEFAULT_SKIN, "newsprint")
+        # Default render is byte-identical to the newsprint skin: no behaviour change.
+        self.assertEqual(self.gateway.render("/site/"), self.gateway.render("/site/", "newsprint"))
+
+    def test_each_skin_bakes_a_csp_whose_style_hash_matches_its_own_stylesheet(self) -> None:
+        # The reusable invariant owner-CSS will rely on: swap the stylesheet and
+        # the pinned style-src follows, so the browser never blocks the page's
+        # own <style>. Verified per skin against the actually-shipped bytes.
+        for skin in gateway_module.SKINS:
+            with self.subTest(skin=skin):
+                page = self.gateway.render("/site/incident-board", skin)
+                styles = re.findall(r"<style>(.*?)</style>", page, re.S)
+                self.assertEqual(len(styles), 1)
+                digest = base64.b64encode(hashlib.sha256(styles[0].encode("utf-8")).digest()).decode("ascii")
+                csp = gateway_module.content_security_policy(skin)
+                self.assertIn(f"style-src 'sha256-{digest}'", csp)
+                self.assertIn(f'content="{csp}"', page)
+
+    def test_the_two_skins_are_visually_distinct_stylesheets(self) -> None:
+        self.assertNotEqual(
+            gateway_module.content_security_policy("newsprint"),
+            gateway_module.content_security_policy("zine"),
+        )
+
+    def test_unknown_skin_is_rejected(self) -> None:
+        with self.assertRaisesRegex(GatewayError, "skin"):
+            self.gateway.render("/site/", "totally_custom")
+        with self.assertRaisesRegex(GatewayError, "skin"):
+            gateway_module.content_security_policy("totally_custom")
+
+
+class StaticDumpTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.assertIsNotNone(dump_site, "the static dump entrypoint does not exist")
+        self.gateway = PublicGateway.from_file(EXPORT)
+
+    def test_dumps_every_site_route_to_a_mirrorable_index_html(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            out = Path(directory)
+            written = dump_site(self.gateway, out)
+
+            expected = {
+                "/site/": out / "site" / "index.html",
+                "/site/incident-board": out / "site" / "incident-board" / "index.html",
+                "/site/incident-board/alerts": out / "site" / "incident-board" / "alerts" / "index.html",
+            }
+            self.assertEqual(set(written), set(expected.values()))
+            for route, path in expected.items():
+                with self.subTest(route=route):
+                    self.assertTrue(path.is_file())
+                    self.assertEqual(path.read_text(encoding="utf-8"), self.gateway.render(route))
+
+    def test_dumped_pages_are_self_contained_and_carry_the_open_in_riot_deep_link(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            out = Path(directory)
+            dump_site(self.gateway, out)
+
+            home = (out / "site" / "index.html").read_text(encoding="utf-8")
+            self.assertIn("Harbor District Evacuation", home)
+            self.assertIn(f"riot://open?namespace={self.gateway.namespace}", home)
+            self.assertIn("<svg", home)
 
 
 class TestModuleLayoutTest(unittest.TestCase):
