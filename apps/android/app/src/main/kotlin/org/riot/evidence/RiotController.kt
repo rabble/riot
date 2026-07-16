@@ -67,11 +67,14 @@ class RiotController(filesDir: File) : AutoCloseable {
     }
 
     fun joinSpace(space: PublicSpace): PublicSpace {
-        val joined = profile.joinPublicSpace(space)
+        // `withWrappingKey` ALWAYS supplies the 32-byte Keystore-protected key
+        // (never empty), so the join seals any displaced author INLINE and a real
+        // user never reaches core's keyless unsealed-parking fallback (Risk 13).
+        // The empty-key path exists only for ephemeral in-memory test profiles.
+        val joined = withWrappingKey { key -> profile.joinPublicSpace(space, key) }
         currentSpace = joined
         persisted = PersistedProfile(PersistedSpace(joined.namespaceId, joined.title), emptyList())
         persist(persisted!!)
-        // Join parks the outgoing author unsealed; seal immediately (Risk 13).
         persistCommunities()
         return joined
     }
@@ -86,7 +89,11 @@ class RiotController(filesDir: File) : AutoCloseable {
      * and content arrive over sync. Seals immediately (Risk 13).
      */
     fun joinAdditionalCommunity(space: PublicSpace): CommunityRow {
-        val joined = profile.joinPublicSpace(space)
+        // Adopting a SECOND community displaces the current author; the join seals
+        // it INLINE under the wrapping key rather than parking it unsealed (Risk
+        // 13). The reference carries only coordinates, so the community is
+        // "pending first sync" until its descriptor and content arrive.
+        val joined = withWrappingKey { key -> profile.joinPublicSpace(space, key) }
         currentSpace = joined
         persisted = PersistedProfile(PersistedSpace(joined.namespaceId, joined.title), emptyList())
         persist(persisted!!)
@@ -288,7 +295,8 @@ class RiotController(filesDir: File) : AutoCloseable {
 
     private fun restore(snapshot: PersistedProfile?) {
         if (snapshot == null) return
-        currentSpace = profile.joinPublicSpace(snapshot.space.toPublicSpace())
+        currentSpace =
+            withWrappingKey { key -> profile.joinPublicSpace(snapshot.space.toPublicSpace(), key) }
         val restoredBundles = mutableListOf<ByteArray>()
         snapshot.alerts.forEach { alert ->
             if (restoredBundles.any { it.contentEquals(alert.bundleBytes) }) return@forEach

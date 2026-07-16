@@ -74,6 +74,50 @@ fn validate(bundle: &AppBundle) -> Result<(), AppsError> {
     Ok(())
 }
 
+/// WebRTC API identifiers whose presence in a bundle's resource bytes makes it
+/// unhostable (Risk 9). A `RTCPeerConnection` opens a transport that bypasses
+/// the WebView URL loader, so the runtime egress backstop cannot see it; the
+/// only tractable defense at import time is to refuse the bundle. `webkit`/`moz`
+/// prefixed variants are listed explicitly even though they contain
+/// `RTCPeerConnection` as a substring, so the refused set is legible on its own.
+pub const REFUSED_EGRESS_APIS: [&[u8]; 6] = [
+    b"RTCPeerConnection",
+    b"webkitRTCPeerConnection",
+    b"mozRTCPeerConnection",
+    b"getUserMedia",
+    b"navigator.mediaDevices",
+    b"RTCDataChannel",
+];
+
+/// Refuses a bundle that references any WebRTC API, scanning the **raw bytes**
+/// of every resource — not its path or declared content type. Scanning bytes is
+/// deliberate: the refusal must be by content, so a `.png`-named or
+/// `text/plain`-typed resource that actually carries script cannot smuggle a
+/// peer connection past the gate.
+///
+/// DENY-CLOSED: a literal substring match refuses even a mere MENTION — a
+/// comment, dead code, or a vendored lib that names but never calls the API.
+/// That is the intended posture (an activist tool should host no WebRTC-capable
+/// code), not a bug. It is also evadable in the other direction (obfuscated
+/// identifiers, dynamic construction like `window['RTC'+'PeerConnection']`), so
+/// it raises the bar without being a guarantee; the runtime `WKContentRuleList`
+/// backstop plus the disabled WebRTC preference remain the actual net. Enforced
+/// at the single `verify_app_pair` chokepoint.
+pub fn scan_bundle_egress(bundle: &AppBundle) -> Result<(), AppsError> {
+    for resource in &bundle.resources {
+        for api in REFUSED_EGRESS_APIS {
+            if resource
+                .bytes
+                .windows(api.len())
+                .any(|window| window == api)
+            {
+                return Err(AppsError::BundleUsesWebRtc);
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Domain-separated digest of a bundle's canonical encoded bytes — the
 /// `bundle_digest` input to `manifest::app_id_for`, following the pattern
 /// in `willow/digest.rs`.
@@ -229,4 +273,95 @@ fn decode_bytes(d: &mut Decoder<'_>) -> Result<Vec<u8>, AppsError> {
     // `decode_app_bundle` rejects an input larger than this ceiling before
     // parsing, so a byte string borrowed from that input cannot exceed it.
     Ok(bytes.to_vec())
+}
+
+#[cfg(test)]
+mod egress_scan_tests {
+    use super::*;
+
+    fn bundle_with(resources: Vec<AppResource>) -> AppBundle {
+        AppBundle {
+            entry_point: resources[0].path.clone(),
+            resources,
+        }
+    }
+
+    fn resource(path: &str, content_type: &str, bytes: &[u8]) -> AppResource {
+        AppResource {
+            path: path.to_string(),
+            content_type: content_type.to_string(),
+            bytes: bytes.to_vec(),
+        }
+    }
+
+    #[test]
+    fn a_clean_bundle_passes_the_egress_scan() {
+        let bundle = bundle_with(vec![
+            resource(
+                "index.html",
+                "text/html",
+                b"<html><body><h1>Roll call</h1></body></html>",
+            ),
+            resource(
+                "app.js",
+                "text/javascript",
+                b"document.querySelector('h1').textContent = 'ready';",
+            ),
+        ]);
+        assert_eq!(scan_bundle_egress(&bundle), Ok(()));
+    }
+
+    #[test]
+    fn every_webrtc_api_token_is_refused() {
+        // Each token, on its own, in an otherwise-benign script resource, must
+        // make the whole bundle unhostable.
+        for api in REFUSED_EGRESS_APIS {
+            let mut script = b"const x = new ".to_vec();
+            script.extend_from_slice(api);
+            script.extend_from_slice(b"();");
+            let bundle = bundle_with(vec![
+                resource("index.html", "text/html", b"<html></html>"),
+                resource("app.js", "text/javascript", &script),
+            ]);
+            assert_eq!(
+                scan_bundle_egress(&bundle),
+                Err(AppsError::BundleUsesWebRtc),
+                "token {:?} must be refused",
+                std::str::from_utf8(api).unwrap(),
+            );
+        }
+    }
+
+    #[test]
+    fn refusal_is_by_content_not_filename_or_content_type() {
+        // The WebRTC call is hidden in a resource that lies about what it is:
+        // a `.png` path with an `image/png` content type. A filename- or
+        // content-type-based gate would wave it through; a byte scan does not.
+        let bundle = bundle_with(vec![
+            resource("index.html", "text/html", b"<html></html>"),
+            resource(
+                "logo.png",
+                "image/png",
+                b"\x89PNG\r\n new RTCPeerConnection({iceServers:[]})",
+            ),
+        ]);
+        assert_eq!(
+            scan_bundle_egress(&bundle),
+            Err(AppsError::BundleUsesWebRtc),
+            "a WebRTC reference disguised as an image must still be refused",
+        );
+    }
+
+    #[test]
+    fn a_benign_name_containing_rtc_substring_does_not_false_positive() {
+        // "getUserMediaList" is not the point; the point is that a resource whose
+        // BYTES never contain a refused token passes even if its NAME hints at
+        // media. The gate is byte content, and clean content is hostable.
+        let bundle = bundle_with(vec![resource(
+            "media-gallery.html",
+            "text/html",
+            b"<html><body>photo gallery</body></html>",
+        )]);
+        assert_eq!(scan_bundle_egress(&bundle), Ok(()));
+    }
 }

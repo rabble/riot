@@ -218,7 +218,7 @@ fn a_space_needs_a_title_and_rejoining_the_active_community_is_idempotent() {
     // community rather than forking a second author for the same namespace.
     assert_eq!(
         profile
-            .join_public_space(space.clone())
+            .join_public_space(space.clone(), Vec::new())
             .expect("re-joining the active community is idempotent"),
         space
     );
@@ -249,7 +249,7 @@ fn a_space_needs_a_title_and_rejoining_the_active_community_is_idempotent() {
     ] {
         assert!(
             matches!(
-                fresh.join_public_space(candidate),
+                fresh.join_public_space(candidate, Vec::new()),
                 Err(MobileError::InvalidInput)
             ),
             "an unusable space was joined"
@@ -280,7 +280,7 @@ fn an_open_sync_session_freezes_the_writing_doors() {
         Err(MobileError::InvalidInput)
     ));
     assert!(matches!(
-        profile.join_public_space(space),
+        profile.join_public_space(space, Vec::new()),
         Err(MobileError::InvalidInput)
     ));
     assert!(matches!(
@@ -371,11 +371,14 @@ fn a_sync_handle_refuses_calls_outside_its_state() {
     // review would need the very preview slot the pending import is holding.
     let joiner = open_local_profile().expect("profile");
     joiner
-        .join_public_space(PublicSpace {
-            namespace_id: signed.entry.namespace_id.clone(),
-            title: "Bounded incident".into(),
-            is_public: true,
-        })
+        .join_public_space(
+            PublicSpace {
+                namespace_id: signed.entry.namespace_id.clone(),
+                title: "Bounded incident".into(),
+                is_public: true,
+            },
+            Vec::new(),
+        )
         .expect("join");
     let _preview = joiner
         .inspect_bytes(signed.bundle_bytes.clone(), "nearby-device".into())

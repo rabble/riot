@@ -242,11 +242,14 @@ fn board_has(profile: &Arc<MobileProfile>, entry_id: &str) -> bool {
 fn foreign_alert(namespace_id: &str) -> (Vec<u8>, String) {
     let other = open_local_profile().expect("foreign profile");
     other
-        .join_public_space(PublicSpace {
-            namespace_id: namespace_id.to_string(),
-            title: "Peer".into(),
-            is_public: true,
-        })
+        .join_public_space(
+            PublicSpace {
+                namespace_id: namespace_id.to_string(),
+                title: "Peer".into(),
+                is_public: true,
+            },
+            Vec::new(),
+        )
         .expect("foreign joins namespace");
     let d = other.create_draft_alert(draft()).expect("foreign draft");
     let signed = other.sign_draft(d.draft_id).expect("foreign sign");
@@ -265,11 +268,70 @@ fn organizer_of_a_member_of_b(db_path: String) -> (Arc<MobileProfile>, String, S
     let b = other
         .create_public_space("Community B".into())
         .expect("create B");
-    profile.join_public_space(b.clone()).expect("join B");
+    // Join B with the real wrapping key so A's outgoing author is sealed INLINE
+    // (Risk 13), not parked unsealed. `persist_communities` then seals B (active).
+    profile
+        .join_public_space(b.clone(), REGISTRY_KEY.to_vec())
+        .expect("join B");
     profile
         .persist_communities(REGISTRY_KEY.to_vec())
         .expect("persist");
     (profile, a.namespace_id, b.namespace_id)
+}
+
+/// Risk 13 (seal-inline-on-join): joining a second community seals the OUTGOING
+/// author inline under the wrapping key, so it is durable IMMEDIATELY — without
+/// waiting for a `persist_communities`. Proven by reopening a fresh handle (which
+/// drops all in-RAM parked authors) and switching back to the joined-away
+/// community: it is recoverable only because the join sealed it to disk. Before
+/// the fix the outgoing author was parked unsealed in RAM and lost on reopen.
+#[test]
+fn a_join_seals_the_outgoing_author_inline_and_it_survives_reopen_without_persist() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let db_path = dir
+        .path()
+        .join("inline-seal.db")
+        .to_string_lossy()
+        .to_string();
+
+    let (sealed, a_ns) = {
+        let profile = open_local_profile_with_database(db_path.clone()).expect("open");
+        let a = profile
+            .create_public_space("Community A".into())
+            .expect("create A");
+        // A second namespace, minted by a throwaway profile.
+        let other = open_local_profile().expect("other");
+        let b = other
+            .create_public_space("Community B".into())
+            .expect("create B");
+        // Join B WITH the key, and DELIBERATELY do not call persist_communities:
+        // the inline seal during the join must be enough to make A durable.
+        profile
+            .join_public_space(b, TEST_WRAPPING_KEY.to_vec())
+            .expect("join B");
+        let sealed = profile
+            .seal_identity(TEST_WRAPPING_KEY.to_vec())
+            .expect("seal identity (B, the active author)");
+        (sealed, a.namespace_id)
+    };
+    // Handle dropped: every in-RAM parked author is gone. Only what was sealed to
+    // disk survives.
+
+    let reopened = open_profile_from_sealed_identity_with_database(
+        db_path,
+        TEST_WRAPPING_KEY.to_vec(),
+        sealed,
+    )
+    .expect("reopen");
+
+    let a_row = reopened
+        .switch_community(a_ns, TEST_WRAPPING_KEY.to_vec())
+        .expect("A survived reopen because the join sealed its author inline");
+    assert_eq!(
+        a_row.relationship,
+        CommunityRelationship::Organizer,
+        "the recovered author is A's own organizer identity, unsealed from its row",
+    );
 }
 
 #[test]

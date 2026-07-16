@@ -291,8 +291,18 @@ impl MobileProfile {
         crate::mobile_state::create_public_space(&self.inner, title)
     }
 
-    pub fn join_public_space(&self, space: PublicSpace) -> Result<PublicSpace, MobileError> {
-        crate::mobile_state::join_public_space(&self.inner, space)
+    /// Joins a public space. When the join displaces a held community's author
+    /// (adopting someone else's space while already in one), that outgoing author
+    /// is sealed INLINE into its registry row under `wrapping_key` — so no author
+    /// is ever parked unsealed in RAM (Risk 13). Pass the secure-store key; an
+    /// empty slice is the keyless path for ephemeral in-memory profiles. The key
+    /// is zeroized before return.
+    pub fn join_public_space(
+        &self,
+        space: PublicSpace,
+        wrapping_key: Vec<u8>,
+    ) -> Result<PublicSpace, MobileError> {
+        crate::mobile_state::join_public_space(&self.inner, space, wrapping_key)
     }
 
     pub fn create_draft_alert(

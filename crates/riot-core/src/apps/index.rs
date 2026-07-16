@@ -74,6 +74,10 @@ pub fn verify_app_pair(manifest_bytes: &[u8], bundle_bytes: &[u8]) -> Result<App
     if manifest.entry_point != bundle.entry_point {
         return Err(AppsError::IndexEntryMismatch);
     }
+    // Refuse to host a bundle that references WebRTC: its egress bypasses the
+    // runtime URL-loader backstop (Risk 9). Enforced here so every accept path
+    // — install, publish, scan, share — refuses it identically.
+    super::bundle::scan_bundle_egress(&bundle)?;
     app_id_for(&manifest, &app_bundle_digest(bundle_bytes))
 }
 
@@ -473,6 +477,30 @@ mod tests {
         // Garbage on either side is a decode failure, never a panic.
         assert!(verify_app_pair(&[0xff; 8], bundle_bytes).is_err());
         assert!(verify_app_pair(manifest_bytes, &[0xff; 8]).is_err());
+    }
+
+    #[test]
+    fn verify_app_pair_refuses_a_webrtc_bundle_at_the_host_gate() {
+        use crate::apps::bundle::{decode_app_bundle, encode_app_bundle};
+
+        let (manifest_bytes, bundle_bytes) = STARTER_CATALOG[0];
+        // The clean starter pair hosts fine.
+        assert!(verify_app_pair(manifest_bytes, bundle_bytes).is_ok());
+
+        // Inject a WebRTC reference into a resource while leaving the entry point
+        // untouched, so the refusal below is the egress scan — not an entry-point
+        // mismatch or a decode failure.
+        let mut bundle = decode_app_bundle(bundle_bytes).expect("starter bundle decodes");
+        bundle.resources[0]
+            .bytes
+            .extend_from_slice(b"\nnew RTCPeerConnection({iceServers:[]});");
+        let poisoned = encode_app_bundle(&bundle).expect("re-encode poisoned bundle");
+
+        assert_eq!(
+            verify_app_pair(manifest_bytes, &poisoned),
+            Err(AppsError::BundleUsesWebRtc),
+            "the single accept chokepoint must refuse a WebRTC bundle",
+        );
     }
 
     fn candidate(

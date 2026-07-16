@@ -62,7 +62,7 @@ fn receiver_holding_a_preview() -> (Arc<MobileProfile>, SignedAlert) {
     let signed = sender.sign_draft(record.draft_id).unwrap();
 
     let receiver = open_local_profile().unwrap();
-    receiver.join_public_space(space).unwrap();
+    receiver.join_public_space(space, Vec::new()).unwrap();
     receiver
         .inspect_bytes(signed.bundle_bytes.clone(), "nearby-device".into())
         .expect("preview parked on the receiver");
@@ -158,7 +158,7 @@ fn join_public_space_is_refused_while_a_sync_session_is_open() {
     let joiner = profile_with_space();
     let _sync = joiner.open_sync_session().unwrap();
     assert!(matches!(
-        joiner.join_public_space(space),
+        joiner.join_public_space(space, Vec::new()),
         Err(MobileError::InvalidInput)
     ));
 }
@@ -172,7 +172,7 @@ fn join_public_space_refuses_a_non_public_or_malformed_space() {
         is_public: false,
     };
     assert!(matches!(
-        profile.join_public_space(not_public),
+        profile.join_public_space(not_public, Vec::new()),
         Err(MobileError::InvalidInput)
     ));
     // The refusal listed nothing, so the board still reads empty.
@@ -197,7 +197,7 @@ fn join_public_space_refuses_a_non_communal_namespace() {
     };
     let profile = open_local_profile().unwrap();
     assert!(matches!(
-        profile.join_public_space(space),
+        profile.join_public_space(space, Vec::new()),
         Err(MobileError::InvalidInput)
     ));
 }
