@@ -659,3 +659,51 @@ fn valid_owned_article_and_marker_bit_forgery_decide_identically_at_every_gate()
         );
     }
 }
+
+// ---------- classification predicate (Task 4 backing) ----------
+
+#[test]
+fn is_owned_editorial_entry_recognises_only_owned_articles() {
+    use riot_core::willow::decode_entry_canonic;
+    use riot_core::willow::site_paths::is_owned_editorial_entry;
+
+    let site = manual_owned_site(0x60, 0x11);
+    // An owned `/articles/` entry: recognised.
+    let article = owned_article_item(&site, b"news", b"post-1", b"body");
+    let article_entry = decode_entry_canonic(&article.entry_bytes).unwrap();
+    assert!(is_owned_editorial_entry(&article_entry));
+
+    // An owned entry at `/manifest`: owned but NOT under /articles — not editorial.
+    let manifest = build_entry(
+        site.namespace_id.clone(),
+        site.owner_secret.corresponding_subspace_id(),
+        Path::from_slices(&[MANIFEST_COMPONENT]).unwrap(),
+        100,
+        b"m",
+    );
+    let manifest = sign_into(manifest, &site.owner_cap, &site.owner_secret, b"m");
+    let manifest_entry = decode_entry_canonic(&manifest.entry_bytes).unwrap();
+    assert!(!is_owned_editorial_entry(&manifest_entry));
+
+    // A communal alert entry: not owned, so never editorial.
+    let author = riot_core::willow::generate_communal_author().unwrap();
+    let alert = riot_core::willow::create_signed_alert(
+        &author,
+        riot_core::willow::AlertDraft {
+            valid_from: None,
+            expires_at: 2_000_000_000,
+            language: "en".into(),
+            urgency: riot_core::model::Urgency::Immediate,
+            severity: riot_core::model::Severity::Severe,
+            certainty: riot_core::model::Certainty::Observed,
+            headline: "h".into(),
+            description: "d".into(),
+            affected_area_claim: None,
+            source_claims: vec!["a field observer".into()],
+            ai_assisted: false,
+        },
+    )
+    .unwrap();
+    let alert_entry = decode_entry_canonic(&alert.signed.entry_bytes).unwrap();
+    assert!(!is_owned_editorial_entry(&alert_entry));
+}

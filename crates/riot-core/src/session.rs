@@ -717,8 +717,7 @@ impl EvidenceStore {
                 // identity), so it binds like app-data — nothing further to
                 // check here.
                 let is_owned_editorial =
-                    willow25::groupings::Namespaced::namespace_id(authorised.entry()).is_owned()
-                        && crate::willow::site_paths::is_under_articles(path);
+                    crate::willow::site_paths::is_owned_editorial_entry(authorised.entry());
                 let valid_newswire = crate::newswire::is_newswire_prefix(path)
                     && crate::newswire::inspect_verified_components(
                         authorised.entry(),
