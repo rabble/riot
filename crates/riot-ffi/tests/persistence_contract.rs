@@ -14,7 +14,7 @@ use riot_ffi::{
     open_local_profile, open_local_profile_with_database,
     open_profile_from_sealed_identity_with_database, AlertCertainty, AlertDraftInput,
     AlertSeverity, AlertUrgency, CommunityRelationship, MobileError, MobileProfile,
-    NewswireSpaceInput, PublicIdentity, PublicSpace,
+    MobileSyncSession, NewswireSpaceInput, PublicIdentity, PublicSpace, SyncOutcomeKind,
 };
 
 fn expires_later() -> u64 {
@@ -807,4 +807,100 @@ fn a_joined_newswire_community_carries_its_descriptor_handle_not_a_dead_follow()
         "a joined community carries its descriptor handle — not a dead follow"
     );
     assert_eq!(row.relationship, CommunityRelationship::Member);
+}
+
+/// Deliver every entry the `origin` holds to the `follower` over the real sync
+/// bridge, accepting whatever import the follower is offered. Both must share the
+/// namespace. Simulates the first sync a joined community receives.
+fn deliver_all_via_sync(origin: &Arc<MobileProfile>, follower: &Arc<MobileProfile>) {
+    let init: Arc<MobileSyncSession> = follower.open_sync_session().expect("follower sync");
+    let resp: Arc<MobileSyncSession> = origin.open_sync_session().expect("origin sync");
+    init.begin().expect("begin");
+    for _ in 0..24 {
+        if let Some(frame) = init.take_outbound_frame().expect("init frame") {
+            resp.receive_frame(frame).expect("resp receive");
+        }
+        match resp.take_outbound_frame().expect("resp frame") {
+            Some(frame) => {
+                let outcome = init.receive_frame(frame).expect("init receive");
+                if outcome.kind == SyncOutcomeKind::ReviewImport {
+                    init.accept_import().expect("accept import");
+                }
+                if outcome.terminal {
+                    break;
+                }
+            }
+            None => break,
+        }
+    }
+}
+
+/// Risk 15 + Risk 16 end-to-end: publishing DISTRIBUTES. A follower joins a
+/// community by share reference (Risk 15 carries the descriptor handle), the
+/// first sync delivers the descriptor + post (Risk 16 lets newswire traverse the
+/// nearby bridge at all), and the follower's Home MATERIALIZES the post.
+#[test]
+fn a_followed_communitys_home_materializes_published_content_after_the_first_sync() {
+    let origin = open_local_profile().expect("origin");
+    let descriptor = origin
+        .create_newswire_space(NewswireSpaceInput {
+            name: "Germany".into(),
+            summary: "Berlin".into(),
+            languages: vec!["de".into()],
+            geographic_tags: vec![],
+            topic_tags: vec![],
+            editorial_roster: vec![],
+        })
+        .expect("create newswire space");
+    origin
+        .create_newswire_post(riot_ffi::NewswirePostInput {
+            space_descriptor_entry_id: descriptor.entry_id.clone(),
+            headline: "Blockade at the depot".into(),
+            body: "Meet at 6.".into(),
+            language: "de".into(),
+            event_time_unix_seconds: None,
+            expires_at_unix_seconds: None,
+            coarse_location: None,
+            source_claims: vec![],
+            operational_profile: None,
+            ai_assisted: false,
+        })
+        .expect("publish post");
+    let origin_namespace = origin.identity().unwrap().namespace_id;
+
+    let follower = open_local_profile().expect("follower");
+    follower
+        .join_newswire_community(
+            PublicSpace {
+                namespace_id: origin_namespace,
+                title: "Germany (pending sync)".into(),
+                is_public: true,
+            },
+            descriptor.entry_id.clone(),
+            Vec::new(),
+        )
+        .expect("join by descriptor handle");
+    // Pending first sync: the descriptor + post aren't on this device yet.
+    assert!(
+        follower
+            .project_newswire_space(descriptor.entry_id.clone())
+            .map(|p| p.open_wire.is_empty())
+            .unwrap_or(true),
+        "pending first sync — no content until the descriptor + post arrive"
+    );
+
+    // First sync delivers the descriptor + post (Risk 16: newswire now syncs).
+    deliver_all_via_sync(&origin, &follower);
+
+    // Home MATERIALIZES the published post via the carried descriptor handle.
+    let projection = follower
+        .project_newswire_space(descriptor.entry_id)
+        .expect("reproject after first sync");
+    assert!(
+        projection
+            .open_wire
+            .iter()
+            .any(|post| post.headline.as_deref() == Some("Blockade at the depot")),
+        "a followed community's Home materializes published content after the first sync"
+    );
 }
