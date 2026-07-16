@@ -4,9 +4,11 @@
 //! catch/quarantine contract depends on. Substring matching is not trusted
 //! for anything a TOML/JSON parser can check.
 
+mod export_newswire;
 mod hex_codec;
 mod sign_conference_fixture;
 mod verify_conference_export;
+mod verify_newswire_export;
 
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -212,6 +214,20 @@ fn run_with(
                 ExitCode::FAILURE
             }
         },
+        Some("export-newswire") => match export_newswire::run(root) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("export-newswire: FAIL: {error}");
+                ExitCode::FAILURE
+            }
+        },
+        Some("verify-newswire-export") => match verify_newswire_export::run(root) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("verify-newswire-export: FAIL: {error}");
+                ExitCode::FAILURE
+            }
+        },
         Some(other) => {
             let _ = writeln!(err, "unknown xtask command: {other}").is_ok();
             let _ = writeln!(err, "available: {}", available_commands().join(", ")).is_ok();
@@ -231,6 +247,8 @@ fn available_commands() -> &'static [&'static str] {
         "generate-bindings",
         "sign-conference-fixture",
         "verify-conference-export",
+        "export-newswire",
+        "verify-newswire-export",
     ]
 }
 
@@ -313,7 +331,7 @@ fn workspace_root_from(manifest_dir: &Path) -> Result<PathBuf, String> {
         })
 }
 
-fn sha256_hex(bytes: &[u8]) -> String {
+pub(crate) fn sha256_hex(bytes: &[u8]) -> String {
     Sha256::digest(bytes)
         .iter()
         .map(|b| format!("{b:02x}"))
@@ -935,6 +953,17 @@ mod tests {
         );
     }
 
+    /// Copies the committed newswire goldens into a private root so
+    /// verify-newswire-export can be dispatched successfully without re-stamping
+    /// the real repository files.
+    fn copy_newswire_fixtures(dest_root: &Path) {
+        let real_root = workspace_root_from(Path::new(env!("CARGO_MANIFEST_DIR"))).unwrap();
+        copy_dir_recursive(
+            &real_root.join("fixtures/newswire"),
+            &dest_root.join("fixtures/newswire"),
+        );
+    }
+
     #[test]
     fn conference_fixture_commands_report_success_and_failure() {
         // Success arms: each command runs against a faithful private copy of the
@@ -985,6 +1014,66 @@ mod tests {
                 "{command} against an empty root should fail"
             );
         }
+    }
+
+    #[test]
+    fn newswire_fixture_commands_report_success_and_failure() {
+        // export-newswire needs no on-disk input (it mints records), so a fresh
+        // root suffices for its success arm; verify needs the committed goldens.
+        let export_root = temp_dir("newswire-export-ok");
+        let mut runner = ScriptedRunner {
+            output: None,
+            status: None,
+        };
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        assert_eq!(
+            run(
+                &export_root,
+                &["export-newswire".into()],
+                &mut runner,
+                &mut out,
+                &mut err
+            ),
+            ExitCode::SUCCESS
+        );
+        assert!(err.is_empty());
+
+        let verify_root = temp_dir("newswire-verify-ok");
+        copy_newswire_fixtures(&verify_root);
+        let mut runner = ScriptedRunner {
+            output: None,
+            status: None,
+        };
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        assert_eq!(
+            run(
+                &verify_root,
+                &["verify-newswire-export".into()],
+                &mut runner,
+                &mut out,
+                &mut err
+            ),
+            ExitCode::SUCCESS
+        );
+        assert!(err.is_empty());
+
+        // Failure arm: verify against an empty root has no fixtures.
+        let missing = temp_dir("newswire-verify-missing");
+        let mut runner = ScriptedRunner {
+            output: None,
+            status: None,
+        };
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        assert_eq!(
+            run(
+                &missing,
+                &["verify-newswire-export".into()],
+                &mut runner,
+                &mut out,
+                &mut err
+            ),
+            ExitCode::FAILURE
+        );
     }
 
     #[test]
