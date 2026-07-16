@@ -13,7 +13,7 @@ pub mod entry;
 pub mod identity;
 mod masthead;
 mod owned;
-mod site_paths;
+pub mod site_paths;
 
 use ufotofu::codec_prelude::{DecodableCanonic, EncodableExt};
 use ufotofu::producer::clone_from_slice;

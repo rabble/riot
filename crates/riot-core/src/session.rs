@@ -10,7 +10,9 @@
 
 use std::sync::{Arc, Mutex};
 
-use crate::import::bundle::{decode_bundle, BundleDecodeOutcome, BundleRejection, ItemStatus};
+use crate::import::bundle::{
+    decode_bundle_with_root, BundleDecodeOutcome, BundleRejection, ItemStatus,
+};
 use crate::import::join::{
     plan_join_with_payloads, JoinEffect, JoinState, STORE_CHARGE_ENTRY_BYTES,
 };
@@ -155,17 +157,36 @@ pub fn public_entry_identity(bytes: &[u8]) -> Result<PublicEntryIdentity, Sessio
     })
 }
 
-/// Local import context: the route the bytes arrived by. Receipt time comes
-/// from the session clock in a fuller build; Phase 0A records the route.
+/// Local import context: the route the bytes arrived by, and the owned-site
+/// root the caller is following (if any). Receipt time comes from the session
+/// clock in a fuller build; Phase 0A records the route.
+///
+/// `followed_site_root` is the ONLY carrier for owned-namespace admission: an
+/// owned editorial entry is admitted only when authored under a cap rooted at
+/// this exact key. It defaults to `None` (`::new`), which fails owned entries
+/// closed — a plain file import with no site-follow context never admits owned
+/// content. Callers that know the followed root (a sync import, a follow-site
+/// import) set it via [`ImportContext::with_followed_root`].
 #[derive(Debug, Clone)]
 pub struct ImportContext {
     pub route: String,
+    pub followed_site_root: Option<[u8; 32]>,
 }
 
 impl ImportContext {
     pub fn new(route: &str) -> Self {
         Self {
             route: route.to_string(),
+            followed_site_root: None,
+        }
+    }
+
+    /// Import context that knows which owned site the caller follows, enabling
+    /// owned-namespace editorial admission bound to `followed_site_root`.
+    pub fn with_followed_root(route: &str, followed_site_root: [u8; 32]) -> Self {
+        Self {
+            route: route.to_string(),
+            followed_site_root: Some(followed_site_root),
         }
     }
 }
@@ -629,8 +650,10 @@ impl EvidenceStore {
             return Err(InspectInnerError::Busy);
         }
 
-        // Decode + verify OUTSIDE any state mutation.
-        let decoded = match decode_bundle(bytes) {
+        // Decode + verify OUTSIDE any state mutation. Owned-namespace editorial
+        // entries are admitted only when authored under a cap rooted at the
+        // followed site the caller declared; `None` fails them closed.
+        let decoded = match decode_bundle_with_root(bytes, context.followed_site_root) {
             BundleDecodeOutcome::Rejected(rejection) => {
                 return Ok(InspectOutcome::Rejected(rejection));
             }
@@ -688,13 +711,22 @@ impl EvidenceStore {
                     willow25::groupings::Keylike::path(authorised.entry()),
                 );
                 let path = willow25::groupings::Keylike::path(authorised.entry());
+                // An owned composite-site editorial entry: `verify_frame`
+                // already bound it to the followed site's owned cap and to the
+                // `/articles/` region. The payload is opaque (path is the
+                // identity), so it binds like app-data — nothing further to
+                // check here.
+                let is_owned_editorial =
+                    crate::willow::site_paths::is_owned_editorial_entry(authorised.entry());
                 let valid_newswire = crate::newswire::is_newswire_prefix(path)
                     && crate::newswire::inspect_verified_components(
                         authorised.entry(),
                         item.frame.payload_bytes(),
                     )
                     .is_ok();
-                let path_matches = if is_app_data {
+                let path_matches = if is_owned_editorial || is_app_data {
+                    // Both bind by path alone: the payload is opaque and embeds
+                    // no identity a path could contradict.
                     true
                 } else if let Some(slot) = app_index_slot {
                     match slot {
@@ -745,7 +777,8 @@ impl EvidenceStore {
                     let retain_payload = is_app_data
                         || app_index_slot.is_some()
                         || profile_subspace.is_some()
-                        || valid_newswire;
+                        || valid_newswire
+                        || is_owned_editorial;
                     verified.push(VerifiedEntry {
                         authorised,
                         entry_id: valid.entry_id,

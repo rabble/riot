@@ -7,7 +7,8 @@ use willow25::groupings::Keylike;
 use zeroize::{Zeroize, Zeroizing};
 
 use riot_core::import::{
-    decode_bundle, encode_bundle, BundleDecodeOutcome, ItemStatus, MAX_BUNDLE_BYTES,
+    decode_bundle, decode_bundle_with_root, encode_bundle, BundleDecodeOutcome, ItemStatus,
+    MAX_BUNDLE_BYTES,
 };
 use riot_core::model::{decode_alert, encode_alert, AlertPayload, Certainty, Severity, Urgency};
 use riot_core::profile::card::{encode_profile_card, ProfileCard};
@@ -947,6 +948,7 @@ pub(crate) fn list_current_entries(
                     && !app_index_ids.contains(id)
                     && !is_profile_prefixed(entry.path())
                     && !riot_core::newswire::is_newswire_prefix(entry.path())
+                    && !riot_core::willow::site_paths::is_owned_editorial_entry(entry)
             })
             .map(|(id, _, _)| id)
             .collect();
@@ -1297,7 +1299,16 @@ fn prepare_sync_import(
     let sync_entries: Vec<_> = inspectable.into_iter().map(|item| item.signed).collect();
     profile.preview = None;
     profile.plan = None;
-    let preview = inspect_core(&profile.store, bundle_bytes, "conference-sync")?;
+    // The synced namespace is the followed root: admit owned editorial in
+    // lockstep with `inspectable_entries` above so the eligible-count check
+    // below holds (a divergence would reject the whole owned bundle).
+    let followed_root = parse_entry_id(&namespace_id)?;
+    let preview = inspect_core_with_root(
+        &profile.store,
+        bundle_bytes,
+        "conference-sync",
+        Some(followed_root),
+    )?;
     if preview.eligible_count().map_err(map_core_error)? != sync_entries.len() {
         return Err(MobileError::ImportRejected);
     }
@@ -1489,10 +1500,24 @@ pub(crate) fn inspect_core(
     bytes: &[u8],
     route: &str,
 ) -> Result<ImportPreview, MobileError> {
-    match store
-        .inspect(bytes, ImportContext::new(route))
-        .map_err(map_core_error)?
-    {
+    inspect_core_with_root(store, bytes, route, None)
+}
+
+/// `inspect_core` for an admission path that knows the owned site it follows.
+/// The sync commit path passes the synced namespace so owned editorial entries
+/// are admitted in lockstep with `inspectable_entries` (both keyed on that same
+/// namespace); local/self routes pass `None` and stay fail-closed for owned.
+pub(crate) fn inspect_core_with_root(
+    store: &EvidenceStore,
+    bytes: &[u8],
+    route: &str,
+    followed_site_root: Option<[u8; 32]>,
+) -> Result<ImportPreview, MobileError> {
+    let context = match followed_site_root {
+        Some(root) => ImportContext::with_followed_root(route, root),
+        None => ImportContext::new(route),
+    };
+    match store.inspect(bytes, context).map_err(map_core_error)? {
         InspectOutcome::Preview(preview) => Ok(preview),
         InspectOutcome::Rejected(_) => Err(MobileError::ImportRejected),
     }
@@ -1502,7 +1527,14 @@ fn inspectable_entries(
     bytes: &[u8],
     expected_namespace_id: &str,
 ) -> Result<Vec<InspectableEntry>, MobileError> {
-    let decoded = match decode_bundle(bytes) {
+    // Every entry must already be in `expected_namespace_id`, so for an owned
+    // site that namespace IS the followed root: decoding with it admits owned
+    // editorial entries here exactly as the commit path (`inspect_core`) does,
+    // keeping the two in lockstep (a divergence would fail the eligible-count
+    // check in `prepare_sync_import` and reject the whole bundle). Communal
+    // namespaces ignore the root.
+    let followed_root = parse_entry_id(expected_namespace_id)?;
+    let decoded = match decode_bundle_with_root(bytes, Some(followed_root)) {
         BundleDecodeOutcome::Decoded(decoded) => decoded,
         BundleDecodeOutcome::Rejected(_) => return Err(MobileError::ImportRejected),
     };
@@ -1530,7 +1562,8 @@ fn inspectable_entries(
         let is_non_alert = riot_core::apps::entry::is_app_data_entry(&decoded_entry)
             || riot_core::apps::index::classify_app_index_path(decoded_entry.path()).is_some()
             || is_profile_prefixed(decoded_entry.path())
-            || riot_core::newswire::is_newswire_prefix(decoded_entry.path());
+            || riot_core::newswire::is_newswire_prefix(decoded_entry.path())
+            || riot_core::willow::site_paths::is_owned_editorial_entry(&decoded_entry);
         let current = if is_non_alert {
             None
         } else {
@@ -2174,12 +2207,14 @@ fn reproject_active(profile: &mut LocalProfile) -> Result<(), MobileError> {
         .map_err(map_core_error)?;
     let mut newest_activity: Option<u64> = None;
     for (id, entry, payload) in prefixed {
-        // Alerts only; app-data, app-index, profile, and newswire entries share
-        // the store but carry no alert row (mirrors `list_current_entries`).
+        // Alerts only; app-data, app-index, profile, newswire, and owned
+        // editorial entries share the store but carry no alert row (mirrors
+        // `list_current_entries`).
         if riot_core::apps::entry::is_app_data_entry(&entry)
             || riot_core::apps::index::classify_app_index_path(entry.path()).is_some()
             || is_profile_prefixed(entry.path())
             || riot_core::newswire::is_newswire_prefix(entry.path())
+            || riot_core::willow::site_paths::is_owned_editorial_entry(&entry)
         {
             continue;
         }

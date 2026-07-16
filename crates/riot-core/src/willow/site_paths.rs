@@ -4,6 +4,8 @@
 //! `/articles/<sect>/` — editorial articles; the ONLY region delegated to editors.
 //! `/mod/`             — moderation records (Unit 3), never delegated to editors.
 
+use willow25::entry::Entry;
+use willow25::groupings::{Keylike, Namespaced};
 use willow25::paths::Path;
 
 /// First path component of the editorial region.
@@ -20,6 +22,17 @@ pub fn is_under_articles(path: &Path) -> bool {
     path.components()
         .next()
         .is_some_and(|first| first.as_ref() == ARTICLES_COMPONENT)
+}
+
+/// True iff `entry` is an owned composite-site editorial entry — its namespace
+/// is owned AND its path is under `/articles/`. This is the opaque editorial
+/// family admitted in Unit 1: the path is the identity, the payload opaque
+/// (integrity via digest/length). Every admission and classification gate that
+/// must treat owned editorial entries as a first-class local family (session
+/// path-binding, the FFI alert/non-alert classifiers) routes through this one
+/// predicate so they cannot drift.
+pub fn is_owned_editorial_entry(entry: &Entry) -> bool {
+    Namespaced::namespace_id(entry).is_owned() && is_under_articles(Keylike::path(entry))
 }
 
 #[cfg(test)]

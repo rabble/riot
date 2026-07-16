@@ -1,4 +1,4 @@
-use crate::import::{decode_bundle, encode_bundle, BundleDecodeOutcome, ItemStatus};
+use crate::import::{decode_bundle_with_root, encode_bundle, BundleDecodeOutcome, ItemStatus};
 use crate::willow::{decode_entry_canonic, entry_id, EntryId, SignedWillowEntry};
 use willow25::groupings::Namespaced;
 
@@ -265,7 +265,12 @@ fn verify_received_bundle(
     namespace_id: [u8; 32],
     expected: &[EntryId],
 ) -> Result<Vec<SignedWillowEntry>, SyncError> {
-    let BundleDecodeOutcome::Decoded(decoded) = decode_bundle(bytes) else {
+    // The session's `namespace_id` is locally chosen (frames from any other
+    // namespace are rejected in `receive`), so for an owned site it IS the
+    // followed root: admit owned editorial entries authored under a cap rooted
+    // at exactly this namespace. Communal admission ignores the argument.
+    let BundleDecodeOutcome::Decoded(decoded) = decode_bundle_with_root(bytes, Some(namespace_id))
+    else {
         return Err(SyncError::InvalidBundle);
     };
     let mut received = Vec::with_capacity(decoded.items.len());
