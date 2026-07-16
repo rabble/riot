@@ -108,6 +108,21 @@ class NewswireRenderTest(unittest.TestCase):
         self.assertIn("riot://open", page)  # the open-in-app deep link
         self.assertIn("connect-src 'none'", page)  # same fences
 
+    def test_about_page_covers_the_collective_and_the_censorship_model(self) -> None:
+        export = dict(self.export)
+        export["space"] = dict(export["space"], summary="A worker-led newswire.",
+                               languages=["en"], topics=["housing"], geographic=["Berlin"])
+        page = nw.render_about(export)
+        self.assertIn("A worker-led newswire.", page)      # this collective
+        self.assertIn("housing", page)                      # its topics
+        self.assertIn("Many mirrors", page)                 # censorship model
+        self.assertIn("Signed, not trusted", page)
+        self.assertIn("/author/aaaa/", page)                # editors link out
+        self.assertIn("connect-src 'none'", page)
+
+    def test_footer_links_to_about(self) -> None:
+        self.assertIn('href="/about/"', self.page)
+
     def test_csp_baked_in_and_no_external_fetches(self) -> None:
         styles = re.findall(r"<style>(.*?)</style>", self.page, re.S)
         digest = base64.b64encode(hashlib.sha256(styles[0].encode("utf-8")).digest()).decode("ascii")

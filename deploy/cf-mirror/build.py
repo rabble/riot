@@ -39,6 +39,11 @@ def main() -> None:
     pub.mkdir(parents=True, exist_ok=True)
     (pub / "index.html").write_text(nw.render_publish(export), encoding="utf-8")
 
+    # /about = this collective + how Riot beats censorship.
+    about = dist / "about"
+    about.mkdir(parents=True, exist_ok=True)
+    (about / "index.html").write_text(nw.render_about(export), encoding="utf-8")
+
     # Post permalinks — keyed by real entry_id (content hash).
     for post in nw.all_posts(export):
         page = dist / "post" / post["entry_id"]

@@ -22,13 +22,20 @@ use riot_ffi::{
 };
 use serde_json::{json, Value};
 
+const SUMMARY: &str = "An independent, worker- and tenant-led newswire. Open publishing for \
+anyone; editorial features are signed by the collective. No owners, no ads, no trackers — \
+just movement media that travels peer-to-peer and mirrors anywhere.";
+const LANGUAGES: [&str; 2] = ["en", "de"];
+const TOPICS: [&str; 6] = ["housing", "labor", "surveillance", "ecology", "repression", "migration"];
+const GEO: [&str; 1] = ["Berlin"];
+
 fn space_input(name: &str) -> NewswireSpaceInput {
     NewswireSpaceInput {
         name: name.into(),
-        summary: "Independent community newswire.".into(),
-        languages: vec!["en".into()],
-        geographic_tags: vec![],
-        topic_tags: vec![],
+        summary: SUMMARY.into(),
+        languages: LANGUAGES.iter().map(|s| s.to_string()).collect(),
+        geographic_tags: GEO.iter().map(|s| s.to_string()).collect(),
+        topic_tags: TOPICS.iter().map(|s| s.to_string()).collect(),
         editorial_roster: vec![],
     }
 }
@@ -143,6 +150,10 @@ fn generate_real_newswire_export() {
         "space": {
             "name": "RIOT · Independent Newswire",
             "descriptor_entry_id": space.entry_id,
+            "summary": SUMMARY,
+            "languages": LANGUAGES,
+            "topics": TOPICS,
+            "geographic": GEO,
         },
         "front_page": projection.front_page.iter().map(post_json).collect::<Vec<_>>(),
         "open_wire": projection.open_wire.iter().map(post_json).collect::<Vec<_>>(),

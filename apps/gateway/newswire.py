@@ -116,6 +116,15 @@ a { color: inherit; }
 .steps p { margin: 0; font-size: 0.98rem; }
 .cta { display: inline-block; margin: 0.4rem 0 0; font-family: ui-monospace, Menlo, monospace; font-weight: 600; text-decoration: none; color: var(--paper); background: var(--ink); padding: 0.35rem 0.7rem; }
 .cta:hover { background: var(--red); }
+.tags { display: flex; gap: 0.4rem; flex-wrap: wrap; margin: 0.7rem 0 1.6rem; }
+.tag { font-family: ui-monospace, Menlo, monospace; font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); border: 1px solid var(--line); padding: 0.12rem 0.5rem; border-radius: 2px; }
+.about h2 { font-family: Georgia, "Times New Roman", serif; font-weight: 800; font-size: 1.5rem; margin: 2.25rem 0 0.6rem; border-top: 2px solid var(--ink); padding-top: 1.4rem; }
+.point { margin: 0 0 1.3rem; max-width: 42rem; }
+.point b { display: block; font-family: ui-monospace, Menlo, monospace; font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--red); margin-bottom: 0.2rem; }
+.editors { list-style: none; margin: 0.4rem 0 1.5rem; padding: 0; display: flex; gap: 0.5rem 1.2rem; flex-wrap: wrap; font-family: ui-monospace, Menlo, monospace; font-size: 0.8rem; }
+.editors a { color: var(--ink); text-decoration: none; border-bottom: 1px solid var(--line); }
+.editors a:hover { color: var(--red); border-bottom-color: var(--red); }
+.ident { font-family: ui-monospace, Menlo, monospace; font-size: 0.7rem; color: var(--muted); word-break: break-all; margin: 0.4rem 0 0; }
 .foot { max-width: 78rem; margin: 0 auto; padding: 1.4rem 1.25rem 3rem; border-top: 1px solid var(--line); font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 0.68rem; color: var(--muted); line-height: 1.6; display: flex; gap: 0.6rem 1.5rem; flex-wrap: wrap; align-items: baseline; }
 .foot a { color: var(--ink); }
 .foot .sample { color: var(--red); }
@@ -154,6 +163,7 @@ def _masthead(export: dict) -> str:
 def _footer(export: dict) -> str:
     uri = f"riot://open?descriptor={export['space']['descriptor_entry_id']}"
     return f"""<footer class="foot">
+  <span><a href="/about/">About · how this works</a></span>
   <span>Served from a mirror · content signed by the collective, not this host</span>
   <span>Verified copy? <a href="{uri}">Open in Riot →</a></span>
   <span class="sample">demo instance · generated from signed records</span>
@@ -282,6 +292,49 @@ def render_author(export: dict, author_id: str, css: str = NEWSPRINT_CSS) -> str
   <div class="profile__handle">{escape(contributor['id'])} · {role} · {contributor.get('contribution_count', 0)} signed records</div>
   <p class="section-label">Published</p>
   <ul class="feed">{items}</ul>
+</main>
+{_footer(export)}
+</body>
+</html>"""
+
+
+def render_about(export: dict, css: str = NEWSPRINT_CSS) -> str:
+    space = export["space"]
+    uri = f"riot://open?descriptor={space['descriptor_entry_id']}"
+    topics = "".join(f'<span class="tag">{escape(t)}</span>' for t in space.get("topics", []))
+    langs = ", ".join(space.get("languages", []))
+    geo = ", ".join(space.get("geographic", []))
+    editors = "".join(
+        f'<li><a href="/author/{c["id"]}/">{escape(c["rendered"])}</a>'
+        f'{" · organizer" if c.get("is_organizer") else ""}</li>'
+        for c in export.get("contributors", [])
+    ) or "<li>None listed yet.</li>"
+    return f"""<!doctype html>
+<html lang="en">
+{_head(f"About · {space['name']}", css)}
+<body>
+{_masthead(export)}
+<main class="narrow about">
+  <a class="back" href="/">← {escape(space['name'])}</a>
+  <span class="kicker">About · how this works</span>
+  <h1 class="profile__name">{escape(space['name'])}</h1>
+  <p class="lead">{escape(space.get('summary', ''))}</p>
+  <div class="tags">{topics}</div>
+  <p class="ident">Languages: {escape(langs)} · Region: {escape(geo)}<br>Namespace: {escape(space['descriptor_entry_id'])}</p>
+
+  <h2>The collective</h2>
+  <p class="point">This newswire is run by the people who publish it — the editors below sign the featured articles; anyone can post to the open wire. There is no company behind it and no server that owns it. Its identity is a cryptographic namespace, not a domain someone can seize.</p>
+  <p class="point"><b>Editors</b></p>
+  <ul class="editors">{editors}</ul>
+
+  <h2>How Riot beats censorship</h2>
+  <p class="point"><b>Many mirrors, not one site</b>This page is one copy of many. Block or seize one and the others stand; anyone can host another in minutes. There is no single address to take down.</p>
+  <p class="point"><b>Signed, not trusted</b>Every article and post is signed by its author. The Riot app checks the signatures. A mirror can show you the content but cannot forge it, alter it, or fake an author — so an untrusted host is safe to read from.</p>
+  <p class="point"><b>Publishing is peer-to-peer and hidden</b>Publishers use the Riot app; signed posts travel directly between phones and volunteer seeds. There is no central publishing server to raid, subpoena, or coerce. This website is only a window onto that network.</p>
+  <p class="point"><b>Readers stay out of the graph</b>Reading over the plain web — especially through a Tor / onion gateway — keeps you off the peer-to-peer network entirely. You are just someone who loaded a web page, not an identifiable node in the system.</p>
+  <p class="point"><b>Verify when it matters</b>A hostile mirror could lie to casual web readers. When a story matters, open it in the Riot app — it re-checks every signature against the collective's key. Web is reach; the app is proof.</p>
+
+  <p class="point"><a class="cta" href="{uri}">Open this newswire in Riot →</a></p>
 </main>
 {_footer(export)}
 </body>
