@@ -92,7 +92,11 @@ mod tests {
             !cap.delegations().is_empty(),
             "delegated cap must carry a delegation link"
         );
-        assert_eq!(cap.receiver(), &editor_id, "final receiver must be the editor");
+        assert_eq!(
+            cap.receiver(),
+            &editor_id,
+            "final receiver must be the editor"
+        );
         assert_eq!(cap.granted_namespace(), m.namespace_id());
     }
 
@@ -130,8 +134,19 @@ mod tests {
         let m = OwnedMasthead::generate().unwrap();
         let cap = m.owner_write_capability();
         assert!(cap.is_owned(), "owner cap must be owned-rooted");
-        assert!(cap.delegations().is_empty(), "owner cap must have zero delegations");
-        assert_eq!(cap.granted_namespace(), m.namespace_id(), "cap namespace must be the site root");
-        assert_eq!(cap.receiver(), &m.owner_subspace_id(), "cap receiver must be the owner subspace");
+        assert!(
+            cap.delegations().is_empty(),
+            "owner cap must have zero delegations"
+        );
+        assert_eq!(
+            cap.granted_namespace(),
+            m.namespace_id(),
+            "cap namespace must be the site root"
+        );
+        assert_eq!(
+            cap.receiver(),
+            &m.owner_subspace_id(),
+            "cap receiver must be the owner subspace"
+        );
     }
 }
