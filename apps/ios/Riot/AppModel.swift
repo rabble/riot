@@ -491,6 +491,19 @@ public final class RiotAppModel: ObservableObject {
         guard let repository else { return }
         perform {
             space = repository.currentSpace
+            // The newswire descriptor id is persisted per community (CommunityRow),
+            // not only captured at create time. Re-derive it on every reload so a
+            // restored, switched, or joined community projects its wire instead of
+            // degrading to the "updates unavailable" state. Previously only
+            // createCommunity set this, so any community reached after an app
+            // relaunch or a switch had a permanently dead newswire.
+            if let namespaceID = space?.namespaceID {
+                newswireDescriptorEntryID = (try? repository.listCommunities())?
+                    .first { $0.namespaceId == namespaceID }?
+                    .descriptorEntryId
+            } else {
+                newswireDescriptorEntryID = nil
+            }
             entries = try repository.currentEntries()
             isDemoMode = repository.isDemoSpaceLoaded
             me = try repository.me()
