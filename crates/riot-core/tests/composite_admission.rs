@@ -30,8 +30,8 @@ use riot_core::session::{CommitOutcome, ImportContext, InspectOutcome, RiotSessi
 use riot_core::sync::{ReconcileSession, SyncAction, SyncFrame};
 use riot_core::willow::site_paths::{ARTICLES_COMPONENT, MANIFEST_COMPONENT};
 use riot_core::willow::{
-    encode_capability, encode_entry, Entry, NamespaceId, OwnedMasthead, Path, SignedWillowEntry,
-    SubspaceId,
+    encode_capability, encode_entry, entry_id, Entry, NamespaceId, OwnedMasthead, Path,
+    SignedWillowEntry, SubspaceId,
 };
 use willow25::prelude::{Area, NamespaceSecret, SubspaceSecret, TimeRange, WriteCapability};
 
@@ -570,5 +570,92 @@ fn owned_editorial_is_admitted_over_sync_under_the_session_namespace_root() {
     }) {
         Ok(SyncAction::ImportBundle(_)) => {}
         other => panic!("owned editorial rejected at the sync gate: {other:?}"),
+    }
+}
+
+// ---------- cross-gate consistency KEYSTONE (Task 5) ----------
+//
+// The two REAL owned-admission surfaces — the session import gate and the sync
+// reconcile gate — both route through the ONE shared `admissible_capability`
+// predicate via `decode_bundle_with_root`. This proves they agree in BOTH
+// directions: a valid owned article is admitted identically at every surface,
+// and a forgery is rejected identically at every surface (no surface stricter
+// or looser than another). The bundle chokepoint is the third witness.
+
+fn bundle_admits(item: &SignedWillowEntry, root: [u8; 32]) -> bool {
+    matches!(status_with_root(item, Some(root)), ItemStatus::Valid(_))
+}
+
+fn session_admits(item: &SignedWillowEntry, root: [u8; 32]) -> bool {
+    let session = RiotSession::open().expect("session");
+    let store = session.create_store().expect("store");
+    // Hand-framed bytes so a forgery (which the producer-side encode preflight
+    // would refuse) can still be fed to the gate as a hostile peer would.
+    let bytes = frame_one(item);
+    match store
+        .inspect(&bytes, ImportContext::with_followed_root("keystone", root))
+        .expect("inspect")
+    {
+        InspectOutcome::Preview(p) => p.plan_all().is_ok(),
+        InspectOutcome::Rejected(_) => false,
+    }
+}
+
+fn sync_admits(item: &SignedWillowEntry, root: [u8; 32]) -> bool {
+    // Drive a receiver to request the item by id, then deliver the raw bytes.
+    let id = entry_id(&item.entry_bytes);
+    let mut receiver = ReconcileSession::new(root, vec![]).unwrap();
+    receiver.begin().unwrap();
+    // A peer advertises the id; the empty receiver requests it (AwaitingEntries).
+    let _request = receiver.receive(SyncFrame::Summary {
+        namespace_id: root,
+        entry_ids: vec![id],
+    });
+    matches!(
+        receiver.receive(SyncFrame::Entries {
+            namespace_id: root,
+            bundle_bytes: frame_one(item),
+        }),
+        Ok(SyncAction::ImportBundle(_))
+    )
+}
+
+#[test]
+fn valid_owned_article_and_marker_bit_forgery_decide_identically_at_every_gate() {
+    let site = manual_owned_site(0x50, 0x10);
+    let root = site.root;
+
+    // A valid owner-signed article — must be admitted everywhere.
+    let valid = owned_article_item(&site, b"news", b"post-1", b"editorial body");
+
+    // A marker-bit forgery: a communal cap NAMING the owned namespace id, in the
+    // owned namespace, at an /articles/ path. Well-formed and signed, but only
+    // the `is_owned()` invariant stops it — must be rejected everywhere.
+    let attacker = SubspaceSecret::from_bytes(&[0x21; 32]);
+    let attacker_id = attacker.corresponding_subspace_id();
+    let communal = WriteCapability::new_communal(site.namespace_id.clone(), attacker_id.clone());
+    let forged_entry = build_entry(
+        site.namespace_id.clone(),
+        attacker_id,
+        article_path(b"news", b"forged"),
+        100,
+        b"forged body",
+    );
+    let forgery = sign_into(forged_entry, &communal, &attacker, b"forged body");
+
+    for (label, item, expected) in [
+        ("valid owned article", &valid, true),
+        ("marker-bit forgery", &forgery, false),
+    ] {
+        let b = bundle_admits(item, root);
+        let s = session_admits(item, root);
+        let y = sync_admits(item, root);
+        assert_eq!(b, expected, "{label}: bundle chokepoint disagreed");
+        assert_eq!(s, expected, "{label}: session import gate disagreed");
+        assert_eq!(y, expected, "{label}: sync reconcile gate disagreed");
+        assert!(
+            b == s && s == y,
+            "{label}: admission gates diverged (bundle={b}, session={s}, sync={y})"
+        );
     }
 }
