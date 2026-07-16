@@ -25,7 +25,22 @@ def main() -> None:
     dist.mkdir(exist_ok=True)
 
     # Home = the two-column newswire (E features + W open-wire), demo content.
-    (dist / "index.html").write_text(nw.render_newswire(nw.sample_view()), encoding="utf-8")
+    view = nw.sample_view()
+    (dist / "index.html").write_text(nw.render_newswire(view), encoding="utf-8")
+
+    # Per-article detail pages (headlines link here).
+    for entry in view.editorial:
+        page = dist / "article" / entry.slug
+        page.mkdir(parents=True, exist_ok=True)
+        (page / "index.html").write_text(nw.render_article(view, entry), encoding="utf-8")
+
+    # Per-category listings (nav links here).
+    for category in view.categories:
+        if category == "Latest":
+            continue
+        page = dist / "c" / nw._slug(category)
+        page.mkdir(parents=True, exist_ok=True)
+        (page / "index.html").write_text(nw.render_category(view, category), encoding="utf-8")
 
     # /board = the incident-board dump, both skins, to exercise the vendored
     # client filter and the skin/CSP seam on a live host.
