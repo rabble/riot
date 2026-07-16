@@ -500,6 +500,12 @@ public final class RiotAppModel: ObservableObject {
             refreshDisplayNames()
             refreshOrganizerState()
             refreshCommunities()
+            // The registry is the source of truth for the active community's
+            // newswire descriptor handle — a JOINED community carries it now
+            // (Risk 15), so read it here rather than only on create, so the shell
+            // reprojects a followed community's Home once sync delivers its
+            // descriptor + posts. `nil` for a legacy alert-only community.
+            newswireDescriptorEntryID = (try? repository.activeCommunity())?.descriptorEntryId
         }
     }
 
@@ -557,7 +563,8 @@ public final class RiotAppModel: ObservableObject {
                 RiotSpace(
                     namespaceID: reference.namespaceId,
                     title: CommunityShareJoin.provisionalTitle(namespaceID: reference.namespaceId)
-                )
+                ),
+                descriptorEntryID: reference.descriptorEntryId
             )
             errorMessage = nil
             communityUnavailable = nil

@@ -88,12 +88,15 @@ class RiotController(filesDir: File) : AutoCloseable {
      * coordinates, so the community is "pending first sync" until its descriptor
      * and content arrive over sync. Seals immediately (Risk 13).
      */
-    fun joinAdditionalCommunity(space: PublicSpace): CommunityRow {
+    fun joinAdditionalCommunity(space: PublicSpace, descriptorEntryId: String): CommunityRow {
         // Adopting a SECOND community displaces the current author; the join seals
         // it INLINE under the wrapping key rather than parking it unsealed (Risk
-        // 13). The reference carries only coordinates, so the community is
-        // "pending first sync" until its descriptor and content arrive.
-        val joined = withWrappingKey { key -> profile.joinPublicSpace(space, key) }
+        // 13). It joins through `joinNewswireCommunity` so the registry row CARRIES
+        // the descriptor handle from the share reference (Risk 15) — otherwise it
+        // is a dead follow whose Home can never reproject. Still "pending first
+        // sync" until content arrives over sync.
+        val joined =
+            withWrappingKey { key -> profile.joinNewswireCommunity(space, descriptorEntryId, key) }
         currentSpace = joined
         persisted = PersistedProfile(PersistedSpace(joined.namespaceId, joined.title), emptyList())
         persist(persisted!!)

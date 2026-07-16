@@ -284,7 +284,9 @@ struct CommunityJoinSheet: View {
             Form {
                 Section {
                     TextField("Paste a community link", text: $pastedReference, axis: .vertical)
+                        #if os(iOS)
                         .textInputAutocapitalization(.never)
+                        #endif
                         .autocorrectionDisabled()
                         .accessibilityIdentifier("join-reference-field")
                 } footer: {
