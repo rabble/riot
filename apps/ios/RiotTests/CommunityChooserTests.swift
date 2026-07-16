@@ -287,7 +287,8 @@ final class CommunityChooserTests: XCTestCase {
         let origin = try openLocalProfile()
         let b = try origin.createPublicSpace(title: "Community B")
         _ = try profile.joinPublicSpace(
-            space: PublicSpace(namespaceId: b.namespaceId, title: "New community", isPublic: true)
+            space: PublicSpace(namespaceId: b.namespaceId, title: "New community", isPublic: true),
+            wrappingKey: key
         )
         let authorInB = try profile.identity()
 
@@ -347,7 +348,8 @@ final class CommunityChooserTests: XCTestCase {
             RiotSpace(
                 namespaceID: ref.namespaceId,
                 title: CommunityShareJoin.provisionalTitle(namespaceID: ref.namespaceId)
-            )
+            ),
+            descriptorEntryID: ref.descriptorEntryId
         )
 
         XCTAssertEqual(joined.namespaceId, b.namespaceId, "the joined community is now active")
@@ -355,6 +357,15 @@ final class CommunityChooserTests: XCTestCase {
         let held = try repository.listCommunities()
         XCTAssertEqual(held.count, 2, "both communities are held")
         XCTAssertTrue(held.contains { $0.namespaceId == a.namespaceID }, "A is parked, not dropped")
+
+        // Risk 15: the joined community carries its descriptor handle from the share
+        // reference — NOT a dead follow. This is what lets its Home reproject once
+        // sync delivers the descriptor + posts.
+        let bRow = held.first { $0.namespaceId == b.namespaceId }
+        XCTAssertEqual(
+            bRow?.descriptorEntryId, ref.descriptorEntryId,
+            "the joined community carries its descriptor handle, not a dead follow"
+        )
 
         // Isolation: A's board entry does NOT bleed into B. A had content; B shows
         // none of it — the join scopes the board to the newly active community.
@@ -384,8 +395,10 @@ final class CommunityChooserTests: XCTestCase {
         )
         let a = try repository.createPublicSpace(title: "Community A")
 
+        let ref = try repository.decodeShareReference(shareReference(forNamespace: a.namespaceID))
         let again = try repository.joinAdditionalCommunity(
-            RiotSpace(namespaceID: a.namespaceID, title: "Community A")
+            RiotSpace(namespaceID: a.namespaceID, title: "Community A"),
+            descriptorEntryID: ref.descriptorEntryId
         )
         XCTAssertEqual(again.namespaceId, a.namespaceID)
         XCTAssertEqual(again.relationship, .organizer, "still the organizer of their own space")
@@ -394,7 +407,8 @@ final class CommunityChooserTests: XCTestCase {
 
     /// The payoff integration test: create A, JOIN B by share reference, SWITCH
     /// back to A — the shell reprojects each time (name + organizer hint flip) and
-    /// the joined community carries no descriptor yet (pending first sync).
+    /// the joined community carries its descriptor handle from the reference (Risk
+    /// 15), so the shell can reproject B's Home once sync delivers it.
     @MainActor
     func testCreateAJoinBSwitchReprojectsTheShell() throws {
         let dir = try Self.temporaryProfileDirectory()
@@ -415,7 +429,10 @@ final class CommunityChooserTests: XCTestCase {
         XCTAssertEqual(model.communities.count, 2, "both communities appear in the chooser")
         XCTAssertEqual(model.community?.namespaceID, b.namespaceId, "the shell is now on B")
         XCTAssertFalse(model.community?.isOrganizer ?? true, "on B this person is a member, not an organizer")
-        XCTAssertNil(model.newswireDescriptorEntryID, "B carries no descriptor yet — pending first sync")
+        XCTAssertEqual(
+            model.newswireDescriptorEntryID, String(repeating: "1", count: 64),
+            "B carries the descriptor handle from its share reference — the shell can reproject once sync delivers it"
+        )
 
         model.switchCommunity(namespaceID: model.communities.first { $0.name == "Community A" }!.namespaceID)
         XCTAssertEqual(model.community?.name, "Community A", "the shell reprojects back to A")
@@ -426,13 +443,18 @@ final class CommunityChooserTests: XCTestCase {
     /// honest state — not fabricated content: a member row with no activity and no
     /// sync yet. An organizer's own space, or a community with any activity, is not.
     func testANewlyJoinedCommunityRowIsPendingFirstSync() {
-        func row(relationship: CommunityRelationship, activity: UInt64?, sync: UInt64?) -> CommunityChooserRow {
+        func row(
+            relationship: CommunityRelationship,
+            activity: UInt64?,
+            sync: UInt64?,
+            descriptor: String? = nil
+        ) -> CommunityChooserRow {
             CommunityChooserRow.from(
                 CommunityRow(
                     namespaceId: String(repeating: "a", count: 64),
                     title: "New community",
                     relationship: relationship,
-                    descriptorEntryId: nil,
+                    descriptorEntryId: descriptor,
                     recentActivityUnixSeconds: activity,
                     syncFreshnessUnixSeconds: sync,
                     archived: false,
@@ -444,6 +466,14 @@ final class CommunityChooserTests: XCTestCase {
         XCTAssertTrue(
             row(relationship: .member, activity: nil, sync: nil).pendingFirstSync,
             "a held-but-never-synced member community is pending first sync"
+        )
+        // Risk 15: carrying the descriptor handle does NOT flip the state — the row
+        // is pending until SYNC delivers content, not merely because it holds the
+        // handle to fetch it.
+        XCTAssertTrue(
+            row(relationship: .member, activity: nil, sync: nil, descriptor: String(repeating: "1", count: 64))
+                .pendingFirstSync,
+            "holding the descriptor handle is not the same as having synced — still pending"
         )
         XCTAssertFalse(
             row(relationship: .organizer, activity: nil, sync: nil).pendingFirstSync,

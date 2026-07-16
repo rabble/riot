@@ -570,7 +570,8 @@ public final class RiotAppModel: ObservableObject {
                 RiotSpace(
                     namespaceID: reference.namespaceId,
                     title: CommunityShareJoin.provisionalTitle(namespaceID: reference.namespaceId)
-                )
+                ),
+                descriptorEntryID: reference.descriptorEntryId
             )
             errorMessage = nil
             communityUnavailable = nil

@@ -481,10 +481,23 @@ public final class RiotProfileRepository {
     /// freshly parked author is sealed IMMEDIATELY via ``persistCommunities`` so
     /// the unsealed-in-RAM window is minimal (Risk 13).
     @discardableResult
-    public func joinAdditionalCommunity(_ space: RiotSpace) throws -> CommunityRow {
-        let joined = try profile.joinPublicSpace(
-            space: PublicSpace(namespaceId: space.namespaceID, title: space.title, isPublic: true)
-        )
+    public func joinAdditionalCommunity(
+        _ space: RiotSpace,
+        descriptorEntryID: String
+    ) throws -> CommunityRow {
+        // Join through `joinNewswireCommunity` so the joined community's registry
+        // row CARRIES the descriptor handle from the share reference (Risk 15) —
+        // otherwise it is a dead follow whose Home can never reproject. Keyed via
+        // the Keychain wrapping key so the displaced author is sealed inline
+        // (Risk 13), exactly like `joinSpace`.
+        let joined = try Self.withWrappingKey(from: keyStore) { wrappingKey in
+            try profile.joinNewswireCommunity(
+                space: PublicSpace(
+                    namespaceId: space.namespaceID, title: space.title, isPublic: true),
+                descriptorEntryId: descriptorEntryID,
+                wrappingKey: wrappingKey
+            )
+        }
         persisted.space = RiotSpace(namespaceID: joined.namespaceId, title: joined.title)
         persisted.sealedIdentity = try sealCurrentIdentity()
         try storage.save(persisted)

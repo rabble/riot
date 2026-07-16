@@ -24,11 +24,12 @@ class CommunityChooserTest {
         quarantined: Boolean = false,
         recentActivityUnixSeconds: ULong? = null,
         syncFreshnessUnixSeconds: ULong? = null,
+        descriptorEntryId: String? = null,
     ): CommunityRow = CommunityRow(
         namespaceId = namespaceId,
         title = title,
         relationship = relationship,
-        descriptorEntryId = null,
+        descriptorEntryId = descriptorEntryId,
         recentActivityUnixSeconds = recentActivityUnixSeconds,
         syncFreshnessUnixSeconds = syncFreshnessUnixSeconds,
         archived = archived,
@@ -119,6 +120,17 @@ class CommunityChooserTest {
         val joined = row("ns-b", title = "New community · ns-b", relationship = CommunityRelationship.MEMBER)
         assertTrue(CommunityChooserRow.isPendingFirstSync(joined))
         assertTrue(CommunityChooserRow.from(joined, nowUnixSeconds = 1_000_000L).pendingFirstSync)
+
+        // Risk 15: a joined community CARRIES its descriptor handle from the share
+        // reference, but that does not flip the state — it is pending until SYNC
+        // delivers content, not merely because it holds the handle to fetch it.
+        val carriesHandle = row(
+            "ns-b",
+            title = "New community · ns-b",
+            relationship = CommunityRelationship.MEMBER,
+            descriptorEntryId = "1".repeat(64),
+        )
+        assertTrue(CommunityChooserRow.isPendingFirstSync(carriesHandle))
     }
 
     @Test
