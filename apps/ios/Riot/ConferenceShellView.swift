@@ -17,7 +17,16 @@ struct ConferenceShellView: View {
             } else {
                 switch model.launchState {
                 case .loading:
-                    ShellRecoveryView(state: .profileStoreLoading, onPrimary: {}, onSecondary: nil)
+                    // The launch load. Its Retry re-attempts the (now self-healing)
+                    // open, and — because it must never be a permanent dead-end —
+                    // "Start fresh" quarantines the persisted state aside and opens
+                    // clean. See ``RiotAppModel/resetAndRecover``.
+                    ShellRecoveryView(
+                        state: .profileStoreLoading,
+                        onPrimary: model.retryBootstrap,
+                        onSecondary: model.resetAndRecover,
+                        secondaryLabelOverride: "Start fresh"
+                    )
                 case .noCommunity:
                     OnboardingView(model: model)
                 case let .unavailable(unavailable):
@@ -31,7 +40,16 @@ struct ConferenceShellView: View {
                 }
             }
         }
+        .safeAreaInset(edge: .top) {
+            if let message = model.recoveryNoticeMessage {
+                RecoveryNoticeBanner(message: message, onDismiss: model.dismissRecoveryNotice)
+            }
+        }
         .alert("Riot couldn’t finish that", isPresented: errorBinding) {
+            // Never only a dead OK/RETRY: "Start fresh" quarantines the persisted
+            // data aside (never deletes it) and re-opens a fresh profile, so a
+            // genuinely-unrecoverable error still reaches a usable state.
+            Button("Start fresh") { model.resetAndRecover() }
             Button("OK") { model.dismissError() }
         } message: {
             Text(model.errorMessage ?? "Unknown local error")
@@ -356,6 +374,44 @@ private struct OnboardingSetupView: View {
     }
 }
 
+// MARK: - Self-healing recovery notice
+
+/// The honest, non-fatal notice shown after a self-healing open recovered
+/// something. Dismissible — the recovery already happened and the app is usable;
+/// this only tells the person what was set aside (never deleted). Never a dead
+/// error.
+private struct RecoveryNoticeBanner: View {
+    let message: String
+    let onDismiss: () -> Void
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(.orange)
+                .accessibilityHidden(true)
+            Text(message)
+                .font(.riot(.body, size: 14, relativeTo: .footnote))
+                .foregroundStyle(RiotTheme.ink(for: colorScheme))
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 8)
+            Button(action: onDismiss) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
+            }
+            .accessibilityLabel("Dismiss")
+        }
+        .padding(12)
+        .background(RiotTheme.surface(for: colorScheme))
+        .overlay(alignment: .bottom) {
+            Rectangle().fill(.orange.opacity(0.4)).frame(height: 1)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("recovery-notice-banner")
+    }
+}
+
 // MARK: - Recovery surfaces (§4.7)
 
 /// The generic §4.7 recovery surface: a plain-language message, a primary action
@@ -366,6 +422,10 @@ private struct ShellRecoveryView: View {
     let state: ShellRecoveryState
     let onPrimary: () -> Void
     let onSecondary: (() -> Void)?
+    /// A secondary label for states whose own `secondaryActionLabel` is nil (the
+    /// loading state), so the launch load can offer "Start fresh" without
+    /// changing the copy the recovery-state tests pin.
+    var secondaryLabelOverride: String? = nil
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
@@ -382,7 +442,8 @@ private struct ShellRecoveryView: View {
             Button(state.primaryActionLabel, action: onPrimary)
                 .buttonStyle(.riotPrimary)
                 .frame(minHeight: 44)
-            if let secondary = state.secondaryActionLabel, let onSecondary {
+            if let secondary = secondaryLabelOverride ?? state.secondaryActionLabel,
+               let onSecondary {
                 Button(secondary, action: onSecondary)
                     .buttonStyle(.riotSecondary)
                     .frame(minHeight: 44)
