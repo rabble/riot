@@ -181,6 +181,68 @@ class NewswireExportViewTest(unittest.TestCase):
         # 837425926000000 µs after J2000 → a fixed UTC minute.
         self.assertEqual(nw._format_j2000(837_425_926_000_000), "2026-07-15 22:18 UTC")
 
+    def test_home_headlines_link_to_their_post_pages(self) -> None:
+        view = nw.newswire_view_from_export(
+            _export([_entry(entry_id="p" * 64, featured=True, title="Linked lead")])
+        )
+        page = nw.render_newswire(view)
+        self.assertIn(f'href="/post/{"p" * 64}/"', page)
+
+
+@unittest.skipIf(nw is None, "newswire module missing")
+class NewswirePostAndAuthorPageTest(unittest.TestCase):
+    SIGNER = "e" * 64
+
+    def _export(self) -> dict:
+        return _export(
+            [
+                _entry(entry_id="f" * 64, featured=True, title="Featured lead",
+                       signer=self.SIGNER, editorially_verified=True),
+                _entry(entry_id="w" * 64, featured=False, body="wire body",
+                       signer="0" * 64),
+                _entry(entry_id="x" * 64, signer=self.SIGNER,
+                       verification_status="signature_invalid", title="bad"),
+            ],
+            contributors=[
+                {"author_id": self.SIGNER, "display_name": "Harbor Desk",
+                 "is_organizer": True, "contribution_count": 2},
+            ],
+        )
+
+    def test_post_page_shows_headline_and_a_display_name_byline_without_the_key(self) -> None:
+        post = nw.post_view_from_export(self._export(), "f" * 64)
+        self.assertIsNotNone(post)
+        page = nw.render_post(post)
+        self.assertIn("Featured lead", page)
+        byline = re.search(r'class="byline".*?</div>', page, re.S).group(0)
+        self.assertIn("Harbor Desk", byline)
+        self.assertNotIn(self.SIGNER, byline)  # no key tag in the byline
+        # The key is disclosed as provenance, not as identity.
+        self.assertIn(self.SIGNER, page)
+
+    def test_a_signature_invalid_entry_has_no_post_page(self) -> None:
+        self.assertIsNone(nw.post_view_from_export(self._export(), "x" * 64))
+        self.assertNotIn("x" * 64, nw.all_post_ids(self._export()))
+
+    def test_all_post_ids_lists_the_renderable_posts_only(self) -> None:
+        self.assertEqual(set(nw.all_post_ids(self._export())), {"f" * 64, "w" * 64})
+
+    def test_author_page_is_emitted_only_for_carded_contributors(self) -> None:
+        self.assertIsNone(nw.author_view_from_export(self._export(), "0" * 64))  # nameless
+        author = nw.author_view_from_export(self._export(), self.SIGNER)
+        self.assertIsNotNone(author)
+        self.assertEqual(author.display_name, "Harbor Desk")
+        self.assertTrue(author.is_organizer)
+
+    def test_author_page_lists_only_that_authors_verified_posts(self) -> None:
+        author = nw.author_view_from_export(self._export(), self.SIGNER)
+        ids = [p.entry_id for p in author.posts]
+        self.assertEqual(ids, ["f" * 64])  # not the "0"-signed wire post, not the invalid one
+        page = nw.render_author(author)
+        self.assertIn("Harbor Desk", page)
+        self.assertIn("recognized organizer", page)
+        self.assertIn(f'href="/post/{"f" * 64}/"', page)
+
 
 if __name__ == "__main__":
     unittest.main()
