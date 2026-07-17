@@ -56,6 +56,16 @@ final class JoinReferenceTests: XCTestCase {
         let model = JoinReferenceModel()
         XCTAssertThrowsError(try model.preview(fromScannedString: "WIFI:S:foo;;")) // scan path: riot:// only
     }
+    func testTooLongPayloadRejected() {
+        let model = JoinReferenceModel()
+        let huge = "riot://newswire/join/v1/" + String(repeating: "a", count: 5000) // > maxLen (4096)
+        XCTAssertThrowsError(try model.preview(fromScannedString: huge)) { error in
+            XCTAssertEqual(error as? JoinReferenceError, .tooLong)
+        }
+        XCTAssertThrowsError(try model.preview(fromPastedString: huge)) { error in
+            XCTAssertEqual(error as? JoinReferenceError, .tooLong)
+        }
+    }
     func testDuplicateJoinIsDetected() throws {
         let model = JoinReferenceModel()
         let existing = [CommunityRowStub(namespaceId: "abc123")]  // or a real CommunityRow
@@ -156,7 +166,7 @@ func testJoiningAnAlreadyJoinedReferenceSwitchesInsteadOfDuplicating() throws {
 
 - [ ] **Step 2: Run → FAIL.**
 
-- [ ] **Step 3: Implement** the sheet (mirror `YourProfileSheet` chrome: `@ObservedObject var model`, `let onClose`, `.riotHeader(eyebrow: "Follow", "Join with a link")`, `.toolbar` Done). Body: a segmented `Picker` (Paste / Scan) → paste `TextField` or `QRScannerView(onScanned:)`; on input → `JoinReferenceModel.preview(from…)`; render the **honest preview** ("Join community `\(preview.shortNamespace)`? Its name and posts arrive on first sync.", namespace in monospace `IdentifierRow` treatment); error state renders `JoinReferenceError` as actionable copy (invalid link / not a Riot link / too long); camera-denied → `CameraPermissionRecovery` card (paste still available). **Confirm** → if `model.isAlreadyJoined(preview.namespaceIdHex, within: listCommunities().map(\.namespaceId))` → `switchToCommunity(namespaceID:)` + dismiss; else call a new `model.joinByReference(preview)` on `RiotAppModel` that does `joinPublicSpace(PublicSpace(namespaceId: preview.namespaceIdHex, title: "", isPublic: true), wrappingKey:)` and routes into the shell showing the **pending-first-sync** state (lead with the honest explanation; Nearby is a secondary option, NOT the headline — nearby is red). Add the thin `RiotAppModel.joinByReference(_:)` method (business logic stays in the FFI/repository; the model just forwards).
+- [ ] **Step 3: Implement** the sheet (mirror `YourProfileSheet` chrome: `@ObservedObject var model`, `let onClose`, `.riotHeader(eyebrow: "Follow", "Join with a link")`, `.toolbar` Done). Body: a segmented `Picker` (Paste / Scan) → paste `TextField` or `QRScannerView(onScanned:)`. **macOS build (gate r1):** `QRScannerView` is `#if os(iOS)` — so the **Scan segment and the `QRScannerView(onScanned:)` embed must ALSO be `#if os(iOS)`**; on macOS the sheet shows **paste-only** (Picker collapses to the paste field, no Scan option). This keeps the macOS app BUILD SUCCEEDED (§Task 6). Then: on input → `JoinReferenceModel.preview(from…)`; render the **honest preview** ("Join community `\(preview.shortNamespace)`? Its name and posts arrive on first sync.", namespace in monospace `IdentifierRow` treatment); error state renders `JoinReferenceError` as actionable copy (invalid link / not a Riot link / too long); camera-denied → `CameraPermissionRecovery` card (paste still available). **Confirm** → if `model.isAlreadyJoined(preview.namespaceIdHex, within: listCommunities().map(\.namespaceId))` → `switchToCommunity(namespaceID:)` + dismiss; else call a new `model.joinByReference(preview)` on `RiotAppModel` that does `joinPublicSpace(PublicSpace(namespaceId: preview.namespaceIdHex, title: "", isPublic: true), wrappingKey:)` and routes into the shell showing the **pending-first-sync** state (lead with the honest explanation; Nearby is a secondary option, NOT the headline — nearby is red). Add the thin `RiotAppModel.joinByReference(_:)` method (business logic stays in the FFI/repository; the model just forwards).
 
 - [ ] **Step 4: Run → PASS.** **Step 5: Commit** the sheet + test.
 

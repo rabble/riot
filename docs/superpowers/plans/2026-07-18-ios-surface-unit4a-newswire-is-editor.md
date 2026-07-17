@@ -64,11 +64,14 @@ First **read `require_action_authority` (entry.rs:212-228) exactly** to determin
 /// The single source of truth for "may this subject take editorial actions in this space".
 /// Reused by both the admission gate (`require_action_authority`) and the FFI display
 /// predicate (`newswire_is_editor`) so the two can never diverge.
-pub(crate) fn is_editorial_authority(descriptor: &SpaceDescriptorV1, subject_id: &[u8; 32]) -> bool {
+/// `pub` (not `pub(crate)`) — the riot-ffi crate calls it via a `crate::newswire` re-export.
+pub fn is_editorial_authority(descriptor: &SpaceDescriptorV1, subject_id: &[u8; 32]) -> bool {
     descriptor.editorial_roster.contains(subject_id)
-    // NOTE: match require_action_authority exactly. If that fn special-cases the founder
-    // (subject == descriptor.namespace_id), add `|| *subject_id == descriptor.namespace_id` here
-    // AND in require_action_authority in the same edit, so both stay identical.
+    // Matches require_action_authority EXACTLY (verified: no founder special-case there —
+    // a founder with an empty roster is rejected at admission, so display==authority==false).
+    // If a future product decision makes the founder always an editor, add
+    // `|| *subject_id == descriptor.namespace_id` HERE and in require_action_authority in the
+    // SAME edit so admission and display stay identical (design §4, corrected r1).
 }
 ```
 Refactor `require_action_authority` to compute `signer_id` as today, keep the namespace-match check, and replace the inline `!descriptor.editorial_roster.contains(&signer_id)` with `!is_editorial_authority(descriptor, &signer_id)`. No behavior change.
@@ -105,6 +108,29 @@ fn newswire_is_editor_true_for_member_false_for_outsider_and_unknown() {
     assert!(!profile.newswire_is_editor(space.entry_id.clone(), OUTSIDER_HEX.into()).unwrap());
     // unknown descriptor id → Ok(false), NOT an error
     assert_eq!(profile.newswire_is_editor(UNKNOWN_ID_HEX.into(), EDITOR_HEX.into()).unwrap(), false);
+}
+
+#[test]
+fn newswire_is_editor_founder_with_empty_roster_is_false_matching_admission() {
+    // A space whose founder created it with an EMPTY roster. The founder's own id
+    // (== the space namespace id) must be false — display==authority; admission rejects it.
+    let profile = open_local_profile();
+    let space = profile.create_newswire_space(NewswireSpaceInput {
+        name: "Empty".into(), summary: "s".into(), languages: vec!["en".into()],
+        geographic_tags: vec![], topic_tags: vec![], editorial_roster: vec![], // empty
+    }).unwrap();
+    let founder_hex = /* hex of this profile's author subspace id == the space namespace id */;
+    assert_eq!(profile.newswire_is_editor(space.entry_id, founder_hex).unwrap(), false);
+}
+
+#[test]
+fn newswire_is_editor_non_descriptor_entry_id_is_false() {
+    // An entry id that resolves to a NON-descriptor record (e.g. a post or editorial action)
+    // → Ok(false) via the let-else branch, not an error.
+    let profile = open_local_profile();
+    let space = profile.create_newswire_space(/* ...roster: [] */).unwrap();
+    let post = profile.create_newswire_post(/* a post in `space` */).unwrap();
+    assert_eq!(profile.newswire_is_editor(post.entry_id, EDITOR_HEX.into()).unwrap(), false);
 }
 ```
 > Build `EDITOR_HEX`/`OUTSIDER_HEX` from generated author subspace ids (hex of `[u8;32]`); `UNKNOWN_ID_HEX` = a syntactically-valid but not-in-store entry id. Match the harness of the nearest existing `crates/riot-ffi/tests/newswire_*_contract.rs`.
