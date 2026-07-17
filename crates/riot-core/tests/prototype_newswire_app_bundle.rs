@@ -2,7 +2,8 @@
 //!
 //! Proves the "web app = a packaged Willow drop" idea against the REAL apps API
 //! (`riot_core::apps::bundle`): take the rendered viewer (index.html) plus the
-//! projected newswire data, build an `AppBundle`, run the format's own egress
+//! rigorous signed `/2` export (`gateway-space/public-export-v1.json`), build an
+//! `AppBundle`, run the format's own egress
 //! fence (`scan_bundle_egress` — refuses phone-home/WebRTC content by byte
 //! scan), encode to the canonical drop bytes, content-address it
 //! (`app_bundle_digest`), and confirm it round-trips through `decode_app_bundle`.
@@ -83,7 +84,7 @@ fn package_newswire_viewer_as_app_drop() {
         "<!doctype html><meta charset=\"utf-8\"><title>RIOT Newswire</title><p>newswire viewer</p>",
     );
     let export = read_or(
-        &root.join("fixtures/newswire/newswire-export-v1.json"),
+        &root.join("fixtures/newswire/gateway-space/public-export-v1.json"),
         "{}",
     );
 
