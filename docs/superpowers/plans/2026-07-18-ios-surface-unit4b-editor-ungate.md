@@ -25,6 +25,18 @@
 
 ---
 
+## Cross-unit coupling (gate r1) — Unit 4b vs Unit 7
+
+**Unit 4b and Unit 7 both edit the same three surfaces** — `NewswireSurfaceModel.init` (`apps/ios/Riot/NewswireEditorial.swift`), the shell construction (`apps/ios/Riot/ConferenceShellView.swift:305-312`), and `apps/ios/RiotTests/NewswireSurfaceTests.swift`. Unit 7 (dead-end fixes) adds a `descriptorResolver:` init parameter (the `offlineStale` "re-derive the descriptor id" path, design §7). **Agreed reconciliation (Unit 7's writer is adding the mirror of this note):**
+
+- **Land order: 4b BEFORE 7.**
+- **Final `NewswireSurfaceModel.init` carries BOTH new params:** `authority:` (4b, replacing `roster:`) **and** `descriptorResolver:` (Unit 7). 4b drops `roster:` + adds `authority:`; Unit 7 then adds `descriptorResolver:` on top of 4b's signature.
+- **Shell construction (`ConferenceShellView.swift:305-312`):** 4b passes `authority:` (predicate-driven, **no `roster:`**); Unit 7 later adds `descriptorResolver:`. The merged call carries both, never `roster:`.
+- **Whoever lands updates ALL init call sites** to the then-current signature: 4b converts `liveModel` (`NewswireSurfaceTests.swift:83-98`) + the constructions at `:242` and `:252` (see Task 2 Step 0); Unit 7 re-updates every call site again when it adds `descriptorResolver:`.
+- **Serialize on the files:** claim `NewswireEditorial.swift` / `ConferenceShellView.swift` / `NewswireSurfaceTests.swift` (and `CommunityShell.swift`) in COLLABORATION.md; **4b and 7 must NOT run concurrently** on these files.
+
+---
+
 ## Ground truth (verified)
 
 - **The session-only hack to REPLACE** (`apps/ios/Riot/NewswireEditorial.swift:198-213`):
@@ -203,22 +215,41 @@ git commit -m "feat(ios): newswireIsEditor repository wrapper + authority seam (
 
 **Files:** Modify `apps/ios/Riot/NewswireEditorial.swift` (`NewswireSurfaceModel` + `NewswireSurfaceView`); Test `apps/ios/RiotTests/NewswireSurfaceTests.swift`.
 
-- [ ] **Step 1: Write the failing tests.** Add to `NewswireSurfaceTests`. These drive the model against **real core** through an authority seam that is the live repository (so display == authority is proven, not stubbed):
-```swift
-// A model whose authority is the live core, keyed on the profile's REAL whoami id.
-private func liveEditorModel(profile: MobileProfile, spaceID: String) throws -> NewswireSurfaceModel {
-    let live = LiveNewswire(profile)
-    let repo = RiotProfileRepository(profile)
-    let mineHex = RiotDirectoryRow.hex(try profile.whoami().id)
-    return NewswireSurfaceModel(projector: live, editor: live, authority: repo,
-        spaceDescriptorEntryID: spaceID, communityName: "Riverside", myKeyHex: mineHex)
-}
+- [ ] **Step 0: Convert EVERY pre-existing `NewswireSurfaceModel(...)` construction to the new init (compile-break fix — do this in the SAME commit as Step 3, else RiotTests won't build).** Changing the init (drop `roster:`, add `authority:`) orphans three existing constructions in `apps/ios/RiotTests/NewswireSurfaceTests.swift`; convert them — do **not** leave the old `roster:` calls and do **not** add a parallel helper:
 
+  **(a) Convert the `liveModel` helper itself** (`NewswireSurfaceTests.swift:83-98`) — this is the shared live-core helper that `testRecognizedEditorCanSignAllSixKindsAndEachTakesEffect` (`:308`), `testANonEditorsActionIsIgnoredTheEffectIsAbsentNotJustTheControl` (`:369`, retained by Task 4), `testHiddenControlAndRejectedActionAreIndependent` (`:394`), and `testAnInvalidDraftIsRejectedBeforeItEverReachesCore` (`:413`) all route through. Fix the FAKE key (`myKeyHex: "aa".repeated(32)`) at the same time by keying on the profile's REAL whoami id, and drop the now-unused `roster:` param (the roster lives in the descriptor created via `spaceInput(_, roster:)`, and the model now reads it through the predicate, not a passed array):
+```swift
+    // A model whose authority is the LIVE core, keyed on the profile's REAL whoami id
+    // (the old `myKeyHex: "aa"*32` never mattered because the replaced static ignored the
+    // key for an empty roster — the predicate does not, so the real id is load-bearing now).
+    private func liveModel(profile: MobileProfile, spaceID: String) throws -> NewswireSurfaceModel {
+        let live = LiveNewswire(profile)
+        return NewswireSurfaceModel(
+            projector: live, editor: live, authority: RiotProfileRepository(profile),
+            spaceDescriptorEntryID: spaceID, communityName: "Riverside",
+            myKeyHex: RiotDirectoryRow.hex(try profile.whoami().id))
+    }
+```
+   Then update its four call sites to `try liveModel(profile: profile, spaceID: space.entryId)` (drop `roster:`/`myKeyHex:`; add `try`). **Where a test needs the founder to BE a recognized editor** (`testRecognizedEditorCanSignAllSixKinds...` `:307`, `testAnInvalidDraft...` `:411` — both currently create with an *empty* roster and assert the founder can sign), change the space creation to seed the founder explicitly, matching production (`ConferenceShellView.swift:98` seeds `editorialRoster: [me.id]`, never literally empty): `let mineHex = RiotDirectoryRow.hex(try profile.whoami().id); let space = try profile.createNewswireSpace(input: spaceInput("Six Kinds", roster: [mineHex]))`. This keeps those tests green under the live predicate **independent of how Unit 4a resolves the literally-empty-stored-roster edge** (4a's `FOUNDER_EMPTY_ROSTER_IS_EDITOR`) — 4b never relies on empty-roster-create implying founder-true. The non-editor tests (`:369`, `:394`) already create with `roster: [stranger]`, so their founder-is-not-an-editor assertions hold as-is once routed through the real key.
+
+  **(b) Convert the two `ThrowingProjector`/`ThrowingEditor` constructions** at `NewswireSurfaceTests.swift:243-246` and `:252-255` to the new init — add `authority:` and drop `roster:`. Make the existing `ThrowingEditor` test double also satisfy the authority seam (throwing ⇒ `load()` maps to `isEditor == false`, which is all these `offlineStale` assertions need):
+```swift
+    // ThrowingEditor now also conforms to NewswireEditorAuthorityChecking:
+    //   func newswireIsEditor(spaceDescriptorEntryID: String, subjectID: String) throws -> Bool {
+    //       throw <the same error ThrowingEditor already throws> }
+    let model = NewswireSurfaceModel(
+        projector: ThrowingProjector(), editor: ThrowingEditor(), authority: ThrowingEditor(),
+        spaceDescriptorEntryID: "", communityName: "Riverside",   // ":252" case: use "desc"
+        myKeyHex: "aa".repeated(32))                               // key irrelevant here (offlineStale test)
+```
+
+- [ ] **Step 1: Write the failing tests** for the new predicate-driven behavior, using the converted `liveModel`. Add to `NewswireSurfaceTests`:
+```swift
 func testFounderInTheStoredRosterIsOfferedControlsViaTheCorePredicate() throws {
     let profile = try openLocalProfile()
     let mineHex = RiotDirectoryRow.hex(try profile.whoami().id)
     let space = try profile.createNewswireSpace(input: spaceInput("Mine", roster: [mineHex]))
-    let model = try liveEditorModel(profile: profile, spaceID: space.entryId)
+    let model = try liveModel(profile: profile, spaceID: space.entryId)
     model.load()
     XCTAssertTrue(model.canOfferEditorialControls, "a roster member is offered controls")
     XCTAssertNil(model.editorialControlsPendingNote, "an editor sees no pending note")
@@ -228,7 +259,7 @@ func testNonMemberIsNotOfferedControlsAndSeesNoMisleadingPendingNoteWhenSynced()
     let profile = try openLocalProfile()
     let space = try profile.createNewswireSpace(input: spaceInput("Others", roster: ["11".repeated(32)]))
     _ = try profile.createNewswirePost(input: postInput(space.entryId, "Report"))  // wire has content ⇒ synced
-    let model = try liveEditorModel(profile: profile, spaceID: space.entryId)       // my key ∉ roster
+    let model = try liveModel(profile: profile, spaceID: space.entryId)             // my key ∉ roster
     model.load()
     XCTAssertFalse(model.canOfferEditorialControls, "a non-member is not offered controls")
     XCTAssertNil(model.editorialControlsPendingNote,
@@ -259,7 +290,7 @@ func testEmptyDescriptorIdIsNeverAnEditorAndShowsNoNote() throws {
 }
 ```
 
-- [ ] **Step 2: Run → FAIL** (`extra argument 'authority'` / `no member 'editorialControlsPendingNote'`).
+- [ ] **Step 2: Run → FAIL** (`extra argument 'authority'` / `no member 'editorialControlsPendingNote'`; and the pre-existing constructions fail to compile until Step 0's conversions land — Step 0 + Step 3 ship together).
 
 - [ ] **Step 3: Implement.** In `NewswireSurfaceModel` (`NewswireEditorial.swift:479-522`):
   - Add the injected seam + a published editor flag; **drop `roster`**, keep `myKeyHex`:
@@ -397,7 +428,7 @@ git commit -m "refactor(ios): delete dead session-only editorial roster (Editori
 
 **Files:** Modify `apps/ios/RiotTests/NewswireSurfaceTests.swift`.
 
-The point of the slice (design §4, §9): the predicate is a *display* gate; core is the authorization boundary. `testANonEditorsActionIsIgnoredTheEffectIsAbsentNotJustTheControl` (`:363-383`, quoted in Ground truth) already proves this end-to-end through the **live** model + real core, and its `liveModel(...)` uses real signing — **retain it unchanged** (it does not depend on the deleted `roster` gate; its `sign()` path goes to core). Add ONE explicit "controls forced visible" assertion so the independence is stated against the new seam:
+The point of the slice (design §4, §9): the predicate is a *display* gate; core is the authorization boundary. `testANonEditorsActionIsIgnoredTheEffectIsAbsentNotJustTheControl` (`:363-383`, quoted in Ground truth) already proves this end-to-end through the **live** model + real core; **retain its assertions** (the `.rejected` outcome, the preserved draft, the unchanged post) — its `sign()` path goes to core, which is unaffected by the display gate. Its ONE mechanical change is the `liveModel` call: it is **converted, not duplicated**, by Task 2 Step 0(a) — `liveModel(profile: profile, spaceID: space.entryId, roster: [stranger])` becomes `try liveModel(profile: profile, spaceID: space.entryId)` (the roster now lives in the descriptor created by `spaceInput("Delegated", roster: [stranger])`, and the model keys on the profile's real whoami id ∉ that roster ⇒ predicate false ⇒ core rejects). Then add ONE explicit "controls forced visible" assertion so the independence is stated against the new seam:
 
 - [ ] **Step 1: Write the failing test.**
 ```swift
@@ -458,5 +489,8 @@ git commit -m "test(ios): defense-in-depth — forced-visible controls still can
 - **Design line-number correction flagged:** `ConferenceShellView.swift:98` is the *founding roster into core* (KEEP), not the `CommunityContext.editorialRoster` display population (`CommunityShell.swift:412`, DELETE) — called out in Ground truth and Task 3 so the implementer does not delete the line that makes founders editors.
 - **Type consistency:** ids are lowercase hex `String` throughout (`me.id`, `RiotDirectoryRow.hex(whoami().id)`, wrapper args); `NewswireEditorAuthorityChecking.newswireIsEditor(spaceDescriptorEntryID:subjectID:) throws -> Bool` used identically by the model seam, the live `RiotProfileRepository` wrapper, the `UnavailableEditor` stub, and the `AlwaysEditor` test stub.
 - **Test seeding of a joined-vs-created roster (the flagged risk):** 4b's tests seed a **synthetic descriptor** via `createNewswireSpace(input: spaceInput(_, roster:))` on a single local profile — a *created* community with a chosen stored roster — **never live two-peer sync** (which is RED on main, see MEMORY `riot-two-peer-sync-red`). The "joined, pre-first-sync" case is modeled as an **unknown descriptor id** (`"ab".repeated(32)`) whose projection fails → `offlineStale` + predicate-false → the pending note (`testUnknownDescriptorShowsThePendingSyncNote...`). This exercises the exact 4b surface (predicate-false → note; predicate-true → controls) without depending on a real sync. A genuinely joined-then-synced roster read is a core/transport concern proven by Unit 4a's Rust/FFI tests, not re-litigated in Swift.
+- **No orphaned call sites (gate r1 BLOCKER 1 resolved):** the init change (drop `roster:`, add `authority:`) converts EVERY pre-existing `NewswireSurfaceModel(...)` in `NewswireSurfaceTests.swift` in the same commit — Task 2 **Step 0** converts (a) the shared `liveModel` helper (`:83-98`, also fixing the FAKE `myKeyHex: "aa"*32` → real `RiotDirectoryRow.hex(try profile.whoami().id)`) and its four call sites (`:308/:369/:394/:413`), and (b) the two `ThrowingProjector`/`ThrowingEditor` constructions (`:243/:252`, with `ThrowingEditor` extended to the authority seam). `testANonEditorsActionIsIgnored...` (Task 4) is **converted through `liveModel`, not duplicated**. RiotTests compiles.
+- **Fake-key fix is complete, not half-done:** `liveModel` itself now uses the real whoami hex, so the founder/non-member predicate reads are genuine; tests that need the founder to be an editor seed `spaceInput(_, roster: [mineHex])` (production reality, `ConferenceShellView.swift:98`), so they hold regardless of 4a's empty-stored-roster resolution.
+- **Cross-unit coupling (gate r1 BLOCKER 2 resolved):** the "Cross-unit coupling" section near the top states the AGREED reconciliation with Unit 7 — land order **4b before 7**; the final `NewswireSurfaceModel.init` carries BOTH `authority:` (4b) and `descriptorResolver:` (Unit 7); the shell construction carries both, never `roster:`; whoever lands updates all init call sites; the shared files are claimed in COLLABORATION.md and 4b/7 do not run concurrently on them.
 - **HARD DEPENDENCY restated:** 4b will not compile — let alone go green — until Unit 4a's regenerated binding (`newswireIsEditor` on `MobileProfile`) + rebuilt native staticlib are on the branch. Task 1 has an explicit precondition gate; do not begin the wrapper before the 4a smoke call compiles + loads without a checksum abort.
-- **Dependency order (within 4b):** T1 (wrapper + seam) → T2 (predicate gate + note, adds `authority`) → T3 (delete dead sources, now safe) → T4 (defense-in-depth) → T5 (build both). No new Swift file ⇒ no pbxproj edit.
+- **Dependency order (within 4b):** T1 (wrapper + seam) → T2 (Step 0 convert existing call sites → predicate gate + note, adds `authority`) → T3 (delete dead sources, now safe) → T4 (defense-in-depth) → T5 (build both). No new Swift file ⇒ no pbxproj edit.

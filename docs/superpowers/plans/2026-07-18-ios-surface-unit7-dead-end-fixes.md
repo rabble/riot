@@ -6,13 +6,39 @@
 
 **Goal:** Kill the three newswire-surface dead-ends called out in design §7 — every terminal state must offer a reachable next action, never a dead no-op button and never a silent retry loop. (1) The no-op "Open wire" button (`NewswireEditorial.swift:652`, empty `{}`) → remove it; the open wire already renders directly below. (2) The `offlineStale` "Try again" loop (`NewswireEditorial.swift:637` → `model.load()` re-projecting the same empty descriptor id) → re-derive the descriptor id first, and if it is still absent (a nearby-joined community with no `descriptorEntryId`), offer a real forward path instead of re-looping. (3) The post-join "pending first sync" state → an honest waiting message that leads with the verified-working path (rejoin with a link) and keeps the red-on-main Nearby path secondary. NOT the chooser Create/Find-nearby no-ops — those are Unit 1.
 
-**Architecture:** All three fixes are modeled as **pure data on `NewswireSurfaceModel`** so the view carries no dead closures and every terminal state is unit-testable as a value. A new `NewswireWireForwardAction` enum enumerates the forward paths (`retry` / `postFirstUpdate` / `rejoinWithLink` / `syncWithPeer`); a computed `forwardActions: [NewswireWireForwardAction]` decides — purely, over the model's already-loaded state — WHICH actions each wire state offers and IN WHAT ORDER. The view renders buttons straight from that array (no inline `(label, {})` literals survive). `load()` gains a **descriptor re-derive seam** (`descriptorResolver: (() -> String?)?`, injected by the shell, defaulting to `nil` so every existing construction is unaffected): a community whose registry row gained a `descriptorEntryId` after this model was built (a switch/join whose sync landed) is picked up on `load()`/`retry()` instead of re-looping on the empty id. The shell wires the resolver to a new on-demand `RiotAppModel.rederivedNewswireDescriptorID()` (the same `listCommunities()` derivation `reload()` already does) and passes `onSyncWithPeer` / `onRejoinWithLink` navigation callbacks into `NewswireSurfaceView`. No new FFI, no `uniffi::Record`, no new Swift file.
+**Architecture:** All three fixes are modeled as **pure data on `NewswireSurfaceModel`** so the view carries no dead closures and every terminal state is unit-testable as a value. A new `NewswireWireForwardAction` enum enumerates the forward paths (`retry` / `postFirstUpdate` / `rejoinWithLink` / `syncWithPeer`); a computed `forwardActions: [NewswireWireForwardAction]` decides — purely, over the model's already-loaded state — WHICH actions each wire state offers and IN WHAT ORDER. The view renders buttons straight from that array (no inline `(label, {})` literals survive). `load()` gains a **descriptor re-derive seam** (`descriptorResolver: (() -> String?)?`, appended onto Unit 4b's post-refactor `init`, injected by the shell, defaulting to `nil` so 4b's own constructions are unaffected): a community whose registry row gained a `descriptorEntryId` after this model was built (a switch/join whose sync landed) is picked up on `load()`/`retry()` instead of re-looping on the empty id. **This unit lands on top of Unit 4b** — see "Cross-unit coupling (gate r1)" for the merged `init`/shell/test signatures (`authority:` from 4b + `descriptorResolver:` from Unit 7, no `roster:`). The shell wires the resolver to a new on-demand `RiotAppModel.rederivedNewswireDescriptorID()` (the same `listCommunities()` derivation `reload()` already does) and passes `onSyncWithPeer` / `onRejoinWithLink` navigation callbacks into `NewswireSurfaceView`. No new FFI, no `uniffi::Record`, no new Swift file.
 
 **Tech stack:** Swift 6 / SwiftUI, XCTest. Design: `docs/superpowers/specs/2026-07-18-ios-surface-built-capabilities-design.md` §7 (dead-end fixes) + §3 (pending-first-sync ordering) + §2 anti-dead-end invariants.
 
-**Shared-checkout:** **No new Swift files** → **no `project.pbxproj` edit on either project** (both edited files — `NewswireEditorial.swift`, `AppModel.swift`, `ConferenceShellView.swift` — and the test file `NewswireSurfaceTests.swift` are already registered). No COLLABORATION.md pbxproj claim is required for this unit. Pathspec commits; absolute `git`/`grep`.
+**Shared-checkout:** **No new Swift files** → **no `project.pbxproj` edit on either project** (both edited files — `NewswireEditorial.swift`, `AppModel.swift`, `ConferenceShellView.swift` — and the test file `NewswireSurfaceTests.swift` are already registered). No COLLABORATION.md pbxproj claim is required. But this unit **collides with Unit 4b** on `NewswireEditorial.swift` / `ConferenceShellView.swift` / `NewswireSurfaceTests.swift` (see "Cross-unit coupling" below) → **claim `apps/ios/Riot/NewswireEditorial.swift`, `apps/ios/Riot/ConferenceShellView.swift`, `apps/ios/Riot/AppModel.swift`, `apps/ios/RiotTests/NewswireSurfaceTests.swift` in COLLABORATION.md before editing; Unit 4b and Unit 7 must NOT run concurrently on these files.** Pathspec commits; absolute `git`/`grep`.
 
-**Cross-unit dependency (flagged — see Self-Review):** the `rejoinWithLink` forward path presents **Unit 1's `JoinByReferenceSheet`**, which does not exist yet (`apps/ios/Riot/JoinByReferenceSheet.swift` absent as of this plan). Unit 7's **model + tests are fully independent of Unit 1** (they assert the pure `forwardActions` data, never the sheet). Only the **shell wiring of `onRejoinWithLink` → present `JoinByReferenceSheet`** (Task 4) depends on Unit 1. **Sequence Unit 1 before Unit 7.** If Unit 7 must land first, wire `onRejoinWithLink` to the same forward action the Unit 1 Launch button will use once it exists, and keep `syncWithPeer` (→ Nearby, a real existing screen) as the interim reachable action — never leave `rejoinWithLink` a dead `{}`.
+---
+
+## Cross-unit coupling (gate r1)
+
+**Unit 7 collides with Unit 4b** and both edit `NewswireSurfaceModel.init`, the shell construction (`ConferenceShellView.swift:305-312`), and `NewswireSurfaceTests.swift`. Reconciliation is AGREED and mirrored in the Unit 4b plan (`docs/superpowers/plans/2026-07-18-ios-surface-unit4b-editor-ungate.md` §"Cross-unit coupling", lines 33-34):
+
+- **Land order: Unit 4b BEFORE Unit 7.** Unit 7 builds ON TOP of 4b's already-refactored `NewswireSurfaceModel`. Unit 4b and Unit 7 must not run concurrently on the shared files (claim them in COLLABORATION.md).
+- **What 4b changes first:** 4b **removes** `roster: [String]?` from `NewswireSurfaceModel.init` and **adds** `authority: NewswireEditorAuthorityChecking`; it **deletes** `CommunityContext.editorialRoster` (and the `EditorialAuthority` enum). So after 4b lands there is **no `roster:` init param and no `community.editorialRoster` field**.
+- **The final `init` carries BOTH new params:** 4b's `authority:` (which replaced `roster:`) **and** Unit 7's `descriptorResolver:`. Unit 7 appends `descriptorResolver: (() -> String?)? = nil` after `initialDraftKind` onto 4b's post-refactor signature:
+```swift
+public init(
+    projector: NewswireProjecting,
+    editor: NewswireEditorialActing,
+    authority: NewswireEditorAuthorityChecking,   // 4b (replaced roster:)
+    spaceDescriptorEntryID: String,
+    communityName: String,
+    myKeyHex: String,
+    initialDraftKind: EditorialActionKind = .feature,
+    descriptorResolver: (() -> String?)? = nil    // Unit 7 (this plan)
+)
+```
+- **Shell wiring (`ConferenceShellView.swift:305-312`) post-4b passes `authority:` and `descriptorResolver:`, NEVER `roster: community.editorialRoster`** (that field is deleted by 4b). Task 4's construction below is written against the post-4b signature.
+- **`load()` ordering:** 4b computes `isEditor` at the TOP of `load()` off `spaceDescriptorEntryID`. Unit 7's descriptor re-derive must run **before** that `isEditor` computation, so the predicate sees the freshly re-derived id (a community whose descriptor just landed is BOTH projected and correctly editor-gated in one `load()`). Task 2's `load()` rewrite places the re-derive as the first statement, ahead of 4b's `isEditor = (try? authority.newswireIsEditor(...))`.
+- **Tests:** every `NewswireSurfaceModel(...)` construction in this plan uses the post-4b signature — `authority:` supplied, **no `roster:`**. Unit 7's pure wire-state tests pass a trivial `StubAuthority` (editor status is irrelevant to wire state); the `descriptorResolver` default stays `nil` so 4b's own offline/stale constructions (which don't pass it) are unaffected.
+- **If Unit 7 somehow must land BEFORE 4b (not recommended):** keep `roster: [String]?` additively in the init and pass `roster: community.editorialRoster` in the shell, and note 4b will remove both — but prefer 4b-first.
+
+**Cross-unit dependency on Unit 1 (separate — flagged, see Self-Review):** the `rejoinWithLink` forward path presents **Unit 1's `JoinByReferenceSheet`**, which does not exist yet (`apps/ios/Riot/JoinByReferenceSheet.swift` absent as of this plan). Unit 7's **model + tests are fully independent of Unit 1** (they assert the pure `forwardActions` data, never the sheet). Only the **shell wiring of `onRejoinWithLink` → present `JoinByReferenceSheet`** (Task 4) depends on Unit 1. **Sequence Unit 1 before Unit 7.** If Unit 7 must land first, wire `onRejoinWithLink` to the same forward action the Unit 1 Launch button will use once it exists, and keep `syncWithPeer` (→ Nearby, a real existing screen) as the interim reachable action — never leave `rejoinWithLink` a dead `{}`. (Combined order: **4b → 1 → 7**, or at minimum **4b → 7** with the Unit 1 interim wiring.)
 
 ---
 
@@ -27,8 +53,8 @@
 - **`NewswireSurfaceView`** (`:605-811`) is `init(model:onPostUpdate:)` (`onPostUpdate` defaults to `{}`); `wireSection` (`:629-663`) switches on `model.wire`. `emptyWire`'s primary is `("Post the first update", onPostUpdate)`; in the shell `NewswireSurfaceView(model: newswire)` passes no `onPostUpdate`, so that button is already a `{}` no-op — **out of scope** (§7 lists Open-wire / offlineStale / pending-sync only), preserved as-is by routing it through the existing `onPostUpdate` seam.
 - **`load()` degradation is the honest pattern to preserve** (`:526-544`): a missing descriptor id or a projection throw both become `.offlineStale` — "never a raw internal error, never invented content." `NewswireSurfaceTests` proves it: `testMissingDescriptorIsOfflineStaleNeverAFabricatedEmptyWire` (`:241`) and `testProjectionFailureIsOfflineStaleNeverARawError` (`:251`).
 - **`AppModel.reload()`** (`:490-517`) already re-derives the descriptor per reload: `newswireDescriptorEntryID = (try? repository.listCommunities())?.first { $0.namespaceId == namespaceID }?.descriptorEntryId` (`:501-503`), else `nil` (`:505`). The comment (`:494-499`) states the exact intent: "any community reached after an app relaunch or a switch had a permanently dead newswire" — this unit extends that re-derive to the `offlineStale` recovery path so a model built before the sync can pick the id up without a full shell rebuild. `RiotAppModel` exposes `select(_:)` (`:358`) for `.nearby` navigation and `newswireDescriptorEntryID` / `space` / `profileRepository`.
-- **Shell construction** (`ConferenceShellView.swift:305-312`): `_newswire = StateObject(wrappedValue: NewswireSurfaceModel(projector:editor:spaceDescriptorEntryID: community.newswireDescriptorEntryID ?? "", communityName:myKeyHex:roster:))`. `HomeRouteView` (`:605-628`) holds `@ObservedObject var model: RiotAppModel` and renders `NewswireSurfaceView(model: newswire)` (`:622`) with `PostUpdateView` and the shortcuts card in the same `ScrollView`. The Home route is built at `routeView(.home)` (`:524-529`).
-- **`NewswireSurfaceTests`** (the mirror): pure surface logic is asserted as VALUES, no store — e.g. `testEmptyWirePostsButNoFeatureAndOfflineStaleAreThreeDistinctStates` (`:215`) asserts the four `accessibilityID`s are distinct and the three copy messages differ. Stubs `ThrowingProjector` / `ThrowingEditor` (`:494-506`) always throw. The `String.repeated(_:)` helper (`:509-512`) builds full-length hex ids. Constructions pass `spaceDescriptorEntryID:` by label → an appended `descriptorResolver:` default parameter leaves them untouched.
+- **Shell construction** (`ConferenceShellView.swift:305-312`, as it exists TODAY, pre-4b): `_newswire = StateObject(wrappedValue: NewswireSurfaceModel(projector:editor:spaceDescriptorEntryID: community.newswireDescriptorEntryID ?? "", communityName:myKeyHex:roster:))`. **Unit 7 lands AFTER 4b, which replaces `roster: community.editorialRoster` with `authority:` — so Unit 7 edits the post-4b construction (`authority:` present, no `roster:`) and only adds `descriptorResolver:`.** `HomeRouteView` (`:605-628`) holds `@ObservedObject var model: RiotAppModel` and renders `NewswireSurfaceView(model: newswire)` (`:622`) with `PostUpdateView` and the shortcuts card in the same `ScrollView`. The Home route is built at `routeView(.home)` (`:524-529`).
+- **`NewswireSurfaceTests`** (the mirror): pure surface logic is asserted as VALUES, no store — e.g. `testEmptyWirePostsButNoFeatureAndOfflineStaleAreThreeDistinctStates` (`:215`) asserts the four `accessibilityID`s are distinct and the three copy messages differ. Stubs `ThrowingProjector` / `ThrowingEditor` (`:494-506`) always throw. The `String.repeated(_:)` helper (`:509-512`) builds full-length hex ids. **Post-4b these stubs/constructions already carry the `authority:` seam (4b added it + a test authority stub); Unit 7 mirrors that and adds `descriptorResolver:` where needed.** The `descriptorResolver:` default (`nil`) means 4b's own constructions that don't pass it stay valid.
 - **No `Nearby` sync claim is made:** two-peer nearby sync is red on main (MEMORY: `riot-two-peer-sync-red`). The `syncWithPeer` action only NAVIGATES to the existing Nearby screen (a real reachable action); it never asserts sync succeeds, and per §3 it is never the headline.
 - **`JoinByReferenceSheet` does not exist yet** (`ls apps/ios/Riot/JoinByReferenceSheet.swift` → absent). It is Unit 1's deliverable — the `rejoinWithLink` wiring dependency (see the flagged cross-unit note above).
 
@@ -49,8 +75,9 @@ func testPostsButNoFeatureOffersNoDeadButtonTheOpenWireIsTheNextAction() {
     let model = NewswireSurfaceModel(
         projector: FixedProjector(projection(openWire: [post], frontPage: [])),
         editor: ThrowingEditor(),
+        authority: StubAuthority(),                 // 4b seam; editor status irrelevant here
         spaceDescriptorEntryID: "desc", communityName: "Riverside",
-        myKeyHex: "aa".repeated(32), roster: [])
+        myKeyHex: "aa".repeated(32))
     model.load()
     guard case let .postsButNoFeature(openWire) = model.wire else {
         return XCTFail("posts but no feature")
@@ -65,8 +92,9 @@ func testEveryTerminalWireStateHasAReachableNextActionAndNoDeadNoOp() {
     // content states → the content itself. No state offers a no-op button.
     let empty = NewswireSurfaceModel(
         projector: FixedProjector(projection(openWire: [], frontPage: [])),
-        editor: ThrowingEditor(), spaceDescriptorEntryID: "desc",
-        communityName: "R", myKeyHex: "aa".repeated(32), roster: [])
+        editor: ThrowingEditor(), authority: StubAuthority(),
+        spaceDescriptorEntryID: "desc",
+        communityName: "R", myKeyHex: "aa".repeated(32))
     empty.load()
     XCTAssertEqual(empty.wire, .emptyWire)
     XCTAssertEqual(empty.forwardActions, [.postFirstUpdate])
@@ -197,7 +225,7 @@ private func perform(_ action: NewswireWireForwardAction) {
     }
 }
 ```
-Add the `FixedProjector` test stub next to `ThrowingProjector` in `NewswireSurfaceTests.swift`:
+Add the `FixedProjector` test stub next to `ThrowingProjector` in `NewswireSurfaceTests.swift`, plus a trivial `StubAuthority` for the post-4b `authority:` seam (editor status is irrelevant to Unit 7's wire-state assertions — if 4b already left a `false`-returning authority stub in the file, reuse it instead of adding this):
 ```swift
 /// Returns a fixed projection so a wire-state can be driven without a store.
 private struct FixedProjector: NewswireProjecting {
@@ -206,6 +234,12 @@ private struct FixedProjector: NewswireProjecting {
     func projectNewswire(spaceDescriptorEntryID: String) throws -> NewswireProjectionView {
         projection
     }
+}
+
+/// Satisfies Unit 4b's `authority:` seam for wire-state tests that don't exercise
+/// editor gating — always "not an editor", so it never colors a wire-state result.
+private struct StubAuthority: NewswireEditorAuthorityChecking {
+    func newswireIsEditor(spaceDescriptorEntryID: String, subjectID: String) throws -> Bool { false }
 }
 ```
 
@@ -228,9 +262,9 @@ func testOfflineStaleReDerivesADescriptorThatLandedInsteadOfLooping() {
     let post = projectedPost(id: "a1", headline: "Landed", treatment: .ordinary)
     let model = NewswireSurfaceModel(
         projector: FixedProjector(projection(openWire: [post], frontPage: [])),
-        editor: ThrowingEditor(),
+        editor: ThrowingEditor(), authority: StubAuthority(),
         spaceDescriptorEntryID: "", communityName: "Riverside",
-        myKeyHex: "aa".repeated(32), roster: [],
+        myKeyHex: "aa".repeated(32),
         descriptorResolver: { "desc-that-just-synced" })
     model.load()
     guard case .postsButNoFeature = model.wire else {
@@ -243,9 +277,9 @@ func testOfflineStaleWithNoDerivableDescriptorOffersAForwardPathNotASilentLoop()
     // resolver yields nil. The state must offer real forward paths and MUST NOT
     // offer the silent .retry re-loop.
     let model = NewswireSurfaceModel(
-        projector: ThrowingProjector(), editor: ThrowingEditor(),
+        projector: ThrowingProjector(), editor: ThrowingEditor(), authority: StubAuthority(),
         spaceDescriptorEntryID: "", communityName: "Riverside",
-        myKeyHex: "aa".repeated(32), roster: [],
+        myKeyHex: "aa".repeated(32),
         descriptorResolver: { nil })
     model.load()
     XCTAssertEqual(model.wire, .offlineStale)
@@ -258,9 +292,9 @@ func testKnownDescriptorThatIsMerelyOfflineStillOffersRetry() {
     // A descriptor we DO have, but projection throws (transient offline). Retry
     // is the honest action here — reproject the id we already hold.
     let model = NewswireSurfaceModel(
-        projector: ThrowingProjector(), editor: ThrowingEditor(),
+        projector: ThrowingProjector(), editor: ThrowingEditor(), authority: StubAuthority(),
         spaceDescriptorEntryID: "desc", communityName: "Riverside",
-        myKeyHex: "aa".repeated(32), roster: [])
+        myKeyHex: "aa".repeated(32))
     model.load()
     XCTAssertEqual(model.wire, .offlineStale)
     XCTAssertEqual(model.forwardActions, [.retry])
@@ -281,16 +315,22 @@ private let descriptorResolver: (() -> String?)?
 /// a forward path, not the silent .retry re-loop). Drives `forwardActions`.
 private var descriptorRecoverable = false
 ```
-Append `descriptorResolver: (() -> String?)? = nil` to `init` (after `initialDraftKind`), and store it. Rewrite `load()`:
+Append `descriptorResolver: (() -> String?)? = nil` to the **post-4b `init`** (after `initialDraftKind` — see "Cross-unit coupling"), and store it. Rewrite `load()` — **the re-derive is the FIRST statement, ahead of 4b's `isEditor` computation**, so the predicate sees the freshly re-derived id (one `load()` both projects the wire AND editor-gates correctly for a community whose descriptor just landed):
 ```swift
 public func load() {
     // A descriptor may have landed since this model was built (a switched or
     // joined community whose registry row now carries one; the shell built this
     // model with "" before the sync). Picking it up here is what turns a silent
-    // offlineStale re-loop into a real projection.
+    // offlineStale re-loop into a real projection — and it must precede the
+    // editor-status read below so the predicate answers off the re-derived id.
     if spaceDescriptorEntryID.isEmpty, let resolved = descriptorResolver?(), !resolved.isEmpty {
         spaceDescriptorEntryID = resolved
     }
+    // 4b: editor status is core's descriptor answer, resolved once per load; an
+    // unknown / not-yet-synced descriptor (or a closed profile) answers false.
+    isEditor = (try? authority.newswireIsEditor(
+        spaceDescriptorEntryID: spaceDescriptorEntryID, subjectID: myKeyHex)) ?? false
+
     guard !spaceDescriptorEntryID.isEmpty else {
         // No descriptor to project — the forward-path state (rejoin / sync),
         // never invented content, never a silent retry.
@@ -336,9 +376,9 @@ Give the unrecoverable `offlineStale` state honest pending-sync copy and assert 
 ```swift
 func testPendingFirstSyncLeadsWithVerifiedPathAndKeepsNearbySecondary() {
     let model = NewswireSurfaceModel(
-        projector: ThrowingProjector(), editor: ThrowingEditor(),
+        projector: ThrowingProjector(), editor: ThrowingEditor(), authority: StubAuthority(),
         spaceDescriptorEntryID: "", communityName: "Riverside",
-        myKeyHex: "aa".repeated(32), roster: [],
+        myKeyHex: "aa".repeated(32),
         descriptorResolver: { nil })
     model.load()
     let actions = model.forwardActions
@@ -362,17 +402,17 @@ func testOfflineStaleCopySelectionFollowsRecoverability() {
     // Unrecoverable (pending first sync) → pending copy; recoverable (transient
     // offline of a known descriptor) → the existing offline copy.
     let pending = NewswireSurfaceModel(
-        projector: ThrowingProjector(), editor: ThrowingEditor(),
+        projector: ThrowingProjector(), editor: ThrowingEditor(), authority: StubAuthority(),
         spaceDescriptorEntryID: "", communityName: "R",
-        myKeyHex: "aa".repeated(32), roster: [], descriptorResolver: { nil })
+        myKeyHex: "aa".repeated(32), descriptorResolver: { nil })
     pending.load()
     XCTAssertEqual(pending.offlineTitle, NewswireWireCopy.pendingSyncTitle)
     XCTAssertEqual(pending.offlineMessage, NewswireWireCopy.pendingSyncMessage)
 
     let offline = NewswireSurfaceModel(
-        projector: ThrowingProjector(), editor: ThrowingEditor(),
+        projector: ThrowingProjector(), editor: ThrowingEditor(), authority: StubAuthority(),
         spaceDescriptorEntryID: "desc", communityName: "R",
-        myKeyHex: "aa".repeated(32), roster: [])
+        myKeyHex: "aa".repeated(32))
     offline.load()
     XCTAssertEqual(offline.offlineTitle, NewswireWireCopy.offlineTitle)
     XCTAssertEqual(offline.offlineMessage, NewswireWireCopy.offlineMessage)
@@ -446,16 +486,17 @@ public func rederivedNewswireDescriptorID() -> String? {
 }
 ```
   (Optional DRY: have `reload()` call this in place of its inline `:500-506` block — behaviorally identical; keep as a follow-up if it widens the diff.)
-  - **`ConferenceShellView.swift`** — pass the resolver when building the model (`:305-312`), capturing the `RiotAppModel` weakly to avoid a cycle:
+  - **`ConferenceShellView.swift`** — pass the resolver when building the model (`:305-312`), capturing the `RiotAppModel` weakly to avoid a cycle. **Post-4b: `authority:` is already present and `roster:`/`community.editorialRoster` are gone (see "Cross-unit coupling") — add ONLY `descriptorResolver:`, never re-introduce `roster:`:**
 ```swift
+let authority: NewswireEditorAuthorityChecking = model.profileRepository ?? UnavailableEditor()  // from 4b
 _newswire = StateObject(wrappedValue: NewswireSurfaceModel(
     projector: wireProjector,
     editor: editor,
+    authority: authority,                          // 4b (replaced roster:)
     spaceDescriptorEntryID: community.newswireDescriptorEntryID ?? "",
     communityName: community.name,
     myKeyHex: me.id,
-    roster: community.editorialRoster,
-    descriptorResolver: { [weak model] in model?.rederivedNewswireDescriptorID() }
+    descriptorResolver: { [weak model] in model?.rederivedNewswireDescriptorID() }  // Unit 7
 ))
 ```
   - **`NewswireSurfaceView`** — extend the initializer with the two navigation callbacks (defaults `{}` so existing/preview call sites compile), and add the `perform(_:)` map from Task 1:
@@ -514,4 +555,5 @@ NewswireSurfaceView(
 - **Placeholder scan:** the one API to confirm on implement is the Task 4 AppModel test harness — whether an existing AppModel suite drives `reload()`'s derivation directly, or the assertion must go through the create flow (`rederivedNewswireDescriptorID() == newswireDescriptorEntryID` after create, `nil` after `leaveCommunity()`); flagged in Task 4 Step 1. No fabricated content anywhere — the pending-sync copy names paths, never invents a title/post. The out-of-scope `emptyWire` "Post the first update" `{}` no-op in the shell is preserved (routed through the existing `onPostUpdate` seam), noted honestly, not silently "fixed."
 - **Cross-unit dependency (flagged as requested):** YES — the `rejoinWithLink` forward path presents **Unit 1's `JoinByReferenceSheet`** (does not exist yet). **Unit 7's model + all Unit 7 tests are independent of Unit 1** (they assert the pure `forwardActions` data and copy, never the sheet). Only **Task 4's shell wiring of `onRejoinWithLink`** depends on Unit 1. **Ordering: land Unit 1 before Unit 7.** If Unit 7 lands first, wire `onRejoinWithLink` to an interim reachable action (`model.select(.nearby)`) with a `TODO(Unit 1)`, never a dead `{}`, and swap in `JoinByReferenceSheet` when Unit 1 lands. `syncWithPeer` → Nearby has no Unit dependency (the screen exists; navigation is a real action even though two-peer sync is red on main — no sync success is claimed).
 - **Type/behavior consistency:** `NewswireWireForwardAction` (T1) drives `forwardActions` (T1/T2/T3), rendered by `wireEmpty` + `perform(_:)` (T1) with callbacks from `NewswireSurfaceView.init` (T4); `descriptorResolver`/`retry()`/`descriptorRecoverable` (T2) feed `forwardActions` recoverability and `offlineTitle`/`offlineMessage` (T3); `rederivedNewswireDescriptorID()` (T4) is the resolver's backing. Existing `offlineStale` degradation tests (`:241`, `:251`) stay green because `descriptorResolver` defaults to `nil`.
-- **Dependency order:** T1 (action data + Open-wire removal) → T2 (re-derive seam) → T3 (pending copy + order) → T4 (shell wiring, the sole Unit 1 touch point) → T5 (build). All model/copy changes land in `NewswireEditorial.swift`; the shell/AppModel edits are isolated to T4. No new Swift file → no pbxproj → no shared-checkout claim for this unit.
+- **Cross-unit coupling (gate r1):** Unit 7 collides with **Unit 4b** on `NewswireSurfaceModel.init`, the shell construction, and `NewswireSurfaceTests.swift`. **Land 4b before 7**; the merged `init` carries 4b's `authority:` AND Unit 7's `descriptorResolver:` (no `roster:`); every construction in this plan (shell + tests) uses the post-4b signature; `load()` runs the descriptor re-derive AHEAD of 4b's `isEditor` read. Claim `NewswireEditorial.swift` / `ConferenceShellView.swift` / `AppModel.swift` / `NewswireSurfaceTests.swift` in COLLABORATION.md — **4b and 7 must not run concurrently** on these files. Separately, Unit 7's `rejoinWithLink` wiring depends on **Unit 1** (`JoinByReferenceSheet`); combined order **4b → 1 → 7**.
+- **Dependency order (within Unit 7):** T1 (action data + Open-wire removal) → T2 (re-derive seam) → T3 (pending copy + order) → T4 (shell wiring, the Unit 1 touch point) → T5 (build). All model/copy changes land in `NewswireEditorial.swift`; the shell/AppModel edits are isolated to T4. No new Swift file → no pbxproj edit — but the shared-source COLLABORATION claim above IS required (the 4b collision), unlike a file-adding unit.
