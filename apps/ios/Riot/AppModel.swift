@@ -615,6 +615,42 @@ public final class RiotAppModel: ObservableObject {
     /// Dismisses the chooser without changing communities.
     public func dismissCommunityChooser() { isCommunityChooserPresented = false }
 
+    /// Whether the join-by-reference sheet (paste / QR) is presented. Raised from the
+    /// chooser's "Join another" row and the Launch screen so both entry points share
+    /// one sheet and one core call.
+    @Published public var isJoinByReferencePresented = false
+
+    /// Whether the chooser's "Create a community" action asked the shell to present
+    /// the create flow. A real intent, not a dead no-op.
+    @Published public private(set) var isCreateCommunityRequested = false
+
+    /// Chooser "Find one nearby": close the chooser and route to the Nearby surface
+    /// (the wired replacement for the old dead `{}` no-op at the call site).
+    public func findNearby() {
+        isCommunityChooserPresented = false
+        select(.nearby)
+    }
+
+    /// Chooser "Join another" / Launch "Join with a link or QR": present the
+    /// join-by-reference sheet.
+    public func requestJoinByReference() {
+        isCommunityChooserPresented = false
+        isJoinByReferencePresented = true
+    }
+
+    /// Dismisses the join-by-reference sheet.
+    public func dismissJoinByReference() { isJoinByReferencePresented = false }
+
+    /// Chooser "Create a community": close the chooser and ask the shell to present
+    /// the create flow (the wired replacement for the old dead `{}` no-op).
+    public func requestCreateCommunity() {
+        isCommunityChooserPresented = false
+        isCreateCommunityRequested = true
+    }
+
+    /// Dismisses the create flow the chooser raised.
+    public func dismissCreateCommunity() { isCreateCommunityRequested = false }
+
     /// Switches to another held community. The switch cancels in-flight work and
     /// fails closed in core; here we reload everything the screens draw so the
     /// board, tools, people, and organizer state all reflect the new community,
