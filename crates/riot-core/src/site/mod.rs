@@ -6,6 +6,7 @@
 
 pub mod manifest;
 pub mod validate;
+pub mod version_floor;
 
 pub use manifest::{
     decode_site_manifest, encode_site_manifest, RequireTransport, SiteDisplay, SiteLayout,
@@ -16,4 +17,7 @@ pub use manifest::{
 pub use validate::{
     validate_site_manifest, ClassifiedMember, MemberClassification, SiteManifestValidationError,
     ValidatedManifest,
+};
+pub use version_floor::{
+    admit_manifest_version, VersionFloorError, VersionFloorOutcome, VersionFloorStore,
 };
