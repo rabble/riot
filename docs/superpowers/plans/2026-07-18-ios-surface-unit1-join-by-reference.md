@@ -1,5 +1,7 @@
 # iOS Surface — Unit 1: Join by link / QR — Implementation Plan
 
+
+**Plan-review gate: PASSED** (Feasibility + Scope + Completeness, 2026-07-18).
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans. Steps use checkbox (`- [ ]`) syntax.
 
 **Goal:** Let a user follow an existing community by pasting a `riot://newswire/join/v1/…` link or scanning its QR — the #1 dead-end today (join = Nearby only, which is red on main). Also fix the community chooser's dead Create/Find-nearby no-ops.

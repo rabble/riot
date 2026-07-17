@@ -1,10 +1,12 @@
 # iOS Surface — Unit 4a: `newswire_is_editor` FFI predicate — Implementation Plan
 
+
+**Plan-review gate: PASSED** (Feasibility + Scope + Completeness, 2026-07-18).
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans. Steps use checkbox (`- [ ]`) syntax.
 
 **Goal:** Expose a store-backed FFI predicate `MobileProfile.newswire_is_editor(descriptor_entry_id, subject_id) -> bool` so the iOS UI (Unit 4b) can show editorial controls for a real editor of any active community — *joined or created* — with a display gate that is provably identical to the core authority gate.
 
-**Architecture:** Extract the roster-authority decision already inside `require_action_authority` into a shared `pub(crate) fn is_editorial_authority(descriptor, subject_id) -> bool`; have both `require_action_authority` (the admission gate) and the new FFI predicate call it. The FFI method loads the descriptor from the store (`load_space_descriptor`) and returns the shared predicate's answer; an unknown/not-yet-synced descriptor returns `Ok(false)`, never an error. No new `uniffi::Record`.
+**Architecture:** Extract the roster-authority decision already inside `require_action_authority` into a shared `pub fn is_editorial_authority(descriptor, subject_id) -> bool` (`pub` — riot-ffi calls it cross-crate); have both `require_action_authority` (the admission gate) and the new FFI predicate call it. The FFI method loads the descriptor from the store (`load_space_descriptor`) and returns the shared predicate's answer; an unknown/not-yet-synced descriptor returns `Ok(false)`, never an error. No new `uniffi::Record`.
 
 **Tech stack:** Rust 2021, `riot-core` newswire, proc-macro `uniffi`.
 
