@@ -22,6 +22,12 @@ final class TwoPhoneRehearsalUITests: XCTestCase {
             app.alerts.firstMatch.buttons.firstMatch.tap()
         }
 
+        // First-run onboarding opens on a welcome screen; advance to setup where
+        // create / find-nearby / demo live. Guarded, so a leftover-community
+        // re-run (shell present, no welcome) skips it.
+        let getStarted = app.buttons["onboarding-get-started"]
+        if getStarted.waitForExistence(timeout: 3) { getStarted.tap() }
+
         if role == "organizer" {
             if !app.buttons["Tools"].waitForExistence(timeout: 3) {
                 let name = app.textFields["community-name-field"]

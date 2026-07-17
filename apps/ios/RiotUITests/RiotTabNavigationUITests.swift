@@ -19,6 +19,9 @@ final class RiotTabNavigationUITests: XCTestCase {
         // present and we skip creation.
         let home = app.buttons["Home"]
         if !home.waitForExistence(timeout: 3) {
+            // First-run onboarding opens on a welcome screen; advance to setup.
+            let getStarted = app.buttons["onboarding-get-started"]
+            if getStarted.waitForExistence(timeout: 3) { getStarted.tap() }
             let nameField = app.textFields["community-name-field"]
             if nameField.waitForExistence(timeout: 5) {
                 nameField.tap()

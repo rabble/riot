@@ -98,6 +98,52 @@ public protocol CommunitySelecting {
     var launchState: ShellLaunchState { get }
 }
 
+// MARK: - First-run onboarding
+
+/// The first-run guided path, as a pure decision the shell reads off real state.
+/// A brand-new person opens Riot with no identity and no community; the shell
+/// already resolves that to `ShellLaunchState.noCommunity`, so onboarding does
+/// not invent a second "have they onboarded?" flag — it derives from the same
+/// launch state. The moment a person has a community they are in the shell, so
+/// onboarding is never shown in front of it again (a person who later leaves
+/// every community returns to no-community and is guided back in — the honest
+/// outcome, since they still need a community to do anything).
+public enum Onboarding {
+    /// True only when the shell is showing the no-community launch state — the
+    /// one moment the guided path belongs in front of the shell. Loading, an
+    /// open community, and in-place recovery are all explicitly not first-run.
+    public static func isFirstRun(_ launchState: ShellLaunchState) -> Bool {
+        launchState == .noCommunity
+    }
+}
+
+/// The two short screens of the first-run path (activists in the field, not a
+/// wizard): a welcome that says what Riot is, then setup where a person names
+/// themselves and creates or joins a community. Setup is the last step — the
+/// flow does not end on a screen, it ends by landing in the shell with a real
+/// community, so there is deliberately no third step and no "finish" button.
+public enum OnboardingStep: Int, CaseIterable, Equatable, Sendable {
+    /// What Riot is, in plain indymedia terms. The only action is "Get started".
+    case welcome
+    /// Name yourself (skippable) and create or join a community (required to
+    /// leave onboarding). Reuses the display-name and create/join paths.
+    case setup
+
+    /// Where the flow begins.
+    public static let first: OnboardingStep = .welcome
+
+    /// The next step, or `nil` when this is the last one (setup completes into a
+    /// real community, not another screen).
+    public var next: OnboardingStep? {
+        OnboardingStep(rawValue: rawValue + 1)
+    }
+
+    /// The previous step, or `nil` at the first step (nowhere back to).
+    public var back: OnboardingStep? {
+        rawValue == 0 ? nil : OnboardingStep(rawValue: rawValue - 1)
+    }
+}
+
 // MARK: - Deterministic Home shortcuts
 
 /// The four Home tool shortcuts. Deterministic by construction: walk the
