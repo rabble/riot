@@ -3722,6 +3722,92 @@ mod tests {
         assert_eq!(listed[0].entry_id, signed.entry.entry_id);
     }
 
+    /// Regression (composite-site Unit 1, #14 follow-up): an owned-namespace
+    /// editorial `/articles/...` entry is the opaque owned-editorial family and
+    /// MUST be classified as a NON-alert family — exactly like newswire — never
+    /// surfaced as an alert. This guards the `is_owned_editorial_entry` clause
+    /// the admission commit added to all three FFI classifier sites
+    /// (`inspectable_entries`, and in lockstep `list_current_entries` /
+    /// `reproject_active`).
+    ///
+    /// This drives the REAL `inspectable_entries` classifier end-to-end: it
+    /// builds a genuine owned masthead site, signs an opaque
+    /// `/articles/news/post-1` entry under the owner's owned write capability,
+    /// encodes a real bundle, and decodes it with the site's own namespace as
+    /// the followed root (exactly what the FFI does — for an owned site the
+    /// entry's namespace IS the followed root). We exercise `inspectable_entries`
+    /// rather than `list_current_entries` because committing an owned entry into
+    /// the active-namespace store requires the followed-site root wired through a
+    /// full sync-import session (a known Unit 1 boundary), whereas the bundle
+    /// inspector runs the identical classifier and is reachable directly.
+    ///
+    /// RED without the owned-editorial clause: the opaque payload is not a
+    /// decodable alert, so it would fall into the alert branch, `decode_alert`
+    /// would fail on it, and the whole bundle would be rejected — turning this
+    /// `Ok(non-alert)` into `Err(ImportRejected)`.
+    #[test]
+    fn inspectable_entries_classifies_owned_articles_as_non_alert() {
+        use willow25::prelude::{NamespaceSecret, SubspaceSecret, WriteCapability};
+
+        // An owned masthead site whose secrets the test controls. The namespace
+        // id MUST carry the owned marker bit (loop until it does), or the owned
+        // admission predicate would never engage.
+        let mut seed = [0x30u8; 32];
+        let namespace_secret = loop {
+            let candidate = NamespaceSecret::from_bytes(&seed);
+            if candidate.corresponding_namespace_id().is_owned() {
+                break candidate;
+            }
+            seed[0] = seed[0].wrapping_add(1);
+        };
+        let namespace_id = namespace_secret.corresponding_namespace_id();
+        let owner_secret = SubspaceSecret::from_bytes(&[0x03u8; 32]);
+        let owner_id = owner_secret.corresponding_subspace_id();
+        let owner_cap = WriteCapability::new_owned(&namespace_secret, owner_id.clone());
+
+        // An opaque editorial article under /articles/ — the path is the
+        // identity, the payload is deliberately NOT a decodable alert.
+        let payload = b"owned editorial body bytes";
+        let entry = riot_core::willow::Entry::builder()
+            .namespace_id(namespace_id.clone())
+            .subspace_id(owner_id)
+            .path(
+                riot_core::willow::Path::from_slices(&[
+                    riot_core::willow::ARTICLES_COMPONENT,
+                    b"news",
+                    b"post-1",
+                ])
+                .expect("article path"),
+            )
+            .timestamp(100u64)
+            .payload(payload)
+            .build();
+        let authorised = entry
+            .into_authorised_entry(&owner_cap, &owner_secret)
+            .expect("owner cap authorises its own /articles entry");
+        let token = authorised.authorisation_token();
+        let signature: Signature = token.signature().clone().into();
+        let item = SignedWillowEntry {
+            entry_bytes: riot_core::willow::encode_entry(authorised.entry()),
+            capability_bytes: riot_core::willow::encode_capability(token.capability()),
+            signature: signature.to_bytes(),
+            payload_bytes: payload.to_vec(),
+        };
+        let bundle = encode_bundle(&[item]).expect("owned article bundle encodes");
+
+        // For an owned site the followed root IS the entry's namespace, so the
+        // FFI passes exactly that hex — admitting the entry, then classifying it.
+        let namespace_hex = hex(namespace_id.as_bytes());
+        let inspected = inspectable_entries(&bundle, &namespace_hex)
+            .expect("owned /articles entry must be admitted + classified, not rejected");
+
+        assert_eq!(inspected.len(), 1, "the single article is inspectable");
+        assert!(
+            inspected[0].current.is_none(),
+            "owned /articles editorial is the non-alert family: it carries no alert row",
+        );
+    }
+
     #[test]
     fn failed_two_entry_share_leaves_store_generation_and_inventory_unchanged() {
         let profile = open_local_profile().unwrap();
