@@ -61,5 +61,126 @@ class NewswireRenderTest(unittest.TestCase):
         self.assertNotRegex(self.page, r'(src|href)="https?://(?!www\.w3\.org)')
 
 
+def _entry(**kw) -> dict:
+    base = {
+        "entry_id": "a" * 64,
+        "signer": "s" * 64,
+        "kind": "post",
+        "title": "A headline",
+        "body": "Body text.",
+        "ai_assisted": False,
+        "tai_j2000_micros": 837_425_926_000_000,
+        "featured": False,
+        "editorially_verified": False,
+        "verification_status": "signature_verified",
+    }
+    base.update(kw)
+    return base
+
+
+def _export(entries, contributors=None, **kw) -> dict:
+    base = {
+        "schema": "riot-public-gateway-export/2",
+        "title": "RIOT · Independent Newswire",
+        "namespace": "n" * 64,
+        "generated_at": "2026-07-17T00:00:00Z",
+        "entries": entries,
+        "contributors": contributors or [],
+    }
+    base.update(kw)
+    return base
+
+
+@unittest.skipIf(nw is None, "newswire module missing")
+class NewswireExportViewTest(unittest.TestCase):
+    def test_featured_entries_become_editorial_and_the_rest_open_wire(self) -> None:
+        export = _export(
+            [
+                _entry(entry_id="f" * 64, featured=True, title="Featured lead"),
+                _entry(entry_id="w" * 64, featured=False, body="Open wire body"),
+            ]
+        )
+        view = nw.newswire_view_from_export(export)
+        self.assertEqual([e.title for e in view.editorial], ["Featured lead"])
+        self.assertEqual([p.body for p in view.wire], ["Open wire body"])
+        self.assertFalse(view.sample)
+
+    def test_all_featured_is_editorial_only_and_none_featured_is_wire_only(self) -> None:
+        e_only = nw.newswire_view_from_export(
+            _export([_entry(entry_id="1" * 64, featured=True), _entry(entry_id="2" * 64, featured=True)])
+        )
+        self.assertEqual(len(e_only.editorial), 2)
+        self.assertEqual(len(e_only.wire), 0)
+        w_only = nw.newswire_view_from_export(
+            _export([_entry(entry_id="3" * 64), _entry(entry_id="4" * 64)])
+        )
+        self.assertEqual(len(w_only.editorial), 0)
+        self.assertEqual(len(w_only.wire), 2)
+
+    def test_a_duplicate_entry_id_is_rendered_once(self) -> None:
+        view = nw.newswire_view_from_export(
+            _export([_entry(entry_id="d" * 64, featured=True), _entry(entry_id="d" * 64, featured=False)])
+        )
+        self.assertEqual(len(view.editorial) + len(view.wire), 1)
+
+    def test_editorially_verified_drives_the_editorial_verified_flag(self) -> None:
+        verified = nw.newswire_view_from_export(
+            _export([_entry(entry_id="v" * 64, featured=True, editorially_verified=True)])
+        )
+        self.assertTrue(verified.editorial[0].verified)
+        unverified = nw.newswire_view_from_export(
+            _export([_entry(entry_id="u" * 64, featured=True, editorially_verified=False)])
+        )
+        self.assertFalse(unverified.editorial[0].verified)
+
+    def test_signature_invalid_entries_are_dropped_entirely(self) -> None:
+        view = nw.newswire_view_from_export(
+            _export(
+                [
+                    _entry(entry_id="g" * 64, verification_status="signature_verified", body="good"),
+                    _entry(entry_id="b" * 64, verification_status="signature_invalid", body="bad"),
+                ]
+            )
+        )
+        bodies = [p.body for p in view.wire]
+        self.assertIn("good", bodies)
+        self.assertNotIn("bad", bodies)
+
+    def test_an_empty_export_renders_the_empty_state_without_crashing(self) -> None:
+        view = nw.newswire_view_from_export(_export([]))
+        self.assertEqual(view.editorial, ())
+        self.assertEqual(view.wire, ())
+        # The renderer must tolerate an empty view.
+        page = nw.render_newswire(view)
+        self.assertIn("Open Newswire", page)
+
+    def test_byline_uses_the_display_name_and_falls_back_for_the_nameless(self) -> None:
+        signer = "c" * 64
+        export = _export(
+            [
+                _entry(entry_id="k" * 64, featured=True, signer=signer),
+                _entry(entry_id="z" * 64, featured=False, signer="0" * 64),  # no card
+            ],
+            contributors=[{"author_id": signer, "display_name": "Harbor Desk", "is_organizer": False, "contribution_count": 1}],
+        )
+        view = nw.newswire_view_from_export(export)
+        self.assertEqual(view.editorial[0].author, "Harbor Desk")
+        self.assertEqual(view.wire[0].handle, "Open contributor")
+        # And no raw signer hex leaks into a byline.
+        page = nw.render_newswire(view)
+        self.assertNotIn(signer, page)
+
+    def test_ai_assisted_entries_carry_a_visible_marker(self) -> None:
+        view = nw.newswire_view_from_export(
+            _export([_entry(entry_id="i" * 64, featured=True, ai_assisted=True)])
+        )
+        self.assertTrue(view.editorial[0].ai_assisted)
+        self.assertIn("AI-assisted", nw.render_newswire(view))
+
+    def test_j2000_timestamp_formats_to_a_utc_string(self) -> None:
+        # 837425926000000 µs after J2000 → a fixed UTC minute.
+        self.assertEqual(nw._format_j2000(837_425_926_000_000), "2026-07-15 22:18 UTC")
+
+
 if __name__ == "__main__":
     unittest.main()

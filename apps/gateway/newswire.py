@@ -16,9 +16,15 @@ Same fences as the rest of the reach layer: inline CSS, no external anything,
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from html import escape
 
 from riot_gateway import _sri_sha256
+
+# Unix seconds at the J2000 epoch (2000-01-01T12:00:00Z). Willow timestamps are
+# TAI/J2000 microseconds; the export carries them raw and the gateway formats.
+# TAI leads UTC by ~64s at J2000 — negligible for a minute-resolution display.
+_J2000_UNIX_SECONDS = 946_728_000
 
 
 @dataclass(frozen=True)
@@ -31,6 +37,7 @@ class EditorialEntry:
     author: str
     time: str
     verified: bool = True
+    ai_assisted: bool = False
 
 
 @dataclass(frozen=True)
@@ -40,6 +47,7 @@ class WirePost:
     time: str
     handle: str
     body: str
+    ai_assisted: bool = False
 
 
 @dataclass(frozen=True)
@@ -86,6 +94,7 @@ a { color: inherit; }
 .byline .who { color: var(--ink); }
 .verified { color: var(--verify); font-weight: 600; }
 .verified::before { content: "\\2713 "; }
+.ai { color: var(--muted); font-style: italic; }
 .stories { display: grid; grid-template-columns: 1fr 1fr; gap: 1.6rem 2rem; }
 .story { border-top: 2px solid var(--ink); padding-top: 0.7rem; }
 .story h3 { font-family: Georgia, "Times New Roman", serif; font-weight: 700; font-size: 1.3rem; line-height: 1.15; margin: 0.4rem 0 0.5rem; }
@@ -127,13 +136,17 @@ def _cats(categories: tuple[str, ...]) -> str:
     return "".join(items)
 
 
+def _ai_marker(ai_assisted: bool) -> str:
+    return '<span>·</span><span class="ai">AI-assisted</span>' if ai_assisted else ""
+
+
 def _lede(entry: EditorialEntry) -> str:
     verify = '<span class="verified">verified editorial</span>' if entry.verified else ""
     return f"""<article class="lede">
   <span class="kicker">{escape(entry.category)}</span>
   <h2>{escape(entry.title)}</h2>
   <p>{escape(entry.summary)}</p>
-  <div class="byline"><span class="who">{escape(entry.author)}</span><span>·</span><span>{escape(entry.time)}</span><span>·</span>{verify}</div>
+  <div class="byline"><span class="who">{escape(entry.author)}</span><span>·</span><span>{escape(entry.time)}</span>{_ai_marker(entry.ai_assisted)}<span>·</span>{verify}</div>
 </article>"""
 
 
@@ -143,16 +156,17 @@ def _story(entry: EditorialEntry) -> str:
   <span class="kicker">{escape(entry.category)}</span>
   <h3>{escape(entry.title)}</h3>
   <p>{escape(entry.summary)}</p>
-  <div class="byline"><span class="who">{escape(entry.author)}</span><span>·</span><span>{escape(entry.time)}</span><span>·</span>{verify}</div>
+  <div class="byline"><span class="who">{escape(entry.author)}</span><span>·</span><span>{escape(entry.time)}</span>{_ai_marker(entry.ai_assisted)}<span>·</span>{verify}</div>
 </article>"""
 
 
 def _post(post: WirePost) -> str:
+    ai = ' <span class="ai">AI-assisted</span>' if post.ai_assisted else ""
     return (
         f'<li class="post"><span class="t">{escape(post.time)}</span> '
         f'<span class="h">{escape(post.handle)}</span>'
         f'<span class="body">{escape(post.body)}</span>'
-        f'<span class="open">open · unverified</span></li>'
+        f'<span class="open">open · unverified</span>{ai}</li>'
     )
 
 
@@ -196,6 +210,70 @@ def render_newswire(view: NewswireView, css: str = NEWSPRINT_CSS) -> str:
 </footer>
 </body>
 </html>"""
+
+
+# Static, non-functional category chrome (no topic field on the /2 export yet).
+_DEFAULT_CATEGORIES = ("Latest", "Housing", "Labor", "Surveillance", "Ecology", "Repression")
+
+
+def _format_j2000(tai_j2000_micros: int) -> str:
+    """A Willow TAI/J2000-microsecond timestamp as a minute-resolution UTC string."""
+    unix = tai_j2000_micros // 1_000_000 + _J2000_UNIX_SECONDS
+    return datetime.fromtimestamp(unix, tz=timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+
+
+def newswire_view_from_export(export: dict) -> NewswireView:
+    """Build the two-column E/W view from a `riot-public-gateway-export/2` newswire
+    export. Featured entries become editorial features; the rest are open wire.
+    Bylines are the author's signed display name only (never the key tag); an
+    author with no card is a nameless open contributor. Entries whose signature
+    did not re-verify are dropped — the gateway never renders unverifiable bytes.
+    """
+    names = {c["author_id"]: c for c in export.get("contributors", [])}
+    editorial: list[EditorialEntry] = []
+    wire: list[WirePost] = []
+    seen: set[str] = set()
+    for entry in export.get("entries", []):
+        if entry.get("verification_status") == "signature_invalid":
+            continue
+        entry_id = entry.get("entry_id", "")
+        if entry_id in seen:
+            continue
+        seen.add(entry_id)
+        display_name = names.get(entry.get("signer"), {}).get("display_name") or "Open contributor"
+        when = _format_j2000(entry.get("tai_j2000_micros", 0))
+        ai_assisted = bool(entry.get("ai_assisted"))
+        if entry.get("featured"):
+            editorial.append(
+                EditorialEntry(
+                    category="Dispatch",
+                    title=entry.get("title", ""),
+                    summary=entry.get("body", ""),
+                    author=display_name,
+                    time=when,
+                    verified=bool(entry.get("editorially_verified")),
+                    ai_assisted=ai_assisted,
+                )
+            )
+        else:
+            wire.append(
+                WirePost(
+                    time=when,
+                    handle=display_name,
+                    body=entry.get("body", ""),
+                    ai_assisted=ai_assisted,
+                )
+            )
+    return NewswireView(
+        name=export.get("title", "RIOT"),
+        tagline="Independent Newswire · publish anywhere",
+        namespace=export.get("namespace", ""),
+        categories=_DEFAULT_CATEGORIES,
+        editorial=tuple(editorial),
+        wire=tuple(wire),
+        mirror_note=f"updated {export.get('generated_at', '')}",
+        sample=False,
+    )
 
 
 def sample_view() -> NewswireView:
