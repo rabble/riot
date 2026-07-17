@@ -40,6 +40,27 @@ public struct RecoveryStep: Equatable, Hashable, Sendable {
     /// A user-initiated "Start fresh": the persisted state is quarantined aside
     /// (never deleted) so the next open starts clean.
     public static let startFresh = RecoveryStep(id: "start-fresh", label: "your saved profile")
+
+    // Phase 2 — per-community open / reproject. One community that will not open
+    // (a corrupt at-rest author, an unreadable registry) is set aside as
+    // unavailable so the registry and the OTHER communities survive.
+    public static let community = RecoveryStep(id: "community", label: "one of your communities")
+
+    // Phase 3 — sync import. A bundle that arrived over sync and the core now
+    // rejects on replay is quarantined + recorded, distinct from a locally
+    // authored alert (`alertReplay`), so its provenance is honest.
+    public static let syncImport = RecoveryStep(id: "sync-import", label: "a synced update")
+
+    // Phase 4 — app-drop / app data. A neighbour-carried app pack (or a starter
+    // pack) that will not install, and a committed app-data bundle the core
+    // rejects on replay — each set aside + recorded instead of silently skipped.
+    public static let appPack = RecoveryStep(id: "app-pack", label: "an app")
+    public static let appData = RecoveryStep(id: "app-data", label: "an app's saved data")
+
+    // Phase 5 — the protected-storage blob itself. The earliest boundary: the
+    // persisted bytes will not decode at all, so they are set aside and the open
+    // starts from an empty profile rather than throwing before it begins.
+    public static let storageBlob = RecoveryStep(id: "storage-blob", label: "your saved profile")
 }
 
 /// What to set aside. A `file` is MOVED (used when the primary path must be left
@@ -272,4 +293,17 @@ public final class RecoveryReport: @unchecked Sendable {
     public var alertsSkipped: Int { dropped.filter { $0 == .alertReplay }.count }
     /// Where the preserved bytes went (the first quarantine directory), if any.
     public var quarantineLocation: URL? { quarantined.first?.directory }
+
+    // MARK: - Convenience for Phases 2–5
+
+    /// A community that could not open/reproject was set aside as unavailable.
+    public var communityUnavailable: Bool { dropped.contains(.community) }
+    /// How many synced bundles the core rejected on replay and were skipped.
+    public var syncImportsSkipped: Int { dropped.filter { $0 == .syncImport }.count }
+    /// How many app packs (carried or starter) failed to install and were set aside.
+    public var appPacksSkipped: Int { dropped.filter { $0 == .appPack }.count }
+    /// How many committed app-data bundles the core rejected on replay were skipped.
+    public var appDataSkipped: Int { dropped.filter { $0 == .appData }.count }
+    /// The undecodable persisted blob was set aside and the open started empty.
+    public var storageBlobQuarantined: Bool { healed.contains(.storageBlob) }
 }
