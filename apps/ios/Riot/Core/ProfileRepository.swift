@@ -200,6 +200,22 @@ public final class ProtectedProfileStorage {
             ofItemAtPath: fileURL.path
         )
     }
+
+    /// The primary snapshot file, so the recovery core can MOVE it aside on the
+    /// deepest failure (leaving the primary path clean for a fresh open).
+    var snapshotURL: URL { fileURL }
+
+    /// The app-storage folder this snapshot lives in — the root under which
+    /// `RecoveryQuarantine` writes `quarantine/`.
+    public var directory: URL { fileURL.deletingLastPathComponent() }
+
+    /// The raw persisted bytes as they are on disk right now (the pre-degrade
+    /// state), for preserving as a quarantine BLOB when the live file will be
+    /// rewritten. `nil` if nothing has been written yet.
+    func rawSnapshotBytes() -> Data? {
+        guard FileManager.default.fileExists(atPath: fileURL.path) else { return nil }
+        return try? Data(contentsOf: fileURL)
+    }
 }
 
 /// An installed app: Rust's verified display record plus the client-side
@@ -225,13 +241,20 @@ public final class RiotProfileRepository {
 
     public var currentSpace: RiotSpace? { persisted.space }
 
+    /// What `open` had to recover to reach a usable state, or `nil` if the open
+    /// was clean. The shell reads this to surface an honest, non-fatal notice
+    /// instead of a dead RETRY, and a recovery view lists its quarantined items.
+    /// See ``RecoveryReport``.
+    public let recovery: RecoveryReport?
+
     private init(
         profile: MobileProfile,
         storage: ProtectedProfileStorage,
         keyStore: WrappingKeyStore,
         appRuntime: AppRuntimeSession,
         installed: [InstalledApp],
-        persisted: PersistedProfile
+        persisted: PersistedProfile,
+        recovery: RecoveryReport?
     ) {
         self.profile = profile
         self.storage = storage
@@ -239,6 +262,7 @@ public final class RiotProfileRepository {
         self.appRuntime = appRuntime
         self.installed = installed
         self.persisted = persisted
+        self.recovery = recovery
     }
 
     public static func open(
@@ -247,64 +271,93 @@ public final class RiotProfileRepository {
         starterPacks: [(manifest: Data, bundle: Data)] = [],
         databasePath: String? = nil
     ) throws -> RiotProfileRepository {
-        var persisted = try storage.load()
+        // The self-healing open, built on the reusable recovery core
+        // (`RecoveryQuarantine` + `recovering` + `RecoveryReport`). Each restore
+        // step is isolated: it either succeeds or is quarantined-and-degraded so
+        // the launch always reaches a usable state. Phases 2–5 add their own
+        // `RecoveryStep`s and reuse this same core.
+        let report = RecoveryReport()
+        let quarantine = RecoveryQuarantine(storageDirectory: storage.directory)
+
+        // STEP 1 — open the core. If the persisted profile cannot be opened at all
+        // (a sealed identity the new core rejects, a corrupt snapshot, a wedged
+        // database), this is the deepest recovery: MOVE the persisted snapshot and
+        // the SQLite database aside — never deleting them — and open a FRESH
+        // profile so the person lands in onboarding instead of a dead RETRY.
+        // The deepest step uses an explicit do/catch (not `recovering`) because
+        // its recovery — a fresh open — can itself throw, and that genuinely-
+        // unrecoverable case must rethrow to the launch surface's "Start fresh"
+        // rather than being absorbed.
+        var persisted = PersistedProfile.empty
         let profile: MobileProfile
-        if let sealedIdentity = persisted.sealedIdentity {
-            guard sealedIdentity.count == 112 else { throw RepositoryError.invalidSealedIdentity }
-            profile = try withWrappingKey(from: keyStore) { wrappingKey in
-                if let databasePath {
-                    try openProfileFromSealedIdentityWithDatabase(
-                        dbPath: databasePath,
-                        wrappingKey: wrappingKey,
-                        sealedIdentity: sealedIdentity
-                    )
-                } else {
-                    try openProfileFromSealedIdentity(
-                        wrappingKey: wrappingKey,
-                        sealedIdentity: sealedIdentity
-                    )
-                }
-            }
-        } else {
-            if let databasePath {
-                profile = try openLocalProfileWithDatabase(dbPath: databasePath)
-            } else {
-                profile = try openLocalProfile()
-            }
+        do {
+            persisted = try storage.load()
+            profile = try openCore(
+                persisted: persisted, keyStore: keyStore, databasePath: databasePath
+            )
+        } catch {
+            let ref = try? quarantine.quarantine(
+                Self.coreArtifacts(snapshot: storage.snapshotURL, databasePath: databasePath),
+                reason: .profileOpen,
+                error: error
+            )
+            report.recordHealed(.profileOpen, quarantine: ref)
+            persisted = .empty
+            // `openFresh` falls back to in-memory; if even that throws, it rethrows
+            // here and the launch surface offers "Start fresh".
+            profile = try openFresh(databasePath: databasePath)
         }
-        if let space = persisted.space {
-            if let demoBundle = persisted.demoBundle {
-                // Demo mode survives a relaunch by REPLAYING THE BUNDLE, not by
-                // re-joining the namespace. `join_public_space` would list an
-                // empty space — the seeded alerts live in Rust's in-memory store
-                // and are gone — and it would never set the demo-mode state that
-                // `hide_demo_space` needs to put the person's own identity back.
-                // Handing the same signed bytes to the same import restores all
-                // three (the listing, the entries, the borrowed author), and it
-                // is idempotent because the entries are content-addressed.
-                _ = try profile.loadDemoSpace(bytes: demoBundle)
-            } else {
-                _ = try withWrappingKey(from: keyStore) { wrappingKey in
-                    try profile.joinPublicSpace(
-                        space: PublicSpace(
-                            namespaceId: space.namespaceID, title: space.title, isPublic: true),
-                        wrappingKey: wrappingKey
-                    )
+
+        if persisted.space != nil {
+            // STEP 2 — restore the space. A space the core will not rebuild (a
+            // schema change, a namespace it now refuses) must not brick the
+            // launch: preserve the pre-drop snapshot as a quarantine blob, DROP the
+            // space from the working state, keep the identity, and continue.
+            recovering(step: .space) {
+                try restoreSpace(profile: profile, persisted: persisted, keyStore: keyStore)
+                // STEP 3 — replay the saved alerts. A single bundle the core
+                // rejects is SKIPPED and quarantined, not fatal — one bad bundle
+                // must not kill the rest, the same rule the app-data / trust loops
+                // below already follow.
+                for alert in persisted.alerts {
+                    recovering(step: .alertReplay) {
+                        let preview = try profile.inspectBytes(
+                            bytes: alert.bundle, route: "protected-local-reload")
+                        let entryIDs = try preview.eligibleEntries().map(\.entryId)
+                        // No `guard !entryIDs.isEmpty`: eligibleEntries lists reviewable
+                        // ALERT rows only, so a bundle that arrived over sync carrying app
+                        // data or a trust marker has none — and skipping it silently threw
+                        // that bundle away on every relaunch. A member who synced the
+                        // organizer's checklist came back to it empty AND locked (the
+                        // approval is a synced entry too). Planning an empty selection
+                        // commits the bundle's hidden entries, exactly as the FFI contract
+                        // test `portable_app_only_review_can_plan_hidden_entries_without_
+                        // fake_rows` pins. Alert bundles are unaffected — theirs is non-empty.
+                        _ = try preview.createPlan(selectedEntryIds: entryIDs).accept()
+                    } onFailure: { error in
+                        let ref = try? quarantine.quarantine(
+                            [.blob(name: "alert.bundle", alert.bundle)],
+                            reason: .alertReplay,
+                            error: error
+                        )
+                        report.recordDropped(.alertReplay, quarantine: ref)
+                    }
                 }
-            }
-            for alert in persisted.alerts {
-                let preview = try profile.inspectBytes(bytes: alert.bundle, route: "protected-local-reload")
-                let entryIDs = try preview.eligibleEntries().map(\.entryId)
-                // No `guard !entryIDs.isEmpty`: eligibleEntries lists reviewable
-                // ALERT rows only, so a bundle that arrived over sync carrying app
-                // data or a trust marker has none — and skipping it silently threw
-                // that bundle away on every relaunch. A member who synced the
-                // organizer's checklist came back to it empty AND locked (the
-                // approval is a synced entry too). Planning an empty selection
-                // commits the bundle's hidden entries, exactly as the FFI contract
-                // test `portable_app_only_review_can_plan_hidden_entries_without_
-                // fake_rows` pins. Alert bundles are unaffected — theirs is non-empty.
-                _ = try preview.createPlan(selectedEntryIds: entryIDs).accept()
+            } onFailure: { error in
+                // The space itself would not restore. Preserve the pre-drop
+                // snapshot bytes as a blob (the live file is about to be rewritten
+                // without the space), drop the space from the working state, and
+                // persist the drop so the identity stays durable. The alerts stay
+                // on disk (dormant without a space) rather than being erased.
+                let ref = try? quarantine.quarantine(
+                    storage.rawSnapshotBytes().map { [.blob(name: "profile-snapshot.json", $0)] } ?? [],
+                    reason: .space,
+                    error: error
+                )
+                report.recordDropped(.space, quarantine: ref)
+                persisted.space = nil
+                persisted.demoBundle = nil
+                try? storage.save(persisted)
             }
         }
 
@@ -381,7 +434,8 @@ public final class RiotProfileRepository {
             keyStore: keyStore,
             appRuntime: appRuntime,
             installed: installedApps,
-            persisted: persisted
+            persisted: persisted,
+            recovery: report.isClean ? nil : report
         )
         if persisted.sealedIdentity == nil {
             persisted.sealedIdentity = try repository.sealCurrentIdentity()
@@ -389,6 +443,93 @@ public final class RiotProfileRepository {
             try storage.save(persisted)
         }
         return repository
+    }
+
+    /// Rebuilds the listed space in the freshly-opened core: replays the demo
+    /// bundle when in demo mode, else re-joins the public space. Throwing here is
+    /// what `open`'s STEP 2 catches to degrade — drop the space, keep the identity.
+    private static func restoreSpace(
+        profile: MobileProfile,
+        persisted: PersistedProfile,
+        keyStore: WrappingKeyStore
+    ) throws {
+        guard let space = persisted.space else { return }
+        if let demoBundle = persisted.demoBundle {
+            // Demo mode survives a relaunch by REPLAYING THE BUNDLE, not by
+            // re-joining the namespace. `join_public_space` would list an empty
+            // space — the seeded alerts live in Rust's in-memory store and are
+            // gone — and it would never set the demo-mode state that
+            // `hide_demo_space` needs to put the person's own identity back.
+            // Handing the same signed bytes to the same import restores all three
+            // (the listing, the entries, the borrowed author), and it is
+            // idempotent because the entries are content-addressed.
+            _ = try profile.loadDemoSpace(bytes: demoBundle)
+        } else {
+            _ = try withWrappingKey(from: keyStore) { wrappingKey in
+                try profile.joinPublicSpace(
+                    space: PublicSpace(
+                        namespaceId: space.namespaceID, title: space.title, isPublic: true),
+                    wrappingKey: wrappingKey
+                )
+            }
+        }
+    }
+
+    /// The files to MOVE aside on the deepest recovery: the persisted snapshot
+    /// plus, when a durable store is in use, the SQLite database and its
+    /// write-ahead sidecars (a half-written WAL/SHM/journal is exactly what can
+    /// wedge the next open). Only paths that exist are relocated.
+    private static func coreArtifacts(snapshot: URL, databasePath: String?) -> [RecoveryArtifact] {
+        var artifacts: [RecoveryArtifact] = [.file(snapshot)]
+        if let databasePath {
+            for suffix in ["", "-wal", "-shm", "-journal"] {
+                artifacts.append(.file(URL(fileURLWithPath: databasePath + suffix)))
+            }
+        }
+        return artifacts
+    }
+
+    /// Opens the core from whatever the snapshot holds — the sealed identity if
+    /// there is one (validated to the 112-byte envelope the core writes), else a
+    /// new local profile. Any throw here means the persisted profile cannot be
+    /// opened at all, and `open` treats it as the deepest recovery.
+    private static func openCore(
+        persisted: PersistedProfile,
+        keyStore: WrappingKeyStore,
+        databasePath: String?
+    ) throws -> MobileProfile {
+        if let sealedIdentity = persisted.sealedIdentity {
+            guard sealedIdentity.count == 112 else { throw RepositoryError.invalidSealedIdentity }
+            return try withWrappingKey(from: keyStore) { wrappingKey in
+                if let databasePath {
+                    try openProfileFromSealedIdentityWithDatabase(
+                        dbPath: databasePath,
+                        wrappingKey: wrappingKey,
+                        sealedIdentity: sealedIdentity
+                    )
+                } else {
+                    try openProfileFromSealedIdentity(
+                        wrappingKey: wrappingKey,
+                        sealedIdentity: sealedIdentity
+                    )
+                }
+            }
+        }
+        return try openFresh(databasePath: databasePath)
+    }
+
+    /// Opens a brand-new local profile on the primary paths — the fresh start
+    /// after a quarantine, or the first-ever open. Prefers the durable database;
+    /// if that path cannot be opened (unwritable directory, a database the store
+    /// still refuses) it falls back to the in-memory profile so the launch still
+    /// reaches a usable state rather than throwing.
+    private static func openFresh(databasePath: String?) throws -> MobileProfile {
+        guard let databasePath else { return try openLocalProfile() }
+        do {
+            return try openLocalProfileWithDatabase(dbPath: databasePath)
+        } catch {
+            return try openLocalProfile()
+        }
     }
 
     public func createPublicSpace(title: String) throws -> RiotSpace {

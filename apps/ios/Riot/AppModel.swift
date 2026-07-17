@@ -251,6 +251,14 @@ public final class RiotAppModel: ObservableObject {
     /// details behind a disclosure); `nil` means the catalog loaded cleanly.
     @Published public private(set) var starterCatalogFailure: StarterCatalogFailure?
 
+    /// Set when `open` had to SELF-HEAL to reach a usable state — the persisted
+    /// profile was quarantined and a fresh one opened, a space could not be
+    /// restored, or one or more saved alerts were skipped. The shell surfaces a
+    /// dismissible, non-fatal notice from this ("We couldn't restore your previous
+    /// data — it's been saved aside") instead of the old dead RETRY. `nil` on a
+    /// clean open. See ``RiotAppModel/recoveryNoticeMessage`` for the wording.
+    @Published public private(set) var recoveryNotice: RecoveryReport?
+
     /// The arguments of the last `bootstrap` call, retained so `retryStarterCatalog`
     /// can re-attempt the one-time install after a catalog failure.
     private var lastBootstrapArgs: (
@@ -363,6 +371,78 @@ public final class RiotAppModel: ObservableObject {
         errorMessage = nil
     }
 
+    /// Dismisses the non-fatal self-healing notice once the person has seen it.
+    /// The recovery already happened — this only clears the banner.
+    public func dismissRecoveryNotice() {
+        recoveryNotice = nil
+    }
+
+    /// The plain-language, non-fatal notice for a self-healing open, or `nil` when
+    /// nothing was recovered. Honest about WHAT was dropped and clear that the data
+    /// was saved aside, never deleted.
+    public var recoveryNoticeMessage: String? {
+        guard let recovery = recoveryNotice else { return nil }
+        if recovery.quarantinedProfile {
+            return "We couldn't restore your previous data, so we started fresh. "
+                + "Your old data has been saved aside on this device, not deleted."
+        }
+        var parts: [String] = []
+        if recovery.spaceDropped {
+            parts.append("your community couldn't be restored")
+        }
+        if recovery.alertsSkipped > 0 {
+            let n = recovery.alertsSkipped
+            parts.append("\(n) saved \(n == 1 ? "alert" : "alerts") couldn't be reloaded")
+        }
+        guard !parts.isEmpty else { return nil }
+        return "We couldn't fully restore your previous data — "
+            + parts.joined(separator: " and ")
+            + ". It's been saved aside on this device, not deleted."
+    }
+
+    /// Re-attempts the one-time profile open with the same arguments the last
+    /// `bootstrap` used. The escape from the old dead RETRY: `open` now
+    /// self-heals, so a retry that reaches it lands the person in a usable app
+    /// rather than re-failing forever. No-ops once the profile is open.
+    public func retryBootstrap() {
+        guard repository == nil, let args = lastBootstrapArgs else { return }
+        errorMessage = nil
+        bootstrap(
+            storageDirectory: args.storageDirectory,
+            keyStore: args.keyStore,
+            starterPacks: args.starterPacks,
+            starterPackResolver: args.starterPackResolver
+        )
+    }
+
+    /// "Start fresh": the last-resort recovery for a genuinely-unrecoverable
+    /// error that survived every in-`open` degrade. It QUARANTINES the persisted
+    /// snapshot and database aside — never deleting them, so the data stays on
+    /// disk for later inspection — then re-opens a fresh profile. This is what
+    /// makes the launch error surface impossible to permanently brick: there is
+    /// always an action that reaches a usable state.
+    public func resetAndRecover() {
+        errorMessage = nil
+        // Move the persisted state aside through the shared recovery core so the
+        // re-open cannot trip on it again — and so the reset is recorded and
+        // preserved (never deleted) exactly like an automatic quarantine.
+        // Best-effort: a failure here must not itself become a new dead-end, and
+        // `open`'s own recovery is the backstop.
+        if let args = lastBootstrapArgs,
+           let base = try? (args.storageDirectory ?? Self.defaultStorageDirectory()) {
+            let databasePath = base.appendingPathComponent("riot.db").path
+            let artifacts: [RecoveryArtifact] =
+                [.file(base.appendingPathComponent("riot-profile.json"))]
+                + ["", "-wal", "-shm", "-journal"].map {
+                    .file(URL(fileURLWithPath: databasePath + $0))
+                }
+            _ = try? RecoveryQuarantine(storageDirectory: base)
+                .quarantine(artifacts, reason: .startFresh, error: nil)
+        }
+        repository = nil
+        retryBootstrap()
+    }
+
     public func openNearbySyncBoundary() throws -> MobileSyncSessionBoundary {
         guard let repository else { throw RepositoryError.profileClosed }
         return try repository.openSyncBoundary()
@@ -444,6 +524,10 @@ public final class RiotAppModel: ObservableObject {
                 databasePath: databasePath
             )
             self.repository = repository
+            // A self-healing open lands the person in a usable app; surface an
+            // honest, non-fatal notice about what it had to drop rather than the
+            // old dead RETRY. `nil` on a clean open.
+            recoveryNotice = repository.recovery
             demoLoader = RiotDemoSpaceLoader(repository: repository, model: self)
             // Headless two-node testing: with RIOT_SEED_SPACE=1 a fresh phone
             // opens a space on launch, so one scripted instance can host a space
