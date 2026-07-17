@@ -203,6 +203,194 @@ final class ProfileRecoveryTests: XCTestCase {
             "the bad alert bundle is preserved aside")
     }
 
+    // MARK: - Phase 5: the protected-storage blob load itself
+
+    /// The earliest boundary — before open even begins. If the persisted bytes
+    /// will not DECODE at all (a truncated write, a foreign file, a schema jump
+    /// the JSON can't survive), `open` must not throw: it quarantines the raw blob
+    /// aside (never deletes it) and starts from an EMPTY profile, landing the user
+    /// in a usable app. This is distinct from `.profileOpen` (a decodable snapshot
+    /// the CORE rejects) — the reason recorded is `storage-blob`.
+    func testUndecodableStorageBlobQuarantinesAndStartsEmpty() throws {
+        let url = uniqueURL("storage-blob")
+        let keyStore = TestWrappingKeyStore()
+
+        // Bytes that are not JSON at all — `JSONDecoder` throws before `open` runs.
+        let garbage = Data("this is not a profile snapshot".utf8)
+        try garbage.write(to: url, options: .atomic)
+
+        let recovered = try RiotProfileRepository.open(
+            storage: try ProtectedProfileStorage(fileURL: url), keyStore: keyStore
+        )
+        let report = try XCTUnwrap(recovered.recovery, "an undecodable blob is a recovery worth surfacing")
+        XCTAssertTrue(report.storageBlobQuarantined, "the raw blob was set aside and the open started empty")
+        XCTAssertFalse(report.quarantinedProfile, "this is the earlier storage-blob boundary, not profile-open")
+        XCTAssertNil(recovered.currentSpace, "an empty start lands with no community")
+        // The empty-started profile is fully usable.
+        _ = try recovered.me()
+        _ = try recovered.createPublicSpace(title: "Fresh")
+
+        let ref = try XCTUnwrap(report.quarantined.first { $0.manifest.reason == "storage-blob" })
+        XCTAssertNotNil(ref.manifest.error, "the manifest records WHY the decode failed")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: ref.manifestURL.path),
+            "manifest.json is on disk beside the quarantined blob")
+        // The undecodable bytes are PRESERVED verbatim, never destroyed.
+        let preserved = ref.directory.appendingPathComponent(url.lastPathComponent)
+        XCTAssertEqual(try Data(contentsOf: preserved), garbage,
+            "the raw undecodable blob is preserved in quarantine")
+    }
+
+    // MARK: - Phase 4: a bad carried app pack / app-data bundle
+
+    /// A neighbour-carried app pack whose bytes no longer install must be set
+    /// aside + RECORDED (not silently `try?`-skipped) and the rest of the open
+    /// continues — the identity and space still come back.
+    func testBadCarriedAppPackQuarantinedOthersSurvive() throws {
+        let url = uniqueURL("app-pack")
+        let keyStore = TestWrappingKeyStore()
+
+        let first = try RiotProfileRepository.open(
+            storage: try ProtectedProfileStorage(fileURL: url), keyStore: keyStore
+        )
+        _ = try first.createPublicSpace(title: "Berlin Mutual Aid")
+        let originalID = try first.me().id
+
+        // Inject a carried app whose manifest/bundle are garbage the installer rejects.
+        var object = try snapshot(url)
+        object["carriedApps"] = [[
+            "appIDHex": String(repeating: "ab", count: 32),
+            "manifest": Data("not a manifest".utf8).base64EncodedString(),
+            "bundle": Data("not a bundle".utf8).base64EncodedString(),
+        ]]
+        try writeSnapshot(object, to: url)
+
+        let recovered = try RiotProfileRepository.open(
+            storage: try ProtectedProfileStorage(fileURL: url), keyStore: keyStore
+        )
+        let report = try XCTUnwrap(recovered.recovery)
+        XCTAssertEqual(report.appPacksSkipped, 1, "exactly the one bad pack was set aside")
+        XCTAssertFalse(report.quarantinedProfile, "only the pack failed — the profile opened")
+        XCTAssertNotNil(recovered.currentSpace, "the space still restored")
+        XCTAssertEqual(try recovered.me().id, originalID, "the identity is kept")
+
+        let ref = try XCTUnwrap(report.quarantined.first { $0.manifest.reason == "app-pack" })
+        XCTAssertFalse(ref.manifest.artifacts.isEmpty,
+            "the bad pack's bytes are preserved aside: \(ref.manifest.artifacts)")
+    }
+
+    /// A committed app-data bundle the core rejects on replay must be set aside +
+    /// recorded, not silently `try?`-skipped, and the open continues.
+    func testBadAppDataBundleQuarantinedOthersSurvive() throws {
+        let url = uniqueURL("app-data")
+        let keyStore = TestWrappingKeyStore()
+
+        let first = try RiotProfileRepository.open(
+            storage: try ProtectedProfileStorage(fileURL: url), keyStore: keyStore
+        )
+        _ = try first.createPublicSpace(title: "Berlin Mutual Aid")
+
+        var object = try snapshot(url)
+        object["appDataBundles"] = [Data("not an app-data bundle".utf8).base64EncodedString()]
+        try writeSnapshot(object, to: url)
+
+        let recovered = try RiotProfileRepository.open(
+            storage: try ProtectedProfileStorage(fileURL: url), keyStore: keyStore
+        )
+        let report = try XCTUnwrap(recovered.recovery)
+        XCTAssertEqual(report.appDataSkipped, 1, "exactly the one bad app-data bundle was set aside")
+        XCTAssertNotNil(recovered.currentSpace, "the space still restored")
+
+        let ref = try XCTUnwrap(report.quarantined.first { $0.manifest.reason == "app-data" })
+        XCTAssertTrue(
+            FileManager.default.fileExists(atPath: ref.directory.appendingPathComponent("app-data.bundle").path),
+            "the bad app-data bundle is preserved aside")
+    }
+
+    // MARK: - Phase 3: a bad SYNCED bundle among good local alerts
+
+    /// A bundle that arrived over SYNC (provenance `fromSync`) and the core now
+    /// rejects on replay is quarantined under the distinct `sync-import` reason,
+    /// never partially applied, and the replay loop CONTINUES — a locally authored
+    /// alert in the same snapshot still comes back.
+    func testBadSyncedBundleQuarantinedUnderSyncImport() throws {
+        let url = uniqueURL("sync-import")
+        let keyStore = TestWrappingKeyStore()
+
+        let first = try RiotProfileRepository.open(
+            storage: try ProtectedProfileStorage(fileURL: url), keyStore: keyStore
+        )
+        let space = try first.createPublicSpace(title: "Berlin Mutual Aid")
+        _ = try first.signAlert(in: space, draft: AlertDraft(
+            expiresAt: UInt64(Date().timeIntervalSince1970) + 3600,
+            headline: "Local", description: "a locally authored alert",
+            sourceClaims: ["a source"], aiAssisted: false))
+        XCTAssertEqual(try first.currentEntries().count, 1)
+
+        // Append a SYNC-origin bundle the core rejects. The existing local alert
+        // stays as-is (fromSync absent → treated as local).
+        var object = try snapshot(url)
+        var alerts = try XCTUnwrap(object["alerts"] as? [[String: Any]])
+        alerts.append([
+            "bundle": Data("not a synced bundle".utf8).base64EncodedString(),
+            "fromSync": true,
+        ])
+        object["alerts"] = alerts
+        try writeSnapshot(object, to: url)
+
+        let recovered = try RiotProfileRepository.open(
+            storage: try ProtectedProfileStorage(fileURL: url), keyStore: keyStore
+        )
+        let report = try XCTUnwrap(recovered.recovery)
+        XCTAssertEqual(report.syncImportsSkipped, 1, "the bad synced bundle was set aside as a sync import")
+        XCTAssertEqual(report.alertsSkipped, 0, "the local alert was NOT the one that failed")
+        XCTAssertNotNil(recovered.currentSpace)
+        XCTAssertEqual(try recovered.currentEntries().count, 1, "the healthy local alert still came back")
+
+        let ref = try XCTUnwrap(report.quarantined.first { $0.manifest.reason == "sync-import" })
+        XCTAssertTrue(
+            FileManager.default.fileExists(atPath: ref.directory.appendingPathComponent("synced.bundle").path),
+            "the rejected synced bundle is preserved aside")
+    }
+
+    // MARK: - Phase 2: a community that will not open/reproject
+
+    /// Switching to a community the registry cannot open (its at-rest author was
+    /// quarantined by the core, or it is simply not openable) must NOT brick: it
+    /// surfaces `CommunityUnavailable`, leaves the CURRENT community untouched, and
+    /// records the event through the recovery core (never a silent heal). From the
+    /// Swift boundary a corrupt author and an unopenable target are the same
+    /// `CommunityUnavailable` signal, so this exercises the resilient wrapper
+    /// without corrupting a live database.
+    func testSwitchToUnavailableCommunityRecordsAndDoesNotBrick() throws {
+        let url = uniqueURL("community")
+        let keyStore = TestWrappingKeyStore()
+
+        let repo = try RiotProfileRepository.open(
+            storage: try ProtectedProfileStorage(fileURL: url), keyStore: keyStore
+        )
+        let space = try repo.createPublicSpace(title: "Berlin Mutual Aid")
+        XCTAssertNil(repo.recovery, "a clean open carries no recovery signal")
+
+        // A well-formed but unheld namespace — core answers CommunityUnavailable.
+        let unheld = String(repeating: "cd", count: 32)
+        XCTAssertThrowsError(try repo.switchToCommunity(namespaceID: unheld),
+            "switching to a community that cannot open surfaces, it does not silently succeed")
+
+        // The current community is untouched — a failed switch never leaves it.
+        XCTAssertEqual(repo.currentSpace?.namespaceID, space.namespaceID,
+            "the working community survives the failed switch")
+
+        // The event is recorded through the recovery core, not swallowed.
+        let report = try XCTUnwrap(repo.recovery, "an unavailable community is a recovery worth surfacing")
+        XCTAssertTrue(report.communityUnavailable)
+        let ref = try XCTUnwrap(report.quarantined.first { $0.manifest.reason == "community" })
+        XCTAssertNotNil(ref.manifest.error, "the manifest records WHY the community could not open")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: ref.manifestURL.path),
+            "a manifest is on disk for the unavailable community")
+        XCTAssertFalse(ref.manifest.artifacts.isEmpty,
+            "a record of the unavailable community is preserved: \(ref.manifest.artifacts)")
+    }
+
     // MARK: - No false positives
 
     func testCleanReopenHasNoRecoverySignal() throws {
