@@ -17,3 +17,10 @@ compatibility_date = "2025-06-01"
 directory = "./dist"
 binding = "ASSETS"
 run_worker_first = true
+
+# DYNAMIC tier: the live projection lives in KV, written by the seed
+# (seed.sh: project → push). The worker reads KV per request, so updating the
+# store updates the site with NO redeploy. Static assets are the fallback.
+[[kv_namespaces]]
+binding = "NEWSWIRE"
+id = "94646e705b474307a38f61b169ab9d5e"
