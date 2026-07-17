@@ -18,6 +18,12 @@ final class RiversideMemberToolUITests: XCTestCase {
             app.alerts.firstMatch.buttons.firstMatch.tap()
         }
 
+        // First-run onboarding opens on a welcome screen; advance to the setup
+        // screen where create / join / demo live. Guarded, so a re-run that
+        // already has a community (shell present, no welcome) simply skips it.
+        let getStarted = app.buttons["onboarding-get-started"]
+        if getStarted.waitForExistence(timeout: 3) { getStarted.tap() }
+
         // Load the seeded Riverside space from the launch screen. Offered only
         // when the profile has no community of its own; on a clean launch that is
         // the case.

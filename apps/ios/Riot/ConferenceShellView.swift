@@ -19,7 +19,7 @@ struct ConferenceShellView: View {
                 case .loading:
                     ShellRecoveryView(state: .profileStoreLoading, onPrimary: {}, onSecondary: nil)
                 case .noCommunity:
-                    LaunchView(model: model)
+                    OnboardingView(model: model)
                 case let .unavailable(unavailable):
                     ShellRecoveryView(
                         state: .communityUnavailable(unavailable),
@@ -154,17 +154,85 @@ struct OpenInRiotVerifyView: View {
     }
 }
 
-// MARK: - Launch (no community)
+// MARK: - First-run onboarding (no community)
 
-/// The no-community launch surface: Create a community / Find one nearby, with
-/// the display name offered inline and skippable, plus the demo space. The
-/// community name is required to create; the display name is not.
-private struct LaunchView: View {
+/// The first-run guided path. It is the shell's `.noCommunity` surface, so it is
+/// shown exactly when `Onboarding.isFirstRun` is true and is dismissed the moment
+/// a community exists (the launch state flips to `.community` and the shell
+/// takes over). Two short screens — a welcome that says what Riot is, then setup
+/// where you name yourself and create or join — because activists in the field
+/// need a path, not a wizard. It reuses the display-name path and the
+/// create/paste-to-join logic; it adds no community or identity machinery.
+private struct OnboardingView: View {
+    @ObservedObject var model: RiotAppModel
+    @State private var step: OnboardingStep = .first
+
+    var body: some View {
+        switch step {
+        case .welcome:
+            OnboardingWelcomeView(onContinue: { step = .setup })
+        case .setup:
+            OnboardingSetupView(model: model, onBack: { step = .welcome })
+        }
+    }
+}
+
+/// Screen one: what Riot is, in plain indymedia terms. One action — get started.
+private struct OnboardingWelcomeView: View {
+    @Environment(\.colorScheme) private var colorScheme
+    let onContinue: () -> Void
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                RiotCard {
+                    VStack(alignment: .leading, spacing: 12) {
+                        eyebrow("Welcome")
+                        Text("Publish to your community.")
+                            .font(.riot(.body, size: 24, relativeTo: .title2))
+                            .foregroundStyle(RiotTheme.ink(for: colorScheme))
+                            .accessibilityAddTraits(.isHeader)
+                        Text("Reach the web, prove it in the app. No servers, no accounts.")
+                            .font(.riot(.body, size: 17, relativeTo: .body))
+                            .foregroundStyle(RiotTheme.ink(for: colorScheme))
+                        Text("Riot is a place to report what's happening where you are — an update, an alert, a call to show up — and have your community carry it. Your posts are signed by you and shared device to device. The web can mirror them; the proof stays in the app.")
+                            .font(.riot(.body, size: 15, relativeTo: .callout))
+                            .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
+
+                        Button("Get started", action: onContinue)
+                            .buttonStyle(.riotPrimary)
+                            .accessibilityIdentifier("onboarding-get-started")
+                    }
+                }
+            }
+            .padding(20)
+        }
+        .riotHeader(eyebrow: "Riot", "Welcome")
+    }
+
+    private func eyebrow(_ text: String) -> some View {
+        Text(text)
+            .font(.riot(.mono, size: 12, relativeTo: .caption))
+            .textCase(.uppercase)
+            .tracking(1)
+            .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
+    }
+}
+
+/// Screen two: name yourself (skippable) and create or join a community
+/// (required to leave onboarding). The display name reuses the existing
+/// `setDisplayName` path; create reuses `createCommunity`; join reuses the exact
+/// paste-to-join sheet the community chooser uses. Nothing here is new identity
+/// or community machinery — it is a flow layer that routes into what exists.
+private struct OnboardingSetupView: View {
     @ObservedObject var model: RiotAppModel
     @Environment(\.colorScheme) private var colorScheme
+    let onBack: () -> Void
     @State private var communityName = ""
     @State private var displayName = ""
     @State private var demoFailure: String?
+    @State private var isJoinPresented = false
+    @State private var pastedReference = ""
 
     private var trimmedCommunity: String {
         communityName.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -175,8 +243,8 @@ private struct LaunchView: View {
             VStack(alignment: .leading, spacing: 16) {
                 RiotCard {
                     VStack(alignment: .leading, spacing: 12) {
-                        eyebrow("Get started")
-                        Text("You’re not in a community yet.")
+                        eyebrow("Set up")
+                        Text("Name yourself, then start or join a community.")
                             .font(.riot(.body, size: 20, relativeTo: .title3))
                             .foregroundStyle(RiotTheme.ink(for: colorScheme))
                             .accessibilityAddTraits(.isHeader)
@@ -211,6 +279,10 @@ private struct LaunchView: View {
                         .disabled(trimmedCommunity.isEmpty)
                         .accessibilityIdentifier("create-community")
 
+                        Button("Join with a link") { isJoinPresented = true }
+                            .buttonStyle(.riotSecondary)
+                            .accessibilityIdentifier("onboarding-join")
+
                         Button("Find one nearby") { model.select(.nearby) }
                             .buttonStyle(.riotSecondary)
                             .accessibilityIdentifier("find-nearby")
@@ -228,6 +300,21 @@ private struct LaunchView: View {
             .padding(20)
         }
         .riotHeader(eyebrow: "Riot", "Welcome")
+        .toolbar {
+            ToolbarItem(placement: .cancellationAction) {
+                Button("Back", action: onBack)
+                    .accessibilityIdentifier("onboarding-back")
+            }
+        }
+        .sheet(isPresented: $isJoinPresented) {
+            // Reuse the community chooser's paste-to-join sheet verbatim, so the
+            // onboarding join path is the same code (and same core call) as the
+            // in-app join, never a duplicate.
+            CommunityJoinSheet(model: model, pastedReference: $pastedReference) {
+                isJoinPresented = false
+                pastedReference = ""
+            }
+        }
         .onAppear { displayName = model.claimedName ?? "" }
     }
 

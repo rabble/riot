@@ -274,10 +274,18 @@ public struct CommunityChooserView: View {
 /// community. It joins as a fresh unlinkable member and appears in the chooser
 /// "pending first sync" until its content arrives over sync. A malformed
 /// reference is refused with a plain-language message and changes nothing.
-struct CommunityJoinSheet: View {
+public struct CommunityJoinSheet: View {
     @ObservedObject var model: RiotAppModel
     @Binding var pastedReference: String
     let onDone: () -> Void
+
+    /// Public so the first-run onboarding flow (app target) can present the exact
+    /// same paste-to-join UI the chooser uses, rather than duplicating it.
+    public init(model: RiotAppModel, pastedReference: Binding<String>, onDone: @escaping () -> Void) {
+        self.model = model
+        self._pastedReference = pastedReference
+        self.onDone = onDone
+    }
 
     /// A share reference is never capitalized; the auto-capitalization modifier is
     /// iOS-only, so it is applied only there — macOS shares this source.
@@ -290,7 +298,7 @@ struct CommunityJoinSheet: View {
         #endif
     }
 
-    var body: some View {
+    public var body: some View {
         NavigationStack {
             Form {
                 Section {

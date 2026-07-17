@@ -234,6 +234,58 @@ final class ShellNavigationTests: XCTestCase {
         }
     }
 
+    // MARK: - First-run onboarding gate + steps
+
+    /// Onboarding is the first-run guided path. It is shown ONLY when the profile
+    /// is open and there is no community yet — the same `.noCommunity` launch
+    /// state the shell already derives from real state. It is never shown while
+    /// the profile is loading, while a community is open, or during recovery — so
+    /// once a person has a community, onboarding never reappears in front of the
+    /// shell.
+    func testOnboardingIsFirstRunOnlyForTheNoCommunityLaunchState() {
+        XCTAssertTrue(Onboarding.isFirstRun(.noCommunity))
+
+        let community = CommunityContext(
+            name: "Riverside Tenants Union",
+            namespaceID: "ns-riverside",
+            newswireDescriptorEntryID: nil,
+            isOrganizer: true
+        )
+        XCTAssertFalse(Onboarding.isFirstRun(.community(community)))
+        XCTAssertFalse(Onboarding.isFirstRun(.loading))
+        XCTAssertFalse(
+            Onboarding.isFirstRun(.unavailable(CommunityUnavailable(name: "Fire Watch")))
+        )
+    }
+
+    /// The guided path is two SHORT screens (activists in the field, not a
+    /// wizard): a welcome that says what Riot is, then setup where you name
+    /// yourself and create or join a community. Setup is the last step — the flow
+    /// ends by landing in the shell (a real community), never on a further screen.
+    func testOnboardingStepsAreWelcomeThenSetup() {
+        XCTAssertEqual(OnboardingStep.first, .welcome)
+        XCTAssertEqual(OnboardingStep.welcome.next, .setup)
+        XCTAssertNil(OnboardingStep.setup.next, "setup is the last step; completion is a real community")
+        XCTAssertEqual(OnboardingStep.setup.back, .welcome)
+        XCTAssertNil(OnboardingStep.welcome.back, "welcome is the first step; there is nowhere back to")
+    }
+
+    /// The gate is derived from real state, not a separate flag: a fresh profile
+    /// with no community is first-run, and creating a community ends first-run —
+    /// so the shell, not onboarding, is what shows from then on.
+    @MainActor
+    func testCreatingACommunityEndsFirstRun() throws {
+        let directory = try Self.temporaryProfileDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let model = RiotAppModel()
+        model.bootstrap(storageDirectory: directory, keyStore: TestWrappingKeyStore(), starterPacks: [])
+
+        XCTAssertTrue(Onboarding.isFirstRun(model.launchState), "a fresh profile with no community is first-run")
+
+        model.createSpace(title: "Riverside Tenants Union")
+        XCTAssertFalse(Onboarding.isFirstRun(model.launchState), "a community ends first-run; the shell shows now")
+    }
+
     // MARK: - Create a community signs a descriptor with a founding roster
 
     /// Create-community signs an immutable `SpaceDescriptorV1` via

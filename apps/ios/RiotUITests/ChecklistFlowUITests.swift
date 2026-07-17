@@ -11,6 +11,11 @@ final class ChecklistFlowUITests: XCTestCase {
             app.alerts.firstMatch.buttons.firstMatch.tap()
         }
 
+        // First-run onboarding opens on a welcome screen; advance to setup where
+        // create lives. Guarded, so a leftover-community re-run skips it.
+        let getStarted = app.buttons["onboarding-get-started"]
+        if getStarted.waitForExistence(timeout: 3) { getStarted.tap() }
+
         // Create the community if this run starts fresh; a re-run against leftover
         // state already has one, in which case the Tools route is present.
         if !app.buttons["Tools"].waitForExistence(timeout: 3) {
