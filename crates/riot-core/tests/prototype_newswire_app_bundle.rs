@@ -82,7 +82,10 @@ fn package_newswire_viewer_as_app_drop() {
         &root.join("deploy/cf-mirror/dist/index.html"),
         "<!doctype html><meta charset=\"utf-8\"><title>RIOT Newswire</title><p>newswire viewer</p>",
     );
-    let export = read_or(&root.join("fixtures/newswire/newswire-export-v1.json"), "{}");
+    let export = read_or(
+        &root.join("fixtures/newswire/newswire-export-v1.json"),
+        "{}",
+    );
 
     let bundle = AppBundle {
         entry_point: "index.html".into(),
@@ -106,7 +109,10 @@ fn package_newswire_viewer_as_app_drop() {
     let encoded = encode_app_bundle(&bundle).expect("encode app bundle");
     let digest = app_bundle_digest(&encoded);
     let decoded = decode_app_bundle(&encoded).expect("decode app bundle");
-    assert_eq!(decoded, bundle, "the app-drop must round-trip byte-identically");
+    assert_eq!(
+        decoded, bundle,
+        "the app-drop must round-trip byte-identically"
+    );
 
     let out = root.join("fixtures/newswire/newswire.bundle");
     fs::write(&out, &encoded).expect("write bundle");
@@ -123,20 +129,34 @@ fn package_newswire_viewer_as_app_drop() {
         permissions: vec![],
         entry_point: "index.html".into(),
     };
-    assert_eq!(manifest.entry_point, bundle.entry_point, "manifest must point at the bundle's entry");
+    assert_eq!(
+        manifest.entry_point, bundle.entry_point,
+        "manifest must point at the bundle's entry"
+    );
 
     let manifest_bytes = encode_manifest(&manifest).expect("encode manifest");
     let app_id = app_id_for(&manifest, &digest).expect("app id");
-    assert_eq!(decode_manifest(&manifest_bytes).expect("decode manifest"), manifest, "manifest round-trips");
+    assert_eq!(
+        decode_manifest(&manifest_bytes).expect("decode manifest"),
+        manifest,
+        "manifest round-trips"
+    );
 
     let manifest_out = root.join("fixtures/newswire/newswire.manifest.cbor");
     fs::write(&manifest_out, &manifest_bytes).expect("write manifest");
 
     let hex = |b: &[u8]| b.iter().map(|x| format!("{x:02x}")).collect::<String>();
     eprintln!("wrote {} ({} bytes)", out.display(), encoded.len());
-    eprintln!("wrote {} ({} bytes)", manifest_out.display(), manifest_bytes.len());
+    eprintln!(
+        "wrote {} ({} bytes)",
+        manifest_out.display(),
+        manifest_bytes.len()
+    );
     eprintln!("entry_point = index.html · resources = index.html + newswire-export.json");
     eprintln!("app_bundle_digest = {}", hex(&digest));
-    eprintln!("author           = {}", hex(&author.identity().signing_key_id));
+    eprintln!(
+        "author           = {}",
+        hex(&author.identity().signing_key_id)
+    );
     eprintln!("app_id           = {}", hex(&app_id));
 }

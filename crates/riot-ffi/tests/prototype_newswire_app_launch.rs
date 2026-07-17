@@ -37,7 +37,9 @@ fn install_trust_launch_the_newswire_app() {
     let runtime = profile.app_runtime();
 
     // IMPORT — verify the (manifest, bundle) pair and publish it into the store.
-    let app = runtime.install_app(manifest, bundle).expect("install the app-drop");
+    let app = runtime
+        .install_app(manifest, bundle)
+        .expect("install the app-drop");
     eprintln!(
         "installed: app_id={} name={:?} entry_point={}",
         app.app_id, app.name, app.entry_point
@@ -51,7 +53,9 @@ fn install_trust_launch_the_newswire_app() {
 
     // TRUST — the per-profile decision to run this app.
     runtime.trust_app(app.app_id.clone()).expect("trust");
-    assert!(runtime.is_app_trusted(app.app_id.clone()).expect("trust query"));
+    assert!(runtime
+        .is_app_trusted(app.app_id.clone())
+        .expect("trust query"));
 
     // LAUNCH — the gate opens only for a trusted app.
     let exec = profile
@@ -71,7 +75,10 @@ fn install_trust_launch_the_newswire_app() {
 
     // Tearing the session down closes the door (denies-closed afterwards).
     exec.invalidate();
-    assert!(exec.app_data_get("draft/1".into()).is_err(), "closed session denies");
+    assert!(
+        exec.app_data_get("draft/1".into()).is_err(),
+        "closed session denies"
+    );
 
     eprintln!("import → trust → launch → bridge round-trip: OK");
 }

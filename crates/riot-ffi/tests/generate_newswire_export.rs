@@ -26,7 +26,14 @@ const SUMMARY: &str = "An independent, worker- and tenant-led newswire. Open pub
 anyone; editorial features are signed by the collective. No owners, no ads, no trackers — \
 just movement media that travels peer-to-peer and mirrors anywhere.";
 const LANGUAGES: [&str; 2] = ["en", "de"];
-const TOPICS: [&str; 6] = ["housing", "labor", "surveillance", "ecology", "repression", "migration"];
+const TOPICS: [&str; 6] = [
+    "housing",
+    "labor",
+    "surveillance",
+    "ecology",
+    "repression",
+    "migration",
+];
 const GEO: [&str; 1] = ["Berlin"];
 
 fn space_input(name: &str) -> NewswireSpaceInput {
@@ -127,10 +134,14 @@ fn generate_real_newswire_export() {
         correction_text: None,
     };
     for target in [&ids[0], &ids[1]] {
-        profile.create_newswire_editorial_action(feature(target)).expect("feature");
+        profile
+            .create_newswire_editorial_action(feature(target))
+            .expect("feature");
     }
     for target in [&ids[0], &ids[1], &ids[2]] {
-        profile.create_newswire_editorial_action(verify(target)).expect("verify");
+        profile
+            .create_newswire_editorial_action(verify(target))
+            .expect("verify");
     }
 
     // Project the collective view + contributors from the signed records.
@@ -141,8 +152,14 @@ fn generate_real_newswire_export() {
         .project_newswire_contributors(space.entry_id.clone())
         .expect("contributors");
 
-    assert!(!projection.front_page.is_empty(), "features must promote to the front page");
-    assert!(!projection.open_wire.is_empty(), "unfeatured posts stay on the open wire");
+    assert!(
+        !projection.front_page.is_empty(),
+        "features must promote to the front page"
+    );
+    assert!(
+        !projection.open_wire.is_empty(),
+        "unfeatured posts stay on the open wire"
+    );
 
     let export = json!({
         "schema": "riot.newswire.export/1",
@@ -167,7 +184,10 @@ fn generate_real_newswire_export() {
     });
 
     let out = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent().unwrap().parent().unwrap()
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
         .join("fixtures/newswire/newswire-export-v1.json");
     fs::create_dir_all(out.parent().unwrap()).expect("mkdir");
     fs::write(&out, serde_json::to_string_pretty(&export).unwrap() + "\n").expect("write export");
