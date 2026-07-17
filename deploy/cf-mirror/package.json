@@ -5,7 +5,8 @@
   "scripts": {
     "build": "python3 build.py",
     "dev": "npm run build && wrangler dev",
-    "deploy": "npm run build && wrangler deploy"
+    "deploy": "npm run build && wrangler deploy",
+    "seed": "python3 seed.py"
   },
   "devDependencies": {
     "wrangler": "^4.50.0"
