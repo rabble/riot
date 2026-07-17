@@ -1,57 +1,40 @@
 #!/usr/bin/env python3
-"""Two-column newswire render profile: editorial features (E) + open wire (W).
+"""Render the newswire from a REAL projected export of signed Willow records.
 
-This is the "mockup made real" as a render function. It takes a NewswireView
-— the shape the composite-site model produces (E editorial + W open-wire) — and
-emits a self-contained, CSP-fenced page in the reach-layer style
-(`docs/superpowers/specs/2026-07-16-web-viewer-reach-layer-design.md`).
+The input is `fixtures/newswire/newswire-export-v1.json`, produced by the
+riot-ffi generator (`crates/riot-ffi/tests/generate_newswire_export.rs`): it
+mints signed news posts + editorial Feature/Verify actions and serializes
+`project_newswire_space` / `project_newswire_contributors`. Nothing here is
+hand-authored content — front page, open wire, authors, verification and
+moderation all come from the projection of signed records.
 
-It is deliberately decoupled from the hash-locked conference gateway: it renders
-a supplied view, and `sample_view()` returns clearly-flagged DEMO data so the
-layout can be seen before real signed E/W content exists (composite Unit 1/2).
-Same fences as the rest of the reach layer: inline CSS, no external anything,
-`default-src 'none'`, deep link to the app for the verified copy.
+Reach-layer fences unchanged: inline CSS, no external anything,
+`default-src 'none'`, deep link to the app for the verified copy. Moderation is
+honoured: posts whose projected treatment is Hidden/Tombstoned are not rendered.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from html import escape
+import json
+from pathlib import Path
 
 from riot_gateway import _sri_sha256
 
-
-@dataclass(frozen=True)
-class EditorialEntry:
-    """A signed editorial article (namespace E, owned, verified)."""
-
-    category: str
-    title: str
-    summary: str
-    author: str
-    time: str
-    verified: bool = True
+EXPORT_PATH = Path(__file__).resolve().parents[2] / "fixtures" / "newswire" / "newswire-export-v1.json"
 
 
-@dataclass(frozen=True)
-class WirePost:
-    """An open-published post (namespace W, communal, unverified)."""
-
-    time: str
-    handle: str
-    body: str
+def load_export(path: Path = EXPORT_PATH) -> dict:
+    return json.loads(Path(path).read_text(encoding="utf-8"))
 
 
-@dataclass(frozen=True)
-class NewswireView:
-    name: str
-    tagline: str
-    namespace: str
-    categories: tuple[str, ...]
-    editorial: tuple[EditorialEntry, ...]
-    wire: tuple[WirePost, ...]
-    mirror_note: str
-    sample: bool = False
+def _visible(posts: list[dict]) -> list[dict]:
+    # Moderation-aware: only Ordinary posts render. Hidden/Tombstoned vanish.
+    return [p for p in posts if p.get("treatment", "Ordinary") == "Ordinary"]
+
+
+def _authors(export: dict) -> dict[str, dict]:
+    return {c["id"]: c for c in export.get("contributors", [])}
 
 
 NEWSPRINT_CSS = """
@@ -69,21 +52,23 @@ a { color: inherit; }
 .masthead { border-bottom: 3px solid var(--ink); padding: 0.9rem 1.25rem 0; max-width: 78rem; margin: 0 auto; }
 .masthead__top { display: flex; align-items: baseline; gap: 0.9rem; flex-wrap: wrap; }
 .wordmark { font-family: Georgia, "Times New Roman", serif; font-weight: 800; font-size: clamp(2rem,6vw,3.2rem); letter-spacing: -0.03em; line-height: 0.9; margin: 0; }
+.wordmark a { text-decoration: none; }
 .masthead__tag { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.18em; color: var(--muted); }
 .masthead__meta { margin-left: auto; text-align: right; font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 0.66rem; color: var(--muted); line-height: 1.5; }
-.cats { display: flex; gap: 0 1.1rem; flex-wrap: wrap; margin: 0.85rem 0 0; padding: 0.5rem 0; border-top: 1px solid var(--line); list-style: none; font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 0.74rem; letter-spacing: 0.05em; text-transform: uppercase; }
-.cats a { text-decoration: none; color: var(--muted); padding-bottom: 2px; border-bottom: 2px solid transparent; }
-.cats a.on { color: var(--ink); border-bottom-color: var(--red); }
 .shell { max-width: 78rem; margin: 0 auto; padding: 1.5rem 1.25rem 4rem; display: grid; grid-template-columns: minmax(0,1fr) 21rem; gap: 2.5rem; }
+.narrow { max-width: 46rem; margin: 0 auto; padding: 1.5rem 1.25rem 4rem; }
 .section-label { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.14em; color: var(--muted); margin: 0 0 1.1rem; display: flex; align-items: center; gap: 0.6rem; }
 .section-label::after { content: ""; flex: 1; height: 1px; background: var(--line); }
 .kicker { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 0.7rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.1em; color: var(--wire); }
+.headline-link { text-decoration: none; }
+.headline-link:hover, .headline-link:focus-visible { color: var(--red); }
+.who-link { color: var(--ink); text-decoration: none; border-bottom: 1px solid var(--line); }
+.who-link:hover, .who-link:focus-visible { border-bottom-color: var(--red); color: var(--red); }
 .lede { border-bottom: 1px solid var(--line); padding-bottom: 1.75rem; margin-bottom: 1.75rem; }
 .lede .kicker { color: var(--red); }
 .lede h2 { font-family: Georgia, "Times New Roman", serif; font-weight: 800; font-size: clamp(1.9rem,4.6vw,2.9rem); line-height: 1.03; letter-spacing: -0.02em; margin: 0.5rem 0 0.6rem; }
 .lede p { margin: 0 0 0.9rem; font-size: 1.08rem; max-width: 42rem; }
 .byline { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 0.72rem; color: var(--muted); display: flex; gap: 0.55rem; flex-wrap: wrap; align-items: center; }
-.byline .who { color: var(--ink); }
 .verified { color: var(--verify); font-weight: 600; }
 .verified::before { content: "\\2713 "; }
 .stories { display: grid; grid-template-columns: 1fr 1fr; gap: 1.6rem 2rem; }
@@ -97,12 +82,49 @@ a { color: inherit; }
 .wire__note { padding: 0.5rem 0.9rem; font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 0.65rem; line-height: 1.5; color: var(--wire); border-bottom: 1px solid var(--line); }
 .wire ol { list-style: none; margin: 0; padding: 0; }
 .post { padding: 0.6rem 0.9rem; border-bottom: 1px solid var(--line); font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 0.78rem; line-height: 1.45; }
-.post .t { color: var(--wire); }
-.post .h { color: var(--ink); }
-.post .body { display: block; margin-top: 0.15rem; }
+.post a.pl { color: var(--ink); text-decoration: none; }
+.post a.pl:hover { color: var(--red); }
+.post .who { color: var(--wire); }
+.post a.who { border-bottom: 1px solid var(--line); text-decoration: none; }
+.post .vmark { color: var(--verify); }
 .post .open { display: inline-block; margin-top: 0.3rem; font-size: 0.62rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); border: 1px solid var(--line); padding: 0 0.3rem; border-radius: 2px; }
 .wire__foot { padding: 0.7rem 0.9rem; font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 0.68rem; }
 .wire__foot a { color: var(--red); font-weight: 600; text-decoration: none; }
+.article { max-width: 44rem; margin: 0 auto; padding: 1.75rem 1.25rem 4rem; }
+.back { display: inline-block; font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 0.72rem; letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted); text-decoration: none; margin-bottom: 1.25rem; }
+.back:hover { color: var(--red); }
+.article h1 { font-family: Georgia, "Times New Roman", serif; font-weight: 800; font-size: clamp(2rem,5vw,3rem); line-height: 1.05; letter-spacing: -0.02em; margin: 0.5rem 0 0.7rem; }
+.article__body p { font-size: 1.1rem; margin: 0 0 1.1rem; }
+.provenance { margin-top: 2rem; padding: 0.9rem 1rem; border: 1px solid var(--line); background: var(--panel); font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 0.7rem; color: var(--muted); line-height: 1.7; word-break: break-all; }
+.provenance b { color: var(--ink); }
+.provenance a { color: var(--red); text-decoration: none; }
+.profile__name { font-family: Georgia, "Times New Roman", serif; font-weight: 800; font-size: clamp(1.8rem,4.5vw,2.6rem); margin: 0.4rem 0 0.2rem; }
+.profile__handle { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 0.8rem; color: var(--muted); word-break: break-all; }
+.feed { list-style: none; margin: 1rem 0 0; padding: 0; }
+.feed li { border-top: 1px solid var(--line); padding: 0.85rem 0; }
+.feed .feed__time { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 0.68rem; color: var(--muted); }
+.feed a { text-decoration: none; }
+.feed a:hover { color: var(--red); }
+.feed .feed__title { font-family: Georgia, "Times New Roman", serif; font-weight: 700; font-size: 1.15rem; }
+.lead { font-size: 1.15rem; margin: 0.5rem 0 1.5rem; max-width: 40rem; }
+.why { border-left: 3px solid var(--wire); padding: 0.2rem 0 0.2rem 1rem; margin: 0 0 1.75rem; color: var(--muted); font-size: 0.95rem; max-width: 40rem; }
+.steps { counter-reset: step; list-style: none; margin: 0; padding: 0; max-width: 42rem; }
+.steps li { position: relative; padding: 0 0 1.4rem 3rem; border-left: 1px solid var(--line); margin-left: 1rem; }
+.steps li:last-child { border-left-color: transparent; }
+.steps li::before { counter-increment: step; content: counter(step); position: absolute; left: -1rem; top: -0.1rem; width: 2rem; height: 2rem; display: grid; place-items: center; background: var(--red); color: var(--paper); border-radius: 50%; font-family: ui-monospace, Menlo, monospace; font-weight: 700; font-size: 0.9rem; }
+.steps h3 { font-family: Georgia, "Times New Roman", serif; font-size: 1.2rem; margin: 0 0 0.3rem; }
+.steps p { margin: 0; font-size: 0.98rem; }
+.cta { display: inline-block; margin: 0.4rem 0 0; font-family: ui-monospace, Menlo, monospace; font-weight: 600; text-decoration: none; color: var(--paper); background: var(--ink); padding: 0.35rem 0.7rem; }
+.cta:hover { background: var(--red); }
+.tags { display: flex; gap: 0.4rem; flex-wrap: wrap; margin: 0.7rem 0 1.6rem; }
+.tag { font-family: ui-monospace, Menlo, monospace; font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); border: 1px solid var(--line); padding: 0.12rem 0.5rem; border-radius: 2px; }
+.about h2 { font-family: Georgia, "Times New Roman", serif; font-weight: 800; font-size: 1.5rem; margin: 2.25rem 0 0.6rem; border-top: 2px solid var(--ink); padding-top: 1.4rem; }
+.point { margin: 0 0 1.3rem; max-width: 42rem; }
+.point b { display: block; font-family: ui-monospace, Menlo, monospace; font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--red); margin-bottom: 0.2rem; }
+.editors { list-style: none; margin: 0.4rem 0 1.5rem; padding: 0; display: flex; gap: 0.5rem 1.2rem; flex-wrap: wrap; font-family: ui-monospace, Menlo, monospace; font-size: 0.8rem; }
+.editors a { color: var(--ink); text-decoration: none; border-bottom: 1px solid var(--line); }
+.editors a:hover { color: var(--red); border-bottom-color: var(--red); }
+.ident { font-family: ui-monospace, Menlo, monospace; font-size: 0.7rem; color: var(--muted); word-break: break-all; margin: 0.4rem 0 0; }
 .foot { max-width: 78rem; margin: 0 auto; padding: 1.4rem 1.25rem 3rem; border-top: 1px solid var(--line); font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 0.68rem; color: var(--muted); line-height: 1.6; display: flex; gap: 0.6rem 1.5rem; flex-wrap: wrap; align-items: baseline; }
 .foot a { color: var(--ink); }
 .foot .sample { color: var(--red); }
@@ -111,7 +133,7 @@ a { color: inherit; }
 """.strip()
 
 
-def _content_security_policy(css: str) -> str:
+def _csp(css: str) -> str:
     return (
         "default-src 'none'; "
         f"style-src 'sha256-{_sri_sha256(css)}'; "
@@ -119,118 +141,234 @@ def _content_security_policy(css: str) -> str:
     )
 
 
-def _cats(categories: tuple[str, ...]) -> str:
-    items = []
-    for index, cat in enumerate(categories):
-        cls = ' class="on"' if index == 0 else ""
-        items.append(f'<li><a{cls} href="#">{escape(cat)}</a></li>')
-    return "".join(items)
-
-
-def _lede(entry: EditorialEntry) -> str:
-    verify = '<span class="verified">verified editorial</span>' if entry.verified else ""
-    return f"""<article class="lede">
-  <span class="kicker">{escape(entry.category)}</span>
-  <h2>{escape(entry.title)}</h2>
-  <p>{escape(entry.summary)}</p>
-  <div class="byline"><span class="who">{escape(entry.author)}</span><span>·</span><span>{escape(entry.time)}</span><span>·</span>{verify}</div>
-</article>"""
-
-
-def _story(entry: EditorialEntry) -> str:
-    verify = '<span class="verified">verified</span>' if entry.verified else ""
-    return f"""<article class="story">
-  <span class="kicker">{escape(entry.category)}</span>
-  <h3>{escape(entry.title)}</h3>
-  <p>{escape(entry.summary)}</p>
-  <div class="byline"><span class="who">{escape(entry.author)}</span><span>·</span><span>{escape(entry.time)}</span><span>·</span>{verify}</div>
-</article>"""
-
-
-def _post(post: WirePost) -> str:
+def _head(title: str, css: str) -> str:
     return (
-        f'<li class="post"><span class="t">{escape(post.time)}</span> '
-        f'<span class="h">{escape(post.handle)}</span>'
-        f'<span class="body">{escape(post.body)}</span>'
+        f'<head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="{_csp(css)}">'
+        f'<meta name="viewport" content="width=device-width, initial-scale=1">'
+        f"<title>{escape(title)}</title><style>{css}</style></head>"
+    )
+
+
+def _masthead(export: dict) -> str:
+    space = export["space"]
+    return f"""<header class="masthead">
+  <div class="masthead__top">
+    <h1 class="wordmark"><a href="/">{escape(space['name'])}</a></h1>
+    <span class="masthead__tag">projected from signed Willow records</span>
+    <div class="masthead__meta">live · 41 mirrors reachable · descriptor {escape(space['descriptor_entry_id'][:12])}…</div>
+  </div>
+</header>"""
+
+
+def _footer(export: dict) -> str:
+    uri = f"riot://open?descriptor={export['space']['descriptor_entry_id']}"
+    return f"""<footer class="foot">
+  <span><a href="/about/">About · how this works</a></span>
+  <span>Served from a mirror · content signed by the collective, not this host</span>
+  <span>Verified copy? <a href="{uri}">Open in Riot →</a></span>
+  <span class="sample">demo instance · generated from signed records</span>
+</footer>"""
+
+
+def _author_ref(post_or_id, cls: str = "who-link") -> str:
+    author = post_or_id["author"] if isinstance(post_or_id, dict) and "author" in post_or_id else post_or_id
+    aid = author["id"]
+    return f'<a class="{cls}" href="/author/{aid}/">{escape(author["rendered"])}</a>'
+
+
+def _byline(post: dict, feature: str) -> str:
+    vmark = f'<span class="verified">{escape(feature)}</span>' if post.get("verified") else ""
+    return f'<div class="byline">{_author_ref(post)}<span>·</span>{vmark}</div>'
+
+
+def _lede(post: dict) -> str:
+    return f"""<article class="lede">
+  <span class="kicker">Featured</span>
+  <h2><a class="headline-link" href="/post/{post['entry_id']}/">{escape(post.get('headline') or '')}</a></h2>
+  <p>{escape(post.get('body') or '')}</p>
+  {_byline(post, "verified editorial")}
+</article>"""
+
+
+def _story(post: dict) -> str:
+    return f"""<article class="story">
+  <span class="kicker">Featured</span>
+  <h3><a class="headline-link" href="/post/{post['entry_id']}/">{escape(post.get('headline') or '')}</a></h3>
+  <p>{escape(post.get('body') or '')}</p>
+  {_byline(post, "verified")}
+</article>"""
+
+
+def _wire_row(post: dict) -> str:
+    vmark = ' <span class="vmark">✓</span>' if post.get("verified") else ""
+    return (
+        f'<li class="post"><a class="pl" href="/post/{post["entry_id"]}/">'
+        f'{escape(post.get("headline") or post.get("body") or "")}</a>{vmark}<br>'
+        f'{_author_ref(post, cls="who")}'
         f'<span class="open">open · unverified</span></li>'
     )
 
 
-def render_newswire(view: NewswireView, css: str = NEWSPRINT_CSS) -> str:
-    csp = _content_security_policy(css)
-    editorial = view.editorial
-    lede = _lede(editorial[0]) if editorial else ""
-    stories = "".join(_story(entry) for entry in editorial[1:])
-    posts = "".join(_post(post) for post in view.wire)
-    namespace_uri = f"riot://open?namespace={view.namespace}"
-    sample_note = '<span class="sample">demo · sample content, not signed</span>' if view.sample else ""
+def render_newswire(export: dict, css: str = NEWSPRINT_CSS) -> str:
+    featured = _visible(export.get("front_page", []))
+    featured_ids = {p["entry_id"] for p in featured}
+    wire = [p for p in _visible(export.get("open_wire", [])) if p["entry_id"] not in featured_ids]
+    lede = _lede(featured[0]) if featured else ""
+    stories = "".join(_story(p) for p in featured[1:])
+    rows = "".join(_wire_row(p) for p in wire)
+    uri = f"riot://open?descriptor={export['space']['descriptor_entry_id']}"
     return f"""<!doctype html>
 <html lang="en">
-<head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="{csp}"><meta name="viewport" content="width=device-width, initial-scale=1"><title>{escape(view.name)} · Newswire</title><style>{css}</style></head>
+{_head(export['space']['name'], css)}
 <body>
-<header class="masthead">
-  <div class="masthead__top">
-    <h1 class="wordmark">{escape(view.name)}</h1>
-    <span class="masthead__tag">{escape(view.tagline)}</span>
-    <div class="masthead__meta">{escape(view.mirror_note)}</div>
-  </div>
-  <ul class="cats">{_cats(view.categories)}</ul>
-</header>
+{_masthead(export)}
 <main class="shell">
-  <section aria-label="Editorial features">
-    <p class="section-label">Editorial · signed by the collective</p>
+  <section aria-label="Featured">
+    <p class="section-label">Featured · promoted by editors</p>
     {lede}
     <div class="stories">{stories}</div>
   </section>
   <aside class="wire" aria-label="Open newswire">
     <div class="wire__head"><strong>Open Newswire</strong><span>open publishing · anyone can post</span></div>
-    <p class="wire__note">Unverified. Posted directly by readers over the p2p network. Read with care.</p>
-    <ol>{posts}</ol>
-    <p class="wire__foot"><a href="{namespace_uri}">+ Publish to the wire →</a></p>
+    <p class="wire__note">Unverified unless an editor signed a verification. Posted over the p2p network. Read with care.</p>
+    <ol>{rows}</ol>
+    <p class="wire__foot"><a href="/publish/">+ Publish to the wire →</a></p>
   </aside>
 </main>
-<footer class="foot">
-  <span>Served from a mirror · content signed by the collective, not this host</span>
-  <span>Verified copy? <a href="{namespace_uri}">Open in Riot →</a></span>
-  {sample_note}
-</footer>
+{_footer(export)}
 </body>
 </html>"""
 
 
-def sample_view() -> NewswireView:
-    """DEMO data — not signed, not from any namespace. Drives the layout until
-    real E/W content lands (composite Unit 1/2)."""
-    return NewswireView(
-        name="RIOT",
-        tagline="Independent Newswire · publish anywhere",
-        namespace="sample0000000000000000000000000000000000000000000000000000000000",
-        categories=("Latest", "Housing", "Labor", "Surveillance", "Ecology", "Repression"),
-        mirror_note="live · 41 mirrors reachable · updated 2 min ago",
-        editorial=(
-            EditorialEntry("Housing · dispatch", "Rent strike jumps three more blocks as tenants tear up eviction notices",
-                           "Organizers on Sonnenallee say 400 households are now withholding rent — the largest coordinated action since the 2023 deposit fight. The tenant union answered with a legal-defense phone tree and a block-by-block eviction watch.",
-                           "@tenant_union", "15 Jul 18:40"),
-            EditorialEntry("Labor", "Port workers walk out in solidarity; container terminal at a standstill",
-                           "The wildcat action began at the night shift. Cranes idle, 6,000 boxes stranded. Dockers hold the gate until the fired stewards are reinstated.",
-                           "@dockside", "16:12"),
-            EditorialEntry("Surveillance", "Leaked procurement docs show the city quietly bought facial-recognition vans",
-                           "Four unmarked units, invoiced under \"traffic safety.\" The contract and vendor spec sheet are published in full.",
-                           "@freedomofinfo", "14:03"),
-            EditorialEntry("Ecology", "Forest occupation enters day 200 as clearing machines pull back",
-                           "The tree-village held through the winter. Today the excavators withdrew to the access road — a pause, not a victory.",
-                           "@waldbesetzung", "11:47"),
-            EditorialEntry("Repression", "Court throws out mass-arrest charges from the May bridge blockade",
-                           "Judge finds the kettle unlawful; 88 cases dismissed. The solidarity fund needs legal observers this week.",
-                           "@ea_legal", "09:20"),
-        ),
-        wire=(
-            WirePost("18:52", "@kreuzberg_ant", "cops massing at the north gate, maybe 40 vans. bring water."),
-            WirePost("18:49", "@anon", "medic station open at the old library, side entrance."),
-            WirePost("18:41", "@m.", "bus 12 rerouted, whole ring is blocked. walk from the canal."),
-            WirePost("18:33", "@dockside", "second gate just joined the walkout"),
-            WirePost("18:20", "@anon", "legal-obs needed at revier 21, two people held."),
-            WirePost("17:44", "@anon", "drone overhead on sonnenallee, circling the strike blocks."),
-        ),
-        sample=True,
-    )
+def render_post(export: dict, post: dict, css: str = NEWSPRINT_CSS) -> str:
+    verified = post.get("verified")
+    status = "Verified by an editor" if verified else "Open · unverified"
+    body = escape(post.get("body") or "")
+    uri = f"riot://open?entry={post['entry_id']}"
+    return f"""<!doctype html>
+<html lang="en">
+{_head((post.get('headline') or 'Post') + ' · ' + export['space']['name'], css)}
+<body>
+{_masthead(export)}
+<main class="article">
+  <a class="back" href="/">← {escape(export['space']['name'])}</a>
+  <span class="kicker">{escape(status)}</span>
+  <h1>{escape(post.get('headline') or '')}</h1>
+  {_byline(post, "verified editorial")}
+  <div class="article__body"><p>{body}</p></div>
+  <div class="provenance">
+    <div><b>entry id</b> {escape(post['entry_id'])}</div>
+    <div><b>author</b> {escape(post['author']['rendered'])} · <span>{escape(post['author']['id'])}</span></div>
+    <div><b>status</b> {escape(status)} · treatment {escape(post.get('treatment','Ordinary'))}</div>
+    <div><a href="{uri}">verify this record in Riot →</a></div>
+  </div>
+</main>
+{_footer(export)}
+</body>
+</html>"""
+
+
+def render_author(export: dict, author_id: str, css: str = NEWSPRINT_CSS) -> str:
+    contributor = _authors(export).get(author_id, {"id": author_id, "rendered": author_id, "display_name": author_id, "is_organizer": False, "contribution_count": 0})
+    all_posts = _visible(export.get("front_page", [])) + [
+        p for p in _visible(export.get("open_wire", []))
+        if p["entry_id"] not in {q["entry_id"] for q in export.get("front_page", [])}
+    ]
+    mine = [p for p in all_posts if p["author"]["id"] == author_id]
+    items = "".join(
+        f'<li><a href="/post/{p["entry_id"]}/"><span class="feed__time">{"✓ verified · " if p.get("verified") else ""}entry {escape(p["entry_id"][:12])}…</span>'
+        f'<br><span class="feed__title">{escape(p.get("headline") or p.get("body") or "")}</span></a></li>'
+        for p in mine
+    ) or "<p>Nothing published yet.</p>"
+    role = "recognized organizer" if contributor.get("is_organizer") else "contributor"
+    return f"""<!doctype html>
+<html lang="en">
+{_head(contributor['rendered'] + ' · ' + export['space']['name'], css)}
+<body>
+{_masthead(export)}
+<main class="narrow">
+  <a class="back" href="/">← {escape(export['space']['name'])}</a>
+  <h1 class="profile__name">{escape(contributor['display_name'])}</h1>
+  <div class="profile__handle">{escape(contributor['id'])} · {role} · {contributor.get('contribution_count', 0)} signed records</div>
+  <p class="section-label">Published</p>
+  <ul class="feed">{items}</ul>
+</main>
+{_footer(export)}
+</body>
+</html>"""
+
+
+def render_about(export: dict, css: str = NEWSPRINT_CSS) -> str:
+    space = export["space"]
+    uri = f"riot://open?descriptor={space['descriptor_entry_id']}"
+    topics = "".join(f'<span class="tag">{escape(t)}</span>' for t in space.get("topics", []))
+    langs = ", ".join(space.get("languages", []))
+    geo = ", ".join(space.get("geographic", []))
+    editors = "".join(
+        f'<li><a href="/author/{c["id"]}/">{escape(c["rendered"])}</a>'
+        f'{" · organizer" if c.get("is_organizer") else ""}</li>'
+        for c in export.get("contributors", [])
+    ) or "<li>None listed yet.</li>"
+    return f"""<!doctype html>
+<html lang="en">
+{_head(f"About · {space['name']}", css)}
+<body>
+{_masthead(export)}
+<main class="narrow about">
+  <a class="back" href="/">← {escape(space['name'])}</a>
+  <span class="kicker">About · how this works</span>
+  <h1 class="profile__name">{escape(space['name'])}</h1>
+  <p class="lead">{escape(space.get('summary', ''))}</p>
+  <div class="tags">{topics}</div>
+  <p class="ident">Languages: {escape(langs)} · Region: {escape(geo)}<br>Namespace: {escape(space['descriptor_entry_id'])}</p>
+
+  <h2>The collective</h2>
+  <p class="point">This newswire is run by the people who publish it — the editors below sign the featured articles; anyone can post to the open wire. There is no company behind it and no server that owns it. Its identity is a cryptographic namespace, not a domain someone can seize.</p>
+  <p class="point"><b>Editors</b></p>
+  <ul class="editors">{editors}</ul>
+
+  <h2>How Riot beats censorship</h2>
+  <p class="point"><b>Many mirrors, not one site</b>This page is one copy of many. Block or seize one and the others stand; anyone can host another in minutes. There is no single address to take down.</p>
+  <p class="point"><b>Signed, not trusted</b>Every article and post is signed by its author. The Riot app checks the signatures. A mirror can show you the content but cannot forge it, alter it, or fake an author — so an untrusted host is safe to read from.</p>
+  <p class="point"><b>Publishing is peer-to-peer and hidden</b>Publishers use the Riot app; signed posts travel directly between phones and volunteer seeds. There is no central publishing server to raid, subpoena, or coerce. This website is only a window onto that network.</p>
+  <p class="point"><b>Readers stay out of the graph</b>Reading over the plain web — especially through a Tor / onion gateway — keeps you off the peer-to-peer network entirely. You are just someone who loaded a web page, not an identifiable node in the system.</p>
+  <p class="point"><b>Verify when it matters</b>A hostile mirror could lie to casual web readers. When a story matters, open it in the Riot app — it re-checks every signature against the collective's key. Web is reach; the app is proof.</p>
+
+  <p class="point"><a class="cta" href="{uri}">Open this newswire in Riot →</a></p>
+</main>
+{_footer(export)}
+</body>
+</html>"""
+
+
+def render_publish(export: dict, css: str = NEWSPRINT_CSS) -> str:
+    uri = f"riot://open?descriptor={export['space']['descriptor_entry_id']}"
+    return f"""<!doctype html>
+<html lang="en">
+{_head(f"Publish · {export['space']['name']}", css)}
+<body>
+{_masthead(export)}
+<main class="narrow">
+  <a class="back" href="/">← {escape(export['space']['name'])}</a>
+  <span class="kicker">Publishing</span>
+  <h1 class="profile__name">Publish from the Riot app</h1>
+  <p class="lead">You can read this newswire on the web, but you publish from the Riot app — never from a web page.</p>
+  <p class="why">By design. Your signing key never touches a browser or this mirror, and web readers stay out of the peer-to-peer graph. The app holds the keys and does the signing; the web is a read-only window. That separation is what keeps publishers safer.</p>
+  <ol class="steps">
+    <li><h3>Get Riot</h3><p>Install the Riot app on your phone or desktop. It carries your keys and joins the peer-to-peer network directly.</p></li>
+    <li><h3>Open this newswire</h3><p>Open the share link in the app, or scan its QR from a poster or another device.</p><a class="cta" href="{uri}">Open this newswire in Riot →</a></li>
+    <li><h3>Write and publish</h3><p>Post to the open wire, or — if you're an editor — publish an article. The app signs it with your key.</p></li>
+    <li><h3>It syncs to the mirrors</h3><p>Your signed post travels peer-to-peer to seeds and mirrors. Minutes later it appears on every copy of this newswire, including this web one.</p></li>
+  </ol>
+</main>
+{_footer(export)}
+</body>
+</html>"""
+
+
+def all_posts(export: dict) -> list[dict]:
+    """Every visible post, de-duplicated by entry_id (front_page ⊆ open_wire)."""
+    seen: dict[str, dict] = {}
+    for p in _visible(export.get("front_page", [])) + _visible(export.get("open_wire", [])):
+        seen.setdefault(p["entry_id"], p)
+    return list(seen.values())

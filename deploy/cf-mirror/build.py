@@ -9,6 +9,7 @@ render change: `python3 build.py`.
 from __future__ import annotations
 
 from pathlib import Path
+import shutil
 import sys
 
 HERE = Path(__file__).resolve().parent
@@ -22,10 +23,39 @@ import server  # noqa: E402
 
 def main() -> None:
     dist = HERE / "dist"
-    dist.mkdir(exist_ok=True)
+    if dist.exists():
+        shutil.rmtree(dist)  # no stale pages from a previous build
+    dist.mkdir(parents=True)
 
-    # Home = the two-column newswire (E features + W open-wire), demo content.
-    (dist / "index.html").write_text(nw.render_newswire(nw.sample_view()), encoding="utf-8")
+    # Newswire = a REAL projection of signed Willow records
+    # (fixtures/newswire/newswire-export-v1.json, minted by the riot-ffi
+    # generator). Regenerate it with:
+    #   cargo test -p riot-ffi --test generate_newswire_export -- --ignored
+    export = nw.load_export()
+    (dist / "index.html").write_text(nw.render_newswire(export), encoding="utf-8")
+
+    # /publish = how to publish (from the app; the web is read-only by design).
+    pub = dist / "publish"
+    pub.mkdir(parents=True, exist_ok=True)
+    (pub / "index.html").write_text(nw.render_publish(export), encoding="utf-8")
+
+    # /about = this collective + how Riot beats censorship.
+    about = dist / "about"
+    about.mkdir(parents=True, exist_ok=True)
+    (about / "index.html").write_text(nw.render_about(export), encoding="utf-8")
+
+    # Post permalinks — keyed by real entry_id (content hash).
+    for post in nw.all_posts(export):
+        page = dist / "post" / post["entry_id"]
+        page.mkdir(parents=True, exist_ok=True)
+        (page / "index.html").write_text(nw.render_post(export, post), encoding="utf-8")
+
+    # Author profiles — one per real contributor (signer). Everything they've
+    # published aggregates here.
+    for contributor in export.get("contributors", []):
+        page = dist / "author" / contributor["id"]
+        page.mkdir(parents=True, exist_ok=True)
+        (page / "index.html").write_text(nw.render_author(export, contributor["id"]), encoding="utf-8")
 
     # /board = the incident-board dump, both skins, to exercise the vendored
     # client filter and the skin/CSP seam on a live host.
