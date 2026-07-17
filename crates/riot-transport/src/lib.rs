@@ -13,6 +13,7 @@ use riot_core::sync::{ByteSyncOutcome, ByteSyncSession, SyncError, MAX_SYNC_FRAM
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 pub mod iroh;
+pub mod seed;
 pub mod ticket;
 
 /// The sync ALPN — the application protocol negotiated on an iroh connection.
