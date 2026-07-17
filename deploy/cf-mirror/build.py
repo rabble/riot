@@ -8,24 +8,68 @@ render change: `python3 build.py`.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 import sys
 
 HERE = Path(__file__).resolve().parent
-GATEWAY = HERE.parents[1] / "apps" / "gateway"
+REPO_ROOT = HERE.parents[1]
+GATEWAY = REPO_ROOT / "apps" / "gateway"
 sys.path.insert(0, str(GATEWAY))
 
 import newswire as nw  # noqa: E402
 import riot_gateway  # noqa: E402
 import server  # noqa: E402
 
+# The real signed /2 newswire export produced by `cargo xtask export-newswire`.
+NEWSWIRE_EXPORT = REPO_ROOT / "fixtures" / "newswire" / "gateway-space" / "public-export-v1.json"
+
+
+def _write(path: Path, html: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(html, encoding="utf-8")
+
+
+def build_newswire(dist: Path, newswire_export: Path = NEWSWIRE_EXPORT) -> None:
+    """Freeze the newswire home + one page per post + one page per named
+    contributor, rendered from the REAL signed export. The `/demo/` route always
+    carries the flagged sample layout. If the export fixture is absent, the home
+    falls back to the demo so the mirror still builds."""
+    # /demo = the layout on flagged demo content, always available.
+    _write(dist / "demo" / "index.html", nw.render_newswire(nw.sample_view()))
+
+    if not newswire_export.exists():
+        _write(dist / "index.html", nw.render_newswire(nw.sample_view()))
+        return
+
+    export = json.loads(newswire_export.read_text(encoding="utf-8"))
+
+    # Home = the two-column newswire from real signed /2 records (sample=False,
+    # so no demo footer).
+    _write(dist / "index.html", nw.render_newswire(nw.newswire_view_from_export(export)))
+
+    # One page per re-verified post.
+    for entry_id in nw.all_post_ids(export):
+        post = nw.post_view_from_export(export, entry_id)
+        if post is not None:
+            _write(dist / "post" / entry_id / "index.html", nw.render_post(post))
+
+    # One page per NAMED contributor (nameless communal authors get none).
+    for contributor in export.get("contributors", []):
+        author = nw.author_view_from_export(export, contributor["author_id"])
+        if author is not None:
+            _write(
+                dist / "author" / contributor["author_id"] / "index.html",
+                nw.render_author(author),
+            )
+
 
 def main() -> None:
     dist = HERE / "dist"
     dist.mkdir(exist_ok=True)
 
-    # Home = the two-column newswire (E features + W open-wire), demo content.
-    (dist / "index.html").write_text(nw.render_newswire(nw.sample_view()), encoding="utf-8")
+    # Home + newswire post/author pages, from the real signed export.
+    build_newswire(dist)
 
     # /board = the incident-board dump, both skins, to exercise the vendored
     # client filter and the skin/CSP seam on a live host.
