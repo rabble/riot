@@ -1,5 +1,13 @@
 # Newswire → Web: Closing the Publish-Anywhere Loop — Program Plan
 
+> **⚠️ STATUS 2026-07-18 (read `docs/coordination/2026-07-18-coordinator-status.md` for the live picture).** Most of this roadmap has LANDED; the table/sequencing below is the original map, kept for context. Current reality:
+> - **WS0 (devices): SHIPPED** — v2 distributed publishing (PR #12) + isolation guard (PR #13). TF v2 ready.
+> - **WS1 (signed `/2` export): MERGED** (PR #15). **WS1-b (display-name `contributors[]`): MERGED** (PR #17). The rigorous export chain is done.
+> - **WS2 (gateway render):** superseded by a collision — a parallel rich site (PR #19, `web/newswire-arc`) merged first on the interim `/1` schema. **Owner ruled: unify onto `/2`** (display names + per-author pages, retire `/1`). A corrective `/2` unification graft on top of #19 is IN FLIGHT (keeps #19's rich site + app-drop, swaps the render to `/2`). WS2's `/2` mapping (PR #20, draft) is the graft seed.
+> - **WS3 ("Open in Riot" verify):** partly covered by #19's signed app-drop; explicit deep-link scoped after unification.
+>
+> The DoD is unchanged; the path just took a corrective PR. Do NOT reintroduce `riot.newswire.export/1` — the schema is `riot-public-gateway-export/2`.
+
 > **For agentic workers:** this is a PROGRAM plan spanning several subsystems. Per `superpowers:writing-plans` scope rules, each workstream (WS1–WS4) gets its OWN detailed TDD plan + the design-review + plan-review gates (see CLAUDE.md) BEFORE execution. This document defines the goal, the interfaces between workstreams, the sequencing, and the definition of done — the map, not the turn-by-turn.
 
 **Goal:** A newswire post created in the Riot app appears on the public web mirror (`riot-newswire-dev.protestnet.workers.dev`) as **real signed content** (not demo), a reader can **"Open in Riot →" to verify** the signed copy, and the same post **distributes device-to-device** over nearby sync. That is the indymedia loop: publish anywhere, read anywhere, verify anywhere.
