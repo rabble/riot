@@ -66,8 +66,6 @@ public struct AppRuntimeView: View {
     private let appName: String
     private let onClose: () -> Void
 
-    @Environment(\.scenePhase) private var scenePhase
-
     public init(
         repository: RiotProfileRepository,
         appIDHex: String,
@@ -81,35 +79,190 @@ public struct AppRuntimeView: View {
     }
 
     public var body: some View {
-        Group {
-            if let launch = AppRuntimeLaunch(repository: repository, appIDHex: appIDHex) {
-                VStack(spacing: 0) {
-                    HStack {
-                        Text(appName)
-                            .font(.riot(.mono, size: 14, relativeTo: .body))
-                            .textCase(.uppercase)
-                        Spacer()
-                        Button("Close", action: onClose)
-                            .buttonStyle(.riotSecondary)
-                            .accessibilityIdentifier("app-close")
-                    }
-                    .padding(12)
-                    AppWebView(launch: launch)
-                }
-                .onChange(of: scenePhase) { _, phase in
-                    if phase == .active { Self.postDataChanged() }
-                }
-                .onReceive(NotificationCenter.default.publisher(for: Self.appInvalidatedNotification)) { _ in
-                    // §4.7: access was revoked/invalidated mid-use — return to Tools.
-                    onClose()
-                }
-            } else {
-                // Trust was revoked between the Tools row rendering "Open" and
-                // this view constructing. Per the HARD CONTRACT we must not
-                // mount an untrusted app: render nothing and dismiss.
-                Color.clear.onAppear(perform: onClose)
+        if let launch = AppRuntimeLaunch(repository: repository, appIDHex: appIDHex) {
+            AppHostView(launch: launch, appName: appName, onClose: onClose)
+        } else {
+            // Trust was revoked between the Tools row rendering "Open" and this
+            // view constructing. Per the HARD CONTRACT we must not mount an
+            // untrusted app: render nothing and dismiss.
+            Color.clear.onAppear(perform: onClose)
+        }
+    }
+}
+
+/// The mounted-app chrome: the app's own themed surface, a subtle activity strip
+/// naming who is active in it, and the sandboxed WebView. On iPhone this is a
+/// PUSH under the Tools tab, so the "‹ Tools" back button and app-name title come
+/// from the enclosing `NavigationStack` and the community header + tab bar stay
+/// on screen. On macOS it lives in the split detail, where there is no back
+/// button, so it keeps an explicit Close.
+private struct AppHostView: View {
+    let launch: AppRuntimeLaunch
+    let appName: String
+    let onClose: () -> Void
+
+    @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.colorScheme) private var colorScheme
+    /// Who is active in THIS app, read from its own stored rows. Refreshed on
+    /// mount, on a store-changed post, and on foreground.
+    @State private var digest: AppActivityDigest = .empty
+
+    var body: some View {
+        VStack(spacing: 0) {
+            #if os(macOS)
+            HStack {
+                Text(appName)
+                    .font(.riot(.mono, size: 14, relativeTo: .body))
+                    .textCase(.uppercase)
+                Spacer()
+                Button("Close", action: onClose)
+                    .buttonStyle(.riotSecondary)
+                    .accessibilityIdentifier("app-close")
+            }
+            .padding(12)
+            #endif
+            activityStrip
+            AppWebView(launch: launch)
+        }
+        .background(RiotTheme.paper(for: colorScheme))
+        #if os(iOS)
+        .navigationTitle(appName)
+        .navigationBarTitleDisplayMode(.inline)
+        #endif
+        .task { refreshDigest() }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active { AppRuntimeView.postDataChanged() }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: AppRuntimeView.dataChangedNotification)) { _ in
+            refreshDigest()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: AppRuntimeView.appInvalidatedNotification)) { _ in
+            // §4.7: access was revoked/invalidated mid-use — return to Tools.
+            onClose()
+        }
+    }
+
+    /// A caption naming who is active in this app — the answer to "can I see the
+    /// people while I'm in a tool?". Hidden when there is nothing to show, so an
+    /// empty or single-author app never carries a bare strip.
+    @ViewBuilder
+    private var activityStrip: some View {
+        if !digest.isEmpty {
+            HStack(spacing: 6) {
+                Image(systemName: "person.2.fill")
+                    .font(.system(size: 11))
+                    .accessibilityHidden(true)
+                Text("Active: \(digest.caption())")
+                    .font(.riot(.mono, size: 11, relativeTo: .caption2))
+                    .lineLimit(1)
+                Spacer(minLength: 0)
+            }
+            .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
+            .padding(.horizontal, 14)
+            .padding(.vertical, 6)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(RiotTheme.paper2(for: colorScheme))
+            .overlay(alignment: .bottom) {
+                Rectangle().fill(RiotTheme.line(for: colorScheme)).frame(height: 1)
+            }
+            .accessibilityElement(children: .combine)
+            .accessibilityIdentifier("app-activity-strip")
+        }
+    }
+
+    /// Read the app's rows through the same gated bridge the WebView uses and
+    /// resolve their authors to a presence summary. A read failure (a torn-down
+    /// or revoked session) leaves the last digest in place rather than clearing
+    /// it — the invalidation path, not this, closes the app.
+    private func refreshDigest() {
+        guard let rows = try? launch.bridge.list(prefix: "") else { return }
+        digest = AppActivityDigest.from(rows: rows) { idHex in
+            guard let profile = launch.bridge.profile(idHex: idHex) else { return nil }
+            // The bridge returns this fallback for an id whose profile this
+            // device has not synced yet; it is not a person to name.
+            if profile.displayName == "member", profile.tag.isEmpty { return nil }
+            return profile.displayName
+        }
+    }
+}
+
+/// A subtle "who is active in this app" summary, derived from the app's OWN
+/// stored rows. Apps tag rows with an author id under a handful of conventional
+/// keys (`author_id`, `updated_by_id`, …); this tallies one contribution per row
+/// per distinct author WITHOUT knowing any single app's schema, so the same strip
+/// works across the whole tool suite. It never guesses a name: an id is counted
+/// only once `resolve` (the host profile lookup) returns a display name for it.
+struct AppActivityDigest: Equatable {
+    struct Contributor: Equatable {
+        let name: String
+        let count: Int
+    }
+
+    let contributors: [Contributor]
+
+    static let empty = AppActivityDigest(contributors: [])
+    var isEmpty: Bool { contributors.isEmpty }
+
+    /// The active people, most active first, capped so the strip stays a caption
+    /// ("Ana, Priya, Sam +2"). Names only — presence, not analytics.
+    func caption(limit: Int = 4) -> String {
+        let shown = contributors.prefix(limit).map(\.name)
+        let overflow = contributors.count - shown.count
+        let list = shown.joined(separator: ", ")
+        return overflow > 0 ? "\(list) +\(overflow)" : list
+    }
+
+    /// Build a digest from an app's stored rows. `resolve` maps an id-hex to a
+    /// display name (nil = unknown, so it is not shown). One contribution is
+    /// counted per row per author; same-named authors collapse into one entry so
+    /// the caption never repeats a name.
+    static func from(
+        rows: [(key: String, valueJSON: String)],
+        resolve: (String) -> String?
+    ) -> AppActivityDigest {
+        var counts: [String: Int] = [:]
+        var order: [String] = []
+        for row in rows {
+            for id in authorIDs(inValueJSON: row.valueJSON) {
+                guard let name = resolve(id) else { continue }
+                if counts[name] == nil { order.append(name) }
+                counts[name, default: 0] += 1
             }
         }
+        let seen = Dictionary(uniqueKeysWithValues: order.enumerated().map { ($1, $0) })
+        let contributors = order
+            .map { Contributor(name: $0, count: counts[$0] ?? 0) }
+            .sorted { lhs, rhs in
+                lhs.count != rhs.count
+                    ? lhs.count > rhs.count
+                    : (seen[lhs.name] ?? 0) < (seen[rhs.name] ?? 0)
+            }
+        return AppActivityDigest(contributors: contributors)
+    }
+
+    /// The author ids in one row's JSON value: any top-level string field whose
+    /// KEY reads like authorship and whose VALUE is a 32-byte subspace id-hex.
+    private static func authorIDs(inValueJSON json: String) -> [String] {
+        guard let data = json.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return [] }
+        return object.compactMap { key, value in
+            guard looksLikeAuthorKey(key),
+                  let string = value as? String,
+                  isSubspaceID(string)
+            else { return nil }
+            return string
+        }
+    }
+
+    private static func looksLikeAuthorKey(_ key: String) -> Bool {
+        let lowered = key.lowercased()
+        return lowered.contains("author") || lowered.contains("_by_id")
+            || lowered == "by_id" || lowered.contains("owner")
+    }
+
+    private static func isSubspaceID(_ value: String) -> Bool {
+        value.count == 64 && value.allSatisfy { $0.isHexDigit && !$0.isUppercase }
     }
 }
 
