@@ -36,6 +36,9 @@ struct ConferenceShellView: View {
         } message: {
             Text(model.errorMessage ?? "Unknown local error")
         }
+        .sheet(item: openOutcomeBinding) { outcome in
+            OpenInRiotVerifyView(outcome: outcome, onClose: model.dismissOpenOutcome)
+        }
     }
 
     private var errorBinding: Binding<Bool> {
@@ -43,6 +46,111 @@ struct ConferenceShellView: View {
             get: { model.errorMessage != nil },
             set: { if !$0 { model.dismissError() } }
         )
+    }
+
+    /// Presents the verify outcome of an "Open in Riot" link — but not for a plain
+    /// home/masthead link, which only navigates. Dismissing clears the pending
+    /// outcome on the model.
+    private var openOutcomeBinding: Binding<RiotOpenOutcome?> {
+        Binding(
+            get: {
+                if case .openedHome = model.openOutcome { return nil }
+                return model.openOutcome
+            },
+            set: { if $0 == nil { model.dismissOpenOutcome() } }
+        )
+    }
+}
+
+// MARK: - "Open in Riot" verify result
+
+/// The honest verify result of an "Open in Riot" deep link (web = reach, app =
+/// truth). A "Verified in Riot" badge appears ONLY for a post this device holds as
+/// its own signed, signature-verified record — never a fake checkmark for content
+/// the app has not cryptographically checked. The other states are equally honest:
+/// a post not yet synced cannot be verified, and a community this device does not
+/// follow has nothing to verify against until it joins and syncs.
+struct OpenInRiotVerifyView: View {
+    let outcome: RiotOpenOutcome
+    let onClose: () -> Void
+
+    var body: some View {
+        VStack(spacing: 20) {
+            Image(systemName: symbolName)
+                .font(.system(size: 44))
+                .foregroundStyle(symbolColor)
+                .accessibilityHidden(true)
+            Text(title)
+                .font(.title2.weight(.bold))
+                .multilineTextAlignment(.center)
+            if let headline {
+                Text(headline)
+                    .font(.headline)
+                    .multilineTextAlignment(.center)
+            }
+            Text(explanation)
+                .font(.body)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer()
+            Button(action: onClose) {
+                Text("Done")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.borderedProminent)
+        }
+        .padding(28)
+        .presentationDetents([.medium])
+    }
+
+    private var symbolName: String {
+        switch outcome {
+        case .verified: "checkmark.seal.fill"
+        case .postNotHeld: "clock.badge.questionmark"
+        case .notFollowing: "person.crop.circle.badge.plus"
+        case .openedHome: "house.fill"
+        }
+    }
+
+    private var symbolColor: Color {
+        switch outcome {
+        case .verified: .green
+        case .postNotHeld, .notFollowing, .openedHome: .secondary
+        }
+    }
+
+    private var title: String {
+        switch outcome {
+        case .verified: "Verified in Riot"
+        case .postNotHeld: "Not on your device yet"
+        case .notFollowing: "You don’t follow this community"
+        case .openedHome: "Opened in Riot"
+        }
+    }
+
+    private var headline: String? {
+        if case let .verified(_, _, headline) = outcome { return headline }
+        return nil
+    }
+
+    private var explanation: String {
+        switch outcome {
+        case .verified:
+            return "Riot holds this post as a signed record for this community and "
+                + "verified its signature when it synced. The web copy matches a "
+                + "post Riot cryptographically checked — a mirror can’t forge that."
+        case .postNotHeld:
+            return "Riot can’t verify this post because it hasn’t synced to your "
+                + "device yet. Open this community, let it sync, then follow the "
+                + "link again to check the signature."
+        case .notFollowing:
+            return "There’s nothing here for Riot to check against yet. Join this "
+                + "community and let it sync — then Riot can verify its posts "
+                + "against the signed records themselves, not the web copy."
+        case .openedHome:
+            return "Opened this community’s Home."
+        }
     }
 }
 

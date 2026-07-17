@@ -583,6 +583,76 @@ public final class RiotAppModel: ObservableObject {
         }
     }
 
+    /// The outcome of the last `riot://open?...` verify link the app was handed,
+    /// or `nil` when none is pending. The shell presents it as an HONEST verify
+    /// result (see ``RiotOpenOutcome``) — a "verified" badge only for a post this
+    /// device holds as its own signed, signature-verified record. Dismissing clears it.
+    @Published public private(set) var openOutcome: RiotOpenOutcome?
+
+    /// Routes an incoming `riot://` deep link. An `open` link surfaces a community
+    /// and, for a per-post link, VERIFIES the post against this device's own synced
+    /// signed records (never a fake checkmark — see ``RiotOpenOutcome``). A `join`
+    /// reference is handed to the established `decodeShareReference` join path
+    /// (``joinAdditionalCommunity(shareReference:)``), not duplicated.
+    public func handleDeepLink(_ url: URL) {
+        guard let link = RiotDeepLink.parse(url) else { return }
+        switch link {
+        case let .joinReference(encoded):
+            joinAdditionalCommunity(shareReference: encoded)
+        case let .openSpace(namespace, entry):
+            openFromDeepLink(namespace: namespace, entry: entry)
+        }
+    }
+
+    /// Dismisses the pending verify outcome.
+    public func dismissOpenOutcome() { openOutcome = nil }
+
+    /// Opens the community a `riot://open?...` link names and resolves the honest
+    /// verify outcome. If this device does not follow the community there is
+    /// nothing to verify against, so it offers to join and verify after sync. If it
+    /// does, the community's Home opens and — for a per-post link — the post is
+    /// checked against the community's projected, signature-verified wire, so a
+    /// mirror cannot make the app confirm a post it never synced.
+    private func openFromDeepLink(namespace: String, entry: String?) {
+        guard let repository else { return }
+        let communities = (try? repository.listCommunities()) ?? []
+        guard let row = communities.first(where: {
+            $0.namespaceId.caseInsensitiveCompare(namespace) == .orderedSame
+        }) else {
+            openOutcome = .notFollowing(namespace: namespace, entry: entry)
+            return
+        }
+
+        // Bring the named community on screen. Only switch when it is not already
+        // selected — a switch regenerates the author, which a re-open must not do.
+        if space?.namespaceID.caseInsensitiveCompare(row.namespaceId) != .orderedSame {
+            switchCommunity(namespaceID: row.namespaceId)
+        } else {
+            destination = .home
+        }
+
+        // Verify the post (if any) against this device's OWN signature-verified
+        // wire — presence there means the record passed core's Ed25519-checking
+        // import path, which is the whole anti-forgery guarantee.
+        var held: Set<String> = []
+        var headlines: [String: String] = [:]
+        if entry != nil, let descriptor = row.descriptorEntryId,
+           let projection = try? repository.projectNewswire(spaceDescriptorEntryID: descriptor) {
+            let posts = projection.openWire + projection.frontPage + projection.earlier
+            for post in posts {
+                let key = post.entryId.lowercased()
+                held.insert(key)
+                if let headline = post.headline { headlines[key] = headline }
+            }
+        }
+        openOutcome = RiotDeepLinkResolver.resolveOpen(
+            namespace: row.namespaceId,
+            entry: entry,
+            followsNamespace: true,
+            heldEntryIDs: held,
+            headlineForEntry: { headlines[$0] })
+    }
+
     /// Core and the codec both answer a bad paste with the same opaque error, so
     /// the sentence names the likely causes rather than guessing at one.
     private static let joinRefusal =
