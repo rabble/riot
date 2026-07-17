@@ -10,7 +10,8 @@ publish = false
 iroh = "1.0.2"
 riot-core = { path = "../riot-core" }
 tokio = { version = "1.53.0", features = ["rt-multi-thread", "macros", "io-util", "time"] }
+# Ticket floor is ROOT-SIGNED and verified before any dial (§5.1) — pure crypto.
+ed25519-dalek = { workspace = true }
 
 [dev-dependencies]
 tokio = { version = "1.53.0", features = ["rt", "rt-multi-thread", "macros", "time", "io-util"] }
-ed25519-dalek = { workspace = true }

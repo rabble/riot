@@ -13,6 +13,7 @@ use riot_core::sync::{ByteSyncOutcome, ByteSyncSession, SyncError, MAX_SYNC_FRAM
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 pub mod iroh;
+pub mod ticket;
 
 /// The sync ALPN — the application protocol negotiated on an iroh connection.
 pub const ALPN: &[u8] = b"riot/sync/1";
@@ -23,8 +24,17 @@ pub enum TransportError {
     FrameTooLarge,
     /// The peer closed the stream mid-exchange.
     StreamClosed,
+    /// The pre-connection gate refused to dial (fail-closed, §5.1-5.3). No
+    /// connection was opened — this is a REFUSAL, not a network failure.
+    Blocked(ticket::TransportBlocked),
     Io(std::io::Error),
     Sync(SyncError),
+}
+
+impl From<ticket::TransportBlocked> for TransportError {
+    fn from(e: ticket::TransportBlocked) -> Self {
+        Self::Blocked(e)
+    }
 }
 
 impl std::fmt::Display for TransportError {
@@ -32,6 +42,7 @@ impl std::fmt::Display for TransportError {
         match self {
             Self::FrameTooLarge => write!(f, "sync frame exceeds MAX_SYNC_FRAME_BYTES"),
             Self::StreamClosed => write!(f, "peer closed the stream mid-exchange"),
+            Self::Blocked(b) => write!(f, "dial refused (fail-closed): {b}"),
             Self::Io(e) => write!(f, "transport io: {e}"),
             Self::Sync(e) => write!(f, "reconcile error: {e:?}"),
         }

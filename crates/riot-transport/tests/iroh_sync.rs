@@ -8,9 +8,46 @@ use std::sync::{Arc, Mutex};
 
 use riot_core::sync::ByteSyncSession;
 use riot_core::willow::generate_communal_author;
-use riot_transport::iroh::{bind, sync_accept, sync_connect};
+use riot_transport::iroh::{bind, dial_with_ticket, dialable_addr, sync_accept, sync_connect};
+use riot_transport::ticket::{mint, Capabilities, TransportBlocked};
+use riot_transport::TransportError;
 
 use common::signed;
+
+#[tokio::test(flavor = "multi_thread")]
+async fn require_arti_ticket_fails_closed_before_any_dial() {
+    // A require:arti site, a client with only iroh: dial_with_ticket must REFUSE
+    // before opening a connection — the peer here is reachable, yet no sync runs.
+    let key = ed25519_dalek::SigningKey::from_bytes(&[9u8; 32]);
+    let ticket = mint(&key, [0x11; 32], "arti", 1, 10_000, [0x22; 32], None);
+
+    let follower = bind().await.unwrap();
+    let seed = bind().await.unwrap();
+    let seed_addr = dialable_addr(&seed).await;
+    let session = ByteSyncSession::new([0x11; 32], vec![]).unwrap();
+
+    let result = dial_with_ticket(
+        &follower,
+        &ticket,
+        &Capabilities {
+            iroh: true,
+            arti: false,
+        },
+        1_000,
+        0,
+        seed_addr,
+        session,
+        |_| true,
+    )
+    .await;
+
+    assert!(matches!(
+        result,
+        Err(TransportError::Blocked(
+            TransportBlocked::RequiresUnavailableTransport(_)
+        ))
+    ));
+}
 
 #[tokio::test(flavor = "multi_thread")]
 async fn reconcile_over_real_iroh_quic() {
