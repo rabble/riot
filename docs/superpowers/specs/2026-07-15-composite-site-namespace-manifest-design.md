@@ -126,12 +126,12 @@ else:  # communal
 - `crates/riot-core/src/import/bundle.rs:496` — `verify_frame` (the single policy chokepoint; edit the policy **here only**).
 - `crates/riot-core/src/session.rs:658` — `into_authorised_entry` (routes through `decode_bundle`→`verify_frame`; add a test seam, do **not** duplicate the policy).
 - `crates/riot-core/src/sync/state.rs:277` — namespace-id equality (routes through the same; test seam).
-- `crates/riot-core/src/newswire/entry.rs:326` — **4th gate**, newswire inspection/projection path, also rejects owned caps. Editorial articles hit this; must be updated consistently.
+- `crates/riot-core/src/newswire/entry.rs:326` — **4th gate**, newswire inspection/projection path, rejects owned caps. **CORRECTION (as implemented in Unit 1 / PR #14): editorial articles do NOT hit this gate.** It is behind `is_newswire_prefix` (path `["newswire","v1",…]`); editorial articles are `["articles",<section>,…]` — disjoint. It was **left refusing owned caps** (relaxing it would admit owned *newswire* records, which §2 forbids); #14 pins that gate 1 and gate 4 agree in refusing an owned newswire record with a test, rather than unifying them.
 - FFI **alert/non-alert classification** splits records in **two** places (`mobile_state.rs`: `inspectable_entries` + `list_current_entries`); new owned record families (article, manifest, revoke, tombstone) must be added to **both** or bundles reject / the board bricks (prior art: newswire 0B).
 
 A **cross-gate consistency test** asserts an owned-namespace editorial entry admitted at `verify_frame` is also accepted/classified at every other gate.
 
-**Retire the string-roster.** The app-level `editorial_roster` (`newswire_ffi.rs:43`) is replaced/backed by the cap check — cryptographic, not a name-compare.
+~~**Retire the string-roster.**~~ **CORRECTION (Unit 1 / #14 did NOT do this — category error):** `editorial_roster` (`newswire_ffi.rs:43`) is the *communal newswire* founding roster — a different namespace and write model than owned-namespace editorial delegation, with which it coexists (§2). The owned cryptographic cap check governs owned articles, not communal newswire membership; it does not replace this field (also a `uniffi::Record` field → native-rebuild trap). Left unchanged.
 
 ---
 
