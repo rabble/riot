@@ -1,7 +1,7 @@
 # iOS — Surface Built-but-Stranded Capabilities & Kill Dead-Ends — Design
 
 **Date:** 2026-07-18
-**Status:** Design — revised after design-review gate round 1 (PM + Security APPROVED; Designer/Architect/CTO NEEDS_REVISION — all addressed below)
+**Status:** Design — **gate PASSED 5/5 (2026-07-18)**. PM, Security, Designer, Architect, CTO all APPROVED (round 2 for the three that flagged Unit 4 / composer / chooser). Ready for planning.
 
 **Revision note (gate r1):** Unit 4 (editor un-gate) can't be pure-Swift — a joined community's roster isn't readable across FFI; split into **4a (new `newswire_is_editor` FFI predicate, one binding regen + staticlib rebuild) + 4b (Swift consumer)**, §8 blanket "no new FFI" corrected. Unit 6 mode picker would strand users (Alert/Request need source/expiry/location fields the composer lacks) → it now ships those operational inputs + inline validation. Unit 1 also fixes the chooser's existing dead Create/Find-nearby no-ops. `AlertDetail` is a value struct not a view → Unit 3 builds a detail sheet. Alerts are global not per-community → scoped to the active community. QR hardened (riot://-only, length-bound, teardown, actionable errors); pending-sync no longer leads with the red Nearby CTA; duplicate-join handled; alert signer renders the core-verified value.
 **Scope:** iOS only. Build the missing UI for capabilities that already work end-to-end via UniFFI, and remove existing UI dead-ends. Organized by user job. Integrates into the existing 4-tab community shell — no new tab.
@@ -91,6 +91,13 @@ Community shell (Home/Tools/People/Nearby)
 - **Honest ordering + not-yet-synced:** before a joined community's descriptor has synced, the predicate is false → no controls, shown with a one-line note "Editorial controls appear after this community's first sync," not a bare empty view.
 - **Defense in depth (display ≠ authority):** the UI predicate is a *display* gate only. The core still independently rejects an editorial action from a non-roster author at signing/admission — so even if controls were forced visible, the action fails at core. A test asserts this.
 - Note: the newswire `editorial_roster` is the editorial mechanism in *this* app. The cryptographic cap layer (composite-site Unit 1) is the separate, deferred owned-site track — not wired to this UI.
+
+**4a implementation requirements (gate r1, from Architect/CTO — must hold or the predicate is wrong):**
+- Reuse the **existing** authenticated read: `load_space_descriptor` + the same `roster.contains(&signer_id)` membership check used at admission (`entry.rs:223`, `projection.rs:237`) — do NOT introduce a parallel roster lookup, so the display gate and the authority gate stay provably identical.
+- **Empty-roster = founder-only.** For a joined community whose descriptor has an empty `editorial_roster`, only the **founder** is an editor. The predicate must resolve the founder identity (from the descriptor's namespace-owner coordinate) → **joined member + empty roster ⇒ false; founder + empty roster ⇒ true.** (The current Swift `isRecognizedEditor` treats empty-roster as true — safe only because it ran on the self-founded roster; moving to Rust for arbitrary subjects makes this a real correctness case.)
+- **Unknown / not-yet-synced descriptor ⇒ `false`, no error** (drives 4b's "controls appear after first sync" note off a defined false).
+- **4b deletes the dead session-only path** (`EditorialAuthority.isRecognizedEditor` `NewswireEditorial.swift:206`, `CommunityContext.editorialRoster` create-time population `ConferenceShellView.swift:98`) so two roster-authority sources never coexist.
+- Rust tests: roster member ⇒ true; non-member ⇒ false; joined member + empty roster ⇒ false; founder + empty roster ⇒ true; unknown descriptor ⇒ false.
 
 ---
 
