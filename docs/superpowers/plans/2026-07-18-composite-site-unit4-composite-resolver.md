@@ -3,6 +3,7 @@
 **Date:** 2026-07-18
 **Design:** `docs/superpowers/specs/2026-07-15-composite-site-namespace-manifest-design.md` §6 (composite render + resolved view-model), §2.2 (member invariants), §4.3 (moderation freshness), §5.2 (manifest floor).
 **Depends on:** Unit 2 (manifest + `site/` module — landed #27) and **Unit 3 (moderation data + freshness verdict — NOT yet built; see its plan).** **Do not start until Unit 3 is on `main`.**
+**Plan-review gate:** PASSED 3/3 (Feasibility + Completeness + Scope&Alignment), 2026-07-18 — reviewers verified every cited symbol against HEAD.
 **Grounded against HEAD** (2026-07-18 recon).
 
 ---

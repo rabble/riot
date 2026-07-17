@@ -3,6 +3,7 @@
 **Date:** 2026-07-18
 **Design:** `docs/superpowers/specs/2026-07-15-composite-site-namespace-manifest-design.md` §4 (dual-mechanism moderation), §4.1–4.3, §8 Unit 3, §8.1 Unit 3 RED cases.
 **Depends on:** Unit 0 (`OwnedMasthead` cap minting/signing), Unit 1 (owned-namespace admission — landed #14), Unit 2 (site manifest + `site/` module — landed #27). **All three are on `main`.**
+**Plan-review gate:** PASSED 3/3 (Feasibility + Completeness + Scope&Alignment), 2026-07-18 — reviewers verified every cited symbol against HEAD.
 **Grounded against HEAD** (2026-07-18 recon), not the spec's assumptions — the spec's line numbers and some claims drifted before (gate-4, roster); every symbol below was verified in code.
 
 ---

@@ -3,6 +3,7 @@
 **Date:** 2026-07-18
 **Design:** `docs/superpowers/specs/2026-07-15-composite-site-namespace-manifest-design.md` §6 (view model it renders), §8 Unit 6, §9.3 (mandatory seizure disclosure), §3 (editor-invite handshake), §5.3 (fail-closed transport copy).
 **Depends on:** Unit 4 (resolved composite view model — NOT built) and Unit 5 (iroh transport / ticket — landed #31). **Do not start until Unit 4 is on `main`.**
+**Plan-review gate:** PASSED 3/3 (Feasibility + Completeness + Scope&Alignment), 2026-07-18 — reviewers verified every cited symbol against HEAD.
 **Grounded against HEAD** (2026-07-18 recon).
 
 ---
