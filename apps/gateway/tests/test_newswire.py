@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import json
 from pathlib import Path
 import re
 import sys
@@ -242,6 +243,44 @@ class NewswirePostAndAuthorPageTest(unittest.TestCase):
         self.assertIn("Harbor Desk", page)
         self.assertIn("recognized organizer", page)
         self.assertIn(f'href="/post/{"f" * 64}/"', page)
+
+
+@unittest.skipIf(nw is None, "newswire module missing")
+class NewswireRealExportRoundTripTest(unittest.TestCase):
+    """The ratification anchor: render the ACTUAL committed signed export, not a
+    hand-authored guess."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        export_path = (
+            Path(__file__).resolve().parents[3]
+            / "fixtures"
+            / "newswire"
+            / "gateway-space"
+            / "public-export-v1.json"
+        )
+        cls.export = json.loads(export_path.read_text(encoding="utf-8"))
+        cls.view = nw.newswire_view_from_export(cls.export)
+        cls.page = nw.render_newswire(cls.view)
+
+    def test_home_renders_the_real_signed_content(self) -> None:
+        self.assertIn("Port workers walk out", self.page)  # a known golden headline
+        self.assertIn("RIOT Editorial Desk", self.page)  # the organizer's byline
+        self.assertNotIn("demo · sample content", self.page)
+        self.assertEqual(len(self.view.editorial), 2, "2 featured entries")
+        self.assertEqual(len(self.view.wire), 4, "6 total − 2 featured = 4 open wire")
+
+    def test_no_signer_hex_leaks_into_a_byline(self) -> None:
+        signers = {e["signer"] for e in self.export["entries"]}
+        for byline in re.findall(r'class="byline".*?</div>', self.page, re.S):
+            for signer in signers:
+                self.assertNotIn(signer, byline, "a raw author key leaked into a byline")
+
+    def test_the_named_editor_has_a_rendered_author_page(self) -> None:
+        editor = next(c for c in self.export["contributors"] if not c["is_organizer"])
+        author = nw.author_view_from_export(self.export, editor["author_id"])
+        self.assertIsNotNone(author)
+        self.assertIn(editor["display_name"], nw.render_author(author))  # "Harbor Desk"
 
 
 if __name__ == "__main__":
