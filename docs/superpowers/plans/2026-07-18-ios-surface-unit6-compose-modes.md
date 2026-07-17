@@ -1,7 +1,7 @@
 # iOS Surface — Unit 6: Composer mode picker (Update/Alert/Request) + operational fields — Implementation Plan
 
 
-**Plan-review gate: PENDING** (Feasibility + Scope + Completeness).
+**Plan-review gate: PASSED (Feasibility + Scope + Completeness, 2026-07-18).
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans. Steps use checkbox (`- [ ]`) syntax.
 
 **Goal:** Surface the operational compose modes that already work end-to-end via UniFFI. `PostUpdateView` carries `ComposerMode` (Update / Alert / Request) in its model but never draws the picker — and, worse, the model's validation already *requires* source-claim + expiry + coarse-location when the mode is not Update, while the view renders **no inputs for them**. So a user who could select Alert/Request today would be **permanently dead-disabled** on Post with nothing to satisfy (the gate-r1 blocker). This unit adds (1) the segmented Update/Alert/Request picker, (2) the three operational input fields shown **only** for Alert/Request, and (3) inline `model.validation` guidance so Post is never dead-disabled. Alert and Request stay **user-visibly distinct** (confirmed distinct at the core — see Ground truth).

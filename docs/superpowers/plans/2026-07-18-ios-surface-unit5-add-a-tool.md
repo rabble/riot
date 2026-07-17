@@ -1,7 +1,7 @@
 # iOS Surface — Unit 5: Add-a-tool (iOS tool import) + Tools empty-state action — Implementation Plan
 
 
-**Plan-review gate: PENDING** (Feasibility + Scope + Completeness).
+**Plan-review gate: PASSED (Feasibility + Scope + Completeness, 2026-07-18).
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans. Steps use checkbox (`- [ ]`) syntax.
 
 **Goal:** Give an organizer a way to add a tool from a file on iOS — the flow Android already has — and stop the Tools tab's empty state from being a dead-end. Today `DirectoryView`'s only empty branch is `RiotEmptyState(title: "No apps yet", …)` with **no action** (`DirectoryView.swift:40`): a person with no tools yet has nowhere to go. This unit adds an **"Add a tool"** affordance (visible in the Tools route header AND therefore in the empty state) → a document picker → `installApp(manifest, bundle)` → the tool appears in Tools **untrusted** → the existing `AppReviewSheet` makes the organizer trust decision. **No auto-trust.**

@@ -1,7 +1,7 @@
 # iOS Surface — Unit 4b: editor un-gate (Swift consumer of `newswire_is_editor`) — Implementation Plan
 
 
-**Plan-review gate: PENDING** (Feasibility + Scope + Completeness).
+**Plan-review gate: PASSED (Feasibility + Scope + Completeness, 2026-07-18).
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans. Steps use checkbox (`- [ ]`) syntax.
 
 **Goal:** Replace the session-only editorial-visibility hack with the descriptor-authenticated FFI predicate, so `EditorialActionSheet` controls appear for a real editor of *any* active community — **joined or created** — and the display gate is provably identical to the core authority gate. A community whose descriptor has not yet synced shows an honest "controls appear after this community's first sync" note instead of silently nothing. Delete the two coexisting roster-authority sources so only one remains.

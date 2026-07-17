@@ -1,7 +1,7 @@
 # iOS Surface — Unit 2: "Share this community" (generate link + QR) — Implementation Plan
 
 
-**Plan-review gate: PENDING.**
+**Plan-review gate: PASSED (Feasibility + Scope + Completeness, 2026-07-18).
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans. Steps use checkbox (`- [ ]`) syntax.
 
 **Goal:** Give a member of the active community a "Share this community" affordance in the Community settings sheet that turns the core's digest-bound join reference into (a) the system **Share sheet** for the `riot://newswire/join/v1/…` link and (b) a **locally-rendered QR** someone can scan with Unit 1's scanner. This is the *generate* half of join — the counterpart to Unit 1's *consume* half. Pure-Swift, **no new FFI**.
