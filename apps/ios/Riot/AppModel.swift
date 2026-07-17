@@ -667,6 +667,22 @@ public final class RiotAppModel: ObservableObject {
         }
     }
 
+    /// Commits a previewed join from the join-by-reference sheet (paste or QR). The
+    /// preview already passed `JoinReferenceModel` validation, so the raw string is
+    /// known-good; this only decides between JOIN and SWITCH: a namespace already
+    /// held routes to a switch (never a duplicate row), otherwise it follows the
+    /// established `joinAdditionalCommunity` path. Business logic stays in the
+    /// repository/FFI — this forwards.
+    public func commitJoin(preview: JoinPreview) {
+        guard let repository else { return }
+        let held = (try? repository.listCommunities())?.map(\.namespaceId) ?? []
+        if JoinReferenceModel().isAlreadyJoined(namespaceIdHex: preview.namespaceIdHex, within: held) {
+            switchCommunity(namespaceID: preview.namespaceIdHex)
+        } else {
+            joinAdditionalCommunity(shareReference: preview.encoded)
+        }
+    }
+
     /// The outcome of the last `riot://open?...` verify link the app was handed,
     /// or `nil` when none is pending. The shell presents it as an HONEST verify
     /// result (see ``RiotOpenOutcome``) — a "verified" badge only for a post this
