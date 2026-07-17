@@ -44,7 +44,7 @@ pub async fn bind() -> Result<Endpoint, TransportError> {
 
 /// Bind a SEED endpoint with a STABLE identity from the durable profile. Only
 /// seeds need a stable NodeId (so followers can find them); followers stay
-/// ephemeral via [`bind`].
+/// ephemeral via [`bind`]. `N0DisableRelay` — direct only, for local/LAN.
 pub async fn bind_seed(secret: [u8; 32]) -> Result<Endpoint, TransportError> {
     Endpoint::builder(presets::N0DisableRelay)
         .secret_key(SecretKey::from_bytes(&secret))
@@ -52,6 +52,84 @@ pub async fn bind_seed(secret: [u8; 32]) -> Result<Endpoint, TransportError> {
         .bind()
         .await
         .map_err(io_err)
+}
+
+/// Bind a PUBLIC endpoint (N0 preset: relay + pkarr/DNS discovery) reachable
+/// from anywhere across NAT — for an always-on internet seed. `secret` gives it
+/// a stable NodeId so followers can find it by id via discovery.
+pub async fn bind_public(secret: [u8; 32]) -> Result<Endpoint, TransportError> {
+    Endpoint::builder(presets::N0)
+        .secret_key(SecretKey::from_bytes(&secret))
+        .alpns(vec![ALPN.to_vec()])
+        .bind()
+        .await
+        .map_err(io_err)
+}
+
+/// This endpoint's NodeId (public key) — a follower dials it by this id, and
+/// discovery resolves the address. Stable across restarts when bound from a
+/// persisted secret.
+pub fn node_id(endpoint: &Endpoint) -> [u8; 32] {
+    *endpoint.id().as_bytes()
+}
+
+/// Dial a peer known only by NodeId (discovery resolves the address).
+pub fn addr_from_node_id(node_id: [u8; 32]) -> Result<EndpointAddr, TransportError> {
+    let key = iroh::PublicKey::from_bytes(&node_id).map_err(io_err)?;
+    Ok(EndpointAddr::from(key))
+}
+
+/// A ticket `node` hint carrying the NodeId AND any direct socket addresses:
+/// `<id_hex>@<ip:port>,<ip:port>`. The addresses let a follower dial directly
+/// (LAN, or a public seed) without waiting on DHT discovery; with no addresses
+/// it degrades to id-only (discovery). Untrusted — outside the ticket signature.
+pub fn endpoint_addr_hint(addr: &EndpointAddr) -> String {
+    let id = addr
+        .addrs
+        .iter()
+        .filter_map(|a| match a {
+            TransportAddr::Ip(s) => Some(s.to_string()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let idhex: String = addr
+        .id
+        .as_bytes()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    if id.is_empty() {
+        idhex
+    } else {
+        format!("{idhex}@{}", id.join(","))
+    }
+}
+
+/// Parse a `node` hint back to a dialable [`EndpointAddr`].
+pub fn addr_from_hint(hint: &str) -> Result<EndpointAddr, TransportError> {
+    let (id_hex, addrs) = match hint.split_once('@') {
+        Some((id, list)) => (id, Some(list)),
+        None => (hint, None),
+    };
+    let mut id = [0u8; 32];
+    if id_hex.len() != 64 {
+        return Err(io_err("node id must be 64 hex chars"));
+    }
+    for (i, b) in id.iter_mut().enumerate() {
+        *b = u8::from_str_radix(&id_hex[i * 2..i * 2 + 2], 16).map_err(io_err)?;
+    }
+    let key = iroh::PublicKey::from_bytes(&id).map_err(io_err)?;
+    match addrs {
+        None => Ok(EndpointAddr::from(key)),
+        Some(list) => {
+            let socks: Vec<TransportAddr> = list
+                .split(',')
+                .filter_map(|s| s.parse().ok())
+                .map(TransportAddr::Ip)
+                .collect();
+            Ok(EndpointAddr::from_parts(key, socks))
+        }
+    }
 }
 
 /// The fail-closed dial (§5.1-5.3): run the pre-connection gate on a root-signed

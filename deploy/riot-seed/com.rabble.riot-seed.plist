@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- launchd service for an always-on riot-seed node on macOS (the Mac mini).
+     Install:
+       mkdir -p ~/riot-seed
+       cp target/release/riot-seed ~/riot-seed/riot-seed
+       cp deploy/riot-seed/com.rabble.riot-seed.plist ~/Library/LaunchAgents/
+       # edit the paths below to your home dir, then:
+       launchctl load -w ~/Library/LaunchAgents/com.rabble.riot-seed.plist
+     The node stays up across reboots and restarts if it crashes. Read the
+     ticket from the log:  grep 'ticket' ~/riot-seed/seed.out.log  -->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.rabble.riot-seed</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/rabble/riot-seed/riot-seed</string>
+  </array>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>RIOT_SEED_DIR</key>
+    <string>/Users/rabble/riot-seed/state</string>
+    <key>RIOT_SEED_DEMO</key>
+    <string>3</string>
+  </dict>
+
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+
+  <key>StandardOutPath</key>
+  <string>/Users/rabble/riot-seed/seed.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/rabble/riot-seed/seed.err.log</string>
+</dict>
+</plist>
