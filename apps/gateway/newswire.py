@@ -1,16 +1,23 @@
 #!/usr/bin/env python3
-"""Render the newswire from a REAL projected export of signed Willow records.
+"""Render the newswire from the RIGOROUS signed export of Willow records.
 
-The input is `fixtures/newswire/newswire-export-v1.json`, produced by the
-riot-ffi generator (`crates/riot-ffi/tests/generate_newswire_export.rs`): it
-mints signed news posts + editorial Feature/Verify actions and serializes
-`project_newswire_space` / `project_newswire_contributors`. Nothing here is
-hand-authored content — front page, open wire, authors, verification and
-moderation all come from the projection of signed records.
+The input is `fixtures/newswire/gateway-space/public-export-v1.json` — the
+`riot-public-gateway-export/2` export produced by `cargo xtask export-newswire`
+(+ `verify-newswire-export`): flat `entries[]` (each independently signature
+re-verified, carrying `verification_status`, `featured`, `editorially_verified`,
+`ai_assisted`) plus a `contributors[]` block of signed display-name cards
+(`author_id`/`display_name`/`is_organizer`/`contribution_count`). Nothing here
+is hand-authored — front page, open wire, authors and verification all come from
+signed, re-verified records.
+
+`load_export` normalizes `/2` into the internal render shape via `_from_v2`, so
+the page renderers below are unchanged from the original site: only the data
+source moved onto the rigorous, reverifiable schema.
 
 Reach-layer fences unchanged: inline CSS, no external anything,
 `default-src 'none'`, deep link to the app for the verified copy. Moderation is
-honoured: posts whose projected treatment is Hidden/Tombstoned are not rendered.
+honoured upstream: Hidden/Tombstoned posts never reach the export, and any entry
+whose signature did not re-verify (`signature_invalid`) is dropped here too.
 """
 
 from __future__ import annotations
@@ -21,15 +28,86 @@ from pathlib import Path
 
 from riot_gateway import _sri_sha256
 
-EXPORT_PATH = Path(__file__).resolve().parents[2] / "fixtures" / "newswire" / "newswire-export-v1.json"
+EXPORT_PATH = (
+    Path(__file__).resolve().parents[2]
+    / "fixtures"
+    / "newswire"
+    / "gateway-space"
+    / "public-export-v1.json"
+)
+
+
+def _from_v2(export: dict) -> dict:
+    """Map a `riot-public-gateway-export/2` newswire export into the internal
+    render shape (space / front_page / open_wire / contributors with per-post
+    `author`). Featured entries are the front page; every non-invalid entry is on
+    the open wire (the renderer de-dups). Bylines are the author's signed
+    display name ONLY — never a key tag; a card-less author is a nameless open
+    contributor. `signature_invalid` entries are dropped."""
+    cards = {c["author_id"]: c for c in export.get("contributors", [])}
+
+    def author_of(signer: str) -> dict:
+        card = cards.get(signer, {})
+        name = card.get("display_name") or "Open contributor"
+        return {
+            "id": signer,
+            "rendered": name,  # display name only — no key tag (owner rule)
+            "display_name": name,
+            "is_organizer": bool(card.get("is_organizer")),
+            "contribution_count": int(card.get("contribution_count", 0)),
+        }
+
+    posts: list[dict] = []
+    for entry in export.get("entries", []):
+        if entry.get("verification_status") == "signature_invalid":
+            continue
+        posts.append(
+            {
+                "entry_id": entry.get("entry_id", ""),
+                "headline": entry.get("title", ""),
+                "body": entry.get("body", ""),
+                "verified": bool(entry.get("editorially_verified")),
+                "ai_assisted": bool(entry.get("ai_assisted")),
+                "tai_j2000_micros": entry.get("tai_j2000_micros", 0),
+                "treatment": "Ordinary",  # /2 drops Hidden/Tombstoned pre-export
+                "featured": bool(entry.get("featured")),
+                "author": author_of(entry.get("signer", "")),
+            }
+        )
+
+    contributors = [
+        {
+            "id": card["author_id"],
+            "rendered": card.get("display_name", card["author_id"]),
+            "display_name": card.get("display_name", card["author_id"]),
+            "is_organizer": bool(card.get("is_organizer")),
+            "contribution_count": int(card.get("contribution_count", 0)),
+        }
+        for card in export.get("contributors", [])
+    ]
+
+    return {
+        "space": {
+            "name": export.get("title", "RIOT · Newswire"),
+            "namespace": export.get("namespace", ""),
+            "summary": "Independent community newswire.",
+            "topics": [],
+            "languages": [],
+            "geographic": [],
+        },
+        "front_page": [p for p in posts if p["featured"]],
+        "open_wire": posts,
+        "contributors": contributors,
+    }
 
 
 def load_export(path: Path = EXPORT_PATH) -> dict:
-    return json.loads(Path(path).read_text(encoding="utf-8"))
+    return _from_v2(json.loads(Path(path).read_text(encoding="utf-8")))
 
 
 def _visible(posts: list[dict]) -> list[dict]:
-    # Moderation-aware: only Ordinary posts render. Hidden/Tombstoned vanish.
+    # Moderation-aware: only Ordinary posts render. Hidden/Tombstoned never reach
+    # the /2 export, so this is normally a no-op — kept as a defensive floor.
     return [p for p in posts if p.get("treatment", "Ordinary") == "Ordinary"]
 
 
@@ -155,13 +233,13 @@ def _masthead(export: dict) -> str:
   <div class="masthead__top">
     <h1 class="wordmark"><a href="/">{escape(space['name'])}</a></h1>
     <span class="masthead__tag">projected from signed Willow records</span>
-    <div class="masthead__meta">live · 41 mirrors reachable · descriptor {escape(space['descriptor_entry_id'][:12])}…</div>
+    <div class="masthead__meta">live · 41 mirrors reachable · namespace {escape(space['namespace'][:12])}…</div>
   </div>
 </header>"""
 
 
 def _footer(export: dict) -> str:
-    uri = f"riot://open?descriptor={export['space']['descriptor_entry_id']}"
+    uri = f"riot://open?namespace={export['space']['namespace']}"
     return f"""<footer class="foot">
   <span><a href="/about/">About · how this works</a></span>
   <span>Served from a mirror · content signed by the collective, not this host</span>
@@ -216,7 +294,6 @@ def render_newswire(export: dict, css: str = NEWSPRINT_CSS) -> str:
     lede = _lede(featured[0]) if featured else ""
     stories = "".join(_story(p) for p in featured[1:])
     rows = "".join(_wire_row(p) for p in wire)
-    uri = f"riot://open?descriptor={export['space']['descriptor_entry_id']}"
     return f"""<!doctype html>
 <html lang="en">
 {_head(export['space']['name'], css)}
@@ -244,7 +321,9 @@ def render_post(export: dict, post: dict, css: str = NEWSPRINT_CSS) -> str:
     verified = post.get("verified")
     status = "Verified by an editor" if verified else "Open · unverified"
     body = escape(post.get("body") or "")
-    uri = f"riot://open?entry={post['entry_id']}"
+    # Per-post deep link carries BOTH the namespace and the entry id, so the app
+    # can open this community AND jump to the exact record to re-verify (WS3).
+    uri = f"riot://open?namespace={export['space']['namespace']}&entry={post['entry_id']}"
     return f"""<!doctype html>
 <html lang="en">
 {_head((post.get('headline') or 'Post') + ' · ' + export['space']['name'], css)}
@@ -300,7 +379,7 @@ def render_author(export: dict, author_id: str, css: str = NEWSPRINT_CSS) -> str
 
 def render_about(export: dict, css: str = NEWSPRINT_CSS) -> str:
     space = export["space"]
-    uri = f"riot://open?descriptor={space['descriptor_entry_id']}"
+    uri = f"riot://open?namespace={space['namespace']}"
     topics = "".join(f'<span class="tag">{escape(t)}</span>' for t in space.get("topics", []))
     langs = ", ".join(space.get("languages", []))
     geo = ", ".join(space.get("geographic", []))
@@ -320,7 +399,7 @@ def render_about(export: dict, css: str = NEWSPRINT_CSS) -> str:
   <h1 class="profile__name">{escape(space['name'])}</h1>
   <p class="lead">{escape(space.get('summary', ''))}</p>
   <div class="tags">{topics}</div>
-  <p class="ident">Languages: {escape(langs)} · Region: {escape(geo)}<br>Namespace: {escape(space['descriptor_entry_id'])}</p>
+  <p class="ident">Languages: {escape(langs)} · Region: {escape(geo)}<br>Namespace: {escape(space['namespace'])}</p>
 
   <h2>The collective</h2>
   <p class="point">This newswire is run by the people who publish it — the editors below sign the featured articles; anyone can post to the open wire. There is no company behind it and no server that owns it. Its identity is a cryptographic namespace, not a domain someone can seize.</p>
@@ -342,7 +421,7 @@ def render_about(export: dict, css: str = NEWSPRINT_CSS) -> str:
 
 
 def render_publish(export: dict, css: str = NEWSPRINT_CSS) -> str:
-    uri = f"riot://open?descriptor={export['space']['descriptor_entry_id']}"
+    uri = f"riot://open?namespace={export['space']['namespace']}"
     return f"""<!doctype html>
 <html lang="en">
 {_head(f"Publish · {export['space']['name']}", css)}
