@@ -21,16 +21,11 @@ import riot_gateway  # noqa: E402
 import server  # noqa: E402
 
 
-def main() -> None:
-    dist = HERE / "dist"
-    if dist.exists():
-        shutil.rmtree(dist)  # no stale pages from a previous build
-    dist.mkdir(parents=True)
-
-    # Newswire = a REAL projection of signed Willow records
-    # (fixtures/newswire/newswire-export-v1.json, minted by the riot-ffi
-    # generator). Regenerate it with:
-    #   cargo test -p riot-ffi --test generate_newswire_export -- --ignored
+def build_newswire(dist: Path) -> None:
+    """Freeze the newswire site (home + /publish/ + /about/ + per-post + per-author)
+    from the RIGOROUS /2 export. The export is minted + signature-reverified by:
+      cargo xtask export-newswire && cargo xtask verify-newswire-export
+    and `newswire.load_export` normalizes it into the render shape."""
     export = nw.load_export()
     (dist / "index.html").write_text(nw.render_newswire(export), encoding="utf-8")
 
@@ -56,6 +51,15 @@ def main() -> None:
         page = dist / "author" / contributor["id"]
         page.mkdir(parents=True, exist_ok=True)
         (page / "index.html").write_text(nw.render_author(export, contributor["id"]), encoding="utf-8")
+
+
+def main() -> None:
+    dist = HERE / "dist"
+    if dist.exists():
+        shutil.rmtree(dist)  # no stale pages from a previous build
+    dist.mkdir(parents=True)
+
+    build_newswire(dist)
 
     # /board = the incident-board dump, both skins, to exercise the vendored
     # client filter and the skin/CSP seam on a live host.
