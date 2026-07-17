@@ -2,6 +2,7 @@
 members = [
     "crates/riot-app-cli",
     "crates/riot-core",
+    "crates/riot-transport",
     "crates/riot-ffi",
     "crates/riot-conformance",
     "crates/xtask",
