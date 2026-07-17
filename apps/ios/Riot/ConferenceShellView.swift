@@ -403,7 +403,7 @@ private struct RecoveryNoticeBanner: View {
             .accessibilityLabel("Dismiss")
         }
         .padding(12)
-        .background(RiotTheme.surface(for: colorScheme))
+        .background(RiotTheme.paper(for: colorScheme))
         .overlay(alignment: .bottom) {
             Rectangle().fill(.orange.opacity(0.4)).frame(height: 1)
         }
