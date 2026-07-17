@@ -1,0 +1,16 @@
+[package]
+name = "riot-transport"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# iroh + tokio live HERE, never in riot-core (which must stay pure/wasm-clean).
+# This crate is a thin adapter: iroh Connection ⇄ ByteSyncSession ⇄ ReconcileSession.
+[dependencies]
+iroh = "1.0.2"
+riot-core = { path = "../riot-core" }
+tokio = { version = "1.53.0", features = ["rt-multi-thread", "macros", "io-util", "time"] }
+
+[dev-dependencies]
+tokio = { version = "1.53.0", features = ["rt", "rt-multi-thread", "macros", "time", "io-util"] }
+ed25519-dalek = { workspace = true }
