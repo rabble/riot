@@ -343,3 +343,62 @@ _(Summary goes at the TOP when done. Task entries append below in order.)_
 - The final adversarial review passed after the injected-clock test was tightened
   into one complete idle flow: visible before waiting, the exact expiry requested,
   refreshed injected time returned, and the last alert hidden afterward.
+
+## Task 5: make Newswire reports readable and accountable
+- Used the approved compact-core-flow design and plan with
+  `superpowers:test-driven-development`, `superpowers:systematic-debugging`, and
+  `metaswarm:orchestrated-execution`.
+- RED: focused `NewswireSurfaceTests` failed to compile because the retained
+  projection payload fields, exact trust copy, signed ordering values, report
+  detail models, treatment detail, action lineage, and selected-action target did
+  not exist.
+- Extended `NewswirePostRow` as a defensive adapter. Ordinary rows retain body,
+  source claims, coarse location, event time, expiry, operational profile, and
+  the unsigned TAI-J2000 ordering value. Hidden and tombstoned rows force
+  headline/body/operational payload to nil or empty even when a malformed
+  projection supplies values.
+- Replaced expanded feed rows with a compact headline, two-line excerpt,
+  `Signed by …`, conditional accountability badges, and one contextual
+  `Read update` action. Replies and report-scoped editorial controls now live in
+  ordinary detail with the full body and operational metadata.
+- Added exact signature/editorial/correction/AI explanations. Human event time
+  is rendered only from `eventTimeUnixSeconds`; absent input says
+  `Event time not provided`. The Willow TAI-J2000 microsecond value is kept as an
+  unsigned ordering value and displayed verbatim under Technical details, never
+  converted into a wall-clock date.
+- Hidden and tombstoned rows now use `Review treatment`. Their detail is
+  payload-redacted and contains only treatment copy, signed author, optional
+  event time, report ID and signed ordering value under Technical details, and
+  the target-scoped signed action lineage. The lineage includes direct actions
+  plus transitive retractions while excluding unrelated global history.
+- Action-scoped Retract creates a forced retraction draft and signs against the
+  selected action ID. A recording-editor test proves the model receives that
+  action ID rather than the report ID.
+- Corrected the hidden placeholder so it no longer promises unavailable original
+  inspection. Assumption: the signed event-time field is the only source for a
+  human event date; the Willow ordering key is not a Unix timestamp. Rejected:
+  inferring a wall clock from TAI-J2000 or reusing treated payload supplied by a
+  malformed adapter input.
+- Deferred core gap: the normative hidden-original inspection path cannot be
+  restored in Swift because the current core projection redacts the original
+  payload. This slice preserves the hide/tombstone distinction and exposes the
+  signed treatment record without making an unavailable promise.
+- GREEN: focused macOS and iOS `NewswireSurfaceTests`, the full shared Swift
+  suite, shared SwiftUI compile, and `git diff --check` pass. Existing
+  WebKit/concurrency and native deployment-target warnings remain unchanged.
+- Adversarial review found that hiding Retract from the generic picker was not
+  sufficient: a canceled action-scoped retraction could remain in the shared
+  draft and later sign against a report ID. Every action sheet now prepares its
+  draft against the target's closed allowed-kind set; generic report targets
+  reset stale Retract state, while action targets force Retract. Tests cover the
+  stale-cancel path and the selected-action ID received by the editor.
+- Review also tightened accountability and focus: each action's complete ID and
+  unsigned ordering value now live under its own Technical details disclosure.
+  Read/Review sheets restore keyboard and VoiceOver focus with a token containing
+  both surface and report ID, so a report duplicated across Front page and Open
+  wire returns to the exact originating control. The final adversarial review
+  passed.
+- Verification note: one parallel Xcode invocation collided on the shared
+  DerivedData build database. The same focused suite passed immediately when
+  rerun serially (and again with isolated DerivedData); this was a test-harness
+  lock, not a product failure.
