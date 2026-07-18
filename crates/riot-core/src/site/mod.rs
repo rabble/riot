@@ -6,9 +6,14 @@
 
 pub mod manifest;
 pub mod moderation;
+pub mod moderation_entry;
 pub mod resolve;
 pub mod validate;
 pub mod version_floor;
+
+pub use moderation_entry::{
+    create_signed_moderation_record, ModerationSignError, SignedModerationRecord,
+};
 
 pub use resolve::{
     item_treatment, resolve_degradation, resolve_soft_link, resolve_trust_tier,

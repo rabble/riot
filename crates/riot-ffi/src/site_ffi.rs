@@ -15,18 +15,22 @@
 use std::collections::BTreeSet;
 
 use riot_core::newswire::PostTreatment;
+use riot_core::site::moderation::{
+    compute_mod_set_digest, ModEpoch, ModerationRecord, Revoke, Tombstone,
+};
 use riot_core::site::{
-    evaluate_freshness, item_treatment, read_moderation_record, resolve_degradation,
-    resolve_trust_tier, validate_site_manifest, CompositeDegradation, DegradationInputs,
-    HeldModerationRecord, MemberClassification, RequireTransport, SiteDisplay, SiteRole, SiteRule,
-    SiteTransport, TrustTier, ValidatedManifest, VersionFloorOutcome,
+    create_signed_moderation_record, evaluate_freshness, item_treatment, read_moderation_record,
+    resolve_degradation, resolve_trust_tier, validate_site_manifest, CompositeDegradation,
+    DegradationInputs, HeldModerationRecord, MemberClassification, RequireTransport,
+    SignedModerationRecord, SiteDisplay, SiteRole, SiteRule, SiteTransport, TrustTier,
+    ValidatedManifest, VersionFloorOutcome,
 };
 use riot_core::willow::site_paths::{ARTICLES_COMPONENT, MOD_COMPONENT};
-use riot_core::willow::{OwnedMasthead, Path, SignedWillowEntry};
+use riot_core::willow::{system_snapshot, ClockSnapshot, OwnedMasthead, Path, SignedWillowEntry};
 use willow25::groupings::Keylike;
 
 use crate::mobile_api::{MobileError, MobileProfile};
-use crate::mobile_state::with_active;
+use crate::mobile_state::{with_active, LocalProfile};
 
 /// Owner-side result of creating or restoring a composite site.
 ///
@@ -582,6 +586,253 @@ fn resolve_composite_site_from_store(
     })
 }
 
+// ---------------------------------------------------------------------------
+// Unit 6 — the owner WRITE path: author moderation actions + publish heartbeats.
+//
+// Ownership IS possession of the site's sealed masthead: these methods open it
+// per call (zeroing the wrapping key + key copy after), sign at O:/mod/ under the
+// owner cap, and import through the same followed-root path a synced /mod/ record
+// takes. Every action AUTO-PUBLISHES a fresh mod-epoch committing to the owner's
+// full held revoke/tombstone set, so a follower's freshness can reach Current —
+// a forgotten heartbeat leaves followers at ModerationLoading forever.
+//
+// SCOPE: owner-only authoring. Minting /mod/-scoped DELEGATED moderator caps
+// (delegate_section) is deferred — the read path already accepts a
+// moderator-cap-signed /mod/ record if one existed; this path just does not let
+// the owner hand out moderator caps yet.
+// ---------------------------------------------------------------------------
+
+/// A moderation action a site owner authors at O:/mod/. The overlay applies to
+/// COMMUNAL member content only (owner editorial is protected read-side).
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Enum)]
+pub enum SiteModerationAction {
+    /// Ban an author-key: every item that author signed is Hidden (read-side).
+    Revoke {
+        /// The author subspace id to revoke, lowercase hex (64 chars).
+        author_key: String,
+    },
+    /// Hide one specific entry by its `(namespace, entry-id)` identity.
+    Tombstone {
+        /// The namespace the tombstoned entry lives in, hex (64 chars).
+        target_namespace: String,
+        /// The entry id to hide, hex (64 chars).
+        target_entry: String,
+    },
+}
+
+/// A signed `/mod/` record: its entry id (hex) and the bundle bytes. The bytes are
+/// what the app propagates to followers — a composite site's owned-namespace
+/// records do NOT ride the per-community sync inventory (that is namespace-scoped
+/// to the active community), so, exactly like a newswire share, the owner hands the
+/// signed bytes onward for sync.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct SiteModerationSignedRecord {
+    pub entry_id: String,
+    pub signed_bytes: Vec<u8>,
+}
+
+/// The result of a moderation write: the signed action AND the fresh heartbeat it
+/// auto-published. The heartbeat is coupled to every action (a forgotten one
+/// strands followers at ModerationLoading).
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct SiteModerationOutcome {
+    pub action: SiteModerationSignedRecord,
+    pub epoch: SiteModerationSignedRecord,
+}
+
+#[uniffi::export]
+impl MobileProfile {
+    /// Author a moderation action as the site owner, then AUTO-PUBLISH a fresh
+    /// mod-epoch heartbeat committing to the owner's full held revoke/tombstone
+    /// set. Requires the site's sealed masthead + wrapping key (a wrong key, or a
+    /// caller who does not hold the masthead, cannot author). Both the wrapping
+    /// key and the opened key copy are zeroed after the call.
+    pub fn create_site_moderation_action(
+        &self,
+        sealed_root: Vec<u8>,
+        mut wrapping_key: Vec<u8>,
+        action: SiteModerationAction,
+    ) -> Result<SiteModerationOutcome, MobileError> {
+        let result = self.author_moderation(&sealed_root, &wrapping_key, action);
+        wrapping_key.iter_mut().for_each(|b| *b = 0);
+        result
+    }
+
+    /// Re-publish a mod-epoch heartbeat without a new action — to refresh
+    /// freshness past the window, or after a sync delivered records the previous
+    /// heartbeat did not commit. Same digest-over-all-held-ids discipline.
+    pub fn republish_mod_epoch(
+        &self,
+        sealed_root: Vec<u8>,
+        mut wrapping_key: Vec<u8>,
+    ) -> Result<SiteModerationSignedRecord, MobileError> {
+        let result = self.republish_heartbeat(&sealed_root, &wrapping_key);
+        wrapping_key.iter_mut().for_each(|b| *b = 0);
+        result
+    }
+}
+
+impl MobileProfile {
+    fn author_moderation(
+        &self,
+        sealed_root: &[u8],
+        wrapping_key: &[u8],
+        action: SiteModerationAction,
+    ) -> Result<SiteModerationOutcome, MobileError> {
+        let mut key = exact_key(wrapping_key)?;
+        let masthead = OwnedMasthead::open_sealed(&key, sealed_root);
+        key.iter_mut().for_each(|b| *b = 0);
+        let masthead = masthead.map_err(|_| MobileError::InvalidInput)?;
+        let root = *masthead.namespace_id().as_bytes();
+        let snapshot = system_snapshot().map_err(|_| MobileError::ClockUnavailable)?;
+        let record = moderation_record_for(&action, snapshot.unix_seconds)?;
+        let signed_action = create_signed_moderation_record(&masthead, &record, snapshot)
+            .map_err(|_| MobileError::InvalidInput)?;
+        with_active(&self.inner, |profile| {
+            let action = import_owned_mod(profile, root, &signed_action)?;
+            let epoch = sign_and_import_epoch(profile, &masthead, root, snapshot)?;
+            Ok(SiteModerationOutcome { action, epoch })
+        })
+    }
+
+    fn republish_heartbeat(
+        &self,
+        sealed_root: &[u8],
+        wrapping_key: &[u8],
+    ) -> Result<SiteModerationSignedRecord, MobileError> {
+        let mut key = exact_key(wrapping_key)?;
+        let masthead = OwnedMasthead::open_sealed(&key, sealed_root);
+        key.iter_mut().for_each(|b| *b = 0);
+        let masthead = masthead.map_err(|_| MobileError::InvalidInput)?;
+        let root = *masthead.namespace_id().as_bytes();
+        let snapshot = system_snapshot().map_err(|_| MobileError::ClockUnavailable)?;
+        with_active(&self.inner, |profile| {
+            sign_and_import_epoch(profile, &masthead, root, snapshot)
+        })
+    }
+}
+
+fn moderation_record_for(
+    action: &SiteModerationAction,
+    effective_ts: u64,
+) -> Result<ModerationRecord, MobileError> {
+    match action {
+        SiteModerationAction::Revoke { author_key } => Ok(ModerationRecord::Revoke(Revoke {
+            author_key: parse_id(author_key)?,
+            effective_ts,
+        })),
+        SiteModerationAction::Tombstone {
+            target_namespace,
+            target_entry,
+        } => Ok(ModerationRecord::Tombstone(Tombstone {
+            target_ns: parse_id(target_namespace)?,
+            target_entry: parse_id(target_entry)?,
+        })),
+    }
+}
+
+/// Sign a fresh heartbeat committing to ALL held revoke/tombstone ids in the
+/// owner's store, and import it. This is what lets a follower's `evaluate_freshness`
+/// reach `Current` (their recomputed digest over the same set matches). Returns the
+/// heartbeat entry id.
+fn sign_and_import_epoch(
+    profile: &mut LocalProfile,
+    masthead: &OwnedMasthead,
+    root: [u8; 32],
+    snapshot: ClockSnapshot,
+) -> Result<SiteModerationSignedRecord, MobileError> {
+    let (mod_ids, next_seq) = scan_held_mods(profile, root)?;
+    let epoch = ModerationRecord::ModEpoch(ModEpoch {
+        seq: next_seq,
+        ts: snapshot.unix_seconds,
+        mod_set_digest: compute_mod_set_digest(&mod_ids),
+    });
+    let signed: SignedModerationRecord =
+        create_signed_moderation_record(masthead, &epoch, snapshot)
+            .map_err(|_| MobileError::InvalidInput)?;
+    import_owned_mod(profile, root, &signed)
+}
+
+/// All held Revoke/Tombstone entry ids in the owned root ns + the next mod-epoch
+/// seq (latest held + 1, or 1). Mirrors what `evaluate_freshness` recomputes on
+/// the read side, so the owner's heartbeat and a follower's recompute agree.
+fn scan_held_mods(
+    profile: &LocalProfile,
+    root: [u8; 32],
+) -> Result<(BTreeSet<[u8; 32]>, u64), MobileError> {
+    let prefix = Path::from_slices(&[MOD_COMPONENT]).map_err(|_| MobileError::Internal)?;
+    let entries = profile
+        .store
+        .entries_with_prefix_in_namespace(&root, &prefix)
+        .map_err(|_| MobileError::Internal)?;
+    let mut mod_ids = BTreeSet::new();
+    let mut max_seq = 0u64;
+    for (id, entry, payload) in &entries {
+        let Some(payload) = payload else { continue };
+        let Ok(record) = read_moderation_record(entry.path(), payload) else {
+            continue;
+        };
+        match record {
+            ModerationRecord::Revoke(_) | ModerationRecord::Tombstone(_) => {
+                mod_ids.insert(*id);
+            }
+            ModerationRecord::ModEpoch(epoch) => max_seq = max_seq.max(epoch.seq),
+            ModerationRecord::Endorse(_) => {}
+        }
+    }
+    Ok((mod_ids, max_seq + 1))
+}
+
+/// Import an owner-signed /mod/ record through the followed-root admission path
+/// (the owner follows their own site) and return its entry id + bundle bytes.
+/// Owned /mod/ fails closed under a rootless import, so the root is required.
+///
+/// It is NOT added to the per-community sync inventory: that inventory is
+/// namespace-scoped to the ACTIVE community and would prune out an owned-namespace
+/// /mod/ record. Composite-site /mod/ propagation instead rides the returned bytes
+/// (the same way a newswire share hands signed bytes onward), which is what a
+/// follower imports to receive the moderation set.
+fn import_owned_mod(
+    profile: &mut LocalProfile,
+    root: [u8; 32],
+    record: &SignedModerationRecord,
+) -> Result<SiteModerationSignedRecord, MobileError> {
+    let bundle = riot_core::import::encode_bundle(std::slice::from_ref(&record.signed))
+        .map_err(|_| MobileError::Internal)?;
+    profile.preview = None;
+    profile.plan = None;
+    let preview = crate::mobile_state::inspect_core_with_root(
+        &profile.store,
+        &bundle,
+        "local-mod-sign",
+        Some(root),
+    )?;
+    let plan = preview.plan_all().map_err(|_| MobileError::Internal)?;
+    use riot_core::session::CommitOutcome;
+    match plan.commit().map_err(|_| MobileError::Internal)? {
+        CommitOutcome::Committed(_) | CommitOutcome::NoChanges(_) => {}
+    }
+    Ok(SiteModerationSignedRecord {
+        entry_id: hex(&record.entry_id),
+        signed_bytes: bundle,
+    })
+}
+
+fn parse_id(hex_str: &str) -> Result<[u8; 32], MobileError> {
+    let bytes = hex_decode(hex_str).ok_or(MobileError::InvalidInput)?;
+    <[u8; 32]>::try_from(bytes.as_slice()).map_err(|_| MobileError::InvalidInput)
+}
+
+fn hex_decode(s: &str) -> Option<Vec<u8>> {
+    if !s.len().is_multiple_of(2) {
+        return None;
+    }
+    (0..s.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(s.get(i..i + 2)?, 16).ok())
+        .collect()
+}
+
 // These tests live IN-CRATE (not crates/riot-ffi/tests/) on purpose: owner /mod/
 // and owner /manifest entries can only enter a profile store via the crate-internal
 // followed-root admission path (`inspect_core_with_root`) — there is no public
@@ -704,6 +955,26 @@ mod resolve_composite_tests {
             Ok(())
         })
         .expect("import owned entry");
+    }
+
+    /// Import already-framed owner-signed bundle bytes (e.g. the bytes the write
+    /// path returns) through the followed-root path — a follower receiving a shared
+    /// /mod/ record.
+    fn import_bundle(profile: &Arc<MobileProfile>, root: [u8; 32], bytes: &[u8]) {
+        with_active(&profile.inner, |p| {
+            let preview = crate::mobile_state::inspect_core_with_root(
+                &p.store,
+                bytes,
+                "test-follower",
+                Some(root),
+            )?;
+            let plan = preview.plan_all().map_err(|_| MobileError::Internal)?;
+            match plan.commit().map_err(|_| MobileError::Internal)? {
+                CommitOutcome::Committed(_) | CommitOutcome::NoChanges(_) => {}
+            }
+            Ok(())
+        })
+        .expect("import bundle");
     }
 
     /// A signed owner `mod_epoch` heartbeat committing to `mod_ids`.
@@ -834,6 +1105,18 @@ mod resolve_composite_tests {
         manifest: &SignedWillowEntry,
         root: [u8; 32],
     ) -> ResolvedCompositeSite {
+        call_resolve_at(profile, manifest, root, NOW)
+    }
+
+    /// Resolve at an explicit `now`. The write path stamps a heartbeat with the
+    /// REAL system clock, so a round-trip must resolve near that clock (else the
+    /// heartbeat reads Stale rather than Current) — write tests pass the real now.
+    fn call_resolve_at(
+        profile: &Arc<MobileProfile>,
+        manifest: &SignedWillowEntry,
+        root: [u8; 32],
+        now: u64,
+    ) -> ResolvedCompositeSite {
         profile
             .resolve_composite_site(
                 manifest.entry_bytes.clone(),
@@ -841,9 +1124,15 @@ mod resolve_composite_tests {
                 manifest.signature.to_vec(),
                 manifest.payload_bytes.clone(),
                 root.to_vec(),
-                NOW,
+                now,
             )
             .expect("resolve")
+    }
+
+    /// The real system clock in unix seconds — the same clock the write path
+    /// stamps heartbeats with, so a resolve at this `now` sees a fresh heartbeat.
+    fn now_unix() -> u64 {
+        riot_core::willow::system_snapshot().unwrap().unix_seconds
     }
 
     /// With no `mod_epoch` heartbeat held, freshness is a positive signal that is
@@ -1034,6 +1323,147 @@ mod resolve_composite_tests {
             SiteItemTreatment::Ordinary,
             "an owner article must be protected from a moderator tombstone (D3)"
         );
+    }
+
+    // ---- Write path: owner authors moderation + auto-published heartbeat ----
+
+    const WRAP_KEY: [u8; 32] = [0x5a; 32];
+
+    /// A fresh masthead sealed under WRAP_KEY. Returns (masthead for signing the
+    /// manifest, sealed blob for the write FFI, root ns).
+    fn sealed_masthead() -> (OwnedMasthead, Vec<u8>, [u8; 32]) {
+        let masthead = OwnedMasthead::generate().unwrap();
+        let sealed = masthead.seal(&WRAP_KEY).unwrap();
+        let root = *masthead.namespace_id().as_bytes();
+        (masthead, sealed, root)
+    }
+
+    /// (b) A wrong wrapping key cannot open the masthead — ownership IS possession
+    /// of the masthead secret, so a non-owner (wrong key, or no sealed blob) is
+    /// refused before anything is signed.
+    #[test]
+    fn a_wrong_wrapping_key_cannot_author_moderation() {
+        let (_masthead, sealed, _root) = sealed_masthead();
+        let profile = open_local_profile().unwrap();
+        let result = profile.create_site_moderation_action(
+            sealed,
+            vec![0x11u8; 32],
+            SiteModerationAction::Revoke {
+                author_key: hex(&[0x42; 32]),
+            },
+        );
+        assert!(result.is_err(), "a wrong wrapping key must be refused");
+    }
+
+    /// (c) ROUND-TRIP: the owner tombstones a wire item; the auto-published
+    /// heartbeat makes freshness Current, and the read-side resolve renders that
+    /// item Tombstoned. Write path → read path Current, end to end.
+    #[test]
+    fn owner_tombstone_round_trips_to_a_tombstoned_item() {
+        let (masthead, sealed, root) = sealed_masthead();
+        let profile = open_local_profile().unwrap();
+        let (ns_w, post_id, _author) = wire_post(&profile);
+        let manifest = manifest_wire(&masthead, vec![masthead_member(root), wire_member(ns_w)]);
+
+        let outcome = profile
+            .create_site_moderation_action(
+                sealed,
+                WRAP_KEY.to_vec(),
+                SiteModerationAction::Tombstone {
+                    target_namespace: hex(&ns_w),
+                    target_entry: hex(&post_id),
+                },
+            )
+            .unwrap();
+        assert!(!outcome.action.entry_id.is_empty());
+        assert!(!outcome.action.signed_bytes.is_empty());
+        assert!(!outcome.epoch.entry_id.is_empty());
+        assert!(!outcome.epoch.signed_bytes.is_empty());
+
+        let resolved = call_resolve_at(&profile, &manifest, root, now_unix());
+        assert_eq!(
+            resolved.degradation,
+            SiteDegradation::None,
+            "the auto-published heartbeat commits to the owner's held set → Current"
+        );
+        let item = item_for(&resolved, post_id).expect("wire post is an item");
+        assert_eq!(item.treatment, SiteItemTreatment::Tombstoned);
+    }
+
+    /// (c) ROUND-TRIP: the owner revokes a wire author; the item is Hidden under a
+    /// Current verdict.
+    #[test]
+    fn owner_revoke_round_trips_to_a_hidden_item() {
+        let (masthead, sealed, root) = sealed_masthead();
+        let profile = open_local_profile().unwrap();
+        let (ns_w, post_id, author) = wire_post(&profile);
+        let manifest = manifest_wire(&masthead, vec![masthead_member(root), wire_member(ns_w)]);
+
+        profile
+            .create_site_moderation_action(
+                sealed,
+                WRAP_KEY.to_vec(),
+                SiteModerationAction::Revoke {
+                    author_key: hex(&author),
+                },
+            )
+            .unwrap();
+
+        let resolved = call_resolve_at(&profile, &manifest, root, now_unix());
+        assert_eq!(resolved.degradation, SiteDegradation::None);
+        let item = item_for(&resolved, post_id).expect("wire post is an item");
+        assert_eq!(item.treatment, SiteItemTreatment::Hidden);
+    }
+
+    /// (d) FAIL-CLOSED against a REAL write-path epoch: a follower that received the
+    /// auto-published heartbeat but is MISSING the tombstone it commits to must NOT
+    /// reach a false Current — the recomputed digest mismatches, so the surface
+    /// holds at ModerationLoading. Proves the write path produces epochs the read
+    /// path correctly rejects when a follower's sync is incomplete (tail-suppression
+    /// resistance against genuine epochs, not hand-built ones).
+    #[test]
+    fn a_follower_missing_the_committed_action_holds_at_moderation_loading() {
+        let (masthead, sealed, root) = sealed_masthead();
+        let owner = open_local_profile().unwrap();
+        let (ns_w, post_id, _author) = wire_post(&owner);
+        let manifest = manifest_wire(&masthead, vec![masthead_member(root), wire_member(ns_w)]);
+
+        let outcome = owner
+            .create_site_moderation_action(
+                sealed,
+                WRAP_KEY.to_vec(),
+                SiteModerationAction::Tombstone {
+                    target_namespace: hex(&ns_w),
+                    target_entry: hex(&post_id),
+                },
+            )
+            .unwrap();
+
+        // A fresh FOLLOWER receives ONLY the heartbeat's bytes (the returned bundle
+        // the app would propagate), not the tombstone action it commits to.
+        let follower = open_local_profile().unwrap();
+        import_bundle(&follower, root, &outcome.epoch.signed_bytes);
+
+        // Resolve at the REAL clock so the ONLY reason for a hold is the digest
+        // mismatch (the missing tombstone) — not a stale heartbeat.
+        let resolved = call_resolve_at(&follower, &manifest, root, now_unix());
+        assert_eq!(
+            resolved.degradation,
+            SiteDegradation::ModerationLoading,
+            "a heartbeat committing to an unheld record must hold the surface, never false-Current"
+        );
+    }
+
+    /// republish_mod_epoch publishes a heartbeat on demand (empty set here).
+    #[test]
+    fn republish_mod_epoch_publishes_a_heartbeat() {
+        let (_masthead, sealed, _root) = sealed_masthead();
+        let profile = open_local_profile().unwrap();
+        let epoch = profile
+            .republish_mod_epoch(sealed, WRAP_KEY.to_vec())
+            .unwrap();
+        assert!(!epoch.entry_id.is_empty());
+        assert!(!epoch.signed_bytes.is_empty());
     }
 
     #[test]

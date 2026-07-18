@@ -1499,3 +1499,239 @@ public extension SiteTrustTier {
         }
     }
 }
+
+// MARK: - Composite-site owner moderation authoring (fix #4, write path)
+
+/// Which moderation action the site owner is authoring. Mirrors the newswire
+/// editorial-action shape, but the moderation overlay is per-content / per-author,
+/// not the editorial vocabulary.
+public enum SiteModerationTargetKind: String, Equatable, Sendable, CaseIterable, Identifiable {
+    /// Ban an author-key — every item that author signed is Hidden read-side.
+    case revoke
+    /// Hide one specific entry by its `(namespace, entry-id)` identity.
+    case tombstone
+
+    public var id: String { rawValue }
+    public var label: String {
+        switch self {
+        case .revoke: "Revoke author"
+        case .tombstone: "Tombstone entry"
+        }
+    }
+}
+
+/// The owner's in-progress moderation action. Only the fields the chosen kind
+/// needs are consulted; the rest are ignored (and cleared when the kind switches
+/// is a UI concern). Mirrors `EditorialActionDraft`.
+public struct SiteModerationDraft: Equatable, Sendable {
+    public var kind: SiteModerationTargetKind
+    /// For `.revoke`: the author subspace id to ban (64 hex).
+    public var authorKey: String
+    /// For `.tombstone`: the namespace of the entry to hide (64 hex).
+    public var targetNamespace: String
+    /// For `.tombstone`: the entry id to hide (64 hex).
+    public var targetEntry: String
+
+    public init(
+        kind: SiteModerationTargetKind,
+        authorKey: String = "",
+        targetNamespace: String = "",
+        targetEntry: String = ""
+    ) {
+        self.kind = kind
+        self.authorKey = authorKey
+        self.targetNamespace = targetNamespace
+        self.targetEntry = targetEntry
+    }
+
+    /// Empty when the fields the current kind needs are blank — drives the
+    /// Stay-or-Discard confirmation on leave.
+    public var isEmpty: Bool {
+        switch kind {
+        case .revoke:
+            authorKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        case .tombstone:
+            targetNamespace.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                && targetEntry.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+    }
+}
+
+/// Why a moderation draft could not be turned into a signable action. Each names
+/// the exact field so the surface can point at it — an invalid draft never
+/// reaches core.
+public enum SiteModerationFieldViolation: Error, Equatable, Sendable {
+    case authorKeyRequired
+    case authorKeyMalformed
+    case targetNamespaceRequired
+    case targetNamespaceMalformed
+    case targetEntryRequired
+    case targetEntryMalformed
+
+    public var message: String {
+        switch self {
+        case .authorKeyRequired: "Enter the author key to revoke."
+        case .authorKeyMalformed: "The author key must be 64 hex characters."
+        case .targetNamespaceRequired: "Enter the entry's namespace."
+        case .targetNamespaceMalformed: "The namespace must be 64 hex characters."
+        case .targetEntryRequired: "Enter the entry id to tombstone."
+        case .targetEntryMalformed: "The entry id must be 64 hex characters."
+        }
+    }
+}
+
+/// Validates a moderation draft into the FFI `SiteModerationAction`. Pure and
+/// deterministic; produces the exact value the model signs, never a partial one.
+public enum SiteModerationValidator {
+    /// A 64-char lowercase-or-uppercase hex string (a 32-byte id).
+    static func isHex32(_ value: String) -> Bool {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.count == 64 else { return false }
+        return trimmed.allSatisfy(\.isHexDigit)
+    }
+
+    public static func validate(
+        _ draft: SiteModerationDraft
+    ) -> Result<SiteModerationAction, SiteModerationFieldViolation> {
+        switch draft.kind {
+        case .revoke:
+            let key = draft.authorKey.trimmingCharacters(in: .whitespacesAndNewlines)
+            if key.isEmpty { return .failure(.authorKeyRequired) }
+            if !isHex32(key) { return .failure(.authorKeyMalformed) }
+            return .success(.revoke(authorKey: key.lowercased()))
+        case .tombstone:
+            let ns = draft.targetNamespace.trimmingCharacters(in: .whitespacesAndNewlines)
+            let entry = draft.targetEntry.trimmingCharacters(in: .whitespacesAndNewlines)
+            if ns.isEmpty { return .failure(.targetNamespaceRequired) }
+            if !isHex32(ns) { return .failure(.targetNamespaceMalformed) }
+            if entry.isEmpty { return .failure(.targetEntryRequired) }
+            if !isHex32(entry) { return .failure(.targetEntryMalformed) }
+            return .success(.tombstone(targetNamespace: ns.lowercased(), targetEntry: entry.lowercased()))
+        }
+    }
+}
+
+/// The immutable review the owner sees before signing — every identifier shown
+/// UNTRUNCATED (this is the signing surface; truncation would be a defect).
+/// Mirrors `EditorialActionReview`.
+public struct SiteModerationReview: Equatable, Sendable {
+    public let kind: SiteModerationTargetKind
+    /// The site root (owned namespace id), untruncated hex.
+    public let siteRoot: String
+    /// The ordered label/value rows — each identifier complete.
+    public let rows: [ReviewRow]
+
+    public struct ReviewRow: Equatable, Sendable {
+        public let label: String
+        public let value: String
+    }
+
+    public init(action: SiteModerationAction, siteRoot: String) {
+        self.siteRoot = siteRoot
+        switch action {
+        case let .revoke(authorKey):
+            self.kind = .revoke
+            self.rows = [
+                ReviewRow(label: "Action", value: "Revoke author"),
+                ReviewRow(label: "Site", value: siteRoot),
+                ReviewRow(label: "Author key", value: authorKey),
+            ]
+        case let .tombstone(targetNamespace, targetEntry):
+            self.kind = .tombstone
+            self.rows = [
+                ReviewRow(label: "Action", value: "Tombstone entry"),
+                ReviewRow(label: "Site", value: siteRoot),
+                ReviewRow(label: "Namespace", value: targetNamespace),
+                ReviewRow(label: "Target entry", value: targetEntry),
+            ]
+        }
+    }
+}
+
+/// The one call the owner moderation surface makes to author + sign an action.
+/// `RiotProfileRepository` conforms (it supplies the wrapping key from the
+/// keychain and forwards to core, which auto-publishes the heartbeat). The
+/// `sealedRoot` is the owner's proof of ownership — possession of the sealed
+/// masthead IS the authority. Tests inject a stub.
+public protocol SiteModerationAuthoring {
+    @discardableResult
+    func authorSiteModeration(
+        sealedRoot: Data,
+        action: SiteModerationAction
+    ) throws -> SiteModerationOutcome
+}
+
+/// The result of attempting to sign a moderation action from the surface.
+public enum SiteModerationSignOutcome: Equatable, Sendable {
+    /// Signed + committed locally (and the coupled heartbeat published). Carries the
+    /// full outcome — INCLUDING the signed bytes, which the app must hand onward to
+    /// propagate to followers (owned-namespace /mod/ has no automatic sync yet).
+    case signed(SiteModerationOutcome)
+    /// The draft violated the field rules — nothing reached core.
+    case invalid(SiteModerationFieldViolation)
+    /// Core refused (wrong wrapping key, closed store, clock). Draft preserved.
+    case rejected
+}
+
+/// Drives the owner moderation sheet for one composite site. Gated on ownership:
+/// it is constructed only with the site's sealed masthead, so a non-owner never
+/// gets one. Validates the draft, signs through the seam (core auto-publishes the
+/// heartbeat), and RETAINS the outcome — `lastOutcome` keeps the signed bytes
+/// reachable so the caller can propagate them (this surface does not itself ship a
+/// share affordance; propagation is a tracked follow-up).
+@MainActor
+public final class SiteModerationModel: ObservableObject {
+    @Published public var draft: SiteModerationDraft
+    @Published public private(set) var lastOutcome: SiteModerationOutcome?
+    @Published public private(set) var lastSignOutcome: SiteModerationSignOutcome?
+
+    public let siteRoot: String
+    private let sealedRoot: Data
+    private let authoring: SiteModerationAuthoring
+
+    public init(
+        siteRoot: String,
+        sealedRoot: Data,
+        authoring: SiteModerationAuthoring,
+        initialKind: SiteModerationTargetKind = .tombstone
+    ) {
+        self.siteRoot = siteRoot
+        self.sealedRoot = sealedRoot
+        self.authoring = authoring
+        self.draft = SiteModerationDraft(kind: initialKind)
+    }
+
+    /// The immutable pre-signing review for the current draft, or the violation
+    /// that blocks it. Pure — nothing is signed.
+    public func review() -> Result<SiteModerationReview, SiteModerationFieldViolation> {
+        SiteModerationValidator.validate(draft).map { action in
+            SiteModerationReview(action: action, siteRoot: siteRoot)
+        }
+    }
+
+    /// Validate and, if it passes, sign through core (which auto-publishes the
+    /// heartbeat). Retains the outcome so the signed bytes stay reachable. A core
+    /// refusal preserves the draft.
+    @discardableResult
+    public func sign() -> SiteModerationSignOutcome {
+        let action: SiteModerationAction
+        switch SiteModerationValidator.validate(draft) {
+        case let .success(value): action = value
+        case let .failure(violation):
+            let outcome = SiteModerationSignOutcome.invalid(violation)
+            lastSignOutcome = outcome
+            return outcome
+        }
+        do {
+            let outcome = try authoring.authorSiteModeration(sealedRoot: sealedRoot, action: action)
+            lastOutcome = outcome
+            let result = SiteModerationSignOutcome.signed(outcome)
+            lastSignOutcome = result
+            return result
+        } catch {
+            let result = SiteModerationSignOutcome.rejected
+            lastSignOutcome = result
+            return result
+        }
+    }
+}

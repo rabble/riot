@@ -951,3 +951,116 @@ final class CompositeSiteReadModelTests: XCTestCase {
         }
     }
 }
+
+/// Fix #4 write path — the owner moderation authoring model. Validates drafts
+/// into the FFI action, signs through the seam (core auto-publishes the coupled
+/// heartbeat), and — critically — RETAINS the outcome so the signed bytes stay
+/// reachable for propagation (owned-namespace /mod/ has no automatic follower sync
+/// yet). Pure over a stub seam; the real end-to-end round-trip is Rust-tested.
+@MainActor
+final class SiteModerationModelTests: XCTestCase {
+    private let root = "ab".repeated(32)
+    private let id32 = "cd".repeated(32)
+
+    /// A stub authoring seam: records the action it was handed and returns a canned
+    /// outcome (with non-empty signed bytes), or throws to simulate a core refusal.
+    private final class StubAuthoring: SiteModerationAuthoring {
+        var lastAction: SiteModerationAction?
+        var shouldThrow = false
+        func authorSiteModeration(sealedRoot: Data, action: SiteModerationAction) throws
+            -> SiteModerationOutcome
+        {
+            lastAction = action
+            if shouldThrow { throw NSError(domain: "test", code: 1) }
+            return SiteModerationOutcome(
+                action: SiteModerationSignedRecord(
+                    entryId: "11".repeated(32), signedBytes: Data([1, 2, 3])),
+                epoch: SiteModerationSignedRecord(
+                    entryId: "22".repeated(32), signedBytes: Data([4, 5, 6, 7])))
+        }
+    }
+
+    private func model(_ stub: StubAuthoring, kind: SiteModerationTargetKind) -> SiteModerationModel {
+        SiteModerationModel(
+            siteRoot: root, sealedRoot: Data([0x9]), authoring: stub, initialKind: kind)
+    }
+
+    /// A revoke needs a well-formed author key; a tombstone needs both a namespace
+    /// and an entry id. Malformed/empty targets are named, never reach core.
+    func testValidatorNamesEachMissingOrMalformedField() {
+        XCTAssertEqual(
+            SiteModerationValidator.validate(SiteModerationDraft(kind: .revoke)),
+            .failure(.authorKeyRequired))
+        XCTAssertEqual(
+            SiteModerationValidator.validate(SiteModerationDraft(kind: .revoke, authorKey: "nothex")),
+            .failure(.authorKeyMalformed))
+        XCTAssertEqual(
+            SiteModerationValidator.validate(SiteModerationDraft(kind: .tombstone, targetEntry: id32)),
+            .failure(.targetNamespaceRequired))
+        XCTAssertEqual(
+            SiteModerationValidator.validate(
+                SiteModerationDraft(kind: .tombstone, targetNamespace: id32, targetEntry: "short")),
+            .failure(.targetEntryMalformed))
+
+        if case let .success(action) = SiteModerationValidator.validate(
+            SiteModerationDraft(kind: .revoke, authorKey: id32.uppercased()))
+        {
+            XCTAssertEqual(action, .revoke(authorKey: id32))  // normalized lowercase
+        } else {
+            XCTFail("a 64-hex author key must validate")
+        }
+    }
+
+    /// A valid draft signs through the seam and the outcome is RETAINED — the
+    /// signed bytes of BOTH the action and the auto-published heartbeat stay
+    /// reachable on the model for the app to propagate.
+    func testSigningRetainsTheOutcomeAndItsSignedBytes() {
+        let stub = StubAuthoring()
+        let model = model(stub, kind: .tombstone)
+        model.draft.targetNamespace = id32
+        model.draft.targetEntry = id32
+
+        guard case let .signed(outcome) = model.sign() else {
+            return XCTFail("a valid tombstone draft should sign")
+        }
+        XCTAssertEqual(stub.lastAction, .tombstone(targetNamespace: id32, targetEntry: id32))
+        // The bytes are the propagation payload — surfaced, not dropped.
+        XCTAssertFalse(outcome.action.signedBytes.isEmpty)
+        XCTAssertFalse(outcome.epoch.signedBytes.isEmpty)
+        XCTAssertEqual(model.lastOutcome, outcome)
+    }
+
+    /// An invalid draft never reaches the seam.
+    func testInvalidDraftNeverReachesCore() {
+        let stub = StubAuthoring()
+        let model = model(stub, kind: .revoke)  // authorKey empty
+        XCTAssertEqual(model.sign(), .invalid(.authorKeyRequired))
+        XCTAssertNil(stub.lastAction, "an invalid draft must not be signed")
+        XCTAssertNil(model.lastOutcome)
+    }
+
+    /// A core refusal is surfaced and the draft is preserved.
+    func testCoreRefusalIsSurfacedAndDraftPreserved() {
+        let stub = StubAuthoring()
+        stub.shouldThrow = true
+        let model = model(stub, kind: .revoke)
+        model.draft.authorKey = id32
+        XCTAssertEqual(model.sign(), .rejected)
+        XCTAssertEqual(model.draft.authorKey, id32, "a refusal preserves the draft")
+        XCTAssertNil(model.lastOutcome)
+    }
+
+    /// The review shows the complete, untruncated identifiers — this is the signing
+    /// surface, where truncation would be a defect.
+    func testReviewShowsUntruncatedIdentifiers() {
+        let stub = StubAuthoring()
+        let model = model(stub, kind: .tombstone)
+        model.draft.targetNamespace = id32
+        model.draft.targetEntry = id32
+        guard case let .success(review) = model.review() else {
+            return XCTFail("a valid draft should review")
+        }
+        XCTAssertTrue(review.rows.contains { $0.value == id32 })
+        XCTAssertTrue(review.rows.contains { $0.label == "Site" && $0.value == root })
+    }
+}
