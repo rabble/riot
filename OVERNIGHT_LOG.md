@@ -1,5 +1,48 @@
 # Overnight Work Log — 2026-07-18 (getting + collaborating with spaces)
 
+## ☀️ MORNING SUMMARY
+
+**Branch `overnight/2026-07-18-collab`** (off origin/main @ ae9ec47), 6 commits, clean tree, NOT
+pushed, NOT merged. Separate from the other session's `overnight/2026-07-18` (nav planning).
+
+**Biggest result: the scope was mostly already built — I de-duplicated instead of rebuilding.**
+The in-session mapper had read a STALE local checkout and wrongly said comments were missing.
+Against real origin/main:
+- **Unit 2 (replies/comments): already DONE end-to-end** (core + FFI + Android + iOS all merged).
+  Nothing to build. This was the night's biggest save — I nearly rebuilt an existing feature.
+- **Unit 1 (invite/share): already BUILT but unmerged & stale** on `feat/ios-share-community`.
+  Reviewed it, documented the exact API drift + rebase steps for morning (see Task 3).
+
+**What's DONE & TESTED tonight (committed a96f787):**
+- **Reactions record family — Rust core + FFI**, the only genuinely-absent feature. `NewsReactionV1`
+  (Support/Solidarity/Important/Grief, toggle), mirrored across all 5 newswire registration sites;
+  per-post distinct-author tally on the projection; `toggle_newswire_reaction` FFI + tally on the
+  projected post. **Verified independently:** workspace builds; riot-core 159 tests (+14) green;
+  riot-ffi reaction contract tests green; clippy + fmt clean; Cargo.lock unchanged.
+
+**What's OPEN / needs a build machine (I could not verify overnight → did NOT commit blind):**
+1. **Reactions iOS reaction-bar UI** — planned in full
+   (`docs/superpowers/plans/2026-07-18-newswire-reactions-implementation.md`), mirrors the (already
+   built) comment UI. Needs Xcode.
+2. **UniFFI regen for reactions** — `scripts/conference/build-native-core.sh` MUST regenerate
+   bindings + the 5 staticlibs together before any native app runs (checksum coupling), THEN the
+   iOS UI. Not done (no build machine overnight).
+3. **Unit 1 share merge** — rebase the stale branch onto origin/main, fix the one API-drift line
+   (`community.newswireDescriptorEntryID` → `AppModel.newswireDescriptorEntryID`), register the file
+   in both Xcode targets, run `scripts/green.sh`, PR. Details in Task 3.
+4. **Coverage gate** — run `scripts/web/coverage.sh` before cutting a reactions PR (blocking gate).
+
+**Assumptions to review:** (a) I treated the owner-locked scope (Invite+Replies+Reactions) as the
+mandate over the other session's nav track — separate branch to avoid collision. (b) reactions =
+new record family (matches comment pattern + the design you approved). (c) closed 4-kind set, no
+free-form emoji (canonical CBOR). (d) tombstone drops a post's reactions, hide keeps them.
+
+**Suggested next steps (morning, in order):** regen native core → build the iOS reaction bar (Task
+3.1–3.3 of the plan) → green.sh → rebase+PR the share screen → run coverage → PR reactions. QR
+scanner-to-join (design had it; share branch is generate-only) is a separate small follow-up.
+
+---
+
 Append-only. Newest entries at the bottom. Morning summary goes at the TOP when done.
 
 Branch: `overnight/2026-07-18-collab` (off `origin/main` @ ae9ec47). Worktree:
@@ -113,3 +156,36 @@ Confirmed against origin/main: comments/replies are fully built at EVERY layer, 
    + native staticlib rebuild MUST happen together on a build machine before the app runs — that is
    morning work, not tonight's.
 2. **Unit 1 — Share:** rebase the stale branch (see Task 3). Morning (needs green.sh).
+
+### Task 2b — Reactions core landed + verified (commit a96f787)
+Coder subagent built the core; I verified INDEPENDENTLY (did not self-certify) and fixed the one
+out-of-scope break it flagged.
+- Fixed `crates/xtask/src/export_newswire.rs` `record_kind()` (E0004 non-exhaustive) — added the
+  `NewsReaction => "news_reaction"` arm + a `signed_record_json` block emitting kind/active/parent.
+- `cargo build --workspace --all-features` green (2m); `cargo test -p riot-core --all-features` green
+  (159, +14 reaction); `cargo test -p riot-ffi --all-features` green.
+- Subagent decisions I accepted (see its report): reactions on a **tombstoned** post are dropped but
+  a **hidden** post keeps its tally (pinned by a test); `validate_reaction` is an intentional no-op
+  guard kept for encode/decode symmetry; `ReactionKind` derives `Ord` for deterministic tally order.
+
+### Task 5 — Reactions FFI landed + verified (same commit a96f787)
+Wrote the FFI layer myself (pure Rust, verifiable):
+- `NewswireReactionTally { kind: String, count: u32 }` (uniffi::Record) + `reactions:
+  Vec<NewswireReactionTally>` on `NewswireProjectedPost`, mapped in `projected_post_view` via
+  `reaction_kind_name` (stable lowercase: support/solidarity/important/grief).
+- `toggle_newswire_reaction(space_descriptor_entry_id, parent_entry_id, kind, active)` mirroring
+  `create_newswire_comment`; `reaction_kind_from_name` rejects unknown kinds as `InvalidInput`
+  (a UNIT variant here — an earlier struct-form `{reason}` was my bug, fixed).
+- 3 new FFI contract tests in `newswire_contract.rs` (tally on react; toggle-off retracts; unknown
+  kind refused) — green. clippy + fmt clean across core/ffi/xtask. `Cargo.lock` unchanged.
+
+**UniFFI coupling reminder (`riot-uniffi-record-change-coupling`):** the added FFI fn + record
+changed the interface. Bindings + the 5 native staticlibs MUST be regenerated together
+(`scripts/conference/build-native-core.sh`) before ANY native app runs, or it aborts at runtime with
+a checksum mismatch. Not done tonight (that step + the iOS UI need a build machine / Xcode).
+
+### Coverage gate note
+`.coverage-thresholds.json` is a BLOCKING pre-PR gate (tarpaulin lines / llvm branches). New code is
+densely tested (14 core + 3 FFI), so the ratchet should hold, but I did NOT run the full tarpaulin
+composite overnight (long, and no PR is being cut on my branch tonight). **Morning:** run
+`scripts/web/coverage.sh` (or the CI coverage job) before opening a reactions PR.
