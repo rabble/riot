@@ -404,4 +404,36 @@ final class PostUpdateTests: XCTestCase {
         XCTAssertTrue(model.canPost, "Alert/Request must never strand Post once its fields are supplied")
         XCTAssertNil(model.validationGuidance, "no guidance once ready")
     }
+
+    // MARK: - Alert vs Request are distinct outcomes (design §10.5, Unit 6)
+
+    @MainActor
+    private func postWith(mode: ComposerMode, operational: Bool) -> NewswireOperationalProfile? {
+        let publisher = StubPublisher()
+        let model = makeModel(publisher: publisher)
+        model.headline = "H"
+        model.body = "B"
+        model.mode = mode
+        if operational {
+            model.sourceClaims = ["Saw it"]
+            model.coarseLocation = "The plaza"
+            model.expiresAt = Date(timeIntervalSince1970: 1_720_003_600)
+        }
+        XCTAssertTrue(model.canPost)
+        model.post()
+        return publisher.lastRequest?.operationalProfile
+    }
+
+    @MainActor
+    func testAlertAndRequestProduceDistinctOperationalProfiles() {
+        let alert = postWith(mode: .operationalAlert, operational: true)
+        let request = postWith(mode: .operationalRequest, operational: true)
+
+        guard case .alert = alert else { return XCTFail("Alert mode must emit an .alert overlay") }
+        guard case .request = request else { return XCTFail("Request mode must emit a .request overlay") }
+        XCTAssertNotEqual(alert, request, "Alert and Request must not collapse to the same core post")
+
+        // Update stays freeform — no overlay at all (operational fields irrelevant).
+        XCTAssertNil(postWith(mode: .freeform, operational: false))
+    }
 }
