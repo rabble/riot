@@ -209,6 +209,15 @@ fn require_post_authority(
     Ok(())
 }
 
+/// Whether `subject_id` carries editorial authority in `descriptor`. This is
+/// the sole admission rule shared by `require_action_authority` (the signing
+/// gate) and the FFI display predicate, so the read-path answer can never
+/// diverge from what the write-path enforces. There is no founder
+/// special-case: a founder absent from the roster is not an editor.
+pub fn is_editorial_authority(descriptor: &SpaceDescriptorV1, subject_id: &[u8; 32]) -> bool {
+    descriptor.editorial_roster.contains(subject_id)
+}
+
 fn require_action_authority(
     author: &EvidenceAuthor,
     descriptor: &VerifiedNewswireRecord,
@@ -220,7 +229,7 @@ fn require_action_authority(
     }
     let signer_id = *author.subspace_id().as_bytes();
     if author.namespace_id().as_bytes() != &descriptor_payload.namespace_id
-        || !descriptor_payload.editorial_roster.contains(&signer_id)
+        || !is_editorial_authority(descriptor_payload, &signer_id)
     {
         return Err(NewswireError::AuthorityInvalid);
     }
@@ -465,6 +474,25 @@ mod tests {
             signature: signature.to_bytes(),
             payload_bytes,
         }
+    }
+
+    #[test]
+    fn is_editorial_authority_matches_admission() {
+        let organizer = generate_space_organizer_author().unwrap();
+        let ns = *organizer.namespace_id().as_bytes();
+        let editor = generate_communal_author_for_namespace(ns).unwrap();
+        let editor_id = *editor.subspace_id().as_bytes();
+        let outsider = generate_communal_author_for_namespace(ns).unwrap();
+        let outsider_id = *outsider.subspace_id().as_bytes();
+        let d = descriptor(ns, vec![editor_id]);
+        assert!(is_editorial_authority(&d, &editor_id));
+        assert!(!is_editorial_authority(&d, &outsider_id));
+        let empty = descriptor(ns, vec![]);
+        assert!(
+            !is_editorial_authority(&empty, &ns),
+            "founder+empty roster is false (matches admission)"
+        );
+        assert!(!is_editorial_authority(&empty, &outsider_id));
     }
 
     #[test]

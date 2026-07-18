@@ -215,19 +215,9 @@ public enum CommunitySelectionShortcut {
 /// the shell.
 public struct CommunityChooserView: View {
     @ObservedObject private var model: RiotAppModel
-    private let onCreate: () -> Void
-    private let onFindNearby: () -> Void
-    @State private var isJoinSheetPresented = false
-    @State private var pastedReference = ""
 
-    public init(
-        model: RiotAppModel,
-        onCreate: @escaping () -> Void = {},
-        onFindNearby: @escaping () -> Void = {}
-    ) {
+    public init(model: RiotAppModel) {
         self.model = model
-        self.onCreate = onCreate
-        self.onFindNearby = onFindNearby
     }
 
     public var body: some View {
@@ -245,12 +235,16 @@ public struct CommunityChooserView: View {
                             .accessibilityIdentifier("chooser-empty")
                     }
                 }
+                // Real flows, not the dead `{}` no-ops the call site used to pass
+                // (Unit 1 Task 4): each closes the chooser and routes to a working
+                // surface. Join now goes through the paste/QR JoinByReferenceSheet,
+                // presented at the shell so the same sheet serves the Launch entry.
                 Section {
-                    Button("Create a community", action: onCreate)
+                    Button("Create a community") { model.requestCreateCommunity() }
                         .accessibilityIdentifier("chooser-create")
-                    Button("Find one nearby", action: onFindNearby)
+                    Button("Find one nearby") { model.findNearby() }
                         .accessibilityIdentifier("chooser-find-nearby")
-                    Button("Join another community") { isJoinSheetPresented = true }
+                    Button("Join with a link or QR") { model.requestJoinByReference() }
                         .accessibilityIdentifier("chooser-join-another")
                 }
             }
@@ -258,76 +252,6 @@ public struct CommunityChooserView: View {
             .toolbar {
                 Button("Done") { model.dismissCommunityChooser() }
                     .accessibilityIdentifier("chooser-done")
-            }
-            .sheet(isPresented: $isJoinSheetPresented) {
-                CommunityJoinSheet(model: model, pastedReference: $pastedReference) {
-                    isJoinSheetPresented = false
-                    pastedReference = ""
-                }
-            }
-        }
-    }
-}
-
-/// Paste-a-share-reference join (Unit 3D). Someone shares a
-/// `riot://newswire/join/v1/...` link; you paste it here to follow that
-/// community. It joins as a fresh unlinkable member and appears in the chooser
-/// "pending first sync" until its content arrives over sync. A malformed
-/// reference is refused with a plain-language message and changes nothing.
-public struct CommunityJoinSheet: View {
-    @ObservedObject var model: RiotAppModel
-    @Binding var pastedReference: String
-    let onDone: () -> Void
-
-    /// Public so the first-run onboarding flow (app target) can present the exact
-    /// same paste-to-join UI the chooser uses, rather than duplicating it.
-    public init(model: RiotAppModel, pastedReference: Binding<String>, onDone: @escaping () -> Void) {
-        self.model = model
-        self._pastedReference = pastedReference
-        self.onDone = onDone
-    }
-
-    /// A share reference is never capitalized; the auto-capitalization modifier is
-    /// iOS-only, so it is applied only there — macOS shares this source.
-    private var joinReferenceField: some View {
-        let field = TextField("Paste a community link", text: $pastedReference, axis: .vertical)
-        #if os(iOS)
-        return field.textInputAutocapitalization(.never)
-        #else
-        return field
-        #endif
-    }
-
-    public var body: some View {
-        NavigationStack {
-            Form {
-                Section {
-                    joinReferenceField
-                        .autocorrectionDisabled()
-                        .accessibilityIdentifier("join-reference-field")
-                } footer: {
-                    Text("Paste a link someone shared. You'll join right away; its updates arrive the next time you sync.")
-                }
-                if let error = model.errorMessage {
-                    Text(error)
-                        .foregroundStyle(.red)
-                        .accessibilityIdentifier("join-error")
-                }
-            }
-            .navigationTitle("Join a community")
-            .toolbar {
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Join") {
-                        model.joinAdditionalCommunity(shareReference: pastedReference)
-                        if model.errorMessage == nil { onDone() }
-                    }
-                    .disabled(pastedReference.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                    .accessibilityIdentifier("join-confirm")
-                }
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel", action: onDone)
-                        .accessibilityIdentifier("join-cancel")
-                }
             }
         }
     }

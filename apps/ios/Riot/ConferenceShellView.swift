@@ -250,7 +250,6 @@ private struct OnboardingSetupView: View {
     @State private var displayName = ""
     @State private var demoFailure: String?
     @State private var isJoinPresented = false
-    @State private var pastedReference = ""
 
     private var trimmedCommunity: String {
         communityName.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -297,9 +296,9 @@ private struct OnboardingSetupView: View {
                         .disabled(trimmedCommunity.isEmpty)
                         .accessibilityIdentifier("create-community")
 
-                        Button("Join with a link") { isJoinPresented = true }
+                        Button("Join with a link or QR") { isJoinPresented = true }
                             .buttonStyle(.riotSecondary)
-                            .accessibilityIdentifier("onboarding-join")
+                            .accessibilityIdentifier("launch-join-by-reference")
 
                         Button("Find one nearby") { model.select(.nearby) }
                             .buttonStyle(.riotSecondary)
@@ -325,13 +324,9 @@ private struct OnboardingSetupView: View {
             }
         }
         .sheet(isPresented: $isJoinPresented) {
-            // Reuse the community chooser's paste-to-join sheet verbatim, so the
-            // onboarding join path is the same code (and same core call) as the
-            // in-app join, never a duplicate.
-            CommunityJoinSheet(model: model, pastedReference: $pastedReference) {
-                isJoinPresented = false
-                pastedReference = ""
-            }
+            // The same paste/QR join sheet the in-app chooser uses, so onboarding's
+            // join path is the identical code and core call, never a duplicate.
+            JoinByReferenceSheet(model: model, onClose: { isJoinPresented = false })
         }
         .onAppear { displayName = model.claimedName ?? "" }
     }
@@ -403,7 +398,7 @@ private struct RecoveryNoticeBanner: View {
             .accessibilityLabel("Dismiss")
         }
         .padding(12)
-        .background(RiotTheme.paper(for: colorScheme))
+        .background(RiotTheme.paper2(for: colorScheme))
         .overlay(alignment: .bottom) {
             Rectangle().fill(.orange.opacity(0.4)).frame(height: 1)
         }
@@ -558,13 +553,15 @@ private struct CommunityShellView: View {
 
         let wireProjector: NewswireProjecting = model.profileRepository ?? UnavailableWireProjector()
         let editor: NewswireEditorialActing = model.profileRepository ?? UnavailableEditor()
+        let authority: NewswireEditorAuthorityChecking = model.profileRepository ?? UnavailableEditor()
         _newswire = StateObject(wrappedValue: NewswireSurfaceModel(
             projector: wireProjector,
             editor: editor,
+            authority: authority,
             spaceDescriptorEntryID: community.newswireDescriptorEntryID ?? "",
             communityName: community.name,
             myKeyHex: me.id,
-            roster: community.editorialRoster
+            descriptorResolver: { [weak model] in model?.rederivedNewswireDescriptorID() }
         ))
     }
 
@@ -606,6 +603,23 @@ private struct CommunityShellView: View {
             .sheet(isPresented: $model.isCommunityChooserPresented) {
                 CommunityChooserView(model: model)
             }
+            // Join with a link or QR — raised from the chooser's "Join another" row
+            // (and, on the launch screen, its own button). Presented at the shell so
+            // both entry points share one sheet and one core call.
+            .sheet(isPresented: $model.isJoinByReferencePresented) {
+                JoinByReferenceSheet(model: model, onClose: model.dismissJoinByReference)
+            }
+            // Create another community — the chooser's "Create a community" row.
+            .sheet(isPresented: createCommunityBinding) {
+                CreateCommunitySheet(model: model, onClose: model.dismissCreateCommunity)
+            }
+    }
+
+    private var createCommunityBinding: Binding<Bool> {
+        Binding(
+            get: { model.isCreateCommunityRequested },
+            set: { if !$0 { model.dismissCreateCommunity() } }
+        )
     }
 
     // MARK: Adaptive presentation
@@ -873,6 +887,7 @@ private struct HomeRouteView: View {
     @ObservedObject var newswire: NewswireSurfaceModel
     let onOpenTool: (RiotSpaceApp, String) -> Void
     @Environment(\.colorScheme) private var colorScheme
+    @State private var showRejoinSheet = false
 
     private var shortcuts: [RiotSpaceApp] { HomeShortcuts.deterministic(from: model.apps) }
 
@@ -884,7 +899,19 @@ private struct HomeRouteView: View {
                 // always-public Editorial history — is the answer to "what is
                 // happening here?" It reads the same core projection every platform
                 // does, so a reader sees the identical front page as its peers.
-                NewswireSurfaceView(model: newswire)
+                // The offlineStale forward paths lead somewhere real: rejoin with a
+                // link (Unit 1's sheet) or sync with a peer (the existing Nearby
+                // screen) — never a dead no-op button and never a silent retry loop.
+                NewswireSurfaceView(
+                    model: newswire,
+                    onSyncWithPeer: { model.select(.nearby) },
+                    onRejoinWithLink: { showRejoinSheet = true }
+                )
+                // The single Home entry point for this community's signed alerts —
+                // the only tappable alert surface (the Nearby count is a diagnostic).
+                AlertsListView(entries: model.entries,
+                               activeNamespaceID: model.space?.namespaceID ?? "",
+                               displayName: { model.rendered(for: $0) })
                 PostUpdateView(model: composer)
             }
             .padding(20)
@@ -893,6 +920,9 @@ private struct HomeRouteView: View {
         // PLACE within it ("what is happening here?") so the community name is
         // not printed twice on the same screen.
         .riotHeader(eyebrow: "Community", model.space?.title ?? "Home")
+        .sheet(isPresented: $showRejoinSheet) {
+            JoinByReferenceSheet(model: model, onClose: { showRejoinSheet = false })
+        }
     }
 
     @ViewBuilder
@@ -959,6 +989,55 @@ private struct ShellRecoveryInline: View {
 
 // MARK: - Identity sheets
 
+/// Create another community from inside the app — the chooser's "Create a community"
+/// row. Mirrors the onboarding create card and calls the same `createCommunity`, so
+/// the in-app and first-run create paths are one flow, never a dead no-op.
+private struct CreateCommunitySheet: View {
+    @ObservedObject var model: RiotAppModel
+    let onClose: () -> Void
+    @State private var communityName = ""
+
+    private var trimmed: String { communityName.trimmingCharacters(in: .whitespacesAndNewlines) }
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    RiotCard {
+                        VStack(alignment: .leading, spacing: 12) {
+                            Text("Name your community")
+                                .font(.riot(.body, size: 17, relativeTo: .body))
+                            TextField("Community name", text: $communityName)
+                                .font(.riot(.body, size: 17, relativeTo: .body))
+                                .accessibilityIdentifier("create-community-name-field")
+                            Button("Create a community") {
+                                model.createCommunity(
+                                    CommunityCreationRequest(
+                                        name: trimmed,
+                                        editorialRoster: model.me.map { [$0.id] } ?? []
+                                    )
+                                )
+                                if model.errorMessage == nil { onClose() }
+                            }
+                            .buttonStyle(.riotPrimary)
+                            .disabled(trimmed.isEmpty)
+                            .accessibilityIdentifier("create-community-confirm")
+                        }
+                    }
+                }
+                .padding(20)
+            }
+            .riotHeader(eyebrow: "Community", "Create a community")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel", action: onClose)
+                        .accessibilityIdentifier("create-community-cancel")
+                }
+            }
+        }
+    }
+}
+
 /// "Your profile" — editing this person's identity, moved out of the way of
 /// everyday community content (nav design: manage identity in context).
 private struct YourProfileSheet: View {
@@ -1016,6 +1095,7 @@ private struct CommunitySettingsSheet: View {
     let onClose: () -> Void
     @Environment(\.colorScheme) private var colorScheme
     @State private var showingTechnical = false
+    @State private var isSharePresented = false
 
     var body: some View {
         ScrollView {
@@ -1040,6 +1120,10 @@ private struct CommunitySettingsSheet: View {
                 }
                 .accessibilityIdentifier("community-technical-details")
 
+                Button("Share this community") { isSharePresented = true }
+                    .buttonStyle(.riotSecondary)
+                    .accessibilityIdentifier("share-community")
+
                 Button("Leave this community", role: .destructive, action: onLeave)
                     .buttonStyle(.riotSecondary)
                     .accessibilityIdentifier("leave-community")
@@ -1049,6 +1133,18 @@ private struct CommunitySettingsSheet: View {
         .riotHeader(eyebrow: "Community", ShellIdentityDestination.communitySettings.label)
         .toolbar {
             ToolbarItem(placement: .confirmationAction) { Button("Done", action: onClose) }
+        }
+        .sheet(isPresented: $isSharePresented) {
+            ShareCommunitySheet(
+                community: community,
+                resolveEncoded: { id in
+                    guard let repository = model.profileRepository else {
+                        throw RepositoryError.profileClosed
+                    }
+                    return try repository.newswireShareReference(spaceDescriptorEntryID: id).encoded
+                },
+                onClose: { isSharePresented = false }
+            )
         }
     }
 
@@ -1084,7 +1180,7 @@ private struct UnavailableWireProjector: NewswireProjecting {
     }
 }
 
-private struct UnavailableEditor: NewswireEditorialActing {
+private struct UnavailableEditor: NewswireEditorialActing, NewswireEditorAuthorityChecking {
     func createNewswireEditorialAction(
         spaceDescriptorEntryID: String,
         targetEntryID: String,
@@ -1093,6 +1189,10 @@ private struct UnavailableEditor: NewswireEditorialActing {
         correctionText: String?
     ) throws -> NewswireSignedRecord {
         throw RepositoryError.profileClosed
+    }
+
+    func newswireIsEditor(spaceDescriptorEntryID: String, subjectID: String) throws -> Bool {
+        throw RepositoryError.profileClosed   // no live profile ⇒ never an editor (load() maps to false)
     }
 }
 
@@ -1268,7 +1368,7 @@ private struct ConnectionStatusView: View {
                             .textCase(.uppercase)
                             .tracking(1)
                             .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
-                        LabeledContent("Signed alerts", value: "\(model.entries.count)")
+                        LabeledContent("Alerts on this device", value: "\(model.entries.count)")
                         LabeledContent("Renderer", value: "incident-board/1")
                     }
                 }

@@ -180,38 +180,6 @@ public enum EditorialActionValidator {
     }
 }
 
-// MARK: - Editor authority (UI visibility only — NEVER the authorization check)
-
-/// Whether this profile should be OFFERED an editorial control. This is a
-/// best-effort UI hint, deliberately separate from the authorization decision:
-/// the real gate is core refusing to sign an action from a key outside the
-/// descriptor's roster (`create_newswire_editorial_action` throws). A hidden
-/// control is a courtesy; a rejected action is the security boundary. The two are
-/// independent by construction — this function never talks to core, and core
-/// never consults this function.
-///
-/// The MVP FFI exposes the founding roster only as CREATE input, never as a
-/// read-back, so this can be computed only for a community whose roster this
-/// device knows — one it created this session. A joined or loaded community's
-/// roster is unknown (Risk 11: no descriptor re-hydration), so it reports `false`
-/// and the control stays hidden until a real attempt would fail closed anyway.
-public enum EditorialAuthority {
-    /// `roster` is the founding editorial roster as hex subspace ids, exactly as
-    /// passed to `createNewswireSpace`, or `nil` when this device does not know the
-    /// community's roster (a joined or loaded community — Risk 11). An UNKNOWN
-    /// roster is never an editor here: the control stays hidden and a real attempt
-    /// fails closed at signing. An EMPTY roster means core's default — the founder
-    /// alone — so the founder is an editor. A non-empty roster makes a key an
-    /// editor only if it is named in it.
-    public static func isRecognizedEditor(myKeyHex: String, roster: [String]?) -> Bool {
-        let me = myKeyHex.lowercased()
-        if me.isEmpty { return false }
-        guard let roster else { return false }
-        if roster.isEmpty { return true }
-        return roster.contains { $0.lowercased() == me }
-    }
-}
-
 // MARK: - Pre-signing review (immutable)
 
 /// The immutable review a person sees before signing an editorial action
@@ -278,6 +246,17 @@ public protocol NewswireEditorialActing {
         reason: String?,
         correctionText: String?
     ) throws -> NewswireSignedRecord
+}
+
+/// The one read the editorial surface makes to decide whether to OFFER a control:
+/// core's descriptor-authenticated roster answer, identical to the authority core
+/// enforces at admission (Unit 4a's shared `is_editorial_authority`). An unknown /
+/// not-yet-synced descriptor answers `false` (never throws) so the surface can
+/// render a "controls appear after first sync" note off a defined false. UI
+/// VISIBILITY only — core still rejects a non-editor's action at signing regardless
+/// of what this returns.
+public protocol NewswireEditorAuthorityChecking {
+    func newswireIsEditor(spaceDescriptorEntryID: String, subjectID: String) throws -> Bool
 }
 
 // MARK: - Post treatment display
@@ -446,10 +425,46 @@ public enum NewswireWireCopy {
     public static let noFeatureTitle = "Nothing featured yet"
     public static let noFeatureMessage =
         "The collective has not selected a feature. See the open wire for every report."
-    public static let noFeatureLink = "Open wire"
     public static let offlineTitle = "Updates unavailable"
     public static let offlineMessage =
         "This community's wire is offline or has not synced yet. What you already have is still here."
+    public static let pendingSyncTitle = "Waiting for the first sync"
+    public static let pendingSyncMessage =
+        "You've joined this community, but no posts have arrived yet. They appear once a peer or seed connects. Rejoin with a link, or sync with a peer nearby."
+}
+
+/// A forward action a wire state offers, as pure data. The view maps each kind
+/// to a handler; the model decides WHICH are offered and IN WHAT ORDER. Modeled
+/// as data (never an inline `(label, {})` closure) so a test can assert every
+/// terminal state has at least one reachable next action, none is a dead no-op,
+/// and the red-on-main Nearby path is never a state's headline action.
+public enum NewswireWireForwardAction: String, Equatable, Sendable, CaseIterable {
+    /// Re-derive the descriptor id and reproject — a known-descriptor community
+    /// that is transiently offline.
+    case retry
+    /// The empty wire's call to the composer (routed through `onPostUpdate`).
+    case postFirstUpdate
+    /// The verified-working join path (Unit 1's `JoinByReferenceSheet`) — the
+    /// pending-first-sync headline.
+    case rejoinWithLink
+    /// Nearby — offered but SECONDARY, never a headline: two-peer nearby sync is
+    /// red on main, so it must never be a state's first action.
+    case syncWithPeer
+
+    public var label: String {
+        switch self {
+        case .retry: "Try again"
+        case .postFirstUpdate: "Post the first update"
+        case .rejoinWithLink: "Rejoin with a link"
+        case .syncWithPeer: "Sync with a peer"
+        }
+    }
+
+    /// A stable per-action id so each forward button is individually addressable.
+    public var accessibilityID: String { "newswire-action-\(rawValue)" }
+
+    /// True for the red-on-main Nearby path. A state must NEVER place this first.
+    public var isNearbyPath: Bool { self == .syncWithPeer }
 }
 
 // MARK: - Sign outcome
@@ -488,26 +503,44 @@ public final class NewswireSurfaceModel: ObservableObject {
 
     private let projector: NewswireProjecting
     private let editor: NewswireEditorialActing
-    private let spaceDescriptorEntryID: String
+    private let authority: NewswireEditorAuthorityChecking
+    private var spaceDescriptorEntryID: String
     private let myKeyHex: String
-    private let roster: [String]?
     public let communityName: String
+
+    /// Re-derives the community's descriptor id on demand (the shell wires this to
+    /// `RiotAppModel.rederivedNewswireDescriptorID()` — the same `listCommunities()`
+    /// derivation `reload()` uses). `nil` in tests/constructions that never need it.
+    private let descriptorResolver: (() -> String?)?
+
+    /// Whether core recognizes this profile as an editor of this descriptor — read
+    /// from the FFI predicate in `load()`, never a locally-asserted roster. `false`
+    /// until loaded and `false` for an unknown / not-yet-synced descriptor (no
+    /// error), by construction.
+    @Published public private(set) var isEditor: Bool = false
+
+    /// Set by `load()`: true when a descriptor id is in hand (retry can reproject),
+    /// false when none is derivable (a nearby-joined community — the wire must offer
+    /// a forward path, not the silent .retry re-loop). Drives `forwardActions`.
+    private var descriptorRecoverable = false
 
     public init(
         projector: NewswireProjecting,
         editor: NewswireEditorialActing,
+        authority: NewswireEditorAuthorityChecking,
         spaceDescriptorEntryID: String,
         communityName: String,
         myKeyHex: String,
-        roster: [String]?,
-        initialDraftKind: EditorialActionKind = .feature
+        initialDraftKind: EditorialActionKind = .feature,
+        descriptorResolver: (() -> String?)? = nil
     ) {
         self.projector = projector
         self.editor = editor
+        self.authority = authority
         self.spaceDescriptorEntryID = spaceDescriptorEntryID
         self.communityName = communityName
         self.myKeyHex = myKeyHex
-        self.roster = roster
+        self.descriptorResolver = descriptorResolver
         self.wire = .offlineStale
         self.history = []
         self.draft = EditorialActionDraft(kind: initialDraftKind)
@@ -515,18 +548,76 @@ public final class NewswireSurfaceModel: ObservableObject {
 
     /// Whether the surface may OFFER an editorial control — UI visibility only.
     /// A `false` here hides the control; it does NOT authorize anything, and a
-    /// `true` here does not either (core still decides at sign time).
+    /// `true` here does not either (core still decides at sign time). Reads the
+    /// cached predicate answer resolved in `load()`, the SAME roster authority core
+    /// enforces at admission.
     public var canOfferEditorialControls: Bool {
-        !spaceDescriptorEntryID.isEmpty
-            && EditorialAuthority.isRecognizedEditor(myKeyHex: myKeyHex, roster: roster)
+        !spaceDescriptorEntryID.isEmpty && isEditor
+    }
+
+    /// The ordered forward actions the current wire state offers — pure over the
+    /// model's loaded state. `postsButNoFeature`/`featured` return `[]` because the
+    /// next action is the visible content itself (the open wire renders directly
+    /// below, already labeled "Open wire" — the redundant no-op button is gone).
+    public var forwardActions: [NewswireWireForwardAction] {
+        switch wire {
+        case .offlineStale:
+            // A known descriptor that is merely offline → Try again; a community
+            // with no derivable descriptor (nearby-joined / pending first sync) →
+            // a real forward path, never a silent re-loop, verified path first.
+            return descriptorRecoverable ? [.retry] : [.rejoinWithLink, .syncWithPeer]
+        case .emptyWire:
+            return [.postFirstUpdate]
+        case .postsButNoFeature, .featured:
+            return []
+        }
+    }
+
+    /// The offlineStale title: the honest pending-first-sync headline when no
+    /// descriptor is derivable, the transient-offline headline when one is in hand.
+    public var offlineTitle: String {
+        descriptorRecoverable ? NewswireWireCopy.offlineTitle : NewswireWireCopy.pendingSyncTitle
+    }
+    /// The offlineStale message, matched to the title.
+    public var offlineMessage: String {
+        descriptorRecoverable ? NewswireWireCopy.offlineMessage : NewswireWireCopy.pendingSyncMessage
+    }
+
+    /// The one honest line shown where a control would be, when this profile is not
+    /// (yet) an editor AND the descriptor has not projected (a joined community
+    /// before its first sync — the predicate can't tell "not synced" from "not a
+    /// member", so the note is scoped to the offline/stale state to avoid telling a
+    /// *synced* reader they will gain controls). `nil` for an editor, for a synced
+    /// non-editor, and when there is no descriptor id at all — never a bare empty
+    /// view for the pre-sync editor.
+    public var editorialControlsPendingNote: String? {
+        guard !spaceDescriptorEntryID.isEmpty, !isEditor, wire == .offlineStale else { return nil }
+        return "Editorial controls appear after this community's first sync."
     }
 
     /// Loads the collective projection. A missing descriptor id or a projection
     /// failure is the offline/stale state — never a fabricated empty wire.
     public func load() {
+        // A descriptor may have landed since this model was built (a switched or
+        // joined community whose registry row now carries one; the shell built this
+        // model with "" before the sync). Picking it up here is what turns a silent
+        // offlineStale re-loop into a real projection — and it must precede the
+        // editor-status read below so the predicate answers off the re-derived id.
+        if spaceDescriptorEntryID.isEmpty, let resolved = descriptorResolver?(), !resolved.isEmpty {
+            spaceDescriptorEntryID = resolved
+        }
+        // Editor status is core's descriptor answer, resolved once per load. An
+        // unknown / not-yet-synced descriptor (or a closed profile) answers false —
+        // never a throw here.
+        isEditor = (try? authority.newswireIsEditor(
+            spaceDescriptorEntryID: spaceDescriptorEntryID, subjectID: myKeyHex)) ?? false
+
         guard !spaceDescriptorEntryID.isEmpty else {
+            // No descriptor to project — the forward-path state (rejoin / sync),
+            // never invented content, never a silent retry.
             wire = .offlineStale
             history = []
+            descriptorRecoverable = false
             return
         }
         do {
@@ -535,13 +626,21 @@ public final class NewswireSurfaceModel: ObservableObject {
             )
             wire = .from(projection)
             history = projection.editorialHistory.map(EditorialHistoryRow.init)
+            descriptorRecoverable = true
         } catch {
-            // Fixed, honest state — never a raw internal error, never invented
-            // content.
+            // We hold a descriptor id but it is transiently offline — retry can
+            // reproject the id we already have. Fixed, honest state — never a raw
+            // internal error, never invented content.
             wire = .offlineStale
             history = []
+            descriptorRecoverable = true
         }
     }
+
+    /// The offlineStale "Try again" action: re-derive + reproject. A no-op if the
+    /// community still has no derivable descriptor (the view then shows the forward
+    /// paths, not this button).
+    public func retry() { load() }
 
     /// Builds the immutable pre-signing review for the current draft against a
     /// target, or the field violation that stops it. Pure: no signing happens.
@@ -605,16 +704,43 @@ public final class NewswireSurfaceModel: ObservableObject {
 public struct NewswireSurfaceView: View {
     @ObservedObject private var model: NewswireSurfaceModel
     private let onPostUpdate: () -> Void
+    private let onSyncWithPeer: () -> Void
+    private let onRejoinWithLink: () -> Void
     @Environment(\.colorScheme) private var colorScheme
     @State private var actionTarget: NewswirePostRow?
 
-    public init(model: NewswireSurfaceModel, onPostUpdate: @escaping () -> Void = {}) {
+    public init(
+        model: NewswireSurfaceModel,
+        onPostUpdate: @escaping () -> Void = {},
+        onSyncWithPeer: @escaping () -> Void = {},
+        onRejoinWithLink: @escaping () -> Void = {}
+    ) {
         self.model = model
         self.onPostUpdate = onPostUpdate
+        self.onSyncWithPeer = onSyncWithPeer
+        self.onRejoinWithLink = onRejoinWithLink
+    }
+
+    /// Maps a pure forward action to its handler. Every case leads somewhere real —
+    /// no branch is a dead `{}`; `.retry` re-derives + reprojects, the two
+    /// navigation cases go through the shell's callbacks.
+    private func perform(_ action: NewswireWireForwardAction) {
+        switch action {
+        case .retry: model.retry()
+        case .postFirstUpdate: onPostUpdate()
+        case .rejoinWithLink: onRejoinWithLink()
+        case .syncWithPeer: onSyncWithPeer()
+        }
     }
 
     public var body: some View {
         VStack(alignment: .leading, spacing: 16) {
+            if let note = model.editorialControlsPendingNote {
+                Text(note)
+                    .font(.riot(.body, size: 13, relativeTo: .caption))
+                    .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
+                    .accessibilityIdentifier("editorial-controls-pending-note")
+            }
             wireSection
             if !model.history.isEmpty {
                 editorialHistorySection
@@ -632,16 +758,16 @@ public struct NewswireSurfaceView: View {
         case .offlineStale:
             wireEmpty(
                 id: model.wire.accessibilityID,
-                title: NewswireWireCopy.offlineTitle,
-                message: NewswireWireCopy.offlineMessage,
-                primary: ("Try again", { model.load() })
+                title: model.offlineTitle,           // pending-first-sync vs transient-offline
+                message: model.offlineMessage,
+                actions: model.forwardActions
             )
         case .emptyWire:
             wireEmpty(
                 id: model.wire.accessibilityID,
                 title: NewswireWireCopy.emptyTitle,
                 message: NewswireWireCopy.emptyMessage,
-                primary: ("Post the first update", onPostUpdate)
+                actions: model.forwardActions
             )
         case let .postsButNoFeature(openWire):
             VStack(alignment: .leading, spacing: 12) {
@@ -649,7 +775,7 @@ public struct NewswireSurfaceView: View {
                     id: model.wire.accessibilityID,
                     title: NewswireWireCopy.noFeatureTitle,
                     message: NewswireWireCopy.noFeatureMessage,
-                    primary: (NewswireWireCopy.noFeatureLink, {})
+                    actions: []                       // the open wire below IS the next action
                 )
                 openWireCard(openWire)
             }
@@ -666,7 +792,7 @@ public struct NewswireSurfaceView: View {
         id: String,
         title: String,
         message: String,
-        primary: (label: String, action: () -> Void)
+        actions: [NewswireWireForwardAction]
     ) -> some View {
         RiotCard {
             VStack(alignment: .leading, spacing: 10) {
@@ -674,9 +800,12 @@ public struct NewswireSurfaceView: View {
                 Text(message)
                     .font(.riot(.body, size: 15, relativeTo: .callout))
                     .foregroundStyle(RiotTheme.ink(for: colorScheme))
-                Button(primary.label, action: primary.action)
-                    .buttonStyle(.riotPrimary)
-                    .frame(minHeight: 44)
+                ForEach(actions, id: \.self) { action in
+                    Button(action.label) { perform(action) }
+                        .buttonStyle(action.isNearbyPath ? .riotSecondary : .riotPrimary)
+                        .frame(minHeight: 44)
+                        .accessibilityIdentifier(action.accessibilityID)
+                }
             }
         }
         .accessibilityIdentifier(id)

@@ -57,7 +57,8 @@ pub use contributors::{contributors, ContributorRowV1};
 pub(crate) use entry::inspect_verified_components;
 pub use entry::{
     create_signed_editorial_action, create_signed_news_post, create_signed_space_descriptor,
-    inspect_news_record, NewswirePayload, SignedNewswireRecord, VerifiedNewswireRecord,
+    inspect_news_record, is_editorial_authority, NewswirePayload, SignedNewswireRecord,
+    VerifiedNewswireRecord,
 };
 pub use model::{
     decode_editorial_action, decode_news_post, decode_space_descriptor, encode_editorial_action,

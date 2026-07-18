@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// The discovery surface: every app this profile can see — built in, shared into
 /// a space, or carried in by someone who synced with you — with what it does,
@@ -20,6 +21,12 @@ public struct DirectoryView: View {
     @Environment(\.colorScheme) private var colorScheme
     @State private var reviewing: RiotSpaceApp?
     @State private var notes: [String: String] = [:]
+    /// Two chained document picks — manifest, then bundle — mirroring Android's
+    /// manifest-then-bundle order. `pendingManifest` carries the first pick's
+    /// bytes across to the second.
+    @State private var isImportingManifest = false
+    @State private var isImportingBundle = false
+    @State private var pendingManifest: Data?
     private let onOpen: (RiotSpaceApp) -> Void
 
     public init(model: RiotAppModel, onOpen: @escaping (RiotSpaceApp) -> Void) {
@@ -36,6 +43,14 @@ public struct DirectoryView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 status
+                // Rendered in the always-visible part of the VStack, so it is the
+                // Tools-route-header affordance AND the empty-state action in one:
+                // an organizer with no tools yet is no longer at a dead end.
+                if model.canApproveApps {
+                    Button("Add a tool") { isImportingManifest = true }
+                        .buttonStyle(.riotSecondary)
+                        .accessibilityIdentifier("directory-add-tool")
+                }
                 if directory.rows.isEmpty {
                     RiotEmptyState(
                         title: "No apps yet",
@@ -57,6 +72,19 @@ public struct DirectoryView: View {
         }
         .onChange(of: model.apps) { _, _ in directory.refresh() }
         .onChange(of: model.space) { _, _ in directory.refresh() }
+        .fileImporter(isPresented: $isImportingManifest, allowedContentTypes: [.data]) { result in
+            guard case let .success(url) = result, let bytes = Self.readSecurityScoped(url) else { return }
+            pendingManifest = bytes
+            isImportingBundle = true            // now pick the bundle
+        }
+        .fileImporter(isPresented: $isImportingBundle, allowedContentTypes: [.data]) { result in
+            defer { pendingManifest = nil }
+            guard case let .success(url) = result,
+                  let manifest = pendingManifest,
+                  let bundle = Self.readSecurityScoped(url) else { return }
+            model.installTool(manifest: manifest, bundle: bundle)
+            directory.refresh()                 // pull the new (untrusted) row into the list
+        }
         .sheet(item: $reviewing) { app in
             AppReviewSheet(
                 app: app,
@@ -78,6 +106,15 @@ public struct DirectoryView: View {
     private func sync() {
         directory.attach(port: model.profileRepository)
         directory.refresh()
+    }
+
+    /// A `.fileImporter` URL is security-scoped: reading it outside the sandbox
+    /// requires bracketing the read with start/stopAccessingSecurityScopedResource,
+    /// else `Data(contentsOf:)` fails for files the app does not otherwise own.
+    private static func readSecurityScoped(_ url: URL) -> Data? {
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+        return try? Data(contentsOf: url)
     }
 
     private var intro: some View {

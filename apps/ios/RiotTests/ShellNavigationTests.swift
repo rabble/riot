@@ -286,6 +286,31 @@ final class ShellNavigationTests: XCTestCase {
         XCTAssertFalse(Onboarding.isFirstRun(model.launchState), "a community ends first-run; the shell shows now")
     }
 
+    /// The offlineStale "Try again" resolver seam (Unit 7): re-deriving the active
+    /// community's newswire descriptor from the registry returns the id a create
+    /// just persisted, and `nil` once there is no selected community — which is what
+    /// drives the wire's forward-path (rejoin / sync) state instead of a silent loop.
+    @MainActor
+    func testRederivedNewswireDescriptorReadsTheRegistryForTheActiveCommunity() throws {
+        let directory = try Self.temporaryProfileDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let model = RiotAppModel()
+        model.bootstrap(storageDirectory: directory, keyStore: TestWrappingKeyStore(), starterPacks: [])
+
+        // No selected community yet → the resolver is honest about having nothing.
+        XCTAssertNil(model.rederivedNewswireDescriptorID())
+
+        model.createCommunity(CommunityCreationRequest(name: "Fire Watch", summary: "east side"))
+        let created = try XCTUnwrap(model.newswireDescriptorEntryID,
+                                    "create signs a descriptor for the active community")
+        XCTAssertEqual(model.rederivedNewswireDescriptorID(), created,
+                       "the on-demand re-derive reads the same registry row reload() does")
+
+        model.leaveCommunity()
+        XCTAssertNil(model.rederivedNewswireDescriptorID(),
+                     "no selected community → nil → the wire's forward-path state, not a loop")
+    }
+
     // MARK: - Create a community signs a descriptor with a founding roster
 
     /// Create-community signs an immutable `SpaceDescriptorV1` via

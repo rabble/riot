@@ -447,6 +447,41 @@ impl MobileProfile {
             Ok(NewswireShareReference::from_core(&reference))
         })
     }
+
+    /// Whether `subject_id` carries editorial authority in the space identified
+    /// by `descriptor_entry_id`. This is a pure display predicate: it calls the
+    /// SAME `is_editorial_authority` rule that `require_action_authority`
+    /// enforces at signing time, so the answer a renderer gates UI on can never
+    /// diverge from what the write path admits. There is no founder
+    /// special-case. An unknown or non-descriptor entry id is not an error — it
+    /// resolves to `false`, so a caller can query freely without branching on
+    /// missing state.
+    pub fn newswire_is_editor(
+        &self,
+        descriptor_entry_id: String,
+        subject_id: String,
+    ) -> Result<bool, MobileError> {
+        with_active(&self.inner, |profile| {
+            let descriptor_id = parse_entry_id(&descriptor_entry_id)?;
+            let subject = parse_entry_id(&subject_id)?;
+            let record =
+                match riot_core::newswire::load_space_descriptor(&profile.store, descriptor_id) {
+                    Ok(record) => record,
+                    Err(riot_core::newswire::NewswireStoreError::DescriptorNotFound) => {
+                        return Ok(false)
+                    }
+                    Err(error) => return Err(map_newswire_store_error(error)),
+                };
+            let riot_core::newswire::NewswirePayload::SpaceDescriptor(descriptor) =
+                record.payload()
+            else {
+                return Ok(false);
+            };
+            Ok(riot_core::newswire::is_editorial_authority(
+                descriptor, &subject,
+            ))
+        })
+    }
 }
 
 /// The WILLIAM3 content digest (hex) of a space descriptor built from the given

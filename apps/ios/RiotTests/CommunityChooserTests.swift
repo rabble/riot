@@ -499,6 +499,34 @@ final class CommunityChooserTests: XCTestCase {
         XCTAssertThrowsError(try repository.decodeShareReference("https://example.com/not-a-reference"))
     }
 
+    /// Unit 1 Task 4: the chooser's action rows are wired to REAL model flows, not
+    /// the dead `{}` no-ops the call site used to pass. Find-nearby routes to the
+    /// Nearby surface, Join-another presents the join-by-reference sheet, and Create
+    /// raises the create flow — each closing the chooser.
+    @MainActor
+    func testChooserActionsAreWiredToRealFlowsNotDeadNoOps() throws {
+        let dir = try Self.temporaryProfileDirectory()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let model = RiotAppModel()
+        model.bootstrap(storageDirectory: dir, keyStore: TestWrappingKeyStore(), starterPacks: [])
+        model.createSpace(title: "Community A")
+
+        model.openCommunityChooser()
+        model.findNearby()
+        XCTAssertFalse(model.isCommunityChooserPresented, "find-nearby closes the chooser")
+        XCTAssertEqual(model.destination, .nearby, "find-nearby routes to Nearby, not a dead no-op")
+
+        model.openCommunityChooser()
+        model.requestJoinByReference()
+        XCTAssertFalse(model.isCommunityChooserPresented, "join-another closes the chooser")
+        XCTAssertTrue(model.isJoinByReferencePresented, "join-another presents the join-by-reference sheet")
+
+        model.openCommunityChooser()
+        model.requestCreateCommunity()
+        XCTAssertFalse(model.isCommunityChooserPresented, "create closes the chooser")
+        XCTAssertTrue(model.isCreateCommunityRequested, "create raises the create flow, not a dead no-op")
+    }
+
     // MARK: - Helpers
 
     private static func temporaryProfileDirectory() throws -> URL {
