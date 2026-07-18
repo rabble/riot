@@ -687,15 +687,6 @@ private struct CommunityShellView: View {
                 ForEach(RiotDestination.phoneTabs) { destination in
                     NavigationStack {
                         routeView(destination)
-                            // The running tool lives on the Tools stack only, so
-                            // "Open" always lands under Tools with a "‹ Tools"
-                            // back button, wherever it was invoked from.
-                            .navigationTitle(destination == .tools ? "Tools" : "")
-                            .navigationDestination(
-                                item: destination == .tools ? toolNavigation : .constant(nil)
-                            ) { tool in
-                                toolHost(tool)
-                            }
                     }
                     .opacity(navigation.destination == destination ? 1 : 0)
                     .allowsHitTesting(navigation.destination == destination)
@@ -705,34 +696,6 @@ private struct CommunityShellView: View {
             RiotTabBar(selection: tabSelection)
         }
         .background(RiotTheme.paper(for: colorScheme).ignoresSafeArea())
-    }
-
-    /// Drives the tool push on the Tools stack. Tapping the automatic back button
-    /// clears `runningTool`; routing that through this binding also runs the focus
-    /// + session teardown, so a back tap and a programmatic close (invalidation,
-    /// a missing repository) share the one close path.
-    private var toolNavigation: Binding<RiotSpaceApp?> {
-        Binding(
-            get: { runningTool },
-            set: { newValue in
-                if newValue == nil, runningTool != nil { _ = focus.close() }
-                runningTool = newValue
-            }
-        )
-    }
-
-    @ViewBuilder
-    private func toolHost(_ tool: RiotSpaceApp) -> some View {
-        if let repository = model.profileRepository {
-            AppRuntimeView(
-                repository: repository,
-                appIDHex: tool.appIDHex,
-                appName: tool.name,
-                onClose: { toolNavigation.wrappedValue = nil }
-            )
-        } else {
-            Color.clear.onAppear { closeTool() }
-        }
     }
 
     private var tabSelection: Binding<RiotDestination> {
@@ -811,7 +774,21 @@ private struct CommunityShellView: View {
                 onOpenTool: openTool
             )
         case .tools:
-            DirectoryView(model: model, onOpen: { openTool($0, fromCardID: "tool-\($0.appIDHex)") })
+            // Opening a tool swaps the Tools list for the mounted tool IN PLACE —
+            // a plain conditional, never a navigationDestination push (setting a
+            // push item in the same update as the tab switch rolls the whole
+            // update back in SwiftUI, which silently reverted both). The community
+            // header and the tab bar live OUTSIDE this stack in `phoneShell`, so
+            // they stay on screen: the person never loses context.
+            if let tool = runningTool {
+                MountedToolView(
+                    tool: tool,
+                    repository: model.profileRepository,
+                    onBack: closeTool
+                )
+            } else {
+                DirectoryView(model: model, onOpen: { openTool($0, fromCardID: "tool-\($0.appIDHex)") })
+            }
         case .people:
             PeopleView(model: people, onPostUpdate: { changeRoute(to: .home) })
         case .nearby:
@@ -825,9 +802,17 @@ private struct CommunityShellView: View {
         // Always surface the tool under Tools so it inherits that tab's context
         // (community header + tab bar stay put). A Home shortcut and the Tools
         // list therefore open a tool the same way — never a contextless cover.
-        model.select(.tools)
         focus.open(toolID: cardID)
-        runningTool = app
+        if navigation.destination == .tools {
+            runningTool = app
+        } else {
+            // Opened from another tab (a Home shortcut): switch to Tools FIRST,
+            // then mount the tool on the next runloop. Doing both in one update
+            // collapses into a single SwiftUI transaction that gets dropped —
+            // the tab silently stays put and the tool never appears.
+            model.select(.tools)
+            DispatchQueue.main.async { runningTool = app }
+        }
     }
 
     private func closeTool() {
@@ -880,6 +865,70 @@ private struct CommunityShellView: View {
                 .opacity(0)
                 .accessibilityIdentifier(CommunitySelectionShortcut.accessibilityID)
         }
+    }
+}
+
+// MARK: - Mounted tool (inside the Tools tab)
+
+/// A tool mounted inside the Tools tab: a "‹ Tools" back bar naming the app, then
+/// the themed app host. The community header and the bottom tab bar are drawn by
+/// the shell AROUND this view, so opening a tool keeps the person in the
+/// community — they can read who is active and step back to the tool list without
+/// ever leaving the space.
+private struct MountedToolView: View {
+    let tool: RiotSpaceApp
+    let repository: RiotProfileRepository?
+    let onBack: () -> Void
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 12) {
+                Button(action: onBack) {
+                    HStack(spacing: 4) {
+                        Image(systemName: "chevron.left")
+                            .font(.system(size: 14, weight: .bold))
+                        Text("Tools")
+                            .font(.riot(.mono, size: 13, relativeTo: .footnote))
+                            .textCase(.uppercase)
+                            .tracking(0.5)
+                    }
+                    .foregroundStyle(RiotTheme.pink(for: colorScheme))
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("tool-back")
+                .accessibilityLabel("Back to Tools")
+
+                Text(tool.name)
+                    .font(.riot(.mono, size: 14, relativeTo: .body))
+                    .textCase(.uppercase)
+                    .foregroundStyle(RiotTheme.ink(for: colorScheme))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .accessibilityAddTraits(.isHeader)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+            .background(RiotTheme.paper2(for: colorScheme))
+            .overlay(alignment: .bottom) {
+                Rectangle().fill(RiotTheme.line(for: colorScheme)).frame(height: 1)
+            }
+
+            if let repository {
+                AppRuntimeView(
+                    repository: repository,
+                    appIDHex: tool.appIDHex,
+                    appName: tool.name,
+                    onClose: onBack
+                )
+            } else {
+                Color.clear.onAppear(perform: onBack)
+            }
+        }
+        #if os(iOS)
+        // The back bar above is this view's chrome; suppress the enclosing
+        // NavigationStack's empty bar so there is not a second, blank one.
+        .toolbar(.hidden, for: .navigationBar)
+        #endif
     }
 }
 

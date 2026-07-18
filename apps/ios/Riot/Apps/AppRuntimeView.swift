@@ -91,11 +91,11 @@ public struct AppRuntimeView: View {
 }
 
 /// The mounted-app chrome: the app's own themed surface, a subtle activity strip
-/// naming who is active in it, and the sandboxed WebView. On iPhone this is a
-/// PUSH under the Tools tab, so the "‹ Tools" back button and app-name title come
-/// from the enclosing `NavigationStack` and the community header + tab bar stay
-/// on screen. On macOS it lives in the split detail, where there is no back
-/// button, so it keeps an explicit Close.
+/// naming who is active in it, and the sandboxed WebView. On iPhone it is hosted
+/// by `MountedToolView` inside the Tools tab, which draws the "‹ Tools" back bar
+/// and app name; the community header and tab bar stay on screen around it. On
+/// macOS it lives in the split detail, where there is no back button, so it keeps
+/// an explicit Close.
 private struct AppHostView: View {
     let launch: AppRuntimeLaunch
     let appName: String
@@ -125,10 +125,6 @@ private struct AppHostView: View {
             AppWebView(launch: launch)
         }
         .background(RiotTheme.paper(for: colorScheme))
-        #if os(iOS)
-        .navigationTitle(appName)
-        .navigationBarTitleDisplayMode(.inline)
-        #endif
         .task { refreshDigest() }
         .onChange(of: scenePhase) { _, phase in
             if phase == .active { AppRuntimeView.postDataChanged() }
@@ -170,12 +166,29 @@ private struct AppHostView: View {
         }
     }
 
+    /// The top-level key collections the community tool suite stores its rows
+    /// under. `list` requires a non-empty prefix (an empty one is rejected as
+    /// `KeyEmpty`), so there is no single "list everything" call; the strip reads
+    /// each collection an app might use and unions the rows. A tool that opened
+    /// its own new collection would simply show no strip until its prefix is added
+    /// here — a known, contained limit, never a crash.
+    private static let collectionPrefixes = [
+        "items", "messages", "posts", "photos",
+        "proposals", "votes", "events", "rsvps", "pages",
+    ]
+
     /// Read the app's rows through the same gated bridge the WebView uses and
     /// resolve their authors to a presence summary. A read failure (a torn-down
-    /// or revoked session) leaves the last digest in place rather than clearing
-    /// it — the invalidation path, not this, closes the app.
+    /// or revoked session, or a collection this app never wrote) is skipped rather
+    /// than clearing the digest — the invalidation path, not this, closes the app.
     private func refreshDigest() {
-        guard let rows = try? launch.bridge.list(prefix: "") else { return }
+        var rows: [(key: String, valueJSON: String)] = []
+        for prefix in Self.collectionPrefixes {
+            if let some = try? launch.bridge.list(prefix: prefix) {
+                rows.append(contentsOf: some)
+            }
+        }
+        guard !rows.isEmpty else { return }
         digest = AppActivityDigest.from(rows: rows) { idHex in
             guard let profile = launch.bridge.profile(idHex: idHex) else { return nil }
             // The bridge returns this fallback for an id whose profile this
