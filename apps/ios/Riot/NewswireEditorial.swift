@@ -248,6 +248,22 @@ public protocol NewswireEditorialActing {
     ) throws -> NewswireSignedRecord
 }
 
+/// The one call the surface makes to sign a communal reply. A reply is communal
+/// — core admits it for any member of the space, not only editors — so unlike
+/// `NewswireEditorialActing` there is no roster gate here; a member who is not
+/// followed yet, or whose parent post is not held, simply has their reply
+/// dropped from the projection. `RiotProfileRepository` conforms; tests inject a
+/// stub, and the real repository is exercised end-to-end in the FFI tests.
+public protocol NewswireCommenting {
+    @discardableResult
+    func createNewswireComment(
+        spaceDescriptorEntryID: String,
+        parentEntryID: String,
+        body: String,
+        language: String
+    ) throws -> NewswireSignedRecord
+}
+
 /// The one read the editorial surface makes to decide whether to OFFER a control:
 /// core's descriptor-authenticated roster answer, identical to the authority core
 /// enforces at admission (Unit 4a's shared `is_editorial_authority`). An unknown /
@@ -320,6 +336,44 @@ public struct NewswirePostRow: Equatable, Identifiable, Sendable {
         self.verificationCount = post.verificationIds.count
         self.aiAssisted = post.aiAssisted
     }
+}
+
+/// One communal reply, ready to draw indented under its parent post. Every field
+/// comes from core's projection; the surface only re-shapes, never re-decides. A
+/// hidden or tombstoned reply arrives with `body == nil`, so the row draws the
+/// treatment copy instead of the words — the same redaction contract as a post.
+public struct NewswireCommentRow: Equatable, Identifiable, Sendable {
+    public let id: String
+    /// The post this reply hangs under. The surface groups the flat list core
+    /// returns by this id; core already dropped any reply with no held parent.
+    public let parentID: String
+    public let author: String
+    public let authorKeyHex: String
+    public let body: String?
+    public let display: NewswirePostDisplay
+
+    public init(_ comment: NewswireProjectedComment) {
+        self.id = comment.entryId
+        self.parentID = comment.parentEntryId
+        self.author = comment.author.rendered
+        self.authorKeyHex = comment.author.id
+        self.body = comment.body
+        self.display = .from(comment.treatment)
+    }
+}
+
+/// The result of attempting to post a communal reply from the surface.
+public enum NewswireCommentOutcome: Equatable, Sendable {
+    /// Signed and committed locally; pending exchange with peers.
+    case posted(entryID: String)
+    /// The reply was empty after trimming — nothing was sent to core.
+    case empty
+    /// No commenter is wired (a preview/test construction) — the affordance is
+    /// hidden in that case, so this is a defensive answer, never a user path.
+    case unavailable
+    /// Core refused to sign (closed store or clock). The draft is preserved so
+    /// the person loses nothing.
+    case rejected
 }
 
 /// One editorial act, ready to draw in the always-public Editorial history. Both
@@ -507,9 +561,17 @@ public final class NewswireSurfaceModel: ObservableObject {
     /// whenever there is no cursor store, no descriptor, or an offline projection.
     @Published public private(set) var unread: NewswireUnread = .none
 
+    /// Communal replies for the space, grouped under each parent post's entry id
+    /// and kept in the flat, time-sorted order core returns them in. Repopulated
+    /// on every `load()`; empty whenever the projection is unavailable.
+    @Published public private(set) var commentsByParent: [String: [NewswireCommentRow]] = [:]
+
     private let projector: NewswireProjecting
     private let editor: NewswireEditorialActing
     private let authority: NewswireEditorAuthorityChecking
+    /// The communal-reply signer. `nil` in preview/test constructions that never
+    /// exercise replying — the reply affordance is then hidden by `canComment`.
+    private let commenter: NewswireCommenting?
     private var spaceDescriptorEntryID: String
     private let myKeyHex: String
     public let communityName: String
@@ -543,11 +605,13 @@ public final class NewswireSurfaceModel: ObservableObject {
         myKeyHex: String,
         initialDraftKind: EditorialActionKind = .feature,
         descriptorResolver: (() -> String?)? = nil,
-        seenCursor: SeenCursorStore? = nil
+        seenCursor: SeenCursorStore? = nil,
+        commenter: NewswireCommenting? = nil
     ) {
         self.projector = projector
         self.editor = editor
         self.authority = authority
+        self.commenter = commenter
         self.spaceDescriptorEntryID = spaceDescriptorEntryID
         self.communityName = communityName
         self.myKeyHex = myKeyHex
@@ -556,6 +620,58 @@ public final class NewswireSurfaceModel: ObservableObject {
         self.wire = .offlineStale
         self.history = []
         self.draft = EditorialActionDraft(kind: initialDraftKind)
+    }
+
+    /// Whether the surface may OFFER a reply affordance. A reply is communal, so
+    /// this is independent of `isEditor` — it needs only a wired commenter and a
+    /// descriptor to reply within. Core still decides admission at signing time.
+    public var canComment: Bool {
+        commenter != nil && !spaceDescriptorEntryID.isEmpty
+    }
+
+    /// The replies to draw under `postID`, flat and time-sorted as core returned
+    /// them. Empty when the post has none — never `nil`, so the view never branches.
+    public func comments(under postID: String) -> [NewswireCommentRow] {
+        commentsByParent[postID] ?? []
+    }
+
+    /// Signs a communal reply to `parentEntryID` and, on success, reloads so the
+    /// reply appears under its post. An empty draft never reaches core. A core
+    /// refusal preserves nothing to lose (the caller keeps the text). The
+    /// language is fixed to the post model's minimum-valid tag for v1 — the
+    /// compose sheet does not yet ask for one.
+    @discardableResult
+    public func submitComment(
+        parentEntryID: String,
+        body: String,
+        language: String = "en"
+    ) -> NewswireCommentOutcome {
+        guard !body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return .empty
+        }
+        guard let commenter else { return .unavailable }
+        do {
+            let record = try commenter.createNewswireComment(
+                spaceDescriptorEntryID: spaceDescriptorEntryID,
+                parentEntryID: parentEntryID,
+                body: body,
+                language: language
+            )
+            load()
+            return .posted(entryID: record.entryId)
+        } catch {
+            return .rejected
+        }
+    }
+
+    /// Groups core's flat, already-sorted comment list under each parent post's
+    /// entry id, preserving order — the surface never re-sorts.
+    static func groupComments(_ comments: [NewswireProjectedComment]) -> [String: [NewswireCommentRow]] {
+        var byParent: [String: [NewswireCommentRow]] = [:]
+        for comment in comments {
+            byParent[comment.parentEntryId, default: []].append(NewswireCommentRow(comment))
+        }
+        return byParent
     }
 
     /// Whether the surface may OFFER an editorial control — UI visibility only.
@@ -629,6 +745,7 @@ public final class NewswireSurfaceModel: ObservableObject {
             // never invented content, never a silent retry.
             wire = .offlineStale
             history = []
+            commentsByParent = [:]
             unread = .none
             descriptorRecoverable = false
             return
@@ -639,6 +756,7 @@ public final class NewswireSurfaceModel: ObservableObject {
             )
             wire = .from(projection)
             history = projection.editorialHistory.map(EditorialHistoryRow.init)
+            commentsByParent = Self.groupComments(projection.comments)
             // Unread is a per-device read against the seen cursor for THIS
             // descriptor — a pure function of what the projection now shows and
             // how far the reader had caught up. Recomputed here (never mutated by
@@ -653,6 +771,7 @@ public final class NewswireSurfaceModel: ObservableObject {
             // internal error, never invented content.
             wire = .offlineStale
             history = []
+            commentsByParent = [:]
             unread = .none
             descriptorRecoverable = true
         }
@@ -752,6 +871,7 @@ public struct NewswireSurfaceView: View {
     private let onRejoinWithLink: () -> Void
     @Environment(\.colorScheme) private var colorScheme
     @State private var actionTarget: NewswirePostRow?
+    @State private var replyTarget: NewswirePostRow?
 
     public init(
         model: NewswireSurfaceModel,
@@ -799,6 +919,10 @@ public struct NewswireSurfaceView: View {
         .onAppear {
             model.load()
             model.markAllSeen()
+        }
+        .sheet(item: $replyTarget) { target in
+            NewswireCommentComposeSheet(
+                model: model, target: target, onClose: { replyTarget = nil })
         }
         .sheet(item: $actionTarget) { target in
             EditorialActionSheet(model: model, target: target, onClose: { actionTarget = nil })
@@ -944,15 +1068,64 @@ public struct NewswireSurfaceView: View {
             Text(post.author)
                 .font(.riot(.mono, size: 11, relativeTo: .caption2))
                 .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
-            if model.canOfferEditorialControls {
-                Button("Editorial action") { actionTarget = post }
-                    .buttonStyle(.riotSecondary)
-                    .frame(minHeight: 44)
-                    .accessibilityIdentifier("editorial-action-\(post.id)")
+            commentsSection(for: post)
+            HStack(spacing: 8) {
+                if model.canComment {
+                    Button("Reply") { replyTarget = post }
+                        .buttonStyle(.riotSecondary)
+                        .frame(minHeight: 44)
+                        .accessibilityIdentifier("reply-\(post.id)")
+                }
+                if model.canOfferEditorialControls {
+                    Button("Editorial action") { actionTarget = post }
+                        .buttonStyle(.riotSecondary)
+                        .frame(minHeight: 44)
+                        .accessibilityIdentifier("editorial-action-\(post.id)")
+                }
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityIdentifier("wire-post-\(post.id)")
+    }
+
+    /// The communal replies under one post, indented and time-ordered as core
+    /// returned them. Drawn only when the post has replies, so an ordinary post
+    /// gains no empty chrome.
+    @ViewBuilder
+    private func commentsSection(for post: NewswirePostRow) -> some View {
+        let comments = model.comments(under: post.id)
+        if !comments.isEmpty {
+            VStack(alignment: .leading, spacing: 8) {
+                ForEach(comments) { comment in commentRow(comment) }
+            }
+            .padding(.leading, 14)
+            .accessibilityIdentifier("wire-comments-\(post.id)")
+        }
+    }
+
+    @ViewBuilder
+    private func commentRow(_ comment: NewswireCommentRow) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            switch comment.display {
+            case .ordinary:
+                Text(comment.body ?? "")
+                    .font(.riot(.body, size: 15, relativeTo: .body))
+                    .foregroundStyle(RiotTheme.ink(for: colorScheme))
+            case .hiddenInterstitial:
+                Text(NewswireTreatmentCopy.hiddenTitle)
+                    .font(.riot(.body, size: 13, relativeTo: .caption))
+                    .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
+            case .tombstoned:
+                Text(NewswireTreatmentCopy.tombstoneTitle)
+                    .font(.riot(.body, size: 13, relativeTo: .caption))
+                    .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
+            }
+            Text(comment.author)
+                .font(.riot(.mono, size: 11, relativeTo: .caption2))
+                .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityIdentifier("wire-comment-\(comment.id)")
     }
 
     /// The per-row "new" marker — a small pink dot on a post newer than the seen
@@ -1136,5 +1309,74 @@ private struct EditorialActionSheet: View {
                 .font(.riot(.body, size: 15, relativeTo: .body))
                 .accessibilityIdentifier(id)
         }
+    }
+}
+
+/// The communal-reply composer, presented for a single parent post. A reply is
+/// communal — there is no roster gate and no kind picker — so the sheet is just a
+/// body field and a post button. An empty reply is disabled; a core refusal keeps
+/// the sheet open with the words intact.
+private struct NewswireCommentComposeSheet: View {
+    @ObservedObject var model: NewswireSurfaceModel
+    let target: NewswirePostRow
+    let onClose: () -> Void
+    @Environment(\.colorScheme) private var colorScheme
+    @State private var text: String = ""
+    @State private var rejected = false
+
+    private var composer: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                if let headline = target.headline {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("Replying to")
+                            .font(.riot(.mono, size: 11, relativeTo: .caption2))
+                            .textCase(.uppercase)
+                            .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
+                        Text(headline)
+                            .font(.riot(.body, size: 15, relativeTo: .headline))
+                            .foregroundStyle(RiotTheme.ink(for: colorScheme))
+                    }
+                    .accessibilityIdentifier("comment-parent-\(target.id)")
+                }
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Your reply")
+                        .font(.riot(.mono, size: 12, relativeTo: .caption))
+                        .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
+                    TextField("Your reply", text: $text, axis: .vertical)
+                        .font(.riot(.body, size: 15, relativeTo: .body))
+                        .accessibilityIdentifier("comment-body")
+                }
+                Button("Reply") {
+                    switch model.submitComment(parentEntryID: target.id, body: text) {
+                    case .posted:
+                        onClose()
+                    case .rejected, .unavailable:
+                        rejected = true
+                    case .empty:
+                        break
+                    }
+                }
+                .buttonStyle(.riotPrimary)
+                .frame(minHeight: 44)
+                .disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .accessibilityIdentifier("comment-submit")
+                if rejected {
+                    Text("That reply was not accepted. Your words are kept.")
+                        .font(.riot(.body, size: 13, relativeTo: .caption))
+                        .foregroundStyle(RiotTheme.pink(for: colorScheme))
+                        .accessibilityIdentifier("comment-rejected")
+                }
+            }
+            .padding(20)
+        }
+    }
+
+    var body: some View {
+        composer
+            .riotHeader(eyebrow: "Reply", model.communityName)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Close", action: onClose) }
+            }
     }
 }

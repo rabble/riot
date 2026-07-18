@@ -176,7 +176,7 @@ private func unreadProjection(
 ) -> NewswireProjectionView {
     NewswireProjectionView(
         openWire: openWire, frontPage: frontPage, earlier: [],
-        editorialHistory: [], futureQuarantine: [])
+        comments: [], editorialHistory: [], futureQuarantine: [])
 }
 
 @MainActor

@@ -10,6 +10,7 @@ use crate::model::{Certainty, Severity, Urgency};
 pub const SPACE_SCHEMA: &str = "org.riot.newswire.space/1";
 pub const POST_SCHEMA: &str = "org.riot.newswire.post/1";
 pub const ACTION_SCHEMA: &str = "org.riot.newswire.editorial-action/1";
+pub const COMMENT_SCHEMA: &str = "org.riot.newswire.comment/1";
 pub const MAX_NEWSWIRE_PAYLOAD_BYTES: usize = 131_072;
 
 const MAX_SPACE_NAME_BYTES: usize = 256;
@@ -81,6 +82,18 @@ pub struct NewsPostV1 {
     pub source_claims: Vec<String>,
     pub operational_profile: Option<OperationalProfileV1>,
     pub ai_assisted: bool,
+}
+
+/// A communal reply attached to a newswire post. Flat only (v1): `parent_entry_id`
+/// names the POST being replied to; a reply-to-a-reply is dropped by projection.
+/// Communal author with a fresh subspace, exactly like a post — moderated per
+/// content (an editorial tombstone on this entry id), never per person.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewsCommentV1 {
+    pub space_descriptor_entry_id: [u8; 32],
+    pub parent_entry_id: [u8; 32],
+    pub body: String,
+    pub language: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -471,6 +484,87 @@ pub fn decode_editorial_action(input: &[u8]) -> Result<EditorialActionV1, Newswi
     validate_action(&action)?;
     prove_canonical(input, encode_editorial_action(&action)?)?;
     Ok(action)
+}
+
+pub fn encode_news_comment(comment: &NewsCommentV1) -> Result<Vec<u8>, NewswireModelError> {
+    validate_comment(comment)?;
+    encode_bounded(|e| {
+        e.map(5)?;
+        e.u8(0)?.str(COMMENT_SCHEMA)?;
+        e.u8(1)?.bytes(&comment.space_descriptor_entry_id)?;
+        e.u8(2)?.bytes(&comment.parent_entry_id)?;
+        e.u8(3)?.str(&comment.body)?;
+        e.u8(4)?.str(&comment.language)?;
+        Ok(())
+    })
+}
+
+pub fn decode_news_comment(input: &[u8]) -> Result<NewsCommentV1, NewswireModelError> {
+    check_input_size(input)?;
+    let mut d = Decoder::new(input);
+    let pairs = definite_map(&mut d)?;
+    if pairs > 5 {
+        return Err(NewswireModelError::Malformed);
+    }
+
+    let mut schema = None;
+    let mut space_descriptor_entry_id = None;
+    let mut parent_entry_id = None;
+    let mut body = None;
+    let mut language = None;
+    let mut last_key = None;
+
+    for _ in 0..pairs {
+        let key = decode_ordered_key(&mut d, &mut last_key)?;
+        match key {
+            0 => schema = Some(decode_text(&mut d, "schema", 1, 64)?),
+            1 => space_descriptor_entry_id = Some(decode_id32(&mut d)?),
+            2 => parent_entry_id = Some(decode_id32(&mut d)?),
+            3 => {
+                body = Some(decode_text(
+                    &mut d,
+                    "body",
+                    1,
+                    MAX_BODY_OR_CORRECTION_BYTES,
+                )?)
+            }
+            4 => {
+                language = Some(decode_text(
+                    &mut d,
+                    "language",
+                    MIN_LANGUAGE_BYTES,
+                    MAX_LANGUAGE_BYTES,
+                )?)
+            }
+            other => return Err(NewswireModelError::UnknownKey(other)),
+        }
+    }
+    finish_input(&d, input)?;
+    if schema.as_deref() != Some(COMMENT_SCHEMA) {
+        return Err(NewswireModelError::WrongSchema);
+    }
+
+    let comment = NewsCommentV1 {
+        space_descriptor_entry_id: space_descriptor_entry_id
+            .ok_or(NewswireModelError::MissingKey(1))?,
+        parent_entry_id: parent_entry_id.ok_or(NewswireModelError::MissingKey(2))?,
+        body: body.ok_or(NewswireModelError::MissingKey(3))?,
+        language: language.ok_or(NewswireModelError::MissingKey(4))?,
+    };
+    validate_comment(&comment)?;
+    prove_canonical(input, encode_news_comment(&comment)?)?;
+    Ok(comment)
+}
+
+fn validate_comment(comment: &NewsCommentV1) -> Result<(), NewswireModelError> {
+    check_text("body", &comment.body, 1, MAX_BODY_OR_CORRECTION_BYTES)?;
+    check_text(
+        "language",
+        &comment.language,
+        MIN_LANGUAGE_BYTES,
+        MAX_LANGUAGE_BYTES,
+    )?;
+    Ok(())
 }
 
 fn validate_space(descriptor: &SpaceDescriptorV1) -> Result<(), NewswireModelError> {
@@ -964,6 +1058,140 @@ mod tests {
             reason: Some("Clarifies the assembly's decision.".into()),
             correction_text: Some("The assembly reconvenes Friday.".into()),
         }
+    }
+
+    fn comment() -> NewsCommentV1 {
+        NewsCommentV1 {
+            space_descriptor_entry_id: [0x11; 32],
+            parent_entry_id: [0x22; 32],
+            body: "I was there — the square filled by nine.".into(),
+            language: "en".into(),
+        }
+    }
+
+    #[test]
+    fn comment_round_trips_and_enforces_body_and_language_bounds() {
+        let value = comment();
+        let bytes = encode_news_comment(&value).unwrap();
+        assert_eq!(decode_news_comment(&bytes).unwrap(), value);
+
+        let mut valid = comment();
+        valid.body = "b".into();
+        assert!(encode_news_comment(&valid).is_ok());
+        let mut valid = comment();
+        valid.body = "b".repeat(MAX_BODY_OR_CORRECTION_BYTES);
+        assert!(encode_news_comment(&valid).is_ok());
+        let mut valid = comment();
+        valid.language = "l".repeat(MAX_LANGUAGE_BYTES);
+        assert!(encode_news_comment(&valid).is_ok());
+
+        let invalid = [
+            {
+                let mut value = comment();
+                value.body.clear();
+                (value, NewswireModelError::FieldEmpty("body"))
+            },
+            {
+                let mut value = comment();
+                value.body = "  ".into();
+                (value, NewswireModelError::FieldEmpty("body"))
+            },
+            {
+                let mut value = comment();
+                value.body = "b".repeat(MAX_BODY_OR_CORRECTION_BYTES + 1);
+                (value, NewswireModelError::FieldTooLarge("body"))
+            },
+            {
+                let mut value = comment();
+                value.language = "e".into();
+                (value, NewswireModelError::FieldTooSmall("language"))
+            },
+            {
+                let mut value = comment();
+                value.language = "l".repeat(MAX_LANGUAGE_BYTES + 1);
+                (value, NewswireModelError::FieldTooLarge("language"))
+            },
+        ];
+        for (value, expected) in invalid {
+            assert_eq!(encode_news_comment(&value), Err(expected));
+        }
+    }
+
+    #[test]
+    fn comment_canonicality_table_rejects_hostile_encodings() {
+        let canonical = encode_news_comment(&comment()).unwrap();
+
+        // Five pairs, but the final key is 99 instead of 4 — an unknown key is
+        // rejected before the arity guard could ever see it.
+        let unknown = {
+            let mut bytes = Vec::new();
+            let mut encoder = Encoder::new(&mut bytes);
+            encoder.map(5).unwrap();
+            encoder.u8(0).unwrap().str(COMMENT_SCHEMA).unwrap();
+            encoder.u8(1).unwrap().bytes(&[0x11; 32]).unwrap();
+            encoder.u8(2).unwrap().bytes(&[0x22; 32]).unwrap();
+            encoder.u8(3).unwrap().str("body").unwrap();
+            encoder.u8(99).unwrap().str("en").unwrap();
+            bytes
+        };
+
+        let mut trailing = canonical.clone();
+        trailing.push(0);
+
+        let mut indefinite_map = vec![0xbf];
+        indefinite_map.extend_from_slice(&canonical[1..]);
+        indefinite_map.push(0xff);
+
+        let mut widened_key = Vec::with_capacity(canonical.len() + 1);
+        widened_key.push(canonical[0]);
+        widened_key.extend_from_slice(&[0x18, 0x00]); // key 0 as two-byte int
+        widened_key.extend_from_slice(&canonical[2..]);
+
+        let mut wrong_schema = canonical.clone();
+        let schema_position = wrong_schema
+            .windows(COMMENT_SCHEMA.len())
+            .position(|window| window == COMMENT_SCHEMA.as_bytes())
+            .unwrap();
+        wrong_schema[schema_position] = b'x';
+
+        let arity_six = {
+            let mut bytes = Vec::new();
+            let mut encoder = Encoder::new(&mut bytes);
+            encoder.map(6).unwrap();
+            encoder.u8(0).unwrap().str(COMMENT_SCHEMA).unwrap();
+            encoder.u8(1).unwrap().bytes(&[0x11; 32]).unwrap();
+            encoder.u8(2).unwrap().bytes(&[0x22; 32]).unwrap();
+            encoder.u8(3).unwrap().str("body").unwrap();
+            encoder.u8(4).unwrap().str("en").unwrap();
+            encoder.u8(5).unwrap().u8(0).unwrap();
+            bytes
+        };
+
+        let cases = [
+            (unknown, NewswireModelError::UnknownKey(99)),
+            (trailing, NewswireModelError::TrailingBytes),
+            (indefinite_map, NewswireModelError::NonCanonical),
+            (widened_key, NewswireModelError::NonCanonical),
+            (wrong_schema, NewswireModelError::WrongSchema),
+            (arity_six, NewswireModelError::Malformed),
+        ];
+        for (bytes, expected) in cases {
+            assert_eq!(decode_news_comment(&bytes), Err(expected));
+        }
+
+        let missing_body = {
+            let mut bytes = Vec::new();
+            let mut encoder = Encoder::new(&mut bytes);
+            encoder.map(3).unwrap();
+            encoder.u8(0).unwrap().str(COMMENT_SCHEMA).unwrap();
+            encoder.u8(1).unwrap().bytes(&[0x11; 32]).unwrap();
+            encoder.u8(2).unwrap().bytes(&[0x22; 32]).unwrap();
+            bytes
+        };
+        assert_eq!(
+            decode_news_comment(&missing_body),
+            Err(NewswireModelError::MissingKey(3))
+        );
     }
 
     #[test]

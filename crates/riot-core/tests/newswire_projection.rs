@@ -73,6 +73,7 @@ fn no_posts_produces_empty_wire_and_front_page() {
             open_wire: vec![],
             front_page: vec![],
             earlier: vec![],
+            comments: vec![],
             future_quarantine: vec![],
             editorial_history: vec![],
         }

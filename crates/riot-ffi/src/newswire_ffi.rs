@@ -10,12 +10,12 @@
 use std::collections::BTreeMap;
 
 use riot_core::newswire::{
-    build_share_reference, create_signed_editorial_action, create_signed_news_post,
-    create_signed_space_descriptor, decode_share_reference, encode_share_reference,
-    encode_space_descriptor, load_space_descriptor, project_space, AlertProfileV1,
-    EditorialActionKind, EditorialActionV1, NewsPostV1, NewswireShareReferenceV1,
-    OperationalProfileV1, ProjectionClockV1, RequestKind, RequestProfileV1, SignedNewswireRecord,
-    SpaceDescriptorV1,
+    build_share_reference, create_signed_editorial_action, create_signed_news_comment,
+    create_signed_news_post, create_signed_space_descriptor, decode_share_reference,
+    encode_share_reference, encode_space_descriptor, load_space_descriptor, project_space,
+    AlertProfileV1, EditorialActionKind, EditorialActionV1, NewsCommentV1, NewsPostV1,
+    NewswireShareReferenceV1, OperationalProfileV1, ProjectionClockV1, RequestKind,
+    RequestProfileV1, SignedNewswireRecord, SpaceDescriptorV1,
 };
 use riot_core::profile::path::SUBSPACE_ID_BYTES;
 use riot_core::profile::resolver::{key_tag, resolve_display_names, sanitize_display_name};
@@ -163,6 +163,22 @@ pub struct NewswireProjectedPost {
     pub treatment: NewswirePostTreatment,
 }
 
+/// A projected communal reply in the collective view. Carries its
+/// `parent_entry_id` so the client can group this flat list under the post row
+/// it replies to. `body` is `None` on a Hidden or Tombstoned row; identity,
+/// ordering and language survive so the row stays accountable — the same
+/// redaction contract as a post.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct NewswireProjectedComment {
+    pub entry_id: String,
+    pub parent_entry_id: String,
+    pub author: NewswireAuthor,
+    pub tai_j2000_micros: u64,
+    pub body: Option<String>,
+    pub language: String,
+    pub treatment: NewswirePostTreatment,
+}
+
 /// A projected editorial action in the collective history — every signed act an
 /// editor took, active or since retracted.
 #[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
@@ -207,6 +223,10 @@ pub struct NewswireProjectionView {
     pub front_page: Vec<NewswireProjectedPost>,
     /// Posts whose expiry has passed — off the open wire, still readable.
     pub earlier: Vec<NewswireProjectedPost>,
+    /// Communal replies across the space, each carrying its `parent_entry_id`.
+    /// Flat and time-sorted within a parent; the client groups them under the
+    /// post rows. Dangling replies are already dropped by the core projection.
+    pub comments: Vec<NewswireProjectedComment>,
     pub editorial_history: Vec<NewswireProjectedEditorialAction>,
     /// Entry ids of records whose timestamp is implausibly far in the future,
     /// held out of the collective view pending a plausible clock.
@@ -324,6 +344,36 @@ impl MobileProfile {
         })
     }
 
+    /// Creates and signs a communal reply attached to an existing post in the
+    /// named space. Admitted exactly like a post — communal, no editorial role
+    /// required. `parent_entry_id` is the post being replied to; the reply is
+    /// dropped from the projection if that post is not held. The space
+    /// descriptor must already be in the store (created or imported).
+    pub fn create_newswire_comment(
+        &self,
+        space_descriptor_entry_id: String,
+        parent_entry_id: String,
+        body: String,
+        language: String,
+    ) -> Result<NewswireSignedRecord, MobileError> {
+        with_active(&self.inner, |profile| {
+            let descriptor_id = parse_entry_id(&space_descriptor_entry_id)?;
+            let parent_id = parse_entry_id(&parent_entry_id)?;
+            let descriptor =
+                riot_core::newswire::load_space_descriptor(&profile.store, descriptor_id)
+                    .map_err(map_newswire_store_error)?;
+            let comment = NewsCommentV1 {
+                space_descriptor_entry_id: descriptor_id,
+                parent_entry_id: parent_id,
+                body,
+                language,
+            };
+            let signed = create_signed_news_comment(&profile.author, &descriptor, comment)
+                .map_err(map_newswire_error)?;
+            import_signed_newswire(profile, &signed)
+        })
+    }
+
     /// Creates and signs an editorial action (feature, verify, correct, hide,
     /// tombstone, retract) targeting an existing post. Only recognized editors
     /// (in the descriptor's editorial roster) may author actions.
@@ -388,6 +438,11 @@ impl MobileProfile {
                     .earlier
                     .iter()
                     .map(|post| projected_post_view(post, &render))
+                    .collect(),
+                comments: projection
+                    .comments
+                    .iter()
+                    .map(|comment| projected_comment_view(comment, &render))
                     .collect(),
                 editorial_history: projection
                     .editorial_history
@@ -615,6 +670,26 @@ fn projected_post_view(
         ai_assisted: post.ai_assisted,
         verification_ids: post.verification_ids.iter().map(|id| hex(id)).collect(),
         correction_ids: post.correction_ids.iter().map(|id| hex(id)).collect(),
+        treatment,
+    }
+}
+
+fn projected_comment_view(
+    comment: &riot_core::newswire::ProjectedComment,
+    render: &impl Fn(&[u8; SUBSPACE_ID_BYTES]) -> NewswireAuthor,
+) -> NewswireProjectedComment {
+    let treatment = match &comment.treatment {
+        riot_core::newswire::PostTreatment::Ordinary => NewswirePostTreatment::Ordinary,
+        riot_core::newswire::PostTreatment::Hidden { .. } => NewswirePostTreatment::Hidden,
+        riot_core::newswire::PostTreatment::Tombstoned { .. } => NewswirePostTreatment::Tombstoned,
+    };
+    NewswireProjectedComment {
+        entry_id: hex(&comment.entry_id),
+        parent_entry_id: hex(&comment.parent_entry_id),
+        author: render(&comment.author_id),
+        tai_j2000_micros: comment.tai_j2000_micros,
+        body: comment.body.clone(),
+        language: comment.language.clone(),
         treatment,
     }
 }

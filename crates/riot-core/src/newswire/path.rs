@@ -9,12 +9,14 @@ const VERSION: &[u8] = b"v1";
 const DESCRIPTORS: &[u8] = b"descriptors";
 const POSTS: &[u8] = b"posts";
 const ACTIONS: &[u8] = b"actions";
+const COMMENTS: &[u8] = b"comments";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NewswirePathKind {
     Descriptor,
     Post { space_descriptor_entry_id: EntryId },
     EditorialAction { space_descriptor_entry_id: EntryId },
+    Comment { space_descriptor_entry_id: EntryId },
 }
 
 pub fn newswire_path(
@@ -44,6 +46,16 @@ pub fn newswire_path(
             VERSION,
             &space_descriptor_entry_id,
             ACTIONS,
+            &time,
+            payload_digest,
+        ]),
+        NewswirePathKind::Comment {
+            space_descriptor_entry_id,
+        } => Path::from_slices(&[
+            ROOT,
+            VERSION,
+            &space_descriptor_entry_id,
+            COMMENTS,
             &time,
             payload_digest,
         ]),
@@ -81,6 +93,10 @@ pub fn classify_newswire_path(path: &Path) -> Option<(NewswirePathKind, u64, [u8
         NewswirePathKind::EditorialAction {
             space_descriptor_entry_id,
         }
+    } else if family.as_ref() == COMMENTS {
+        NewswirePathKind::Comment {
+            space_descriptor_entry_id,
+        }
     } else {
         return None;
     };
@@ -112,6 +128,9 @@ mod tests {
             NewswirePathKind::EditorialAction {
                 space_descriptor_entry_id: id,
             },
+            NewswirePathKind::Comment {
+                space_descriptor_entry_id: id,
+            },
         ] {
             let path = newswire_path(kind, 0x0102_0304_0506_0708, &digest).unwrap();
             assert_eq!(
@@ -139,6 +158,11 @@ mod tests {
             Path::from_slices(&[ROOT, VERSION, &[0; 32], POSTS, &[0; 8], &[0; 32], b"extra"])
                 .unwrap(),
             Path::from_slices(&[b"other", VERSION, DESCRIPTORS, &[0; 8], &[0; 32]]).unwrap(),
+            Path::from_slices(&[ROOT, VERSION, &[0; 32], COMMENTS, &[0; 7], &[0; 32]]).unwrap(),
+            Path::from_slices(&[
+                ROOT, VERSION, &[0; 32], COMMENTS, &[0; 8], &[0; 32], b"extra",
+            ])
+            .unwrap(),
         ];
         for path in malformed {
             assert_eq!(classify_newswire_path(&path), None, "{path:?}");

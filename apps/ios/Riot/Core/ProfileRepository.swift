@@ -1453,6 +1453,25 @@ public extension RiotProfileRepository {
         ))
     }
 
+    /// Signs a communal reply to `parentEntryID` and imports it through the same
+    /// preview/plan/commit path as a post. A reply is communal — no editorial
+    /// role is required — so core admits it for any member of the space; it is
+    /// dropped from the projection if the parent post is not held.
+    @discardableResult
+    func createNewswireComment(
+        spaceDescriptorEntryID: String,
+        parentEntryID: String,
+        body: String,
+        language: String
+    ) throws -> NewswireSignedRecord {
+        try profile.createNewswireComment(
+            spaceDescriptorEntryId: spaceDescriptorEntryID,
+            parentEntryId: parentEntryID,
+            body: body,
+            language: language
+        )
+    }
+
     /// The collective view of a newswire space: the open wire (all non-expired
     /// posts, newest-first) and the front page (ordinary posts with an active
     /// Feature action). `Hidden`/`Tombstoned` posts arrive with `body == nil`.
@@ -1520,6 +1539,11 @@ extension RiotProfileRepository: NewswireProjecting {}
 /// The live signer for the editorial surface — it hands the action straight to
 /// core, whose roster check (not any UI state) is what actually authorizes it.
 extension RiotProfileRepository: NewswireEditorialActing {}
+
+/// The live signer for a communal reply — it forwards to core, which admits the
+/// reply for any member of the space (no editorial role) and drops it from the
+/// projection if the parent post is not held.
+extension RiotProfileRepository: NewswireCommenting {}
 
 /// The live editor-authority read for the editorial surface — it forwards to
 /// core's descriptor-authenticated roster answer (Unit 4a), the same authority
