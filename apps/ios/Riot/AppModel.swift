@@ -1077,6 +1077,29 @@ public final class RiotAppModel: ObservableObject {
         refreshOrganizerState()
     }
 
+    /// Adds a tool the organizer chose from a file, then refreshes Tools so the
+    /// new tool shows with its "Review" action. Installing turns nothing on — the
+    /// tool is UNTRUSTED until the organizer approves it in `AppReviewSheet`; this
+    /// method never trusts. A rejected file surfaces a plain message rather than
+    /// the silent no-op that let a failed install "just not appear".
+    public func installTool(manifest: Data, bundle: Data) {
+        guard let repository else { return }
+        do {
+            _ = try repository.installApp(manifest: manifest, bundle: bundle)
+            errorMessage = nil
+            refreshApps()
+        } catch {
+            errorMessage = Self.toolImportFailureMessage(error)
+        }
+    }
+
+    /// Why a chosen file could not be added as a tool, in words a person can act
+    /// on. Deliberately not `approvalFailureMessage` — that copy is about the
+    /// organizer trust gate, not a malformed file.
+    static func toolImportFailureMessage(_ error: Error) -> String {
+        "That file couldn’t be added as a tool. Choose the tool’s manifest, then its bundle."
+    }
+
     /// Revokes trust for an app in the current space. Organizer-gated like
     /// `trustApp` (a member turning an app off has the same organizer gate as
     /// turning one on).
