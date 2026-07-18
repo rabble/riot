@@ -624,6 +624,46 @@ private final class FakeNearbyHost: NearbySpaceHost {
 }
 
 extension TransportContractTests {
+    func testNearbyPreparationRunsOnceBeforeSpaceJoinMutation() {
+        var order: [String] = []
+        var callbacksAreValid = true
+        var transportWasStopped = false
+        let gate = CommunityTransitionGate()
+        let token = gate.registerPreparation { preparation in
+            order.append("prepare")
+            callbacksAreValid = false
+            if !preparation.transportMustContinue {
+                transportWasStopped = true
+            }
+        }
+        let space = RiotSpace(namespaceID: "community-b", title: "Community B")
+
+        let result = NearbySpaceJoinPreparation.run(
+            joining: space,
+            prepare: gate.prepareForNearbyAdoption,
+            resume: {
+                order.append("join")
+                XCTAssertFalse(callbacksAreValid, "old shell callbacks are invalid before mutation")
+                XCTAssertFalse(transportWasStopped, "the in-flight adoption wire must remain alive")
+                return "resumed"
+            }
+        )
+
+        XCTAssertEqual(order, ["prepare", "join"])
+        XCTAssertEqual(result, "resumed")
+        gate.unregister(token)
+    }
+
+    func testNearbyPreparationDoesNotRunForSameCommunitySync() {
+        var prepareCount = 0
+        _ = NearbySpaceJoinPreparation.run(
+            joining: nil,
+            prepare: { prepareCount += 1 },
+            resume: { "resumed" }
+        )
+        XCTAssertEqual(prepareCount, 0)
+    }
+
     fileprivate func makePairing(
         over channel: FrameChannel,
         host: NearbySpaceHost,

@@ -15,6 +15,16 @@ final class DirectoryStorefrontTests: XCTestCase {
         RiotSpace(namespaceID: RiotDirectoryRow.hex(spaceID), title: "Berlin Mutual Aid")
     }
 
+    func testCompactToolVocabularyUsesToolsAndCommunities() {
+        XCTAssertEqual(ToolStrings.emptyTitle, "No tools yet")
+        XCTAssertTrue(ToolStrings.intro.lowercased().contains("tool"))
+        XCTAssertTrue(ToolStrings.intro.lowercased().contains("communities"))
+        for value in ToolStrings.userFacingVocabulary {
+            XCTAssertFalse(value.localizedCaseInsensitiveContains("space app"))
+            XCTAssertFalse(value.localizedCaseInsensitiveContains("renderer:"))
+        }
+    }
+
     // MARK: - Matching a listing to what this device actually holds
 
     func testAppIDBytesMatchTheHexKeyOfAHeldApp() {

@@ -51,6 +51,27 @@ public struct PostingCommunity: Equatable, Sendable {
     }
 }
 
+public struct PublishingContext: Equatable, Sendable {
+    public let communityID: String
+    public let identity: PublishingIdentity
+    public let community: PostingCommunity
+
+    public init(
+        communityID: String,
+        identity: PublishingIdentity,
+        community: PostingCommunity
+    ) {
+        self.communityID = communityID
+        self.identity = identity
+        self.community = community
+    }
+}
+
+@MainActor
+public protocol PublishingContextProviding: AnyObject {
+    func currentPublishingContext() -> PublishingContext?
+}
+
 // MARK: - Composer mode
 
 /// What kind of post is being written. The newswire route's freeform default
@@ -59,7 +80,7 @@ public struct PostingCommunity: Equatable, Sendable {
 /// claims, expiry, coarse location). This rule supersedes the navigation
 /// design's blanket "sources + expiry required" for the newswire route
 /// (newswire design §"The default Newswire composer…").
-public enum ComposerMode: Equatable, Sendable, CaseIterable {
+public enum ComposerMode: String, Codable, Equatable, Sendable, CaseIterable {
     case freeform
     case operationalAlert
     case operationalRequest
@@ -75,6 +96,17 @@ public enum ComposerMode: Equatable, Sendable, CaseIterable {
         case .operationalAlert: return "Alert"
         case .operationalRequest: return "Request"
         }
+    }
+}
+
+/// Keeps the compact segmented control for ordinary text sizes while giving
+/// accessibility text sizes room for complete, tappable labels.
+public enum PostModeControlLayout: Equatable, Sendable {
+    case segmented
+    case vertical
+
+    public static func resolve(isAccessibilitySize: Bool) -> Self {
+        isAccessibilitySize ? .vertical : .segmented
     }
 }
 
@@ -132,7 +164,8 @@ public struct PostUpdateRequest: Equatable, Sendable {
 /// "Pending nearby exchange" status (nav Posting step 5 / newswire Publishing
 /// step 6) — committed, not yet exchanged.
 public struct PostedUpdate: Equatable, Sendable {
-    public static let pendingExchangeStatus = "Pending nearby exchange"
+    public static let pendingExchangeStatus =
+        "Saved and signed on this device. Exchange with someone nearby to share it."
 
     public let entryID: String
     public var exchangeStatus: String { Self.pendingExchangeStatus }
@@ -196,24 +229,53 @@ public struct PostDraft: Equatable, Codable, Sendable {
     public var aiAssisted: Bool
     public var sourceClaims: [String]
     public var coarseLocation: String
+    public var mode: ComposerMode
+    public var expiresAtUnixSeconds: UInt64?
 
     public init(
         headline: String,
         body: String,
         aiAssisted: Bool,
         sourceClaims: [String],
-        coarseLocation: String
+        coarseLocation: String,
+        mode: ComposerMode = .freeform,
+        expiresAtUnixSeconds: UInt64? = nil
     ) {
         self.headline = headline
         self.body = body
         self.aiAssisted = aiAssisted
         self.sourceClaims = sourceClaims
         self.coarseLocation = coarseLocation
+        self.mode = mode
+        self.expiresAtUnixSeconds = expiresAtUnixSeconds
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case headline
+        case body
+        case aiAssisted
+        case sourceClaims
+        case coarseLocation
+        case mode
+        case expiresAtUnixSeconds
+    }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        headline = try values.decode(String.self, forKey: .headline)
+        body = try values.decode(String.self, forKey: .body)
+        aiAssisted = try values.decode(Bool.self, forKey: .aiAssisted)
+        sourceClaims = try values.decode([String].self, forKey: .sourceClaims)
+        coarseLocation = try values.decode(String.self, forKey: .coarseLocation)
+        mode = try values.decodeIfPresent(ComposerMode.self, forKey: .mode) ?? .freeform
+        expiresAtUnixSeconds =
+            try values.decodeIfPresent(UInt64.self, forKey: .expiresAtUnixSeconds)
     }
 
     public var isEmpty: Bool {
         headline.isEmpty && body.isEmpty && !aiAssisted
             && sourceClaims.isEmpty && coarseLocation.isEmpty
+            && mode == .freeform && expiresAtUnixSeconds == nil
     }
 }
 
@@ -256,6 +318,8 @@ public final class PostUpdateViewModel: ObservableObject {
     /// avoids (mirrors `AppModel.approvalFailureMessage`).
     public static let writeFailureMessage =
         "Couldn't post your update just now. Your draft is safe — try posting again."
+    public static let publishingContextFailureMessage =
+        "Your posting identity or community changed. Your draft is safe — review it and try again."
 
     /// The primary action's label — outcome language, never mechanism. The view
     /// draws exactly this; a test pins it so it can never regress to
@@ -276,24 +340,30 @@ public final class PostUpdateViewModel: ObservableObject {
     /// Fixed, human failure copy — nil unless the last write failed.
     @Published public private(set) var errorMessage: String?
 
-    public let identity: PublishingIdentity
-    public let community: PostingCommunity
+    @Published public private(set) var identity: PublishingIdentity
+    @Published public private(set) var community: PostingCommunity
 
     private let publisher: NewswirePostPublishing
     private let draftStore: PostDraftStore
     private let now: () -> Date
+    private let expectedCommunityID: String?
+    private weak var contextProvider: (any PublishingContextProviding)?
 
     public init(
         identity: PublishingIdentity,
         community: PostingCommunity,
         publisher: NewswirePostPublishing,
         draftStore: PostDraftStore,
+        expectedCommunityID: String? = nil,
+        contextProvider: (any PublishingContextProviding)? = nil,
         now: @escaping () -> Date = Date.init
     ) {
         self.identity = identity
         self.community = community
         self.publisher = publisher
         self.draftStore = draftStore
+        self.expectedCommunityID = expectedCommunityID
+        self.contextProvider = contextProvider
         self.now = now
         restoreDraft()
     }
@@ -364,7 +434,11 @@ public final class PostUpdateViewModel: ObservableObject {
             body: body,
             aiAssisted: aiAssisted,
             sourceClaims: sourceClaims,
-            coarseLocation: coarseLocation
+            coarseLocation: coarseLocation,
+            mode: mode,
+            expiresAtUnixSeconds: expiresAt.map {
+                UInt64(max(0, $0.timeIntervalSince1970))
+            }
         )
     }
 
@@ -388,15 +462,35 @@ public final class PostUpdateViewModel: ObservableObject {
         aiAssisted = draft.aiAssisted
         sourceClaims = draft.sourceClaims
         coarseLocation = draft.coarseLocation
+        mode = draft.mode
+        expiresAt = draft.expiresAtUnixSeconds.map {
+            Date(timeIntervalSince1970: TimeInterval($0))
+        }
     }
 
     // MARK: Posting
+
+    @discardableResult
+    public func refreshPublishingContext() -> Bool {
+        guard let contextProvider else { return true }
+        guard let context = contextProvider.currentPublishingContext(),
+              expectedCommunityID == nil || context.communityID == expectedCommunityID,
+              !context.community.spaceDescriptorEntryID.isEmpty else {
+            errorMessage = Self.publishingContextFailureMessage
+            return false
+        }
+        identity = context.identity
+        community = context.community
+        errorMessage = nil
+        return true
+    }
 
     /// The one signed write. Guarded so a double-tap or a post after success
     /// cannot sign twice. On success the draft is cleared and the status carries
     /// the pending-exchange result; on failure the draft is preserved untouched
     /// and a fixed message is shown.
     public func post() {
+        guard refreshPublishingContext() else { return }
         guard canPost else { return }
         status = .posting
         errorMessage = nil
@@ -422,6 +516,22 @@ public final class PostUpdateViewModel: ObservableObject {
             status = .editing
             errorMessage = Self.writeFailureMessage
         }
+    }
+
+    /// Starts a genuinely fresh update after a successful local commit. It never
+    /// signs: the previous post is already complete, and this transition only
+    /// clears the next draft's in-memory and persisted state.
+    public func postAnother() {
+        headline = ""
+        body = ""
+        aiAssisted = false
+        mode = .freeform
+        sourceClaims = []
+        coarseLocation = ""
+        expiresAt = nil
+        errorMessage = nil
+        status = .editing
+        draftStore.clear()
     }
 
     private var trimmedSourceClaims: [String] {
@@ -480,51 +590,113 @@ private extension String {
 /// hosts it as a primary Home action. It never says "Compose & sign" — a person
 /// posts an update; the signing is the app's job, not the label's.
 public struct PostUpdateView: View {
+    private enum FocusedField: Hashable {
+        case headline
+        case body
+    }
+
     @ObservedObject var model: PostUpdateViewModel
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(\.scenePhase) private var scenePhase
-    var onPosted: (PostedUpdate) -> Void = { _ in }
+    @FocusState private var focusedField: FocusedField?
+    @State private var draftResetRequest = 0
+    let onPosted: (PostedUpdate) -> Void
+    let onDone: () -> Void
 
-    public init(model: PostUpdateViewModel, onPosted: @escaping (PostedUpdate) -> Void = { _ in }) {
+    public init(
+        model: PostUpdateViewModel,
+        onPosted: @escaping (PostedUpdate) -> Void,
+        onDone: @escaping () -> Void
+    ) {
         self.model = model
         self.onPosted = onPosted
+        self.onDone = onDone
     }
 
     public var body: some View {
-        ScrollView {
-            VStack(spacing: 16) {
-                modeCard
-                draftCard
-                if model.mode.requiresStricterFields { operationalCard }
-                reviewCard
-                if let error = model.errorMessage {
-                    failureCard(error)
+        ScrollViewReader { proxy in
+            ScrollView {
+                VStack(spacing: 16) {
+                    modeCard
+                    draftCard
+                        .id("post-draft")
+                    if model.mode.requiresStricterFields { operationalCard }
+                    reviewCard
+                    Button(isPosted ? "Done" : "Close", action: onDone)
+                        .buttonStyle(.riotSecondary)
+                        .frame(maxWidth: .infinity, minHeight: 44)
+                        .accessibilityIdentifier(isPosted ? "post-done" : "post-close")
+                    if let error = model.errorMessage {
+                        failureCard(error)
+                    }
+                }
+                .padding(20)
+            }
+            .riotHeader(eyebrow: "Share with your community", "Post an update")
+            // A half-written post survives the view leaving the foreground.
+            .onChange(of: scenePhase) { _, phase in
+                if phase != .active { model.persistDraft() }
+            }
+            .onDisappear { model.persistDraft() }
+            .onChange(of: model.status) { _, status in
+                if case let .posted(update) = status {
+                    focusedField = nil
+                    onPosted(update)
                 }
             }
-            .padding(20)
+            .onChange(of: draftResetRequest) { _, _ in
+                proxy.scrollTo("post-draft", anchor: .top)
+                focusedField = .headline
+            }
         }
-        .riotHeader(eyebrow: "Share with your community", "Post an update")
-        // A half-written post survives the view leaving the foreground.
-        .onChange(of: scenePhase) { _, phase in
-            if phase != .active { model.persistDraft() }
-        }
-        .onDisappear { model.persistDraft() }
-        .onChange(of: model.status) { _, status in
-            if case let .posted(update) = status { onPosted(update) }
-        }
+    }
+
+    private var isPosted: Bool {
+        if case .posted = model.status { return true }
+        return false
     }
 
     private var modeCard: some View {
         RiotCard {
             VStack(alignment: .leading, spacing: 10) {
                 eyebrow("What kind of post")
-                Picker("Post kind", selection: $model.mode) {
-                    ForEach(ComposerMode.allCases, id: \.self) { mode in
-                        Text(mode.label).tag(mode)
+                switch PostModeControlLayout.resolve(
+                    isAccessibilitySize: dynamicTypeSize.isAccessibilitySize
+                ) {
+                case .segmented:
+                    Picker("Post kind", selection: $model.mode) {
+                        ForEach(ComposerMode.allCases, id: \.self) { mode in
+                            Text(mode.label)
+                                .tag(mode)
+                                .accessibilityIdentifier(mode.accessibilityIdentifier)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .accessibilityIdentifier("post-mode-picker")
+                case .vertical:
+                    VStack(spacing: 8) {
+                        ForEach(ComposerMode.allCases, id: \.self) { mode in
+                            Button {
+                                model.mode = mode
+                            } label: {
+                                HStack {
+                                    Text(mode.label)
+                                    Spacer()
+                                    if model.mode == mode {
+                                        Image(systemName: "checkmark")
+                                            .accessibilityHidden(true)
+                                    }
+                                }
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                            .buttonStyle(model.mode == mode ? .riotPrimary : .riotSecondary)
+                            .frame(minHeight: 44)
+                            .accessibilityIdentifier(mode.accessibilityIdentifier)
+                            .accessibilityAddTraits(model.mode == mode ? .isSelected : [])
+                        }
                     }
                 }
-                .pickerStyle(.segmented)
-                .accessibilityIdentifier("post-mode-picker")
             }
         }
     }
@@ -579,10 +751,12 @@ public struct PostUpdateView: View {
                 eyebrow("Draft")
                 TextField("Headline", text: $model.headline, axis: .vertical)
                     .font(.riot(.body, size: 17, relativeTo: .body))
+                    .focused($focusedField, equals: .headline)
                     .accessibilityIdentifier("post-headline")
                 TextField("What people need to know", text: $model.body, axis: .vertical)
                     .font(.riot(.body, size: 15, relativeTo: .body))
                     .lineLimit(4...8)
+                    .focused($focusedField, equals: .body)
                     .accessibilityIdentifier("post-body")
                 Toggle("Started with model assistance", isOn: $model.aiAssisted)
                     .tint(RiotTheme.pink(for: colorScheme))
@@ -613,6 +787,7 @@ public struct PostUpdateView: View {
                         .font(.riot(.mono, size: 12, relativeTo: .caption))
                         .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
                         .accessibilityIdentifier("post-pending-exchange")
+                    postAnotherButton
                 } else {
                     if let guidance = model.validationGuidance {
                         Text(guidance)
@@ -627,6 +802,16 @@ public struct PostUpdateView: View {
                 }
             }
         }
+    }
+
+    private var postAnotherButton: some View {
+        Button("Post another") {
+            model.postAnother()
+            draftResetRequest += 1
+        }
+        .buttonStyle(.riotPrimary)
+        .frame(maxWidth: .infinity, minHeight: 44)
+        .accessibilityIdentifier("post-another")
     }
 
     private func failureCard(_ error: String) -> some View {
@@ -644,5 +829,15 @@ public struct PostUpdateView: View {
             .textCase(.uppercase)
             .tracking(1)
             .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
+    }
+}
+
+private extension ComposerMode {
+    var accessibilityIdentifier: String {
+        switch self {
+        case .freeform: return "post-mode-update"
+        case .operationalAlert: return "post-mode-alert"
+        case .operationalRequest: return "post-mode-request"
+        }
     }
 }

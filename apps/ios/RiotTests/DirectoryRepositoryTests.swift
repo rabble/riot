@@ -358,13 +358,13 @@ final class DirectoryRepositoryTests: XCTestCase {
     /// ask the organizer; only a pre-organizer profile is told to start a new one.
     func testTheApproveButtonIsReplacedByAnHonestSentenceWhenItCannotSucceed() {
         let member = AppReviewSheet.unavailableReason(canApprove: false, isLegacyProfile: false)
-        XCTAssertEqual(member, "Only the organizer of this space can turn an app on here.")
+        XCTAssertEqual(member, "Only the organizer of this community can turn a tool on here.")
 
         let legacy = AppReviewSheet.unavailableReason(canApprove: false, isLegacyProfile: true)
         XCTAssertEqual(
             legacy,
-            "This profile was made before spaces had organizers, so it can’t "
-                + "approve apps for this space. Start a new profile to organize one."
+            "This profile was made before communities had organizers, so it can’t "
+                + "approve tools for this community. Start a new profile to organize one."
         )
         XCTAssertNotEqual(member, legacy, "the two cases need opposite advice")
 
@@ -380,12 +380,12 @@ final class DirectoryRepositoryTests: XCTestCase {
     func testApprovalFailuresAreTranslatedOutOfErrorCodes() {
         XCTAssertEqual(
             RiotAppModel.approvalFailureMessage(MobileError.LegacyProfileCannotOrganize),
-            "This profile was made before spaces had organizers, so it can’t "
-                + "approve apps for this space. Start a new profile to organize one."
+            "This profile was made before communities had organizers, so it can’t "
+                + "approve tools for this community. Start a new profile to organize one."
         )
         XCTAssertEqual(
             RiotAppModel.approvalFailureMessage(MobileError.NotSpaceOrganizer),
-            "Only the organizer of this space can turn an app on here."
+            "Only the organizer of this community can turn a tool on here."
         )
     }
 

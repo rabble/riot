@@ -97,7 +97,7 @@ public struct PeerProfileView: View {
                 Text(
                     isConnected
                         ? "You are connected to them right now. What they carry is theirs — nothing runs on your device until you turn it on."
-                        : "Near you now. What they carry is theirs — nothing runs on your device until you turn it on."
+                        : "Near you now. What they carry is theirs — no tool runs on your device until you turn it on."
                 )
                 .font(.riot(.body, size: 14, relativeTo: .callout))
                 .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
@@ -116,7 +116,7 @@ public struct PeerProfileView: View {
         if theirCollection.isEmpty {
             RiotEmptyState(
                 title: "Nothing yet",
-                message: "When you sync, the apps this person carries will show up here for you to review."
+                message: "When you sync, the tools this person carries will show up here for you to review."
             )
         } else {
             ForEach(theirCollection) { row in
@@ -151,7 +151,7 @@ public struct PeerProfileView: View {
         case let .invite(space):
             RiotCard {
                 VStack(alignment: .leading, spacing: 10) {
-                    Text("Bring them into a space you organize. They choose whether to accept — an invite is a door, not a push.")
+                    Text("Bring them into a community you organize. They choose whether to accept — an invite is a door, not a push.")
                         .font(.riot(.body, size: 14, relativeTo: .callout))
                         .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
                     Button("Invite to \(space.title)") { onInvite?(space) }
@@ -189,7 +189,7 @@ public enum PeerCollaboration: Equatable, Sendable {
 
         public var title: String {
             switch self {
-            case .noSpace: "No space to invite them to yet"
+            case .noSpace: "No community to invite them to yet"
             case .alreadyInNetwork: "Already in your network"
             }
         }
@@ -197,9 +197,9 @@ public enum PeerCollaboration: Equatable, Sendable {
         public var message: String {
             switch self {
             case .noSpace:
-                "Create or open a space first, then you can invite the people near you into it."
+                "Create or open a community first, then you can invite the people near you into it."
             case .alreadyInNetwork:
-                "You’ve synced with this person — they’re carrying your space’s latest."
+                "You’ve synced with this person — they’re carrying your community’s latest."
             }
         }
     }

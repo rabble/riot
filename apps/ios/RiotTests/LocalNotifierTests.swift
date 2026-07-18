@@ -160,6 +160,7 @@ final class LocalNotifierTests: XCTestCase {
         let undetermined = SpyScheduler(authorization: .notDetermined)
         let notifier = LocalNotifier(scheduler: undetermined)
         await notifier.requestAuthorizationIfNeeded()
+        await notifier.requestAuthorizationIfNeeded()
         XCTAssertEqual(undetermined.requestCount, 1)
 
         // Already decided → never prompt again.

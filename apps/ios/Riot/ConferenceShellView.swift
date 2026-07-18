@@ -1,6 +1,20 @@
 import SwiftUI
 import RiotKit
 
+/// Narrow, UUID-gated seams for deterministic UI automation. A production
+/// launch cannot activate these flags accidentally because it has no run ID.
+private enum RiotUIAutomationEnvironment {
+    static func isEnabled(_ key: String) -> Bool {
+        let environment = ProcessInfo.processInfo.environment
+        guard
+            environment[key] == "1",
+            let runID = environment["RIOT_UI_TEST_RUN_ID"],
+            UUID(uuidString: runID) != nil
+        else { return false }
+        return true
+    }
+}
+
 /// The community-first shell (Unit 2A). Riot is organized around a community:
 /// once one is selected, a person answers "what is happening here?" (Home) and
 /// "what can we do together?" (Tools / People / Nearby). Before a community
@@ -9,6 +23,15 @@ import RiotKit
 /// screen. The old five debug-shaped surfaces are gone.
 struct ConferenceShellView: View {
     @ObservedObject var model: RiotAppModel
+    private let notifierFactory: @MainActor () -> LocalNotifier
+
+    init(
+        model: RiotAppModel,
+        notifierFactory: @escaping @MainActor () -> LocalNotifier = LocalNotifier.makeDefault
+    ) {
+        self.model = model
+        self.notifierFactory = notifierFactory
+    }
 
     var body: some View {
         Group {
@@ -36,7 +59,12 @@ struct ConferenceShellView: View {
                         onSecondary: { model.select(.nearby) }
                     )
                 case let .community(community):
-                    CommunityShellView(model: model, community: community)
+                    CommunityShellView(
+                        model: model,
+                        community: community,
+                        notifierFactory: notifierFactory
+                    )
+                        .id(community.id)
                 }
             }
         }
@@ -246,15 +274,13 @@ private struct OnboardingSetupView: View {
     @ObservedObject var model: RiotAppModel
     @Environment(\.colorScheme) private var colorScheme
     let onBack: () -> Void
-    @State private var communityName = ""
     @State private var displayName = ""
     @State private var demoFailure: String?
+    @State private var showNameError = false
+    @State private var isCreatePresented = false
     @State private var isJoinPresented = false
     @State private var isFollowSitePresented = false
-
-    private var trimmedCommunity: String {
-        communityName.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
+    @AccessibilityFocusState private var nameErrorFocused: Bool
 
     var body: some View {
         ScrollView {
@@ -262,56 +288,54 @@ private struct OnboardingSetupView: View {
                 RiotCard {
                     VStack(alignment: .leading, spacing: 12) {
                         eyebrow("Set up")
-                        Text("Name yourself, then start or join a community.")
+                        Text("Enter a community")
                             .font(.riot(.body, size: 20, relativeTo: .title3))
                             .foregroundStyle(RiotTheme.ink(for: colorScheme))
                             .accessibilityAddTraits(.isHeader)
 
-                        // Display name — offered inline, skippable.
                         TextField("Your name (optional)", text: $displayName)
                             .font(.riot(.body, size: 17, relativeTo: .body))
                             .accessibilityIdentifier("launch-display-name")
-                        Button("Save name") { model.setDisplayName(displayName.trimmingCharacters(in: .whitespacesAndNewlines)) }
-                            .buttonStyle(.riotSecondary)
-                            .disabled(displayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                            .accessibilityIdentifier("launch-save-display-name")
+                        Text("This self-claimed name is saved on this device and shared with future peers.")
+                            .font(.riot(.body, size: 13, relativeTo: .caption))
+                            .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
+                            .accessibilityIdentifier("launch-display-name-disclosure")
 
-                        Divider().overlay(RiotTheme.line(for: colorScheme))
+                        if showNameError, let nameError = model.nameError {
+                            Text(nameError)
+                                .font(.riot(.body, size: 13, relativeTo: .caption))
+                                .foregroundStyle(RiotTheme.pink(for: colorScheme))
+                                .accessibilityIdentifier("launch-name-error")
+                                .accessibilityFocused($nameErrorFocused)
+                        }
 
-                        TextField("Community name", text: $communityName)
-                            .font(.riot(.body, size: 17, relativeTo: .body))
-                            .accessibilityIdentifier("community-name-field")
-                        Button("Create a community") {
-                            model.createCommunity(
-                                CommunityCreationRequest(
-                                    name: trimmedCommunity,
-                                    // The founding collective's initial editorial
-                                    // selection: the founder, threaded explicitly
-                                    // so the community is not silently pinned to
-                                    // core's single-editor default.
-                                    editorialRoster: model.me.map { [$0.id] } ?? []
-                                )
-                            )
+                        Button("Join with a link or QR") {
+                            perform(.join) { isJoinPresented = true }
                         }
                         .buttonStyle(.riotPrimary)
-                        .disabled(trimmedCommunity.isEmpty)
-                        .accessibilityIdentifier("create-community")
+                        .accessibilityIdentifier("launch-join-by-reference")
 
-                        Button("Join with a link or QR") { isJoinPresented = true }
+                        Button("Create a community") { isCreatePresented = true }
                             .buttonStyle(.riotSecondary)
-                            .accessibilityIdentifier("launch-join-by-reference")
+                            .accessibilityIdentifier("create-community")
 
                         Button("Follow a site") { isFollowSitePresented = true }
                             .buttonStyle(.riotSecondary)
                             .accessibilityIdentifier("launch-follow-site")
 
-                        Button("Find one nearby") { model.select(.nearby) }
-                            .buttonStyle(.riotSecondary)
-                            .accessibilityIdentifier("find-nearby")
+                        Button("Try the Riverside demo") {
+                            perform(.demo, action: loadDemoSpace)
+                        }
+                        .buttonStyle(.riotSecondary)
+                        .accessibilityIdentifier("demo-load")
+
+                        Text(OnboardingPresentation.nearbyNote)
+                            .font(.riot(.body, size: 13, relativeTo: .caption))
+                            .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
+                            .accessibilityIdentifier("launch-nearby-note")
                     }
                 }
 
-                loadDemoCard
                 if let demoFailure {
                     Text(demoFailure)
                         .font(.riot(.body, size: 13, relativeTo: .caption))
@@ -329,32 +353,30 @@ private struct OnboardingSetupView: View {
             }
         }
         .sheet(isPresented: $isJoinPresented) {
-            // The same paste/QR join sheet the in-app chooser uses, so onboarding's
-            // join path is the identical code and core call, never a duplicate.
             JoinByReferenceSheet(model: model, onClose: { isJoinPresented = false })
         }
         .sheet(isPresented: $isFollowSitePresented) {
-            // Follow a composite indymedia site by ticket, and refresh the sites
-            // already followed — the same code the in-app surfaces will reuse.
             FollowSiteSheet(model: model, onClose: { isFollowSitePresented = false })
+        }
+        .sheet(isPresented: $isCreatePresented) {
+            OnboardingCreateCommunitySheet(
+                model: model,
+                displayName: displayName,
+                onClose: { isCreatePresented = false }
+            )
         }
         .onAppear { displayName = model.claimedName ?? "" }
     }
 
-    /// The seeded Riverside space, offered where a person will find it — right
-    /// where they are deciding what to do with no community of their own.
-    private var loadDemoCard: some View {
-        RiotCard {
-            VStack(alignment: .leading, spacing: 12) {
-                eyebrow("Or try it out")
-                Text("Start from a community that already has people in it — alerts, a part-done checklist, and a tool to open.")
-                    .font(.riot(.body, size: 13, relativeTo: .caption))
-                    .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
-                Button("Load the demo space (Riverside Tenants Union)") { loadDemoSpace() }
-                    .buttonStyle(.riotSecondary)
-                    .accessibilityIdentifier("demo-load")
-            }
-        }
+    private func perform(_ exit: OnboardingExit, action: @escaping () -> Void) {
+        let result = OnboardingExitGate.perform(
+            exit,
+            displayName: displayName,
+            saveName: model.setDisplayName,
+            proceed: { _ in action() }
+        )
+        showNameError = result == .nameSaveFailed
+        nameErrorFocused = showNameError
     }
 
     private func loadDemoSpace() {
@@ -376,6 +398,83 @@ private struct OnboardingSetupView: View {
             .textCase(.uppercase)
             .tracking(1)
             .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
+    }
+}
+
+/// First-run creation owns only the community-name field. The optional display
+/// name remains visible on setup and is saved by the same fail-closed exit gate
+/// immediately before creation.
+private struct OnboardingCreateCommunitySheet: View {
+    @ObservedObject var model: RiotAppModel
+    let displayName: String
+    let onClose: () -> Void
+    @Environment(\.colorScheme) private var colorScheme
+    @State private var communityName = ""
+    @State private var showNameError = false
+    @AccessibilityFocusState private var nameErrorFocused: Bool
+
+    private var trimmedCommunity: String {
+        communityName.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                RiotCard {
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("Name your community")
+                            .font(.riot(.body, size: 17, relativeTo: .body))
+                        Text("You’ll be its founding organizer and first editor. You can invite others later.")
+                            .font(.riot(.body, size: 13, relativeTo: .caption))
+                            .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
+                            .accessibilityIdentifier("create-community-founding-disclosure")
+                        TextField("Community name", text: $communityName)
+                            .font(.riot(.body, size: 17, relativeTo: .body))
+                            .accessibilityIdentifier("create-community-name-field")
+                        if showNameError, let nameError = model.nameError {
+                            Text(nameError)
+                                .font(.riot(.body, size: 13, relativeTo: .caption))
+                                .foregroundStyle(RiotTheme.pink(for: colorScheme))
+                                .accessibilityIdentifier("create-community-name-error")
+                                .accessibilityFocused($nameErrorFocused)
+                        }
+                        Button("Create a community", action: create)
+                            .buttonStyle(.riotPrimary)
+                            .disabled(trimmedCommunity.isEmpty)
+                            .accessibilityIdentifier("create-community-confirm")
+                    }
+                }
+                .padding(20)
+            }
+            .riotHeader(eyebrow: "Community", "Create a community")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel", action: onClose)
+                        .accessibilityIdentifier("create-community-cancel")
+                }
+            }
+        }
+    }
+
+    private func create() {
+        let result = OnboardingExitGate.perform(
+            .create,
+            displayName: displayName,
+            saveName: model.setDisplayName,
+            proceed: { _ in
+                model.createCommunity(
+                    CommunityCreationRequest(
+                        name: trimmedCommunity,
+                        editorialRoster: model.me.map { [$0.id] } ?? []
+                    )
+                )
+            }
+        )
+        showNameError = result == .nameSaveFailed
+        nameErrorFocused = showNameError
+        if result == .proceeded, model.community != nil {
+            onClose()
+        }
     }
 }
 
@@ -733,6 +832,9 @@ private struct CommunityShellView: View {
     @State private var focus = ToolFocusRestoration()
 
     @State private var identitySheet: ShellIdentityDestination?
+    @State private var composerPresentation: ComposerPresentationState = .closed
+    @State private var transitionToken: CommunityTransitionGate.Token?
+    @FocusState private var focusedComposerTrigger: ComposerOrigin?
     /// Presented when a community-change is requested with an unsaved draft.
     @State private var confirmingLeave = false
 
@@ -741,16 +843,22 @@ private struct CommunityShellView: View {
     /// foregrounded. There is no server/push in this P2P app — the only trigger is
     /// a LOCAL event (accepted nearby sync, or foregrounding), both of which arrive
     /// through `AppRuntimeView.dataChangedNotification`.
-    @StateObject private var notifier = LocalNotifier.makeDefault()
+    @StateObject private var notifier: LocalNotifier
 
     @Environment(\.colorScheme) private var colorScheme
     /// Foreground vs background — decides system-notify vs in-app banner.
     @Environment(\.scenePhase) private var scenePhase
 
-    init(model: RiotAppModel, community: CommunityContext) {
+    init(
+        model: RiotAppModel,
+        community: CommunityContext,
+        notifierFactory: @MainActor () -> LocalNotifier
+    ) {
         _model = ObservedObject(wrappedValue: model)
         _navigation = ObservedObject(wrappedValue: model.navigation)
         self.community = community
+        let notifier = notifierFactory()
+        _notifier = StateObject(wrappedValue: notifier)
 
         let me = model.me ?? RiotPerson(id: "", displayName: "member", tag: "")
         let publisher: NewswirePostPublishing = model.profileRepository ?? UnavailablePublisher()
@@ -762,7 +870,9 @@ private struct CommunityShellView: View {
             identity: .persistent(me),
             community: postingCommunity,
             publisher: publisher,
-            draftStore: UserDefaultsPostDraftStore(communityID: community.id)
+            draftStore: UserDefaultsPostDraftStore(communityID: community.id),
+            expectedCommunityID: community.id,
+            contextProvider: model
         ))
 
         let projector: NewswireContributorProjecting = model.profileRepository ?? UnavailableProjector()
@@ -803,30 +913,36 @@ private struct CommunityShellView: View {
             // A subtle in-app banner when new content arrives while the app is on
             // screen — the foreground counterpart to a backgrounded system alert.
             .overlay(alignment: .top) { newContentBanner }
-            // Ask for notification permission at a relevant first moment: the reader
-            // already has a community (this shell is on screen), never on cold launch.
-            .task { await notifier.requestAuthorizationIfNeeded() }
             // The one local trigger: an accepted nearby sync or a foregrounding both
             // post this. Recompute unread (reusing the seen-cursor) and let the
             // notifier decide system-notify / banner / nothing.
             .onReceive(NotificationCenter.default.publisher(for: AppRuntimeView.dataChangedNotification)) { _ in
                 handleStoreChanged()
             }
+            .onChange(of: model.me) { _, _ in
+                composer.refreshPublishingContext()
+            }
+            .onChange(of: model.newswireDescriptorEntryID) { _, _ in
+                composer.refreshPublishingContext()
+            }
             // Leaving/switching this community cancels the old coordinator's
             // pairing, transfer, and callbacks before the shell is rebuilt for the
             // next community (nav design §"Nearby security and lifecycle").
-            .onDisappear { nearby.stop() }
+            .onAppear { registerCommunityScope() }
+            .onDisappear { unregisterCommunityScope() }
             .sheet(item: $identitySheet) { destination in
-                switch destination {
-                case .yourProfile:
-                    YourProfileSheet(model: model, onClose: { identitySheet = nil })
-                case .communitySettings:
-                    CommunitySettingsSheet(
-                        model: model,
-                        community: community,
-                        onLeave: requestLeaveCommunity,
-                        onClose: { identitySheet = nil }
-                    )
+                NavigationStack {
+                    switch destination {
+                    case .yourProfile:
+                        YourProfileSheet(model: model, onClose: { identitySheet = nil })
+                    case .communitySettings:
+                        CommunitySettingsSheet(
+                            model: model,
+                            community: community,
+                            onLeave: requestLeaveCommunity,
+                            onClose: { identitySheet = nil }
+                        )
+                    }
                 }
             }
             .confirmationDialog(
@@ -853,6 +969,15 @@ private struct CommunityShellView: View {
             .sheet(isPresented: createCommunityBinding) {
                 CreateCommunitySheet(model: model, onClose: model.dismissCreateCommunity)
             }
+            .sheet(isPresented: composerPresented) {
+                NavigationStack {
+                    PostUpdateView(
+                        model: composer,
+                        onPosted: handlePosted,
+                        onDone: closeComposer
+                    )
+                }
+            }
     }
 
     private var createCommunityBinding: Binding<Bool> {
@@ -860,6 +985,87 @@ private struct CommunityShellView: View {
             get: { model.isCreateCommunityRequested },
             set: { if !$0 { model.dismissCreateCommunity() } }
         )
+    }
+
+    private var composerPresented: Binding<Bool> {
+        Binding(
+            get: {
+                if case .open = composerPresentation { return true }
+                return false
+            },
+            set: { if !$0 { closeComposer() } }
+        )
+    }
+
+    private func openComposer(_ origin: ComposerOrigin) {
+        composer.refreshPublishingContext()
+        composerPresentation.open(origin)
+    }
+
+    private func closeComposer() {
+        let origin = composerPresentation.origin
+        composerPresentation.close()
+        focusedComposerTrigger = origin
+    }
+
+    private func handlePosted(_ update: PostedUpdate) {
+        _ = update
+        newswire.load()
+        people.load()
+        guard !RiotUIAutomationEnvironment.isEnabled(
+            "RIOT_UI_TEST_SUPPRESS_NOTIFICATION_PERMISSION"
+        ) else { return }
+        Task {
+            await Task.yield()
+            await notifier.requestAuthorizationIfNeeded()
+        }
+    }
+
+    private func registerCommunityScope() {
+        guard transitionToken == nil else { return }
+        nearby.onBeforeSpaceJoin = {
+            model.communityTransitionGate.prepareForNearbyAdoption()
+        }
+        transitionToken = model.communityTransitionGate.registerPreparation(
+            { preparation in prepareForCommunityTransition(preparation) },
+            recover: rearmCommunityScopeCallbacks
+        )
+    }
+
+    private func unregisterCommunityScope() {
+        if let transitionToken {
+            model.communityTransitionGate.unregister(transitionToken)
+            self.transitionToken = nil
+        }
+        nearby.onBeforeSpaceJoin = nil
+        nearby.onSpaceJoined = nil
+        nearby.stop()
+    }
+
+    private func prepareForCommunityTransition(_ preparation: CommunityTransitionPreparation) {
+        CommunityDraftTransition.apply(
+            preparation.reason,
+            persist: composer.persistDraft,
+            clear: { UserDefaultsPostDraftStore(communityID: community.id).clear() }
+        )
+        composerPresentation.close()
+        identitySheet = nil
+        confirmingLeave = false
+        runningTool = nil
+        nearby.onBeforeSpaceJoin = nil
+        nearby.onSpaceJoined = nil
+        if !preparation.transportMustContinue {
+            nearby.stop()
+        }
+    }
+
+    private func rearmCommunityScopeCallbacks() {
+        nearby.onBeforeSpaceJoin = {
+            model.communityTransitionGate.prepareForNearbyAdoption()
+        }
+        nearby.onSpaceJoined = {
+            model.refreshFromStore()
+        }
     }
 
     /// A local store-changed event landed (accepted sync or foregrounding).
@@ -1098,15 +1304,18 @@ private struct CommunityShellView: View {
 
             Spacer()
 
-            // Community switcher — icon only. The community name is shown once,
-            // in the designed Home header, so this top row carries just the
-            // controls. Keeps the `community-name` id the nav tests tap.
             Button { model.openCommunityChooser() } label: {
-                Image(systemName: "rectangle.stack")
-                    .font(.system(size: 20))
+                HStack(spacing: 6) {
+                    Text(community.name)
+                        .font(.riot(.body, size: 15, relativeTo: .callout))
+                        .lineLimit(1)
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 12, weight: .semibold))
+                }
             }
             .accessibilityLabel("Your communities")
             .accessibilityIdentifier("community-name")
+            .frame(minHeight: 44)
 
             Button { identitySheet = .communitySettings } label: {
                 Image(systemName: ShellIdentityDestination.communitySettings.systemImage)
@@ -1130,14 +1339,20 @@ private struct CommunityShellView: View {
         case .home:
             HomeRouteView(
                 model: model,
-                composer: composer,
                 newswire: newswire,
+                onPostUpdate: { openComposer(.home) },
+                onPostFirstUpdate: { openComposer(.emptyWire) },
+                composerFocus: $focusedComposerTrigger,
                 onOpenTool: openTool
             )
         case .tools:
             DirectoryView(model: model, onOpen: { openTool($0, fromCardID: "tool-\($0.appIDHex)") })
         case .people:
-            PeopleView(model: people, onPostUpdate: { changeRoute(to: .home) })
+            PeopleView(
+                model: people,
+                onPostUpdate: { openComposer(.people) },
+                composerFocus: $focusedComposerTrigger
+            )
         case .nearby:
             ConnectionStatusView(model: model, nearby: nearby)
         }
@@ -1215,18 +1430,60 @@ private struct CommunityShellView: View {
 /// no-updates recovery, never a blank list.
 private struct HomeRouteView: View {
     @ObservedObject var model: RiotAppModel
-    @ObservedObject var composer: PostUpdateViewModel
     @ObservedObject var newswire: NewswireSurfaceModel
+    let onPostUpdate: () -> Void
+    let onPostFirstUpdate: () -> Void
+    let composerFocus: FocusState<ComposerOrigin?>.Binding
     let onOpenTool: (RiotSpaceApp, String) -> Void
+    let alertClock: ActiveAlertsClock
     @Environment(\.colorScheme) private var colorScheme
     @State private var showRejoinSheet = false
+    @State private var now: Date
+
+    init(
+        model: RiotAppModel,
+        newswire: NewswireSurfaceModel,
+        onPostUpdate: @escaping () -> Void,
+        onPostFirstUpdate: @escaping () -> Void,
+        composerFocus: FocusState<ComposerOrigin?>.Binding,
+        onOpenTool: @escaping (RiotSpaceApp, String) -> Void,
+        alertClock: ActiveAlertsClock = .live
+    ) {
+        _model = ObservedObject(wrappedValue: model)
+        _newswire = ObservedObject(wrappedValue: newswire)
+        self.onPostUpdate = onPostUpdate
+        self.onPostFirstUpdate = onPostFirstUpdate
+        self.composerFocus = composerFocus
+        self.onOpenTool = onOpenTool
+        self.alertClock = alertClock
+        _now = State(initialValue: alertClock.now())
+    }
 
     private var shortcuts: [RiotSpaceApp] { HomeShortcuts.deterministic(from: model.apps) }
+    private var activeAlerts: ActiveAlertsPresentation {
+        ActiveAlertsPresentation.from(
+            model.entries,
+            activeNamespaceID: model.space?.namespaceID ?? "",
+            now: now
+        )
+    }
+    private var sections: [HomePresentation.Section] {
+        HomePresentation.sections(
+            wireHasPosts: newswire.hasPosts,
+            alerts: activeAlerts,
+            hasTools: !shortcuts.isEmpty
+        )
+    }
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
-                shortcutsCard
+                if sections.contains(.activeAlerts) {
+                    AlertsListView(
+                        presentation: activeAlerts,
+                        displayName: { model.rendered(for: $0) }
+                    )
+                }
                 // The collective newswire — Front page, Open wire, and the
                 // always-public Editorial history — is the answer to "what is
                 // happening here?" It reads the same core projection every platform
@@ -1234,17 +1491,23 @@ private struct HomeRouteView: View {
                 // The offlineStale forward paths lead somewhere real: rejoin with a
                 // link (Unit 1's sheet) or sync with a peer (the existing Nearby
                 // screen) — never a dead no-op button and never a silent retry loop.
+                if sections.contains(.post) {
+                    Button("Post an update", action: onPostUpdate)
+                        .buttonStyle(.riotPrimary)
+                        .frame(minHeight: 44)
+                        .focused(composerFocus, equals: .home)
+                        .accessibilityIdentifier("home-post-update")
+                }
                 NewswireSurfaceView(
                     model: newswire,
+                    onPostUpdate: onPostFirstUpdate,
                     onSyncWithPeer: { model.select(.nearby) },
-                    onRejoinWithLink: { showRejoinSheet = true }
+                    onRejoinWithLink: { showRejoinSheet = true },
+                    composerFocus: composerFocus
                 )
-                // The single Home entry point for this community's signed alerts —
-                // the only tappable alert surface (the Nearby count is a diagnostic).
-                AlertsListView(entries: model.entries,
-                               activeNamespaceID: model.space?.namespaceID ?? "",
-                               displayName: { model.rendered(for: $0) })
-                PostUpdateView(model: composer)
+                if sections.contains(.tools) {
+                    shortcutsCard
+                }
             }
             .padding(20)
         }
@@ -1254,6 +1517,15 @@ private struct HomeRouteView: View {
         .riotHeader(eyebrow: "Community", model.space?.title ?? "Home")
         .sheet(isPresented: $showRejoinSheet) {
             JoinByReferenceSheet(model: model, onClose: { showRejoinSheet = false })
+        }
+        .task(id: activeAlerts.nextExpiryDate) {
+            guard let expiry = activeAlerts.nextExpiryDate else { return }
+            do {
+                now = try await ActiveAlertsExpiryRefresh.wait(
+                    until: expiry,
+                    clock: alertClock
+                )
+            } catch {}
         }
     }
 
@@ -1400,6 +1672,9 @@ private struct YourProfileSheet: View {
                     .buttonStyle(.riotPrimary)
                     .disabled(trimmed.isEmpty)
                     .accessibilityIdentifier("save-my-name")
+                Button("Done", action: onClose)
+                    .buttonStyle(.riotSecondary)
+                    .accessibilityIdentifier("your-profile-done")
                 if let nameError = model.nameError {
                     Text(nameError)
                         .font(.riot(.body, size: 13, relativeTo: .caption))
@@ -1410,9 +1685,6 @@ private struct YourProfileSheet: View {
             .padding(20)
         }
         .riotHeader(eyebrow: "You", ShellIdentityDestination.yourProfile.label)
-        .toolbar {
-            ToolbarItem(placement: .confirmationAction) { Button("Done", action: onClose) }
-        }
         .onAppear { name = model.claimedName ?? "" }
     }
 }
@@ -1459,13 +1731,14 @@ private struct CommunitySettingsSheet: View {
                 Button("Leave this community", role: .destructive, action: onLeave)
                     .buttonStyle(.riotSecondary)
                     .accessibilityIdentifier("leave-community")
+
+                Button("Done", action: onClose)
+                    .buttonStyle(.riotSecondary)
+                    .accessibilityIdentifier("community-settings-done")
             }
             .padding(20)
         }
         .riotHeader(eyebrow: "Community", ShellIdentityDestination.communitySettings.label)
-        .toolbar {
-            ToolbarItem(placement: .confirmationAction) { Button("Done", action: onClose) }
-        }
         .sheet(isPresented: $isSharePresented) {
             ShareCommunitySheet(
                 community: community,
@@ -1550,6 +1823,9 @@ private struct ConnectionStatusView: View {
     }
 
     private func startDiscoveryWhenReady() {
+        guard !RiotUIAutomationEnvironment.isEnabled(
+            "RIOT_UI_TEST_DISABLE_NEARBY_AUTOSTART"
+        ) else { return }
         guard model.isProfileOpen, nearby.state == .idle else { return }
         nearby.findNearby(host: model.nearbySpaceHost)
     }
@@ -1564,12 +1840,12 @@ private struct ConnectionStatusView: View {
         case .connecting: "Connecting…"
         case .gettingLatest: "Getting the latest from them…"
         case let .preview(count, _):
-            "\(count) new thing\(count == 1 ? "" : "s") to bring over — review them below"
+            "\(count) offered update\(count == 1 ? "" : "s") to review"
         case .caughtUp:
             if let count = nearby.itemsBroughtOver, count > 0 {
-                "Synced · \(count) new thing\(count == 1 ? "" : "s") arrived"
+                "Synced · \(count) update\(count == 1 ? "" : "s") added"
             } else {
-                "Synced · you both have the same things"
+                "Synced · you both have the same updates"
             }
         case .alreadyCurrent: "Synced · nothing new to bring over"
         case .differentSpace: "They are in a different space, so nothing was shared"
@@ -1577,6 +1853,11 @@ private struct ConnectionStatusView: View {
         case .failed: "The connection failed — try again"
         default: "Connected"
         }
+    }
+
+    private var previewCount: Int? {
+        guard case let .preview(count, _) = nearby.state else { return nil }
+        return Int(count)
     }
 
     /// The §4.7 "Bluetooth/local-network denied" recovery: what still works
@@ -1638,7 +1919,7 @@ private struct ConnectionStatusView: View {
                 connectedCard
                 RiotCard {
                     VStack(alignment: .leading, spacing: 14) {
-                        Text("Connections stay between devices near you — over Bluetooth, or the local network you are both on. Riot never sends this session over the internet.")
+                        Text(NearbyStrings.deviceSummary)
                             .font(.riot(.body, size: 15, relativeTo: .callout))
                             .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
                         if nearby.state == .idle || nearby.state == .failed {
@@ -1646,22 +1927,32 @@ private struct ConnectionStatusView: View {
                                 nearby.findNearby(host: model.nearbySpaceHost)
                             }
                             .buttonStyle(.riotPrimary)
+                            .frame(minHeight: 44)
+                            .accessibilityIdentifier("nearby-find-devices")
                         } else {
-                            Button("Stop looking", role: .cancel) { nearby.stop() }
+                            Button(NearbyStrings.stopLabel, role: .cancel) { nearby.stop() }
                                 .buttonStyle(.riotSecondary)
+                                .frame(minHeight: 44)
+                                .accessibilityIdentifier("nearby-stop-looking")
                         }
-                        if case .preview = nearby.state {
-                            Button("Add them") { nearby.addPreviewedContent() }
+                        if let previewCount {
+                            Button(NearbyStrings.addUpdates(previewCount)) {
+                                nearby.addPreviewedContent()
+                            }
                                 .buttonStyle(.riotPrimary)
+                                .frame(minHeight: 44)
+                                .accessibilityIdentifier("nearby-add-updates")
                             Button("Not now", role: .cancel) { nearby.rejectPreviewedContent() }
                                 .buttonStyle(.riotSecondary)
+                                .frame(minHeight: 44)
+                                .accessibilityIdentifier("nearby-reject-updates")
                         }
                     }
                 }
                 if !nearby.phones.isEmpty {
                     RiotCard {
                         VStack(alignment: .leading, spacing: 10) {
-                            Text("Devices")
+                            Text(NearbyStrings.devicesTitle)
                                 .font(.riot(.mono, size: 12, relativeTo: .caption))
                                 .textCase(.uppercase)
                                 .tracking(1)
@@ -1677,12 +1968,12 @@ private struct ConnectionStatusView: View {
                 if !syncedPeople.isEmpty {
                     RiotCard {
                         VStack(alignment: .leading, spacing: 10) {
-                            Text("People")
+                            Text(NearbyStrings.syncedPeopleTitle)
                                 .font(.riot(.mono, size: 12, relativeTo: .caption))
                                 .textCase(.uppercase)
                                 .tracking(1)
                                 .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
-                            Text("People you have synced with. Tap to see who they are and what they carry.")
+                            Text("Open a person to review what they carry.")
                                 .font(.riot(.body, size: 13, relativeTo: .caption))
                                 .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
                             ForEach(syncedPeople) { person in
@@ -1691,17 +1982,6 @@ private struct ConnectionStatusView: View {
                                     .accessibilityIdentifier("person-\(person.id)")
                             }
                         }
-                    }
-                }
-                RiotCard {
-                    VStack(alignment: .leading, spacing: 10) {
-                        Text("On this device")
-                            .font(.riot(.mono, size: 12, relativeTo: .caption))
-                            .textCase(.uppercase)
-                            .tracking(1)
-                            .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
-                        LabeledContent("Alerts on this device", value: "\(model.entries.count)")
-                        LabeledContent("Renderer", value: "incident-board/1")
                     }
                 }
             }
@@ -1730,6 +2010,9 @@ private struct ConnectionStatusView: View {
         }
         .onAppear {
             nearby.onSpaceJoined = { model.refreshFromStore() }
+            nearby.onBeforeSpaceJoin = {
+                model.communityTransitionGate.prepareForNearbyAdoption()
+            }
             startDiscoveryWhenReady()
         }
         .onChange(of: model.isProfileOpen) { _, _ in startDiscoveryWhenReady() }
