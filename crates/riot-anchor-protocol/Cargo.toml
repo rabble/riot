@@ -15,6 +15,13 @@ license = "AGPL-3.0-or-later"
 riot-core = { path = "../riot-core", default-features = false }
 minicbor = { workspace = true }
 blake3 = { workspace = true }
+# Ed25519 root-signature verification for `PublicSiteTicketV2Core` admission.
+# This is the SAME primitive the rest of the workspace (riot-core, willow25)
+# already uses, and it is pure-Rust (wasm-safe), so it does not violate the
+# crate's dependency-neutrality contract. It DOES add a Cargo.lock dependency
+# edge, which changes the lockfile the `validate-contracts` xtask pins — the
+# manifest sha256 must be refreshed when this lands.
+ed25519-dalek = { workspace = true }
 
 [dev-dependencies]
 serde_json = { workspace = true }

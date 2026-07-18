@@ -51,3 +51,82 @@ root-signed-ticket-core-envelope-v2 = [2, any, signature-64]
 
 ; ControlDigestBodyV1 = canonical_cbor([1, operation_kind, semantic_body])
 control-digest-body-v1 = [1, tstr, any]
+
+; ---------------------------------------------------------------------------
+; WU-003B — authority records: tickets, listings, delegate grants.
+; Layout: docs/research/2026-07-18-wu003b-record-layout-proposal.md, with the
+; three OWNER-LOCKED wire decisions applied.
+; ---------------------------------------------------------------------------
+
+; A 32-byte id / digest / key.
+bytes-32 = bstr .size 32
+
+; TransportFloor: closed, ORDERED enum, wire = snake_case tstr. The colon form
+; `require:none` / `require:arti` from the design prose maps to these tokens
+; (a colon is not a valid snake_case discriminant). require_none < require_arti.
+transport-floor = "require_none" / "require_arti"
+
+; PublicSiteTicketV2Core (OWNER-LOCKED decision 1: IMPLICIT schema/version — NO
+; leading version field; version is carried by envelope tag 2 + signing domain
+; "riot/public-site-ticket/v2"). Canonical core <= 768 bytes. min_sync_version
+; MUST be 2. Signed by the O root:
+;   Sign("riot/public-site-ticket/v2" || canonical_cbor(core))
+public-site-ticket-v2-core = [
+  bytes-32,          ; root_id (full O root key; also the signer)
+  bytes-32,          ; o_namespace_id
+  bytes-32,          ; c_namespace_id
+  bytes-32,          ; w_namespace_id
+  bytes-32,          ; manifest_digest
+  uint,              ; manifest_version
+  uint,              ; min_sync_version (== 2)
+  transport-floor,   ; manifest_required_transport
+  transport-floor,   ; transport_floor (>= manifest_required_transport)
+  uint,              ; transport_epoch (u32)
+  uint,              ; issued_unix_seconds
+  uint,              ; expiry_unix_seconds (inclusive; <= issued + 90 days)
+]
+
+; RootSignedTicketCoreEnvelopeV2 = [2, <core embedded as a CBOR value>, sig-64].
+; root_signed_ticket_core_digest =
+;   digest_v1("riot/public-site-ticket-signed-core/v2", canonical(envelope)).
+root-signed-ticket-core-envelope-v2 = [2, public-site-ticket-v2-core, signature-64]
+
+; CommunityListingV1 — payload at O:/directory/listing. Explicit schema tstr.
+; OWNER-LOCKED decision 2: ticket_core_bytes = canonical
+; RootSignedTicketCoreEnvelopeV2 bytes (bstr), so the O-root signature is
+; independently re-verifiable from the listing alone.
+; OWNER-LOCKED decision 3: topic_tags and languages are SORTED CANONICAL SETS.
+community-listing-v1 = [
+  "riot/community-listing/1",   ; schema
+  bytes-32,          ; root_id
+  bytes-32,          ; o_namespace_id
+  bytes-32,          ; c_namespace_id
+  bytes-32,          ; w_namespace_id
+  bytes-32,          ; manifest_digest
+  uint,              ; manifest_version
+  bstr,              ; ticket_core_bytes (canonical root-signed-ticket-core envelope)
+  uint,              ; listing_epoch (u32)
+  uint,              ; listing_revision (u32)
+  bool,              ; listed (false = unlisting tombstone)
+  tstr,              ; title (<= 120 UTF-8 bytes)
+  tstr,              ; summary (<= 512 bytes)
+  [* (bstr .size (0..32))],   ; topic_tags: sorted set, <= 8 entries
+  [* (tstr)],                 ; languages: sorted set, <= 8 BCP-47 tags <= 35 bytes
+  null / (bstr .size (0..16)),; region (optional coarse region)
+  uint,              ; issued_unix_seconds
+  uint,              ; expiry_unix_seconds (inclusive)
+]
+
+; ListingDelegateGrantV1 — root-signed, IMPLICIT version (signing domain carries
+; it). Signed by the O root:
+;   Sign("riot/listing-delegate-grant/v1" || canonical_cbor(grant))
+; terminal_capability_digest =
+;   digest_v1("riot/listing-terminal-capability/v1", terminal_capability_canonical).
+listing-delegate-grant-v1 = [
+  bytes-32,          ; root_id (the O root)
+  bytes-32,          ; delegate_key (listing key subspace)
+  bytes-32,          ; terminal_capability_digest
+  uint,              ; listing_epoch (u32; exactly one)
+  uint,              ; issued_unix_seconds
+  uint,              ; expiry_unix_seconds (cannot outlive the Meadowcap range)
+]
