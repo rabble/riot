@@ -1,7 +1,7 @@
 # Public Community Anchor Network Design
 
 Date: 2026-07-18
-Status: Design review rounds 1-11 revised; pending round 12
+Status: Design review rounds 1-12 revised; pending round 13
 Scope: Owner-rooted composite public sites, discovery, hosting, web mirroring,
 and opportunistic internet sync
 
@@ -112,6 +112,10 @@ Round eleven closed structured response recovery by giving every refusal code
 one canonical details payload and making `GetOperation` embed the original
 operation kind and exact prepared payload or terminal outcome without
 alternate nesting.
+
+Round twelve fixed empty-feed and first-checkpoint sentinels, closed every
+`sync/2` refusal variant, and specified the observable Prepare/Commit/restart/
+expiry/unknown-operation lifecycle for `GetOperation` and checkpoint recovery.
 
 ## Product Decisions
 
@@ -509,7 +513,7 @@ success payloads are:
 | `prepare_replica` | `[1, operation_id, base_site_generation, ordered_namespace_host_plan, ordered_namespace_tokens, ordered_retained_snapshot_digests, sync_version, effective_operation_limits, operation_expiry]` |
 | `pull_directory_feed` | `[1, ["page", inclusions, floor_sequence, head_sequence, head_digest, done]]` or `[1, ["checkpoint_required", checkpoint, snapshot_cursor]]` |
 | `pull_directory_snapshot` | `[1, checkpoint, optional_snapshot_record, optional_next_cursor, done]` |
-| `get_operation` | `[1, operation_id, original_operation_kind, ["claimed"] \| ["prepared", operation_expiry, original_success_payload] \| ["terminal", original_outcome]]` |
+| `get_operation` | `[1, operation_id, originating_prepare_kind, ["prepared", operation_expiry, prepare_success_payload] \| ["terminal", terminal_operation_outcome]]` |
 
 `effective_operation_limits` is a sorted array of `[limit_id,
 effective_value]` drawn byte-identically from the described limit profile. It
@@ -519,15 +523,35 @@ use their already specified semantic order. A retained idempotent result stores
 and replays the complete canonical `ControlResponseV1`, not an
 implementation-private projection.
 
-For `get_operation`, `original_operation_kind` is the exact kind of the
-queried operation, never `get_operation`. `original_success_payload` is the
-embedded canonical success payload for that kind—not a CBOR byte string and
-not a nested `ControlResponseV1`. `original_outcome` is exactly the original
-embedded `["success", success_payload]` or
-`["refused", ControlRefusal]` sum. The operation row persists kind plus the
-canonical prepared success payload or terminal outcome; replay constructs only
-the one wrapper shown above. Alternate full-response nesting, outcome omission,
-or byte-string wrapping is rejected.
+For `get_operation`, `originating_prepare_kind` is exactly `prepare_host` or
+`prepare_replica`. `prepare_success_payload` is the embedded canonical success
+payload originally returned by that Prepare—not a CBOR byte string and not a
+nested `ControlResponseV1`. `terminal_operation_outcome` is exactly one of
+`["committed", hosting_receipt]` or `["refused", ControlRefusal]`; it is an
+operation-lifecycle outcome, not a nested Commit response. The operation row
+persists its originating kind plus the canonical prepared payload or terminal
+outcome; replay constructs only the one wrapper shown above. Alternate
+full-response nesting, Commit-outcome nesting, outcome omission, or byte-string
+wrapping is rejected.
+
+The observable lifecycle is fixed:
+
+| Event | Operation row / `GetOperation` result |
+| --- | --- |
+| Prepare key claimed before operation creation | no public operation ID; `GetOperation` is impossible |
+| Prepare transaction commits and returns an ID | `prepared` with the byte-identical embedded Prepare success payload |
+| namespace sync is in progress or complete but Commit has not committed | unchanged `prepared` |
+| Commit key is claimed but its transaction has not committed | unchanged `prepared`; Commit exact replay resolves its own idempotency row |
+| Commit transaction succeeds | atomically `terminal ["committed", hosting_receipt]` |
+| Commit or peer/session recovery terminally refuses the operation | atomically `terminal ["refused", ControlRefusal]` |
+| process restarts | recovered persisted `prepared`, except peer-bound replicas become terminal `peer_context_changed` before readiness; terminal remains byte-identical |
+| operation deadline passes before commit | terminal `operation_expired`; staging and tokens are invalidated in the same transaction |
+| retained terminal/result window later expires | operation row is deleted; query returns `operation_not_found` |
+| unknown random operation ID | `operation_not_found`, with no additional existence metadata |
+
+Checkpoint/snapshot pull with an unknown, reclaimed, missing, or digest-invalid
+checkpoint returns `checkpoint_unavailable` with the exact reason above. It
+never returns an empty success page.
 
 Namespace tuples always appear in `O`, `C`, `W` order. Every `operation_id`,
 idempotency key, root, namespace ID, digest, nonce, key, signature, cursor, and
@@ -1005,8 +1029,42 @@ EntriesChunk {
 PageComplete { phase, page_digest }
 DirectionComplete { phase, sender_snapshot_digest }
 NamespaceComplete { mode, final_snapshot_digest }
-Refuse { code, subject, retryable, retry_after_seconds }
+Refuse { code, retryable, retry_after_seconds: optional, details }
 ```
+
+`Refuse.code` is a closed lowercase textual enum, and `details` must match
+exactly:
+
+| Sync refusal code | Exact `details` |
+| --- | --- |
+| `unsupported_version` | `["version", supported_versions]` |
+| `invalid_ticket` | `["ticket", reason]`, where reason is `signature \| root \| structure` |
+| `expired_ticket` | `["ticket_expiry", expires_at, observed_at]` |
+| `transport_mismatch` | `["transport", required_mode, observed_mode]` |
+| `namespace_not_member` | `["namespace", namespace_id]` |
+| `manifest_mismatch` | `["manifest", expected_digest, observed_digest]` |
+| `invalid_mode` | `["mode", observed_mode]` |
+| `operation_not_found` | `["operation", operation_id]` |
+| `invalid_namespace_token` | `["namespace_token", namespace_id]` |
+| `operation_expired` | `["operation_expiry", operation_id, expires_at, observed_at]` |
+| `unexpected_frame` | `["frame", phase, expected_frame_names, observed_frame_name]` |
+| `cursor_regression` | `["cursor", after_exclusive, observed_first_id]` |
+| `page_mismatch` | `["page", expected_page_digest, observed_page_digest]` |
+| `snapshot_mismatch` | `["snapshot", expected_snapshot_digest, observed_snapshot_digest]` |
+| `request_mismatch` | `["request", request_id]` |
+| `chunk_mismatch` | `["chunk", request_id, expected_index, observed_index]` |
+| `frame_oversize` | `["encoded_size", observed_bytes, maximum_bytes]` |
+| `admission_failed` | `["admission", subject]`, where subject is `authority \| bundle \| entry` |
+| `quota_exceeded` | `["quota", limit_id, effective_value, observed_value]` |
+| `busy` | `["capacity", limit_id]` |
+| `peer_context_changed` | `["peer_context", side, prior_descriptor_digest, optional_latest_descriptor_digest, reason]` |
+
+The transport and peer-context nested enums are the same closed values as
+`ControlRefusal`; `phase`, frame names, and mode are the exact closed textual
+discriminants declared by the `sync/2` FSM. Only `busy` is retryable and
+requires `retry_after_seconds`; every structural, authority, cursor, digest,
+token, expiry, or peer-context refusal is terminal for that session. Unknown
+code/detail pairings close the session without applying staged state.
 
 `page_digest` uses the protocol identity table above. For each direction the
 inventory sender and receiver follow this exact FSM:
@@ -1611,6 +1669,9 @@ allowed:
 | `attestation_consumed` | `["attestation", replica_source_attestation_digest]` |
 | `already_unlisted` | `["listing_state", "already_unlisted"]` |
 | `removal_replay_window` | `["relist_window", earliest_retry_at]` |
+| `operation_not_found` | `["operation", operation_id]` |
+| `operation_expired` | `["operation_expiry", operation_id, expires_at]` |
+| `checkpoint_unavailable` | `["checkpoint", checkpoint_digest, reason]` |
 | `peer_context_changed` | `["peer_context", side, prior_descriptor_digest, optional_latest_descriptor_digest, reason]` |
 | `busy` | `["capacity", limit_id]` |
 | `peer_auth_failed` | `["peer_auth", stage]` |
@@ -1622,6 +1683,8 @@ require_arti | unsupported_other`; storage `required_class` is
 `profile_total | site_logical_bytes | entries_per_namespace | item_payload |
 bundle`; and peer-auth `stage` is `descriptor_exchange | hello_validation |
 channel_binding | initiator_proof | responder_proof | configured_rule`.
+Checkpoint-unavailable `reason` is `unknown | reclaimed | snapshot_missing |
+digest_mismatch`.
 Unknown code/detail or enum pairings fail decoding. Error text and
 implementation diagnostics stay outside the wire result.
 `removal_replay_window`, `busy`, and every overload result require
@@ -2604,6 +2667,18 @@ anchors. Gossip improves reach but is not required.
 
 Each anchor owns an append-only signed public directory feed. Its canonical
 record is:
+
+```text
+ZERO_DIGEST_32 =
+  h'0000000000000000000000000000000000000000000000000000000000000000'
+```
+
+The empty feed is exactly `floor_sequence = 0`, `head_sequence = 0`, and
+`head_digest = ZERO_DIGEST_32`. The first inclusion has `sequence = 1` and
+`previous_inclusion_digest = ZERO_DIGEST_32`. The first checkpoint and every
+`CheckpointWorkV1` planning it use
+`previous_checkpoint_digest = ZERO_DIGEST_32`. No real BLAKE3 digest is treated
+as a sentinel, and an all-zero value is illegal at later links.
 
 ```text
 DirectoryInclusionBodyV1 {
@@ -3729,6 +3804,8 @@ REFACTOR:
 RED:
 
 - responder cannot route a namespace before constructing a session;
+- a `sync/2` refusal uses an unknown code/detail pair or disagrees on
+  retryability;
 - 257+ IDs cannot reconcile in bounded pages;
 - one 64-ID request exceeds 8 MiB or chunk indexes fork;
 - cursor overlap/digest change is not rejected;
@@ -3960,7 +4037,14 @@ Tests explicitly cover:
 - eviction during a read snapshot;
 - sync disconnect between commit and receipt;
 - `GetOperation` after restart;
+- `GetOperation` during Prepare, sync, Commit claim, committed/refused
+  terminal, expiry, retained-result deletion, and random unknown ID, with every
+  alternate nesting rejected;
 - directory feed fork/reorder and descriptor rollback;
+- empty-feed, first-inclusion, and first-checkpoint encodings differ from the
+  exact zero-digest sentinel contract;
+- every closed `sync/2` refusal code/details shape, retry rule, and unknown
+  pairing rejection;
 - feed cursor before compaction floor and snapshot digest mismatch;
 - cold checkpoint verification after several operator-key rotations;
 - removals beyond reserved feed capacity using emergency checkpoint coalescing;
@@ -4098,6 +4182,9 @@ The design is implemented when:
   control/sync/signed-body encoding without implementation-chosen tags;
 - exact work-stamp and peer-proof preimages plus versioned control
   success/refusal envelopes interoperate across independent implementations;
+- empty feed/checkpoint sentinels, every `sync/2` refusal, and the complete
+  Prepare-to-GetOperation lifecycle have one canonical encoding and recovery
+  result;
 - all signed coordinates and continuity/cursor identities match the checked-in
   domain-separated body/envelope digest vectors across implementations;
 - host reconciliation keeps organizer state private until a destination
