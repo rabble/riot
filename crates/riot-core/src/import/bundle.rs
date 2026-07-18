@@ -604,14 +604,20 @@ fn verify_frame(
     // at `inspect`), never whether a name/marker is "allowed".
     // Everything else is UnsupportedSchema.
     let schema_ok = if entry.namespace_id().is_owned() {
-        // Owned composite-site namespace: Unit 1 admits ONLY the delegatable
-        // `/articles/` region, with an OPAQUE payload — integrity is the
+        // Owned composite-site namespace, OPAQUE payload — integrity is the
         // digest/length checks above and the path is the identity (mirrors
-        // app-data). The reserved `/manifest` and `/mod/` regions carry no
-        // schema here and are refused (Units 2/3). Admission for owned entries
-        // already required a cap rooted at the followed site above, so nothing
-        // communal can reach this branch.
+        // app-data); the record schema is validated read-side (moderation.rs
+        // `read_moderation_record`, manifest on its own path). Admitted regions:
+        //   `/articles/` (Unit 1, editor-delegatable) and `/mod/` (Unit 3,
+        //   owner + `/mod/`-scoped moderator caps).
+        // The reserved `/manifest` carries no schema here and is refused (Unit 2
+        // validates it on an independent path). A `/mod/` entry authored under an
+        // `/articles/`-scoped editor cap is refused UPSTREAM by willow25
+        // `does_authorise` (the editor area does not include `/mod/`), never
+        // reaching this schema check. Admission already required a cap rooted at
+        // the followed site above, so nothing communal reaches this branch.
         crate::willow::site_paths::is_under_articles(entry.path())
+            || crate::willow::site_paths::is_under_mod(entry.path())
     } else if crate::apps::entry::is_app_data_path(entry.path()) {
         true
     } else {
