@@ -39,9 +39,10 @@ Spec §3/§4/§7 cite pre-overnight line numbers; the overnight checkout has dri
 | `listCommunities()` / `activeCommunity()` wrappers | `ProfileRepository.swift:985,998` | — |
 | `FollowedSiteRow` / `list_followed_sites()` (FFI) | `crates/riot-ffi/src/mobile_api.rs:62,394` | §6.2 |
 
-**Two gaps the skeleton must close (both verified absent):**
+**Three gaps the skeleton must close (all verified absent):**
 1. **The Swift `RiotProfileRepository` wrapper does NOT expose `listFollowedSites()`** — only `listCommunities`/`activeCommunity` (`ProfileRepository.swift:985,998`). The generated `MobileProfile` binding gains `listFollowedSites()` after `generate-bindings`, but the app-facing wrapper needs a method. **Rung 2 Step 1 adds it.**
 2. **Android's `CommunityRelationship` `when` is exhaustive with no `else`** (`apps/android/.../CommunityChooser.kt:16-20`). Regenerating the Android binding to include `FOLLOWING`/`PERSONAL` (Rung 1's additive variants) **breaks compilation** until arms are added — the Kotlin analogue of Rung 1's Rust match-exhaustiveness note. **Rung 2 Step 3 fixes it first, before any UI.**
+3. **iOS twin: `CommunityChooser.swift`'s `plainLabel` `switch` is exhaustive over the three old cases with NO `default`** (`apps/ios/Riot/CommunityChooser.swift:9-15` — `case .organizer / .member / .publicReader`). Rung 2's own Swift tests can only see `.personal` / `FollowedSiteRow` **after the iOS/macOS binding is regenerated** (`cargo run -p xtask -- generate-bindings`), and that same regen adds `.following`/`.personal` to the generated `CommunityRelationship` enum → the `plainLabel` switch goes **non-exhaustive → Swift compile error** (the exact analogue of the Android `when` break). **Rung 2 Step 2.0 fixes it first, before any new model code**, by regenerating bindings and healing the switch with `.following => "Following"` and `.personal => "Your space"`. **Verified this is the ONLY landed iOS switch over `CommunityRelationship` that lacks a `default`:** `AlertsListView.swift` and `PeopleView.swift` merely *reference* the type (`.organizer` badge tests / booleans, never a `switch`), and `NewswireEditorial.swift`'s switches are over a different (trust-tier) enum — so no other iOS site breaks at regen time.
 
 **Android reality check:** Android is still on the *old* debug shell — `ConferenceSurface` is a flat 7-value enum (`Spaces/App directory/Incident board/Newswire/Compose & sign/Import preview/Connection`, `ConferenceSurface.kt:3-11`) driven by an imperative `MainActivity.show(surface)` (`MainActivity.kt:172-187`, plain Android `View`/`addView`, not Compose). It already carries the pure-Kotlin `CommunityChooserRow` + `CommunityReturnOutcome.decide` mirrors (`CommunityChooser.kt`). So Android Rung 2 = pure-model parity + a space-list *root surface* skeleton, host-JVM tested like `ConferenceSurfaceTest.kt`.
 
@@ -51,7 +52,7 @@ Spec §3/§4/§7 cite pre-overnight line numbers; the overnight checkout has dri
 
 The design + CTO flagged big-bang risk (spec §7, §10 Risk 1). Rung 2 is **four independently-landable steps**, each green on its own, each behind rewritten nav test suites:
 
-- **2.0 — Shared pure tier/row-state model (Swift, no UI).** `SpaceTier`, `SpaceRowState` vocabulary (§3.1), `SpaceListRow`, and a pure `groupedSpaceList(...)` merge of `[CommunityRow]` + `[FollowedSiteRow]` with the §3.3 VoiceOver announcement. Fully unit-tested without a window or the FFI. First because it de-risks everything above it and touches no landed shell.
+- **2.0 — Regenerate iOS/macOS bindings + heal the switch, then the shared pure tier/row-state model (Swift, no UI).** Regenerate the iOS/macOS bindings (`cargo run -p xtask -- generate-bindings`) so `.personal` / `FollowedSiteRow` exist, and heal the now-non-exhaustive `CommunityChooser.swift` `plainLabel` switch (`.following => "Following"`, `.personal => "Your space"`) so `RiotKit` compiles. Then add `SpaceTier`, `SpaceRowState` vocabulary (§3.1), `SpaceListRow`, and a pure `groupedSpaceList(...)` merge of `[CommunityRow]` + `[FollowedSiteRow]` with the §3.3 VoiceOver announcement. Fully unit-tested without a window or the FFI. First because it de-risks everything above it; the only landed-shell edit is the one-line-per-arm `plainLabel` heal (unavoidable — the regen forces it, exactly as the Android `when` is forced in 2.3).
 - **2.1 — iOS repository + app-model plumbing.** Add `listFollowedSites()` to the `RiotProfileRepository` wrapper + a `SpaceListing` seam; publish a tiered `spaceList` on `RiotAppModel`, refreshed in `reload()`. No UI. Additive → green.
 - **2.2 — iOS/macOS two-pane shell.** Space list as root (reuse `NavigationSplitView`), `CommunityShellView` carried **verbatim** as the community detail, by-kind routing to followed/personal **placeholders**, launch-restore via `decide()`, Tools off the top level. Rewrites the nav test suites.
 - **2.3 — Android.** Exhaustive-`when` fix + `FollowedSiteRow`/tier Kotlin mirrors + a space-list root surface skeleton routing by kind. JUnit-tested.
@@ -60,14 +61,20 @@ Steps 2.0→2.2 are iOS/macOS and sequential; 2.3 (Android) is independent and m
 
 ---
 
-## Step 2.0 — Shared pure tier + row-state model (Swift)
+## Step 2.0 — Regenerate bindings + heal the iOS switch, then the shared pure tier + row-state model (Swift)
 
-**Why first:** pure value types, no UI, no live FFI — provable with `swift`/XCTest alone, and the safest possible first commit (touches no landed shell file).
+**Why first:** pure value types, no UI, no live FFI — provable with `swift`/XCTest alone. It is the *safest* first commit, but **not** a zero-shell-edit one: the binding regen this step performs (needed so the tests can name `.personal` / `FollowedSiteRow`) adds `.following`/`.personal` to the generated `CommunityRelationship` enum, which forces the landed `CommunityChooser.swift` `plainLabel` switch non-exhaustive. This step therefore **also heals that switch** (one arm each for `.following` / `.personal`) — otherwise `RiotKit` will not compile and Steps 2.1/2.2 are all blocked. This is the iOS twin of the Android `when` heal in Step 2.3, and (verified) `CommunityChooser.swift:9-15` is the only landed iOS `switch` over `CommunityRelationship` without a `default` — `AlertsListView`/`PeopleView` only reference the type, they do not switch on it.
 
 **Files:**
 - New: `apps/ios/Riot/SpaceList.swift`
 - New test: `apps/ios/RiotTests/SpaceListModelTests.swift`
+- Modify: `apps/ios/Riot/CommunityChooser.swift` (heal the `plainLabel` switch: add `case .following: return "Following"` and `case .personal: return "Your space"`).
+- Regenerate (not hand-edited): the iOS/macOS UniFFI binding via `cargo run -p xtask -- generate-bindings` — brings `.personal`/`.following` and `FollowedSiteRow` into `riot_ffi.swift`.
 - Modify: `apps/ios/Riot.xcodeproj/project.pbxproj` **and** `apps/macos/Riot.xcodeproj/project.pbxproj` (register both new files in each — see the pbxproj recipe below).
+
+### - [ ] Step 0: Regenerate iOS/macOS bindings + heal the switch (before any test runs)
+- `cargo run -p xtask -- generate-bindings` — regenerates `riot_ffi.swift` so `CommunityRelationship` gains `.following`/`.personal` and `FollowedSiteRow` exists (Rung 1's additive variants). Without this the Step 1 tests can't even name `.personal` / `FollowedSiteRow`.
+- Heal `apps/ios/Riot/CommunityChooser.swift` `plainLabel` (`:9-15`): add `case .following: return "Following"` and `case .personal: return "Your space"` so the switch is exhaustive again and `RiotKit` compiles. (This is the RED-then-GREEN twin of Android Step 2.3 Step 1 — the regen is the forcing function; the heal is the fix.)
 
 ### - [ ] Step 1: Write the failing tests
 
@@ -120,6 +127,24 @@ final class SpaceListModelTests: XCTestCase {
         XCTAssertTrue(sections.isEmpty, "no tiers render when there is nothing in them")
     }
 
+    // §3.2 — the search field is a PURE name-filter over the grouped list; the
+    // UI TextField just binds a query to this function (no policy in the view).
+    func testSearchFieldFiltersRowsByNameAndDropsEmptiedTiers() {
+        let you = Self.communityRow(ns: "p", title: "You", relationship: .personal)
+        let richmond = Self.communityRow(ns: "c", title: "Richmond", relationship: .member)
+        let oakland = Self.communityRow(ns: "d", title: "Oakland", relationship: .member)
+        let sections = groupedSpaceList(communities: [you, richmond, oakland],
+                                        followed: [], now: Date())
+        // Case-insensitive substring match on the row name.
+        let filtered = filteredSpaceList(sections, query: "rich")
+        XCTAssertEqual(filtered.first { $0.tier == .communities }?.rows.map(\.name), ["Richmond"])
+        // A tier with no surviving rows is dropped, not shown empty (§9).
+        XCTAssertNil(filtered.first { $0.tier == .yourSpace },
+                     "the Your space tier is omitted when its only row is filtered out")
+        // An empty/whitespace query returns the list unchanged.
+        XCTAssertEqual(filteredSpaceList(sections, query: "  ").map(\.tier), sections.map(\.tier))
+    }
+
     private static func communityRow(ns: String, title: String,
                                      relationship: CommunityRelationship) -> CommunityRow {
         CommunityRow(namespaceId: ns, title: title, relationship: relationship,
@@ -151,6 +176,7 @@ xcodebuild test -project apps/ios/Riot.xcodeproj -scheme RiotKit \
   - Map each `CommunityRow` to a `SpaceRowState` by the **core-provided** signals (`quarantined` → `.quarantined`; `!available` → `.degraded`; the `CommunityChooserRow.isPendingFirstSync` rule → `.pendingFirstSync`; else `.available`). *Reuse the existing `CommunityChooserRow.isPendingFirstSync` derivation so there is one pending rule, not two.*
   - Map each `FollowedSiteRow` to a state from its `state` token + `transportBlocked` (§6.2 note: Rung 1 persists the default `pending-first-sync`; the true transport-blocked path is Rung 5, but the mapping is complete now).
   - Emit only non-empty tiers, in `[.yourSpace, .communities, .following]` order.
+- `func filteredSpaceList(_ sections: [SpaceListSection], query: String) -> [SpaceListSection]` — the pure §3.2 search filter: trims `query`; an empty/whitespace query returns `sections` unchanged; otherwise keeps rows whose `name` contains the query case-insensitively and **drops any tier left with no rows** (§9 — never a blank section). The 2.2 `SpaceListView` search `TextField` binds only to this — no filtering logic in the view.
 
 ### - [ ] Step 4: Register both files in BOTH pbxproj (see recipe) — build green
 ### - [ ] Step 5: Run to verify pass
@@ -164,8 +190,10 @@ xcodebuild test -project apps/ios/Riot.xcodeproj -scheme RiotKit \
 ### - [ ] Step 6: Commit
 ```bash
 git add apps/ios/Riot/SpaceList.swift apps/ios/RiotTests/SpaceListModelTests.swift \
-        apps/ios/Riot.xcodeproj/project.pbxproj apps/macos/Riot.xcodeproj/project.pbxproj
-git commit -m "feat(spaces/rung2): pure tiered space-list model + row-state vocabulary (§3.1/§3.3)"
+        apps/ios/Riot/CommunityChooser.swift \
+        apps/ios/Riot.xcodeproj/project.pbxproj apps/macos/Riot.xcodeproj/project.pbxproj \
+        <regenerated riot_ffi.swift binding path(s)>
+git commit -m "feat(spaces/rung2): regen bindings + heal plainLabel switch; pure tiered space-list model + row-state vocabulary (§3.1/§3.3)"
 ```
 
 ---
@@ -200,6 +228,11 @@ func testReloadPublishesBothTiersFromTheTwoCoreLists() {
 ```
 
 ### - [ ] Step 2: Run → FAIL (`no member spaceList`).
+```
+xcodebuild test -project apps/ios/Riot.xcodeproj -scheme RiotKit \
+  -destination 'platform=iOS Simulator,name=iPhone 17 Pro,OS=26.2,arch=arm64' \
+  -only-testing:RiotTests/CommunityChooserTests/testReloadPublishesBothTiersFromTheTwoCoreLists
+```
 
 ### - [ ] Step 3: Implement
 - `ProfileRepository.swift`: `extension RiotProfileRepository: SpaceListing { public func listFollowedSites() throws -> [FollowedSiteRow] { try handle.listFollowedSites() } }` — a thin passthrough to the generated `MobileProfile.listFollowedSites()` (mirrors `listCommunities()` at :985). *No logic; core owns the list.*
@@ -207,6 +240,10 @@ func testReloadPublishesBothTiersFromTheTwoCoreLists() {
 - Add the `injectSpaceListingForTest` / `refreshSpaceListForTest` seams alongside the existing test-only bootstrap seams.
 
 ### - [ ] Step 4: Run → PASS.  Full `RiotKit` iOS test run stays green (additive).
+```
+xcodebuild test -project apps/ios/Riot.xcodeproj -scheme RiotKit \
+  -destination 'platform=iOS Simulator,name=iPhone 17 Pro,OS=26.2,arch=arm64'
+```
 ### - [ ] Step 5: Commit
 ```bash
 git add apps/ios/Riot/Core/ProfileRepository.swift apps/ios/Riot/CommunityChooser.swift apps/ios/Riot/AppModel.swift apps/ios/RiotTests/CommunityChooserTests.swift
@@ -295,8 +332,8 @@ Also add to `ShellNavigationTests.swift`: keep `testTheShellExposesExactlyTheFou
 ### - [ ] Step 2: Run → FAIL (`cannot find SpaceShellRoot` / `SpaceDetailRoute`).
 
 ### - [ ] Step 3: Implement
-- `SpaceListView.swift`: renders `model.spaceList` as `Section`s per tier; each row shows icon+text state (`SpaceRowState`), a pinned search field (§3.2 may be a stub `TextField` filtering by name), and pinned Join/Create affordances (reuse `model.requestCreateCommunity()` / `requestJoinByReference()`); each row carries `.accessibilityLabel(row.accessibilityLabel)` (§3.3) and `.accessibilityIdentifier("space-row-\(row.id)")`. Selecting a row sets `model.selectedSpace`.
-- `SpaceDetailPlaceholders.swift`: two neutral, honest placeholder views (§9 "never a blank or a fabricated feed"), each naming what lands next ("Site view arrives soon" / "Your space arrives soon").
+- `SpaceListView.swift`: renders `model.spaceList` as `Section`s per tier; each row shows icon+text state (`SpaceRowState`), a pinned search field (§3.2 — a `TextField` bound to a `@State` query string that feeds the pure `filteredSpaceList(_:query:)` from 2.0; no filtering logic in the view), and pinned Join/Create affordances (reuse `model.requestCreateCommunity()` / `requestJoinByReference()`); each row carries `.accessibilityLabel(row.accessibilityLabel)` (§3.3) and `.accessibilityIdentifier("space-row-\(row.id)")`. Selecting a row sets `model.selectedSpace`.
+- `SpaceDetailPlaceholders.swift`: two neutral, honest placeholder views (§9 "never a blank or a fabricated feed"), each naming what lands next ("Site view arrives soon" / "Your space arrives soon"). **§4 chrome scope:** the full cross-kind chrome *contract* (header = title + **tier badge** + relationship control) **lands with the renders in Rung 3/4**, not here — but each placeholder cheaply carries a **tier-badge header stub now** (the selected row's title + a `SpaceTier`-derived badge label, e.g. "Following" / "Your space"), so the header slot exists and is testable before the render fills it. No relationship control (Follow/Unfollow) in Rung 2 — that is Rung 3/5.
 - `ConferenceShellView.swift`: wrap the existing launch switch in an outer `NavigationSplitView { SpaceListView(model:) } detail: { detailForSelection }`. `detailForSelection` uses `SpaceDetailRoute.forTier(selectedTier)` → `CommunityShellView` (verbatim) / placeholder. Preserve the existing `.loading`/`.noCommunity`/`.unavailable` launch states as the **empty/first-run** root (§9): no spaces → the space list shows the empty state + the neutral welcome detail.
 - `AppModel.swift`: `@Published var selectedSpace: SpaceSelection?`; `restoreLastActiveSpace()` calls `CommunityReturnOutcome.decide(active: try? activeCommunity(), all: try? listCommunities())` and sets the selection (community tiers only — extending `decide()` to followed/personal is **deferred to Rung 3/4**, noted below). Call it once when the profile opens.
 
@@ -326,7 +363,7 @@ git commit -m "feat(spaces/rung2): space-list root + by-kind detail + launch-res
 
 **Files:**
 - Modify: `apps/android/app/src/main/kotlin/org/riot/evidence/CommunityChooser.kt` (add `FOLLOWING`/`PERSONAL` arms; add `FollowedSiteRow` mirror + tier grouping)
-- Modify: `apps/android/app/src/main/kotlin/org/riot/evidence/ConferenceSurface.kt` (add a `SPACE_LIST` root surface) and `MainActivity.kt` (a `showSpaceList()` skeleton routing by kind)
+- Modify: `apps/android/app/src/main/kotlin/org/riot/evidence/ConferenceSurface.kt` (add a `SPACE_LIST("Your Spaces")` root surface — distinct label, since `SPACES("Spaces")` already exists) and `MainActivity.kt` (a `showSpaceList()` skeleton routing by kind)
 - New test: `apps/android/app/src/test/kotlin/org/riot/evidence/SpaceListTest.kt`
 - Modify test: `apps/android/app/src/test/kotlin/org/riot/evidence/ConferenceSurfaceTest.kt` (update the expected surface list)
 
@@ -379,8 +416,9 @@ class SpaceListTest {
 ### - [ ] Step 3: Implement
 - `CommunityChooser.kt`: add the two `when` arms (`FOLLOWING -> "Following"`, `PERSONAL -> "Your space"`) — heals compilation.
 - New pure Kotlin in a `SpaceList.kt` (or extend `CommunityChooser.kt`): `SpaceTier`, `SpaceRowState` (icon token + `label`), `SpaceListRow` (`contentDescription = "$name, ${tier.talkBackNoun}, ${state.label}"` — TalkBack §3.3), `data class FollowedSiteRow(root, title, state, transportBlocked)` mirroring the FFI record (or use the generated `uniffi.riot_ffi.FollowedSiteRow` directly if the regen produced it — prefer the generated type), and `groupedSpaceList(...)` mirroring the Swift merge.
-- `ConferenceSurface.kt`: add `SPACE_LIST("Spaces")` as the root; `MainActivity.show(...)` gains a `SPACE_LIST -> showSpaceList()` arm rendering tiered rows and routing by kind to the existing surfaces (community → the existing board/newswire surfaces; followed/personal → a placeholder `TextView`). Skeleton — relocate, don't redesign the debug surfaces.
+- `ConferenceSurface.kt`: add the new tiered root surface as `SPACE_LIST("Your Spaces")` — **use a distinct label, NOT `"Spaces"`**, because the enum already carries `SPACES("Spaces")` (verified: `ConferenceSurface.kt` line 4) and two members sharing a `label` string would collide in any label-driven lookup/`ConferenceSurfaceTest` assertion. `MainActivity.show(...)` gains a `SPACE_LIST -> showSpaceList()` arm rendering tiered rows and routing by kind to the existing surfaces (community → the existing board/newswire surfaces; followed/personal → a placeholder `TextView`). Skeleton — relocate, don't redesign the debug surfaces.
 - Update `ConferenceSurfaceTest.kt`'s expected label list to include the new root.
+- **Launch-restore:** no new Android restore logic is needed — Android already carries the pure-Kotlin `CommunityReturnOutcome.decide(active:all:)` mirror (`CommunityChooser.kt`, per the Android reality check above), so the space-list root reuses it to pick the last-active space exactly as iOS Step 2.2 does. Rung 2 just wires the existing mirror to the new root surface; the followed/personal `decide()` extension is deferred to Rung 3/4 (same as iOS).
 
 ### - [ ] Step 4: Run → PASS
 ```
@@ -437,6 +475,8 @@ Rung 2 lands the **skeleton and routing**; the detail *renders* are later rungs 
 | §3.1 pendingFirstSync one rule (reuse `isPendingFirstSync`) | 2.0 (reuses `CommunityChooserRow.isPendingFirstSync`) | ✓ |
 | §3.3 list-as-nav a11y: rows announce tier+name+state | 2.0 `accessibilityLabel` / 2.3 `contentDescription` + tests | ✓ |
 | §4 by-kind detail routing (community/followed/your space) | 2.2 `SpaceDetailRoute.forTier` + placeholders | ✓ (renders → 3/4) |
+| §4 cross-kind chrome contract (title + tier badge + relationship control) | Rung 3/4 renders; 2.2 placeholders carry a tier-badge header **stub** now | ✓ (contract lands with renders; header slot stubbed now) |
+| §3.2 search field = pure name-filter over the grouped list | 2.0 `filteredSpaceList(_:query:)` + `SpaceListModelTests` filter test; 2.2 `TextField` binds to it | ✓ |
 | §4 community detail = Home/People/Nearby/Tools relocated **verbatim** | 2.2 (`CommunityShellView` unchanged) | ✓ |
 | §6.5 shell routes by core-assigned tier only, no policy in shell | 2.0/2.1 (core lists → pure merge) | ✓ |
 | §7 space list as the ROOT (replace modal chooser) | 2.2 (persistent pane supersedes `CommunityChooserView`) | ✓ |
@@ -445,6 +485,9 @@ Rung 2 lands the **skeleton and routing**; the detail *renders* are later rungs 
 | §7 increment sub-ladder, each landable + green | 2.0→2.3 (four commits, TDD) | ✓ |
 | §7/§10 pbxproj both-projects for every new Swift file | pbxproj recipe in 2.0/2.2 | ✓ |
 | §2/§6 Rung-1 core consumed, no new core/FFI logic | (Rung 1 on main `ae9ec47`; Rung 2 Swift/Kotlin only) | ✓ |
+| iOS exhaustive-`switch` heal (`plainLabel` `.following`/`.personal`; regen-forced twin of the Android `when`) | 2.0 Step 0 | ✓ (verified only landed iOS switch lacking a `default`) |
 | Android exhaustive-`when` heal (Kotlin analogue of Rung 1 match note) | 2.3 Step 1–3 | ✓ |
+| Android `SPACE_LIST` root label distinct from existing `SPACES("Spaces")` | 2.3 (`"Your Spaces"` label) | ✓ |
+| Android launch-restore reuses existing `CommunityReturnOutcome.decide` mirror | 2.3 (no new restore logic) | ✓ (communities; followed/personal → Rung 3/4) |
 
 **Known partials (by design):** the Following tier is empty on a shipped build until Rung 5's real `follow_site(ticket)` — proven now only via the pure model + stubs; the followed-site and your-space **detail renders** are placeholders (Rungs 3/4). These are the deferrals above, not gaps.
