@@ -1,7 +1,7 @@
 # Public Community Anchor Network Design
 
 Date: 2026-07-18
-Status: Design review rounds 1-16 revised; pending round 17
+Status: Design review rounds 1-17 revised; pending round 18
 Scope: Owner-rooted composite public sites, discovery, hosting, web mirroring,
 and opportunistic internet sync
 
@@ -134,6 +134,10 @@ Round sixteen aligned retry scopes with durable idempotency by classifying
 pre-claim refusals versus claimed terminal results, and added an authenticated
 `sync/2 stale_source` abort that terminalizes the destination operation and
 Prepare replay before retry.
+
+Round seventeen applied the published reserved-removal aggregate job/byte caps
+across authenticated direct-root and delegated lanes, with a protected
+direct-root subpartition and deterministic pre-claim overload.
 
 ## Product Decisions
 
@@ -2649,8 +2653,20 @@ root-signed key/body follows normal root serialization.
 Delegated or non-direct candidates use the remaining lane: at most one per
 `(root, source)`, eight per root, three verification permits, and deficit
 round-robin scheduling. Its preallocated queue enforces the published global
-job/canonical-byte ceilings and never evicts an admitted candidate. A new
-candidate beyond either ceiling receives typed `removal_busy`; a failed
+job/canonical-byte ceilings and never evicts an admitted candidate.
+
+Limit IDs 51 and 52 are shared aggregate caps across the authenticated
+direct-root queue and delegated queue together; neither the sum of jobs nor
+canonical bytes may exceed them. One quarter of each cap is exclusively
+reserved for direct-root candidates and cannot be consumed by delegates.
+Direct-root candidates may borrow unused delegated capacity, but the aggregate
+cap still applies. Limits 80 and 81 separately bound only the prefilter's
+unverified input burst. A valid root signature arriving when its direct
+subpartition and all borrowable shared capacity are full receives pre-claim
+`removal_busy` with retry timing and creates no index/slot/result row; admitted
+direct-root work retains the two-round guarantee. A delegated
+candidate beyond either remaining/shared ceiling also receives
+`removal_busy`. A failed
 signature/capability chain releases its slot and creates no claim. This general
 lane can be saturated without consuming the authenticated direct-root slot,
 permit, or writer. Once either lane verifies authority, the job cannot be
@@ -4227,6 +4243,9 @@ RED:
 - eight invalid delegated candidates plus continuous invalid direct-root
   signature refill prevent an admitted valid root-signed tombstone from
   reaching verification and commit within two scheduler rounds;
+- authenticated direct-root plus delegated jobs or canonical bytes exceed
+  aggregate limits 51/52, delegates consume the protected quarter, or a
+  cap-refused valid root creates durable state;
 - TLS handshake churn, slow ClientHello/header, keep-alive, unsupported method,
   Range, or connection lifetime bypasses a compiled ingress ceiling;
 - anonymous HTTP search/feed/static floods exceed connection, queue, CPU,
@@ -4493,7 +4512,8 @@ The design is implemented when:
 - public iroh handshakes and control/sync frames have bounded progress, idle,
   write, and absolute lifetimes from pre-ALPN allocation through close;
 - invalid removal candidates cannot occupy the authenticated direct-root lane,
-  whose reserved verifier/writer guarantees admitted owner progress;
+  whose shared aggregate caps, protected subpartition, reserved verifier/writer,
+  and fair scheduler guarantee bounded admitted owner progress;
 - authenticated directory and replica gossip has a complete bounded wire
   lifecycle, channel-bound peer authentication, current-key connection-bound
   single-use source attestations, same-snapshot generation checks, and
