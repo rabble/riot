@@ -8,6 +8,16 @@ import XCTest
 /// with a founding editorial roster. The old five debug-shaped surfaces
 /// (Spaces/Apps/Board/Post/Connect) are gone.
 final class ShellNavigationTests: XCTestCase {
+    func testEveryComposerOriginUsesOneOpenState() {
+        var state = ComposerPresentationState.closed
+        for origin in ComposerOrigin.allCases {
+            state.open(origin)
+            XCTAssertEqual(state, .open(origin))
+            state.close()
+            XCTAssertEqual(state, .closed)
+        }
+    }
+
     // MARK: - The four community routes
 
     func testTheShellExposesExactlyTheFourCommunityRoutes() {

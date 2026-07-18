@@ -249,6 +249,10 @@ final class NewswireSurfaceTests: XCTestCase {
 
         let featured = NewswireWireState.from(projection(openWire: [post], frontPage: [post]))
         guard case .featured = featured else { return XCTFail("featured") }
+        XCTAssertFalse(NewswireWireState.offlineStale.hasPosts)
+        XCTAssertFalse(empty.hasPosts)
+        XCTAssertTrue(noFeature.hasPosts)
+        XCTAssertTrue(featured.hasPosts)
 
         // Distinct accessibility ids: the three never collapse to one view.
         let ids = Set([

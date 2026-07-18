@@ -8,6 +8,156 @@ import XCTest
 /// the app-model wiring over the real FFI.
 final class CommunityChooserTests: XCTestCase {
 
+    func testStaleShellCannotUnregisterNewTransitionPreparation() {
+        let gate = CommunityTransitionGate()
+        var calls: [String] = []
+        let old = gate.register { _ in calls.append("old") }
+        let new = gate.register { _ in calls.append("new") }
+
+        gate.unregister(old)
+        gate.prepare(.preserveDraft)
+
+        XCTAssertEqual(calls, ["new"])
+        gate.unregister(new)
+    }
+
+    func testTransitionReasonsRemainDistinct() {
+        let gate = CommunityTransitionGate()
+        var reasons: [CommunityTransitionReason] = []
+        let token = gate.register { reasons.append($0) }
+
+        gate.prepare(.preserveDraft)
+        gate.prepare(.discardDraft)
+
+        XCTAssertEqual(reasons, [.preserveDraft, .discardDraft])
+        gate.unregister(token)
+    }
+
+    func testPreserveAndDiscardChooseOppositeDraftActions() {
+        var persisted = 0
+        var cleared = 0
+        CommunityDraftTransition.apply(
+            .preserveDraft,
+            persist: { persisted += 1 },
+            clear: { cleared += 1 }
+        )
+        XCTAssertEqual(persisted, 1)
+        XCTAssertEqual(cleared, 0)
+
+        CommunityDraftTransition.apply(
+            .discardDraft,
+            persist: { persisted += 1 },
+            clear: { cleared += 1 }
+        )
+        XCTAssertEqual(persisted, 1)
+        XCTAssertEqual(cleared, 1)
+    }
+
+    @MainActor
+    func testModelCommunityMutationsPrepareWithTheRequiredReason() {
+        let model = RiotAppModel()
+        var reasons: [CommunityTransitionReason] = []
+        let token = model.communityTransitionGate.register { reasons.append($0) }
+
+        model.switchCommunity(namespaceID: "missing")
+        model.joinAdditionalCommunity(shareReference: "missing")
+        model.createCommunity(CommunityCreationRequest(name: "New"))
+        model.retryCommunity()
+        model.leaveCommunity()
+
+        XCTAssertEqual(
+            reasons,
+            [.preserveDraft, .preserveDraft, .preserveDraft, .preserveDraft, .discardDraft]
+        )
+        model.communityTransitionGate.unregister(token)
+    }
+
+    @MainActor
+    func testFailedPreservingSwitchLeavesOutgoingDraftRestorable() throws {
+        let directory = try Self.temporaryProfileDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let model = RiotAppModel()
+        model.bootstrap(
+            storageDirectory: directory,
+            keyStore: TestWrappingKeyStore(),
+            starterPacks: []
+        )
+        model.createSpace(title: "Community A")
+
+        let community = try XCTUnwrap(model.community)
+        let publisher = try XCTUnwrap(model.profileRepository)
+        let defaults = try XCTUnwrap(
+            UserDefaults(suiteName: "riot-transition-\(UUID().uuidString)")
+        )
+        let store = UserDefaultsPostDraftStore(
+            communityID: community.id,
+            defaults: defaults
+        )
+        let composer = PostUpdateViewModel(
+            identity: .persistent(try XCTUnwrap(model.me)),
+            community: PostingCommunity(
+                name: community.name,
+                spaceDescriptorEntryID: community.newswireDescriptorEntryID ?? ""
+            ),
+            publisher: publisher,
+            draftStore: store
+        )
+        composer.headline = "Keep this headline"
+        composer.body = "Keep this body"
+
+        let token = model.communityTransitionGate.register { reason in
+            CommunityDraftTransition.apply(
+                reason,
+                persist: composer.persistDraft,
+                clear: store.clear
+            )
+        }
+        model.switchCommunity(namespaceID: "not-a-held-community")
+
+        let restored = PostUpdateViewModel(
+            identity: .persistent(try XCTUnwrap(model.me)),
+            community: composer.community,
+            publisher: publisher,
+            draftStore: store
+        )
+        XCTAssertEqual(restored.headline, "Keep this headline")
+        XCTAssertEqual(restored.body, "Keep this body")
+        XCTAssertEqual(model.community?.id, community.id)
+        model.communityTransitionGate.unregister(token)
+    }
+
+    @MainActor
+    func testFailedJoinRearmsCallbacksBeforeAnotherAdoptionPreparation() throws {
+        let directory = try Self.temporaryProfileDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let model = RiotAppModel()
+        model.bootstrap(
+            storageDirectory: directory,
+            keyStore: TestWrappingKeyStore(),
+            starterPacks: []
+        )
+        model.createSpace(title: "Community A")
+
+        var callbacksArmed = true
+        var preparationCount = 0
+        let token = model.communityTransitionGate.registerPreparation(
+            { _ in
+                preparationCount += 1
+                callbacksArmed = false
+            },
+            recover: { callbacksArmed = true }
+        )
+
+        model.joinAdditionalCommunity(shareReference: "not-a-reference")
+        XCTAssertTrue(callbacksArmed, "a refused preserving mutation must re-arm the retained shell")
+        XCTAssertEqual(preparationCount, 1)
+
+        model.communityTransitionGate.prepareForNearbyAdoption()
+        XCTAssertFalse(callbacksArmed, "the next adoption still reaches preparation")
+        XCTAssertEqual(preparationCount, 2)
+        model.communityTransitionGate.unregister(token)
+    }
+
     // MARK: - Plain-language rows
 
     func testRelationshipsRenderInPlainLanguageNotTechnicalTerms() {
@@ -436,9 +586,23 @@ final class CommunityChooserTests: XCTestCase {
             "B carries the descriptor handle from its share reference — the shell can reproject once sync delivers it"
         )
 
-        model.switchCommunity(namespaceID: model.communities.first { $0.name == "Community A" }!.namespaceID)
+        let bID = try XCTUnwrap(model.community?.id)
+        var communitySeenDuringPreparation: String?
+        let token = model.communityTransitionGate.register { _ in
+            communitySeenDuringPreparation = model.community?.id
+        }
+        let aID = try XCTUnwrap(
+            model.communities.first { $0.name == "Community A" }?.namespaceID
+        )
+        model.switchCommunity(namespaceID: aID)
+        XCTAssertEqual(
+            communitySeenDuringPreparation,
+            bID,
+            "preparation must run while the outgoing community is still active"
+        )
         XCTAssertEqual(model.community?.name, "Community A", "the shell reprojects back to A")
         XCTAssertTrue(model.community?.isOrganizer ?? false, "A's organizer hint returns")
+        model.communityTransitionGate.unregister(token)
     }
 
     /// A freshly joined community is rendered "pending first sync" — a distinct,

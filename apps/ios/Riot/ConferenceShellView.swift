@@ -9,6 +9,15 @@ import RiotKit
 /// screen. The old five debug-shaped surfaces are gone.
 struct ConferenceShellView: View {
     @ObservedObject var model: RiotAppModel
+    private let notifierFactory: @MainActor () -> LocalNotifier
+
+    init(
+        model: RiotAppModel,
+        notifierFactory: @escaping @MainActor () -> LocalNotifier = LocalNotifier.makeDefault
+    ) {
+        self.model = model
+        self.notifierFactory = notifierFactory
+    }
 
     var body: some View {
         Group {
@@ -36,7 +45,12 @@ struct ConferenceShellView: View {
                         onSecondary: { model.select(.nearby) }
                     )
                 case let .community(community):
-                    CommunityShellView(model: model, community: community)
+                    CommunityShellView(
+                        model: model,
+                        community: community,
+                        notifierFactory: notifierFactory
+                    )
+                        .id(community.id)
                 }
             }
         }
@@ -792,6 +806,9 @@ private struct CommunityShellView: View {
     @State private var focus = ToolFocusRestoration()
 
     @State private var identitySheet: ShellIdentityDestination?
+    @State private var composerPresentation: ComposerPresentationState = .closed
+    @State private var transitionToken: CommunityTransitionGate.Token?
+    @FocusState private var focusedComposerTrigger: ComposerOrigin?
     /// Presented when a community-change is requested with an unsaved draft.
     @State private var confirmingLeave = false
 
@@ -800,16 +817,22 @@ private struct CommunityShellView: View {
     /// foregrounded. There is no server/push in this P2P app — the only trigger is
     /// a LOCAL event (accepted nearby sync, or foregrounding), both of which arrive
     /// through `AppRuntimeView.dataChangedNotification`.
-    @StateObject private var notifier = LocalNotifier.makeDefault()
+    @StateObject private var notifier: LocalNotifier
 
     @Environment(\.colorScheme) private var colorScheme
     /// Foreground vs background — decides system-notify vs in-app banner.
     @Environment(\.scenePhase) private var scenePhase
 
-    init(model: RiotAppModel, community: CommunityContext) {
+    init(
+        model: RiotAppModel,
+        community: CommunityContext,
+        notifierFactory: @MainActor () -> LocalNotifier
+    ) {
         _model = ObservedObject(wrappedValue: model)
         _navigation = ObservedObject(wrappedValue: model.navigation)
         self.community = community
+        let notifier = notifierFactory()
+        _notifier = StateObject(wrappedValue: notifier)
 
         let me = model.me ?? RiotPerson(id: "", displayName: "member", tag: "")
         let publisher: NewswirePostPublishing = model.profileRepository ?? UnavailablePublisher()
@@ -821,7 +844,9 @@ private struct CommunityShellView: View {
             identity: .persistent(me),
             community: postingCommunity,
             publisher: publisher,
-            draftStore: UserDefaultsPostDraftStore(communityID: community.id)
+            draftStore: UserDefaultsPostDraftStore(communityID: community.id),
+            expectedCommunityID: community.id,
+            contextProvider: model
         ))
 
         let projector: NewswireContributorProjecting = model.profileRepository ?? UnavailableProjector()
@@ -860,19 +885,23 @@ private struct CommunityShellView: View {
             // A subtle in-app banner when new content arrives while the app is on
             // screen — the foreground counterpart to a backgrounded system alert.
             .overlay(alignment: .top) { newContentBanner }
-            // Ask for notification permission at a relevant first moment: the reader
-            // already has a community (this shell is on screen), never on cold launch.
-            .task { await notifier.requestAuthorizationIfNeeded() }
             // The one local trigger: an accepted nearby sync or a foregrounding both
             // post this. Recompute unread (reusing the seen-cursor) and let the
             // notifier decide system-notify / banner / nothing.
             .onReceive(NotificationCenter.default.publisher(for: AppRuntimeView.dataChangedNotification)) { _ in
                 handleStoreChanged()
             }
+            .onChange(of: model.me) { _, _ in
+                composer.refreshPublishingContext()
+            }
+            .onChange(of: model.newswireDescriptorEntryID) { _, _ in
+                composer.refreshPublishingContext()
+            }
             // Leaving/switching this community cancels the old coordinator's
             // pairing, transfer, and callbacks before the shell is rebuilt for the
             // next community (nav design §"Nearby security and lifecycle").
-            .onDisappear { nearby.stop() }
+            .onAppear { registerCommunityScope() }
+            .onDisappear { unregisterCommunityScope() }
             .sheet(item: $identitySheet) { destination in
                 switch destination {
                 case .yourProfile:
@@ -910,6 +939,15 @@ private struct CommunityShellView: View {
             .sheet(isPresented: createCommunityBinding) {
                 CreateCommunitySheet(model: model, onClose: model.dismissCreateCommunity)
             }
+            .sheet(isPresented: composerPresented) {
+                NavigationStack {
+                    PostUpdateView(
+                        model: composer,
+                        onPosted: handlePosted,
+                        onDone: closeComposer
+                    )
+                }
+            }
     }
 
     private var createCommunityBinding: Binding<Bool> {
@@ -917,6 +955,83 @@ private struct CommunityShellView: View {
             get: { model.isCreateCommunityRequested },
             set: { if !$0 { model.dismissCreateCommunity() } }
         )
+    }
+
+    private var composerPresented: Binding<Bool> {
+        Binding(
+            get: {
+                if case .open = composerPresentation { return true }
+                return false
+            },
+            set: { if !$0 { closeComposer() } }
+        )
+    }
+
+    private func openComposer(_ origin: ComposerOrigin) {
+        composer.refreshPublishingContext()
+        composerPresentation.open(origin)
+    }
+
+    private func closeComposer() {
+        let origin = composerPresentation.origin
+        composerPresentation.close()
+        focusedComposerTrigger = origin
+    }
+
+    private func handlePosted(_ update: PostedUpdate) {
+        _ = update
+        newswire.load()
+        Task {
+            await Task.yield()
+            await notifier.requestAuthorizationIfNeeded()
+        }
+    }
+
+    private func registerCommunityScope() {
+        guard transitionToken == nil else { return }
+        nearby.onBeforeSpaceJoin = {
+            model.communityTransitionGate.prepareForNearbyAdoption()
+        }
+        transitionToken = model.communityTransitionGate.registerPreparation(
+            { preparation in prepareForCommunityTransition(preparation) },
+            recover: rearmCommunityScopeCallbacks
+        )
+    }
+
+    private func unregisterCommunityScope() {
+        if let transitionToken {
+            model.communityTransitionGate.unregister(transitionToken)
+            self.transitionToken = nil
+        }
+        nearby.onBeforeSpaceJoin = nil
+        nearby.onSpaceJoined = nil
+        nearby.stop()
+    }
+
+    private func prepareForCommunityTransition(_ preparation: CommunityTransitionPreparation) {
+        CommunityDraftTransition.apply(
+            preparation.reason,
+            persist: composer.persistDraft,
+            clear: { UserDefaultsPostDraftStore(communityID: community.id).clear() }
+        )
+        composerPresentation.close()
+        identitySheet = nil
+        confirmingLeave = false
+        runningTool = nil
+        nearby.onBeforeSpaceJoin = nil
+        nearby.onSpaceJoined = nil
+        if !preparation.transportMustContinue {
+            nearby.stop()
+        }
+    }
+
+    private func rearmCommunityScopeCallbacks() {
+        nearby.onBeforeSpaceJoin = {
+            model.communityTransitionGate.prepareForNearbyAdoption()
+        }
+        nearby.onSpaceJoined = {
+            model.refreshFromStore()
+        }
     }
 
     /// A local store-changed event landed (accepted sync or foregrounding).
@@ -1155,15 +1270,18 @@ private struct CommunityShellView: View {
 
             Spacer()
 
-            // Community switcher — icon only. The community name is shown once,
-            // in the designed Home header, so this top row carries just the
-            // controls. Keeps the `community-name` id the nav tests tap.
             Button { model.openCommunityChooser() } label: {
-                Image(systemName: "rectangle.stack")
-                    .font(.system(size: 20))
+                HStack(spacing: 6) {
+                    Text(community.name)
+                        .font(.riot(.body, size: 15, relativeTo: .callout))
+                        .lineLimit(1)
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 12, weight: .semibold))
+                }
             }
             .accessibilityLabel("Your communities")
             .accessibilityIdentifier("community-name")
+            .frame(minHeight: 44)
 
             Button { identitySheet = .communitySettings } label: {
                 Image(systemName: ShellIdentityDestination.communitySettings.systemImage)
@@ -1187,14 +1305,20 @@ private struct CommunityShellView: View {
         case .home:
             HomeRouteView(
                 model: model,
-                composer: composer,
                 newswire: newswire,
+                onPostUpdate: { openComposer(.home) },
+                onPostFirstUpdate: { openComposer(.emptyWire) },
+                composerFocus: $focusedComposerTrigger,
                 onOpenTool: openTool
             )
         case .tools:
             DirectoryView(model: model, onOpen: { openTool($0, fromCardID: "tool-\($0.appIDHex)") })
         case .people:
-            PeopleView(model: people, onPostUpdate: { changeRoute(to: .home) })
+            PeopleView(
+                model: people,
+                onPostUpdate: { openComposer(.people) },
+                composerFocus: $focusedComposerTrigger
+            )
         case .nearby:
             ConnectionStatusView(model: model, nearby: nearby)
         }
@@ -1272,8 +1396,10 @@ private struct CommunityShellView: View {
 /// no-updates recovery, never a blank list.
 private struct HomeRouteView: View {
     @ObservedObject var model: RiotAppModel
-    @ObservedObject var composer: PostUpdateViewModel
     @ObservedObject var newswire: NewswireSurfaceModel
+    let onPostUpdate: () -> Void
+    let onPostFirstUpdate: () -> Void
+    let composerFocus: FocusState<ComposerOrigin?>.Binding
     let onOpenTool: (RiotSpaceApp, String) -> Void
     @Environment(\.colorScheme) private var colorScheme
     @State private var showRejoinSheet = false
@@ -1291,17 +1417,25 @@ private struct HomeRouteView: View {
                 // The offlineStale forward paths lead somewhere real: rejoin with a
                 // link (Unit 1's sheet) or sync with a peer (the existing Nearby
                 // screen) — never a dead no-op button and never a silent retry loop.
+                if newswire.hasPosts {
+                    Button("Post an update", action: onPostUpdate)
+                        .buttonStyle(.riotPrimary)
+                        .frame(minHeight: 44)
+                        .focused(composerFocus, equals: .home)
+                        .accessibilityIdentifier("home-post-update")
+                }
                 NewswireSurfaceView(
                     model: newswire,
+                    onPostUpdate: onPostFirstUpdate,
                     onSyncWithPeer: { model.select(.nearby) },
-                    onRejoinWithLink: { showRejoinSheet = true }
+                    onRejoinWithLink: { showRejoinSheet = true },
+                    composerFocus: composerFocus
                 )
                 // The single Home entry point for this community's signed alerts —
                 // the only tappable alert surface (the Nearby count is a diagnostic).
                 AlertsListView(entries: model.entries,
                                activeNamespaceID: model.space?.namespaceID ?? "",
                                displayName: { model.rendered(for: $0) })
-                PostUpdateView(model: composer)
             }
             .padding(20)
         }
@@ -1787,6 +1921,9 @@ private struct ConnectionStatusView: View {
         }
         .onAppear {
             nearby.onSpaceJoined = { model.refreshFromStore() }
+            nearby.onBeforeSpaceJoin = {
+                model.communityTransitionGate.prepareForNearbyAdoption()
+            }
             startDiscoveryWhenReady()
         }
         .onChange(of: model.isProfileOpen) { _, _ in startDiscoveryWhenReady() }

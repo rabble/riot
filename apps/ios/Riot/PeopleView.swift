@@ -147,10 +147,16 @@ public final class PeopleSurfaceModel: ObservableObject {
 public struct PeopleView: View {
     @ObservedObject private var model: PeopleSurfaceModel
     private let onPostUpdate: () -> Void
+    private let composerFocus: FocusState<ComposerOrigin?>.Binding
 
-    public init(model: PeopleSurfaceModel, onPostUpdate: @escaping () -> Void = {}) {
+    public init(
+        model: PeopleSurfaceModel,
+        onPostUpdate: @escaping () -> Void,
+        composerFocus: FocusState<ComposerOrigin?>.Binding
+    ) {
         self.model = model
         self.onPostUpdate = onPostUpdate
+        self.composerFocus = composerFocus
     }
 
     public var body: some View {
@@ -179,6 +185,7 @@ public struct PeopleView: View {
                 .foregroundStyle(.secondary)
             Button(empty.actionLabel, action: onPostUpdate)
                 .frame(minHeight: 44)
+                .focused(composerFocus, equals: .people)
         }
         .padding()
     }

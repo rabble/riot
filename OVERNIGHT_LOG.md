@@ -229,3 +229,70 @@ _(Summary goes at the TOP when done. Task entries append below in order.)_
   explanation of founding responsibility. Added concise adjacent copy that the
   creator becomes the founding organizer and first editor and may invite others
   later.
+
+## Task 3: isolate community transitions and unify posting
+- Used the approved compact-core-flow design and plan with
+  `superpowers:test-driven-development`, `superpowers:systematic-debugging`, and
+  `metaswarm:orchestrated-execution`.
+- RED: the iOS chooser/shell suites failed to compile because the tokened
+  transition gate and single composer presentation state did not exist.
+- Added one model-owned `CommunityTransitionGate`. Switch, join, create, retry,
+  deep-link routing through those operations, and the legacy create seam prepare
+  with `.preserveDraft`; confirmed Leave prepares with `.discardDraft`.
+  Registrations are tokened, so an old keyed shell cannot unregister the new
+  shell's handler. Pure tests pin both reasons and stale-token behavior.
+- The community shell is keyed by community ID. Before mutation it persists or
+  clears the old community's draft as requested, closes the composer/identity/
+  tool state, and stops Nearby. A failed preserving mutation leaves the gate
+  registered and the draft stored, while a confirmed discard removes the keyed
+  draft. Nearby adoption now has an explicit pre-join callback, with a pure
+  order test proving preparation occurs once before resume/join and never for an
+  ordinary same-community sync.
+- Replaced the embedded composer with one sheet and one
+  `ComposerPresentationState` shared by Home, the empty wire, and People.
+  Removed default no-op posting callbacks. Empty wire owns `Post the first
+  update`; a populated wire gets one standalone `Post an update`; offline/
+  pending states get none. Editing uses Close, success uses Done plus Post
+  another, and closing restores keyboard focus to the exact origin trigger.
+- Added live `PublishingContextProviding`: the review refreshes on presentation,
+  identity/descriptor changes, and immediately before Post. A changed community
+  or missing descriptor shows fixed draft-safe copy and performs no signed write;
+  a newly arrived descriptor and current self-claimed identity replace stale
+  review values.
+- Moved notification authorization out of community-open. A successful rendered
+  post first reloads the wire, yields one render turn, then asks the injected
+  notifier; the scheduler test confirms repeated calls request at most once once
+  authorization resolves. The phone switcher now visibly names the current
+  community with a chevron and a 44-point target.
+- GREEN: focused iOS CommunityChooser/ShellNavigation/Transport suites; focused
+  macOS PostUpdate/People/Newswire suites; the full shared Swift suite; shared
+  SwiftUI compile; and `git diff --check` all passed.
+- Assumption: keeping stopped Nearby callbacks registered until the old shell
+  actually disappears is safer than clearing them during preparation: if a
+  repository mutation fails, the still-current shell can start a new session.
+  The coordinator is stopped before mutation, and keyed-shell disappearance
+  clears callbacks before any new community session can use them.
+- Scope note: `PostUpdateView.swift`, `PostUpdateTests.swift`, and
+  `LocalNotifierTests.swift` were necessarily included although the plan's file
+  list omitted them; Task 3 explicitly requires the sheet close contract, live
+  context fail-closed tests, and post-success permission scheduling.
+- Adversarial review found the initial Nearby pre-join handler stopped the
+  pairing before `resume(joining:)`, destroying the transport needed to perform
+  its own mutation. Transition preparation now carries an explicit
+  `transportMustContinue` bit: adoption still invalidates old callbacks and
+  persists the draft synchronously, but keeps that one in-flight wire alive;
+  ordinary mutations invalidate callbacks and stop Nearby before repository
+  work. The controller captures only its intended post-join refresh completion.
+- Strengthened evidence after review: the gate-backed Nearby test asserts
+  callbacks are invalid before join while the transport remains alive; the real
+  two-community model test records the outgoing community during preparation;
+  and a failed repository switch restores an unsaved draft from the outgoing
+  community's keyed store. Also moved the populated-wire composer trigger to
+  immediately above Newswire as specified.
+- A second review caught the retained-shell failure case: an ordinary failed
+  join/create could leave the still-mounted iPhone Nearby route stopped with
+  callbacks cleared. The tokened gate now has an explicit failure-recovery
+  callback. Every preserving repository catch/refusal invokes it; the current
+  shell re-arms pre-join preparation and post-join refresh without resurrecting a
+  stale shell. A real invalid-reference join test proves recovery, then proves a
+  subsequent Nearby adoption still reaches preparation.

@@ -44,6 +44,17 @@ final class PostUpdateTests: XCTestCase {
         func clear() { stored = nil; clearCount += 1 }
     }
 
+    @MainActor
+    private final class StubContextProvider: PublishingContextProviding {
+        var context: PublishingContext?
+
+        init(context: PublishingContext?) {
+            self.context = context
+        }
+
+        func currentPublishingContext() -> PublishingContext? { context }
+    }
+
     // MARK: - Fixtures
 
     private static func person(_ name: String = "Ana", tag: String = "a3f91122") -> RiotPerson {
@@ -58,13 +69,17 @@ final class PostUpdateTests: XCTestCase {
     private func makeModel(
         identity: PublishingIdentity? = nil,
         publisher: StubPublisher = StubPublisher(),
-        store: MemoryDraftStore = MemoryDraftStore()
+        store: MemoryDraftStore = MemoryDraftStore(),
+        expectedCommunityID: String? = nil,
+        contextProvider: (any PublishingContextProviding)? = nil
     ) -> PostUpdateViewModel {
         PostUpdateViewModel(
             identity: identity ?? .persistent(Self.person()),
             community: Self.community(),
             publisher: publisher,
-            draftStore: store
+            draftStore: store,
+            expectedCommunityID: expectedCommunityID,
+            contextProvider: contextProvider
         )
     }
 
@@ -159,6 +174,59 @@ final class PostUpdateTests: XCTestCase {
 
         XCTAssertEqual(publisher.callCount, 1)
         XCTAssertFalse(model.canPost, "the composer is spent once the post is committed")
+    }
+
+    @MainActor
+    func testPostingFailsClosedWhenLiveCommunityNoLongerMatchesReview() {
+        let publisher = StubPublisher()
+        let provider = StubContextProvider(
+            context: PublishingContext(
+                communityID: "community-b",
+                identity: .persistent(Self.person("Bo")),
+                community: PostingCommunity(
+                    name: "Another community",
+                    spaceDescriptorEntryID: String(repeating: "f", count: 64)
+                )
+            )
+        )
+        let model = makeModel(
+            publisher: publisher,
+            expectedCommunityID: "community-a",
+            contextProvider: provider
+        )
+        model.headline = "Headline"
+        model.body = "Body"
+
+        model.post()
+
+        XCTAssertEqual(publisher.callCount, 0)
+        XCTAssertEqual(model.status, .editing)
+        XCTAssertEqual(model.errorMessage, PostUpdateViewModel.publishingContextFailureMessage)
+    }
+
+    @MainActor
+    func testRefreshingContextUpdatesIdentityAndNewlyArrivedDescriptor() {
+        let provider = StubContextProvider(
+            context: PublishingContext(
+                communityID: "community-a",
+                identity: .persistent(Self.person("Bo")),
+                community: PostingCommunity(
+                    name: "Riverside Mutual Aid",
+                    spaceDescriptorEntryID: String(repeating: "f", count: 64)
+                )
+            )
+        )
+        let model = makeModel(
+            expectedCommunityID: "community-a",
+            contextProvider: provider
+        )
+
+        XCTAssertTrue(model.refreshPublishingContext())
+        XCTAssertEqual(model.review.identityLabel, "Bo · a3f91122")
+        XCTAssertEqual(
+            model.community.spaceDescriptorEntryID,
+            String(repeating: "f", count: 64)
+        )
     }
 
     // MARK: - Failure preserves the draft behind a fixed message

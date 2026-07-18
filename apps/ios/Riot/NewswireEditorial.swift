@@ -469,6 +469,13 @@ public enum NewswireWireState: Equatable, Sendable {
         case .featured: "newswire-featured"
         }
     }
+
+    public var hasPosts: Bool {
+        switch self {
+        case .postsButNoFeature, .featured: true
+        case .offlineStale, .emptyWire: false
+        }
+    }
 }
 
 /// The fixed copy for the three non-featured states — pinned once so the design's
@@ -627,6 +634,10 @@ public final class NewswireSurfaceModel: ObservableObject {
     /// descriptor to reply within. Core still decides admission at signing time.
     public var canComment: Bool {
         commenter != nil && !spaceDescriptorEntryID.isEmpty
+    }
+
+    public var hasPosts: Bool {
+        wire.hasPosts
     }
 
     /// The replies to draw under `postID`, flat and time-sorted as core returned
@@ -869,20 +880,23 @@ public struct NewswireSurfaceView: View {
     private let onPostUpdate: () -> Void
     private let onSyncWithPeer: () -> Void
     private let onRejoinWithLink: () -> Void
+    private let composerFocus: FocusState<ComposerOrigin?>.Binding
     @Environment(\.colorScheme) private var colorScheme
     @State private var actionTarget: NewswirePostRow?
     @State private var replyTarget: NewswirePostRow?
 
     public init(
         model: NewswireSurfaceModel,
-        onPostUpdate: @escaping () -> Void = {},
-        onSyncWithPeer: @escaping () -> Void = {},
-        onRejoinWithLink: @escaping () -> Void = {}
+        onPostUpdate: @escaping () -> Void,
+        onSyncWithPeer: @escaping () -> Void,
+        onRejoinWithLink: @escaping () -> Void,
+        composerFocus: FocusState<ComposerOrigin?>.Binding
     ) {
         self.model = model
         self.onPostUpdate = onPostUpdate
         self.onSyncWithPeer = onSyncWithPeer
         self.onRejoinWithLink = onRejoinWithLink
+        self.composerFocus = composerFocus
     }
 
     /// Maps a pure forward action to its handler. Every case leads somewhere real —
@@ -997,14 +1011,24 @@ public struct NewswireSurfaceView: View {
                     .font(.riot(.body, size: 15, relativeTo: .callout))
                     .foregroundStyle(RiotTheme.ink(for: colorScheme))
                 ForEach(actions, id: \.self) { action in
-                    Button(action.label) { perform(action) }
-                        .buttonStyle(action.isNearbyPath ? .riotSecondary : .riotPrimary)
-                        .frame(minHeight: 44)
-                        .accessibilityIdentifier(action.accessibilityID)
+                    wireActionButton(action)
                 }
             }
         }
         .accessibilityIdentifier(id)
+    }
+
+    @ViewBuilder
+    private func wireActionButton(_ action: NewswireWireForwardAction) -> some View {
+        let button = Button(action.label) { perform(action) }
+            .buttonStyle(action.isNearbyPath ? .riotSecondary : .riotPrimary)
+            .frame(minHeight: 44)
+            .accessibilityIdentifier(action.accessibilityID)
+        if action == .postFirstUpdate {
+            button.focused(composerFocus, equals: .emptyWire)
+        } else {
+            button
+        }
     }
 
     private func frontPageCard(_ posts: [NewswirePostRow]) -> some View {

@@ -51,6 +51,27 @@ public struct PostingCommunity: Equatable, Sendable {
     }
 }
 
+public struct PublishingContext: Equatable, Sendable {
+    public let communityID: String
+    public let identity: PublishingIdentity
+    public let community: PostingCommunity
+
+    public init(
+        communityID: String,
+        identity: PublishingIdentity,
+        community: PostingCommunity
+    ) {
+        self.communityID = communityID
+        self.identity = identity
+        self.community = community
+    }
+}
+
+@MainActor
+public protocol PublishingContextProviding: AnyObject {
+    func currentPublishingContext() -> PublishingContext?
+}
+
 // MARK: - Composer mode
 
 /// What kind of post is being written. The newswire route's freeform default
@@ -297,6 +318,8 @@ public final class PostUpdateViewModel: ObservableObject {
     /// avoids (mirrors `AppModel.approvalFailureMessage`).
     public static let writeFailureMessage =
         "Couldn't post your update just now. Your draft is safe — try posting again."
+    public static let publishingContextFailureMessage =
+        "Your posting identity or community changed. Your draft is safe — review it and try again."
 
     /// The primary action's label — outcome language, never mechanism. The view
     /// draws exactly this; a test pins it so it can never regress to
@@ -317,24 +340,30 @@ public final class PostUpdateViewModel: ObservableObject {
     /// Fixed, human failure copy — nil unless the last write failed.
     @Published public private(set) var errorMessage: String?
 
-    public let identity: PublishingIdentity
-    public let community: PostingCommunity
+    @Published public private(set) var identity: PublishingIdentity
+    @Published public private(set) var community: PostingCommunity
 
     private let publisher: NewswirePostPublishing
     private let draftStore: PostDraftStore
     private let now: () -> Date
+    private let expectedCommunityID: String?
+    private weak var contextProvider: (any PublishingContextProviding)?
 
     public init(
         identity: PublishingIdentity,
         community: PostingCommunity,
         publisher: NewswirePostPublishing,
         draftStore: PostDraftStore,
+        expectedCommunityID: String? = nil,
+        contextProvider: (any PublishingContextProviding)? = nil,
         now: @escaping () -> Date = Date.init
     ) {
         self.identity = identity
         self.community = community
         self.publisher = publisher
         self.draftStore = draftStore
+        self.expectedCommunityID = expectedCommunityID
+        self.contextProvider = contextProvider
         self.now = now
         restoreDraft()
     }
@@ -441,11 +470,27 @@ public final class PostUpdateViewModel: ObservableObject {
 
     // MARK: Posting
 
+    @discardableResult
+    public func refreshPublishingContext() -> Bool {
+        guard let contextProvider else { return true }
+        guard let context = contextProvider.currentPublishingContext(),
+              expectedCommunityID == nil || context.communityID == expectedCommunityID,
+              !context.community.spaceDescriptorEntryID.isEmpty else {
+            errorMessage = Self.publishingContextFailureMessage
+            return false
+        }
+        identity = context.identity
+        community = context.community
+        errorMessage = nil
+        return true
+    }
+
     /// The one signed write. Guarded so a double-tap or a post after success
     /// cannot sign twice. On success the draft is cleared and the status carries
     /// the pending-exchange result; on failure the draft is preserved untouched
     /// and a fixed message is shown.
     public func post() {
+        guard refreshPublishingContext() else { return }
         guard canPost else { return }
         status = .posting
         errorMessage = nil
@@ -554,11 +599,17 @@ public struct PostUpdateView: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(\.scenePhase) private var scenePhase
     @FocusState private var focusedField: FocusedField?
-    var onPosted: (PostedUpdate) -> Void = { _ in }
+    let onPosted: (PostedUpdate) -> Void
+    let onDone: () -> Void
 
-    public init(model: PostUpdateViewModel, onPosted: @escaping (PostedUpdate) -> Void = { _ in }) {
+    public init(
+        model: PostUpdateViewModel,
+        onPosted: @escaping (PostedUpdate) -> Void,
+        onDone: @escaping () -> Void
+    ) {
         self.model = model
         self.onPosted = onPosted
+        self.onDone = onDone
     }
 
     public var body: some View {
@@ -583,6 +634,17 @@ public struct PostUpdateView: View {
         .onChange(of: model.status) { _, status in
             if case let .posted(update) = status { onPosted(update) }
         }
+        .toolbar {
+            ToolbarItem(placement: .cancellationAction) {
+                Button(isPosted ? "Done" : "Close", action: onDone)
+                    .accessibilityIdentifier(isPosted ? "post-done" : "post-close")
+            }
+        }
+    }
+
+    private var isPosted: Bool {
+        if case .posted = model.status { return true }
+        return false
     }
 
     private var modeCard: some View {
