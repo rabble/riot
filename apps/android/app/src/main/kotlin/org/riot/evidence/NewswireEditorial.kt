@@ -352,22 +352,56 @@ fun interface NewswireProjector {
 }
 
 /**
+ * Everything one community's newswire renders: the [NewswireWireState] (front page
+ * / open wire structure) plus the communal replies grouped under each parent post.
+ * Comments are kept SEPARATE from the wire enum — they hang under posts across all
+ * wire states, so they are a cross-cutting map keyed by parent entry id, never a
+ * field of the post-structure enum (the Android twin of iOS's `commentsByParent`).
+ */
+data class NewswireSurface(
+    val wire: NewswireWireState,
+    val commentsByParent: Map<String, List<NewswireCommentRow>>,
+) {
+    /** The replies to draw under [postId], in core's order; empty when none. */
+    fun comments(postId: String): List<NewswireCommentRow> = commentsByParent[postId] ?: emptyList()
+
+    companion object {
+        val OFFLINE = NewswireSurface(NewswireWireState.OfflineStale, emptyMap())
+
+        fun from(projection: NewswireProjectionView) = NewswireSurface(
+            wire = NewswireWireState.from(projection),
+            commentsByParent = NewswireCommentRow.group(projection.comments),
+        )
+    }
+}
+
+/**
  * The screen-level resolver: turns the active community's descriptor (which may be
  * null for a legacy space, or point at a wire that fails to project) into the
- * [NewswireWireState] the surface renders. A null/blank descriptor or a projection
- * that throws yields [NewswireWireState.OfflineStale] — the exact mirror of iOS's
- * `try? projectNewswire(...)` → offlineStale fallback. Otherwise it delegates to
- * the already-verified [NewswireWireState.from]. Pure given the projector.
+ * [NewswireSurface] the screen renders. A null/blank descriptor or a projection
+ * that throws yields an offline-stale surface with no comments — the exact mirror
+ * of iOS's `try? projectNewswire(...)` → offlineStale fallback. Otherwise it
+ * delegates to [NewswireSurface.from]. Pure given the projector.
  */
 object NewswireScreen {
-    fun resolve(descriptorEntryId: String?, projector: NewswireProjector): NewswireWireState {
-        if (descriptorEntryId.isNullOrBlank()) return NewswireWireState.OfflineStale
+    fun resolve(descriptorEntryId: String?, projector: NewswireProjector): NewswireSurface {
+        if (descriptorEntryId.isNullOrBlank()) return NewswireSurface.OFFLINE
         // Any projection failure (an unavailable/stale wire, a core refusal) is an
         // offline-stale surface, never a crash — matches iOS's `try?` fallback.
         return try {
-            NewswireWireState.from(projector.project(descriptorEntryId))
+            NewswireSurface.from(projector.project(descriptorEntryId))
         } catch (_: Exception) {
-            NewswireWireState.OfflineStale
+            NewswireSurface.OFFLINE
         }
     }
+}
+
+/**
+ * The one pre-submit rule the surface enforces before the native comment sign: a
+ * reply must be non-empty after trimming (whitespace-only is blocked). Pure and
+ * host-JVM testable even though the submit itself is native — the Kotlin twin of
+ * iOS `submitComment`'s `.empty` guard.
+ */
+object NewswireCommentValidator {
+    fun isSubmittable(body: String): Boolean = body.trim().isNotEmpty()
 }

@@ -414,9 +414,10 @@ class MainActivity : Activity() {
      * The community newswire: the collective's published wire for the active
      * community, shown exactly as core's signed, already-split projection presents
      * it (front page / open wire), honoring editorial treatment (hidden and
-     * tombstoned posts are redacted to their interstitial). Read-only here;
-     * comments and unread land in later PRs. An unavailable/stale projection
-     * degrades to the offline-stale copy rather than crashing.
+     * tombstoned posts are redacted to their interstitial). Communal replies are
+     * threaded under each post with a reply affordance; unread lands in a later
+     * PR. An unavailable/stale projection degrades to the offline-stale copy
+     * rather than crashing.
      */
     private fun showNewswire() {
         val community = controller.activeCommunity()
@@ -432,11 +433,12 @@ class MainActivity : Activity() {
             "Wire for ${community.title}. Reports appear exactly as the " +
                 "collective's signed records present them.",
         ))
-        renderWire(NewswireScreen.resolve(community.descriptorEntryId) { controller.projectNewswire(it) })
+        val descriptor = community.descriptorEntryId
+        renderSurface(NewswireScreen.resolve(descriptor) { controller.projectNewswire(it) }, descriptor)
     }
 
-    private fun renderWire(state: NewswireWireState) {
-        when (state) {
+    private fun renderSurface(surface: NewswireSurface, descriptor: String?) {
+        when (val wire = surface.wire) {
             NewswireWireState.OfflineStale -> {
                 content.addView(heading(NewswireWireCopy.OFFLINE_TITLE))
                 content.addView(body(NewswireWireCopy.OFFLINE_MESSAGE))
@@ -450,15 +452,53 @@ class MainActivity : Activity() {
                 content.addView(heading(NewswireWireCopy.NO_FEATURE_TITLE))
                 content.addView(body(NewswireWireCopy.NO_FEATURE_MESSAGE))
                 content.addView(heading(NewswireWireCopy.NO_FEATURE_LINK))
-                state.openWire.forEach { content.addView(postView(it)) }
+                wire.openWire.forEach { renderPost(it, surface, descriptor) }
             }
             is NewswireWireState.Featured -> {
                 content.addView(heading("Featured"))
-                state.frontPage.forEach { content.addView(postView(it)) }
+                wire.frontPage.forEach { renderPost(it, surface, descriptor) }
                 content.addView(heading("Open wire"))
-                state.openWire.forEach { content.addView(postView(it)) }
+                wire.openWire.forEach { renderPost(it, surface, descriptor) }
             }
         }
+    }
+
+    /** A post row, its communal replies threaded beneath it, and — for an ordinary
+     *  post on a projectable wire — a reply affordance. A redacted post shows no
+     *  reply control (you reply to visible reports, not withheld ones). */
+    private fun renderPost(row: NewswirePostRow, surface: NewswireSurface, descriptor: String?) {
+        content.addView(postView(row))
+        surface.comments(row.id).forEach { content.addView(commentView(it)) }
+        if (row.display == NewswirePostDisplay.ORDINARY && descriptor != null) {
+            addReplyAffordance(descriptor, row.id)
+        }
+    }
+
+    /** One reply, indented under its parent. Hidden/tombstoned replies show only
+     *  their signed interstitial — never the withheld words — like a post. */
+    private fun commentView(comment: NewswireCommentRow): TextView {
+        val text = when (comment.display) {
+            NewswirePostDisplay.HIDDEN_INTERSTITIAL -> NewswireTreatmentCopy.HIDDEN_BODY
+            NewswirePostDisplay.TOMBSTONED -> NewswireTreatmentCopy.TOMBSTONE_BODY
+            NewswirePostDisplay.ORDINARY -> comment.body ?: ""
+        }
+        return body("↳ ${comment.author}\n$text").apply { setPadding(48, 8, 0, 8) }
+    }
+
+    private fun addReplyAffordance(descriptorEntryId: String, parentEntryId: String) {
+        val input = EditText(this).apply { hint = "Reply to the collective" }
+        content.addView(input)
+        content.addView(action("Post reply") {
+            val text = input.text.toString()
+            if (!NewswireCommentValidator.isSubmittable(text)) {
+                status.text = "A reply can't be empty."
+                return@action
+            }
+            runAction("Reply signed and posted") {
+                controller.createNewswireComment(descriptorEntryId, parentEntryId, text)
+                show(ConferenceSurface.NEWSWIRE)
+            }
+        })
     }
 
     /** One post row. A hidden or tombstoned post shows only its signed

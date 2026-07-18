@@ -1,6 +1,7 @@
 package org.riot.evidence
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -79,5 +80,20 @@ class NewswireCommentTest {
     @Test
     fun groupOfEmptyIsEmpty() {
         assertTrue(NewswireCommentRow.group(emptyList()).isEmpty())
+    }
+
+    // MARK: - Pre-submit validation (the one rule the surface enforces before the
+    // native sign — the twin of iOS submitComment's `.empty` guard).
+
+    @Test
+    fun emptyOrWhitespaceReplyIsNotSubmittable() {
+        assertFalse(NewswireCommentValidator.isSubmittable(""))
+        assertFalse(NewswireCommentValidator.isSubmittable("   \n\t"))
+    }
+
+    @Test
+    fun nonEmptyReplyIsSubmittable() {
+        assertTrue(NewswireCommentValidator.isSubmittable("I was there."))
+        assertTrue(NewswireCommentValidator.isSubmittable("   padded  "))
     }
 }
