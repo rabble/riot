@@ -180,38 +180,6 @@ public enum EditorialActionValidator {
     }
 }
 
-// MARK: - Editor authority (UI visibility only — NEVER the authorization check)
-
-/// Whether this profile should be OFFERED an editorial control. This is a
-/// best-effort UI hint, deliberately separate from the authorization decision:
-/// the real gate is core refusing to sign an action from a key outside the
-/// descriptor's roster (`create_newswire_editorial_action` throws). A hidden
-/// control is a courtesy; a rejected action is the security boundary. The two are
-/// independent by construction — this function never talks to core, and core
-/// never consults this function.
-///
-/// The MVP FFI exposes the founding roster only as CREATE input, never as a
-/// read-back, so this can be computed only for a community whose roster this
-/// device knows — one it created this session. A joined or loaded community's
-/// roster is unknown (Risk 11: no descriptor re-hydration), so it reports `false`
-/// and the control stays hidden until a real attempt would fail closed anyway.
-public enum EditorialAuthority {
-    /// `roster` is the founding editorial roster as hex subspace ids, exactly as
-    /// passed to `createNewswireSpace`, or `nil` when this device does not know the
-    /// community's roster (a joined or loaded community — Risk 11). An UNKNOWN
-    /// roster is never an editor here: the control stays hidden and a real attempt
-    /// fails closed at signing. An EMPTY roster means core's default — the founder
-    /// alone — so the founder is an editor. A non-empty roster makes a key an
-    /// editor only if it is named in it.
-    public static func isRecognizedEditor(myKeyHex: String, roster: [String]?) -> Bool {
-        let me = myKeyHex.lowercased()
-        if me.isEmpty { return false }
-        guard let roster else { return false }
-        if roster.isEmpty { return true }
-        return roster.contains { $0.lowercased() == me }
-    }
-}
-
 // MARK: - Pre-signing review (immutable)
 
 /// The immutable review a person sees before signing an editorial action

@@ -288,22 +288,6 @@ final class NewswireSurfaceTests: XCTestCase {
         XCTAssertNil(EditorialHistoryRow(feature).correctionLabel)
     }
 
-    // MARK: - Editor visibility (UI hint ONLY — never the authorization check)
-
-    func testEditorVisibilityIsAPureHintDecoupledFromAuthorization() {
-        // Unknown roster (a joined/loaded community) ⇒ never offered a control.
-        XCTAssertFalse(EditorialAuthority.isRecognizedEditor(myKeyHex: "aa".repeated(32), roster: nil))
-        // Empty roster ⇒ core's founder-alone default ⇒ the founder is an editor.
-        XCTAssertTrue(EditorialAuthority.isRecognizedEditor(myKeyHex: "aa".repeated(32), roster: []))
-        // Named ⇒ editor iff the key is in the roster.
-        XCTAssertTrue(EditorialAuthority.isRecognizedEditor(
-            myKeyHex: "aa".repeated(32), roster: ["AA".repeated(32)]))  // case-insensitive
-        XCTAssertFalse(EditorialAuthority.isRecognizedEditor(
-            myKeyHex: "aa".repeated(32), roster: ["11".repeated(32)]))
-        // An empty key is never an editor.
-        XCTAssertFalse(EditorialAuthority.isRecognizedEditor(myKeyHex: "", roster: []))
-    }
-
     // MARK: - Predicate-driven visibility (Unit 4b)
 
     func testFounderInTheStoredRosterIsOfferedControlsViaTheCorePredicate() throws {
