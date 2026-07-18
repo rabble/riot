@@ -40,7 +40,9 @@ visibly distinct, and a local save is never described as global delivery.
 
 Keep the existing community-first shell and models. Add presentation state and
 small typed helpers inside already-registered shared Swift files. Do not add a
-navigation framework, database shape, FFI contract, dependency, or policy layer.
+navigation framework, core/database schema, FFI contract, dependency, or policy
+layer. The local `PostDraft` Codable value gains backward-compatible optional
+mode/expiry fields so operational work survives community switching and relaunch.
 
 Rejected alternatives:
 
@@ -72,7 +74,7 @@ Community Home
 
 Post an update
   → compose
-  → immutable review
+  → live review of identity and destination
   → local signed commit
   → “Saved and signed on this device”
   → Done | Post another
@@ -99,10 +101,16 @@ Welcome copy becomes three short promises: read local updates, publish signed
 reports, and exchange nearby without internet. “Works without a server” replaces
 the absolute “No servers” claim.
 
-Setup has one filled action: `Join a community`. Create and demo are secondary.
-A dedicated `Save name` button is removed. Nearby is not a first-run action;
-setup says `Nearby exchange is available after you join a community.` The
-community shell retains the existing Nearby route.
+Setup has one filled action: `Join with a link or QR`. Create and demo are
+secondary. The exact order is optional self-claimed display name and disclosure,
+Join, Create, Try the demo, then the informational line `Nearby exchange is
+available after you enter a community.` A dedicated `Save name` button is
+removed. Nearby is not a first-run action; the community shell retains the route.
+
+The community-name field is not shown above the primary Join action. `Create a
+community` opens a secondary sheet containing only community name, what founding
+means, `Create`, and `Cancel`; save-before-exit occurs when Create is confirmed.
+Join saves before presenting its link/QR sheet. Demo saves before loading.
 
 Join, create, and demo all pass through one save-before-exit helper. An empty name
 draft proceeds using the current key-derived identity. A non-empty name is
@@ -120,6 +128,10 @@ Long names truncate rather than displacing 44-point controls.
 Home starts with a bounded active-alert summary when unexpired alerts exist.
 Urgent information cannot fall below an unbounded report list.
 Expired-only and empty alert sets omit the card; this slice adds no alert history.
+The card renders at most two organizer-first/newest alerts. With more than two,
+`View all N active alerts` opens a complete active-alert sheet and restores focus
+to that overflow button on close; its VoiceOver label includes the count. The
+overflow sheet uses the same deterministic active filter and row detail.
 
 Home has exactly one composer trigger per Newswire state:
 
@@ -140,6 +152,16 @@ that one sheet through a small `ComposerPresentationState` transition
 (`closed → open(origin) → closed`). `NewswireSurfaceView` and `PeopleView`
 initializers require an explicit handler; no visible action can be constructed
 with a default `{}`. Tools follow the content.
+
+The parent keys `CommunityShellView` with `.id(community.id)`. Any chooser,
+archive, leave, or recovery switch therefore runs one typed teardown before a
+new shell exists: persist the old community’s complete draft, dismiss its
+composer/detail/tool presentations, clear callbacks, and stop Nearby. Only then
+can the new keyed shell own its publisher, descriptor, identity, draft, and
+coordinators. A Community A draft restores only from A’s store and can never be
+posted by Community B’s model. Leaving/removal still requires the discard guard;
+ordinary switching preserves the per-community draft and needs no destructive
+prompt.
 
 Front page and Open wire remain separately labeled. No ranking or blending is
 introduced.
@@ -179,7 +201,19 @@ payload. Restoring the normative hidden-original inspection path requires a
 separate core/FFI design; this slice preserves the hide/tombstone distinction and
 records the existing gap.
 
+Both treated rows have a `Review treatment` action. Its payload-redacted detail
+shows treatment type, signed author/tag, timestamp, target entry under Technical
+details, and only signed history whose `targetEntryID` matches that report.
+Authorized editors retain `Editorial action`, including a signed retraction,
+from this detail. Replies and all report/operational payload remain absent.
+
 ### Posting contract
+
+The composer’s `Review before posting` card is a live summary of current identity
+and destination, not an immutable prepared request. The single Post tap validates
+the current fields, constructs one complete `PostUpdateRequest`, and passes that
+exact value to the publisher once. The design makes no separate confirmation-step
+claim.
 
 After a successful commit, the composer says: `Saved and signed on this device.
 Exchange with someone nearby to share it.` The notification prompt, if needed,
@@ -199,13 +233,19 @@ edited draft.
 
 Draft persistence is explicit:
 
-| Event | headline/body/AI/sources/location | type/expiry | identity/signature |
+| Event | persisted store | in-memory model | identity/signature |
 | --- | --- | --- | --- |
-| sheet dismissal / route change | retained per community | retained in process | never in draft |
-| app relaunch | plaintext `UserDefaults` / device backup | not retained | never in draft |
-| community switch | existing keep/discard decision | same retained model decision | never in draft |
-| successful commit | cleared | cleared | committed record only |
-| `Post another` / explicit discard / community removal | cleared | cleared | unaffected |
+| sheet dismissal / route change | all draft fields retained per community | unchanged | never in draft |
+| app relaunch / community switch away and back | all fields restored, including type/expiry | rebuilt from that community’s store | never in draft |
+| successful commit | cleared immediately | posted values retained behind success state | committed record only |
+| `Done` after success | remains clear | posted success remains if reopened; no write/reset | unaffected |
+| `Post another` | remains clear | exact reset to editing defaults | unaffected |
+| explicit discard / community removal | cleared | discarded with community shell | unaffected |
+
+`PostDraft` adds `mode` and an expiry Unix second. Decoding an older value defaults
+to `.freeform` and `nil`; a test proves the old five-field JSON still restores.
+This additive local preference shape is rollback-safe: an older binary ignores
+the unknown JSON keys. It does not alter the Willow/core database.
 
 Drafts never enter Nearby or the Newswire before signed commit. Plaintext
 `UserDefaults` and backup exposure is an existing residual privacy risk; at-rest
@@ -219,9 +259,13 @@ existing review sheet. User-facing `app`, `space app`, and `space` strings in
 `DirectoryView`, `AppReviewSheet`, and peer recommendation surfaces become
 `tool` and `community`; protocol and type names stay unchanged.
 
-People uses Riot typography/chrome instead of a system-large title. Empty
-`Post the first update` opens the shared composer. Full identifiers stay under
-Technical details.
+People uses the exact anti-membership vocabulary `Known contributors`,
+`No known contributors yet`, and `Known contributors appear here once people
+post updates.` It uses Riot typography/chrome instead of a system-large title.
+Empty `Post the first update` opens the shared composer. Each row summary has one
+composed spoken label, while `Technical details for <name>` remains a separate
+focusable disclosure. The full identifier is absent from the accessibility tree
+and visible hierarchy until expansion, then remains selectable and untruncated.
 
 Nearby retains automatic discovery but never auto-connects or auto-accepts. It
 is limited to eligible public communal communities, advertises only its existing
@@ -289,29 +333,43 @@ Small pure states live in already-registered source files:
 - `PostSuccessCommand` maps `.done` to dismissal only and `.postAnother` to the
   field reset above.
 
-`CommunityShellView` accepts an injected `LocalNotifier` (defaulting to
-production) so tests prove opening, reading, drafting, and failed writes do not
-request authorization; first successful commit requests only while undetermined;
-denial does not block; later success does not re-prompt. The current
-community-open `.task` prompt is removed.
+`ConferenceShellView` accepts an internal test-visible notifier factory, defaulting
+to production, and passes the one community-shell notifier to the composer.
+`PostUpdateView` exposes a success-presented async callback from its rendered
+success branch; it yields one render turn before calling a small
+`NotificationPermissionCoordinator`. Tests inject a scheduler/factory and prove
+opening, reading, drafting, and failed writes do not request; first rendered
+success requests only while undetermined; denial does not block; later success
+does not re-prompt. The current community-open `.task` prompt is removed.
+
+`ActiveAlertsPresentation.from(entries:activeNamespaceID:now:)` performs
+namespace and expiry filtering, organizer/newest ordering, two-row capping, and
+overflow count once. Home and the overflow sheet render those exact rows; neither
+calls `Date()` or re-filters independently, so expiry cannot change between
+composition and display.
 
 ## TDD contract
 
 1. Onboarding tests prove unsupported first-run Nearby is absent, all three exits
    share save-before-exit gating, and a failed non-empty name save starts nothing.
 2. Shell/Home tests prove the empty-wire and People actions open the retained
-   composer and every wire state has no duplicate composer trigger.
+   composer and every wire state has no duplicate composer trigger. A keyed-shell
+   switch test proves A’s model is torn down/persisted before B opens and cannot
+   publish A’s draft into B.
 3. Newswire tests prove ordinary rows carry body/operational metadata, the
    excerpt/detail split, contextual labels, exact trust copy, and defensive
-   treated-payload redaction.
+   treated-payload redaction. Treatment detail tests prove target-scoped history
+   and editorial retraction remain reachable without payload.
 4. Composer tests prove posted → post-another clears every field without signing,
    while Done creates no second write.
 5. Alerts tests prove empty and expired-only states omit Home alerts while an
    unexpired alert appears before the Newswire. Time is injected. Empty,
    foreign-only, expiry-at-now, expired-only, and active inputs are covered by the
-   pure Home composition predicate.
+   pure Home composition predicate. Two rows have no overflow; three rows cap at
+   two and expose `View all 3 active alerts`, whose close restores focus.
 6. Directory/People/Nearby tests pin compact vocabulary, disclosure placement,
-   and offered-count wording.
+   offered-count wording, exact `Known contributors` copy, and that Technical
+   details is independently reachable while its ID is hidden before expansion.
 7. Accessibility tests or inspection pin the large-text picker, stacked controls,
    contextual labels, focus transitions, announcements, and 44-point targets.
 8. Focused suites run RED then GREEN. Shared macOS tests, iOS simulator build,
@@ -348,6 +406,8 @@ This slice passes only when:
   empty/expired-only alert card;
 - four core routes have no clipped text or horizontal scrolling at an
   accessibility size and pass VoiceOver label/focus inspection.
+- first-run setup order is name disclosure, Join with link/QR, Create, Demo, then
+  the Nearby boundary; the community-name field appears only after Create.
 
 Evaluation is immediate: automated checks and simulator/VoiceOver inspection
 must pass before branch completion. The next TestFlight usability session should

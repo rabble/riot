@@ -35,3 +35,38 @@ _(Summary goes at the TOP when done. Task entries append below in order.)_
   resets every field on successful reuse; storage hardening remains separate.
 - Baseline native-core package build passed for iOS device/simulator, macOS arm64,
   and Android arm64/x86_64. Baseline shared Swift tests were started before code.
+
+## Task: restore a compilable Swift baseline
+- Used `superpowers:systematic-debugging` after `sh scripts/ios-check.sh test`
+  failed before UX code: Swift 6 reported the `CommunityRelationship.plainLabel`
+  switch was non-exhaustive for new `.following` and `.personal` FFI cases.
+- Root cause traced to merged Rung 1 commit `ae9ec47`, which added the enum cases
+  without its iOS presentation mapping. The same exact fix and assertions had
+  already been committed by the agent holding the requested overnight branch as
+  `3b5c126`; I cherry-picked that reviewed commit as `304b7c9` instead of creating
+  a competing edit.
+- This is a prerequisite baseline repair, not part of the UX audit. The shared
+  Swift suite was restarted after the cherry-pick.
+
+## Task: mandatory design review, revision 2
+- Fresh Product, Architecture, and UX reviewers found remaining source-level
+  mismatches. I revised rather than beginning implementation.
+- Operational mode and expiry will join the per-community `PostDraft` as additive,
+  backward-compatible Codable fields. Old five-field drafts default to Update/no
+  expiry; an older binary ignores the new JSON keys. A successful commit clears
+  the persisted store but retains the posted in-memory snapshot until the person
+  chooses Post another.
+- Community shells are keyed by community ID and use one teardown transition to
+  persist the old draft, dismiss presentations, clear callbacks, and stop Nearby
+  before the new publisher/descriptor/identity exists. This closes a pre-existing
+  cross-community `@StateObject` retention risk found during review.
+- Active alerts are capped at two with a counted View-all sheet, using one injected
+  clock and one filtered row set. Setup now leads with Join; community name exists
+  only in a Create sheet. People uses exact `Known contributors` vocabulary and
+  keeps Technical details independently VoiceOver-focusable.
+- Treated reports retain a payload-redacted Review treatment path with target-
+  scoped signed history and authorized retraction. The design removed its inaccurate
+  “immutable review” claim and specifies a live identity/destination review followed
+  by one validated request at Post time.
+- Baseline `sh scripts/ios-check.sh test` passed after the unrelated relationship
+  mapping repair. Existing Swift concurrency/WebKit warnings remain pre-existing.
