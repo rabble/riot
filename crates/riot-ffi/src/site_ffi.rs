@@ -583,8 +583,123 @@ fn resolve_composite_site_from_store(
 }
 
 #[cfg(test)]
-mod tests {
+mod resolve_composite_tests {
     use super::*;
+    use crate::mobile_api::open_local_profile;
+    use riot_core::site::manifest::{
+        encode_site_manifest, SiteLayout, SiteManifestV1, SiteMemberV1, TransportPolicyV1,
+    };
+    use riot_core::willow::{
+        encode_capability, encode_entry, entry_id, Entry, SignedWillowEntry, MANIFEST_COMPONENT,
+    };
+    use std::sync::Arc;
+
+    /// A fixed wall-clock inside the freshness window of the heartbeats below.
+    const NOW: u64 = 2_000_000_000;
+
+    /// Sign an owner entry at `path` and return its wire plus its willow entry-id.
+    fn owner_sign(
+        masthead: &OwnedMasthead,
+        path: &[&[u8]],
+        ts: u64,
+        payload: &[u8],
+    ) -> (SignedWillowEntry, [u8; 32]) {
+        let entry = Entry::builder()
+            .namespace_id(masthead.namespace_id().clone())
+            .subspace_id(masthead.owner_subspace_id())
+            .path(Path::from_slices(path).expect("path"))
+            .timestamp(ts)
+            .payload(payload)
+            .build();
+        let authorised = masthead.authorise_owner_entry(entry).expect("authorise");
+        let token = authorised.authorisation_token();
+        let signature: ed25519_dalek::Signature = token.signature().clone().into();
+        let entry_bytes = encode_entry(authorised.entry());
+        let id = entry_id(&entry_bytes);
+        (
+            SignedWillowEntry {
+                entry_bytes,
+                capability_bytes: encode_capability(token.capability()),
+                signature: signature.to_bytes(),
+                payload_bytes: payload.to_vec(),
+            },
+            id,
+        )
+    }
+
+    fn masthead_member(root: [u8; 32]) -> SiteMemberV1 {
+        SiteMemberV1 {
+            ns: root,
+            role: SiteRole::Masthead,
+            rule: SiteRule::OwnedWrite,
+            display: SiteDisplay::FrontArticles,
+        }
+    }
+
+    /// An owner-signed manifest at `O:/manifest` over the given members.
+    fn manifest_wire(masthead: &OwnedMasthead, members: Vec<SiteMemberV1>) -> SignedWillowEntry {
+        let manifest = SiteManifestV1 {
+            root: *masthead.namespace_id().as_bytes(),
+            members,
+            moderation_path: vec![b"mod".to_vec()],
+            transport_policy: TransportPolicyV1 {
+                allow: vec![],
+                require: RequireTransport::None,
+            },
+            version: 1,
+            layout: SiteLayout::SiteDefault,
+        };
+        let payload = encode_site_manifest(&manifest).expect("encode manifest");
+        owner_sign(masthead, &[MANIFEST_COMPONENT], 1_000, &payload).0
+    }
+
+    fn call_resolve(
+        profile: &Arc<MobileProfile>,
+        manifest: &SignedWillowEntry,
+        root: [u8; 32],
+    ) -> ResolvedCompositeSite {
+        profile
+            .resolve_composite_site(
+                manifest.entry_bytes.clone(),
+                manifest.capability_bytes.clone(),
+                manifest.signature.to_vec(),
+                manifest.payload_bytes.clone(),
+                root.to_vec(),
+                NOW,
+            )
+            .expect("resolve")
+    }
+
+    /// With no `mod_epoch` heartbeat held, freshness is a positive signal that is
+    /// absent, so the whole surface is held at `ModerationLoading` — never falsely
+    /// rendered current-and-unmoderated. This is the fail-closed default and works
+    /// against an empty store (no `/mod/` records needed).
+    #[test]
+    fn no_moderation_records_holds_the_surface_at_moderation_loading() {
+        let masthead = OwnedMasthead::generate().unwrap();
+        let root = *masthead.namespace_id().as_bytes();
+        let manifest = manifest_wire(&masthead, vec![masthead_member(root)]);
+        let profile = open_local_profile().unwrap();
+
+        let resolved = call_resolve(&profile, &manifest, root);
+        assert_eq!(resolved.degradation, SiteDegradation::ModerationLoading);
+    }
+
+    /// A tampered manifest signature resolves to the ManifestInvalid STATE (never
+    /// a thrown error), with no items.
+    #[test]
+    fn a_tampered_manifest_resolves_to_the_invalid_state_not_an_error() {
+        let masthead = OwnedMasthead::generate().unwrap();
+        let root = *masthead.namespace_id().as_bytes();
+        let mut manifest = manifest_wire(&masthead, vec![masthead_member(root)]);
+        manifest.signature[0] ^= 0x01;
+        let profile = open_local_profile().unwrap();
+
+        let resolved = call_resolve(&profile, &manifest, root);
+        assert_eq!(resolved.degradation, SiteDegradation::ManifestInvalid);
+        assert!(resolved.items.is_empty());
+        assert_eq!(resolved.transport_status, "manifest_invalid");
+    }
 
     #[test]
     fn trust_tier_maps_and_open_wire_is_never_editorial() {
