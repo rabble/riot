@@ -872,3 +872,82 @@ private extension String {
     /// Repeats a two-char hex unit `count` times — a readable full 32-byte id.
     func repeated(_ count: Int) -> String { String(repeating: self, count: count) }
 }
+
+/// Fix #4 — the composite-site moderation READ model. The security property under
+/// test: a `.moderationLoading` verdict HOLDS the whole content surface (the banner
+/// is a control, not decoration), and moderated items render as accountable
+/// placeholders. Pure over core's `ResolvedCompositeSite` — no store, mirrors the
+/// Rust `resolve_composite_site` contract the model consumes.
+final class CompositeSiteReadModelTests: XCTestCase {
+    private func item(
+        _ id: String, _ treatment: SiteItemTreatment, tier: SiteTrustTier = .openWire
+    ) -> ResolvedSiteItem {
+        ResolvedSiteItem(
+            entryId: id, authorSubspace: "ab".repeated(32), trustTier: tier, treatment: treatment)
+    }
+
+    private func resolved(
+        _ degradation: SiteDegradation, items: [ResolvedSiteItem] = []
+    ) -> ResolvedCompositeSite {
+        ResolvedCompositeSite(
+            root: "cd".repeated(32), degradation: degradation, transportStatus: "available",
+            items: items, writerCapExpired: false)
+    }
+
+    /// THE security property: moderation-loading holds the surface. The whole
+    /// content column is gated (`isContentHeld`) and the banner explains why — a
+    /// present item is NEVER shown as trustworthy-clean under a hold.
+    func testModerationLoadingHoldsTheWholeSurface() {
+        let model = CompositeSiteReadModel.from(
+            resolved(.moderationLoading, items: [item("11".repeated(32), .ordinary)]))
+        XCTAssertTrue(model.isContentHeld, "moderation-loading must HOLD the content surface")
+        XCTAssertEqual(model.hold, .held(reason: .moderationLoading))
+        XCTAssertNotNil(model.bannerMessage, "the hold must be explained by a banner")
+        // The item is still present as a row (accountable), but the surface is held.
+        XCTAssertEqual(model.items.count, 1)
+    }
+
+    /// A fully-current site shows content: not held, no banner.
+    func testCurrentSiteShowsContentWithoutABanner() {
+        let model = CompositeSiteReadModel.from(
+            resolved(.none, items: [item("11".repeated(32), .ordinary)]))
+        XCTAssertFalse(model.isContentHeld)
+        XCTAssertEqual(model.hold, .shown)
+        XCTAssertNil(model.bannerMessage)
+    }
+
+    /// A tombstoned or hidden item renders as an accountable placeholder treatment,
+    /// never a silent disappearance — even on a current site.
+    func testModeratedItemsRenderAsAccountablePlaceholders() {
+        let model = CompositeSiteReadModel.from(
+            resolved(
+                .none,
+                items: [
+                    item("11".repeated(32), .tombstoned),
+                    item("22".repeated(32), .hidden),
+                    item("33".repeated(32), .ordinary),
+                ]))
+        XCTAssertEqual(model.items.map(\.display), [.tombstoned, .hiddenInterstitial, .ordinary])
+    }
+
+    /// An invalid manifest also holds the surface (a more-severe honest state), with
+    /// a banner — content is never shown as trustworthy without a valid manifest.
+    func testInvalidManifestHoldsTheSurface() {
+        let model = CompositeSiteReadModel.from(resolved(.manifestInvalid))
+        XCTAssertTrue(model.isContentHeld)
+        XCTAssertEqual(model.hold, .held(reason: .manifestInvalid))
+        XCTAssertNotNil(model.bannerMessage)
+    }
+
+    /// The mild states show content WITH a notice — held is reserved for states
+    /// where content must not be trusted, so a milder degradation never needlessly
+    /// blanks the surface.
+    func testMildDegradationShowsContentWithANotice() {
+        for degradation in [SiteDegradation.editorialOnly, .memberUnverified] {
+            let model = CompositeSiteReadModel.from(
+                resolved(degradation, items: [item("11".repeated(32), .ordinary)]))
+            XCTAssertFalse(model.isContentHeld, "\(degradation) should show content, not hold it")
+            XCTAssertNotNil(model.bannerMessage, "\(degradation) still explains itself")
+        }
+    }
+}
