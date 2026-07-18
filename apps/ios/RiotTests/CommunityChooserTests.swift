@@ -14,6 +14,8 @@ final class CommunityChooserTests: XCTestCase {
         XCTAssertEqual(CommunityRelationship.organizer.plainLabel, "Organizer")
         XCTAssertEqual(CommunityRelationship.member.plainLabel, "Member")
         XCTAssertEqual(CommunityRelationship.publicReader.plainLabel, "Public reader")
+        XCTAssertEqual(CommunityRelationship.following.plainLabel, "Following")
+        XCTAssertEqual(CommunityRelationship.personal.plainLabel, "Personal space")
     }
 
     func testRecentActivityAndSyncFreshnessAreHumanPhrasesNotTimestamps() {
