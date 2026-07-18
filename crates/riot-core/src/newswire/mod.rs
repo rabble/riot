@@ -56,9 +56,9 @@ pub fn is_newswire_prefix(path: &crate::willow::Path) -> bool {
 pub use contributors::{contributors, ContributorRowV1};
 pub(crate) use entry::inspect_verified_components;
 pub use entry::{
-    create_signed_editorial_action, create_signed_news_post, create_signed_space_descriptor,
-    inspect_news_record, is_editorial_authority, NewswirePayload, SignedNewswireRecord,
-    VerifiedNewswireRecord,
+    create_signed_editorial_action, create_signed_news_comment, create_signed_news_post,
+    create_signed_space_descriptor, inspect_news_record, is_editorial_authority, NewswirePayload,
+    SignedNewswireRecord, VerifiedNewswireRecord,
 };
 pub use model::{
     decode_editorial_action, decode_news_comment, decode_news_post, decode_space_descriptor,
@@ -69,8 +69,9 @@ pub use model::{
 };
 pub use path::{classify_newswire_path, newswire_path, NewswirePathKind};
 pub use projection::{
-    project, NewswireProjection, NewswireProjectionError, PostTreatment, ProjectedEditorialAction,
-    ProjectedPost, ProjectionClockV1, MAX_FUTURE_SKEW_MICROS, MAX_PROJECTED_RECORDS,
+    project, NewswireProjection, NewswireProjectionError, PostTreatment, ProjectedComment,
+    ProjectedEditorialAction, ProjectedPost, ProjectionClockV1, MAX_FUTURE_SKEW_MICROS,
+    MAX_PROJECTED_RECORDS,
 };
 pub use share::{
     build_share_reference, decode_share_reference, encode_share_reference,
@@ -84,6 +85,6 @@ pub use store::{
 
 #[cfg(feature = "conformance")]
 pub use entry::{
-    create_signed_editorial_action_with_clock, create_signed_news_post_with_clock,
-    create_signed_space_descriptor_with_clock,
+    create_signed_editorial_action_with_clock, create_signed_news_comment_with_clock,
+    create_signed_news_post_with_clock, create_signed_space_descriptor_with_clock,
 };

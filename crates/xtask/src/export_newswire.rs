@@ -280,6 +280,7 @@ fn record_kind(payload: &NewswirePayload) -> &'static str {
         NewswirePayload::SpaceDescriptor(_) => "space_descriptor",
         NewswirePayload::NewsPost(_) => "news_post",
         NewswirePayload::EditorialAction(_) => "editorial_action",
+        NewswirePayload::NewsComment(_) => "news_comment",
     }
 }
 
@@ -307,6 +308,11 @@ fn signed_record_json(record: &SignedNewswireRecord) -> Result<Value, String> {
     if let NewswirePayload::EditorialAction(action) = &record.payload {
         value["action_kind"] = json!(format!("{:?}", action.kind));
         value["target_entry_id"] = json!(hex_codec::encode(&action.target_entry_id));
+    }
+    if let NewswirePayload::NewsComment(comment) = &record.payload {
+        value["body"] = json!(comment.body);
+        value["parent_entry_id"] = json!(hex_codec::encode(&comment.parent_entry_id));
+        value["tai_j2000_micros"] = json!(record.snapshot.tai_j2000_micros);
     }
     Ok(value)
 }
