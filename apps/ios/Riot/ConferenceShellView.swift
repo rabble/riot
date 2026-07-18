@@ -561,7 +561,10 @@ private struct CommunityShellView: View {
             spaceDescriptorEntryID: community.newswireDescriptorEntryID ?? "",
             communityName: community.name,
             myKeyHex: me.id,
-            descriptorResolver: { [weak model] in model?.rederivedNewswireDescriptorID() }
+            descriptorResolver: { [weak model] in model?.rederivedNewswireDescriptorID() },
+            // Per-device seen state lives in the standard defaults, keyed per
+            // community — never the Willow store, never the FFI.
+            seenCursor: SeenCursorStore()
         ))
     }
 
@@ -732,9 +735,18 @@ private struct CommunityShellView: View {
                     .allowsHitTesting(navigation.destination == destination)
                 }
             }
-            RiotTabBar(selection: tabSelection)
+            RiotTabBar(selection: tabSelection, unreadBadges: unreadBadges)
         }
         .background(RiotTheme.paper(for: colorScheme).ignoresSafeArea())
+    }
+
+    /// The per-tab unread badges. Home carries the newswire's unread count, but
+    /// only while the reader is somewhere else — a "come back, there's new" cue,
+    /// not a badge on the screen you are already looking at (Home marks itself seen
+    /// on appear). Other routes carry none yet.
+    private var unreadBadges: [RiotDestination: Int] {
+        let homeUnread = navigation.destination == .home ? 0 : newswire.unread.count
+        return homeUnread > 0 ? [.home: homeUnread] : [:]
     }
 
     /// Drives the tool push on the Tools stack. Tapping the automatic back button

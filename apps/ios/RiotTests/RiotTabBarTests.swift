@@ -21,4 +21,15 @@ final class RiotTabBarTests: XCTestCase {
         XCTAssertEqual(RiotTabBar.items.map(\.destination), RiotDestination.phoneTabs)
         XCTAssertEqual(RiotTabBar.items.map(\.label), RiotDestination.phoneTabs.map(\.tabTitle))
     }
+
+    /// The unread badge shows nothing at zero, the exact count through nine, and
+    /// caps at "9+" so a large count never widens the tab.
+    func testBadgeTextGatesZeroCountsAndNine() {
+        XCTAssertNil(RiotTabBar.badgeText(forCount: 0))
+        XCTAssertNil(RiotTabBar.badgeText(forCount: -3))
+        XCTAssertEqual(RiotTabBar.badgeText(forCount: 1), "1")
+        XCTAssertEqual(RiotTabBar.badgeText(forCount: 9), "9")
+        XCTAssertEqual(RiotTabBar.badgeText(forCount: 10), "9+")
+        XCTAssertEqual(RiotTabBar.badgeText(forCount: 250), "9+")
+    }
 }

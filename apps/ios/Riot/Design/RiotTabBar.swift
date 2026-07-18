@@ -10,13 +10,26 @@ public struct RiotTabItem: Identifiable, Equatable {
 public struct RiotTabBar: View {
     @Environment(\.colorScheme) private var colorScheme
     @Binding private var selection: RiotDestination
+    private let unreadBadges: [RiotDestination: Int]
 
     public static let items: [RiotTabItem] = RiotDestination.phoneTabs.map {
         RiotTabItem(destination: $0, label: $0.tabTitle, systemImage: $0.systemImage)
     }
 
-    public init(selection: Binding<RiotDestination>) {
+    /// The text a tab's unread badge shows, or `nil` when there is nothing to
+    /// announce. Zero and negative counts are inert; counts above 9 cap at "9+" so
+    /// the badge never widens the tab. Pure so the mapping is unit-tested directly.
+    public static func badgeText(forCount count: Int) -> String? {
+        guard count > 0 else { return nil }
+        return count > 9 ? "9+" : String(count)
+    }
+
+    public init(
+        selection: Binding<RiotDestination>,
+        unreadBadges: [RiotDestination: Int] = [:]
+    ) {
         self._selection = selection
+        self.unreadBadges = unreadBadges
     }
 
     public var body: some View {
@@ -46,6 +59,11 @@ public struct RiotTabBar: View {
         VStack(spacing: 4) {
             Image(systemName: item.systemImage)
                 .font(.system(size: 20, weight: .bold))
+                .overlay(alignment: .topTrailing) {
+                    if let badge = Self.badgeText(forCount: unreadBadges[item.destination] ?? 0) {
+                        unreadBadge(badge)
+                    }
+                }
             Text(item.label)
                 .font(.riot(.mono, size: 10, relativeTo: .caption2))
                 .textCase(.uppercase)
@@ -62,5 +80,18 @@ public struct RiotTabBar: View {
                     .padding(.horizontal, 4)
             }
         }
+    }
+
+    /// The unread count badge that rides the top-trailing corner of a tab icon —
+    /// the "what's new" cue for a community route the reader is not currently on.
+    private func unreadBadge(_ text: String) -> some View {
+        Text(text)
+            .font(.riot(.mono, size: 9, relativeTo: .caption2))
+            .foregroundStyle(RiotTheme.paper(for: colorScheme))
+            .padding(.horizontal, 4)
+            .padding(.vertical, 1)
+            .background(Capsule().fill(RiotTheme.pink(for: colorScheme)))
+            .offset(x: 10, y: -6)
+            .accessibilityIdentifier("tab-unread-\(text)")
     }
 }
