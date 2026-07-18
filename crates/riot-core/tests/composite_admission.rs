@@ -628,6 +628,58 @@ fn owned_moderation_import_without_followed_root_admits_nothing() {
     assert_eq!(store.live_count().expect("live_count"), 0);
 }
 
+/// DEFENSE IN DEPTH (end-to-end): the session inspect exemption that now admits
+/// owned `/mod/` must only ever trust an ALREADY-owner-verified entry. A communal
+/// genesis cap NAMING the owned namespace (marker-bit forgery) at a `/mod/` path
+/// is refused at `verify_frame` (`admissible_capability` requires an OWNED cap for
+/// an owned namespace), so it never becomes eligible and never commits — proven
+/// through the SAME `inspect_core_with_root(Some(root)) → plan_all` path the owner
+/// `/mod/` record commits through, not merely at the bundle gate. This closes the
+/// worry that the path-exemption could widen admission: the exemption is downstream
+/// of the owner-cap gate, and this asserts it end to end.
+#[test]
+fn a_communal_cap_cannot_land_a_mod_record_end_to_end() {
+    let session = RiotSession::open().expect("session");
+    let store = session.create_store().expect("store");
+    let site = manual_owned_site(0x52, 0x1c);
+    let attacker = SubspaceSecret::from_bytes(&[0x13; 32]);
+    let attacker_id = attacker.corresponding_subspace_id();
+    // A communal cap is unconditionally valid and can NAME the owned namespace id.
+    let communal = WriteCapability::new_communal(site.namespace_id.clone(), attacker_id.clone());
+    let entry = build_entry(
+        site.namespace_id.clone(),
+        attacker_id,
+        Path::from_slices(&[MOD_COMPONENT, b"revoke", b"forged"]).expect("mod path"),
+        100,
+        b"forged moderation payload",
+    );
+    let item = sign_into(entry, &communal, &attacker, b"forged moderation payload");
+    // Hand-frame the bytes: `encode_bundle`'s producer-side preflight would refuse
+    // to export this forgery, so we feed the gate raw bytes as a hostile peer would.
+    let bytes = frame_one(&item);
+
+    match store
+        .inspect(
+            &bytes,
+            ImportContext::with_followed_root("follow-site", site.root),
+        )
+        .expect("inspect")
+    {
+        InspectOutcome::Preview(p) => {
+            assert!(
+                p.plan_all().is_err(),
+                "a communal-cap /mod/ forgery must never be eligible for import"
+            );
+        }
+        InspectOutcome::Rejected(_) => {}
+    }
+    assert_eq!(
+        store.live_count().expect("live_count"),
+        0,
+        "a communal-cap /mod/ forgery must not commit"
+    );
+}
+
 // ---------- sync admission path (Task 2 — gate 3) ----------
 
 fn outbound(action: SyncAction) -> SyncFrame {
