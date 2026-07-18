@@ -525,7 +525,16 @@ private struct CommunityShellView: View {
     /// Presented when a community-change is requested with an unsaved draft.
     @State private var confirmingLeave = false
 
+    /// Turns local store-changed events into new-content notifications: a system
+    /// alert when the app is backgrounded, a subtle in-app banner when it is
+    /// foregrounded. There is no server/push in this P2P app — the only trigger is
+    /// a LOCAL event (accepted nearby sync, or foregrounding), both of which arrive
+    /// through `AppRuntimeView.dataChangedNotification`.
+    @StateObject private var notifier = LocalNotifier.makeDefault()
+
     @Environment(\.colorScheme) private var colorScheme
+    /// Foreground vs background — decides system-notify vs in-app banner.
+    @Environment(\.scenePhase) private var scenePhase
 
     init(model: RiotAppModel, community: CommunityContext) {
         _model = ObservedObject(wrappedValue: model)
@@ -575,6 +584,18 @@ private struct CommunityShellView: View {
     var body: some View {
         adaptiveShell
             .background(keyboardShortcuts)
+            // A subtle in-app banner when new content arrives while the app is on
+            // screen — the foreground counterpart to a backgrounded system alert.
+            .overlay(alignment: .top) { newContentBanner }
+            // Ask for notification permission at a relevant first moment: the reader
+            // already has a community (this shell is on screen), never on cold launch.
+            .task { await notifier.requestAuthorizationIfNeeded() }
+            // The one local trigger: an accepted nearby sync or a foregrounding both
+            // post this. Recompute unread (reusing the seen-cursor) and let the
+            // notifier decide system-notify / banner / nothing.
+            .onReceive(NotificationCenter.default.publisher(for: AppRuntimeView.dataChangedNotification)) { _ in
+                handleStoreChanged()
+            }
             // Leaving/switching this community cancels the old coordinator's
             // pairing, transfer, and callbacks before the shell is rebuilt for the
             // next community (nav design §"Nearby security and lifecycle").
@@ -623,6 +644,55 @@ private struct CommunityShellView: View {
             get: { model.isCreateCommunityRequested },
             set: { if !$0 { model.dismissCreateCommunity() } }
         )
+    }
+
+    /// A local store-changed event landed (accepted sync or foregrounding).
+    /// Refresh the wire — which recomputes `newswire.unread` against the per-device
+    /// seen cursor using the SAME what's-new logic Home draws from — then hand that
+    /// fresh unread to the notifier along with the current foreground/background
+    /// phase. Scoped to the selected community: that is the one wire this shell has
+    /// projected. (Multi-community background notification would iterate every
+    /// joined community's projection — deferred with the multi-community registry.)
+    private func handleStoreChanged() {
+        newswire.load()
+        let phase: NotifierPhase = scenePhase == .active ? .active : .background
+        Task {
+            await notifier.evaluate(
+                communityID: community.id,
+                communityName: community.name,
+                unread: newswire.unread,
+                phase: phase
+            )
+        }
+    }
+
+    /// The foreground new-content banner: a subtle, tappable, auto-dismissing toast
+    /// ("N new in <community>"). Tapping it (or a few seconds) clears it; the badge
+    /// and delta on Home carry the durable cue. Nothing renders when there is no
+    /// banner to show.
+    @ViewBuilder
+    private var newContentBanner: some View {
+        if let banner = notifier.banner {
+            Text(banner.text)
+                .font(.riot(.mono, size: 13, relativeTo: .footnote))
+                .foregroundStyle(RiotTheme.paper(for: colorScheme))
+                .padding(.horizontal, 16)
+                .padding(.vertical, 10)
+                .background(
+                    Capsule().fill(RiotTheme.pink(for: colorScheme))
+                )
+                .padding(.top, 8)
+                .shadow(radius: 6, y: 2)
+                .onTapGesture { notifier.dismissBanner() }
+                .transition(.move(edge: .top).combined(with: .opacity))
+                .accessibilityIdentifier("new-content-banner")
+                .task(id: banner.id) {
+                    // Auto-dismiss after a few seconds; a route change or a tap
+                    // clears it sooner. Cancelled if a newer banner replaces this one.
+                    try? await Task.sleep(nanoseconds: 4_000_000_000)
+                    notifier.dismissBanner()
+                }
+        }
     }
 
     // MARK: Adaptive presentation
