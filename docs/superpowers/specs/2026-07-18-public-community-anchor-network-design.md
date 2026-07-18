@@ -1,7 +1,7 @@
 # Public Community Anchor Network Design
 
 Date: 2026-07-18
-Status: Design review rounds 1-12 revised; pending round 13
+Status: Design review rounds 1-13 revised; pending round 14
 Scope: Owner-rooted composite public sites, discovery, hosting, web mirroring,
 and opportunistic internet sync
 
@@ -116,6 +116,10 @@ alternate nesting.
 Round twelve fixed empty-feed and first-checkpoint sentinels, closed every
 `sync/2` refusal variant, and specified the observable Prepare/Commit/restart/
 expiry/unknown-operation lifecycle for `GetOperation` and checkpoint recovery.
+
+Round thirteen defined feed and authenticated snapshot cursor failures and
+classified every Commit refusal as either pre-operation, reusable Prepared, or
+terminal-with-cleanup so receipt recovery and retry scope cannot diverge.
 
 ## Product Decisions
 
@@ -494,7 +498,7 @@ bodies are:
 | `submit_listing` | `[1, admitted_listing_envelope_bytes, optional_work_stamp]` |
 | `prepare_replica` | `[1, replica_prepare_challenge, replica_source_attestation, root_signed_ticket_core, ordered_namespace_snapshot_digests]` |
 | `pull_directory_feed` | `[1, after_sequence, limit]` |
-| `pull_directory_snapshot` | `[1, checkpoint_digest, optional_snapshot_cursor]` |
+| `pull_directory_snapshot` | `[1, checkpoint_digest, optional_snapshot_cursor_bytes]` |
 | `get_operation` | `[1, operation_id]` |
 
 Every bounded control reply is exactly
@@ -511,8 +515,8 @@ success payloads are:
 | `commit_host` | `[1, hosting_receipt]` |
 | `submit_listing` | `[1, listing_receipt]` |
 | `prepare_replica` | `[1, operation_id, base_site_generation, ordered_namespace_host_plan, ordered_namespace_tokens, ordered_retained_snapshot_digests, sync_version, effective_operation_limits, operation_expiry]` |
-| `pull_directory_feed` | `[1, ["page", inclusions, floor_sequence, head_sequence, head_digest, done]]` or `[1, ["checkpoint_required", checkpoint, snapshot_cursor]]` |
-| `pull_directory_snapshot` | `[1, checkpoint, optional_snapshot_record, optional_next_cursor, done]` |
+| `pull_directory_feed` | `[1, ["page", inclusions, floor_sequence, head_sequence, head_digest, done]]` or `[1, ["checkpoint_required", checkpoint, snapshot_cursor_bytes]]` |
+| `pull_directory_snapshot` | `[1, checkpoint, optional_snapshot_record, optional_next_cursor_bytes, done]` |
 | `get_operation` | `[1, operation_id, originating_prepare_kind, ["prepared", operation_expiry, prepare_success_payload] \| ["terminal", terminal_operation_outcome]]` |
 
 `effective_operation_limits` is a sorted array of `[limit_id,
@@ -552,6 +556,26 @@ The observable lifecycle is fixed:
 Checkpoint/snapshot pull with an unknown, reclaimed, missing, or digest-invalid
 checkpoint returns `checkpoint_unavailable` with the exact reason above. It
 never returns an empty success page.
+
+`CommitHost` disposition is also closed:
+
+| Commit observation/result | Operation disposition |
+| --- | --- |
+| malformed/noncanonical frame before durable lookup | no Commit row and no operation mutation |
+| `idempotency_conflict`, `unsupported_version`, or `operation_not_found` | Commit request is refused; any separately found operation is unchanged |
+| `busy` or Commit-time `over_quota` | operation remains `prepared`; staging/tokens remain valid until its existing expiry; the refused Commit key is terminal, so retry uses a fresh Commit idempotency key after the required retry time |
+| `stale_base`, `stale_source`, `manifest_mismatch`, `manifest_transport_mismatch`, `expired`, `snapshot_mismatch`, `equivocation`, `invalid_authority` discovered by final revalidation, `peer_context_changed`, or `operation_expired` | atomically store terminal refused operation outcome, delete all staging, invalidate every namespace token, and terminalize the Commit key |
+| successful generation-CAS and admission | atomically store terminal committed receipt, promote state, invalidate tokens, and terminalize the Commit key |
+| transport loss before the commit transaction | operation remains `prepared`; retry the exact Commit key |
+| transport loss after an unknown transaction outcome | query `GetOperation`; it returns either the prior `prepared` state or the byte-identical terminal result |
+
+No other refusal code is legal for `CommitHost`. `stale_base`,
+`stale_source`, and other retryable terminal results mean “start a fresh
+Prepare with a new operation,” never reuse old staging or tokens. A reusable
+`busy`/`over_quota` refusal means “new Commit key, same operation.” Commit-time
+`busy` and `over_quota` require nonzero `retry_after_seconds`; every terminal
+cleanup result has retry scope encoded by this table even if the higher-level
+workflow may start over.
 
 Namespace tuples always appear in `O`, `C`, `W` order. Every `operation_id`,
 idempotency key, root, namespace ID, digest, nonce, key, signature, cursor, and
@@ -843,7 +867,10 @@ The operator key is loaded through an injectable `AnchorKeyStore`; production
 uses a non-world-readable OS secret store or managed KMS. It is never stored in
 the community database.
 
-Epoch zero has no predecessor signature and must verify under the genesis key.
+Epoch zero has no predecessor signature, requires
+`current_operator_verification_key == genesis_operator_public_key`, requires
+`current_operator_key_id` to equal the canonical key-ID formula for that exact
+key, and must verify under it.
 Every later epoch has both signatures above. The predecessor may be the same
 key for an endpoint/origin/config update; in that case both fields are present
 and verify under that key. Historical intermediates are validated against the
@@ -1064,7 +1091,8 @@ The transport and peer-context nested enums are the same closed values as
 discriminants declared by the `sync/2` FSM. Only `busy` is retryable and
 requires `retry_after_seconds`; every structural, authority, cursor, digest,
 token, expiry, or peer-context refusal is terminal for that session. Unknown
-code/detail pairings close the session without applying staged state.
+code/detail pairings close the session without applying staged state. Every
+non-retryable sync refusal requires `retry_after_seconds = null`.
 
 `page_digest` uses the protocol identity table above. For each direction the
 inventory sender and receiver follow this exact FSM:
@@ -1619,7 +1647,11 @@ CheckpointRequired { checkpoint, snapshot_cursor }
 Each inclusion is at most 48 KiB; the server includes no more than the
 requested count that fits one 60 KiB page, preserving the control-frame
 ceiling. The operation is read-only and available only to authenticated
-configured peers.
+configured peers. `after_sequence > head_sequence` returns terminal
+`cursor_invalid` with kind `feed`, reason `after_head`, and current floor/head;
+it never masquerades as an empty page. Values below the floor use
+`CheckpointRequired`, equality with the head returns an empty `done: true`
+page, and values inside the retained interval return the next sequence.
 
 ### `PullDirectorySnapshot`
 
@@ -1628,6 +1660,47 @@ Output contains the immutable checkpoint plus the next full-root-ordered
 `DirectorySnapshotRecordV1`, next cursor, and `done`. At most one snapshot
 record and 60 KiB is returned per frame. On the final frame the receiver must
 recompute the checkpoint state digest before advancing its feed cursor.
+
+The opaque value is canonical `SnapshotCursorV1` bytes:
+
+```text
+SnapshotCursorBodyV1 {
+  checkpoint_digest,
+  snapshot_generation_id,
+  next_ordinal,
+  previous_root: optional,
+  expires_at,
+  cursor_secret_epoch
+}
+
+cursor_tag = HMAC-SHA256(
+  cursor_secret,
+  u16be(33) || "riot/directory-snapshot-cursor/v1" ||
+  u64be(byte_length(canonical_cbor(cursor_body))) ||
+  canonical_cbor(cursor_body)
+)
+
+SnapshotCursorV1 =
+  canonical_cbor([1, SnapshotCursorBodyV1, exactly_32_byte_cursor_tag])
+```
+
+The request/response fields are CBOR byte strings containing those canonical
+bytes. A null cursor starts at ordinal zero with no previous root. The anchor
+canonically decodes and authenticates before lookup, then requires the named
+checkpoint, its immutable generation, an unexpired retained cursor-secret
+epoch, `next_ordinal <= member_count`, and `previous_root` equal to the member
+immediately before that ordinal (or null only at zero). Malformed/authentication
+failure is `cursor_invalid/malformed`; a different requested checkpoint is
+`wrong_checkpoint`; a noncurrent immutable generation is `wrong_generation`;
+an ordinal/root inconsistency is `regressed`; and time failure is `expired`.
+A byte-identical or older still-valid cursor may replay its deterministic page
+and is not regression. Wrong-checkpoint/generation cursor errors reveal no
+snapshot member. Unknown/reclaimed/missing checkpoint state instead uses
+`checkpoint_unavailable`. Every cursor failure is terminal, non-retryable, and
+has `retry_after_seconds = null`; recovery starts from a freshly verified
+checkpoint with null cursor. Cursor secrets remain available until every
+cursor under their epoch expires; readiness fails if a retained epoch key is
+missing.
 
 ### `GetOperation`
 
@@ -1659,6 +1732,7 @@ allowed:
 | `over_quota` | `["quota", limit_id, effective_value, observed_value]` |
 | `unsupported_transport` | `["transport", required_mode, observed_mode]` |
 | `manifest_transport_mismatch`, `manifest_mismatch` | `["digests", expected_digest, observed_digest]` |
+| `snapshot_mismatch` | `["snapshot", expected_snapshot_digest, observed_snapshot_digest]` |
 | `expired` | `["expiry", expires_at, observed_at]` |
 | `equivocation` | `["equivocation", first_digest, second_digest]` |
 | `anchor_profile_oversize` | `["encoded_size", observed_bytes, maximum_bytes]` |
@@ -1672,6 +1746,7 @@ allowed:
 | `operation_not_found` | `["operation", operation_id]` |
 | `operation_expired` | `["operation_expiry", operation_id, expires_at]` |
 | `checkpoint_unavailable` | `["checkpoint", checkpoint_digest, reason]` |
+| `cursor_invalid` | `["cursor", cursor_kind, reason, optional_checkpoint_digest, optional_floor_sequence, optional_head_sequence]` |
 | `peer_context_changed` | `["peer_context", side, prior_descriptor_digest, optional_latest_descriptor_digest, reason]` |
 | `busy` | `["capacity", limit_id]` |
 | `peer_auth_failed` | `["peer_auth", stage]` |
@@ -1684,12 +1759,14 @@ require_arti | unsupported_other`; storage `required_class` is
 bundle`; and peer-auth `stage` is `descriptor_exchange | hello_validation |
 channel_binding | initiator_proof | responder_proof | configured_rule`.
 Checkpoint-unavailable `reason` is `unknown | reclaimed | snapshot_missing |
-digest_mismatch`.
+digest_mismatch`. Cursor `cursor_kind` is `feed | snapshot`, and its `reason`
+is `malformed | after_head | wrong_checkpoint | wrong_generation | regressed |
+expired`.
 Unknown code/detail or enum pairings fail decoding. Error text and
 implementation diagnostics stay outside the wire result.
-`removal_replay_window`, `busy`, and every overload result require
-`retry_after_seconds`; for relisting it is the exact earliest retained
-removal-slot expiry.
+`removal_replay_window`, `busy`, Commit-time `over_quota`, and every overload
+result require `retry_after_seconds`; for relisting it is the exact earliest
+retained removal-slot expiry.
 A refusal is a protocol result, not a transport failure and not a signed
 hosting receipt.
 
@@ -3777,6 +3854,7 @@ RED:
   v1/v2 downgrade are not rejected;
 - a descriptor's operator key ID differs from its complete current verification
   key, or two pinned floors claim the same epoch with different digests/keys;
+- epoch zero current/genesis keys differ or its key ID does not recompute;
 - Rust/Swift/Kotlin/TypeScript disagree on any domain label, canonical bytes,
   length prefix, body/envelope choice, or expected protocol identity digest.
 - any implementation disagrees on `limit_profile_digest`, listing-receipt
@@ -3809,6 +3887,8 @@ RED:
 - 257+ IDs cannot reconcile in bounded pages;
 - one 64-ID request exceeds 8 MiB or chunk indexes fork;
 - cursor overlap/digest change is not rejected;
+- feed after-head and malformed/wrong-checkpoint/wrong-generation/regressed/
+  expired snapshot cursor outcomes are not canonical;
 - read sync can mutate anchor state or staged host sync can leak before commit;
 - replica sync mutates the source or organizer state commits before receipt;
 - independent implementations disagree on frame order or snapshot digest.
@@ -3829,6 +3909,8 @@ RED:
 
 - crash between staging and commit leaks partial visibility;
 - operation IDs collide with idempotency keys or duplicate work/receipts;
+- a Commit refusal retains or destroys staging/tokens contrary to the closed
+  disposition matrix, or `stale_base` reuses an old operation;
 - prepared replay after restart changes operation ID or namespace token;
 - canonical decode, re-encoding, and body digest comparison occur after an
   idempotency lookup or reveal a stored result to a same-key/different-body
@@ -4040,12 +4122,17 @@ Tests explicitly cover:
 - `GetOperation` during Prepare, sync, Commit claim, committed/refused
   terminal, expiry, retained-result deletion, and random unknown ID, with every
   alternate nesting rejected;
+- every Commit refusal disposition, including reusable busy/quota with a new
+  Commit key, terminal stale-base/source/final-revalidation cleanup, and
+  transport loss on both sides of the atomic transaction;
 - directory feed fork/reorder and descriptor rollback;
 - empty-feed, first-inclusion, and first-checkpoint encodings differ from the
   exact zero-digest sentinel contract;
 - every closed `sync/2` refusal code/details shape, retry rule, and unknown
   pairing rejection;
 - feed cursor before compaction floor and snapshot digest mismatch;
+- feed cursor after head plus null, replayed-old, malformed, wrong-checkpoint,
+  wrong-generation, inconsistent ordinal/root, and expired snapshot cursors;
 - cold checkpoint verification after several operator-key rotations;
 - removals beyond reserved feed capacity using emergency checkpoint coalescing;
 - maximum-size removal at ordinary metadata/database/WAL ceilings;
@@ -4185,6 +4272,8 @@ The design is implemented when:
 - empty feed/checkpoint sentinels, every `sync/2` refusal, and the complete
   Prepare-to-GetOperation lifecycle have one canonical encoding and recovery
   result;
+- authenticated directory cursors and the closed Commit disposition matrix
+  distinguish safe same-operation retry from mandatory fresh preparation;
 - all signed coordinates and continuity/cursor identities match the checked-in
   domain-separated body/envelope digest vectors across implementations;
 - host reconciliation keeps organizer state private until a destination
