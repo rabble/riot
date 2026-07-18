@@ -1,5 +1,7 @@
 # Spaces-First — Rung 2: Two-pane shell skeleton — Implementation Plan
 
+**Plan-review gate: PASSED 3/3** (Feasibility + Completeness + Scope & Alignment, 2026-07-18, overnight; reviewers verified every cited symbol against `overnight/2026-07-18`). Feasibility took one round to fix the iOS `plainLabel` switch-break.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax. This is a **skeleton** rung — relocate, do not redesign; land the detail *renders* in Rungs 3/4.
 
 **Goal:** Make the **tiered space list the navigation root** on iOS + Android + macOS — Your space / Communities / Following — with the existing per-community routes (Home/People/Nearby/Tools) **relocated verbatim** under a selected-space detail, launch-restore of the last-active space, the §3.1 row-state vocabulary (icon+text, colour-independent) and §3.3 list-as-nav accessibility. **Tools leaves the top level.** By-kind detail routing lands with **placeholders** for the followed-site render (Rung 3) and the personal home (Rung 4); the actual renders are explicitly deferred.

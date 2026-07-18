@@ -44,3 +44,7 @@ Feasibility caught a real defect + a Rung-1 latent break:
 - Rung 2 plan FAIL (fixable): Step 2.0 claims "touches no landed shell / safest first commit" — FALSE, it must also heal CommunityChooser.swift:plainLabel + regenerate iOS bindings (the plan gave Android a regen step but not iOS). Fix: add an iOS gap item mirroring Android; pull CommunityChooser.swift into Step 2.0 scope.
 - Completeness non-blocking (fold in): (1) state the cross-kind chrome contract §4 lands with the renders (Rung 3/4), placeholders carry a tier-badge header stub; (2) add a pure-model row-filter test for §3.2 search; (3) note Android launch-restore rides the existing CommunityReturnOutcome mirror; (4) 2.1 add the explicit xcodebuild command.
 Dispatching a fix to the Rung 2 plan, then re-review feasibility.
+
+### Wake 4 — Rung 2 plan GATE-PASSED 3/3
+Feasibility re-review PASS after the iOS plainLabel fix. Rung 2 (two-pane shell skeleton) plan is now 3/3 (Scope + Completeness + Feasibility). Marked gate-passed in the plan header. Ready for native execution BY THE USER (I don't build native overnight).
+Rung 3 (followed-site detail) draft dispatched in parallel — pending.
