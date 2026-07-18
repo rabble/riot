@@ -48,3 +48,10 @@ Dispatching a fix to the Rung 2 plan, then re-review feasibility.
 ### Wake 4 — Rung 2 plan GATE-PASSED 3/3
 Feasibility re-review PASS after the iOS plainLabel fix. Rung 2 (two-pane shell skeleton) plan is now 3/3 (Scope + Completeness + Feasibility). Marked gate-passed in the plan header. Ready for native execution BY THE USER (I don't build native overnight).
 Rung 3 (followed-site detail) draft dispatched in parallel — pending.
+
+### Wake 5 — Rung 3 drafted; TWO REAL FFI GAPS surfaced (morning decision)
+Rung 3 draft written (main thread — the Rung-3 planning agent stalled at 144B; agents flaky overnight). Grounding the followed-site detail against the real Unit 4 FFI (site_ffi.rs) found the composite render is NOT sufficient to show a followed site's content:
+- **GAP 1: no store-backed resolve-by-root.** `resolve_composite_site` (:436) requires the caller to SUPPLY signed manifest bytes; there's no `resolved_site_for_root(root, now)` that fetches the synced manifest from the store. The shell, given a followed root, can't render without this.
+- **GAP 2: `ResolvedSiteItem` has NO content** (:385 — only entry_id/author/trust_tier/treatment; no title/body/timestamp). So the detail can render trust-tier chrome + moderation placeholder + degradation, but NOT article headlines/text. Adding content to the view-model is a **design decision on the Unit 4 FFI contract — USER'S CALL** (what content crosses FFI, ceilings). Overlaps Unit 4.
+Rung 3 plan splits: **3a** = pure-Rust FFI gap-fills (resolved_site_for_root + item content) — cargo-verifiable + executable, BUT 3a.2 is a contract decision so I did NOT execute it overnight (guardrail: no big design decisions without user). **3b** = native render, planning-only. Marked DRAFT / gate-deferred pending the user's view-model decision. The non-spoofable trust-tier chrome (§4.1 security-UI) is speccable now (3b.2, anti-impersonation test).
+NEXT: draft Rung 4 (reconcile with the prior personal-spaces-and-pages design) + Rung 5.
