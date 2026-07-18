@@ -358,7 +358,7 @@ public final class RiotAppModel: ObservableObject {
 
     public var connectionDisclosure: String {
         switch connectionStatus {
-        case .offline: "Offline · local device only"
+        case .offline: "Not connected"
         case let .nearby(peer): "Nearby · \(peer)"
         }
     }
