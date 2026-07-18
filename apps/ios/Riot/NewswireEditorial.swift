@@ -425,10 +425,43 @@ public enum NewswireWireCopy {
     public static let noFeatureTitle = "Nothing featured yet"
     public static let noFeatureMessage =
         "The collective has not selected a feature. See the open wire for every report."
-    public static let noFeatureLink = "Open wire"
     public static let offlineTitle = "Updates unavailable"
     public static let offlineMessage =
         "This community's wire is offline or has not synced yet. What you already have is still here."
+}
+
+/// A forward action a wire state offers, as pure data. The view maps each kind
+/// to a handler; the model decides WHICH are offered and IN WHAT ORDER. Modeled
+/// as data (never an inline `(label, {})` closure) so a test can assert every
+/// terminal state has at least one reachable next action, none is a dead no-op,
+/// and the red-on-main Nearby path is never a state's headline action.
+public enum NewswireWireForwardAction: String, Equatable, Sendable, CaseIterable {
+    /// Re-derive the descriptor id and reproject — a known-descriptor community
+    /// that is transiently offline.
+    case retry
+    /// The empty wire's call to the composer (routed through `onPostUpdate`).
+    case postFirstUpdate
+    /// The verified-working join path (Unit 1's `JoinByReferenceSheet`) — the
+    /// pending-first-sync headline.
+    case rejoinWithLink
+    /// Nearby — offered but SECONDARY, never a headline: two-peer nearby sync is
+    /// red on main, so it must never be a state's first action.
+    case syncWithPeer
+
+    public var label: String {
+        switch self {
+        case .retry: "Try again"
+        case .postFirstUpdate: "Post the first update"
+        case .rejoinWithLink: "Rejoin with a link"
+        case .syncWithPeer: "Sync with a peer"
+        }
+    }
+
+    /// A stable per-action id so each forward button is individually addressable.
+    public var accessibilityID: String { "newswire-action-\(rawValue)" }
+
+    /// True for the red-on-main Nearby path. A state must NEVER place this first.
+    public var isNearbyPath: Bool { self == .syncWithPeer }
 }
 
 // MARK: - Sign outcome
@@ -478,6 +511,11 @@ public final class NewswireSurfaceModel: ObservableObject {
     /// error), by construction.
     @Published public private(set) var isEditor: Bool = false
 
+    /// Set by `load()`: true when a descriptor id is in hand (retry can reproject),
+    /// false when none is derivable (a nearby-joined community — the wire must offer
+    /// a forward path, not the silent .retry re-loop). Drives `forwardActions`.
+    private var descriptorRecoverable = false
+
     public init(
         projector: NewswireProjecting,
         editor: NewswireEditorialActing,
@@ -505,6 +543,24 @@ public final class NewswireSurfaceModel: ObservableObject {
     /// enforces at admission.
     public var canOfferEditorialControls: Bool {
         !spaceDescriptorEntryID.isEmpty && isEditor
+    }
+
+    /// The ordered forward actions the current wire state offers — pure over the
+    /// model's loaded state. `postsButNoFeature`/`featured` return `[]` because the
+    /// next action is the visible content itself (the open wire renders directly
+    /// below, already labeled "Open wire" — the redundant no-op button is gone).
+    public var forwardActions: [NewswireWireForwardAction] {
+        switch wire {
+        case .offlineStale:
+            // A known descriptor that is merely offline → Try again; a community
+            // with no derivable descriptor (nearby-joined / pending first sync) →
+            // a real forward path, never a silent re-loop, verified path first.
+            return descriptorRecoverable ? [.retry] : [.rejoinWithLink, .syncWithPeer]
+        case .emptyWire:
+            return [.postFirstUpdate]
+        case .postsButNoFeature, .featured:
+            return []
+        }
     }
 
     /// The one honest line shown where a control would be, when this profile is not
@@ -546,6 +602,11 @@ public final class NewswireSurfaceModel: ObservableObject {
             history = []
         }
     }
+
+    /// The offlineStale "Try again" action: re-derive + reproject. A no-op if the
+    /// community still has no derivable descriptor (the view then shows the forward
+    /// paths, not this button).
+    public func retry() { load() }
 
     /// Builds the immutable pre-signing review for the current draft against a
     /// target, or the field violation that stops it. Pure: no signing happens.
@@ -609,12 +670,33 @@ public final class NewswireSurfaceModel: ObservableObject {
 public struct NewswireSurfaceView: View {
     @ObservedObject private var model: NewswireSurfaceModel
     private let onPostUpdate: () -> Void
+    private let onSyncWithPeer: () -> Void
+    private let onRejoinWithLink: () -> Void
     @Environment(\.colorScheme) private var colorScheme
     @State private var actionTarget: NewswirePostRow?
 
-    public init(model: NewswireSurfaceModel, onPostUpdate: @escaping () -> Void = {}) {
+    public init(
+        model: NewswireSurfaceModel,
+        onPostUpdate: @escaping () -> Void = {},
+        onSyncWithPeer: @escaping () -> Void = {},
+        onRejoinWithLink: @escaping () -> Void = {}
+    ) {
         self.model = model
         self.onPostUpdate = onPostUpdate
+        self.onSyncWithPeer = onSyncWithPeer
+        self.onRejoinWithLink = onRejoinWithLink
+    }
+
+    /// Maps a pure forward action to its handler. Every case leads somewhere real —
+    /// no branch is a dead `{}`; `.retry` re-derives + reprojects, the two
+    /// navigation cases go through the shell's callbacks.
+    private func perform(_ action: NewswireWireForwardAction) {
+        switch action {
+        case .retry: model.retry()
+        case .postFirstUpdate: onPostUpdate()
+        case .rejoinWithLink: onRejoinWithLink()
+        case .syncWithPeer: onSyncWithPeer()
+        }
     }
 
     public var body: some View {
@@ -644,14 +726,14 @@ public struct NewswireSurfaceView: View {
                 id: model.wire.accessibilityID,
                 title: NewswireWireCopy.offlineTitle,
                 message: NewswireWireCopy.offlineMessage,
-                primary: ("Try again", { model.load() })
+                actions: model.forwardActions
             )
         case .emptyWire:
             wireEmpty(
                 id: model.wire.accessibilityID,
                 title: NewswireWireCopy.emptyTitle,
                 message: NewswireWireCopy.emptyMessage,
-                primary: ("Post the first update", onPostUpdate)
+                actions: model.forwardActions
             )
         case let .postsButNoFeature(openWire):
             VStack(alignment: .leading, spacing: 12) {
@@ -659,7 +741,7 @@ public struct NewswireSurfaceView: View {
                     id: model.wire.accessibilityID,
                     title: NewswireWireCopy.noFeatureTitle,
                     message: NewswireWireCopy.noFeatureMessage,
-                    primary: (NewswireWireCopy.noFeatureLink, {})
+                    actions: []                       // the open wire below IS the next action
                 )
                 openWireCard(openWire)
             }
@@ -676,7 +758,7 @@ public struct NewswireSurfaceView: View {
         id: String,
         title: String,
         message: String,
-        primary: (label: String, action: () -> Void)
+        actions: [NewswireWireForwardAction]
     ) -> some View {
         RiotCard {
             VStack(alignment: .leading, spacing: 10) {
@@ -684,9 +766,12 @@ public struct NewswireSurfaceView: View {
                 Text(message)
                     .font(.riot(.body, size: 15, relativeTo: .callout))
                     .foregroundStyle(RiotTheme.ink(for: colorScheme))
-                Button(primary.label, action: primary.action)
-                    .buttonStyle(.riotPrimary)
-                    .frame(minHeight: 44)
+                ForEach(actions, id: \.self) { action in
+                    Button(action.label) { perform(action) }
+                        .buttonStyle(action.isNearbyPath ? .riotSecondary : .riotPrimary)
+                        .frame(minHeight: 44)
+                        .accessibilityIdentifier(action.accessibilityID)
+                }
             }
         }
         .accessibilityIdentifier(id)

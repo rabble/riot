@@ -263,6 +263,38 @@ final class NewswireSurfaceTests: XCTestCase {
         XCTAssertEqual(model.wire, .offlineStale)
     }
 
+    // MARK: - Dead-end fixes (Unit 7)
+
+    func testPostsButNoFeatureOffersNoDeadButtonTheOpenWireIsTheNextAction() {
+        let post = projectedPost(id: "a1", headline: "Report", treatment: .ordinary)
+        let model = NewswireSurfaceModel(
+            projector: FixedProjector(projection(openWire: [post], frontPage: [])),
+            editor: ThrowingEditor(),
+            authority: StubAuthority(),                 // 4b seam; editor status irrelevant here
+            spaceDescriptorEntryID: "desc", communityName: "Riverside",
+            myKeyHex: "aa".repeated(32))
+        model.load()
+        guard case let .postsButNoFeature(openWire) = model.wire else {
+            return XCTFail("posts but no feature")
+        }
+        // The next action is the visible open wire, not a button.
+        XCTAssertFalse(openWire.isEmpty, "the open wire content IS the reachable next action")
+        XCTAssertTrue(model.forwardActions.isEmpty, "the dead 'Open wire' no-op button is gone")
+    }
+
+    func testEveryTerminalWireStateHasAReachableNextActionAndNoDeadNoOp() {
+        // emptyWire → post the first update; offlineStale → a forward path; the two
+        // content states → the content itself. No state offers a no-op button.
+        let empty = NewswireSurfaceModel(
+            projector: FixedProjector(projection(openWire: [], frontPage: [])),
+            editor: ThrowingEditor(), authority: StubAuthority(),
+            spaceDescriptorEntryID: "desc",
+            communityName: "R", myKeyHex: "aa".repeated(32))
+        empty.load()
+        XCTAssertEqual(empty.wire, .emptyWire)
+        XCTAssertEqual(empty.forwardActions, [.postFirstUpdate])
+    }
+
     // MARK: - Treatment rendering
 
     func testHiddenPostRendersTheWarningInterstitialAndDropsThePayload() {
@@ -594,6 +626,19 @@ final class NewswireSurfaceTests: XCTestCase {
         func projectNewswire(spaceDescriptorEntryID: String) throws -> NewswireProjectionView {
             throw NSError(domain: "test", code: 1)
         }
+    }
+    /// Returns a fixed projection so a wire-state can be driven without a store.
+    private struct FixedProjector: NewswireProjecting {
+        let projection: NewswireProjectionView
+        init(_ projection: NewswireProjectionView) { self.projection = projection }
+        func projectNewswire(spaceDescriptorEntryID: String) throws -> NewswireProjectionView {
+            projection
+        }
+    }
+    /// Satisfies Unit 4b's `authority:` seam for wire-state tests that don't exercise
+    /// editor gating — always "not an editor", so it never colors a wire-state result.
+    private struct StubAuthority: NewswireEditorAuthorityChecking {
+        func newswireIsEditor(spaceDescriptorEntryID: String, subjectID: String) throws -> Bool { false }
     }
     private struct ThrowingEditor: NewswireEditorialActing, NewswireEditorAuthorityChecking {
         func createNewswireEditorialAction(
