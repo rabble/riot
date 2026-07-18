@@ -17,6 +17,8 @@ fun CommunityRelationship.plainLabel(): String =
         CommunityRelationship.ORGANIZER -> "Organizer"
         CommunityRelationship.MEMBER -> "Member"
         CommunityRelationship.PUBLIC_READER -> "Public reader"
+        CommunityRelationship.FOLLOWING -> "Following"
+        CommunityRelationship.PERSONAL -> "Personal space"
     }
 
 /** Plain relative-time phrases for the chooser — never a raw timestamp. */
