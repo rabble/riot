@@ -29,3 +29,8 @@ Read all spaces/nav/personal .md docs. KEY FINDINGS (doc-wins discipline):
 - **`plans/2026-07-18-ios-surface-unit6-compose-modes.md` (gate-passed)**: a DIFFERENT "Unit 6" — iOS composer mode picker (Update/Alert/Request). Naming collision with composite-site Unit 6. Separate track; relevant to Rung 5 compose flows only. Not a conflict.
 
 Decision: proceed to PLAN Rung 2 (two-pane shell) first — biggest, most valuable, independent of the personal-spaces reconciliation. Native EXECUTION deferred (can't verify on-device overnight); planning is gate-verifiable and safe.
+
+### Wake 2 — Rung 2 plan drafted
+Architect agent drafted `plans/2026-07-18-spaces-first-rung2-two-pane-shell.md` — a 4-step increment sub-ladder (2.0 shared pure tier/row model XCTest-only; 2.1 iOS repo/app-model plumbing; 2.2 iOS/macOS two-pane shell; 2.3 Android mirror-models + root skeleton). Grounded against overnight branch (symbols, corrected line table).
+Real gaps it found (for morning): (a) Swift RiotProfileRepository has no listFollowedSites() wrapper yet; (b) **Rung-1 FOLLOW-UP: Android's CommunityRelationship `when` is exhaustive with no else — regenerating Android bindings with Rung 1's new variants breaks Kotlin compile.** Not caught by Rust CI (Android app CI is deferred). Healed in Rung 2 step 2.3; flagged here so it's not a surprise. (c) macOS shares iOS sources → both pbxproj need entries per new Swift file (recipe included). (d) Android still on the OLD debug shell (flat ConferenceSurface enum, Views not Compose) → its Rung 2 is a skeleton, not a redesign.
+Committing the draft; running the plan-review gate (3 reviewers) next.
