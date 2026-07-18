@@ -1,7 +1,7 @@
 # Public Community Anchor Network Design
 
 Date: 2026-07-18
-Status: Design review rounds 1-15 revised; pending round 16
+Status: Design review rounds 1-16 revised; pending round 17
 Scope: Owner-rooted composite public sites, discovery, hosting, web mirroring,
 and opportunistic internet sync
 
@@ -129,6 +129,11 @@ context, and removed unverifiable collector-deletion claims from retention UX.
 Round fifteen replaced generic control refusals with a closed per-code matrix
 fixing subject, retryability, delay presence, retry scope, and canonical
 details, and made the one-stream-per-session QUIC boundary explicit.
+
+Round sixteen aligned retry scopes with durable idempotency by classifying
+pre-claim refusals versus claimed terminal results, and added an authenticated
+`sync/2 stale_source` abort that terminalizes the destination operation and
+Prepare replay before retry.
 
 ## Product Decisions
 
@@ -1100,6 +1105,7 @@ exactly:
 | `cursor_regression` | `["cursor", after_exclusive, observed_first_id]` |
 | `page_mismatch` | `["page", expected_page_digest, observed_page_digest]` |
 | `snapshot_mismatch` | `["snapshot", expected_snapshot_digest, observed_snapshot_digest]` |
+| `stale_source` | `["source_state", attested_generation, observed_generation, ordered_observed_namespace_snapshot_digests]` |
 | `request_mismatch` | `["request", request_id]` |
 | `chunk_mismatch` | `["chunk", request_id, expected_index, observed_index]` |
 | `frame_oversize` | `["encoded_size", observed_bytes, maximum_bytes]` |
@@ -1248,7 +1254,31 @@ constraint across ordinary and reserved classes. An ordinary winning claim
 points at its ordinary state row; `PrepareHost` or `PrepareReplica` creates the
 operation and changes that row to `Prepared` in the same transaction.
 Concurrent exact calls compare the retained request digest and replay it, while
-another body is rejected without result disclosure. Namespace tokens are
+another body is rejected without result disclosure.
+
+Admission and disposition ordering is exhaustive:
+
+| Stage/result | Durable key disposition |
+| --- | --- |
+| frame bound, canonical decode/re-encode, or digest construction fails | no lookup result and no key claim; bounded protocol failure/close |
+| key exists with equal digest | replay its byte-identical `Claimed`, `Prepared`, or `Terminal` state |
+| key exists with different digest | `idempotency_conflict`; never reveal or change stored state |
+| novel request fails version/transport/profile-size/source-rate/global-headroom/authority checks | pre-claim refusal; no index or result row |
+| novel request gets `admission_busy`, `removal_busy`, or `admission_over_quota` | pre-claim refusal; same key/body may retry after its required delay |
+| novel request gets `work_required` or `work_expired` | pre-claim refusal; same key may retry with the required new stamp because no prior digest was stored |
+| all pre-claim checks pass | atomically insert key plus request digest before any operation/single-call mutation |
+| Prepare succeeds | same transaction creates operation and stores `Prepared` |
+| claimed ordinary single-call/listing/read succeeds or transactionally refuses | store byte-identical `Terminal` outcome |
+| Commit request reaches disposition processing | claim its separate key, then follow the closed Commit matrix; reusable `commit_busy`/`commit_over_quota` still terminalize that Commit key |
+| reserved removal authority succeeds | atomically claim the reserved index partition, request digest, removal slot, and removal state/result |
+
+Pre-claim refusals are never retained and therefore never count toward the
+24-hour terminal-result ceiling. Only `Claimed`, `Prepared`, and `Terminal`
+states participate in exact replay. This is why a changed work stamp under the
+same key is legal only after `work_required`/`work_expired`, while changing any
+claimed request is always `idempotency_conflict`.
+
+Namespace tokens are
 deterministically derived as:
 
 ```text
@@ -1273,7 +1303,8 @@ invalid tokens are never replayed as usable. Every `CommitHost` has its own
 idempotency row. The final
 promotion transaction atomically marks the operation committed, creates the
 receipt, and changes that Commit row to `Terminal`. A refused Prepare or any
-ordinary single-call request stores `Terminal` directly.
+ordinary single-call request stores `Terminal` only if the refusal arises after
+the claim boundary above.
 
 A prepared mapping is retained through `operation_expiry + 24 hours`; a
 terminal or ordinary single-call result is retained for 24 hours. The
@@ -1605,12 +1636,24 @@ creating tokens and applying peer-specific byte/site budgets. To begin
 `ReplicaIntoStaged`, the source first opens one immutable repository read
 transaction, then reads and compares generation plus all namespace digests
 inside that transaction, and streams only from that same snapshot. A mismatch
-fails `stale_source`; no compare-then-open sequence is legal. Changes committed
-after the immutable snapshot opens appear in the next replication.
+causes the source, before `SnapshotStart`, to send the authenticated `sync/2`
+`stale_source` refusal carrying the attested generation, observed generation,
+and observed `O/C/W` snapshot digests. No compare-then-open sequence is legal.
+Changes committed after the immutable snapshot opens appear in the next
+replication.
 
-`stale_source` immediately discards destination staging. The source obtains a
-fresh destination challenge and attestation and may retry at most three times
-with 1/2/4-second backoff inside peer budgets. Publish progress exposes
+On that refusal the destination verifies the tuple against the prepared
+attestation and operation, then in one transaction records terminal
+`ControlRefusal::stale_source`, deletes all destination staging, invalidates
+every namespace token, and changes the Prepare idempotency mapping to that
+Terminal result. Exact Prepare replay and `GetOperation` then return the same
+`stale_source`; Commit cannot revive the operation. If the refusal/connection
+is lost first, mandatory session-close handling instead produces terminal
+`peer_context_changed` with the same cleanup, so no EOF path leaves a live
+operation.
+
+The source obtains a fresh destination challenge and attestation and may retry
+at most three times with 1/2/4-second backoff inside peer budgets. Publish progress exposes
 `RetryingStaleSource`; background gossip exposes the same attempts under
 Technical details, then a typed `source_changed` terminal outcome without
 changing existing hosted copies. No historical operator key is accepted merely
@@ -1758,7 +1801,7 @@ extra wire field.
 | `invalid_listing_authority` | `listing` | false | null | `never` | `["none"]` |
 | `invalid_operation_authority` | `operation` | false | null | `never` | `["none"]` |
 | `unsupported_version` | `version` | false | null | `never` | `["versions", supported_versions]` |
-| `admission_over_quota` | `capacity` | true | required | `new_idempotency_key_after_delay` | `["quota", limit_id, effective_value, observed_value]` |
+| `admission_over_quota` | `capacity` | true | required | `same_request_after_delay` | `["quota", limit_id, effective_value, observed_value]` |
 | `commit_over_quota` | `capacity` | true | required | `same_operation_new_commit_key` | `["quota", limit_id, effective_value, observed_value]` |
 | `unsupported_transport` | `transport` | false | null | `never` | `["transport", required_mode, observed_mode]` |
 | `manifest_transport_mismatch` | `manifest` | false | null | `never` | `["digests", expected_digest, observed_digest]` |
@@ -1775,7 +1818,7 @@ extra wire field.
 | `site_too_large` | `capacity` | false | null | `never` | `["storage", required_class, advertised_bytes, local_limit_bytes]` |
 | `work_required` | `work` | true | null | `same_idempotency_with_new_work_stamp` | `["work", policy_epoch, difficulty]` |
 | `stale_base` | `operation` | true | null | `new_operation` | `["site_state", current_generation, ordered_namespace_snapshot_digests]` |
-| `stale_source` | `operation` | true | null | `new_operation` | `["source_state", observed_generation, current_generation, ordered_namespace_snapshot_digests]` |
+| `stale_source` | `operation` | true | null | `new_operation` | `["source_state", attested_generation, observed_generation, ordered_observed_namespace_snapshot_digests]` |
 | `attestation_consumed` | `operation` | true | null | `new_operation` | `["attestation", replica_source_attestation_digest]` |
 | `already_unlisted` | `listing` | false | null | `never` | `["listing_state", "already_unlisted"]` |
 | `removal_replay_window` | `listing` | true | required | `new_idempotency_key_after_delay` | `["relist_window", earliest_retry_at]` |
@@ -2650,7 +2693,9 @@ before any KMS call. Concurrent final requests for one idempotency key race on
 the global index plus their class's durable state transition; only the winner
 can consume capacity, and all exact losers replay its state.
 
-Idempotency results and terminal refusals expire after 24 hours; abandoned
+Terminal idempotency results and post-claim terminal refusals expire after 24
+hours; `Claimed` uses its 30-second lease, `Prepared` uses the operation expiry
+plus 24-hour rule above, and pre-claim refusals leave no row. Abandoned
 staging expires at its operation deadline; expired directory-feed history is
 compacted behind a signed head checkpoint; conflict evidence retains only the
 bounded proofs above. Startup recovery performs the same cleanup before
@@ -2714,10 +2759,13 @@ first canonically decodes the stamp and nested envelope, recomputes
 `proof_bytes`, and checks every binding: anchor/key/descriptor, intended
 operation kind, outer idempotency key, `work_target_digest` of this request
 with the work-stamp slot reset to `null`, community root, policy epoch, and time
-window. Only then may it perform admission work or claim the request. An exact
-request replay compares the stored `control_request_digest` and returns its
-existing state without re-consuming work; the same key with a changed stamp,
-counter, or body is `idempotency_conflict`.
+window. A missing/expired/invalid stamp for a novel key is rejected before
+claim; after a valid stamp and every other pre-claim check, the transaction may
+claim the request. For an already claimed key, exact digest replay returns its
+stored state without re-consuming work, while a changed stamp, counter, or body
+is `idempotency_conflict`. For an unclaimed key that just received
+`work_required`/`work_expired`, adding a new valid stamp is permitted because
+no stored digest exists.
 Difficulty is `0..24`, the challenge expires after five minutes, and the work
 stamp is therefore bound to one anchor, request key, exact request body, root,
 operation kind, and pressure-policy epoch. A proof cannot authorize a different
@@ -4035,6 +4083,8 @@ RED:
 - canonical decode, re-encoding, and body digest comparison occur after an
   idempotency lookup or reveal a stored result to a same-key/different-body
   request;
+- pre-claim work/busy/quota refusal creates a durable key, blocks same-key
+  retry-through-success, or lets a changed claimed request bypass conflict;
 - a reserved removal drops its request digest, or one key can claim both an
   ordinary and reserved result;
 - crash at any SubmitListing/removal failpoint duplicates an inclusion, loses a
@@ -4084,6 +4134,9 @@ RED:
   attestation after the source generation changes;
 - one challenge/attestation prepares twice, survives descriptor rotation, or
   compares source generation outside the immutable snapshot it streams.
+- source mutation after Prepare but before immutable snapshot acquisition
+  cannot send canonical `sync/2 stale_source`, or leaves destination staging,
+  tokens, Prepare replay, or `GetOperation` live;
 - a prepared replica replays usable tokens after its peer session closes or
   either descriptor rotates, rather than terminalizing as
   `peer_context_changed`;
@@ -4222,6 +4275,9 @@ Tests explicitly cover:
 - work proof replay with another key or body;
 - work-stamp golden vectors for exact nested challenge envelope, null-slot
   target digest, counter/proof, expiry, request key/root/kind/policy bindings;
+- pre-claim `work_required`, `work_expired`, admission/removal busy, and quota
+  retry through success under the specified key, followed by claimed
+  exact/different-digest replay;
 - peer-proof reflection, replay, role swap, exporter mismatch, and stale hello;
 - omitted versus present-empty TLS exporter context and exporter output-vector
   mismatch;
@@ -4280,6 +4336,9 @@ Tests explicitly cover:
   phase, proving pre-readiness terminalization and session-generation advance;
 - concurrent source commit between replica authorization and immutable
   snapshot acquisition;
+- authenticated `sync/2 stale_source` delivery and lost-delivery/session-close
+  alternatives, both proving atomic destination cleanup and fresh
+  challenge/attestation/Prepare recovery;
 - listing before hosting and hosting eviction after listing;
 - gossip loops and final quiescence;
 - unsupported `require:arti` ticket;
@@ -4403,6 +4462,8 @@ The design is implemented when:
   success/refusal envelopes interoperate across independent implementations;
 - every control refusal has one canonical subject, retry flag, delay presence,
   details payload, and client retry scope;
+- pre-claim refusals never poison idempotency retry, while every claimed result
+  retains and enforces its exact request digest;
 - empty feed/checkpoint sentinels, every `sync/2` refusal, and the complete
   Prepare-to-GetOperation lifecycle have one canonical encoding and recovery
   result;
@@ -4437,6 +4498,8 @@ The design is implemented when:
   lifecycle, channel-bound peer authentication, current-key connection-bound
   single-use source attestations, same-snapshot generation checks, and
   checkpoint recovery;
+- replica source changes travel as authenticated sync refusals that atomically
+  terminalize destination staging/tokens and require a fresh attested Prepare;
 - public HTTPS remains within compiled accepted-socket, TLS handshake,
   connection-lifetime, request rate/queue, CPU, database-snapshot, query-time,
   and response-byte ceilings without consuming the reserved
