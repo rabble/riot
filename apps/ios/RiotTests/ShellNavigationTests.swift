@@ -424,7 +424,7 @@ final class ShellNavigationTests: XCTestCase {
     func testConnectionStartsExplicitlyOffline() {
         let model = RiotAppModel()
         XCTAssertEqual(model.connectionStatus, .offline)
-        XCTAssertEqual(model.connectionDisclosure, "Offline · local device only")
+        XCTAssertEqual(model.connectionDisclosure, "Not connected")
     }
 
     @MainActor

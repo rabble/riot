@@ -11,6 +11,8 @@ public extension CommunityRelationship {
         case .organizer: return "Organizer"
         case .member: return "Member"
         case .publicReader: return "Public reader"
+        case .following: return "Following"
+        case .personal: return "Personal space"
         }
     }
 }
