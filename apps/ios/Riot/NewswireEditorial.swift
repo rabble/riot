@@ -1380,3 +1380,122 @@ private struct NewswireCommentComposeSheet: View {
             }
     }
 }
+
+// MARK: - Composite-site moderation read surface (fix #4, read path)
+
+/// How a composite site's content surface is presented, resolved from core's
+/// single `SiteDegradation` verdict. `held` is a SECURITY control, not decoration:
+/// when core reports `.moderationLoading` the moderation list is not yet current,
+/// so the whole content surface is HELD — items are NEVER rendered as
+/// trustworthy-clean, because showing not-yet-moderated content as if it were
+/// moderated is the exact failure the freshness gate exists to prevent. A
+/// more-severe honest degradation (invalid manifest, rollback/equivocation alarm,
+/// blocked transport) holds the surface too; the mild states (editorial-only,
+/// member-unverified) show content with a notice.
+public enum CompositeContentHold: Equatable, Sendable {
+    /// Content renders normally (possibly with a mild informational banner).
+    case shown
+    /// Content is gated behind the banner — not presented as trustworthy.
+    case held(reason: SiteDegradation)
+}
+
+/// One accountable row on the composite read surface. The resolved item carries
+/// no body (this is the moderation/trust view, not the article reader), so a row
+/// is identity + trust tier + moderation treatment. A Hidden/Tombstoned item is an
+/// accountable placeholder (its `display`), never a silent disappearance.
+public struct CompositeItemRow: Equatable, Identifiable, Sendable {
+    public let id: String
+    public let authorTag: String
+    public let tier: SiteTrustTier
+    public let display: NewswirePostDisplay
+
+    public init(_ item: ResolvedSiteItem) {
+        self.id = item.entryId
+        self.authorTag = String(item.authorSubspace.prefix(8))
+        self.tier = item.trustTier
+        self.display = NewswirePostDisplay.fromSite(item.treatment)
+    }
+}
+
+public extension NewswirePostDisplay {
+    /// Map a composite-site item treatment to the shared post-display treatment —
+    /// the same accountable-placeholder rendering a moderated newswire post gets.
+    static func fromSite(_ treatment: SiteItemTreatment) -> NewswirePostDisplay {
+        switch treatment {
+        case .ordinary: .ordinary
+        case .hidden: .hiddenInterstitial
+        case .tombstoned: .tombstoned
+        }
+    }
+}
+
+/// The read-model for a resolved composite site: the hold decision, the honest
+/// banner copy, and the accountable rows. Pure over core's `ResolvedCompositeSite`
+/// — the view renders exactly this and makes no trust decision of its own.
+public struct CompositeSiteReadModel: Equatable, Sendable {
+    public let root: String
+    public let hold: CompositeContentHold
+    public let bannerMessage: String?
+    public let items: [CompositeItemRow]
+
+    /// Whether the content surface is HELD (gated, not trustworthy). The view MUST
+    /// honour this — under a hold it never renders the rows as clean content.
+    public var isContentHeld: Bool {
+        if case .held = hold { return true }
+        return false
+    }
+
+    public static func from(_ resolved: ResolvedCompositeSite) -> CompositeSiteReadModel {
+        CompositeSiteReadModel(
+            root: resolved.root,
+            hold: holdFor(resolved.degradation),
+            bannerMessage: banner(for: resolved.degradation),
+            items: resolved.items.map(CompositeItemRow.init))
+    }
+
+    /// The hold decision. Every state where content must NOT be trusted holds the
+    /// surface; the two mild states still show content with a notice.
+    static func holdFor(_ degradation: SiteDegradation) -> CompositeContentHold {
+        switch degradation {
+        case .none, .memberUnverified, .editorialOnly:
+            .shown
+        case .moderationLoading, .manifestInvalid, .transportBlocked,
+            .manifestRollbackAlarm, .equivocationAlarm:
+            .held(reason: degradation)
+        }
+    }
+
+    /// Honest, plain-language banner copy per degradation. `nil` only when fully
+    /// current — every degraded state names its own "why".
+    static func banner(for degradation: SiteDegradation) -> String? {
+        switch degradation {
+        case .none:
+            nil
+        case .moderationLoading:
+            "Moderation loading — posts stay held until this site's moderation list catches up."
+        case .manifestInvalid:
+            "This site couldn't be verified. Its content is held until a valid signature syncs."
+        case .memberUnverified:
+            "A section of this site couldn't be verified."
+        case .editorialOnly:
+            "Comments and the open wire are still syncing."
+        case .transportBlocked:
+            "This site requires a connection that isn't available right now."
+        case .manifestRollbackAlarm:
+            "This site's configuration looks rolled back — content is held."
+        case .equivocationAlarm:
+            "This site has conflicting owner signatures — content is held."
+        }
+    }
+}
+
+public extension SiteTrustTier {
+    /// A short, stable label for the item's owner-resolved trust tier.
+    var label: String {
+        switch self {
+        case .editorial: "Editorial"
+        case .openWire: "Open wire"
+        case .comment: "Comment"
+        }
+    }
+}

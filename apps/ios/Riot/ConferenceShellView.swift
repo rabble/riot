@@ -375,7 +375,74 @@ private struct OnboardingSetupView: View {
 /// something. Dismissible — the recovery already happened and the app is usable;
 /// this only tells the person what was set aside (never deleted). Never a dead
 /// error.
-private struct RecoveryNoticeBanner: View {
+/// The composite-site read surface: the honest-degradation banner (the SAME
+/// `RecoveryNoticeBanner` the shell uses) over the accountable rows. When the
+/// model reports a hold — critically, `.moderationLoading` — the rows are visually
+/// GATED (dimmed and non-interactive behind the banner) so not-yet-trustworthy
+/// content is never presented as clean. The hold is a security control enforced by
+/// the model (`isContentHeld`), independent of whether the banner is dismissed.
+struct CompositeSiteReadView: View {
+    private let model: CompositeSiteReadModel
+    @State private var bannerDismissed = false
+    @Environment(\.colorScheme) private var colorScheme
+
+    init(model: CompositeSiteReadModel) {
+        self.model = model
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            if let message = model.bannerMessage, !bannerDismissed {
+                RecoveryNoticeBanner(message: message, onDismiss: { bannerDismissed = true })
+                    .accessibilityIdentifier("composite-degradation-banner")
+            }
+            if model.items.isEmpty {
+                Text("No posts on this site yet.")
+                    .font(.riot(.body, size: 14, relativeTo: .footnote))
+                    .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
+            } else {
+                VStack(alignment: .leading, spacing: 10) {
+                    ForEach(model.items) { row in compositeRow(row) }
+                }
+                .opacity(model.isContentHeld ? 0.4 : 1)
+                .disabled(model.isContentHeld)
+                .accessibilityIdentifier(
+                    model.isContentHeld ? "composite-content-held" : "composite-content-shown")
+            }
+        }
+        .accessibilityIdentifier("composite-site-read")
+    }
+
+    @ViewBuilder
+    private func compositeRow(_ row: CompositeItemRow) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            switch row.display {
+            case .ordinary:
+                Text(row.tier.label)
+                    .font(.riot(.body, size: 15, relativeTo: .headline))
+                    .foregroundStyle(RiotTheme.ink(for: colorScheme))
+            case .hiddenInterstitial:
+                Text(NewswireTreatmentCopy.hiddenTitle)
+                    .font(.riot(.body, size: 13, relativeTo: .caption))
+                    .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
+            case .tombstoned:
+                Text(NewswireTreatmentCopy.tombstoneTitle)
+                    .font(.riot(.body, size: 13, relativeTo: .caption))
+                    .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
+            }
+            Text(row.authorTag)
+                .font(.riot(.mono, size: 11, relativeTo: .caption2))
+                .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityIdentifier("composite-item-\(row.id)")
+    }
+}
+
+/// The honest-degradation notice banner (§4.7 recovery convention). Internal so
+/// the composite-site read surface can reuse the exact same banner for its
+/// moderation-loading / degraded states.
+struct RecoveryNoticeBanner: View {
     let message: String
     let onDismiss: () -> Void
     @Environment(\.colorScheme) private var colorScheme
