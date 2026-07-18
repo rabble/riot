@@ -34,6 +34,8 @@
 //! entries) are applied in Task 5's freshness/exemption evaluation; this module
 //! only defines and (de)serializes the record.
 
+use crate::willow::site_paths::is_under_mod;
+use crate::willow::Path;
 use minicbor::{Decoder, Encoder};
 
 /// Frozen moderation-record schema tag (envelope top-level key 0).
@@ -150,6 +152,10 @@ pub enum ModerationRecordError {
     NonCanonical,
     TrailingBytes,
     Malformed,
+    /// The entry carrying a moderation payload is not under `O:/mod/`. A
+    /// moderation record is only meaningful at a `/mod/` path; a record body at
+    /// `/articles/` or `/manifest` is refused (read-side path guard, Task 2).
+    NotUnderMod,
 }
 
 impl std::fmt::Display for ModerationRecordError {
@@ -237,6 +243,25 @@ pub fn decode_moderation_record(input: &[u8]) -> Result<ModerationRecord, Modera
     let record = record.ok_or(ModerationRecordError::MissingKey(2))?;
     prove_canonical(input, encode_moderation_record(&record)?)?;
     Ok(record)
+}
+
+/// Read a moderation record from an owner-signed entry's `(path, payload)`.
+///
+/// The signature over the entry is willow25's concern (verified upstream at
+/// admission via `verify_entry` / `authorise_owner_entry`); this is the Riot-side
+/// **path guard**: a moderation record is only meaningful at `O:/mod/`, so a
+/// record body carried at `/articles/` or `/manifest` is refused
+/// (`NotUnderMod`) BEFORE the payload is trusted as moderation. Owner signing
+/// itself uses `OwnedMasthead::authorise_owner_entry` with an entry built at a
+/// `/mod/` path (Task 2 tests exercise the full sign → verify → read round-trip).
+pub fn read_moderation_record(
+    path: &Path,
+    payload: &[u8],
+) -> Result<ModerationRecord, ModerationRecordError> {
+    if !is_under_mod(path) {
+        return Err(ModerationRecordError::NotUnderMod);
+    }
+    decode_moderation_record(payload)
 }
 
 fn decode_body(

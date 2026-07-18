@@ -16,8 +16,8 @@ pub use manifest::{
     MAX_TRANSPORT_ALLOW, SITE_MANIFEST_SCHEMA,
 };
 pub use moderation::{
-    decode_moderation_record, encode_moderation_record, Endorse, ModEpoch, ModerationRecord,
-    ModerationRecordError, Revoke, Tombstone, MAX_MODERATION_RECORD_BYTES,
+    decode_moderation_record, encode_moderation_record, read_moderation_record, Endorse, ModEpoch,
+    ModerationRecord, ModerationRecordError, Revoke, Tombstone, MAX_MODERATION_RECORD_BYTES,
     MODERATION_RECORD_SCHEMA,
 };
 pub use validate::{
