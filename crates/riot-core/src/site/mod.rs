@@ -16,9 +16,10 @@ pub use manifest::{
     MAX_TRANSPORT_ALLOW, SITE_MANIFEST_SCHEMA,
 };
 pub use moderation::{
-    decode_moderation_record, encode_moderation_record, read_moderation_record, Endorse, ModEpoch,
-    ModerationRecord, ModerationRecordError, Revoke, Tombstone, MAX_MODERATION_RECORD_BYTES,
-    MODERATION_RECORD_SCHEMA,
+    compute_mod_set_digest, decode_moderation_record, encode_moderation_record, evaluate_freshness,
+    read_moderation_record, Endorse, HeldModerationRecord, ModEpoch, ModerationFreshness,
+    ModerationLoading, ModerationRecord, ModerationRecordError, Revoke, Tombstone,
+    MAX_MODERATION_RECORD_BYTES, MODERATION_FRESHNESS_WINDOW_SECS, MODERATION_RECORD_SCHEMA,
 };
 pub use validate::{
     validate_site_manifest, ClassifiedMember, MemberClassification, SiteManifestValidationError,

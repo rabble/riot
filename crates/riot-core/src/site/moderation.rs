@@ -35,8 +35,14 @@
 //! only defines and (de)serializes the record.
 
 use crate::willow::site_paths::is_under_mod;
-use crate::willow::Path;
+use crate::willow::{william3_digest, Path};
 use minicbor::{Decoder, Encoder};
+use std::collections::BTreeSet;
+
+/// How stale a heartbeat may be before `/mod/` is no longer "current". A client
+/// whose latest `mod_epoch` is older than this holds the open namespaces as
+/// `moderation-loading` rather than falsely rendering unmoderated content.
+pub const MODERATION_FRESHNESS_WINDOW_SECS: u64 = 24 * 60 * 60;
 
 /// Frozen moderation-record schema tag (envelope top-level key 0).
 pub const MODERATION_RECORD_SCHEMA: &str = "org.riot.site.moderation/1";
@@ -262,6 +268,148 @@ pub fn read_moderation_record(
         return Err(ModerationRecordError::NotUnderMod);
     }
     decode_moderation_record(payload)
+}
+
+// ---------- Task 5: freshness evaluation + exemption filtering ----------
+
+/// A held moderation record paired with its willow value-identity (record-id).
+/// The id is what `mod_set_digest` commits to; the caller supplies it from the
+/// synced entry (`entry_id`), so this module stays free of willow entry types.
+#[derive(Debug, Clone)]
+pub struct HeldModerationRecord {
+    pub record: ModerationRecord,
+    pub record_id: [u8; 32],
+}
+
+/// Why `/mod/` is not yet current. Every variant means the resolver holds the
+/// open namespaces as `moderation-loading` — NEVER a false "current".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModerationLoading {
+    /// No `mod_epoch` heartbeat held at all — freshness is a positive signal, so
+    /// its absence is loading, not "current-and-empty".
+    NoHeartbeat,
+    /// The latest heartbeat's `ts` is older than the freshness window.
+    StaleHeartbeat,
+    /// A gap in the held heartbeat `seq` sequence — a heartbeat is missing.
+    SeqGap,
+    /// The recomputed digest over the held revoke+tombstone record-ids does not
+    /// match the heartbeat's `mod_set_digest` — the client is missing (or has
+    /// extra) records the owner committed to. This is what detects tail
+    /// suppression (a withheld latest revoke shows no `seq` gap).
+    DigestMismatch,
+}
+
+/// The resolved `/mod/` freshness verdict. `Current` carries the exemption-FILTERED
+/// sets the resolver (Unit 4) overlays directly: `revoke{root}` and
+/// tombstones of protected (manifest/root/owner) entries are already removed, so
+/// a rogue/seized moderator cannot brick the site through the overlay.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ModerationFreshness {
+    Current {
+        revoked: BTreeSet<[u8; 32]>,
+        tombstoned: BTreeSet<[u8; 32]>,
+        endorsed: BTreeSet<[u8; 32]>,
+    },
+    Loading(ModerationLoading),
+}
+
+/// Recompute `mod_set_digest` over a set of revoke+tombstone record-ids, the
+/// recompute-and-compare form (a one-way hash cannot enumerate missing names;
+/// it can only reveal the held set differs). `BTreeSet` gives the canonical
+/// sorted order, so owner and client agree byte-for-byte.
+pub fn compute_mod_set_digest(record_ids: &BTreeSet<[u8; 32]>) -> [u8; 32] {
+    let mut buf = Vec::with_capacity(record_ids.len() * 32);
+    for id in record_ids {
+        buf.extend_from_slice(id);
+    }
+    william3_digest(&buf)
+}
+
+/// Evaluate whether `/mod/` is current, and if so emit the exemption-filtered
+/// revoked/tombstoned/endorsed sets (§4.3 + plan §2 invariants 1, 3, 4).
+///
+/// `manifest_root` exempts `revoke{author_key == root}` (a moderator cannot
+/// revoke the owner). `protected_entry_ids` (the manifest entry-id + owner
+/// entry-ids, supplied by the resolver which knows entry identities) exempts
+/// `tombstone{target ∈ protected}` (a moderator cannot tombstone `/manifest`
+/// or owner records). Both exemptions are applied HERE so the overlay never sees
+/// a brick-the-site record.
+pub fn evaluate_freshness(
+    held: &[HeldModerationRecord],
+    manifest_root: [u8; 32],
+    protected_entry_ids: &BTreeSet<[u8; 32]>,
+    now: u64,
+) -> ModerationFreshness {
+    // 1. Latest heartbeat. Absence ⇒ loading (freshness is a positive signal).
+    let mut epochs: Vec<&ModEpoch> = held
+        .iter()
+        .filter_map(|h| match &h.record {
+            ModerationRecord::ModEpoch(e) => Some(e),
+            _ => None,
+        })
+        .collect();
+    epochs.sort_by_key(|e| e.seq);
+    let Some(latest) = epochs.last().copied() else {
+        return ModerationFreshness::Loading(ModerationLoading::NoHeartbeat);
+    };
+
+    // 2. Freshness window.
+    if now.saturating_sub(latest.ts) > MODERATION_FRESHNESS_WINDOW_SECS {
+        return ModerationFreshness::Loading(ModerationLoading::StaleHeartbeat);
+    }
+
+    // 3. Seq contiguity — a hole in the held heartbeat sequence is a missing
+    //    heartbeat. (Missing revoke/tombstone RECORDS are caught by the digest;
+    //    this catches missing HEARTBEATS.)
+    for pair in epochs.windows(2) {
+        if pair[1].seq != pair[0].seq + 1 {
+            return ModerationFreshness::Loading(ModerationLoading::SeqGap);
+        }
+    }
+
+    // 4. Digest recompute-and-compare over held revoke+tombstone ids.
+    let held_mod_ids: BTreeSet<[u8; 32]> = held
+        .iter()
+        .filter(|h| {
+            matches!(
+                h.record,
+                ModerationRecord::Revoke(_) | ModerationRecord::Tombstone(_)
+            )
+        })
+        .map(|h| h.record_id)
+        .collect();
+    if compute_mod_set_digest(&held_mod_ids) != latest.mod_set_digest {
+        return ModerationFreshness::Loading(ModerationLoading::DigestMismatch);
+    }
+
+    // 5. Current — build exemption-filtered sets. The guarantee rests on
+    //    identity at render, not the clock, so a backdated revoke still hides.
+    let mut revoked = BTreeSet::new();
+    let mut tombstoned = BTreeSet::new();
+    let mut endorsed = BTreeSet::new();
+    for h in held {
+        match &h.record {
+            // Root is exempt: a moderator can never revoke the owner.
+            ModerationRecord::Revoke(r) if r.author_key != manifest_root => {
+                revoked.insert(r.author_key);
+            }
+            ModerationRecord::Revoke(_) => {}
+            // Protected entries (manifest / owner) are exempt from tombstone.
+            ModerationRecord::Tombstone(t) if !protected_entry_ids.contains(&t.target_entry) => {
+                tombstoned.insert(t.target_entry);
+            }
+            ModerationRecord::Tombstone(_) => {}
+            ModerationRecord::Endorse(e) => {
+                endorsed.insert(e.author_key);
+            }
+            ModerationRecord::ModEpoch(_) => {}
+        }
+    }
+    ModerationFreshness::Current {
+        revoked,
+        tombstoned,
+        endorsed,
+    }
 }
 
 fn decode_body(
