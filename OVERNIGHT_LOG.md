@@ -113,3 +113,15 @@ _(Summary goes at the TOP when done. Task entries append below in order.)_
   treated-row inline reply leakage, create-sheet name errors, exact alert-expiry
   refresh, isolated UI-test storage, missing `cargo check`, per-task log entries,
   and final integration into the requested branch.
+
+## Task: plan review gate, iteration 2
+- Scope & Alignment passed again. Feasibility found the repository’s name-only
+  iPhone 17 Pro destination resolves to unavailable `OS:latest` despite installed
+  26.1/26.2 devices. Added a first TDD unit that makes `ios-check.sh` resolve an
+  available device UUID with an environment override; every direct test and
+  native screenshot command consumes that resolver.
+- Completeness found the controller’s latent `joinSpace` seam, insufficient
+  non-empty-name coverage, and ambiguous treated timestamps. Added a pre-join
+  transition hook/test, success/failure loops for typed names across Join/Create/
+  Demo plus a real typed-name UI path, and explicit signed TAI-J2000 ordering
+  values under Technical details without inventing a wall clock.

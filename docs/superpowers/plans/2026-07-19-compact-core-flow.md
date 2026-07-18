@@ -16,12 +16,65 @@
 - `apps/ios/Riot/AppModel.swift`: Boolean display-name commit, publishing-context resolver, and prepare-before-community-mutation gate.
 - `apps/ios/Riot/ConferenceShellView.swift`: first-run hierarchy, keyed shell lifetime, one composer sheet, exact Home composition, current community label, contextual notification request, and compact Nearby chrome.
 - `apps/ios/Riot/CommunityChooser.swift`: pure tokened transition gate and chooser callbacks that cannot bypass it.
+- `apps/ios/Riot/Transport/NearbyTransportController.swift`: pre-adoption transition hook before its repository join.
 - `apps/ios/Riot/AlertsListView.swift`: single-clock active-alert presentation, two-row cap, and overflow list.
 - `apps/ios/Riot/NewswireEditorial.swift`: complete ordinary row adapter, compact row/detail split, trust copy, treated detail, and action lineage.
 - `apps/ios/Riot/PeopleView.swift`: Known-contributors vocabulary, Riot chrome, and independently focusable Technical details.
 - `apps/ios/Riot/Directory/DirectoryView.swift`, `apps/ios/Riot/Apps/AppReviewSheet.swift`, `apps/ios/Riot/Peers/PeerProfileView.swift`: compact tool disclosure and consistent tool/community vocabulary.
 - `apps/ios/Riot/RiotApp.swift`: isolated per-run UI-test storage only when the XCUITest launch environment requests it.
 - Existing XCTest files receive all logic tests; existing `RiotTabNavigationUITests.swift` receives the real interaction smoke test. No new source/test file and no Xcode project edit.
+
+### Task 0: Select an actually installed iOS simulator
+
+**Files:**
+- Modify: `scripts/ios-check.sh`
+
+- [ ] **Step 1: Reproduce the destination failure**
+
+Run `sh scripts/ios-check.sh sim`.
+
+Expected RED on the current machine: `Unable to find a destination matching ...
+name:iPhone 17 Pro, OS:latest` even though 26.1/26.2 devices are installed.
+
+- [ ] **Step 2: Add one reusable simulator resolver**
+
+```sh
+resolve_simulator_id() {
+  if [ -n "${RIOT_IOS_SIMULATOR_ID:-}" ]; then
+    printf '%s\n' "$RIOT_IOS_SIMULATOR_ID"
+    return
+  fi
+  xcrun simctl list devices available |
+    awk '/^[[:space:]]+iPhone 17 Pro \(/ {
+      gsub(/[()]/, "", $4); id = $4
+    } END { if (id != "") print id }'
+}
+```
+
+Add `simulator-id` to print the resolved UUID and make `sim` use
+`-destination "platform=iOS Simulator,id=$(resolve_simulator_id)"`. Fail with a
+fixed message if none exists. `RIOT_IOS_SIMULATOR_ID` remains the CI/local
+override.
+
+- [ ] **Step 3: Verify the resolver and simulator build GREEN**
+
+```bash
+SIM_ID=$(sh scripts/ios-check.sh simulator-id)
+test -n "$SIM_ID"
+xcrun simctl list devices available | grep "$SIM_ID"
+sh scripts/ios-check.sh sim
+```
+
+Expected: an available UUID is printed and the simulator build succeeds.
+
+- [ ] **Step 4: Log and commit**
+
+Append the structured Task 0 entry to `OVERNIGHT_LOG.md`.
+
+```bash
+git add OVERNIGHT_LOG.md scripts/ios-check.sh
+git commit -m "fix(ios): resolve an installed simulator"
+```
 
 ### Task 1: Preserve and reset the complete composer safely
 
@@ -175,22 +228,31 @@ func testSetupOrderAndUnsupportedNearbyBoundary() {
                    "Nearby exchange is available after you enter a community.")
 }
 
-func testNonEmptyNameFailureStartsNoExit() {
-    var performed: [OnboardingExit] = []
-    let result = OnboardingExitGate.perform(
-        .join, displayName: "Ana",
-        saveName: { _ in false },
-        proceed: { performed.append($0) })
-    XCTAssertEqual(result, .nameSaveFailed)
-    XCTAssertEqual(performed, [])
-}
-
-func testEmptyNameAndSuccessfulNameCoverAllExits() {
+func testNonEmptyNameFailureBlocksEveryExit() {
     for exit in OnboardingExit.allCases {
         var performed: [OnboardingExit] = []
+        let result = OnboardingExitGate.perform(
+            exit, displayName: "Ana",
+            saveName: { _ in false },
+            proceed: { performed.append($0) })
+        XCTAssertEqual(result, .nameSaveFailed)
+        XCTAssertEqual(performed, [])
+    }
+}
+
+func testEmptyAndSuccessfullySavedNameCoverEveryExit() {
+    for exit in OnboardingExit.allCases {
+        var performed: [OnboardingExit] = []; var saved: [String] = []
         XCTAssertEqual(OnboardingExitGate.perform(
             exit, displayName: "", saveName: { _ in XCTFail(); return false },
             proceed: { performed.append($0) }), .proceeded)
+        XCTAssertEqual(performed, [exit])
+
+        performed = []
+        XCTAssertEqual(OnboardingExitGate.perform(
+            exit, displayName: "Ana", saveName: { saved.append($0); return true },
+            proceed: { performed.append($0) }), .proceeded)
+        XCTAssertEqual(saved, ["Ana"])
         XCTAssertEqual(performed, [exit])
     }
 }
@@ -202,7 +264,7 @@ Run:
 
 ```bash
 xcodebuild test -project apps/ios/Riot.xcodeproj -scheme RiotKit \
-  -destination 'platform=iOS Simulator,name=iPhone 17 Pro' \
+  -destination "platform=iOS Simulator,id=$(sh scripts/ios-check.sh simulator-id)" \
   -only-testing:RiotKitTests/ShellNavigationTests \
   -derivedDataPath build/xcode-dd CODE_SIGNING_ALLOWED=NO
 ```
@@ -280,10 +342,12 @@ git commit -m "feat(onboarding): make setup compact and fail closed"
 - Modify: `apps/ios/Riot/ConferenceShellView.swift`
 - Modify: `apps/ios/Riot/PeopleView.swift`
 - Modify: `apps/ios/Riot/NewswireEditorial.swift`
+- Modify: `apps/ios/Riot/Transport/NearbyTransportController.swift`
 - Test: `apps/ios/RiotTests/CommunityChooserTests.swift`
 - Test: `apps/ios/RiotTests/ShellNavigationTests.swift`
 - Test: `apps/ios/RiotTests/PeopleSurfaceTests.swift`
 - Test: `apps/ios/RiotTests/NewswireSurfaceTests.swift`
+- Test: `apps/ios/RiotTests/TransportContractTests.swift`
 
 - [ ] **Step 1: Write failing transition and composer-state tests**
 
@@ -291,10 +355,10 @@ git commit -m "feat(onboarding): make setup compact and fail closed"
 func testStaleShellCannotUnregisterNewTransitionPreparation() {
     let gate = CommunityTransitionGate()
     var calls: [String] = []
-    let old = gate.register { calls.append("old") }
-    let new = gate.register { calls.append("new") }
+    let old = gate.register { _ in calls.append("old") }
+    let new = gate.register { _ in calls.append("new") }
     gate.unregister(old)
-    gate.prepare()
+    gate.prepare(.preserveDraft)
     XCTAssertEqual(calls, ["new"])
     gate.unregister(new)
 }
@@ -316,6 +380,13 @@ switch/join/create/retry/deep link use `.preserveDraft`; confirmed Leave uses
 `.discardDraft`. A failed preserving mutation leaves the persisted old draft
 available; a confirmed discard clears it and cannot reappear.
 
+Add a Nearby controller contract: before `pairing.resume(joining:)` can call the
+host’s `joinSpace`, `onBeforeSpaceJoin` fires once. The shell wires it to
+`gate.prepare(.preserveDraft)`. Assert preparation precedes join and a Community
+A draft remains in A’s keyed store. First-run Nearby is removed and an
+existing-community peer cannot adopt a different namespace, but this closes the
+transport’s remaining mutation seam.
+
 - [ ] **Step 2: Run the four focused suites RED**
 
 Run `CommunityChooserTests` and `ShellNavigationTests` on the iOS `RiotKit`
@@ -323,14 +394,15 @@ scheme:
 
 ```bash
 xcodebuild test -project apps/ios/Riot.xcodeproj -scheme RiotKit \
-  -destination 'platform=iOS Simulator,name=iPhone 17 Pro' \
+  -destination "platform=iOS Simulator,id=$(sh scripts/ios-check.sh simulator-id)" \
   -only-testing:RiotKitTests/CommunityChooserTests \
   -only-testing:RiotKitTests/ShellNavigationTests \
   -derivedDataPath build/xcode-dd CODE_SIGNING_ALLOWED=NO
 ```
 
 Run `PeopleSurfaceTests` and `NewswireSurfaceTests` on the macOS scheme with
-their `RiotKitTests-macOS` selectors.
+their `RiotKitTests-macOS` selectors. Run `TransportContractTests` on the iOS
+scheme in the same simulator test invocation.
 
 Expected: missing gate/presentation types and default no-op initializer assertions fail.
 
@@ -398,10 +470,12 @@ git add OVERNIGHT_LOG.md apps/ios/Riot/CommunityChooser.swift \
   apps/ios/Riot/AppModel.swift \
   apps/ios/Riot/ConferenceShellView.swift apps/ios/Riot/PeopleView.swift \
   apps/ios/Riot/NewswireEditorial.swift \
+  apps/ios/Riot/Transport/NearbyTransportController.swift \
   apps/ios/RiotTests/CommunityChooserTests.swift \
   apps/ios/RiotTests/ShellNavigationTests.swift \
   apps/ios/RiotTests/PeopleSurfaceTests.swift \
-  apps/ios/RiotTests/NewswireSurfaceTests.swift
+  apps/ios/RiotTests/NewswireSurfaceTests.swift \
+  apps/ios/RiotTests/TransportContractTests.swift
 git commit -m "feat(shell): isolate communities and unify posting"
 ```
 
@@ -480,6 +554,7 @@ func testOrdinaryRowCarriesReadableAndOperationalFields() {
     XCTAssertEqual(row.sourceClaims, ["eyewitness"])
     XCTAssertEqual(row.coarseLocation, "north bridge")
     XCTAssertEqual(row.operationalProfile, .alert)
+    XCTAssertEqual(row.taiJ2000Micros, 42)
 }
 
 func testTreatedRowDropsEveryPayloadField() {
@@ -500,7 +575,11 @@ func testActionLineageIncludesRetractionOfDirectAction() {
 }
 ```
 
-Pin exact signature/editorial/AI copy and assert Retract calls `sign(targetEntryID: selectedAction.id)`.
+Pin exact signature/editorial/AI copy and assert Retract calls
+`sign(targetEntryID: selectedAction.id)`. Retain `taiJ2000Micros` on
+`EditorialHistoryRow`; treatment detail labels report/action values as
+`Signed ordering value (TAI-J2000 microseconds)` under Technical details. Tests
+pin the exact unsigned values and prove no date is fabricated from them.
 
 - [ ] **Step 2: Run NewswireSurfaceTests RED**
 
@@ -522,7 +601,11 @@ approved design.
 
 - [ ] **Step 5: Build payload-redacted treatment detail**
 
-Add `Review treatment` for hidden/tombstoned rows. Show type, signed author/tag, timestamp, Technical details ID, and `EditorialActionLineage`. Keep action-scoped Retract beside active lineage actions; never render body, operational metadata, or replies.
+Add `Review treatment` for hidden/tombstoned rows. Show type, signed author/tag,
+optional event time or `Event time not provided`, Technical details ID and signed
+TAI ordering value, and `EditorialActionLineage` with each action’s ordering
+value. Keep action-scoped Retract beside active lineage actions; never render
+body, operational metadata, or replies.
 Remove the existing inline `commentsSection`, Reply, and generic editorial
 controls from every feed row. Ordinary detail owns replies/actions; treated
 detail owns only treatment history and action-scoped editorial controls.
@@ -616,10 +699,11 @@ Make the UI test deterministic: set `RIOT_UI_TEST_RUN_ID` to a UUID in
 `XCUIApplication.launchEnvironment`; `RiotApp` resolves that only under UI tests
 to a unique app-sandbox temporary storage directory and otherwise uses production
 bootstrap. Drive one concrete path: Get started → verify no
-`find-nearby`/`launch-save-display-name` → Create sheet → enter community name →
-Home visible community name → the single composer entry → enter headline/body →
-post success → Post another → focused Headline → enter/post a second report →
-Done → Read update → close to exact trigger.
+`find-nearby`/`launch-save-display-name` → type display name `Ana` → Create sheet
+→ enter community name → Home visible community name → open Your profile and
+assert `Ana` plus its key-derived tag → the single composer entry → enter
+headline/body → post success → Post another → focused Headline → enter/post a
+second report → Done → Read update → close to exact trigger.
 
 - [ ] **Step 2: Run the UI flow RED then GREEN**
 
@@ -627,7 +711,7 @@ Run:
 
 ```bash
 xcodebuild test -project apps/ios/Riot.xcodeproj -scheme Riot \
-  -destination 'platform=iOS Simulator,name=iPhone 17 Pro' \
+  -destination "platform=iOS Simulator,id=$(sh scripts/ios-check.sh simulator-id)" \
   -only-testing:RiotUITests/RiotTabNavigationUITests \
   -derivedDataPath build/xcode-dd CODE_SIGNING_ALLOWED=NO
 ```
@@ -642,20 +726,22 @@ populated Home, ordinary report detail, post success, Tools, Known contributors,
 and Nearby. For accessibility size, boot the named simulator and run:
 
 ```bash
-xcrun simctl ui booted content_size accessibility-extra-extra-extra-large
+SIM_ID=$(sh scripts/ios-check.sh simulator-id)
+xcrun simctl boot "$SIM_ID" 2>/dev/null || true
+xcrun simctl ui "$SIM_ID" content_size accessibility-extra-extra-extra-large
 ```
 
 Rerun the UI flow and inspect kept result-bundle attachments plus an on-demand
 native capture:
 
 ```bash
-xcrun simctl io booted screenshot /tmp/riot-ux-accessibility.png
+xcrun simctl io "$SIM_ID" screenshot /tmp/riot-ux-accessibility.png
 ```
 
 Reject clipping, horizontal scrolling, duplicate filled actions, buried alerts,
 missing focus labels, or more than two inline alerts. Record observations in the
 log; do not commit screenshots or DerivedData. Restore simulator content size to
-`large` afterward.
+`large` afterward with `xcrun simctl ui "$SIM_ID" content_size large`.
 
 - [ ] **Step 4: Run all Apple gates**
 
