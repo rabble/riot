@@ -340,6 +340,50 @@ final class NewswireSurfaceTests: XCTestCase {
         XCTAssertEqual(model.forwardActions, [.retry])
     }
 
+    func testPendingFirstSyncLeadsWithVerifiedPathAndKeepsNearbySecondary() {
+        let model = NewswireSurfaceModel(
+            projector: ThrowingProjector(), editor: ThrowingEditor(), authority: StubAuthority(),
+            spaceDescriptorEntryID: "", communityName: "Riverside",
+            myKeyHex: "aa".repeated(32),
+            descriptorResolver: { nil })
+        model.load()
+        let actions = model.forwardActions
+        XCTAssertEqual(actions.first, .rejoinWithLink, "the verified-working path is the headline")
+        XCTAssertFalse(actions.first?.isNearbyPath ?? true, "the red Nearby path is never first")
+        XCTAssertEqual(actions.last, .syncWithPeer, "Nearby is offered but secondary")
+        XCTAssertEqual(actions, [.rejoinWithLink, .syncWithPeer])
+    }
+
+    func testPendingSyncCopyIsHonestAndDistinctFromTransientOfflineCopy() {
+        // The pending-first-sync message explains WHY there is nothing yet and names
+        // the forward paths; it is not the same string as the transient-offline copy.
+        XCTAssertTrue(
+            NewswireWireCopy.pendingSyncMessage.localizedCaseInsensitiveContains("sync")
+            || NewswireWireCopy.pendingSyncMessage.localizedCaseInsensitiveContains("peer"))
+        XCTAssertNotEqual(NewswireWireCopy.pendingSyncMessage, NewswireWireCopy.offlineMessage)
+        XCTAssertNotEqual(NewswireWireCopy.pendingSyncTitle, NewswireWireCopy.offlineTitle)
+    }
+
+    func testOfflineStaleCopySelectionFollowsRecoverability() {
+        // Unrecoverable (pending first sync) → pending copy; recoverable (transient
+        // offline of a known descriptor) → the existing offline copy.
+        let pending = NewswireSurfaceModel(
+            projector: ThrowingProjector(), editor: ThrowingEditor(), authority: StubAuthority(),
+            spaceDescriptorEntryID: "", communityName: "R",
+            myKeyHex: "aa".repeated(32), descriptorResolver: { nil })
+        pending.load()
+        XCTAssertEqual(pending.offlineTitle, NewswireWireCopy.pendingSyncTitle)
+        XCTAssertEqual(pending.offlineMessage, NewswireWireCopy.pendingSyncMessage)
+
+        let offline = NewswireSurfaceModel(
+            projector: ThrowingProjector(), editor: ThrowingEditor(), authority: StubAuthority(),
+            spaceDescriptorEntryID: "desc", communityName: "R",
+            myKeyHex: "aa".repeated(32))
+        offline.load()
+        XCTAssertEqual(offline.offlineTitle, NewswireWireCopy.offlineTitle)
+        XCTAssertEqual(offline.offlineMessage, NewswireWireCopy.offlineMessage)
+    }
+
     // MARK: - Treatment rendering
 
     func testHiddenPostRendersTheWarningInterstitialAndDropsThePayload() {

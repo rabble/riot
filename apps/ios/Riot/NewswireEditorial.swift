@@ -428,6 +428,9 @@ public enum NewswireWireCopy {
     public static let offlineTitle = "Updates unavailable"
     public static let offlineMessage =
         "This community's wire is offline or has not synced yet. What you already have is still here."
+    public static let pendingSyncTitle = "Waiting for the first sync"
+    public static let pendingSyncMessage =
+        "You've joined this community, but no posts have arrived yet. They appear once a peer or seed connects. Rejoin with a link, or sync with a peer nearby."
 }
 
 /// A forward action a wire state offers, as pure data. The view maps each kind
@@ -568,6 +571,16 @@ public final class NewswireSurfaceModel: ObservableObject {
         case .postsButNoFeature, .featured:
             return []
         }
+    }
+
+    /// The offlineStale title: the honest pending-first-sync headline when no
+    /// descriptor is derivable, the transient-offline headline when one is in hand.
+    public var offlineTitle: String {
+        descriptorRecoverable ? NewswireWireCopy.offlineTitle : NewswireWireCopy.pendingSyncTitle
+    }
+    /// The offlineStale message, matched to the title.
+    public var offlineMessage: String {
+        descriptorRecoverable ? NewswireWireCopy.offlineMessage : NewswireWireCopy.pendingSyncMessage
     }
 
     /// The one honest line shown where a control would be, when this profile is not
@@ -745,8 +758,8 @@ public struct NewswireSurfaceView: View {
         case .offlineStale:
             wireEmpty(
                 id: model.wire.accessibilityID,
-                title: NewswireWireCopy.offlineTitle,
-                message: NewswireWireCopy.offlineMessage,
+                title: model.offlineTitle,           // pending-first-sync vs transient-offline
+                message: model.offlineMessage,
                 actions: model.forwardActions
             )
         case .emptyWire:
