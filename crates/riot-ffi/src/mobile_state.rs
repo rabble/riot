@@ -2123,6 +2123,8 @@ fn relationship_to_ffi(relationship: Relationship) -> CommunityRelationship {
         Relationship::Organizer => CommunityRelationship::Organizer,
         Relationship::Member => CommunityRelationship::Member,
         Relationship::PublicReader => CommunityRelationship::PublicReader,
+        Relationship::Following => CommunityRelationship::Following,
+        Relationship::Personal => CommunityRelationship::Personal,
     }
 }
 

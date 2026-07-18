@@ -23,6 +23,10 @@ pub enum CommunityRelationship {
     Member,
     /// They carry the community but hold no author — read only.
     PublicReader,
+    /// A composite indymedia site the user follows (read-mostly).
+    Following,
+    /// The user's own personal home space.
+    Personal,
 }
 
 /// One row in the community chooser. Plain-language fields only; the full

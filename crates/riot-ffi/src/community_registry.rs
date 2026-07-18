@@ -49,6 +49,12 @@ pub(crate) enum Relationship {
     Organizer,
     Member,
     PublicReader,
+    /// A composite indymedia site the user follows (author-less; surfaced via
+    /// `list_followed_sites`, filtered out of `list_communities`).
+    Following,
+    /// The user's own distinguished personal home space (author-bearing; rides
+    /// `CommunityRow`/`list_communities`).
+    Personal,
 }
 
 impl Relationship {
@@ -57,6 +63,8 @@ impl Relationship {
             Relationship::Organizer => 0,
             Relationship::Member => 1,
             Relationship::PublicReader => 2,
+            Relationship::Following => 3,
+            Relationship::Personal => 4,
         }
     }
 
@@ -65,6 +73,8 @@ impl Relationship {
             0 => Some(Relationship::Organizer),
             1 => Some(Relationship::Member),
             2 => Some(Relationship::PublicReader),
+            3 => Some(Relationship::Following),
+            4 => Some(Relationship::Personal),
             _ => None,
         }
     }
@@ -304,6 +314,22 @@ mod tests {
             last_activity_unix_seconds: Some(1_000 + seed as u64),
             last_sync_unix_seconds: None,
         }
+    }
+
+    #[test]
+    fn following_and_personal_round_trip_through_wire_without_a_version_bump() {
+        for r in [
+            Relationship::Organizer,
+            Relationship::Member,
+            Relationship::PublicReader,
+            Relationship::Following,
+            Relationship::Personal,
+        ] {
+            assert_eq!(Relationship::from_wire(r.to_wire()), Some(r));
+        }
+        assert_eq!(Relationship::from_wire(5), None);
+        assert_eq!(REGISTRY_VERSION, 1);
+        assert_eq!(RECORD_FIELDS, 9);
     }
 
     #[test]
