@@ -1,7 +1,7 @@
 # Public Community Anchor Network Design
 
 Date: 2026-07-18
-Status: Design review rounds 1-5 revised; pending round 6
+Status: Design review rounds 1-6 revised; pending round 7
 Scope: Owner-rooted composite public sites, discovery, hosting, web mirroring,
 and opportunistic internet sync
 
@@ -76,6 +76,12 @@ current-key verifiable, sized exclusive emergency metadata/WAL reserves, added
 site-generation compare-and-swap, specified the actual FFI-to-core database
 ownership migration, closed local follow/configuration failure states, and made
 pilot enrollment/export distinct, private, and replay-safe.
+
+Round six bounded anonymous HTTPS work independently from control traffic,
+added a single-use privacy-preserving pilot invitation contract, aligned the
+native storage refactor with the real `LocalProfile`/`EvidenceStore` ownership,
+and replaced historical-receipt verification during replication with a
+current-key, connection-bound source attestation.
 
 ## Product Decisions
 
@@ -169,11 +175,15 @@ Native internet operations use a new mobile-compatible `riot-client-net` crate
 that owns one iroh endpoint and Tokio runtime per application process. It
 depends on `riot-anchor-protocol`, `riot-transport`, and a direct
 no-default-features `riot-core` dependency for `SiteReplicaRepository`;
-`riot-ffi` exposes its cancellable async operations and typed event streams
-through UniFFI. Existing native nearby carriers remain unchanged. The existing
-client-side `rusqlite` feature remains in `riot-core`; anchor-server SQLite,
-HTTP-server, and renderer dependencies never enter `riot-core`,
-`riot-anchor-protocol`, `riot-client-net`, or native shells.
+`riot-ffi` depends on `riot-client-net` and exposes its cancellable async
+operations and typed event streams through UniFFI. No dependency edge runs
+from `riot-core` or `riot-anchor-protocol` back to either adapter. Existing
+native nearby carriers remain unchanged. The existing client-side `rusqlite`
+feature remains in `riot-core`; anchor-server SQLite, HTTP-server, and renderer
+dependencies never enter `riot-core`, `riot-anchor-protocol`,
+`riot-client-net`, `riot-ffi`, or native shells. A feature-closure CI test
+inspects every native target's resolved Cargo graph and fails if an HTTP server,
+renderer, or `riot-anchor` daemon dependency appears.
 
 The native shell starts the client once after protected profile unlock and
 closes it on profile lock/process teardown. Each FFI operation owns a
@@ -845,7 +855,7 @@ signatures and envelopes:
 | Well-known descriptor response | 16 KiB |
 | Descriptor-chain page | 60 KiB / 16 envelopes |
 | Limit profile | 8 KiB |
-| `HostingReceiptV1` or `ListingReceiptV1` | 4 KiB |
+| `HostingReceiptV1`, `ListingReceiptV1`, or `ReplicaSourceAttestationV1` | 4 KiB |
 | `WorkChallengeV1`, refusal, peer hello, or peer proof | 4 KiB |
 | `PrepareHost` request / response | 32 KiB / 8 KiB |
 | `CommitHost` request / response | 4 KiB / 8 KiB |
@@ -853,7 +863,7 @@ signatures and envelopes:
 | `PrepareReplica` request / response | 60 KiB / 8 KiB |
 | `GetOperation` response | 16 KiB |
 | Directory feed or snapshot frame | 60 KiB |
-| Public directory JSON response | 1 MiB |
+| Public directory JSON response | 4 MiB |
 
 Descriptor HTTPS origins are at most 255 UTF-8 bytes; endpoint hints are at
 most 512 bytes; supported control/sync version arrays have at most 16 distinct
@@ -948,12 +958,46 @@ never removes hosted state.
 ### `PrepareReplica`
 
 This operation is accepted only on a mutually authenticated, configured
-anchor-peer connection whose rule permits the named site. Input contains the
-source descriptor, source hosting receipt, the same root-signed ticket core,
-and desired snapshot digests. The destination validates all three, creates a
-normal staged operation with tokens, and applies peer-specific byte/site
-budgets. The source then acts as the sync initiator using
-`ReplicaIntoStaged`. `CommitHost` produces a destination-signed receipt.
+anchor-peer connection whose rule permits the named site. It does not ask a
+peer pinned at the current descriptor to validate an old hosting receipt.
+After the peer handshake, the source instead creates:
+
+```text
+ReplicaSourceAttestationV1 {
+  source_anchor_id,
+  source_current_operator_key_id,
+  source_current_descriptor_epoch,
+  source_current_descriptor_digest,
+  destination_anchor_id,
+  peer_transcript_digest,
+  full_site_root,
+  manifest_digest_and_version,
+  root_signed_ticket_core_digest,
+  source_site_generation,
+  ordered_namespace_snapshot_digests,
+  issued_at,
+  expires_at
+}
+```
+
+The source's current operator key signs
+`"riot/replica-source-attestation/v1" || canonical_cbor(body)`. The expiry is
+at most five minutes after issuance. The descriptor coordinates must equal the
+source head authenticated by the current peer handshake; destination ID and
+`peer_transcript_digest = BLAKE3(transcript)` bind it to this connection and
+peer. The source issues it only from one immutable currently hosted-site
+snapshot.
+
+`PrepareReplica` input contains this attestation, the same complete root-signed
+ticket core, and desired snapshot digests. The destination verifies the
+current-key signature, connection/peer binding, time, ticket/manifest/site
+coordinates, and exact snapshot tuple before creating a normal staged operation
+with tokens and peer-specific byte/site budgets. Before `ReplicaIntoStaged`,
+the source's current generation and digests must still equal the attestation;
+it then opens that immutable snapshot, otherwise it fails `stale_source`.
+Changes committed after the immutable snapshot opens appear in the next
+replication. No historical operator key is accepted merely because it signed
+an old receipt. `CommitHost` produces a destination-signed hosting receipt.
 Replication never copies listing status implicitly.
 
 ### `PullDirectoryFeed`
@@ -1002,7 +1046,7 @@ Codes include `invalid_authority`, `unsupported_version`, `over_quota`,
 `unsupported_transport`, `manifest_transport_mismatch`, `expired`,
 `not_hosted`, `manifest_mismatch`,
 `equivocation`, `anchor_profile_oversize`, `site_too_large`, `work_required`,
-`stale_base`, and `busy`.
+`stale_base`, `stale_source`, and `busy`.
 A refusal is a protocol result, not a transport failure and not a signed
 hosting receipt.
 
@@ -1169,36 +1213,67 @@ default-on `rusqlite`, `RiotDatabase`, migration runner, and profile database.
 
 This requires an explicit refactor of today's ownership:
 
-1. Add `CoreProfileStorage` in `riot-core::store`. It owns the single opened
-   `RiotDatabase`, transaction gate, `EvidenceRepository`,
-   `ClientSiteRepository`, registry persistence, backup/restore, and all new
-   migrations.
-2. The FFI profile factory opens `RiotDatabase` once and immediately moves it
-   into `Arc<CoreProfileStorage>`. `RiotSession::open_sqlite` is replaced by an
-   opener accepting that retained storage owner.
-3. `MobileProfile` replaces its current
-   `db: Option<RiotDatabase>` field with
-   `storage: Option<Arc<CoreProfileStorage>>`. Its `ProfileState` mutex
-   continues to own in-memory authors, projections, active-community selection,
-   and UI session generations, but registry writes call core storage methods;
-   FFI no longer owns a raw database clone or transaction.
-4. One new serialized `ClientSiteDatabaseWorker` owns repository command
-   execution. `riot-client-net` retains an `Arc` command port to that worker;
-   it never runs synchronous `rusqlite` on an iroh/Tokio network executor.
+1. Today's `MobileProfile` continues to contain only
+   `Arc<Mutex<ProfileState>>`. The change is inside the actual
+   `LocalProfile`: remove both its `store: EvidenceStore` and
+   `db: Option<RiotDatabase>` fields and add one
+   `storage: Arc<CoreProfileStorage>`.
+2. Add `CoreProfileStorage` in `riot-core::store`. Its durable constructor takes
+   the single opened `RiotDatabase` and internally creates the existing
+   `EvidenceRepository`/`EvidenceStore`, the new `ClientSiteRepository`,
+   registry persistence, transaction gate, migrations, backup/restore, and one
+   bounded serialized command worker. Move the current
+   `riot-ffi::community_registry` durable record/codec and quarantine keys into
+   `riot-core::profile`; FFI retains only projections and UI conversion. The
+   memory constructor provides the same command port without SQLite.
+3. Replace the FFI calls to `RiotSession::open_sqlite(database)` and retained
+   database cloning with `CoreProfileStorage::open_sqlite(database)`. No FFI
+   type owns a raw database handle, repository, transaction, or callable
+   `EvidenceStore`; all existing evidence and registry access as well as new
+   client-site access crosses `ProfileStorageCommand`.
+4. Refactor every current `with_active` path that calls `profile.store`,
+   `persist_registry`, `load_registry`, backup/restore, or another
+   SQLite-capable helper into three phases. Under `ProfileState`, it prepares
+   immutable command inputs, captures the relevant community/app generation,
+   installs one unique pending profile-operation ID for a mutation, and clones
+   the storage port. It then releases `ProfileState` and executes the command.
+   Finally it reacquires `ProfileState` and applies the returned projection only
+   when the pending ID and captured generation still match.
+5. While a mutable profile command is pending, another profile mutation is
+   queued or returns typed `busy`; it cannot advance that generation. A failed
+   storage command clears the pending marker without changing memory. If the
+   process closes after durable commit but before in-memory apply, reopen loads
+   the committed registry/evidence/site state and rebuilds projections. Read
+   commands use captured inputs and never publish results across a generation
+   change.
 
-Lock ordering is fixed: snapshot inputs and the profile generation under
-`ProfileState`, release that mutex, execute one database command, then reacquire
-only to apply a result if the generation still matches. No database command or
-await occurs while holding `ProfileState`. Cancellation closes the network
-operation but lets an already-started atomic database command finish and report
-its recovered outcome.
+`ProfileStorageCommand` includes the operations now reached through
+`EvidenceStore`—inspect/load/query/commit—and registry load/replace, in addition
+to client-site stage/promote, configuration, floors, receipts, backup, restore,
+and migration. This is not a client-site-only worker. Its compiled queue holds
+at most 64 commands; a full queue returns typed `busy`. `CoreProfileStorage`
+owns the sender, worker join handle, and shutdown state. Profile lock/teardown
+closes admission, cancels queued commands that have not begun, lets the one
+running atomic command finish, checkpoints durable state, joins the worker, and
+only then releases the database. Synchronous UniFFI calls may wait for their
+result only after releasing `ProfileState`;
+`riot-client-net` awaits the same bounded command port and never executes
+`rusqlite` on an iroh/Tokio network executor.
+
+The normative lock rule is testable: acquiring `ProfileState` while a storage
+command is already running is allowed, but invoking or awaiting any
+`ProfileStorageCommand`, `EvidenceStore`, registry database method, or raw
+`RiotDatabase` operation while holding `ProfileState` fails the lock-order test.
+Cancellation closes the network operation but lets an already-started atomic
+storage command finish and report its recovered outcome.
 
 New versioned tables store verified manifests, `O/C/W` entries, payloads,
 follow/host staging, anchor configuration/floors, receipts, and retry intent.
 Core backup/restore includes these tables and validates their floors before
 reopening. One core-owned transaction promotes all three namespaces plus the
 ongoing-sync schedule after consent. `riot-ffi` only constructs the retained
-owner, injects ports, and projects typed results.
+owner, injects ports, phase-splits in-memory state transitions, and projects
+typed results.
 
 Default device limits are 1 GiB total followed-site logical bytes, 64 MiB per
 site, 4,096 live entries per namespace, and the anchor-profile per-item bounds.
@@ -1324,6 +1399,16 @@ MVP defaults and absolute ceilings:
 | Concurrent sync/control sessions | 128 | 512 |
 | Sessions per source | 4 | 16 |
 | Sessions per site | 8 | 32 |
+| Active public HTTPS connections | 256 | 1,024 |
+| Concurrent public HTTPS handlers | 128 | 512 |
+| Queued public HTTPS handlers | 128 | 512 |
+| Public HTTPS requests per source per minute | 120 | 600 |
+| Public HTTPS requests globally per second | 500 | 2,000 |
+| Concurrent public HTTP database snapshots | 32 | 128 |
+| Public HTTP database snapshots per source | 2 | 8 |
+| Public HTTP query CPU / wall time | 250 ms / 2 s | 1 s / 5 s |
+| Public API response bytes | 1 MiB | 4 MiB |
+| One static web response | 2 MiB | 8 MiB |
 | Search results per page | 50 | 100 |
 | Search query UTF-8 bytes | 128 | 256 |
 | Directory listings | 10,000 | 50,000 |
@@ -1331,6 +1416,11 @@ MVP defaults and absolute ceilings:
 | Verification queue jobs | 512 | 2,048 |
 | Verification CPU per request | 500 ms | 2 s |
 | Aggregate outstanding verification CPU budget | 16 s | 64 s |
+| Reserved owner-removal verification permits | 4 | fixed |
+| Reserved valid-removal database writer permits | 2 | fixed |
+| Emergency checkpoint worker | 1 | fixed |
+| Owner-removal attempts per source per minute | 10 | 40 |
+| Owner-removal attempts globally per second | 100 | 400 |
 | Work-challenge signatures per second | 100 | 500 |
 | Work challenges per source per minute | 30 | 120 |
 | Static projection bytes | 5 GiB | 20 GiB |
@@ -1344,6 +1434,9 @@ MVP defaults and absolute ceilings:
 | Rotated local log files | 128 | 512 |
 | Concurrent gossip sessions per peer | 2 | 4 |
 | Gossip transfer per peer per hour | 256 MiB | 1 GiB |
+
+The three fixed reservation rows are mandatory partitions, not operator-tunable
+ordinary capacity.
 
 The emergency reserves are exclusive headroom, not ordinary capacity. For the
 configured listing ceiling `L`, readiness computes:
@@ -1362,6 +1455,43 @@ owner removal, expiry, equivocation/security suspension, checkpoint publication,
 and ensuing WAL checkpoint/truncation may consume them. Readiness fails if
 byte, page, free-space, or WAL accounting cannot still complete one worst-case
 emergency checkpoint.
+
+### Public HTTPS admission
+
+Every public HTTP route, including descriptors, descriptor chains, feed and
+snapshot pages, search/detail JSON, handoff pages, and static community views,
+passes a compiled admission layer independent of `riot/anchor/1` and
+`riot/sync/2`.
+
+Before allocating a handler or opening a SQLite snapshot, the listener enforces
+the connection, global/per-source token-bucket, 8 KiB request-target, 16 KiB
+total-header, five-second header deadline, and zero request-body limits. It
+then acquires the bounded handler queue/permit. Dynamic routes additionally
+acquire the global and per-source database-snapshot permits, run under the
+published CPU/wall deadline, and serialize no more than the endpoint and global
+response-byte ceiling. Static routes use no database snapshot but retain the
+same handler, deadline, and response-byte envelope. A limit returns bounded
+HTTP 429 with `Retry-After` or 503 and creates no durable row, cursor, task, or
+unbounded buffered response.
+
+The source key is a transient connection address or configured trusted-proxy
+address prefix used only in in-memory expiring buckets; it is never written to
+application or pilot logs. Deployments behind a proxy fail readiness unless
+the trusted hop and forwarded-address policy are explicit. Unknown or
+untrusted forwarded headers are ignored.
+
+HTTP readers have a separate read-only connection pool and CPU/handler
+semaphores. They cannot acquire the control-plane verification permits, the two
+database writer permits reserved for valid owner unlisting/security removal,
+or the emergency checkpoint/WAL lane. The configured public-snapshot ceiling
+is validated low enough that those writers and the emergency reserves remain
+available. Structurally invalid or unauthorized removal-shaped control
+requests stay in ordinary per-source control budgets. A structurally bounded
+tombstone naming an existing durable listing floor may use the separate
+per-source removal bucket and one of four reserved verification permits; a
+failed signature/capability check stops there. Only a canonical tombstone that
+verifies against that admitted owner/listing floor may acquire one of the two
+reserved database writers and the emergency checkpoint lane.
 
 Before creating any durable row for a new request, the anchor applies, in
 order: frame/body bounds, in-memory connection and source rate limits, existing
@@ -1927,6 +2057,12 @@ States:
 - expired ticket with preserved readable web destination and organizer-refresh
   explanation.
 
+Before `Accept`, the verified preview states that this is a public community,
+the complete followed site will be stored locally and receive ongoing updates,
+and contacted public hosts can observe connection metadata. Storage required
+versus available and the selected destination are shown without exposing
+protocol jargon.
+
 ### Publish and listing
 
 Maintainers see per-anchor progress:
@@ -2058,11 +2194,55 @@ community, entry, anchor, operator, query, IP, capability, or stable device
 or product-account identifier.
 
 To audit distinct participants and prevent duplicate exports, explicit pilot
-enrollment creates an unrelated window-scoped Ed25519 keypair. The collector
-issues one signed `PilotEnrollmentTokenV1` per recruited participant, binding
-only the pilot window, random participant pseudonym, public key, role flags
-(`reader`, `organizer`), and expiry. It contains no Riot identity or device
-identifier.
+enrollment creates an unrelated window-scoped Ed25519 keypair. Before the
+window, the collector generates shuffled, high-entropy single-use scratch
+credentials:
+
+```text
+PilotInvitationV1 {
+  pilot_window,
+  random_256_bit_secret,
+  fixed_role_flags,
+  expiry,
+  collector_signature
+}
+
+PilotEnrollmentRequestV1 {
+  invitation,
+  window_scoped_public_key,
+  random_128_bit_idempotency_key
+}
+```
+
+The recruitment coordinator gives exactly one credential, shuffled within its
+fixed-role batch, to each consenting participant and records only the human
+consent contact, permitted role flags, and `credential_issued: true`; it does
+not record the credential, scratch-card order, client key, or later pseudonym.
+A person may decline without a credential being marked issued. Roles are fixed
+for the window; an attempt to alter them is rejected, and a legitimate role
+change is deferred to a later pilot window rather than minting a second token.
+
+The collector stores only
+`HMAC(collector_invitation_key, canonical_invitation)` and atomically
+transitions:
+
+```text
+Unspent |
+Spent {
+  enrollment_request_digest,
+  canonical_enrollment_response
+} |
+Revoked
+```
+
+An unspent valid credential creates one random participant pseudonym and signed
+`PilotEnrollmentTokenV1`, binding only the pilot window, pseudonym,
+window-scoped public key, the invitation's fixed role flags, and expiry. Exact
+request replay returns the byte-identical token. Reuse with a different key,
+idempotency key, or body returns `invitation_spent`; it cannot create another
+pseudonym. The token contains no Riot identity or device identifier. Withdrawal
+deletes metrics and keeps only the bounded `Revoked` spent-credential digest
+through the window so the same credential cannot re-enroll.
 
 Exports are cumulative:
 
@@ -2080,8 +2260,13 @@ sequence for each pseudonym, replacing rather than summing prior cumulative
 exports. Distinct valid tokens count participants by role; replay, lower
 sequence, or conflicting same-sequence export is rejected. Participants see
 the aggregate and explicitly export it. Anchor logs are not joined to client
-metrics. Tokens and collector rows are deleted after the published pilot report
-and its 30-day audit window.
+metrics. Invitation/token/export request bodies, source addresses, and
+transport metadata are never written to collector application logs or joined
+to recruitment records. The collector applies compiled 64 KiB request,
+connection/handler/queue, per-source/global rate, signature-CPU, and database
+row ceilings before verification. Tokens, spent/revoked invitation digests,
+and collector rows are deleted after the published pilot report and its 30-day
+audit window.
 
 Event boundaries and denominators are fixed:
 
@@ -2121,7 +2306,9 @@ Event boundaries and denominators are fixed:
 
 The collector derives totals from the highest accepted cumulative export per
 token and publishes the denominator beside every percentage. Consent withdrawal
-deletes unsubmitted local metrics and revokes the enrollment token.
+deletes local metrics, requests deletion of any submitted aggregate, and
+revokes the enrollment token; only the non-linkable spent-credential digest
+remains through the window to prevent reenrollment.
 
 A pilot is valid only with:
 
@@ -2274,7 +2461,8 @@ RED:
 - logical quota is bypassed by cross-community dedup;
 - metadata-only requests exceed a persistent ceiling;
 - client O/C/W state overflows the legacy evidence repository;
-- `MobileProfile` retains a raw database transaction path, or profile
+- `LocalProfile` retains a raw `EvidenceStore`/database path, an evidence or
+  registry database command runs under `ProfileState`, or profile
   migration/backup/restore loses client-site stages or floors.
 
 GREEN:
@@ -2298,7 +2486,10 @@ RED:
   proofs, and listing-before-hosting become visible;
 - unseen peer descriptor rotation cannot authenticate or removal reserve
   exhaustion blocks an owner tombstone;
-- a post-rotation cold peer cannot verify current-key snapshot records.
+- a post-rotation cold peer cannot verify current-key snapshot records;
+- a current-floor destination accepts an old hosting receipt without a
+  current-key, connection-bound replica-source attestation, or accepts that
+  attestation after the source generation changes.
 
 GREEN:
 
@@ -2341,6 +2532,8 @@ RED:
 - host configuration or follow consent depends on undocumented side state;
 - post-consent storage exhaustion or batch configuration recovery reports a
   false no-mutation result;
+- a native resolved Cargo graph contains the anchor daemon, HTTP server, or
+  renderer dependency closure;
 - cancellation leaves native networking or staged local mutation alive.
 
 GREEN:
@@ -2362,6 +2555,11 @@ RED:
   aggregate-metric formula, renderer quota, or rollback contracts fail under
   adversarial load;
 - maximum-record removal fails after ordinary row/byte/WAL exhaustion;
+- anonymous HTTP search/feed/static floods exceed connection, queue, CPU,
+  snapshot, rate, or response-byte ceilings or starve the reserved removal
+  lane;
+- one pilot invitation creates two pseudonyms, changes role, or returns a
+  different token on exact enrollment replay;
 - a replayed pilot export inflates participants/denominators or a
   subminimum/zero denominator is reported as pass.
 
@@ -2404,6 +2602,8 @@ Tests explicitly cover:
 - removals beyond reserved feed capacity using emergency checkpoint coalescing;
 - maximum-size removal at ordinary metadata/database/WAL ceilings;
 - client pinned across several descriptor-key rotations;
+- replica source attestation replayed on another connection/destination or
+  after source generation changes;
 - listing before hosting and hosting eviction after listing;
 - gossip loops and final quiescence;
 - unsupported `require:arti` ticket;
@@ -2411,6 +2611,9 @@ Tests explicitly cover:
 - all embedded defaults disabled, removed, reset, or unreachable;
 - zero and subminimum pilot denominators plus install-return minimums;
 - replayed/lower/conflicting pilot export sequences and distinct role counts;
+- replayed/altered pilot enrollment invitations and fixed-role enforcement;
+- HTTP slow-header, rate, queue, database-snapshot, query-time, and oversized
+  response exhaustion while a valid owner removal completes;
 - one or two anchors unavailable;
 - stale cached directory with partial source coverage;
 - malformed Unicode/control characters in listings and search;
@@ -2482,6 +2685,9 @@ The design is implemented when:
   schedule ongoing reconciliation;
 - mobile internet operations run through the cancellable Rust-owned
   iroh/Tokio/UniFFI boundary;
+- `LocalProfile` reaches existing evidence, registry, and new site persistence
+  only through the bounded core storage command port, with no database command
+  or await under `ProfileState`;
 - anchors enforce manifest and Meadowcap authority before propagation;
 - the root-signed ticket bootstrap requirement is checked before a cold public
   dial, and the digest-matched manifest requirement is checked before content
@@ -2504,13 +2710,17 @@ The design is implemented when:
 - open hosting cannot exceed compiled process ceilings or trigger unbounded
   gossip;
 - authenticated directory and replica gossip has a complete bounded wire
-  lifecycle, channel-bound peer authentication, and checkpoint recovery;
+  lifecycle, channel-bound peer authentication, current-key connection-bound
+  source attestations, and checkpoint recovery;
+- anonymous HTTPS reads remain within compiled connection, rate, queue, CPU,
+  database-snapshot, query-time, and response-byte ceilings without consuming
+  the reserved owner-removal/checkpoint lane;
 - the text-only web renderer uses immutable ownership transfer and preserves
   the hostile-content boundary;
 - deterministic three-anchor tests converge and survive anchor loss;
 - typed post-consent local-storage failure and crash-safe single/batch host
   configuration recovery never report a false no-mutation outcome;
 - opt-in, pseudonymous, replay-safe cumulative exports count distinct pilot
-  participants and prove the user-focused thresholds without correlated server
-  logs;
+  participants from single-use idempotent enrollment credentials and prove the
+  user-focused thresholds without correlated server logs;
 - all quality and coverage gates pass.
