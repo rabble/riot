@@ -218,6 +218,7 @@ public struct CommunityChooserView: View {
     private let onCreate: () -> Void
     private let onFindNearby: () -> Void
     @State private var isJoinSheetPresented = false
+    @State private var isShareSheetPresented = false
     @State private var pastedReference = ""
 
     public init(
@@ -252,6 +253,12 @@ public struct CommunityChooserView: View {
                         .accessibilityIdentifier("chooser-find-nearby")
                     Button("Join another community") { isJoinSheetPresented = true }
                         .accessibilityIdentifier("chooser-join-another")
+                    // Share the active community as a link + QR. Only offered when a
+                    // community is selected — there is nothing to share otherwise.
+                    if model.community != nil {
+                        Button("Share this community") { isShareSheetPresented = true }
+                            .accessibilityIdentifier("chooser-share")
+                    }
                 }
             }
             .navigationTitle("Your communities")
@@ -263,6 +270,20 @@ public struct CommunityChooserView: View {
                 CommunityJoinSheet(model: model, pastedReference: $pastedReference) {
                     isJoinSheetPresented = false
                     pastedReference = ""
+                }
+            }
+            .sheet(isPresented: $isShareSheetPresented) {
+                // The active community's descriptor id + name come from the shell's
+                // community context (the same source PostUpdate/Editorial thread
+                // through); the profile repository mints the digest-bound reference.
+                // A community whose descriptor hasn't synced yet carries a nil id,
+                // which ShareCommunityView surfaces as an honest "can't share yet".
+                if let community = model.community, let repository = model.profileRepository {
+                    ShareCommunityView(
+                        communityName: community.name,
+                        spaceDescriptorEntryID: community.newswireDescriptorEntryID ?? "",
+                        referencing: repository
+                    )
                 }
             }
         }
