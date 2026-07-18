@@ -10,7 +10,10 @@
 //! OWNER-SIGNED manifest's namespace→role binding, never from anything a peer or
 //! a shell can assert.
 
+use crate::newswire::PostTreatment;
 use crate::site::manifest::{SiteManifestV1, SiteRole};
+use crate::site::moderation::ModerationFreshness;
+use crate::site::version_floor::VersionFloorOutcome;
 
 /// The per-item trust tier the shells style. Resolved by core from the signed
 /// manifest; a shell renders exactly this and never infers it.
@@ -48,6 +51,116 @@ pub fn resolve_trust_tier(
         SiteRole::OpenWire => Some(TrustTier::OpenWire),
         SiteRole::Comments => Some(TrustTier::Comment),
         SiteRole::Unknown(_) => None,
+    }
+}
+
+/// The honest, named degradation state of a composite site (§6). A single
+/// PRIMARY state, ordered least→most severe; the resolver reports the most severe
+/// applicable so a shell shows one clear "why" with a next step, never a blank
+/// screen or an infinite spinner. Every non-`None` state holds real content
+/// (accountable degradation), never silently drops it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum CompositeDegradation {
+    /// Fully resolved and current.
+    None,
+    /// A member was dropped for a rule/key-structure mismatch (§2.2 inv 1); the
+    /// rest of the site still resolves. Shown as "this section couldn't be
+    /// verified", never a silent disappearance.
+    MemberUnverified,
+    /// O (editorial) synced but C/W (comments/wire) still pending.
+    EditorialOnly,
+    /// `/mod/` not yet current (Unit 3 verdict was `Loading`); open namespaces
+    /// held with "posts appear once moderation syncs", never rendered un-moderated.
+    ModerationLoading,
+    /// The required transport is unavailable (fail-closed, §5.3).
+    TransportBlocked,
+    /// The manifest was rolled back or its `require` downgraded below the durable
+    /// floor.
+    ManifestRollbackAlarm,
+    /// Two conflicting owner signatures at the same version — compromise alarm.
+    EquivocationAlarm,
+    /// The manifest is invalid/unverifiable — no trustworthy site to resolve.
+    ManifestInvalid,
+}
+
+/// The already-computed sub-verdicts the resolver combines into one primary
+/// degradation. Keeping them as plain inputs makes the precedence headless-testable
+/// and keeps `resolve.rs` free of the store/sync/transport plumbing that produces
+/// them.
+pub struct DegradationInputs<'a> {
+    /// `validate_site_manifest` returned `Ok`.
+    pub manifest_valid: bool,
+    /// No member classified `Unverified` (`ValidatedManifest::all_members_verified`).
+    pub all_members_verified: bool,
+    /// The durable version-floor verdict.
+    pub floor: VersionFloorOutcome,
+    /// Unit 3's moderation freshness verdict.
+    pub moderation: &'a ModerationFreshness,
+    /// The required transport is unavailable.
+    pub transport_blocked: bool,
+    /// C and W have finished their first sync (else `editorial-only`).
+    pub comments_and_wire_synced: bool,
+}
+
+/// Resolve the single most-severe degradation from the sub-verdicts. Precedence
+/// (severe→mild): a broken manifest dominates (nothing trustworthy to show), then
+/// floor alarms, then a blocked transport, then moderation-loading (never render
+/// un-moderated), then editorial-only, then member-unverified, then none.
+pub fn resolve_degradation(inputs: &DegradationInputs) -> CompositeDegradation {
+    if !inputs.manifest_valid {
+        return CompositeDegradation::ManifestInvalid;
+    }
+    match inputs.floor {
+        VersionFloorOutcome::EquivocationAlarm => return CompositeDegradation::EquivocationAlarm,
+        VersionFloorOutcome::RollbackRejected | VersionFloorOutcome::RequireDowngradeRejected => {
+            return CompositeDegradation::ManifestRollbackAlarm
+        }
+        VersionFloorOutcome::Accepted => {}
+    }
+    if inputs.transport_blocked {
+        return CompositeDegradation::TransportBlocked;
+    }
+    if matches!(inputs.moderation, ModerationFreshness::Loading(_)) {
+        return CompositeDegradation::ModerationLoading;
+    }
+    if !inputs.comments_and_wire_synced {
+        return CompositeDegradation::EditorialOnly;
+    }
+    if !inputs.all_members_verified {
+        return CompositeDegradation::MemberUnverified;
+    }
+    CompositeDegradation::None
+}
+
+/// Resolve one item's moderation treatment from Unit 3's freshness verdict.
+///
+/// The overlay applies ONLY when moderation is `Current` — a `Loading` verdict
+/// yields `Ordinary` here because the whole surface is held at the
+/// `ModerationLoading` degradation (the caller must NOT render these items as
+/// clean; `resolve_degradation` reports the hold). When `Current`, the sets are
+/// already exemption-filtered by Unit 3 (root revoke / manifest tombstone
+/// removed), so this applies them directly. Moderated rows become accountable
+/// placeholders (`Hidden`/`Tombstoned`), never dropped.
+pub fn item_treatment(
+    author_key: &[u8; 32],
+    entry_id: &[u8; 32],
+    moderation: &ModerationFreshness,
+) -> PostTreatment {
+    let ModerationFreshness::Current {
+        revoked,
+        tombstoned,
+        ..
+    } = moderation
+    else {
+        // Loading: surface is held at the degradation level, not per-item.
+        return PostTreatment::Ordinary;
+    };
+    if tombstoned.contains(entry_id) {
+        PostTreatment::Tombstoned { actions: vec![] }
+    } else if revoked.contains(author_key) {
+        PostTreatment::Hidden { actions: vec![] }
+    } else {
+        PostTreatment::Ordinary
     }
 }
 
@@ -148,5 +261,139 @@ mod tests {
             None,
             "an unknown forward-compat role must fail closed, never up-tier to editorial"
         );
+    }
+
+    // ---- degradation + overlay (Tasks 2/3/4) ----
+
+    use crate::site::moderation::{ModerationFreshness, ModerationLoading};
+    use std::collections::BTreeSet;
+
+    fn healthy_inputs(moderation: &ModerationFreshness) -> DegradationInputs<'_> {
+        DegradationInputs {
+            manifest_valid: true,
+            all_members_verified: true,
+            floor: VersionFloorOutcome::Accepted,
+            moderation,
+            transport_blocked: false,
+            comments_and_wire_synced: true,
+        }
+    }
+
+    fn current(revoked: &[[u8; 32]], tombstoned: &[[u8; 32]]) -> ModerationFreshness {
+        ModerationFreshness::Current {
+            revoked: revoked.iter().copied().collect(),
+            tombstoned: tombstoned.iter().copied().collect(),
+            endorsed: BTreeSet::new(),
+        }
+    }
+
+    #[test]
+    fn a_fully_healthy_current_site_has_no_degradation() {
+        let mod_ok = current(&[], &[]);
+        assert_eq!(
+            resolve_degradation(&healthy_inputs(&mod_ok)),
+            CompositeDegradation::None
+        );
+    }
+
+    #[test]
+    fn an_invalid_manifest_dominates_every_other_state() {
+        let loading = ModerationFreshness::Loading(ModerationLoading::NoHeartbeat);
+        let mut inputs = healthy_inputs(&loading);
+        inputs.manifest_valid = false;
+        inputs.transport_blocked = true;
+        inputs.all_members_verified = false;
+        // Even with several problems, the broken manifest is THE reported state.
+        assert_eq!(
+            resolve_degradation(&inputs),
+            CompositeDegradation::ManifestInvalid
+        );
+    }
+
+    #[test]
+    fn a_rollback_alarm_outranks_transport_and_moderation() {
+        let loading = ModerationFreshness::Loading(ModerationLoading::SeqGap);
+        let mut inputs = healthy_inputs(&loading);
+        inputs.floor = VersionFloorOutcome::RollbackRejected;
+        inputs.transport_blocked = true;
+        assert_eq!(
+            resolve_degradation(&inputs),
+            CompositeDegradation::ManifestRollbackAlarm
+        );
+    }
+
+    #[test]
+    fn moderation_loading_is_reported_when_not_current() {
+        let loading = ModerationFreshness::Loading(ModerationLoading::DigestMismatch);
+        assert_eq!(
+            resolve_degradation(&healthy_inputs(&loading)),
+            CompositeDegradation::ModerationLoading
+        );
+    }
+
+    #[test]
+    fn editorial_only_when_comments_and_wire_are_pending() {
+        let mod_ok = current(&[], &[]);
+        let mut inputs = healthy_inputs(&mod_ok);
+        inputs.comments_and_wire_synced = false;
+        assert_eq!(
+            resolve_degradation(&inputs),
+            CompositeDegradation::EditorialOnly
+        );
+    }
+
+    #[test]
+    fn member_unverified_is_the_mildest_state_still_surfaced() {
+        let mod_ok = current(&[], &[]);
+        let mut inputs = healthy_inputs(&mod_ok);
+        inputs.all_members_verified = false;
+        assert_eq!(
+            resolve_degradation(&inputs),
+            CompositeDegradation::MemberUnverified
+        );
+    }
+
+    // ---- overlay ----
+
+    const AUTHOR: [u8; 32] = [0x77; 32];
+    const ENTRY: [u8; 32] = [0x88; 32];
+
+    #[test]
+    fn a_revoked_author_entry_is_hidden_when_current() {
+        let mod_state = current(&[AUTHOR], &[]);
+        assert!(matches!(
+            item_treatment(&AUTHOR, &ENTRY, &mod_state),
+            PostTreatment::Hidden { .. }
+        ));
+    }
+
+    #[test]
+    fn a_tombstoned_entry_is_tombstoned_when_current() {
+        let mod_state = current(&[], &[ENTRY]);
+        assert!(matches!(
+            item_treatment(&AUTHOR, &ENTRY, &mod_state),
+            PostTreatment::Tombstoned { .. }
+        ));
+    }
+
+    #[test]
+    fn an_unmoderated_entry_is_ordinary_when_current() {
+        let mod_state = current(&[], &[]);
+        assert!(matches!(
+            item_treatment(&AUTHOR, &ENTRY, &mod_state),
+            PostTreatment::Ordinary
+        ));
+    }
+
+    #[test]
+    fn loading_holds_the_surface_so_items_are_not_individually_hidden() {
+        // Under Loading the overlay is NOT applied per-item (the whole surface is
+        // held at ModerationLoading); even a would-be-revoked author is Ordinary
+        // here, because rendering it Hidden would leak a partial verdict.
+        let loading = ModerationFreshness::Loading(ModerationLoading::NoHeartbeat);
+        assert!(matches!(
+            item_treatment(&AUTHOR, &ENTRY, &loading),
+            PostTreatment::Ordinary
+        ));
     }
 }
