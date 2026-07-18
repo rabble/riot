@@ -236,6 +236,20 @@ class RiotController(filesDir: File) : AutoCloseable {
         NewswireEditorialActionInput(spaceDescriptorEntryId, targetEntryId, kind, reason, correctionText),
     )
 
+    /**
+     * Signs a communal reply to a post (or another reply) on the open wire. Like
+     * every newswire write this goes straight to [MobileProfile]; core is the
+     * authorization boundary and refuses a reply whose parent it does not hold, so
+     * this THROWS for a dangling parent — the surface never re-decides admission.
+     */
+    fun createNewswireComment(
+        spaceDescriptorEntryId: String,
+        parentEntryId: String,
+        body: String,
+        language: String = "en",
+    ): NewswireSignedRecord =
+        profile.createNewswireComment(spaceDescriptorEntryId, parentEntryId, body, language)
+
     fun projectNewswire(spaceDescriptorEntryId: String): NewswireProjectionView =
         profile.projectNewswireSpace(spaceDescriptorEntryId)
 
