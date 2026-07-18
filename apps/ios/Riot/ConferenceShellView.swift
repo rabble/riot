@@ -639,20 +639,35 @@ private struct CommunityShellView: View {
     private var macShell: some View {
         NavigationSplitView {
             VStack(spacing: 0) {
-                List(RiotDestination.phoneTabs, selection: sidebarSelection) { destination in
-                    Label(destination.title, systemImage: destination.systemImage)
-                        .tag(destination)
+                // Custom sidebar rows instead of a List: the macOS List selection
+                // highlight follows the system accent (blue) and can't be retinted
+                // reliably, so we paint our own pink-on-select rows in the app's
+                // own palette — fully coherent, no system accent.
+                VStack(spacing: 4) {
+                    ForEach(RiotDestination.phoneTabs) { destination in
+                        let selected = navigation.destination == destination
+                        Button { changeRoute(to: destination) } label: {
+                            Label(destination.title, systemImage: destination.systemImage)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 7)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(selected ? RiotTheme.paper(for: colorScheme) : RiotTheme.ink(for: colorScheme))
+                        .background(selected ? RiotTheme.pink(for: colorScheme) : Color.clear)
+                        .clipShape(RoundedRectangle(cornerRadius: 6))
                         .accessibilityIdentifier("route-\(destination.rawValue)")
+                        .accessibilityAddTraits(selected ? .isSelected : [])
+                    }
                 }
-                .scrollContentBackground(.hidden)
-                // The sidebar selection highlight follows the app accent, which the
-                // outer .tint doesn't reach on a macOS List — tint it here so the
-                // selected route reads pink, not system blue.
-                .tint(RiotTheme.pink(for: colorScheme))
+                .padding(8)
+                Spacer()
                 Divider()
                 identityFooter
                     .padding(12)
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
             .background(RiotTheme.paper(for: colorScheme))
             .navigationTitle(community.name)
         } detail: {
@@ -671,13 +686,15 @@ private struct CommunityShellView: View {
             }
             // The route/tool views set their own paper on iOS via phoneShell;
             // on macOS the split-view detail is system-white unless we paint it.
-            // Hide the scroll surface so the paper shows, and back the whole pane.
+            // Hide the scroll surface so the paper shows; constrain the content to
+            // a readable centered column so it reads like a feed, not a stretched
+            // phone; and back the whole pane paper.
             .scrollContentBackground(.hidden)
+            .frame(maxWidth: 760)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(RiotTheme.paper(for: colorScheme).ignoresSafeArea())
         }
-        // Kill the macOS system-blue accent — the app's language is ink/pink, not
-        // the default tint on segmented controls, selection, and links.
+        // Kill the macOS system-blue accent everywhere else it might leak.
         .tint(RiotTheme.pink(for: colorScheme))
     }
 
