@@ -1065,6 +1065,7 @@ private struct CommunitySettingsSheet: View {
     let onClose: () -> Void
     @Environment(\.colorScheme) private var colorScheme
     @State private var showingTechnical = false
+    @State private var isSharePresented = false
 
     var body: some View {
         ScrollView {
@@ -1089,6 +1090,10 @@ private struct CommunitySettingsSheet: View {
                 }
                 .accessibilityIdentifier("community-technical-details")
 
+                Button("Share this community") { isSharePresented = true }
+                    .buttonStyle(.riotSecondary)
+                    .accessibilityIdentifier("share-community")
+
                 Button("Leave this community", role: .destructive, action: onLeave)
                     .buttonStyle(.riotSecondary)
                     .accessibilityIdentifier("leave-community")
@@ -1098,6 +1103,18 @@ private struct CommunitySettingsSheet: View {
         .riotHeader(eyebrow: "Community", ShellIdentityDestination.communitySettings.label)
         .toolbar {
             ToolbarItem(placement: .confirmationAction) { Button("Done", action: onClose) }
+        }
+        .sheet(isPresented: $isSharePresented) {
+            ShareCommunitySheet(
+                community: community,
+                resolveEncoded: { id in
+                    guard let repository = model.profileRepository else {
+                        throw RepositoryError.profileClosed
+                    }
+                    return try repository.newswireShareReference(spaceDescriptorEntryID: id).encoded
+                },
+                onClose: { isSharePresented = false }
+            )
         }
     }
 
