@@ -295,6 +295,51 @@ final class NewswireSurfaceTests: XCTestCase {
         XCTAssertEqual(empty.forwardActions, [.postFirstUpdate])
     }
 
+    func testOfflineStaleReDerivesADescriptorThatLandedInsteadOfLooping() {
+        // Built with "" (the shell's pre-sync case), but the registry now HAS a
+        // descriptor (a joined/switched community whose sync just landed). load()
+        // must pick it up and project — not re-loop on the empty id.
+        let post = projectedPost(id: "a1", headline: "Landed", treatment: .ordinary)
+        let model = NewswireSurfaceModel(
+            projector: FixedProjector(projection(openWire: [post], frontPage: [])),
+            editor: ThrowingEditor(), authority: StubAuthority(),
+            spaceDescriptorEntryID: "", communityName: "Riverside",
+            myKeyHex: "aa".repeated(32),
+            descriptorResolver: { "desc-that-just-synced" })
+        model.load()
+        guard case .postsButNoFeature = model.wire else {
+            return XCTFail("a re-derived descriptor must project, not stay offlineStale")
+        }
+    }
+
+    func testOfflineStaleWithNoDerivableDescriptorOffersAForwardPathNotASilentLoop() {
+        // A nearby-joined community: it never gets a descriptorEntryId, so the
+        // resolver yields nil. The state must offer real forward paths and MUST NOT
+        // offer the silent .retry re-loop.
+        let model = NewswireSurfaceModel(
+            projector: ThrowingProjector(), editor: ThrowingEditor(), authority: StubAuthority(),
+            spaceDescriptorEntryID: "", communityName: "Riverside",
+            myKeyHex: "aa".repeated(32),
+            descriptorResolver: { nil })
+        model.load()
+        XCTAssertEqual(model.wire, .offlineStale)
+        XCTAssertFalse(model.forwardActions.contains(.retry),
+                       "no silent re-loop when there is nothing to re-derive")
+        XCTAssertFalse(model.forwardActions.isEmpty, "offlineStale is never a dead end")
+    }
+
+    func testKnownDescriptorThatIsMerelyOfflineStillOffersRetry() {
+        // A descriptor we DO have, but projection throws (transient offline). Retry
+        // is the honest action here — reproject the id we already hold.
+        let model = NewswireSurfaceModel(
+            projector: ThrowingProjector(), editor: ThrowingEditor(), authority: StubAuthority(),
+            spaceDescriptorEntryID: "desc", communityName: "Riverside",
+            myKeyHex: "aa".repeated(32))
+        model.load()
+        XCTAssertEqual(model.wire, .offlineStale)
+        XCTAssertEqual(model.forwardActions, [.retry])
+    }
+
     // MARK: - Treatment rendering
 
     func testHiddenPostRendersTheWarningInterstitialAndDropsThePayload() {

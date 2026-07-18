@@ -501,9 +501,14 @@ public final class NewswireSurfaceModel: ObservableObject {
     private let projector: NewswireProjecting
     private let editor: NewswireEditorialActing
     private let authority: NewswireEditorAuthorityChecking
-    private let spaceDescriptorEntryID: String
+    private var spaceDescriptorEntryID: String
     private let myKeyHex: String
     public let communityName: String
+
+    /// Re-derives the community's descriptor id on demand (the shell wires this to
+    /// `RiotAppModel.rederivedNewswireDescriptorID()` — the same `listCommunities()`
+    /// derivation `reload()` uses). `nil` in tests/constructions that never need it.
+    private let descriptorResolver: (() -> String?)?
 
     /// Whether core recognizes this profile as an editor of this descriptor — read
     /// from the FFI predicate in `load()`, never a locally-asserted roster. `false`
@@ -523,7 +528,8 @@ public final class NewswireSurfaceModel: ObservableObject {
         spaceDescriptorEntryID: String,
         communityName: String,
         myKeyHex: String,
-        initialDraftKind: EditorialActionKind = .feature
+        initialDraftKind: EditorialActionKind = .feature,
+        descriptorResolver: (() -> String?)? = nil
     ) {
         self.projector = projector
         self.editor = editor
@@ -531,6 +537,7 @@ public final class NewswireSurfaceModel: ObservableObject {
         self.spaceDescriptorEntryID = spaceDescriptorEntryID
         self.communityName = communityName
         self.myKeyHex = myKeyHex
+        self.descriptorResolver = descriptorResolver
         self.wire = .offlineStale
         self.history = []
         self.draft = EditorialActionDraft(kind: initialDraftKind)
@@ -578,6 +585,14 @@ public final class NewswireSurfaceModel: ObservableObject {
     /// Loads the collective projection. A missing descriptor id or a projection
     /// failure is the offline/stale state — never a fabricated empty wire.
     public func load() {
+        // A descriptor may have landed since this model was built (a switched or
+        // joined community whose registry row now carries one; the shell built this
+        // model with "" before the sync). Picking it up here is what turns a silent
+        // offlineStale re-loop into a real projection — and it must precede the
+        // editor-status read below so the predicate answers off the re-derived id.
+        if spaceDescriptorEntryID.isEmpty, let resolved = descriptorResolver?(), !resolved.isEmpty {
+            spaceDescriptorEntryID = resolved
+        }
         // Editor status is core's descriptor answer, resolved once per load. An
         // unknown / not-yet-synced descriptor (or a closed profile) answers false —
         // never a throw here.
@@ -585,8 +600,11 @@ public final class NewswireSurfaceModel: ObservableObject {
             spaceDescriptorEntryID: spaceDescriptorEntryID, subjectID: myKeyHex)) ?? false
 
         guard !spaceDescriptorEntryID.isEmpty else {
+            // No descriptor to project — the forward-path state (rejoin / sync),
+            // never invented content, never a silent retry.
             wire = .offlineStale
             history = []
+            descriptorRecoverable = false
             return
         }
         do {
@@ -595,11 +613,14 @@ public final class NewswireSurfaceModel: ObservableObject {
             )
             wire = .from(projection)
             history = projection.editorialHistory.map(EditorialHistoryRow.init)
+            descriptorRecoverable = true
         } catch {
-            // Fixed, honest state — never a raw internal error, never invented
-            // content.
+            // We hold a descriptor id but it is transiently offline — retry can
+            // reproject the id we already have. Fixed, honest state — never a raw
+            // internal error, never invented content.
             wire = .offlineStale
             history = []
+            descriptorRecoverable = true
         }
     }
 
