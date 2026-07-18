@@ -582,20 +582,43 @@ fn resolve_composite_site_from_store(
     })
 }
 
+// These tests live IN-CRATE (not crates/riot-ffi/tests/) on purpose: owner /mod/
+// and owner /manifest entries can only enter a profile store via the crate-internal
+// followed-root admission path (`inspect_core_with_root`) — there is no public
+// single-shot site import, only the full sync session. So an integration test in
+// tests/ could not populate the store the way newswire_contract.rs does. These
+// exercise the real store, the real admission path, and real core — same fidelity,
+// just reachable only from inside the crate. Do NOT "fix" this by moving to tests/.
 #[cfg(test)]
 mod resolve_composite_tests {
     use super::*;
     use crate::mobile_api::open_local_profile;
+    use crate::newswire_ffi::{NewswirePostInput, NewswireSpaceInput};
+    use riot_core::import::encode_bundle;
+    use riot_core::session::CommitOutcome;
     use riot_core::site::manifest::{
         encode_site_manifest, SiteLayout, SiteManifestV1, SiteMemberV1, TransportPolicyV1,
+    };
+    use riot_core::site::moderation::{
+        compute_mod_set_digest, encode_moderation_record, ModEpoch, ModerationRecord, Revoke,
+        Tombstone,
     };
     use riot_core::willow::{
         encode_capability, encode_entry, entry_id, Entry, SignedWillowEntry, MANIFEST_COMPONENT,
     };
+    use std::collections::BTreeSet as StdBTreeSet;
     use std::sync::Arc;
 
-    /// A fixed wall-clock inside the freshness window of the heartbeats below.
+    /// A fixed wall-clock inside the freshness window of a fresh heartbeat.
     const NOW: u64 = 2_000_000_000;
+
+    fn unhex(s: &str) -> [u8; 32] {
+        let bytes: Vec<u8> = (0..s.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap())
+            .collect();
+        <[u8; 32]>::try_from(bytes.as_slice()).unwrap()
+    }
 
     /// Sign an owner entry at `path` and return its wire plus its willow entry-id.
     fn owner_sign(
@@ -653,6 +676,159 @@ mod resolve_composite_tests {
         owner_sign(masthead, &[MANIFEST_COMPONENT], 1_000, &payload).0
     }
 
+    fn wire_member(ns: [u8; 32]) -> SiteMemberV1 {
+        SiteMemberV1 {
+            ns,
+            role: SiteRole::OpenWire,
+            rule: SiteRule::CommunalOpen,
+            display: SiteDisplay::WireColumn,
+        }
+    }
+
+    /// Import an owner-signed entry into the profile store via the same
+    /// followed-root admission path the sync commit uses.
+    fn import_owned(profile: &Arc<MobileProfile>, root: [u8; 32], signed: &SignedWillowEntry) {
+        with_active(&profile.inner, |p| {
+            let bundle =
+                encode_bundle(std::slice::from_ref(signed)).map_err(|_| MobileError::Internal)?;
+            let preview = crate::mobile_state::inspect_core_with_root(
+                &p.store,
+                &bundle,
+                "test-composite",
+                Some(root),
+            )?;
+            let plan = preview.plan_all().map_err(|_| MobileError::Internal)?;
+            match plan.commit().map_err(|_| MobileError::Internal)? {
+                CommitOutcome::Committed(_) | CommitOutcome::NoChanges(_) => {}
+            }
+            Ok(())
+        })
+        .expect("import owned entry");
+    }
+
+    /// A signed owner `mod_epoch` heartbeat committing to `mod_ids`.
+    fn heartbeat(
+        masthead: &OwnedMasthead,
+        seq: u64,
+        ts: u64,
+        mod_ids: &[[u8; 32]],
+    ) -> SignedWillowEntry {
+        let set: StdBTreeSet<[u8; 32]> = mod_ids.iter().copied().collect();
+        let payload = encode_moderation_record(&ModerationRecord::ModEpoch(ModEpoch {
+            seq,
+            ts,
+            mod_set_digest: compute_mod_set_digest(&set),
+        }))
+        .expect("encode epoch");
+        owner_sign(masthead, &[b"mod", b"epoch"], ts, &payload).0
+    }
+
+    /// A signed owner `revoke{author_key}` moderation record.
+    fn revoke(
+        masthead: &OwnedMasthead,
+        slug: &[u8],
+        author_key: [u8; 32],
+    ) -> (SignedWillowEntry, [u8; 32]) {
+        let payload = encode_moderation_record(&ModerationRecord::Revoke(Revoke {
+            author_key,
+            effective_ts: NOW,
+        }))
+        .expect("encode revoke");
+        owner_sign(masthead, &[b"mod", slug], NOW, &payload)
+    }
+
+    /// A signed owner `tombstone{target_ns, target_entry}` moderation record.
+    fn tombstone(
+        masthead: &OwnedMasthead,
+        slug: &[u8],
+        target_ns: [u8; 32],
+        target_entry: [u8; 32],
+    ) -> (SignedWillowEntry, [u8; 32]) {
+        let payload = encode_moderation_record(&ModerationRecord::Tombstone(Tombstone {
+            target_ns,
+            target_entry,
+        }))
+        .expect("encode tombstone");
+        owner_sign(masthead, &[b"mod", slug], NOW, &payload)
+    }
+
+    /// A held communal open-wire item: a real newswire post in its own communal
+    /// namespace, which the manifest binds as the `W` member. Returns the profile,
+    /// the wire namespace, the post entry id, and the post author subspace.
+    fn wire_post(profile: &Arc<MobileProfile>) -> ([u8; 32], [u8; 32], [u8; 32]) {
+        let space = profile
+            .create_newswire_space(NewswireSpaceInput {
+                name: "Wire".into(),
+                summary: "Open wire.".into(),
+                languages: vec!["en".into()],
+                geographic_tags: vec![],
+                topic_tags: vec![],
+                editorial_roster: vec![],
+            })
+            .expect("create wire space");
+        let post = profile
+            .create_newswire_post(NewswirePostInput {
+                space_descriptor_entry_id: space.entry_id.clone(),
+                headline: "On the wire".into(),
+                body: "A community report.".into(),
+                language: "en".into(),
+                event_time_unix_seconds: None,
+                expires_at_unix_seconds: None,
+                coarse_location: None,
+                source_claims: vec![],
+                operational_profile: None,
+                ai_assisted: false,
+            })
+            .expect("create wire post");
+        let post_id = unhex(&post.entry_id);
+        // The wire namespace and the post's author come straight from the store,
+        // so the manifest binds the real namespace and moderation targets the real
+        // author/entry.
+        with_active(&profile.inner, |p| {
+            let ns_hex = p.space.as_ref().unwrap().namespace_id.clone();
+            let ns = unhex(&ns_hex);
+            let prefix = Path::from_slices(&[b"newswire", b"v1"]).unwrap();
+            let entries = p
+                .store
+                .entries_with_prefix_in_namespace(&ns, &prefix)
+                .map_err(|_| MobileError::Internal)?;
+            let author = entries
+                .iter()
+                .find(|(id, _, _)| *id == post_id)
+                .map(|(_, e, _)| *e.subspace_id().as_bytes())
+                .expect("post held in wire namespace");
+            Ok((ns, post_id, author))
+        })
+        .expect("read wire namespace")
+    }
+
+    /// The count of genuinely-held (decodable, payload-retained) `/mod/` records in
+    /// the owned root namespace — the resolver's loaded moderation set.
+    fn held_mod_count(profile: &Arc<MobileProfile>, root: [u8; 32]) -> usize {
+        with_active(&profile.inner, |p| {
+            let prefix = Path::from_slices(&[MOD_COMPONENT]).unwrap();
+            let entries = p
+                .store
+                .entries_with_prefix_in_namespace(&root, &prefix)
+                .map_err(|_| MobileError::Internal)?;
+            Ok(entries
+                .iter()
+                .filter(|(_, e, payload)| {
+                    payload
+                        .as_ref()
+                        .is_some_and(|pl| read_moderation_record(e.path(), pl).is_ok())
+                })
+                .count())
+        })
+        .expect("count held mod records")
+    }
+
+    /// Find the resolved item for `entry_id` (hex), if present.
+    fn item_for(resolved: &ResolvedCompositeSite, entry_id: [u8; 32]) -> Option<&ResolvedSiteItem> {
+        let hexed = hex(&entry_id);
+        resolved.items.iter().find(|i| i.entry_id == hexed)
+    }
+
     fn call_resolve(
         profile: &Arc<MobileProfile>,
         manifest: &SignedWillowEntry,
@@ -699,6 +875,165 @@ mod resolve_composite_tests {
         assert_eq!(resolved.degradation, SiteDegradation::ManifestInvalid);
         assert!(resolved.items.is_empty());
         assert_eq!(resolved.transport_status, "manifest_invalid");
+    }
+
+    /// A fresh heartbeat committing to an empty mod set is a Current verdict with
+    /// nothing moderated: no degradation. (Also proves owner /mod/ records now
+    /// reach the store — the session-import fix.)
+    #[test]
+    fn a_fresh_empty_heartbeat_is_current_with_no_degradation() {
+        let masthead = OwnedMasthead::generate().unwrap();
+        let root = *masthead.namespace_id().as_bytes();
+        let manifest = manifest_wire(&masthead, vec![masthead_member(root)]);
+        let profile = open_local_profile().unwrap();
+        import_owned(&profile, root, &heartbeat(&masthead, 1, NOW, &[]));
+
+        assert_eq!(
+            held_mod_count(&profile, root),
+            1,
+            "the heartbeat must be held"
+        );
+        let resolved = call_resolve(&profile, &manifest, root);
+        assert_eq!(resolved.degradation, SiteDegradation::None);
+    }
+
+    /// A held tombstone of a communal wire item, attested by a fresh heartbeat,
+    /// renders that item Tombstoned — the moderation overlay reaches communal
+    /// content.
+    #[test]
+    fn a_tombstoned_wire_item_is_tombstoned_when_current() {
+        let masthead = OwnedMasthead::generate().unwrap();
+        let root = *masthead.namespace_id().as_bytes();
+        let profile = open_local_profile().unwrap();
+        let (ns_w, post_id, _author) = wire_post(&profile);
+        let manifest = manifest_wire(&masthead, vec![masthead_member(root), wire_member(ns_w)]);
+
+        let (tomb, tomb_id) = tombstone(&masthead, b"t1", ns_w, post_id);
+        import_owned(&profile, root, &tomb);
+        import_owned(&profile, root, &heartbeat(&masthead, 1, NOW, &[tomb_id]));
+
+        let resolved = call_resolve(&profile, &manifest, root);
+        assert_eq!(resolved.degradation, SiteDegradation::None);
+        let item = item_for(&resolved, post_id).expect("wire post is an item");
+        assert_eq!(item.treatment, SiteItemTreatment::Tombstoned);
+        assert_eq!(item.trust_tier, SiteTrustTier::OpenWire);
+    }
+
+    /// A held revoke of a communal author, attested by a fresh heartbeat, hides
+    /// that author's wire item.
+    #[test]
+    fn a_revoked_authors_wire_item_is_hidden_when_current() {
+        let masthead = OwnedMasthead::generate().unwrap();
+        let root = *masthead.namespace_id().as_bytes();
+        let profile = open_local_profile().unwrap();
+        let (ns_w, post_id, author) = wire_post(&profile);
+        let manifest = manifest_wire(&masthead, vec![masthead_member(root), wire_member(ns_w)]);
+
+        let (rev, rev_id) = revoke(&masthead, b"r1", author);
+        import_owned(&profile, root, &rev);
+        import_owned(&profile, root, &heartbeat(&masthead, 1, NOW, &[rev_id]));
+
+        let resolved = call_resolve(&profile, &manifest, root);
+        assert_eq!(resolved.degradation, SiteDegradation::None);
+        let item = item_for(&resolved, post_id).expect("wire post is an item");
+        assert_eq!(item.treatment, SiteItemTreatment::Hidden);
+    }
+
+    /// KEYSTONE: under a Loading verdict the whole surface is HELD — even a
+    /// present, would-be-revoked author's item stays Ordinary (rendering it Hidden
+    /// would leak a partial verdict), and the degradation is ModerationLoading. The
+    /// hold happens BECAUSE the mod is present-but-unattested (a stale heartbeat),
+    /// not because it is absent — asserted by held_mod_count.
+    #[test]
+    fn loading_holds_the_surface_even_with_a_present_but_unattested_revoke() {
+        let masthead = OwnedMasthead::generate().unwrap();
+        let root = *masthead.namespace_id().as_bytes();
+        let profile = open_local_profile().unwrap();
+        let (ns_w, post_id, author) = wire_post(&profile);
+        let manifest = manifest_wire(&masthead, vec![masthead_member(root), wire_member(ns_w)]);
+
+        let (rev, rev_id) = revoke(&masthead, b"r1", author);
+        import_owned(&profile, root, &rev);
+        // A STALE heartbeat (far outside the freshness window) that DOES commit the
+        // revoke: the mod is present and attested, but freshness is Loading, so the
+        // surface holds rather than applying the revoke.
+        let stale_ts = NOW - 10 * riot_core::site::MODERATION_FRESHNESS_WINDOW_SECS;
+        import_owned(
+            &profile,
+            root,
+            &heartbeat(&masthead, 1, stale_ts, &[rev_id]),
+        );
+
+        // The revoke IS held — the hold below is not because moderation is missing.
+        assert_eq!(
+            held_mod_count(&profile, root),
+            2,
+            "both the revoke and the (stale) heartbeat are held"
+        );
+        let resolved = call_resolve(&profile, &manifest, root);
+        assert_eq!(resolved.degradation, SiteDegradation::ModerationLoading);
+        let item = item_for(&resolved, post_id).expect("wire post is an item");
+        assert_eq!(
+            item.treatment,
+            SiteItemTreatment::Ordinary,
+            "under Loading the item is held Ordinary, never Hidden — no partial verdict leak"
+        );
+    }
+
+    /// A held revoke that the latest heartbeat does NOT commit to (digest mismatch)
+    /// is tail-suppression: the client is missing records the owner attested, so
+    /// the surface holds at ModerationLoading.
+    #[test]
+    fn a_revoke_absent_from_the_heartbeat_digest_holds_at_moderation_loading() {
+        let masthead = OwnedMasthead::generate().unwrap();
+        let root = *masthead.namespace_id().as_bytes();
+        let profile = open_local_profile().unwrap();
+        let (ns_w, _post_id, author) = wire_post(&profile);
+        let manifest = manifest_wire(&masthead, vec![masthead_member(root), wire_member(ns_w)]);
+
+        let (rev, _rev_id) = revoke(&masthead, b"r1", author);
+        import_owned(&profile, root, &rev);
+        // Fresh heartbeat, but its digest commits to the EMPTY set — it does not
+        // attest the held revoke.
+        import_owned(&profile, root, &heartbeat(&masthead, 1, NOW, &[]));
+
+        assert_eq!(held_mod_count(&profile, root), 2);
+        let resolved = call_resolve(&profile, &manifest, root);
+        assert_eq!(resolved.degradation, SiteDegradation::ModerationLoading);
+    }
+
+    /// D3 GUARD (keep permanently): the moderation overlay applies to communal
+    /// content only — an owner O:/articles item is PROTECTED, so a tombstone
+    /// targeting it (attested by a fresh heartbeat) has no effect and the item
+    /// stays Ordinary. A delegated moderator must never tombstone the owner's
+    /// editorial.
+    #[test]
+    fn an_owner_article_is_protected_from_tombstone() {
+        let masthead = OwnedMasthead::generate().unwrap();
+        let root = *masthead.namespace_id().as_bytes();
+        let manifest = manifest_wire(&masthead, vec![masthead_member(root)]);
+        let profile = open_local_profile().unwrap();
+
+        // An owner-signed article at O:/articles/, held in the root namespace.
+        let (article, article_id) = owner_sign(
+            &masthead,
+            &[ARTICLES_COMPONENT, b"news", b"a1"],
+            NOW,
+            b"editorial body",
+        );
+        import_owned(&profile, root, &article);
+        let (tomb, tomb_id) = tombstone(&masthead, b"t1", root, article_id);
+        import_owned(&profile, root, &tomb);
+        import_owned(&profile, root, &heartbeat(&masthead, 1, NOW, &[tomb_id]));
+
+        let resolved = call_resolve(&profile, &manifest, root);
+        let item = item_for(&resolved, article_id).expect("owner article is an item");
+        assert_eq!(item.trust_tier, SiteTrustTier::Editorial);
+        assert_eq!(
+            item.treatment,
+            SiteItemTreatment::Ordinary,
+            "an owner article must be protected from a moderator tombstone (D3)"
+        );
     }
 
     #[test]
