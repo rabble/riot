@@ -12,14 +12,21 @@
 //! regenerated (and the staticlib rebuilt) before any native app can consume
 //! these functions — that regen happens in Unit 6, not here.
 
+use std::collections::BTreeSet;
+
 use riot_core::newswire::PostTreatment;
 use riot_core::site::{
-    validate_site_manifest, CompositeDegradation, MemberClassification, RequireTransport,
-    SiteDisplay, SiteRole, SiteRule, SiteTransport, TrustTier, ValidatedManifest,
+    evaluate_freshness, item_treatment, read_moderation_record, resolve_degradation,
+    resolve_trust_tier, validate_site_manifest, CompositeDegradation, DegradationInputs,
+    HeldModerationRecord, MemberClassification, RequireTransport, SiteDisplay, SiteRole, SiteRule,
+    SiteTransport, TrustTier, ValidatedManifest, VersionFloorOutcome,
 };
-use riot_core::willow::{OwnedMasthead, SignedWillowEntry};
+use riot_core::willow::site_paths::{ARTICLES_COMPONENT, MOD_COMPONENT};
+use riot_core::willow::{OwnedMasthead, Path, SignedWillowEntry};
+use willow25::groupings::Keylike;
 
-use crate::mobile_api::MobileError;
+use crate::mobile_api::{MobileError, MobileProfile};
+use crate::mobile_state::with_active;
 
 /// Owner-side result of creating or restoring a composite site.
 ///
@@ -396,6 +403,183 @@ pub struct ResolvedCompositeSite {
     pub items: Vec<ResolvedSiteItem>,
     /// True iff the local editor's cap has expired (compose-time warning).
     pub writer_cap_expired: bool,
+}
+
+// ---------------------------------------------------------------------------
+// Unit 6 — the store-wired composite-site resolver (read path).
+//
+// Assembles a real `ResolvedCompositeSite` from a profile's synced store: it
+// validates the owner-signed manifest, loads the held `O:/mod/` records, and
+// applies the core `site::resolve` decisions (freshness → degradation, per-item
+// trust tier + moderation treatment). It owns NO decision logic — every verdict
+// comes from `riot_core::site` — it is pure store I/O + core calls + FFI mapping.
+// ---------------------------------------------------------------------------
+
+#[uniffi::export]
+impl MobileProfile {
+    /// Resolve the composite site rooted at `root` from this profile's synced
+    /// store, for rendering by the shells with no business logic.
+    ///
+    /// The manifest is passed IN as its owner-signed wire (the four fields mirror
+    /// [`resolve_site_manifest`]); there is no stored "active site" — a composite
+    /// site's members, moderation records, and items all live in the shared
+    /// evidence store and are read by namespace here. `now_unix_seconds` is the
+    /// clock the moderation freshness window is evaluated against.
+    ///
+    /// A validation or resolution problem is a STATE carried in `degradation`,
+    /// never a thrown error: an invalid manifest returns a `ManifestInvalid` view
+    /// with no items, so the shell renders the honest degraded surface.
+    pub fn resolve_composite_site(
+        &self,
+        entry_bytes: Vec<u8>,
+        capability_bytes: Vec<u8>,
+        signature: Vec<u8>,
+        payload_bytes: Vec<u8>,
+        root: Vec<u8>,
+        now_unix_seconds: u64,
+    ) -> Result<ResolvedCompositeSite, MobileError> {
+        let root = <[u8; 32]>::try_from(root.as_slice()).map_err(|_| MobileError::InvalidInput)?;
+        let signature =
+            <[u8; 64]>::try_from(signature.as_slice()).map_err(|_| MobileError::InvalidInput)?;
+        let signed = SignedWillowEntry {
+            entry_bytes,
+            capability_bytes,
+            signature,
+            payload_bytes,
+        };
+        with_active(&self.inner, |profile| {
+            resolve_composite_site_from_store(&profile.store, &signed, root, now_unix_seconds)
+        })
+    }
+}
+
+/// The fail-closed invalid-manifest view: no trustworthy site to resolve, so the
+/// shell shows the degraded state and no items.
+fn manifest_invalid_view(root: [u8; 32]) -> ResolvedCompositeSite {
+    ResolvedCompositeSite {
+        root: hex(&root),
+        degradation: SiteDegradation::ManifestInvalid,
+        transport_status: "manifest_invalid".to_string(),
+        items: Vec::new(),
+        writer_cap_expired: false,
+    }
+}
+
+fn resolve_composite_site_from_store(
+    store: &riot_core::session::EvidenceStore,
+    signed: &SignedWillowEntry,
+    root: [u8; 32],
+    now_unix_seconds: u64,
+) -> Result<ResolvedCompositeSite, MobileError> {
+    // 1. Validate the owner-signed manifest. A failure is the ManifestInvalid
+    //    STATE (fail-closed), never an error to the caller.
+    let Ok(validated) = validate_site_manifest(signed, &root) else {
+        return Ok(manifest_invalid_view(root));
+    };
+    let manifest = &validated.manifest;
+
+    // 2. Load the held O:/mod/ records from the owned root namespace. The path
+    //    guard (`read_moderation_record`) refuses any non-/mod/ payload; a record
+    //    that will not decode, or whose payload was not retained, is dropped
+    //    (fail-closed — a malformed record is simply not held, never trusted).
+    let mod_prefix = Path::from_slices(&[MOD_COMPONENT]).map_err(|_| MobileError::Internal)?;
+    let mod_entries = store
+        .entries_with_prefix_in_namespace(&root, &mod_prefix)
+        .map_err(|_| MobileError::Internal)?;
+    let mut held = Vec::new();
+    for (record_id, entry, payload) in &mod_entries {
+        let Some(payload) = payload else { continue };
+        if let Ok(record) = read_moderation_record(entry.path(), payload) {
+            held.push(HeldModerationRecord {
+                record,
+                record_id: *record_id,
+            });
+        }
+    }
+
+    // 3. Protected entries = every entry in the owned root namespace (the
+    //    manifest + owner records). Over-approximating the exemption is fail-safe:
+    //    a moderator must never be able to tombstone an owner record or /manifest.
+    let all_prefix = Path::from_slices(&[]).map_err(|_| MobileError::Internal)?;
+    let protected: BTreeSet<[u8; 32]> = store
+        .entries_with_prefix_in_namespace(&root, &all_prefix)
+        .map_err(|_| MobileError::Internal)?
+        .into_iter()
+        .map(|(id, _, _)| id)
+        .collect();
+
+    // 4. Freshness verdict — Loading holds the whole surface (never a false
+    //    "current"); Current carries the exemption-filtered revoke/tombstone sets.
+    let freshness = evaluate_freshness(&held, root, &protected, now_unix_seconds);
+
+    // 5. Items: for each manifest member namespace, list its content and tag each
+    //    entry with the OWNER-signed trust tier and the moderation treatment.
+    //    Editorial (O) is scoped to /articles/ (excludes /manifest and /mod);
+    //    the open communal members (W, C) have no reserved content path, so every
+    //    entry in the member namespace is an item (honest over-approximation).
+    let mut items = Vec::new();
+    let mut comment_member_pending = false;
+    let mut wire_member_pending = false;
+    for member in &manifest.members {
+        let Some(tier) = resolve_trust_tier(manifest, &member.ns) else {
+            // Unknown/untrusted role — not styled here; surfaced via all_members_verified.
+            continue;
+        };
+        let prefix = match tier {
+            TrustTier::Editorial => {
+                Path::from_slices(&[ARTICLES_COMPONENT]).map_err(|_| MobileError::Internal)?
+            }
+            TrustTier::OpenWire | TrustTier::Comment => {
+                Path::from_slices(&[]).map_err(|_| MobileError::Internal)?
+            }
+        };
+        let member_entries = store
+            .entries_with_prefix_in_namespace(&member.ns, &prefix)
+            .map_err(|_| MobileError::Internal)?;
+        match tier {
+            TrustTier::Comment => comment_member_pending = member_entries.is_empty(),
+            TrustTier::OpenWire => wire_member_pending = member_entries.is_empty(),
+            TrustTier::Editorial => {}
+        }
+        for (entry_id, entry, _) in &member_entries {
+            let author = *entry.subspace_id().as_bytes();
+            let treatment = item_treatment(&author, entry_id, &freshness);
+            items.push(ResolvedSiteItem {
+                entry_id: hex(entry_id),
+                author_subspace: hex(&author),
+                trust_tier: tier.into(),
+                treatment: treatment.into(),
+            });
+        }
+    }
+
+    // 6. Fold the sub-verdicts into one primary degradation. The three inputs
+    //    below are STUBBED benign for this read-path slice — each is strictly
+    //    MORE severe than ModerationLoading in the resolver's precedence, so
+    //    stubbing them cannot mask the moderation state:
+    //    - floor = Accepted: the durable version-floor check needs the profile
+    //      database (rollback/equivocation alarms) — a tracked follow-up.
+    //    - transport_blocked = false: transport reachability is not yet wired.
+    //    - writer_cap_expired = false: writer/compose state is the write path.
+    //    `comments_and_wire_synced` is a heuristic: a member namespace that
+    //    exists but holds nothing is treated as still-syncing (EditorialOnly,
+    //    milder than ModerationLoading).
+    let degradation = resolve_degradation(&DegradationInputs {
+        manifest_valid: true,
+        all_members_verified: validated.all_members_verified(),
+        floor: VersionFloorOutcome::Accepted,
+        moderation: &freshness,
+        transport_blocked: false,
+        comments_and_wire_synced: !comment_member_pending && !wire_member_pending,
+    });
+
+    Ok(ResolvedCompositeSite {
+        root: hex(&root),
+        degradation: degradation.into(),
+        transport_status: "available".to_string(),
+        items,
+        writer_cap_expired: false,
+    })
 }
 
 #[cfg(test)]
