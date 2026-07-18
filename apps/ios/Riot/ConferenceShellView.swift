@@ -644,24 +644,41 @@ private struct CommunityShellView: View {
                         .tag(destination)
                         .accessibilityIdentifier("route-\(destination.rawValue)")
                 }
+                .scrollContentBackground(.hidden)
+                // The sidebar selection highlight follows the app accent, which the
+                // outer .tint doesn't reach on a macOS List — tint it here so the
+                // selected route reads pink, not system blue.
+                .tint(RiotTheme.pink(for: colorScheme))
                 Divider()
                 identityFooter
                     .padding(12)
             }
+            .background(RiotTheme.paper(for: colorScheme))
             .navigationTitle(community.name)
         } detail: {
-            if let tool = runningTool, let repository = model.profileRepository {
-                AppRuntimeView(
-                    repository: repository,
-                    appIDHex: tool.appIDHex,
-                    appName: tool.name,
-                    onClose: closeTool
-                )
-                .onExitCommand(perform: escape)
-            } else {
-                routeView(navigation.destination)
+            Group {
+                if let tool = runningTool, let repository = model.profileRepository {
+                    AppRuntimeView(
+                        repository: repository,
+                        appIDHex: tool.appIDHex,
+                        appName: tool.name,
+                        onClose: closeTool
+                    )
+                    .onExitCommand(perform: escape)
+                } else {
+                    routeView(navigation.destination)
+                }
             }
+            // The route/tool views set their own paper on iOS via phoneShell;
+            // on macOS the split-view detail is system-white unless we paint it.
+            // Hide the scroll surface so the paper shows, and back the whole pane.
+            .scrollContentBackground(.hidden)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(RiotTheme.paper(for: colorScheme).ignoresSafeArea())
         }
+        // Kill the macOS system-blue accent — the app's language is ink/pink, not
+        // the default tint on segmented controls, selection, and links.
+        .tint(RiotTheme.pink(for: colorScheme))
     }
 
     private var sidebarSelection: Binding<RiotDestination?> {
