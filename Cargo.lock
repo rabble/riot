@@ -3457,6 +3457,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "riot-anchor-protocol"
+version = "0.1.0"
+dependencies = [
+ "riot-core",
+ "serde_json",
+]
+
+[[package]]
 name = "riot-app-cli"
 version = "0.1.0"
 dependencies = [
