@@ -11,11 +11,11 @@ use std::collections::BTreeMap;
 
 use riot_core::newswire::{
     build_share_reference, create_signed_editorial_action, create_signed_news_comment,
-    create_signed_news_post, create_signed_space_descriptor, decode_share_reference,
-    encode_share_reference, encode_space_descriptor, load_space_descriptor, project_space,
-    AlertProfileV1, EditorialActionKind, EditorialActionV1, NewsCommentV1, NewsPostV1,
-    NewswireShareReferenceV1, OperationalProfileV1, ProjectionClockV1, RequestKind,
-    RequestProfileV1, SignedNewswireRecord, SpaceDescriptorV1,
+    create_signed_news_post, create_signed_news_reaction, create_signed_space_descriptor,
+    decode_share_reference, encode_share_reference, encode_space_descriptor, load_space_descriptor,
+    project_space, AlertProfileV1, EditorialActionKind, EditorialActionV1, NewsCommentV1,
+    NewsPostV1, NewsReactionV1, NewswireShareReferenceV1, OperationalProfileV1, ProjectionClockV1,
+    RequestKind, RequestProfileV1, SignedNewswireRecord, SpaceDescriptorV1,
 };
 use riot_core::profile::path::SUBSPACE_ID_BYTES;
 use riot_core::profile::resolver::{key_tag, resolve_display_names, sanitize_display_name};
@@ -161,6 +161,20 @@ pub struct NewswireProjectedPost {
     pub verification_ids: Vec<String>,
     pub correction_ids: Vec<String>,
     pub treatment: NewswirePostTreatment,
+    /// Communal reaction tallies for this post — one entry per reaction kind with
+    /// a nonzero count of distinct authors currently reacting, ascending by kind.
+    /// Empty for a tombstoned post. The client draws a reaction bar from this.
+    pub reactions: Vec<NewswireReactionTally>,
+}
+
+/// A projected communal reaction tally on a post: a reaction kind and the number
+/// of distinct authors currently reacting with it (latest-wins per author; a
+/// retracted reaction drops out). `kind` is the stable lowercase name
+/// (`support`/`solidarity`/`important`/`grief`).
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct NewswireReactionTally {
+    pub kind: String,
+    pub count: u32,
 }
 
 /// A projected communal reply in the collective view. Carries its
@@ -369,6 +383,38 @@ impl MobileProfile {
                 language,
             };
             let signed = create_signed_news_comment(&profile.author, &descriptor, comment)
+                .map_err(map_newswire_error)?;
+            import_signed_newswire(profile, &signed)
+        })
+    }
+
+    /// Signs a communal reaction on a post and admits it. `active = true` reacts,
+    /// `active = false` retracts a prior reaction of the same kind (toggle). Dedup
+    /// is latest-wins per (author, post, kind); the projected post's `reactions`
+    /// tally reflects the current distinct-author count. Communal, exactly like a
+    /// comment — anyone who holds the descriptor and the parent post may react.
+    /// An unknown `kind` string is rejected as invalid input.
+    pub fn toggle_newswire_reaction(
+        &self,
+        space_descriptor_entry_id: String,
+        parent_entry_id: String,
+        kind: String,
+        active: bool,
+    ) -> Result<NewswireSignedRecord, MobileError> {
+        with_active(&self.inner, |profile| {
+            let descriptor_id = parse_entry_id(&space_descriptor_entry_id)?;
+            let parent_id = parse_entry_id(&parent_entry_id)?;
+            let reaction_kind = reaction_kind_from_name(&kind)?;
+            let descriptor =
+                riot_core::newswire::load_space_descriptor(&profile.store, descriptor_id)
+                    .map_err(map_newswire_store_error)?;
+            let reaction = NewsReactionV1 {
+                space_descriptor_entry_id: descriptor_id,
+                parent_entry_id: parent_id,
+                kind: reaction_kind,
+                active,
+            };
+            let signed = create_signed_news_reaction(&profile.author, &descriptor, reaction)
                 .map_err(map_newswire_error)?;
             import_signed_newswire(profile, &signed)
         })
@@ -671,6 +717,37 @@ fn projected_post_view(
         verification_ids: post.verification_ids.iter().map(|id| hex(id)).collect(),
         correction_ids: post.correction_ids.iter().map(|id| hex(id)).collect(),
         treatment,
+        reactions: post
+            .reactions
+            .iter()
+            .map(|tally| NewswireReactionTally {
+                kind: reaction_kind_name(tally.kind).to_string(),
+                count: tally.count,
+            })
+            .collect(),
+    }
+}
+
+/// The stable lowercase wire name for a reaction kind — the string the native
+/// client keys its reaction bar on. Kept in one place so FFI and UI agree.
+fn reaction_kind_name(kind: riot_core::newswire::ReactionKind) -> &'static str {
+    match kind {
+        riot_core::newswire::ReactionKind::Support => "support",
+        riot_core::newswire::ReactionKind::Solidarity => "solidarity",
+        riot_core::newswire::ReactionKind::Important => "important",
+        riot_core::newswire::ReactionKind::Grief => "grief",
+    }
+}
+
+/// Parse a native reaction-kind string back to the core enum. Unknown strings are
+/// rejected as invalid input rather than silently coerced.
+fn reaction_kind_from_name(name: &str) -> Result<riot_core::newswire::ReactionKind, MobileError> {
+    match name {
+        "support" => Ok(riot_core::newswire::ReactionKind::Support),
+        "solidarity" => Ok(riot_core::newswire::ReactionKind::Solidarity),
+        "important" => Ok(riot_core::newswire::ReactionKind::Important),
+        "grief" => Ok(riot_core::newswire::ReactionKind::Grief),
+        _ => Err(MobileError::InvalidInput),
     }
 }
 

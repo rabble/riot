@@ -5,8 +5,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::willow::{system_snapshot, ClockSnapshot, EntryId};
 
 use super::{
-    EditorialActionKind, EditorialActionV1, NewsCommentV1, NewsPostV1, NewswirePayload,
-    OperationalProfileV1, VerifiedNewswireRecord,
+    EditorialActionKind, EditorialActionV1, NewsCommentV1, NewsPostV1, NewsReactionV1,
+    NewswirePayload, OperationalProfileV1, ReactionKind, VerifiedNewswireRecord,
 };
 
 pub const MAX_PROJECTED_RECORDS: usize = 1_024;
@@ -79,6 +79,16 @@ pub enum PostTreatment {
     Tombstoned { actions: Vec<EntryId> },
 }
 
+/// A per-post reaction count for one `ReactionKind`: the number of DISTINCT
+/// author subspaces whose LATEST (author, parent, kind) reaction is active.
+/// Only kinds with a nonzero count appear, ordered ascending by kind, so the
+/// tally is deterministic across clients and arrival orders.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProjectedReactionTally {
+    pub kind: ReactionKind,
+    pub count: u32,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProjectedPost {
     pub entry_id: EntryId,
@@ -102,6 +112,10 @@ pub struct ProjectedPost {
     pub verification_ids: Vec<EntryId>,
     pub correction_ids: Vec<EntryId>,
     pub treatment: PostTreatment,
+    /// Communal reaction tallies for this post, one entry per `ReactionKind`
+    /// with a nonzero distinct-active-author count, ascending by kind. Empty
+    /// when the post is Tombstoned — reactions on a tombstoned post are dropped.
+    pub reactions: Vec<ProjectedReactionTally>,
 }
 
 /// A projected communal reply, grouped under its parent post by
@@ -200,6 +214,11 @@ struct EligibleComment<'a> {
     comment: &'a NewsCommentV1,
 }
 
+struct EligibleReaction<'a> {
+    record: &'a VerifiedNewswireRecord,
+    reaction: &'a NewsReactionV1,
+}
+
 pub fn project(
     descriptor: &VerifiedNewswireRecord,
     records: &[VerifiedNewswireRecord],
@@ -244,6 +263,7 @@ pub fn project(
     let mut posts = Vec::new();
     let mut actions = Vec::new();
     let mut comments = Vec::new();
+    let mut reactions = Vec::new();
     let mut future = Vec::new();
 
     for record in distinct.into_values() {
@@ -281,6 +301,15 @@ pub fn project(
                     future.push(key);
                 } else {
                     comments.push(EligibleComment { record, comment });
+                }
+            }
+            NewswirePayload::NewsReaction(reaction)
+                if reaction.space_descriptor_entry_id == descriptor_id =>
+            {
+                if record.tai_j2000_micros() > future_cutoff {
+                    future.push(key);
+                } else {
+                    reactions.push(EligibleReaction { record, reaction });
                 }
             }
             _ => {}
@@ -352,6 +381,55 @@ pub fn project(
         })
         .map(|action| action.action.target_entry_id)
         .collect::<BTreeSet<_>>();
+
+    // A post that is actively tombstoned drops its reactions entirely (test:
+    // reaction on a tombstoned post is dropped). Hidden posts keep their
+    // tallies — only a tombstone removes the row's content wholesale.
+    let tombstoned_post_ids = actions
+        .iter()
+        .filter(|action| action.active && action.action.kind == EditorialActionKind::Tombstone)
+        .map(|action| action.action.target_entry_id)
+        .collect::<BTreeSet<_>>();
+
+    // Dedup: per (author subspace, parent post, kind) the latest entry wins,
+    // ordered by (time, entry_id) exactly like every other family. A reaction
+    // whose parent is not an eligible, non-tombstoned post is dangling and is
+    // dropped — this also drops reactions on comments and on other reactions.
+    let mut latest_reactions: BTreeMap<([u8; 32], EntryId, ReactionKind), (ProjectionKey, bool)> =
+        BTreeMap::new();
+    for eligible in reactions {
+        let parent = eligible.reaction.parent_entry_id;
+        if !eligible_post_ids.contains(&parent) || tombstoned_post_ids.contains(&parent) {
+            continue;
+        }
+        let key = (
+            eligible.record.tai_j2000_micros(),
+            eligible.record.entry_id(),
+        );
+        let map_key = (eligible.record.signer_id(), parent, eligible.reaction.kind);
+        match latest_reactions.get(&map_key) {
+            Some((existing_key, _)) if *existing_key >= key => {}
+            _ => {
+                latest_reactions.insert(map_key, (key, eligible.reaction.active));
+            }
+        }
+    }
+    // Count DISTINCT authors whose latest reaction is active (a retracting
+    // `active = false` drops the author out). BTreeMap key order yields parents
+    // and kinds ascending, so each post's tally vec is already kind-sorted.
+    let mut reaction_counts: BTreeMap<(EntryId, ReactionKind), u32> = BTreeMap::new();
+    for ((_signer, parent, kind), (_key, active)) in &latest_reactions {
+        if *active {
+            *reaction_counts.entry((*parent, *kind)).or_insert(0) += 1;
+        }
+    }
+    let mut reaction_tallies: BTreeMap<EntryId, Vec<ProjectedReactionTally>> = BTreeMap::new();
+    for ((parent, kind), count) in reaction_counts {
+        reaction_tallies
+            .entry(parent)
+            .or_default()
+            .push(ProjectedReactionTally { kind, count });
+    }
 
     let editorial_history = actions
         .iter()
@@ -444,6 +522,10 @@ pub fn project(
             verification_ids,
             correction_ids,
             treatment,
+            reactions: reaction_tallies
+                .get(&eligible.record.entry_id())
+                .cloned()
+                .unwrap_or_default(),
         };
         let expired = eligible
             .post
@@ -1378,6 +1460,53 @@ mod tests {
         comment_bound_to(entry_id, time, parent_entry_id, id(1), AUTHOR)
     }
 
+    #[allow(clippy::too_many_arguments)]
+    fn reaction_bound_to(
+        entry_id: EntryId,
+        time: u64,
+        parent_entry_id: EntryId,
+        descriptor_id: EntryId,
+        signer_id: [u8; 32],
+        kind: ReactionKind,
+        active: bool,
+    ) -> VerifiedNewswireRecord {
+        record(
+            entry_id,
+            NAMESPACE,
+            signer_id,
+            time,
+            NewswirePayload::NewsReaction(NewsReactionV1 {
+                space_descriptor_entry_id: descriptor_id,
+                parent_entry_id,
+                kind,
+                active,
+            }),
+        )
+    }
+
+    fn reaction(
+        entry_id: EntryId,
+        time: u64,
+        parent_entry_id: EntryId,
+        signer_id: [u8; 32],
+        kind: ReactionKind,
+        active: bool,
+    ) -> VerifiedNewswireRecord {
+        reaction_bound_to(
+            entry_id,
+            time,
+            parent_entry_id,
+            id(1),
+            signer_id,
+            kind,
+            active,
+        )
+    }
+
+    fn tally(post: &ProjectedPost) -> Vec<(ReactionKind, u32)> {
+        post.reactions.iter().map(|t| (t.kind, t.count)).collect()
+    }
+
     #[test]
     fn comments_group_under_parent_flat_and_time_sorted() {
         let view = projection(&[
@@ -1490,6 +1619,214 @@ mod tests {
         ];
         let expected = projection(&records);
         assert_eq!(expected.comments.len(), 3);
+        let mut reversed = records.clone();
+        reversed.reverse();
+        assert_eq!(projection(&reversed), expected);
+        let mut rotated = records;
+        rotated.rotate_left(2);
+        assert_eq!(projection(&rotated), expected);
+    }
+
+    const REACTOR_ONE: [u8; 32] = [0x50; 32];
+    const REACTOR_TWO: [u8; 32] = [0x51; 32];
+    const REACTOR_THREE: [u8; 32] = [0x52; 32];
+
+    #[test]
+    fn reaction_tally_counts_distinct_authors_per_kind_sorted_by_kind() {
+        let view = projection(&[
+            post(id(2), 100, None),
+            reaction(id(20), 200, id(2), REACTOR_ONE, ReactionKind::Support, true),
+            reaction(id(21), 210, id(2), REACTOR_TWO, ReactionKind::Support, true),
+            reaction(
+                id(22),
+                220,
+                id(2),
+                REACTOR_THREE,
+                ReactionKind::Solidarity,
+                true,
+            ),
+        ]);
+        assert_eq!(
+            tally(&view.open_wire[0]),
+            vec![(ReactionKind::Support, 2), (ReactionKind::Solidarity, 1)]
+        );
+    }
+
+    #[test]
+    fn same_author_reacting_twice_same_kind_counts_once_latest_wins() {
+        let view = projection(&[
+            post(id(2), 100, None),
+            reaction(id(20), 200, id(2), REACTOR_ONE, ReactionKind::Support, true),
+            reaction(id(21), 300, id(2), REACTOR_ONE, ReactionKind::Support, true),
+        ]);
+        assert_eq!(tally(&view.open_wire[0]), vec![(ReactionKind::Support, 1)]);
+    }
+
+    #[test]
+    fn later_inactive_reaction_retracts_the_author_from_the_tally() {
+        let view = projection(&[
+            post(id(2), 100, None),
+            // REACTOR_ONE reacts then retracts later — drops out.
+            reaction(id(20), 200, id(2), REACTOR_ONE, ReactionKind::Support, true),
+            reaction(
+                id(21),
+                300,
+                id(2),
+                REACTOR_ONE,
+                ReactionKind::Support,
+                false,
+            ),
+            // REACTOR_TWO retracts first, then re-reacts later — stays in.
+            reaction(
+                id(22),
+                200,
+                id(2),
+                REACTOR_TWO,
+                ReactionKind::Support,
+                false,
+            ),
+            reaction(id(23), 300, id(2), REACTOR_TWO, ReactionKind::Support, true),
+        ]);
+        assert_eq!(tally(&view.open_wire[0]), vec![(ReactionKind::Support, 1)]);
+    }
+
+    #[test]
+    fn reaction_on_tombstoned_or_dangling_post_is_dropped() {
+        let view = projection(&[
+            post(id(2), 100, None),
+            post(id(3), 110, None),
+            reaction(id(20), 200, id(2), REACTOR_ONE, ReactionKind::Support, true),
+            reaction(id(21), 210, id(3), REACTOR_ONE, ReactionKind::Support, true),
+            reaction(
+                id(22),
+                220,
+                id(999),
+                REACTOR_ONE,
+                ReactionKind::Support,
+                true,
+            ),
+            action(id(30), 300, id(2), EditorialActionKind::Tombstone),
+        ]);
+        let tombstoned = view.open_wire.iter().find(|p| p.entry_id == id(2)).unwrap();
+        assert_eq!(
+            tombstoned.treatment,
+            PostTreatment::Tombstoned {
+                actions: vec![id(30)]
+            }
+        );
+        assert!(tombstoned.reactions.is_empty());
+        let alive = view.open_wire.iter().find(|p| p.entry_id == id(3)).unwrap();
+        assert_eq!(tally(alive), vec![(ReactionKind::Support, 1)]);
+    }
+
+    #[test]
+    fn reaction_on_a_comment_is_dropped() {
+        let view = projection(&[
+            post(id(2), 100, None),
+            comment(id(20), 200, id(2)),
+            reaction(
+                id(30),
+                300,
+                id(20),
+                REACTOR_ONE,
+                ReactionKind::Support,
+                true,
+            ),
+        ]);
+        assert!(view.open_wire[0].reactions.is_empty());
+        assert_eq!(view.comments.len(), 1);
+    }
+
+    #[test]
+    fn hidden_post_keeps_its_reaction_tally() {
+        // A hide redacts content but does not remove the row; only a tombstone
+        // drops reactions. The tally survives a hide.
+        let view = projection(&[
+            post(id(2), 100, None),
+            reaction(id(20), 200, id(2), REACTOR_ONE, ReactionKind::Grief, true),
+            action(id(30), 300, id(2), EditorialActionKind::Hide),
+        ]);
+        assert_eq!(
+            view.open_wire[0].treatment,
+            PostTreatment::Hidden {
+                actions: vec![id(30)]
+            }
+        );
+        assert_eq!(tally(&view.open_wire[0]), vec![(ReactionKind::Grief, 1)]);
+    }
+
+    #[test]
+    fn reactions_attach_to_expired_posts_in_earlier() {
+        let view = projection(&[
+            post(id(2), 100, Some(clock().unix_seconds)),
+            reaction(
+                id(20),
+                200,
+                id(2),
+                REACTOR_ONE,
+                ReactionKind::Important,
+                true,
+            ),
+        ]);
+        assert!(view.open_wire.is_empty());
+        assert_eq!(view.earlier[0].entry_id, id(2));
+        assert_eq!(tally(&view.earlier[0]), vec![(ReactionKind::Important, 1)]);
+    }
+
+    #[test]
+    fn future_reaction_is_quarantined_like_a_post() {
+        let cutoff = clock().tai_j2000_micros + MAX_FUTURE_SKEW_MICROS;
+        let view = projection(&[
+            post(id(2), 100, None),
+            reaction(
+                id(20),
+                cutoff + 1,
+                id(2),
+                REACTOR_ONE,
+                ReactionKind::Support,
+                true,
+            ),
+        ]);
+        assert!(view.open_wire[0].reactions.is_empty());
+        assert_eq!(view.future_quarantine, vec![id(20)]);
+    }
+
+    #[test]
+    fn reaction_permutations_produce_equal_projection() {
+        let records = vec![
+            post(id(2), 100, None),
+            post(id(3), 110, None),
+            reaction(id(20), 200, id(2), REACTOR_ONE, ReactionKind::Support, true),
+            reaction(id(21), 210, id(2), REACTOR_TWO, ReactionKind::Support, true),
+            reaction(id(22), 220, id(2), REACTOR_ONE, ReactionKind::Grief, true),
+            reaction(
+                id(23),
+                230,
+                id(2),
+                REACTOR_TWO,
+                ReactionKind::Support,
+                false,
+            ),
+            reaction(
+                id(24),
+                240,
+                id(3),
+                REACTOR_THREE,
+                ReactionKind::Solidarity,
+                true,
+            ),
+        ];
+        let expected = projection(&records);
+        let post_two = expected
+            .open_wire
+            .iter()
+            .find(|p| p.entry_id == id(2))
+            .unwrap();
+        // REACTOR_ONE Support+Grief, REACTOR_TWO Support retracted.
+        assert_eq!(
+            tally(post_two),
+            vec![(ReactionKind::Support, 1), (ReactionKind::Grief, 1)]
+        );
         let mut reversed = records.clone();
         reversed.reverse();
         assert_eq!(projection(&reversed), expected);

@@ -1003,3 +1003,105 @@ fn projecting_an_unknown_space_fails_cleanly() {
     let profile = open_local_profile().expect("profile");
     assert!(profile.project_newswire_space("ab".repeat(32)).is_err());
 }
+
+fn find_post<'a>(
+    projection: &'a [NewswireProjectedPost],
+    entry_id: &str,
+) -> &'a NewswireProjectedPost {
+    projection
+        .iter()
+        .find(|post| post.entry_id == entry_id)
+        .expect("projected post")
+}
+
+/// A communal reaction is signed through the boundary and reaches the projected
+/// post as a tally: one entry for the reacted kind with a distinct-author count
+/// of one, keyed by the stable lowercase kind name.
+#[test]
+fn a_reaction_is_signed_and_tallied_on_its_post() {
+    let profile = open_local_profile().expect("profile");
+    let space = profile
+        .create_newswire_space(space_input("Reactions"))
+        .expect("create space");
+    let post = profile
+        .create_newswire_post(post_input(&space.entry_id, "Solidarity now"))
+        .expect("create post");
+
+    let reaction = profile
+        .toggle_newswire_reaction(
+            space.entry_id.clone(),
+            post.entry_id.clone(),
+            "solidarity".into(),
+            true,
+        )
+        .expect("react");
+    assert!(!reaction.entry_id.is_empty());
+    assert!(!reaction.signed_bytes.is_empty());
+
+    let projection = profile
+        .project_newswire_space(space.entry_id)
+        .expect("project");
+    let projected = find_post(&projection.open_wire, &post.entry_id);
+    assert_eq!(projected.reactions.len(), 1);
+    assert_eq!(projected.reactions[0].kind, "solidarity");
+    assert_eq!(projected.reactions[0].count, 1);
+}
+
+/// Toggling the same reaction off (active = false) retracts it: the author drops
+/// out of the tally, and with no one left the kind disappears from the post.
+#[test]
+fn toggling_a_reaction_off_retracts_it_from_the_tally() {
+    let profile = open_local_profile().expect("profile");
+    let space = profile
+        .create_newswire_space(space_input("Toggle"))
+        .expect("create space");
+    let post = profile
+        .create_newswire_post(post_input(&space.entry_id, "Toggle me"))
+        .expect("create post");
+
+    profile
+        .toggle_newswire_reaction(
+            space.entry_id.clone(),
+            post.entry_id.clone(),
+            "support".into(),
+            true,
+        )
+        .expect("react on");
+    profile
+        .toggle_newswire_reaction(
+            space.entry_id.clone(),
+            post.entry_id.clone(),
+            "support".into(),
+            false,
+        )
+        .expect("react off");
+
+    let projection = profile
+        .project_newswire_space(space.entry_id)
+        .expect("project");
+    let projected = find_post(&projection.open_wire, &post.entry_id);
+    assert!(
+        projected
+            .reactions
+            .iter()
+            .all(|tally| tally.kind != "support"),
+        "a retracted reaction must leave no tally behind"
+    );
+}
+
+/// An unknown reaction kind is refused at the boundary rather than silently
+/// coerced to a default — the closed set is enforced in one place.
+#[test]
+fn an_unknown_reaction_kind_is_refused() {
+    let profile = open_local_profile().expect("profile");
+    let space = profile
+        .create_newswire_space(space_input("Closed set"))
+        .expect("create space");
+    let post = profile
+        .create_newswire_post(post_input(&space.entry_id, "Only four kinds"))
+        .expect("create post");
+
+    assert!(profile
+        .toggle_newswire_reaction(space.entry_id, post.entry_id, "party".into(), true)
+        .is_err());
+}

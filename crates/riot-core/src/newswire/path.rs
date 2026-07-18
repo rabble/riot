@@ -10,6 +10,7 @@ const DESCRIPTORS: &[u8] = b"descriptors";
 const POSTS: &[u8] = b"posts";
 const ACTIONS: &[u8] = b"actions";
 const COMMENTS: &[u8] = b"comments";
+const REACTIONS: &[u8] = b"reactions";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NewswirePathKind {
@@ -17,6 +18,7 @@ pub enum NewswirePathKind {
     Post { space_descriptor_entry_id: EntryId },
     EditorialAction { space_descriptor_entry_id: EntryId },
     Comment { space_descriptor_entry_id: EntryId },
+    Reaction { space_descriptor_entry_id: EntryId },
 }
 
 pub fn newswire_path(
@@ -59,6 +61,16 @@ pub fn newswire_path(
             &time,
             payload_digest,
         ]),
+        NewswirePathKind::Reaction {
+            space_descriptor_entry_id,
+        } => Path::from_slices(&[
+            ROOT,
+            VERSION,
+            &space_descriptor_entry_id,
+            REACTIONS,
+            &time,
+            payload_digest,
+        ]),
     };
     result.map_err(|_| NewswireError::PathInvalid)
 }
@@ -97,6 +109,10 @@ pub fn classify_newswire_path(path: &Path) -> Option<(NewswirePathKind, u64, [u8
         NewswirePathKind::Comment {
             space_descriptor_entry_id,
         }
+    } else if family.as_ref() == REACTIONS {
+        NewswirePathKind::Reaction {
+            space_descriptor_entry_id,
+        }
     } else {
         return None;
     };
@@ -131,6 +147,9 @@ mod tests {
             NewswirePathKind::Comment {
                 space_descriptor_entry_id: id,
             },
+            NewswirePathKind::Reaction {
+                space_descriptor_entry_id: id,
+            },
         ] {
             let path = newswire_path(kind, 0x0102_0304_0506_0708, &digest).unwrap();
             assert_eq!(
@@ -161,6 +180,11 @@ mod tests {
             Path::from_slices(&[ROOT, VERSION, &[0; 32], COMMENTS, &[0; 7], &[0; 32]]).unwrap(),
             Path::from_slices(&[
                 ROOT, VERSION, &[0; 32], COMMENTS, &[0; 8], &[0; 32], b"extra",
+            ])
+            .unwrap(),
+            Path::from_slices(&[ROOT, VERSION, &[0; 32], REACTIONS, &[0; 7], &[0; 32]]).unwrap(),
+            Path::from_slices(&[
+                ROOT, VERSION, &[0; 32], REACTIONS, &[0; 8], &[0; 32], b"extra",
             ])
             .unwrap(),
         ];
