@@ -1,71 +1,83 @@
 # Public Community Anchor Network Design
 
 Date: 2026-07-18
-Status: Approved in brainstorming; pending metaswarm design review
-Scope: Public communities, publications, discovery, web mirroring, and
-opportunistic internet sync
+Status: Design review round 1 revised; pending round 2
+Scope: Owner-rooted composite public sites, discovery, hosting, web mirroring,
+and opportunistic internet sync
 
 ## Purpose
 
-Riot already supports local-first signed state, nearby exchange, deterministic
-multi-node convergence, public web rendering, and an iroh transport adapter.
-What it lacks is a reliable on-ramp when the relevant phones and desktops are
-not simultaneously reachable peer to peer.
+Riot already has signed local-first state, nearby exchange, public site
+manifests, web rendering, and an iroh transport adapter. It lacks a reliable
+on-ramp when the relevant phones and desktops are not simultaneously reachable
+peer to peer.
 
-This design adds plural, interchangeable **anchors**: always-online Riot peers
-that retain public community state, help users discover explicitly listed
-communities, seed the same reconciliation protocol used by ordinary peers, and
-render public communities at normal web URLs.
+This design adds plural **anchors**: always-online Riot peers that retain
+admitted public site state, seed the same reconciliation protocol used by
+ordinary peers, publish plural discovery feeds, and render safe public views at
+ordinary web URLs.
 
-Anchors improve reach. They do not become community identity, authority, or a
-required dependency. An anchor may disappear permanently without invalidating a
-community or requiring a migration.
+An anchor improves reach. It never becomes the site's identity, root of trust,
+or required home. Losing an anchor reduces availability but does not trigger
+identity migration.
 
-## Decisions
+## Round 1 Review Revisions
 
-1. **Riot-native always-on peers, not canonical homes.** An anchor runs the same
-   community reconciliation protocol as a client and stores the same signed
-   public state. A community is identified by its root/namespace and manifest,
-   never by its host.
-2. **Plural anchors from the first release.** Clients ship with a removable
-   default set, may add or remove anchors, and connect to several. No default
-   anchor is canonical.
-3. **Client multi-homing plus anchor gossip.** Clients reconcile independently
-   with several anchors. Anchors may also reconcile with configured anchor
-   peers. Neither path depends on the other.
-4. **Hosting and discovery are separate.** A public community can be hosted and
-   shared by ticket without being searchable. Search requires a separate,
-   owner-authorized, expiring listing.
-5. **Open hosting.** Any protocol-valid public community may request hosting
-   without an account, invitation, payment, or editorial approval. Published
-   resource limits still apply.
-6. **Web mirror included.** Each anchor serves directory pages, readable
-   community mirrors, QR/share tickets, and “Open in Riot” links alongside the
-   native sync endpoint.
-7. **Meadowcap is enforced at every ingress.** Anchors validate entry signatures
-   and complete capability chains before retaining, indexing, serving, or
-   gossiping state.
-8. **Public scope only.** This design does not implement private-group
-   rendezvous, encrypted mailboxes, MLS membership, or read confidentiality.
+The first design-review round identified five implementation-blocking gaps.
+This revision resolves them:
+
+1. `riot/sync/1` is single-namespace and limited to 64 inventory IDs. Anchors
+   therefore use a new, paginated `riot/sync/2` protocol with inbound namespace
+   routing and immutable session snapshots.
+2. Anchor operations do not fit the existing sync frames. A separate bounded
+   `riot/anchor/1` control ALPN now owns hosting plans, idempotency, listing
+   submission, and signed receipts.
+3. Listing authority is now an exact Meadowcap boundary at
+   `O:/directory/listing`, disjoint from editorial authority.
+4. The capped mobile evidence repository is not reused as a server. A new
+   SQLite-backed `AnchorRepository` provides server-scale transactions,
+   reference accounting, crash recovery, and eviction.
+5. The fixed gateway is not treated as a dynamic trusted renderer. The anchor
+   produces immutable verified projections for an isolated, text-only static
+   renderer.
+
+This revision also adds the complete web-to-app journey, typed plural-source
+outcomes, concrete global resource ceilings, bounded operator-selected gossip,
+anchor key rotation, a deterministic test harness, per-slice TDD cycles, and
+user-focused pilot thresholds.
+
+## Product Decisions
+
+1. **Riot-native always-on peers, not canonical homes.**
+2. **Several removable, independently operated anchors from the first public
+   pilot.**
+3. **Client multi-homing plus optional anchor-to-anchor gossip.**
+4. **Hosting, sharing, and listing are separate states.**
+5. **Open hosting:** no account, payment, invitation, or editorial approval.
+6. **Web mirror included:** directory, readable views, install handoff, and
+   “Open in Riot.”
+7. **Meadowcap enforced at every state ingress.**
+8. **Public scope only:** no private-group rendezvous or read confidentiality.
+9. **MVP site type is intentionally narrow:** only the approved owner-rooted
+   composite site profile is listable and hostable. Its comments and open wire
+   remain communal namespaces. Standalone legacy communal spaces remain
+   supported by their existing local/share flows but do not enter the anchor
+   network in this slice.
+10. **Following is durable and ongoing:** acceptance creates a local copy and a
+    schedule for opportunistic reconciliation with configured anchors. Manual
+    refresh and nearby/file exchange remain available.
 
 ## Lessons Incorporated
 
-The design combines three proven ideas without adopting any source system
-wholesale:
+- AT Protocol demonstrates the value of reliable hosted indexing and web
+  views. Riot does not adopt a canonical PDS home.
+- Nostr demonstrates plural client-chosen relay sets and replaceable location
+  hints. Riot avoids making users guess divergent read/write sets by combining
+  client multi-homing with optional anchor gossip.
+- Briar, Secure Scuttlebutt, and Riot's existing research demonstrate that
+  local and internet paths should use one reconciliation model.
 
-- From AT Protocol: hosted infrastructure can make public data reliably
-  available and provide useful search and web views, while signed repositories
-  keep data verifiable. Riot does not adopt the PDS as a canonical community
-  home.
-- From Nostr: clients should be able to choose several interchangeable hosts
-  and include replaceable location hints with stable signed identifiers. Riot
-  does not rely on every client independently guessing compatible read/write
-  relay sets.
-- From Briar, Secure Scuttlebutt, and Riot's existing research: local sync and
-  internet backhaul must use one transport-independent reconciliation
-  primitive. There is no separate “server truth” merge path.
-
-Primary references:
+References:
 
 - <https://atproto.com/guides/the-at-stack>
 - <https://github.com/nostr-protocol/nips/blob/master/65.md>
@@ -73,587 +85,1084 @@ Primary references:
 - <https://github.com/nostr-protocol/nips/blob/master/77.md>
 - `docs/research/2026-07-11-hybrid-gossip-backhaul-research.md`
 - `docs/superpowers/specs/2026-07-10-riot-dual-mode-design.md`
+- `docs/superpowers/specs/2026-07-15-composite-site-namespace-manifest-design.md`
+
+## Personas and Use Cases
+
+| Person | Wants | So that | When |
+| --- | --- | --- | --- |
+| Organizer | Host a public site on several anchors and list it explicitly | the site remains discoverable while their device is offline | preparing or running a public publication/community |
+| Web visitor | Read a safe public projection and preserve the exact destination through install | they can join without understanding Riot first | following a shared article or community URL |
+| Riot reader | Search several anchors, verify a site, and retain it locally | one host outage does not strand them | discovering or revisiting a community |
+| Contributor | Publish through a valid Meadowcap capability and sync through any available path | work can begin locally and propagate later | disconnected, nearby-only, or online |
+| Anchor operator | Offer open hosting under explicit hard limits | public communities gain reach without granting the operator authority | running independent infrastructure |
 
 ## System Shape
 
 ```text
-                                ordinary HTTPS
-                                      |
-                              +-------v-------+
-                              | web + search  |
-                              | derived views |
-                              +-------+-------+
-                                      |
-                          +-----------v------------+
-                          | Riot anchor             |
-                          |                         |
-                          | sync  store  directory  |
-                          | mirror gossip limits    |
-                          +-----+-------------+-----+
-                                |             |
-                      same sync |             | same sync
-                                |             |
-                   +------------v--+       +--v-------------+
-                   | phones/desktops|       | other anchors  |
-                   +-------+--------+       +--------+-------+
-                           |                         |
-                           +------ nearby/files -----+
+                       ordinary HTTPS
+                            |
+                    +-------v--------+
+                    | static web     |
+                    | mirror/search  |
+                    +-------+--------+
+                            | immutable verified snapshot
+                    +-------v--------------------------+
+                    | riot-anchor                      |
+                    | control | sync/2 | repository    |
+                    | feeds   | gossip | projection    |
+                    +------+--------------------+------+
+                           |                    |
+                 same sync/2                    | same sync/2
+                           |                    |
+                   +-------v------+      +------v-------+
+                   | Riot clients |      | other anchors|
+                   +-------+------+      +------+-------+
+                           |                    |
+                           +-- nearby / files --+
 ```
 
-The arrows all carry the same signed community state through the existing
-reconciliation and preview/admission boundaries. Transport changes how bytes
-move, not how state becomes valid.
+The anchor daemon is a new workspace binary crate, `riot-anchor`, depending on
+`riot-core` and `riot-transport`. Server dependencies never flow into
+`riot-core`, `riot-ffi`, or native shells.
 
-## What an Anchor Is
+## Community Authority Bootstrap
 
-An anchor is one deployable service with six isolated modules.
+The anchor accepts only the owner-rooted composite public site profile approved
+in the composite-site design.
 
-### Sync
+The masthead namespace `O` is owned. The manifest lives at `O:/manifest` and is
+admitted only when all of these independently hold:
 
-Accepts the existing Riot reconciliation protocol over an internet-capable byte
-channel. The native path uses `ByteSyncSession` over the existing
-`riot/sync/1` iroh ALPN. The sync module does not interpret transport origin
-when reconciling state.
+1. the manifest capability is owned with zero delegations;
+2. the capability receiver equals the `O` owner key;
+3. `manifest.root` equals the `O` owner key;
+4. the followed ticket root equals the `O` owner key;
+5. the hosting namespace is exactly `O`;
+6. every member namespace's intrinsic owned/communal rule matches its declared
+   rule;
+7. the manifest selects the supported read-open composite-site profile;
+8. manifest version is at or above the durable per-site floor;
+9. an already-seen version has the same digest.
 
-### Store
+A different digest at an already-seen manifest version is equivocation. The
+anchor quarantines the site from listing, hosting commits, and web projection,
+retains both conflicting proofs under a bounded incident record, and requires a
+higher root-owned manifest version to recover.
 
-Retains bounded public Willow entries, capabilities, manifests, directory
-records, and content-addressed payloads. Authoritative state is signed protocol
-data; database tables and indices are disposable storage projections.
+The MVP composite contains:
 
-### Directory
+- `O`: owned masthead/articles/moderation/directory;
+- `C`: communal comments;
+- `W`: communal open wire.
 
-Validates owner-authorized community listings, retains them under explicit
-budgets, and builds a local browse/search index. It merges configured plural
-directory feeds and deduplicates by full community identity.
+The anchor syncs `O` first, admits the manifest, then routes `C` and `W` only
+when their full namespace IDs match the admitted member list.
 
-### Mirror
+## Listing Authority
 
-Uses the existing gateway renderer to serve hosted public communities at
-ordinary HTTPS URLs. Every page exposes the full community identity through an
-“Open in Riot” link and QR/share ticket. The web mirror never handles private
-group data.
+### Reserved coordinate
 
-### Gossip
+The only listable coordinate is:
 
-Runs scheduled, bounded reconciliation against configured anchor peers.
-Directory feeds are reconciled first. Community state is reconciled only for:
+```text
+O:/directory/listing
+```
 
-- communities the anchor already hosts;
-- communities explicitly requested by a client;
-- communities selected by a configured replication relationship; or
-- a bounded, operator-configured subset of recent listings.
+`/directory` is reserved and disjoint from `/manifest`, `/mod`, and
+`/articles`. An editorial capability rooted under `/articles` can never
+authorize a listing.
 
-There is no mandatory global firehose and no requirement that every anchor
-store every community.
+### Who may write it
 
-### Limits
+A listing entry is valid when it is signed by either:
 
-Applies resource budgets and backpressure before expensive parsing, allocation,
-signature verification, payload retrieval, or gossip fanout.
+- the `O` owner using the owned zero-delegation capability; or
+- a dedicated listing key whose complete Meadowcap chain begins at `O` and
+  whose terminal area has:
+  - receiver equal to the listing key's subspace;
+  - path prefix exactly `/directory`;
+  - a bounded time range containing the entry timestamp.
 
-## What an Anchor Is Not
-
-An anchor is not:
-
-- a PDS or canonical community home;
-- a community root, capability issuer, signer, or key-recovery service;
-- a trusted source of truth;
-- a global moderation authority;
-- a guarantee of permanent retention;
-- an endorsement of listed communities;
-- an iroh packet relay.
-
-Iroh packet relays forward encrypted packets between endpoint IDs and assist
-NAT traversal. They do not retain, index, reconcile, or render Riot application
-state. The current `riot-transport` adapter deliberately uses
-`N0DisableRelay`; a public anchor can be reached at a stable public address
-without first deploying a custom iroh packet-relay network. Packet-relay policy
-may evolve independently.
-
-## Identities and Records
-
-### Community identity
-
-The stable identity is the community root/namespace plus its admitted manifest.
-No hostname or anchor ID participates in community authority.
-
-### `AnchorDescriptorV1`
-
-An anchor-operator-signed descriptor advertises:
-
-- schema and version;
-- full anchor signing key ID;
-- HTTPS origin;
-- stable iroh endpoint ID and addressing information;
-- supported sync and record versions;
-- supported roles: hosting, directory, mirror, gossip;
-- published hard-limit profile or its canonical digest;
-- issued and expiry times;
-- signature.
-
-It is served from a well-known HTTPS route and may also circulate through
-signed anchor-directory feeds. Expired descriptors are not used for new
-connections.
+The Riot admission layer additionally requires the entry's path to equal
+`/directory/listing`; authority over arbitrary `/directory` children is not
+interpreted as a new record type.
 
 ### `CommunityListingV1`
 
-An owner-authorized listing contains:
+The canonical CBOR payload binds:
 
-- schema and version;
-- full community root and namespace IDs;
-- manifest digest and monotonic manifest version;
-- title and concise summary;
-- bounded topic tags;
-- supported languages;
+- schema `riot/community-listing/1`;
+- full root and `O`, `C`, and `W` namespace IDs;
+- manifest digest and version;
+- monotonically increasing listing revision;
+- `listed: true | false`;
+- title and summary;
+- bounded topic tags and languages;
 - optional coarse region;
-- listing revision;
-- issued and expiry times;
-- signer and capability proof through the normal Willow/Meadowcap envelope.
+- issued time and expiry.
 
-The listing is signed by the community root or by a key with an explicit,
-time-bounded listing capability. It is not inferred from hosted content.
+The Willow entry signature covers the payload digest, namespace, subspace,
+path, timestamp, and capability. No second ad hoc signature scheme is added.
 
-Each anchor includes accepted listing bytes in its own signed public directory
-feed. Other anchors validate both the directory-feed entry and the inner
-community listing. Search merges multiple feeds and selects the newest valid
-listing revision per full community identity.
+`listed: false` is an explicit unlisting tombstone. It stops future directory
+display but does not delete hosted state or copies held by peers.
+
+For a given root:
+
+- higher valid revision wins;
+- identical revision and digest deduplicate;
+- identical revision with different digests is listing equivocation, so neither
+  listing is shown;
+- a higher **root-owned zero-delegation** listing clears listing equivocation;
+- expiry is inclusive: the listing is invalid when `now >= expiry`.
+
+Anchors persist the highest admitted revision and conflict evidence so restart
+or cache eviction cannot roll the listing backward.
+
+## Canonical Anchor Records
+
+All anchor-owned records use deterministic CBOR with integer map keys,
+definite-length containers, minimal integer encodings, and sorted collections.
+Decoders reject unknown required versions, duplicate fields, non-canonical
+encodings, and trailing bytes.
+
+### `AnchorDescriptorV1`
+
+The operator signs:
+
+```text
+"riot/anchor-descriptor/v1" || canonical_cbor(descriptor_body)
+```
+
+The body contains:
+
+- full anchor operator key ID;
+- current iroh endpoint ID;
+- HTTPS origin;
+- supported control and sync versions;
+- enabled roles: host, directory, mirror, gossip;
+- limit-profile digest;
+- predecessor operator key, when rotating;
+- issued and expiry times.
 
 ### `HostingReceiptV1`
 
-An anchor-signed hosting receipt reports:
+The operator signs:
 
-- full anchor ID;
-- full community identity;
+```text
+"riot/hosting-receipt/v1" || canonical_cbor(receipt_body)
+```
+
+The body contains:
+
+- anchor ID;
+- idempotency request ID;
+- full site root and manifest digest/version;
+- one ordered `(namespace_id, snapshot_digest, entry_count)` tuple per admitted
+  member namespace;
 - status;
-- accepted state frontier/heads;
-- payload coverage state;
-- acceptance time;
-- promised retention horizon;
-- applicable limit-profile digest;
-- signature.
+- accepted time;
+- `reported_retention_through`;
+- limit-profile digest.
 
-Statuses are a closed, versioned set:
+`reported_retention_through` is the anchor's signed operational claim, not a
+cryptographic guarantee. A dishonest or failed anchor may break it.
 
-- `accepted`;
-- `partial`;
-- `over_quota`;
-- `expired`;
-- `not_hosted`;
-- `unsupported_version`;
-- `invalid_authority`.
+### `ListingReceiptV1`
 
-A receipt is evidence of what one anchor says it currently retains. It grants
-no community authority and does not guarantee that the anchor will remain
-online.
+The operator signs the listing digest, site root, accepted revision, directory
+feed coordinate, acceptance time, expiry, and request ID under:
 
-## Share Tickets and Location Hints
+```text
+"riot/listing-receipt/v1"
+```
 
-A share ticket carries:
+Receipts never grant site authority.
 
-- the signed community root and namespace;
-- expected manifest digest/version;
-- the root-signed transport floor, epoch, and expiry;
-- a bounded list of replaceable anchor hints;
-- an optional web-mirror hint.
+## Anchor Keys
 
-Anchor and web hints are locations, not identity. They are intentionally
-replaceable and are not used to authorize retrieved state. A client may try
-them, but accepts data only after verifying the signed transport floor,
-community identity, manifest, capabilities, entries, and payload digests.
+The anchor operator signing key is separate from:
 
-The existing `riot://site/v1` ticket already treats `node` as an untrusted
-seeding hint while signing the transport floor. Its compatible evolution may
-carry repeated bounded hints; older clients may use a single hint while newer
-clients combine all hints with their configured anchors.
+- the iroh endpoint key;
+- TLS keys;
+- hosted community keys, which the anchor never possesses.
 
-An attacker-controlled hint can observe a connection or withhold data. It
-cannot make another namespace satisfy the expected community root and digest.
-The signed transport floor remains the pre-dial defense against stripping a
-Tor-only requirement to force a clearnet connection.
+The operator key is loaded through an injectable `AnchorKeyStore`; production
+uses a non-world-readable OS secret store or managed KMS. It is never stored in
+the community database.
 
-## Meadowcap Admission Boundary
+Rotation uses a descriptor containing the predecessor key and two signatures:
+one by the old key over the new descriptor digest and one by the new key over
+the descriptor. Clients accept overlap only before the old descriptor expires
+and persist the new key after verifying continuity. Emergency revocation
+without the old key is an operational trust reset and is not hidden as normal
+rotation.
 
-Every anchor independently performs all admission checks before data enters
-retained storage or any derived view:
+## Transport Roles
 
-1. Parse under strict byte, depth, count, and path bounds.
-2. Verify the namespace and admitted community manifest.
-3. Verify that the manifest selects an explicitly supported public,
-   read-open community profile. Unknown, gated-read, and private profiles fail
-   closed before storage.
-4. Verify the complete Meadowcap delegation chain.
-5. Verify that the signer holds authority for the claimed subspace.
-6. Verify that the entry path is within the delegated prefix.
-7. Verify delegation, capability, entry, and listing time bounds.
-8. Verify payload digest and entry signature.
-9. Verify manifest and transport epoch floors against durable local floors.
-10. Apply object-type and anchor resource limits.
-11. Commit atomically only after all checks pass.
+Iroh packet relays and Riot anchors are distinct:
 
-For an owned publication namespace, only valid delegated capability holders may
-write. In a communal submissions namespace, each author remains restricted to
-their own subspace. Invalid data is never stored as accepted state and is never
-gossiped.
+- an iroh relay forwards encrypted endpoint packets and assists NAT traversal;
+- a Riot anchor is an application endpoint that validates and persists public
+  site state.
 
-The anchor does not mint community capabilities, recover community root keys,
-or decide community membership. It can carry signed delegation artifacts, but
-authority originates with the community.
+The checked-in transport has:
 
-Meadowcap governs write authority. It is not read encryption. Content admitted
-under this design is public and may be served to any reader. A future
-read-restricted design requires encrypted private-group machinery and is
-outside this scope.
+- `bind` and `bind_seed` using `N0DisableRelay`;
+- `bind_public` using the `N0` preset with relay plus Pkarr/DNS discovery.
 
-## Lifecycle
+The MVP anchor uses `bind_public` with a stable iroh endpoint key. The
+descriptor publishes the resulting endpoint ID. Anchor operator identity
+remains the separate signing key above.
 
-### 1. Create and host
+## `riot/sync/2`: Routed Paginated Reconciliation
 
-1. An organizer creates a community, manifest, and initial entries locally.
-2. The client selects at least two configured anchors by default.
-3. The client reconciles the community independently with each anchor.
-4. Each anchor performs the complete admission boundary.
-5. Each accepting anchor returns a signed hosting receipt.
-6. The client retains receipts as availability observations, not authority.
+`riot/sync/1` remains supported for existing nearby and legacy tests. Anchors
+do not silently downgrade to it.
 
-Any peer may carry and offer valid public community state to an anchor.
-Rehosting public state does not require the original author to remain online.
+New composite-site tickets bind:
 
-### 2. Opt into discovery
+- `min_sync_version: 2`;
+- manifest digest/version;
+- signed transport floor/epoch/expiry;
+- site root and member namespace IDs.
 
-1. An authorized organizer creates `CommunityListingV1`.
-2. The client submits the same signed listing to several anchors.
-3. Each anchor validates listing authority and expiry.
-4. Each accepting anchor includes the exact listing in its signed directory
-   feed and local search index.
-5. Directory feeds reconcile among configured peers under strict budgets.
+The minimum sync version is inside the root-signed ticket payload. A client
+refuses an anchor that cannot satisfy it.
 
-Hosting without this step does not cause automatic listing.
+### Inbound routing
 
-### 3. Browse and follow
+The ALPN is `riot/sync/2`. Unlike `sync/1`, the responder does not construct a
+namespace session before reading. It first reads a bounded `OpenNamespace`
+frame:
 
-1. A reader searches the merged directory exposed by any configured anchor or
-   opens a web mirror, link, or QR ticket.
-2. The Riot client combines its configured anchors with bounded ticket hints.
-3. It races or queries several sources and compares verified state frontiers.
-4. It rejects identity, manifest, capability, and digest mismatches.
-5. Retrieved state crosses the existing preview-first admission boundary.
-6. The reader accepts and persists a durable local copy.
+```text
+OpenNamespace {
+  protocol_version,
+  request_id,
+  community_root,
+  manifest_digest,
+  namespace_id,
+  direction
+}
+```
 
-Directory appearance means only that a valid authority opted into listing. It
-is not a trust, safety, accuracy, or endorsement signal.
+The responder verifies the active host/follow operation, routes to that exact
+namespace, opens an immutable repository snapshot, and returns either
+`SnapshotStart` or a structured refusal.
 
-### 4. Publish and converge
+### Snapshot inventory
 
-Valid writes may originate on phones or desktops and first travel through any
-available path:
+Each direction reconciles a stable, lexicographically sorted entry-ID snapshot:
 
-- nearby Bluetooth/local-network sync;
-- an anchor;
-- another ordinary peer;
-- an exported file;
-- a physical data mule.
+```text
+SnapshotStart { snapshot_digest, entry_count }
+IdsPage {
+  snapshot_digest,
+  after_exclusive: optional EntryId,
+  entry_ids: at most 256,
+  done
+}
+NeedEntries { entry_ids: at most 64 }
+Entries { canonical bundle: at most 64 entries and 8 MiB }
+DirectionComplete { snapshot_digest }
+SessionComplete
+Refuse { code, subject, retryable, retry_after_seconds }
+```
 
-When a node later reaches another source, the same reconciliation logic
-exchanges the missing signed state. There is no canonical upload order and no
-transport-specific conflict rule.
+Rules:
 
-### 5. Recover from outage
+- a page is strictly sorted and starts after its cursor;
+- page overlap, duplicate IDs, cursor regression, or digest changes fail the
+  session;
+- each side uses one immutable snapshot per direction;
+- writes arriving mid-session appear in the next session;
+- entries still pass the existing preview/admission decoder;
+- bundles retain the current 64-entry, 8 MiB, 1 MiB-per-item ceilings;
+- state is committed only after admission;
+- the second direction runs after the first, preserving bidirectional sync.
 
-When an anchor is unavailable, clients:
+This is bounded paginated inventory exchange, not the final bandwidth-optimal
+algorithm. A future Negentropy/range-summary version may reduce ID transfer
+without changing anchor authority or storage semantics.
 
-1. try other configured anchors;
-2. try non-expired ticket hints;
-3. preserve their durable local state;
-4. continue nearby and file exchange;
-5. reconcile the missing state when any anchor returns.
+### Composite transaction
 
-An outage is a reachability degradation, not an identity or migration event.
+A hosting operation stages `O`, then `C`, then `W` under one request ID.
+Nothing becomes directory-visible or mirror-visible until:
 
-## Open Hosting and Resource Controls
+1. all three namespace sessions finish;
+2. all entries pass admission;
+3. the declared snapshot digests match staged state; and
+4. one SQLite transaction promotes the complete staged site.
 
-Open hosting has no account or editorial admission gate. It still has strict,
-published resource controls:
+A failed operation deletes or expires its staged rows. Existing admitted site
+state remains unchanged.
 
-- maximum sync frame size;
-- maximum entry and capability-chain size;
-- maximum path length and depth;
-- maximum individual payload size;
-- per-community retained-byte and object-count budgets;
-- bounded reconciliation transitions and wall-clock duration;
-- bounded concurrent sessions;
-- rate limits by connection source and community root;
-- mandatory listing expiry;
-- bounded record count and bytes per directory feed;
-- content-addressed payload deduplication;
-- lazy payload retrieval under explicit budgets;
-- load shedding before allocation or expensive verification;
-- bounded gossip fanout and retry backoff.
+## `riot/anchor/1`: Control Plane
 
-Root signatures do not prevent Sybil communities. Directory feeds therefore
-remain plural and every client/anchor applies byte, count, age, and source-feed
-budgets locally. No anchor automatically downloads an entire community merely
-because a valid listing exists.
+The control ALPN carries canonical CBOR frames no larger than 64 KiB. Every
+request has a random 128-bit request ID. An anchor stores idempotent results for
+24 hours; repeating the same request ID and body returns the same result, while
+reusing an ID with a different body is rejected.
 
-An anchor may evict locally under storage pressure, operational failure, or
-legal necessity. It reports its local availability status when possible.
-Eviction creates no protocol deletion and carries no instruction for other
-anchors or peers to discard their copies.
+Operations:
 
-## Web Experience
+### `Describe`
 
-Each anchor provides:
+Returns the current signed `AnchorDescriptorV1` and limit profile.
 
-- a directory landing page;
-- bounded search and filters over valid, unexpired listings;
-- readable routes for hosted communities;
-- full community identity and freshness information;
-- “Open in Riot” links;
-- QR/share tickets with multiple anchor hints;
-- an anchor-information page generated from `AnchorDescriptorV1`.
+### `PrepareHost`
 
-The renderer remains read-only. It has no signing key, authoring flow, or
-private-group access.
+Input:
 
-Web output is a projection. A malicious mirror can omit or misrepresent content
-to a casual browser reader. Riot verifies the underlying signed state before
-import and displays verification outside community-controlled content.
+- root-signed composite ticket;
+- desired namespace snapshot digests;
+- optional valid admission work stamp.
 
-## Native Client Experience
+Output:
 
-### Explore
+- ordered namespace host plan;
+- current retained snapshot digests;
+- sync version and limits;
+- operation expiry.
 
-The client queries configured anchors, merges valid unexpired listings, and
-deduplicates them by full community identity. Cards may show observed
-availability such as “available from three anchors,” but availability is not
-trust.
+The client then opens `sync/2` for each required namespace.
+
+### `CommitHost`
+
+Input:
+
+- request ID;
+- final snapshot digests for `O`, `C`, and `W`.
+
+Output:
+
+- signed `HostingReceiptV1`; or
+- typed refusal.
+
+### `SubmitListing`
+
+Input:
+
+- complete canonical signed Willow entry for `O:/directory/listing`;
+- optional valid admission work stamp.
+
+Output:
+
+- signed `ListingReceiptV1`; or
+- typed refusal.
+
+### `GetOperation`
+
+Returns an idempotently retained result for a request ID, allowing recovery
+after a disconnect between commit and receipt delivery.
+
+### Refusals
+
+```text
+ControlRefusal {
+  code,
+  subject: ticket | manifest | listing | namespace | capacity | version,
+  retryable,
+  retry_after_seconds: optional
+}
+```
+
+Codes include `invalid_authority`, `unsupported_version`, `over_quota`,
+`expired`, `not_hosted`, `equivocation`, `work_required`, and `busy`.
+A refusal is a protocol result, not a transport failure and not a signed
+hosting receipt.
+
+## Typed Client Operation Results
+
+Native boundaries expose source-specific envelopes:
+
+```text
+AnchorAttempt<T> {
+  anchor_id,
+  result: Verified(T) | Refused(ControlRefusal) | TransportFailure(kind),
+  observed_at
+}
+
+DirectoryPage {
+  items,
+  source_coverage: Complete | Partial { succeeded, failed },
+  next_cursor
+}
+
+FollowResult {
+  site_root,
+  local_state: Saved | AlreadyFollowed | Cancelled,
+  anchor_attempts,
+  destination_entry: optional full EntryId
+}
+```
+
+`expired` always names the expired subject. `over_quota` always names the
+anchor and quota class. A verified receipt, protocol refusal, and local network
+failure can never collapse into the same enum case.
+
+Pure injectable ports mirror existing repository patterns:
+
+- `AnchorDirectoryPort`;
+- `AnchorHostingPort`;
+- `AnchorSyncPort`;
+- `Clock`;
+- `RetryScheduler`.
+
+## Anchor Repository
+
+`riot-anchor` owns a new SQLite-backed `AnchorRepository`. It reuses canonical
+Riot codecs and admission functions but does not extend the capped
+`EvidenceRepository` or demo `SiteState`.
+
+Logical tables:
+
+- `communities`;
+- `manifests` and durable version/digest floors;
+- `namespaces`;
+- `entries`;
+- `payloads`;
+- `community_payload_refs`;
+- `listings` and listing conflict floors;
+- `directory_inclusions`;
+- `hosting_receipts`;
+- `staged_operations`;
+- `idempotency_results`;
+- `anchor_peers`;
+- `operator_state`.
+
+### Transactions
+
+- SQLite WAL mode and foreign keys are mandatory.
+- Staging, full admission, promotion, search-index visibility, and receipt
+  creation share one transaction boundary at commit.
+- A receipt is reconstructable from committed state after restart.
+- A crash before commit leaves only expirable staging rows.
+- A crash after commit returns the same receipt through `GetOperation`.
+- Reads use immutable SQLite snapshots.
+
+### Payload accounting
+
+Physical payload bytes deduplicate by digest. Quotas charge every community the
+full logical payload size before deduplication. Per-community reference rows
+prevent one community's eviction from deleting a payload still retained for
+another.
+
+### Eviction
+
+New admissions never evict data within a signed
+`reported_retention_through`. If capacity cannot honor the horizon, the anchor
+rejects the new operation.
+
+After horizons expire, eviction order is deterministic:
+
+1. expired/unlisted directory projections;
+2. incomplete abandoned staging;
+3. unlisted sites by oldest last successful host refresh;
+4. listed sites by oldest last successful host refresh.
+
+Promotion, reference decrements, search removal, projection invalidation, and
+new receipt state occur atomically.
+
+## Open Hosting Resource Contract
+
+Operators may configure lower values, but not exceed the compiled absolute
+ceilings. The signed descriptor publishes effective values.
+
+MVP defaults and absolute ceilings:
+
+| Resource | Default | Absolute ceiling |
+| --- | ---: | ---: |
+| Logical retained bytes, whole anchor | 20 GiB | 100 GiB |
+| Physical retained bytes | 20 GiB | 100 GiB |
+| Staged bytes | 256 MiB | 1 GiB |
+| Hosted sites | 10,000 | 50,000 |
+| Logical bytes per site | 64 MiB | 256 MiB |
+| Live entries per namespace | 4,096 | 16,384 |
+| Item payload | 1 MiB | 1 MiB |
+| Bundle | 8 MiB / 64 entries | unchanged |
+| Concurrent sync/control sessions | 128 | 512 |
+| Sessions per source | 4 | 16 |
+| Sessions per site | 8 | 32 |
+| Search results per page | 50 | 100 |
+| Search query UTF-8 bytes | 128 | 256 |
+| Directory listings | 10,000 | 50,000 |
+| Concurrent gossip sessions per peer | 2 | 4 |
+| Gossip transfer per peer per hour | 256 MiB | 1 GiB |
+
+The anchor also bounds:
+
+- request headers and control bodies;
+- queued signature/capability verification jobs;
+- cumulative verification CPU time per source and globally;
+- response bytes;
+- retry count and exponential backoff;
+- directory-feed bytes and records;
+- cache lifetime to signed expiry.
+
+### Admission work stamp
+
+Global ceilings protect the process but do not make anonymous admission fair.
+For a previously unseen root or a new listing, an anchor uses a stateless work
+challenge:
+
+```text
+BLAKE3(
+  "riot/anchor-work/v1" ||
+  anchor_id || operation || community_root ||
+  random_challenge || expires || counter
+)
+```
+
+The digest must have the descriptor-advertised number of leading zero bits.
+Difficulty is `0..24`, the challenge expires after five minutes, and the work
+stamp is bound to one anchor and operation. Difficulty zero means no work.
+
+The descriptor publishes a deterministic pressure policy. The default policy
+uses difficulty zero while the maximum of logical-storage, staged-storage,
+site-count, listing-count, and verification-queue utilization is below 75%.
+At or above 75%, a valid nonzero work stamp is mandatory for every unseen root
+and new listing. Difficulty increases monotonically with the published
+utilization bands and never exceeds 24. Existing admitted roots may refresh
+without work while within their quotas. At any hard ceiling, new admissions
+are refused regardless of work.
+
+This remains open hosting: no identity, approval, payment, or invitation is
+introduced. It gives operators a bounded pressure valve rather than pretending
+root signatures alone resist Sybil floods.
+
+Accepted sites within their reported horizon are not displaced by new Sybil
+roots. At hard capacity the anchor refuses new roots.
+
+### Gossip amplification boundary
+
+An arbitrary client request never enqueues cross-anchor replication.
+
+Anchor gossip occurs only when:
+
+- both operators configured a peer relationship;
+- the relationship names directory-only or explicit site replication rules;
+- per-peer work and byte budgets permit it.
+
+Clients achieve baseline redundancy by hosting independently on several
+anchors. Gossip improves reach but is not required.
+
+## Directory Feeds and Search
+
+Each anchor owns a signed public directory feed containing exact accepted
+listing envelopes plus inclusion metadata. Other anchors can reconcile feeds
+under operator-configured directory peering.
+
+The HTTPS API:
+
+```text
+GET /.well-known/riot-anchor.json
+GET /api/v1/directory?q=&cursor=&limit=
+GET /api/v1/directory/<full-community-root>
+GET /c/<full-community-root>/
+GET /c/<full-community-root>/e/<full-entry-id>
+```
+
+Search responses are lossless JSON projections containing:
+
+- the canonical listing envelope for client verification;
+- directory source anchor IDs;
+- source coverage (`complete` or `partial`);
+- a stable opaque cursor;
+- no claim of endorsement.
+
+Inputs are normalized and bounded. Database queries are parameterized. Cursors
+bind the normalized query and snapshot generation so they cannot be reused
+across queries.
+
+Open hosting does not imply automatic listing. A valid listing submitted under
+budget appears in that anchor's raw directory feed. The default Explore view
+merges configured feeds, deduplicates one visible record per root, excludes
+expired/conflicted/unlisted records, and exposes topic/language/region filters.
+It does not claim Sybil-proof ranking.
+
+## Safe Web Projection
+
+The existing fixed gateway remains intact. The anchor adds a new isolated
+snapshot pipeline:
+
+1. Rust reads one admitted SQLite snapshot.
+2. Rust emits `AnchorWebSnapshotV1`, containing only typed, bounded public text
+   records and canonical full identifiers.
+3. A renderer worker with no database credentials and no network access reads
+   the snapshot and writes a complete static tree.
+4. The anchor validates the output manifest and atomically swaps the served
+   directory.
+
+The Rust daemon and renderer worker ship as one deployable container, but the
+worker is a separate process and trust boundary. It may reuse extracted pure
+templates from `apps/gateway`; it does not weaken the existing pinned-fixture
+constructor or tests.
+
+MVP mirror rules:
+
+- typed text records only;
+- context-aware escaping for text and attributes;
+- routes derived only from canonical validated full IDs;
+- no owner-authored HTML, CSS, JavaScript, SVG, iframe, or executable MIME;
+- no inline arbitrary attachments;
+- unknown payload profiles are omitted with a plain explanation;
+- success and error pages carry CSP as an HTTP header;
+- `default-src 'none'`;
+- only the exact hashed static stylesheet is permitted;
+- `frame-ancestors 'none'`, `nosniff`, HSTS, and restrictive
+  `Permissions-Policy`;
+- no cookies and no third-party requests.
+
+Riot-native sync still carries admitted payloads. The web MVP does not attempt
+to serve arbitrary media safely.
+
+Projection cache lifetime never exceeds listing or record expiry. Admission,
+eviction, unlisting, or manifest change invalidates the affected generation.
+
+## Canonical Web-to-App Handoff
+
+Anchor-generated pages use a versioned composite handoff envelope:
+
+```text
+riot://site/v2/<canonical-base64url-envelope>
+```
+
+The canonical envelope has two layers. Its `signed_core` is the root-signed
+ticket and includes:
+
+- full site root and `O`, `C`, `W` IDs;
+- manifest digest/version;
+- minimum sync version;
+- transport floor/epoch/expiry;
+- optional destination full entry ID.
+
+Its `anchor_hints` field is unsigned, replaceable routing metadata outside the
+signed core. A client verifies the signed core first, caps the envelope at
+eight hints of 512 bytes each, and treats hints only as candidate routes. A
+hint can never alter the site, namespaces, manifest, transport floor, expiry,
+or destination entry. Reissuing the same signed core with different hints does
+not change community identity or authority.
+
+Existing links remain supported:
+
+- `riot://newswire/join/v1/...` remains the legacy newswire join reference;
+- `riot://open?namespace=...&entry=...` continues to verify/open content already
+  held locally;
+- neither is emitted as the new composite anchor handoff.
+
+### App installed
+
+“Open in Riot” launches the v2 reference. Riot:
+
+1. validates the ticket before dialing;
+2. resolves configured anchors plus bounded hints;
+3. shows the unknown-community preview;
+4. follows after explicit acceptance;
+5. opens the destination entry after commit, or the site home when no
+   destination is present.
+
+### App not installed
+
+The HTTPS page remains the durable continuation. It shows platform install
+links, the QR code, and:
+
+> Install Riot, return to this page, then tap Open in Riot.
+
+No fingerprinting or server-side deferred-link token is used. The complete
+ticket and destination remain in the page URL/QR, so returning preserves the
+journey.
+
+### Install unavailable
+
+The visitor can continue reading the safe web projection and copy/save the
+normal HTTPS link or QR. The page does not claim offline availability.
+
+### Expired, malformed, or failed import
+
+The page stays readable. Riot identifies whether the ticket, manifest,
+capability, or anchor attempt failed; preserves the web URL; and offers retry
+with configured anchors, rescan/copy of a fresh ticket, or cancel. It never
+silently opens a different community.
+
+## Native UX State Model
+
+User-facing language says “public hosts” or “Find communities online.”
+“Anchor,” descriptor digests, and full protocol details live under Technical
+details.
+
+### Explore placement
+
+Explore is available:
+
+- from the first-run/community chooser as “Find communities online”;
+- from the existing community switcher;
+- without requiring the user to leave a currently selected community.
+
+States:
+
+| Technical state | User-facing result |
+| --- | --- |
+| Loading | “Looking across public hosts…” with cancel |
+| Complete, zero results | “No communities matched” with filters/reset |
+| Partial source success | Results plus “Some public hosts didn’t respond” and retry |
+| All sources unreachable, cached results | Cached results marked “Saved results — may be out of date” |
+| All sources unreachable, no cache | “Couldn’t reach public hosts” with retry and link/QR option |
+| Listing conflict/expiry | Omitted from results; technical details explain why |
 
 ### Follow
 
-The client contacts multiple sources, verifies the community, shows the
-existing import preview, and persists a local copy after acceptance.
+States:
 
-### Publish
+- validating ticket;
+- contacting named public hosts;
+- preview ready;
+- already followed;
+- saving;
+- saved and ongoing updates enabled;
+- cancelled with no mutation;
+- source-specific refusal;
+- all sources unreachable;
+- manifest/listing equivocation quarantined;
+- retryable expired ticket with preserved web destination.
 
-Community maintainers see hosting state separately from listing state:
+### Publish and listing
 
-- hosted on which anchors;
-- last verified frontier and receipt horizon;
-- listed or unlisted;
-- listing expiry and refresh action.
+Maintainers see per-anchor progress:
 
-The default action hosts on several configured anchors. Listing remains an
-explicit, separate choice.
+- preparing;
+- syncing `O`, `C`, `W`;
+- hosted through reported date;
+- refused with named quota/subject;
+- unreachable;
+- receipt recovery;
+- listing submitted;
+- listing expired/refresh due;
+- unlisted.
 
-### Anchor settings
+Hosting and listing are separate controls. A failed listing refresh never
+removes hosted state.
 
-Users can:
+## Privacy and Logging
 
-- inspect the full signed descriptor;
-- add an anchor from a URL or QR code;
-- remove any default anchor;
-- see supported features and published limits;
-- see recent reachability without treating it as trust;
-- choose which anchors receive their public communities.
+A Riot anchor is a public application endpoint. It sees public content and can
+observe client IP, requested community, timing, query, and transfer volume.
+Iroh encryption does not hide these facts from the endpoint.
+
+Default application, reverse-proxy, CDN, and load-balancer configuration:
+
+- does not log query strings, tickets, capability material, payload bodies, or
+  per-IP/community pairs;
+- truncates operational access logs to seven days;
+- restricts access to operators;
+- emits aggregate counts by default;
+- requires an explicit, time-bounded diagnostic mode for detailed request
+  correlation.
+
+Public IDs are printed in full when a specific diagnostic requires them; they
+are never truncated.
+
+Ticket and descriptor parsers:
+
+- reject duplicate authoritative fields and ambiguous encodings;
+- cap hints at eight and each hint at 512 bytes;
+- allow only defined iroh and HTTPS hint schemes;
+- verify the signed transport floor before every native dial;
+- never cause an anchor to fetch a client-supplied web URL or private-network
+  address.
 
 ## Failure and Threat Model
 
-### A malicious anchor can
+A malicious anchor can:
 
-- observe a client's IP address, requested communities, timing, and approximate
-  transfer volume;
-- withhold new or historical state;
-- omit a listing from its local search;
-- return stale but previously valid state;
+- observe connection metadata;
+- withhold or omit state;
+- serve stale but previously valid state;
+- omit a listing locally;
 - lie in an unsigned web projection;
-- disappear without notice;
-- issue a dishonest hosting receipt.
+- issue a dishonest receipt;
+- disappear.
 
-### A malicious anchor cannot
+It cannot:
 
-- forge a valid community root or signer;
-- forge a valid Meadowcap delegation;
+- forge site roots, manifests, listings, entries, or Meadowcap chains;
 - write outside an admitted capability;
-- substitute a different namespace for an expected signed ticket;
-- alter an entry or payload without failing digest/signature verification;
-- delete copies already held by peers or other anchors.
+- replace the signed site identity through an anchor hint;
+- force rollback below durable manifest/listing/transport floors;
+- delete copies held by clients or other anchors.
 
-### Metadata privacy
+Directory inclusion means “owner-authorized and structurally admitted,” not
+“safe,” “true,” or “endorsed.” Trust and moderation remain reader-selected
+lenses.
 
-Iroh encrypts the connection in transit, but the Riot anchor is an application
-endpoint and sees public community state plus connection metadata. This design
-does not claim anonymity or follow-graph privacy. A root-signed transport floor
-continues to allow a future community to require a privacy transport and fail
-closed when that transport is unavailable.
+## Performance and Pilot Contract
 
-Anchor metrics are aggregate by default. Logs never contain ticket secrets,
-private keys, capability secrets, or payload bodies. Public identifiers are
-printed in full only when a specific diagnostic requires them; they are never
-truncated.
+Engineering targets under the default limit profile:
 
-### Trust and moderation
+- warm directory query p95 below 500 ms at 10,000 listings;
+- anchor descriptor p95 below 200 ms;
+- restart recovery and receipt reconstruction below 30 seconds at 20 GiB;
+- transparent failover begins within 5 seconds and completes within 30 seconds
+  when another anchor is reachable;
+- no unbounded allocation or queue growth under invalid input.
 
-Search inclusion means “owner-authorized and structurally valid,” not
-“verified,” “safe,” or “endorsed.” Trust and curation remain reader-selected
-lenses over signed public data. This design adds no shared moderation authority
-and no network-wide deletion mechanism.
+Public pilot prerequisites:
 
-## Error Semantics
+- at least three anchors;
+- at least two independent operators;
+- at least two infrastructure failure domains or regions;
+- seven consecutive pilot days.
 
-Errors are structured and stable across native and web surfaces:
+User-focused pilot thresholds:
 
-- `invalid_authority`: signature or Meadowcap admission failed;
-- `unsupported_version`: record or sync version is unsupported;
-- `over_quota`: a published resource budget was exceeded;
-- `expired`: listing, ticket, delegation, or requested retention expired;
-- `not_hosted`: this anchor has no retained state for the community;
-- `stale`: the anchor has valid state but is behind a verified peer frontier;
-- `unreachable`: connection failed without an authority judgment;
-- `partial`: metadata or entries are retained but some payloads are absent.
+- at least 10 organizers, 30 readers, and 50 follow attempts;
+- 90% of installed-app discovery-to-saved journeys complete within two minutes;
+- 80% of organizer host-plus-list journeys complete within three minutes;
+- 95% of follow attempts succeed through another anchor within 30 seconds when
+  one configured anchor is intentionally unavailable;
+- 100% of accepted follows preserve the requested full site and destination
+  entry IDs;
+- zero invalid capability or manifest admissions.
 
-Clients distinguish refusal from network failure. They never convert one
-anchor's refusal into a global community status. A failure on one source causes
-the client to try other sources within bounded retry and concurrency budgets.
+Stop/revise criteria:
 
-## Deterministic MVP Proof
+- a valid site becomes unreachable solely because one anchor is lost;
+- a web-to-app handoff opens a different site or loses its requested entry;
+- any invalid authority reaches retained state or web output;
+- open admission can exceed a compiled global ceiling;
+- fewer than 80% of installed-app follow journeys complete in the pilot.
 
-The first end-to-end proof uses three independent anchors and several clients:
+## Deterministic Test Harness
 
-1. An organizer creates a public community locally.
-2. The organizer hosts it on anchors A and B.
-3. The organizer signs and submits an opt-in listing.
-4. Directory and configured community replication reach anchor C.
-5. A new user discovers the community through anchor C's web directory.
-6. The organizer goes offline.
-7. The new user opens the community in Riot, verifies it, and saves a local
-   copy.
-8. Anchor A is stopped; discovery and sync still succeed through B and C.
-9. A writer creates a valid update while connected only to a nearby peer.
-10. Later connectivity carries that update to one anchor.
-11. Anchor gossip and client multi-homing converge all reachable nodes.
-12. A final reconciliation round transfers no new accepted state.
+New support lives under `crates/riot-anchor/tests/support/` and uses production
+interfaces:
 
-The proof must show that the same full entry IDs, signer IDs, community IDs,
-manifest digest, and application-level reads converge everywhere.
+- `TestAnchor` with isolated SQLite database and keys;
+- `TestClient` using the public control/sync protocol types;
+- `TestAnchorNetwork` with deterministic partitions and ordered schedules;
+- `FakeClock`;
+- in-memory duplex `AnchorTransport`;
+- `DeterministicGossipScheduler`;
+- `FailpointRepository` that can fail before/after SQLite transaction stages;
+- `FakeRenderer` recording immutable snapshot generations;
+- bounded operation reports containing metadata only.
 
-## Testing
+Real iroh and HTTP integration tests are separate from the deterministic
+network. No test reaches into repository internals to manufacture accepted
+state.
 
-### Protocol tests
+Required injected production seams:
 
-- Canonical encoding and signatures for all three records.
-- Descriptor and listing expiry.
-- Listing authority through root and delegated capabilities.
-- Anchor hints never participate in community identity.
-- Root-signed transport floor rejects stripping, replay, and rollback.
-- Unknown versions and transport floors fail closed.
+- clock;
+- operator key store;
+- repository transaction/failpoint boundary;
+- control transport;
+- sync transport;
+- gossip scheduler;
+- projection renderer;
+- work-challenge verifier.
 
-### Admission tests
+## TDD Delivery Slices
 
-- Valid owned-publication delegation is accepted.
-- Out-of-prefix, expired, forged, or wrong-subspace capabilities are rejected.
-- Communal authors cannot write another author's subspace.
-- Unknown, gated-read, and private community profiles fail before storage.
-- Invalid state is absent from retained storage, search, web output, and gossip.
-- Admission is atomic under interruption and parser failure.
+### Slice 1: Authority records and tickets
 
-### Anchor contract tests
+RED:
 
-- Hosting requires no account.
-- Hosting does not imply listing.
-- Valid owner-authorized listing appears in search.
-- Expired or forged listing disappears or is rejected.
-- Web mirror renders only admitted public state.
-- Receipts accurately describe retained heads and payload coverage.
-- Deduplication and eviction preserve protocol validity.
+- same-version manifest equivocation is not quarantined;
+- editorial capability incorrectly authorizes `/directory/listing`;
+- duplicate ticket fields and v1/v2 downgrade are not rejected.
 
-### Resource and adversarial tests
+GREEN:
 
-- Oversized frames, entries, paths, payloads, and capability chains fail before
-  unbounded allocation.
-- Per-community and directory-feed budgets are enforced.
-- Duplicate delivery is idempotent.
-- Interrupted sync releases resources and can be retried.
-- Stale and dishonest anchors cannot downgrade accepted local state.
-- Gossip loops do not amplify identical entries or payloads.
+- canonical records, reserved listing admission, floors, tombstones, v2 ticket,
+  and parser bounds pass focused tests.
 
-### Network tests
+REFACTOR:
 
-- Three-anchor deterministic lifecycle described above.
-- Client multi-homing works when anchor gossip is disabled.
-- Anchor gossip works when the original publishing client is offline.
-- Any one anchor can disappear without blocking discovery and sync.
-- Nearby-only state later converges through anchors.
-- Final quiescent rounds accept no new state.
+- share canonical decoders and authority predicates without changing existing
+  v1 behavior.
 
-### Native and web tests
+### Slice 2: `sync/2`
 
-- Explore merges and deduplicates listings from several anchors.
-- Follow preserves preview-before-accept.
-- Hosting and listing are visibly separate actions.
-- Removing all default anchors leaves nearby/file operation available.
-- Web pages contain full-identity share tickets and retain existing gateway
-  security headers.
+RED:
 
-### Quality gates
+- responder cannot route a namespace before constructing a session;
+- 257+ IDs cannot reconcile in bounded pages;
+- cursor overlap/digest change is not rejected.
 
-Implementation follows TDD. Before completion it runs:
+GREEN:
+
+- immutable paginated bidirectional reconciliation converges over in-memory
+  duplex for `O`, `C`, and `W`.
+
+REFACTOR:
+
+- isolate common bundle admission shared with `sync/1`.
+
+### Slice 3: Anchor control and repository
+
+RED:
+
+- crash between staging and commit leaks partial visibility;
+- repeated request IDs duplicate work or receipts;
+- logical quota is bypassed by cross-community dedup.
+
+GREEN:
+
+- Prepare/Sync/Commit, SQLite atomic promotion, receipt recovery, quotas,
+  reference accounting, and restart pass.
+
+REFACTOR:
+
+- separate protocol types from daemon adapters.
+
+### Slice 4: Plural directory and bounded gossip
+
+RED:
+
+- hosting implies listing;
+- conflicting listing revisions produce divergent search;
+- client-triggered requests create background fanout.
+
+GREEN:
+
+- signed feeds, listing/unlisting, typed coverage, configured gossip, work
+  challenge, and three-anchor quiescence pass.
+
+REFACTOR:
+
+- extract deterministic scheduler policies.
+
+### Slice 5: Static web projection and handoff
+
+RED:
+
+- hostile HTML/SVG/attribute strings execute or escape context;
+- app-absent journey loses the ticket/destination;
+- old deep links regress.
+
+GREEN:
+
+- immutable text-only rendering, security headers, v2 handoff, install-return
+  journey, and v1 compatibility pass.
+
+REFACTOR:
+
+- extract pure templates while preserving pinned gateway fixtures.
+
+### Slice 6: Native plural-source UX
+
+RED:
+
+- zero results collapse with partial source failure;
+- receipt/refusal/transport errors collapse;
+- one-anchor outage blocks follow.
+
+GREEN:
+
+- injected ports drive every Explore, Follow, Publish, refresh, cancel, and
+  recovery state on iOS and Android.
+
+REFACTOR:
+
+- share Rust result semantics through UniFFI while preserving native state
+  presentation.
+
+### Slice 7: Operational closure
+
+RED:
+
+- global capacity, verification queue, logging, eviction, or restart contracts
+  fail under adversarial load.
+
+GREEN:
+
+- compiled ceilings, safe load shedding, deterministic eviction, privacy
+  configuration, deployment packaging, and the pilot rehearsal pass.
+
+REFACTOR:
+
+- remove test-only duplication and update `SERVICE-INVENTORY.md`.
+
+## Edge-Case Matrix
+
+Tests explicitly cover:
+
+- `now == expiry`;
+- manifest and listing revision ties/equivocation;
+- listing tombstone followed by stale replay;
+- manifest upgrade during sync;
+- duplicate/ambiguous anchor hints;
+- concurrent uploads for one site;
+- crash before and after admission commit;
+- eviction during a read snapshot;
+- sync disconnect between commit and receipt;
+- `GetOperation` after restart;
+- gossip loops and final quiescence;
+- all anchors unavailable;
+- one or two anchors unavailable;
+- stale cached directory with partial source coverage;
+- malformed Unicode/control characters in listings and search;
+- hostile strings in every HTML context;
+- cancellation before preview and before commit.
+
+## Quality Gates
+
+Before completion:
 
 - `cargo test --workspace --all-features`;
 - `cargo fmt --all -- --check`;
 - `cargo clippy --workspace --all-features -- -D warnings`;
-- native platform tests for changed client surfaces;
-- gateway tests for changed web surfaces;
-- the coverage enforcement commands and floors in
-  `.coverage-thresholds.json`.
+- gateway Python tests;
+- blocking local iOS and Android tests plus regenerated UniFFI bindings until
+  native CI exists;
+- `scripts/web/coverage.sh`;
+- thresholds from `.coverage-thresholds.json`:
+  - Tarpaulin lines: 97;
+  - LLVM lines/functions/regions/branches: 95/95/92/83;
+  - JS tooling lines/branches/functions/statements: 100.
 
-## Delivery Slices
-
-This design should be implemented as independently reviewable slices:
-
-1. **Records and pure admission:** canonical records, signatures, Meadowcap
-   verification, expiry, limits, and ticket-hint evolution.
-2. **Headless anchor peer:** bounded store, stable iroh endpoint, sync acceptor,
-   hosting receipts, and deterministic two-anchor tests.
-3. **Plural directory and gossip:** anchor descriptors, directory feeds,
-   listing validation, configured peer reconciliation, and three-anchor tests.
-4. **Web mirror and discovery:** directory/search pages, community rendering,
-   QR/share tickets, and anchor information.
-5. **Native multi-anchor experience:** configurable anchor set, Explore,
-   Follow, multi-home publishing, hosting receipts, and listing controls.
-6. **Adversarial and operational closure:** quotas, load shedding, eviction,
-   observability privacy, outage tests, packaging, and deployment runbook.
-
-The implementation plan will assign exact file scope and dependencies after
-the design review gate.
+The absent generic metaswarm guide paths are not treated as evidence. Planning
+uses checked-in CI docs, `SERVICE-INVENTORY.md`, this spec, existing tests, and
+the headless-network design as the baseline.
 
 ## Non-Goals
 
-- Private groups, MLS, encrypted group drops, or private rendezvous.
-- Read authorization or gated plaintext delivery.
-- Accounts, passwords, canonical homes, or PDS migration.
+- Private groups, MLS, encrypted drops, or private rendezvous.
+- Read authorization.
+- Legacy standalone communal-space hosting/listing.
+- Accounts, passwords, PDS homes, or account migration.
 - A global firehose or requirement that every anchor store everything.
-- A canonical directory or global search ranking.
-- Network-wide moderation or deletion.
-- Permanent hosting guarantees.
-- Payment, proof-of-work, or invitation gates.
+- Canonical search ranking or network-wide moderation.
+- Permanent retention guarantees.
+- Payment or invitation gates.
+- Arbitrary web HTML/media rendering.
 - A custom iroh packet-relay network.
-- Tor/Arti integration beyond preserving the existing signed transport-floor
-  contract.
+- Tor/Arti implementation beyond preserving the signed transport floor.
+- Bandwidth-optimal range reconciliation in the first `sync/2`.
 
 ## Definition of Done
 
-The feature is complete when:
+The design is implemented when:
 
-- public communities can be hosted on several independently configured anchors
-  without accounts;
-- hosting does not cause automatic listing;
-- owner-authorized listings are discoverable through plural anchor feeds and
-  ordinary web pages;
-- clients follow from web, search, link, or QR and persist verified local state;
-- anchors enforce signatures and Meadowcap capabilities before propagation;
-- clients and anchors reconcile through the same transport-independent state
-  machine;
-- the deterministic three-anchor proof converges and survives anchor loss;
-- open-hosting resource controls and structured failure semantics are tested;
-- private-group data cannot enter any anchor or web-mirror path;
-- all repository quality and coverage gates pass.
+- composite public sites host on several independent anchors without accounts;
+- hosting never implies listing;
+- exact listing authority and equivocation rules are enforced;
+- clients discover through plural feeds and ordinary web pages;
+- web/app handoff preserves site and entry destination across install;
+- clients persist a verified local copy and schedule ongoing reconciliation;
+- anchors enforce manifest and Meadowcap authority before propagation;
+- `sync/2` routes and paginates all composite namespaces without the 64-ID
+  inventory ceiling;
+- control operations are canonical, idempotent, recoverable, and typed;
+- the anchor repository survives crash/restart and enforces logical/global
+  quotas;
+- open hosting cannot exceed compiled process ceilings or trigger unbounded
+  gossip;
+- the text-only web renderer preserves the hostile-content boundary;
+- deterministic three-anchor tests converge and survive anchor loss;
+- the public pilot meets the user-focused thresholds;
+- all quality and coverage gates pass.
