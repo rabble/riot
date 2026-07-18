@@ -89,3 +89,27 @@ Not repeating that in the dark.
 **Morning steps:** cherry-pick the two NEW files onto a fresh branch off origin/main (new files can't
 conflict), redo the chooser hook against the AppModel API above, register the file in both Xcode
 targets, run `scripts/green.sh`, then PR. Est. small once green.sh is available.
+
+### Task 4 — Unit 2 (Replies/Comments) is ALREADY DONE end-to-end (correction)
+Confirmed against origin/main: comments/replies are fully built at EVERY layer, no work needed.
+- Core: `NewsCommentV1`, communal admission, tombstone/hide, flat grouping (merged).
+- FFI: `create_newswire_comment` (merged).
+- Android: comment row + grouping + threaded into surface (#60, merged).
+- **iOS (the layer I feared was missing — it is NOT):** `NewswireEditorial.swift` has
+  `commentsByParent: [String:[NewswireCommentRow]]` (L567), `canComment` gate (L625),
+  `comments(under:)` (L634), reply signing (L638), `groupComments` (L669), load wires
+  `projection.comments` (L759), `@State replyTarget` + `.sheet` → `NewswireCommentComposeSheet`
+  (L874/923), a per-post **Reply** button (L1074 `Button("Reply"){ replyTarget = post }`), and
+  comment rows drawn indented under each post (L1096–1107). `NewswireCommentRow` struct at L345.
+- **The in-session mapper's "comments don't exist" was 100% a stale-checkout artifact** (local HEAD
+  was behind origin/main). Nothing to build for Unit 2. This is the night's biggest de-dup.
+
+### Refined remaining scope (only two things are real)
+1. **Unit 3 — Reactions:** genuinely absent. Core + FFI are pure Rust → BOTH `cargo test`-verifiable
+   and safe to build+commit tonight on this branch. Only the iOS reaction-bar UI needs Xcode → plan
+   it (mirror the now-complete comment UI template: a `reactionsByPost` map + a tally bar under
+   `postRow`, exactly like `commentsByParent`/`commentRow`). NOTE the UniFFI coupling
+   (`riot-uniffi-record-change-coupling`): adding FFI fns changes the checksum, so the binding regen
+   + native staticlib rebuild MUST happen together on a build machine before the app runs — that is
+   morning work, not tonight's.
+2. **Unit 1 — Share:** rebase the stale branch (see Task 3). Morning (needs green.sh).
