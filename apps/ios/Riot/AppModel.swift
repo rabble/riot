@@ -600,6 +600,26 @@ public final class RiotAppModel: ObservableObject {
         }
     }
 
+    /// Re-derives the active community's newswire descriptor id from the registry
+    /// on demand — the offlineStale "Try again" path. Returns nil when the community
+    /// still carries none (a nearby-joined community), which is what puts the wire
+    /// into its forward-path (rejoin / sync) state instead of a silent re-loop.
+    /// Publishes the fresh value so the shell and Home agree. This is the same
+    /// `listCommunities()` derivation `reload()` performs, callable without a full
+    /// reload so the wire picks up a descriptor that just landed.
+    @discardableResult
+    public func rederivedNewswireDescriptorID() -> String? {
+        guard let repository, let namespaceID = space?.namespaceID else {
+            newswireDescriptorEntryID = nil
+            return nil
+        }
+        let derived = (try? repository.listCommunities())?
+            .first { $0.namespaceId == namespaceID }?
+            .descriptorEntryId
+        newswireDescriptorEntryID = derived
+        return derived
+    }
+
     /// Re-reads the held communities for the chooser. A failure leaves the last
     /// list rather than blanking the chooser.
     private func refreshCommunities() {

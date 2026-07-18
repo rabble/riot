@@ -560,7 +560,8 @@ private struct CommunityShellView: View {
             authority: authority,
             spaceDescriptorEntryID: community.newswireDescriptorEntryID ?? "",
             communityName: community.name,
-            myKeyHex: me.id
+            myKeyHex: me.id,
+            descriptorResolver: { [weak model] in model?.rederivedNewswireDescriptorID() }
         ))
     }
 
@@ -877,6 +878,7 @@ private struct HomeRouteView: View {
     @ObservedObject var newswire: NewswireSurfaceModel
     let onOpenTool: (RiotSpaceApp, String) -> Void
     @Environment(\.colorScheme) private var colorScheme
+    @State private var showRejoinSheet = false
 
     private var shortcuts: [RiotSpaceApp] { HomeShortcuts.deterministic(from: model.apps) }
 
@@ -888,7 +890,14 @@ private struct HomeRouteView: View {
                 // always-public Editorial history — is the answer to "what is
                 // happening here?" It reads the same core projection every platform
                 // does, so a reader sees the identical front page as its peers.
-                NewswireSurfaceView(model: newswire)
+                // The offlineStale forward paths lead somewhere real: rejoin with a
+                // link (Unit 1's sheet) or sync with a peer (the existing Nearby
+                // screen) — never a dead no-op button and never a silent retry loop.
+                NewswireSurfaceView(
+                    model: newswire,
+                    onSyncWithPeer: { model.select(.nearby) },
+                    onRejoinWithLink: { showRejoinSheet = true }
+                )
                 // The single Home entry point for this community's signed alerts —
                 // the only tappable alert surface (the Nearby count is a diagnostic).
                 AlertsListView(entries: model.entries,
@@ -899,6 +908,9 @@ private struct HomeRouteView: View {
             .padding(20)
         }
         .riotHeader(eyebrow: "Community", model.space?.title ?? "Home")
+        .sheet(isPresented: $showRejoinSheet) {
+            JoinByReferenceSheet(model: model, onClose: { showRejoinSheet = false })
+        }
     }
 
     @ViewBuilder
