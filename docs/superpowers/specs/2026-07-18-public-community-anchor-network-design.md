@@ -1,7 +1,7 @@
 # Public Community Anchor Network Design
 
 Date: 2026-07-18
-Status: Design review rounds 1-14 revised; pending round 15
+Status: Design review rounds 1-15 revised; pending round 16
 Scope: Owner-rooted composite public sites, discovery, hosting, web mirroring,
 and opportunistic internet sync
 
@@ -125,6 +125,10 @@ Round fourteen bounded public iroh handshakes and every control/sync session
 from accept through progress and close, added an authenticated direct-root
 removal lane immune to invalid-candidate queue capture, fixed the TLS exporter
 context, and removed unverifiable collector-deletion claims from retention UX.
+
+Round fifteen replaced generic control refusals with a closed per-code matrix
+fixing subject, retryability, delay presence, retry scope, and canonical
+details, and made the one-stream-per-session QUIC boundary explicit.
 
 ## Product Decisions
 
@@ -568,8 +572,8 @@ never returns an empty success page.
 | --- | --- |
 | malformed/noncanonical frame before durable lookup | no Commit row and no operation mutation |
 | `idempotency_conflict`, `unsupported_version`, or `operation_not_found` | Commit request is refused; any separately found operation is unchanged |
-| `busy` or Commit-time `over_quota` | operation remains `prepared`; staging/tokens remain valid until its existing expiry; the refused Commit key is terminal, so retry uses a fresh Commit idempotency key after the required retry time |
-| `stale_base`, `stale_source`, `manifest_mismatch`, `manifest_transport_mismatch`, `expired`, `snapshot_mismatch`, `equivocation`, `invalid_authority` discovered by final revalidation, `peer_context_changed`, or `operation_expired` | atomically store terminal refused operation outcome, delete all staging, invalidate every namespace token, and terminalize the Commit key |
+| `commit_busy` or `commit_over_quota` | operation remains `prepared`; staging/tokens remain valid until its existing expiry; the refused Commit key is terminal, so retry uses a fresh Commit idempotency key after the required retry time |
+| `stale_base`, `stale_source`, `commit_manifest_mismatch`, `manifest_transport_mismatch`, `ticket_expired`, `snapshot_mismatch`, `manifest_equivocation`, `invalid_operation_authority` discovered by final revalidation, `peer_context_changed`, or `operation_expired` | atomically store terminal refused operation outcome, delete all staging, invalidate every namespace token, and terminalize the Commit key |
 | successful generation-CAS and admission | atomically store terminal committed receipt, promote state, invalidate tokens, and terminalize the Commit key |
 | transport loss before the commit transaction | operation remains `prepared`; retry the exact Commit key |
 | transport loss after an unknown transaction outcome | query `GetOperation`; it returns either the prior `prepared` state or the byte-identical terminal result |
@@ -577,8 +581,8 @@ never returns an empty success page.
 No other refusal code is legal for `CommitHost`. `stale_base`,
 `stale_source`, and other retryable terminal results mean “start a fresh
 Prepare with a new operation,” never reuse old staging or tokens. A reusable
-`busy`/`over_quota` refusal means “new Commit key, same operation.” Commit-time
-`busy` and `over_quota` require nonzero `retry_after_seconds`; every terminal
+`commit_busy`/`commit_over_quota` means “new Commit key, same operation” and
+requires nonzero `retry_after_seconds`; every terminal
 cleanup result has retry scope encoded by this table even if the higher-level
 workflow may start over.
 
@@ -1380,7 +1384,7 @@ For `listed: true`, the anchor atomically verifies that the listing's root,
 `O`, `C`, `W`, manifest digest/version, and ticket core exactly equal its
 currently committed composite manifest and root ticket. The site must currently
 be hosted on that anchor. Otherwise it returns `not_hosted` or
-`manifest_mismatch` and creates no directory inclusion.
+`listing_manifest_mismatch` and creates no directory inclusion.
 
 For `listed: false`, the anchor may instead match the tombstone against its
 durable prior admitted listing/manifest/ticket floors. This permits explicit
@@ -1741,35 +1745,50 @@ ControlRefusal {
 }
 ```
 
-`code` is a closed lowercase textual enum. `details` must have the exact
-matching sum shape below; no generic map or extra diagnostic fields are
-allowed:
+`code` is a closed lowercase textual enum. The tuple
+`(code, subject, retryable, retry_after_seconds, details)` must match exactly
+one row below. `required` means a nonzero value; `null` means CBOR null.
+`retry_scope` is the normative client action derived from the row and is not an
+extra wire field.
 
-| Code | Exact `details` |
-| --- | --- |
-| `invalid_authority`, `not_hosted`, `idempotency_conflict` | `["none"]` |
-| `unsupported_version` | `["versions", supported_versions]` |
-| `over_quota` | `["quota", limit_id, effective_value, observed_value]` |
-| `unsupported_transport` | `["transport", required_mode, observed_mode]` |
-| `manifest_transport_mismatch`, `manifest_mismatch` | `["digests", expected_digest, observed_digest]` |
-| `snapshot_mismatch` | `["snapshot", expected_snapshot_digest, observed_snapshot_digest]` |
-| `expired` | `["expiry", expires_at, observed_at]` |
-| `equivocation` | `["equivocation", first_digest, second_digest]` |
-| `anchor_profile_oversize` | `["encoded_size", observed_bytes, maximum_bytes]` |
-| `site_too_large` | `["storage", required_class, advertised_bytes, local_limit_bytes]` |
-| `work_required` | `["work", policy_epoch, difficulty]` |
-| `stale_base` | `["site_state", current_generation, ordered_namespace_snapshot_digests]` |
-| `stale_source` | `["source_state", observed_generation, current_generation, ordered_namespace_snapshot_digests]` |
-| `attestation_consumed` | `["attestation", replica_source_attestation_digest]` |
-| `already_unlisted` | `["listing_state", "already_unlisted"]` |
-| `removal_replay_window` | `["relist_window", earliest_retry_at]` |
-| `operation_not_found` | `["operation", operation_id]` |
-| `operation_expired` | `["operation_expiry", operation_id, expires_at]` |
-| `checkpoint_unavailable` | `["checkpoint", checkpoint_digest, reason]` |
-| `cursor_invalid` | `["cursor", cursor_kind, reason, optional_checkpoint_digest, optional_floor_sequence, optional_head_sequence]` |
-| `peer_context_changed` | `["peer_context", side, prior_descriptor_digest, optional_latest_descriptor_digest, reason]` |
-| `busy` | `["capacity", limit_id]` |
-| `peer_auth_failed` | `["peer_auth", stage]` |
+| Code | Subject | Retryable | Retry after | Retry scope | Exact `details` |
+| --- | --- | ---: | --- | --- | --- |
+| `invalid_ticket_authority` | `ticket` | false | null | `never` | `["none"]` |
+| `invalid_manifest_authority` | `manifest` | false | null | `never` | `["none"]` |
+| `invalid_listing_authority` | `listing` | false | null | `never` | `["none"]` |
+| `invalid_operation_authority` | `operation` | false | null | `never` | `["none"]` |
+| `unsupported_version` | `version` | false | null | `never` | `["versions", supported_versions]` |
+| `admission_over_quota` | `capacity` | true | required | `new_idempotency_key_after_delay` | `["quota", limit_id, effective_value, observed_value]` |
+| `commit_over_quota` | `capacity` | true | required | `same_operation_new_commit_key` | `["quota", limit_id, effective_value, observed_value]` |
+| `unsupported_transport` | `transport` | false | null | `never` | `["transport", required_mode, observed_mode]` |
+| `manifest_transport_mismatch` | `manifest` | false | null | `never` | `["digests", expected_digest, observed_digest]` |
+| `not_hosted` | `listing` | true | null | `host_then_new_idempotency_key` | `["none"]` |
+| `listing_manifest_mismatch` | `listing` | true | null | `host_then_new_idempotency_key` | `["digests", expected_digest, observed_digest]` |
+| `commit_manifest_mismatch` | `operation` | true | null | `new_operation` | `["digests", expected_digest, observed_digest]` |
+| `snapshot_mismatch` | `namespace` | true | null | `new_operation` | `["snapshot", expected_snapshot_digest, observed_snapshot_digest]` |
+| `ticket_expired` | `ticket` | false | null | `never` | `["expiry", expires_at, observed_at]` |
+| `listing_expired` | `listing` | false | null | `never` | `["expiry", expires_at, observed_at]` |
+| `work_expired` | `work` | true | null | `same_idempotency_with_new_work_stamp` | `["expiry", expires_at, observed_at]` |
+| `listing_equivocation` | `listing` | false | null | `never` | `["equivocation", first_digest, second_digest]` |
+| `manifest_equivocation` | `manifest` | false | null | `never` | `["equivocation", first_digest, second_digest]` |
+| `anchor_profile_oversize` | `capacity` | false | null | `never` | `["encoded_size", observed_bytes, maximum_bytes]` |
+| `site_too_large` | `capacity` | false | null | `never` | `["storage", required_class, advertised_bytes, local_limit_bytes]` |
+| `work_required` | `work` | true | null | `same_idempotency_with_new_work_stamp` | `["work", policy_epoch, difficulty]` |
+| `stale_base` | `operation` | true | null | `new_operation` | `["site_state", current_generation, ordered_namespace_snapshot_digests]` |
+| `stale_source` | `operation` | true | null | `new_operation` | `["source_state", observed_generation, current_generation, ordered_namespace_snapshot_digests]` |
+| `attestation_consumed` | `operation` | true | null | `new_operation` | `["attestation", replica_source_attestation_digest]` |
+| `already_unlisted` | `listing` | false | null | `never` | `["listing_state", "already_unlisted"]` |
+| `removal_replay_window` | `listing` | true | required | `new_idempotency_key_after_delay` | `["relist_window", earliest_retry_at]` |
+| `idempotency_conflict` | `operation` | false | null | `never` | `["none"]` |
+| `operation_not_found` | `operation` | false | null | `never` | `["operation", operation_id]` |
+| `operation_expired` | `operation` | true | null | `new_operation` | `["operation_expiry", operation_id, expires_at]` |
+| `checkpoint_unavailable` | `operation` | true | null | `new_checkpoint` | `["checkpoint", checkpoint_digest, reason]` |
+| `cursor_invalid` | `operation` | true | null | `new_checkpoint` | `["cursor", cursor_kind, reason, optional_checkpoint_digest, optional_floor_sequence, optional_head_sequence]` |
+| `peer_context_changed` | `peer` | true | null | `new_operation` | `["peer_context", side, prior_descriptor_digest, optional_latest_descriptor_digest, reason]` |
+| `admission_busy` | `capacity` | true | required | `same_request_after_delay` | `["capacity", limit_id]` |
+| `removal_busy` | `capacity` | true | required | `same_request_after_delay` | `["capacity", limit_id]` |
+| `commit_busy` | `capacity` | true | required | `same_operation_new_commit_key` | `["capacity", limit_id]` |
+| `peer_auth_failed` | `peer` | true | null | `refresh_descriptor` | `["peer_auth", stage]` |
 
 The nested enums are also closed: `side` is `source | destination`; peer-context
 `reason` is `descriptor_rotation | configuration_rotation | transport_loss |
@@ -1784,9 +1803,9 @@ is `malformed | after_head | wrong_checkpoint | wrong_generation | regressed |
 expired`.
 Unknown code/detail or enum pairings fail decoding. Error text and
 implementation diagnostics stay outside the wire result.
-`removal_replay_window`, `busy`, Commit-time `over_quota`, and every overload
-result require `retry_after_seconds`; for relisting it is the exact earliest
-retained removal-slot expiry.
+For relisting, the required delay is the exact earliest retained removal-slot
+expiry. No implementation may change retryability or scope based on local
+policy; a different behavior requires a new code/version.
 A refusal is a protocol result, not a transport failure and not a signed
 hosting receipt.
 
@@ -2026,7 +2045,7 @@ handoff state. `ProfileClosed` says “Profile locked—reopen to continue.”
 prevents switching to the same database, and offers Retry close; no operation
 is labeled failed or uncommitted until recovery proves it.
 
-`expired` always names the expired subject. `over_quota` always names the
+Expiry codes always name their fixed subject. Quota codes always name the
 anchor and quota class. A verified receipt, protocol refusal, and local network
 failure can never collapse into the same enum case.
 
@@ -2456,6 +2475,11 @@ advertised ALPN, and then acquire the existing global/per-source session permit.
 After endpoint authentication, the stable endpoint ID replaces the transient
 address as the source key. Unknown ALPN, rate, deadline, or permit failure
 closes immediately without a protocol session, durable row, or detached task.
+Each accepted QUIC connection carries exactly one negotiated control/sync
+protocol session and exactly one bidirectional application stream. Opening a
+second application stream resets it and closes the connection; unidirectional
+application streams are forbidden. QUIC multiplexing therefore cannot create
+work outside the connection's one session permit.
 
 The selected handler must receive a complete bounded first frame by the
 first-frame deadline. Every later length-delimited frame must advance by at
@@ -2583,7 +2607,7 @@ Delegated or non-direct candidates use the remaining lane: at most one per
 `(root, source)`, eight per root, three verification permits, and deficit
 round-robin scheduling. Its preallocated queue enforces the published global
 job/canonical-byte ceilings and never evicts an admitted candidate. A new
-candidate beyond either ceiling receives typed `busy`; a failed
+candidate beyond either ceiling receives typed `removal_busy`; a failed
 signature/capability chain releases its slot and creates no claim. This general
 lane can be saturated without consuming the authenticated direct-root slot,
 permit, or writer. Once either lane verifies authority, the job cannot be
@@ -4213,9 +4237,11 @@ Tests explicitly cover:
   numeric tags, field orders, and nested-byte forms rejected;
 - every control response success/refusal and `GetOperation` nested terminal
   outcome, plus both peer roles and the exact ALPN transcript/preimage;
-- every structured refusal code/details pair and all three `GetOperation`
+- every structured refusal tuple and every observable `GetOperation`
   states, with alternate full-response, outcome-only, payload-only, and
   byte-string nesting rejected;
+- every control refusal's exact subject/retryable/retry-after tuple and derived
+  retry scope, with every cross-code or local-policy substitution rejected;
 - 64 requested maximum-size items split across ordered chunks;
 - concurrent uploads for one site;
 - two same-base site commits with one CAS winner and one `stale_base`;
@@ -4375,6 +4401,8 @@ The design is implemented when:
   control/sync/signed-body encoding without implementation-chosen tags;
 - exact work-stamp and peer-proof preimages plus versioned control
   success/refusal envelopes interoperate across independent implementations;
+- every control refusal has one canonical subject, retry flag, delay presence,
+  details payload, and client retry scope;
 - empty feed/checkpoint sentinels, every `sync/2` refusal, and the complete
   Prepare-to-GetOperation lifecycle have one canonical encoding and recovery
   result;
