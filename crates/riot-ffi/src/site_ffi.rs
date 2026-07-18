@@ -844,16 +844,18 @@ fn hex_decode(s: &str) -> Option<Vec<u8>> {
 // ---------------------------------------------------------------------------
 // Delivery: import a shared followed-site bundle (the propagation channel).
 //
-// Owned-namespace content (/mod/, /articles/, /manifest) has no automatic
-// follower sync — the community sync inventory is namespace-scoped to the ACTIVE
-// community, so it never carries an owned site's records (see import_owned_mod).
-// The owner therefore hands the signed bytes onward out-of-band; THIS is the
-// follower's importer for them. It is a NEW admission entry point (external bytes
-// → store), gated by TWO checks before the proven inspect_core_with_root(Some(root))
+// Owned-namespace content (/mod/, /articles/) has no automatic follower sync —
+// the community sync inventory is namespace-scoped to the ACTIVE community, so it
+// never carries an owned site's records (see import_owned_mod). The owner
+// therefore hands the signed bytes onward out-of-band; THIS is the follower's
+// importer for them. It is a NEW admission entry point (external bytes → store),
+// gated by TWO checks before the proven inspect_core_with_root(Some(root))
 // admission runs:
 //   1. FOLLOWING gate: the caller must already hold a `Following` registry record
 //      for `root` — a bundle can never smuggle an UNFOLLOWED owned namespace in.
-//   2. FAMILY gate: every entry must be owned /mod, /articles, or /manifest;
+//   2. FAMILY gate: every entry must be owned /mod or /articles (least-privilege —
+//      exactly the families a store reader consumes; owned /manifest is validated
+//      from a caller arg, not the store, so it is NOT admitted here);
 //      anything else (a communal alert, a newswire post) rejects the whole bundle.
 // A non-admissible item (e.g. an owned entry NOT rooted at `root`) is Invalid at
 // decode and rejects the whole bundle (fail-closed, all-or-nothing). The imported
@@ -864,7 +866,7 @@ fn hex_decode(s: &str) -> Option<Vec<u8>> {
 /// The result of importing a followed-site bundle: how many records committed.
 #[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
 pub struct ImportSummary {
-    /// Number of owned-site records (mod / articles / manifest) admitted + committed.
+    /// Number of owned-site records (mod / articles) admitted + committed.
     pub imported: u32,
 }
 
@@ -872,9 +874,9 @@ pub struct ImportSummary {
 impl MobileProfile {
     /// Import a shared owner-signed bundle for a followed composite site. The
     /// caller must already FOLLOW `followed_site_root` (a Following registry
-    /// record); the bundle may carry ONLY that site's owned /mod, /articles, and
-    /// /manifest records — anything else, or any entry not rooted at the followed
-    /// site, rejects the whole bundle. Admitted records land in the store (read by
+    /// record); the bundle may carry ONLY that site's owned /mod and /articles
+    /// records — anything else, or any entry not rooted at the followed site,
+    /// rejects the whole bundle. Admitted records land in the store (read by
     /// resolve_composite_site); nothing enters the community sync inventory.
     pub fn import_followed_site_bundle(
         &self,
@@ -917,8 +919,8 @@ impl MobileProfile {
                 return Err(MobileError::ImportRejected);
             }
 
-            // 3. Admit + commit through the proven followed-root path. Owned /mod,
-            //    /articles, /manifest are all admitted under a cap rooted at `root`.
+            // 3. Admit + commit through the proven followed-root path. Owned /mod
+            //    and /articles are admitted under a cap rooted at `root`.
             profile.preview = None;
             profile.plan = None;
             let preview = crate::mobile_state::inspect_core_with_root(
