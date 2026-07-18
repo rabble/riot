@@ -138,3 +138,22 @@ _(Summary goes at the TOP when done. Task entries append below in order.)_
 - Final plan-gate result after that verification: Feasibility, Completeness, and
   Scope & Alignment all `PASS`. The already-approved user request (“implement
   it”) plus the overnight autonomy directive is treated as approval to execute.
+
+## Task 0: reliably select an installed iOS simulator
+- Used `superpowers:test-driven-development`, `superpowers:executing-plans`, and
+  `metaswarm:orchestrated-execution`.
+- RED: `sh scripts/ios-check.sh simulator-id` exited 2 because the command did not
+  exist. The name-only simulator build happened to pass on this rerun after Xcode
+  state changed, confirming the deeper issue is nondeterministic destination
+  selection rather than a permanently absent runtime.
+- Implemented a reusable available-device UUID resolver with
+  `RIOT_IOS_SIMULATOR_ID` override. Both `sim` and `simulator-id` use it and fail
+  with fixed guidance when no iPhone 17 Pro exists.
+- GREEN: resolved `5A62C0A1-E94C-49B4-A39F-7B9028C9EFA5`, confirmed it is
+  available, and `sh scripts/ios-check.sh sim` passed. `sh -n` and `git diff
+  --check` passed.
+- Assumption: selecting the last available iPhone 17 Pro returned by `simctl`
+  is the best local default (currently the newest installed runtime); CI or a
+  developer can pin an exact UUID through the environment.
+- Rejected: hard-coding OS 26.2 or a machine-specific UUID, both of which would
+  recreate the same fragility elsewhere.
