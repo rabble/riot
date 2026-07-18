@@ -807,4 +807,83 @@ extension AppRuntimeHostTests {
             "a read that fails because the session was revoked must route to Return to Tools"
         )
     }
+
+    // MARK: - App activity strip (who is active in a mounted app)
+
+    private static let anaID = String(repeating: "a", count: 64)
+    private static let priyaID = String(repeating: "b", count: 64)
+    private static let samID = String(repeating: "c", count: 64)
+
+    private func resolveDemoNames(_ idHex: String) -> String? {
+        switch idHex {
+        case Self.anaID: return "Ana"
+        case Self.priyaID: return "Priya"
+        case Self.samID: return "Sam"
+        default: return nil
+        }
+    }
+
+    /// The strip reads authors across differing app schemas: `author_id` (chat,
+    /// dispatches), `updated_by_id` (checklist), and any `*_by_id` / owner field —
+    /// tallying one contribution per row, most active first.
+    func testActivityDigestTalliesAuthorsAcrossAppSchemas() {
+        let rows: [(key: String, valueJSON: String)] = [
+            ("messages/1", "{\"text\":\"hi\",\"author_id\":\"\(Self.anaID)\"}"),
+            ("messages/2", "{\"text\":\"yo\",\"author_id\":\"\(Self.priyaID)\"}"),
+            ("items/1", "{\"label\":\"tents\",\"updated_by_id\":\"\(Self.anaID)\"}"),
+            ("items/2", "{\"label\":\"water\",\"owner_id\":\"\(Self.anaID)\"}"),
+        ]
+        let digest = AppActivityDigest.from(rows: rows, resolve: resolveDemoNames)
+        XCTAssertEqual(
+            digest.contributors,
+            [
+                AppActivityDigest.Contributor(name: "Ana", count: 3),
+                AppActivityDigest.Contributor(name: "Priya", count: 1),
+            ],
+            "Ana authored three rows across three schemas; the most active sorts first"
+        )
+        XCTAssertEqual(digest.caption(), "Ana, Priya")
+    }
+
+    /// An id the device has not resolved (no profile yet) is not named, and a
+    /// non-id value in an author-shaped field is ignored — the strip never invents
+    /// a person.
+    func testActivityDigestSkipsUnresolvedAndNonIDAuthors() {
+        let rows: [(key: String, valueJSON: String)] = [
+            ("a", "{\"author_id\":\"\(Self.anaID)\"}"),
+            ("b", "{\"author_id\":\"\(String(repeating: "d", count: 64))\"}"), // unknown → dropped
+            ("c", "{\"author_id\":\"not-an-id\"}"), // wrong shape → ignored
+            ("d", "{\"note\":\"\(Self.priyaID)\"}"), // id, but not an author key → ignored
+        ]
+        let digest = AppActivityDigest.from(rows: rows, resolve: resolveDemoNames)
+        XCTAssertEqual(digest.contributors, [AppActivityDigest.Contributor(name: "Ana", count: 1)])
+    }
+
+    /// No authors → an empty digest, so the strip renders nothing rather than a
+    /// bare label.
+    func testActivityDigestIsEmptyWithoutAuthors() {
+        let digest = AppActivityDigest.from(
+            rows: [("k", "{\"text\":\"no author here\"}")],
+            resolve: resolveDemoNames
+        )
+        XCTAssertTrue(digest.isEmpty)
+        XCTAssertEqual(digest.caption(), "")
+    }
+
+    /// The caption stays a caption: it caps the names and reports the overflow.
+    func testActivityDigestCaptionCapsAndCountsOverflow() {
+        let extraID = String(repeating: "e", count: 64)
+        let rows: [(key: String, valueJSON: String)] = [
+            ("1", "{\"author_id\":\"\(Self.anaID)\"}"),
+            ("2", "{\"author_id\":\"\(Self.priyaID)\"}"),
+            ("3", "{\"author_id\":\"\(Self.samID)\"}"),
+            ("4", "{\"author_id\":\"\(extraID)\"}"),
+            ("5", "{\"author_id\":\"\(extraID)\"}"),
+        ]
+        let digest = AppActivityDigest.from(rows: rows) { idHex in
+            idHex == extraID ? "Wren" : self.resolveDemoNames(idHex)
+        }
+        // Wren (2) sorts first, then first-seen order among the singles.
+        XCTAssertEqual(digest.caption(limit: 2), "Wren, Ana +2")
+    }
 }

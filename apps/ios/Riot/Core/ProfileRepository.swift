@@ -43,7 +43,7 @@ public struct RiotEntry: Codable, Equatable, Identifiable, Sendable {
 /// manifest fields plus this profile's trust decision. `appIDHex` is the
 /// content-derived id (lowercased hex) used to address the app's resources
 /// and data.
-public struct RiotSpaceApp: Equatable, Sendable, Identifiable {
+public struct RiotSpaceApp: Equatable, Hashable, Sendable, Identifiable {
     public let appIDHex: String
     public let name: String
     public let description: String

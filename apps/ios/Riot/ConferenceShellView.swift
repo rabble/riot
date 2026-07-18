@@ -676,8 +676,10 @@ private struct CommunityShellView: View {
     #else
     /// iPhone: a header with the community name and the two identity controls,
     /// the four routes kept alive in a ZStack (the tab-lifecycle performance
-    /// contract), a connection bar, and the bottom tab bar. Opening a tool
-    /// presents it full-screen — never the phone's card sheet for a tool.
+    /// contract), a connection bar, and the bottom tab bar. Opening a tool is a
+    /// navigation PUSH onto the Tools stack — so the community header and the tab
+    /// bar (both outside every route's stack) stay on screen and the person never
+    /// loses context. A tool never covers the shell as a bare full-screen sheet.
     private var phoneShell: some View {
         VStack(spacing: 0) {
             communityHeader
@@ -685,6 +687,15 @@ private struct CommunityShellView: View {
                 ForEach(RiotDestination.phoneTabs) { destination in
                     NavigationStack {
                         routeView(destination)
+                            // The running tool lives on the Tools stack only, so
+                            // "Open" always lands under Tools with a "‹ Tools"
+                            // back button, wherever it was invoked from.
+                            .navigationTitle(destination == .tools ? "Tools" : "")
+                            .navigationDestination(
+                                item: destination == .tools ? toolNavigation : .constant(nil)
+                            ) { tool in
+                                toolHost(tool)
+                            }
                     }
                     .opacity(navigation.destination == destination ? 1 : 0)
                     .allowsHitTesting(navigation.destination == destination)
@@ -693,17 +704,33 @@ private struct CommunityShellView: View {
             RiotTabBar(selection: tabSelection)
         }
         .background(RiotTheme.paper(for: colorScheme).ignoresSafeArea())
-        .fullScreenCover(item: $runningTool) { tool in
-            if let repository = model.profileRepository {
-                AppRuntimeView(
-                    repository: repository,
-                    appIDHex: tool.appIDHex,
-                    appName: tool.name,
-                    onClose: closeTool
-                )
-            } else {
-                Color.clear.onAppear { closeTool() }
+    }
+
+    /// Drives the tool push on the Tools stack. Tapping the automatic back button
+    /// clears `runningTool`; routing that through this binding also runs the focus
+    /// + session teardown, so a back tap and a programmatic close (invalidation,
+    /// a missing repository) share the one close path.
+    private var toolNavigation: Binding<RiotSpaceApp?> {
+        Binding(
+            get: { runningTool },
+            set: { newValue in
+                if newValue == nil, runningTool != nil { _ = focus.close() }
+                runningTool = newValue
             }
+        )
+    }
+
+    @ViewBuilder
+    private func toolHost(_ tool: RiotSpaceApp) -> some View {
+        if let repository = model.profileRepository {
+            AppRuntimeView(
+                repository: repository,
+                appIDHex: tool.appIDHex,
+                appName: tool.name,
+                onClose: { toolNavigation.wrappedValue = nil }
+            )
+        } else {
+            Color.clear.onAppear { closeTool() }
         }
     }
 
@@ -773,6 +800,10 @@ private struct CommunityShellView: View {
     // MARK: Tool lifecycle + focus
 
     private func openTool(_ app: RiotSpaceApp, fromCardID cardID: String) {
+        // Always surface the tool under Tools so it inherits that tab's context
+        // (community header + tab bar stay put). A Home shortcut and the Tools
+        // list therefore open a tool the same way — never a contextless cover.
+        model.select(.tools)
         focus.open(toolID: cardID)
         runningTool = app
     }
@@ -858,6 +889,9 @@ private struct HomeRouteView: View {
             }
             .padding(20)
         }
+        // The persistent top bar already names the community; Home names the
+        // PLACE within it ("what is happening here?") so the community name is
+        // not printed twice on the same screen.
         .riotHeader(eyebrow: "Community", model.space?.title ?? "Home")
     }
 
