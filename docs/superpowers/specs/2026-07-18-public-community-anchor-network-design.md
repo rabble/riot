@@ -1,7 +1,7 @@
 # Public Community Anchor Network Design
 
 Date: 2026-07-18
-Status: Design review rounds 1-13 revised; pending round 14
+Status: Design review rounds 1-14 revised; pending round 15
 Scope: Owner-rooted composite public sites, discovery, hosting, web mirroring,
 and opportunistic internet sync
 
@@ -120,6 +120,11 @@ expiry/unknown-operation lifecycle for `GetOperation` and checkpoint recovery.
 Round thirteen defined feed and authenticated snapshot cursor failures and
 classified every Commit refusal as either pre-operation, reusable Prepared, or
 terminal-with-cleanup so receipt recovery and retry scope cannot diverge.
+
+Round fourteen bounded public iroh handshakes and every control/sync session
+from accept through progress and close, added an authenticated direct-root
+removal lane immune to invalid-candidate queue capture, fixed the TLS exporter
+context, and removed unverifiable collector-deletion claims from retention UX.
 
 ## Product Decisions
 
@@ -521,7 +526,7 @@ success payloads are:
 
 `effective_operation_limits` is a sorted array of `[limit_id,
 effective_value]` drawn byte-identically from the described limit profile. It
-contains all 69 IDs exactly once in strictly ascending order.
+contains all 82 IDs exactly once in strictly ascending order.
 `ordered_namespace_host_plan`, tokens, retained digests, and feed inclusions
 use their already specified semantic order. A retained idempotent result stores
 and replays the complete canonical `ControlResponseV1`, not an
@@ -665,6 +670,19 @@ changing any value increments `profile_epoch`.
 67 rotated_local_log_files
 68 concurrent_gossip_sessions_per_peer
 69 gossip_transfer_per_peer_per_hour
+70 pending_public_iroh_quic_handshakes
+71 public_iroh_quic_handshake_wall_time
+72 control_sync_first_frame_wall_time
+73 control_frame_read_write_wall_time
+74 sync_frame_read_write_wall_time
+75 control_sync_progress_interval
+76 control_sync_idle_absolute_session_lifetime
+77 snapshot_cursor_lifetime
+78 public_iroh_handshakes_per_source_per_minute
+79 public_iroh_handshakes_globally_per_second
+80 direct_root_prefilter_queue_jobs
+81 direct_root_prefilter_queue_canonical_bytes
+82 direct_root_signature_cpu_wall_time
 ```
 
 Every operator-signed row below uses `OperatorSignedEnvelopeV1`; its signature
@@ -1669,6 +1687,7 @@ SnapshotCursorBodyV1 {
   snapshot_generation_id,
   next_ordinal,
   previous_root: optional,
+  issued_at,
   expires_at,
   cursor_secret_epoch
 }
@@ -1698,7 +1717,8 @@ and is not regression. Wrong-checkpoint/generation cursor errors reveal no
 snapshot member. Unknown/reclaimed/missing checkpoint state instead uses
 `checkpoint_unavailable`. Every cursor failure is terminal, non-retryable, and
 has `retry_after_seconds = null`; recovery starts from a freshly verified
-checkpoint with null cursor. Cursor secrets remain available until every
+checkpoint with null cursor. `expires_at - issued_at` must not exceed effective
+limit ID 77, and `issued_at <= observed_at < expires_at`. Cursor secrets remain available until every
 cursor under their epoch expires; readiness fails if a retained epoch key is
 missing.
 
@@ -2254,11 +2274,15 @@ Logical tables:
 - `listings` and listing conflict floors;
 - `directory_inclusions`;
 - `directory_feed_heads`;
+- `directory_checkpoints`, immutable snapshot generations, and snapshot members;
+- `checkpoint_work` with frozen members, publication phase, and filenames;
+- preprovisioned `removal_slots`;
 - `hosting_receipts`;
 - `staged_operations`;
-- `idempotency_results`;
+- global `idempotency_key_index` plus ordinary/reserved results;
 - `anchor_peers`;
-- `operator_state` and descriptor floors.
+- peer-session generations, replica challenges, and consumed attestations;
+- `operator_state`, descriptor floors, and retained cursor-secret epochs.
 
 ### Transactions
 
@@ -2327,7 +2351,7 @@ control-frame limit.
 MVP defaults and absolute ceilings:
 
 The following rows correspond one-for-one, in order, to stable limit IDs
-`1..=69` in the canonical registry above; slash-compound rows use the
+`1..=82` in the canonical registry above; slash-compound rows use the
 two-element value form.
 
 | Resource | Default | Absolute ceiling |
@@ -2401,6 +2425,19 @@ two-element value form.
 | Rotated local log files | 128 | 512 |
 | Concurrent gossip sessions per peer | 2 | 4 |
 | Gossip transfer per peer per hour | 256 MiB | 1 GiB |
+| Pending public iroh/QUIC handshakes | 64 | 256 |
+| Public iroh/QUIC handshake wall time | 5 s | 10 s |
+| Control/sync first-frame wall time | 5 s | 10 s |
+| Control frame read/write wall time | 10 s | 30 s |
+| Sync frame read/write wall time | 30 s | 120 s |
+| Control/sync progress interval | 5 s | 15 s |
+| Control/sync idle / absolute session lifetime | 30 s / 15 min | 60 s / 1 h |
+| Snapshot cursor lifetime | 15 min | 1 h |
+| Public iroh handshakes per source per minute | 30 | 120 |
+| Public iroh handshakes globally per second | 200 | 800 |
+| Direct-root prefilter queue jobs | 128 | 512 |
+| Direct-root prefilter queue canonical bytes | 4 MiB | 16 MiB |
+| Direct-root signature CPU / wall time | 2 ms / 50 ms | 10 ms / 100 ms |
 
 The three fixed reservation rows are mandatory partitions, not operator-tunable
 ordinary capacity.
@@ -2409,6 +2446,35 @@ Every rate row is a token bucket with no hidden burst: global per-second
 buckets hold one second of published tokens, and per-source per-minute buckets
 hold one minute. Permit acquisition is nonblocking; failure rejects before
 allocating the protected resource.
+
+### Public iroh control/sync admission
+
+The bounds begin before ALPN dispatch. A public iroh/QUIC handshake must acquire
+the pending-handshake permit and transient-address source token before
+cryptographic allocation, complete under the handshake deadline, negotiate one
+advertised ALPN, and then acquire the existing global/per-source session permit.
+After endpoint authentication, the stable endpoint ID replaces the transient
+address as the source key. Unknown ALPN, rate, deadline, or permit failure
+closes immediately without a protocol session, durable row, or detached task.
+
+The selected handler must receive a complete bounded first frame by the
+first-frame deadline. Every later length-delimited frame must advance by at
+least one byte within each progress interval **and** finish within its
+control/sync frame deadline; one-byte trickles do not extend that deadline.
+Every response frame obeys the corresponding write deadline and progress rule.
+The idle timer runs whenever no frame is in progress, and the absolute lifetime
+closes the session regardless of activity. Page computation, admission, and
+database work count inside the write deadline rather than pausing it. A stalled
+peer therefore cannot retain a session permit, immutable snapshot, staging
+writer, or response buffer beyond the published bounds.
+
+Timeout cancellation closes QUIC streams, releases permits/snapshots/buffers,
+and deletes direction-private uncommitted staging. An already durable host
+operation remains recoverable under its operation expiry; timeout never
+silently terminalizes a reusable operation unless the Commit disposition or
+peer-context rules require it. Readiness benchmarks configured handshake/frame
+rates against the reserved crypto/worker pools and lowers effective rates or
+fails closed if the machine cannot honor every admitted deadline.
 
 The emergency reserves are exclusive headroom, not ordinary capacity. For the
 configured listing ceiling `L`, readiness computes:
@@ -2491,17 +2557,39 @@ is validated low enough that those writers and the emergency reserves remain
 available. Structurally invalid or unauthorized removal-shaped control
 requests stay in ordinary per-source control budgets. A structurally bounded
 tombstone naming an existing durable listing floor may use the separate
-per-source removal bucket. The reserved verifier accepts at most one candidate
-per `(root, source)`, eight candidates per root, and schedules full roots in
-deficit round-robin order; one root may occupy at most one of the four permits.
-Its preallocated queue enforces both the global job and canonical-byte ceilings;
-it never evicts an admitted candidate. A new candidate beyond either ceiling
-receives typed `busy` with retry timing, while already admitted roots continue
-deterministic rounds. A failed signature/capability check releases its slot and
-cannot create a claim row. Once authority verifies, the job leaves the
-untrusted queue and cannot be starved or evicted by later candidates. Only that
-canonical tombstone may consume its root's reserved removal slot, acquire one
-of the two reserved database writers, and enter the emergency checkpoint lane.
+per-source removal bucket.
+
+Direct root recovery has a protected authentication prefilter. From the
+durable listing floor the anchor obtains the exact root verification key and,
+for a tombstone claiming root authority, verifies the canonical entry signature
+before it consumes any root-local candidate slot. This Ed25519-only prefilter
+has its own preallocated FIFO, CPU deadline, and fair root scheduler. Its queue
+holds at least one complete published global token-bucket burst; readiness
+benchmarks enough reserved workers to drain faster than the maximum admitted
+removal rate, including the burst, or lowers that rate/fails closed. Refill
+cannot overtake an already admitted request. Invalid signatures release only
+prefilter memory and never enter the non-evicting root queue.
+
+A valid direct-root signature enters a separate authenticated queue with at
+most one candidate per root. One of the four reserved verification permits and
+one of the two removal writers are exclusively available to that queue; full
+roots are deficit-round-robin scheduled, and an admitted direct-root candidate
+reaches final structural/floor verification within two scheduler rounds
+regardless of invalid-candidate refill. Root authority needs no delegate-chain
+walk. A later exact duplicate joins its idempotent result; a different valid
+root-signed key/body follows normal root serialization.
+
+Delegated or non-direct candidates use the remaining lane: at most one per
+`(root, source)`, eight per root, three verification permits, and deficit
+round-robin scheduling. Its preallocated queue enforces the published global
+job/canonical-byte ceilings and never evicts an admitted candidate. A new
+candidate beyond either ceiling receives typed `busy`; a failed
+signature/capability chain releases its slot and creates no claim. This general
+lane can be saturated without consuming the authenticated direct-root slot,
+permit, or writer. Once either lane verifies authority, the job cannot be
+starved or evicted by later candidates. Only that canonical tombstone may
+consume its root's reserved removal slot and enter the emergency checkpoint
+lane.
 
 For an established HTTP request, 429/503 serves a prebuilt, at most 8 KiB,
 keyboard/screen-reader-accessible error page from a fixed reserved buffer. It
@@ -2679,7 +2767,11 @@ The transport adapter exposes the live QUIC TLS exporter:
 
 ```text
 channel_binding =
-  TLS-Exporter("EXPORTER-Riot-Anchor-Peer-v1", 32 bytes)
+  TLS-Exporter(
+    label = "EXPORTER-Riot-Anchor-Peer-v1",
+    context = h'',
+    output_length = 32
+  )
 
 PeerTranscriptV1 {
   control_protocol_version,
@@ -2716,7 +2808,9 @@ The only legal control protocol version is integer `1`; the only legal
 in hex above. `role` in the signature preimage is the exact lowercase ASCII
 `initiator` or `responder`, length-prefixed as shown; no role byte or numeric
 alias exists. `peer_transcript_digest` hashes the complete canonical
-`PeerTranscriptV1` array under its table label.
+`PeerTranscriptV1` array under its table label. The exporter context is the
+present empty byte string, not an omitted-context API variant; transport
+fixtures pin the resulting 32 bytes for a deterministic TLS test session.
 
 Both proofs bind roles, nonces, operator keys, stable anchor IDs, descriptor
 epochs/digests, iroh endpoint IDs, ALPN, and this live connection. A reflected,
@@ -3663,15 +3757,17 @@ deletes the imported invitation before returning to `NotEnrolled`.
 
 Before export or withdrawal Riot stores the next checked sequence, exact signed
 body, and idempotency key; retry is byte-identical. Retryable states retain that
-material and expose the phase-specific accessible controls below. Enrollment terminal
-states delete an unusable invitation/key. Export terminal states retain the
+material and expose the phase-specific accessible controls below. Enrollment
+terminal states delete an unusable invitation/key. Export terminal states retain the
 token/key/metrics so authenticated withdrawal remains possible. A confirmed
 withdrawal deletes key/token/metrics and retains only its signed accessible
 receipt. After a pilot report is published it cannot retract an already
 published anonymous aggregate; the confirmation explains that limit. After the
-audit window, `RetentionComplete` confirms the collector holds no participant
-row and deletes all remaining local pilot secrets. Overload is always
-retryable with verified timing, never a terminal pilot failure.
+audit window, `RetentionComplete` deletes all remaining local pilot secrets and
+says the collector's published retention window has ended. Unless the
+participant has a signed withdrawal receipt, it explicitly does **not** claim
+independent proof of remote deletion. Overload is always retryable with
+verified timing, never a terminal pilot failure.
 
 Cancellation is phase-specific and never destroys ambiguous credentials:
 
@@ -4051,11 +4147,17 @@ RED:
 - maximum-record removal fails after ordinary row/byte/WAL exhaustion;
 - ordinary idempotency exhaustion blocks a valid removal or forged requests
   monopolize one root/all reserved verification permits;
+- eight invalid delegated candidates plus continuous invalid direct-root
+  signature refill prevent an admitted valid root-signed tombstone from
+  reaching verification and commit within two scheduler rounds;
 - TLS handshake churn, slow ClientHello/header, keep-alive, unsupported method,
   Range, or connection lifetime bypasses a compiled ingress ceiling;
 - anonymous HTTP search/feed/static floods exceed connection, queue, CPU,
   snapshot, rate, or response-byte ceilings or starve the reserved removal
   lane;
+- public iroh handshake/first-frame trickle, stalled control/sync frame,
+  stalled page computation/write, idle session, or absolute-lifetime renewal
+  retains a permit beyond its compiled bound;
 - 65 decoded header fields, a field line over 8 KiB, an over-cap reserved
   removal queue, or over-cap reserved canonical bytes are admitted;
 - one pilot invitation creates two pseudonyms, changes role, or returns a
@@ -4097,6 +4199,8 @@ Tests explicitly cover:
 - work-stamp golden vectors for exact nested challenge envelope, null-slot
   target digest, counter/proof, expiry, request key/root/kind/policy bindings;
 - peer-proof reflection, replay, role swap, exporter mismatch, and stale hello;
+- omitted versus present-empty TLS exporter context and exporter output-vector
+  mismatch;
 - pre-auth peer descriptor refresh across same-key and changed-key rotations;
 - forged predecessor verification key after a non-genesis pinned floor;
 - ambiguous same-epoch descriptor floors with different digests or keys;
@@ -4172,6 +4276,8 @@ Tests explicitly cover:
   response exhaustion while a valid owner removal completes;
 - TLS slow-handshake/resumption churn, keep-alive exhaustion, rejected
   HTTP/2/upgrade/method/Range/compression, and connection-level starvation;
+- public iroh handshake churn, slow first/control/sync frames, one-byte
+  trickles, stalled writes, idle timeout, and absolute session lifetime;
 - every removal failpoint from committed tombstone through frozen checkpoint,
   filesystem publication, atomic checkpoint/floor/Terminal result, lost
   delivery, exact retry, and separately bounded physical reclamation;
@@ -4295,6 +4401,10 @@ The design is implemented when:
   WAL truncation remain bounded post-acknowledgement maintenance;
 - open hosting cannot exceed compiled process ceilings or trigger unbounded
   gossip;
+- public iroh handshakes and control/sync frames have bounded progress, idle,
+  write, and absolute lifetimes from pre-ALPN allocation through close;
+- invalid removal candidates cannot occupy the authenticated direct-root lane,
+  whose reserved verifier/writer guarantees admitted owner progress;
 - authenticated directory and replica gossip has a complete bounded wire
   lifecycle, channel-bound peer authentication, current-key connection-bound
   single-use source attestations, same-snapshot generation checks, and
