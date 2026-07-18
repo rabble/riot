@@ -47,3 +47,45 @@ ae9ec47) and wrongly reported "comments don't exist." Against **origin/main** th
 ---
 
 ## Log
+
+### Task 1 — bearings + de-dup (done)
+See "Bearings" above. Toolchain confirmed: `cargo test -p riot-core --all-features` builds green
+(note: bare `cargo test -p riot-core` fails — an integration test needs the `conformance` feature;
+always pass `--all-features`, matching CLAUDE.md).
+
+### Task 2 — Reactions Rust core (Unit 3), dispatched
+Dispatched a coder subagent to build the `NewsReactionV1` newswire record family in
+`crates/riot-core/src/newswire/` with strict TDD, mirroring `NewsCommentV1` across all 5
+registration sites (model/path/store-scan/projection/mod) + closed `ReactionKind`
+(Support/Solidarity/Important/Grief), toggle via `active` bool, latest-wins dedup per
+(author,parent,kind), tally of distinct active authors per kind. Pure Rust, `cargo test`-verifiable.
+I verify + commit; subagent does not commit. (Running at time of writing.)
+
+### Task 3 — Unit 1 (Invite & Share) review: READY IN SUBSTANCE, needs rebase + green (NOT committed)
+Reviewed `feat/ios-share-community` (`riot-wt-share`, 00f0dc1). The screen is well-built and matches
+the design: `ShareCommunityView.swift` (protocol seam `NewswireShareReferencing`; honest
+missing-descriptor + mint-failure states; CoreImage `CIQRCodeGenerator` QR — no dep, no camera;
+`ShareLink` + Copy cross-platform UIKit/AppKit; themed paper/ink/pink + `riotHeader`/`RiotCard`;
+a11y IDs) + `ShareCommunityTests.swift` (126 lines) + chooser wiring + both pbxproj targets.
+**Omission vs design:** generate-only — NO QR *scanner* to join (separable follow-up).
+
+**Why NOT landed tonight (safety):** the branch is STALE — merge-base is PR #36 (`f2a33de`), far
+behind `origin/main` (`ae9ec47`); `git merge-tree` shows conflicts in composite-site files merged
+since. Re-applying Swift + re-registering pbxproj targets blind — with no way to run `green.sh`
+overnight — is exactly how the two prior app-target breaks slipped past Linux-only CI (#33, #39).
+Not repeating that in the dark.
+
+**API drift the morning rebase MUST fix (confirmed against origin/main):**
+- Seam intact: `RiotProfileRepository.newswireShareReference(spaceDescriptorEntryID:)`
+  (ProfileRepository.swift:1494); `riotHeader`, `RiotCard` present. The new view file drops in clean.
+- The chooser wiring reads `community.newswireDescriptorEntryID` — that property does NOT exist on
+  origin/main. The descriptor id now lives on **`AppModel.newswireDescriptorEntryID: String?`**
+  (AppModel.swift:175, derived from `repository.listCommunities()…descriptorEntryId`). Present the
+  share sheet from AppModel context: `spaceDescriptorEntryID: model.newswireDescriptorEntryID ?? ""`,
+  `communityName:` from the active community, `referencing:` = the repository.
+- Verify the current `CommunityChooserView` model exposes the repository + active community before
+  reusing the branch's `model.community` / `model.profileRepository` wiring; adapt to the current shape.
+
+**Morning steps:** cherry-pick the two NEW files onto a fresh branch off origin/main (new files can't
+conflict), redo the chooser hook against the AppModel API above, register the file in both Xcode
+targets, run `scripts/green.sh`, then PR. Est. small once green.sh is available.
