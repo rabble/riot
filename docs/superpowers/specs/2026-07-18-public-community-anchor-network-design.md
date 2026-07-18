@@ -1,7 +1,7 @@
 # Public Community Anchor Network Design
 
 Date: 2026-07-18
-Status: Design review rounds 1-17 revised; pending round 18
+Status: Design review gate approved (round 18)
 Scope: Owner-rooted composite public sites, discovery, hosting, web mirroring,
 and opportunistic internet sync
 
@@ -138,6 +138,14 @@ Prepare replay before retry.
 Round seventeen applied the published reserved-removal aggregate job/byte caps
 across authenticated direct-root and delegated lanes, with a protected
 direct-root subpartition and deterministic pre-claim overload.
+
+Round eighteen received unanimous `APPROVED` verdicts with no blockers from
+Product Manager, Architect, Security Design, Designer, and CTO reviewers against
+commit `2779c8c`. Nonblocking implementation notes are deferred to planning:
+land protocol vectors/feature-closure checks early, validate mobile iroh/Tokio
+cross-compilation early, instrument shared removal-queue partitions, preserve
+accessible focus in plural-row cancellation, and prepare operator/pilot
+runbooks and plain-language copy.
 
 ## Product Decisions
 
