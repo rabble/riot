@@ -48,6 +48,8 @@ A pre-existing `stash@{0}` ("WIP on main: 3215689") is **not mine and has been l
 
 | agent-composite-unit4 | **Composite-site Unit 4 — composite resolver + resolved view-model (§6)** — plan `docs/superpowers/plans/2026-07-18-composite-site-unit4-composite-resolver.md` (gate-passed 3/3). NOT the community-first-shell "Unit 4". | NEW `crates/riot-core/src/site/resolve.rs`, `crates/riot-core/src/site/mod.rs` (exports), `crates/riot-ffi/src/site_ffi.rs` (resolved view model + degradation enum), NEW tests. New FFI records ⇒ UniFFI regen + native rebuild SAME commit. | **CLAIMED — executing (worktree `feat/composite-site-unit4` off main `5e3bec3`).** Deps 2 + 3 on main (Unit 3 merged #41). Verified unclaimed 2026-07-18 (no branch/PR). | 2026-07-18 |
 
+| agent-spaces-rung1 | **Spaces-first Rung 1 — core following+personal relationships** — plan `docs/superpowers/plans/2026-07-18-spaces-first-rung1-core-relationships.md` (gate-passed 3/3). | `crates/riot-ffi/src/community_registry.rs`, `crates/riot-ffi/src/mobile_api.rs`, `crates/riot-ffi/src/mobile_state.rs`, NEW `crates/riot-ffi/tests/spaces_relationships_contract.rs`. Additive Relationship variants (no migration) + FollowedSiteRow/list_followed_sites + list_communities Following-exclusion. UniFFI regen + native rebuild. | **CLAIMED — executing (worktree feat/spaces-rung1 off main 3b901e8).** Verified unclaimed 2026-07-18. | 2026-07-18 |
+
 ## Do NOT claim (owned by later units)
 
 - `crates/riot-core/src/newswire/**`, `crates/riot-ffi/src/newswire_ffi.rs` → **Unit 1A**

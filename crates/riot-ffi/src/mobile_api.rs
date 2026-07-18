@@ -23,6 +23,10 @@ pub enum CommunityRelationship {
     Member,
     /// They carry the community but hold no author — read only.
     PublicReader,
+    /// A composite indymedia site the user follows (read-mostly).
+    Following,
+    /// The user's own personal home space.
+    Personal,
 }
 
 /// One row in the community chooser. Plain-language fields only; the full
@@ -48,6 +52,31 @@ pub struct CommunityRow {
     /// archived, not quarantined). False → the chooser offers recovery, never
     /// silently drops the row.
     pub available: bool,
+}
+
+/// One row in the followed-sites list: a composite indymedia site the user
+/// follows. Distinct from `CommunityRow` because a followed site is **author-less**
+/// (the user holds no posting author there); it carries only public identifiers —
+/// there is NO secret / `Vec<u8>` field on this boundary (Security S2).
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct FollowedSiteRow {
+    /// Owned site root (namespace id), lowercase hex (64 chars).
+    pub root: String,
+    /// Core-resolved title (from the resolved manifest, or a placeholder token
+    /// until first resolve). Never caller-asserted.
+    pub title: String,
+    /// Honest row-state token, aligned to spec §3.1 where meaningful for a
+    /// followed site: "available" / "pending-first-sync" / "transport-blocked"
+    /// / "degraded". (syncing/quarantined are community-only.)
+    /// NOTE: in Rung 1 the seam persists a plain Following record, so rows carry
+    /// the default ("pending-first-sync") — the true transport-blocked/degraded
+    /// PATH is exercised in Rung 5 (real `follow_site(ticket)` transport parsing).
+    /// Rung 1 lands the FIELDS + default only.
+    pub state: String,
+    /// True iff the site requires an unavailable transport (`require:arti`) — the
+    /// row shows "requires Tor — unavailable" without drilling in (S1). Field
+    /// lands here; its true-path is set in Rung 5 (see `state` note).
+    pub transport_blocked: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
@@ -357,6 +386,13 @@ impl MobileProfile {
     /// metadata only — it never unseals any community's author.
     pub fn list_communities(&self) -> Result<Vec<CommunityRow>, MobileError> {
         crate::mobile_state::list_communities(&self.inner)
+    }
+
+    /// Every composite indymedia site the user follows, as author-less rows —
+    /// distinct from `list_communities` (which surfaces only author-bearing
+    /// communities). Reads registry metadata only; never unseals anything.
+    pub fn list_followed_sites(&self) -> Result<Vec<FollowedSiteRow>, MobileError> {
+        crate::mobile_state::list_followed_sites(&self.inner)
     }
 
     /// The currently selected community, or `None` before any is chosen. This is

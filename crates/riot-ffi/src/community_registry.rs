@@ -49,6 +49,12 @@ pub(crate) enum Relationship {
     Organizer,
     Member,
     PublicReader,
+    /// A composite indymedia site the user follows (author-less; surfaced via
+    /// `list_followed_sites`, filtered out of `list_communities`).
+    Following,
+    /// The user's own distinguished personal home space (author-bearing; rides
+    /// `CommunityRow`/`list_communities`).
+    Personal,
 }
 
 impl Relationship {
@@ -57,6 +63,8 @@ impl Relationship {
             Relationship::Organizer => 0,
             Relationship::Member => 1,
             Relationship::PublicReader => 2,
+            Relationship::Following => 3,
+            Relationship::Personal => 4,
         }
     }
 
@@ -65,6 +73,8 @@ impl Relationship {
             0 => Some(Relationship::Organizer),
             1 => Some(Relationship::Member),
             2 => Some(Relationship::PublicReader),
+            3 => Some(Relationship::Following),
+            4 => Some(Relationship::Personal),
             _ => None,
         }
     }
@@ -307,6 +317,22 @@ mod tests {
     }
 
     #[test]
+    fn following_and_personal_round_trip_through_wire_without_a_version_bump() {
+        for r in [
+            Relationship::Organizer,
+            Relationship::Member,
+            Relationship::PublicReader,
+            Relationship::Following,
+            Relationship::Personal,
+        ] {
+            assert_eq!(Relationship::from_wire(r.to_wire()), Some(r));
+        }
+        assert_eq!(Relationship::from_wire(5), None);
+        assert_eq!(REGISTRY_VERSION, 1);
+        assert_eq!(RECORD_FIELDS, 9);
+    }
+
+    #[test]
     fn round_trips_a_populated_registry() {
         let registry = CommunityRegistry {
             communities: vec![record(1), {
@@ -425,5 +451,35 @@ mod tests {
         assert_eq!(stored.last_activity_unix_seconds, Some(300));
         assert_eq!(stored.last_sync_unix_seconds, Some(400));
         assert_eq!(registry.communities.len(), 1);
+    }
+
+    #[test]
+    fn a_pre_following_registry_round_trips_after_the_additive_variants() {
+        // A registry written before Following/Personal existed carries only the
+        // historical relationships. With the extended enum compiled in, encoding
+        // then decoding it must be a byte-identical round trip: the additive
+        // variants must not disturb old data or force a REGISTRY_VERSION bump.
+        let mut registry = CommunityRegistry::default();
+
+        let mut organizer = record(1);
+        organizer.relationship = Relationship::Organizer;
+        registry.upsert(organizer);
+
+        let mut member = record(2);
+        member.relationship = Relationship::Member;
+        registry.upsert(member);
+
+        let mut public_reader = record(3);
+        public_reader.relationship = Relationship::PublicReader;
+        public_reader.sealed_author = None;
+        registry.upsert(public_reader);
+
+        registry.active = Some([1; 32]);
+
+        let blob = registry.encode();
+        assert_eq!(
+            CommunityRegistry::decode(&blob).expect("pre-Following record decodes"),
+            registry
+        );
     }
 }
