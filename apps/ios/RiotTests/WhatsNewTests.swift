@@ -132,3 +132,145 @@ final class WhatsNewTests: XCTestCase {
         XCTAssertTrue(thirdVisit.isNew("d"))
     }
 }
+
+// MARK: - Model integration: unread derived from a projection through load()
+
+private struct FixedUnreadProjector: NewswireProjecting {
+    let projection: NewswireProjectionView
+    func projectNewswire(spaceDescriptorEntryID: String) throws -> NewswireProjectionView {
+        projection
+    }
+}
+
+private struct ThrowingUnreadProjector: NewswireProjecting {
+    func projectNewswire(spaceDescriptorEntryID: String) throws -> NewswireProjectionView {
+        throw NSError(domain: "test", code: 1)
+    }
+}
+
+private struct StubUnreadEditor: NewswireEditorialActing, NewswireEditorAuthorityChecking {
+    func createNewswireEditorialAction(
+        spaceDescriptorEntryID: String, targetEntryID: String,
+        kind: NewswireEditorialActionKind, reason: String?, correctionText: String?
+    ) throws -> NewswireSignedRecord {
+        throw NSError(domain: "test", code: 1)
+    }
+    func newswireIsEditor(spaceDescriptorEntryID: String, subjectID: String) throws -> Bool { false }
+}
+
+private func unreadAuthor() -> NewswireAuthor {
+    NewswireAuthor(id: "ab", displayName: "Ana", tag: "ab", rendered: "Ana · ab")
+}
+
+private func unreadPost(_ id: String, _ tai: UInt64) -> NewswireProjectedPost {
+    NewswireProjectedPost(
+        entryId: id, author: unreadAuthor(), taiJ2000Micros: tai,
+        headline: "h-\(id)", body: "b", language: "en",
+        coarseLocation: nil, eventTimeUnixSeconds: nil, expiresAtUnixSeconds: nil,
+        sourceClaims: [], operationalProfile: nil, aiAssisted: false,
+        verificationIds: [], correctionIds: [], treatment: .ordinary)
+}
+
+private func unreadProjection(
+    openWire: [NewswireProjectedPost], frontPage: [NewswireProjectedPost] = []
+) -> NewswireProjectionView {
+    NewswireProjectionView(
+        openWire: openWire, frontPage: frontPage, earlier: [],
+        editorialHistory: [], futureQuarantine: [])
+}
+
+@MainActor
+final class NewswireUnreadModelTests: XCTestCase {
+    private func makeModel(
+        _ projector: NewswireProjecting, descriptor: String = "space-1",
+        cursor: SeenCursorStore?
+    ) -> NewswireSurfaceModel {
+        NewswireSurfaceModel(
+            projector: projector, editor: StubUnreadEditor(), authority: StubUnreadEditor(),
+            spaceDescriptorEntryID: descriptor, communityName: "Test", myKeyHex: "me",
+            seenCursor: cursor)
+    }
+
+    func testFreshCommunityLoadsEveryPostAsUnread() {
+        let projector = FixedUnreadProjector(projection: unreadProjection(
+            openWire: [unreadPost("a", 30), unreadPost("b", 20), unreadPost("c", 10)]))
+        let model = makeModel(projector, cursor: SeenCursorStore(store: MemorySeenStore()))
+        model.load()
+        XCTAssertEqual(model.unread.count, 3)
+        XCTAssertTrue(model.unread.isNew("a"))
+        XCTAssertEqual(model.unread.latestTimestamp, 30)
+    }
+
+    func testMarkAllSeenThenReloadReportsZeroUnread() {
+        let projector = FixedUnreadProjector(projection: unreadProjection(
+            openWire: [unreadPost("a", 30), unreadPost("b", 20)]))
+        let store = SeenCursorStore(store: MemorySeenStore())
+        let model = makeModel(projector, cursor: store)
+        model.load()
+        XCTAssertEqual(model.unread.count, 2)
+
+        model.markAllSeen()
+        // The current visit keeps its delta visible — markAllSeen does not zero it.
+        XCTAssertEqual(model.unread.count, 2)
+        // The next visit reads the advanced cursor and reports zero.
+        model.load()
+        XCTAssertEqual(model.unread.count, 0)
+    }
+
+    func testNewerPostAfterMarkSeenIsTheOnlyUnread() {
+        let store = SeenCursorStore(store: MemorySeenStore())
+        let first = FixedUnreadProjector(projection: unreadProjection(
+            openWire: [unreadPost("a", 30), unreadPost("b", 20)]))
+        let model = makeModel(first, cursor: store)
+        model.load()
+        model.markAllSeen()
+
+        let withNewer = FixedUnreadProjector(projection: unreadProjection(
+            openWire: [unreadPost("d", 45), unreadPost("a", 30), unreadPost("b", 20)]))
+        let model2 = makeModel(withNewer, cursor: store)
+        model2.load()
+        XCTAssertEqual(model2.unread.count, 1)
+        XCTAssertTrue(model2.unread.isNew("d"))
+    }
+
+    func testFrontPageAndOpenWireOverlapCountsEachPostOnce() {
+        let shared = unreadPost("feat", 50)
+        let projector = FixedUnreadProjector(projection: unreadProjection(
+            openWire: [shared, unreadPost("x", 40)], frontPage: [shared]))
+        let model = makeModel(projector, cursor: SeenCursorStore(store: MemorySeenStore()))
+        model.load()
+        XCTAssertEqual(model.unread.count, 2)
+    }
+
+    func testOfflineProjectionHasNoUnread() {
+        let model = makeModel(ThrowingUnreadProjector(),
+                              cursor: SeenCursorStore(store: MemorySeenStore()))
+        model.load()
+        XCTAssertEqual(model.unread, .none)
+        XCTAssertFalse(model.unread.hasUnread)
+    }
+
+    func testMissingDescriptorHasNoUnread() {
+        let projector = FixedUnreadProjector(projection: unreadProjection(
+            openWire: [unreadPost("a", 30)]))
+        let model = makeModel(projector, descriptor: "", cursor: SeenCursorStore(store: MemorySeenStore()))
+        model.load()
+        XCTAssertEqual(model.unread, .none)
+    }
+
+    func testTwoCommunitiesKeepSeparateUnreadThroughSharedStore() {
+        let store = SeenCursorStore(store: MemorySeenStore())
+        let a = makeModel(FixedUnreadProjector(projection: unreadProjection(
+            openWire: [unreadPost("a", 30)])), descriptor: "space-A", cursor: store)
+        a.load()
+        a.markAllSeen()
+        a.load()
+        XCTAssertEqual(a.unread.count, 0)
+
+        // A different community, same store — still fully unread.
+        let b = makeModel(FixedUnreadProjector(projection: unreadProjection(
+            openWire: [unreadPost("z", 99)])), descriptor: "space-B", cursor: store)
+        b.load()
+        XCTAssertEqual(b.unread.count, 1)
+    }
+}

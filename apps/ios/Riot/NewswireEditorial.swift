@@ -501,6 +501,12 @@ public final class NewswireSurfaceModel: ObservableObject {
     /// sign so a person never loses their words.
     @Published public var draft: EditorialActionDraft
 
+    /// The unread / what's-new state for this community, recomputed on every
+    /// `load()` against the per-device seen cursor. Drives the Home tab badge, the
+    /// "N new since you last looked" delta, and the per-row new dot. `.none` (zero)
+    /// whenever there is no cursor store, no descriptor, or an offline projection.
+    @Published public private(set) var unread: NewswireUnread = .none
+
     private let projector: NewswireProjecting
     private let editor: NewswireEditorialActing
     private let authority: NewswireEditorAuthorityChecking
@@ -512,6 +518,10 @@ public final class NewswireSurfaceModel: ObservableObject {
     /// `RiotAppModel.rederivedNewswireDescriptorID()` — the same `listCommunities()`
     /// derivation `reload()` uses). `nil` in tests/constructions that never need it.
     private let descriptorResolver: (() -> String?)?
+
+    /// The per-device seen-cursor store. `nil` in tests/constructions that never
+    /// exercise unread — the unread state then stays `.none`, never a crash.
+    private let seenCursor: SeenCursorStore?
 
     /// Whether core recognizes this profile as an editor of this descriptor — read
     /// from the FFI predicate in `load()`, never a locally-asserted roster. `false`
@@ -532,7 +542,8 @@ public final class NewswireSurfaceModel: ObservableObject {
         communityName: String,
         myKeyHex: String,
         initialDraftKind: EditorialActionKind = .feature,
-        descriptorResolver: (() -> String?)? = nil
+        descriptorResolver: (() -> String?)? = nil,
+        seenCursor: SeenCursorStore? = nil
     ) {
         self.projector = projector
         self.editor = editor
@@ -541,6 +552,7 @@ public final class NewswireSurfaceModel: ObservableObject {
         self.communityName = communityName
         self.myKeyHex = myKeyHex
         self.descriptorResolver = descriptorResolver
+        self.seenCursor = seenCursor
         self.wire = .offlineStale
         self.history = []
         self.draft = EditorialActionDraft(kind: initialDraftKind)
@@ -617,6 +629,7 @@ public final class NewswireSurfaceModel: ObservableObject {
             // never invented content, never a silent retry.
             wire = .offlineStale
             history = []
+            unread = .none
             descriptorRecoverable = false
             return
         }
@@ -626,6 +639,13 @@ public final class NewswireSurfaceModel: ObservableObject {
             )
             wire = .from(projection)
             history = projection.editorialHistory.map(EditorialHistoryRow.init)
+            // Unread is a per-device read against the seen cursor for THIS
+            // descriptor — a pure function of what the projection now shows and
+            // how far the reader had caught up. Recomputed here (never mutated by
+            // marking seen, so the delta survives the current visit).
+            unread = NewswireUnread(
+                posts: seenRefs(from: projection),
+                cursor: seenCursor?.cursor(forCommunity: spaceDescriptorEntryID))
             descriptorRecoverable = true
         } catch {
             // We hold a descriptor id but it is transiently offline — retry can
@@ -633,8 +653,32 @@ public final class NewswireSurfaceModel: ObservableObject {
             // internal error, never invented content.
             wire = .offlineStale
             history = []
+            unread = .none
             descriptorRecoverable = true
         }
+    }
+
+    /// The de-duplicated set of posts the projection is showing, as the minimal
+    /// `SeenPostRef` the unread math needs. Front-page and open-wire may overlap
+    /// (a featured post is still on the wire); keying by entry id counts each post
+    /// once so the unread total matches what the reader can actually see.
+    private func seenRefs(from projection: NewswireProjectionView) -> [SeenPostRef] {
+        var byID: [String: SeenPostRef] = [:]
+        for post in projection.openWire + projection.frontPage {
+            byID[post.entryId] = SeenPostRef(
+                entryID: post.entryId, taiJ2000Micros: post.taiJ2000Micros)
+        }
+        return Array(byID.values)
+    }
+
+    /// Advance the seen cursor to the newest post currently shown — the reader has
+    /// looked. Deliberately does NOT recompute `unread`, so the "N new" delta stays
+    /// visible for the rest of this visit; the NEXT `load()` reads the advanced
+    /// cursor and reports zero. A no-op when nothing is shown or no cursor store is
+    /// wired, and monotonic in the store, so it can never mark seen unseen content.
+    public func markAllSeen() {
+        guard let latest = unread.latestTimestamp else { return }
+        seenCursor?.advance(community: spaceDescriptorEntryID, to: latest)
     }
 
     /// The offlineStale "Try again" action: re-derive + reproject. A no-op if the
