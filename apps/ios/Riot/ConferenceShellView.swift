@@ -704,7 +704,6 @@ private struct CommunityShellView: View {
                     .allowsHitTesting(navigation.destination == destination)
                 }
             }
-            connectionDisclosureBar
             RiotTabBar(selection: tabSelection)
         }
         .background(RiotTheme.paper(for: colorScheme).ignoresSafeArea())
@@ -738,16 +737,16 @@ private struct CommunityShellView: View {
             .accessibilityLabel(ShellIdentityDestination.yourProfile.label)
             .accessibilityIdentifier(ShellIdentityDestination.yourProfile.accessibilityID)
 
-            // The community name is the chooser's entry point — "Your communities"
-            // is one action away here (nav design Slice 3).
+            Spacer()
+
+            // Community switcher — icon only. The community name is shown once,
+            // in the designed Home header, so this top row carries just the
+            // controls. Keeps the `community-name` id the nav tests tap.
             Button { model.openCommunityChooser() } label: {
-                Text(community.name)
-                    .font(.riot(.body, size: 18, relativeTo: .headline))
-                    .foregroundStyle(RiotTheme.ink(for: colorScheme))
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .accessibilityAddTraits(.isHeader)
+                Image(systemName: "rectangle.stack")
+                    .font(.system(size: 20))
             }
-            .buttonStyle(.plain)
+            .accessibilityLabel("Your communities")
             .accessibilityIdentifier("community-name")
 
             Button { identitySheet = .communitySettings } label: {
@@ -762,27 +761,6 @@ private struct CommunityShellView: View {
         .background(RiotTheme.paper2(for: colorScheme))
     }
 
-    private var connectionDisclosureBar: some View {
-        VStack(spacing: 3) {
-            if let me = model.me {
-                Text("You are \(me.rendered)")
-                    .font(.riot(.mono, size: 11, relativeTo: .caption2))
-                    .foregroundStyle(RiotTheme.ink(for: colorScheme))
-                    .accessibilityIdentifier("identity-chip")
-            }
-            Text(model.connectionDisclosure)
-                .font(.riot(.mono, size: 11, relativeTo: .caption2))
-                .textCase(.uppercase)
-                .tracking(0.5)
-                .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
-        }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 8)
-        .background(RiotTheme.paper2(for: colorScheme))
-        .overlay(alignment: .top) {
-            Rectangle().fill(RiotTheme.line(for: colorScheme)).frame(height: 1)
-        }
-    }
     #endif
 
     // MARK: Routes

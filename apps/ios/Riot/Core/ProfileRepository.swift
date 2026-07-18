@@ -62,6 +62,29 @@ public struct RiotAppResource: Equatable, Sendable {
 
 private struct PersistedAlert: Codable {
     let bundle: Data
+    /// Provenance: a bundle that arrived over SYNC from another peer, versus one
+    /// this device authored locally (`signAlert`). Both live here because they
+    /// replay through the same reload loop, but they degrade under DIFFERENT
+    /// recovery reasons — a poison SYNCED bundle is quarantined as `.syncImport`,
+    /// a poison local alert as `.alertReplay` — so the recovery record is honest
+    /// about where the bad bytes came from (Phase 3).
+    let fromSync: Bool
+
+    init(bundle: Data, fromSync: Bool = false) {
+        self.bundle = bundle
+        self.fromSync = fromSync
+    }
+
+    // Custom decode so snapshots written before `fromSync` existed decode to
+    // `false` (a local alert) rather than failing — the same backward-compatible
+    // discipline `PersistedProfile` uses. A benign field addition must never
+    // brick decoding (which Phase 5 would then quarantine). Encoding stays
+    // synthesized.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        bundle = try container.decode(Data.self, forKey: .bundle)
+        fromSync = try container.decodeIfPresent(Bool.self, forKey: .fromSync) ?? false
+    }
 }
 
 /// An app this profile took up from a neighbour, kept as the exact pair of bytes
@@ -239,13 +262,21 @@ public final class RiotProfileRepository {
     private var installed: [InstalledApp]
     private var persisted: PersistedProfile
 
+    /// The recovery record for this repository. Built at `open` and carried on the
+    /// instance so post-open boundaries (a per-community switch that finds an
+    /// unopenable community, Phase 2) can record into the SAME report and set
+    /// aside through the SAME quarantine — recovery is one system, not per-call.
+    private let recoveryReport: RecoveryReport
+    private let quarantine: RecoveryQuarantine
+
     public var currentSpace: RiotSpace? { persisted.space }
 
-    /// What `open` had to recover to reach a usable state, or `nil` if the open
-    /// was clean. The shell reads this to surface an honest, non-fatal notice
-    /// instead of a dead RETRY, and a recovery view lists its quarantined items.
-    /// See ``RecoveryReport``.
-    public let recovery: RecoveryReport?
+    /// What this repository had to recover to reach a usable state, or `nil` if
+    /// everything is clean. The shell reads this to surface an honest, non-fatal
+    /// notice instead of a dead RETRY, and a recovery view lists its quarantined
+    /// items. Computed so a post-open recovery (a per-community switch) is
+    /// reflected the moment it is recorded. See ``RecoveryReport``.
+    public var recovery: RecoveryReport? { recoveryReport.isClean ? nil : recoveryReport }
 
     private init(
         profile: MobileProfile,
@@ -254,7 +285,8 @@ public final class RiotProfileRepository {
         appRuntime: AppRuntimeSession,
         installed: [InstalledApp],
         persisted: PersistedProfile,
-        recovery: RecoveryReport?
+        recoveryReport: RecoveryReport,
+        quarantine: RecoveryQuarantine
     ) {
         self.profile = profile
         self.storage = storage
@@ -262,7 +294,8 @@ public final class RiotProfileRepository {
         self.appRuntime = appRuntime
         self.installed = installed
         self.persisted = persisted
-        self.recovery = recovery
+        self.recoveryReport = recoveryReport
+        self.quarantine = quarantine
     }
 
     public static func open(
@@ -279,6 +312,26 @@ public final class RiotProfileRepository {
         let report = RecoveryReport()
         let quarantine = RecoveryQuarantine(storageDirectory: storage.directory)
 
+        // STEP 0 (Phase 5) — the outermost safety net: LOAD the persisted blob.
+        // This runs before open even begins. If the bytes will not DECODE at all
+        // (a truncated write, a foreign file, a format the JSON can't survive),
+        // set the raw blob aside — never deleting it — and start from an EMPTY
+        // profile. That is a strictly earlier, distinct failure from a decodable
+        // snapshot the CORE later rejects (`.profileOpen`), so it carries its own
+        // `.storageBlob` reason. `recovering` absorbs the decode error here because
+        // the substitute (an empty profile) cannot itself fail.
+        var persisted = recovering(step: .storageBlob) {
+            try storage.load()
+        } onFailure: { error in
+            // MOVE the undecodable bytes aside so the primary path is clean for the
+            // fresh save at the end of open; the empty profile then opens cleanly.
+            let ref = try? quarantine.quarantine(
+                [.file(storage.snapshotURL)], reason: .storageBlob, error: error
+            )
+            report.recordHealed(.storageBlob, quarantine: ref)
+            return .empty
+        }
+
         // STEP 1 — open the core. If the persisted profile cannot be opened at all
         // (a sealed identity the new core rejects, a corrupt snapshot, a wedged
         // database), this is the deepest recovery: MOVE the persisted snapshot and
@@ -288,10 +341,8 @@ public final class RiotProfileRepository {
         // its recovery — a fresh open — can itself throw, and that genuinely-
         // unrecoverable case must rethrow to the launch surface's "Start fresh"
         // rather than being absorbed.
-        var persisted = PersistedProfile.empty
         let profile: MobileProfile
         do {
-            persisted = try storage.load()
             profile = try openCore(
                 persisted: persisted, keyStore: keyStore, databasePath: databasePath
             )
@@ -315,12 +366,16 @@ public final class RiotProfileRepository {
             // space from the working state, keep the identity, and continue.
             recovering(step: .space) {
                 try restoreSpace(profile: profile, persisted: persisted, keyStore: keyStore)
-                // STEP 3 — replay the saved alerts. A single bundle the core
-                // rejects is SKIPPED and quarantined, not fatal — one bad bundle
-                // must not kill the rest, the same rule the app-data / trust loops
-                // below already follow.
+                // STEP 3 — replay the saved bundles (Phase 1 local alerts + Phase 3
+                // synced imports). A single bundle the core rejects is SKIPPED and
+                // quarantined, not fatal — one poison bundle must not kill the rest,
+                // the same rule the app-data / trust loops below already follow. The
+                // recovery reason follows the bundle's PROVENANCE: a synced import is
+                // set aside as `.syncImport`, a local alert as `.alertReplay`, so the
+                // record is honest about where the bad bytes came from.
                 for alert in persisted.alerts {
-                    recovering(step: .alertReplay) {
+                    let step: RecoveryStep = alert.fromSync ? .syncImport : .alertReplay
+                    recovering(step: step) {
                         let preview = try profile.inspectBytes(
                             bytes: alert.bundle, route: "protected-local-reload")
                         let entryIDs = try preview.eligibleEntries().map(\.entryId)
@@ -336,11 +391,12 @@ public final class RiotProfileRepository {
                         _ = try preview.createPlan(selectedEntryIds: entryIDs).accept()
                     } onFailure: { error in
                         let ref = try? quarantine.quarantine(
-                            [.blob(name: "alert.bundle", alert.bundle)],
-                            reason: .alertReplay,
+                            [.blob(name: alert.fromSync ? "synced.bundle" : "alert.bundle",
+                                   alert.bundle)],
+                            reason: step,
                             error: error
                         )
-                        report.recordDropped(.alertReplay, quarantine: ref)
+                        report.recordDropped(step, quarantine: ref)
                     }
                 }
             } onFailure: { error in
@@ -379,28 +435,40 @@ public final class RiotProfileRepository {
 
         // Install the starter catalog. Rust's `installApp` is the integrity
         // oracle; a pair that fails to install, decode, or match its declared
-        // entry point is silently excluded (spec's silent-exclusion rule).
+        // entry point is set aside and RECORDED (Phase 4) rather than silently
+        // excluded — a starter pack that stopped installing is a signal worth
+        // surfacing, not a mystery-missing tool.
         let appRuntime = profile.appRuntime()
         var installedApps: [InstalledApp] = []
         for pack in starterPacks {
-            guard let installed = try? installPack(
-                appRuntime: appRuntime,
-                manifest: pack.manifest,
-                bundle: pack.bundle
-            ) else { continue }
-            installedApps.append(installed)
+            recovering(step: .appPack) {
+                installedApps.append(try installPack(
+                    appRuntime: appRuntime, manifest: pack.manifest, bundle: pack.bundle))
+            } onFailure: { error in
+                let ref = try? quarantine.quarantine(
+                    [.blob(name: "starter-manifest.bin", pack.manifest),
+                     .blob(name: "starter-bundle.bin", pack.bundle)],
+                    reason: .appPack, error: error)
+                report.recordDropped(.appPack, quarantine: ref)
+            }
         }
 
         // Then the apps other people carried here. They go back in through the
         // same install as the starter catalog — Rust re-verifies the pair, so a
-        // snapshot that was tampered with on disk is refused, not trusted.
+        // snapshot that was tampered with on disk is refused, not trusted. A pack
+        // that will not install (tampered bytes, an incompatible core) is carried
+        // user data: set it aside + RECORD it (Phase 4), skip it, keep the rest.
         for pack in persisted.carriedApps {
-            guard let installed = try? installPack(
-                appRuntime: appRuntime,
-                manifest: pack.manifest,
-                bundle: pack.bundle
-            ) else { continue }
-            installedApps.append(installed)
+            recovering(step: .appPack) {
+                installedApps.append(try installPack(
+                    appRuntime: appRuntime, manifest: pack.manifest, bundle: pack.bundle))
+            } onFailure: { error in
+                let ref = try? quarantine.quarantine(
+                    [.blob(name: "\(pack.appIDHex)-manifest.bin", pack.manifest),
+                     .blob(name: "\(pack.appIDHex)-bundle.bin", pack.bundle)],
+                    reason: .appPack, error: error)
+                report.recordDropped(.appPack, quarantine: ref)
+            }
         }
 
         // Trust is profile-local in-memory in Rust and does not survive process
@@ -423,9 +491,16 @@ public final class RiotProfileRepository {
 
         // Rust's app-data store is in-memory per session, so re-commit the
         // persisted signed bundles in the order they were written. A single
-        // corrupt bundle is skipped (`try?`) rather than aborting the open.
+        // corrupt bundle is set aside + RECORDED (Phase 4) and the rest replay —
+        // one poison receipt never aborts the open or loses the others silently.
         for bundle in persisted.appDataBundles {
-            try? appRuntime.replayAppDataBundle(bytes: bundle)
+            recovering(step: .appData) {
+                try appRuntime.replayAppDataBundle(bytes: bundle)
+            } onFailure: { error in
+                let ref = try? quarantine.quarantine(
+                    [.blob(name: "app-data.bundle", bundle)], reason: .appData, error: error)
+                report.recordDropped(.appData, quarantine: ref)
+            }
         }
 
         let repository = RiotProfileRepository(
@@ -435,7 +510,8 @@ public final class RiotProfileRepository {
             appRuntime: appRuntime,
             installed: installedApps,
             persisted: persisted,
-            recovery: report.isClean ? nil : report
+            recoveryReport: report,
+            quarantine: quarantine
         )
         if persisted.sealedIdentity == nil {
             persisted.sealedIdentity = try repository.sealCurrentIdentity()
@@ -862,7 +938,10 @@ public final class RiotProfileRepository {
         return GeneratedSyncSessionAdapter(backend: backend) { [weak self] bundle in
             guard let self else { throw RepositoryError.profileClosed }
             if !self.persisted.alerts.contains(where: { $0.bundle == bundle }) {
-                self.persisted.alerts.append(PersistedAlert(bundle: bundle))
+                // Tagged `fromSync` so a later replay that the core rejects is
+                // quarantined under `.syncImport` (its true provenance), not
+                // `.alertReplay` (Phase 3).
+                self.persisted.alerts.append(PersistedAlert(bundle: bundle, fromSync: true))
                 try self.storage.save(self.persisted)
             }
         }
@@ -896,8 +975,24 @@ public final class RiotProfileRepository {
 /// Real shipping users therefore get durable SEALED per-community identity; no
 /// raw secret is ever exposed, and no new key or secure store is introduced.
 extension RiotProfileRepository: CommunityRegistry {
+    /// The held communities for the chooser. The core already returns rows for
+    /// unavailable/quarantined communities (it never drops a row), so one corrupt
+    /// community cannot brick this list. The one remaining brick risk is a
+    /// registry whose whole persisted form failed to decode — if that ever throws
+    /// here, degrade to an EMPTY chooser + RECORD it (Phase 2) rather than a dead
+    /// launch: the person still reaches a usable app with an honest recovery
+    /// signal, never a crash.
     public func listCommunities() throws -> [CommunityRow] {
-        try profile.listCommunities()
+        recovering(step: .community) {
+            try profile.listCommunities()
+        } onFailure: { error in
+            let ref = try? quarantine.quarantine(
+                [.blob(name: "community-registry.json",
+                       Data("registry unreadable".utf8))],
+                reason: .community, error: error)
+            recoveryReport.recordDropped(.community, quarantine: ref)
+            return []
+        }
     }
 
     public func activeCommunity() throws -> CommunityRow? {
@@ -906,25 +1001,64 @@ extension RiotProfileRepository: CommunityRegistry {
 
     @discardableResult
     public func switchToCommunity(namespaceID: String) throws -> CommunityRow {
-        let row = try Self.withWrappingKey(from: keyStore) { wrappingKey in
-            try profile.switchCommunity(namespaceId: namespaceID, wrappingKey: wrappingKey)
+        // Per-community open/reproject (Phase 2). The core loads (unseals) the
+        // target's at-rest author here; if that author is corrupt it quarantines
+        // it (never drops it) and answers `CommunityUnavailable` WITHOUT leaving
+        // the current community — so a broken community can never brick the
+        // registry or the others. From this Swift boundary a corrupt author and an
+        // otherwise-unopenable target are the SAME signal, so both route through
+        // the recovery core: RECORD the event + set a manifest aside (never a
+        // silent heal), then rethrow so the shell surfaces the unavailable state
+        // in place. Explicit do/catch (not `recovering`) because this must rethrow
+        // to the caller, exactly as the deepest profile-open step does.
+        do {
+            let row = try Self.withWrappingKey(from: keyStore) { wrappingKey in
+                try profile.switchCommunity(namespaceId: namespaceID, wrappingKey: wrappingKey)
+            }
+            // The registry is now on `row`; mirror it into the persisted single-slot
+            // so `currentSpace` (and the reprojection that reads it) reflects the
+            // community just switched to, not the one we came from. Without this a
+            // switch leaves the previous community's title on screen.
+            persisted.space = RiotSpace(namespaceID: row.namespaceId, title: row.title)
+            try storage.save(persisted)
+            return row
+        } catch {
+            recordCommunityUnavailable(namespaceID: namespaceID, error: error)
+            throw error
         }
-        // The registry is now on `row`; mirror it into the persisted single-slot so
-        // `currentSpace` (and the reprojection that reads it) reflects the community
-        // just switched to, not the one we came from. Without this a switch leaves
-        // the previous community's title on screen.
-        persisted.space = RiotSpace(namespaceID: row.namespaceId, title: row.title)
-        try storage.save(persisted)
-        return row
     }
 
     public func archiveCommunity(namespaceID: String) throws {
-        try profile.archiveCommunity(namespaceId: namespaceID)
+        do {
+            try profile.archiveCommunity(namespaceId: namespaceID)
+        } catch {
+            recordCommunityUnavailable(namespaceID: namespaceID, error: error)
+            throw error
+        }
     }
 
     @discardableResult
     public func restoreCommunity(namespaceID: String) throws -> CommunityRow {
-        try profile.restoreCommunity(namespaceId: namespaceID)
+        do {
+            return try profile.restoreCommunity(namespaceId: namespaceID)
+        } catch {
+            recordCommunityUnavailable(namespaceID: namespaceID, error: error)
+            throw error
+        }
+    }
+
+    /// Records a community that could not open/reproject through the recovery core:
+    /// a manifest naming which community + why is set aside (the core has already
+    /// preserved the community's at-rest author for recovery — this is the honest
+    /// Swift-side record the recovery view lists), and the event lands in the
+    /// shared `RecoveryReport` so the shell can surface it. Never deletes anything.
+    private func recordCommunityUnavailable(namespaceID: String, error: Error) {
+        let record = ["namespaceID": namespaceID]
+        let bytes = (try? JSONSerialization.data(withJSONObject: record)) ?? Data(namespaceID.utf8)
+        let ref = try? quarantine.quarantine(
+            [.blob(name: "community-\(namespaceID.prefix(16)).json", bytes)],
+            reason: .community, error: error)
+        recoveryReport.recordDropped(.community, quarantine: ref)
     }
 
     /// Seals every session-held community author under the secure-store wrapping

@@ -88,6 +88,8 @@
 		C00000000000000000000005 = {isa = PBXFileReference; explicitFileType = archive.ar; path = libRiotKit.a; sourceTree = BUILT_PRODUCTS_DIR;};
 		C00000000000000000000011 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = riot_ffi.swift; path = ../../build/generated/riot-ffi/riot_ffi.swift; sourceTree = SOURCE_ROOT;};
 		C00000000000000000000012 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = ProfileRepository.swift; path = ../ios/Riot/Core/ProfileRepository.swift; sourceTree = SOURCE_ROOT;};
+		C00000000000000000000310 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = RecoveryQuarantine.swift; path = ../ios/Riot/Core/RecoveryQuarantine.swift; sourceTree = SOURCE_ROOT;};
+		C00000000000000000000312 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = RiotDeepLink.swift; path = ../ios/Riot/Core/RiotDeepLink.swift; sourceTree = SOURCE_ROOT;};
 		C00000000000000000000017 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = WrappingKeyStore.swift; path = ../ios/Riot/Core/WrappingKeyStore.swift; sourceTree = SOURCE_ROOT;};
 		F0FF0000000000000000A100 = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = RecoveryQuarantine.swift; path = ../ios/Riot/Core/RecoveryQuarantine.swift; sourceTree = SOURCE_ROOT;};
 		F0FF0000000000000000A101 = {isa = PBXBuildFile; fileRef = F0FF0000000000000000A100;};
@@ -186,6 +188,8 @@
 		F0000000000000000000009D = {isa = PBXBuildFile; fileRef = F0000000000000000000009C;};
 		C00000000000000000000021 = {isa = PBXBuildFile; fileRef = C00000000000000000000011;};
 		C00000000000000000000023 = {isa = PBXBuildFile; fileRef = C00000000000000000000012;};
+		C00000000000000000000311 = {isa = PBXBuildFile; fileRef = C00000000000000000000310;};
+		C00000000000000000000313 = {isa = PBXBuildFile; fileRef = C00000000000000000000312;};
 		C00000000000000000000029 = {isa = PBXBuildFile; fileRef = C00000000000000000000017;};
 		C00000000000000000000025 = {isa = PBXBuildFile; fileRef = C00000000000000000000014;};
 		C0000000000000000000002B = {isa = PBXBuildFile; fileRef = C00000000000000000000019;};
