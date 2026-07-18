@@ -479,6 +479,7 @@ public struct PostUpdateView: View {
             VStack(spacing: 16) {
                 modeCard
                 draftCard
+                if model.mode.requiresStricterFields { operationalCard }
                 reviewCard
                 if let error = model.errorMessage {
                     failureCard(error)
@@ -508,6 +509,50 @@ public struct PostUpdateView: View {
                 }
                 .pickerStyle(.segmented)
                 .accessibilityIdentifier("post-mode-picker")
+            }
+        }
+    }
+
+    // A single-source-claim binding onto the model's [String] (finer multi-source
+    // authoring is a later refinement; validation needs one non-empty claim).
+    private var sourceClaimBinding: Binding<String> {
+        Binding(
+            get: { model.sourceClaims.first ?? "" },
+            set: { model.sourceClaims = $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? [] : [$0] }
+        )
+    }
+
+    // The expiry starts unset (model.expiresAt == nil) so Alert/Request are honestly
+    // incomplete until the person sets one. A toggle reveals the picker; turning it
+    // off clears the expiry back to nil (validation fails again — no silent default).
+    private var hasExpiryBinding: Binding<Bool> {
+        Binding(
+            get: { model.expiresAt != nil },
+            set: { model.expiresAt = $0 ? (model.expiresAt ?? Date()) : nil }
+        )
+    }
+
+    private var operationalCard: some View {
+        RiotCard {
+            VStack(alignment: .leading, spacing: 14) {
+                eyebrow(model.mode == .operationalAlert ? "Alert details" : "Request details")
+                TextField("Source (how you know)", text: sourceClaimBinding, axis: .vertical)
+                    .font(.riot(.body, size: 15, relativeTo: .body))
+                    .accessibilityIdentifier("post-source-claim")
+                TextField("Coarse location (area, not a precise point)", text: $model.coarseLocation)
+                    .font(.riot(.body, size: 15, relativeTo: .body))
+                    .accessibilityIdentifier("post-coarse-location")
+                Toggle("Set an expiry", isOn: hasExpiryBinding)
+                    .tint(RiotTheme.pink(for: colorScheme))
+                    .accessibilityIdentifier("post-expiry-toggle")
+                if model.expiresAt != nil {
+                    DatePicker(
+                        "Expires",
+                        selection: Binding(get: { model.expiresAt ?? Date() }, set: { model.expiresAt = $0 }),
+                        displayedComponents: [.date, .hourAndMinute]
+                    )
+                    .accessibilityIdentifier("post-expiry-picker")
+                }
             }
         }
     }

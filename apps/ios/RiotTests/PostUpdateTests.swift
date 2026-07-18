@@ -329,4 +329,43 @@ final class PostUpdateTests: XCTestCase {
         XCTAssertEqual(ComposerMode.operationalRequest.label, "Request")
         XCTAssertEqual(ComposerMode.allCases.count, 3, "the picker offers exactly Update/Alert/Request")
     }
+
+    // MARK: - Operational fields visibility (Unit 6)
+
+    @MainActor
+    func testOperationalFieldsAreHiddenForUpdateAndShownForAlertAndRequest() {
+        let model = makeModel()
+        XCTAssertFalse(model.mode.requiresStricterFields, "Update: no operational fields")
+
+        model.mode = .operationalAlert
+        XCTAssertTrue(model.mode.requiresStricterFields, "Alert: operational fields shown")
+
+        model.mode = .operationalRequest
+        XCTAssertTrue(model.mode.requiresStricterFields, "Request: operational fields shown")
+    }
+
+    @MainActor
+    func testOperationalFieldBindingsFeedValidationAndTheSignedWrite() {
+        let publisher = StubPublisher()
+        let model = makeModel(publisher: publisher)
+        model.headline = "Tear gas at the south barricade"
+        model.body = "Move north; medics are staging by the fountain."
+        model.mode = .operationalAlert
+
+        // Fields empty → not ready.
+        guard case .needsOperationalFields = model.validation else {
+            return XCTFail("empty operational fields must not validate")
+        }
+
+        // The three inputs the view binds.
+        model.sourceClaims = ["Saw it myself"]     // source-claim field
+        model.coarseLocation = "South barricade"   // coarse-location field
+        model.expiresAt = Date(timeIntervalSince1970: 1_720_003_600)  // expiry picker
+
+        XCTAssertEqual(model.validation, .ready)
+        model.post()
+        XCTAssertEqual(publisher.lastRequest?.sourceClaims, ["Saw it myself"])
+        XCTAssertEqual(publisher.lastRequest?.coarseLocation, "South barricade")
+        XCTAssertEqual(publisher.lastRequest?.expiresAtUnixSeconds, 1_720_003_600)
+    }
 }
