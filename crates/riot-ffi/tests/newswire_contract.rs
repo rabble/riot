@@ -7,6 +7,7 @@
 //! cannot derive the same front page as its peers, and the signed record is
 //! a promise the app cannot keep.
 
+use riot_ffi::NewswireProjectedComment;
 use riot_ffi::{
     open_local_profile, AlertCertainty, AlertSeverity, AlertUrgency, NewswireAlertProfile,
     NewswireEditorialActionInput, NewswireEditorialActionKind, NewswireOperationalProfile,
@@ -73,8 +74,144 @@ fn create_space_and_project_empty_newswire() {
     assert!(projection.open_wire.is_empty());
     assert!(projection.front_page.is_empty());
     assert!(projection.earlier.is_empty());
+    assert!(projection.comments.is_empty());
     assert!(projection.editorial_history.is_empty());
     assert!(projection.future_quarantine.is_empty());
+}
+
+fn find_comment<'a>(
+    comments: &'a [NewswireProjectedComment],
+    entry_id: &str,
+) -> &'a NewswireProjectedComment {
+    comments
+        .iter()
+        .find(|comment| comment.entry_id == entry_id)
+        .expect("projected comment")
+}
+
+/// A communal reply is created through the boundary and reaches the projection
+/// grouped under its parent post — carrying its body, parent id, and a rendered
+/// author, exactly like a post row.
+#[test]
+fn a_comment_is_created_and_projected_under_its_parent_post() {
+    let profile = open_local_profile().expect("profile");
+    let session = profile.profile();
+    session
+        .set_display_name("Bo".into())
+        .expect("set display name");
+
+    let space = profile
+        .create_newswire_space(space_input("Discussion"))
+        .expect("create space");
+    let post = profile
+        .create_newswire_post(post_input(&space.entry_id, "What did you see?"))
+        .expect("create post");
+
+    let comment = profile
+        .create_newswire_comment(
+            space.entry_id.clone(),
+            post.entry_id.clone(),
+            "I was on the east side when it started.".into(),
+            "en".into(),
+        )
+        .expect("create comment");
+    assert!(!comment.entry_id.is_empty());
+    assert!(!comment.signed_bytes.is_empty());
+
+    let projection = profile
+        .project_newswire_space(space.entry_id)
+        .expect("project");
+    let projected = find_comment(&projection.comments, &comment.entry_id);
+
+    assert_eq!(projected.parent_entry_id, post.entry_id);
+    assert_eq!(
+        projected.body.as_deref(),
+        Some("I was on the east side when it started.")
+    );
+    assert_eq!(projected.language, "en");
+    assert_eq!(projected.treatment, NewswirePostTreatment::Ordinary);
+    assert!(projected.tai_j2000_micros > 0);
+    // The author is rendered by the same sanctioned path as a post author.
+    assert_eq!(projected.author.display_name, "Bo");
+    assert_eq!(
+        projected.author.rendered,
+        format!("Bo · {}", projected.author.tag)
+    );
+}
+
+/// A reply whose parent post is not held is dropped from the projection — the
+/// flat list never carries an orphan. A comment is still communal, so any
+/// profile may post one (no editorial role required).
+#[test]
+fn a_comment_with_no_held_parent_is_dropped_from_the_projection() {
+    let profile = open_local_profile().expect("profile");
+    let space = profile
+        .create_newswire_space(space_input("Danglers"))
+        .expect("create space");
+
+    // A well-formed entry id that names no post this store holds.
+    let ghost_parent = "ab".repeat(32);
+    let comment = profile
+        .create_newswire_comment(
+            space.entry_id.clone(),
+            ghost_parent,
+            "Reply into the void.".into(),
+            "en".into(),
+        )
+        .expect("create comment");
+
+    let projection = profile
+        .project_newswire_space(space.entry_id)
+        .expect("project");
+    assert!(
+        projection
+            .comments
+            .iter()
+            .all(|c| c.entry_id != comment.entry_id),
+        "a reply with no held parent must not appear in the projection"
+    );
+}
+
+/// An editor tombstoning a comment redacts its body while keeping identity and
+/// ordering — the same per-content moderation a post receives, never per person.
+#[test]
+fn an_editor_tombstone_redacts_a_comment_body() {
+    let profile = open_local_profile().expect("profile");
+    let space = profile
+        .create_newswire_space(space_input("Moderated replies"))
+        .expect("create space");
+    let post = profile
+        .create_newswire_post(post_input(&space.entry_id, "Open thread"))
+        .expect("create post");
+    let comment = profile
+        .create_newswire_comment(
+            space.entry_id.clone(),
+            post.entry_id.clone(),
+            "Content that names a private individual.".into(),
+            "en".into(),
+        )
+        .expect("create comment");
+
+    // The founding organizer is the default editor and can moderate the reply.
+    profile
+        .create_newswire_editorial_action(NewswireEditorialActionInput {
+            space_descriptor_entry_id: space.entry_id.clone(),
+            target_entry_id: comment.entry_id.clone(),
+            kind: NewswireEditorialActionKind::Tombstone,
+            reason: Some("Names a private individual.".into()),
+            correction_text: None,
+        })
+        .expect("tombstone the comment");
+
+    let projection = profile
+        .project_newswire_space(space.entry_id)
+        .expect("project");
+    let projected = find_comment(&projection.comments, &comment.entry_id);
+    assert_eq!(projected.treatment, NewswirePostTreatment::Tombstoned);
+    assert_eq!(projected.body, None);
+    // Identity survives: the row is still accountable.
+    assert_eq!(projected.parent_entry_id, post.entry_id);
+    assert!(projected.tai_j2000_micros > 0);
 }
 
 /// The heart of Unit 1A: a post signs headline, body, language, location,
