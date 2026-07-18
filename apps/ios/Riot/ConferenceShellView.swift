@@ -375,6 +375,136 @@ private struct OnboardingSetupView: View {
 /// something. Dismissible — the recovery already happened and the app is usable;
 /// this only tells the person what was set aside (never deleted). Never a dead
 /// error.
+/// The owner moderation sheet: author a Revoke/Tombstone at O:/mod/, review the
+/// complete (untruncated) identifiers, and sign — core auto-publishes the coupled
+/// heartbeat. Shown only to an owner (the model is constructed with the site's
+/// sealed masthead). Mirrors the editorial-action sheet. On success it surfaces the
+/// signed action + heartbeat records; their `signedBytes` are the propagation
+/// payload the app hands onward (owned-namespace /mod/ has no automatic sync yet),
+/// so they are shown, never silently dropped.
+struct SiteModerationSheet: View {
+    @ObservedObject var model: SiteModerationModel
+    let onClose: () -> Void
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
+        composer
+            .riotHeader(eyebrow: "Moderate", "Owner moderation")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Close", action: onClose) }
+            }
+    }
+
+    private var composer: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                Picker("Action", selection: $model.draft.kind) {
+                    ForEach(SiteModerationTargetKind.allCases) { kind in
+                        Text(kind.label).tag(kind)
+                    }
+                }
+                .accessibilityIdentifier("mod-kind-picker")
+
+                switch model.draft.kind {
+                case .revoke:
+                    field("Author key", text: $model.draft.authorKey, id: "mod-author-key")
+                case .tombstone:
+                    field("Namespace", text: $model.draft.targetNamespace, id: "mod-target-namespace")
+                    field("Target entry", text: $model.draft.targetEntry, id: "mod-target-entry")
+                }
+
+                reviewCard
+                signButton
+                outcomeNotice
+            }
+            .padding(20)
+        }
+    }
+
+    @ViewBuilder
+    private var reviewCard: some View {
+        if case let .success(review) = model.review() {
+            RiotCard {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("Review before signing")
+                        .font(.riot(.mono, size: 12, relativeTo: .caption))
+                        .textCase(.uppercase)
+                        .tracking(1)
+                        .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
+                    ForEach(review.rows, id: \.label) { row in
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(row.label)
+                                .font(.riot(.mono, size: 11, relativeTo: .caption2))
+                                .textCase(.uppercase)
+                                .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
+                            Text(row.value)
+                                .font(.riot(.mono, size: 13, relativeTo: .footnote))
+                                .foregroundStyle(RiotTheme.ink(for: colorScheme))
+                                .textSelection(.enabled)
+                        }
+                    }
+                }
+            }
+            .accessibilityIdentifier("mod-review")
+        }
+    }
+
+    @ViewBuilder
+    private var signButton: some View {
+        let isReady: Bool = {
+            if case .success = model.review() { return true }
+            return false
+        }()
+        Button("Sign and publish") {
+            if case .signed = model.sign() { /* stays open to show the outcome */ }
+        }
+        .buttonStyle(.riotPrimary)
+        .frame(minHeight: 44)
+        .disabled(!isReady)
+        .accessibilityIdentifier("mod-sign")
+    }
+
+    @ViewBuilder
+    private var outcomeNotice: some View {
+        switch model.lastSignOutcome {
+        case let .signed(outcome):
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Signed. A fresh moderation heartbeat was published.")
+                    .font(.riot(.body, size: 13, relativeTo: .caption))
+                    .foregroundStyle(RiotTheme.ink(for: colorScheme))
+                // The signed bytes are the propagation payload — surfaced, not dropped.
+                Text("Share \(outcome.action.signedBytes.count + outcome.epoch.signedBytes.count) bytes to sync this to followers.")
+                    .font(.riot(.mono, size: 11, relativeTo: .caption2))
+                    .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
+            }
+            .accessibilityIdentifier("mod-signed")
+        case let .invalid(violation):
+            Text(violation.message)
+                .font(.riot(.body, size: 13, relativeTo: .caption))
+                .foregroundStyle(RiotTheme.pink(for: colorScheme))
+                .accessibilityIdentifier("mod-violation")
+        case .rejected:
+            Text("That action was not accepted. Your draft is kept.")
+                .font(.riot(.body, size: 13, relativeTo: .caption))
+                .foregroundStyle(RiotTheme.pink(for: colorScheme))
+                .accessibilityIdentifier("mod-rejected")
+        case .none:
+            EmptyView()
+        }
+    }
+
+    private func field(_ label: String, text: Binding<String>, id: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(label)
+                .font(.riot(.mono, size: 12, relativeTo: .caption))
+                .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
+            TextField(label, text: text, axis: .vertical)
+                .font(.riot(.mono, size: 13, relativeTo: .footnote))
+                .accessibilityIdentifier(id)
+        }
+    }
+}
+
 /// The composite-site read surface: the honest-degradation banner (the SAME
 /// `RecoveryNoticeBanner` the shell uses) over the accountable rows. When the
 /// model reports a hold — critically, `.moderationLoading` — the rows are visually

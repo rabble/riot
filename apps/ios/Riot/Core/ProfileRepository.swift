@@ -1545,6 +1545,27 @@ extension RiotProfileRepository: NewswireEditorialActing {}
 /// projection if the parent post is not held.
 extension RiotProfileRepository: NewswireCommenting {}
 
+/// The live owner-moderation signer — it loads the device wrapping key
+/// transiently (reset after use) and hands the sealed masthead + action to core,
+/// which signs at O:/mod/ under the owner cap and auto-publishes the coupled
+/// heartbeat. Ownership is proven by possession of `sealedRoot` + the wrapping
+/// key; core refuses a masthead the key cannot open.
+extension RiotProfileRepository: SiteModerationAuthoring {
+    @discardableResult
+    public func authorSiteModeration(
+        sealedRoot: Data,
+        action: SiteModerationAction
+    ) throws -> SiteModerationOutcome {
+        try Self.withWrappingKey(from: keyStore) { wrappingKey in
+            try profile.createSiteModerationAction(
+                sealedRoot: sealedRoot,
+                wrappingKey: wrappingKey,
+                action: action
+            )
+        }
+    }
+}
+
 /// The live editor-authority read for the editorial surface — it forwards to
 /// core's descriptor-authenticated roster answer (Unit 4a), the same authority
 /// core enforces at admission. Visibility only; core is the signing gate.
