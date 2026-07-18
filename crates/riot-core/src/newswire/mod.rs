@@ -61,11 +61,11 @@ pub use entry::{
     VerifiedNewswireRecord,
 };
 pub use model::{
-    decode_editorial_action, decode_news_post, decode_space_descriptor, encode_editorial_action,
-    encode_news_post, encode_space_descriptor, AlertProfileV1, EditorialActionKind,
-    EditorialActionV1, NewsPostV1, NewswireModelError, OperationalProfileV1, RequestKind,
-    RequestProfileV1, SpaceDescriptorV1, ACTION_SCHEMA, MAX_NEWSWIRE_PAYLOAD_BYTES, POST_SCHEMA,
-    SPACE_SCHEMA,
+    decode_editorial_action, decode_news_comment, decode_news_post, decode_space_descriptor,
+    encode_editorial_action, encode_news_comment, encode_news_post, encode_space_descriptor,
+    AlertProfileV1, EditorialActionKind, EditorialActionV1, NewsCommentV1, NewsPostV1,
+    NewswireModelError, OperationalProfileV1, RequestKind, RequestProfileV1, SpaceDescriptorV1,
+    ACTION_SCHEMA, COMMENT_SCHEMA, MAX_NEWSWIRE_PAYLOAD_BYTES, POST_SCHEMA, SPACE_SCHEMA,
 };
 pub use path::{classify_newswire_path, newswire_path, NewswirePathKind};
 pub use projection::{
