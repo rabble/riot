@@ -452,22 +452,34 @@ class MainActivity : Activity() {
                 content.addView(heading(NewswireWireCopy.NO_FEATURE_TITLE))
                 content.addView(body(NewswireWireCopy.NO_FEATURE_MESSAGE))
                 content.addView(heading(NewswireWireCopy.NO_FEATURE_LINK))
-                wire.openWire.forEach { renderPost(it, surface, descriptor) }
+                wire.openWire.forEach { renderPost(it, surface, descriptor, withThread = true) }
             }
             is NewswireWireState.Featured -> {
+                // A featured post is re-listed on the open wire, so its thread +
+                // reply render once — on the canonical open-wire row. The Featured
+                // highlight is headline-only unless the post is featured-only.
+                val featuredOwners = wire.featuredOnlyIds
                 content.addView(heading("Featured"))
-                wire.frontPage.forEach { renderPost(it, surface, descriptor) }
+                wire.frontPage.forEach { renderPost(it, surface, descriptor, withThread = it.id in featuredOwners) }
                 content.addView(heading("Open wire"))
-                wire.openWire.forEach { renderPost(it, surface, descriptor) }
+                wire.openWire.forEach { renderPost(it, surface, descriptor, withThread = true) }
             }
         }
     }
 
-    /** A post row, its communal replies threaded beneath it, and — for an ordinary
-     *  post on a projectable wire — a reply affordance. A redacted post shows no
+    /** A post row and, when [withThread], its communal replies plus — for an
+     *  ordinary post on a projectable wire — a reply affordance. [withThread] is
+     *  false for a featured highlight whose thread lives on its open-wire row, so a
+     *  thread and reply box render exactly once per post. A redacted post shows no
      *  reply control (you reply to visible reports, not withheld ones). */
-    private fun renderPost(row: NewswirePostRow, surface: NewswireSurface, descriptor: String?) {
+    private fun renderPost(
+        row: NewswirePostRow,
+        surface: NewswireSurface,
+        descriptor: String?,
+        withThread: Boolean,
+    ) {
         content.addView(postView(row))
+        if (!withThread) return
         surface.comments(row.id).forEach { content.addView(commentView(it)) }
         if (row.display == NewswirePostDisplay.ORDINARY && descriptor != null) {
             addReplyAffordance(descriptor, row.id)

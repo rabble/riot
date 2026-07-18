@@ -329,7 +329,19 @@ sealed class NewswireWireState(val accessibilityId: String) {
     data class PostsButNoFeature(val openWire: List<NewswirePostRow>) :
         NewswireWireState("newswire-no-feature")
     data class Featured(val frontPage: List<NewswirePostRow>, val openWire: List<NewswirePostRow>) :
-        NewswireWireState("newswire-featured")
+        NewswireWireState("newswire-featured") {
+        /** Front-page post ids whose comment thread + reply belong in the FEATURED
+         *  section — only those NOT also on the open wire. Core re-lists every
+         *  featured post on the open wire (featured ⊆ open wire), so this is empty
+         *  and the highlight stays headline-only, its thread rendered once on the
+         *  canonical open-wire row. Kept general so a thread is never doubled nor
+         *  orphaned if that guarantee ever changes. */
+        val featuredOnlyIds: Set<String>
+            get() {
+                val onWire = openWire.mapTo(mutableSetOf()) { it.id }
+                return frontPage.mapNotNullTo(mutableSetOf()) { row -> row.id.takeUnless { it in onWire } }
+            }
+    }
 
     companion object {
         fun from(projection: NewswireProjectionView): NewswireWireState {

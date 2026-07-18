@@ -112,6 +112,24 @@ class NewswireScreenTest {
     }
 
     @Test
+    fun aFeaturedPostRepeatedOnTheWireDoesNotOwnItsThreadInTheFeaturedSection() {
+        // Core always re-lists a featured post on the open wire (featured ⊆ open
+        // wire), so its thread renders once — on the canonical open-wire row — and
+        // the Featured highlight is headline-only.
+        val featured = NewswirePostRow.of(post("f", "Featured", NewswirePostTreatment.ORDINARY))
+        val state = NewswireWireState.Featured(frontPage = listOf(featured), openWire = listOf(featured))
+        assertTrue(state.featuredOnlyIds.isEmpty())
+    }
+
+    @Test
+    fun aFeaturedPostAbsentFromTheOpenWireKeepsItsThreadInFeatured() {
+        val onlyFeatured = NewswirePostRow.of(post("f", "Featured", NewswirePostTreatment.ORDINARY))
+        val onWire = NewswirePostRow.of(post("w", "Wire", NewswirePostTreatment.ORDINARY))
+        val state = NewswireWireState.Featured(frontPage = listOf(onlyFeatured), openWire = listOf(onWire))
+        assertEquals(setOf("f"), state.featuredOnlyIds)
+    }
+
+    @Test
     fun commentsSurviveIntoTheSurfaceGroupedUnderTheirParent() {
         val surface = NewswireScreen.resolve("desc") {
             projection(
