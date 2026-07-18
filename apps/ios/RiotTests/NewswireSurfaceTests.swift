@@ -421,6 +421,34 @@ final class NewswireSurfaceTests: XCTestCase {
         XCTAssertEqual(row.headline, "Standing report", "the payload must survive an unauthorized hide")
     }
 
+    /// Even if a bug FORCED the editorial control visible (authority seam stubbed to
+    /// true), the core still refuses a non-roster author's action and the post is
+    /// UNCHANGED — the display predicate is never the security boundary (design §4
+    /// defense-in-depth).
+    func testForcingControlsVisibleDoesNotLetANonEditorChangeAnything() throws {
+        struct AlwaysEditor: NewswireEditorAuthorityChecking {
+            func newswireIsEditor(spaceDescriptorEntryID: String, subjectID: String) throws -> Bool { true }
+        }
+        let stranger = "33".repeated(32)
+        let profile = try openLocalProfile()                       // my key ∉ roster
+        let space = try profile.createNewswireSpace(input: spaceInput("Forced", roster: [stranger]))
+        let post = try profile.createNewswirePost(input: postInput(space.entryId, "Untouched"))
+        let live = LiveNewswire(profile)
+        let model = NewswireSurfaceModel(projector: live, editor: live, authority: AlwaysEditor(),
+            spaceDescriptorEntryID: space.entryId, communityName: "Forced",
+            myKeyHex: RiotDirectoryRow.hex(try profile.profile().whoami().id))
+        model.load()
+        XCTAssertTrue(model.canOfferEditorialControls, "seam forced true ⇒ control shown (the bug we defend against)")
+
+        // …yet the action still fails at core and the post is unchanged.
+        model.draft = EditorialActionDraft(kind: .hide, reason: "force it")
+        XCTAssertEqual(model.sign(targetEntryID: post.entryId), .rejected)
+        let projection = try profile.projectNewswireSpace(spaceDescriptorEntryId: space.entryId)
+        let row = try XCTUnwrap(projection.openWire.first { $0.entryId == post.entryId })
+        XCTAssertEqual(row.treatment, .ordinary, "core, not the UI, is the gate")
+        XCTAssertEqual(row.headline, "Untouched")
+    }
+
     /// "UI visibility is never an authorization check." The two halves are proven
     /// INDEPENDENTLY on the same non-editor: the control is hidden AND, even when
     /// the sign is called directly (bypassing the hidden control), the post's
