@@ -2,6 +2,7 @@ package org.riot.evidence
 
 import uniffi.riot_ffi.NewswireEditorialActionKind
 import uniffi.riot_ffi.NewswirePostTreatment
+import uniffi.riot_ffi.NewswireProjectedComment
 import uniffi.riot_ffi.NewswireProjectedEditorialAction
 import uniffi.riot_ffi.NewswireProjectedPost
 import uniffi.riot_ffi.NewswireProjectionView
@@ -237,6 +238,45 @@ data class NewswirePostRow(
             verificationCount = post.verificationIds.size,
             aiAssisted = post.aiAssisted,
         )
+    }
+}
+
+/**
+ * One communal reply, ready to draw indented under its parent post. Every field
+ * comes from core's projection; the surface only re-shapes, never re-decides. A
+ * hidden or tombstoned reply arrives with `body == null`, so the row draws the
+ * treatment interstitial instead of the words — the same redaction contract as a
+ * post. Twin of iOS `NewswireCommentRow`.
+ */
+data class NewswireCommentRow(
+    val id: String,
+    /** The post this reply hangs under. The surface groups core's flat list by
+     *  this id; core already dropped any reply with no held parent. */
+    val parentId: String,
+    val author: String,
+    val authorKeyHex: String,
+    val body: String?,
+    val display: NewswirePostDisplay,
+) {
+    companion object {
+        fun of(comment: NewswireProjectedComment) = NewswireCommentRow(
+            id = comment.entryId,
+            parentId = comment.parentEntryId,
+            author = comment.author.rendered,
+            authorKeyHex = comment.author.id,
+            body = comment.body,
+            display = NewswirePostDisplay.from(comment.treatment),
+        )
+
+        /** Groups core's flat, already-time-sorted comment list under each parent
+         *  post's entry id, preserving order — the surface never re-sorts. */
+        fun group(comments: List<NewswireProjectedComment>): Map<String, List<NewswireCommentRow>> {
+            val byParent = linkedMapOf<String, MutableList<NewswireCommentRow>>()
+            for (comment in comments) {
+                byParent.getOrPut(comment.parentEntryId) { mutableListOf() }.add(of(comment))
+            }
+            return byParent
+        }
     }
 }
 
