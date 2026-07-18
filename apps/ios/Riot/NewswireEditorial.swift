@@ -280,6 +280,17 @@ public protocol NewswireEditorialActing {
     ) throws -> NewswireSignedRecord
 }
 
+/// The one read the editorial surface makes to decide whether to OFFER a control:
+/// core's descriptor-authenticated roster answer, identical to the authority core
+/// enforces at admission (Unit 4a's shared `is_editorial_authority`). An unknown /
+/// not-yet-synced descriptor answers `false` (never throws) so the surface can
+/// render a "controls appear after first sync" note off a defined false. UI
+/// VISIBILITY only — core still rejects a non-editor's action at signing regardless
+/// of what this returns.
+public protocol NewswireEditorAuthorityChecking {
+    func newswireIsEditor(spaceDescriptorEntryID: String, subjectID: String) throws -> Bool
+}
+
 // MARK: - Post treatment display
 
 /// How one projected post renders under active editorial actions. Read straight

@@ -1299,6 +1299,14 @@ public extension RiotProfileRepository {
     func newswireShareReference(spaceDescriptorEntryID: String) throws -> NewswireShareReference {
         try profile.newswireShareReference(spaceDescriptorEntryId: spaceDescriptorEntryID)
     }
+
+    /// True iff `subjectID` may take editorial actions in the space identified by
+    /// `spaceDescriptorEntryID` — core's descriptor-authenticated roster answer
+    /// (Unit 4a), the SAME authority core enforces at admission. An unknown /
+    /// not-yet-synced descriptor returns `false`, never a throw.
+    func newswireIsEditor(spaceDescriptorEntryID: String, subjectID: String) throws -> Bool {
+        try profile.newswireIsEditor(descriptorEntryId: spaceDescriptorEntryID, subjectId: subjectID)
+    }
 }
 
 /// `RiotProfileRepository` is the live source of the People surface — it hands
@@ -1336,6 +1344,11 @@ extension RiotProfileRepository: NewswireProjecting {}
 /// The live signer for the editorial surface — it hands the action straight to
 /// core, whose roster check (not any UI state) is what actually authorizes it.
 extension RiotProfileRepository: NewswireEditorialActing {}
+
+/// The live editor-authority read for the editorial surface — it forwards to
+/// core's descriptor-authenticated roster answer (Unit 4a), the same authority
+/// core enforces at admission. Visibility only; core is the signing gate.
+extension RiotProfileRepository: NewswireEditorAuthorityChecking {}
 
 private extension RiotEntry {
     init(_ entry: CurrentEntry) {

@@ -446,6 +446,36 @@ final class NewswireSurfaceTests: XCTestCase {
         XCTAssertTrue(openWire.contains { $0.id == p2.entryId })
     }
 
+    // MARK: - Repository authority wrapper (Unit 4b, consumes Unit 4a)
+
+    private func openRepository() throws -> RiotProfileRepository {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("newswire-editor-\(UUID().uuidString)", isDirectory: true)
+        let storage = try ProtectedProfileStorage(
+            fileURL: directory.appendingPathComponent("profile.json"))
+        return try RiotProfileRepository.open(storage: storage, keyStore: TestWrappingKeyStore())
+    }
+
+    /// The live repository wrapper answers with core's descriptor-authenticated
+    /// roster (Unit 4a): a roster member is an editor, a stranger is not, and an
+    /// unknown / not-yet-synced descriptor answers `false`, never a throw (that
+    /// defined false is what drives the pending-sync note in the model).
+    func testRepositoryWrapperMatchesTheCoreAuthorityForMemberAndNonMember() throws {
+        let repo = try openRepository()
+        let mineHex = try repo.me().id   // the founder's real subspace id, hex
+        // Founding roster = [me] (what ConferenceShellView seeds): I edit my own community.
+        let record = try repo.createNewswireSpace(
+            name: "Wrapped", summary: "News.", editorialRoster: [mineHex])
+        XCTAssertTrue(try repo.newswireIsEditor(
+            spaceDescriptorEntryID: record.entryId, subjectID: mineHex))
+        // A stranger key is NOT an editor.
+        XCTAssertFalse(try repo.newswireIsEditor(
+            spaceDescriptorEntryID: record.entryId, subjectID: "11".repeated(32)))
+        // An unknown / not-yet-synced descriptor id → false, NOT a throw.
+        XCTAssertFalse(try repo.newswireIsEditor(
+            spaceDescriptorEntryID: "ab".repeated(32), subjectID: mineHex))
+    }
+
     // MARK: - Fixtures & helpers
 
     private func projection(
@@ -502,6 +532,16 @@ final class NewswireSurfaceTests: XCTestCase {
             kind: NewswireEditorialActionKind, reason: String?, correctionText: String?
         ) throws -> NewswireSignedRecord {
             throw NSError(domain: "test", code: 1)
+        }
+    }
+
+    private final class TestWrappingKeyStore: WrappingKeyStore {
+        private var key: Data?
+        func loadOrCreateWrappingKey() throws -> Data {
+            if let key { return key }
+            let created = Data(repeating: 0x5a, count: 32)
+            key = created
+            return created
         }
     }
 }
