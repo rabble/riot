@@ -79,29 +79,43 @@ pub fn addr_from_node_id(node_id: [u8; 32]) -> Result<EndpointAddr, TransportErr
     Ok(EndpointAddr::from(key))
 }
 
-/// A ticket `node` hint carrying the NodeId AND any direct socket addresses:
-/// `<id_hex>@<ip:port>,<ip:port>`. The addresses let a follower dial directly
-/// (LAN, or a public seed) without waiting on DHT discovery; with no addresses
-/// it degrades to id-only (discovery). Untrusted — outside the ticket signature.
-pub fn endpoint_addr_hint(addr: &EndpointAddr) -> String {
-    let id = addr
-        .addrs
-        .iter()
-        .filter_map(|a| match a {
-            TransportAddr::Ip(s) => Some(s.to_string()),
-            _ => None,
-        })
-        .collect::<Vec<_>>();
-    let idhex: String = addr
-        .id
+/// A ticket `node` hint carrying the NodeId AND direct socket addresses:
+/// `<id_hex>@<ip:port>,<ip:port>`. Uses the endpoint's REAL bound UDP port (not
+/// the STUN-observed external port, which is invalid for a LAN/tailnet peer) —
+/// so a peer on the same LAN or tailnet dials directly and connects. For a
+/// public seed behind NAT, discovery-by-id (id-only hint) is the reachable path.
+/// Untrusted — outside the ticket signature.
+pub fn endpoint_addr_hint(endpoint: &Endpoint) -> String {
+    let idhex: String = endpoint
+        .id()
         .as_bytes()
         .iter()
         .map(|b| format!("{b:02x}"))
         .collect();
-    if id.is_empty() {
+
+    // The actual bound local ports (e.g. 0.0.0.0:54426) — what a same-network
+    // peer must dial, unlike the STUN-mapped port in watch_addr().
+    let bound_v4 = endpoint
+        .bound_sockets()
+        .into_iter()
+        .find(|s| s.is_ipv4())
+        .map(|s| s.port());
+
+    // The endpoint's interface IPs, re-homed onto the real bound port.
+    let mut seen = std::collections::BTreeSet::new();
+    for a in endpoint.addr().addrs {
+        if let TransportAddr::Ip(s) = a {
+            let port = bound_v4.unwrap_or_else(|| s.port());
+            if s.is_ipv4() {
+                seen.insert(format!("{}:{}", s.ip(), port));
+            }
+        }
+    }
+    let addrs: Vec<String> = seen.into_iter().collect();
+    if addrs.is_empty() {
         idhex
     } else {
-        format!("{idhex}@{}", id.join(","))
+        format!("{idhex}@{}", addrs.join(","))
     }
 }
 
