@@ -82,3 +82,60 @@ public enum AlertsListState: Equatable, Sendable {
         return .populated(rows)
     }
 }
+
+/// Renders the existing `AlertDetail` value model. Headline is plain
+/// `Text(verbatim:)` (never markdown/AttributedString auto-link — anti-injection);
+/// the 64-hex ids stay behind the closed **Technical details** disclosure until a
+/// person opts in.
+public struct AlertDetailSheet: View {
+    /// The disclosure default, exposed for the contract test (full ids stay hidden until opt-in).
+    public static let technicalStartsExpanded = false
+
+    public let detail: AlertDetail
+    public let onClose: () -> Void
+    @Environment(\.colorScheme) private var colorScheme
+    @State private var showingTechnical = AlertDetailSheet.technicalStartsExpanded
+
+    public init(detail: AlertDetail, onClose: @escaping () -> Void) {
+        self.detail = detail
+        self.onClose = onClose
+    }
+
+    public var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                // Plain Text(verbatim:) — never markdown/AttributedString auto-link (anti-injection).
+                Text(verbatim: detail.headline)
+                    .font(.riot(.body, size: 20, relativeTo: .title3))
+                    .foregroundStyle(RiotTheme.ink(for: colorScheme))
+                    .accessibilityAddTraits(.isHeader)
+                if detail.aiAssisted {
+                    Text("AI-assisted")
+                        .font(.riot(.mono, size: 12, relativeTo: .caption))
+                        .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
+                        .accessibilityIdentifier("alert-detail-ai-assisted")
+                }
+                ForEach(detail.summary, id: \.label) { row in
+                    LabeledContent(row.label, value: row.value)
+                }
+                DisclosureGroup(AlertDetail.technicalDisclosureTitle, isExpanded: $showingTechnical) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        ForEach(detail.technical, id: \.label) { row in
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(row.label).font(.riot(.mono, size: 11, relativeTo: .caption2))
+                                    .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
+                                Text(verbatim: row.value).font(.riot(.mono, size: 12, relativeTo: .caption))
+                                    .textSelection(.enabled)
+                            }
+                        }
+                    }
+                }
+                .font(.riot(.mono, size: 12, relativeTo: .caption))
+                .accessibilityIdentifier("alert-detail-technical")
+            }
+            .padding(20)
+        }
+        .riotHeader(eyebrow: "Alert", detail.headline)
+        .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done", action: onClose) } }
+    }
+}

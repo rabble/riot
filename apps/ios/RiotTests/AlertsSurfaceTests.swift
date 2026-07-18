@@ -95,3 +95,33 @@ final class AlertsSurfaceTests: XCTestCase {
         XCTAssertEqual(AlertRelativeTime.freshness(dead, now: now), AlertsStrings.expired)
     }
 }
+
+// MARK: - Task 2: AlertDetailSheet renders the AlertDetail value model
+
+extension AlertsSurfaceTests {
+    func testAlertDetailModelDrivesTheSheetContent() {
+        let e = Self.entry("Bridge out on 5th", signerID: Self.activeNS, aiAssisted: true)
+        let detail = AlertDetail(entry: e)
+        XCTAssertEqual(detail.headline, "Bridge out on 5th")
+        XCTAssertTrue(detail.aiAssisted)
+        // Summary is the act-on-it window; the 64-hex ids live only under technical.
+        XCTAssertTrue(detail.summary.contains { $0.label == "Expires" })
+        XCTAssertTrue(detail.technical.contains { $0.label == "Signer" && $0.value == Self.activeNS })
+        XCTAssertFalse(detail.summary.contains { $0.value == Self.activeNS }, "full ids never lead the sheet")
+    }
+
+    func testSheetTechnicalDisclosureStartsClosedByContract() {
+        // The sheet binds its DisclosureGroup to this default; a full id must never
+        // be visible until a person opts in (navigation accessibility contract).
+        XCTAssertFalse(AlertDetailSheet.technicalStartsExpanded)
+        XCTAssertEqual(AlertDetail.technicalDisclosureTitle, "Technical details")
+    }
+
+    func testHeadlineIsCarriedVerbatimForPlainTextRendering() {
+        // Anti-injection: a markdown-looking headline is preserved literally; the
+        // view renders it as plain Text (verbatim:), never AttributedString auto-link.
+        let e = Self.entry("[tap here](http://evil.example)", signerID: Self.activeNS)
+        XCTAssertEqual(AlertDetail(entry: e).headline, "[tap here](http://evil.example)")
+        XCTAssertEqual(AlertRow(e, activeNamespaceID: Self.activeNS).headline, "[tap here](http://evil.example)")
+    }
+}
