@@ -1,7 +1,7 @@
 # Public Community Anchor Network Design
 
 Date: 2026-07-18
-Status: Design review rounds 1-2 revised; pending round 3
+Status: Design review rounds 1-3 revised; pending round 4
 Scope: Owner-rooted composite public sites, discovery, hosting, web mirroring,
 and opportunistic internet sync
 
@@ -53,6 +53,14 @@ sync FSMs and digests, multi-ALPN/native transport boundaries, signed feed and
 replica gossip, all-class persistence ceilings, authenticated work challenges,
 safe hinted dialing, renderer sandbox/output validation, typed UX transitions,
 and opt-in aggregate pilot measurement.
+
+Round three closed boundary conditions exposed by those exact contracts:
+scalable native site storage, multi-chunk sync responses, durable prepared
+idempotency replay, stable anchor identity and paged key continuity, bounded
+anchor proof profiles, root-safe delegated listing epochs, channel-bound peer
+authentication, signed feed checkpoints/snapshots, immutable renderer ownership
+transfer, operational-log quotas, self-contained host/consent states, strict
+ticket/manifest transport matching, and exact pilot formulas.
 
 ## Product Decisions
 
@@ -216,6 +224,17 @@ A listing entry is valid when it is signed by either:
   - path prefix exactly `/directory`;
   - a bounded time range containing the entry timestamp.
 
+A delegated entry must also carry a canonical `ListingDelegateGrantV1` signed
+directly by the `O` root under:
+
+```text
+"riot/listing-delegate-grant/v1" || canonical_cbor(grant_body)
+```
+
+The grant binds the root, delegate key, terminal capability digest, one exact
+`listing_epoch`, issued time, and expiry. It cannot outlive the Meadowcap time
+range. A Meadowcap chain alone does not let a delegate choose an epoch.
+
 The Riot admission layer additionally requires the entry's path to equal
 `/directory/listing`; authority over arbitrary `/directory` children is not
 interpreted as a new record type.
@@ -228,7 +247,8 @@ The canonical CBOR payload binds:
 - full root and `O`, `C`, and `W` namespace IDs;
 - manifest digest and version;
 - a canonical root-signed `PublicSiteTicketV2` core;
-- monotonically increasing listing revision;
+- `listing_epoch: u32`;
+- `listing_revision: u32`;
 - `listed: true | false`;
 - title and summary;
 - bounded topic tags and languages;
@@ -245,10 +265,26 @@ Sign(
 ```
 
 The body binds schema/version, full root and `O`, `C`, and `W` IDs, manifest
-digest/version, `min_sync_version: 2`, `transport_floor: require:none`,
-transport epoch, issued time, and expiry. Its expiry must be at or after the
-listing expiry. The listing entry and ticket core must name identical roots,
-namespaces, and manifest coordinates or admission fails.
+digest/version, `min_sync_version: 2`,
+`manifest_required_transport`, `transport_floor`, transport epoch, issued
+time, and expiry. The ticket floor must be greater than or equal to the
+manifest requirement under the current total ordering
+`require:none < require:arti`. The MVP accepts
+only the equality `require:none == require:none`; every other combination
+fails before dialing as `unsupported_transport`. Its expiry must be at or
+after the listing expiry. The listing entry and ticket core must name identical
+roots, namespaces, and manifest coordinates or admission fails.
+
+The core ticket builder reads the verified manifest and refuses a mismatched
+transport pair. Clients compare `transport_floor >=
+manifest_required_transport` and require both to be `require:none` before any
+anchor or hinted iroh/HTTPS dial. `PrepareHost` performs the same ticket check
+and compares against an already-retained manifest when present; after a new
+operation stages `O`, it compares the actual manifest field before permitting
+`C`, `W`, or commit. `SubmitListing` and every `ReadCommitted` open compare all
+three values again against the admitted manifest. A mismatch is
+`manifest_transport_mismatch`, quarantines the operation/listing, and never
+downgrades to public iroh.
 
 A dedicated listing delegate may update listing presentation and revision, but
 cannot mint this root-signed ticket. The owner issues or refreshes the ticket
@@ -262,15 +298,25 @@ display but does not delete hosted state or copies held by peers.
 
 For a given root:
 
-- higher valid revision wins;
-- identical revision and digest deduplicate;
-- identical revision with different digests is listing equivocation, so neither
-  listing is shown;
-- a higher **root-owned zero-delegation** listing clears listing equivocation;
+- a delegated entry is admitted only in the epoch named by its valid grant;
+- only a root-owned zero-delegation entry or grant may establish the next epoch,
+  and it may advance by exactly one;
+- higher valid epoch wins;
+- within an epoch, a root-owned zero-delegation listing unconditionally wins
+  over every delegated listing, regardless of revision, and seals that epoch
+  against later delegated changes;
+- among records in the same authority class, higher revision wins;
+- identical `(epoch, authority class, revision)` and digest deduplicate;
+- identical coordinates with different digests are listing equivocation, so
+  neither listing is shown;
+- a higher-revision root-owned listing in the current epoch or any valid
+  root-established next epoch clears equivocation and cannot be pinned by a
+  delegate at `u32::MAX`;
 - expiry is inclusive: the listing is invalid when `now >= expiry`.
 
-Anchors persist the highest admitted revision and conflict evidence so restart
-or cache eviction cannot roll the listing backward.
+Anchors persist the root-controlled epoch, sealed status, highest admitted
+revision, grants, and conflict evidence so restart or cache eviction cannot
+roll the listing backward.
 
 ## Canonical Anchor Records
 
@@ -281,6 +327,20 @@ encodings, and trailing bytes.
 
 ### `AnchorDescriptorV1`
 
+`AnchorId` is stable for the life of one deployed anchor:
+
+```text
+AnchorId = BLAKE3(
+  "riot/anchor-id/v1" ||
+  genesis_operator_public_key ||
+  genesis_random_256_bits
+)
+```
+
+It does not change when operator signing or iroh endpoint keys rotate. Receipts,
+feed coordinates, cursors, configuration, and deduplication use `AnchorId`;
+signatures name the current operator key separately.
+
 The operator signs:
 
 ```text
@@ -289,6 +349,7 @@ The operator signs:
 
 The body contains:
 
+- stable full `AnchorId`;
 - full anchor operator key ID;
 - monotonically increasing descriptor epoch;
 - previous descriptor digest when epoch is greater than zero;
@@ -325,8 +386,9 @@ cryptographic guarantee. A dishonest or failed anchor may break it.
 
 ### `ListingReceiptV1`
 
-The operator signs the listing digest, site root, accepted revision, directory
-feed coordinate, acceptance time, expiry, and request idempotency key under:
+The operator signs the listing digest, site root, accepted epoch/revision,
+directory feed coordinate, acceptance time, expiry, and request idempotency key
+under:
 
 ```text
 "riot/listing-receipt/v1"
@@ -355,6 +417,15 @@ lower epoch, any different digest at the same epoch, and every replayed
 predecessor descriptor. Emergency revocation without the old key is an
 explicit user-visible operational trust reset and is not hidden as normal
 rotation.
+
+The well-known response contains the latest descriptor and a same-origin,
+redirect-free descriptor-chain endpoint. A client pinned at any older digest
+fetches bounded pages of at most 16 descriptors, verifies every previous digest,
+epoch increment, old-key signature, new-key signature, stable `AnchorId`, and
+time overlap, then persists the newest floor. The operator must retain this
+chain for every still-supported app floor. If the chain is unavailable or
+inconsistent, the client reports `descriptor_chain_unavailable` and requires an
+app update or explicit trust reset; it never skips rotations.
 
 ## Transport Roles
 
@@ -486,9 +557,16 @@ IdsPage {
   entry_ids: at most 256,
   done
 }
-NeedEntries { phase, page_digest, entry_ids: at most 64 }
+NeedEntries { phase, page_digest, request_id, entry_ids: at most 64 }
 PageNeedsComplete { phase, page_digest }
-Entries { phase, page_digest, canonical bundle: at most 64 entries and 8 MiB }
+EntriesChunk {
+  phase,
+  page_digest,
+  request_id,
+  chunk_index,
+  done,
+  canonical bundle: at most 64 entries and 8 MiB
+}
 PageComplete { phase, page_digest }
 DirectionComplete { phase, sender_snapshot_digest }
 NamespaceComplete { mode, final_snapshot_digest }
@@ -500,11 +578,14 @@ direction the inventory sender and receiver follow this exact FSM:
 
 1. Sender opens one immutable snapshot and sends `SnapshotStart`.
 2. Sender sends exactly one strictly sorted `IdsPage`.
-3. Receiver sends zero to four `NeedEntries` frames. Every requested ID must
-   occur in that page and may occur once. Receiver ends requests with exactly
-   one `PageNeedsComplete`.
-4. Sender returns one `Entries` frame per request, in request order, then
-   `PageComplete`.
+3. Receiver sends zero to four `NeedEntries` frames with distinct request IDs.
+   Every requested ID must occur in that page and may occur once. Receiver ends
+   requests with exactly one `PageNeedsComplete`.
+4. For each request in order, sender deterministically partitions the requested
+   entries, preserving requested-ID order, into one or more legal
+   `EntriesChunk` bundles. Chunk indices start at zero without gaps; only the
+   last has `done: true`. Because every admitted anchor-profile item is at most
+   2 MiB, at least one item always fits. Sender then sends `PageComplete`.
 5. Only after `PageComplete` may sender send the next page. Its first ID must be
    greater than `after_exclusive`.
 6. After the page with `done: true`, receiver first verifies the advertised
@@ -512,10 +593,19 @@ direction the inventory sender and receiver follow this exact FSM:
    received bundles for that direction, and sends `DirectionComplete`.
 
 Page overlap, duplicate IDs, cursor regression, digest change, out-of-page
-need, unexpected frame, admission failure, or premature EOF terminates the
-session with no visibility outside the relevant local/staged transaction.
-Bundles retain the current 64-entry, 8 MiB, and 1 MiB-per-item ceilings.
+need, missing/duplicate request or chunk index, oversized chunk, unexpected
+frame, admission failure, or premature EOF terminates the session with no
+visibility outside the relevant local/staged transaction.
+Bundles retain the current 64-entry, 8 MiB, and 1 MiB payload-per-item
+ceilings; the anchor-profile encoded item including proofs is at most 2 MiB.
 Writes arriving after a sender opens its snapshot appear in the next session.
+
+Each received chunk is admitted into direction-private staging in a short
+transaction. `DirectionComplete` verifies completeness and atomically promotes
+that direction's stage into its parent local-follow or anchor-host operation.
+An abort deletes or expires the direction stage; already committed application
+state remains unchanged. This reconciles bounded per-chunk writes with
+end-of-direction atomic visibility.
 
 `ReadCommitted` executes one phase, `AnchorToClient`. After
 `DirectionComplete`, the anchor sends `NamespaceComplete` with its committed
@@ -564,8 +654,37 @@ leaves no durable follow mutation.
 
 The control ALPN carries canonical CBOR frames no larger than 64 KiB. Every
 request has a random 128-bit `idempotency_key`. The anchor stores the canonical
-request-body digest and terminal result for 24 hours. Repeating the same key
-and body returns that result; reusing a key with another body is rejected.
+request-body digest and an idempotency state:
+
+```text
+Claimed |
+Prepared { operation_id, operation_expiry } |
+Terminal { result }
+```
+
+One SQLite unique constraint atomically claims a new key. The winning
+`PrepareHost` or `PrepareReplica` transaction creates the operation and changes
+the same row to `Prepared`; concurrent exact calls read and replay it, while
+another body is rejected. Namespace tokens are deterministically derived as:
+
+```text
+HMAC-SHA256(
+  anchor_operation_secret,
+  "riot/namespace-token/v1" ||
+  operation_id || namespace_id || operation_expiry
+)
+```
+
+so exact prepared replay returns the same tokens after restart without storing
+them in plaintext. The operation stores the token-secret epoch; key-store
+rotation retains prior secrets until every operation using them expires.
+Commit/refusal changes the row to `Terminal`. A prepared
+mapping is retained through `operation_expiry + 24 hours`; a terminal or
+ordinary single-call result is retained for 24 hours. The prepared-operation
+lifetime is at most one hour, so its mapping cannot disappear while live.
+A `Claimed` row has a 30-second lease; startup or retry may delete it only when
+no operation/result exists and the lease expired. Prepare operation creation
+and transition to `Prepared` commit atomically.
 
 Long-running work has a separate random 256-bit `operation_id`, created by the
 anchor and returned from `PrepareHost` or `PrepareReplica`. Every later call
@@ -663,12 +782,22 @@ increasing feed sequence:
 
 ```text
 PullDirectoryFeed { after_sequence, limit: at most 32 }
-DirectoryFeedPage { inclusions, head_sequence, head_digest, done }
+DirectoryFeedPage { inclusions, floor_sequence, head_sequence, head_digest, done }
+CheckpointRequired { checkpoint, snapshot_cursor }
 ```
 
-Each inclusion is at most 16 KiB and each page at most 60 KiB, preserving the
-control-frame ceiling. The operation is read-only and available only to
-authenticated configured peers.
+Each inclusion is at most 48 KiB; the server includes no more than the
+requested count that fits one 60 KiB page, preserving the control-frame
+ceiling. The operation is read-only and available only to authenticated
+configured peers.
+
+### `PullDirectorySnapshot`
+
+Input names a verified checkpoint digest and optional opaque snapshot cursor.
+Output contains the immutable checkpoint plus the next full-root-ordered
+current-state record, next cursor, and `done`. At most one inclusion and 60 KiB
+is returned per frame. On the final frame the receiver must recompute the
+checkpoint state digest before advancing its feed cursor.
 
 ### `GetOperation`
 
@@ -689,8 +818,10 @@ ControlRefusal {
 ```
 
 Codes include `invalid_authority`, `unsupported_version`, `over_quota`,
-`unsupported_transport`, `expired`, `not_hosted`, `manifest_mismatch`,
-`equivocation`, `work_required`, and `busy`.
+`unsupported_transport`, `manifest_transport_mismatch`, `expired`,
+`not_hosted`, `manifest_mismatch`,
+`equivocation`, `anchor_profile_oversize`, `site_too_large`, `work_required`,
+and `busy`.
 A refusal is a protocol result, not a transport failure and not a signed
 hosting receipt.
 
@@ -724,15 +855,23 @@ ExploreState =
 FollowState =
   Validating |
   Resolving { attempts } |
-  Preview { verified_site, destination_status } |
-  AwaitingConsent |
+  AwaitingConsent { verified_site, ticket_core, destination_status } |
   Syncing { per_anchor_progress } |
   CommittingLocal |
   Saved { site_root, destination_status, attempts } |
   AlreadyFollowed { site_root, destination_status } |
   Cancelled { mutation: None } |
-  Failed { phase, attempts, local_mutation: None } |
+  Failed { phase, attempts, retry_context, local_mutation: None } |
   Quarantined { subject, evidence }
+
+ReplacementPhase =
+  VerifyingNew |
+  HostingNew |
+  ListingNew |
+  ConfirmingRedundancy |
+  DisablingOldRoute |
+  OptionallyUnlistingOld |
+  Complete
 
 PublishState =
   SelectingHosts |
@@ -744,9 +883,23 @@ PublishState =
   Listed { listing_receipts, host_receipts } |
   Unlisting { per_anchor } |
   Refreshing { per_anchor } |
-  Replacing { old_anchor, new_anchor, phase } |
+  Replacing { old_anchor, new_anchor, phase: ReplacementPhase } |
   Partial { completed, refused, unreachable } |
   Failed { phase, per_anchor }
+
+HostConfigurationState =
+  Idle { configured_hosts } |
+  FetchingDescriptor { origin } |
+  VerifyingDescriptor { origin, descriptor } |
+  AwaitingHostConsent { descriptor, continuity, roles } |
+  PersistingHost { descriptor } |
+  Enabling { anchor_id } |
+  Disabling { anchor_id } |
+  RemovingLocalRoute { anchor_id } |
+  ResettingEmbeddedDefaults |
+  Ready { configured_hosts, changed_anchor } |
+  Cancelled { mutation: None } |
+  Failed { phase, reason, mutation: None }
 ```
 
 `expired` always names the expired subject. `over_quota` always names the
@@ -762,7 +915,10 @@ Technical details even when a record is absent from visible results.
 Legal mutation boundaries are normative:
 
 - Explore never mutates follow or hosting state.
-- Follow mutates no durable state before explicit preview acceptance.
+- Follow mutates no durable state before `Accept` from
+  `AwaitingConsent`; `Cancel` or app termination there discards the retained
+  verified payload with no mutation. `Retry` from a retryable failure consumes
+  the explicit `retry_context`, never hidden side state.
 - Accepted data is staged locally; `Saved` is emitted only after one atomic
   local follow commit. Cancellation or failure before it emits
   `local_mutation: None`.
@@ -772,6 +928,10 @@ Legal mutation boundaries are normative:
   the old host then stops future client sync but does not claim remote deletion.
   Remote unlisting is a separate signed operation, and retained hosted state
   expires under the old receipt's policy.
+- Host configuration persists nothing before `AwaitingHostConsent` acceptance.
+  Enabling/disabling/removing changes one local routing record atomically.
+  Reset replaces only the routing configuration with the package-signed
+  embedded defaults; it never changes follows, listings, or remote state.
 
 Pure injectable ports mirror existing repository patterns:
 
@@ -781,6 +941,30 @@ Pure injectable ports mirror existing repository patterns:
 - `AnchorConfigurationPort`;
 - `Clock`;
 - `RetryScheduler`.
+
+## Native Client Site Repository
+
+The current capped `EvidenceRepository` and its 1,024-entry/16 MiB store and
+2 MiB preview budgets are not used for followed composite sites.
+
+A new SQLite-backed `ClientSiteRepository` implements a dependency-neutral
+`SiteReplicaRepository` trait in `riot-core`. The SQLite adapter is owned by
+the profile layer exposed through `riot-ffi`; `riot-client-net` receives the
+trait as an injected handle. It stores verified manifests, `O/C/W` entries,
+payloads, follow staging, anchor configuration/floors, receipts, and retry
+intent. One transaction promotes all three namespaces plus the ongoing-sync
+schedule after consent.
+
+Default device limits are 1 GiB total followed-site logical bytes, 64 MiB per
+site, 4,096 live entries per namespace, and the anchor-profile per-item bounds.
+Users may configure lower total storage. Before accepting a preview, Riot
+compares the ticket/manifest, anchor limit descriptor, advertised snapshot
+counts, and remaining local budget. A site that cannot fit yields typed
+`site_too_large { required_class, advertised, local_limit }`; it does not fall
+back to the smaller evidence store or partially commit. SQLite WAL, crash
+recovery, per-site staging, payload reference accounting, and eviction of
+explicitly unfollowed/expired staging follow the same atomicity rules as the
+anchor repository.
 
 ## Anchor Repository
 
@@ -847,6 +1031,29 @@ new receipt state occur atomically.
 Operators may configure lower values, but not exceed the compiled absolute
 ceilings. The signed descriptor publishes effective values.
 
+### Anchor public-profile bounds
+
+Anchor eligibility is intentionally stricter than the general Riot/Meadowcap
+codec maxima. `AnchorPublicProfileV1` requires:
+
+| Canonical object | Maximum |
+| --- | ---: |
+| Capability chain attached to one anchor-profile entry | 12 KiB |
+| Manifest entry plus capability | 16 KiB |
+| Listing entry plus capability and optional delegate grant | 16 KiB |
+| `PublicSiteTicketV2` core | 768 bytes |
+| `DirectoryInclusionV1` | 48 KiB |
+| One sync bundle item including payload/proofs | 2 MiB |
+| Listing expiry from admission | 30 days |
+| Ticket expiry from admission | 90 days |
+| Prepared operation lifetime | 1 hour |
+
+Bounds are checked before host staging, listing persistence, or feed
+construction. A general protocol-valid record that exceeds them receives the
+typed `anchor_profile_oversize` refusal and remains valid for nearby/file/P2P
+exchange. Thus every valid anchor-profile listing and inclusion fits the 64 KiB
+control-frame limit.
+
 MVP defaults and absolute ceilings:
 
 | Resource | Default | Absolute ceiling |
@@ -877,8 +1084,14 @@ MVP defaults and absolute ceilings:
 | Verification queue jobs | 512 | 2,048 |
 | Verification CPU per request | 500 ms | 2 s |
 | Aggregate outstanding verification CPU budget | 16 s | 64 s |
+| Work-challenge signatures per second | 100 | 500 |
+| Work challenges per source per minute | 30 | 120 |
 | Static projection bytes | 5 GiB | 20 GiB |
+| Renderer temporary filesystem | 1 GiB | 4 GiB |
 | Published generations per site | 2 | 2 |
+| Local operational log bytes, all classes | 512 MiB | 2 GiB |
+| Diagnostic log bytes | 128 MiB | 512 MiB |
+| Rotated local log files | 128 | 512 |
 | Concurrent gossip sessions per peer | 2 | 4 |
 | Gossip transfer per peer per hour | 256 MiB | 1 GiB |
 
@@ -888,6 +1101,11 @@ idempotency lookup, global metadata/row headroom, work verification when
 required, then canonical/admission verification. Exact idempotent replay reads
 the prior row without repeating work. A novel key that exceeds any source or
 global ceiling is refused without persistence.
+
+Challenge signing has separate in-memory per-source and global token buckets
+before any KMS call. Concurrent final requests for one idempotency key race on
+the single durable `Claimed` row; only the winner can consume capacity, and all
+exact losers replay its state.
 
 Idempotency results and terminal refusals expire after 24 hours; abandoned
 staging expires at its operation deadline; expired directory-feed history is
@@ -948,6 +1166,65 @@ root signatures alone resist Sybil floods.
 Accepted sites within their reported horizon are not displaced by new Sybil
 roots. At hard capacity the anchor refuses new roots.
 
+### Configured-peer authentication
+
+Peer-only control operations begin with this exact `riot/anchor/1` handshake;
+all frames are canonical CBOR and at most 4 KiB:
+
+```text
+PeerHello {
+  role: Initiator | Responder,
+  nonce: 32 random bytes,
+  anchor_id,
+  operator_key_id,
+  descriptor_epoch,
+  descriptor_digest,
+  iroh_endpoint_id,
+  issued_at
+}
+
+PeerProof {
+  role,
+  signature
+}
+```
+
+The initiator sends `PeerHello(Initiator)`. The responder verifies freshness
+within five minutes, descriptor validity, stable anchor/endpoint bindings, and
+configured operator/role, then sends `PeerHello(Responder)` followed by its
+proof. The initiator verifies both and sends its proof. Nonces must differ.
+
+The transport adapter exposes the live QUIC TLS exporter:
+
+```text
+channel_binding =
+  TLS-Exporter("EXPORTER-Riot-Anchor-Peer-v1", 32 bytes)
+
+transcript = canonical_cbor(
+  protocol_version,
+  negotiated_alpn,
+  initiator_hello,
+  responder_hello,
+  channel_binding
+)
+
+signature =
+  Sign(
+    operator_key,
+    "riot/anchor-peer-proof/v1" ||
+    role_byte ||
+    BLAKE3(transcript)
+  )
+```
+
+Both proofs bind roles, nonces, operator keys, stable anchor IDs, descriptor
+epochs/digests, iroh endpoint IDs, ALPN, and this live connection. A reflected,
+replayed, cross-role, cross-endpoint, or cross-connection proof fails.
+`PrepareReplica`, `PullDirectoryFeed`, and `PullDirectorySnapshot` remain
+unavailable until both proofs verify and the configured-rule lookup succeeds.
+Failure returns one bounded `peer_auth_failed { stage }` refusal and closes the
+connection.
+
 ### Gossip amplification boundary
 
 An arbitrary client request never enqueues cross-anchor replication.
@@ -955,10 +1232,7 @@ An arbitrary client request never enqueues cross-anchor replication.
 Anchor gossip occurs only when:
 
 - both operators configured a peer relationship;
-- the iroh peer endpoint equals the endpoint in a currently valid descriptor
-  signed by the configured operator key;
-- both sides complete nonce-based proof of possession of their operator keys
-  over the connection transcript before receiving peer budgets;
+- the configured-peer handshake above succeeds;
 - the relationship names directory-only or explicit site replication rules;
 - per-peer work and byte budgets permit it.
 
@@ -978,6 +1252,7 @@ DirectoryInclusionV1 {
   state: Included | Suspended | Removed,
   reason,
   listing_entry_and_capability,
+  optional_listing_delegate_grant,
   public_site_ticket_core,
   admitted_manifest_entry_and_capability,
   accepted_manifest_digest_and_version,
@@ -985,10 +1260,20 @@ DirectoryInclusionV1 {
 }
 ```
 
-The operator signs the domain-separated canonical record. Sequence starts at
-one and increases by one; the previous digest makes truncation or reordering
-detectable relative to a signed head. `ListingReceiptV1.feed_coordinate` is
-exactly `(anchor_id, sequence, inclusion_digest)`.
+The operator signs:
+
+```text
+Sign(
+  operator_key,
+  "riot/directory-inclusion/v1" ||
+  canonical_cbor(inclusion_body)
+)
+```
+
+Sequence starts at one and increases by one; the previous digest makes
+truncation or reordering detectable relative to a signed head.
+`ListingReceiptV1.feed_coordinate` is exactly
+`(anchor_id, sequence, inclusion_digest)`.
 
 `Included` is emitted only after the local atomic hosted-manifest/listing match
 defined by `SubmitListing`. Unlisting, expiry, manifest mismatch, hosting
@@ -1004,11 +1289,60 @@ web mirror unless the peer separately completes `PrepareReplica`, commit, and
 local listing admission. Peer cursors persist `(operator key, descriptor epoch,
 sequence, inclusion digest)` and reject forked histories.
 
+### Feed checkpoint and bounded recovery
+
+Before compacting, the anchor creates:
+
+```text
+DirectoryCheckpointV1 {
+  anchor_id,
+  descriptor_epoch,
+  floor_sequence,
+  head_sequence,
+  head_inclusion_digest,
+  state_digest,
+  previous_checkpoint_digest,
+  created_at
+}
+```
+
+It signs
+`"riot/directory-checkpoint/v1" || canonical_cbor(checkpoint_body)`.
+`state_digest` is:
+
+```text
+BLAKE3(
+  "riot/directory-state/v1" ||
+  for each current root sorted by full root bytes:
+    u32be(len(root)) || root ||
+    u32be(len(current_inclusion_digest)) || current_inclusion_digest
+)
+```
+
+Feed entries are retained for at least 30 days and until covered by a signed
+checkpoint. The newest two checkpoints and their complete current-state
+snapshots are retained. If `after_sequence < floor_sequence`,
+`PullDirectoryFeed` returns
+`CheckpointRequired { checkpoint, snapshot_cursor }`.
+`PullDirectorySnapshot` then pages current `DirectoryInclusionV1` records in
+full-root order under that immutable checkpoint, at most one 48 KiB record and
+60 KiB per frame. The peer verifies every record, recomputes `state_digest`,
+sets its cursor to `head_sequence/head_inclusion_digest`, then resumes the
+incremental feed. A checkpoint mismatch or unavailable snapshot is a typed
+fail-closed error, never an empty feed.
+
+Ten percent of the feed-record ceiling is reserved for unlisting, expiry,
+equivocation, and security suspension. If the non-reserved ceiling is reached
+before records are old enough to compact, new listings/refreshes are refused;
+the anchor never violates the global cap or blocks owner removal records.
+
 The HTTPS API:
 
 ```text
 GET /.well-known/riot-anchor.json
+GET /.well-known/riot-anchor-chain/v1?after=<descriptor-digest>&cursor=
 GET /api/v1/feed?after=&limit=
+GET /api/v1/feed/snapshot?checkpoint=&cursor=
 GET /api/v1/directory?q=&cursor=&limit=
 GET /api/v1/directory/<full-community-root>
 GET /open/v2/<canonical-base64url-envelope>
@@ -1030,6 +1364,20 @@ exact retained ticket core, an optional requested destination, and current
 bounded source hints. The anchor can replace hints but cannot change or mint
 the root-signed core. Native Explore consumes the same core directly, so
 directory discovery and web sharing enter one Follow state machine.
+
+For a peer-learned item the URL origin must be a verified source descriptor
+whose latest inclusion says `Included` and whose roles contain both `host` and
+`mirror`. Sources are tried in the user's configured priority, then full
+`AnchorId` order. If none qualifies, the item exposes a native handoff and
+“Web view unavailable”; the querying anchor never emits a local mirror URL for
+content it does not host.
+
+The public feed endpoint is a lossless JSON envelope carrying base64url
+canonical signed inclusion/checkpoint bytes plus `head`, `floor`, and opaque
+cursor. An old cursor returns HTTP 409 with typed `checkpoint_required` and the
+signed checkpoint/snapshot cursor. Its snapshot endpoint is the HTTPS
+projection of the same immutable `PullDirectorySnapshot` protocol; cursors
+bind anchor ID, checkpoint digest, and last full root.
 
 Inputs are normalized and bounded. Database queries are parameterized. Cursors
 bind the normalized query and snapshot generation so they cannot be reused
@@ -1054,10 +1402,12 @@ snapshot pipeline:
 4. The anchor validates the output manifest and atomically swaps the served
    directory.
 
-Production ships the daemon and renderer as one deployment unit with separate
-OCI containers. The renderer sidecar is unprivileged, has a read-only root
-filesystem, no network namespace interface, a restrictive seccomp profile, and
-write access only to one generation-temporary volume. The daemon alone can
+Production ships the daemon and renderer as one orchestrated deployment unit
+with separate OCI containers, not a same-network-namespace pod. The renderer
+job uses `network_mode: none` (or an equivalent dedicated empty network
+namespace), is unprivileged, has a read-only root filesystem, a restrictive
+seccomp profile, and write access only to one quota-limited
+generation-temporary volume. The daemon alone can
 atomically publish a validated generation. A local-development subprocess is
 allowed but is not described as a security boundary. The renderer may reuse
 extracted pure templates from `apps/gateway`; it does not weaken the existing
@@ -1073,6 +1423,7 @@ MVP mirror rules:
 - unknown payload profiles are omitted with a plain explanation;
 - success and error pages carry CSP as an HTTP header;
 - `default-src 'none'`;
+- `base-uri 'none'` and `form-action 'none'`;
 - only the exact hashed static stylesheet is permitted;
 - `frame-ancestors 'none'`, `nosniff`, HSTS, and restrictive
   `Permissions-Policy`;
@@ -1084,6 +1435,20 @@ rejects symlinks, hard links, devices, sockets, non-regular files, path escapes,
 duplicate or case-colliding routes, files absent from the manifest, unexpected
 MIME types, size/count overruns, and changed digests. Security headers are
 applied by the daemon to every success and error response, not by templates.
+
+Publication is an ownership transfer, not validation followed by reuse of a
+writable tree:
+
+1. The renderer exits and its temporary mount is detached.
+2. The daemon opens every source and destination with no-follow descriptors,
+   copies into a fresh daemon-owned generation, and hashes bytes during copy.
+3. It rechecks the manifest, fsyncs files and directories, makes the tree
+   read-only to the daemon's serving identity, and confirms the renderer
+   container has no mount or descriptor into it.
+4. Only then does it atomically rename the generation into service.
+
+Renderer temporary output is on its own filesystem quota and cannot consume
+database, log, or published-generation headroom.
 
 Riot-native sync still carries admitted payloads. The web MVP does not attempt
 to serve arbitrary media safely.
@@ -1108,12 +1473,12 @@ https://<anchor-origin>/open/v2/<canonical-base64url-envelope>
 The envelope contains:
 
 - `signed_core`: the site-wide root-signed `PublicSiteTicketV2` retained from
-  the admitted listing;
+  admitted hosting; a listing, when present, carries the exact same core;
 - `destination_entry`: optional full entry ID outside the ticket core;
 - `anchor_hints`: unsigned replaceable routing metadata.
 
 The envelope is at most 1,800 canonical bytes before base64url encoding and
-contains at most four hints of 192 bytes. This keeps the complete HTTPS URL
+contains at most three hints of 192 bytes. This keeps the complete HTTPS URL
 within 2,500 characters for QR and platform handoff compatibility. Larger
 configured anchor sets remain local and are not copied into the envelope.
 
@@ -1269,13 +1634,23 @@ Default application, reverse-proxy, CDN, and load-balancer configuration:
 - requires an explicit, time-bounded diagnostic mode for detailed request
   correlation.
 
+Application, proxy, audit, crash, CDN-export spool, and diagnostic logs share
+the compiled byte/file ceilings above. Size rotation runs before the seven-day
+time limit and deletes oldest closed files first. Diagnostic mode has its own
+smaller subquota and shuts off when full or expired. External proxy/CDN sinks
+must declare equivalent retention and storage caps in deployment
+configuration; an unbounded sink fails readiness validation. Log saturation
+drops new non-authoritative log events and increments a bounded in-memory
+counter; it never consumes database/static headroom or blocks protocol
+readiness. Logs are not authority or recovery state.
+
 Public IDs are printed in full when a specific diagnostic requires them; they
 are never truncated.
 
 Ticket and descriptor parsers:
 
 - reject duplicate authoritative fields and ambiguous encodings;
-- cap v2 handoff envelopes at 1,800 canonical bytes and hints at four entries
+- cap v2 handoff envelopes at 1,800 canonical bytes and hints at three entries
   of 192 bytes;
 - allow only defined iroh and HTTPS hint schemes;
 - verify the signed transport floor before every native dial;
@@ -1336,17 +1711,27 @@ pilot collector. Anchor logs are not joined to client metrics.
 
 Event boundaries and denominators are fixed:
 
+- A reported follow attempt begins at `Validating`; the “at least 50” pilot
+  count includes valid, invalid, cancelled, accepted, and failed attempts.
 - A follow journey starts when a user opens a verified Explore result or v2
-  handoff and enters `AwaitingConsent`. It enters the duration denominator only
-  after acceptance, ends at `Saved`, and records explicit cancellation,
-  invalid ticket, and app termination as separate outcomes rather than silently
-  excluding them.
+  handoff and enters `AwaitingConsent`; that monotonic instant is its duration
+  start. Let `A` be every such journey that later emits `Accept`. `A` includes
+  post-accept cancellation, app termination, timeout, refusal, and transport
+  failure. Pre-accept cancellation and inputs that never verify into
+  `AwaitingConsent` are reported separately and are not in `A`.
+- Let `S120` be members of `A` that reach `Saved` within 120 seconds of their
+  duration start, and `S` be members that reach `Saved` at any time before the
+  pilot attempt timeout. The 90% threshold is exactly `S120 / A`. The 80%
+  stop/revise completion criterion is exactly `S / A`.
 - A host-plus-list journey starts at organizer confirmation with at least two
   selected hosts and ends when two hosting receipts and at least one listing
-  receipt are verified. Refusal, cancellation, or timeout is a failed attempt.
+  receipt are verified. Its three-minute percentage is successful journeys
+  completed within 180 seconds divided by all confirmed journeys; refusal,
+  cancellation, app termination, or timeout remains in the denominator.
 - An intentional failover trial starts when the harness marks one configured
   anchor unavailable immediately before the first dial and ends at `Saved`
-  through another anchor or at 30 seconds.
+  through another anchor or at 30 seconds. Its percentage is successful
+  alternate-anchor saves within 30 seconds divided by all intentional trials.
 - Destination preservation compares the input full root/entry bytes with the
   locally verified saved/opened result. A legitimately absent destination is
   reported separately and is not counted as opening a different entry.
@@ -1357,7 +1742,7 @@ every percentage. Consent withdrawal deletes unsubmitted local metrics.
 User-focused pilot thresholds:
 
 - at least 10 organizers, 30 readers, and 50 follow attempts;
-- 90% of installed-app discovery-to-saved journeys complete within two minutes;
+- `S120 / A >= 90%` for installed-app discovery-to-saved journeys;
 - 80% of organizer host-plus-list journeys complete within three minutes;
 - 95% of follow attempts succeed through another anchor within 30 seconds when
   one configured anchor is intentionally unavailable;
@@ -1371,7 +1756,7 @@ Stop/revise criteria:
 - a web-to-app handoff opens a different site or loses its requested entry;
 - any invalid authority reaches retained state or web output;
 - open admission can exceed a compiled global ceiling;
-- fewer than 80% of installed-app follow journeys complete in the pilot.
+- `S / A < 80%` for installed-app follow journeys.
 
 ## Deployment and Recovery Contract
 
@@ -1431,14 +1816,17 @@ RED:
 
 - same-version manifest equivocation is not quarantined;
 - editorial capability incorrectly authorizes `/directory/listing`;
+- max-revision delegate prevents root recovery;
 - listing/ticket/manifest coordinates can disagree;
-- duplicate ticket fields, unsupported Arti floor, and v1/v2 downgrade are not
-  rejected.
+- ticket transport summary differs from the manifest;
+- duplicate ticket fields, oversize anchor proofs, unsupported Arti floor, and
+  v1/v2 downgrade are not rejected.
 
 GREEN:
 
-- canonical records, reserved listing admission, exact manifest match, floors,
-  tombstones, v2 ticket, and parser bounds pass focused tests.
+- canonical records, root-controlled listing epochs/grants, exact manifest and
+  transport match, floors, tombstones, v2 ticket, and profile bounds pass
+  focused tests.
 
 REFACTOR:
 
@@ -1451,6 +1839,7 @@ RED:
 
 - responder cannot route a namespace before constructing a session;
 - 257+ IDs cannot reconcile in bounded pages;
+- one 64-ID request exceeds 8 MiB or chunk indexes fork;
 - cursor overlap/digest change is not rejected;
 - read sync can mutate anchor state or staged host sync can leak before commit;
 - independent implementations disagree on frame order or snapshot digest.
@@ -1471,15 +1860,17 @@ RED:
 
 - crash between staging and commit leaks partial visibility;
 - operation IDs collide with idempotency keys or duplicate work/receipts;
+- prepared replay after restart changes operation ID or namespace token;
 - work proof replays against another body;
 - logical quota is bypassed by cross-community dedup;
-- metadata-only requests exceed a persistent ceiling.
+- metadata-only requests exceed a persistent ceiling;
+- client O/C/W state overflows the legacy evidence repository.
 
 GREEN:
 
-- routed multi-ALPN Describe/Prepare/Sync/Commit, SQLite atomic promotion,
-  receipt recovery, authenticated work, all-class quotas, reference accounting,
-  and restart pass.
+- routed multi-ALPN Describe/Prepare/Sync/Commit, durable prepared replay,
+  server and scalable client SQLite atomic promotion, receipt recovery,
+  authenticated work, all-class quotas, reference accounting, and restart pass.
 
 REFACTOR:
 
@@ -1492,12 +1883,14 @@ RED:
 - hosting implies listing;
 - conflicting listing revisions produce divergent search;
 - client-triggered requests create background fanout;
-- feed forks, unauthenticated peers, and listing-before-hosting become visible.
+- feed forks, stale pre-checkpoint cursors, unauthenticated/reflected peer
+  proofs, and listing-before-hosting become visible.
 
 GREEN:
 
-- signed chained feeds, listing/unlisting/suspension, typed coverage,
-  authenticated configured replica gossip, and three-anchor quiescence pass.
+- signed chained feeds/checkpoint snapshots, listing/unlisting/suspension,
+  channel-bound configured replica gossip, typed coverage, and three-anchor
+  quiescence pass.
 
 REFACTOR:
 
@@ -1509,14 +1902,15 @@ RED:
 
 - hostile HTML/SVG/attribute strings execute or escape context;
 - symlink/path/MIME output escapes renderer validation;
+- renderer mutates a file after validation or fills its temporary filesystem;
 - app-absent journey loses the ticket/destination;
 - old deep links regress.
 
 GREEN:
 
-- sandboxed immutable text-only rendering, validated output manifests, security
-  headers, bounded byte-identical HTTPS/custom v2 handoff, install-return
-  journey, and v1 compatibility pass.
+- sandboxed immutable ownership-transfer rendering, validated output manifests,
+  security headers, bounded byte-identical HTTPS/custom v2 handoff,
+  install-return journey, and v1 compatibility pass.
 
 REFACTOR:
 
@@ -1530,6 +1924,7 @@ RED:
 - receipt/refusal/transport errors collapse;
 - one-anchor outage blocks follow;
 - clean install has no verified defaults or reset path;
+- host configuration or follow consent depends on undocumented side state;
 - cancellation leaves native networking or staged local mutation alive.
 
 GREEN:
@@ -1548,7 +1943,8 @@ REFACTOR:
 RED:
 
 - global capacity, verification queue, logging, migration, eviction, restart,
-  aggregate-metric, or rollback contracts fail under adversarial load.
+  aggregate-metric formula, renderer quota, or rollback contracts fail under
+  adversarial load.
 
 GREEN:
 
@@ -1565,17 +1961,23 @@ Tests explicitly cover:
 
 - `now == expiry`;
 - manifest and listing revision ties/equivocation;
+- delegate at `u32::MAX` followed by root recovery;
 - listing tombstone followed by stale replay;
 - manifest upgrade during sync;
 - duplicate/ambiguous anchor hints;
 - loopback/private/DNS-rebinding hints and descriptor endpoint mismatch;
 - work proof replay with another key or body;
+- peer-proof reflection, replay, role swap, exporter mismatch, and stale hello;
+- prepared idempotency replay before/after restart and expiry;
+- 64 requested maximum-size items split across ordered chunks;
 - concurrent uploads for one site;
 - crash before and after admission commit;
 - eviction during a read snapshot;
 - sync disconnect between commit and receipt;
 - `GetOperation` after restart;
 - directory feed fork/reorder and descriptor rollback;
+- feed cursor before compaction floor and snapshot digest mismatch;
+- client pinned across several descriptor-key rotations;
 - listing before hosting and hosting eviction after listing;
 - gossip loops and final quiescence;
 - unsupported `require:arti` ticket;
@@ -1585,7 +1987,8 @@ Tests explicitly cover:
 - stale cached directory with partial source coverage;
 - malformed Unicode/control characters in listings and search;
 - hostile strings in every HTML context;
-- cancellation before preview and before commit.
+- post-validation renderer mutation and log/temp-filesystem exhaustion;
+- cancellation before consent acceptance and before commit.
 
 ## Quality Gates
 
@@ -1641,27 +2044,33 @@ The design is implemented when:
 - clean installs verify a removable plural default set and users can
   add/remove/replace/reset hosts without changing community identity;
 - hosting never implies listing;
-- exact listing authority and equivocation rules are enforced;
+- exact listing authority, owner recovery, and equivocation rules are enforced;
 - clients discover through plural feeds and ordinary web pages;
 - web/app handoff preserves site and entry destination across install;
 - directory results and web pages carry the same root-signed public-site ticket
   core without giving anchors minting authority;
-- clients persist a verified local copy and schedule ongoing reconciliation;
+- clients atomically persist verified `O/C/W` state in the scalable site
+  repository and schedule ongoing reconciliation;
 - mobile internet operations run through the cancellable Rust-owned
   iroh/Tokio/UniFFI boundary;
 - anchors enforce manifest and Meadowcap authority before propagation;
+- ticket and manifest transport requirements match before every public dial or
+  admission;
 - `sync/2` routes and paginates all composite namespaces without the 64-ID
-  inventory ceiling;
+  inventory ceiling or 8 MiB response dead end;
 - control operations are canonical, idempotent, recoverable, and typed;
 - operation IDs, idempotency keys, and authenticated work proofs cannot be
   replayed across bodies;
+- stable anchor IDs, descriptor chains, and prepared namespace tokens survive
+  key rotation and restart;
 - the anchor repository survives crash/restart and enforces logical/global
   quotas;
 - open hosting cannot exceed compiled process ceilings or trigger unbounded
   gossip;
 - authenticated directory and replica gossip has a complete bounded wire
-  lifecycle and independently verified feed history;
-- the text-only web renderer preserves the hostile-content boundary;
+  lifecycle, channel-bound peer authentication, and checkpoint recovery;
+- the text-only web renderer uses immutable ownership transfer and preserves
+  the hostile-content boundary;
 - deterministic three-anchor tests converge and survive anchor loss;
 - opt-in aggregate metrics prove the public pilot meets the user-focused
   thresholds without correlated server logs;
