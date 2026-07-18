@@ -1,7 +1,7 @@
 # Public Community Anchor Network Design
 
 Date: 2026-07-18
-Status: Design review rounds 1-9 revised; pending round 10
+Status: Design review rounds 1-10 revised; pending round 11
 Scope: Owner-rooted composite public sites, discovery, hosting, web mirroring,
 and opportunistic internet sync
 
@@ -102,6 +102,11 @@ numeric tags, retained request digests across reserved owner-removal replay,
 defined crash-orphan replica invalidation, corrected profile-scoped network
 shutdown, fixed daemon feature ownership, and made multi-anchor publish,
 relisting, and pilot cancellation/recovery states durably executable.
+
+Round ten completed the remaining wire surface: named peer-transcript and proof
+preimages, a canonical admission work stamp, exact success/refusal response
+envelopes for every control operation, stable limit identifiers, pilot HMAC-key
+retention, and reservation release for automatic listing lifecycle changes.
 
 ## Product Decisions
 
@@ -483,6 +488,31 @@ bodies are:
 | `pull_directory_snapshot` | `[1, checkpoint_digest, optional_snapshot_cursor]` |
 | `get_operation` | `[1, operation_id]` |
 
+Every bounded control reply is exactly
+`ControlResponseV1 = [1, operation_kind, outcome]`, where `outcome` is either
+`["success", success_payload]` or `["refused", ControlRefusal]`. There is no
+third envelope shape; transport loss occurs outside a decoded response. Exact
+success payloads are:
+
+| Operation | Exact `success_payload` |
+| --- | --- |
+| `describe` | `[1, descriptor_envelope, anchor_limit_profile]` |
+| `get_work_challenge` | `[1, work_challenge_envelope]` |
+| `prepare_host` | `[1, operation_id, base_site_generation, ordered_namespace_host_plan, ordered_namespace_tokens, ordered_retained_snapshot_digests, sync_version, effective_operation_limits, operation_expiry]` |
+| `commit_host` | `[1, hosting_receipt]` |
+| `submit_listing` | `[1, listing_receipt]` |
+| `prepare_replica` | `[1, operation_id, base_site_generation, ordered_namespace_host_plan, ordered_namespace_tokens, ordered_retained_snapshot_digests, sync_version, effective_operation_limits, operation_expiry]` |
+| `pull_directory_feed` | `[1, ["page", inclusions, floor_sequence, head_sequence, head_digest, done]]` or `[1, ["checkpoint_required", checkpoint, snapshot_cursor]]` |
+| `pull_directory_snapshot` | `[1, checkpoint, optional_snapshot_record, optional_next_cursor, done]` |
+| `get_operation` | `[1, operation_id, ["claimed"] \| ["prepared", operation_expiry, canonical_prepare_success_payload] \| ["terminal", terminal_control_outcome]]` |
+
+`effective_operation_limits` is a sorted array of `[limit_id,
+effective_value]` drawn byte-identically from the described limit profile.
+`ordered_namespace_host_plan`, tokens, retained digests, and feed inclusions
+use their already specified semantic order. A retained idempotent result stores
+and replays the complete canonical `ControlResponseV1`, not an
+implementation-private projection.
+
 Namespace tuples always appear in `O`, `C`, `W` order. Every `operation_id`,
 idempotency key, root, namespace ID, digest, nonce, key, signature, cursor, and
 canonical `*_bytes` field is a CBOR byte string with the exact byte limit stated
@@ -492,15 +522,86 @@ normative arrays. CDDL and code must agree with this document; neither may add
 a tag, field, alternate map form, or numeric discriminant.
 
 `AnchorLimitProfileV1` is exactly
-`[1, profile_epoch, [[limit_name, effective_value, absolute_value]...]]`.
-`limit_name` is the exact first-column resource-table text encoded as UTF-8;
-compound rows with two slash-separated quantities become two entries whose
-names append exact ASCII ` / first` and ` / second`. Entries are sorted by
-canonical `limit_name` bytes and every resource-table row appears exactly once
-(or twice for a compound row). Values are unsigned integers expressed in the
-unit printed by that row; byte units are converted to bytes and durations to
-milliseconds. `fixed` means effective and absolute are equal. An operator may
-only lower `effective_value`; changing any value increments `profile_epoch`.
+`[1, profile_epoch, [[limit_id, effective_value, absolute_value]...]]`.
+Entries contain every ID below exactly once in ascending order. A scalar value
+is `u64`; a slash-compound value is `[first_u64, second_u64]`. Bytes are
+expressed in bytes, durations in milliseconds, counts/rates in their printed
+table unit, and CPU percentages in basis points. `fixed` and `unchanged`
+resolve to the same numeric effective/absolute value; formulas such as `2 * L`
+are resolved before signing. An operator may only lower an effective value;
+changing any value increments `profile_epoch`.
+
+```text
+ 1 logical_retained_bytes_whole_anchor
+ 2 physical_retained_bytes
+ 3 ordinary_sqlite_database_including_wal
+ 4 non_payload_metadata_bytes
+ 5 sqlite_wal_bytes
+ 6 emergency_removal_metadata_reserve
+ 7 emergency_removal_wal_fsync_reserve
+ 8 staged_bytes
+ 9 live_staged_operations
+10 idempotency_rows
+11 idempotency_rows_per_source_per_24h
+12 reserved_removal_idempotency_result_rows
+13 incident_conflict_records
+14 conflict_proofs_per_site_subject
+15 hosted_sites
+16 logical_bytes_per_site
+17 live_entries_per_namespace
+18 item_payload
+19 bundle
+20 concurrent_sync_control_sessions
+21 sessions_per_source
+22 sessions_per_site
+23 tcp_listen_backlog
+24 accepted_public_https_sockets
+25 pending_tls_handshakes
+26 tls_handshakes_per_source_per_minute
+27 tls_handshakes_globally_per_second
+28 tls_clienthello_total_handshake_bytes
+29 tls_handshake_cpu_wall_time
+30 active_public_https_connections
+31 http_requests_per_keep_alive_connection
+32 http_idle_absolute_connection_lifetime
+33 http_decoded_header_fields_one_field_line
+34 concurrent_public_https_handlers
+35 queued_public_https_handlers
+36 public_https_requests_per_source_per_minute
+37 public_https_requests_globally_per_second
+38 concurrent_public_http_database_snapshots
+39 public_http_database_snapshots_per_source
+40 public_http_query_cpu_wall_time
+41 public_api_response_bytes
+42 one_static_web_response
+43 search_results_per_page
+44 search_query_utf8_bytes
+45 directory_listings
+46 directory_feed_records
+47 verification_queue_jobs
+48 verification_cpu_per_request
+49 aggregate_outstanding_verification_cpu_budget
+50 reserved_owner_removal_verification_permits
+51 queued_reserved_removal_jobs
+52 queued_reserved_removal_canonical_bytes
+53 reserved_valid_removal_database_writer_permits
+54 emergency_checkpoint_worker
+55 owner_removal_attempts_per_source_per_minute
+56 owner_removal_attempts_globally_per_second
+57 work_challenge_signatures_per_second
+58 work_challenges_per_source_per_minute
+59 static_projection_bytes
+60 renderer_temporary_filesystem
+61 renderer_temporary_files_inodes
+62 concurrent_renderer_jobs
+63 renderer_cpu_wall_time_per_generation
+64 published_generations_per_site
+65 local_operational_log_bytes_all_classes
+66 diagnostic_log_bytes
+67 rotated_local_log_files
+68 concurrent_gossip_sessions_per_peer
+69 gossip_transfer_per_peer_per_hour
+```
 
 Every operator-signed row below uses `OperatorSignedEnvelopeV1`; its signature
 preimage remains that record type's stated domain plus canonical body bytes.
@@ -520,7 +621,7 @@ byte-for-byte canonical re-encoding check before hashing.
 | `control_request_digest` | `riot/anchor-control-request-body/v1` | `ControlDigestBodyV1` with every semantic field including `work_stamp`, excluding only outer idempotency key and transport/framing metadata |
 | `work_target_digest` | `riot/anchor-work-target/v1` | `ControlDigestBodyV1` with the fixed optional `work_stamp` slot set to `null` and the same idempotency/framing exclusions |
 | `page_digest` | `riot/sync-ids-page/v2` | complete canonical `IdsPage` frame |
-| `peer_transcript_digest` | `riot/anchor-peer-transcript/v1` | canonical peer transcript tuple |
+| `peer_transcript_digest` | `riot/anchor-peer-transcript/v1` | complete canonical `PeerTranscriptV1` array |
 | `replica_source_attestation_digest` | `riot/replica-source-attestation-envelope/v1` | `OperatorSignedEnvelopeV1<ReplicaSourceAttestationBodyV1>` |
 
 An admitted manifest continues to use the existing manifest-version canonical
@@ -1071,7 +1172,7 @@ signatures and envelopes:
 | Descriptor-chain page | 60 KiB / 16 envelopes |
 | Limit profile | 8 KiB |
 | `HostingReceiptV1`, `ListingReceiptV1`, or `ReplicaSourceAttestationV1` | 4 KiB |
-| `WorkChallengeV1`, `ReplicaPrepareChallengeV1`, refusal, peer hello, or peer proof | 4 KiB |
+| `WorkChallengeV1`, `WorkStampV1`, `ReplicaPrepareChallengeV1`, refusal, peer hello, or peer proof | 4 KiB |
 | `PrepareHost` request / response | 32 KiB / 8 KiB |
 | `CommitHost` request / response | 4 KiB / 8 KiB |
 | `SubmitListing` request / response | 32 KiB / 8 KiB |
@@ -1231,6 +1332,17 @@ without retaining a claim. While already unlisted, another key receives that
 bounded result; receipt recovery uses the original key. Relisting acquires a
 new `Free` slot. After two list/remove cycles inside the 24-hour retention
 window, relisting—not a subsequent removal—waits for the earlier Terminal.
+
+Reservation lifecycle follows visibility intent. Hosting eviction or a
+reversible security suspension keeps `ReservedForListedRoot`, because the
+listing may become visible again and its owner must still be able to remove it.
+Listing expiry, manifest-invalidating terminal suspension, or an operator
+terminal administrative removal atomically appends the appropriate signed
+`Suspended`/`Removed` inclusion, clears current visibility/restore intent, and
+changes `ReservedForListedRoot` to `Free` in the same transaction. A later
+owner tombstone observes the durable `already_unlisted` floor and needs no
+removal slot. Startup cleanup performs the same transition idempotently, so
+abandoned reservations cannot accumulate.
 
 One fixed-capacity `IdempotencyKeyIndex`, sized for the ordinary ceiling plus
 `2 * L` exclusively reserved entries, makes a key unique across ordinary and
@@ -1574,7 +1686,11 @@ DestinationPublishOutcome =
   Refused(ControlRefusal) |
   Overloaded { retry_at, preserved_work } |
   Unreachable { retry_context } |
-  Cancelled
+  Cancelled {
+    hosted_state: Unchanged,
+    retained_hosting_receipt: optional,
+    retained_listing_receipt: optional
+  }
 
 PublishState =
   SelectingHosts |
@@ -2025,6 +2141,10 @@ control-frame limit.
 
 MVP defaults and absolute ceilings:
 
+The following rows correspond one-for-one, in order, to stable limit IDs
+`1..=69` in the canonical registry above; slash-compound rows use the
+two-element value form.
+
 | Resource | Default | Absolute ceiling |
 | --- | ---: | ---: |
 | Logical retained bytes, whole anchor | 20 GiB | 100 GiB |
@@ -2276,10 +2396,31 @@ proof =
     work_challenge_digest ||
     u64be(counter)
   )
+
+WorkStampV1 {
+  challenge_envelope_bytes,
+  counter,
+  proof_bytes
+}
 ```
 
+`challenge_envelope_bytes` is the complete canonical
+`OperatorSignedEnvelopeV1<WorkChallengeBodyV1>` as a CBOR byte string,
+`counter` is a `u64`, and `proof_bytes` is exactly the 32-byte BLAKE3 output
+above. The optional work-stamp slot in a control semantic body is therefore
+either `null` or canonical `[1, challenge_envelope_bytes, counter,
+proof_bytes]`.
+
 The proof must have the challenge's number of leading zero bits. The anchor
-first verifies its own challenge signature, all bindings, and time window.
+first canonically decodes the stamp and nested envelope, recomputes
+`work_challenge_digest`, verifies its own challenge signature, verifies
+`proof_bytes`, and checks every binding: anchor/key/descriptor, intended
+operation kind, outer idempotency key, `work_target_digest` of this request
+with the work-stamp slot reset to `null`, community root, policy epoch, and time
+window. Only then may it perform admission work or claim the request. An exact
+request replay compares the stored `control_request_digest` and returns its
+existing state without re-consuming work; the same key with a changed stamp,
+counter, or body is `idempotency_conflict`.
 Difficulty is `0..24`, the challenge expires after five minutes, and the work
 stamp is therefore bound to one anchor, request key, exact request body, root,
 operation kind, and pressure-policy epoch. A proof cannot authorize a different
@@ -2355,22 +2496,42 @@ The transport adapter exposes the live QUIC TLS exporter:
 channel_binding =
   TLS-Exporter("EXPORTER-Riot-Anchor-Peer-v1", 32 bytes)
 
-transcript = canonical_cbor(
-  protocol_version,
-  negotiated_alpn,
+PeerTranscriptV1 {
+  control_protocol_version,
+  negotiated_alpn_bytes,
   initiator_hello,
   responder_hello,
   channel_binding
-)
+}
+
+transcript =
+  canonical_cbor([
+    1,
+    1,
+    h'72696f742f616e63686f722f31',
+    initiator_hello,
+    responder_hello,
+    channel_binding
+  ])
+
+peer_proof_signature_preimage(role, peer_transcript_digest) =
+  u16be(25) || "riot/anchor-peer-proof/v1" ||
+  u16be(byte_length(role)) || role ||
+  peer_transcript_digest
 
 signature =
   Sign(
     operator_key,
-    "riot/anchor-peer-proof/v1" ||
-    role_byte ||
-    peer_transcript_digest
+    peer_proof_signature_preimage(role, peer_transcript_digest)
   )
 ```
+
+The only legal control protocol version is integer `1`; the only legal
+`negotiated_alpn_bytes` is the exact 13-byte ASCII value `riot/anchor/1` shown
+in hex above. `role` in the signature preimage is the exact lowercase ASCII
+`initiator` or `responder`, length-prefixed as shown; no role byte or numeric
+alias exists. `peer_transcript_digest` hashes the complete canonical
+`PeerTranscriptV1` array under its table label.
 
 Both proofs bind roles, nonces, operator keys, stable anchor IDs, descriptor
 epochs/digests, iroh endpoint IDs, ALPN, and this live connection. A reflected,
@@ -3055,6 +3216,14 @@ keyed_token_commitment = HMAC-SHA256(
 )
 ```
 
+The collector provisions distinct invitation/deletion HMAC keys per pilot
+window before issuing credentials. It never rotates either key during that
+window or its 30-day audit period; encrypted backup/restore includes them, and
+readiness fails closed if either is unavailable. Enrollment replay, withdrawal,
+and deletion-receipt replay use the original window keys. Only after every
+invitation/token/receipt row for the window has passed retention may the keys be
+cryptographically erased.
+
 The collector stores only `pilot_invitation_lookup` and atomically transitions:
 
 ```text
@@ -3496,6 +3665,8 @@ RED:
 - any encoder uses a CBOR map, undocumented numeric field/enum tag, alternate
   operation discriminant, embedded-versus-byte-string substitution, or field
   order other than the normative positional grammar;
+- either peer role signs a different transcript/ALPN/version representation,
+  or any control success/refusal uses an alternate response envelope;
 
 GREEN:
 
@@ -3552,6 +3723,9 @@ RED:
   floor, and all covered removal results advance atomically;
 - concurrent same-base commits both win or the loser overwrites newer state;
 - work proof replays against another body;
+- a work stamp changes its nested challenge bytes, counter, proof, request key,
+  root, operation kind, policy epoch, expiry, or null-stamp target without
+  rejection;
 - logical quota is bypassed by cross-community dedup;
 - metadata-only requests exceed a persistent ceiling;
 - client O/C/W state overflows the legacy evidence repository;
@@ -3716,6 +3890,8 @@ Tests explicitly cover:
 - duplicate/ambiguous anchor hints;
 - loopback/private/DNS-rebinding hints and descriptor endpoint mismatch;
 - work proof replay with another key or body;
+- work-stamp golden vectors for exact nested challenge envelope, null-slot
+  target digest, counter/proof, expiry, request key/root/kind/policy bindings;
 - peer-proof reflection, replay, role swap, exporter mismatch, and stale hello;
 - pre-auth peer descriptor refresh across same-key and changed-key rotations;
 - forged predecessor verification key after a non-genesis pinned floor;
@@ -3727,6 +3903,8 @@ Tests explicitly cover:
 - normative CBOR grammar fixtures for every control operation, sync frame,
   signed body, sum variant, refusal, phase, and mode, with alternate maps,
   numeric tags, field orders, and nested-byte forms rejected;
+- every control response success/refusal and `GetOperation` nested terminal
+  outcome, plus both peer roles and the exact ALPN transcript/preimage;
 - 64 requested maximum-size items split across ordered chunks;
 - concurrent uploads for one site;
 - two same-base site commits with one CAS winner and one `stale_base`;
@@ -3870,6 +4048,8 @@ The design is implemented when:
 - control operations are canonical, idempotent, recoverable, and typed;
 - one positional-CBOR grammar and closed textual discriminants define every
   control/sync/signed-body encoding without implementation-chosen tags;
+- exact work-stamp and peer-proof preimages plus versioned control
+  success/refusal envelopes interoperate across independent implementations;
 - all signed coordinates and continuity/cursor identities match the checked-in
   domain-separated body/envelope digest vectors across implementations;
 - host reconciliation keeps organizer state private until a destination
