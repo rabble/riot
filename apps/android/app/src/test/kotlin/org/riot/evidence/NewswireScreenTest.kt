@@ -67,7 +67,7 @@ class NewswireScreenTest {
     @Test
     fun nullDescriptorIsOfflineStaleAndNeverProjects() {
         var called = false
-        val surface = NewswireScreen.resolve(null) { called = true; projection(emptyList(), emptyList()) }
+        val surface = NewswireScreen.resolve(null, cursor = null) { called = true; projection(emptyList(), emptyList()) }
         assertEquals(NewswireWireState.OfflineStale, surface.wire)
         assertTrue(surface.commentsByParent.isEmpty())
         assertFalse("a null descriptor must not attempt a projection", called)
@@ -75,26 +75,26 @@ class NewswireScreenTest {
 
     @Test
     fun blankDescriptorIsOfflineStale() {
-        val surface = NewswireScreen.resolve("   ") { projection(emptyList(), emptyList()) }
+        val surface = NewswireScreen.resolve("   ", cursor = null) { projection(emptyList(), emptyList()) }
         assertEquals(NewswireWireState.OfflineStale, surface.wire)
     }
 
     @Test
     fun projectionThatThrowsIsOfflineStale() {
-        val surface = NewswireScreen.resolve("desc") { error("core refused to project") }
+        val surface = NewswireScreen.resolve("desc", cursor = null) { error("core refused to project") }
         assertEquals(NewswireWireState.OfflineStale, surface.wire)
         assertTrue(surface.commentsByParent.isEmpty())
     }
 
     @Test
     fun emptyProjectionIsEmptyWire() {
-        val surface = NewswireScreen.resolve("desc") { projection(emptyList(), emptyList()) }
+        val surface = NewswireScreen.resolve("desc", cursor = null) { projection(emptyList(), emptyList()) }
         assertEquals(NewswireWireState.EmptyWire, surface.wire)
     }
 
     @Test
     fun postsWithNoFrontPageIsPostsButNoFeature() {
-        val surface = NewswireScreen.resolve("desc") {
+        val surface = NewswireScreen.resolve("desc", cursor = null) {
             projection(openWire = listOf(post("a", "Report", NewswirePostTreatment.ORDINARY)), frontPage = emptyList())
         }
         assertTrue(surface.wire is NewswireWireState.PostsButNoFeature)
@@ -104,7 +104,7 @@ class NewswireScreenTest {
     @Test
     fun frontPageAndOpenWireIsFeatured() {
         val featured = post("f", "Featured", NewswirePostTreatment.ORDINARY)
-        val surface = NewswireScreen.resolve("desc") {
+        val surface = NewswireScreen.resolve("desc", cursor = null) {
             projection(openWire = listOf(featured), frontPage = listOf(featured))
         }
         assertTrue(surface.wire is NewswireWireState.Featured)
@@ -131,7 +131,7 @@ class NewswireScreenTest {
 
     @Test
     fun commentsSurviveIntoTheSurfaceGroupedUnderTheirParent() {
-        val surface = NewswireScreen.resolve("desc") {
+        val surface = NewswireScreen.resolve("desc", cursor = null) {
             projection(
                 openWire = listOf(post("a", "Report", NewswirePostTreatment.ORDINARY)),
                 frontPage = emptyList(),
@@ -140,5 +140,26 @@ class NewswireScreenTest {
         }
         assertEquals(listOf("c1", "c2"), surface.comments("a").map { it.id })
         assertTrue("a post with no replies has none", surface.comments("other").isEmpty())
+    }
+
+    @Test
+    fun surfaceCarriesUnreadComputedAgainstTheCursor() {
+        // The post helper stamps tai = 1, so a null cursor makes it unread and a
+        // cursor at 1 makes it caught up — one projection yields wire + unread.
+        val fresh = NewswireScreen.resolve("desc", cursor = null) {
+            projection(openWire = listOf(post("a", "Report", NewswirePostTreatment.ORDINARY)), frontPage = emptyList())
+        }
+        assertEquals(1, fresh.unread.count)
+
+        val caughtUp = NewswireScreen.resolve("desc", cursor = 1u) {
+            projection(openWire = listOf(post("a", "Report", NewswirePostTreatment.ORDINARY)), frontPage = emptyList())
+        }
+        assertEquals(0, caughtUp.unread.count)
+    }
+
+    @Test
+    fun offlineSurfaceHasNoUnread() {
+        val surface = NewswireScreen.resolve("desc", cursor = null) { error("offline") }
+        assertEquals(NewswireUnread.NONE, surface.unread)
     }
 }

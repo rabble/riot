@@ -1,8 +1,11 @@
 package org.riot.evidence
 
+import android.Manifest
 import android.app.Activity
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.graphics.Typeface
+import android.os.Build
 import android.os.Bundle
 import android.view.Gravity
 import android.view.View
@@ -13,6 +16,7 @@ import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
+import android.widget.Toast
 import uniffi.riot_ffi.CurrentEntry
 import org.riot.evidence.apps.AppBundleCodec
 import org.riot.evidence.apps.AppResourceResolver
@@ -45,9 +49,26 @@ class MainActivity : Activity() {
     private var runningApp: Pair<InstalledApp, AppWebViewHost>? = null
     private var pendingAppManifest: ByteArray? = null
 
+    // Local new-content notifications (PR1 infra, wired live here). The notifier is
+    // pure + a thin scheduler; the seen cursor is per-device SharedPreferences.
+    private lateinit var notifier: LocalNotifier
+    private lateinit var seenCursor: SeenCursorStore
+    // Foreground/background phase for the notifier — plain lifecycle, never
+    // androidx.lifecycle (its transitive lifecycle-runtime is not in the offline graph).
+    private var foreground = false
+    // POST_NOTIFICATIONS is requested once per process, only on API 33+.
+    private var notificationPermissionRequested = false
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         controller = RiotController(filesDir)
+        seenCursor = SeenCursorStore(
+            SharedPreferencesSeenStore(getSharedPreferences("riot.newswire.seen", MODE_PRIVATE)),
+        )
+        notifier = LocalNotifier(AndroidNotificationScheduler(applicationContext))
+        // An accepted nearby sync (the only local "new content" event) drives the
+        // notifier. Fires on the sync thread → hop to the UI thread for evaluate.
+        controller.onDataChanged = { runOnUiThread { handleStoreChanged() } }
         apps = RiotAppsController(
             controller.openAppRuntime(),
             onInstalled = controller::onAppInstalled,
@@ -123,8 +144,52 @@ class MainActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
+        foreground = true
         // Foreground `watch` trigger (spec): re-fire app watchers on return.
         runningApp?.second?.notifyDataChanged()
+    }
+
+    override fun onPause() {
+        foreground = false
+        super.onPause()
+    }
+
+    /// A local store-changed event landed (accepted sync). Recompute the active
+    /// community's unread against its seen cursor and hand it to the notifier with
+    /// the current phase. Deliberately does NOT advance the cursor — only opening
+    /// the newswire screen marks seen — so new content arriving while the reader is
+    /// elsewhere (or on-screen) stays unread until they next open the wire. A
+    /// foreground evaluation yields an in-app banner (shown as a toast); a
+    /// background one posts a system notification through the scheduler.
+    private fun handleStoreChanged() {
+        val community = controller.activeCommunity() ?: return
+        val descriptor = community.descriptorEntryId ?: return
+        val unread = NewswireScreen.resolve(descriptor, seenCursor.cursor(descriptor)) {
+            controller.projectNewswire(it)
+        }.unread
+        notifier.evaluate(
+            communityId = community.namespaceId,
+            communityName = community.title,
+            unread = unread,
+            phase = if (foreground) NotifierPhase.ACTIVE else NotifierPhase.BACKGROUND,
+        )
+        notifier.banner?.let { banner ->
+            Toast.makeText(this, banner.text, Toast.LENGTH_SHORT).show()
+            notifier.dismissBanner()
+        }
+    }
+
+    /// Ask for POST_NOTIFICATIONS once, only on API 33+ and only if not already
+    /// granted — the twin of iOS's requestAuthorizationIfNeeded, fired when the
+    /// newswire surface first appears (the reader already has a community).
+    /// MainActivity extends the platform Activity, so this uses requestPermissions,
+    /// not androidx's registerForActivityResult.
+    private fun requestNotificationPermissionIfNeeded() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
+        if (notificationPermissionRequested) return
+        if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED) return
+        notificationPermissionRequested = true
+        requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), POST_NOTIFICATIONS_REQUEST)
     }
 
     @Suppress("DEPRECATION")
@@ -429,12 +494,26 @@ class MainActivity : Activity() {
             content.addView(action("Go to spaces") { show(ConferenceSurface.SPACES) })
             return
         }
+        requestNotificationPermissionIfNeeded()
         content.addView(body(
             "Wire for ${community.title}. Reports appear exactly as the " +
                 "collective's signed records present them.",
         ))
         val descriptor = community.descriptorEntryId
-        renderSurface(NewswireScreen.resolve(descriptor) { controller.projectNewswire(it) }, descriptor)
+        val surface = NewswireScreen.resolve(descriptor, descriptor?.let { seenCursor.cursor(it) }) {
+            controller.projectNewswire(it)
+        }
+        // The "N new" delta is computed against the OLD cursor so it is visible this
+        // visit; the cursor is then advanced below so the NEXT open reads zero.
+        if (surface.unread.hasUnread) {
+            content.addView(body("${surface.unread.count} new since you last looked"))
+        }
+        renderSurface(surface, descriptor)
+        // Opening the wire marks it seen: advance to the newest shown post. Monotonic
+        // and after render, so the delta survives this visit and clears next open.
+        if (descriptor != null) {
+            surface.unread.latestTimestamp?.let { seenCursor.advance(descriptor, it) }
+        }
     }
 
     private fun renderSurface(surface: NewswireSurface, descriptor: String?) {
@@ -728,5 +807,6 @@ class MainActivity : Activity() {
         const val PICK_APP_MANIFEST = 11
         const val PICK_APP_BUNDLE = 12
         const val MAX_APP_MANIFEST_BYTES = 4_096
+        const val POST_NOTIFICATIONS_REQUEST = 13
     }
 }
