@@ -46,6 +46,7 @@ public struct JoinByReferenceSheet: View {
                     }
                     .pickerStyle(.segmented)
                     .accessibilityIdentifier("join-mode-picker")
+                    .onChange(of: mode) { _, _ in preview = nil; errorText = nil }
 
                     switch mode {
                     case .paste:
