@@ -270,6 +270,66 @@ final class ShellNavigationTests: XCTestCase {
         XCTAssertNil(OnboardingStep.welcome.back, "welcome is the first step; there is nowhere back to")
     }
 
+    func testSetupOrderAndUnsupportedNearbyBoundary() {
+        XCTAssertEqual(OnboardingPresentation.actionOrder, [.join, .create, .demo])
+        XCTAssertEqual(
+            OnboardingPresentation.nearbyNote,
+            "Nearby exchange is available after you enter a community."
+        )
+    }
+
+    func testNonEmptyNameFailureBlocksEveryExit() {
+        for exit in OnboardingExit.allCases {
+            var performed: [OnboardingExit] = []
+            let result = OnboardingExitGate.perform(
+                exit,
+                displayName: "Ana",
+                saveName: { _ in false },
+                proceed: { performed.append($0) }
+            )
+
+            XCTAssertEqual(result, .nameSaveFailed)
+            XCTAssertEqual(performed, [])
+        }
+    }
+
+    func testEmptyAndSuccessfullySavedNameCoverEveryExit() {
+        for exit in OnboardingExit.allCases {
+            var performed: [OnboardingExit] = []
+            var saved: [String] = []
+
+            XCTAssertEqual(
+                OnboardingExitGate.perform(
+                    exit,
+                    displayName: "  ",
+                    saveName: { _ in
+                        XCTFail("an empty optional name must not be saved")
+                        return false
+                    },
+                    proceed: { performed.append($0) }
+                ),
+                .proceeded
+            )
+            XCTAssertEqual(performed, [exit])
+
+            performed = []
+            XCTAssertEqual(
+                OnboardingExitGate.perform(
+                    exit,
+                    displayName: "  Ana  ",
+                    saveName: {
+                        saved.append($0)
+                        return true
+                    },
+                    proceed: { performed.append($0) }
+                ),
+                .proceeded
+            )
+            XCTAssertEqual(saved, ["Ana"])
+            XCTAssertEqual(performed, [exit])
+        }
+    }
+
     /// The gate is derived from real state, not a separate flag: a fresh profile
     /// with no community is first-run, and creating a community ends first-run —
     /// so the shell, not onboarding, is what shows from then on.

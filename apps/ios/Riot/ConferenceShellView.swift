@@ -246,14 +246,12 @@ private struct OnboardingSetupView: View {
     @ObservedObject var model: RiotAppModel
     @Environment(\.colorScheme) private var colorScheme
     let onBack: () -> Void
-    @State private var communityName = ""
     @State private var displayName = ""
     @State private var demoFailure: String?
+    @State private var showNameError = false
+    @State private var isCreatePresented = false
     @State private var isJoinPresented = false
-
-    private var trimmedCommunity: String {
-        communityName.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
+    @AccessibilityFocusState private var nameErrorFocused: Bool
 
     var body: some View {
         ScrollView {
@@ -261,52 +259,50 @@ private struct OnboardingSetupView: View {
                 RiotCard {
                     VStack(alignment: .leading, spacing: 12) {
                         eyebrow("Set up")
-                        Text("Name yourself, then start or join a community.")
+                        Text("Enter a community")
                             .font(.riot(.body, size: 20, relativeTo: .title3))
                             .foregroundStyle(RiotTheme.ink(for: colorScheme))
                             .accessibilityAddTraits(.isHeader)
 
-                        // Display name — offered inline, skippable.
                         TextField("Your name (optional)", text: $displayName)
                             .font(.riot(.body, size: 17, relativeTo: .body))
                             .accessibilityIdentifier("launch-display-name")
-                        Button("Save name") { model.setDisplayName(displayName.trimmingCharacters(in: .whitespacesAndNewlines)) }
-                            .buttonStyle(.riotSecondary)
-                            .disabled(displayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                            .accessibilityIdentifier("launch-save-display-name")
+                        Text("This self-claimed name is saved on this device and shared with future peers.")
+                            .font(.riot(.body, size: 13, relativeTo: .caption))
+                            .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
+                            .accessibilityIdentifier("launch-display-name-disclosure")
 
-                        Divider().overlay(RiotTheme.line(for: colorScheme))
+                        if showNameError, let nameError = model.nameError {
+                            Text(nameError)
+                                .font(.riot(.body, size: 13, relativeTo: .caption))
+                                .foregroundStyle(RiotTheme.pink(for: colorScheme))
+                                .accessibilityIdentifier("launch-name-error")
+                                .accessibilityFocused($nameErrorFocused)
+                        }
 
-                        TextField("Community name", text: $communityName)
-                            .font(.riot(.body, size: 17, relativeTo: .body))
-                            .accessibilityIdentifier("community-name-field")
-                        Button("Create a community") {
-                            model.createCommunity(
-                                CommunityCreationRequest(
-                                    name: trimmedCommunity,
-                                    // The founding collective's initial editorial
-                                    // selection: the founder, threaded explicitly
-                                    // so the community is not silently pinned to
-                                    // core's single-editor default.
-                                    editorialRoster: model.me.map { [$0.id] } ?? []
-                                )
-                            )
+                        Button("Join with a link or QR") {
+                            perform(.join) { isJoinPresented = true }
                         }
                         .buttonStyle(.riotPrimary)
-                        .disabled(trimmedCommunity.isEmpty)
-                        .accessibilityIdentifier("create-community")
+                        .accessibilityIdentifier("launch-join-by-reference")
 
-                        Button("Join with a link or QR") { isJoinPresented = true }
+                        Button("Create a community") { isCreatePresented = true }
                             .buttonStyle(.riotSecondary)
-                            .accessibilityIdentifier("launch-join-by-reference")
+                            .accessibilityIdentifier("create-community")
 
-                        Button("Find one nearby") { model.select(.nearby) }
-                            .buttonStyle(.riotSecondary)
-                            .accessibilityIdentifier("find-nearby")
+                        Button("Try the Riverside demo") {
+                            perform(.demo, action: loadDemoSpace)
+                        }
+                        .buttonStyle(.riotSecondary)
+                        .accessibilityIdentifier("demo-load")
+
+                        Text(OnboardingPresentation.nearbyNote)
+                            .font(.riot(.body, size: 13, relativeTo: .caption))
+                            .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
+                            .accessibilityIdentifier("launch-nearby-note")
                     }
                 }
 
-                loadDemoCard
                 if let demoFailure {
                     Text(demoFailure)
                         .font(.riot(.body, size: 13, relativeTo: .caption))
@@ -324,27 +320,27 @@ private struct OnboardingSetupView: View {
             }
         }
         .sheet(isPresented: $isJoinPresented) {
-            // The same paste/QR join sheet the in-app chooser uses, so onboarding's
-            // join path is the identical code and core call, never a duplicate.
             JoinByReferenceSheet(model: model, onClose: { isJoinPresented = false })
+        }
+        .sheet(isPresented: $isCreatePresented) {
+            OnboardingCreateCommunitySheet(
+                model: model,
+                displayName: displayName,
+                onClose: { isCreatePresented = false }
+            )
         }
         .onAppear { displayName = model.claimedName ?? "" }
     }
 
-    /// The seeded Riverside space, offered where a person will find it — right
-    /// where they are deciding what to do with no community of their own.
-    private var loadDemoCard: some View {
-        RiotCard {
-            VStack(alignment: .leading, spacing: 12) {
-                eyebrow("Or try it out")
-                Text("Start from a community that already has people in it — alerts, a part-done checklist, and a tool to open.")
-                    .font(.riot(.body, size: 13, relativeTo: .caption))
-                    .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
-                Button("Load the demo space (Riverside Tenants Union)") { loadDemoSpace() }
-                    .buttonStyle(.riotSecondary)
-                    .accessibilityIdentifier("demo-load")
-            }
-        }
+    private func perform(_ exit: OnboardingExit, action: @escaping () -> Void) {
+        let result = OnboardingExitGate.perform(
+            exit,
+            displayName: displayName,
+            saveName: model.setDisplayName,
+            proceed: { _ in action() }
+        )
+        showNameError = result == .nameSaveFailed
+        nameErrorFocused = showNameError
     }
 
     private func loadDemoSpace() {
@@ -366,6 +362,83 @@ private struct OnboardingSetupView: View {
             .textCase(.uppercase)
             .tracking(1)
             .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
+    }
+}
+
+/// First-run creation owns only the community-name field. The optional display
+/// name remains visible on setup and is saved by the same fail-closed exit gate
+/// immediately before creation.
+private struct OnboardingCreateCommunitySheet: View {
+    @ObservedObject var model: RiotAppModel
+    let displayName: String
+    let onClose: () -> Void
+    @Environment(\.colorScheme) private var colorScheme
+    @State private var communityName = ""
+    @State private var showNameError = false
+    @AccessibilityFocusState private var nameErrorFocused: Bool
+
+    private var trimmedCommunity: String {
+        communityName.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                RiotCard {
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("Name your community")
+                            .font(.riot(.body, size: 17, relativeTo: .body))
+                        Text("You’ll be its founding organizer and first editor. You can invite others later.")
+                            .font(.riot(.body, size: 13, relativeTo: .caption))
+                            .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
+                            .accessibilityIdentifier("create-community-founding-disclosure")
+                        TextField("Community name", text: $communityName)
+                            .font(.riot(.body, size: 17, relativeTo: .body))
+                            .accessibilityIdentifier("create-community-name-field")
+                        if showNameError, let nameError = model.nameError {
+                            Text(nameError)
+                                .font(.riot(.body, size: 13, relativeTo: .caption))
+                                .foregroundStyle(RiotTheme.pink(for: colorScheme))
+                                .accessibilityIdentifier("create-community-name-error")
+                                .accessibilityFocused($nameErrorFocused)
+                        }
+                        Button("Create a community", action: create)
+                            .buttonStyle(.riotPrimary)
+                            .disabled(trimmedCommunity.isEmpty)
+                            .accessibilityIdentifier("create-community-confirm")
+                    }
+                }
+                .padding(20)
+            }
+            .riotHeader(eyebrow: "Community", "Create a community")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel", action: onClose)
+                        .accessibilityIdentifier("create-community-cancel")
+                }
+            }
+        }
+    }
+
+    private func create() {
+        let result = OnboardingExitGate.perform(
+            .create,
+            displayName: displayName,
+            saveName: model.setDisplayName,
+            proceed: { _ in
+                model.createCommunity(
+                    CommunityCreationRequest(
+                        name: trimmedCommunity,
+                        editorialRoster: model.me.map { [$0.id] } ?? []
+                    )
+                )
+            }
+        )
+        showNameError = result == .nameSaveFailed
+        nameErrorFocused = showNameError
+        if result == .proceeded, model.community != nil {
+            onClose()
+        }
     }
 }
 

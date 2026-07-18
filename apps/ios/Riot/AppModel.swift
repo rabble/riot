@@ -1,6 +1,43 @@
 import Foundation
 import SwiftUI
 
+/// The three supported ways to leave first-run setup. Nearby exchange requires
+/// an active community, so it is deliberately not an onboarding exit.
+public enum OnboardingExit: CaseIterable, Equatable, Sendable {
+    case join
+    case create
+    case demo
+}
+
+public enum OnboardingExitResult: Equatable, Sendable {
+    case proceeded
+    case nameSaveFailed
+}
+
+public enum OnboardingPresentation {
+    public static let actionOrder: [OnboardingExit] = [.join, .create, .demo]
+    public static let nearbyNote =
+        "Nearby exchange is available after you enter a community."
+}
+
+/// One fail-closed dispatcher for every setup exit. A blank optional name is
+/// skipped; a typed name must be saved before any community action may begin.
+public enum OnboardingExitGate {
+    public static func perform(
+        _ exit: OnboardingExit,
+        displayName: String,
+        saveName: (String) -> Bool,
+        proceed: (OnboardingExit) -> Void
+    ) -> OnboardingExitResult {
+        let name = displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !name.isEmpty, !saveName(name) {
+            return .nameSaveFailed
+        }
+        proceed(exit)
+        return .proceeded
+    }
+}
+
 /// The four destinations inside a selected community (community-first
 /// navigation design §"Navigation and platform behavior"). This replaces the
 /// old five debug-shaped surfaces (Spaces/Apps/Board/Post/Connect): Riot is now
@@ -358,7 +395,7 @@ public final class RiotAppModel: ObservableObject {
 
     public var connectionDisclosure: String {
         switch connectionStatus {
-        case .offline: "Not connected"
+        case .offline: "Offline · local device only"
         case let .nearby(peer): "Nearby · \(peer)"
         }
     }
@@ -828,8 +865,12 @@ public final class RiotAppModel: ObservableObject {
     /// does not pre-validate: it lets core refuse and translates that refusal.
     /// The refusal is deliberately not routed through ``errorMessage`` — see
     /// ``nameError``.
-    public func setDisplayName(_ name: String) {
-        guard let repository else { return }
+    @discardableResult
+    public func setDisplayName(_ name: String) -> Bool {
+        guard let repository else {
+            nameError = Self.nameRefusal
+            return false
+        }
         do {
             try repository.setDisplayName(name)
             nameError = nil
@@ -839,10 +880,12 @@ public final class RiotAppModel: ObservableObject {
             me = try repository.me()
             claimedName = repository.claimedName
             refreshDisplayNames()
+            return true
         } catch {
             nameError = Self.nameRefusal
             // The name on screen is still the one core holds — this attempt
             // changed nothing — so leave `me` alone rather than clearing it.
+            return false
         }
     }
 

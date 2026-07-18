@@ -189,3 +189,43 @@ _(Summary goes at the TOP when done. Task entries append below in order.)_
 - Existing build warnings in WebKit/Swift concurrency and the native archive
   deployment target remain pre-existing; no new dependency or architecture
   change was introduced.
+
+## Task 2: make first run one clear, fail-closed path
+- Used the approved compact-core-flow design and plan with
+  `superpowers:test-driven-development`, `superpowers:systematic-debugging`, and
+  `metaswarm:orchestrated-execution`.
+- RED: the iOS `ShellNavigationTests` target failed to compile because
+  `OnboardingPresentation`, `OnboardingExit`, and `OnboardingExitGate` did not
+  exist. The tests cover all three exits with blank, successfully saved, and
+  refused optional names.
+- Added one pure gate shared by Join, Create, and Demo. A blank name is skipped;
+  any typed name must save successfully before the exit action can run.
+  `setDisplayName` now returns a Boolean and fails closed, with the existing fixed
+  refusal copy, when the profile repository is absent or rejects the claim.
+- Rebuilt setup around one decision: optional self-claimed name disclosure, Join
+  as the only filled action, Create in its own name sheet, Riverside demo, and
+  the exact explanation that Nearby follows community entry. Removed the
+  duplicate Save-name action, inline community field, and unsupported first-run
+  Nearby action.
+- A refused name before Create keeps the sheet open, creates nothing, shows
+  `RiotAppModel.nameError` beside Create, and moves accessibility focus to that
+  error. Join and Demo refusal likewise remain on setup, perform no exit, and
+  focus the same fixed error.
+- GREEN: focused iOS `ShellNavigationTests`, the shared SwiftUI compile check,
+  the full shared Swift suite, and `git diff --check` passed.
+- While running the full focused class, a pre-existing contradiction surfaced:
+  `ShellNavigationTests` required the explicit disclosure
+  `Offline · local device only`, while production had regressed to the vague
+  `Not connected`. The more specific test and the audit's understandable-status
+  goal win; production now matches the explicit copy.
+- Assumption: saving the optional name before presenting Join is sufficient
+  because the shared Join sheet owns the later preview/commit transaction; no
+  community mutation occurs merely by presenting it.
+- Rejected: saving a name through its own button, continuing after a failed name
+  claim, or advertising first-run Nearby. Those paths respectively duplicate a
+  decision, misrepresent the person's identity, or enter a protocol state the
+  current announce cannot complete.
+- Adversarial review found the first Create-sheet pass omitted the approved
+  explanation of founding responsibility. Added concise adjacent copy that the
+  creator becomes the founding organizer and first editor and may invite others
+  later.
