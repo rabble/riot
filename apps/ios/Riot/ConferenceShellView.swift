@@ -892,7 +892,7 @@ private struct HomeRouteView: View {
         // The persistent top bar already names the community; Home names the
         // PLACE within it ("what is happening here?") so the community name is
         // not printed twice on the same screen.
-        .riotHeader(eyebrow: "Home", "Latest")
+        .riotHeader(eyebrow: "Community", model.space?.title ?? "Home")
     }
 
     @ViewBuilder
