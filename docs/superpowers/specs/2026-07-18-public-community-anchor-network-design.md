@@ -1,7 +1,7 @@
 # Public Community Anchor Network Design
 
 Date: 2026-07-18
-Status: Design review rounds 1-10 revised; pending round 11
+Status: Design review rounds 1-11 revised; pending round 12
 Scope: Owner-rooted composite public sites, discovery, hosting, web mirroring,
 and opportunistic internet sync
 
@@ -107,6 +107,11 @@ Round ten completed the remaining wire surface: named peer-transcript and proof
 preimages, a canonical admission work stamp, exact success/refusal response
 envelopes for every control operation, stable limit identifiers, pilot HMAC-key
 retention, and reservation release for automatic listing lifecycle changes.
+
+Round eleven closed structured response recovery by giving every refusal code
+one canonical details payload and making `GetOperation` embed the original
+operation kind and exact prepared payload or terminal outcome without
+alternate nesting.
 
 ## Product Decisions
 
@@ -504,14 +509,25 @@ success payloads are:
 | `prepare_replica` | `[1, operation_id, base_site_generation, ordered_namespace_host_plan, ordered_namespace_tokens, ordered_retained_snapshot_digests, sync_version, effective_operation_limits, operation_expiry]` |
 | `pull_directory_feed` | `[1, ["page", inclusions, floor_sequence, head_sequence, head_digest, done]]` or `[1, ["checkpoint_required", checkpoint, snapshot_cursor]]` |
 | `pull_directory_snapshot` | `[1, checkpoint, optional_snapshot_record, optional_next_cursor, done]` |
-| `get_operation` | `[1, operation_id, ["claimed"] \| ["prepared", operation_expiry, canonical_prepare_success_payload] \| ["terminal", terminal_control_outcome]]` |
+| `get_operation` | `[1, operation_id, original_operation_kind, ["claimed"] \| ["prepared", operation_expiry, original_success_payload] \| ["terminal", original_outcome]]` |
 
 `effective_operation_limits` is a sorted array of `[limit_id,
-effective_value]` drawn byte-identically from the described limit profile.
+effective_value]` drawn byte-identically from the described limit profile. It
+contains all 69 IDs exactly once in strictly ascending order.
 `ordered_namespace_host_plan`, tokens, retained digests, and feed inclusions
 use their already specified semantic order. A retained idempotent result stores
 and replays the complete canonical `ControlResponseV1`, not an
 implementation-private projection.
+
+For `get_operation`, `original_operation_kind` is the exact kind of the
+queried operation, never `get_operation`. `original_success_payload` is the
+embedded canonical success payload for that kind—not a CBOR byte string and
+not a nested `ControlResponseV1`. `original_outcome` is exactly the original
+embedded `["success", success_payload]` or
+`["refused", ControlRefusal]` sum. The operation row persists kind plus the
+canonical prepared success payload or terminal outcome; replay constructs only
+the one wrapper shown above. Alternate full-response nesting, outcome omission,
+or byte-string wrapping is rejected.
 
 Namespace tuples always appear in `O`, `C`, `W` order. Every `operation_id`,
 idempotency key, root, namespace ID, digest, nonce, key, signature, cursor, and
@@ -1508,7 +1524,8 @@ session is live. Any session close—including descriptor/config rotation,
 transport loss, or orderly shutdown—atomically:
 
 - terminalizes every uncommitted replica operation for that session as
-  `peer_context_changed { side, prior_descriptor, latest_known_descriptor }`;
+  `peer_context_changed {
+  side, prior_descriptor, latest_known_descriptor, reason }`;
 - invalidates its namespace-token acceptance and deletes destination staging;
 - changes its Prepare idempotency mapping to that Terminal result.
 
@@ -1566,19 +1583,47 @@ ControlRefusal {
   code,
   subject:
     ticket | manifest | listing | namespace | capacity |
-    version | transport | operation | work,
+    version | transport | operation | work | peer,
   retryable,
-  retry_after_seconds: optional
+  retry_after_seconds: optional,
+  details
 }
 ```
 
-Codes include `invalid_authority`, `unsupported_version`, `over_quota`,
-`unsupported_transport`, `manifest_transport_mismatch`, `expired`,
-`not_hosted`, `manifest_mismatch`,
-`equivocation`, `anchor_profile_oversize`, `site_too_large`, `work_required`,
-`stale_base`, `stale_source`, `attestation_consumed`, `already_unlisted`,
-`removal_replay_window`, `idempotency_conflict`, `peer_context_changed`, and
-`busy`.
+`code` is a closed lowercase textual enum. `details` must have the exact
+matching sum shape below; no generic map or extra diagnostic fields are
+allowed:
+
+| Code | Exact `details` |
+| --- | --- |
+| `invalid_authority`, `not_hosted`, `idempotency_conflict` | `["none"]` |
+| `unsupported_version` | `["versions", supported_versions]` |
+| `over_quota` | `["quota", limit_id, effective_value, observed_value]` |
+| `unsupported_transport` | `["transport", required_mode, observed_mode]` |
+| `manifest_transport_mismatch`, `manifest_mismatch` | `["digests", expected_digest, observed_digest]` |
+| `expired` | `["expiry", expires_at, observed_at]` |
+| `equivocation` | `["equivocation", first_digest, second_digest]` |
+| `anchor_profile_oversize` | `["encoded_size", observed_bytes, maximum_bytes]` |
+| `site_too_large` | `["storage", required_class, advertised_bytes, local_limit_bytes]` |
+| `work_required` | `["work", policy_epoch, difficulty]` |
+| `stale_base` | `["site_state", current_generation, ordered_namespace_snapshot_digests]` |
+| `stale_source` | `["source_state", observed_generation, current_generation, ordered_namespace_snapshot_digests]` |
+| `attestation_consumed` | `["attestation", replica_source_attestation_digest]` |
+| `already_unlisted` | `["listing_state", "already_unlisted"]` |
+| `removal_replay_window` | `["relist_window", earliest_retry_at]` |
+| `peer_context_changed` | `["peer_context", side, prior_descriptor_digest, optional_latest_descriptor_digest, reason]` |
+| `busy` | `["capacity", limit_id]` |
+| `peer_auth_failed` | `["peer_auth", stage]` |
+
+The nested enums are also closed: `side` is `source | destination`; peer-context
+`reason` is `descriptor_rotation | configuration_rotation | transport_loss |
+orderly_shutdown | process_restart`; transport mode is `require_none |
+require_arti | unsupported_other`; storage `required_class` is
+`profile_total | site_logical_bytes | entries_per_namespace | item_payload |
+bundle`; and peer-auth `stage` is `descriptor_exchange | hello_validation |
+channel_binding | initiator_proof | responder_proof | configured_rule`.
+Unknown code/detail or enum pairings fail decoding. Error text and
+implementation diagnostics stay outside the wire result.
 `removal_replay_window`, `busy`, and every overload result require
 `retry_after_seconds`; for relisting it is the exact earliest retained
 removal-slot expiry.
@@ -3905,6 +3950,9 @@ Tests explicitly cover:
   numeric tags, field orders, and nested-byte forms rejected;
 - every control response success/refusal and `GetOperation` nested terminal
   outcome, plus both peer roles and the exact ALPN transcript/preimage;
+- every structured refusal code/details pair and all three `GetOperation`
+  states, with alternate full-response, outcome-only, payload-only, and
+  byte-string nesting rejected;
 - 64 requested maximum-size items split across ordered chunks;
 - concurrent uploads for one site;
 - two same-base site commits with one CAS winner and one `stale_base`;
