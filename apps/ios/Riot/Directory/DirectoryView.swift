@@ -1,6 +1,15 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
+public enum ToolStrings {
+    public static let emptyTitle = "No tools yet"
+    public static let emptyMessage =
+        "Tools carried by your communities appear here. Nothing runs until an organizer turns it on."
+    public static let intro =
+        "Tools carried by your communities. Nothing runs until an organizer turns it on."
+    public static let userFacingVocabulary = [emptyTitle, emptyMessage, intro]
+}
+
 /// The discovery surface: every app this profile can see — built in, shared into
 /// a space, or carried in by someone who synced with you — with what it does,
 /// what it can reach, who recommends it, and the actions to review it, recommend
@@ -53,8 +62,8 @@ public struct DirectoryView: View {
                 }
                 if directory.rows.isEmpty {
                     RiotEmptyState(
-                        title: "No apps yet",
-                        message: "Apps your communities carry will show up here. Nothing runs until an organizer turns one on for a space."
+                        title: ToolStrings.emptyTitle,
+                        message: ToolStrings.emptyMessage
                     )
                 } else {
                     intro
@@ -118,7 +127,7 @@ public struct DirectoryView: View {
     }
 
     private var intro: some View {
-        Text("Every app your communities carry shows up here. Nothing runs until an organizer turns it on for a space.")
+        Text(ToolStrings.intro)
             .font(.riot(.body, size: 15, relativeTo: .callout))
             .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
     }
@@ -138,7 +147,7 @@ public struct DirectoryView: View {
     private func card(for row: RiotDirectoryRow) -> some View {
         RiotCard {
             VStack(alignment: .leading, spacing: 12) {
-                Text("\(row.name) · \(row.version)")
+                Text(row.name)
                     .font(.riot(.body, size: 17, relativeTo: .headline))
                     .foregroundStyle(RiotTheme.ink(for: colorScheme))
                 Text(row.description)
@@ -147,15 +156,22 @@ public struct DirectoryView: View {
                 if !row.badges.isEmpty {
                     badges(row.badges)
                 }
-                if !row.permissions.isEmpty {
-                    permissions(row.permissions)
+                primaryAction(for: row)
+                DisclosureGroup("More details for \(row.name)") {
+                    VStack(alignment: .leading, spacing: 10) {
+                        LabeledContent("Version", value: row.version)
+                        if !row.permissions.isEmpty {
+                            permissions(row.permissions)
+                        }
+                        if let endorsement = row.endorsement {
+                            Text(endorsement)
+                                .font(.riot(.body, size: 13, relativeTo: .caption))
+                                .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
+                        }
+                        secondaryActions(for: row)
+                    }
                 }
-                if let endorsement = row.endorsement {
-                    Text(endorsement)
-                        .font(.riot(.body, size: 13, relativeTo: .caption))
-                        .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
-                }
-                actions(for: row)
+                .accessibilityIdentifier("directory-more-\(row.name)")
             }
         }
     }
@@ -175,7 +191,7 @@ public struct DirectoryView: View {
 
     private func permissions(_ permissions: [String]) -> some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("This app can:")
+            Text("This tool can:")
                 .font(.riot(.mono, size: 12, relativeTo: .caption))
                 .textCase(.uppercase)
                 .tracking(1)
@@ -189,15 +205,17 @@ public struct DirectoryView: View {
     }
 
     @ViewBuilder
-    private func actions(for row: RiotDirectoryRow) -> some View {
+    private func primaryAction(for row: RiotDirectoryRow) -> some View {
         switch row.availability {
         case let .open(app):
             Button("Open \(row.name)") { onOpen(app) }
                 .buttonStyle(.riotPrimary)
+                .frame(minHeight: 44)
                 .accessibilityIdentifier("directory-open-\(row.name)")
         case let .review(app):
             Button("Review \(row.name)") { reviewing = app }
                 .buttonStyle(.riotSecondary)
+                .frame(minHeight: 44)
                 .accessibilityIdentifier("directory-review-\(row.name)")
         case .get:
             // The app is here in full, carried by someone this person synced
@@ -205,13 +223,17 @@ public struct DirectoryView: View {
             // it and running.
             Button("Get \(row.name)") { directory.get(row) }
                 .buttonStyle(.riotPrimary)
+                .frame(minHeight: 44)
                 .accessibilityIdentifier("directory-get-\(row.name)")
         case .arriving:
             Text("Still arriving from your group…")
                 .font(.riot(.body, size: 13, relativeTo: .caption))
                 .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
         }
+    }
 
+    @ViewBuilder
+    private func secondaryActions(for row: RiotDirectoryRow) -> some View {
         // Recommending speaks for a space that already trusts the app (design
         // spec), so it appears only once the app is on in this space. A row this
         // profile already endorsed offers the take-back instead.
@@ -220,6 +242,7 @@ public struct DirectoryView: View {
                 directory.retract(row)
             }
             .buttonStyle(.riotSecondary)
+            .frame(minHeight: 44)
             .accessibilityIdentifier("directory-retract-\(row.name)")
         } else if row.canRecommend {
             TextField("Why you recommend it (optional)", text: note(for: row))
@@ -229,12 +252,14 @@ public struct DirectoryView: View {
                 notes[row.appIDHex] = ""
             }
             .buttonStyle(.riotSecondary)
+            .frame(minHeight: 44)
             .accessibilityIdentifier("directory-recommend-\(row.name)")
         }
 
         if row.canShare {
-            Button("Share to this space") { directory.share(row) }
+            Button("Share with this community") { directory.share(row) }
                 .buttonStyle(.riotSecondary)
+                .frame(minHeight: 44)
                 .accessibilityIdentifier("directory-share-\(row.name)")
         }
     }

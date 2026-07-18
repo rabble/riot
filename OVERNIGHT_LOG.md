@@ -402,3 +402,42 @@ _(Summary goes at the TOP when done. Task entries append below in order.)_
   DerivedData build database. The same focused suite passed immediately when
   rerun serially (and again with isolated DerivedData); this was a test-harness
   lock, not a product failure.
+
+## Task 6: compact Tools, Known contributors, and Nearby
+- Used the approved compact-core-flow design and plan with
+  `superpowers:test-driven-development`, `superpowers:systematic-debugging`, and
+  `metaswarm:orchestrated-execution`.
+- RED: focused tests failed because the exact Known-contributors labels,
+  separately addressable contributor summary/technical accessibility model,
+  compact tool vocabulary, and Nearby offered-count strings did not exist.
+- Tools now lead with name, purpose, trust/status badges, and one availability
+  action. Version, permissions, endorsements, recommendation, and sharing live
+  under `More details for <tool>`. Empty, intro, review, approval, and peer-profile
+  copy consistently says tool/community instead of app/space while protocol type
+  names remain unchanged.
+- People now uses `Known contributors` and `No known contributors yet` with Riot
+  headers/cards. The rendered name/tag, organizer word, and contribution count
+  form one concise summary accessibility element. Technical details remains a
+  separate focusable disclosure with the complete ID absent until expansion.
+- Nearby keeps automatic discovery, permission recovery, inbound confirmation,
+  preview acceptance/rejection, joining consent, and all failure states. It now
+  labels `Nearby devices`, `People you’ve synced with`, and `Add N updates`, calls
+  the count offered rather than verified, gives every action a 44-point target,
+  and removes the renderer/device diagnostic card.
+- Assumption: the preview count is an offered-item count supplied by the transport
+  preview, not a trust claim. Rejected: `Add them`, “new things,” renderer names,
+  or collapsing the existing consent states for visual brevity.
+- Scope note: `CommunityShell.swift` carries the pure shared Nearby vocabulary
+  seam because `ConferenceShellView.swift` is not compiled into the testable
+  `RiotKit` target. `DirectoryRepositoryTests.swift` and
+  `SpaceAdoptionTests.swift` were necessarily updated because their exact
+  user-facing app/space copy assertions changed to tool/community.
+- During GREEN, shared compile caught the FFI preview count is `UInt32`; the
+  presentation seam now converts it explicitly to `Int` for pluralization.
+- GREEN: focused People/Directory/Shell/Space-adoption suites, the full shared
+  Swift suite, shared SwiftUI compile, and `git diff --check` pass.
+- Adversarial review caught that the first empty-state sentence was truthful but
+  not the design's exact anti-membership copy. It now reads and tests
+  `Known contributors appear here once people post updates.` Empty/unavailable
+  states also use Riot cards and typography, and the looking action uses the
+  compact exact `Stop` label. Final adversarial review passed.

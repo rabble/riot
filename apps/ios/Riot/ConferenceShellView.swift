@@ -1802,12 +1802,12 @@ private struct ConnectionStatusView: View {
         case .connecting: "Connecting…"
         case .gettingLatest: "Getting the latest from them…"
         case let .preview(count, _):
-            "\(count) new thing\(count == 1 ? "" : "s") to bring over — review them below"
+            "\(count) offered update\(count == 1 ? "" : "s") to review"
         case .caughtUp:
             if let count = nearby.itemsBroughtOver, count > 0 {
-                "Synced · \(count) new thing\(count == 1 ? "" : "s") arrived"
+                "Synced · \(count) update\(count == 1 ? "" : "s") added"
             } else {
-                "Synced · you both have the same things"
+                "Synced · you both have the same updates"
             }
         case .alreadyCurrent: "Synced · nothing new to bring over"
         case .differentSpace: "They are in a different space, so nothing was shared"
@@ -1815,6 +1815,11 @@ private struct ConnectionStatusView: View {
         case .failed: "The connection failed — try again"
         default: "Connected"
         }
+    }
+
+    private var previewCount: Int? {
+        guard case let .preview(count, _) = nearby.state else { return nil }
+        return Int(count)
     }
 
     /// The §4.7 "Bluetooth/local-network denied" recovery: what still works
@@ -1876,7 +1881,7 @@ private struct ConnectionStatusView: View {
                 connectedCard
                 RiotCard {
                     VStack(alignment: .leading, spacing: 14) {
-                        Text("Connections stay between devices near you — over Bluetooth, or the local network you are both on. Riot never sends this session over the internet.")
+                        Text(NearbyStrings.deviceSummary)
                             .font(.riot(.body, size: 15, relativeTo: .callout))
                             .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
                         if nearby.state == .idle || nearby.state == .failed {
@@ -1884,22 +1889,32 @@ private struct ConnectionStatusView: View {
                                 nearby.findNearby(host: model.nearbySpaceHost)
                             }
                             .buttonStyle(.riotPrimary)
+                            .frame(minHeight: 44)
+                            .accessibilityIdentifier("nearby-find-devices")
                         } else {
-                            Button("Stop looking", role: .cancel) { nearby.stop() }
+                            Button(NearbyStrings.stopLabel, role: .cancel) { nearby.stop() }
                                 .buttonStyle(.riotSecondary)
+                                .frame(minHeight: 44)
+                                .accessibilityIdentifier("nearby-stop-looking")
                         }
-                        if case .preview = nearby.state {
-                            Button("Add them") { nearby.addPreviewedContent() }
+                        if let previewCount {
+                            Button(NearbyStrings.addUpdates(previewCount)) {
+                                nearby.addPreviewedContent()
+                            }
                                 .buttonStyle(.riotPrimary)
+                                .frame(minHeight: 44)
+                                .accessibilityIdentifier("nearby-add-updates")
                             Button("Not now", role: .cancel) { nearby.rejectPreviewedContent() }
                                 .buttonStyle(.riotSecondary)
+                                .frame(minHeight: 44)
+                                .accessibilityIdentifier("nearby-reject-updates")
                         }
                     }
                 }
                 if !nearby.phones.isEmpty {
                     RiotCard {
                         VStack(alignment: .leading, spacing: 10) {
-                            Text("Devices")
+                            Text(NearbyStrings.devicesTitle)
                                 .font(.riot(.mono, size: 12, relativeTo: .caption))
                                 .textCase(.uppercase)
                                 .tracking(1)
@@ -1915,12 +1930,12 @@ private struct ConnectionStatusView: View {
                 if !syncedPeople.isEmpty {
                     RiotCard {
                         VStack(alignment: .leading, spacing: 10) {
-                            Text("People")
+                            Text(NearbyStrings.syncedPeopleTitle)
                                 .font(.riot(.mono, size: 12, relativeTo: .caption))
                                 .textCase(.uppercase)
                                 .tracking(1)
                                 .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
-                            Text("People you have synced with. Tap to see who they are and what they carry.")
+                            Text("Open a person to review what they carry.")
                                 .font(.riot(.body, size: 13, relativeTo: .caption))
                                 .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
                             ForEach(syncedPeople) { person in
@@ -1929,17 +1944,6 @@ private struct ConnectionStatusView: View {
                                     .accessibilityIdentifier("person-\(person.id)")
                             }
                         }
-                    }
-                }
-                RiotCard {
-                    VStack(alignment: .leading, spacing: 10) {
-                        Text("On this device")
-                            .font(.riot(.mono, size: 12, relativeTo: .caption))
-                            .textCase(.uppercase)
-                            .tracking(1)
-                            .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
-                        LabeledContent("Alerts on this device", value: "\(model.entries.count)")
-                        LabeledContent("Renderer", value: "incident-board/1")
                     }
                 }
             }

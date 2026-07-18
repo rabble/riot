@@ -1,5 +1,17 @@
 import Foundation
 
+public enum NearbyStrings {
+    public static let devicesTitle = "Nearby devices"
+    public static let syncedPeopleTitle = "People you’ve synced with"
+    public static let stopLabel = "Stop"
+    public static let deviceSummary =
+        "Discovery runs automatically nearby over Bluetooth or your local network."
+
+    public static func addUpdates(_ count: Int) -> String {
+        "Add \(count) update\(count == 1 ? "" : "s")"
+    }
+}
+
 // MARK: - Community context
 
 /// The selected community, as the shell reads it. Views bind to this value —

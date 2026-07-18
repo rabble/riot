@@ -261,13 +261,13 @@ final class SpaceAdoptionTests: XCTestCase {
         XCTAssertEqual(synced.emptyState?.title, "Already in your network")
         XCTAssertEqual(
             synced.emptyState?.message,
-            "You’ve synced with this person — they’re carrying your space’s latest."
+            "You’ve synced with this person — they’re carrying your community’s latest."
         )
 
         // Genuinely no space: the only case where that sentence is true.
         let spaceless = PeerCollaboration(space: nil, canInvite: false)
         XCTAssertEqual(spaceless, .nothingToOffer(.noSpace))
-        XCTAssertEqual(spaceless.emptyState?.title, "No space to invite them to yet")
+        XCTAssertEqual(spaceless.emptyState?.title, "No community to invite them to yet")
 
         XCTAssertNotEqual(
             synced.emptyState?.title,

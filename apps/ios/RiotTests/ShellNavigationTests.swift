@@ -497,6 +497,16 @@ final class ShellNavigationTests: XCTestCase {
         XCTAssertEqual(model.connectionDisclosure, "Offline · local device only")
     }
 
+    func testNearbyUsesTruthfulCompactVocabularyAndOfferedCount() {
+        XCTAssertEqual(NearbyStrings.devicesTitle, "Nearby devices")
+        XCTAssertEqual(NearbyStrings.syncedPeopleTitle, "People you’ve synced with")
+        XCTAssertEqual(NearbyStrings.stopLabel, "Stop")
+        XCTAssertEqual(NearbyStrings.addUpdates(3), "Add 3 updates")
+        XCTAssertEqual(NearbyStrings.addUpdates(1), "Add 1 update")
+        XCTAssertFalse(NearbyStrings.deviceSummary.localizedCaseInsensitiveContains("renderer"))
+        XCTAssertFalse(NearbyStrings.syncedPeopleTitle.contains("Recently synced"))
+    }
+
     @MainActor
     func testDismissingAnAlertClearsItsBackingError() {
         let model = RiotAppModel(testError: "InvalidInput")
