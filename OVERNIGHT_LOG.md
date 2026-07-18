@@ -70,3 +70,18 @@ _(Summary goes at the TOP when done. Task entries append below in order.)_
   by one validated request at Post time.
 - Baseline `sh scripts/ios-check.sh test` passed after the unrelated relationship
   mapping repair. Existing Swift concurrency/WebKit warnings remain pre-existing.
+
+## Task: mandatory design review, revision 3
+- Product and UX approved. Architecture identified three final source contracts:
+  shell keying alone cannot order teardown before repository mutation; retained
+  identity review can become stale after a name change; and report-only history
+  filtering loses retractions because retractions target action IDs.
+- Added a tokened `CommunityTransitionGate` owned by the app model. Every community-
+  mutating entry must synchronously prepare the active shell before repository work;
+  stale teardown cannot unregister a newer shell.
+- Added an explicit publishing-context refresh on presentation, observed identity
+  change, and Post, with fail-closed key/destination mismatch.
+- Treatment detail now computes direct report actions plus transitive retractions.
+  Retract is action-scoped and signs the selected editorial-action ID, never the
+  report ID. This also surfaced a real issue in the current generic action sheet
+  that the implementation tests will expose RED before repair.

@@ -153,15 +153,22 @@ that one sheet through a small `ComposerPresentationState` transition
 initializers require an explicit handler; no visible action can be constructed
 with a default `{}`. Tools follow the content.
 
-The parent keys `CommunityShellView` with `.id(community.id)`. Any chooser,
-archive, leave, or recovery switch therefore runs one typed teardown before a
-new shell exists: persist the old community’s complete draft, dismiss its
-composer/detail/tool presentations, clear callbacks, and stop Nearby. Only then
-can the new keyed shell own its publisher, descriptor, identity, draft, and
-coordinators. A Community A draft restores only from A’s store and can never be
-posted by Community B’s model. Leaving/removal still requires the discard guard;
-ordinary switching preserves the per-community draft and needs no destructive
-prompt.
+The parent keys `CommunityShellView` with `.id(community.id)`. Keying is backed by
+an explicit `CommunityTransitionGate` owned by `RiotAppModel`. The active shell
+registers one tokened preparation closure; every model entry that can mutate the
+active community—chooser switch, link/QR join, deep-link switch, create, archive,
+leave, retry/recovery—must call `prepare()` before its repository mutation.
+Preparation synchronously persists the old community’s complete draft, dismisses
+composer/detail/tool presentations, invalidates callbacks, and stops Nearby.
+The shell unregisters only its own token on disappearance, preventing a stale
+shell from clearing a newer registration.
+
+Only after preparation may the repository switch and the new keyed shell own its
+publisher, descriptor, identity, draft, and coordinators. A Community A draft
+restores only from A’s store and can never be posted by B’s model. Leaving/removal
+still requires the discard guard; ordinary switching preserves the draft and
+needs no destructive prompt. Tests call every mutating model entry and assert
+prepare precedes the registry operation.
 
 Front page and Open wire remain separately labeled. No ranking or blending is
 introduced.
@@ -203,17 +210,30 @@ records the existing gap.
 
 Both treated rows have a `Review treatment` action. Its payload-redacted detail
 shows treatment type, signed author/tag, timestamp, target entry under Technical
-details, and only signed history whose `targetEntryID` matches that report.
-Authorized editors retain `Editorial action`, including a signed retraction,
-from this detail. Replies and all report/operational payload remain absent.
+details, and the report’s signed action lineage. Lineage begins with direct
+actions whose `targetEntryID == report.id`, then repeatedly includes retractions
+whose targets are any already-included action IDs. This keeps retractions visible
+without admitting unrelated global history.
+
+Authorized editors retain `Editorial action`. New actions target the report ID;
+`Retract` is offered beside a selected active editorial action and signs against
+that action’s ID, never the report ID. Replies and all report/operational payload
+remain absent.
 
 ### Posting contract
 
 The composer’s `Review before posting` card is a live summary of current identity
-and destination, not an immutable prepared request. The single Post tap validates
-the current fields, constructs one complete `PostUpdateRequest`, and passes that
-exact value to the publisher once. The design makes no separate confirmation-step
-claim.
+and destination, not an immutable prepared request. The retained model receives
+a `PublishingContextProviding` resolver from `RiotAppModel`.
+`CommunityShellView` already observes that model; every published identity change
+calls `composer.refreshPublishingContext()`, and the composer also resolves once
+on presentation and again at Post. Destination is immutable for the keyed shell.
+A display-name change therefore refreshes the visible review; a key/destination
+mismatch invalidates posting rather than signing under stale copy.
+
+The single Post tap resolves context again, validates current fields, constructs
+one complete `PostUpdateRequest`, and passes that exact value to the publisher
+once. The design makes no separate confirmation-step claim.
 
 After a successful commit, the composer says: `Saved and signed on this device.
 Exchange with someone nearby to share it.` The notification prompt, if needed,
@@ -332,6 +352,10 @@ Small pure states live in already-registered source files:
   and its single composer placement, filtering active alerts with injected time;
 - `PostSuccessCommand` maps `.done` to dismissal only and `.postAnother` to the
   field reset above.
+- `CommunityTransitionGate` has tokened register/unregister and a synchronous
+  prepare-before-mutation contract.
+- `EditorialActionLineage` computes direct actions plus transitive retractions;
+  `Retract` carries a selected editorial-action ID.
 
 `ConferenceShellView` accepts an internal test-visible notifier factory, defaulting
 to production, and passes the one community-shell notifier to the composer.
@@ -355,11 +379,13 @@ composition and display.
 2. Shell/Home tests prove the empty-wire and People actions open the retained
    composer and every wire state has no duplicate composer trigger. A keyed-shell
    switch test proves A’s model is torn down/persisted before B opens and cannot
-   publish A’s draft into B.
+   publish A’s draft into B. Gate tests cover chooser, join, deep link, create,
+   archive, leave, and retry order plus stale-token unregister.
 3. Newswire tests prove ordinary rows carry body/operational metadata, the
    excerpt/detail split, contextual labels, exact trust copy, and defensive
    treated-payload redaction. Treatment detail tests prove target-scoped history
-   and editorial retraction remain reachable without payload.
+   plus transitive retractions remain reachable without payload, and Retract signs
+   the selected action ID rather than the report ID.
 4. Composer tests prove posted → post-another clears every field without signing,
    while Done creates no second write.
 5. Alerts tests prove empty and expired-only states omit Home alerts while an
