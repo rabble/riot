@@ -2,6 +2,34 @@
 
 _(Summary goes at the TOP when done. Task entries append below in order.)_
 
+## Morning summary
+- Done: implemented the approved compact iOS/macOS core flow across first run,
+  Home, repeat posting, report reading, Tools, Known contributors, Nearby, and
+  community-scoped state. The complete first-run → identity → two posts → exact
+  report → secondary routes journey passes at normal text and Accessibility
+  XXXL. The accessibility tab bar uses two stable rows without reducing the
+  chosen text size; its unread badge no longer covers the icon and announces the
+  actual unread count.
+- Tested: `cargo test --workspace --all-features`, `cargo check --workspace
+  --all-features`, `cargo fmt --all -- --check`, Swift unit tests, iOS simulator
+  build, iOS device build, normal and Accessibility XXXL XCUITest journeys, and
+  visual screenshot inspection all pass. Product changes passed iterative
+  adversarial review.
+- Open/blocking repository gates: strict Clippy fails on three pre-existing
+  Rust 1.95 warnings in `crates/xtask/src/verify_newswire_export.rs`. The
+  repository-wide coverage run executes successfully but measures 95.36%
+  (11,037/11,574) against the 97% ratchet floor. Neither failure is in the
+  Swift-only UX diff; I did not expand scope or lower the coverage floor.
+- Assumptions to review: “implement it” meant the audited Apple SwiftUI app;
+  Android parity remains a separate audit. Notification and Nearby suppression
+  are UUID-gated UI-automation seams only; ordinary launches retain contextual
+  notification permission and automatic discovery.
+- Suggested next steps: repair the three xtask Clippy warnings, audit why the
+  measured Tarpaulin baseline fell from the documented 97.26% to 95.36%, then
+  rerun the composite coverage gate. Separately schedule Android parity and the
+  documented core work for authenticated first-run Nearby adoption, hidden-
+  original inspection, and encrypted/full-fidelity draft persistence.
+
 ## Bearings and scope
 - Read all 98 repository Markdown files: 11 current/top-level/platform/product documents directly, plus 36 implementation plans, 30 design specs, and 21 research/decision/archive documents through independent metaswarm readers.
 - Skills used: `metaswarm:start`, `superpowers:brainstorming`, `metaswarm:brainstorming-extension`, `metaswarm:design-review-gate`, `superpowers:using-git-worktrees`, and `superpowers:dispatching-parallel-agents`. Repo-local `skills/` inventory: none; installed project skills are the source of workflow conventions.
@@ -441,3 +469,54 @@ _(Summary goes at the TOP when done. Task entries append below in order.)_
   `Known contributors appear here once people post updates.` Empty/unavailable
   states also use Riot cards and typography, and the looking action uses the
   compact exact `Stop` label. Final adversarial review passed.
+
+## Task 7: verify the complete compact core flow
+- Used the approved design/plan with `superpowers:test-driven-development`,
+  `superpowers:systematic-debugging`, `metaswarm:orchestrated-execution`,
+  `metaswarm:visual-review`, and `superpowers:verification-before-completion`.
+- Replaced the state-dependent route smoke test with one deterministic journey:
+  fresh onboarding, display name, named community creation, profile identity
+  with key tag, two successive posts, keyboard/focus reset, exact named report
+  detail and return action, then Tools, Known contributors, and idle Nearby.
+  Every major state keeps a screenshot.
+- UI automation uses a valid run UUID for isolated temporary storage and a
+  deterministic wrapping key because an unsigned simulator test runner cannot
+  write Keychain items (`-34018`). Two additional UUID-gated flags suppress the
+  notification prompt and Nearby autostart only during this journey; production
+  startup, notification timing, and discovery are unchanged.
+- Failures found and fixed during the interaction loop: toolbar-only sheet
+  actions were invisible under the custom headers, the composer left its
+  keyboard covering success actions, People retained stale data after posting,
+  Post another focused an off-screen headline at the largest text size, and the
+  first report query opened the containing wire card rather than the exact
+  headline-specific action.
+- Accessibility review rejected a first attempt that capped tab-label Dynamic
+  Type. The cap was removed. Standard sizes keep one compact row; accessibility
+  sizes use two explicit equal-width rows at the person's full chosen size.
+  The bar resists compression from tall route content. Visual inspection then
+  found and fixed a scaled unread badge covering Home's icon; accessibility
+  layouts place it beside the icon and the spoken label includes the actual
+  unread count.
+- Focus evidence: SwiftUI restores both keyboard and accessibility focus using
+  the full `surface + report ID` trigger. XCUITest does not expose the VoiceOver
+  cursor, so the UI acceptance test closes the exact headline-specific report
+  and reuses that same element to reopen the same detail; unit tests separately
+  pin duplicate report triggers to their originating surface.
+- GREEN: full shared Swift tests, simulator build, device build, normal XCUITest,
+  Accessibility XXXL XCUITest, visual screenshot inspection, `git diff --check`,
+  `cargo test --workspace --all-features`, `cargo check --workspace
+  --all-features`, and `cargo fmt --all -- --check`.
+- Blocked gate, not changed: `cargo clippy --workspace --all-targets
+  --all-features -- -D warnings` fails on three existing warnings in
+  `crates/xtask/src/verify_newswire_export.rs` (`cmp_owned` once,
+  `manual_strip` twice). That file is untouched by this UX branch.
+- Blocked gate, not changed: `scripts/web/coverage.sh` ran the complete
+  Tarpaulin suite and measured 95.36% (11,037/11,574), below the authoritative
+  97% floor and the file's documented 97.26% prior measurement. I did not lower
+  the ratchet. The older context saying “~94.6%” is explicitly stale; the JSON
+  threshold is authoritative.
+- Existing warnings left unchanged: WebKit delegate near-match, Swift
+  concurrency warnings in older tests/transport code, and native archive
+  deployment-target warnings.
+- No production systems, remote branches, databases, dependencies, or protocol
+  behavior were touched.

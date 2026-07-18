@@ -592,6 +592,7 @@ private extension String {
 public struct PostUpdateView: View {
     private enum FocusedField: Hashable {
         case headline
+        case body
     }
 
     @ObservedObject var model: PostUpdateViewModel
@@ -599,6 +600,7 @@ public struct PostUpdateView: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(\.scenePhase) private var scenePhase
     @FocusState private var focusedField: FocusedField?
+    @State private var draftResetRequest = 0
     let onPosted: (PostedUpdate) -> Void
     let onDone: () -> Void
 
@@ -613,31 +615,39 @@ public struct PostUpdateView: View {
     }
 
     public var body: some View {
-        ScrollView {
-            VStack(spacing: 16) {
-                modeCard
-                draftCard
-                if model.mode.requiresStricterFields { operationalCard }
-                reviewCard
-                if let error = model.errorMessage {
-                    failureCard(error)
+        ScrollViewReader { proxy in
+            ScrollView {
+                VStack(spacing: 16) {
+                    modeCard
+                    draftCard
+                        .id("post-draft")
+                    if model.mode.requiresStricterFields { operationalCard }
+                    reviewCard
+                    Button(isPosted ? "Done" : "Close", action: onDone)
+                        .buttonStyle(.riotSecondary)
+                        .frame(maxWidth: .infinity, minHeight: 44)
+                        .accessibilityIdentifier(isPosted ? "post-done" : "post-close")
+                    if let error = model.errorMessage {
+                        failureCard(error)
+                    }
+                }
+                .padding(20)
+            }
+            .riotHeader(eyebrow: "Share with your community", "Post an update")
+            // A half-written post survives the view leaving the foreground.
+            .onChange(of: scenePhase) { _, phase in
+                if phase != .active { model.persistDraft() }
+            }
+            .onDisappear { model.persistDraft() }
+            .onChange(of: model.status) { _, status in
+                if case let .posted(update) = status {
+                    focusedField = nil
+                    onPosted(update)
                 }
             }
-            .padding(20)
-        }
-        .riotHeader(eyebrow: "Share with your community", "Post an update")
-        // A half-written post survives the view leaving the foreground.
-        .onChange(of: scenePhase) { _, phase in
-            if phase != .active { model.persistDraft() }
-        }
-        .onDisappear { model.persistDraft() }
-        .onChange(of: model.status) { _, status in
-            if case let .posted(update) = status { onPosted(update) }
-        }
-        .toolbar {
-            ToolbarItem(placement: .cancellationAction) {
-                Button(isPosted ? "Done" : "Close", action: onDone)
-                    .accessibilityIdentifier(isPosted ? "post-done" : "post-close")
+            .onChange(of: draftResetRequest) { _, _ in
+                proxy.scrollTo("post-draft", anchor: .top)
+                focusedField = .headline
             }
         }
     }
@@ -746,6 +756,7 @@ public struct PostUpdateView: View {
                 TextField("What people need to know", text: $model.body, axis: .vertical)
                     .font(.riot(.body, size: 15, relativeTo: .body))
                     .lineLimit(4...8)
+                    .focused($focusedField, equals: .body)
                     .accessibilityIdentifier("post-body")
                 Toggle("Started with model assistance", isOn: $model.aiAssisted)
                     .tint(RiotTheme.pink(for: colorScheme))
@@ -796,7 +807,7 @@ public struct PostUpdateView: View {
     private var postAnotherButton: some View {
         Button("Post another") {
             model.postAnother()
-            focusedField = .headline
+            draftResetRequest += 1
         }
         .buttonStyle(.riotPrimary)
         .frame(maxWidth: .infinity, minHeight: 44)

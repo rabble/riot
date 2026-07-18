@@ -1382,12 +1382,16 @@ private struct NewswireReportDetailSheet: View {
 
     var body: some View {
         ScrollView {
-            Group {
+            VStack(alignment: .leading, spacing: 18) {
                 if row.display == .ordinary {
                     ordinaryDetail
                 } else {
                     treatmentDetail
                 }
+                Button("Close", action: onClose)
+                    .buttonStyle(.riotSecondary)
+                    .frame(maxWidth: .infinity, minHeight: 44)
+                    .accessibilityIdentifier("newswire-detail-close")
             }
             .padding(20)
         }
@@ -1395,12 +1399,6 @@ private struct NewswireReportDetailSheet: View {
             eyebrow: row.display == .ordinary ? "Update" : "Treatment",
             row.display == .ordinary ? (row.headline ?? "Update") : treatmentTitle
         )
-        .toolbar {
-            ToolbarItem(placement: .cancellationAction) {
-                Button("Close", action: onClose)
-                    .accessibilityIdentifier("newswire-detail-close")
-            }
-        }
         .sheet(item: $replyTarget) { target in
             NewswireCommentComposeSheet(
                 model: model,

@@ -1,6 +1,20 @@
 import SwiftUI
 import RiotKit
 
+/// Narrow, UUID-gated seams for deterministic UI automation. A production
+/// launch cannot activate these flags accidentally because it has no run ID.
+private enum RiotUIAutomationEnvironment {
+    static func isEnabled(_ key: String) -> Bool {
+        let environment = ProcessInfo.processInfo.environment
+        guard
+            environment[key] == "1",
+            let runID = environment["RIOT_UI_TEST_RUN_ID"],
+            UUID(uuidString: runID) != nil
+        else { return false }
+        return true
+    }
+}
+
 /// The community-first shell (Unit 2A). Riot is organized around a community:
 /// once one is selected, a person answers "what is happening here?" (Home) and
 /// "what can we do together?" (Tools / People / Nearby). Before a community
@@ -903,16 +917,18 @@ private struct CommunityShellView: View {
             .onAppear { registerCommunityScope() }
             .onDisappear { unregisterCommunityScope() }
             .sheet(item: $identitySheet) { destination in
-                switch destination {
-                case .yourProfile:
-                    YourProfileSheet(model: model, onClose: { identitySheet = nil })
-                case .communitySettings:
-                    CommunitySettingsSheet(
-                        model: model,
-                        community: community,
-                        onLeave: requestLeaveCommunity,
-                        onClose: { identitySheet = nil }
-                    )
+                NavigationStack {
+                    switch destination {
+                    case .yourProfile:
+                        YourProfileSheet(model: model, onClose: { identitySheet = nil })
+                    case .communitySettings:
+                        CommunitySettingsSheet(
+                            model: model,
+                            community: community,
+                            onLeave: requestLeaveCommunity,
+                            onClose: { identitySheet = nil }
+                        )
+                    }
                 }
             }
             .confirmationDialog(
@@ -981,6 +997,10 @@ private struct CommunityShellView: View {
     private func handlePosted(_ update: PostedUpdate) {
         _ = update
         newswire.load()
+        people.load()
+        guard !RiotUIAutomationEnvironment.isEnabled(
+            "RIOT_UI_TEST_SUPPRESS_NOTIFICATION_PERMISSION"
+        ) else { return }
         Task {
             await Task.yield()
             await notifier.requestAuthorizationIfNeeded()
@@ -1638,6 +1658,9 @@ private struct YourProfileSheet: View {
                     .buttonStyle(.riotPrimary)
                     .disabled(trimmed.isEmpty)
                     .accessibilityIdentifier("save-my-name")
+                Button("Done", action: onClose)
+                    .buttonStyle(.riotSecondary)
+                    .accessibilityIdentifier("your-profile-done")
                 if let nameError = model.nameError {
                     Text(nameError)
                         .font(.riot(.body, size: 13, relativeTo: .caption))
@@ -1648,9 +1671,6 @@ private struct YourProfileSheet: View {
             .padding(20)
         }
         .riotHeader(eyebrow: "You", ShellIdentityDestination.yourProfile.label)
-        .toolbar {
-            ToolbarItem(placement: .confirmationAction) { Button("Done", action: onClose) }
-        }
         .onAppear { name = model.claimedName ?? "" }
     }
 }
@@ -1697,13 +1717,14 @@ private struct CommunitySettingsSheet: View {
                 Button("Leave this community", role: .destructive, action: onLeave)
                     .buttonStyle(.riotSecondary)
                     .accessibilityIdentifier("leave-community")
+
+                Button("Done", action: onClose)
+                    .buttonStyle(.riotSecondary)
+                    .accessibilityIdentifier("community-settings-done")
             }
             .padding(20)
         }
         .riotHeader(eyebrow: "Community", ShellIdentityDestination.communitySettings.label)
-        .toolbar {
-            ToolbarItem(placement: .confirmationAction) { Button("Done", action: onClose) }
-        }
         .sheet(isPresented: $isSharePresented) {
             ShareCommunitySheet(
                 community: community,
@@ -1788,6 +1809,9 @@ private struct ConnectionStatusView: View {
     }
 
     private func startDiscoveryWhenReady() {
+        guard !RiotUIAutomationEnvironment.isEnabled(
+            "RIOT_UI_TEST_DISABLE_NEARBY_AUTOSTART"
+        ) else { return }
         guard model.isProfileOpen, nearby.state == .idle else { return }
         nearby.findNearby(host: model.nearbySpaceHost)
     }
