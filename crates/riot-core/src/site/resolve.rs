@@ -14,6 +14,7 @@ use crate::newswire::PostTreatment;
 use crate::site::manifest::{SiteManifestV1, SiteRole};
 use crate::site::moderation::ModerationFreshness;
 use crate::site::version_floor::VersionFloorOutcome;
+use std::collections::BTreeSet;
 
 /// The per-item trust tier the shells style. Resolved by core from the signed
 /// manifest; a shell renders exactly this and never infers it.
@@ -162,6 +163,67 @@ pub fn item_treatment(
     } else {
         PostTreatment::Ordinary
     }
+}
+
+// ---- Task 5: soft-link resolution (comment → article parent) ----
+
+/// A cross-namespace soft link (a comment in `C` referencing its parent article
+/// in `O`). Resolved at render only — `C` is open, so there is no admission-time
+/// referential integrity, and a reference may point at an article this client has
+/// not synced (or that never existed). A dangling reference collapses gracefully.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SoftLink {
+    /// The parent article is held; the link resolves to its entry-id.
+    Resolved([u8; 32]),
+    /// The parent is not held — collapse gracefully, never error the whole view.
+    Dangling,
+}
+
+/// Resolve a comment's parent-article reference against the set of held article
+/// entry-ids. A miss is `Dangling`, not a failure — tolerate it (§6 step 7).
+pub fn resolve_soft_link(parent_ref: &[u8; 32], held_article_ids: &BTreeSet<[u8; 32]>) -> SoftLink {
+    if held_article_ids.contains(parent_ref) {
+        SoftLink::Resolved(*parent_ref)
+    } else {
+        SoftLink::Dangling
+    }
+}
+
+// ---- Task 6: writer-side state (produced here, rendered in Unit 6) ----
+
+/// The editor's own capability state, surfaced at compose. An editor whose
+/// time-boxed cap has expired must be warned BEFORE writing — silent
+/// write-rejection is the worst publishing UX (§6).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WriterCapState {
+    /// The cap is within its `time_range`; writes will be accepted.
+    Active,
+    /// The cap expired; the shell warns "editorial access expired on <date>".
+    Expired { expired_at: u64 },
+}
+
+/// Resolve the writer's cap state from its expiry and the current time.
+pub fn writer_cap_state(cap_expires_at: u64, now: u64) -> WriterCapState {
+    if now >= cap_expires_at {
+        WriterCapState::Expired {
+            expired_at: cap_expires_at,
+        }
+    } else {
+        WriterCapState::Active
+    }
+}
+
+/// The status of a locally-authored write, core-reported so the shell never
+/// infers publish-success from local state. A peer-rejected write is `Failed`,
+/// never silently shown as `Published`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WriteStatus {
+    /// Accepted by at least one peer (or the local durable store) — published.
+    Published,
+    /// Authored locally, not yet confirmed by a peer.
+    Pending,
+    /// Rejected at a peer (e.g. expired cap, admission refusal) — NOT published.
+    Failed,
 }
 
 #[cfg(test)]
@@ -395,5 +457,44 @@ mod tests {
             item_treatment(&AUTHOR, &ENTRY, &loading),
             PostTreatment::Ordinary
         ));
+    }
+
+    // ---- soft links (Task 5) ----
+
+    #[test]
+    fn a_soft_link_to_a_held_article_resolves() {
+        let mut held = BTreeSet::new();
+        held.insert(ENTRY);
+        assert_eq!(resolve_soft_link(&ENTRY, &held), SoftLink::Resolved(ENTRY));
+    }
+
+    #[test]
+    fn a_dangling_soft_link_collapses_gracefully() {
+        // The parent article is not held — must collapse, not error the view.
+        let held = BTreeSet::new();
+        assert_eq!(resolve_soft_link(&ENTRY, &held), SoftLink::Dangling);
+    }
+
+    // ---- writer-side state (Task 6) ----
+
+    #[test]
+    fn an_active_cap_is_active_and_an_expired_cap_warns() {
+        assert_eq!(writer_cap_state(1_000, 500), WriterCapState::Active);
+        assert_eq!(
+            writer_cap_state(1_000, 1_000),
+            WriterCapState::Expired { expired_at: 1_000 }
+        );
+        assert_eq!(
+            writer_cap_state(1_000, 2_000),
+            WriterCapState::Expired { expired_at: 1_000 }
+        );
+    }
+
+    #[test]
+    fn a_rejected_write_is_failed_never_published() {
+        // The status is core-reported; a peer rejection is Failed, distinct from
+        // Published — the shell must not infer publish-success from local state.
+        assert_ne!(WriteStatus::Failed, WriteStatus::Published);
+        assert_ne!(WriteStatus::Pending, WriteStatus::Published);
     }
 }
