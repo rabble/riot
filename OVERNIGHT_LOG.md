@@ -87,3 +87,13 @@ _(Summary goes at the TOP when done. Task entries append below in order.)_
   that the implementation tests will expose RED before repair.
 - Final gate result: Product, Architecture, UX, Security, and CTO/TDD all
   `APPROVED` the current design. Implementation planning may now begin.
+
+## Task: write the implementation plan
+- Used `superpowers:writing-plans` against the approved design. Created
+  `docs/superpowers/plans/2026-07-19-compact-core-flow.md` with seven dependency-
+  ordered TDD units, exact existing file scope, RED/GREEN commands, commit
+  boundaries, simulator interaction, visual review, and full release gates.
+- Chose inline metaswarm orchestrated execution rather than asking for a morning
+  choice: the overnight directive explicitly requires autonomous progress, and
+  the repo mandates its own implement/validate/adversarial-review/commit loop.
+- No implementation begins until the separate three-reviewer plan gate passes.
