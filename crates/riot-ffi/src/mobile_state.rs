@@ -949,6 +949,7 @@ pub(crate) fn list_current_entries(
                     && !is_profile_prefixed(entry.path())
                     && !riot_core::newswire::is_newswire_prefix(entry.path())
                     && !riot_core::willow::site_paths::is_owned_editorial_entry(entry)
+                    && !riot_core::willow::site_paths::is_owned_moderation_entry(entry)
             })
             .map(|(id, _, _)| id)
             .collect();
@@ -1563,7 +1564,8 @@ fn inspectable_entries(
             || riot_core::apps::index::classify_app_index_path(decoded_entry.path()).is_some()
             || is_profile_prefixed(decoded_entry.path())
             || riot_core::newswire::is_newswire_prefix(decoded_entry.path())
-            || riot_core::willow::site_paths::is_owned_editorial_entry(&decoded_entry);
+            || riot_core::willow::site_paths::is_owned_editorial_entry(&decoded_entry)
+            || riot_core::willow::site_paths::is_owned_moderation_entry(&decoded_entry);
         let current = if is_non_alert {
             None
         } else {
@@ -2216,6 +2218,7 @@ fn reproject_active(profile: &mut LocalProfile) -> Result<(), MobileError> {
             || is_profile_prefixed(entry.path())
             || riot_core::newswire::is_newswire_prefix(entry.path())
             || riot_core::willow::site_paths::is_owned_editorial_entry(&entry)
+            || riot_core::willow::site_paths::is_owned_moderation_entry(&entry)
         {
             continue;
         }
