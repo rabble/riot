@@ -499,26 +499,32 @@ public final class NewswireSurfaceModel: ObservableObject {
 
     private let projector: NewswireProjecting
     private let editor: NewswireEditorialActing
+    private let authority: NewswireEditorAuthorityChecking
     private let spaceDescriptorEntryID: String
     private let myKeyHex: String
-    private let roster: [String]?
     public let communityName: String
+
+    /// Whether core recognizes this profile as an editor of this descriptor — read
+    /// from the FFI predicate in `load()`, never a locally-asserted roster. `false`
+    /// until loaded and `false` for an unknown / not-yet-synced descriptor (no
+    /// error), by construction.
+    @Published public private(set) var isEditor: Bool = false
 
     public init(
         projector: NewswireProjecting,
         editor: NewswireEditorialActing,
+        authority: NewswireEditorAuthorityChecking,
         spaceDescriptorEntryID: String,
         communityName: String,
         myKeyHex: String,
-        roster: [String]?,
         initialDraftKind: EditorialActionKind = .feature
     ) {
         self.projector = projector
         self.editor = editor
+        self.authority = authority
         self.spaceDescriptorEntryID = spaceDescriptorEntryID
         self.communityName = communityName
         self.myKeyHex = myKeyHex
-        self.roster = roster
         self.wire = .offlineStale
         self.history = []
         self.draft = EditorialActionDraft(kind: initialDraftKind)
@@ -526,15 +532,34 @@ public final class NewswireSurfaceModel: ObservableObject {
 
     /// Whether the surface may OFFER an editorial control — UI visibility only.
     /// A `false` here hides the control; it does NOT authorize anything, and a
-    /// `true` here does not either (core still decides at sign time).
+    /// `true` here does not either (core still decides at sign time). Reads the
+    /// cached predicate answer resolved in `load()`, the SAME roster authority core
+    /// enforces at admission.
     public var canOfferEditorialControls: Bool {
-        !spaceDescriptorEntryID.isEmpty
-            && EditorialAuthority.isRecognizedEditor(myKeyHex: myKeyHex, roster: roster)
+        !spaceDescriptorEntryID.isEmpty && isEditor
+    }
+
+    /// The one honest line shown where a control would be, when this profile is not
+    /// (yet) an editor AND the descriptor has not projected (a joined community
+    /// before its first sync — the predicate can't tell "not synced" from "not a
+    /// member", so the note is scoped to the offline/stale state to avoid telling a
+    /// *synced* reader they will gain controls). `nil` for an editor, for a synced
+    /// non-editor, and when there is no descriptor id at all — never a bare empty
+    /// view for the pre-sync editor.
+    public var editorialControlsPendingNote: String? {
+        guard !spaceDescriptorEntryID.isEmpty, !isEditor, wire == .offlineStale else { return nil }
+        return "Editorial controls appear after this community's first sync."
     }
 
     /// Loads the collective projection. A missing descriptor id or a projection
     /// failure is the offline/stale state — never a fabricated empty wire.
     public func load() {
+        // Editor status is core's descriptor answer, resolved once per load. An
+        // unknown / not-yet-synced descriptor (or a closed profile) answers false —
+        // never a throw here.
+        isEditor = (try? authority.newswireIsEditor(
+            spaceDescriptorEntryID: spaceDescriptorEntryID, subjectID: myKeyHex)) ?? false
+
         guard !spaceDescriptorEntryID.isEmpty else {
             wire = .offlineStale
             history = []
@@ -626,6 +651,12 @@ public struct NewswireSurfaceView: View {
 
     public var body: some View {
         VStack(alignment: .leading, spacing: 16) {
+            if let note = model.editorialControlsPendingNote {
+                Text(note)
+                    .font(.riot(.body, size: 13, relativeTo: .caption))
+                    .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
+                    .accessibilityIdentifier("editorial-controls-pending-note")
+            }
             wireSection
             if !model.history.isEmpty {
                 editorialHistorySection

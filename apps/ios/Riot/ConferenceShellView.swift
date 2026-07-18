@@ -553,13 +553,14 @@ private struct CommunityShellView: View {
 
         let wireProjector: NewswireProjecting = model.profileRepository ?? UnavailableWireProjector()
         let editor: NewswireEditorialActing = model.profileRepository ?? UnavailableEditor()
+        let authority: NewswireEditorAuthorityChecking = model.profileRepository ?? UnavailableEditor()
         _newswire = StateObject(wrappedValue: NewswireSurfaceModel(
             projector: wireProjector,
             editor: editor,
+            authority: authority,
             spaceDescriptorEntryID: community.newswireDescriptorEntryID ?? "",
             communityName: community.name,
-            myKeyHex: me.id,
-            roster: community.editorialRoster
+            myKeyHex: me.id
         ))
     }
 
@@ -1155,7 +1156,7 @@ private struct UnavailableWireProjector: NewswireProjecting {
     }
 }
 
-private struct UnavailableEditor: NewswireEditorialActing {
+private struct UnavailableEditor: NewswireEditorialActing, NewswireEditorAuthorityChecking {
     func createNewswireEditorialAction(
         spaceDescriptorEntryID: String,
         targetEntryID: String,
@@ -1164,6 +1165,10 @@ private struct UnavailableEditor: NewswireEditorialActing {
         correctionText: String?
     ) throws -> NewswireSignedRecord {
         throw RepositoryError.profileClosed
+    }
+
+    func newswireIsEditor(spaceDescriptorEntryID: String, subjectID: String) throws -> Bool {
+        throw RepositoryError.profileClosed   // no live profile ⇒ never an editor (load() maps to false)
     }
 }
 

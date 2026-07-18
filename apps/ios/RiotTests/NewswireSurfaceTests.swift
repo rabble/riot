@@ -27,12 +27,19 @@ final class NewswireSurfaceTests: XCTestCase {
     /// Forwards the two editorial seams to a real `MobileProfile`. Identical to
     /// what `RiotProfileRepository`'s Newswire extension does, so the model under
     /// test exercises the genuine core rejection.
-    private final class LiveNewswire: NewswireProjecting, NewswireEditorialActing {
+    private final class LiveNewswire: NewswireProjecting, NewswireEditorialActing,
+        NewswireEditorAuthorityChecking {
         let profile: MobileProfile
         init(_ profile: MobileProfile) { self.profile = profile }
 
         func projectNewswire(spaceDescriptorEntryID: String) throws -> NewswireProjectionView {
             try profile.projectNewswireSpace(spaceDescriptorEntryId: spaceDescriptorEntryID)
+        }
+
+        /// The genuine core predicate (Unit 4a) — identical to the shipping
+        /// `RiotProfileRepository` wrapper, so the model reads the real authority.
+        func newswireIsEditor(spaceDescriptorEntryID: String, subjectID: String) throws -> Bool {
+            try profile.newswireIsEditor(descriptorEntryId: spaceDescriptorEntryID, subjectId: subjectID)
         }
 
         func createNewswireEditorialAction(
@@ -78,22 +85,21 @@ final class NewswireSurfaceTests: XCTestCase {
         )
     }
 
-    /// A model wired to a real profile. `roster` empty ⇒ the founder is the sole
-    /// editor (core default); a stranger roster ⇒ the founder is NOT an editor.
-    private func liveModel(
-        profile: MobileProfile,
-        spaceID: String,
-        roster: [String]?,
-        myKeyHex: String = "aa".repeated(32)
-    ) -> NewswireSurfaceModel {
+    /// A model whose authority is the LIVE core, keyed on the profile's REAL
+    /// whoami id (the old `myKeyHex: "aa"*32` never mattered because the replaced
+    /// static ignored the key for an empty roster — the predicate does not, so the
+    /// real id is load-bearing now). The roster lives in the descriptor created via
+    /// `spaceInput(_, roster:)`; the model reads it through the predicate, not a
+    /// passed array.
+    private func liveModel(profile: MobileProfile, spaceID: String) throws -> NewswireSurfaceModel {
         let live = LiveNewswire(profile)
         return NewswireSurfaceModel(
             projector: live,
             editor: live,
+            authority: live,
             spaceDescriptorEntryID: spaceID,
             communityName: "Riverside",
-            myKeyHex: myKeyHex,
-            roster: roster
+            myKeyHex: RiotDirectoryRow.hex(try profile.profile().whoami().id)
         )
     }
 
@@ -241,18 +247,18 @@ final class NewswireSurfaceTests: XCTestCase {
     func testMissingDescriptorIsOfflineStaleNeverAFabricatedEmptyWire() {
         // No descriptor id ⇒ the surface cannot honestly claim the wire is empty.
         let model = NewswireSurfaceModel(
-            projector: ThrowingProjector(), editor: ThrowingEditor(),
+            projector: ThrowingProjector(), editor: ThrowingEditor(), authority: ThrowingEditor(),
             spaceDescriptorEntryID: "", communityName: "Riverside",
-            myKeyHex: "aa".repeated(32), roster: [])
+            myKeyHex: "aa".repeated(32))
         model.load()
         XCTAssertEqual(model.wire, .offlineStale)
     }
 
     func testProjectionFailureIsOfflineStaleNeverARawError() {
         let model = NewswireSurfaceModel(
-            projector: ThrowingProjector(), editor: ThrowingEditor(),
+            projector: ThrowingProjector(), editor: ThrowingEditor(), authority: ThrowingEditor(),
             spaceDescriptorEntryID: "desc", communityName: "Riverside",
-            myKeyHex: "aa".repeated(32), roster: [])
+            myKeyHex: "aa".repeated(32))
         model.load()
         XCTAssertEqual(model.wire, .offlineStale)
     }
@@ -298,15 +304,64 @@ final class NewswireSurfaceTests: XCTestCase {
         XCTAssertFalse(EditorialAuthority.isRecognizedEditor(myKeyHex: "", roster: []))
     }
 
+    // MARK: - Predicate-driven visibility (Unit 4b)
+
+    func testFounderInTheStoredRosterIsOfferedControlsViaTheCorePredicate() throws {
+        let profile = try openLocalProfile()
+        let mineHex = RiotDirectoryRow.hex(try profile.profile().whoami().id)
+        let space = try profile.createNewswireSpace(input: spaceInput("Mine", roster: [mineHex]))
+        let model = try liveModel(profile: profile, spaceID: space.entryId)
+        model.load()
+        XCTAssertTrue(model.canOfferEditorialControls, "a roster member is offered controls")
+        XCTAssertNil(model.editorialControlsPendingNote, "an editor sees no pending note")
+    }
+
+    func testNonMemberIsNotOfferedControlsAndSeesNoMisleadingPendingNoteWhenSynced() throws {
+        let profile = try openLocalProfile()
+        let space = try profile.createNewswireSpace(input: spaceInput("Others", roster: ["11".repeated(32)]))
+        _ = try profile.createNewswirePost(input: postInput(space.entryId, "Report"))  // wire has content ⇒ synced
+        let model = try liveModel(profile: profile, spaceID: space.entryId)             // my key ∉ roster
+        model.load()
+        XCTAssertFalse(model.canOfferEditorialControls, "a non-member is not offered controls")
+        XCTAssertNil(model.editorialControlsPendingNote,
+                     "a synced non-editor is a reader, not told controls 'appear after sync'")
+    }
+
+    func testUnknownDescriptorShowsThePendingSyncNoteNotABareEmptyView() throws {
+        let profile = try openLocalProfile()
+        let mineHex = RiotDirectoryRow.hex(try profile.profile().whoami().id)
+        // A descriptor id we hold no descriptor for (a joined community pre-first-sync).
+        let live = LiveNewswire(profile)
+        let model = NewswireSurfaceModel(projector: live, editor: live, authority: live,
+            spaceDescriptorEntryID: "ab".repeated(32), communityName: "Pending", myKeyHex: mineHex)
+        model.load()  // projection fails ⇒ wire == .offlineStale; predicate ⇒ false
+        XCTAssertFalse(model.canOfferEditorialControls)
+        XCTAssertEqual(model.editorialControlsPendingNote,
+                       "Editorial controls appear after this community's first sync.")
+    }
+
+    func testEmptyDescriptorIdIsNeverAnEditorAndShowsNoNote() throws {
+        let profile = try openLocalProfile()
+        let live = LiveNewswire(profile)
+        let model = NewswireSurfaceModel(projector: live, editor: live, authority: live,
+            spaceDescriptorEntryID: "", communityName: "None",
+            myKeyHex: RiotDirectoryRow.hex(try profile.profile().whoami().id))
+        model.load()
+        XCTAssertFalse(model.canOfferEditorialControls)
+        XCTAssertNil(model.editorialControlsPendingNote, "no descriptor id at all ⇒ no editorial affordance or note")
+    }
+
     // MARK: - REAL authorization end-to-end (through core)
 
     /// A recognized editor (empty founding roster ⇒ the founder) can sign each of
     /// the six kinds through the model, and each takes effect in the projection.
     func testRecognizedEditorCanSignAllSixKindsAndEachTakesEffect() throws {
         let profile = try openLocalProfile()
-        let space = try profile.createNewswireSpace(input: spaceInput("Six Kinds"))
-        let model = liveModel(profile: profile, spaceID: space.entryId, roster: [])
-        XCTAssertTrue(model.canOfferEditorialControls, "the founder of a default-roster space is an editor")
+        let mineHex = RiotDirectoryRow.hex(try profile.profile().whoami().id)
+        let space = try profile.createNewswireSpace(input: spaceInput("Six Kinds", roster: [mineHex]))
+        let model = try liveModel(profile: profile, spaceID: space.entryId)
+        model.load()
+        XCTAssertTrue(model.canOfferEditorialControls, "the founder in the stored roster is an editor")
 
         // feature ⇒ the post reaches the front page.
         let featurePost = try profile.createNewswirePost(input: postInput(space.entryId, "Featured"))
@@ -366,7 +421,7 @@ final class NewswireSurfaceTests: XCTestCase {
         let space = try profile.createNewswireSpace(input: spaceInput("Delegated", roster: [stranger]))
         let post = try profile.createNewswirePost(input: postInput(space.entryId, "Standing report"))
 
-        let model = liveModel(profile: profile, spaceID: space.entryId, roster: [stranger])
+        let model = try liveModel(profile: profile, spaceID: space.entryId)
 
         model.draft = EditorialActionDraft(kind: .hide, reason: "I want this gone")
         let outcome = model.sign(targetEntryID: post.entryId)
@@ -391,7 +446,8 @@ final class NewswireSurfaceTests: XCTestCase {
         let profile = try openLocalProfile()
         let space = try profile.createNewswireSpace(input: spaceInput("Independence", roster: [stranger]))
         let post = try profile.createNewswirePost(input: postInput(space.entryId, "Untouched"))
-        let model = liveModel(profile: profile, spaceID: space.entryId, roster: [stranger])
+        let model = try liveModel(profile: profile, spaceID: space.entryId)
+        model.load()
 
         // Half 1 — the control is not offered.
         XCTAssertFalse(model.canOfferEditorialControls)
@@ -408,9 +464,10 @@ final class NewswireSurfaceTests: XCTestCase {
     /// reports the field violation and signs nothing.
     func testAnInvalidDraftIsRejectedBeforeItEverReachesCore() throws {
         let profile = try openLocalProfile()
-        let space = try profile.createNewswireSpace(input: spaceInput("Validation"))
+        let mineHex = RiotDirectoryRow.hex(try profile.profile().whoami().id)
+        let space = try profile.createNewswireSpace(input: spaceInput("Validation", roster: [mineHex]))
         let post = try profile.createNewswirePost(input: postInput(space.entryId, "Report"))
-        let model = liveModel(profile: profile, spaceID: space.entryId, roster: [])
+        let model = try liveModel(profile: profile, spaceID: space.entryId)
 
         // feature with a reason ⇒ the closed table rejects it up front.
         model.draft = EditorialActionDraft(kind: .feature, reason: "not allowed")
@@ -526,12 +583,15 @@ final class NewswireSurfaceTests: XCTestCase {
             throw NSError(domain: "test", code: 1)
         }
     }
-    private struct ThrowingEditor: NewswireEditorialActing {
+    private struct ThrowingEditor: NewswireEditorialActing, NewswireEditorAuthorityChecking {
         func createNewswireEditorialAction(
             spaceDescriptorEntryID: String, targetEntryID: String,
             kind: NewswireEditorialActionKind, reason: String?, correctionText: String?
         ) throws -> NewswireSignedRecord {
             throw NSError(domain: "test", code: 1)
+        }
+        func newswireIsEditor(spaceDescriptorEntryID: String, subjectID: String) throws -> Bool {
+            throw NSError(domain: "test", code: 1)   // load() maps the throw to isEditor == false
         }
     }
 
