@@ -6,8 +6,11 @@
 
 pub mod manifest;
 pub mod moderation;
+pub mod resolve;
 pub mod validate;
 pub mod version_floor;
+
+pub use resolve::{resolve_trust_tier, TrustTier};
 
 pub use manifest::{
     decode_site_manifest, encode_site_manifest, RequireTransport, SiteDisplay, SiteLayout,
