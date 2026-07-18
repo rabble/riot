@@ -20,6 +20,7 @@
 - `apps/ios/Riot/NewswireEditorial.swift`: complete ordinary row adapter, compact row/detail split, trust copy, treated detail, and action lineage.
 - `apps/ios/Riot/PeopleView.swift`: Known-contributors vocabulary, Riot chrome, and independently focusable Technical details.
 - `apps/ios/Riot/Directory/DirectoryView.swift`, `apps/ios/Riot/Apps/AppReviewSheet.swift`, `apps/ios/Riot/Peers/PeerProfileView.swift`: compact tool disclosure and consistent tool/community vocabulary.
+- `apps/ios/Riot/RiotApp.swift`: isolated per-run UI-test storage only when the XCUITest launch environment requests it.
 - Existing XCTest files receive all logic tests; existing `RiotTabNavigationUITests.swift` receives the real interaction smoke test. No new source/test file and no Xcode project edit.
 
 ### Task 1: Preserve and reset the complete composer safely
@@ -95,6 +96,12 @@ public struct PostDraft: Equatable, Codable, Sendable {
     public var mode: ComposerMode
     public var expiresAtUnixSeconds: UInt64?
 
+    public var isEmpty: Bool {
+        headline.isEmpty && body.isEmpty && !aiAssisted
+            && sourceClaims.isEmpty && coarseLocation.isEmpty
+            && mode == .freeform && expiresAtUnixSeconds == nil
+    }
+
     private enum CodingKeys: String, CodingKey {
         case headline, body, aiAssisted, sourceClaims, coarseLocation, mode, expiresAtUnixSeconds
     }
@@ -142,8 +149,11 @@ Expected: `PostUpdateTests` and the full shared suite pass.
 
 - [ ] **Step 6: Commit**
 
+Before committing, append a Task 1 entry to `OVERNIGHT_LOG.md` naming the design/plan/TDD skills used, RED and GREEN evidence, assumptions, rejected alternatives, skips/conflicts, and morning questions.
+
 ```bash
-git add apps/ios/Riot/PostUpdateView.swift apps/ios/RiotTests/PostUpdateTests.swift
+git add OVERNIGHT_LOG.md apps/ios/Riot/PostUpdateView.swift \
+  apps/ios/RiotTests/PostUpdateTests.swift
 git commit -m "feat(post): make repeat posting and drafts safe"
 ```
 
@@ -186,10 +196,16 @@ func testEmptyNameAndSuccessfulNameCoverAllExits() {
 }
 ```
 
-- [ ] **Step 2: Run ShellNavigationTests RED**
+- [ ] **Step 2: Run ShellNavigationTests on the iOS simulator and verify RED**
 
-Use the focused `xcodebuild` command from Task 1 with
-`-only-testing:RiotKitTests-macOS/ShellNavigationTests`.
+Run:
+
+```bash
+xcodebuild test -project apps/ios/Riot.xcodeproj -scheme RiotKit \
+  -destination 'platform=iOS Simulator,name=iPhone 17 Pro' \
+  -only-testing:RiotKitTests/ShellNavigationTests \
+  -derivedDataPath build/xcode-dd CODE_SIGNING_ALLOWED=NO
+```
 
 Expected: missing `OnboardingPresentation`, `OnboardingExit`, and `OnboardingExitGate`.
 
@@ -233,18 +249,25 @@ Keep optional display name plus the disclosure `This self-claimed name is saved 
 3. secondary `Try the Riverside demo`;
 4. the exact Nearby note.
 
-Call the shared gate before presenting Join, confirming Create, or loading Demo. On failure keep setup visible and focus/announce `model.nameError`.
+Call the shared gate before presenting Join, confirming Create, or loading Demo.
+The Create sheet observes `model.nameError` itself: a failed name save leaves the
+sheet open, creates nothing, shows the fixed error beside Create, and focuses or
+announces it. Join/demo failure stays on setup with the same behavior.
 
 - [ ] **Step 5: Run focused tests and macOS compile GREEN**
 
-Run focused tests and `sh scripts/ios-check.sh`.
+Run the iOS focused command above and `sh scripts/ios-check.sh`.
 
 Expected: tests pass and both shared views compile.
 
 - [ ] **Step 6: Commit**
 
+Append the structured Task 2 entry to `OVERNIGHT_LOG.md`, including the exact
+create-sheet failure behavior and RED/GREEN commands.
+
 ```bash
-git add apps/ios/Riot/AppModel.swift apps/ios/Riot/ConferenceShellView.swift \
+git add OVERNIGHT_LOG.md apps/ios/Riot/AppModel.swift \
+  apps/ios/Riot/ConferenceShellView.swift \
   apps/ios/RiotTests/ShellNavigationTests.swift
 git commit -m "feat(onboarding): make setup compact and fail closed"
 ```
@@ -288,32 +311,50 @@ func testEveryComposerOriginUsesOneOpenState() {
 ```
 
 Add spy-backed model tests asserting `prepare` records before repository
-`switch`, `join`, `create`, `leave`, and `retry`.
+`switch`, `join`, `create`, `leave`, and `retry`. Pin the transition reason:
+switch/join/create/retry/deep link use `.preserveDraft`; confirmed Leave uses
+`.discardDraft`. A failed preserving mutation leaves the persisted old draft
+available; a confirmed discard clears it and cannot reappear.
 
-- [ ] **Step 2: Run the three focused suites RED**
+- [ ] **Step 2: Run the four focused suites RED**
 
-Run `CommunityChooserTests`, `ShellNavigationTests`, `PeopleSurfaceTests`, and
-`NewswireSurfaceTests` with `-only-testing` selectors.
+Run `CommunityChooserTests` and `ShellNavigationTests` on the iOS `RiotKit`
+scheme:
+
+```bash
+xcodebuild test -project apps/ios/Riot.xcodeproj -scheme RiotKit \
+  -destination 'platform=iOS Simulator,name=iPhone 17 Pro' \
+  -only-testing:RiotKitTests/CommunityChooserTests \
+  -only-testing:RiotKitTests/ShellNavigationTests \
+  -derivedDataPath build/xcode-dd CODE_SIGNING_ALLOWED=NO
+```
+
+Run `PeopleSurfaceTests` and `NewswireSurfaceTests` on the macOS scheme with
+their `RiotKitTests-macOS` selectors.
 
 Expected: missing gate/presentation types and default no-op initializer assertions fail.
 
 - [ ] **Step 3: Implement the tokened transition gate**
 
 ```swift
+public enum CommunityTransitionReason { case preserveDraft, discardDraft }
 public final class CommunityTransitionGate {
     public struct Token: Equatable { fileprivate let id: UUID }
-    private var active: (Token, () -> Void)?
-    public func register(_ prepare: @escaping () -> Void) -> Token {
+    private var active: (Token, (CommunityTransitionReason) -> Void)?
+    public func register(_ prepare: @escaping (CommunityTransitionReason) -> Void) -> Token {
         let token = Token(id: UUID()); active = (token, prepare); return token
     }
     public func unregister(_ token: Token) {
         if active?.0 == token { active = nil }
     }
-    public func prepare() { active?.1() }
+    public func prepare(_ reason: CommunityTransitionReason) { active?.1(reason) }
 }
 ```
 
 Give `RiotAppModel` one gate and call `prepare()` synchronously before every active-community mutation. Key `CommunityShellView` with `.id(community.id)`. Register a closure that persists `composer`, closes sheets/tools, clears callbacks, and stops Nearby; unregister its own token on disappear.
+For `.discardDraft`, clear the draft store instead of persisting. Preparation
+does not unregister itself, so a failed repository mutation leaves the current
+shell able to continue safely.
 
 - [ ] **Step 4: Implement one composer sheet**
 
@@ -321,9 +362,22 @@ Define `ComposerOrigin` (`home`, `emptyWire`, `people`) and `ComposerPresentatio
 
 Use per-wire placement: empty card owns `Post the first update`; pending/offline has none; populated wire has one standalone `Post an update`.
 
+Give the editing sheet a `Close` toolbar action; after success replace it with
+`Done` plus `Post another`. `Close`/`Done` dismiss through one `onDone` callback
+and restore focus to the exact `ComposerOrigin`; `Post another` stays open and
+focuses Headline.
+
+Add a `PublishingContextProviding` resolver that returns current identity,
+community ID, and descriptor ID. Refresh on sheet presentation, on observed
+`model.me`/descriptor changes, and immediately before Post. A context mismatch
+sets fixed failure copy and performs no write; a newly arrived descriptor makes a
+previous pending-first-sync composer usable without rebuilding the app.
+
 - [ ] **Step 5: Move notification permission to rendered success**
 
 Inject a notifier factory at `ConferenceShellView`; remove the community-open `.task`. From the posted success branch, yield one render turn and invoke the notifier’s `requestAuthorizationIfNeeded()`. Add scheduler-spy tests proving only the first undetermined success requests.
+The same success callback calls `newswire.load()` before notification work, so
+the locally committed report becomes immediately readable on Home.
 
 - [ ] **Step 6: Show the visible community name**
 
@@ -336,8 +390,12 @@ Run the four focused suites, `sh scripts/ios-check.sh test`, and
 
 - [ ] **Step 8: Commit**
 
+Append the structured Task 3 log entry, including preserve-versus-discard
+semantics, any failed mutation evidence, and the community-isolation assumption.
+
 ```bash
-git add apps/ios/Riot/CommunityChooser.swift apps/ios/Riot/AppModel.swift \
+git add OVERNIGHT_LOG.md apps/ios/Riot/CommunityChooser.swift \
+  apps/ios/Riot/AppModel.swift \
   apps/ios/Riot/ConferenceShellView.swift apps/ios/Riot/PeopleView.swift \
   apps/ios/Riot/NewswireEditorial.swift \
   apps/ios/RiotTests/CommunityChooserTests.swift \
@@ -383,6 +441,10 @@ Expected: missing `ActiveAlertsPresentation` and expired-only currently populate
 - [ ] **Step 3: Implement one filter/clock/result**
 
 Filter `namespaceID` and `expiresAt > now`, map/sort once organizer-first then newest, retain `allRows`, expose `prefix(2)` and total. Make `AlertsListView` accept this presentation rather than raw entries/`Date()`.
+Expose `nextExpiryDate`. Home owns one `now` state and a cancellable `.task(id:
+nextExpiryDate)` that sleeps until that exact instant, advances `now`, and
+recomputes; switching communities cancels the old task. Add a clock-injected test
+that the last active row disappears at its expiry while Home is otherwise idle.
 
 - [ ] **Step 4: Render exact Home order and overflow**
 
@@ -394,8 +456,11 @@ Run `AlertsSurfaceTests`, `ShellNavigationTests`, and `sh scripts/ios-check.sh`.
 
 - [ ] **Step 6: Commit**
 
+Append the structured Task 4 log entry before committing.
+
 ```bash
-git add apps/ios/Riot/AlertsListView.swift apps/ios/Riot/ConferenceShellView.swift \
+git add OVERNIGHT_LOG.md apps/ios/Riot/AlertsListView.swift \
+  apps/ios/Riot/ConferenceShellView.swift \
   apps/ios/RiotTests/AlertsSurfaceTests.swift
 git commit -m "feat(home): keep active alerts compact and visible"
 ```
@@ -447,11 +512,20 @@ For `.ordinary`, map body, event time, expiry, sources, location, and operationa
 
 - [ ] **Step 4: Build compact row and ordinary detail**
 
-Row: headline, two-line body excerpt, `Signed by <rendered>`, conditional badges, and `Read update` with accessibility label `Read <headline>`. Detail: full body, human timestamp/freshness, source claims, location, expiry, operational type, replies, and authorized actions. Add exact signature/editorial explanations from the approved design.
+Row: headline, two-line body excerpt, `Signed by <rendered>`, conditional badges,
+and `Read update` with accessibility label `Read <headline>`. Detail: full body,
+source claims, location, expiry, operational type, replies, and authorized
+actions. Show a human event time only when `eventTimeUnixSeconds` exists;
+otherwise show `Event time not provided`. Never convert `taiJ2000Micros` into a
+wall clock in Swift. Add exact signature/editorial explanations from the
+approved design.
 
 - [ ] **Step 5: Build payload-redacted treatment detail**
 
 Add `Review treatment` for hidden/tombstoned rows. Show type, signed author/tag, timestamp, Technical details ID, and `EditorialActionLineage`. Keep action-scoped Retract beside active lineage actions; never render body, operational metadata, or replies.
+Remove the existing inline `commentsSection`, Reply, and generic editorial
+controls from every feed row. Ordinary detail owns replies/actions; treated
+detail owns only treatment history and action-scoped editorial controls.
 
 - [ ] **Step 6: Run focused/full shared tests GREEN**
 
@@ -459,8 +533,11 @@ Run `NewswireSurfaceTests` and `sh scripts/ios-check.sh test`.
 
 - [ ] **Step 7: Commit**
 
+Append the structured Task 5 log entry, explicitly recording the conditional
+event-time assumption and the deferred hidden-original core gap.
+
 ```bash
-git add apps/ios/Riot/NewswireEditorial.swift \
+git add OVERNIGHT_LOG.md apps/ios/Riot/NewswireEditorial.swift \
   apps/ios/RiotTests/NewswireSurfaceTests.swift
 git commit -m "feat(newswire): add compact readable report details"
 ```
@@ -513,8 +590,10 @@ Run affected suites, `sh scripts/ios-check.sh test`, and `sh scripts/ios-check.s
 
 - [ ] **Step 7: Commit**
 
+Append the structured Task 6 log entry before committing.
+
 ```bash
-git add apps/ios/Riot/Directory/DirectoryView.swift \
+git add OVERNIGHT_LOG.md apps/ios/Riot/Directory/DirectoryView.swift \
   apps/ios/Riot/Apps/AppReviewSheet.swift \
   apps/ios/Riot/Peers/PeerProfileView.swift \
   apps/ios/Riot/PeopleView.swift apps/ios/Riot/ConferenceShellView.swift \
@@ -527,12 +606,20 @@ git commit -m "feat(ux): compact secondary community surfaces"
 ### Task 7: Prove the real interaction and release gates
 
 **Files:**
+- Modify: `apps/ios/Riot/RiotApp.swift`
 - Modify: `apps/ios/RiotUITests/RiotTabNavigationUITests.swift`
 - Modify: `OVERNIGHT_LOG.md`
 
 - [ ] **Step 1: Update the existing simulator smoke flow**
 
-Drive real identifiers: Get started → verify no `find-nearby`/`launch-save-display-name` → Join/Create sheet → Home visible community name → single composer entry → post success → Post another → Headline → Read update → close to exact trigger. Add an accessibility-size launch argument and assert core controls are hittable.
+Make the UI test deterministic: set `RIOT_UI_TEST_RUN_ID` to a UUID in
+`XCUIApplication.launchEnvironment`; `RiotApp` resolves that only under UI tests
+to a unique app-sandbox temporary storage directory and otherwise uses production
+bootstrap. Drive one concrete path: Get started → verify no
+`find-nearby`/`launch-save-display-name` → Create sheet → enter community name →
+Home visible community name → the single composer entry → enter headline/body →
+post success → Post another → focused Headline → enter/post a second report →
+Done → Read update → close to exact trigger.
 
 - [ ] **Step 2: Run the UI flow RED then GREEN**
 
@@ -547,9 +634,28 @@ xcodebuild test -project apps/ios/Riot.xcodeproj -scheme Riot \
 
 Expected before final identifier/focus adjustments: at least one audited transition fails. Make only the minimal identifier/focus adjustments in already scoped files, rerun, and require PASS.
 
-- [ ] **Step 3: Use the visual-review skill**
+- [ ] **Step 3: Capture and inspect native simulator screenshots**
 
-Capture first run, populated Home, ordinary report detail, post success, Tools, Known contributors, and Nearby at normal and accessibility Dynamic Type. Reject clipping, horizontal scrolling, duplicate filled actions, buried alerts, missing focus labels, or more than two inline alerts. Record screenshots/observations in the log; do not commit DerivedData or transient images.
+The Playwright-based `metaswarm:visual-review` skill cannot drive a native
+SwiftUI app, so do not invoke it. Add `XCTAttachment` screenshots at first run,
+populated Home, ordinary report detail, post success, Tools, Known contributors,
+and Nearby. For accessibility size, boot the named simulator and run:
+
+```bash
+xcrun simctl ui booted content_size accessibility-extra-extra-extra-large
+```
+
+Rerun the UI flow and inspect kept result-bundle attachments plus an on-demand
+native capture:
+
+```bash
+xcrun simctl io booted screenshot /tmp/riot-ux-accessibility.png
+```
+
+Reject clipping, horizontal scrolling, duplicate filled actions, buried alerts,
+missing focus labels, or more than two inline alerts. Record observations in the
+log; do not commit screenshots or DerivedData. Restore simulator content size to
+`large` afterward.
 
 - [ ] **Step 4: Run all Apple gates**
 
@@ -560,6 +666,7 @@ sh scripts/ios-check.sh ios
 plutil -lint apps/ios/Riot.xcodeproj/project.pbxproj
 plutil -lint apps/macos/Riot.xcodeproj/project.pbxproj
 cargo test --workspace --all-features
+cargo check --workspace --all-features
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 sh scripts/web/coverage.sh
@@ -571,12 +678,23 @@ Expected: all commands pass at the committed `.coverage-thresholds.json` floors.
 
 Prepend a short summary listing completed behavior/tests, remaining Android and physical-BLE limitations, assumptions, and next steps. Preserve every chronological task entry below it.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 6: Commit the final verification**
 
 ```bash
-git add apps/ios/RiotUITests/RiotTabNavigationUITests.swift OVERNIGHT_LOG.md
+git add apps/ios/Riot/RiotApp.swift \
+  apps/ios/RiotUITests/RiotTabNavigationUITests.swift OVERNIGHT_LOG.md
 git commit -m "test(ux): verify the compact core flow"
 ```
+
+- [ ] **Step 7: Integrate into the requested branch without overwriting foreign work**
+
+Confirm `/Users/rabble/code/explorations/riot/.claude/worktrees/overnight` is
+clean and still owns `overnight/2026-07-19`. Merge
+`overnight/2026-07-19-ux` there with `--no-ff`. Resolve only the expected
+`OVERNIGHT_LOG.md` add/add conflict by preserving the existing agent’s summary
+and chronological entries plus every entry from this plan; do not rewrite either
+history. Re-run `sh scripts/ios-check.sh test` from the requested branch and
+commit the combined log/merge normally. Do not push or deploy.
 
 ## Plan self-review
 

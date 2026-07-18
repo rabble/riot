@@ -97,3 +97,19 @@ _(Summary goes at the TOP when done. Task entries append below in order.)_
   choice: the overnight directive explicitly requires autonomous progress, and
   the repo mandates its own implement/validate/adversarial-review/commit loop.
 - No implementation begins until the separate three-reviewer plan gate passes.
+
+## Task: plan review gate, iteration 1
+- Used `metaswarm:plan-review-gate`. Scope & Alignment passed; Feasibility and
+  Completeness failed with executable issues, so implementation remains stopped.
+- Corrected focused test commands: Shell/Chooser tests exist only in the iOS test
+  target, while Post/People/Newswire/Alerts/Directory are registered for macOS.
+- Removed an invented timestamp assumption. Event time is optional and local posts
+  omit it; details now show event time only when core provides it and otherwise say
+  `Event time not provided`. Swift never converts the TAI-J2000 ordering key.
+- Replaced the inapplicable Playwright visual-review path with native XCUITest
+  attachments, `simctl ui` accessibility sizing, and `simctl io` screenshots.
+- Closed draft `isEmpty`, editing Close/posted Done, focus restoration, post→wire
+  refresh, live publishing context, preserve-vs-discard community transitions,
+  treated-row inline reply leakage, create-sheet name errors, exact alert-expiry
+  refresh, isolated UI-test storage, missing `cargo check`, per-task log entries,
+  and final integration into the requested branch.
