@@ -249,6 +249,10 @@ final class NewswireSurfaceTests: XCTestCase {
 
         let featured = NewswireWireState.from(projection(openWire: [post], frontPage: [post]))
         guard case .featured = featured else { return XCTFail("featured") }
+        XCTAssertFalse(NewswireWireState.offlineStale.hasPosts)
+        XCTAssertFalse(empty.hasPosts)
+        XCTAssertTrue(noFeature.hasPosts)
+        XCTAssertTrue(featured.hasPosts)
 
         // Distinct accessibility ids: the three never collapse to one view.
         let ids = Set([
@@ -408,16 +412,209 @@ final class NewswireSurfaceTests: XCTestCase {
     // MARK: - Treatment rendering
 
     func testHiddenPostRendersTheWarningInterstitialAndDropsThePayload() {
-        let hidden = projectedPost(id: "h1", headline: nil, treatment: .hidden)
+        let hidden = projectedPost(
+            id: "h1",
+            headline: "must disappear",
+            treatment: .hidden,
+            body: "secret body",
+            sourceClaims: ["eyewitness"],
+            coarseLocation: "north bridge",
+            operationalProfile: alertProfile
+        )
         let row = NewswirePostRow(hidden)
         XCTAssertEqual(row.display, .hiddenInterstitial)
         XCTAssertNil(row.headline, "a hidden post shows no headline; the interstitial stands in for it")
+        XCTAssertNil(row.body)
+        XCTAssertEqual(row.sourceClaims, [])
+        XCTAssertNil(row.coarseLocation)
+        XCTAssertNil(row.operationalProfile)
+        XCTAssertEqual(
+            NewswireTreatmentCopy.hiddenBody,
+            "The collective hid this report. Its signed treatment record remains available."
+        )
     }
 
     func testTombstonedPostRendersTheTombstoneTreatment() {
-        let tomb = projectedPost(id: "t1", headline: nil, treatment: .tombstoned)
-        XCTAssertEqual(NewswirePostRow(tomb).display, .tombstoned)
+        let tomb = projectedPost(
+            id: "t1",
+            headline: "must disappear",
+            treatment: .tombstoned,
+            body: "private payload",
+            sourceClaims: ["source"],
+            coarseLocation: "private place",
+            operationalProfile: alertProfile
+        )
+        let row = NewswirePostRow(tomb)
+        XCTAssertEqual(row.display, .tombstoned)
+        XCTAssertNil(row.headline)
+        XCTAssertNil(row.body)
+        XCTAssertEqual(row.sourceClaims, [])
+        XCTAssertNil(row.coarseLocation)
+        XCTAssertNil(row.operationalProfile)
         XCTAssertNotEqual(NewswireTreatmentCopy.hiddenBody, NewswireTreatmentCopy.tombstoneBody)
+    }
+
+    func testOrdinaryRowCarriesReadableAndOperationalFields() {
+        let row = NewswirePostRow(projectedPost(
+            id: "ordinary",
+            headline: "Bridge update",
+            treatment: .ordinary,
+            body: "Full body",
+            taiJ2000Micros: 42,
+            sourceClaims: ["eyewitness"],
+            coarseLocation: "north bridge",
+            eventTimeUnixSeconds: 1_000,
+            expiresAtUnixSeconds: 2_000,
+            operationalProfile: alertProfile
+        ))
+
+        XCTAssertEqual(row.body, "Full body")
+        XCTAssertEqual(row.sourceClaims, ["eyewitness"])
+        XCTAssertEqual(row.coarseLocation, "north bridge")
+        XCTAssertEqual(row.eventTimeUnixSeconds, 1_000)
+        XCTAssertEqual(row.expiresAtUnixSeconds, 2_000)
+        XCTAssertEqual(row.operationalProfile, alertProfile)
+        XCTAssertEqual(row.taiJ2000Micros, 42)
+        XCTAssertEqual(row.readAccessibilityLabel, "Read Bridge update")
+        XCTAssertNotEqual(
+            NewswireReportTrigger(surface: "front-page", reportID: row.id),
+            NewswireReportTrigger(surface: "open-wire", reportID: row.id),
+            "duplicate projections of one report must restore to the opening surface"
+        )
+    }
+
+    func testExactTrustCopyAndMissingEventTimeAreHonest() {
+        XCTAssertEqual(
+            NewswireTrustCopy.signatureBody,
+            "This key authored this report. A signature does not prove the report is true. Display names are self-claimed."
+        )
+        XCTAssertEqual(
+            NewswireTrustCopy.editorialChecksBody,
+            "Signed editorial judgments from this community’s current editorial roster. They are evidence notes, not proof of truth."
+        )
+        XCTAssertEqual(
+            NewswireTrustCopy.correctionBody,
+            "Editors signed a correction. Review the signed history."
+        )
+        XCTAssertEqual(
+            NewswireTrustCopy.aiAssisted,
+            "AI-assisted · human reviewed and signed"
+        )
+        let row = NewswirePostRow(projectedPost(
+            id: "no-event",
+            headline: "Report",
+            treatment: .ordinary,
+            eventTimeUnixSeconds: nil
+        ))
+        XCTAssertEqual(NewswirePostDetail(row: row).eventTimeText, "Event time not provided")
+    }
+
+    func testEditorialLineageIncludesDirectActionsAndTransitiveRetractionsOnly() {
+        let rows = [
+            projectedAction(id: "hide", target: "post", kind: .hide, active: false, tai: 10),
+            projectedAction(id: "undo", target: "hide", kind: .retract, active: false, tai: 11),
+            projectedAction(id: "undo-undo", target: "undo", kind: .retract, active: true, tai: 12),
+            projectedAction(id: "other", target: "elsewhere", kind: .verify, active: true, tai: 13)
+        ].map(EditorialHistoryRow.init)
+
+        let lineage = EditorialActionLineage.forReport("post", in: rows)
+
+        XCTAssertEqual(lineage.map(\.id), ["hide", "undo", "undo-undo"])
+        XCTAssertEqual(lineage.map(\.taiJ2000Micros), [10, 11, 12])
+        XCTAssertFalse(lineage.contains { $0.id == "other" })
+        XCTAssertEqual(
+            EditorialHistoryRow.signedOrderingLabel,
+            "Signed ordering value (TAI-J2000 microseconds)"
+        )
+    }
+
+    func testTreatmentDetailContainsAccountabilityButNoPayload() {
+        let treated = NewswirePostRow(projectedPost(
+            id: "treated",
+            headline: "redact me",
+            treatment: .hidden,
+            body: "redact me too",
+            taiJ2000Micros: 77,
+            sourceClaims: ["redact"],
+            coarseLocation: "redact",
+            operationalProfile: alertProfile
+        ))
+        let action = EditorialHistoryRow(projectedAction(
+            id: "hide", target: "treated", kind: .hide, active: true, tai: 88
+        ))
+        let detail = NewswireTreatmentDetail(
+            row: treated,
+            lineage: EditorialActionLineage.forReport("treated", in: [action])
+        )
+
+        XCTAssertEqual(detail.reportID, "treated")
+        XCTAssertEqual(detail.taiJ2000Micros, 77)
+        XCTAssertEqual(detail.lineage.map(\.id), ["hide"])
+        XCTAssertEqual(detail.eventTimeText, "Event time not provided")
+        XCTAssertFalse(detail.exposesPayload)
+        XCTAssertEqual(
+            EditorialActionTarget.retraction(of: action).entryID,
+            "hide",
+            "Retract must sign against the selected action, never the report"
+        )
+        XCTAssertEqual(
+            EditorialActionTarget.retraction(of: action).availableKinds,
+            [.retract]
+        )
+        XCTAssertFalse(
+            EditorialActionTarget.report(treated).availableKinds.contains(.retract),
+            "report-scoped controls must not offer a retraction against a report ID"
+        )
+        let staleRetraction = EditorialActionDraft(
+            kind: .retract,
+            reason: "must not cross into report-scoped signing"
+        )
+        let prepared = EditorialActionTarget.report(treated)
+            .preparedDraft(from: staleRetraction)
+        XCTAssertNotEqual(prepared.kind, .retract)
+        XCTAssertTrue(prepared.reason.isEmpty)
+    }
+
+    func testActionScopedRetractionSignsTheSelectedActionID() {
+        let editor = RecordingEditor()
+        let model = NewswireSurfaceModel(
+            projector: FixedProjector(projection(openWire: [], frontPage: [])),
+            editor: editor,
+            authority: StubAuthority(),
+            spaceDescriptorEntryID: "space",
+            communityName: "Riverside",
+            myKeyHex: "aa".repeated(32)
+        )
+        let selected = EditorialHistoryRow(projectedAction(
+            id: "selected-action",
+            target: "report",
+            kind: .hide,
+            active: true
+        ))
+        let target = EditorialActionTarget.retraction(of: selected)
+        model.draft = EditorialActionDraft(kind: .retract, reason: "signed in error")
+
+        XCTAssertSigned(model.sign(targetEntryID: target.entryID))
+        XCTAssertEqual(editor.targetEntryID, "selected-action")
+        XCTAssertEqual(editor.kind, .retract)
+
+        let report = NewswirePostRow(projectedPost(
+            id: "report",
+            headline: "Report",
+            treatment: .ordinary
+        ))
+        model.draft = EditorialActionDraft(
+            kind: .retract,
+            reason: "stale canceled retraction"
+        )
+        let reportTarget = EditorialActionTarget.report(report)
+        model.draft = reportTarget.preparedDraft(from: model.draft)
+        guard case let .success(review) = model.review(
+            targetEntryID: reportTarget.entryID
+        ) else {
+            return XCTFail("normalized report action should be reviewable")
+        }
+        XCTAssertNotEqual(review.kind, .retract)
     }
 
     func testCorrectionOnAPostShowsTheEditorialCorrectionLabel() {
@@ -797,23 +994,49 @@ final class NewswireSurfaceTests: XCTestCase {
                        rendered: "Ana · \(key.prefix(8))")
     }
 
+    private var alertProfile: NewswireOperationalProfile {
+        .alert(profile: NewswireAlertProfile(
+            urgency: .immediate,
+            severity: .severe,
+            certainty: .observed,
+            validFromUnixSeconds: nil
+        ))
+    }
+
     private func projectedPost(
-        id: String, headline: String?, treatment: NewswirePostTreatment,
-        correctionIDs: [String] = []
+        id: String,
+        headline: String?,
+        treatment: NewswirePostTreatment,
+        correctionIDs: [String] = [],
+        body: String? = nil,
+        taiJ2000Micros: UInt64 = 1,
+        sourceClaims: [String] = [],
+        coarseLocation: String? = nil,
+        eventTimeUnixSeconds: UInt64? = nil,
+        expiresAtUnixSeconds: UInt64? = nil,
+        operationalProfile: NewswireOperationalProfile? = nil
     ) -> NewswireProjectedPost {
         NewswireProjectedPost(
-            entryId: id, author: author(), taiJ2000Micros: 1,
-            headline: headline, body: headline == nil ? nil : "body", language: "en",
-            coarseLocation: nil, eventTimeUnixSeconds: nil, expiresAtUnixSeconds: nil,
-            sourceClaims: [], operationalProfile: nil, aiAssisted: false,
+            entryId: id, author: author(), taiJ2000Micros: taiJ2000Micros,
+            headline: headline, body: body ?? (headline == nil ? nil : "body"), language: "en",
+            coarseLocation: coarseLocation,
+            eventTimeUnixSeconds: eventTimeUnixSeconds,
+            expiresAtUnixSeconds: expiresAtUnixSeconds,
+            sourceClaims: sourceClaims,
+            operationalProfile: operationalProfile,
+            aiAssisted: false,
             verificationIds: [], correctionIds: correctionIDs, treatment: treatment)
     }
 
     private func projectedAction(
-        id: String, kind: NewswireEditorialActionKind, active: Bool
+        id: String,
+        target: String = "t",
+        kind: NewswireEditorialActionKind,
+        active: Bool,
+        tai: UInt64 = 1
     ) -> NewswireProjectedEditorialAction {
         NewswireProjectedEditorialAction(
-            entryId: id, signer: author(), taiJ2000Micros: 1, targetEntryId: "t",
+            entryId: id, signer: author(), taiJ2000Micros: tai, targetEntryId: target,
             kind: kind, reason: kind == .feature ? nil : "reason",
             correctionText: kind == .correct ? "new" : nil, active: active)
     }
@@ -838,6 +1061,23 @@ final class NewswireSurfaceTests: XCTestCase {
         init(_ projection: NewswireProjectionView) { self.projection = projection }
         func projectNewswire(spaceDescriptorEntryID: String) throws -> NewswireProjectionView {
             projection
+        }
+    }
+
+    private final class RecordingEditor: NewswireEditorialActing {
+        private(set) var targetEntryID: String?
+        private(set) var kind: NewswireEditorialActionKind?
+
+        func createNewswireEditorialAction(
+            spaceDescriptorEntryID: String,
+            targetEntryID: String,
+            kind: NewswireEditorialActionKind,
+            reason: String?,
+            correctionText: String?
+        ) throws -> NewswireSignedRecord {
+            self.targetEntryID = targetEntryID
+            self.kind = kind
+            return NewswireSignedRecord(entryId: "signed", signedBytes: Data())
         }
     }
     /// Satisfies Unit 4b's `authority:` seam for wire-state tests that don't exercise

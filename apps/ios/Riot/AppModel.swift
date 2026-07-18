@@ -1,6 +1,145 @@
 import Foundation
 import SwiftUI
 
+/// The three supported ways to leave first-run setup. Nearby exchange requires
+/// an active community, so it is deliberately not an onboarding exit.
+public enum OnboardingExit: CaseIterable, Equatable, Sendable {
+    case join
+    case create
+    case demo
+}
+
+public enum OnboardingExitResult: Equatable, Sendable {
+    case proceeded
+    case nameSaveFailed
+}
+
+public enum OnboardingPresentation {
+    public static let actionOrder: [OnboardingExit] = [.join, .create, .demo]
+    public static let nearbyNote =
+        "Nearby exchange is available after you enter a community."
+}
+
+/// One fail-closed dispatcher for every setup exit. A blank optional name is
+/// skipped; a typed name must be saved before any community action may begin.
+public enum OnboardingExitGate {
+    public static func perform(
+        _ exit: OnboardingExit,
+        displayName: String,
+        saveName: (String) -> Bool,
+        proceed: (OnboardingExit) -> Void
+    ) -> OnboardingExitResult {
+        let name = displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !name.isEmpty, !saveName(name) {
+            return .nameSaveFailed
+        }
+        proceed(exit)
+        return .proceeded
+    }
+}
+
+public enum CommunityTransitionReason: Equatable, Sendable {
+    case preserveDraft
+    case discardDraft
+}
+
+public struct CommunityTransitionPreparation: Equatable, Sendable {
+    public let reason: CommunityTransitionReason
+    public let transportMustContinue: Bool
+
+    public init(reason: CommunityTransitionReason, transportMustContinue: Bool = false) {
+        self.reason = reason
+        self.transportMustContinue = transportMustContinue
+    }
+}
+
+public enum CommunityDraftTransition {
+    public static func apply(
+        _ reason: CommunityTransitionReason,
+        persist: () -> Void,
+        clear: () -> Void
+    ) {
+        switch reason {
+        case .preserveDraft: persist()
+        case .discardDraft: clear()
+        }
+    }
+}
+
+/// Orders community-scoped teardown before repository mutation. Registration is
+/// tokened so an old shell cannot clear a newer shell's handler on disappear.
+public final class CommunityTransitionGate {
+    public struct Token: Equatable, Sendable {
+        fileprivate let id: UUID
+    }
+
+    private var active: (
+        token: Token,
+        prepare: (CommunityTransitionPreparation) -> Void,
+        recover: () -> Void
+    )?
+
+    public init() {}
+
+    public func register(
+        _ prepare: @escaping (CommunityTransitionReason) -> Void
+    ) -> Token {
+        registerPreparation({ prepare($0.reason) })
+    }
+
+    public func registerPreparation(
+        _ prepare: @escaping (CommunityTransitionPreparation) -> Void,
+        recover: @escaping () -> Void = {}
+    ) -> Token {
+        let token = Token(id: UUID())
+        active = (token, prepare, recover)
+        return token
+    }
+
+    public func unregister(_ token: Token) {
+        if active?.token == token { active = nil }
+    }
+
+    public func prepare(_ reason: CommunityTransitionReason) {
+        active?.prepare(CommunityTransitionPreparation(reason: reason))
+    }
+
+    public func prepareForNearbyAdoption() {
+        active?.prepare(CommunityTransitionPreparation(
+            reason: .preserveDraft,
+            transportMustContinue: true
+        ))
+    }
+
+    public func recoverAfterFailedPreparation() {
+        active?.recover()
+    }
+}
+
+public enum ComposerOrigin: String, CaseIterable, Equatable, Sendable {
+    case home
+    case emptyWire
+    case people
+}
+
+public enum ComposerPresentationState: Equatable, Sendable {
+    case closed
+    case open(ComposerOrigin)
+
+    public mutating func open(_ origin: ComposerOrigin) {
+        self = .open(origin)
+    }
+
+    public mutating func close() {
+        self = .closed
+    }
+
+    public var origin: ComposerOrigin? {
+        if case let .open(origin) = self { return origin }
+        return nil
+    }
+}
+
 /// The four destinations inside a selected community (community-first
 /// navigation design §"Navigation and platform behavior"). This replaces the
 /// old five debug-shaped surfaces (Spaces/Apps/Board/Post/Connect): Riot is now
@@ -273,6 +412,7 @@ public final class RiotAppModel: ObservableObject {
     private var knownEntryIDs: Set<String>?
 
     private var repository: RiotProfileRepository?
+    public let communityTransitionGate = CommunityTransitionGate()
 
     /// Read-only handle for the runtime host, which needs the live repository to
     /// mount a trusted app's WebView. Exposed instead of widening the stored
@@ -358,7 +498,7 @@ public final class RiotAppModel: ObservableObject {
 
     public var connectionDisclosure: String {
         switch connectionStatus {
-        case .offline: "Not connected"
+        case .offline: "Offline · local device only"
         case let .nearby(peer): "Nearby · \(peer)"
         }
     }
@@ -677,7 +817,11 @@ public final class RiotAppModel: ObservableObject {
     /// then land on Home. A community that cannot open surfaces the §4.7
     /// community-unavailable recovery in place rather than a blank screen.
     public func switchCommunity(namespaceID: String) {
-        guard let repository else { return }
+        communityTransitionGate.prepare(.preserveDraft)
+        guard let repository else {
+            communityTransitionGate.recoverAfterFailedPreparation()
+            return
+        }
         do {
             let row = try repository.switchToCommunity(namespaceID: namespaceID)
             communityUnavailable = nil
@@ -686,6 +830,7 @@ public final class RiotAppModel: ObservableObject {
             reload()
             _ = row
         } catch {
+            communityTransitionGate.recoverAfterFailedPreparation()
             // A row that could not open (archived / quarantined / no author) is
             // preserved with recovery, never dropped or shown as a raw error.
             let name = communities.first { $0.namespaceID == namespaceID }?.name ?? "This community"
@@ -703,7 +848,11 @@ public final class RiotAppModel: ObservableObject {
     /// shell shows that honestly rather than fabricating a feed. A malformed or
     /// incomplete reference is refused into ``errorMessage`` and changes nothing.
     public func joinAdditionalCommunity(shareReference: String) {
-        guard let repository else { return }
+        communityTransitionGate.prepare(.preserveDraft)
+        guard let repository else {
+            communityTransitionGate.recoverAfterFailedPreparation()
+            return
+        }
         do {
             let reference = try repository.decodeShareReference(shareReference)
             _ = try repository.joinAdditionalCommunity(
@@ -719,6 +868,7 @@ public final class RiotAppModel: ObservableObject {
             destination = .home
             reload()
         } catch {
+            communityTransitionGate.recoverAfterFailedPreparation()
             errorMessage = Self.joinRefusal
         }
     }
@@ -828,8 +978,12 @@ public final class RiotAppModel: ObservableObject {
     /// does not pre-validate: it lets core refuse and translates that refusal.
     /// The refusal is deliberately not routed through ``errorMessage`` — see
     /// ``nameError``.
-    public func setDisplayName(_ name: String) {
-        guard let repository else { return }
+    @discardableResult
+    public func setDisplayName(_ name: String) -> Bool {
+        guard let repository else {
+            nameError = Self.nameRefusal
+            return false
+        }
         do {
             try repository.setDisplayName(name)
             nameError = nil
@@ -839,10 +993,12 @@ public final class RiotAppModel: ObservableObject {
             me = try repository.me()
             claimedName = repository.claimedName
             refreshDisplayNames()
+            return true
         } catch {
             nameError = Self.nameRefusal
             // The name on screen is still the one core holds — this attempt
             // changed nothing — so leave `me` alone rather than clearing it.
+            return false
         }
     }
 
@@ -939,8 +1095,12 @@ public final class RiotAppModel: ObservableObject {
     }
 
     public func createSpace(title: String) {
-        perform {
-            guard let repository else { return }
+        communityTransitionGate.prepare(.preserveDraft)
+        guard let repository else {
+            communityTransitionGate.recoverAfterFailedPreparation()
+            return
+        }
+        perform({
             space = try repository.createPublicSpace(title: title)
             refreshApps()
             // Creating a space is what makes you its organizer.
@@ -948,7 +1108,7 @@ public final class RiotAppModel: ObservableObject {
             persistCommunitiesQuietly()
             refreshCommunities()
             destination = .home
-        }
+        }, onFailure: communityTransitionGate.recoverAfterFailedPreparation)
     }
 
     /// The selected community as the shell reads it: name + namespace from the
@@ -1001,6 +1161,7 @@ public final class RiotAppModel: ObservableObject {
     /// Clears the community-unavailable state — the Retry recovery action, which
     /// re-attempts opening the community context that is already in memory.
     public func retryCommunity() {
+        communityTransitionGate.prepare(.preserveDraft)
         communityUnavailable = nil
     }
 
@@ -1011,6 +1172,7 @@ public final class RiotAppModel: ObservableObject {
     /// Stay-or-Discard confirmation (``CommunityChangeGuard``) so unsaved work is
     /// never lost silently.
     public func leaveCommunity() {
+        communityTransitionGate.prepare(.discardDraft)
         space = nil
         newswireDescriptorEntryID = nil
         communityUnavailable = nil
@@ -1018,7 +1180,11 @@ public final class RiotAppModel: ObservableObject {
     }
 
     public func createCommunity(_ request: CommunityCreationRequest) {
-        guard let repository else { return }
+        communityTransitionGate.prepare(.preserveDraft)
+        guard let repository else {
+            communityTransitionGate.recoverAfterFailedPreparation()
+            return
+        }
         // A newswire SpaceDescriptorV1 requires a non-empty summary; core rejects
         // an empty one with InvalidInput. The founder form does not collect a
         // summary, so default it to the community name. Without this, create signs
@@ -1034,7 +1200,7 @@ public final class RiotAppModel: ObservableObject {
             )
             : request
         let coordinator = CommunityCreationCoordinator(backing: repository, descriptor: repository)
-        perform {
+        perform({
             let context = try coordinator.create(normalized)
             space = repository.currentSpace
             newswireDescriptorEntryID = context.newswireDescriptorEntryID
@@ -1046,7 +1212,7 @@ public final class RiotAppModel: ObservableObject {
             persistCommunitiesQuietly()
             refreshCommunities()
             destination = .home
-        }
+        }, onFailure: communityTransitionGate.recoverAfterFailedPreparation)
     }
 
     /// True when this person may approve apps here — i.e. they are this space's
@@ -1139,11 +1305,15 @@ public final class RiotAppModel: ObservableObject {
         apps = (try? repository?.spaceApps()) ?? []
     }
 
-    private func perform(_ operation: () throws -> Void) {
+    private func perform(
+        _ operation: () throws -> Void,
+        onFailure: (() -> Void)? = nil
+    ) {
         do {
             try operation()
             errorMessage = nil
         } catch {
+            onFailure?()
             errorMessage = String(describing: error)
         }
     }
@@ -1218,6 +1388,20 @@ public final class RiotAppModel: ObservableObject {
 /// The shell reads its launch state through this seam; Unit 3 swaps the
 /// conformer for a multi-community registry without touching a route view.
 extension RiotAppModel: CommunitySelecting {}
+
+extension RiotAppModel: PublishingContextProviding {
+    public func currentPublishingContext() -> PublishingContext? {
+        guard let community, let me else { return nil }
+        return PublishingContext(
+            communityID: community.id,
+            identity: .persistent(me),
+            community: PostingCommunity(
+                name: community.name,
+                spaceDescriptorEntryID: community.newswireDescriptorEntryID ?? ""
+            )
+        )
+    }
+}
 
 /// Demo mode's port, wired to the live profile AND to the screens.
 ///

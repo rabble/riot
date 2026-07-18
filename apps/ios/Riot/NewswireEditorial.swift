@@ -304,10 +304,21 @@ public enum NewswirePostDisplay: Equatable, Sendable {
 public enum NewswireTreatmentCopy {
     public static let hiddenTitle = "Hidden by the editorial collective"
     public static let hiddenBody =
-        "The collective hid this report. You can still inspect the original and the signed actions."
+        "The collective hid this report. Its signed treatment record remains available."
     public static let tombstoneTitle = "Removed for safety"
     public static let tombstoneBody =
         "The collective tombstoned this report. Its content is withheld; the signed record of the act remains."
+}
+
+public enum NewswireTrustCopy {
+    public static let signatureTitle = "Signature checked"
+    public static let signatureBody =
+        "This key authored this report. A signature does not prove the report is true. Display names are self-claimed."
+    public static let editorialChecksBody =
+        "Signed editorial judgments from this community’s current editorial roster. They are evidence notes, not proof of truth."
+    public static let correctionBody =
+        "Editors signed a correction. Review the signed history."
+    public static let aiAssisted = "AI-assisted · human reviewed and signed"
 }
 
 /// One post, ready to draw on the front page or open wire. Every field comes from
@@ -319,6 +330,13 @@ public struct NewswirePostRow: Equatable, Identifiable, Sendable {
     public let author: String
     public let authorKeyHex: String
     public let headline: String?
+    public let body: String?
+    public let taiJ2000Micros: UInt64
+    public let sourceClaims: [String]
+    public let coarseLocation: String?
+    public let eventTimeUnixSeconds: UInt64?
+    public let expiresAtUnixSeconds: UInt64?
+    public let operationalProfile: NewswireOperationalProfile?
     public let display: NewswirePostDisplay
     /// True when core reports one or more active corrections — the row shows the
     /// mandatory "Editorial correction" label and links to the full history.
@@ -327,14 +345,60 @@ public struct NewswirePostRow: Equatable, Identifiable, Sendable {
     public let aiAssisted: Bool
 
     public init(_ post: NewswireProjectedPost) {
+        let display = NewswirePostDisplay.from(post.treatment)
+        let isOrdinary = display == .ordinary
         self.id = post.entryId
         self.author = post.author.rendered
         self.authorKeyHex = post.author.id
-        self.headline = post.headline
-        self.display = .from(post.treatment)
-        self.hasCorrection = !post.correctionIds.isEmpty
-        self.verificationCount = post.verificationIds.count
-        self.aiAssisted = post.aiAssisted
+        self.headline = isOrdinary ? post.headline : nil
+        self.body = isOrdinary ? post.body : nil
+        self.taiJ2000Micros = post.taiJ2000Micros
+        self.sourceClaims = isOrdinary ? post.sourceClaims : []
+        self.coarseLocation = isOrdinary ? post.coarseLocation : nil
+        self.eventTimeUnixSeconds = post.eventTimeUnixSeconds
+        self.expiresAtUnixSeconds = isOrdinary ? post.expiresAtUnixSeconds : nil
+        self.operationalProfile = isOrdinary ? post.operationalProfile : nil
+        self.display = display
+        self.hasCorrection = isOrdinary && !post.correctionIds.isEmpty
+        self.verificationCount = isOrdinary ? post.verificationIds.count : 0
+        self.aiAssisted = isOrdinary && post.aiAssisted
+    }
+
+    public var readAccessibilityLabel: String {
+        "Read \(headline ?? "update")"
+    }
+}
+
+public struct NewswirePostDetail: Equatable, Sendable {
+    public let row: NewswirePostRow
+
+    public init(row: NewswirePostRow) {
+        self.row = row
+    }
+
+    public var eventTimeText: String {
+        guard let seconds = row.eventTimeUnixSeconds else {
+            return "Event time not provided"
+        }
+        return Date(timeIntervalSince1970: TimeInterval(seconds))
+            .formatted(date: .abbreviated, time: .shortened)
+    }
+
+    public var expiryText: String? {
+        row.expiresAtUnixSeconds.map {
+            Date(timeIntervalSince1970: TimeInterval($0))
+                .formatted(date: .abbreviated, time: .shortened)
+        }
+    }
+}
+
+public struct NewswireReportTrigger: Equatable, Hashable, Sendable {
+    public let surface: String
+    public let reportID: String
+
+    public init(surface: String, reportID: String) {
+        self.surface = surface
+        self.reportID = reportID
     }
 }
 
@@ -382,6 +446,9 @@ public enum NewswireCommentOutcome: Equatable, Sendable {
 /// its target is hidden/tombstoned, so `replacementText` may be `nil` even for a
 /// correction.
 public struct EditorialHistoryRow: Equatable, Identifiable, Sendable {
+    public static let signedOrderingLabel =
+        "Signed ordering value (TAI-J2000 microseconds)"
+
     public let id: String
     public let signer: String
     public let kind: EditorialActionKind
@@ -389,6 +456,7 @@ public struct EditorialHistoryRow: Equatable, Identifiable, Sendable {
     public let reason: String?
     public let replacementText: String?
     public let isActive: Bool
+    public let taiJ2000Micros: UInt64
 
     public init(_ action: NewswireProjectedEditorialAction) {
         self.id = action.entryId
@@ -398,12 +466,94 @@ public struct EditorialHistoryRow: Equatable, Identifiable, Sendable {
         self.reason = action.reason
         self.replacementText = action.correctionText
         self.isActive = action.active
+        self.taiJ2000Micros = action.taiJ2000Micros
     }
 
     /// The mandatory correction label, present only for a correction so it can
     /// never read as an author edit.
     public var correctionLabel: String? {
         kind.isEditorialCorrection ? EditorialCorrectionLabel.text : nil
+    }
+}
+
+public enum EditorialActionLineage {
+    public static func forReport(
+        _ reportID: String,
+        in actions: [EditorialHistoryRow]
+    ) -> [EditorialHistoryRow] {
+        var included = Set(
+            actions.filter { $0.targetEntryID == reportID }.map(\.id)
+        )
+        var changed = true
+        while changed {
+            changed = false
+            for action in actions
+            where action.kind == .retract
+                && included.contains(action.targetEntryID)
+                && !included.contains(action.id) {
+                included.insert(action.id)
+                changed = true
+            }
+        }
+        return actions.filter { included.contains($0.id) }
+    }
+}
+
+public struct NewswireTreatmentDetail: Equatable, Sendable {
+    public let reportID: String
+    public let author: String
+    public let display: NewswirePostDisplay
+    public let eventTimeText: String
+    public let taiJ2000Micros: UInt64
+    public let lineage: [EditorialHistoryRow]
+    public let exposesPayload = false
+
+    public init(row: NewswirePostRow, lineage: [EditorialHistoryRow]) {
+        self.reportID = row.id
+        self.author = row.author
+        self.display = row.display
+        self.eventTimeText = NewswirePostDetail(row: row).eventTimeText
+        self.taiJ2000Micros = row.taiJ2000Micros
+        self.lineage = lineage
+    }
+}
+
+public struct EditorialActionTarget: Equatable, Identifiable, Sendable {
+    public let entryID: String
+    public let context: String
+    public let forcedKind: EditorialActionKind?
+    public var id: String { entryID }
+    public var availableKinds: [EditorialActionKind] {
+        if let forcedKind { return [forcedKind] }
+        return EditorialActionKind.allCases.filter { $0 != .retract }
+    }
+
+    public func preparedDraft(from draft: EditorialActionDraft) -> EditorialActionDraft {
+        if let forcedKind {
+            return draft.kind == forcedKind
+                ? draft
+                : EditorialActionDraft(kind: forcedKind)
+        }
+        guard availableKinds.contains(draft.kind) else {
+            return EditorialActionDraft(kind: availableKinds[0])
+        }
+        return draft
+    }
+
+    public static func report(_ row: NewswirePostRow) -> Self {
+        EditorialActionTarget(
+            entryID: row.id,
+            context: row.headline ?? "Treated report",
+            forcedKind: nil
+        )
+    }
+
+    public static func retraction(of action: EditorialHistoryRow) -> Self {
+        EditorialActionTarget(
+            entryID: action.id,
+            context: "\(action.kind.label) by \(action.signer)",
+            forcedKind: .retract
+        )
     }
 }
 
@@ -467,6 +617,13 @@ public enum NewswireWireState: Equatable, Sendable {
         case .emptyWire: "newswire-empty-wire"
         case .postsButNoFeature: "newswire-no-feature"
         case .featured: "newswire-featured"
+        }
+    }
+
+    public var hasPosts: Bool {
+        switch self {
+        case .postsButNoFeature, .featured: true
+        case .offlineStale, .emptyWire: false
         }
     }
 }
@@ -627,6 +784,10 @@ public final class NewswireSurfaceModel: ObservableObject {
     /// descriptor to reply within. Core still decides admission at signing time.
     public var canComment: Bool {
         commenter != nil && !spaceDescriptorEntryID.isEmpty
+    }
+
+    public var hasPosts: Bool {
+        wire.hasPosts
     }
 
     /// The replies to draw under `postID`, flat and time-sorted as core returned
@@ -869,20 +1030,25 @@ public struct NewswireSurfaceView: View {
     private let onPostUpdate: () -> Void
     private let onSyncWithPeer: () -> Void
     private let onRejoinWithLink: () -> Void
+    private let composerFocus: FocusState<ComposerOrigin?>.Binding
     @Environment(\.colorScheme) private var colorScheme
-    @State private var actionTarget: NewswirePostRow?
-    @State private var replyTarget: NewswirePostRow?
+    @State private var reading: NewswirePostRow?
+    @State private var openedTrigger: NewswireReportTrigger?
+    @FocusState private var focusedTrigger: NewswireReportTrigger?
+    @AccessibilityFocusState private var accessibilityFocusedTrigger: NewswireReportTrigger?
 
     public init(
         model: NewswireSurfaceModel,
-        onPostUpdate: @escaping () -> Void = {},
-        onSyncWithPeer: @escaping () -> Void = {},
-        onRejoinWithLink: @escaping () -> Void = {}
+        onPostUpdate: @escaping () -> Void,
+        onSyncWithPeer: @escaping () -> Void,
+        onRejoinWithLink: @escaping () -> Void,
+        composerFocus: FocusState<ComposerOrigin?>.Binding
     ) {
         self.model = model
         self.onPostUpdate = onPostUpdate
         self.onSyncWithPeer = onSyncWithPeer
         self.onRejoinWithLink = onRejoinWithLink
+        self.composerFocus = composerFocus
     }
 
     /// Maps a pure forward action to its handler. Every case leads somewhere real —
@@ -920,12 +1086,17 @@ public struct NewswireSurfaceView: View {
             model.load()
             model.markAllSeen()
         }
-        .sheet(item: $replyTarget) { target in
-            NewswireCommentComposeSheet(
-                model: model, target: target, onClose: { replyTarget = nil })
-        }
-        .sheet(item: $actionTarget) { target in
-            EditorialActionSheet(model: model, target: target, onClose: { actionTarget = nil })
+        .sheet(item: $reading, onDismiss: {
+            guard let openedTrigger else { return }
+            focusedTrigger = openedTrigger
+            accessibilityFocusedTrigger = openedTrigger
+            self.openedTrigger = nil
+        }) { row in
+            NewswireReportDetailSheet(
+                model: model,
+                row: row,
+                onClose: { reading = nil }
+            )
         }
     }
 
@@ -997,21 +1168,31 @@ public struct NewswireSurfaceView: View {
                     .font(.riot(.body, size: 15, relativeTo: .callout))
                     .foregroundStyle(RiotTheme.ink(for: colorScheme))
                 ForEach(actions, id: \.self) { action in
-                    Button(action.label) { perform(action) }
-                        .buttonStyle(action.isNearbyPath ? .riotSecondary : .riotPrimary)
-                        .frame(minHeight: 44)
-                        .accessibilityIdentifier(action.accessibilityID)
+                    wireActionButton(action)
                 }
             }
         }
         .accessibilityIdentifier(id)
     }
 
+    @ViewBuilder
+    private func wireActionButton(_ action: NewswireWireForwardAction) -> some View {
+        let button = Button(action.label) { perform(action) }
+            .buttonStyle(action.isNearbyPath ? .riotSecondary : .riotPrimary)
+            .frame(minHeight: 44)
+            .accessibilityIdentifier(action.accessibilityID)
+        if action == .postFirstUpdate {
+            button.focused(composerFocus, equals: .emptyWire)
+        } else {
+            button
+        }
+    }
+
     private func frontPageCard(_ posts: [NewswirePostRow]) -> some View {
         RiotCard {
             VStack(alignment: .leading, spacing: 12) {
                 eyebrow("Front page")
-                ForEach(posts) { post in postRow(post) }
+                ForEach(posts) { post in postRow(post, surface: "front-page") }
             }
         }
         .accessibilityIdentifier("newswire-front-page")
@@ -1021,14 +1202,15 @@ public struct NewswireSurfaceView: View {
         RiotCard {
             VStack(alignment: .leading, spacing: 12) {
                 eyebrow("Open wire")
-                ForEach(posts) { post in postRow(post) }
+                ForEach(posts) { post in postRow(post, surface: "open-wire") }
             }
         }
         .accessibilityIdentifier("newswire-open-wire")
     }
 
     @ViewBuilder
-    private func postRow(_ post: NewswirePostRow) -> some View {
+    private func postRow(_ post: NewswirePostRow, surface: String) -> some View {
+        let trigger = NewswireReportTrigger(surface: surface, reportID: post.id)
         VStack(alignment: .leading, spacing: 6) {
             switch post.display {
             case .ordinary:
@@ -1040,18 +1222,40 @@ public struct NewswireSurfaceView: View {
                         .font(.riot(.body, size: 17, relativeTo: .headline))
                         .foregroundStyle(RiotTheme.ink(for: colorScheme))
                 }
+                if let body = post.body {
+                    Text(body)
+                        .font(.riot(.body, size: 15, relativeTo: .body))
+                        .foregroundStyle(RiotTheme.ink(for: colorScheme))
+                        .lineLimit(2)
+                }
+                Text("Signed by \(post.author)")
+                    .font(.riot(.mono, size: 11, relativeTo: .caption2))
+                    .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
                 if post.hasCorrection {
                     RiotBadge(EditorialCorrectionLabel.text)
                         .accessibilityIdentifier("correction-label-\(post.id)")
                 }
                 if post.verificationCount > 0 {
-                    Text("\(post.verificationCount) verification\(post.verificationCount == 1 ? "" : "s")")
+                    Text("Editorial checks: \(post.verificationCount)")
                         .font(.riot(.mono, size: 11, relativeTo: .caption2))
                         .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
                 }
                 if post.aiAssisted {
-                    RiotBadge("AI-assisted · human reviewed and signed")
+                    RiotBadge(NewswireTrustCopy.aiAssisted)
                 }
+                Button("Read update") {
+                    openedTrigger = trigger
+                    reading = post
+                }
+                    .buttonStyle(.riotSecondary)
+                    .frame(minHeight: 44)
+                    .focused($focusedTrigger, equals: trigger)
+                    .accessibilityFocused(
+                        $accessibilityFocusedTrigger,
+                        equals: trigger
+                    )
+                    .accessibilityLabel(post.readAccessibilityLabel)
+                    .accessibilityIdentifier("read-update-\(post.id)")
             case .hiddenInterstitial:
                 treatmentInterstitial(
                     id: "hidden-interstitial-\(post.id)",
@@ -1065,67 +1269,26 @@ public struct NewswireSurfaceView: View {
                     body: NewswireTreatmentCopy.tombstoneBody
                 )
             }
-            Text(post.author)
-                .font(.riot(.mono, size: 11, relativeTo: .caption2))
-                .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
-            commentsSection(for: post)
-            HStack(spacing: 8) {
-                if model.canComment {
-                    Button("Reply") { replyTarget = post }
-                        .buttonStyle(.riotSecondary)
-                        .frame(minHeight: 44)
-                        .accessibilityIdentifier("reply-\(post.id)")
+            if post.display != .ordinary {
+                Text("Signed by \(post.author)")
+                    .font(.riot(.mono, size: 11, relativeTo: .caption2))
+                    .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
+                Button("Review treatment") {
+                    openedTrigger = trigger
+                    reading = post
                 }
-                if model.canOfferEditorialControls {
-                    Button("Editorial action") { actionTarget = post }
-                        .buttonStyle(.riotSecondary)
-                        .frame(minHeight: 44)
-                        .accessibilityIdentifier("editorial-action-\(post.id)")
-                }
+                    .buttonStyle(.riotSecondary)
+                    .frame(minHeight: 44)
+                    .focused($focusedTrigger, equals: trigger)
+                    .accessibilityFocused(
+                        $accessibilityFocusedTrigger,
+                        equals: trigger
+                    )
+                    .accessibilityIdentifier("review-treatment-\(post.id)")
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityIdentifier("wire-post-\(post.id)")
-    }
-
-    /// The communal replies under one post, indented and time-ordered as core
-    /// returned them. Drawn only when the post has replies, so an ordinary post
-    /// gains no empty chrome.
-    @ViewBuilder
-    private func commentsSection(for post: NewswirePostRow) -> some View {
-        let comments = model.comments(under: post.id)
-        if !comments.isEmpty {
-            VStack(alignment: .leading, spacing: 8) {
-                ForEach(comments) { comment in commentRow(comment) }
-            }
-            .padding(.leading, 14)
-            .accessibilityIdentifier("wire-comments-\(post.id)")
-        }
-    }
-
-    @ViewBuilder
-    private func commentRow(_ comment: NewswireCommentRow) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
-            switch comment.display {
-            case .ordinary:
-                Text(comment.body ?? "")
-                    .font(.riot(.body, size: 15, relativeTo: .body))
-                    .foregroundStyle(RiotTheme.ink(for: colorScheme))
-            case .hiddenInterstitial:
-                Text(NewswireTreatmentCopy.hiddenTitle)
-                    .font(.riot(.body, size: 13, relativeTo: .caption))
-                    .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
-            case .tombstoned:
-                Text(NewswireTreatmentCopy.tombstoneTitle)
-                    .font(.riot(.body, size: 13, relativeTo: .caption))
-                    .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
-            }
-            Text(comment.author)
-                .font(.riot(.mono, size: 11, relativeTo: .caption2))
-                .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .accessibilityIdentifier("wire-comment-\(comment.id)")
     }
 
     /// The per-row "new" marker — a small pink dot on a post newer than the seen
@@ -1200,14 +1363,313 @@ public struct NewswireSurfaceView: View {
     }
 }
 
+/// A report opens into one of two deliberately separate readers. Ordinary
+/// reports own payload, replies, and report-scoped actions. Treated reports own
+/// only accountable identity and signed action lineage.
+private struct NewswireReportDetailSheet: View {
+    @ObservedObject var model: NewswireSurfaceModel
+    let row: NewswirePostRow
+    let onClose: () -> Void
+    @Environment(\.colorScheme) private var colorScheme
+    @State private var replyTarget: NewswirePostRow?
+    @State private var actionTarget: EditorialActionTarget?
+    @State private var showingTechnical = false
+
+    private var detail: NewswirePostDetail { NewswirePostDetail(row: row) }
+    private var lineage: [EditorialHistoryRow] {
+        EditorialActionLineage.forReport(row.id, in: model.history)
+    }
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 18) {
+                if row.display == .ordinary {
+                    ordinaryDetail
+                } else {
+                    treatmentDetail
+                }
+                Button("Close", action: onClose)
+                    .buttonStyle(.riotSecondary)
+                    .frame(maxWidth: .infinity, minHeight: 44)
+                    .accessibilityIdentifier("newswire-detail-close")
+            }
+            .padding(20)
+        }
+        .riotHeader(
+            eyebrow: row.display == .ordinary ? "Update" : "Treatment",
+            row.display == .ordinary ? (row.headline ?? "Update") : treatmentTitle
+        )
+        .sheet(item: $replyTarget) { target in
+            NewswireCommentComposeSheet(
+                model: model,
+                target: target,
+                onClose: { replyTarget = nil }
+            )
+        }
+        .sheet(item: $actionTarget) { target in
+            EditorialActionSheet(
+                model: model,
+                target: target,
+                onClose: { actionTarget = nil },
+                onSigned: {
+                    actionTarget = nil
+                    onClose()
+                }
+            )
+        }
+    }
+
+    private var ordinaryDetail: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Text(verbatim: row.headline ?? "")
+                .font(.riot(.body, size: 22, relativeTo: .title2))
+                .foregroundStyle(RiotTheme.ink(for: colorScheme))
+                .accessibilityAddTraits(.isHeader)
+            if let body = row.body {
+                Text(verbatim: body)
+                    .font(.riot(.body, size: 17, relativeTo: .body))
+                    .foregroundStyle(RiotTheme.ink(for: colorScheme))
+                    .textSelection(.enabled)
+                    .accessibilityIdentifier("newswire-detail-body")
+            }
+            trustSection
+            metadataSection
+            if !lineage.isEmpty {
+                lineageSection(allowsRetraction: model.canOfferEditorialControls)
+            }
+            repliesSection
+            HStack(spacing: 8) {
+                if model.canComment {
+                    Button("Reply") { replyTarget = row }
+                        .buttonStyle(.riotSecondary)
+                        .frame(minHeight: 44)
+                        .accessibilityIdentifier("detail-reply-\(row.id)")
+                }
+                if model.canOfferEditorialControls {
+                    Button("Editorial action") {
+                        actionTarget = .report(row)
+                    }
+                    .buttonStyle(.riotSecondary)
+                    .frame(minHeight: 44)
+                    .accessibilityIdentifier("detail-editorial-action-\(row.id)")
+                }
+            }
+        }
+    }
+
+    private var treatmentDetail: some View {
+        let treatment = NewswireTreatmentDetail(row: row, lineage: lineage)
+        return VStack(alignment: .leading, spacing: 18) {
+            Text(treatmentTitle)
+                .font(.riot(.body, size: 22, relativeTo: .title2))
+                .foregroundStyle(RiotTheme.ink(for: colorScheme))
+                .accessibilityAddTraits(.isHeader)
+            Text(treatmentBody)
+                .font(.riot(.body, size: 15, relativeTo: .body))
+                .foregroundStyle(RiotTheme.ink(for: colorScheme))
+            LabeledContent("Signed author", value: treatment.author)
+            LabeledContent("Event time", value: treatment.eventTimeText)
+            DisclosureGroup("Technical details", isExpanded: $showingTechnical) {
+                VStack(alignment: .leading, spacing: 8) {
+                    technicalValue("Report ID", treatment.reportID)
+                    technicalValue(
+                        EditorialHistoryRow.signedOrderingLabel,
+                        String(treatment.taiJ2000Micros)
+                    )
+                }
+            }
+            .accessibilityIdentifier("treatment-technical-\(row.id)")
+            if treatment.lineage.isEmpty {
+                Text("No signed treatment actions are held on this device.")
+                    .font(.riot(.body, size: 15, relativeTo: .body))
+                    .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
+            } else {
+                lineageSection(allowsRetraction: model.canOfferEditorialControls)
+            }
+        }
+        .accessibilityIdentifier("treatment-detail-\(row.id)")
+    }
+
+    private var trustSection: some View {
+        RiotCard {
+            VStack(alignment: .leading, spacing: 12) {
+                trustNote(
+                    title: NewswireTrustCopy.signatureTitle,
+                    body: NewswireTrustCopy.signatureBody
+                )
+                if row.verificationCount > 0 {
+                    trustNote(
+                        title: "Editorial checks: \(row.verificationCount)",
+                        body: NewswireTrustCopy.editorialChecksBody
+                    )
+                }
+                if row.hasCorrection {
+                    trustNote(
+                        title: EditorialCorrectionLabel.text,
+                        body: NewswireTrustCopy.correctionBody
+                    )
+                }
+                if row.aiAssisted {
+                    Text(NewswireTrustCopy.aiAssisted)
+                        .font(.riot(.mono, size: 12, relativeTo: .caption))
+                        .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
+                }
+                Text("Signed by \(row.author)")
+                    .font(.riot(.mono, size: 12, relativeTo: .caption))
+                    .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
+            }
+        }
+        .accessibilityIdentifier("newswire-detail-trust")
+    }
+
+    private var metadataSection: some View {
+        RiotCard {
+            VStack(alignment: .leading, spacing: 10) {
+                sectionTitle("Report details")
+                LabeledContent("Event time", value: detail.eventTimeText)
+                if !row.sourceClaims.isEmpty {
+                    LabeledContent("Sources", value: row.sourceClaims.joined(separator: ", "))
+                }
+                if let location = row.coarseLocation {
+                    LabeledContent("Location", value: location)
+                }
+                if let expiry = detail.expiryText {
+                    LabeledContent("Expires", value: expiry)
+                }
+                if let operationalType {
+                    LabeledContent("Operational type", value: operationalType)
+                }
+            }
+        }
+        .accessibilityIdentifier("newswire-detail-metadata")
+    }
+
+    @ViewBuilder
+    private var repliesSection: some View {
+        let comments = model.comments(under: row.id)
+        if !comments.isEmpty {
+            RiotCard {
+                VStack(alignment: .leading, spacing: 10) {
+                    sectionTitle("Replies")
+                    ForEach(comments) { comment in
+                        VStack(alignment: .leading, spacing: 3) {
+                            switch comment.display {
+                            case .ordinary:
+                                Text(verbatim: comment.body ?? "")
+                            case .hiddenInterstitial:
+                                Text(NewswireTreatmentCopy.hiddenTitle)
+                            case .tombstoned:
+                                Text(NewswireTreatmentCopy.tombstoneTitle)
+                            }
+                            Text("Signed by \(comment.author)")
+                                .font(.riot(.mono, size: 11, relativeTo: .caption2))
+                                .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
+                        }
+                        .accessibilityIdentifier("detail-comment-\(comment.id)")
+                    }
+                }
+            }
+        }
+    }
+
+    private func lineageSection(allowsRetraction: Bool) -> some View {
+        RiotCard {
+            VStack(alignment: .leading, spacing: 12) {
+                sectionTitle("Signed editorial history")
+                ForEach(lineage) { action in
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(action.kind.label)
+                            .font(.riot(.body, size: 15, relativeTo: .headline))
+                        Text("Signed by \(action.signer)")
+                            .font(.riot(.mono, size: 11, relativeTo: .caption2))
+                        if let reason = action.reason {
+                            Text(verbatim: reason)
+                                .font(.riot(.body, size: 13, relativeTo: .caption))
+                        }
+                        DisclosureGroup("Technical details") {
+                            VStack(alignment: .leading, spacing: 6) {
+                                technicalValue("Action ID", action.id)
+                                technicalValue(
+                                    EditorialHistoryRow.signedOrderingLabel,
+                                    String(action.taiJ2000Micros)
+                                )
+                            }
+                        }
+                        .font(.riot(.mono, size: 11, relativeTo: .caption2))
+                        if allowsRetraction && action.isActive {
+                            Button("Retract") {
+                                model.draft = EditorialActionDraft(kind: .retract)
+                                actionTarget = .retraction(of: action)
+                            }
+                            .buttonStyle(.riotSecondary)
+                            .frame(minHeight: 44)
+                            .accessibilityIdentifier("retract-action-\(action.id)")
+                        }
+                    }
+                    .accessibilityIdentifier("detail-history-\(action.id)")
+                }
+            }
+        }
+    }
+
+    private var treatmentTitle: String {
+        row.display == .tombstoned
+            ? NewswireTreatmentCopy.tombstoneTitle
+            : NewswireTreatmentCopy.hiddenTitle
+    }
+
+    private var treatmentBody: String {
+        row.display == .tombstoned
+            ? NewswireTreatmentCopy.tombstoneBody
+            : NewswireTreatmentCopy.hiddenBody
+    }
+
+    private var operationalType: String? {
+        switch row.operationalProfile {
+        case .alert: "Alert"
+        case .request: "Mutual-aid request"
+        case nil: nil
+        }
+    }
+
+    private func sectionTitle(_ text: String) -> some View {
+        Text(text)
+            .font(.riot(.mono, size: 12, relativeTo: .caption))
+            .textCase(.uppercase)
+            .tracking(1)
+            .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
+    }
+
+    private func trustNote(title: String, body: String) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(title)
+                .font(.riot(.body, size: 15, relativeTo: .headline))
+            Text(body)
+                .font(.riot(.body, size: 13, relativeTo: .caption))
+                .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
+        }
+    }
+
+    private func technicalValue(_ label: String, _ value: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(label)
+                .font(.riot(.mono, size: 11, relativeTo: .caption2))
+            Text(verbatim: value)
+                .font(.riot(.mono, size: 12, relativeTo: .caption))
+                .textSelection(.enabled)
+        }
+    }
+}
+
 /// The editorial-action composer + immutable pre-signing review, presented for a
 /// single target post. The kind picker drives which fields the closed table
 /// requires; the review shows every complete identifier before a signature; a
 /// failed sign keeps the sheet open with the draft intact.
 private struct EditorialActionSheet: View {
     @ObservedObject var model: NewswireSurfaceModel
-    let target: NewswirePostRow
+    let target: EditorialActionTarget
     let onClose: () -> Void
+    let onSigned: () -> Void
     @Environment(\.colorScheme) private var colorScheme
 
     private var rules: EditorialFieldRules { model.draft.kind.fieldRules }
@@ -1215,12 +1677,17 @@ private struct EditorialActionSheet: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
-                Picker("Action", selection: $model.draft.kind) {
-                    ForEach(EditorialActionKind.allCases) { kind in
-                        Text(kind.label).tag(kind)
+                if target.forcedKind == nil {
+                    Picker("Action", selection: $model.draft.kind) {
+                        ForEach(target.availableKinds) { kind in
+                            Text(kind.label).tag(kind)
+                        }
                     }
+                    .accessibilityIdentifier("editorial-kind-picker")
+                } else {
+                    LabeledContent("Action", value: model.draft.kind.label)
                 }
-                .accessibilityIdentifier("editorial-kind-picker")
+                LabeledContent("Target", value: target.context)
 
                 if rules.reason == .required {
                     field("Reason", text: $model.draft.reason, id: "editorial-reason")
@@ -1255,11 +1722,14 @@ private struct EditorialActionSheet: View {
         .toolbar {
             ToolbarItem(placement: .cancellationAction) { Button("Close", action: onClose) }
         }
+        .onAppear {
+            model.draft = target.preparedDraft(from: model.draft)
+        }
     }
 
     @ViewBuilder
     private var reviewCard: some View {
-        if case let .success(review) = model.review(targetEntryID: target.id) {
+        if case let .success(review) = model.review(targetEntryID: target.entryID) {
             RiotCard {
                 VStack(alignment: .leading, spacing: 10) {
                     Text("Review before signing")
@@ -1288,11 +1758,13 @@ private struct EditorialActionSheet: View {
     @ViewBuilder
     private var signButton: some View {
         let isReady: Bool = {
-            if case .success = model.review(targetEntryID: target.id) { return true }
+            if case .success = model.review(targetEntryID: target.entryID) { return true }
             return false
         }()
         Button("Sign and post") {
-            if case .signed = model.sign(targetEntryID: target.id) { onClose() }
+            if case .signed = model.sign(targetEntryID: target.entryID) {
+                onSigned()
+            }
         }
         .buttonStyle(.riotPrimary)
         .frame(minHeight: 44)

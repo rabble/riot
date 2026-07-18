@@ -8,6 +8,16 @@ import XCTest
 /// with a founding editorial roster. The old five debug-shaped surfaces
 /// (Spaces/Apps/Board/Post/Connect) are gone.
 final class ShellNavigationTests: XCTestCase {
+    func testEveryComposerOriginUsesOneOpenState() {
+        var state = ComposerPresentationState.closed
+        for origin in ComposerOrigin.allCases {
+            state.open(origin)
+            XCTAssertEqual(state, .open(origin))
+            state.close()
+            XCTAssertEqual(state, .closed)
+        }
+    }
+
     // MARK: - The four community routes
 
     func testTheShellExposesExactlyTheFourCommunityRoutes() {
@@ -270,6 +280,66 @@ final class ShellNavigationTests: XCTestCase {
         XCTAssertNil(OnboardingStep.welcome.back, "welcome is the first step; there is nowhere back to")
     }
 
+    func testSetupOrderAndUnsupportedNearbyBoundary() {
+        XCTAssertEqual(OnboardingPresentation.actionOrder, [.join, .create, .demo])
+        XCTAssertEqual(
+            OnboardingPresentation.nearbyNote,
+            "Nearby exchange is available after you enter a community."
+        )
+    }
+
+    func testNonEmptyNameFailureBlocksEveryExit() {
+        for exit in OnboardingExit.allCases {
+            var performed: [OnboardingExit] = []
+            let result = OnboardingExitGate.perform(
+                exit,
+                displayName: "Ana",
+                saveName: { _ in false },
+                proceed: { performed.append($0) }
+            )
+
+            XCTAssertEqual(result, .nameSaveFailed)
+            XCTAssertEqual(performed, [])
+        }
+    }
+
+    func testEmptyAndSuccessfullySavedNameCoverEveryExit() {
+        for exit in OnboardingExit.allCases {
+            var performed: [OnboardingExit] = []
+            var saved: [String] = []
+
+            XCTAssertEqual(
+                OnboardingExitGate.perform(
+                    exit,
+                    displayName: "  ",
+                    saveName: { _ in
+                        XCTFail("an empty optional name must not be saved")
+                        return false
+                    },
+                    proceed: { performed.append($0) }
+                ),
+                .proceeded
+            )
+            XCTAssertEqual(performed, [exit])
+
+            performed = []
+            XCTAssertEqual(
+                OnboardingExitGate.perform(
+                    exit,
+                    displayName: "  Ana  ",
+                    saveName: {
+                        saved.append($0)
+                        return true
+                    },
+                    proceed: { performed.append($0) }
+                ),
+                .proceeded
+            )
+            XCTAssertEqual(saved, ["Ana"])
+            XCTAssertEqual(performed, [exit])
+        }
+    }
+
     /// The gate is derived from real state, not a separate flag: a fresh profile
     /// with no community is first-run, and creating a community ends first-run —
     /// so the shell, not onboarding, is what shows from then on.
@@ -425,6 +495,16 @@ final class ShellNavigationTests: XCTestCase {
         let model = RiotAppModel()
         XCTAssertEqual(model.connectionStatus, .offline)
         XCTAssertEqual(model.connectionDisclosure, "Not connected")
+    }
+
+    func testNearbyUsesTruthfulCompactVocabularyAndOfferedCount() {
+        XCTAssertEqual(NearbyStrings.devicesTitle, "Nearby devices")
+        XCTAssertEqual(NearbyStrings.syncedPeopleTitle, "People you’ve synced with")
+        XCTAssertEqual(NearbyStrings.stopLabel, "Stop")
+        XCTAssertEqual(NearbyStrings.addUpdates(3), "Add 3 updates")
+        XCTAssertEqual(NearbyStrings.addUpdates(1), "Add 1 update")
+        XCTAssertFalse(NearbyStrings.deviceSummary.localizedCaseInsensitiveContains("renderer"))
+        XCTAssertFalse(NearbyStrings.syncedPeopleTitle.contains("Recently synced"))
     }
 
     @MainActor
