@@ -1,7 +1,7 @@
 # Public Community Anchor Network Design
 
 Date: 2026-07-18
-Status: Design review rounds 1-3 revised; pending round 4
+Status: Design review rounds 1-4 revised; pending round 5
 Scope: Owner-rooted composite public sites, discovery, hosting, web mirroring,
 and opportunistic internet sync
 
@@ -61,6 +61,14 @@ anchor proof profiles, root-safe delegated listing epochs, channel-bound peer
 authentication, signed feed checkpoints/snapshots, immutable renderer ownership
 transfer, operational-log quotas, self-contained host/consent states, strict
 ticket/manifest transport matching, and exact pilot formulas.
+
+Round four removed the last lifecycle overclaims: initiator and replica state
+remain private through composite receipt, client storage uses the existing
+core-owned RiotDatabase lifecycle, genesis/rotation envelopes are fully
+verifiable, every control record is byte-bounded, cold handoff uses the signed
+ticket as its bootstrap transport assertion, peers exchange rotated descriptor
+chains before proof, feed removals can force bounded emergency checkpoints, and
+pilot percentages require meaningful samples including install return.
 
 ## Product Decisions
 
@@ -144,7 +152,8 @@ References:
 
 Shared canonical frames, records, state enums, and codecs live in a new
 dependency-neutral `riot-anchor-protocol` library crate. It depends on
-`riot-core`, but never on SQLite, HTTP, iroh, Tokio, or server adapters.
+`riot-core` with storage/default features disabled, and never on SQLite, HTTP,
+iroh, Tokio, or server adapters.
 
 The anchor daemon is a new workspace binary crate, `riot-anchor`, depending on
 `riot-anchor-protocol`, `riot-core`, and `riot-transport`.
@@ -153,7 +162,8 @@ Native internet operations use a new mobile-compatible `riot-client-net` crate
 that owns one iroh endpoint and Tokio runtime per application process. It
 depends on `riot-anchor-protocol` and `riot-transport`; `riot-ffi` exposes its
 cancellable async operations and typed event streams through UniFFI. Existing
-native nearby carriers remain unchanged. SQLite, HTTP-server, and renderer
+native nearby carriers remain unchanged. The existing client-side `rusqlite`
+feature remains in `riot-core`; anchor-server SQLite, HTTP-server, and renderer
 dependencies never enter `riot-core`, `riot-anchor-protocol`,
 `riot-client-net`, or native shells.
 
@@ -278,11 +288,15 @@ roots, namespaces, and manifest coordinates or admission fails.
 The core ticket builder reads the verified manifest and refuses a mismatched
 transport pair. Clients compare `transport_floor >=
 manifest_required_transport` and require both to be `require:none` before any
-anchor or hinted iroh/HTTPS dial. `PrepareHost` performs the same ticket check
-and compares against an already-retained manifest when present; after a new
-operation stages `O`, it compares the actual manifest field before permitting
-`C`, `W`, or commit. `SubmitListing` and every `ReadCommitted` open compare all
-three values again against the admitted manifest. A mismatch is
+anchor or hinted iroh/HTTPS dial. For a cold handoff, the root-signed ticket
+assertion is the authoritative bootstrap transport requirement; no manifest
+fetch is needed before that first permitted `require:none` dial.
+
+`PrepareHost` performs the same ticket check and compares against an
+already-retained manifest when present; after a new operation stages `O`, it
+compares the actual digest-matched manifest field before permitting `C`, `W`,
+content admission, or commit. `SubmitListing` and every `ReadCommitted` open
+compare all three values again against the admitted manifest. A mismatch is
 `manifest_transport_mismatch`, quarantines the operation/listing, and never
 downgrades to public iroh.
 
@@ -325,6 +339,11 @@ definite-length containers, minimal integer encodings, and sorted collections.
 Decoders reject unknown required versions, duplicate fields, non-canonical
 encodings, and trailing bytes.
 
+Every anchor-owned signed body other than a descriptor binds the stable
+`AnchorId`, current operator key ID, descriptor epoch, and descriptor digest.
+Verification therefore identifies the exact still-chain-valid signing context
+instead of treating every historical key as indefinitely current.
+
 ### `AnchorDescriptorV1`
 
 `AnchorId` is stable for the life of one deployed anchor:
@@ -341,20 +360,41 @@ It does not change when operator signing or iroh endpoint keys rotate. Receipts,
 feed coordinates, cursors, configuration, and deduplication use `AnchorId`;
 signatures name the current operator key separately.
 
-The operator signs:
+Every descriptor body contains both genesis inputs, and verifiers recompute
+`AnchorId` before accepting it. The signed envelope is:
 
 ```text
-"riot/anchor-descriptor/v1" || canonical_cbor(descriptor_body)
+DescriptorEnvelopeV1 {
+  body,
+  current_signature,
+  predecessor_signature: optional
+}
+
+current_signature =
+  Sign(
+    current_operator_key,
+    "riot/anchor-descriptor/v1" || canonical_cbor(body)
+  )
+
+predecessor_signature =
+  Sign(
+    predecessor_operator_key,
+    "riot/anchor-descriptor-transition/v1" ||
+    BLAKE3(canonical_cbor(body))
+  )
 ```
 
 The body contains:
 
 - stable full `AnchorId`;
+- genesis operator public key;
+- genesis random 256-bit value;
 - full anchor operator key ID;
 - monotonically increasing descriptor epoch;
 - previous descriptor digest when epoch is greater than zero;
 - current iroh endpoint ID;
 - HTTPS origin;
+- bounded operator display label and self-reported failure-domain label;
 - supported control and sync versions;
 - enabled roles: host, directory, mirror, gossip;
 - limit-profile digest;
@@ -372,6 +412,7 @@ The operator signs:
 The body contains:
 
 - anchor ID;
+- operator key ID and descriptor epoch/digest;
 - stable hosting operation ID;
 - full site root and manifest digest/version;
 - one ordered `(namespace_id, snapshot_digest, entry_count)` tuple per admitted
@@ -386,9 +427,9 @@ cryptographic guarantee. A dishonest or failed anchor may break it.
 
 ### `ListingReceiptV1`
 
-The operator signs the listing digest, site root, accepted epoch/revision,
-directory feed coordinate, acceptance time, expiry, and request idempotency key
-under:
+The operator signs anchor ID, operator key ID, descriptor epoch/digest, listing
+digest, site root, accepted epoch/revision, directory feed coordinate,
+acceptance time, expiry, and request idempotency key under:
 
 ```text
 "riot/listing-receipt/v1"
@@ -408,24 +449,34 @@ The operator key is loaded through an injectable `AnchorKeyStore`; production
 uses a non-world-readable OS secret store or managed KMS. It is never stored in
 the community database.
 
-Rotation uses a descriptor containing the predecessor key and digest and two
-signatures: one by the old key over the new descriptor digest and one by the
-new key over the descriptor. Clients accept overlap only before the old
-descriptor expires. After verifying continuity they durably persist the
-operator key, highest descriptor epoch, and descriptor digest. They reject any
-lower epoch, any different digest at the same epoch, and every replayed
-predecessor descriptor. Emergency revocation without the old key is an
-explicit user-visible operational trust reset and is not hidden as normal
-rotation.
+Epoch zero has no predecessor signature and must verify under the genesis key.
+Every later epoch has both signatures above. The predecessor may be the same
+key for an endpoint/origin/config update; in that case both fields are present
+and verify under that key. Historical intermediates are validated against the
+issued/expiry overlap that existed when the transition was signed. They may be
+expired at retrieval time; only the resulting head must be currently valid.
+After verifying continuity clients durably persist the operator key, highest
+descriptor epoch, and descriptor digest. They reject any lower epoch, any
+different digest at the same epoch, and every replayed predecessor descriptor.
+Emergency revocation without the old key is an explicit user-visible
+operational trust reset and is not hidden as normal rotation.
 
 The well-known response contains the latest descriptor and a same-origin,
 redirect-free descriptor-chain endpoint. A client pinned at any older digest
 fetches bounded pages of at most 16 descriptors, verifies every previous digest,
 epoch increment, old-key signature, new-key signature, stable `AnchorId`, and
 time overlap, then persists the newest floor. The operator must retain this
-chain for every still-supported app floor. If the chain is unavailable or
-inconsistent, the client reports `descriptor_chain_unavailable` and requires an
-app update or explicit trust reset; it never skips rotations.
+chain for every still-supported app floor. A complete traversal is capped at
+32 hops, 256 KiB canonical bytes, and five seconds; each page is at most
+60 KiB. If the chain is unavailable, inconsistent, or exceeds a cap, the client
+reports `descriptor_chain_unavailable` and requires an app update or explicit
+trust reset; it never skips rotations.
+
+Restoring one anchor backup into two live deployments is identity cloning, not
+horizontal scaling. The database and KMS hold a matching
+`deployment_instance_token`; startup must acquire the operator-configured
+single-writer lease for that token before signing or readiness. A clone without
+the lease fails closed and is reported as potential anchor equivocation.
 
 ## Transport Roles
 
@@ -517,7 +568,8 @@ OpenNamespace {
   namespace_id,
   mode:
     ReadCommitted |
-    ReconcileStaged { operation_id, namespace_token }
+    HostReconcileStaged { operation_id, namespace_token } |
+    ReplicaIntoStaged { operation_id, namespace_token }
 }
 ```
 
@@ -526,11 +578,13 @@ operation. The responder verifies the root signature, ticket expiry, transport
 floor, exact namespace membership, and equality with its currently committed
 manifest, then exposes a one-way committed snapshot.
 
-`ReconcileStaged` is the host/replica path. The responder additionally verifies
-the active operation and its unguessable, per-namespace 256-bit token, then
-routes writes only to that operation's staged namespace. A stage is initialized
-from the currently committed namespace when `PrepareHost` or `PrepareReplica`
-creates the operation.
+Both staged modes verify the active operation and its unguessable,
+per-namespace 256-bit token, then route writes only to that operation's staged
+namespace. A stage is initialized from the destination anchor's currently
+committed namespace when `PrepareHost` or `PrepareReplica` creates the
+operation. `HostReconcileStaged` is bidirectional for an organizer client.
+`ReplicaIntoStaged` is one-way from a source anchor into a destination and can
+never mutate the source.
 
 ### Snapshot inventory
 
@@ -542,6 +596,7 @@ BLAKE3(
   "riot/sync-snapshot/v2" ||
   u32be(len(namespace_id)) || namespace_id ||
   u64be(entry_count) ||
+  u64be(logical_bytes) ||
   for each sorted ID: u32be(len(entry_id)) || entry_id
 )
 ```
@@ -549,7 +604,13 @@ BLAKE3(
 The frame set is:
 
 ```text
-SnapshotStart { phase, namespace_id, snapshot_digest, entry_count }
+SnapshotStart {
+  phase,
+  namespace_id,
+  snapshot_digest,
+  entry_count,
+  logical_bytes
+}
 IdsPage {
   phase,
   snapshot_digest,
@@ -607,23 +668,39 @@ An abort deletes or expires the direction stage; already committed application
 state remains unchanged. This reconciles bounded per-chunk writes with
 end-of-direction atomic visibility.
 
+`logical_bytes` is the exact sum of canonical encoded bundle-item bytes in the
+sender snapshot. It is digest-bound and supports conservative quota preflight;
+the receiver still enforces actual bytes while staging.
+
 `ReadCommitted` executes one phase, `AnchorToClient`. After
 `DirectionComplete`, the anchor sends `NamespaceComplete` with its committed
 snapshot digest. The client may retain additional valid local entries; read
 sync does not upload them.
 
-`ReconcileStaged` executes two ordered phases:
+`HostReconcileStaged` executes two ordered phases:
 
 1. `AnchorToClient` uses the stage's committed-base snapshot. The client admits
-   and commits received entries locally.
-2. Only then, the client opens a new immutable snapshot of its resulting local
-   namespace and becomes inventory sender for `ClientToAnchor`. The anchor
-   admits missing entries into the stage.
+   received entries into its private host-operation stage, not its committed
+   application namespace.
+2. Only then, the client opens an immutable view of its local committed
+   namespace union that private stage and becomes inventory sender for
+   `ClientToAnchor`. The anchor admits missing entries into its own stage.
 
 After phase two, the anchor computes the stage digest and sends
 `NamespaceComplete`. It must equal the client's phase-two snapshot digest.
-Any error leaves the prior committed site unchanged and marks the operation
-retryable or failed according to the refusal.
+
+`ReplicaIntoStaged` executes only `SourceToDestination`: the source anchor
+sends one immutable committed snapshot; the destination admits missing entries
+into its operation stage, computes the union digest, and returns
+`NamespaceComplete`. No frame offers destination-only entries to the source.
+
+Direction completion promotes only into the parent private operation stage.
+No organizer-client or anchor application state becomes committed until all
+`O/C/W` namespace stages complete, destination `CommitHost` commits, and any
+lost receipt is recovered through `GetOperation`. The organizer then promotes
+its local private stage in one transaction; a replica source discards its
+read-only operation view. Any error before this sequence leaves every
+participant's prior committed site unchanged.
 
 This is bounded paginated inventory exchange, not the final bandwidth-optimal
 algorithm. A future Negentropy/range-summary version may reduce ID transfer
@@ -658,7 +735,7 @@ request-body digest and an idempotency state:
 
 ```text
 Claimed |
-Prepared { operation_id, operation_expiry } |
+Prepared { operation_id, operation_expiry, canonical_prepare_response } |
 Terminal { result }
 ```
 
@@ -678,13 +755,53 @@ HMAC-SHA256(
 so exact prepared replay returns the same tokens after restart without storing
 them in plaintext. The operation stores the token-secret epoch; key-store
 rotation retains prior secrets until every operation using them expires.
-Commit/refusal changes the row to `Terminal`. A prepared
-mapping is retained through `operation_expiry + 24 hours`; a terminal or
-ordinary single-call result is retained for 24 hours. The prepared-operation
-lifetime is at most one hour, so its mapping cannot disappear while live.
+The Prepare idempotency row remains `Prepared` and always replays its original
+response, even after the operation completes; a caller then uses
+`GetOperation`. Every `CommitHost` has its own idempotency row. The final
+promotion transaction atomically marks the operation committed, creates the
+receipt, and changes that Commit row to `Terminal`. A refused Prepare or any
+ordinary single-call request stores `Terminal` directly.
+
+A prepared mapping is retained through `operation_expiry + 24 hours`; a
+terminal or ordinary single-call result is retained for 24 hours. The
+prepared-operation lifetime is at most one hour, so its mapping cannot
+disappear while live. Namespace tokens are accepted only while the operation
+status is actively staged, so replaying a completed Prepare cannot reopen it.
 A `Claimed` row has a 30-second lease; startup or retry may delete it only when
 no operation/result exists and the lease expired. Prepare operation creation
 and transition to `Prepared` commit atomically.
+
+### Encoded control-record profile
+
+Every limit below is over complete canonical encoded bytes, including
+signatures and envelopes:
+
+| Record/frame | Maximum |
+| --- | ---: |
+| `DescriptorEnvelopeV1` | 8 KiB |
+| Well-known descriptor response | 16 KiB |
+| Descriptor-chain page | 60 KiB / 16 envelopes |
+| Limit profile | 8 KiB |
+| `HostingReceiptV1` or `ListingReceiptV1` | 4 KiB |
+| `WorkChallengeV1`, refusal, peer hello, or peer proof | 4 KiB |
+| `PrepareHost` request / response | 32 KiB / 8 KiB |
+| `CommitHost` request / response | 4 KiB / 8 KiB |
+| `SubmitListing` request / response | 32 KiB / 8 KiB |
+| `PrepareReplica` request / response | 60 KiB / 8 KiB |
+| `GetOperation` response | 16 KiB |
+| Directory feed or snapshot frame | 60 KiB |
+| Public directory JSON response | 1 MiB |
+
+Descriptor HTTPS origins are at most 255 UTF-8 bytes; endpoint hints are at
+most 512 bytes; supported control/sync version arrays have at most 16 distinct
+entries each; roles have at most the four defined values; and headers total at
+most 16 KiB. Operator/failure-domain labels are at most 64 UTF-8 bytes each.
+Namespace tuples are exactly the three `O/C/W` members. All other collections
+carry explicit count and byte limits in their schemas.
+
+Descriptor/config construction runs before readiness. An operator
+configuration that cannot produce legal descriptor, limit-profile, receipt, or
+peer frames fails readiness instead of truncating a signed value.
 
 Long-running work has a separate random 256-bit `operation_id`, created by the
 anchor and returned from `PrepareHost` or `PrepareReplica`. Every later call
@@ -772,7 +889,7 @@ source descriptor, source hosting receipt, the same root-signed ticket core,
 and desired snapshot digests. The destination validates all three, creates a
 normal staged operation with tokens, and applies peer-specific byte/site
 budgets. The source then acts as the sync initiator using
-`ReconcileStaged`. `CommitHost` produces a destination-signed receipt.
+`ReplicaIntoStaged`. `CommitHost` produces a destination-signed receipt.
 Replication never copies listing status implicitly.
 
 ### `PullDirectoryFeed`
@@ -892,7 +1009,8 @@ HostConfigurationState =
   FetchingDescriptor { origin } |
   VerifyingDescriptor { origin, descriptor } |
   AwaitingHostConsent { descriptor, continuity, roles } |
-  PersistingHost { descriptor } |
+  PersistingHost { intent_id, descriptor, selected_roles } |
+  RecoveringConfiguration { intent_id } |
   Enabling { anchor_id } |
   Disabling { anchor_id } |
   RemovingLocalRoute { anchor_id } |
@@ -932,6 +1050,9 @@ Legal mutation boundaries are normative:
   Enabling/disabling/removing changes one local routing record atomically.
   Reset replaces only the routing configuration with the package-signed
   embedded defaults; it never changes follows, listings, or remote state.
+  After crash in `PersistingHost`, recovery rereads the intent and committed
+  routing record: it emits `Ready` if committed or `Failed { mutation: None }`
+  only when no record exists.
 
 Pure injectable ports mirror existing repository patterns:
 
@@ -947,13 +1068,22 @@ Pure injectable ports mirror existing repository patterns:
 The current capped `EvidenceRepository` and its 1,024-entry/16 MiB store and
 2 MiB preview budgets are not used for followed composite sites.
 
-A new SQLite-backed `ClientSiteRepository` implements a dependency-neutral
-`SiteReplicaRepository` trait in `riot-core`. The SQLite adapter is owned by
-the profile layer exposed through `riot-ffi`; `riot-client-net` receives the
-trait as an injected handle. It stores verified manifests, `O/C/W` entries,
-payloads, follow staging, anchor configuration/floors, receipts, and retry
-intent. One transaction promotes all three namespaces plus the ongoing-sync
-schedule after consent.
+A new `ClientSiteRepository` and dependency-neutral `SiteReplicaRepository`
+trait live in `riot-core::store`. The concrete repository uses the existing
+default-on `rusqlite`, `RiotDatabase`, migration runner, profile database, and
+`RiotSession` lifecycle. New versioned tables store verified manifests,
+`O/C/W` entries, payloads, follow/host staging, anchor configuration/floors,
+receipts, and retry intent. `RiotSession` retains the profile lock and
+transaction ownership; backup/restore includes these tables and validates their
+floors before reopening. One core-owned transaction promotes all three
+namespaces plus the ongoing-sync schedule after consent.
+
+`riot-client-net` receives a thread-safe command port to this repository. All
+synchronous `rusqlite` work runs on the existing dedicated serialized database
+worker or `spawn_blocking`, never an iroh/Tokio network executor.
+`riot-ffi` constructs the session, injects the port, and projects typed results;
+it does not own migrations, connections, transactions, or durable business
+state.
 
 Default device limits are 1 GiB total followed-site logical bytes, 64 MiB per
 site, 4,096 live entries per namespace, and the anchor-profile per-item bounds.
@@ -1088,6 +1218,9 @@ MVP defaults and absolute ceilings:
 | Work challenges per source per minute | 30 | 120 |
 | Static projection bytes | 5 GiB | 20 GiB |
 | Renderer temporary filesystem | 1 GiB | 4 GiB |
+| Renderer temporary files/inodes | 10,000 | 50,000 |
+| Concurrent renderer jobs | 4 | 16 |
+| Renderer CPU/wall time per generation | 30 s | 120 s |
 | Published generations per site | 2 | 2 |
 | Local operational log bytes, all classes | 512 MiB | 2 GiB |
 | Diagnostic log bytes | 128 MiB | 512 MiB |
@@ -1124,6 +1257,9 @@ challenge:
 ```text
 WorkChallengeV1 {
   anchor_id,
+  operator_key_id,
+  descriptor_epoch,
+  descriptor_digest,
   operation_kind,
   idempotency_key,
   canonical_request_body_digest,
@@ -1169,7 +1305,8 @@ roots. At hard capacity the anchor refuses new roots.
 ### Configured-peer authentication
 
 Peer-only control operations begin with this exact `riot/anchor/1` handshake;
-all frames are canonical CBOR and at most 4 KiB:
+all frames are canonical CBOR. Hello/proof/request/ack frames are at most
+4 KiB; descriptor pages follow the 60 KiB chain-page limit:
 
 ```text
 PeerHello {
@@ -1187,12 +1324,27 @@ PeerProof {
   role,
   signature
 }
+
+PeerDescriptorRequest { anchor_id, after_descriptor_digest }
+PeerDescriptorPage { envelopes: at most 16, done }
+PeerDescriptorAck { anchor_id, verified_head_digest }
 ```
 
-The initiator sends `PeerHello(Initiator)`. The responder verifies freshness
-within five minutes, descriptor validity, stable anchor/endpoint bindings, and
-configured operator/role, then sends `PeerHello(Responder)` followed by its
-proof. The initiator verifies both and sends its proof. Nonces must differ.
+Peer configuration pins stable `AnchorId`, genesis operator key, and a minimum
+descriptor digest. The initiator sends `PeerHello(Initiator)`. If its head is
+not already provisioned, the responder sends `PeerDescriptorRequest` from its
+pinned floor; the initiator returns byte-bounded chain pages and the responder
+verifies through the Hello head before sending `PeerDescriptorAck`. The
+responder then sends `PeerHello(Responder)` and the initiator performs the same
+request/page/ack sequence when needed.
+
+Only after both heads are verified, fresh within five minutes, and bound to the
+configured anchors/roles/endpoints does the responder send its proof. The
+initiator verifies it and sends its proof. Nonces must differ. The unauthenticated
+descriptor exchange permits at most 32 hops, 256 KiB, and five seconds total,
+uses the normal verification CPU budgets, and exposes no peer operation or
+replication budget. An exact current descriptor may instead be provisioned out
+of band, in which case each side immediately acknowledges it.
 
 The transport adapter exposes the live QUIC TLS exporter:
 
@@ -1247,6 +1399,9 @@ record is:
 ```text
 DirectoryInclusionV1 {
   anchor_id,
+  operator_key_id,
+  descriptor_epoch,
+  descriptor_digest,
   sequence,
   previous_inclusion_digest,
   state: Included | Suspended | Removed,
@@ -1296,7 +1451,9 @@ Before compacting, the anchor creates:
 ```text
 DirectoryCheckpointV1 {
   anchor_id,
+  operator_key_id,
   descriptor_epoch,
+  descriptor_digest,
   floor_sequence,
   head_sequence,
   head_inclusion_digest,
@@ -1319,10 +1476,14 @@ BLAKE3(
 )
 ```
 
-Feed entries are retained for at least 30 days and until covered by a signed
-checkpoint. The newest two checkpoints and their complete current-state
-snapshots are retained. If `after_sequence < floor_sequence`,
-`PullDirectoryFeed` returns
+Thirty days is the normal incremental-history retention target, not a promise
+that can override the compiled cap. Every compacted entry must first be covered
+by a signed checkpoint. The newest two checkpoints and their complete
+current-state snapshots are retained.
+
+`floor_sequence` is the lowest accepted incremental cursor: a request with
+`after_sequence == floor_sequence` receives the next retained sequence, while
+for `after_sequence < floor_sequence`, `PullDirectoryFeed` returns
 `CheckpointRequired { checkpoint, snapshot_cursor }`.
 `PullDirectorySnapshot` then pages current `DirectoryInclusionV1` records in
 full-root order under that immutable checkpoint, at most one 48 KiB record and
@@ -1332,9 +1493,15 @@ incremental feed. A checkpoint mismatch or unavailable snapshot is a typed
 fail-closed error, never an empty feed.
 
 Ten percent of the feed-record ceiling is reserved for unlisting, expiry,
-equivocation, and security suspension. If the non-reserved ceiling is reached
-before records are old enough to compact, new listings/refreshes are refused;
-the anchor never violates the global cap or blocks owner removal records.
+equivocation, and security suspension. At 90% utilization the anchor refuses
+new listings/refreshes and creates an emergency checkpoint. A removal arriving
+while the reserve is under pressure atomically replaces that root's bounded
+current-state record with a signed `Removed` inclusion, builds and fsyncs a new
+checkpoint/snapshot, advances the floor past the coalesced event, then compacts
+covered incremental rows before acknowledging its removal receipt. This
+constant-per-root emergency path may shorten incremental history below the
+30-day target, but never exceeds the cap or blocks an owner removal; offline
+peers recover through the checkpoint snapshot.
 
 The HTTPS API:
 
@@ -1578,6 +1745,8 @@ States:
 - saved and ongoing updates enabled;
 - cancelled with no mutation;
 - source-specific refusal;
+- local `site_too_large`, showing the required storage class and local limit,
+  with actions to manage followed-site storage or cancel; no partial follow;
 - all sources unreachable;
 - manifest/listing equivocation quarantined;
 - expired ticket with preserved readable web destination and organizer-refresh
@@ -1607,6 +1776,11 @@ replacing a failed host, disabling a route, refreshing hosting, listing,
 unlisting, and resetting default hosts use the typed transitions above. Local
 route removal is labeled “Stop using this host”; remote listing removal is
 “Remove from this host’s directory.” Neither is presented as deleting copies.
+
+“Independent” in the client means different stable operator identities and
+different signed self-reported failure-domain labels. The UI marks the latter
+as operator-reported, not independently verified. Pilot operators and failure
+domains are verified out of band before the observation window.
 
 ### Accessibility
 
@@ -1721,13 +1895,14 @@ Event boundaries and denominators are fixed:
   `AwaitingConsent` are reported separately and are not in `A`.
 - Let `S120` be members of `A` that reach `Saved` within 120 seconds of their
   duration start, and `S` be members that reach `Saved` at any time before the
-  pilot attempt timeout. The 90% threshold is exactly `S120 / A`. The 80%
-  stop/revise completion criterion is exactly `S / A`.
+  five-minute follow-attempt timeout. The 90% threshold is exactly `S120 / A`.
+  The 80% stop/revise completion criterion is exactly `S / A`.
 - A host-plus-list journey starts at organizer confirmation with at least two
   selected hosts and ends when two hosting receipts and at least one listing
   receipt are verified. Its three-minute percentage is successful journeys
   completed within 180 seconds divided by all confirmed journeys; refusal,
-  cancellation, app termination, or timeout remains in the denominator.
+  cancellation, app termination, or the ten-minute organizer-attempt timeout
+  remains in the denominator.
 - An intentional failover trial starts when the harness marks one configured
   anchor unavailable immediately before the first dial and ends at `Saved`
   through another anchor or at 30 seconds. Its percentage is successful
@@ -1735,19 +1910,38 @@ Event boundaries and denominators are fixed:
 - Destination preservation compares the input full root/entry bytes with the
   locally verified saved/opened result. A legitimately absent destination is
   reported separately and is not counted as opening a different entry.
+- Let `I` be first-ever app launches that carry a valid v2 envelope after the
+  participant began on the no-app HTTPS page, and `I5` be those reaching
+  `Saved` within five minutes of that first app handling. This local
+  `first_launch_handoff` classification needs no browser fingerprint or
+  server-side correlation.
 
 The collector sums exported aggregates and publishes the denominator beside
 every percentage. Consent withdrawal deletes unsubmitted local metrics.
 
+A pilot is valid only with:
+
+- at least 50 reported follow attempts;
+- `A >= 30` accepted follow journeys;
+- at least 10 confirmed host-plus-list journeys;
+- at least 20 intentional failover trials;
+- at least 20 accepted destination-bearing follows;
+- `I >= 10` no-app install-return journeys.
+
+A zero or subminimum denominator is **inconclusive**, never a pass. The
+observation window must be extended or the pilot rerun.
+
 User-focused pilot thresholds:
 
-- at least 10 organizers, 30 readers, and 50 follow attempts;
+- at least 10 organizers and 30 readers, plus every valid denominator above;
 - `S120 / A >= 90%` for installed-app discovery-to-saved journeys;
 - 80% of organizer host-plus-list journeys complete within three minutes;
 - 95% of follow attempts succeed through another anchor within 30 seconds when
   one configured anchor is intentionally unavailable;
-- 100% of accepted follows preserve the requested full site and destination
-  entry IDs;
+- 100% of the at least 20 destination-bearing accepted follows preserve the
+  requested full site and destination entry IDs;
+- `I5 / I >= 80%`, with 100% of successful install returns preserving root and
+  requested destination bytes;
 - zero invalid capability or manifest admissions.
 
 Stop/revise criteria:
@@ -1756,7 +1950,8 @@ Stop/revise criteria:
 - a web-to-app handoff opens a different site or loses its requested entry;
 - any invalid authority reaches retained state or web output;
 - open admission can exceed a compiled global ceiling;
-- `S / A < 80%` for installed-app follow journeys.
+- `S / A < 80%` for installed-app follow journeys;
+- any required pilot denominator is below its minimum.
 
 ## Deployment and Recovery Contract
 
@@ -1842,6 +2037,7 @@ RED:
 - one 64-ID request exceeds 8 MiB or chunk indexes fork;
 - cursor overlap/digest change is not rejected;
 - read sync can mutate anchor state or staged host sync can leak before commit;
+- replica sync mutates the source or organizer state commits before receipt;
 - independent implementations disagree on frame order or snapshot digest.
 
 GREEN:
@@ -1864,7 +2060,8 @@ RED:
 - work proof replays against another body;
 - logical quota is bypassed by cross-community dedup;
 - metadata-only requests exceed a persistent ceiling;
-- client O/C/W state overflows the legacy evidence repository.
+- client O/C/W state overflows the legacy evidence repository;
+- existing profile migration/backup/restore loses client-site stages or floors.
 
 GREEN:
 
@@ -1884,7 +2081,9 @@ RED:
 - conflicting listing revisions produce divergent search;
 - client-triggered requests create background fanout;
 - feed forks, stale pre-checkpoint cursors, unauthenticated/reflected peer
-  proofs, and listing-before-hosting become visible.
+  proofs, and listing-before-hosting become visible;
+- unseen peer descriptor rotation cannot authenticate or removal reserve
+  exhaustion blocks an owner tombstone.
 
 GREEN:
 
@@ -1944,7 +2143,8 @@ RED:
 
 - global capacity, verification queue, logging, migration, eviction, restart,
   aggregate-metric formula, renderer quota, or rollback contracts fail under
-  adversarial load.
+  adversarial load;
+- a subminimum/zero pilot denominator is reported as pass.
 
 GREEN:
 
@@ -1968,6 +2168,7 @@ Tests explicitly cover:
 - loopback/private/DNS-rebinding hints and descriptor endpoint mismatch;
 - work proof replay with another key or body;
 - peer-proof reflection, replay, role swap, exporter mismatch, and stale hello;
+- pre-auth peer descriptor refresh across same-key and changed-key rotations;
 - prepared idempotency replay before/after restart and expiry;
 - 64 requested maximum-size items split across ordered chunks;
 - concurrent uploads for one site;
@@ -1977,12 +2178,14 @@ Tests explicitly cover:
 - `GetOperation` after restart;
 - directory feed fork/reorder and descriptor rollback;
 - feed cursor before compaction floor and snapshot digest mismatch;
+- removals beyond reserved feed capacity using emergency checkpoint coalescing;
 - client pinned across several descriptor-key rotations;
 - listing before hosting and hosting eviction after listing;
 - gossip loops and final quiescence;
 - unsupported `require:arti` ticket;
 - all anchors unavailable;
 - all embedded defaults disabled, removed, reset, or unreachable;
+- zero and subminimum pilot denominators plus install-return minimums;
 - one or two anchors unavailable;
 - stale cached directory with partial source coverage;
 - malformed Unicode/control characters in listings and search;
@@ -2054,8 +2257,9 @@ The design is implemented when:
 - mobile internet operations run through the cancellable Rust-owned
   iroh/Tokio/UniFFI boundary;
 - anchors enforce manifest and Meadowcap authority before propagation;
-- ticket and manifest transport requirements match before every public dial or
-  admission;
+- the root-signed ticket bootstrap requirement is checked before a cold public
+  dial, and the digest-matched manifest requirement is checked before content
+  admission or composite commit;
 - `sync/2` routes and paginates all composite namespaces without the 64-ID
   inventory ceiling or 8 MiB response dead end;
 - control operations are canonical, idempotent, recoverable, and typed;
