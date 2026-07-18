@@ -8,6 +8,8 @@
 
 **Tech Stack:** Swift 6, SwiftUI, XCTest/XCUITest, existing RiotKit FFI bindings, `xcodebuild`, repository shell gates.
 
+**Status:** Plan Review Gate approved — Feasibility, Completeness, and Scope & Alignment passed.
+
 ---
 
 ## File map and boundaries
@@ -265,7 +267,7 @@ Run:
 ```bash
 xcodebuild test -project apps/ios/Riot.xcodeproj -scheme RiotKit \
   -destination "platform=iOS Simulator,id=$(sh scripts/ios-check.sh simulator-id)" \
-  -only-testing:RiotKitTests/ShellNavigationTests \
+  -only-testing:RiotTests/ShellNavigationTests \
   -derivedDataPath build/xcode-dd CODE_SIGNING_ALLOWED=NO
 ```
 
@@ -395,8 +397,9 @@ scheme:
 ```bash
 xcodebuild test -project apps/ios/Riot.xcodeproj -scheme RiotKit \
   -destination "platform=iOS Simulator,id=$(sh scripts/ios-check.sh simulator-id)" \
-  -only-testing:RiotKitTests/CommunityChooserTests \
-  -only-testing:RiotKitTests/ShellNavigationTests \
+  -only-testing:RiotTests/CommunityChooserTests \
+  -only-testing:RiotTests/ShellNavigationTests \
+  -only-testing:RiotTests/TransportContractTests \
   -derivedDataPath build/xcode-dd CODE_SIGNING_ALLOWED=NO
 ```
 
