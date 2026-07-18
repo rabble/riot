@@ -94,6 +94,196 @@ final class AlertsSurfaceTests: XCTestCase {
         XCTAssertFalse(AlertRelativeTime.freshness(live, now: now).contains("1000"))
         XCTAssertEqual(AlertRelativeTime.freshness(dead, now: now), AlertsStrings.expired)
     }
+
+    func testExpiredAndForeignAlertsAreOmittedFromActivePresentation() {
+        let now = Date(timeIntervalSince1970: 100)
+        let expired = Self.entry(
+            "expired", namespaceID: Self.activeNS, signerID: Self.activeNS, expiresAt: 100
+        )
+        let foreign = Self.entry(
+            "foreign", namespaceID: Self.otherNS, signerID: Self.otherNS, expiresAt: 200
+        )
+
+        XCTAssertEqual(
+            ActiveAlertsPresentation.from(
+                [expired, foreign],
+                activeNamespaceID: Self.activeNS,
+                now: now
+            ),
+            .hidden
+        )
+    }
+
+    func testThreeActiveAlertsCapAtTwoWithCountedOverflow() {
+        let entries = (1...3).map {
+            Self.entry(
+                "alert-\($0)",
+                entryID: String(repeating: "\($0)", count: 64),
+                signerID: Self.activeNS,
+                createdAt: UInt64($0),
+                expiresAt: 200
+            )
+        }
+        let state = ActiveAlertsPresentation.from(
+            entries,
+            activeNamespaceID: Self.activeNS,
+            now: Date(timeIntervalSince1970: 100)
+        )
+
+        guard case let .visible(rows, allRows) = state else {
+            return XCTFail("expected visible alerts")
+        }
+        XCTAssertEqual(rows.count, 2)
+        XCTAssertEqual(allRows.count, 3)
+        XCTAssertEqual(state.overflowLabel, "View all 3 active alerts")
+    }
+
+    func testTwoActiveAlertsHaveNoOverflowAndUseOrganizerNewestOrder() {
+        let member = Self.entry(
+            "new member",
+            entryID: String(repeating: "1", count: 64),
+            signerID: String(repeating: "c", count: 64),
+            createdAt: 200,
+            expiresAt: 300
+        )
+        let organizer = Self.entry(
+            "older organizer",
+            entryID: String(repeating: "2", count: 64),
+            signerID: Self.activeNS,
+            createdAt: 100,
+            expiresAt: 300
+        )
+        let state = ActiveAlertsPresentation.from(
+            [member, organizer],
+            activeNamespaceID: Self.activeNS,
+            now: Date(timeIntervalSince1970: 50)
+        )
+
+        guard case let .visible(rows, allRows) = state else {
+            return XCTFail("expected visible alerts")
+        }
+        XCTAssertEqual(rows.map(\.headline), ["older organizer", "new member"])
+        XCTAssertEqual(allRows, rows)
+        XCTAssertNil(state.overflowLabel)
+    }
+
+    func testHomePresentationPinsCompactSectionOrderAndActivePredicate() {
+        let active = Self.entry(
+            "active", signerID: Self.activeNS, expiresAt: 101
+        )
+        let hidden = HomePresentation.sections(
+            wireHasPosts: true,
+            alerts: .hidden,
+            hasTools: true
+        )
+        XCTAssertEqual(hidden, [.post, .newswire, .tools])
+
+        let visible = ActiveAlertsPresentation.from(
+            [active],
+            activeNamespaceID: Self.activeNS,
+            now: Date(timeIntervalSince1970: 100)
+        )
+        XCTAssertEqual(
+            HomePresentation.sections(
+                wireHasPosts: true,
+                alerts: visible,
+                hasTools: true
+            ),
+            [.activeAlerts, .post, .newswire, .tools]
+        )
+    }
+
+    func testLastActiveAlertDisappearsAtItsExactExpiry() {
+        let entry = Self.entry(
+            "brief", signerID: Self.activeNS, expiresAt: 101
+        )
+        let before = ActiveAlertsPresentation.from(
+            [entry],
+            activeNamespaceID: Self.activeNS,
+            now: Date(timeIntervalSince1970: 100)
+        )
+        XCTAssertEqual(before.nextExpiryDate, Date(timeIntervalSince1970: 101))
+
+        let atExpiry = ActiveAlertsPresentation.from(
+            [entry],
+            activeNamespaceID: Self.activeNS,
+            now: Date(timeIntervalSince1970: 101)
+        )
+        XCTAssertEqual(atExpiry, .hidden)
+    }
+
+    func testIdleExpiryRefreshUsesInjectedClock() async throws {
+        let expiry = Date(timeIntervalSince1970: 101)
+        let refreshed = Date(timeIntervalSince1970: 101.25)
+        let entry = Self.entry(
+            "brief", signerID: Self.activeNS, expiresAt: 101
+        )
+        let recorder = ExpiryRecorder()
+        let clock = ActiveAlertsClock(
+            now: { refreshed },
+            sleepUntil: { date in await recorder.record(date) }
+        )
+        XCTAssertNotEqual(
+            ActiveAlertsPresentation.from(
+                [entry],
+                activeNamespaceID: Self.activeNS,
+                now: Date(timeIntervalSince1970: 100)
+            ),
+            .hidden
+        )
+
+        let result = try await ActiveAlertsExpiryRefresh.wait(
+            until: expiry,
+            clock: clock
+        )
+
+        XCTAssertEqual(result, refreshed)
+        XCTAssertEqual(
+            ActiveAlertsPresentation.from(
+                [entry],
+                activeNamespaceID: Self.activeNS,
+                now: result
+            ),
+            .hidden
+        )
+        let recorded = await recorder.recorded()
+        XCTAssertEqual(recorded, [expiry])
+    }
+
+    func testExpiryRefreshPropagatesCancellationFromKeyedShellTask() async {
+        let task = Task {
+            try await ActiveAlertsExpiryRefresh.wait(
+                until: Date(timeIntervalSince1970: 500),
+                clock: ActiveAlertsClock(
+                    now: { Date(timeIntervalSince1970: 500) },
+                    sleepUntil: { _ in
+                        try await Task.sleep(for: .seconds(30))
+                    }
+                )
+            )
+        }
+        task.cancel()
+
+        do {
+            _ = try await task.value
+            XCTFail("a removed keyed shell must not refresh its replacement")
+        } catch is CancellationError {
+            // Expected: SwiftUI cancellation reaches the injected wait.
+        } catch {
+            XCTFail("expected CancellationError, got \(error)")
+        }
+    }
+
+    func testAlertActionsExposeStableAccessibilityIdentifiers() {
+        XCTAssertEqual(AlertsAccessibility.viewAll, "active-alerts-view-all")
+        XCTAssertEqual(AlertsAccessibility.done, "active-alerts-done")
+    }
+}
+
+private actor ExpiryRecorder {
+    private var dates: [Date] = []
+    func record(_ date: Date) { dates.append(date) }
+    func recorded() -> [Date] { dates }
 }
 
 // MARK: - Task 2: AlertDetailSheet renders the AlertDetail value model

@@ -296,3 +296,50 @@ _(Summary goes at the TOP when done. Task entries append below in order.)_
   shell re-arms pre-join preparation and post-join refresh without resurrecting a
   stale shell. A real invalid-reference join test proves recovery, then proves a
   subsequent Nearby adoption still reaches preparation.
+
+## Task 4: keep active alerts compact and visible
+- Used the approved compact-core-flow design and plan with
+  `superpowers:test-driven-development`, `superpowers:systematic-debugging`, and
+  `metaswarm:orchestrated-execution`.
+- RED: focused `AlertsSurfaceTests` failed to compile because
+  `ActiveAlertsPresentation` did not exist. The new tests pin namespace and
+  expiry filtering, the two-row cap with counted overflow, and disappearance at
+  the exact expiry instant.
+- Added one deterministic presentation pass: filter to the active namespace and
+  `expiresAt > now`, map and organizer-first/newest sort once, retain the complete
+  ordered result, and expose only its first two rows on Home. No active alerts
+  now means no alert card rather than an empty or expired card.
+- Home owns the presentation clock and schedules a cancellable task for the
+  earliest active expiry. Re-keying the shell or changing the next expiry
+  cancels the obsolete task. The exact compact order is active alerts, the
+  populated-wire Post action, Newswire, then Tools.
+- Three or more alerts show `View all N active alerts`. The overflow sheet owns
+  its own detail presentation so it can open every precomputed row on compact
+  devices, and Done returns focus to the overflow trigger.
+- GREEN so far: focused macOS `AlertsSurfaceTests`, focused iOS
+  `ShellNavigationTests`, and `git diff --check` passed. The full shared Swift
+  suite and compile gate are recorded after the work-unit review.
+- Assumption: `expiresAt` is an absolute Unix-second boundary, consistent with
+  `AlertRelativeTime` and the core entry model. At exactly that second the alert
+  is no longer actionable, so the filter is strict `>` rather than `>=`.
+- Rejected: rendering expired history in the Home alert card, calling `Date()`
+  independently per row, keeping more than two urgent rows above the wire, or
+  recomputing a differently ordered overflow list. Those choices respectively
+  obscure current action, introduce boundary disagreement, expand Home, or make
+  “View all” inconsistent with its preview.
+- The first adversarial review found that the overflow close restored keyboard
+  focus but not VoiceOver focus, and that the initial tests proved only the pure
+  expiry predicate rather than the idle scheduling seam. Added explicit
+  `AccessibilityFocusState`, stable View-all/Done action identifiers, a
+  clock-injected cancellable expiry refresh, and a `HomePresentation` seam that
+  drives and pins active-alert/Post/Newswire/Tools order. Additional tests cover
+  the active adapter's own organizer/newest ordering, the no-overflow two-row
+  boundary, injected idle refresh, and keyed-task cancellation.
+- GREEN: focused macOS `AlertsSurfaceTests`, focused iOS
+  `ShellNavigationTests`, the full shared Swift suite, shared SwiftUI compile,
+  and `git diff --check` pass after the review fixes. Remaining compiler warnings
+  are the pre-existing WebKit/concurrency and native deployment-target warnings
+  already noted above.
+- The final adversarial review passed after the injected-clock test was tightened
+  into one complete idle flow: visible before waiting, the exact expiry requested,
+  refreshed injected time returned, and the last alert hidden afterward.

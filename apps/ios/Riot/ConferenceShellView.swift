@@ -1401,15 +1401,55 @@ private struct HomeRouteView: View {
     let onPostFirstUpdate: () -> Void
     let composerFocus: FocusState<ComposerOrigin?>.Binding
     let onOpenTool: (RiotSpaceApp, String) -> Void
+    let alertClock: ActiveAlertsClock
     @Environment(\.colorScheme) private var colorScheme
     @State private var showRejoinSheet = false
+    @State private var now: Date
+
+    init(
+        model: RiotAppModel,
+        newswire: NewswireSurfaceModel,
+        onPostUpdate: @escaping () -> Void,
+        onPostFirstUpdate: @escaping () -> Void,
+        composerFocus: FocusState<ComposerOrigin?>.Binding,
+        onOpenTool: @escaping (RiotSpaceApp, String) -> Void,
+        alertClock: ActiveAlertsClock = .live
+    ) {
+        _model = ObservedObject(wrappedValue: model)
+        _newswire = ObservedObject(wrappedValue: newswire)
+        self.onPostUpdate = onPostUpdate
+        self.onPostFirstUpdate = onPostFirstUpdate
+        self.composerFocus = composerFocus
+        self.onOpenTool = onOpenTool
+        self.alertClock = alertClock
+        _now = State(initialValue: alertClock.now())
+    }
 
     private var shortcuts: [RiotSpaceApp] { HomeShortcuts.deterministic(from: model.apps) }
+    private var activeAlerts: ActiveAlertsPresentation {
+        ActiveAlertsPresentation.from(
+            model.entries,
+            activeNamespaceID: model.space?.namespaceID ?? "",
+            now: now
+        )
+    }
+    private var sections: [HomePresentation.Section] {
+        HomePresentation.sections(
+            wireHasPosts: newswire.hasPosts,
+            alerts: activeAlerts,
+            hasTools: !shortcuts.isEmpty
+        )
+    }
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
-                shortcutsCard
+                if sections.contains(.activeAlerts) {
+                    AlertsListView(
+                        presentation: activeAlerts,
+                        displayName: { model.rendered(for: $0) }
+                    )
+                }
                 // The collective newswire — Front page, Open wire, and the
                 // always-public Editorial history — is the answer to "what is
                 // happening here?" It reads the same core projection every platform
@@ -1417,7 +1457,7 @@ private struct HomeRouteView: View {
                 // The offlineStale forward paths lead somewhere real: rejoin with a
                 // link (Unit 1's sheet) or sync with a peer (the existing Nearby
                 // screen) — never a dead no-op button and never a silent retry loop.
-                if newswire.hasPosts {
+                if sections.contains(.post) {
                     Button("Post an update", action: onPostUpdate)
                         .buttonStyle(.riotPrimary)
                         .frame(minHeight: 44)
@@ -1431,11 +1471,9 @@ private struct HomeRouteView: View {
                     onRejoinWithLink: { showRejoinSheet = true },
                     composerFocus: composerFocus
                 )
-                // The single Home entry point for this community's signed alerts —
-                // the only tappable alert surface (the Nearby count is a diagnostic).
-                AlertsListView(entries: model.entries,
-                               activeNamespaceID: model.space?.namespaceID ?? "",
-                               displayName: { model.rendered(for: $0) })
+                if sections.contains(.tools) {
+                    shortcutsCard
+                }
             }
             .padding(20)
         }
@@ -1445,6 +1483,15 @@ private struct HomeRouteView: View {
         .riotHeader(eyebrow: "Community", model.space?.title ?? "Home")
         .sheet(isPresented: $showRejoinSheet) {
             JoinByReferenceSheet(model: model, onClose: { showRejoinSheet = false })
+        }
+        .task(id: activeAlerts.nextExpiryDate) {
+            guard let expiry = activeAlerts.nextExpiryDate else { return }
+            do {
+                now = try await ActiveAlertsExpiryRefresh.wait(
+                    until: expiry,
+                    clock: alertClock
+                )
+            } catch {}
         }
     }
 
