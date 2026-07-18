@@ -135,7 +135,10 @@ final class PostUpdateTests: XCTestCase {
             return XCTFail("a successful post lands in .posted")
         }
         XCTAssertEqual(update.entryID, publisher.record.entryId)
-        XCTAssertEqual(update.exchangeStatus, "Pending nearby exchange")
+        XCTAssertEqual(
+            update.exchangeStatus,
+            "Saved and signed on this device. Exchange with someone nearby to share it."
+        )
         XCTAssertNil(model.errorMessage)
 
         // A posted draft leaves nothing to restore.
@@ -275,6 +278,106 @@ final class PostUpdateTests: XCTestCase {
         XCTAssertEqual(restored.headline, "Half a headline")
         XCTAssertEqual(restored.body, "Half a body")
         XCTAssertTrue(restored.aiAssisted)
+    }
+
+    func testLegacyFiveFieldDraftDefaultsToUpdateWithoutExpiry() throws {
+        let data = Data(
+            #"{"headline":"H","body":"B","aiAssisted":false,"sourceClaims":[],"coarseLocation":""}"#
+                .utf8
+        )
+
+        let draft = try JSONDecoder().decode(PostDraft.self, from: data)
+
+        XCTAssertEqual(draft.mode, .freeform)
+        XCTAssertNil(draft.expiresAtUnixSeconds)
+    }
+
+    @MainActor
+    func testOperationalDraftRestoresModeAndExpiry() {
+        let store = MemoryDraftStore()
+        let first = makeModel(store: store)
+        first.headline = "Bridge closed"
+        first.body = "Use the north crossing"
+        first.mode = .operationalAlert
+        first.sourceClaims = ["eyewitness"]
+        first.coarseLocation = "south bridge"
+        first.expiresAt = Date(timeIntervalSince1970: 1_800_000_000)
+
+        first.persistDraft()
+        let restored = makeModel(store: store)
+
+        XCTAssertEqual(restored.mode, .operationalAlert)
+        XCTAssertEqual(restored.expiresAt?.timeIntervalSince1970, 1_800_000_000)
+    }
+
+    func testOperationalDraftModeAndExpirySurviveJSONRoundTrip() throws {
+        let original = PostDraft(
+            headline: "Bridge closed",
+            body: "Use the north crossing",
+            aiAssisted: false,
+            sourceClaims: ["eyewitness"],
+            coarseLocation: "south bridge",
+            mode: .operationalAlert,
+            expiresAtUnixSeconds: 1_800_000_000
+        )
+
+        let encoded = try JSONEncoder().encode(original)
+        let restored = try JSONDecoder().decode(PostDraft.self, from: encoded)
+
+        XCTAssertEqual(restored, original)
+        XCTAssertEqual(restored.mode, .operationalAlert)
+        XCTAssertEqual(restored.expiresAtUnixSeconds, 1_800_000_000)
+    }
+
+    func testModeOrExpiryAloneMakesADraftNonEmpty() {
+        XCTAssertFalse(
+            PostDraft(
+                headline: "", body: "", aiAssisted: false,
+                sourceClaims: [], coarseLocation: "",
+                mode: .operationalAlert, expiresAtUnixSeconds: nil
+            ).isEmpty
+        )
+        XCTAssertFalse(
+            PostDraft(
+                headline: "", body: "", aiAssisted: false,
+                sourceClaims: [], coarseLocation: "",
+                mode: .freeform, expiresAtUnixSeconds: 1_800_000_000
+            ).isEmpty
+        )
+    }
+
+    func testModeControlStacksAtAccessibilitySizes() {
+        XCTAssertEqual(PostModeControlLayout.resolve(isAccessibilitySize: false), .segmented)
+        XCTAssertEqual(PostModeControlLayout.resolve(isAccessibilitySize: true), .vertical)
+    }
+
+    @MainActor
+    func testPostAnotherClearsEveryFieldAndDoesNotPublishAgain() {
+        let publisher = StubPublisher()
+        let store = MemoryDraftStore()
+        let model = makeModel(publisher: publisher, store: store)
+        model.headline = "Bridge closed"
+        model.body = "Use the north crossing"
+        model.aiAssisted = true
+        model.mode = .operationalAlert
+        model.sourceClaims = ["eyewitness"]
+        model.coarseLocation = "south bridge"
+        model.expiresAt = Date(timeIntervalSince1970: 1_800_000_000)
+        model.post()
+
+        model.postAnother()
+
+        XCTAssertEqual(model.headline, "")
+        XCTAssertEqual(model.body, "")
+        XCTAssertFalse(model.aiAssisted)
+        XCTAssertEqual(model.mode, .freeform)
+        XCTAssertEqual(model.sourceClaims, [])
+        XCTAssertEqual(model.coarseLocation, "")
+        XCTAssertNil(model.expiresAt)
+        XCTAssertNil(model.errorMessage)
+        XCTAssertEqual(model.status, .editing)
+        XCTAssertEqual(publisher.callCount, 1)
+        XCTAssertEqual(store.clearCount, 2)
     }
 
     /// A successful post is not re-persisted as a draft — there is nothing to

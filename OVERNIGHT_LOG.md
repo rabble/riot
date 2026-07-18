@@ -157,3 +157,35 @@ _(Summary goes at the TOP when done. Task entries append below in order.)_
   developer can pin an exact UUID through the environment.
 - Rejected: hard-coding OS 26.2 or a machine-specific UUID, both of which would
   recreate the same fragility elsewhere.
+
+## Task 1: preserve and reset the complete composer safely
+- Used the approved compact-core-flow design and plan with
+  `superpowers:test-driven-development`, `superpowers:executing-plans`, and
+  `metaswarm:orchestrated-execution`.
+- RED: focused `PostUpdateTests` first failed because persisted drafts had no
+  mode/expiry fields and the model had no `postAnother()` transition. A separate
+  focused RED then failed because the accessibility-size mode-layout contract did
+  not exist.
+- Added backward-compatible draft decoding: existing five-field drafts restore as
+  Update with no expiry, while new drafts preserve mode and expiry per community.
+  A mode or expiry alone now counts as a real draft.
+- The successful state now explains the exact local outcome and offers a 44-point
+  `Post another` action that clears every field,
+  returns to Update, focuses Headline, clears persisted state, and cannot sign a
+  second time. The mode control stacks into three labeled buttons at
+  accessibility text sizes and remains segmented at ordinary sizes.
+- GREEN: focused `PostUpdateTests`, the full shared Swift test suite
+  (`sh scripts/ios-check.sh test`), the shared SwiftUI compile check
+  (`sh scripts/ios-check.sh`), and `git diff --check` all passed.
+- Adversarial review found that rendering `Done` before Task 3 would create a dead
+  action: the only current composer is embedded inline in Home, so SwiftUI has no
+  presentation to dismiss. `Done` is therefore deliberately deferred to Task 3,
+  where the composer becomes a sheet with a required origin-aware close callback.
+  The review also found that direct in-memory restoration did not prove Codable
+  symmetry, so a non-default JSON encode/decode round-trip test was added.
+- Rejected: retaining the incomplete legacy draft shape, silently defaulting
+  operational expiry on restore, or resetting only visible text. Each alternative
+  could lose intent or leak state into a subsequent signed post.
+- Existing build warnings in WebKit/Swift concurrency and the native archive
+  deployment target remain pre-existing; no new dependency or architecture
+  change was introduced.
