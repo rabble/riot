@@ -785,12 +785,21 @@ public struct NewswireSurfaceView: View {
                     .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
                     .accessibilityIdentifier("editorial-controls-pending-note")
             }
+            if model.unread.hasUnread {
+                unreadDelta(model.unread.count)
+            }
             wireSection
             if !model.history.isEmpty {
                 editorialHistorySection
             }
         }
-        .onAppear { model.load() }
+        // Load computes the unread delta against the OLD cursor (so it is visible
+        // this visit); marking seen then advances the cursor so the NEXT visit is
+        // clean. markAllSeen does not recompute, so the delta survives the visit.
+        .onAppear {
+            model.load()
+            model.markAllSeen()
+        }
         .sheet(item: $actionTarget) { target in
             EditorialActionSheet(model: model, target: target, onClose: { actionTarget = nil })
         }
@@ -830,6 +839,25 @@ public struct NewswireSurfaceView: View {
             }
             .accessibilityIdentifier(model.wire.accessibilityID)
         }
+    }
+
+    /// The "N new since you last looked" delta at the top of the wire — the
+    /// retention cue. Hidden when zero (the caller gates on `hasUnread`); subtle by
+    /// design (a small pink dot + a mono count line), never a modal or a takeover.
+    private func unreadDelta(_ count: Int) -> some View {
+        HStack(spacing: 8) {
+            Circle()
+                .fill(RiotTheme.pink(for: colorScheme))
+                .frame(width: 8, height: 8)
+            Text("\(count) new since you last looked")
+                .font(.riot(.mono, size: 12, relativeTo: .caption))
+                .textCase(.uppercase)
+                .tracking(0.5)
+                .foregroundStyle(RiotTheme.ink(for: colorScheme))
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityIdentifier("newswire-unread-delta")
+        .accessibilityLabel("\(count) new report\(count == 1 ? "" : "s") since you last looked")
     }
 
     private func wireEmpty(
@@ -880,9 +908,14 @@ public struct NewswireSurfaceView: View {
         VStack(alignment: .leading, spacing: 6) {
             switch post.display {
             case .ordinary:
-                Text(post.headline ?? "")
-                    .font(.riot(.body, size: 17, relativeTo: .headline))
-                    .foregroundStyle(RiotTheme.ink(for: colorScheme))
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    if model.unread.isNew(post.id) {
+                        newDot(for: post.id)
+                    }
+                    Text(post.headline ?? "")
+                        .font(.riot(.body, size: 17, relativeTo: .headline))
+                        .foregroundStyle(RiotTheme.ink(for: colorScheme))
+                }
                 if post.hasCorrection {
                     RiotBadge(EditorialCorrectionLabel.text)
                         .accessibilityIdentifier("correction-label-\(post.id)")
@@ -920,6 +953,17 @@ public struct NewswireSurfaceView: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityIdentifier("wire-post-\(post.id)")
+    }
+
+    /// The per-row "new" marker — a small pink dot on a post newer than the seen
+    /// cursor. Addressable per post so a UI test can assert exactly which rows are
+    /// marked, and labeled for VoiceOver.
+    private func newDot(for id: String) -> some View {
+        Circle()
+            .fill(RiotTheme.pink(for: colorScheme))
+            .frame(width: 8, height: 8)
+            .accessibilityIdentifier("wire-post-new-\(id)")
+            .accessibilityLabel("New")
     }
 
     private func treatmentInterstitial(id: String, title: String, body: String) -> some View {
