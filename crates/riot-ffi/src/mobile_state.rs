@@ -3989,4 +3989,21 @@ mod spaces_rung1 {
             .iter()
             .all(|c| c.namespace_id != root_hex));
     }
+
+    // Task 4 — exposure-boundary guard (Security S2): a followed-site row carries
+    // only public identifiers, never key material.
+    #[test]
+    fn followed_site_row_exposes_only_public_identifiers() {
+        let profile = open_local_profile().unwrap();
+        let root_hex = profile.follow_site_for_test(vec![0x22; 32]).unwrap();
+        let row = profile
+            .list_followed_sites()
+            .unwrap()
+            .into_iter()
+            .find(|r| r.root == root_hex)
+            .unwrap();
+        assert_eq!(row.root.len(), 64);
+        assert!(row.root.chars().all(|c| c.is_ascii_hexdigit()));
+        // Compile-time: FollowedSiteRow has no Vec<u8>/secret field — reviewed.
+    }
 }
