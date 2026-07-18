@@ -31,9 +31,9 @@ use riot_core::willow::{
 use crate::community_registry::{CommunityRecord, Relationship, REGISTRY_KEY};
 use crate::mobile_api::{
     AlertCertainty, AlertDraftInput, AlertDraftRecord, AlertFreshness, AlertSeverity, AlertUrgency,
-    CommunityRelationship, CommunityRow, CurrentEntry, ImportAcceptance, MobileError,
-    MobileImportPlan, MobileImportPreview, MobileProfile, MobileSyncSession, PublicIdentity,
-    PublicSpace, SignedAlert, SyncOutcome, SyncOutcomeKind,
+    CommunityRelationship, CommunityRow, CurrentEntry, FollowedSiteRow, ImportAcceptance,
+    MobileError, MobileImportPlan, MobileImportPreview, MobileProfile, MobileSyncSession,
+    PublicIdentity, PublicSpace, SignedAlert, SyncOutcome, SyncOutcomeKind,
 };
 
 pub(crate) enum ProfileState {
@@ -2308,6 +2308,10 @@ pub(crate) fn list_communities(
             .registry
             .communities
             .iter()
+            // Followed composite sites are author-less: they are surfaced through
+            // `list_followed_sites`, never as a `CommunityRow`. `Personal` stays
+            // IN (it is author-bearing and rides the community list).
+            .filter(|record| record.relationship != Relationship::Following)
             .map(|record| community_row(profile, record))
             .collect();
         let active_hex = active.map(|ns| hex(&ns));
@@ -2326,6 +2330,65 @@ pub(crate) fn list_communities(
         });
         Ok(rows)
     })
+}
+
+/// Build the author-less FFI row for one followed composite site. Rung 1 lands
+/// the fields + honest defaults: `state` is `"pending-first-sync"` (the post-follow
+/// default until a manifest resolves) and `transport_blocked` is `false`; both
+/// get their real transport-derived values on the ticket-follow path in Rung 5.
+fn followed_site_row(record: &CommunityRecord) -> FollowedSiteRow {
+    FollowedSiteRow {
+        root: hex(&record.namespace_id),
+        title: record.title.clone(),
+        state: "pending-first-sync".to_string(),
+        transport_blocked: false,
+    }
+}
+
+/// Every composite indymedia site the user follows, as author-less rows. These
+/// are the `Following` registry records — the same records `list_communities`
+/// filters OUT — so a followed root surfaces here and nowhere else. Reads
+/// metadata only; never unseals anything.
+pub(crate) fn list_followed_sites(
+    inner: &Arc<Mutex<ProfileState>>,
+) -> Result<Vec<FollowedSiteRow>, MobileError> {
+    with_active(inner, |profile| {
+        Ok(profile
+            .registry
+            .communities
+            .iter()
+            .filter(|record| record.relationship == Relationship::Following)
+            .map(followed_site_row)
+            .collect())
+    })
+}
+
+/// Test-only seam that persists a `Following` registry record for `root` and
+/// returns its lowercase-hex namespace id. It lives in a NON-`#[uniffi::export]`
+/// impl block so UniFFI never surfaces a test-only method across the FFI
+/// boundary. The production entry point is Rung 5's `follow_site(ticket)` (real
+/// ticket + transport parsing); Rung 1 only needs a persisted `Following` record
+/// to exercise the `list_followed_sites` / `list_communities`-exclusion paths.
+#[cfg(test)]
+impl MobileProfile {
+    pub(crate) fn follow_site_for_test(&self, root: Vec<u8>) -> Result<String, MobileError> {
+        let root: [u8; 32] = root.try_into().map_err(|_| MobileError::InvalidInput)?;
+        with_active(&self.inner, |profile| {
+            profile.registry.upsert(CommunityRecord {
+                namespace_id: root,
+                title: "Followed site".to_string(),
+                relationship: Relationship::Following,
+                sealed_author: None,
+                descriptor_entry_id: None,
+                archived: false,
+                quarantined: false,
+                last_activity_unix_seconds: None,
+                last_sync_unix_seconds: None,
+            });
+            persist_registry(profile)?;
+            Ok(hex(&root))
+        })
+    }
 }
 
 pub(crate) fn active_community(
@@ -3896,5 +3959,34 @@ mod tests {
             Ok(())
         })
         .unwrap();
+    }
+}
+
+// ===========================================================================
+// Spaces-first Rung 1: followed composite sites. These tests exercise the
+// `#[cfg(test)] follow_site_for_test` seam, which is INVISIBLE to integration
+// tests (they link the lib built without `cfg(test)`), so they must live inline
+// here where the seam is compiled in.
+// ===========================================================================
+#[cfg(test)]
+mod spaces_rung1 {
+    use crate::mobile_state::open_local_profile;
+
+    #[test]
+    fn a_followed_site_is_in_list_followed_sites_and_excluded_from_list_communities() {
+        let profile = open_local_profile().unwrap();
+        let root_hex = profile.follow_site_for_test(vec![0x11; 32]).unwrap();
+        // The followed site appears in the author-less followed list...
+        assert!(profile
+            .list_followed_sites()
+            .unwrap()
+            .iter()
+            .any(|r| r.root == root_hex));
+        // ...and NEVER as a CommunityRow (author-less → filtered out).
+        assert!(profile
+            .list_communities()
+            .unwrap()
+            .iter()
+            .all(|c| c.namespace_id != root_hex));
     }
 }
