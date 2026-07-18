@@ -1,52 +1,58 @@
 # Riot Compact Core Flow Design
 
 **Date:** 2026-07-19  
-**Status:** Design review candidate  
+**Status:** Design review revision 1  
 **Scope:** iOS and shared macOS SwiftUI surfaces only
 
 ## Problem
 
 Riot’s core loop is present but not reliably usable. First-run Nearby changes an
 invisible route, the empty-wire post action has no handler, newswire rows omit
-the report body, and a successful composer cannot start another post. The Home
-screen also gives equal visual weight to tools, two content systems, and a
-permanent composer, obscuring the primary job: understand what is happening and
-contribute an update.
+the report body, and a successful composer cannot start another post. Home gives
+equal visual weight to tools, two content systems, and a permanent composer,
+obscuring the primary job: understand what is happening and contribute.
 
 The work must improve comprehension without weakening Riot’s guarantees:
-signatures prove authorship rather than truth, identities remain key-tagged,
-editorial and open-wire content remain visibly distinct, and local success is
-never described as global delivery.
+signatures establish key authorship and integrity rather than truth, display
+names remain self-claimed and key-tagged, editorial and open-wire content remain
+visibly distinct, and a local save is never described as global delivery.
 
 ## Users and outcomes
 
 1. **A first-time contributor** wants to join or create a community so that they
-   can reach a useful Home screen without guessing which of five equal actions
-   matters.
-2. **A reader** wants to open a report so that they can read its headline, body,
-   byline, provenance, and treatment.
+   reach a useful Home screen, **when the app has no current community**.
+2. **A reader** wants to scan and open a report so that they understand its
+   content, authorship, provenance, and editorial treatment, **when Home contains
+   ordinary or treated reports**.
 3. **A contributor** wants to post repeatedly so that one successful local write
-   does not strand the composer.
+   does not strand the composer, **when they have just signed and saved an
+   update**.
 4. **A nearby participant** wants to understand the current connection step so
-   that they can review and accept a concrete number of updates without seeing
-   renderer diagnostics.
-5. **An organizer or member** wants to scan Tools and People so that trust detail
-   remains available without dominating directory browsing.
+   that they review a peer and a concrete offered count before importing,
+   **when they intentionally open Nearby from an existing community**.
+5. **An organizer** wants to inspect permissions and editorial actions so that
+   authority remains reviewable, **when they choose a secondary detail or signed
+   action**.
+6. **A member** wants to scan Tools and People so that useful names and purposes
+   appear before trust internals, **when browsing directories on a phone**.
 
 ## Chosen approach
 
-Use the existing community-first shell and models, adding presentation state and
-small typed view-model helpers. Do not introduce a new navigation framework,
-database shape, FFI contract, dependency, or policy layer.
+Keep the existing community-first shell and models. Add presentation state and
+small typed helpers inside already-registered shared Swift files. Do not add a
+navigation framework, database shape, FFI contract, dependency, or policy layer.
 
 Rejected alternatives:
 
-- A shell rewrite: unnecessary and likely to regress retained tab state,
-  community switching, and macOS keyboard behavior.
-- A new unified Rust feed type: the immediate confusion is native composition,
-  and alerts/newswire already have distinct verified models.
-- Removing trust detail: compactness must move detail behind explicit review or
-  disclosure, not erase it.
+- A shell rewrite risks retained tab state, community switching, and macOS
+  keyboard behavior.
+- A unified Rust feed would blend alerts and the Newswire despite their distinct
+  verified models.
+- Removing trust detail would make the interface smaller by hiding accountability.
+- First-run Nearby adoption cannot be made honest in a UI-only slice: the current
+  pairing announce does not carry an authenticated Newswire descriptor handle,
+  so adoption creates a dead follow whose Home cannot project or post. The dead
+  control is removed and the protocol repair is deferred explicitly.
 
 ## Target flow
 
@@ -54,35 +60,35 @@ Rejected alternatives:
 Welcome
   → Join a community (QR/link)
   → Create one
-  → Find nearby
   → Try demo
+  → Nearby becomes available after joining
 
 Community Home
   → visible community chooser
-  → Post update
+  → active alert summary, only when current
   → chronological/editorial newswire
-  → active alerts only
+  → one Post an update trigger for the current wire state
   → compact tool shortcuts
 
-Post update
+Post an update
   → compose
   → immutable review
   → local signed commit
-  → “Saved on this device — sync to share”
+  → “Saved and signed on this device”
   → Done | Post another
 
 Read update
-  → headline + body
-  → author with key-derived tag
-  → correction/verification/AI disclosure
-  → Reply or editorial action where authorized
+  → complete headline + body + operational metadata
+  → Signed by author with key-derived tag
+  → editorial checks/corrections/AI disclosure with explanations
+  → replies and editorial action where authorized
 
-Nearby
+Nearby (from an existing community)
   → Looking
-  → device selected
+  → peer selected and mutually confirmed
   → connected
-  → “Add N updates”
-  → synced result
+  → preview “Add N updates”
+  → accepted local import
 ```
 
 ## Screen design
@@ -93,113 +99,274 @@ Welcome copy becomes three short promises: read local updates, publish signed
 reports, and exchange nearby without internet. “Works without a server” replaces
 the absolute “No servers” claim.
 
-Setup has one filled action at a time. “Join a community” is primary; create,
-Nearby, and demo remain available but secondary. A non-empty display-name draft
-is committed automatically before create, join, or Nearby. A dedicated Save
-button is removed.
+Setup has one filled action: `Join a community`. Create and demo are secondary.
+A dedicated `Save name` button is removed. Nearby is not a first-run action;
+setup says `Nearby exchange is available after you join a community.` The
+community shell retains the existing Nearby route.
 
-First-run Nearby owns a temporary `NearbyTransportController` and presents the
-existing Nearby surface with the open profile as host. A successful adoption
-refreshes the store; launch state then naturally changes from no-community to
-community. Cancel returns to setup.
+Join, create, and demo all pass through one save-before-exit helper. An empty name
+draft proceeds using the current key-derived identity. A non-empty name is
+self-claimed public profile data; adjacent copy says it will be saved on this
+device and shared with future peers. It must be confirmed by the repository
+before the selected action begins. Any failure leaves the person on setup,
+preserves their words, announces the fixed error, and starts no sheet, join,
+creation, or demo load. Key-derived tags remain beside names everywhere.
 
 ### Home and shell
 
 The phone header always shows `Community name ▾`, plus profile and settings.
 Long names truncate rather than displacing 44-point controls.
 
-Home begins with one `Post update` action and the newswire. The composer is a
-sheet backed by the existing retained `PostUpdateViewModel`, so drafts still
-survive route changes. Empty or active alerts do not create a second empty feed:
-the Alerts card renders only when scoped alerts exist. Tool shortcuts move below
-content.
+Home starts with a bounded active-alert summary when unexpired alerts exist.
+Urgent information cannot fall below an unbounded report list.
+Expired-only and empty alert sets omit the card; this slice adds no alert history.
 
-Front page and Open wire remain separate, explicit sections. This work does not
-blend them or introduce ranking.
+Home has exactly one composer trigger per Newswire state:
 
-### Reading and posting
+| Wire state | Composer trigger |
+| --- | --- |
+| empty | `Post the first update` inside the empty-state card |
+| pending first sync / offline | none in the recovery card |
+| has reports | `Post an update` immediately above the Newswire |
 
-`NewswirePostRow` carries the core-projected body in addition to the headline.
-Ordinary rows expose `Read update`; a detail sheet renders the complete report
-and existing trust annotations. Hidden and tombstoned rows never reveal payload
-content and remain accountable placeholders.
+The exact Home section order is active alerts when present, the standalone
+composer trigger only when reports exist, the Newswire (whose empty card may
+carry its single trigger), then Tools. Pending/offline recovery shows no
+standalone composer trigger.
 
-After a successful local post, the composer says it is saved locally and will
-spread through exchange. `Done` dismisses the sheet. `Post another` clears all
-draft fields, error state, and posted state, then returns to editing. It never
-reuses an operational expiry or AI-assistance choice accidentally.
+`CommunityShellView` owns composer presentation and the existing retained
+per-community `PostUpdateViewModel`. Home, empty-wire, and People callbacks open
+that one sheet through a small `ComposerPresentationState` transition
+(`closed → open(origin) → closed`). `NewswireSurfaceView` and `PeopleView`
+initializers require an explicit handler; no visible action can be constructed
+with a default `{}`. Tools follow the content.
 
-Notification permission is not requested merely because a community opened.
-The first successful post is the contextual request point. Denial does not block
-posting or local use.
+Front page and Open wire remain separately labeled. No ranking or blending is
+introduced.
+
+### Reading contract
+
+`NewswirePostRow` gains the projection’s body, timestamp, source claims, coarse
+location, expiry, and operational profile. An ordinary Home row contains:
+
+- headline and at most two body lines;
+- `Signed by <display name · key tag>`;
+- `Editorial checks: N`, `Editorial correction`, and AI-assistance badges only
+  when applicable;
+- one visible `Read update` button whose VoiceOver label includes the headline.
+
+Rows do not inline replies, Reply, editorial controls, complete metadata, the
+full body, or editorial history. Detail contains the full body, timestamp,
+sources, location, expiry, operational type, replies, and authorized actions.
+
+Trust copy is exact:
+
+- `Signature checked` — `This key authored this report. A signature does not
+  prove the report is true. Display names are self-claimed.`
+- `Editorial checks: N` — `Signed editorial judgments from this community’s
+  current editorial roster. They are evidence notes, not proof of truth.`
+- `Editorial correction` — `Editors signed a correction. Review the signed
+  history.`
+- `AI-assisted · human reviewed and signed` — provenance, never a substitute
+  author.
+
+An ordinary hidden report remains a warning interstitial and a tombstone remains
+payload-redacted. Current core projection redacts both payloads. The hidden
+placeholder is corrected so it does not promise unavailable original inspection.
+The row adapter assigns body and operational fields only for `.ordinary`.
+Rows, details, accessibility values, logs, and history never expose treated
+payload. Restoring the normative hidden-original inspection path requires a
+separate core/FFI design; this slice preserves the hide/tombstone distinction and
+records the existing gap.
+
+### Posting contract
+
+After a successful commit, the composer says: `Saved and signed on this device.
+Exchange with someone nearby to share it.` The notification prompt, if needed,
+occurs only after this success is visible and explains that notifications concern
+newly received community updates. Denial never changes posting success.
+
+`Done` dismisses without signing again. `Post another` clears headline, body, AI
+choice, operational type, source claims, location, expiry, validation/write
+errors, persisted draft fields, and posted state, then focuses Headline. It
+cannot invoke signing.
+
+The exact reset is `headline = ""`, `body = ""`, `aiAssisted = false`,
+`mode = .freeform`, `sourceClaims = []`, `coarseLocation = ""`,
+`expiresAt = nil`, `errorMessage = nil`, `status = .editing`, and an empty draft
+store. `Done` is presentation-only: it neither writes nor clears a partially
+edited draft.
+
+Draft persistence is explicit:
+
+| Event | headline/body/AI/sources/location | type/expiry | identity/signature |
+| --- | --- | --- | --- |
+| sheet dismissal / route change | retained per community | retained in process | never in draft |
+| app relaunch | plaintext `UserDefaults` / device backup | not retained | never in draft |
+| community switch | existing keep/discard decision | same retained model decision | never in draft |
+| successful commit | cleared | cleared | committed record only |
+| `Post another` / explicit discard / community removal | cleared | cleared | unaffected |
+
+Drafts never enter Nearby or the Newswire before signed commit. Plaintext
+`UserDefaults` and backup exposure is an existing residual privacy risk; at-rest
+hardening is not hidden inside this compact-UX slice.
 
 ### Tools, People, Nearby
 
-Tools cards show name, purpose, trust/status badges, and one availability action.
+Tool cards show name, purpose, trust/status badges, and one availability action.
 Permissions and recommendation/share controls move under `More details` or the
-existing review sheet. The terms “Tools” and “tool” are used consistently in
-directory copy.
+existing review sheet. User-facing `app`, `space app`, and `space` strings in
+`DirectoryView`, `AppReviewSheet`, and peer recommendation surfaces become
+`tool` and `community`; protocol and type names stay unchanged.
 
-People uses Riot typography and chrome rather than an unrelated system-large
-navigation title. Empty `Post the first update` opens the composer directly.
-Full identifiers remain behind Technical details.
+People uses Riot typography/chrome instead of a system-large title. Empty
+`Post the first update` opens the shared composer. Full identifiers stay under
+Technical details.
 
-Nearby retains automatic discovery because the current demo and transport
-contracts expect it. The screen removes `Renderer: incident-board/1`, shortens
-the repeated transport explanation, uses “Nearby devices” and “Recently synced,”
-and labels acceptance with the offered count: `Add N updates`. Permission,
-failure, different-community, and treatment states remain explicit.
+Nearby retains automatic discovery but never auto-connects or auto-accepts. It
+is limited to eligible public communal communities, advertises only its existing
+randomized opaque transport identity before bilateral confirmation, preserves
+namespace-bound core preview/admission, and commits nothing on rejection. `N` is
+an offered item count, never a trusted or verified count.
 
-## State and error handling
+The screen removes `Renderer: incident-board/1`, shortens repeated explanation,
+uses `Nearby devices` and truthful `People you’ve synced with`, and labels
+acceptance `Add N updates`.
+
+| Nearby state | Meaning and action |
+| --- | --- |
+| looking, no peers | `Looking nearby…`; `Stop` |
+| permission denied | fixed offline explanation + `Open Settings` |
+| inbound request | named peer + `Accept` / `Decline`; metadata still withheld |
+| peer selected | named peer profile + `Connect` / `Cancel` |
+| connecting | named peer + progress; `Cancel` |
+| community offered | peer and community named + `Join` / `Not now` |
+| import preview | offered count + `Add N updates` / `Not now` |
+| different community | explicit refusal; return to looking |
+| failure / vanished peer | fixed retry copy + `Try again` |
+| cancellation | tear down session/callbacks; return to looking |
+| accepted | exact imported count when known; refresh after committed import |
+
+## Error, privacy, and lifecycle rules
 
 - No raw persistence, transport, or hostile payload error reaches display copy.
-- First-run Nearby can be cancelled without creating or mutating a community.
-- A failed display-name save does not falsely claim success; existing fixed error
-  handling remains visible and community creation does not proceed under a
-  different claimed name.
-- A post detail sheet never renders a hidden/tombstoned body.
-- Composer dismissal persists a non-empty draft; successful posts clear persisted
-  drafts.
-- Permission denial leaves read, post, and file exchange available.
-- Notification authorization is optional and requested at most once through the
-  existing notifier.
+- Unsupported first-run Nearby adoption is absent, not cosmetically enabled.
+- Name-save failure blocks every setup exit and never implies the draft was used.
+- Treated post payloads never enter detail, accessibility, logs, or history.
+- Nearby cancellation invalidates callbacks, stops the active session, and cannot
+  permit a late import. A selected-community change still fails namespace-bound
+  admission.
+- Notification authorization is optional, contextual, and requested at most once
+  through the existing notifier.
+- Complete identifiers remain behind deliberate Technical details, not in Nearby
+  advertisements, ordinary cards, accessibility labels, analytics, or error copy.
 
-## Accessibility
+## Accessibility and responsive behavior
 
-- Every new action has a stable accessibility identifier and a minimum 44×44
-  target.
-- Dynamic Type may wrap copy; community names truncate to preserve controls.
-- Status is expressed in text, never color alone.
-- Sheets have explicit Done/Cancel actions and restore focus to their trigger.
-- Full IDs remain selectable under Technical details and are never truncated.
+- Every new action has a stable identifier and 44×44-point target.
+- At accessibility Dynamic Type sizes, Update/Alert/Request becomes a vertical
+  radio-style choice; row actions and tool badges stack rather than clip or
+  horizontally scroll.
+- Essential small text uses ink/ink-soft rather than pink on cream. Status is
+  never color-only.
+- Sheets restore focus to the exact opening trigger. `Post another` focuses
+  Headline. Name, validation, and write errors receive focus or announcement.
+- Repeated controls have contextual labels: `Read <headline>` and `More details
+  for <tool>`.
+- Full IDs remain selectable and untruncated only under Technical details.
 - Reduced-motion behavior and existing Riot theme tokens remain unchanged.
+
+## Testable presentation seams
+
+Small pure states live in already-registered source files:
+
+- `OnboardingExit` plus one save-before-exit dispatcher covers `.join`,
+  `.create`, and `.demo`;
+- `ComposerPresentationState` records closed/open and the originating Home,
+  empty-wire, or People trigger, allowing exact focus restoration;
+- `HomePresentation.sections(wire:alerts:now:)` returns the ordered section list
+  and its single composer placement, filtering active alerts with injected time;
+- `PostSuccessCommand` maps `.done` to dismissal only and `.postAnother` to the
+  field reset above.
+
+`CommunityShellView` accepts an injected `LocalNotifier` (defaulting to
+production) so tests prove opening, reading, drafting, and failed writes do not
+request authorization; first successful commit requests only while undetermined;
+denial does not block; later success does not re-prompt. The current
+community-open `.task` prompt is removed.
 
 ## TDD contract
 
-1. A shell/onboarding test proves first-run Nearby presents a real surface
-   instead of only mutating an invisible route.
-2. A Home contract test proves every empty-wire and People post action opens the
-   retained composer.
-3. Newswire tests prove ordinary rows carry bodies while treated rows do not
-   reveal them, and detail presentation copy remains author/key-tagged.
-4. Composer tests prove posted → post-another resets every field and returns to
-   editing, while Done does not create another write.
-5. Alerts tests prove an empty scoped alert list requests no Home card.
-6. Directory/People/Nearby pure presentation tests pin compact labels, disclosure
-   placement, and `Add N updates`.
-7. Focused suites run RED then GREEN; shared macOS tests, iOS simulator build,
-   project-file lint, and the repository coverage gate run before completion.
+1. Onboarding tests prove unsupported first-run Nearby is absent, all three exits
+   share save-before-exit gating, and a failed non-empty name save starts nothing.
+2. Shell/Home tests prove the empty-wire and People actions open the retained
+   composer and every wire state has no duplicate composer trigger.
+3. Newswire tests prove ordinary rows carry body/operational metadata, the
+   excerpt/detail split, contextual labels, exact trust copy, and defensive
+   treated-payload redaction.
+4. Composer tests prove posted → post-another clears every field without signing,
+   while Done creates no second write.
+5. Alerts tests prove empty and expired-only states omit Home alerts while an
+   unexpired alert appears before the Newswire. Time is injected. Empty,
+   foreign-only, expiry-at-now, expired-only, and active inputs are covered by the
+   pure Home composition predicate.
+6. Directory/People/Nearby tests pin compact vocabulary, disclosure placement,
+   and offered-count wording.
+7. Accessibility tests or inspection pin the large-text picker, stacked controls,
+   contextual labels, focus transitions, announcements, and 44-point targets.
+8. Focused suites run RED then GREEN. Shared macOS tests, iOS simulator build,
+   iOS device compile, project-file lint, and repository coverage gates run
+   before completion. At least one simulator interaction taps the actual
+   accessibility identifiers for first run, composer entry, read detail, and
+   post-another; source-order checks are not accepted as interaction evidence.
+
+## Audited dead-end map
+
+| Defect and current evidence | Expected transition | RED → GREEN evidence |
+| --- | --- | --- |
+| setup `Find one nearby` only changes an invisible route while launch state remains onboarding | unsupported action is absent; truthful after-join boundary remains | onboarding contract finds no first-run Nearby CTA and all visible exits act |
+| `NewswireSurfaceView.onPostUpdate` defaults to `{}` and Home supplies none | empty-wire CTA opens the retained composer | required-handler compile/call-site tests plus simulator tap |
+| `NewswirePostRow` drops projected body/provenance | ordinary row shows excerpt and Read opens complete detail | row mapping/detail tests plus simulator Read tap |
+| posted composer renders status with no Done/Post another transition | Done dismisses; Post another resets/focuses without a write | command/model tests plus simulator tap |
+| display name needs a separate Save and exit actions can imply unsaved identity | one fail-closed save-before-exit gate; no Save button | join/create/demo success/failure branch tests |
+
+## Success and release checks
+
+Baseline is the 2026-07-19 simulator audit: one invisible first-run action, one
+empty-wire no-op, body-less reports, no repeat-post path, overweight Home, and a
+notification prompt merely on community open.
+
+This slice passes only when:
+
+- Join, Create, and Demo reach Home in at most three primary choices after setup,
+  while a failed name save reaches none;
+- every audited visible CTA has a tested state transition (zero no-op actions);
+- after opening one ordinary report, simulator review can identify its content,
+  signed author, and that signing is not proof of truth;
+- `Post another` returns to empty, focused Headline without a second write;
+- Home has one filled composer action, active alerts above the wire, and no
+  empty/expired-only alert card;
+- four core routes have no clipped text or horizontal scrolling at an
+  accessibility size and pass VoiceOver label/focus inspection.
+
+Evaluation is immediate: automated checks and simulator/VoiceOver inspection
+must pass before branch completion. The next TestFlight usability session should
+repeat comprehension checks; any dead CTA, hidden ordinary body, truth claim, or
+inaccessible/clipped core action fails release. The repo has no product-analytics
+baseline, so the design does not invent conversion percentages.
 
 ## Definition of done
 
-- All five functional dead ends from the audit are fixed.
-- Home’s primary action and readable feed appear before secondary tools.
-- Empty alerts and the permanent embedded composer no longer consume Home.
+- The five audited dead ends are fixed by implementation or, for unsupported
+  first-run Nearby adoption, removal with honest explanation.
+- Home’s urgent/current information and readable feed precede secondary tools.
+- Empty alerts and the embedded composer no longer consume Home.
 - Current community is visible on every phone route.
-- Tools, People, and Nearby remove the audited redundant/technical clutter while
-  preserving recovery and trust detail.
-- Existing four-tab order, editorial/open-wire separation, per-community draft
-  safety, identity tags, and local-first wording remain intact.
-- No new dependency, schema, FFI surface, or core policy is introduced.
+- Tools, People, and Nearby remove audited clutter while preserving consent,
+  recovery, provenance, and trust detail.
+- Four-tab order, Front page/Open wire separation, per-community draft safety,
+  key tags, and local-first wording remain intact.
+- No dependency, schema, FFI surface, or core policy is introduced. No new shared
+  Swift file is required.
 - Android is explicitly reported as not audited or changed by this iOS/macOS
   slice.
