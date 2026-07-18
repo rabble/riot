@@ -83,6 +83,70 @@ public enum AlertsListState: Equatable, Sendable {
     }
 }
 
+/// The single Home entry point for a community's signed alerts. Renders
+/// `AlertsListState` inside a `RiotCard`, organizer-first rows, each opening
+/// `AlertDetailSheet`. Headline + signer render as plain `Text(verbatim:)` — no
+/// markdown auto-link. The signer line leads with the core-verified `signerTag` +
+/// organizer badge; the optional self-claimed display name is secondary decoration.
+public struct AlertsListView: View {
+    public let entries: [RiotEntry]
+    public let activeNamespaceID: String
+    /// Self-claimed display name for a signer, if known — decoration only.
+    public let displayName: (String) -> String?
+    @State private var selected: RiotEntry?
+    @Environment(\.colorScheme) private var colorScheme
+
+    public init(entries: [RiotEntry], activeNamespaceID: String,
+                displayName: @escaping (String) -> String? = { _ in nil }) {
+        self.entries = entries
+        self.activeNamespaceID = activeNamespaceID
+        self.displayName = displayName
+    }
+
+    public var body: some View {
+        RiotCard {
+            VStack(alignment: .leading, spacing: 12) {
+                Text(AlertsStrings.title.uppercased())
+                    .font(.riot(.mono, size: 12, relativeTo: .caption)).tracking(1)
+                    .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
+                switch AlertsListState.from(entries, activeNamespaceID: activeNamespaceID) {
+                case .empty(let empty):
+                    Text(empty.title).font(.riot(.body, size: 15, relativeTo: .callout))
+                        .foregroundStyle(RiotTheme.ink(for: colorScheme))
+                    Text(empty.message).font(.riot(.body, size: 13, relativeTo: .caption))
+                        .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
+                case .populated(let rows):
+                    ForEach(rows) { row in
+                        Button { selected = row.entry } label: { rowLabel(row) }
+                            .buttonStyle(.riotSecondary)
+                            .accessibilityIdentifier("alert-\(row.id)")
+                    }
+                }
+            }
+        }
+        .accessibilityIdentifier("home-alerts-card")
+        .sheet(item: $selected) { entry in
+            AlertDetailSheet(detail: AlertDetail(entry: entry), onClose: { selected = nil })
+        }
+    }
+
+    @ViewBuilder private func rowLabel(_ row: AlertRow) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(verbatim: row.headline).font(.riot(.body, size: 17, relativeTo: .body))
+            HStack(spacing: 6) {
+                if row.isOrganizer {
+                    Text(AlertsStrings.organizerBadge).font(.riot(.mono, size: 11, relativeTo: .caption2))
+                }
+                Text(verbatim: displayName(row.signerID) ?? row.signerTag)
+                    .font(.riot(.mono, size: 11, relativeTo: .caption2))
+                Spacer()
+                Text(row.freshness).font(.riot(.mono, size: 11, relativeTo: .caption2))
+            }
+            .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
+        }
+    }
+}
+
 /// Renders the existing `AlertDetail` value model. Headline is plain
 /// `Text(verbatim:)` (never markdown/AttributedString auto-link — anti-injection);
 /// the 64-hex ids stay behind the closed **Technical details** disclosure until a

@@ -888,6 +888,11 @@ private struct HomeRouteView: View {
                 // happening here?" It reads the same core projection every platform
                 // does, so a reader sees the identical front page as its peers.
                 NewswireSurfaceView(model: newswire)
+                // The single Home entry point for this community's signed alerts —
+                // the only tappable alert surface (the Nearby count is a diagnostic).
+                AlertsListView(entries: model.entries,
+                               activeNamespaceID: model.space?.namespaceID ?? "",
+                               displayName: { model.rendered(for: $0) })
                 PostUpdateView(model: composer)
             }
             .padding(20)
@@ -1334,7 +1339,7 @@ private struct ConnectionStatusView: View {
                             .textCase(.uppercase)
                             .tracking(1)
                             .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
-                        LabeledContent("Signed alerts", value: "\(model.entries.count)")
+                        LabeledContent("Alerts on this device", value: "\(model.entries.count)")
                         LabeledContent("Renderer", value: "incident-board/1")
                     }
                 }

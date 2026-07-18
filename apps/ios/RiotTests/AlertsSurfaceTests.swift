@@ -125,3 +125,25 @@ extension AlertsSurfaceTests {
         XCTAssertEqual(AlertRow(e, activeNamespaceID: Self.activeNS).headline, "[tap here](http://evil.example)")
     }
 }
+
+// MARK: - Task 3: Home card wiring (single entry point)
+
+extension AlertsSurfaceTests {
+    func testAlertsListStateIsBuiltFromActiveModelEntries() {
+        // The Home card feeds AlertsListState.from(model.entries, model.space?.namespaceID)
+        // — the exact call the view makes — so a green state here is the card's content.
+        let e = Self.entry("Water main break", signerID: Self.activeNS)
+        guard case let .populated(rows) = AlertsListState.from([e], activeNamespaceID: Self.activeNS) else {
+            return XCTFail("expected populated")
+        }
+        XCTAssertEqual(rows.first?.headline, "Water main break")
+        XCTAssertEqual(rows.first.map { AlertDetail(entry: $0.entry).headline }, "Water main break")
+    }
+
+    func testNoActiveSpaceYieldsEmptyStateNotACrash() {
+        // Home renders the card with activeNamespaceID = "" before a community is joined.
+        guard case .empty = AlertsListState.from([], activeNamespaceID: "") else {
+            return XCTFail("no active space must be the benign empty state")
+        }
+    }
+}
