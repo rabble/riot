@@ -73,7 +73,10 @@ pub(crate) struct LocalProfile {
     pub(crate) preview: Option<StoredPreview>,
     pub(crate) plan: Option<StoredPlan>,
     entries: Vec<CurrentEntry>,
-    sync_inventory: Vec<SignedWillowEntry>,
+    // pub(crate) so the site-follow-import test can assert the isolation invariant:
+    // an owned-namespace bundle import must leave the community sync inventory
+    // UNCHANGED. Only mutated via prospective/install_sync_inventory.
+    pub(crate) sync_inventory: Vec<SignedWillowEntry>,
     sync_session: Option<StoredSyncSession>,
     next_handle_id: u64,
     /// Installed apps with their canonical manifest/bundle bytes (dedup +
@@ -122,7 +125,9 @@ pub(crate) struct LocalProfile {
     db: Option<riot_core::store::RiotDatabase>,
     /// The held communities and which one is active (Unit 3). Source of truth in
     /// memory; mirrored to `local_state` on every mutation when `db` is `Some`.
-    registry: crate::community_registry::CommunityRegistry,
+    // pub(crate) so the site-follow importer can read the Following gate and stamp
+    // last-sync; only ever mutated via registry methods + persist_registry.
+    pub(crate) registry: crate::community_registry::CommunityRegistry,
     /// Inactive per-community authors, unsealed and parked by namespace. The
     /// ACTIVE community's author is `self.author`, never duplicated here (the
     /// author is deliberately not `Clone`). A community's sealed author is
@@ -2150,7 +2155,7 @@ fn community_row(profile: &LocalProfile, record: &CommunityRecord) -> CommunityR
 
 /// Encode and flush the registry to durable `local_state`. A no-op for an
 /// in-memory profile, whose registry lives only for the session.
-fn persist_registry(profile: &LocalProfile) -> Result<(), MobileError> {
+pub(crate) fn persist_registry(profile: &LocalProfile) -> Result<(), MobileError> {
     if let Some(db) = profile.db.as_ref() {
         db.set_local_state(REGISTRY_KEY, &profile.registry.encode())
             .map_err(map_database_error)?;

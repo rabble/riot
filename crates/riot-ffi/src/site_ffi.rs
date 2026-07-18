@@ -14,6 +14,7 @@
 
 use std::collections::BTreeSet;
 
+use riot_core::import::{decode_bundle_with_root, BundleDecodeOutcome, ItemStatus};
 use riot_core::newswire::PostTreatment;
 use riot_core::site::moderation::{
     compute_mod_set_digest, ModEpoch, ModerationRecord, Revoke, Tombstone,
@@ -25,9 +26,16 @@ use riot_core::site::{
     SignedModerationRecord, SiteDisplay, SiteRole, SiteRule, SiteTransport, TrustTier,
     ValidatedManifest, VersionFloorOutcome,
 };
-use riot_core::willow::site_paths::{ARTICLES_COMPONENT, MOD_COMPONENT};
-use riot_core::willow::{system_snapshot, ClockSnapshot, OwnedMasthead, Path, SignedWillowEntry};
+use riot_core::willow::site_paths::{
+    is_owned_editorial_entry, is_owned_moderation_entry, ARTICLES_COMPONENT, MOD_COMPONENT,
+};
+use riot_core::willow::{
+    decode_entry_canonic, system_snapshot, ClockSnapshot, Entry, OwnedMasthead, Path,
+    SignedWillowEntry,
+};
 use willow25::groupings::Keylike;
+
+use crate::community_registry::Relationship;
 
 use crate::mobile_api::{MobileError, MobileProfile};
 use crate::mobile_state::{with_active, LocalProfile};
@@ -833,6 +841,126 @@ fn hex_decode(s: &str) -> Option<Vec<u8>> {
         .collect()
 }
 
+// ---------------------------------------------------------------------------
+// Delivery: import a shared followed-site bundle (the propagation channel).
+//
+// Owned-namespace content (/mod/, /articles/) has no automatic follower sync —
+// the community sync inventory is namespace-scoped to the ACTIVE community, so it
+// never carries an owned site's records (see import_owned_mod). The owner
+// therefore hands the signed bytes onward out-of-band; THIS is the follower's
+// importer for them. It is a NEW admission entry point (external bytes → store),
+// gated by TWO checks before the proven inspect_core_with_root(Some(root))
+// admission runs:
+//   1. FOLLOWING gate: the caller must already hold a `Following` registry record
+//      for `root` — a bundle can never smuggle an UNFOLLOWED owned namespace in.
+//   2. FAMILY gate: every entry must be owned /mod or /articles (least-privilege —
+//      exactly the families a store reader consumes; owned /manifest is validated
+//      from a caller arg, not the store, so it is NOT admitted here);
+//      anything else (a communal alert, a newswire post) rejects the whole bundle.
+// A non-admissible item (e.g. an owned entry NOT rooted at `root`) is Invalid at
+// decode and rejects the whole bundle (fail-closed, all-or-nothing). The imported
+// records go to the store only — sync_inventory is never touched (owned ns must
+// not leak into the active community's peer offer set).
+// ---------------------------------------------------------------------------
+
+/// The result of importing a followed-site bundle: how many records committed.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct ImportSummary {
+    /// Number of owned-site records (mod / articles) admitted + committed.
+    pub imported: u32,
+}
+
+#[uniffi::export]
+impl MobileProfile {
+    /// Import a shared owner-signed bundle for a followed composite site. The
+    /// caller must already FOLLOW `followed_site_root` (a Following registry
+    /// record); the bundle may carry ONLY that site's owned /mod and /articles
+    /// records — anything else, or any entry not rooted at the followed site,
+    /// rejects the whole bundle. Admitted records land in the store (read by
+    /// resolve_composite_site); nothing enters the community sync inventory.
+    pub fn import_followed_site_bundle(
+        &self,
+        bytes: Vec<u8>,
+        followed_site_root: Vec<u8>,
+    ) -> Result<ImportSummary, MobileError> {
+        let root = <[u8; 32]>::try_from(followed_site_root.as_slice())
+            .map_err(|_| MobileError::InvalidInput)?;
+        with_active(&self.inner, |profile| {
+            // 1. FOLLOWING gate — the key security check. A bundle for an
+            //    unfollowed owned namespace is refused before any admission runs.
+            let following = profile
+                .registry
+                .find(&root)
+                .is_some_and(|record| record.relationship == Relationship::Following);
+            if !following {
+                return Err(MobileError::ImportRejected);
+            }
+
+            // 2. Decode under the followed root + FAMILY gate (all-or-nothing).
+            let decoded = match decode_bundle_with_root(&bytes, Some(root)) {
+                BundleDecodeOutcome::Decoded(decoded) => decoded,
+                BundleDecodeOutcome::Rejected(_) => return Err(MobileError::ImportRejected),
+            };
+            let mut count = 0u32;
+            for item in &decoded.items {
+                // A non-admissible item (owned entry not rooted at `root`, forged
+                // cap, etc.) makes the whole followed-site bundle untrustworthy.
+                let ItemStatus::Valid(_) = &item.status else {
+                    return Err(MobileError::ImportRejected);
+                };
+                let entry = decode_entry_canonic(item.frame.entry_bytes())
+                    .map_err(|_| MobileError::ImportRejected)?;
+                if !is_followed_site_family(&entry) {
+                    return Err(MobileError::ImportRejected);
+                }
+                count += 1;
+            }
+            if count == 0 {
+                return Err(MobileError::ImportRejected);
+            }
+
+            // 3. Admit + commit through the proven followed-root path. Owned /mod
+            //    and /articles are admitted under a cap rooted at `root`.
+            profile.preview = None;
+            profile.plan = None;
+            let preview = crate::mobile_state::inspect_core_with_root(
+                &profile.store,
+                &bytes,
+                "site-follow-import",
+                Some(root),
+            )?;
+            let plan = preview.plan_all().map_err(|_| MobileError::Internal)?;
+            use riot_core::session::CommitOutcome;
+            match plan.commit().map_err(|_| MobileError::Internal)? {
+                CommitOutcome::Committed(_) | CommitOutcome::NoChanges(_) => {}
+            }
+
+            // 4. sync_inventory is intentionally NOT touched: owned-namespace records
+            //    must stay out of the active community's peer offer set (the
+            //    install_sync_inventory isolation invariant).
+            // 5. Stamp the follow's last-sync time (best-effort).
+            if let Ok(snapshot) = system_snapshot() {
+                if let Some(record) = profile.registry.find_mut(&root) {
+                    record.last_sync_unix_seconds = Some(snapshot.unix_seconds);
+                    let _ = crate::mobile_state::persist_registry(profile);
+                }
+            }
+            Ok(ImportSummary { imported: count })
+        })
+    }
+}
+
+/// Whether `entry` is an owned composite-site record a followed-site bundle may
+/// carry: `/mod` (moderation) or `/articles` (editorial) only. Least-privilege —
+/// these are exactly the families a STORE READER consumes (resolve_composite_site
+/// reads /mod freshness + /articles items). The manifest is validated from a
+/// caller argument, never read from the store, so admitting owned /manifest here
+/// would be dead admission that only widens the surface — excluded. Anything else
+/// (a communal alert/newswire entry) is never admissible here.
+fn is_followed_site_family(entry: &Entry) -> bool {
+    is_owned_moderation_entry(entry) || is_owned_editorial_entry(entry)
+}
+
 // These tests live IN-CRATE (not crates/riot-ffi/tests/) on purpose: owner /mod/
 // and owner /manifest entries can only enter a profile store via the crate-internal
 // followed-root admission path (`inspect_core_with_root`) — there is no public
@@ -1464,6 +1592,140 @@ mod resolve_composite_tests {
             .unwrap();
         assert!(!epoch.entry_id.is_empty());
         assert!(!epoch.signed_bytes.is_empty());
+    }
+
+    // ---- Delivery: import_followed_site_bundle (the propagation channel) ----
+
+    /// A shared /mod bundle (tombstone + an attesting fresh heartbeat) as owner
+    /// bytes a follower would receive out of band.
+    fn shared_mod_bundle(masthead: &OwnedMasthead) -> Vec<u8> {
+        let (tomb, tomb_id) = tombstone(masthead, b"t1", [0x77; 32], [0x88; 32]);
+        let epoch = heartbeat(masthead, 1, now_unix(), &[tomb_id]);
+        encode_bundle(&[tomb, epoch]).expect("bundle")
+    }
+
+    /// (1) ROUND-TRIP DELIVERY: a follower holding a Following record imports the
+    /// owner's /mod bundle and advances OFF ModerationLoading — the delivery the
+    /// merged read/write paths were missing.
+    #[test]
+    fn a_following_follower_imports_a_mod_bundle_and_advances_off_loading() {
+        let (masthead, _sealed, root) = sealed_masthead();
+        let bundle = shared_mod_bundle(&masthead);
+        let manifest = manifest_wire(&masthead, vec![masthead_member(root)]);
+        let follower = open_local_profile().unwrap();
+        follower.follow_site_for_test(root.to_vec()).unwrap();
+
+        // Before delivery: no /mod records → held at ModerationLoading.
+        assert_eq!(
+            call_resolve_at(&follower, &manifest, root, now_unix()).degradation,
+            SiteDegradation::ModerationLoading
+        );
+
+        let summary = follower
+            .import_followed_site_bundle(bundle, root.to_vec())
+            .unwrap();
+        assert_eq!(summary.imported, 2);
+
+        // After delivery: freshness reaches Current → off ModerationLoading.
+        assert_ne!(
+            call_resolve_at(&follower, &manifest, root, now_unix()).degradation,
+            SiteDegradation::ModerationLoading,
+            "delivering the owner's /mod bundle must advance the follower off ModerationLoading"
+        );
+    }
+
+    /// (2) FOLLOWING GATE: a bundle for a root the caller does NOT follow is
+    /// refused — a bundle can never smuggle an unfollowed owned namespace in.
+    #[test]
+    fn a_bundle_for_an_unfollowed_root_is_rejected() {
+        let (masthead, _sealed, root) = sealed_masthead();
+        let bundle = shared_mod_bundle(&masthead);
+        let follower = open_local_profile().unwrap();
+        // Deliberately does NOT follow `root`.
+        assert!(follower
+            .import_followed_site_bundle(bundle, root.to_vec())
+            .is_err());
+    }
+
+    /// (3) FAMILY GATE: a bundle carrying a COMMUNAL entry (a real newswire post,
+    /// valid under communal admission) is rejected — only owned /mod, /articles,
+    /// /manifest may ride this channel.
+    #[test]
+    fn a_bundle_carrying_a_communal_entry_is_rejected() {
+        // A genuine communal newswire post bundle (the FFI returns the signed bytes).
+        let poster = open_local_profile().unwrap();
+        let space = poster
+            .create_newswire_space(NewswireSpaceInput {
+                name: "Wire".into(),
+                summary: "Open wire.".into(),
+                languages: vec!["en".into()],
+                geographic_tags: vec![],
+                topic_tags: vec![],
+                editorial_roster: vec![],
+            })
+            .unwrap();
+        let post = poster
+            .create_newswire_post(NewswirePostInput {
+                space_descriptor_entry_id: space.entry_id.clone(),
+                headline: "Communal".into(),
+                body: "Not owned.".into(),
+                language: "en".into(),
+                event_time_unix_seconds: None,
+                expires_at_unix_seconds: None,
+                coarse_location: None,
+                source_claims: vec![],
+                operational_profile: None,
+                ai_assisted: false,
+            })
+            .unwrap();
+
+        let (_masthead, _sealed, root) = sealed_masthead();
+        let follower = open_local_profile().unwrap();
+        follower.follow_site_for_test(root.to_vec()).unwrap();
+        assert!(
+            follower
+                .import_followed_site_bundle(post.signed_bytes, root.to_vec())
+                .is_err(),
+            "a communal entry must not ride the owned-site import channel"
+        );
+    }
+
+    /// (4) An owned entry NOT rooted at the followed site is refused end-to-end: it
+    /// is non-admissible under `Some(followed_root)`, so the whole bundle rejects.
+    #[test]
+    fn an_owned_entry_not_rooted_at_the_followed_site_is_rejected() {
+        let (masthead_a, _sa, _root_a) = sealed_masthead();
+        let (revoke_a, _id) = revoke(&masthead_a, b"r1", [1; 32]);
+        let bundle_a = encode_bundle(&[revoke_a]).expect("bundle");
+
+        let (_masthead_b, _sb, root_b) = sealed_masthead();
+        let follower = open_local_profile().unwrap();
+        follower.follow_site_for_test(root_b.to_vec()).unwrap();
+        // A's /mod entry is not rooted at B → admission rejects it under Some(B).
+        assert!(follower
+            .import_followed_site_bundle(bundle_a, root_b.to_vec())
+            .is_err());
+    }
+
+    /// (5) ISOLATION INVARIANT: importing an owned /mod bundle leaves the community
+    /// sync inventory UNCHANGED — owned-ns records must never enter the active
+    /// community's peer offer set.
+    #[test]
+    fn importing_a_mod_bundle_leaves_the_sync_inventory_unchanged() {
+        let (masthead, _sealed, root) = sealed_masthead();
+        let bundle = shared_mod_bundle(&masthead);
+        let follower = open_local_profile().unwrap();
+        follower.follow_site_for_test(root.to_vec()).unwrap();
+
+        let before = with_active(&follower.inner, |p| Ok(p.sync_inventory.len())).unwrap();
+        follower
+            .import_followed_site_bundle(bundle, root.to_vec())
+            .unwrap();
+        let after = with_active(&follower.inner, |p| Ok(p.sync_inventory.len())).unwrap();
+        assert_eq!(
+            before, after,
+            "owned /mod records must NOT enter the community sync inventory"
+        );
     }
 
     #[test]
