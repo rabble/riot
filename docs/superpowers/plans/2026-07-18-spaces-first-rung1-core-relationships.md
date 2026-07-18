@@ -22,6 +22,8 @@
 
 **Match-exhaustiveness note (verified):** `relationship_to_ffi` (`mobile_state.rs:2121-2127`) is an exhaustive match with **no wildcard**. Extending core `Relationship` and FFI `CommunityRelationship` therefore MUST land in the SAME commit as that mapping arm, or `riot-ffi` fails to compile (E0004). Task 1 does all three together.
 
+**`#[cfg(test)]`-seam note (verified):** `follow_site_for_test` is a `#[cfg(test)]` seam. A `#[cfg(test)]` item is **invisible to integration tests** in `crates/riot-ffi/tests/` — those link `riot_ffi` compiled *without* `cfg(test)`, so calling the seam from `tests/` fails with `E0599` (and `riot-ffi` has **no `[features]` table**, so `--all-features` cannot gate it in). Therefore every test that CALLS `follow_site_for_test` (Tasks 3, 4) lives **inline** in a `#[cfg(test)] mod` in `mobile_state.rs`, where the seam is visible. Only the seam-free enum-existence test (Task 1) stays an integration test.
+
 ## File structure
 
 - `crates/riot-ffi/src/community_registry.rs` — `Following`/`Personal` on `Relationship` + wire codec.
@@ -147,24 +149,26 @@ git commit -m "test(spaces/rung1): prove pre-Following registry records still de
 
 **Files:**
 - Modify: `crates/riot-ffi/src/mobile_api.rs` (`FollowedSiteRow` record + `list_followed_sites` method)
-- Modify: `crates/riot-ffi/src/mobile_state.rs` (`list_followed_sites` impl; **add `Following`-exclusion filter to `list_communities` at ~:2300**)
-- Test: `crates/riot-ffi/tests/followed_sites_contract.rs` (new)
+- Modify: `crates/riot-ffi/src/mobile_state.rs` (`list_followed_sites` impl; **add `Following`-exclusion filter to `list_communities` at ~:2300**; **inline `#[cfg(test)] mod` test** — the seam is `#[cfg(test)]`, so its tests must be inline, not in `tests/`, per the cfg-seam note above)
 
-- [ ] **Step 1: Write the failing contract test** — a followed site appears in `list_followed_sites` (by owned-root hex) and is EXCLUDED from `list_communities`:
+- [ ] **Step 1: Write the failing test INLINE** in a `#[cfg(test)] mod spaces_rung1` in `mobile_state.rs` (the crate can call its own `pub` API):
 
 ```rust
-use riot_ffi::open_local_profile;
-#[test]
-fn a_followed_site_is_in_list_followed_sites_and_excluded_from_list_communities() {
-    let profile = open_local_profile().unwrap();
-    let root_hex = profile.follow_site_for_test(vec![0x11; 32]).unwrap();
-    assert!(profile.list_followed_sites().unwrap().iter().any(|r| r.root == root_hex));
-    // author-less: filtered OUT of the community list
-    assert!(profile.list_communities().unwrap().iter().all(|c| c.namespace_id != root_hex));
+#[cfg(test)]
+mod spaces_rung1 {
+    use crate::mobile_api::open_local_profile; // or the crate-internal path — grep
+    #[test]
+    fn a_followed_site_is_in_list_followed_sites_and_excluded_from_list_communities() {
+        let profile = open_local_profile().unwrap();
+        let root_hex = profile.follow_site_for_test(vec![0x11; 32]).unwrap();
+        assert!(profile.list_followed_sites().unwrap().iter().any(|r| r.root == root_hex));
+        // author-less: filtered OUT of the community list
+        assert!(profile.list_communities().unwrap().iter().all(|c| c.namespace_id != root_hex));
+    }
 }
 ```
 
-- [ ] **Step 2: Run** → `cargo test -p riot-ffi --test followed_sites_contract --all-features` → FAIL (`no method list_followed_sites`).
+- [ ] **Step 2: Run** → `cargo test -p riot-ffi spaces_rung1::a_followed_site --all-features` → FAIL (`no method list_followed_sites`).
 
 - [ ] **Step 3: Implement**
 
@@ -180,22 +184,27 @@ pub struct FollowedSiteRow {
     /// Honest row-state token, aligned to spec §3.1 where meaningful for a
     /// followed site: "available" / "pending-first-sync" / "transport-blocked"
     /// / "degraded". (syncing/quarantined are community-only.)
+    /// NOTE: in Rung 1 the seam persists a plain Following record, so rows carry
+    /// the default ("pending-first-sync") — the true transport-blocked/degraded
+    /// PATH is exercised in Rung 5 (real follow_site(ticket) transport parsing).
+    /// Rung 1 lands the FIELDS + default only.
     pub state: String,
     /// True iff the site requires an unavailable transport (require:arti) — the
-    /// row shows "requires Tor — unavailable" without drilling in (S1).
+    /// row shows "requires Tor — unavailable" without drilling in (S1). Field
+    /// lands here; its true-path is set in Rung 5 (see `state` note).
     pub transport_blocked: bool,
 }
 ```
 - `list_followed_sites`: read `Following` roots from the registry, build a `FollowedSiteRow` per root (title/state from the resolved manifest where available, else `pending-first-sync`).
 - **`list_communities` filter (the fix):** at `mobile_state.rs:2300` where every registry record is mapped, skip records whose relationship is `Following` (`.filter(|rec| rec.relationship != Relationship::Following)`), so a followed root never appears as a `CommunityRow`. `Personal` is NOT filtered (rides `CommunityRow`).
-- **Test seam:** the real `follow_site(ticket)` is Rung 5 (ticket/transport parsing is Unit 5 territory). Add a `#[cfg(test)] follow_site_for_test(root: Vec<u8>) -> Result<String, MobileError>` that persists a `Following` registry record and returns its root hex, so the row/list/filter are testable now. Document this seam in a code comment naming Rung 5 as the production entry.
+- **Test seam:** the real `follow_site(ticket)` is Rung 5 (ticket/transport parsing is Unit 5 territory). Add `#[cfg(test)] fn follow_site_for_test(&self, root: Vec<u8>) -> Result<String, MobileError>` on `MobileProfile` in a **separate, NON-`#[uniffi::export]` `impl` block** (so UniFFI never tries to export a test-only method), persisting a `Following` registry record and returning its root hex. Because it is `#[cfg(test)]`, its tests are the inline `#[cfg(test)] mod spaces_rung1` (Step 1), NOT `tests/`. Comment it, naming Rung 5 as the production `follow_site(ticket)` entry.
 
-- [ ] **Step 4: Run** → PASS.
+- [ ] **Step 4: Run** → `cargo test -p riot-ffi spaces_rung1 --all-features` → PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add crates/riot-ffi/src/mobile_api.rs crates/riot-ffi/src/mobile_state.rs crates/riot-ffi/tests/followed_sites_contract.rs
+git add crates/riot-ffi/src/mobile_api.rs crates/riot-ffi/src/mobile_state.rs
 git commit -m "feat(spaces/rung1): FollowedSiteRow + list_followed_sites + list_communities Following-exclusion"
 ```
 
@@ -203,27 +212,27 @@ git commit -m "feat(spaces/rung1): FollowedSiteRow + list_followed_sites + list_
 
 ## Task 4: Exposure-boundary guard — no secrets in the followed-site row (Security S2)
 
-**Files:** Test: `crates/riot-ffi/tests/spaces_exposure_boundary.rs` (new)
+**Files:** Test: add to the inline `#[cfg(test)] mod spaces_rung1` in `crates/riot-ffi/src/mobile_state.rs` (uses the `#[cfg(test)]` seam — must be inline, not `tests/`).
 
-- [ ] **Step 1: Write the test**
+- [ ] **Step 1: Write the test** (in the same inline module as Task 3)
 
 ```rust
-#[test]
-fn followed_site_row_exposes_only_public_identifiers() {
-    let profile = riot_ffi::open_local_profile().unwrap();
-    let root_hex = profile.follow_site_for_test(vec![0x22; 32]).unwrap();
-    let row = profile.list_followed_sites().unwrap().into_iter()
-        .find(|r| r.root == root_hex).unwrap();
-    assert_eq!(row.root.len(), 64);
-    assert!(row.root.chars().all(|c| c.is_ascii_hexdigit()));
-    // Compile-time: FollowedSiteRow has no Vec<u8>/secret field — reviewed.
-}
+    #[test]
+    fn followed_site_row_exposes_only_public_identifiers() {
+        let profile = open_local_profile().unwrap();
+        let root_hex = profile.follow_site_for_test(vec![0x22; 32]).unwrap();
+        let row = profile.list_followed_sites().unwrap().into_iter()
+            .find(|r| r.root == root_hex).unwrap();
+        assert_eq!(row.root.len(), 64);
+        assert!(row.root.chars().all(|c| c.is_ascii_hexdigit()));
+        // Compile-time: FollowedSiteRow has no Vec<u8>/secret field — reviewed.
+    }
 ```
 
-- [ ] **Step 2-4: Run (PASS) / Commit**
+- [ ] **Step 2-4: Run (`cargo test -p riot-ffi spaces_rung1 --all-features` → PASS) / Commit**
 
 ```bash
-git add crates/riot-ffi/tests/spaces_exposure_boundary.rs
+git add crates/riot-ffi/src/mobile_state.rs
 git commit -m "test(spaces/rung1): followed rows expose only public ids (S2 boundary)"
 ```
 
@@ -245,7 +254,7 @@ git commit -m "test(spaces/rung1): followed rows expose only public ids (S2 boun
 - §6.2 followed-site state (new, author-less, filtered out of communities) → Task 3. ✓
 - §6.3 durable registry format (additive, no migration) → Tasks 1/2 (backward-compat proof). ✓
 - §2 three-tier relationship tags → Task 1 (core+FFI+mapping, one compiling commit). ✓
-- §3.1 row honest state + transport-blocked-at-row (S1) → `FollowedSiteRow.state`/`transport_blocked` (Task 3). ✓
+- §3.1 row honest state + transport-blocked-at-row (S1) → `FollowedSiteRow.state`/`transport_blocked` FIELDS land in Task 3; the true transport-blocked/degraded PATH is Rung 5 (real ticket-follow). Rung 1 = fields + default only (partial, by design). ◐
 - §6.4 exposure boundary (S2) → Task 4. ✓
 - §6.5 no logic in shell → core-derived passthroughs. ✓
 - UniFFI gate → Task 5. ✓
