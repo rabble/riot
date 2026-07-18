@@ -11,6 +11,9 @@
     <uses-permission android:name="android.permission.BLUETOOTH_ADVERTISE" />
     <!-- Android gates direct LAN sockets behind INTERNET; code accepts numeric local addresses only. -->
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Local new-content notifications (system-alert when the app is backgrounded).
+         Runtime-requested on API 33+; a no-op grant below that. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <application
         android:allowBackup="false"
         android:label="Riot"
