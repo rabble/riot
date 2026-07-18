@@ -12,9 +12,10 @@
 //! regenerated (and the staticlib rebuilt) before any native app can consume
 //! these functions — that regen happens in Unit 6, not here.
 
+use riot_core::newswire::PostTreatment;
 use riot_core::site::{
-    validate_site_manifest, MemberClassification, RequireTransport, SiteDisplay, SiteRole,
-    SiteRule, SiteTransport, ValidatedManifest,
+    validate_site_manifest, CompositeDegradation, MemberClassification, RequireTransport,
+    SiteDisplay, SiteRole, SiteRule, SiteTransport, TrustTier, ValidatedManifest,
 };
 use riot_core::willow::{OwnedMasthead, SignedWillowEntry};
 
@@ -285,9 +286,185 @@ pub fn resolve_site_manifest(
     }
 }
 
+// ---------------------------------------------------------------------------
+// Unit 4 — resolved composite-site view model (Task 7).
+//
+// NEW `uniffi::Enum`s (`SiteTrustTier`, `SiteDegradation`, `SiteItemTreatment`)
+// and NEW `uniffi::Record`s (`ResolvedSiteItem`, `ResolvedCompositeSite`). Per
+// the UniFFI gate, the native bindings + staticlib must be regenerated together
+// (`scripts/conference/build-native-core.sh`) or the apps runtime-checksum-abort.
+//
+// These mirror the core `site::resolve` decisions so the shells RENDER them with
+// no business logic: core owns trust tier, treatment, and degradation; the shell
+// styles exactly what core resolved.
+// ---------------------------------------------------------------------------
+
+/// Per-item trust tier the shell styles (mirror of `site::resolve::TrustTier`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum SiteTrustTier {
+    /// Editorial — `O:/articles`, cap-chain verified.
+    Editorial,
+    /// Open-wire — `W`, open publishing.
+    OpenWire,
+    /// Comment — `C`, open, unlinkable author.
+    Comment,
+}
+
+impl From<TrustTier> for SiteTrustTier {
+    fn from(tier: TrustTier) -> Self {
+        match tier {
+            TrustTier::Editorial => SiteTrustTier::Editorial,
+            TrustTier::OpenWire => SiteTrustTier::OpenWire,
+            TrustTier::Comment => SiteTrustTier::Comment,
+        }
+    }
+}
+
+/// The composite site's honest degradation state (mirror of
+/// `site::resolve::CompositeDegradation`). A shell shows the matching copy +
+/// next-step; `None` is fully resolved.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum SiteDegradation {
+    None,
+    MemberUnverified,
+    EditorialOnly,
+    ModerationLoading,
+    TransportBlocked,
+    ManifestRollbackAlarm,
+    EquivocationAlarm,
+    ManifestInvalid,
+}
+
+impl From<CompositeDegradation> for SiteDegradation {
+    fn from(d: CompositeDegradation) -> Self {
+        match d {
+            CompositeDegradation::None => SiteDegradation::None,
+            CompositeDegradation::MemberUnverified => SiteDegradation::MemberUnverified,
+            CompositeDegradation::EditorialOnly => SiteDegradation::EditorialOnly,
+            CompositeDegradation::ModerationLoading => SiteDegradation::ModerationLoading,
+            CompositeDegradation::TransportBlocked => SiteDegradation::TransportBlocked,
+            CompositeDegradation::ManifestRollbackAlarm => SiteDegradation::ManifestRollbackAlarm,
+            CompositeDegradation::EquivocationAlarm => SiteDegradation::EquivocationAlarm,
+            CompositeDegradation::ManifestInvalid => SiteDegradation::ManifestInvalid,
+        }
+    }
+}
+
+/// A moderated item's treatment (mirror of newswire `PostTreatment`, collapsed to
+/// the shell-facing shape). Moderated rows stay as accountable placeholders.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum SiteItemTreatment {
+    Ordinary,
+    Hidden,
+    Tombstoned,
+}
+
+impl From<PostTreatment> for SiteItemTreatment {
+    fn from(t: PostTreatment) -> Self {
+        match t {
+            PostTreatment::Ordinary => SiteItemTreatment::Ordinary,
+            PostTreatment::Hidden { .. } => SiteItemTreatment::Hidden,
+            PostTreatment::Tombstoned { .. } => SiteItemTreatment::Tombstoned,
+        }
+    }
+}
+
+/// One resolved composite-site item, projected for the shells.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct ResolvedSiteItem {
+    /// Entry value-identity, lowercase hex (64 chars).
+    pub entry_id: String,
+    /// Author subspace id, lowercase hex (64 chars).
+    pub author_subspace: String,
+    /// Core-resolved trust tier — the shell styles this, never infers it.
+    pub trust_tier: SiteTrustTier,
+    /// Core-resolved moderation treatment.
+    pub treatment: SiteItemTreatment,
+}
+
+/// The resolved composite site the native shells render with no business logic.
+/// A degradation is a STATE carried here, never a thrown error.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct ResolvedCompositeSite {
+    /// Site root (owned namespace id), lowercase hex (64 chars).
+    pub root: String,
+    /// The single primary degradation state (most severe applicable).
+    pub degradation: SiteDegradation,
+    /// Fail-closed transport reason token, or `available`.
+    pub transport_status: String,
+    /// Resolved items across the composite (editorial + comments + wire).
+    pub items: Vec<ResolvedSiteItem>,
+    /// True iff the local editor's cap has expired (compose-time warning).
+    pub writer_cap_expired: bool,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn trust_tier_maps_and_open_wire_is_never_editorial() {
+        assert_eq!(
+            SiteTrustTier::from(TrustTier::Editorial),
+            SiteTrustTier::Editorial
+        );
+        let wire = SiteTrustTier::from(TrustTier::OpenWire);
+        assert_eq!(wire, SiteTrustTier::OpenWire);
+        assert_ne!(wire, SiteTrustTier::Editorial);
+    }
+
+    #[test]
+    fn degradation_maps_every_variant() {
+        for (core, ffi) in [
+            (CompositeDegradation::None, SiteDegradation::None),
+            (
+                CompositeDegradation::MemberUnverified,
+                SiteDegradation::MemberUnverified,
+            ),
+            (
+                CompositeDegradation::EditorialOnly,
+                SiteDegradation::EditorialOnly,
+            ),
+            (
+                CompositeDegradation::ModerationLoading,
+                SiteDegradation::ModerationLoading,
+            ),
+            (
+                CompositeDegradation::TransportBlocked,
+                SiteDegradation::TransportBlocked,
+            ),
+            (
+                CompositeDegradation::ManifestRollbackAlarm,
+                SiteDegradation::ManifestRollbackAlarm,
+            ),
+            (
+                CompositeDegradation::EquivocationAlarm,
+                SiteDegradation::EquivocationAlarm,
+            ),
+            (
+                CompositeDegradation::ManifestInvalid,
+                SiteDegradation::ManifestInvalid,
+            ),
+        ] {
+            assert_eq!(SiteDegradation::from(core), ffi);
+        }
+    }
+
+    #[test]
+    fn treatment_maps_hidden_and_tombstoned() {
+        assert_eq!(
+            SiteItemTreatment::from(PostTreatment::Hidden { actions: vec![] }),
+            SiteItemTreatment::Hidden
+        );
+        assert_eq!(
+            SiteItemTreatment::from(PostTreatment::Tombstoned { actions: vec![] }),
+            SiteItemTreatment::Tombstoned
+        );
+        assert_eq!(
+            SiteItemTreatment::from(PostTreatment::Ordinary),
+            SiteItemTreatment::Ordinary
+        );
+    }
 
     #[test]
     fn create_site_returns_owned_namespace_and_sealed_root() {
