@@ -1,7 +1,7 @@
 # Public Community Anchor Network Design
 
 Date: 2026-07-18
-Status: Design review rounds 1-7 revised; pending round 8
+Status: Design review rounds 1-8 revised; pending round 9
 Scope: Owner-rooted composite public sites, discovery, hosting, web mirroring,
 and opportunistic internet sync
 
@@ -89,6 +89,13 @@ emergency recovery atomic, bound replica preparation to a one-use destination
 challenge and one immutable source snapshot, chose deterministic local mutation
 contention and explicit runtime shutdown, and completed overload, enrollment,
 export, withdrawal, and stale-source user lifecycles.
+
+Round eight completed the remaining preimages, persisted checkpoint work before
+filesystem publication, reserved removal capacity when listing becomes visible,
+bounded the removal and HTTP parser queues, separated the process network
+runtime from revocable profile/storage leases, terminalized prepared replicas
+on peer-context loss, and made relisting, close recovery, source change, and all
+pilot outcomes explicit.
 
 ## Product Decisions
 
@@ -179,7 +186,8 @@ The anchor daemon is a new workspace binary crate, `riot-anchor`, depending on
 `riot-anchor-protocol`, `riot-core`, and `riot-transport`.
 
 Native internet operations use a new mobile-compatible `riot-client-net` crate
-that owns one iroh endpoint and Tokio runtime per application process. It
+behind one process-singleton `RiotApplicationRuntime`, which owns one iroh
+endpoint and Tokio runtime per application process. It
 depends on `riot-anchor-protocol`, `riot-transport`, and a direct
 no-default-features `riot-core` dependency for `SiteReplicaRepository`;
 `riot-ffi` depends on `riot-client-net` and exposes its cancellable async
@@ -192,8 +200,15 @@ dependencies never enter `riot-core`, `riot-anchor-protocol`,
 inspects every native target's resolved Cargo graph and fails if an HTTP server,
 renderer, or `riot-anchor` daemon dependency appears.
 
-The native shell starts the client once after protected profile unlock and
-closes it on profile lock/process teardown. Each FFI operation owns a
+`riot-transport` also changes its `riot-core` edge to
+`default-features = false`; the native top-level `riot-ffi` build deliberately
+enables SQLite rather than receiving it through feature unification.
+
+The native shell starts `RiotApplicationRuntime` once at process startup and
+closes it only after every profile lease is closed at orderly process teardown.
+Protected profile unlock obtains a revocable profile network lease; profile
+lock releases that lease without closing the process endpoint. Each FFI
+operation owns a
 cancellation token; cancellation closes its streams, awaits task termination,
 and emits a terminal state before releasing the handle. Background execution
 uses the platform's bounded task window and persists retry intent, never an
@@ -400,23 +415,51 @@ Labels are the exact ASCII bytes below. “Envelope” means the complete canoni
 signed envelope including its signature fields; “body” excludes the containing
 signature:
 
+```text
+OperatorSignedEnvelopeV1<T> =
+  canonical_cbor([1, T, exactly_64_signature_bytes])
+
+AdmittedListingEnvelopeV1 =
+  canonical_cbor([
+    1,
+    canonical_signed_listing_entry_bytes,
+    canonical_capability_chain_bytes,
+    null | canonical_delegate_grant_bytes
+  ])
+
+RootSignedTicketCoreEnvelopeV2 =
+  canonical_cbor([2, PublicSiteTicketV2Core, exactly_64_root_signature_bytes])
+
+ControlDigestBodyV1 =
+  canonical_cbor([control_protocol_version, operation_kind_u16, semantic_body])
+```
+
+Every operator-signed row below uses `OperatorSignedEnvelopeV1`; its signature
+preimage remains that record type's stated domain plus canonical body bytes.
+Canonical component byte strings must themselves pass their normal decoder and
+byte-for-byte canonical re-encoding check before hashing.
+
 | Name | Label | Canonical bytes hashed |
 | --- | --- | --- |
 | `descriptor_digest` | `riot/anchor-descriptor-envelope/v1` | complete `DescriptorEnvelopeV1` |
-| `inclusion_digest` | `riot/directory-inclusion-envelope/v1` | inclusion body plus operator signature |
-| `checkpoint_digest` | `riot/directory-checkpoint-envelope/v1` | checkpoint body plus operator signature |
-| `snapshot_record_digest` | `riot/directory-snapshot-envelope/v1` | snapshot-record body plus operator signature |
-| `listing_digest` | `riot/admitted-listing-envelope/v1` | signed listing entry, capability chain, and optional delegate grant |
-| `root_signed_ticket_core_digest` | `riot/public-site-ticket-signed-core/v2` | ticket core plus root signature, excluding replaceable hints |
-| `work_challenge_digest` | `riot/anchor-work-challenge-envelope/v1` | challenge body plus operator signature |
-| `control_request_digest` | `riot/anchor-control-request-body/v1` | operation-kind-tagged semantic request body, excluding the outer idempotency key |
-| `work_target_digest` | `riot/anchor-work-target/v1` | the same operation body with `work_stamp` absent |
+| `limit_profile_digest` | `riot/anchor-limit-profile/v1` | complete canonical `AnchorLimitProfileV1` body |
+| `inclusion_digest` | `riot/directory-inclusion-envelope/v1` | `OperatorSignedEnvelopeV1<DirectoryInclusionBodyV1>` |
+| `checkpoint_digest` | `riot/directory-checkpoint-envelope/v1` | `OperatorSignedEnvelopeV1<DirectoryCheckpointBodyV1>` |
+| `snapshot_record_digest` | `riot/directory-snapshot-envelope/v1` | `OperatorSignedEnvelopeV1<DirectorySnapshotRecordBodyV1>` |
+| `listing_digest` | `riot/admitted-listing-envelope/v1` | `AdmittedListingEnvelopeV1` |
+| `root_signed_ticket_core_digest` | `riot/public-site-ticket-signed-core/v2` | `RootSignedTicketCoreEnvelopeV2`, excluding replaceable hints |
+| `work_challenge_digest` | `riot/anchor-work-challenge-envelope/v1` | `OperatorSignedEnvelopeV1<WorkChallengeBodyV1>` |
+| `control_request_digest` | `riot/anchor-control-request-body/v1` | `ControlDigestBodyV1` with every semantic field including `work_stamp`, excluding only outer idempotency key and transport/framing metadata |
+| `work_target_digest` | `riot/anchor-work-target/v1` | `ControlDigestBodyV1` with `work_stamp` omitted and the same idempotency/framing exclusions |
 | `page_digest` | `riot/sync-ids-page/v2` | complete canonical `IdsPage` frame |
 | `peer_transcript_digest` | `riot/anchor-peer-transcript/v1` | canonical peer transcript tuple |
-| `replica_source_attestation_digest` | `riot/replica-source-attestation-envelope/v1` | attestation body plus current operator signature |
+| `replica_source_attestation_digest` | `riot/replica-source-attestation-envelope/v1` | `OperatorSignedEnvelopeV1<ReplicaSourceAttestationBodyV1>` |
 
 An admitted manifest continues to use the existing manifest-version canonical
 digest defined by `riot-core`; anchor records name both that digest and version.
+`AnchorLimitProfileV1` is the canonical map of every effective compiled or
+operator-lowered limit in the resource table; `Describe` returns those exact
+bytes and clients reject a descriptor/receipt whose digest differs.
 No implementation may substitute a body digest for an envelope digest or hash
 JSON/projection bytes. Work proofs use `work_challenge_digest` exactly.
 
@@ -498,7 +541,8 @@ The body contains:
 - supported control and sync versions;
 - enabled roles: host, directory, mirror, gossip;
 - limit-profile digest;
-- predecessor operator key, when rotating;
+- predecessor operator verification key for every epoch greater than zero,
+  including same-key endpoint/origin/configuration updates;
 - issued and expiry times.
 
 ### `HostingReceiptV1`
@@ -528,12 +572,19 @@ cryptographic guarantee. A dishonest or failed anchor may break it.
 
 ### `ListingReceiptV1`
 
-The operator signs anchor ID, operator key ID, descriptor epoch/digest, listing
-digest, site root, accepted epoch/revision, directory feed coordinate,
-acceptance time, expiry, and request idempotency key under:
+The canonical body contains anchor ID, operator key ID, descriptor
+epoch/digest, listing digest, site root, accepted epoch/revision, directory feed
+coordinate, acceptance time, expiry, and request idempotency key. Its exact
+signature is:
 
 ```text
-"riot/listing-receipt/v1"
+signature = Ed25519.Sign(
+  operator_key,
+  "riot/listing-receipt/v1" || canonical_cbor(receipt_body)
+)
+
+ListingReceiptV1 =
+  OperatorSignedEnvelopeV1<ListingReceiptBodyV1>
 ```
 
 Receipts never grant site authority.
@@ -874,17 +925,23 @@ another body is rejected. Namespace tokens are deterministically derived as:
 ```text
 HMAC-SHA256(
   anchor_operation_secret,
-  "riot/namespace-token/v1" ||
-  operation_id || namespace_id || operation_expiry
+  u16be(23) || "riot/namespace-token/v1" ||
+  u16be(byte_length(operation_id)) || operation_id ||
+  u16be(byte_length(namespace_id)) || namespace_id ||
+  u64be(operation_expiry_unix_seconds) ||
+  u32be(token_secret_epoch)
 )
 ```
 
 so exact prepared replay returns the same tokens after restart without storing
 them in plaintext. The operation stores the token-secret epoch; key-store
 rotation retains prior secrets until every operation using them expires.
-The Prepare idempotency row remains `Prepared` and always replays its original
-response, even after the operation completes; a caller then uses
-`GetOperation`. Every `CommitHost` has its own idempotency row. The final
+The Prepare idempotency row normally remains `Prepared` and replays its original
+response after operation completion; a caller then uses `GetOperation`. The
+security exception is an uncommitted peer-bound replica whose session closes:
+its Prepare mapping atomically becomes Terminal `peer_context_changed`, so
+invalid tokens are never replayed as usable. Every `CommitHost` has its own
+idempotency row. The final
 promotion transaction atomically marks the operation committed, creates the
 receipt, and changes that Commit row to `Terminal`. A refused Prepare or any
 ordinary single-call request stores `Terminal` directly.
@@ -1024,43 +1081,91 @@ RemovalCommitted {
   listing_digest,
   inclusion_digest,
   receipt,
-  checkpoint_required
+  checkpoint_work_id: optional
 } |
-RemovalCheckpointed { checkpoint_digest, exact_result } |
 RemovalTerminal { exact_result }
+
+RemovalSlot =
+  Free |
+  ReservedForListedRoot { root } |
+  Committed { root, removal_operation_id } |
+  Terminal { root, idempotency_key, expires_at, exact_result }
 ```
 
-After structural bounds and authority verification, a unique
-`(root, idempotency_key)` claim comes from the reserved `2 * L` rows in the same
-transaction as the mutation, never from the ordinary idempotency ceiling. That
-transaction atomically changes listing/search/current-state visibility, appends
-one `Removed` inclusion, invalidates the projection, creates the receipt, and records
-`RemovalCommitted`. If no emergency checkpoint is required it records
-`RemovalTerminal` in that transaction. Transactions serialize on the root row;
-concurrent different keys cannot both claim/mutate it, and the loser observes
-`already_unlisted` without retaining a claim.
+The table preprovisions exactly `2 * L` physical slots. The transaction that
+makes `listed: true` visible must atomically change one `Free` slot to
+`ReservedForListedRoot`; every currently listed root therefore owns removal
+capacity that another root cannot consume. If no slot is free, listing remains
+hosted but invisible and returns `removal_replay_window` with required
+`retry_after_seconds` equal to the earliest Terminal expiry. A root may retain
+at most two Terminal slots.
 
-The reserved table preprovisions capacity for exactly `2 * L` rows and enforces
-at most two retained Terminal slots per root. While a root is already unlisted,
-a different removal key receives bounded
-`already_unlisted` without consuming a slot; recovery of the receipt uses the
-original key. A later `listed: true` transition is admitted only when that root
-has a free removal slot. After two list/remove cycles inside the 24-hour
-terminal-retention window, relisting returns retryable
-`removal_replay_window` until the older Terminal expires. Thus rapid relisting,
-not a subsequent owner removal, is the operation that can wait for replay
-capacity.
+After structural bounds and authority verification, the unlisting transaction
+serializes on the root, changes its reserved slot directly to `Terminal` or
+operation-linked `RemovalCommitted`, changes listing/search/current-state
+visibility, appends one `Removed` inclusion, invalidates the projection, and
+creates the receipt. It never uses ordinary idempotency capacity. Concurrent
+different keys cannot both mutate it; the loser observes `already_unlisted`
+without retaining a claim. While already unlisted, another key receives that
+bounded result; receipt recovery uses the original key. Relisting acquires a
+new `Free` slot. After two list/remove cycles inside the 24-hour retention
+window, relisting—not a subsequent removal—waits for the earlier Terminal.
 
-When checkpointing is required, no success is delivered at
-`RemovalCommitted`. Recovery builds and fsyncs the deterministic checkpoint and
-snapshot from the already committed removal. One SQLite transaction then
-advances the feed floor, compacts covered rows, and records
-`RemovalCheckpointed`. Recovery checkpoints/truncates WAL, records
-`RemovalTerminal` in a final bounded transaction, and only then returns the
-stored receipt. Failpoints after removal commit, snapshot fsync, floor
-advancement, checkpointed write, before/after WAL truncation, and terminal write
-all resume from the durable state. They never recreate the listing mutation,
-inclusion, receipt, or result.
+Emergency checkpoint generation uses a durable work record:
+
+```text
+CheckpointWorkV1 {
+  work_id,
+  phase: Planned | Signed | FilesPublished | FloorAdvanced | Reclaimed,
+  frozen_state_generation,
+  covered_head_sequence,
+  covered_head_inclusion_digest,
+  previous_checkpoint_digest,
+  created_at,
+  canonical_checkpoint_body,
+  checkpoint_envelope: optional,
+  checkpoint_digest: optional,
+  snapshot_generation_id,
+  ordered_members: [(root, snapshot_record_digest)],
+  covered_removal_operation_ids,
+  temp_name,
+  final_name
+}
+```
+
+One planning transaction freezes immutable versioned snapshot-member rows,
+their order/digests, head, state generation, previous checkpoint, creation
+time, canonical checkpoint body, output identities, and every unassigned
+`RemovalCommitted` operation it covers. Later site/listing changes create new
+versions and cannot alter this work. The operator signs the persisted body and
+stores the exact envelope/digest as `Signed`.
+
+Filesystem publication is fixed:
+
+1. write the signed checkpoint and frozen member bytes under `temp_name`;
+2. hash/validate them, fsync every file, and fsync the temporary directory;
+3. atomically rename to `final_name` on the same filesystem and fsync its
+   parent directory;
+4. in one database transaction verify the published hashes, switch the
+   checkpoint/snapshot pointer, advance the logical feed floor, and change
+   every covered removal slot/operation to `RemovalTerminal` with its original
+   idempotency key and exact receipt;
+5. only after that transaction may each waiting caller receive success.
+
+Recovery inspects the persisted phase and exact names/hashes, safely removes an
+unpublished temp tree or resumes the next step, and never invents a new
+timestamp, membership set, body, digest, inclusion, receipt, or result. One
+checkpoint can terminalize many covered removals atomically; each remains
+recoverable through its own original key.
+
+Physical feed-row deletion, index reclamation, old-generation deletion, and WAL
+truncation are **not** on the acknowledgement path. After `FloorAdvanced`, a
+bounded maintenance worker deletes at most 1,024 covered rows per transaction,
+checkpoints within ordinary WAL limits, retains the newest two published
+generations, and eventually marks the work `Reclaimed`. Ordinary listing and
+relisting admission stays paused until reserve readiness is restored, but
+logical floor advancement and every already-reserved owner removal remain
+independent of worst-case physical compaction amplification.
 
 ### `PrepareReplica`
 
@@ -1142,6 +1247,24 @@ or coordinates serve operations. Peers must complete a new descriptor-chain
 exchange and handshake; an attestation or challenge from the old session is
 invalid even if its wall-clock expiry has not elapsed.
 
+Every prepared replica operation persists source and destination descriptor
+epoch/digest, `peer_transcript_digest`, and the connection's monotonically
+allocated `peer_session_generation`. It is valid only while that exact
+authenticated session is live. Any session close—including descriptor/config
+rotation, transport loss, or shutdown—atomically:
+
+- terminalizes every uncommitted replica operation for that session as
+  `peer_context_changed { side, prior_descriptor, latest_known_descriptor }`;
+- invalidates its namespace-token acceptance and deletes destination staging;
+- changes its Prepare idempotency mapping to that Terminal result.
+
+Exact same-key/body replay then returns `peer_context_changed`, never the old
+tokens. Same key/different body always returns `idempotency_conflict` before
+attestation handling. A fresh key that reuses a consumed challenge/attestation
+returns `attestation_consumed`. Recovery requires a new descriptor exchange,
+peer handshake, challenge, attestation, and prepared operation; already
+committed destination receipts/state are unaffected.
+
 ### `PullDirectoryFeed`
 
 This peer operation is paginated by the source anchor's monotonically
@@ -1190,7 +1313,11 @@ Codes include `invalid_authority`, `unsupported_version`, `over_quota`,
 `not_hosted`, `manifest_mismatch`,
 `equivocation`, `anchor_profile_oversize`, `site_too_large`, `work_required`,
 `stale_base`, `stale_source`, `attestation_consumed`, `already_unlisted`,
-`removal_replay_window`, and `busy`.
+`removal_replay_window`, `idempotency_conflict`, `peer_context_changed`, and
+`busy`.
+`removal_replay_window`, `busy`, and every overload result require
+`retry_after_seconds`; for relisting it is the exact earliest retained
+removal-slot expiry.
 A refusal is a protocol result, not a transport failure and not a signed
 hosting receipt.
 
@@ -1251,6 +1378,9 @@ FollowState =
   Syncing { per_anchor_progress } |
   CommittingLocal |
   RecoveringLocalCommit { local_operation_id } |
+  ProfileClosing { retry_context } |
+  ProfileClosed { retry_after_reopen } |
+  CloseIncompleteRecoverable { reason, retry_context } |
   Saved { site_root, destination_status, attempts } |
   AlreadyFollowed { site_root, destination_status } |
   Cancelled { mutation: None } |
@@ -1270,9 +1400,34 @@ PublishState =
   SelectingHosts |
   Preparing { per_anchor } |
   Syncing { per_anchor, namespace } |
-  WaitingForLocalStorage { local_operation_id, remote_results } |
+  WaitingForLocalStorage {
+    blocked_by_operation_id,
+    retry_context,
+    preserved_remote_results
+  } |
+  PersistingLocalResults { local_operation_id, remote_results } |
+  RecoveringLocalPersistence { local_operation_id, remote_results } |
   RetryingStaleSource { source_anchor, destination_anchor, attempt, next_retry_at } |
-  RecoveringReceipt { per_anchor } |
+  SourceChanged {
+    source_anchor,
+    destination_anchor,
+    attempts,
+    existing_hosted_copies: Unchanged,
+    actions: RefreshSource | ChooseDifferentSource | RetryLater | Cancel
+  } |
+  RecoveringRemoteReceipt { per_anchor } |
+  WaitingToRelist {
+    anchor_id,
+    signed_listing_intent,
+    earliest_retry_at,
+    prior_removal_receipts_retained: true,
+    hosted_state: Unchanged,
+    actions: Cancel | RetryWhenReady | RetryNow
+  } |
+  Overloaded { per_anchor, earliest_retry_at, preserved_work } |
+  ProfileClosing { preserved_work } |
+  ProfileClosed { retry_after_reopen, preserved_work } |
+  CloseIncompleteRecoverable { reason, preserved_work } |
   Hosted { receipts, redundancy } |
   Listing { per_anchor } |
   Listed { listing_receipts, host_receipts } |
@@ -1301,8 +1456,15 @@ HostConfigurationState =
   Disabling { intent_id, anchor_id } |
   RemovingLocalRoute { intent_id, anchor_id } |
   ResettingEmbeddedDefaults { intent_id } |
-  WaitingForLocalStorage { requested_change, retry_after } |
+  WaitingForLocalStorage {
+    blocked_by_operation_id,
+    requested_change,
+    retry_after
+  } |
   RecoveringConfiguration { intent_id } |
+  ProfileClosing { requested_change_or_intent } |
+  ProfileClosed { retry_after_reopen, requested_change_or_intent } |
+  CloseIncompleteRecoverable { reason, requested_change_or_intent } |
   Ready { configured_hosts, change: optional ConfigurationChange } |
   Cancelled { mutation: None } |
   Failed { phase, reason, observed_change: None }
@@ -1324,11 +1486,36 @@ LocalMutationOutcome =
 the verified preview and accepted consent for the bounded ticket/preview
 lifetime; explicit Retry resubmits after the active mutation finishes. Publish
 preserves verified remote receipts in `remote_results` while local persistence
-is busy and recovers them with `GetOperation`. Host configuration preserves the
-requested single/batch change but creates no intent until retry is admitted.
-Once a local command begins, cancellation cannot claim no mutation:
-`Recovering` reads its durable operation/intent and ends in exactly
+is busy. `RecoveringRemoteReceipt` uses anchor `GetOperation`;
+`RecoveringLocalPersistence` and `RecoveringLocalCommit` use the core storage
+port's local operation/intent lookup—never the anchor. Host configuration
+preserves the requested single/batch change but creates no intent until retry
+is admitted. Once a local command begins, cancellation cannot claim no
+mutation: `Recovering` reads its durable operation/intent and ends in exactly
 `Committed` or `NotCommitted`.
+
+The UI mapping is exhaustive:
+
+| Durable boundary | Follow | Publish | Host configuration |
+| --- | --- | --- | --- |
+| command not admitted because another local write owns the slot | `WaitingForLocalStorage` | `WaitingForLocalStorage` | `WaitingForLocalStorage` |
+| admitted and durably identified, result not yet known | `CommittingLocal` | `PersistingLocalResults` | the requested `Persisting`/`Enabling`/`Disabling`/`RemovingLocalRoute`/`ResettingEmbeddedDefaults` state |
+| admitted, callback/response lost | `RecoveringLocalCommit` | `RecoveringLocalPersistence` | `RecoveringConfiguration` |
+| remote receipt verified, local receipt write not admitted or recovering | not applicable | `WaitingForLocalStorage` or `RecoveringLocalPersistence`, with `remote_results` retained | not applicable |
+| close begins before admission | `ProfileClosing` | `ProfileClosing` | `ProfileClosing` |
+| profile is closed and no same-database work remains | `ProfileClosed` | `ProfileClosed` | `ProfileClosed` |
+| close cannot yet prove the durable result or release the database | `CloseIncompleteRecoverable` | `CloseIncompleteRecoverable` | `CloseIncompleteRecoverable` |
+
+No `Busy` outcome creates an operation or may be shown as recovery. No
+`Running`/`Recovering` outcome may be shown as no mutation, failure, or safe
+profile switch until its durable lookup resolves.
+
+Profile close transitions preserve only bounded verified previews, signed
+listing intents, remote receipt envelopes, and retry IDs in protected native
+handoff state. `ProfileClosed` says “Profile locked—reopen to continue.”
+`CloseIncompleteRecoverable` says the profile is still finishing a local write,
+prevents switching to the same database, and offers Retry close; no operation
+is labeled failed or uncommitted until recovery proves it.
 
 `expired` always names the expired subject. `over_quota` always names the
 anchor and quota class. A verified receipt, protocol refusal, and local network
@@ -1405,9 +1592,9 @@ This requires an explicit refactor of today's ownership:
 1. Today `MobileProfile` contains only `Arc<Mutex<ProfileState>>`; it does not
    own the database field. The storage ownership change is inside the actual
    `LocalProfile`: remove both its `store: EvidenceStore` and
-   `db: Option<RiotDatabase>` fields and add one
-   `storage: Arc<CoreProfileStorage>`. The lifecycle section later adds a
-   runtime owner beside `inner`, never a raw database.
+   `db: Option<RiotDatabase>` fields and add one revocable
+   `storage_port: ProfileStoragePortLease`. The lifecycle section adds the
+   only strong storage owner beside `inner`, never a raw database.
 2. Add `CoreProfileStorage` in `riot-core::store`. Its durable constructor takes
    the single opened `RiotDatabase` and internally creates the existing
    `EvidenceRepository`/`EvidenceStore`, the new `ClientSiteRepository`,
@@ -1417,16 +1604,22 @@ This requires an explicit refactor of today's ownership:
    `riot-core::profile`; FFI retains only projections and UI conversion. The
    memory constructor provides the same command port without SQLite.
 3. Replace the FFI calls to `RiotSession::open_sqlite(database)` and retained
-   database cloning with `CoreProfileStorage::open_sqlite(database)`. No FFI
-   type owns a raw database handle, repository, transaction, or callable
-   `EvidenceStore`; all existing evidence and registry access as well as new
-   client-site access crosses `ProfileStorageCommand`.
+   database cloning with `CoreProfileStorage::open_sqlite(database)`. The
+   storage worker exclusively owns `RiotSession`, `EvidenceStore`, every live
+   core `ImportPreview`/`ImportPlan`, and maps them to opaque generation-scoped
+   IDs. `StoredPreview`, `StoredPlan`, `MobileImportPreview`,
+   `MobileImportPlan`, sync handles, and other FFI state retain only those IDs,
+   immutable display projections, and a revocable profile lease. No FFI type
+   owns a raw database handle, repository, transaction, callable core session
+   handle, or strong storage `Arc`; all existing evidence and registry access
+   as well as new client-site access crosses `ProfileStorageCommand`.
 4. Refactor every current `with_active` path that calls `profile.store`,
    `persist_registry`, `load_registry`, backup/restore, or another
    SQLite-capable helper into three phases. Under `ProfileState`, it prepares
    immutable command inputs, captures the relevant community/app generation,
    installs one unique pending profile-operation ID for a mutation, and clones
-   the storage port. It then releases `ProfileState` and executes the command.
+   the revocable storage-port lease. It then releases `ProfileState` and
+   executes the command.
    Finally it reacquires `ProfileState` and applies the returned projection only
    when the pending ID and captured generation still match.
 5. Exactly one mutable profile command may be pending. A second mutation is
@@ -1466,9 +1659,11 @@ storage command finish and report its recovered outcome.
 ### Native profile lifecycle
 
 `MobileProfile` gains an `Arc<MobileProfileRuntime>` beside its existing
-`inner`. The runtime is the sole lifecycle owner of `riot-client-net`,
-`CoreProfileStorage`, every cancellable operation, and revocable command-port
-leases:
+`inner`. `MobileProfileRuntime` is the sole strong owner of that profile's
+`CoreProfileStorage`, cancellable operations, one
+`ProfileNetworkLease` borrowed from the process `RiotApplicationRuntime`, and
+all revocable storage-port leases. It does not own or close the process iroh
+endpoint/Tokio runtime.
 
 ```text
 MobileProfileRuntimeState =
@@ -1476,6 +1671,12 @@ MobileProfileRuntimeState =
   Closing { close_id, deadline } |
   CloseIncompleteRecoverable { close_id, reason } |
   Closed { close_id, storage_outcome }
+
+ProfileState =
+  Active(LocalProfile { storage_port: ProfileStoragePortLease, ... }) |
+  Closing { close_id, recovery_operation_ids } |
+  Closed { close_id } |
+  Failed
 ```
 
 UniFFI exports idempotent async `MobileProfile.close()`. Native profile lock,
@@ -1487,16 +1688,19 @@ or resumes `CloseIncompleteRecoverable`. Close performs this fixed order:
 2. cancel all network operations and await their terminal events within ten
    seconds, while their existing storage leases remain valid only for terminal
    recovery;
-3. revoke every cloned command-port lease so a retained `riot-client-net` `Arc`
-   cannot submit more work;
-4. under `ProfileState`, mark the profile closing and detach its storage port,
-   then release `ProfileState`;
-5. close storage admission; terminate every queued read waiter with `Closed`;
+3. release the profile's `ProfileNetworkLease`; this cancels that profile's
+   remaining network tasks but leaves the process endpoint/runtime serving
+   other profiles;
+4. revoke every cloned storage-port lease so retained profile or child-handle
+   `Arc`s cannot submit more work;
+5. under `ProfileState`, replace `Active` with `Closing`, retaining only
+   recovery operation IDs, then release `ProfileState`;
+6. close storage admission; terminate every queued read waiter with `Closed`;
    cancel a queued not-yet-started mutation as `NotCommitted`;
-6. allow the one running atomic command its compiled ten-second deadline,
+7. allow the one running atomic command its compiled ten-second deadline,
    recover its durable result, checkpoint WAL, join the worker, and release
    `RiotDatabase`;
-7. publish the replayable `Closed` result.
+8. publish the replayable runtime and `ProfileState::Closed` result.
 
 At the network deadline, the runtime closes the iroh endpoint/streams and
 aborts remaining network tasks; a database command they already submitted is
@@ -1512,6 +1716,14 @@ profile switch cannot open another profile at the same database path until
 close reaches `Closed`. If the OS kills the process before the bounded drain
 finishes, the next open performs WAL and durable-intent recovery before
 readiness; it never assumes cancellation meant no commit.
+
+`RiotApplicationRuntime` is acquired through one process-global constructor;
+a second constructor returns the existing instance rather than starting another
+endpoint/runtime. Its idempotent async close first requires every
+`MobileProfileRuntime` lease to be `Closed`, rejects new leases, joins the
+process network tasks, and then closes the endpoint/Tokio runtime. A profile
+close can therefore neither duplicate nor prematurely terminate process-shared
+networking.
 
 New versioned tables store verified manifests, `O/C/W` entries, payloads,
 follow/host staging, anchor configuration/floors, receipts, and retry intent.
@@ -1656,6 +1868,7 @@ MVP defaults and absolute ceilings:
 | Active public HTTPS connections | 256 | 1,024 |
 | HTTP requests per keep-alive connection | 100 | 1,000 |
 | HTTP idle / absolute connection lifetime | 15 s / 5 min | 60 s / 30 min |
+| HTTP decoded header fields / one field line | 64 / 8 KiB | fixed |
 | Concurrent public HTTPS handlers | 128 | 512 |
 | Queued public HTTPS handlers | 128 | 512 |
 | Public HTTPS requests per source per minute | 120 | 600 |
@@ -1673,6 +1886,8 @@ MVP defaults and absolute ceilings:
 | Verification CPU per request | 500 ms | 2 s |
 | Aggregate outstanding verification CPU budget | 16 s | 64 s |
 | Reserved owner-removal verification permits | 4 | fixed |
+| Queued reserved-removal jobs | 256 | 1,024 |
+| Queued reserved-removal canonical bytes | 4 MiB | 16 MiB |
 | Reserved valid-removal database writer permits | 2 | fixed |
 | Emergency checkpoint worker | 1 | fixed |
 | Owner-removal attempts per source per minute | 10 | 40 |
@@ -1694,6 +1909,11 @@ MVP defaults and absolute ceilings:
 The three fixed reservation rows are mandatory partitions, not operator-tunable
 ordinary capacity.
 
+Every rate row is a token bucket with no hidden burst: global per-second
+buckets hold one second of published tokens, and per-source per-minute buckets
+hold one minute. Permit acquisition is nonblocking; failure rejects before
+allocating the protected resource.
+
 The emergency reserves are exclusive headroom, not ordinary capacity. For the
 configured listing ceiling `L`, readiness computes:
 
@@ -1714,9 +1934,11 @@ reserves. Default `L = 10,000` fits 768 MiB; absolute `L = 50,000` fits 3 GiB.
 Ordinary admissions are charged only against their advertised ordinary
 ceilings and stop before consuming either separately provisioned reserve. Only
 owner removal, expiry, equivocation/security suspension, checkpoint publication,
-and ensuing WAL checkpoint/truncation may consume them. Readiness fails if
-byte, page, free-space, or WAL accounting cannot still complete one worst-case
-emergency checkpoint.
+and the later bounded checkpoint-reclamation/WAL maintenance may consume them.
+Logical checkpoint publication and removal acknowledgement never wait for
+physical row deletion, index reclamation, or WAL truncation. Readiness fails if
+byte, page, free-space, or WAL accounting cannot still publish one worst-case
+emergency checkpoint and retain its post-acknowledgement maintenance headroom.
 
 ### Public HTTPS admission
 
@@ -1738,9 +1960,10 @@ After handshake, one connection has at most one in-flight request, the fixed
 idle/absolute lifetime, and the fixed request-count ceiling. Before allocating
 a handler or opening a SQLite snapshot, the parser enforces the
 global/per-source request token bucket, 8 KiB request target, 16 KiB decoded
-total headers, five-second header deadline, and zero request body. Only `GET`
-and `HEAD` are accepted. Transfer encoding, nonzero content length, every Range
-request, dynamic response compression, and unsupported methods receive a
+total headers, 64 decoded fields, 8 KiB per field line, five-second header
+deadline, and zero request body. Only `GET` and `HEAD` are accepted. Transfer
+encoding, duplicate/ambiguous content length, nonzero content length, every
+Range request, dynamic response compression, and unsupported methods receive a
 bounded error and close.
 
 The request then acquires the bounded handler queue/permit. Dynamic routes
@@ -1775,10 +1998,14 @@ tombstone naming an existing durable listing floor may use the separate
 per-source removal bucket. The reserved verifier accepts at most one candidate
 per `(root, source)`, eight candidates per root, and schedules full roots in
 deficit round-robin order; one root may occupy at most one of the four permits.
-A failed signature/capability check releases its slot and cannot create a
-claim row. Only a canonical tombstone that verifies against that admitted
-owner/listing floor may claim a preprovisioned removal row, acquire one of the
-two reserved database writers, and enter the emergency checkpoint lane.
+Its preallocated queue enforces both the global job and canonical-byte ceilings;
+it never evicts an admitted candidate. A new candidate beyond either ceiling
+receives typed `busy` with retry timing, while already admitted roots continue
+deterministic rounds. A failed signature/capability check releases its slot and
+cannot create a claim row. Once authority verifies, the job leaves the
+untrusted queue and cannot be starved or evicted by later candidates. Only that
+canonical tombstone may consume its root's reserved removal slot, acquire one
+of the two reserved database writers, and enter the emergency checkpoint lane.
 
 For an established HTTP request, 429/503 serves a prebuilt, at most 8 KiB,
 keyboard/screen-reader-accessible error page from a fixed reserved buffer. It
@@ -1793,10 +2020,14 @@ record source-specific overload/transport attempts and continue plural-source
 fallback; browsers retain the requested URL for ordinary reload.
 
 Before creating any durable row for a new request, the anchor applies, in
-order: frame/body bounds, in-memory connection and source rate limits, existing
-idempotency lookup, global metadata/row headroom, work verification when
-required, then canonical/admission verification. Exact idempotent replay reads
-the prior row without repeating work. A novel key that exceeds any source or
+order: frame/body bounds; in-memory connection/source limits; bounded canonical
+decode with unknown/duplicate/trailing-field rejection; byte-for-byte canonical
+re-encoding; `control_request_digest` computation; then existing idempotency
+lookup and constant-time digest comparison. Only an exact digest may read/replay
+the prior result; the same key with another body is rejected without revealing
+that result. A novel key then passes global metadata/row headroom, work
+verification when required, and full authority/admission verification. Exact
+replay does not repeat expensive work. A novel key that exceeds any source or
 global ceiling is refused without persistence.
 
 The sole exception is a structurally bounded owner-unlisting candidate: it
@@ -2102,12 +2333,12 @@ listings/refreshes and creates an emergency checkpoint. A removal arriving
 while the reserve is under pressure follows the `RemovalCommitted` through
 `RemovalTerminal` state machine: its first transaction atomically replaces that
 root's bounded current state with a signed `Removed` inclusion; recovery then
-builds/fsyncs the reserved checkpoint snapshot, advances the floor, compacts,
-and truncates/checkpoints WAL before acknowledging the stored receipt. Under a
-healthy deployment that passed reserve readiness, this constant-per-root path
-may shorten incremental history below the 30-day target but never exceeds
-ordinary caps or blocks an owner removal; offline peers recover through the
-checkpoint snapshot.
+publishes the frozen checkpoint snapshot and advances the logical floor before
+acknowledging the stored receipt. Bounded physical compaction/WAL maintenance
+follows independently. Under a healthy deployment that passed reserve
+readiness, this constant-per-root acknowledgement path may shorten incremental
+history below the 30-day target but never exceeds ordinary caps or blocks an
+owner removal; offline peers recover through the checkpoint snapshot.
 
 Operator-key rotation pauses directory writes, publishes the verified new
 descriptor, reissues all bounded current snapshot records under that descriptor,
@@ -2388,6 +2619,7 @@ Maintainers see per-anchor progress:
 - syncing `O`, `C`, `W`;
 - hosted through reported date;
 - refused with named quota/subject;
+- overloaded with verified retry time and preserved work;
 - unreachable;
 - receipt recovery;
 - local receipt persistence busy/recovery with verified remote success
@@ -2400,6 +2632,14 @@ Maintainers see per-anchor progress:
 
 Hosting and listing are separate controls. A failed listing refresh never
 removes hosted state.
+
+`WaitingToRelist` says: “This host is keeping earlier remove receipts replayable
+until <time>. Your community is still hosted here but is not in this host’s
+directory.” It preserves the signed intent, offers cancel/manual retry, and
+automatically retries once at the exact expiry unless cancelled. It is distinct
+from quota, overload, invalid authority, and terminal listing failure. A later
+owner removal remains available because the relisting transition never became
+visible without its reserved removal slot.
 
 The host-management screen starts with the configured defaults selected and a
 recommended target of three independent hosts. It explains each signed
@@ -2423,6 +2663,9 @@ return, expose text labels in addition to color or icons, and do not reorder
 focused rows. Partial, stale, refused, expired, and unreachable states have
 distinct accessible names. Reduced-motion settings disable nonessential
 progress animation.
+Countdowns announce entry into a wait, the final minute, readiness, and failure;
+they do not announce every second. Recovery/profile-close transitions preserve
+focus and expose operation IDs only under Technical details.
 
 ## Privacy and Logging
 
@@ -2579,9 +2822,25 @@ change is deferred to a later pilot window rather than minting a second token.
 this trusted recruitment procedure, not cryptographic proof that two
 credentials could never reach one human.
 
-The collector stores only
-`HMAC(collector_invitation_key, canonical_invitation)` and atomically
-transitions:
+The collector invitation lookup and deletion commitment are exactly:
+
+```text
+pilot_invitation_lookup = HMAC-SHA256(
+  collector_invitation_key,
+  u16be(31) || "riot/pilot-invitation-lookup/v1" ||
+  u64be(byte_length(canonical_cbor(PilotInvitationV1))) ||
+  canonical_cbor(PilotInvitationV1)
+)
+
+keyed_token_commitment = HMAC-SHA256(
+  collector_deletion_key,
+  u16be(30) || "riot/pilot-token-commitment/v1" ||
+  u64be(byte_length(canonical_cbor(PilotEnrollmentTokenV1))) ||
+  canonical_cbor(PilotEnrollmentTokenV1)
+)
+```
+
+The collector stores only `pilot_invitation_lookup` and atomically transitions:
 
 ```text
 Unspent |
@@ -2612,7 +2871,7 @@ Exports are cumulative:
 ```text
 PilotMetricsExportBodyV1 {
   enrollment_token,
-  export_sequence: u64,
+  export_sequence: u64 in 1..=u64::MAX-1,
   random_128_bit_idempotency_key,
   cumulative_metrics
 }
@@ -2644,7 +2903,7 @@ PilotExportReceiptV1 {
 PilotWithdrawalBodyV1 {
   enrollment_token,
   random_128_bit_idempotency_key,
-  withdrawal_sequence: u64,
+  withdrawal_sequence: exactly 1,
   requested_at
 }
 
@@ -2675,8 +2934,8 @@ PilotWithdrawalReceiptV1 {
 
 `withdrawal_request_digest` is
 `digest_v1("riot/pilot-withdrawal-request-envelope/v1",
-canonical_cbor(PilotWithdrawalRequestV1))`; the keyed token commitment is an
-HMAC under the collector's deletion key, not a public stable identifier.
+canonical_cbor(PilotWithdrawalRequestV1))`; `keyed_token_commitment` is the
+HMAC-SHA256 value above, not a public stable identifier.
 Checked-in pilot vectors fix every canonical body, signature preimage, key ID,
 request digest, valid signature, and one-bit-invalid signature.
 
@@ -2689,8 +2948,9 @@ replay returns the byte-identical signed `PilotExportReceiptV1` without
 recounting. `cumulative_metrics_digest` uses
 `digest_v1("riot/pilot-cumulative-metrics/v1", canonical_cbor(metrics))`.
 
-Withdrawal requires the token's window key signature and a sequence greater
-than the highest accepted export sequence. One transaction claims the
+Withdrawal uses its independent one-shot sequence value `1`; it does not need
+to exceed the export counter, so export at its maximum cannot prevent deletion.
+One transaction claims the
 withdrawal idempotency key, verifies the active token/pseudonym, deletes the
 highest export and denominator contribution, revokes the token and invitation,
 and stores the canonical signed deletion receipt. Exact retry returns that
@@ -2703,10 +2963,14 @@ Participants see the aggregate and explicitly export it. Anchor logs are not
 joined to client metrics. Invitation/token/export/withdrawal request bodies,
 source addresses, and transport metadata are never written to collector
 application logs or joined to recruitment records. The collector applies
-the same accepted-socket, TLS 1.3/http1-only, handshake, keep-alive, idle, and
-connection-lifetime admission contract as the anchor. It accepts only
-`POST application/cbor` on enrollment, export, and withdrawal, with a 64 KiB
-body, no transfer/content compression, and compiled handler/queue,
+the anchor's accepted-socket, TLS 1.3/http1-only, handshake, 64-header/8-KiB
+field-line, idle, and absolute-lifetime bounds, but has this separate request
+state machine: exactly one `POST application/cbor` request per connection on
+enrollment, export, or withdrawal; exactly one decimal `Content-Length` in
+`1..=65,536`; no transfer encoding, `Expect`, content/transfer compression,
+duplicate length, or trailing bytes; and a ten-second body-read deadline.
+It reads exactly the declared bytes into the preallocated body budget, closes
+after its bounded response, and applies compiled handler/queue,
 per-source/global rate, signature-CPU, and database-row ceilings before
 verification. Tokens, spent/revoked invitation digests, and collector rows are
 deleted after the published pilot report and its 30-day audit window.
@@ -2718,31 +2982,70 @@ PilotParticipationState =
   NotEnrolled |
   ImportingInvitation |
   AwaitingPilotConsent { roles, privacy_summary, expiry } |
+  Declined { invitation_deleted: true, network_mutation: None } |
   PersistingEnrollment { invitation_digest, key_id, idempotency_key } |
-  RecoveringEnrollment { idempotency_key } |
-  Enrolled { token, roles, highest_export_sequence } |
-  EnrollmentFailed {
-    Invalid | Expired | Spent | Revoked | Overloaded | LocalStorageBusy
+  RecoveringEnrollment { signed_request, idempotency_key } |
+  EnrollmentRetryable {
+    reason: Offline | Overloaded { retry_after } |
+      LocalStorageBusy { blocked_by_operation_id },
+    signed_request,
+    idempotency_key
   } |
+  EnrollmentTerminal {
+    reason: Invalid | Expired | SpentByDifferentRequest |
+      Revoked | CollectorRejected,
+    local_invitation_and_key: Deleted
+  } |
+  Enrolled { token, roles, highest_export_sequence } |
   PreviewingAggregate { cumulative_metrics } |
   Exporting { sequence, cumulative_metrics_digest, idempotency_key } |
   ExportConfirmed { sequence, accepted_at } |
-  ExportRetryable { sequence, retry_after } |
+  ExportRetryable {
+    reason: Offline | Overloaded { retry_after } |
+      LocalStorageBusy { blocked_by_operation_id } | ResponseLost,
+    signed_export
+  } |
+  ExportTerminal {
+    reason: InvalidToken | TokenExpired | Revoked |
+      SequenceExhausted | CollectorRejected,
+    withdrawal_material: Retained
+  } |
   Withdrawing { withdrawal_sequence, idempotency_key } |
-  WithdrawalRetryable { retry_after } |
-  Withdrawn { confirmed_at, published_aggregate_limit }
+  WithdrawalRetryable {
+    reason: Offline | Overloaded { retry_after } |
+      LocalStorageBusy { blocked_by_operation_id } | ResponseLost,
+    signed_withdrawal
+  } |
+  WithdrawalTerminal {
+    reason: InvalidSignature | CollectorRejected,
+    local_material: Retained
+  } |
+  Withdrawn {
+    receipt,
+    confirmed_at,
+    published_aggregate_limit,
+    key_token_metrics: Deleted
+  } |
+  RetentionComplete { local_key_token_metrics: Deleted }
 ```
 
 Before first enrollment I/O, Riot atomically stores the invitation, generated
 window key, and idempotency key. Crash recovery repeats the exact signed
-request. Before export or withdrawal it stores the next checked `u64` sequence,
-exact signed body, and idempotency key; retry is byte-identical. Invalid,
-expired, spent, revoked, overload, offline, confirmation, and deletion states
-are user-visible and accessible. Withdrawal remains retryable offline. After a
-pilot report is published it deletes the retained audit row but cannot retract
-an already published anonymous aggregate; the confirmation explains that
-limit. After the audit window, `retention_complete` confirms the collector
-already holds no participant row and Riot deletes its local pilot key/token.
+request. Response loss enters `RecoveringEnrollment`, never `Spent`; exact
+replay recovers the token. Declining consent performs no network request and
+deletes the imported invitation before returning to `NotEnrolled`.
+
+Before export or withdrawal Riot stores the next checked sequence, exact signed
+body, and idempotency key; retry is byte-identical. Retryable states retain that
+material and expose accessible Retry/Cancel controls. Enrollment terminal
+states delete an unusable invitation/key. Export terminal states retain the
+token/key/metrics so authenticated withdrawal remains possible. A confirmed
+withdrawal deletes key/token/metrics and retains only its signed accessible
+receipt. After a pilot report is published it cannot retract an already
+published anonymous aggregate; the confirmation explains that limit. After the
+audit window, `RetentionComplete` confirms the collector holds no participant
+row and deletes all remaining local pilot secrets. Overload is always
+retryable with verified timing, never a terminal pilot failure.
 
 Event boundaries and denominators are fixed:
 
@@ -2856,9 +3159,15 @@ interfaces:
 - `FailpointRepository` with named production boundaries:
   `after_stage_bundle_commit`, `before_promotion_transaction`,
   `before_promotion_commit`, `after_promotion_before_receipt_delivery`,
-  `after_removal_commit`, `after_removal_snapshot_fsync`,
-  `after_removal_floor_advance`, `before_removal_wal_truncate`,
-  `after_removal_wal_truncate`,
+  `after_removal_commit`, `after_checkpoint_work_planned`,
+  `after_checkpoint_signed`, `after_checkpoint_temp_files_fsync`,
+  `after_checkpoint_rename_before_parent_fsync`,
+  `after_checkpoint_parent_fsync`,
+  `after_checkpoint_pointer_floor_advance`,
+  `after_covered_removals_terminalized`,
+  `before_removal_terminal_delivery`,
+  `during_incremental_checkpoint_reclaim`,
+  `before_maintenance_wal_checkpoint`, `after_maintenance_wal_checkpoint`,
   `before_projection_publish`, and `after_projection_publish_before_cleanup`;
 - `FakeRenderer` recording immutable snapshot generations;
 - bounded operation reports containing metadata only.
@@ -2898,6 +3207,9 @@ RED:
   key, or two pinned floors claim the same epoch with different digests/keys;
 - Rust/Swift/Kotlin/TypeScript disagree on any domain label, canonical bytes,
   length prefix, body/envelope choice, or expected protocol identity digest.
+- any implementation disagrees on `limit_profile_digest`, listing-receipt
+  signature bytes, namespace-token HMAC input, or the distinction between the
+  control-request and work-target digest bodies;
 
 GREEN:
 
@@ -2939,8 +3251,17 @@ RED:
 - crash between staging and commit leaks partial visibility;
 - operation IDs collide with idempotency keys or duplicate work/receipts;
 - prepared replay after restart changes operation ID or namespace token;
+- canonical decode, re-encoding, and body digest comparison occur after an
+  idempotency lookup or reveal a stored result to a same-key/different-body
+  request;
 - crash at any SubmitListing/removal failpoint duplicates an inclusion, loses a
   receipt/result, or makes exact idempotent recovery impossible;
+- listing becomes visible without atomically owning a reserved removal slot, or
+  another root can consume that slot;
+- recovery changes a frozen checkpoint timestamp, member order, head,
+  signature, output name, digest, or covered-removal set;
+- a caller receives removal success before the checkpoint pointer, logical
+  floor, and all covered removal results advance atomically;
 - concurrent same-base commits both win or the loser overwrites newer state;
 - work proof replays against another body;
 - logical quota is bypassed by cross-community dedup;
@@ -2977,6 +3298,9 @@ RED:
   attestation after the source generation changes;
 - one challenge/attestation prepares twice, survives descriptor rotation, or
   compares source generation outside the immutable snapshot it streams.
+- a prepared replica replays usable tokens after its peer session closes or
+  either descriptor rotates, rather than terminalizing as
+  `peer_context_changed`;
 
 GREEN:
 
@@ -3022,10 +3346,15 @@ RED:
 - a second local mutation queues ambiguously, local busy/commit recovery
   collapses into Internal, or a waiter survives profile close without a
   terminal result;
+- an FFI `ImportPreview`/`ImportPlan` handle strongly owns core session or
+  evidence storage, or a profile close tears down the process-global network
+  runtime while another profile lease remains;
 - 429/503 appears as zero results/invalid reference or loses the preserved web
   URL and accessible retry;
 - `stale_source` retries invisibly/unboundedly or collapses into generic
   publish failure;
+- `removal_replay_window` appears as quota/failure, loses the signed listing
+  intent, omits its exact retry time, or hides that hosting remains intact;
 - a native resolved Cargo graph contains the anchor daemon, HTTP server, or
   renderer dependency closure;
 - cancellation leaves native networking or staged local mutation alive.
@@ -3056,8 +3385,15 @@ RED:
 - anonymous HTTP search/feed/static floods exceed connection, queue, CPU,
   snapshot, rate, or response-byte ceilings or starve the reserved removal
   lane;
+- 65 decoded header fields, a field line over 8 KiB, an over-cap reserved
+  removal queue, or over-cap reserved canonical bytes are admitted;
 - one pilot invitation creates two pseudonyms, changes role, or returns a
   different token on exact enrollment replay;
+- collector `GET`, missing/duplicate/non-decimal/out-of-range content length,
+  transfer encoding, compressed or trailing bytes, or a body that misses its
+  ten-second deadline is admitted;
+- export accepts sequence `u64::MAX`, or an export at `u64::MAX - 1` prevents
+  the independent sequence-1 authenticated withdrawal;
 - forged/replayed/overflow pilot signatures or unauthenticated withdrawal
   deletes, restores, or recounts a participant row;
 - a replayed pilot export inflates participants/denominators or a
@@ -3089,6 +3425,8 @@ Tests explicitly cover:
 - forged predecessor verification key after a non-genesis pinned floor;
 - ambiguous same-epoch descriptor floors with different digests or keys;
 - every protocol identity golden vector plus body-versus-envelope mutation;
+- exact listing-receipt signature, namespace HMAC, invitation-lookup HMAC,
+  token-commitment HMAC, limit-profile digest, and work/control digest vectors;
 - prepared idempotency replay before/after restart and expiry;
 - 64 requested maximum-size items split across ordered chunks;
 - concurrent uploads for one site;
@@ -3102,6 +3440,11 @@ Tests explicitly cover:
 - cold checkpoint verification after several operator-key rotations;
 - removals beyond reserved feed capacity using emergency checkpoint coalescing;
 - maximum-size removal at ordinary metadata/database/WAL ceilings;
+- listing-slot reservation races, two retained removal results, relist
+  countdown/retry, and a later guaranteed owner removal;
+- restart at every `CheckpointWorkV1` and publication failpoint, including
+  rename before parent fsync, atomic floor/result advancement, terminal
+  delivery loss, bounded reclamation, and maintenance WAL checkpoint;
 - client pinned across several descriptor-key rotations;
 - replica source attestation replayed on another connection/destination or
   after source generation changes;
@@ -3119,12 +3462,16 @@ Tests explicitly cover:
   ledger;
 - pilot crash recovery during enrollment/export/withdrawal plus unauthorized,
   exact-replay, offline, post-report, and post-retention withdrawal;
+- pilot consent decline, local-storage busy, overload with retry timing,
+  response loss, every enrollment/export/withdrawal terminal reason, retained
+  withdrawal material, confirmed deletion, and retention completion;
 - HTTP slow-header, rate, queue, database-snapshot, query-time, and oversized
   response exhaustion while a valid owner removal completes;
 - TLS slow-handshake/resumption churn, keep-alive exhaustion, rejected
   HTTP/2/upgrade/method/Range/compression, and connection-level starvation;
-- every removal failpoint from committed tombstone through checkpoint/floor,
-  WAL truncation, Terminal result, and exact retry;
+- every removal failpoint from committed tombstone through frozen checkpoint,
+  filesystem publication, atomic checkpoint/floor/Terminal result, lost
+  delivery, exact retry, and separately bounded physical reclamation;
 - local queue-full, busy retry, cancel-before-start, cancel-after-start,
   shutdown with queued/running work, and reopen-after-commit recovery;
 - one or two anchors unavailable;
@@ -3196,8 +3543,9 @@ The design is implemented when:
 - clients atomically persist verified `O/C/W` state in the scalable site
   repository through the single core-owned profile database lifecycle and
   schedule ongoing reconciliation;
-- mobile internet operations run through the cancellable Rust-owned
-  iroh/Tokio/UniFFI boundary;
+- mobile internet operations share the process-singleton Rust-owned
+  iroh/Tokio endpoint through revocable profile leases and cancellable UniFFI
+  operations;
 - `LocalProfile` reaches existing evidence, registry, and new site persistence
   only through the bounded core storage command port, with no database command
   or await under `ProfileState`;
@@ -3223,9 +3571,11 @@ The design is implemented when:
   tokens survive key rotation and restart;
 - the anchor repository survives crash/restart and enforces logical/global
   quotas;
-- exclusive emergency metadata and WAL/fsync reserves permit a maximum-size
-  owner removal and checkpoint after ordinary capacity and idempotency rows are
-  exhausted, with one crash-safe listing/feed/receipt/result lifecycle;
+- per-listed-root reservation plus exclusive emergency metadata and WAL/fsync
+  reserves permit a maximum-size owner removal and logical checkpoint/floor
+  advance after ordinary capacity and idempotency rows are exhausted, with one
+  crash-safe listing/feed/receipt/result lifecycle; physical reclamation and
+  WAL truncation remain bounded post-acknowledgement maintenance;
 - open hosting cannot exceed compiled process ceilings or trigger unbounded
   gossip;
 - authenticated directory and replica gossip has a complete bounded wire
