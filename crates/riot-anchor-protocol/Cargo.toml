@@ -13,6 +13,8 @@ license = "AGPL-3.0-or-later"
 # transport, FFI, or a platform. `tests/dependency_boundary.rs` enforces this.
 [dependencies]
 riot-core = { path = "../riot-core", default-features = false }
+minicbor = { workspace = true }
+blake3 = { workspace = true }
 
 [dev-dependencies]
 serde_json = { workspace = true }

@@ -16,3 +16,9 @@
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
+
+pub mod codec;
+pub mod digest;
+
+pub use codec::{decode_canonical, CanonicalRecord, CodecError};
+pub use digest::digest_v1;

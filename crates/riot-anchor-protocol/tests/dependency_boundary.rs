@@ -52,7 +52,7 @@ const FORBIDDEN: &[&str] = &[
 /// Direct normal dependencies this crate is allowed to declare. Keeping this an
 /// explicit allowlist means any new direct dependency is a deliberate, reviewed
 /// change to this test, not a silent graph expansion.
-const DIRECT_ALLOWLIST: &[&str] = &["riot-core"];
+const DIRECT_ALLOWLIST: &[&str] = &["riot-core", "minicbor", "blake3"];
 
 fn cargo_metadata() -> Value {
     let output = Command::new(env!("CARGO"))

@@ -3460,6 +3460,8 @@ dependencies = [
 name = "riot-anchor-protocol"
 version = "0.1.0"
 dependencies = [
+ "blake3",
+ "minicbor",
  "riot-core",
  "serde_json",
 ]

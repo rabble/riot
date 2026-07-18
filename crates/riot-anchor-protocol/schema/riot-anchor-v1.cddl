@@ -1,0 +1,53 @@
+; riot-anchor-v1.cddl
+; Machine-readable transcription of the canonical positional-CBOR grammar for
+; the Riot public community anchor network (design:
+; docs/superpowers/specs/2026-07-18-public-community-anchor-network-design.md,
+; "Canonical Anchor Records"). CDDL and code must agree with the design; neither
+; may add a tag, field, alternate map form, or numeric discriminant.
+;
+; Encoding conventions (normative prose; enforced in code by decode->re-encode):
+;   * a product type `NameVn { a, b, c }` encodes as the positional array
+;     [n, a, b, c]; a protocol-version-scoped `Name { a, b, c }` encodes as
+;     [a, b, c], always in displayed field order.
+;   * an optional field is `null` or its one typed value; it never changes the
+;     array length.
+;   * a closed enum value is its exact lowercase ASCII snake_case name (tstr).
+;   * a sum variant encodes as [variant_name, *variant_fields].
+;   * a field whose schema name ends in `_bytes` is a CBOR byte string carrying
+;     separately-canonical bytes; every other nested typed field is embedded as a
+;     CBOR value, not double-encoded.
+;   * unordered sets encode as arrays sorted by complete canonical element bytes;
+;     ordered lists retain their specified semantic order.
+;   * decoders reject unknown versions, unknown enum/sum names, duplicate set
+;     elements, non-canonical encodings, maps, indefinite lengths, and trailing
+;     bytes.
+;
+; Digest construction (see src/digest.rs):
+;   digest_v1(label, canonical) =
+;     BLAKE3(u16be(len(label)) || label || u64be(len(canonical)) || canonical)
+;
+; Later work units extend this file with concrete record rules (authority,
+; control, sync2, directory, peer). WU-002 defines only the shared envelope
+; wrappers used across those records; their inner bodies appear as `any` here
+; until the owning work unit replaces them with an exact rule.
+
+; A 64-byte Ed25519 signature.
+signature-64 = bstr .size 64
+
+; OperatorSignedEnvelopeV1<T> = canonical_cbor([1, T, exactly_64_signature_bytes])
+operator-signed-envelope-v1 = [1, any, signature-64]
+
+; AdmittedListingEnvelopeV1 = canonical_cbor([
+;   1,
+;   canonical_signed_listing_entry_bytes,
+;   canonical_capability_chain_bytes,
+;   null / canonical_delegate_grant_bytes
+; ])
+admitted-listing-envelope-v1 = [1, bstr, bstr, null / bstr]
+
+; RootSignedTicketCoreEnvelopeV2 =
+;   canonical_cbor([2, PublicSiteTicketV2Core, exactly_64_root_signature_bytes])
+root-signed-ticket-core-envelope-v2 = [2, any, signature-64]
+
+; ControlDigestBodyV1 = canonical_cbor([1, operation_kind, semantic_body])
+control-digest-body-v1 = [1, tstr, any]
