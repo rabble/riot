@@ -34,3 +34,13 @@ Decision: proceed to PLAN Rung 2 (two-pane shell) first — biggest, most valuab
 Architect agent drafted `plans/2026-07-18-spaces-first-rung2-two-pane-shell.md` — a 4-step increment sub-ladder (2.0 shared pure tier/row model XCTest-only; 2.1 iOS repo/app-model plumbing; 2.2 iOS/macOS two-pane shell; 2.3 Android mirror-models + root skeleton). Grounded against overnight branch (symbols, corrected line table).
 Real gaps it found (for morning): (a) Swift RiotProfileRepository has no listFollowedSites() wrapper yet; (b) **Rung-1 FOLLOW-UP: Android's CommunityRelationship `when` is exhaustive with no else — regenerating Android bindings with Rung 1's new variants breaks Kotlin compile.** Not caught by Rust CI (Android app CI is deferred). Healed in Rung 2 step 2.3; flagged here so it's not a surprise. (c) macOS shares iOS sources → both pbxproj need entries per new Swift file (recipe included). (d) Android still on the OLD debug shell (flat ConferenceSurface enum, Views not Compose) → its Rung 2 is a skeleton, not a redesign.
 Committing the draft; running the plan-review gate (3 reviewers) next.
+
+### Wake 3 — Rung 2 gate: 2 PASS (Scope, Completeness), 1 FAIL (Feasibility)
+Feasibility caught a real defect + a Rung-1 latent break:
+- **RUNG-1 LATENT NATIVE BUILD BREAKS (morning action needed).** Rung 1 (#59, merged) added CommunityRelationship::{Following,Personal}. Regenerating NATIVE bindings breaks two landed switches that have no default/else:
+  1. iOS `apps/ios/Riot/CommunityChooser.swift` `plainLabel` switch (organizer/member/publicReader) → non-exhaustive → Swift compile error.
+  2. Android `CommunityChooser.kt:16` + a second `when` — same.
+  Both invisible to Rust CI (native app CI is DEFERRED per memory), so #59 went green with these latent. The exhaustive-match trap AGAIN, native side. Rung 2 step 2.0/2.3 heal them, but if Rung 2 slips, someone regenerating iOS bindings hits it first. LOG PROMINENTLY.
+- Rung 2 plan FAIL (fixable): Step 2.0 claims "touches no landed shell / safest first commit" — FALSE, it must also heal CommunityChooser.swift:plainLabel + regenerate iOS bindings (the plan gave Android a regen step but not iOS). Fix: add an iOS gap item mirroring Android; pull CommunityChooser.swift into Step 2.0 scope.
+- Completeness non-blocking (fold in): (1) state the cross-kind chrome contract §4 lands with the renders (Rung 3/4), placeholders carry a tier-badge header stub; (2) add a pure-model row-filter test for §3.2 search; (3) note Android launch-restore rides the existing CommunityReturnOutcome mirror; (4) 2.1 add the explicit xcodebuild command.
+Dispatching a fix to the Rung 2 plan, then re-review feasibility.
