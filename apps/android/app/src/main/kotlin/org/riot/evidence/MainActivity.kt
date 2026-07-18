@@ -181,6 +181,7 @@ class MainActivity : Activity() {
             ConferenceSurface.SPACES -> showSpaces()
             ConferenceSurface.APP_DIRECTORY -> showDirectory()
             ConferenceSurface.INCIDENT_BOARD -> showBoard()
+            ConferenceSurface.NEWSWIRE -> showNewswire()
             ConferenceSurface.COMPOSE_AND_SIGN -> showCompose()
             ConferenceSurface.IMPORT_PREVIEW -> showImportPreview()
             ConferenceSurface.CONNECTION -> showConnection()
@@ -406,6 +407,84 @@ class MainActivity : Activity() {
                     "Fresh until: ${entry.freshness.expiresAt}\n" +
                     if (entry.aiAssisted) "AI-assisted draft • human signed" else "Human drafted and signed",
             ))
+        }
+    }
+
+    /**
+     * The community newswire: the collective's published wire for the active
+     * community, shown exactly as core's signed, already-split projection presents
+     * it (front page / open wire), honoring editorial treatment (hidden and
+     * tombstoned posts are redacted to their interstitial). Read-only here;
+     * comments and unread land in later PRs. An unavailable/stale projection
+     * degrades to the offline-stale copy rather than crashing.
+     */
+    private fun showNewswire() {
+        val community = controller.activeCommunity()
+        if (community == null) {
+            content.addView(body(
+                "Join or create a community to see its newswire. " +
+                    "Everything you already hold stays available offline.",
+            ))
+            content.addView(action("Go to spaces") { show(ConferenceSurface.SPACES) })
+            return
+        }
+        content.addView(body(
+            "Wire for ${community.title}. Reports appear exactly as the " +
+                "collective's signed records present them.",
+        ))
+        renderWire(NewswireScreen.resolve(community.descriptorEntryId) { controller.projectNewswire(it) })
+    }
+
+    private fun renderWire(state: NewswireWireState) {
+        when (state) {
+            NewswireWireState.OfflineStale -> {
+                content.addView(heading(NewswireWireCopy.OFFLINE_TITLE))
+                content.addView(body(NewswireWireCopy.OFFLINE_MESSAGE))
+                content.addView(action("Try again") { show(ConferenceSurface.NEWSWIRE) })
+            }
+            NewswireWireState.EmptyWire -> {
+                content.addView(heading(NewswireWireCopy.EMPTY_TITLE))
+                content.addView(body(NewswireWireCopy.EMPTY_MESSAGE))
+            }
+            is NewswireWireState.PostsButNoFeature -> {
+                content.addView(heading(NewswireWireCopy.NO_FEATURE_TITLE))
+                content.addView(body(NewswireWireCopy.NO_FEATURE_MESSAGE))
+                content.addView(heading(NewswireWireCopy.NO_FEATURE_LINK))
+                state.openWire.forEach { content.addView(postView(it)) }
+            }
+            is NewswireWireState.Featured -> {
+                content.addView(heading("Featured"))
+                state.frontPage.forEach { content.addView(postView(it)) }
+                content.addView(heading("Open wire"))
+                state.openWire.forEach { content.addView(postView(it)) }
+            }
+        }
+    }
+
+    /** One post row. A hidden or tombstoned post shows only its signed
+     *  interstitial — never the withheld headline — matching the treatment copy. */
+    private fun postView(row: NewswirePostRow): TextView = when (row.display) {
+        NewswirePostDisplay.HIDDEN_INTERSTITIAL ->
+            body("${NewswireTreatmentCopy.HIDDEN_TITLE}\n${NewswireTreatmentCopy.HIDDEN_BODY}")
+        NewswirePostDisplay.TOMBSTONED ->
+            body("${NewswireTreatmentCopy.TOMBSTONE_TITLE}\n${NewswireTreatmentCopy.TOMBSTONE_BODY}")
+        NewswirePostDisplay.ORDINARY -> body(ordinaryPostText(row))
+    }
+
+    private fun ordinaryPostText(row: NewswirePostRow): String {
+        val badges = buildList {
+            if (row.verificationCount > 0) add("Verified x${row.verificationCount}")
+            if (row.hasCorrection) add(EditorialCorrectionLabel.TEXT)
+            if (row.aiAssisted) add("AI-assisted")
+        }
+        return buildString {
+            append(row.headline ?: "(untitled report)")
+            append("\n")
+            append(row.author)
+            if (badges.isNotEmpty()) {
+                append("\n")
+                append(badges.joinToString(" • "))
+            }
         }
     }
 

@@ -303,3 +303,31 @@ sealed class NewswireWireState(val accessibilityId: String) {
         }
     }
 }
+
+/** Projects a community's newswire by its descriptor entry id. A one-method seam
+ *  (`RiotController::projectNewswire`) so the screen resolver stays pure and
+ *  host-JVM testable without a native profile. */
+fun interface NewswireProjector {
+    fun project(descriptorEntryId: String): NewswireProjectionView
+}
+
+/**
+ * The screen-level resolver: turns the active community's descriptor (which may be
+ * null for a legacy space, or point at a wire that fails to project) into the
+ * [NewswireWireState] the surface renders. A null/blank descriptor or a projection
+ * that throws yields [NewswireWireState.OfflineStale] — the exact mirror of iOS's
+ * `try? projectNewswire(...)` → offlineStale fallback. Otherwise it delegates to
+ * the already-verified [NewswireWireState.from]. Pure given the projector.
+ */
+object NewswireScreen {
+    fun resolve(descriptorEntryId: String?, projector: NewswireProjector): NewswireWireState {
+        if (descriptorEntryId.isNullOrBlank()) return NewswireWireState.OfflineStale
+        // Any projection failure (an unavailable/stale wire, a core refusal) is an
+        // offline-stale surface, never a crash — matches iOS's `try?` fallback.
+        return try {
+            NewswireWireState.from(projector.project(descriptorEntryId))
+        } catch (_: Exception) {
+            NewswireWireState.OfflineStale
+        }
+    }
+}
