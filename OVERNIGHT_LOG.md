@@ -2,6 +2,40 @@
 
 Append-only. Newest entries at the bottom (morning summary goes at TOP when done).
 
+---
+
+# ☀️ MORNING SUMMARY (read this first)
+
+**All on branch `overnight/2026-07-18` (pushed). Nothing merged to main overnight** (Rung 1 #59 hit main moments before your overnight brief — pre-dates the "no main" rule).
+
+## Done + verified
+- **Rung 1 (core following+personal relationships) — MERGED (#59), CI-green.** Executed subagent-driven earlier: additive `Following`/`Personal` (no registry migration), `FollowedSiteRow` + `list_followed_sites()` + `list_communities` Following-exclusion, S2 exposure guard. Workspace 1086/0.
+- **Rung 2 (two-pane shell skeleton) plan — GATE-PASSED 3/3.** Ready for native execution (by you, on-device). A 4-step increment ladder (pure model → iOS plumbing → iOS/macOS shell → Android), each green-keeping.
+
+## Drafted, NOT gated — each blocked on a decision or FFI gap (your call)
+- **Rung 3 (followed-site detail) — DRAFT + 2 FFI GAPS.** The Unit 4 composite render can't show a followed site's *content* as-is: (1) no store-backed `resolved_site_for_root`; (2) `ResolvedSiteItem` has NO title/body — only ids/tier/treatment. Adding content = a **view-model contract decision (yours)**. Trust-tier chrome (§4.1 security-UI) is speccable now.
+- **Rung 4 (your-space) — DRAFT + BLOCKED.** A prior **gate-passed `personal-spaces-and-pages` design already exists** (owned namespace + published page, GeoCities-style) — "your space" and that feature are the same object. **3 questions for you:** (1) is your-space == personal-spaces? (2) how much of personal-spaces is built (owned.rs exists; page/store slices look unfinished)? (3) bounded-home (spaces-first §11 B) vs full-CMS (personal-spaces design) — which governs? They conflict.
+- **Rung 5 (Unit 6 obligations) — DRAFT.** Seizure disclosure (§9.3, mandatory, blocking at `create_owned_site` mint) is fully speccable + is the priority. FFI gaps: `delegate_section` (editor handshake) and `follow_site(ticket)` are NOT in FFI yet. QR/camera net-new both platforms.
+
+## ⚠️ Needs a fix (found overnight): Rung 1 has TWO latent NATIVE build breaks
+Adding `CommunityRelationship::{Following,Personal}` (merged in #59) makes two landed switches non-exhaustive once native bindings regenerate — **invisible to Rust CI** (native app CI is deferred), so #59 went green with them latent:
+1. iOS `apps/ios/Riot/CommunityChooser.swift` `plainLabel` (organizer/member/publicReader, no default).
+2. Android `CommunityChooser.kt` `plainLabel()` `when` (+ a second `when`).
+Rung 2 step 2.0/2.3 heal both. If you regenerate native bindings BEFORE executing Rung 2, add the `.following`/`.personal` arms first. (I did not fix these overnight — native, unverifiable on-device.)
+
+## Assumptions I made (review)
+- "Your space" == the personal-spaces feature (Rung 4 is the nav entry; personal-spaces is the contents). If wrong, Rung 4 rescopes.
+- Planned-not-executed all native rungs (can't build iOS/Android on-device overnight). No unverified native committed.
+
+## Suggested next steps (morning)
+1. Answer the Rung 4 reconciliation (biggest unblock) + the Rung 3 view-model-content decision.
+2. Decide whether to hotfix the two Rung-1 native switch breaks now vs. let Rung 2 execution heal them.
+3. Execute Rung 2 (gate-passed) on-device; then Rung 3a FFI gap-fills (pure-Rust, once the content shape is decided).
+
+Loop stopped after this summary (further progress needs your decisions).
+
+---
+
 ## Context at start
 Marathon session already delivered: composite-site Units 0–5 merged to main; spaces-first
 navigation design-gate-passed (spec `docs/superpowers/specs/2026-07-18-spaces-first-navigation-design.md`);
