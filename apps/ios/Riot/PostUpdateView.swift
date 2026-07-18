@@ -339,6 +339,22 @@ public final class PostUpdateViewModel: ObservableObject {
         }
     }
 
+    /// Plain-language guidance for why Post is disabled, or nil when ready. So the
+    /// composer explains what's still needed instead of a silent dead-disable —
+    /// the exact stranding an operational mode would otherwise cause. This is
+    /// presentation of the already-computed `validation`, not new business logic.
+    public var validationGuidance: String? {
+        switch validation {
+        case .ready:
+            return nil
+        case .needsHeadlineAndBody:
+            return "Add a headline and body to post."
+        case let .needsOperationalFields(missing):
+            // missing is already human: "a source claim", "an expiry", "a coarse location".
+            return "To post \(mode.label.lowercased()), add \(missing.joined(separator: ", "))."
+        }
+    }
+
     // MARK: Draft persistence
 
     /// The current draft, as it would be persisted.
@@ -598,6 +614,12 @@ public struct PostUpdateView: View {
                         .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
                         .accessibilityIdentifier("post-pending-exchange")
                 } else {
+                    if let guidance = model.validationGuidance {
+                        Text(guidance)
+                            .font(.riot(.body, size: 13, relativeTo: .footnote))
+                            .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
+                            .accessibilityIdentifier("post-validation-guidance")
+                    }
                     Button(PostUpdateViewModel.primaryActionTitle, action: model.post)
                         .buttonStyle(.riotPrimary)
                         .accessibilityIdentifier("post-update")

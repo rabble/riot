@@ -368,4 +368,40 @@ final class PostUpdateTests: XCTestCase {
         XCTAssertEqual(publisher.lastRequest?.coarseLocation, "South barricade")
         XCTAssertEqual(publisher.lastRequest?.expiresAtUnixSeconds, 1_720_003_600)
     }
+
+    // MARK: - Post is never dead-disabled (gate-r1 blocker, Unit 6)
+
+    @MainActor
+    func testAlertWithEmptyFieldsDisablesPostButShowsActionableGuidance() {
+        let model = makeModel()
+        model.headline = "Headline"
+        model.body = "Body"
+        // Update mode: ready, no guidance.
+        XCTAssertTrue(model.canPost)
+        XCTAssertNil(model.validationGuidance)
+
+        // Alert with nothing supplied: disabled, but NOT silently — guidance lists what's missing.
+        model.mode = .operationalAlert
+        XCTAssertFalse(model.canPost)
+        let guidance = try? XCTUnwrap(model.validationGuidance)
+        XCTAssertTrue(guidance?.contains("source") ?? false)
+        XCTAssertTrue(guidance?.contains("expiry") ?? false)
+        XCTAssertTrue(guidance?.contains("location") ?? false)
+    }
+
+    @MainActor
+    func testSupplyingOperationalFieldsEnablesPostAndClearsGuidance() {
+        let model = makeModel()
+        model.headline = "Headline"
+        model.body = "Body"
+        model.mode = .operationalRequest
+        XCTAssertFalse(model.canPost)
+
+        model.sourceClaims = ["A neighbour told me"]
+        model.coarseLocation = "North gate"
+        model.expiresAt = Date(timeIntervalSince1970: 1_720_003_600)
+
+        XCTAssertTrue(model.canPost, "Alert/Request must never strand Post once its fields are supplied")
+        XCTAssertNil(model.validationGuidance, "no guidance once ready")
+    }
 }
