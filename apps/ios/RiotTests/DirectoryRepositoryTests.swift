@@ -480,6 +480,58 @@ final class DirectoryRepositoryTests: XCTestCase {
             XCTAssertEqual(error as? RepositoryError, .noCurrentSpace)
         }
     }
+
+    /// The "Add a tool" install path: a chosen manifest+bundle pair is installed
+    /// at runtime, appears in the held apps UNTRUSTED (install turns nothing on),
+    /// and — because it is persisted as a carried pack — survives a relaunch.
+    func testInstallAppAddsAnUntrustedToolThatSurvivesRelaunch() throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("add-tool-\(UUID().uuidString)")
+        let keyStore = TestWrappingKeyStore()
+        let file = dir.appendingPathComponent("profile.json")
+
+        // Open with NO starter packs, then install the fixture pair at runtime.
+        let repo = try RiotProfileRepository.open(
+            storage: try ProtectedProfileStorage(fileURL: file),
+            keyStore: keyStore,
+            starterPacks: []
+        )
+        XCTAssertTrue(try repo.installedApps().isEmpty)
+
+        let (manifest, bundle) = try XCTUnwrap(try Self.starterPacks().first)
+        let installed = try repo.installApp(manifest: manifest, bundle: bundle)
+
+        // Appears, and appears UNTRUSTED — install turns nothing on.
+        XCTAssertEqual(installed.name, "Checklist")
+        XCTAssertFalse(installed.trusted, "a freshly added tool must be untrusted until the organizer trusts it")
+        XCTAssertEqual(try repo.installedApps().count, 1)
+        XCTAssertFalse(try XCTUnwrap(try repo.installedApps().first).trusted)
+
+        // Persisted as a carried pack -> present after a reopen (still untrusted).
+        let reopened = try RiotProfileRepository.open(
+            storage: try ProtectedProfileStorage(fileURL: file),
+            keyStore: keyStore,
+            starterPacks: []
+        )
+        XCTAssertEqual(try reopened.installedApps().count, 1)
+        XCTAssertFalse(try XCTUnwrap(try reopened.installedApps().first).trusted)
+    }
+
+    /// A pair Rust refuses is never retained: a corrupt bundle throws and leaves
+    /// the held apps empty, so a failed install cannot silently "just not appear".
+    func testInstallAppRejectsStructurallyBrokenBytesWithoutRetaining() throws {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("add-tool-bad-\(UUID().uuidString)")
+        let repo = try RiotProfileRepository.open(
+            storage: try ProtectedProfileStorage(fileURL: dir.appendingPathComponent("profile.json")),
+            keyStore: TestWrappingKeyStore(),
+            starterPacks: []
+        )
+        var (manifest, bundle) = try XCTUnwrap(try Self.starterPacks().first)
+        bundle.removeLast(bundle.count / 2)   // corrupt the bundle
+        XCTAssertThrowsError(try repo.installApp(manifest: manifest, bundle: bundle))
+        XCTAssertTrue(try repo.installedApps().isEmpty, "a rejected pair must not be retained")
+    }
 }
 
 extension RepositoryError: @retroactive Equatable {
