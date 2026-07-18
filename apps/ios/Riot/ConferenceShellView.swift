@@ -573,7 +573,10 @@ private struct CommunityShellView: View {
             descriptorResolver: { [weak model] in model?.rederivedNewswireDescriptorID() },
             // Per-device seen state lives in the standard defaults, keyed per
             // community — never the Willow store, never the FFI.
-            seenCursor: SeenCursorStore()
+            seenCursor: SeenCursorStore(),
+            // Communal reply signer — the same repository, or nil (reply hidden)
+            // when no profile is open.
+            commenter: model.profileRepository
         ))
     }
 

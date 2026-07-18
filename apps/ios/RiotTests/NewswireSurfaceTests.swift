@@ -28,12 +28,28 @@ final class NewswireSurfaceTests: XCTestCase {
     /// what `RiotProfileRepository`'s Newswire extension does, so the model under
     /// test exercises the genuine core rejection.
     private final class LiveNewswire: NewswireProjecting, NewswireEditorialActing,
-        NewswireEditorAuthorityChecking {
+        NewswireEditorAuthorityChecking, NewswireCommenting {
         let profile: MobileProfile
         init(_ profile: MobileProfile) { self.profile = profile }
 
         func projectNewswire(spaceDescriptorEntryID: String) throws -> NewswireProjectionView {
             try profile.projectNewswireSpace(spaceDescriptorEntryId: spaceDescriptorEntryID)
+        }
+
+        /// The genuine communal-reply signer — identical to the shipping
+        /// `RiotProfileRepository` wrapper, so an admission is genuinely core's.
+        func createNewswireComment(
+            spaceDescriptorEntryID: String,
+            parentEntryID: String,
+            body: String,
+            language: String
+        ) throws -> NewswireSignedRecord {
+            try profile.createNewswireComment(
+                spaceDescriptorEntryId: spaceDescriptorEntryID,
+                parentEntryId: parentEntryID,
+                body: body,
+                language: language
+            )
         }
 
         /// The genuine core predicate (Unit 4a) — identical to the shipping
@@ -91,7 +107,11 @@ final class NewswireSurfaceTests: XCTestCase {
     /// real id is load-bearing now). The roster lives in the descriptor created via
     /// `spaceInput(_, roster:)`; the model reads it through the predicate, not a
     /// passed array.
-    private func liveModel(profile: MobileProfile, spaceID: String) throws -> NewswireSurfaceModel {
+    private func liveModel(
+        profile: MobileProfile,
+        spaceID: String,
+        withCommenter: Bool = true
+    ) throws -> NewswireSurfaceModel {
         let live = LiveNewswire(profile)
         return NewswireSurfaceModel(
             projector: live,
@@ -99,7 +119,8 @@ final class NewswireSurfaceTests: XCTestCase {
             authority: live,
             spaceDescriptorEntryID: spaceID,
             communityName: "Riverside",
-            myKeyHex: RiotDirectoryRow.hex(try profile.profile().whoami().id)
+            myKeyHex: RiotDirectoryRow.hex(try profile.profile().whoami().id),
+            commenter: withCommenter ? live : nil
         )
     }
 
@@ -636,6 +657,101 @@ final class NewswireSurfaceTests: XCTestCase {
         XCTAssertTrue(openWire.contains { $0.id == p2.entryId })
     }
 
+    // MARK: - Communal replies (comments)
+
+    /// A reply composed through the model reaches core, and on reload the surface
+    /// groups it under its parent post — carrying the body and a rendered author,
+    /// exactly as a post row does. A reply is communal, so the founder (or any
+    /// member) may post one; `canComment` is independent of editor status.
+    func testAReplyIsSignedAndGroupedUnderItsParentPost() throws {
+        let profile = try openLocalProfile()
+        try profile.profile().setDisplayName(name: "Bo")
+        let space = try profile.createNewswireSpace(input: spaceInput("Discussion"))
+        let post = try profile.createNewswirePost(input: postInput(space.entryId, "What did you see?"))
+        let model = try liveModel(profile: profile, spaceID: space.entryId)
+        model.load()
+        XCTAssertTrue(model.canComment, "a wired commenter + descriptor ⇒ the reply affordance is offered")
+
+        let outcome = model.submitComment(parentEntryID: post.entryId, body: "I was on the east side.")
+        guard case .posted = outcome else {
+            return XCTFail("a communal reply should post, got \(outcome)")
+        }
+
+        let replies = model.comments(under: post.entryId)
+        XCTAssertEqual(replies.count, 1)
+        let reply = try XCTUnwrap(replies.first)
+        XCTAssertEqual(reply.parentID, post.entryId)
+        XCTAssertEqual(reply.body, "I was on the east side.")
+        XCTAssertEqual(reply.display, .ordinary)
+        XCTAssertTrue(
+            reply.author.hasPrefix("Bo · "),
+            "the reply author is rendered by the same name path as a post author, got \(reply.author)")
+    }
+
+    /// A reply whose parent post is not held is dropped from the projection — the
+    /// surface never shows an orphan reply. Core signs it (it is a valid communal
+    /// record); projection is where the dangling parent is resolved away.
+    func testAReplyWithNoHeldParentNeverAppearsInTheSurface() throws {
+        let profile = try openLocalProfile()
+        let space = try profile.createNewswireSpace(input: spaceInput("Danglers"))
+        let model = try liveModel(profile: profile, spaceID: space.entryId)
+
+        let outcome = model.submitComment(parentEntryID: "ab".repeated(32), body: "Into the void.")
+        guard case .posted = outcome else {
+            return XCTFail("a well-formed reply signs even when its parent is unheld, got \(outcome)")
+        }
+        model.load()
+        XCTAssertTrue(
+            model.commentsByParent.isEmpty,
+            "a reply with no held parent must not surface")
+    }
+
+    /// An empty reply never reaches core, and a model with no commenter wired hides
+    /// the affordance and answers `.unavailable` if asked to submit anyway.
+    func testEmptyReplyIsBlockedAndAbsentCommenterHidesTheAffordance() throws {
+        let profile = try openLocalProfile()
+        let space = try profile.createNewswireSpace(input: spaceInput("Guards"))
+        let post = try profile.createNewswirePost(input: postInput(space.entryId, "Prompt"))
+
+        let model = try liveModel(profile: profile, spaceID: space.entryId)
+        model.load()
+        XCTAssertEqual(model.submitComment(parentEntryID: post.entryId, body: "   \n"), .empty)
+        XCTAssertTrue(model.comments(under: post.entryId).isEmpty)
+
+        let noCommenter = try liveModel(profile: profile, spaceID: space.entryId, withCommenter: false)
+        noCommenter.load()
+        XCTAssertFalse(noCommenter.canComment, "no commenter wired ⇒ the reply affordance is hidden")
+        XCTAssertEqual(
+            noCommenter.submitComment(parentEntryID: post.entryId, body: "hi"), .unavailable)
+    }
+
+    /// An editor tombstoning a reply redacts its body while keeping identity and
+    /// ordering — the same per-content moderation a post receives, never per person.
+    /// (Mirrors the Rust `editor_tombstone_redacts_a_comment_body`.)
+    func testAnEditorTombstoneRedactsAReplyBody() throws {
+        let profile = try openLocalProfile()
+        let mineHex = RiotDirectoryRow.hex(try profile.profile().whoami().id)
+        let space = try profile.createNewswireSpace(input: spaceInput("Moderated", roster: [mineHex]))
+        let post = try profile.createNewswirePost(input: postInput(space.entryId, "Open thread"))
+        let model = try liveModel(profile: profile, spaceID: space.entryId)
+        model.load()
+
+        guard case let .posted(commentID) = model.submitComment(
+            parentEntryID: post.entryId, body: "Names a private individual.") else {
+            return XCTFail("the reply should post")
+        }
+
+        // The founder is the sole editor and moderates the reply per content.
+        model.draft = EditorialActionDraft(kind: .tombstone, reason: "Names a private individual.")
+        XCTAssertSigned(model.sign(targetEntryID: commentID))
+        model.load()
+
+        let reply = try XCTUnwrap(model.comments(under: post.entryId).first { $0.id == commentID })
+        XCTAssertEqual(reply.display, .tombstoned)
+        XCTAssertNil(reply.body, "a tombstoned reply surrenders its body")
+        XCTAssertEqual(reply.parentID, post.entryId, "identity survives the redaction")
+    }
+
     // MARK: - Repository authority wrapper (Unit 4b, consumes Unit 4a)
 
     private func openRepository() throws -> RiotProfileRepository {
@@ -673,7 +789,7 @@ final class NewswireSurfaceTests: XCTestCase {
     ) -> NewswireProjectionView {
         NewswireProjectionView(
             openWire: openWire, frontPage: frontPage, earlier: [],
-            editorialHistory: [], futureQuarantine: [])
+            comments: [], editorialHistory: [], futureQuarantine: [])
     }
 
     private func author(_ key: String = "ab".repeated(32)) -> NewswireAuthor {
