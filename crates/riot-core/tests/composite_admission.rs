@@ -308,6 +308,36 @@ fn marker_bit_forgery_communal_cap_naming_owned_namespace_is_rejected() {
 }
 
 #[test]
+fn marker_bit_forgery_communal_cap_at_a_mod_path_is_rejected() {
+    // The /mod/-SPECIFIC guard for the session-import exemption this PR adds.
+    // `session.rs` admits an owned entry into the store when its path is under
+    // `/mod/` (`is_owned_moderation_entry`) — that exemption keys ONLY on the
+    // path, so its safety rests ENTIRELY on `verify_frame` rejecting a non-owner
+    // cap at a `/mod/` path. The sibling `article_path` marker-bit test above
+    // would NOT catch a `/mod/`-specific admission regression, so pin it here on
+    // the exact path the exemption trusts: a communal genesis cap NAMING the
+    // owned namespace at a `/mod/` path is rejected at the policy predicate
+    // (`UnsupportedCapability`), never by some incidental later check.
+    let site = manual_owned_site(0x53, 0x0e);
+    let attacker = SubspaceSecret::from_bytes(&[0x14; 32]);
+    let attacker_id = attacker.corresponding_subspace_id();
+    let communal = WriteCapability::new_communal(site.namespace_id.clone(), attacker_id.clone());
+    let entry = build_entry(
+        site.namespace_id.clone(),
+        attacker_id,
+        Path::from_slices(&[MOD_COMPONENT, b"revoke", b"forged"]).expect("mod path"),
+        100,
+        b"forged moderation payload",
+    );
+    let item = sign_into(entry, &communal, &attacker, b"forged moderation payload");
+    assert_rejected_code(
+        &item,
+        Some(site.root),
+        DiagnosticCode::UnsupportedCapability,
+    );
+}
+
+#[test]
 fn cross_namespace_cap_reuse_is_rejected_by_root_binding() {
     // A cap genuinely owned-rooted at site A, whose editor tries to author into
     // the FOLLOWED site B's owned namespace. The genesis namespace key != the
