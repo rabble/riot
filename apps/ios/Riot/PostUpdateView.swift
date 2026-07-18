@@ -477,6 +477,7 @@ public struct PostUpdateView: View {
     public var body: some View {
         ScrollView {
             VStack(spacing: 16) {
+                modeCard
                 draftCard
                 reviewCard
                 if let error = model.errorMessage {
@@ -493,6 +494,21 @@ public struct PostUpdateView: View {
         .onDisappear { model.persistDraft() }
         .onChange(of: model.status) { _, status in
             if case let .posted(update) = status { onPosted(update) }
+        }
+    }
+
+    private var modeCard: some View {
+        RiotCard {
+            VStack(alignment: .leading, spacing: 10) {
+                eyebrow("What kind of post")
+                Picker("Post kind", selection: $model.mode) {
+                    ForEach(ComposerMode.allCases, id: \.self) { mode in
+                        Text(mode.label).tag(mode)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .accessibilityIdentifier("post-mode-picker")
+            }
         }
     }
 

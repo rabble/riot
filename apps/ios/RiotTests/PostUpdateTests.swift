@@ -304,4 +304,29 @@ final class PostUpdateTests: XCTestCase {
 
         XCTAssertNil(store.load())
     }
+
+    // MARK: - Mode picker (Unit 6)
+
+    @MainActor
+    func testModeSelectionSwitchesTheModel() {
+        let model = makeModel()
+        XCTAssertEqual(model.mode, .freeform, "the composer opens in Update mode")
+
+        model.mode = .operationalAlert
+        XCTAssertTrue(model.mode.requiresStricterFields)
+
+        model.mode = .operationalRequest
+        XCTAssertTrue(model.mode.requiresStricterFields)
+
+        model.mode = .freeform
+        XCTAssertFalse(model.mode.requiresStricterFields, "Update pulls in no extra fields")
+    }
+
+    @MainActor
+    func testModeLabelsAreOutcomeLanguageNotMechanism() {
+        XCTAssertEqual(ComposerMode.freeform.label, "Update")
+        XCTAssertEqual(ComposerMode.operationalAlert.label, "Alert")
+        XCTAssertEqual(ComposerMode.operationalRequest.label, "Request")
+        XCTAssertEqual(ComposerMode.allCases.count, 3, "the picker offers exactly Update/Alert/Request")
+    }
 }
