@@ -29,7 +29,7 @@ use riot_core::import::{
 use riot_core::newswire::{inspect_news_record, NewswireError};
 use riot_core::session::{CommitOutcome, ImportContext, InspectOutcome, RiotSession};
 use riot_core::sync::{ReconcileSession, SyncAction, SyncFrame};
-use riot_core::willow::site_paths::{ARTICLES_COMPONENT, MANIFEST_COMPONENT};
+use riot_core::willow::site_paths::{ARTICLES_COMPONENT, MANIFEST_COMPONENT, MOD_COMPONENT};
 use riot_core::willow::{
     encode_capability, encode_entry, entry_id, Entry, NamespaceId, OwnedMasthead, Path,
     SignedWillowEntry, SubspaceId,
@@ -532,6 +532,95 @@ fn owned_editorial_import_without_followed_root_admits_nothing() {
             assert!(
                 p.plan_all().is_err(),
                 "no owned entry may be eligible without a followed root"
+            );
+        }
+        InspectOutcome::Rejected(_) => {}
+    }
+    assert_eq!(store.live_count().expect("live_count"), 0);
+}
+
+/// An owner-signed `/mod/` record for a manually-controlled owned site.
+fn owned_mod_item(site: &OwnedSite, slug: &[u8], payload: &[u8]) -> SignedWillowEntry {
+    let entry = build_entry(
+        site.namespace_id.clone(),
+        site.owner_secret.corresponding_subspace_id(),
+        Path::from_slices(&[MOD_COMPONENT, b"revoke", slug]).expect("mod path"),
+        100,
+        payload,
+    );
+    sign_into(entry, &site.owner_cap, &site.owner_secret, payload)
+}
+
+/// An owner-signed `/mod/` record is committed AND its payload retained via the
+/// followed-root import. Both halves are load-bearing and were previously
+/// missing: the session inspect path-binding admitted only owned `/articles/`,
+/// so a synced `/mod/` record was dropped, and payload retention likewise
+/// covered only editorial. The read-side resolver reconstructs the moderation
+/// record from the exact retained bytes (`read_moderation_record`), so a
+/// committed-but-unretained `/mod/` entry would be invisible to a follower and
+/// moderation could never resolve to `Current`. This guards the symmetric
+/// admission of owned moderation alongside owned editorial at the session gate.
+#[test]
+fn owned_moderation_is_committed_and_payload_retained_via_followed_root_import() {
+    let session = RiotSession::open().expect("session");
+    let store = session.create_store().expect("store");
+    let site = manual_owned_site(0x50, 0x1a);
+    let item = owned_mod_item(&site, b"id-1", b"opaque moderation payload");
+    let bundle = encode_bundle(std::slice::from_ref(&item)).expect("encode");
+
+    let preview = match store
+        .inspect(
+            &bundle,
+            ImportContext::with_followed_root("follow-site", site.root),
+        )
+        .expect("inspect")
+    {
+        InspectOutcome::Preview(p) => p,
+        InspectOutcome::Rejected(r) => panic!("owned /mod/ rejected: {r:?}"),
+    };
+    let plan = preview.plan_all().expect("plan_all");
+    match plan.commit().expect("commit") {
+        CommitOutcome::Committed(_) => {}
+        CommitOutcome::NoChanges(_) => panic!("owned /mod/ entry was dropped, not committed"),
+    }
+    assert_eq!(store.live_count().expect("live_count"), 1);
+
+    // Retention is the half a follower's resolver depends on.
+    let mod_prefix = Path::from_slices(&[MOD_COMPONENT]).expect("mod prefix");
+    let held = store
+        .entries_with_prefix_in_namespace(&site.root, &mod_prefix)
+        .expect("scan /mod/");
+    assert_eq!(
+        held.len(),
+        1,
+        "the /mod/ entry must be scannable in its namespace"
+    );
+    assert_eq!(
+        held[0].2.as_deref(),
+        Some(b"opaque moderation payload".as_slice()),
+        "the /mod/ payload must be RETAINED (not digest-only) so a follower can read it"
+    );
+}
+
+/// Fail-closed symmetry: a `/mod/` record imported with NO followed-root context
+/// admits nothing — owned moderation is bound to the followed site exactly like
+/// owned editorial, so a rootless import can never commit it.
+#[test]
+fn owned_moderation_import_without_followed_root_admits_nothing() {
+    let session = RiotSession::open().expect("session");
+    let store = session.create_store().expect("store");
+    let site = manual_owned_site(0x51, 0x1b);
+    let item = owned_mod_item(&site, b"id-1", b"opaque moderation payload");
+    let bundle = encode_bundle(std::slice::from_ref(&item)).expect("encode");
+
+    match store
+        .inspect(&bundle, ImportContext::new("plain-file-import"))
+        .expect("inspect")
+    {
+        InspectOutcome::Preview(p) => {
+            assert!(
+                p.plan_all().is_err(),
+                "no owned /mod/ entry may be eligible without a followed root"
             );
         }
         InspectOutcome::Rejected(_) => {}
