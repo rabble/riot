@@ -25,10 +25,10 @@ public struct AppReviewSheet: View {
     static func unavailableReason(canApprove: Bool, isLegacyProfile: Bool) -> String? {
         guard !canApprove else { return nil }
         if isLegacyProfile {
-            return "This profile was made before spaces had organizers, so it can’t "
-                + "approve apps for this space. Start a new profile to organize one."
+            return "This profile was made before communities had organizers, so it can’t "
+                + "approve tools for this community. Start a new profile to organize one."
         }
-        return "Only the organizer of this space can turn an app on here."
+        return "Only the organizer of this community can turn a tool on here."
     }
 
     /// - Parameters:
@@ -62,7 +62,7 @@ public struct AppReviewSheet: View {
                     .foregroundStyle(RiotTheme.ink(for: colorScheme))
                 RiotCard {
                     VStack(alignment: .leading, spacing: 8) {
-                        Text("This app can")
+                        Text("This tool can")
                             .font(.riot(.mono, size: 12, relativeTo: .caption))
                             .textCase(.uppercase)
                             .tracking(1)
@@ -83,7 +83,7 @@ public struct AppReviewSheet: View {
                         .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
                         .accessibilityIdentifier("approve-unavailable")
                 } else {
-                    Button("Let everyone in this space use this") { onApprove() }
+                    Button("Let this community use this tool") { onApprove() }
                         .buttonStyle(.riotPrimary)
                         .accessibilityIdentifier("approve-app")
                 }

@@ -6,6 +6,14 @@ verify loop landed, so it lists several items as gaps that are now **shipped + t
 is verified against `main = ae9ec47` (includes the #59 spaces/following feature and the iOS-surface
 PRs). Every "shipped" claim below is backed by a code reference checked on this commit.
 
+> **⚠️ Baseline drift (coordinator note, 2026-07-19):** this worktree is now 15+ commits past
+> `ae9ec47` (HEAD `8ce2d84`). The "compact core flow" overnight run reworked the exact surfaces this
+> table calls DONE — `a9e851c feat(onboarding): make setup compact and fail closed`,
+> `bbfb0a0 feat(home): keep active alerts compact`, `3cc9c4d feat(shell): isolate communities and
+> unify posting`. The claims' *substance* still holds (first-run path is still `.noCommunity`/
+> `LaunchView`, now at `ConferenceShellView:205` not `:177`) but **line references are stale and the
+> layouts changed** — re-verify a row against current HEAD before retiring it from the roadmap.
+
 > Purpose: give the coordinator + owner an accurate roadmap and an actionable TestFlight-v2 test
 > script, so no session re-builds a done thing and TF validates the right flows.
 
@@ -25,7 +33,7 @@ PRs). Every "shipped" claim below is backed by a code reference checked on this 
 | Only "post an update" (P2) | **DONE** — compose Update/**Alert**/**Request** + operational fields (no dead-disabled Post) | PR #42 Unit 6 |
 | Dead-ends: no-op Open-wire button, offlineStale loop, chooser no-ops, Tools empty state | **DONE** — all fixed with reachable next actions | PR #42 Units 1/7 |
 | Display-name / identity screen (P2) | **Present** — set at first-run (`LaunchView` "Save name", skippable) and editable in `YourProfileSheet` (avatar→profile). Prominence is fine (first-run + profile). | `ConferenceShellView:273,1359-1383` |
-| First-run / onboarding (cross-cutting #1) | **Present** — `LaunchView` is the `.noCommunity` guided path (name-skippable + create + join-by-link/QR + nearby). | `ConferenceShellView:177`, `AppModel.launchState` |
+| First-run / onboarding (cross-cutting #1) | **Present but being REDESIGNED — do NOT retire this item.** `LaunchView` is the `.noCommunity` guided path (name-skippable + create + join-by-link/QR + nearby), and `a9e851c` already made setup compact/fail-closed. Meanwhile `design/interaction-frame` (spec `docs/superpowers/specs/2026-07-18-interaction-frame-design.md`, tip `c020277`) is an active redesign of exactly this surface — a first-run resilience hero + in-context teaching. Two sessions own first-run; coordinate, don't declare done. | `ConferenceShellView:205`, `AppModel.launchState` |
 
 **Net: the iOS UX layer is ~complete against the persona audit.** The audit's ranked items #3
 (verify loop), #4 (display name), #6 (editorial completeness), #7 (follower share/join) are done.
@@ -89,7 +97,13 @@ exercises so a failure localizes.
 ## Recommended next steps (uncontested, safe first)
 
 - **Owner:** archive TF-v2 from clean `main`; run the script above; ratify the two pending decisions.
-- **Coordinator:** treat the audit's iOS-UX items as DONE; re-point the roadmap at the real gaps
-  (notifications, discovery, Android parity, trust-legibility polish).
+- **Coordinator:** treat the audit's iOS-UX items as DONE **except first-run/onboarding** — that is
+  under active redesign in TWO places (`compact-flow` in this worktree + `design/interaction-frame`).
+  Do NOT re-point the roadmap away from it; instead **reconcile those two sessions** so first-run
+  isn't rebuilt twice with divergent premises. Re-point at the genuinely open gaps (notifications,
+  discovery, Android parity) after re-verifying each against current HEAD, not `ae9ec47`.
 - **Uncontested overnight/incremental work:** trust-legibility consistency pass (gap #7) is the one
-  safe in-lane iOS code task; everything else is contended or owner-blocked.
+  safe in-lane iOS code task — **but scope it against the interaction-frame's "in-context teaching"
+  remit first** (the frame owns first-encounter verify/signed cues; gap #7 owns the wire-treatment /
+  verify-landing / web-badge *vocabulary consistency*). Assign it to exactly one session so the
+  "signed/verified/open" language isn't unified twice, divergently.

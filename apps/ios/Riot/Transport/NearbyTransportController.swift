@@ -35,6 +35,17 @@ public enum NearbyPermissionRecovery {
         + "You can still read and post updates offline. Open Settings to turn access on."
 }
 
+public enum NearbySpaceJoinPreparation {
+    public static func run<Result>(
+        joining space: RiotSpace?,
+        prepare: () -> Void,
+        resume: () throws -> Result
+    ) rethrows -> Result {
+        if space != nil { prepare() }
+        return try resume()
+    }
+}
+
 enum LocalNetworkRole: Equatable {
     case attempt
     case wait
@@ -125,6 +136,9 @@ public final class NearbyTransportController: ObservableObject {
     /// Fired after this phone has joined a peer's space, so the app can re-read a
     /// profile that now has a space it did not have a moment ago.
     public var onSpaceJoined: (() -> Void)?
+    /// Fires synchronously before a confirmed adoption mutates the active
+    /// community, allowing the old shell to persist its scoped state first.
+    public var onBeforeSpaceJoin: (() -> Void)?
 
     /// The Bonjour type discovery runs on. The app never sets it; a test passes a
     /// unique one so its two peers meet each other and not every other Riot on the
@@ -521,8 +535,13 @@ public final class NearbyTransportController: ObservableObject {
             // `resume` joins first when adopting: Rust refuses a join while a sync
             // session is open, and refuses to open one without a space, so the
             // order is forced.
-            let coordinator = try pairing.resume(joining: space)
-            if space != nil { onSpaceJoined?() }
+            let joined = onSpaceJoined
+            let coordinator = try NearbySpaceJoinPreparation.run(
+                joining: space,
+                prepare: { onBeforeSpaceJoin?() },
+                resume: { try pairing.resume(joining: space) }
+            )
+            if space != nil { joined?() }
             adopt(coordinator)
             // Only now does the wire belong to the session — and whatever the peer
             // sent while this phone was deciding is replayed into it, in order.
