@@ -272,11 +272,11 @@ mod tests {
         let mut signed: Value =
             serde_json::from_str(&fs::read_to_string(&signed_path).unwrap()).unwrap();
         for record in signed["records"].as_array_mut().unwrap() {
-            if record["willow_entry_id"] == Value::from(target_id.clone()) {
+            if record["willow_entry_id"].as_str() == Some(target_id.as_str()) {
                 // Flip the first byte of the hex entry_bytes to break the signature.
                 let bytes = record["willow_entry_bytes"].as_str().unwrap();
-                let flipped = if bytes.starts_with('0') {
-                    format!("1{}", &bytes[1..])
+                let flipped = if let Some(rest) = bytes.strip_prefix('0') {
+                    format!("1{rest}")
                 } else {
                     format!("0{}", &bytes[1..])
                 };
@@ -349,8 +349,8 @@ mod tests {
         for record in signed["records"].as_array_mut().unwrap() {
             if record["record_kind"] == "profile_card" {
                 let bytes = record["willow_entry_bytes"].as_str().unwrap();
-                let flipped = if bytes.starts_with('0') {
-                    format!("1{}", &bytes[1..])
+                let flipped = if let Some(rest) = bytes.strip_prefix('0') {
+                    format!("1{rest}")
                 } else {
                     format!("0{}", &bytes[1..])
                 };
