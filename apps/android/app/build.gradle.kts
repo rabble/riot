@@ -35,6 +35,13 @@ android {
         getByName("androidTest") {
             assets.directories.add(rootProject.file("../../fixtures/apps").path)
         }
+        getByName("test") {
+            // WU-006B: the anchor protocol conformance vectors are read off the
+            // host-JVM unit-test classpath (getResourceAsStream). Referenced from
+            // the shared fixtures tree, never copied, so Rust/TS/Swift/Kotlin all
+            // assert against the same bytes.
+            resources.directories.add(rootProject.file("../../fixtures/anchor").path)
+        }
     }
 }
 
