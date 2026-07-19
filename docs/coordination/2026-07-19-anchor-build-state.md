@@ -27,9 +27,19 @@ read its **Coordinator Addendum** for the M1–M5 milestone phasing + pilot defe
 | 005 routed paginated `sync/2` | ✅ done (133 crate tests) | `80a8a2a` |
 | WU-003B security hardening | ✅ done (lifetime-cap + indefinite tests; phantom-guard doc) | `00a6a5f` |
 | 006A/006B conformance vectors (Rust/TS + native) | ⛔ **NEXT — blocked on the pre-006 confirmation checklist below** | — |
-| 007 multi-ALPN iroh router | not started (opens `riot-transport`) — **independent of the 006 freeze, buildable now** | — |
+| 007 multi-ALPN iroh router | ✅ done (`AlpnRouter`, bounded lifecycle, sync/1 wrapper preserved; 14 tests) | `2da6200` |
+| riot-ffi latent workspace break | ✅ fixed (WU-003A added a `WillowError` variant; riot-ffi match was non-exhaustive) | `0b19d06` |
 
-**M1 protocol core (001–005) is COMPLETE + hardened.** Remaining M1: 006 (gated on checklist) + 007 (independent).
+**M1 is 6/7 COMPLETE + hardened.** Only **WU-006** remains — gated on the pre-006 checklist (the four `EnabledRole` tokens).
+
+### ⚠️ VERIFICATION LESSON (do this from now on)
+The workspace build was RED from WU-003A (`145283c`) to WU-007 because every WU only ran
+`cargo test -p riot-anchor-protocol` (its scope) — nobody built the workspace, so a cross-crate break
+(riot-core added `WillowError::DelegationAreaEscapesDirectory`; riot-ffi's match went non-exhaustive)
+sat undetected for ~7 commits. **When a WU touches a `riot-core` enum (or any type other crates match
+on), the coordinator MUST run `cargo build --workspace --all-features` before committing** — a scoped
+`cargo test -p <crate>` cannot see downstream breakage. This is the same failure class as
+`[[riot-uniffi-record-change-coupling]]` but at the Rust-match layer.
 
 ## NEXT STEPS (in order)
 1. **When WU-005 lands:** run `cargo test -p riot-anchor-protocol --all-features` (independent verify),
