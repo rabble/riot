@@ -62,6 +62,7 @@ fn manifest(version: u64, require: RequireTransport) -> SiteManifestV1 {
         },
         version,
         layout: SiteLayout::SiteDefault,
+        sections: vec![],
     }
 }
 

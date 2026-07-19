@@ -30,6 +30,10 @@ pub const MAX_MODERATION_PATH_COMPONENTS: usize = 8;
 pub const MAX_PATH_COMPONENT_BYTES: usize = 64;
 /// Upper bound on entries in the transport allow-list.
 pub const MAX_TRANSPORT_ALLOW: usize = 8;
+/// Upper bound on a single declared section name's byte length.
+pub const MAX_SECTION_BYTES: usize = 64;
+/// Upper bound on the number of declared sections.
+pub const MAX_SECTIONS: usize = 64;
 
 /// A namespace bound into the site, with its declared role/rule/display.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -53,6 +57,10 @@ pub struct SiteManifestV1 {
     /// Monotonic version; the durable per-root floor refuses any lower value.
     pub version: u64,
     pub layout: SiteLayout,
+    /// Named content sections the owner has declared (each a component byte
+    /// string, e.g. `b"news"`). Omitted from the wire when empty (canonicity —
+    /// see `encode_site_manifest`/`decode_site_manifest`).
+    pub sections: Vec<Vec<u8>>,
 }
 
 /// Member role. OPEN enum — a future value decodes to `Unknown(raw)`.
@@ -256,8 +264,9 @@ impl RequireTransport {
 
 pub fn encode_site_manifest(manifest: &SiteManifestV1) -> Result<Vec<u8>, SiteManifestError> {
     validate_structure(manifest)?;
+    let pairs = if manifest.sections.is_empty() { 7 } else { 8 };
     encode_bounded(|e| {
-        e.map(7)?;
+        e.map(pairs)?;
         e.u8(0)?.str(SITE_MANIFEST_SCHEMA)?;
         e.u8(1)?.bytes(&manifest.root)?;
         e.u8(2)?.array(manifest.members.len() as u64)?;
@@ -281,6 +290,12 @@ pub fn encode_site_manifest(manifest: &SiteManifestV1) -> Result<Vec<u8>, SiteMa
         e.u8(1)?.u64(manifest.transport_policy.require.to_code())?;
         e.u8(5)?.u64(manifest.version)?;
         e.u8(6)?.u64(manifest.layout.to_code())?;
+        if !manifest.sections.is_empty() {
+            e.u8(7)?.array(manifest.sections.len() as u64)?;
+            for section in &manifest.sections {
+                e.bytes(section)?;
+            }
+        }
         Ok(())
     })
 }
@@ -291,7 +306,7 @@ pub fn decode_site_manifest(input: &[u8]) -> Result<SiteManifestV1, SiteManifest
     check_input_size(input)?;
     let mut d = Decoder::new(input);
     let pairs = definite_map(&mut d)?;
-    if pairs > 7 {
+    if pairs > 8 {
         return Err(SiteManifestError::Malformed);
     }
 
@@ -302,6 +317,9 @@ pub fn decode_site_manifest(input: &[u8]) -> Result<SiteManifestV1, SiteManifest
     let mut transport_policy = None;
     let mut version = None;
     let mut layout = None;
+    // Default empty — key 7 is omitted-when-empty on the wire, so an absent
+    // key means `[]`, not a missing field.
+    let mut sections: Vec<Vec<u8>> = Vec::new();
     let mut last_key = None;
 
     for _ in 0..pairs {
@@ -314,6 +332,7 @@ pub fn decode_site_manifest(input: &[u8]) -> Result<SiteManifestV1, SiteManifest
             4 => transport_policy = Some(decode_transport_policy(&mut d)?),
             5 => version = Some(decode_u64(&mut d)?),
             6 => layout = Some(SiteLayout::from_code(decode_u64(&mut d)?)?),
+            7 => sections = decode_sections(&mut d)?,
             other => return Err(SiteManifestError::UnknownKey(other)),
         }
     }
@@ -329,10 +348,20 @@ pub fn decode_site_manifest(input: &[u8]) -> Result<SiteManifestV1, SiteManifest
         transport_policy: transport_policy.ok_or(SiteManifestError::MissingKey(4))?,
         version: version.ok_or(SiteManifestError::MissingKey(5))?,
         layout: layout.ok_or(SiteManifestError::MissingKey(6))?,
+        sections,
     };
     validate_structure(&manifest)?;
     prove_canonical(input, encode_site_manifest(&manifest)?)?;
     Ok(manifest)
+}
+
+// ---------- shared validators ----------
+
+/// Whether `section` was declared in `manifest.sections`. The single shared
+/// authority used both at article-write time (reject an undeclared section)
+/// and at feed-projection time (grouping) — no per-wrapper courtesy check.
+pub fn section_is_declared(manifest: &SiteManifestV1, section: &[u8]) -> bool {
+    !section.is_empty() && manifest.sections.iter().any(|s| s == section)
 }
 
 fn decode_members(d: &mut Decoder<'_>) -> Result<Vec<SiteMemberV1>, SiteManifestError> {
@@ -367,6 +396,22 @@ fn decode_members(d: &mut Decoder<'_>) -> Result<Vec<SiteMemberV1>, SiteManifest
         });
     }
     Ok(members)
+}
+
+fn decode_sections(d: &mut Decoder<'_>) -> Result<Vec<Vec<u8>>, SiteManifestError> {
+    let len = definite_array(d)?;
+    if len as usize > MAX_SECTIONS {
+        return Err(SiteManifestError::TooManyEntries("sections"));
+    }
+    let mut sections = Vec::with_capacity(len as usize);
+    for _ in 0..len {
+        let section = d.bytes().map_err(|_| SiteManifestError::Malformed)?;
+        if section.is_empty() || section.len() > MAX_SECTION_BYTES {
+            return Err(SiteManifestError::FieldTooLarge("section"));
+        }
+        sections.push(section.to_vec());
+    }
+    Ok(sections)
 }
 
 fn decode_moderation_path(d: &mut Decoder<'_>) -> Result<Vec<Vec<u8>>, SiteManifestError> {
@@ -431,6 +476,14 @@ fn validate_structure(manifest: &SiteManifestV1) -> Result<(), SiteManifestError
     }
     if manifest.transport_policy.allow.len() > MAX_TRANSPORT_ALLOW {
         return Err(SiteManifestError::TooManyEntries("allow"));
+    }
+    if manifest.sections.len() > MAX_SECTIONS {
+        return Err(SiteManifestError::TooManyEntries("sections"));
+    }
+    for section in &manifest.sections {
+        if section.is_empty() || section.len() > MAX_SECTION_BYTES {
+            return Err(SiteManifestError::FieldTooLarge("section"));
+        }
     }
     Ok(())
 }
@@ -517,5 +570,143 @@ fn prove_canonical(input: &[u8], encoded: Vec<u8>) -> Result<(), SiteManifestErr
         Ok(())
     } else {
         Err(SiteManifestError::NonCanonical)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_manifest() -> SiteManifestV1 {
+        SiteManifestV1 {
+            root: [7u8; 32],
+            members: vec![SiteMemberV1 {
+                ns: [7u8; 32],
+                role: SiteRole::Masthead,
+                rule: SiteRule::OwnedWrite,
+                display: SiteDisplay::FrontArticles,
+            }],
+            moderation_path: vec![b"mod".to_vec()],
+            transport_policy: TransportPolicyV1 {
+                allow: vec![],
+                require: RequireTransport::None,
+            },
+            version: 1,
+            layout: SiteLayout::SiteDefault,
+            sections: vec![],
+        }
+    }
+
+    #[test]
+    fn manifest_without_sections_decodes_as_empty_and_round_trips() {
+        let m = sample_manifest();
+        let bytes = encode_site_manifest(&m).unwrap();
+        let decoded = decode_site_manifest(&bytes).unwrap();
+        assert!(decoded.sections.is_empty());
+        // Re-encoding the decoded value reproduces the exact bytes.
+        assert_eq!(encode_site_manifest(&decoded).unwrap(), bytes);
+    }
+
+    #[test]
+    fn non_empty_sections_round_trip() {
+        let mut m = sample_manifest();
+        m.sections = vec![b"news".to_vec(), b"analysis".to_vec()];
+        let bytes = encode_site_manifest(&m).unwrap();
+        assert_eq!(decode_site_manifest(&bytes).unwrap().sections, m.sections);
+        assert_eq!(
+            encode_site_manifest(&decode_site_manifest(&bytes).unwrap()).unwrap(),
+            bytes
+        );
+    }
+
+    /// Encode top-level keys 0-6 exactly as `encode_site_manifest` does, but
+    /// always under a fixed `map(8)` header (the caller appends key 7).
+    /// Mirrors the real encoder's key-by-key shape so the only difference
+    /// from a genuine encoding is what the caller does with key 7.
+    fn encode_manifest_prefix(buffer: &mut Vec<u8>, m: &SiteManifestV1) {
+        let mut e = Encoder::new(buffer);
+        e.map(8).unwrap();
+        e.u8(0).unwrap().str(SITE_MANIFEST_SCHEMA).unwrap();
+        e.u8(1).unwrap().bytes(&m.root).unwrap();
+        e.u8(2).unwrap().array(m.members.len() as u64).unwrap();
+        for member in &m.members {
+            e.map(4).unwrap();
+            e.u8(0).unwrap().bytes(&member.ns).unwrap();
+            e.u8(1).unwrap().u64(member.role.to_code()).unwrap();
+            e.u8(2).unwrap().u64(member.rule.to_code()).unwrap();
+            e.u8(3).unwrap().u64(member.display.to_code()).unwrap();
+        }
+        e.u8(3)
+            .unwrap()
+            .array(m.moderation_path.len() as u64)
+            .unwrap();
+        for component in &m.moderation_path {
+            e.bytes(component).unwrap();
+        }
+        e.u8(4).unwrap().map(2).unwrap();
+        e.u8(0)
+            .unwrap()
+            .array(m.transport_policy.allow.len() as u64)
+            .unwrap();
+        for transport in &m.transport_policy.allow {
+            e.u64(transport.to_code()).unwrap();
+        }
+        e.u8(1)
+            .unwrap()
+            .u64(m.transport_policy.require.to_code())
+            .unwrap();
+        e.u8(5).unwrap().u64(m.version).unwrap();
+        e.u8(6).unwrap().u64(m.layout.to_code()).unwrap();
+    }
+
+    /// Hand-encode a manifest carrying key 7 present with a 0-length array —
+    /// the shape `encode_site_manifest` never produces (it omits key 7
+    /// entirely when `sections` is empty).
+    fn encode_manifest_with_forced_empty_sections_key() -> Vec<u8> {
+        let m = sample_manifest();
+        let mut buffer = Vec::new();
+        encode_manifest_prefix(&mut buffer, &m);
+        let mut e = Encoder::new(&mut buffer);
+        e.u8(7).unwrap().array(0).unwrap();
+        buffer
+    }
+
+    /// Hand-encode a manifest whose key-7 array header claims `claimed_len`
+    /// elements but supplies none — proves the bound is checked before any
+    /// allocation/element read is attempted.
+    fn encode_manifest_claiming_section_count(claimed_len: u64) -> Vec<u8> {
+        let m = sample_manifest();
+        let mut buffer = Vec::new();
+        encode_manifest_prefix(&mut buffer, &m);
+        let mut e = Encoder::new(&mut buffer);
+        e.u8(7).unwrap().array(claimed_len).unwrap();
+        buffer
+    }
+
+    #[test]
+    fn key7_present_but_empty_array_is_rejected_non_canonical() {
+        let bytes = encode_manifest_with_forced_empty_sections_key();
+        assert!(matches!(
+            decode_site_manifest(&bytes),
+            Err(SiteManifestError::NonCanonical)
+        ));
+    }
+
+    #[test]
+    fn oversize_section_count_rejected_before_alloc() {
+        let bytes = encode_manifest_claiming_section_count(MAX_SECTIONS as u64 + 1);
+        assert!(matches!(
+            decode_site_manifest(&bytes),
+            Err(SiteManifestError::TooManyEntries("sections"))
+        ));
+    }
+
+    #[test]
+    fn section_is_declared_accepts_declared_rejects_undeclared() {
+        let mut m = sample_manifest();
+        m.sections = vec![b"news".to_vec()];
+        assert!(section_is_declared(&m, b"news"));
+        assert!(!section_is_declared(&m, b"sports"));
+        assert!(!section_is_declared(&m, b"")); // empty never declared
     }
 }
