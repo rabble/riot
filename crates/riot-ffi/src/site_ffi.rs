@@ -26,8 +26,11 @@ use riot_core::site::{
     ValidatedManifest, VersionFloorOutcome,
 };
 use riot_core::willow::site_paths::{ARTICLES_COMPONENT, MOD_COMPONENT};
-use riot_core::willow::{system_snapshot, ClockSnapshot, OwnedMasthead, Path, SignedWillowEntry};
-use willow25::groupings::Keylike;
+use riot_core::willow::{
+    encode_capability, system_snapshot, ClockSnapshot, OwnedMasthead, Path, SignedWillowEntry,
+    SubspaceId,
+};
+use willow25::groupings::{Area, Keylike, TimeRange};
 
 use crate::community_registry::Relationship;
 
@@ -104,6 +107,105 @@ pub fn restore_owned_site(
             namespace_id: hex(masthead.namespace_id().as_bytes()),
             owner_subspace_id: hex(masthead.owner_subspace_id().as_bytes()),
             sealed_root,
+        })
+    })();
+    wrapping_key.iter_mut().for_each(|b| *b = 0);
+    result
+}
+
+/// A section-scoped, time-boxed EDITOR write invite the owner mints for an
+/// invitee. Transport-safe: `capability_bytes` is a DELEGATION chain (public),
+/// not a secret — the editor authors with THEIR own subspace secret. No owner or
+/// root secret ever appears here.
+#[derive(uniffi::Record)]
+pub struct EditorInvite {
+    /// The delegated editor write-capability, encoded for transport to the
+    /// invitee. A DELEGATION, not a secret.
+    pub capability_bytes: Vec<u8>,
+    /// The `/articles/<section>` path component this cap is scoped to.
+    pub section: String,
+    /// The time-box: the cap authorises no entry timestamped at or after this
+    /// unix-seconds bound. The owner's soft-revoke lever (let it lapse).
+    pub expires_unix_seconds: u64,
+}
+
+/// Parse a lowercase-hex 32-byte subspace id (64 hex chars) into a `SubspaceId`.
+/// Fails closed on any wrong length or non-hex character.
+fn subspace_id_from_hex(id: &str) -> Result<SubspaceId, MobileError> {
+    if id.len() != 64 {
+        return Err(MobileError::InvalidInput);
+    }
+    let mut bytes = [0u8; 32];
+    let src = id.as_bytes();
+    for (i, out) in bytes.iter_mut().enumerate() {
+        let hi = (src[i * 2] as char)
+            .to_digit(16)
+            .ok_or(MobileError::InvalidInput)?;
+        let lo = (src[i * 2 + 1] as char)
+            .to_digit(16)
+            .ok_or(MobileError::InvalidInput)?;
+        *out = ((hi << 4) | lo) as u8;
+    }
+    Ok(SubspaceId::from_bytes(&bytes))
+}
+
+/// Mint a section-scoped, time-boxed EDITOR write capability for an invitee.
+///
+/// The owner opens their sealed masthead under `wrapping_key`, then delegates a
+/// write capability over `/articles/<section>` to the editor's own subspace id,
+/// bounded to `[now, expires_unix_seconds)`. The core `delegate_section` enforces
+/// the `/articles/` belt: any area not under `/articles/` (i.e. `/manifest`,
+/// `/mod/`) is refused, and because `section` is a single path COMPONENT it can
+/// never traverse out of the editorial region regardless of its contents.
+///
+/// SECURITY: what crosses back is ONLY the public delegation chain
+/// ([`encode_capability`]) — never the owner/root subspace secret. The in-process
+/// wrapping-key copy is zeroed on every return path.
+#[uniffi::export]
+pub fn delegate_editor_section(
+    sealed_root: Vec<u8>,
+    mut wrapping_key: Vec<u8>,
+    editor_subspace_id: String,
+    section: String,
+    expires_unix_seconds: u64,
+) -> Result<EditorInvite, MobileError> {
+    let key = match exact_key(&wrapping_key) {
+        Ok(k) => k,
+        Err(e) => {
+            wrapping_key.iter_mut().for_each(|b| *b = 0);
+            return Err(e);
+        }
+    };
+    let result = (|| {
+        let masthead = OwnedMasthead::open_sealed(&key, &sealed_root)
+            .map_err(|_| MobileError::InvalidInput)?;
+        let editor_id = subspace_id_from_hex(&editor_subspace_id)?;
+
+        let now = system_snapshot()
+            .map_err(|_| MobileError::ClockUnavailable)?
+            .unix_seconds;
+        // A degenerate or already-elapsed time box mints nothing (and avoids an
+        // inverted-range construction). The owner must give the editor real time.
+        if expires_unix_seconds <= now {
+            return Err(MobileError::InvalidInput);
+        }
+
+        let path = Path::from_slices(&[ARTICLES_COMPONENT, section.as_bytes()])
+            .map_err(|_| MobileError::InvalidInput)?;
+        let area = Area::new(
+            Some(editor_id.clone()),
+            path,
+            TimeRange::new(now.into(), Some(expires_unix_seconds.into())),
+        );
+
+        let cap = masthead
+            .delegate_section(editor_id, area)
+            .map_err(|_| MobileError::InvalidInput)?;
+
+        Ok(EditorInvite {
+            capability_bytes: encode_capability(&cap),
+            section,
+            expires_unix_seconds,
         })
     })();
     wrapping_key.iter_mut().for_each(|b| *b = 0);
