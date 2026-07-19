@@ -45,6 +45,7 @@ class WhatsNewTest {
         verificationIds = emptyList(),
         correctionIds = emptyList(),
         treatment = NewswirePostTreatment.ORDINARY,
+        reactions = emptyList(),
     )
 
     private fun projection(openWire: List<NewswireProjectedPost>, frontPage: List<NewswireProjectedPost> = emptyList()) =

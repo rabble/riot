@@ -38,7 +38,13 @@ pub(crate) const REGISTRY_KEY: &str = "community_registry/v1";
 pub(crate) const REGISTRY_QUARANTINE_KEY: &str = "community_registry_quarantine/v1";
 
 const REGISTRY_VERSION: u8 = 1;
-const RECORD_FIELDS: u64 = 9;
+/// Current per-record field count. Records are decoded TOLERANTLY: a registry
+/// written by an older build has `RECORD_FIELDS_LEGACY` fields and still loads
+/// (the appended optional fields default to `None`) — so an upgrade never bricks
+/// on a pre-existing registry. Append new optional fields at the END and bump.
+const RECORD_FIELDS: u64 = 11;
+/// The field count before `fetch_url` + `require_floor` were appended.
+const RECORD_FIELDS_LEGACY: u64 = 9;
 
 /// The person's relationship to a community, in plain product terms. Derived
 /// from the sealed author, never caller-asserted: `Organizer` iff the author's
@@ -99,6 +105,18 @@ pub(crate) struct CommunityRecord {
     pub quarantined: bool,
     pub last_activity_unix_seconds: Option<u64>,
     pub last_sync_unix_seconds: Option<u64>,
+    /// For a followed composite site: the HTTPS URL to pull the owner-signed
+    /// bundle from (Option C HTTP-pull), carried by the follow ticket's signed
+    /// `url=` field. `None` for communities and for a ticket with no url — the
+    /// phone then has nothing to auto-pull (graceful, not broken). Untrusted: the
+    /// fetched bytes are re-verified by `import_followed_site_bundle`.
+    pub fetch_url: Option<String>,
+    /// The site's transport `require` floor token from the follow ticket
+    /// ("none" / "arti" / unknown). `None` for communities. Load-bearing for the
+    /// FETCH-TIME fail-closed gate: a `require:arti` site must NOT be pulled over
+    /// clearnet HTTPS (that leaks the follower's IP to the mirror — the exact harm
+    /// require:arti prevents), so only a `none` floor exposes a fetchable url.
+    pub require_floor: Option<String>,
 }
 
 /// The whole registry: every held community plus which one is active.
@@ -145,6 +163,12 @@ impl CommunityRegistry {
             }
             if incoming.last_sync_unix_seconds.is_some() {
                 existing.last_sync_unix_seconds = incoming.last_sync_unix_seconds;
+            }
+            if incoming.fetch_url.is_some() {
+                existing.fetch_url = incoming.fetch_url;
+            }
+            if incoming.require_floor.is_some() {
+                existing.require_floor = incoming.require_floor;
             }
         } else {
             self.communities.push(incoming);
@@ -216,12 +240,22 @@ fn encode_record(e: &mut Encoder<&mut Vec<u8>>, record: &CommunityRecord) {
     e.bool(record.quarantined).expect("vec encoder infallible");
     encode_opt_u64(e, record.last_activity_unix_seconds);
     encode_opt_u64(e, record.last_sync_unix_seconds);
+    encode_opt_str(e, record.fetch_url.as_deref());
+    encode_opt_str(e, record.require_floor.as_deref());
 }
 
 fn decode_record(d: &mut Decoder) -> Result<CommunityRecord, RegistryCorrupt> {
-    if d.array().map_err(|_| RegistryCorrupt)? != Some(RECORD_FIELDS) {
-        return Err(RegistryCorrupt);
-    }
+    // TOLERANT arity, but FAIL-CLOSED: accept ONLY the legacy or the current
+    // field count — anything else is malformed and rejected (never silently
+    // accepted). A registry written before the appended tail existed has
+    // RECORD_FIELDS_LEGACY fields and still loads (the new fields -> None), so an
+    // upgrade never bricks a pre-existing registry.
+    let fields = d.array().map_err(|_| RegistryCorrupt)?;
+    let has_new_fields = match fields {
+        Some(n) if n == RECORD_FIELDS => true,
+        Some(n) if n == RECORD_FIELDS_LEGACY => false,
+        _ => return Err(RegistryCorrupt),
+    };
     let namespace_id = decode_array32(d)?;
     let title = d.str().map_err(|_| RegistryCorrupt)?.to_string();
     let relationship =
@@ -232,6 +266,13 @@ fn decode_record(d: &mut Decoder) -> Result<CommunityRecord, RegistryCorrupt> {
     let quarantined = d.bool().map_err(|_| RegistryCorrupt)?;
     let last_activity_unix_seconds = decode_opt_u64(d)?;
     let last_sync_unix_seconds = decode_opt_u64(d)?;
+    // `has_new_fields` covers the whole appended tail (fetch_url + require_floor),
+    // added together in one release — a legacy record has neither.
+    let (fetch_url, require_floor) = if has_new_fields {
+        (decode_opt_str(d)?, decode_opt_str(d)?)
+    } else {
+        (None, None)
+    };
     Ok(CommunityRecord {
         namespace_id,
         title,
@@ -242,6 +283,8 @@ fn decode_record(d: &mut Decoder) -> Result<CommunityRecord, RegistryCorrupt> {
         quarantined,
         last_activity_unix_seconds,
         last_sync_unix_seconds,
+        fetch_url,
+        require_floor,
     })
 }
 
@@ -265,6 +308,25 @@ fn encode_opt_u64(e: &mut Encoder<&mut Vec<u8>>, value: Option<u64>) {
             e.null().expect("vec encoder infallible");
         }
     }
+}
+
+fn encode_opt_str(e: &mut Encoder<&mut Vec<u8>>, value: Option<&str>) {
+    match value {
+        Some(v) => {
+            e.str(v).expect("vec encoder infallible");
+        }
+        None => {
+            e.null().expect("vec encoder infallible");
+        }
+    }
+}
+
+fn decode_opt_str(d: &mut Decoder) -> Result<Option<String>, RegistryCorrupt> {
+    if d.datatype().map_err(|_| RegistryCorrupt)? == Type::Null {
+        d.null().map_err(|_| RegistryCorrupt)?;
+        return Ok(None);
+    }
+    Ok(Some(d.str().map_err(|_| RegistryCorrupt)?.to_string()))
 }
 
 fn decode_opt_bytes(d: &mut Decoder) -> Result<Option<Vec<u8>>, RegistryCorrupt> {
@@ -313,7 +375,67 @@ mod tests {
             quarantined: false,
             last_activity_unix_seconds: Some(1_000 + seed as u64),
             last_sync_unix_seconds: None,
+            fetch_url: None,
+            require_floor: None,
         }
+    }
+
+    /// BACKWARD-COMPAT: a registry written before the appended tail existed has the
+    /// legacy 9-field record layout and MUST still decode (new fields -> None), so
+    /// an app upgrade never bricks a pre-existing registry.
+    #[test]
+    fn a_legacy_record_without_fetch_url_decodes_with_none() {
+        let mut buf = Vec::new();
+        let mut e = Encoder::new(&mut buf);
+        e.array(RECORD_FIELDS_LEGACY).unwrap();
+        e.bytes(&[9u8; 32]).unwrap();
+        e.str("Legacy site").unwrap();
+        e.u8(Relationship::Following.to_wire()).unwrap();
+        e.null().unwrap(); // sealed_author
+        e.null().unwrap(); // descriptor_entry_id
+        e.bool(false).unwrap(); // archived
+        e.bool(false).unwrap(); // quarantined
+        e.null().unwrap(); // last_activity_unix_seconds
+        e.null().unwrap(); // last_sync_unix_seconds
+                           // no fetch_url field — the legacy layout
+
+        let mut d = Decoder::new(&buf);
+        let record = decode_record(&mut d).expect("legacy record must still decode");
+        assert_eq!(record.namespace_id, [9u8; 32]);
+        assert_eq!(record.relationship, Relationship::Following);
+        assert!(
+            record.fetch_url.is_none() && record.require_floor.is_none(),
+            "a legacy record loads with the new fields None — no brick on upgrade"
+        );
+    }
+
+    #[test]
+    fn a_record_with_the_new_fields_round_trips() {
+        let mut r = record(5);
+        r.fetch_url = Some("https://mirror.example/site.bundle".into());
+        r.require_floor = Some("none".into());
+        let mut buf = Vec::new();
+        let mut e = Encoder::new(&mut buf);
+        encode_record(&mut e, &r);
+        let mut d = Decoder::new(&buf);
+        assert_eq!(decode_record(&mut d).unwrap(), r);
+    }
+
+    /// FAIL-CLOSED arity: a record whose field count is NEITHER the legacy nor the
+    /// current arity is malformed and rejected — never silently accepted.
+    #[test]
+    fn a_record_with_an_unknown_arity_is_rejected() {
+        let mut buf = Vec::new();
+        let mut e = Encoder::new(&mut buf);
+        e.array(3).unwrap(); // neither RECORD_FIELDS_LEGACY nor RECORD_FIELDS
+        e.bytes(&[1u8; 32]).unwrap();
+        e.str("x").unwrap();
+        e.u8(Relationship::Following.to_wire()).unwrap();
+        let mut d = Decoder::new(&buf);
+        assert!(
+            decode_record(&mut d).is_err(),
+            "an unexpected field count must fail closed"
+        );
     }
 
     #[test]
@@ -328,8 +450,12 @@ mod tests {
             assert_eq!(Relationship::from_wire(r.to_wire()), Some(r));
         }
         assert_eq!(Relationship::from_wire(5), None);
+        // The record shape grew (fetch_url + require_floor appended) but the wire
+        // is still decoded TOLERANTLY (legacy 9-field records load), so no
+        // REGISTRY_VERSION bump was needed — that is the property this guards.
         assert_eq!(REGISTRY_VERSION, 1);
-        assert_eq!(RECORD_FIELDS, 9);
+        assert_eq!(RECORD_FIELDS_LEGACY, 9);
+        assert_eq!(RECORD_FIELDS, 11);
     }
 
     #[test]

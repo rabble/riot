@@ -17,7 +17,7 @@ use chacha20poly1305::{
 use super::identity::os_fill;
 use super::owned::OwnedRoot;
 use super::WillowError;
-use crate::willow::site_paths::is_under_articles;
+use crate::willow::site_paths::{is_under_articles, is_under_directory};
 
 const MASTHEAD_MAGIC: &[u8] = b"RIOTMH\x01\0";
 const MASTHEAD_AAD: &[u8] = b"riot/owned-masthead/sealed/v1";
@@ -77,6 +77,31 @@ impl OwnedMasthead {
         }
         let mut cap = self.owner_write_capability();
         cap.try_delegate(&self.owner_subspace_secret, new_area, editor_subspace_id)
+            .map_err(|_| WillowError::DoesNotAuthorise)?;
+        Ok(cap)
+    }
+
+    /// Delegate a `/directory`-scoped, time-boxed write capability to a dedicated
+    /// listing key. REFUSES (belt) any `new_area` whose path is not under
+    /// `/directory`, so a listing delegate can never mint a cap reaching
+    /// `/manifest`, `/mod/`, or `/articles`. The dedicated key writes the
+    /// community listing at `O:/directory/listing`; the owner still mints and
+    /// refreshes the root-signed ticket (a delegate cannot).
+    ///
+    /// This constructor establishes only the Meadowcap boundary. A delegated
+    /// listing entry must additionally carry a root-signed `ListingDelegateGrantV1`
+    /// binding one exact `listing_epoch` (WU-003B); a Meadowcap chain alone does
+    /// not let a delegate choose an epoch.
+    pub fn delegate_listing(
+        &self,
+        listing_subspace_id: SubspaceId,
+        new_area: Area,
+    ) -> Result<WriteCapability, WillowError> {
+        if !is_under_directory(new_area.path()) {
+            return Err(WillowError::DelegationAreaEscapesDirectory);
+        }
+        let mut cap = self.owner_write_capability();
+        cap.try_delegate(&self.owner_subspace_secret, new_area, listing_subspace_id)
             .map_err(|_| WillowError::DoesNotAuthorise)?;
         Ok(cap)
     }

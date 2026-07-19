@@ -1638,13 +1638,12 @@ fn prepare_followed_site_import(
     // FAMILY GATE (R2): a followed-site bundle may carry ONLY owned /mod +
     // /articles. Any other family (a communal alert/newswire entry, a profile
     // card, a third namespace's entry) makes the whole bundle untrustworthy —
-    // reject it all-or-nothing. Same least-privilege set as Option B.
+    // reject it all-or-nothing. Routed through the SAME canonical predicate the
+    // manual (Option B) and transport (WU3) paths use, so the gate cannot drift.
     for item in &inspectable {
         let entry = riot_core::willow::decode_entry_canonic(&item.signed.entry_bytes)
             .map_err(|_| MobileError::ImportRejected)?;
-        let owned_family = riot_core::willow::site_paths::is_owned_moderation_entry(&entry)
-            || riot_core::willow::site_paths::is_owned_editorial_entry(&entry);
-        if !owned_family {
+        if !riot_core::site::is_followed_site_family(&entry) {
             return Err(MobileError::ImportRejected);
         }
     }
@@ -2089,7 +2088,7 @@ fn namespace_live_ids(
 /// sync requires a durable profile.
 // Consumed by the followed-site drive fns below (FFI-wired in WU4).
 #[allow(dead_code)]
-fn build_followed_site_offer(
+pub(crate) fn build_followed_site_offer(
     profile: &LocalProfile,
     namespace_id: &[u8; 32],
 ) -> Result<Vec<SignedWillowEntry>, MobileError> {
@@ -2303,7 +2302,7 @@ pub(crate) fn hex(bytes: &[u8]) -> String {
     value
 }
 
-fn map_core_error(error: riot_core::session::SessionError) -> MobileError {
+pub(crate) fn map_core_error(error: riot_core::session::SessionError) -> MobileError {
     use riot_core::session::SessionError;
 
     match error {
@@ -2332,6 +2331,7 @@ fn map_author_error(error: WillowError) -> MobileError {
         WillowError::InvalidAlert(_)
         | WillowError::NamespaceNotCommunal
         | WillowError::DelegationAreaEscapesArticles
+        | WillowError::DelegationAreaEscapesDirectory
         | WillowError::DelegationAreaEscapesMod => MobileError::InvalidInput,
         WillowError::SealedIdentityInvalid | WillowError::SealedMastheadInvalid => {
             MobileError::InvalidInput
@@ -2578,6 +2578,8 @@ pub(crate) fn register_active_community(
         quarantined: false,
         last_activity_unix_seconds: None,
         last_sync_unix_seconds: None,
+        fetch_url: None,
+        require_floor: None,
     });
     profile.registry.active = Some(namespace_id);
     persist_registry(profile)?;
@@ -2729,11 +2731,26 @@ pub(crate) fn list_communities(
 /// default until a manifest resolves) and `transport_blocked` is `false`; both
 /// get their real transport-derived values on the ticket-follow path in Rung 5.
 fn followed_site_row(record: &CommunityRecord) -> FollowedSiteRow {
+    use riot_core::site::ticket::Floor;
+    // FETCH-TIME FAIL-CLOSED GATE: a `require:arti` (or unknown) site must never
+    // expose a clearnet-pullable url — HTTP-pulling it over clearnet would leak
+    // the follower's IP to the mirror, the exact harm require:arti prevents, and
+    // mobile has no Tor transport in v1. So ONLY a `none` floor surfaces the url;
+    // otherwise the row is transport_blocked and carries no fetch_url (the app has
+    // nothing to GET, stays held/unavailable — never a clearnet leak).
+    let floor = record.require_floor.as_deref().map(Floor::parse);
+    let clearnet_ok = matches!(floor, Some(Floor::None) | None);
+    let transport_blocked = matches!(floor, Some(Floor::Arti) | Some(Floor::Unknown(_)));
     FollowedSiteRow {
         root: hex(&record.namespace_id),
         title: record.title.clone(),
-        state: "pending-first-sync".to_string(),
-        transport_blocked: false,
+        state: if transport_blocked {
+            "transport-blocked".to_string()
+        } else {
+            "pending-first-sync".to_string()
+        },
+        transport_blocked,
+        fetch_url: clearnet_ok.then(|| record.fetch_url.clone()).flatten(),
     }
 }
 
@@ -2752,6 +2769,54 @@ pub(crate) fn list_followed_sites(
             .filter(|record| record.relationship == Relationship::Following)
             .map(followed_site_row)
             .collect())
+    })
+}
+
+/// Production follow-by-ticket (Option C HTTP-pull): parse + VERIFY a root-signed
+/// site ticket, then persist a `Following` registry record carrying the ticket's
+/// signed HTTPS `url=` fetch hint. The phone later pulls that url and imports the
+/// bytes through `import_followed_site_bundle` (which re-verifies every entry —
+/// the sole trust anchor; the url and its mirror are untrusted).
+///
+/// Verifies the root signature and expiry. A ticket with no `url=` still follows
+/// (fetch_url `None` → nothing to auto-pull, graceful). NOTE (v1 limits, flagged
+/// for follow-up): epoch-rollback protection needs a persisted per-site epoch
+/// floor, and a `require:arti` site should refuse a clearnet HTTP pull — both are
+/// out of this cut; the url is only a fetch hint and fetched bytes are re-verified.
+pub(crate) fn follow_site(
+    inner: &Arc<Mutex<ProfileState>>,
+    ticket_uri: String,
+) -> Result<FollowedSiteRow, MobileError> {
+    let ticket =
+        riot_core::site::ticket::parse(&ticket_uri).map_err(|_| MobileError::InvalidInput)?;
+    if !ticket.verify() {
+        return Err(MobileError::InvalidInput);
+    }
+    let now = system_snapshot().map_err(map_author_error)?.unix_seconds;
+    if now > ticket.exp {
+        return Err(MobileError::InvalidInput);
+    }
+
+    with_active(inner, |profile| {
+        profile.registry.upsert(CommunityRecord {
+            namespace_id: ticket.namespace,
+            title: "Followed site".to_string(),
+            relationship: Relationship::Following,
+            sealed_author: None,
+            descriptor_entry_id: None,
+            archived: false,
+            quarantined: false,
+            last_activity_unix_seconds: None,
+            last_sync_unix_seconds: None,
+            fetch_url: ticket.url.clone(),
+            require_floor: Some(ticket.require_raw.clone()),
+        });
+        persist_registry(profile)?;
+        let record = profile
+            .registry
+            .find(&ticket.namespace)
+            .ok_or(MobileError::Internal)?;
+        Ok(followed_site_row(record))
     })
 }
 
@@ -2776,6 +2841,8 @@ impl MobileProfile {
                 quarantined: false,
                 last_activity_unix_seconds: None,
                 last_sync_unix_seconds: None,
+                fetch_url: None,
+                require_floor: None,
             });
             persist_registry(profile)?;
             Ok(hex(&root))
@@ -4540,6 +4607,101 @@ mod tests {
             Ok(())
         })
         .unwrap();
+    }
+
+    fn site_ticket(
+        root: [u8; 32],
+        require: &str,
+        exp: u64,
+        url: Option<String>,
+    ) -> riot_core::site::ticket::Ticket {
+        let key = ed25519_dalek::SigningKey::from_bytes(&[7u8; 32]);
+        riot_core::site::ticket::mint(&key, root, require, 1, exp, [0u8; 32], None, url)
+    }
+
+    /// follow_site verifies a root-signed ticket and persists the Following record
+    /// with the ticket's signed HTTPS fetch url (Option C HTTP-pull).
+    #[test]
+    fn follow_site_verifies_a_ticket_and_persists_the_fetch_url() {
+        let profile = open_local_profile().unwrap();
+        create_public_space(&profile.inner, "Home".into()).unwrap();
+        let root = [0x55u8; 32];
+        let url = "https://mirror.example/s.bundle";
+        let ticket = site_ticket(root, "none", u64::MAX, Some(url.into()));
+
+        let row = follow_site(&profile.inner, ticket.encode()).expect("follow");
+        assert_eq!(row.root, hex(&root));
+        assert_eq!(row.fetch_url.as_deref(), Some(url));
+
+        let sites = list_followed_sites(&profile.inner).unwrap();
+        assert!(
+            sites
+                .iter()
+                .any(|s| s.root == hex(&root) && s.fetch_url.as_deref() == Some(url)),
+            "the followed site surfaces in list_followed_sites with its fetch url"
+        );
+    }
+
+    #[test]
+    fn follow_site_refuses_a_tampered_ticket() {
+        let profile = open_local_profile().unwrap();
+        create_public_space(&profile.inner, "Home".into()).unwrap();
+        let mut ticket = site_ticket([0x55u8; 32], "none", u64::MAX, Some("https://m/x".into()));
+        ticket.sig[0] ^= 0x01;
+        assert!(
+            follow_site(&profile.inner, ticket.encode()).is_err(),
+            "a bad-signature ticket is refused"
+        );
+    }
+
+    #[test]
+    fn follow_site_refuses_an_expired_ticket() {
+        let profile = open_local_profile().unwrap();
+        create_public_space(&profile.inner, "Home".into()).unwrap();
+        let ticket = site_ticket([0x55u8; 32], "none", 1, Some("https://m/x".into()));
+        assert!(
+            follow_site(&profile.inner, ticket.encode()).is_err(),
+            "an expired ticket is refused"
+        );
+    }
+
+    #[test]
+    fn follow_site_with_no_url_follows_with_none() {
+        let profile = open_local_profile().unwrap();
+        create_public_space(&profile.inner, "Home".into()).unwrap();
+        let ticket = site_ticket([0x66u8; 32], "none", u64::MAX, None);
+        let row = follow_site(&profile.inner, ticket.encode()).expect("follow");
+        assert!(
+            row.fetch_url.is_none(),
+            "a no-url ticket follows with fetch_url None (graceful)"
+        );
+    }
+
+    /// FETCH-TIME FAIL-CLOSED: a require:arti site follows (persisting leaks
+    /// nothing), but its row exposes NO clearnet fetch_url and is transport_blocked
+    /// — the app has nothing to HTTP-GET over clearnet, so no IP leak to a mirror.
+    #[test]
+    fn a_require_arti_site_follows_but_exposes_no_clearnet_fetch_url() {
+        let profile = open_local_profile().unwrap();
+        create_public_space(&profile.inner, "Home".into()).unwrap();
+        let root = [0x77u8; 32];
+        // The url is signed into the ticket, but the arti floor must gate it out.
+        let ticket = site_ticket(root, "arti", u64::MAX, Some("https://mirror/x".into()));
+
+        let row = follow_site(&profile.inner, ticket.encode()).expect("follow persists");
+        assert!(
+            row.transport_blocked,
+            "a require:arti site is transport-blocked on mobile (no Tor)"
+        );
+        assert!(
+            row.fetch_url.is_none(),
+            "a require:arti site exposes NO clearnet fetch url — fail-closed, no IP leak"
+        );
+
+        // And it still surfaces in the followed list, blocked + urlless.
+        let sites = list_followed_sites(&profile.inner).unwrap();
+        let listed = sites.iter().find(|s| s.root == hex(&root)).expect("listed");
+        assert!(listed.transport_blocked && listed.fetch_url.is_none());
     }
 }
 

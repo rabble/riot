@@ -14,7 +14,6 @@
 
 use std::collections::BTreeSet;
 
-use riot_core::import::{decode_bundle_with_root, BundleDecodeOutcome, ItemStatus};
 use riot_core::newswire::PostTreatment;
 use riot_core::site::moderation::{
     compute_mod_set_digest, ModEpoch, ModerationRecord, Revoke, Tombstone,
@@ -26,14 +25,12 @@ use riot_core::site::{
     SignedModerationRecord, SiteDisplay, SiteRole, SiteRule, SiteTransport, TrustTier,
     ValidatedManifest, VersionFloorOutcome,
 };
-use riot_core::willow::site_paths::{
-    is_owned_editorial_entry, is_owned_moderation_entry, ARTICLES_COMPONENT, MOD_COMPONENT,
-};
+use riot_core::willow::site_paths::{ARTICLES_COMPONENT, MOD_COMPONENT};
 use riot_core::willow::{
-    decode_entry_canonic, system_snapshot, ClockSnapshot, Entry, OwnedMasthead, Path,
-    SignedWillowEntry,
+    encode_capability, system_snapshot, tai_j2000_micros_from_unix_seconds, ClockSnapshot,
+    OwnedMasthead, Path, SignedWillowEntry, SubspaceId,
 };
-use willow25::groupings::Keylike;
+use willow25::groupings::{Area, Keylike, TimeRange};
 
 use crate::community_registry::Relationship;
 
@@ -110,6 +107,114 @@ pub fn restore_owned_site(
             namespace_id: hex(masthead.namespace_id().as_bytes()),
             owner_subspace_id: hex(masthead.owner_subspace_id().as_bytes()),
             sealed_root,
+        })
+    })();
+    wrapping_key.iter_mut().for_each(|b| *b = 0);
+    result
+}
+
+/// A section-scoped, time-boxed EDITOR write invite the owner mints for an
+/// invitee. Transport-safe: `capability_bytes` is a DELEGATION chain (public),
+/// not a secret — the editor authors with THEIR own subspace secret. No owner or
+/// root secret ever appears here.
+#[derive(uniffi::Record)]
+pub struct EditorInvite {
+    /// The delegated editor write-capability, encoded for transport to the
+    /// invitee. A DELEGATION, not a secret.
+    pub capability_bytes: Vec<u8>,
+    /// The `/articles/<section>` path component this cap is scoped to.
+    pub section: String,
+    /// The time-box: the cap authorises no entry timestamped at or after this
+    /// unix-seconds bound. The owner's soft-revoke lever (let it lapse).
+    pub expires_unix_seconds: u64,
+}
+
+/// Parse a lowercase-hex 32-byte subspace id (64 hex chars) into a `SubspaceId`.
+/// Fails closed on any wrong length or non-hex character.
+fn subspace_id_from_hex(id: &str) -> Result<SubspaceId, MobileError> {
+    if id.len() != 64 {
+        return Err(MobileError::InvalidInput);
+    }
+    let mut bytes = [0u8; 32];
+    let src = id.as_bytes();
+    for (i, out) in bytes.iter_mut().enumerate() {
+        let hi = (src[i * 2] as char)
+            .to_digit(16)
+            .ok_or(MobileError::InvalidInput)?;
+        let lo = (src[i * 2 + 1] as char)
+            .to_digit(16)
+            .ok_or(MobileError::InvalidInput)?;
+        *out = ((hi << 4) | lo) as u8;
+    }
+    Ok(SubspaceId::from_bytes(&bytes))
+}
+
+/// Mint a section-scoped, time-boxed EDITOR write capability for an invitee.
+///
+/// The owner opens their sealed masthead under `wrapping_key`, then delegates a
+/// write capability over `/articles/<section>` to the editor's own subspace id,
+/// bounded to `[now, expires_unix_seconds)`. The core `delegate_section` enforces
+/// the `/articles/` belt: any area not under `/articles/` (i.e. `/manifest`,
+/// `/mod/`) is refused, and because `section` is a single path COMPONENT it can
+/// never traverse out of the editorial region regardless of its contents.
+///
+/// SECURITY: what crosses back is ONLY the public delegation chain
+/// ([`encode_capability`]) — never the owner/root subspace secret. The in-process
+/// wrapping-key copy is zeroed on every return path.
+#[uniffi::export]
+pub fn delegate_editor_section(
+    sealed_root: Vec<u8>,
+    mut wrapping_key: Vec<u8>,
+    editor_subspace_id: String,
+    section: String,
+    expires_unix_seconds: u64,
+) -> Result<EditorInvite, MobileError> {
+    let key = match exact_key(&wrapping_key) {
+        Ok(k) => k,
+        Err(e) => {
+            wrapping_key.iter_mut().for_each(|b| *b = 0);
+            return Err(e);
+        }
+    };
+    let result = (|| {
+        let masthead = OwnedMasthead::open_sealed(&key, &sealed_root)
+            .map_err(|_| MobileError::InvalidInput)?;
+        let editor_id = subspace_id_from_hex(&editor_subspace_id)?;
+
+        let snap = system_snapshot().map_err(|_| MobileError::ClockUnavailable)?;
+        // A degenerate or already-elapsed time box mints nothing (and avoids an
+        // inverted-range construction). The owner must give the editor real time.
+        // Compared in the product wall-clock unit the caller supplied.
+        if expires_unix_seconds <= snap.unix_seconds {
+            return Err(MobileError::InvalidInput);
+        }
+
+        // The cap's TimeRange MUST be in the entry-time unit — TAI/J2000
+        // microseconds — not Unix seconds. Real Willow entries are stamped in
+        // micros (~8.3e14 for 2026); a seconds bound (~1.7e9) would exclude every
+        // real editorial entry, so the cap would authorise nothing. Convert both
+        // bounds through the same clock path the entry writer uses. The seconds
+        // guard above and the conversion's monotonicity keep now_micros < expires.
+        let now_micros = snap.tai_j2000_micros;
+        let expires_micros = tai_j2000_micros_from_unix_seconds(expires_unix_seconds)
+            .map_err(|_| MobileError::InvalidInput)?;
+
+        let path = Path::from_slices(&[ARTICLES_COMPONENT, section.as_bytes()])
+            .map_err(|_| MobileError::InvalidInput)?;
+        let area = Area::new(
+            Some(editor_id.clone()),
+            path,
+            TimeRange::new(now_micros.into(), Some(expires_micros.into())),
+        );
+
+        let cap = masthead
+            .delegate_section(editor_id, area)
+            .map_err(|_| MobileError::InvalidInput)?;
+
+        Ok(EditorInvite {
+            capability_bytes: encode_capability(&cap),
+            section,
+            expires_unix_seconds,
         })
     })();
     wrapping_key.iter_mut().for_each(|b| *b = 0);
@@ -896,44 +1001,21 @@ impl MobileProfile {
                 return Err(MobileError::ImportRejected);
             }
 
-            // 2. Decode under the followed root + FAMILY gate (all-or-nothing).
-            let decoded = match decode_bundle_with_root(&bytes, Some(root)) {
-                BundleDecodeOutcome::Decoded(decoded) => decoded,
-                BundleDecodeOutcome::Rejected(_) => return Err(MobileError::ImportRejected),
-            };
-            let mut count = 0u32;
-            for item in &decoded.items {
-                // A non-admissible item (owned entry not rooted at `root`, forged
-                // cap, etc.) makes the whole followed-site bundle untrustworthy.
-                let ItemStatus::Valid(_) = &item.status else {
-                    return Err(MobileError::ImportRejected);
-                };
-                let entry = decode_entry_canonic(item.frame.entry_bytes())
-                    .map_err(|_| MobileError::ImportRejected)?;
-                if !is_followed_site_family(&entry) {
-                    return Err(MobileError::ImportRejected);
-                }
-                count += 1;
-            }
-            if count == 0 {
-                return Err(MobileError::ImportRejected);
-            }
-
-            // 3. Admit + commit through the proven followed-root path. Owned /mod
-            //    and /articles are admitted under a cap rooted at `root`.
+            // 2 + 3. Admit + commit through the SINGLE canonical followed-site
+            //    gate (riot_core::site::admit_followed_site_frame): decode under
+            //    the followed root + family-gate to owned /mod + /articles +
+            //    eligible-count check + commit. The manual (here), the WU2 sync
+            //    session, and the WU3 transport follower all route through this
+            //    one gate, so the security boundary cannot drift between them.
             profile.preview = None;
             profile.plan = None;
-            let preview = crate::mobile_state::inspect_core_with_root(
+            let count = riot_core::site::admit_followed_site_frame(
                 &profile.store,
+                root,
                 &bytes,
                 "site-follow-import",
-                Some(root),
-            )?;
-            let plan = preview.plan_all().map_err(|_| MobileError::Internal)?;
-            use riot_core::session::CommitOutcome;
-            match plan.commit().map_err(|_| MobileError::Internal)? {
-                CommitOutcome::Committed(_) | CommitOutcome::NoChanges(_) => {}
-            }
+            )
+            .map_err(map_followed_site_admit_error)?;
 
             // 4. sync_inventory is intentionally NOT touched: owned-namespace records
             //    must stay out of the active community's peer offer set (the
@@ -948,17 +1030,41 @@ impl MobileProfile {
             Ok(ImportSummary { imported: count })
         })
     }
+
+    /// Export this owner's PUBLIC signed followed-site bundle for
+    /// `followed_site_root`: the owned /mod + /articles records in their full
+    /// signed form, encoded as ONE bundle. This is the "reach" artifact rabble's
+    /// HTTP-pull model publishes to a static mirror — a follower fetches it over
+    /// UNTRUSTED HTTPS and imports it via `import_followed_site_bundle`, which
+    /// re-verifies every entry against the owner cap rooted at the site (the sole
+    /// trust anchor; a hostile mirror can only serve stale/empty, never forge).
+    ///
+    /// Owner-side and DURABLE-ONLY: the signed form lives only in durable storage
+    /// (the in-memory join drops cap/sig), so this fails closed on a memory
+    /// profile. The exported bytes are exactly what `import_followed_site_bundle`
+    /// consumes — produce and consume are symmetric.
+    pub fn export_followed_site_offer(
+        &self,
+        followed_site_root: Vec<u8>,
+    ) -> Result<Vec<u8>, MobileError> {
+        let root = <[u8; 32]>::try_from(followed_site_root.as_slice())
+            .map_err(|_| MobileError::InvalidInput)?;
+        with_active(&self.inner, |profile| {
+            let offer = crate::mobile_state::build_followed_site_offer(profile, &root)?;
+            riot_core::import::encode_bundle(&offer).map_err(|_| MobileError::Internal)
+        })
+    }
 }
 
-/// Whether `entry` is an owned composite-site record a followed-site bundle may
-/// carry: `/mod` (moderation) or `/articles` (editorial) only. Least-privilege —
-/// these are exactly the families a STORE READER consumes (resolve_composite_site
-/// reads /mod freshness + /articles items). The manifest is validated from a
-/// caller argument, never read from the store, so admitting owned /manifest here
-/// would be dead admission that only widens the surface — excluded. Anything else
-/// (a communal alert/newswire entry) is never admissible here.
-fn is_followed_site_family(entry: &Entry) -> bool {
-    is_owned_moderation_entry(entry) || is_owned_editorial_entry(entry)
+/// Map the canonical core admission refusal onto the FFI error: a fail-closed
+/// `Rejected` is `ImportRejected`; an underlying store fault keeps its mapped code.
+fn map_followed_site_admit_error(error: riot_core::site::FollowedSiteAdmitError) -> MobileError {
+    match error {
+        riot_core::site::FollowedSiteAdmitError::Rejected => MobileError::ImportRejected,
+        riot_core::site::FollowedSiteAdmitError::Store(error) => {
+            crate::mobile_state::map_core_error(error)
+        }
+    }
 }
 
 // These tests live IN-CRATE (not crates/riot-ffi/tests/) on purpose: owner /mod/
@@ -1955,6 +2061,103 @@ mod resolve_composite_tests {
                 "a foreign-namespace frame must be rejected by the followed-site session"
             ),
         }
+    }
+
+    // ---- Serve side: export_followed_site_offer (the HTTP-pull artifact) ----
+
+    /// The exported bundle is exactly what import_followed_site_bundle consumes:
+    /// an owner exports its signed /mod bundle, a following follower imports the
+    /// bytes (as if fetched over untrusted HTTPS) and advances off
+    /// ModerationLoading. Produce and consume are symmetric.
+    #[test]
+    fn exported_offer_round_trips_through_import_into_a_following_follower() {
+        let (masthead, _sealed, root) = sealed_masthead();
+        let manifest = manifest_wire(&masthead, vec![masthead_member(root)]);
+
+        // Owner: durable, holds a /mod bundle (tombstone + attesting heartbeat).
+        let (_owner_dir, owner) = durable_profile();
+        let (tomb, tomb_id) = tombstone(&masthead, b"t1", [0x77; 32], [0x88; 32]);
+        let epoch = heartbeat(&masthead, 1, now_unix(), &[tomb_id]);
+        import_owned(&owner, root, &tomb);
+        import_owned(&owner, root, &epoch);
+
+        let bundle = owner
+            .export_followed_site_offer(root.to_vec())
+            .expect("export");
+        assert!(
+            !bundle.is_empty(),
+            "the export carries the owner's signed records"
+        );
+
+        // A following follower imports the fetched bytes via Option B.
+        let (_follower_dir, follower) = durable_profile();
+        follower.follow_site_for_test(root.to_vec()).unwrap();
+        assert_eq!(
+            call_resolve_at(&follower, &manifest, root, now_unix()).degradation,
+            SiteDegradation::ModerationLoading,
+            "before delivery the follower has no /mod → held at ModerationLoading"
+        );
+
+        let summary = follower
+            .import_followed_site_bundle(bundle, root.to_vec())
+            .expect("import the fetched bundle");
+        assert_eq!(summary.imported, 2, "both exported records were admitted");
+        assert_ne!(
+            call_resolve_at(&follower, &manifest, root, now_unix()).degradation,
+            SiteDegradation::ModerationLoading,
+            "the exported+served bundle advances the follower off ModerationLoading"
+        );
+    }
+
+    /// Durable-only: a memory owner cannot reconstruct the signed form
+    /// (the join drops cap/sig), so the export fails closed rather than emitting
+    /// an unsigned or empty bundle.
+    #[test]
+    fn export_followed_site_offer_fails_closed_on_a_memory_owner() {
+        let (masthead, _sealed, root) = sealed_masthead();
+        let owner = open_local_profile().unwrap();
+        let (tomb, _id) = tombstone(&masthead, b"t1", [0x77; 32], [0x88; 32]);
+        import_owned(&owner, root, &tomb);
+
+        assert!(
+            owner.export_followed_site_offer(root.to_vec()).is_err(),
+            "a memory owner cannot export a signed bundle — fail closed"
+        );
+    }
+
+    /// THE HTTP-pull-specific attack: a mirror re-serving an OLD but validly-signed
+    /// bundle to hide a newer state cannot fake Current — the stale heartbeat falls
+    /// outside the freshness window, so the follower HOLDS at ModerationLoading
+    /// (fail-closed), never rendering the stale bundle as up-to-date.
+    #[test]
+    fn a_stale_served_bundle_holds_at_moderation_loading_not_false_current() {
+        let (masthead, _sealed, root) = sealed_masthead();
+        let manifest = manifest_wire(&masthead, vec![masthead_member(root)]);
+
+        let (_owner_dir, owner) = durable_profile();
+        let stamped = now_unix();
+        let (tomb, tomb_id) = tombstone(&masthead, b"t1", [0x77; 32], [0x88; 32]);
+        let epoch = heartbeat(&masthead, 1, stamped, &[tomb_id]);
+        import_owned(&owner, root, &tomb);
+        import_owned(&owner, root, &epoch);
+        let bundle = owner
+            .export_followed_site_offer(root.to_vec())
+            .expect("export");
+
+        let (_follower_dir, follower) = durable_profile();
+        follower.follow_site_for_test(root.to_vec()).unwrap();
+        follower
+            .import_followed_site_bundle(bundle, root.to_vec())
+            .expect("import stale bundle");
+
+        // Resolve LATER — past the freshness window — as if the mirror keeps
+        // serving this same old bundle long after the owner moved on.
+        let stale_now = stamped + riot_core::site::moderation::MODERATION_FRESHNESS_WINDOW_SECS + 1;
+        assert_eq!(
+            call_resolve_at(&follower, &manifest, root, stale_now).degradation,
+            SiteDegradation::ModerationLoading,
+            "a stale served bundle (old heartbeat) HOLDS at ModerationLoading, never false Current"
+        );
     }
 
     #[test]

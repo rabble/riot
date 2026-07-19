@@ -1,0 +1,35 @@
+[package]
+name = "riot-client-net"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Process-singleton client internet runtime for Riot native shells (one iroh endpoint + one Tokio runtime, per-profile leases)."
+
+# CLIENT internet runtime. It owns ONE iroh endpoint and ONE Tokio runtime per
+# application process behind `RiotApplicationRuntime`, and will later be consumed
+# by `riot-ffi` (WU-012). The real endpoint/runtime live behind injected
+# factories (see `runtime.rs`) so the lifecycle is unit-testable with fakes and
+# no live network. Versions MIRROR `riot-transport` exactly so no new package
+# version resolves into the workspace lock tree.
+[dependencies]
+# The one Tokio runtime lives in `TokioTaskSpawner`. Same version + minimal
+# feature set as riot-transport so resolution reuses the existing package.
+tokio = { version = "1.53.0", features = ["rt-multi-thread", "time"] }
+# The one iroh endpoint, created behind `IrohEndpointFactory`. Same version as
+# riot-transport (which is where iroh+tokio are allowed to live).
+iroh = "1.0.2"
+# Reuse the vetted, fail-closed endpoint `bind` helper rather than re-deriving
+# it here. This is the only workspace edge riot-client-net needs for 011A.
+riot-transport = { path = "../riot-transport" }
+# WU-011B: the canonical, dependency-neutral wire layer. Reused for the
+# SECURITY-CRITICAL `admit_public_site_ticket` (ticket-first verification +
+# `require:none` transport equality) and the descriptor identity types, rather
+# than re-deriving that logic here. Already resolved in the workspace lock; this
+# only adds a dependency edge (no new package version).
+riot-anchor-protocol = { path = "../riot-anchor-protocol" }
+
+[dev-dependencies]
+# Tests construct genuinely root-signed v2 tickets (a downgraded/arti/expired
+# ticket still carries a VALID signature so it reaches the transport/version
+# gate). Same primitive + workspace version the protocol crate already uses.
+ed25519-dalek = { workspace = true }

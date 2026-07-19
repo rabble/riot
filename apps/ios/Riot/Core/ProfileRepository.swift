@@ -731,6 +731,31 @@ public final class RiotProfileRepository {
         try newswireDecodeShareReference(encoded: encoded)
     }
 
+    // MARK: - Followed composite sites (Option C HTTP-pull)
+
+    /// Follows a composite indymedia site from a root-signed `riot://site/v1/...`
+    /// ticket. The core parses + verifies (signature, expiry) and persists the
+    /// `Following` record carrying the ticket's signed HTTPS `url=`; a bad ticket
+    /// throws. A thin forward — the trust logic lives in the FFI.
+    @discardableResult
+    public func followSite(ticket: String) throws -> FollowedSiteRow {
+        try profile.followSite(ticket: ticket)
+    }
+
+    /// Every composite site the user follows, as author-less rows. Metadata only.
+    public func listFollowedSites() throws -> [FollowedSiteRow] {
+        try profile.listFollowedSites()
+    }
+
+    /// Imports an owner-signed `/mod` + `/articles` bundle pulled for a followed
+    /// site. The core re-verifies every entry against `root` (owner cap +
+    /// Following-gate + family-gate) before committing — the pulled bytes are
+    /// untrusted until it does.
+    @discardableResult
+    public func importFollowedSiteBundle(bytes: Data, root: Data) throws -> ImportSummary {
+        try profile.importFollowedSiteBundle(bytes: bytes, followedSiteRoot: root)
+    }
+
     public func signAlert(in space: RiotSpace, draft: AlertDraft) throws -> RiotEntry {
         guard persisted.space == space else { throw RepositoryError.spaceMismatch }
         let record = try profile.createDraftAlert(
@@ -1486,6 +1511,28 @@ public extension RiotProfileRepository {
         )
     }
 
+    /// Toggles this profile's communal reaction of `kind` on `parentEntryID` and
+    /// imports it through the same preview/plan/commit path as a reply. Like a
+    /// reply a reaction is communal — no editorial role is required — so core
+    /// admits it for any member of the space; `active: false` retracts this
+    /// author's reaction of that kind (latest-wins per author). `kind` is one of
+    /// the closed wire names (`support`/`solidarity`/`important`/`grief`); an
+    /// unknown name is refused by core as invalid input.
+    @discardableResult
+    func toggleNewswireReaction(
+        spaceDescriptorEntryID: String,
+        parentEntryID: String,
+        kind: String,
+        active: Bool
+    ) throws -> NewswireSignedRecord {
+        try profile.toggleNewswireReaction(
+            spaceDescriptorEntryId: spaceDescriptorEntryID,
+            parentEntryId: parentEntryID,
+            kind: kind,
+            active: active
+        )
+    }
+
     /// The collective view of a newswire space: the open wire (all non-expired
     /// posts, newest-first) and the front page (ordinary posts with an active
     /// Feature action). `Hidden`/`Tombstoned` posts arrive with `body == nil`.
@@ -1558,6 +1605,12 @@ extension RiotProfileRepository: NewswireEditorialActing {}
 /// reply for any member of the space (no editorial role) and drops it from the
 /// projection if the parent post is not held.
 extension RiotProfileRepository: NewswireCommenting {}
+
+/// The live signer for a communal reaction — it forwards to core, which admits
+/// the reaction for any member of the space (no editorial role) and retracts this
+/// author's reaction of that kind on `active: false`. The same communal contract
+/// as a reply.
+extension RiotProfileRepository: NewswireReacting {}
 
 /// The live owner-moderation signer — it loads the device wrapping key
 /// transiently (reset after use) and hands the sealed masthead + action to core,

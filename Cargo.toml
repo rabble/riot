@@ -1,6 +1,9 @@
 [workspace]
 members = [
     "crates/riot-app-cli",
+    "crates/riot-anchor",
+    "crates/riot-anchor-protocol",
+    "crates/riot-client-net",
     "crates/riot-core",
     "crates/riot-transport",
     "crates/riot-ffi",
@@ -20,6 +23,7 @@ camino = "=1.2.4"
 minicbor = { version = "=2.2.2", features = ["std"] }
 cddl-cat = "=0.7.1"
 sha2 = "=0.10.9"
+blake3 = "=1.8.5"
 # Already in the willow25 transitive graph; direct pins so riot-core can
 # drive the async codec traits synchronously. Recorded in the WU0R report.
 pollster = "=0.4.0"

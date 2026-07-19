@@ -77,6 +77,11 @@ pub struct FollowedSiteRow {
     /// row shows "requires Tor — unavailable" without drilling in (S1). Field
     /// lands here; its true-path is set in Rung 5 (see `state` note).
     pub transport_blocked: bool,
+    /// The HTTPS URL the phone pulls the owner-signed bundle from (Option C
+    /// HTTP-pull), from the follow ticket's signed `url=`. `None` when the ticket
+    /// carried no url — the "refresh from site" action then has nothing to fetch.
+    /// Untrusted: fetched bytes are re-verified by `import_followed_site_bundle`.
+    pub fetch_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
@@ -393,6 +398,17 @@ impl MobileProfile {
     /// communities). Reads registry metadata only; never unseals anything.
     pub fn list_followed_sites(&self) -> Result<Vec<FollowedSiteRow>, MobileError> {
         crate::mobile_state::list_followed_sites(&self.inner)
+    }
+
+    /// Follow a composite indymedia site from a shared, root-signed ticket
+    /// (Option C HTTP-pull). Verifies the ticket signature + expiry, persists a
+    /// `Following` record, and carries the ticket's signed HTTPS `url=` so the
+    /// app can pull the owner-signed bundle and import it via
+    /// `import_followed_site_bundle`. An invalid, expired, or unparseable ticket
+    /// is refused (`InvalidInput`); a ticket with no `url=` follows with nothing
+    /// to auto-pull.
+    pub fn follow_site(&self, ticket: String) -> Result<FollowedSiteRow, MobileError> {
+        crate::mobile_state::follow_site(&self.inner, ticket)
     }
 
     /// The currently selected community, or `None` before any is chosen. This is

@@ -3,14 +3,28 @@
 //! Thin: establish a connection, take its bidirectional stream, and hand it to
 //! the transport-agnostic [`crate::pump`]. No reconcile logic lives here.
 
-use iroh::endpoint::{presets, Connection};
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::{Arc, Mutex};
+
+use iroh::endpoint::{presets, Connection, VarInt};
 use iroh::{Endpoint, EndpointAddr, SecretKey, TransportAddr, Watcher};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::time::{sleep, Duration};
 
+use riot_core::session::EvidenceStore;
+use riot_core::site::admit_followed_site_frame;
 use riot_core::sync::ByteSyncSession;
+use riot_core::willow::SignedWillowEntry;
 
+use crate::router::{
+    AlpnRouter, BoundedStream, BoxRead, BoxWrite, Deadlines, Exporter, RouterConnection,
+};
 use crate::ticket::{admit_dial, Capabilities, Ticket};
 use crate::{pump, TransportError, ALPN};
+
+/// The route recorded for transport-delivered followed-site imports.
+const FOLLOWED_SITE_ROUTE: &str = "site-follow-transport";
 
 fn io_err<E: std::fmt::Display>(e: E) -> TransportError {
     TransportError::Io(std::io::Error::other(e.to_string()))
@@ -181,7 +195,15 @@ pub async fn sync_connect<F: FnMut(&[u8]) -> bool>(
 }
 
 /// Responder: accept the next inbound connection and reconcile.
-pub async fn sync_accept<F: FnMut(&[u8]) -> bool>(
+///
+/// This is the `riot/sync/1` COMPATIBILITY WRAPPER over the general
+/// [`AlpnRouter`]: it builds a router that routes ONLY `riot/sync/1` and
+/// dispatches the accepted connection through it. The reconcile therefore now
+/// runs inside the router's bounded envelope — one session permit, exactly one
+/// bidirectional stream (a forbidden extra stream resets the connection), the
+/// handshake deadline, and the absolute session lifetime — while the legacy
+/// [`pump`] framing on the raw stream is preserved byte-for-byte.
+pub async fn sync_accept<F: FnMut(&[u8]) -> bool + Send + 'static>(
     endpoint: &Endpoint,
     session: ByteSyncSession,
     on_bundle: F,
@@ -191,19 +213,175 @@ pub async fn sync_accept<F: FnMut(&[u8]) -> bool>(
         .await
         .ok_or(TransportError::StreamClosed)?;
     let conn: Connection = incoming.await.map_err(io_err)?;
-    let (mut send, mut recv) = conn.accept_bi().await.map_err(io_err)?;
-    let session = pump(session, &mut send, &mut recv, false, on_bundle).await?;
-    graceful_close(&mut send, &mut recv).await;
-    Ok(session)
+
+    // The pumped session and its admission hook are handed to the handler, which
+    // runs exactly once; a oneshot carries the terminal session back out. `Fn`
+    // (not `FnOnce`) storage forces the take-once cell.
+    let cell = Arc::new(Mutex::new(Some((session, on_bundle))));
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let tx = Arc::new(Mutex::new(Some(tx)));
+
+    let handler: crate::router::Handler = Arc::new(move |stream: BoundedStream, _ex: Exporter| {
+        let cell = Arc::clone(&cell);
+        let tx = Arc::clone(&tx);
+        Box::pin(async move {
+            let (session, on_bundle) = cell
+                .lock()
+                .expect("sync/1 handler cell")
+                .take()
+                .expect("sync/1 handler runs at most once");
+            let (mut send, mut recv) = stream.into_halves();
+            let session = pump(session, &mut send, &mut recv, false, on_bundle).await?;
+            graceful_close(&mut send, &mut recv).await;
+            if let Some(tx) = tx.lock().expect("sync/1 result tx").take() {
+                let _ = tx.send(session);
+            }
+            Ok(())
+        }) as Pin<Box<dyn Future<Output = Result<(), TransportError>> + Send>>
+    });
+
+    let mut router = AlpnRouter::new(1);
+    router.register(ALPN, Deadlines::sync(), handler);
+    router.dispatch(IrohConnection::new(conn)).await?;
+
+    rx.await.map_err(|_| TransportError::StreamClosed)
+}
+
+/// Accept ONE inbound connection on a public endpoint and dispatch it through a
+/// multi-ALPN [`AlpnRouter`]. This is the general accept primitive a public
+/// anchor runs in a loop: the endpoint advertises `router.alpns()`, and each
+/// accepted connection is routed to the handler for its negotiated ALPN under
+/// the router's full bounded envelope. Unknown ALPNs, permit exhaustion, and
+/// stream violations return the corresponding [`TransportError`] without leaking
+/// a session.
+pub async fn accept_with_router(
+    endpoint: &Endpoint,
+    router: &AlpnRouter,
+) -> Result<(), TransportError> {
+    let incoming = endpoint
+        .accept()
+        .await
+        .ok_or(TransportError::StreamClosed)?;
+    let conn: Connection = incoming.await.map_err(io_err)?;
+    router.dispatch(IrohConnection::new(conn)).await
+}
+
+/// Owner side (WU3): passively SERVE an owned site's offer to a follower over an
+/// accepted connection. Read-mostly v1 — the owner reseeds `offer` (what
+/// `build_followed_site_offer(root)` returns on a device) and does not ingest
+/// follower publishes (`|_| true` acknowledges without importing). A separate
+/// session keyed on the site `root`, distinct from any community sync.
+pub async fn serve_followed_site(
+    endpoint: &Endpoint,
+    root: [u8; 32],
+    offer: Vec<SignedWillowEntry>,
+) -> Result<ByteSyncSession, TransportError> {
+    let session = ByteSyncSession::new(root, offer).map_err(TransportError::Sync)?;
+    sync_accept(endpoint, session, |_| true).await
+}
+
+/// Follower side (WU3): dial a followed site through the FAIL-CLOSED ticket gate
+/// and admit every delivered bundle through the SINGLE canonical core gate
+/// (`admit_followed_site_frame`), committing owner /mod + /articles into `store`.
+///
+/// The ticket is verified BEFORE any packet: a ticket that fails its transport
+/// floor refuses without opening a connection. Every received bundle is admitted
+/// under `followed_root = root` and family-gated — the exact gate the manual
+/// (Option B) and sync-session (WU2) paths use, so nothing drifts.
+#[allow(clippy::too_many_arguments)]
+pub async fn connect_followed_site(
+    endpoint: &Endpoint,
+    peer: EndpointAddr,
+    ticket: &Ticket,
+    caps: &Capabilities,
+    now_unix: u64,
+    durable_epoch_floor: u64,
+    store: &EvidenceStore,
+    root: [u8; 32],
+    offer: Vec<SignedWillowEntry>,
+) -> Result<ByteSyncSession, TransportError> {
+    let session = ByteSyncSession::new(root, offer).map_err(TransportError::Sync)?;
+    dial_with_ticket(
+        endpoint,
+        ticket,
+        caps,
+        now_unix,
+        durable_epoch_floor,
+        peer,
+        session,
+        |bundle| admit_followed_site_frame(store, root, bundle, FOLLOWED_SITE_ROUTE).is_ok(),
+    )
+    .await
 }
 
 /// Both sides finish writing, then drain the peer to EOF, so neither tears the
 /// QUIC connection down while the other is still flushing its final frame.
-async fn graceful_close(
-    send: &mut iroh::endpoint::SendStream,
-    recv: &mut iroh::endpoint::RecvStream,
-) {
-    let _ = send.finish();
+/// `shutdown` on an iroh send stream performs a graceful QUIC `finish`.
+async fn graceful_close<S: AsyncWrite + Unpin, R: AsyncRead + Unpin>(send: &mut S, recv: &mut R) {
+    let _ = send.shutdown().await;
     let mut sink = Vec::new();
-    let _ = tokio::io::AsyncReadExt::read_to_end(recv, &mut sink).await;
+    let _ = recv.read_to_end(&mut sink).await;
+}
+
+/// Adapts a live iroh [`Connection`] to the transport-agnostic
+/// [`RouterConnection`] the [`AlpnRouter`] drives. A `Connection` is a cheap
+/// `Arc` handle, so `Clone` is free and lets the exporter capability outlive the
+/// dispatch call.
+#[derive(Clone)]
+pub struct IrohConnection(Connection);
+
+impl IrohConnection {
+    /// Wrap an already-accepted, handshake-completed connection.
+    pub fn new(conn: Connection) -> Self {
+        Self(conn)
+    }
+}
+
+impl RouterConnection for IrohConnection {
+    fn negotiated_alpn(&self) -> Option<Vec<u8>> {
+        Some(self.0.alpn().to_vec())
+    }
+
+    fn export_keying_material(
+        &self,
+        label: &[u8],
+        context: &[u8],
+        out_len: usize,
+    ) -> Result<Vec<u8>, TransportError> {
+        let mut out = vec![0u8; out_len];
+        self.0
+            .export_keying_material(&mut out, label, context)
+            .map_err(|e| TransportError::Io(std::io::Error::other(format!("{e:?}"))))?;
+        Ok(out)
+    }
+
+    fn accept_bi(
+        &self,
+    ) -> impl Future<Output = Result<(BoxWrite, BoxRead), TransportError>> + Send {
+        let conn = self.0.clone();
+        async move {
+            let (send, recv) = conn.accept_bi().await.map_err(io_err)?;
+            Ok((Box::pin(send) as BoxWrite, Box::pin(recv) as BoxRead))
+        }
+    }
+
+    fn accept_extra(&self) -> impl Future<Output = ()> + Send {
+        let conn = self.0.clone();
+        async move {
+            // A forbidden second bidirectional stream or ANY unidirectional
+            // stream is a violation. A connection close (Err) is NOT a violation:
+            // in that case pend forever so the running handler's own outcome wins.
+            let is_extra = tokio::select! {
+                r = conn.accept_bi() => r.is_ok(),
+                r = conn.accept_uni() => r.is_ok(),
+            };
+            if !is_extra {
+                std::future::pending::<()>().await;
+            }
+        }
+    }
+
+    fn close(&self, reason: &[u8]) {
+        self.0.close(VarInt::from_u32(0), reason);
+    }
 }

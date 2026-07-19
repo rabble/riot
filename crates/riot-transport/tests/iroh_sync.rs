@@ -19,7 +19,7 @@ async fn require_arti_ticket_fails_closed_before_any_dial() {
     // A require:arti site, a client with only iroh: dial_with_ticket must REFUSE
     // before opening a connection — the peer here is reachable, yet no sync runs.
     let key = ed25519_dalek::SigningKey::from_bytes(&[9u8; 32]);
-    let ticket = mint(&key, [0x11; 32], "arti", 1, 10_000, [0x22; 32], None);
+    let ticket = mint(&key, [0x11; 32], "arti", 1, 10_000, [0x22; 32], None, None);
 
     let follower = bind().await.unwrap();
     let seed = bind().await.unwrap();
@@ -90,4 +90,71 @@ async fn reconcile_over_real_iroh_quic() {
         "follower pulled the entries bundle over QUIC"
     );
     assert!(!bundles[0].is_empty());
+}
+
+/// The general multi-ALPN accept path over real QUIC: an [`AlpnRouter`] with a
+/// `riot/sync/1` handler, driven by `accept_with_router`, reconciles with a
+/// `sync_connect` initiator exactly like the bespoke `sync_accept` wrapper. This
+/// exercises `accept_with_router` + `IrohConnection` end-to-end.
+#[tokio::test(flavor = "multi_thread")]
+async fn accept_with_router_reconciles_sync1_over_real_quic() {
+    use std::future::Future;
+    use std::pin::Pin;
+
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    use riot_transport::iroh::accept_with_router;
+    use riot_transport::router::{AlpnRouter, BoundedStream, Deadlines, Exporter, Handler};
+    use riot_transport::{pump, ALPN};
+
+    let author = generate_communal_author().unwrap();
+    let namespace = author.identity().namespace_id;
+
+    let seed_session =
+        ByteSyncSession::new(namespace, vec![signed(&author, 1), signed(&author, 2)]).unwrap();
+    let follower_session = ByteSyncSession::new(namespace, vec![]).unwrap();
+
+    let seed = bind().await.expect("bind seed");
+    let follower = bind().await.expect("bind follower");
+    let seed_addr = dialable_addr(&seed).await;
+
+    // A sync/1 handler that pumps the responder side and reports terminality.
+    let done = Arc::new(Mutex::new(false));
+    let done2 = Arc::clone(&done);
+    let cell = Arc::new(Mutex::new(Some(seed_session)));
+    let handler: Handler = Arc::new(move |stream: BoundedStream, _ex: Exporter| {
+        let done = Arc::clone(&done2);
+        let cell = Arc::clone(&cell);
+        Box::pin(async move {
+            let session = cell.lock().unwrap().take().expect("handler runs once");
+            let (mut send, mut recv) = stream.into_halves();
+            let session = pump(session, &mut send, &mut recv, false, |_| true).await?;
+            // Graceful close: finish our side, drain the peer to EOF, so the QUIC
+            // connection is not torn down while the follower flushes its last frame.
+            let _ = send.shutdown().await;
+            let mut sink = Vec::new();
+            let _ = recv.read_to_end(&mut sink).await;
+            *done.lock().unwrap() = session.is_terminal();
+            Ok(())
+        }) as Pin<Box<dyn Future<Output = Result<(), TransportError>> + Send>>
+    });
+
+    let mut router = AlpnRouter::new(4);
+    router.register(ALPN, Deadlines::sync(), handler);
+    let router = Arc::new(router);
+
+    let seed_router = Arc::clone(&router);
+    let seed_task = tokio::spawn(async move { accept_with_router(&seed, &seed_router).await });
+
+    let follower_session = sync_connect(&follower, seed_addr, follower_session, |_| true)
+        .await
+        .expect("follower connect+sync");
+
+    seed_task.await.expect("seed task").expect("router accept");
+    assert!(follower_session.is_terminal(), "follower reaches Complete");
+    assert!(
+        *done.lock().unwrap(),
+        "responder reaches Complete via router"
+    );
+    assert_eq!(router.available_permits(), 4, "session permit released");
 }
