@@ -25,8 +25,12 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
+#[cfg(feature = "daemon")]
+pub mod admission;
 pub mod checkpoint;
 pub mod control;
+#[cfg(feature = "daemon")]
+pub mod daemon;
 pub mod hosting;
 pub mod idempotency;
 pub mod listing;
