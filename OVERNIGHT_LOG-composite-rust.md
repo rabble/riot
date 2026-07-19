@@ -47,3 +47,20 @@ with the article-authoring session that owns `masthead.rs`), all via the real wi
 coverage ratchet on a primitive whose FFI just regressed. 8 tests (predicate, owner-write, section
 scope + cross-region negatives, sibling-section, receiver-mismatch, time-escape, belt-escape sweep,
 listing-cap-can't-write-article). RED/GREEN + gate result appended below.
+
+**RESULT: DONE — PR #82.** 8/8 green (existing behavior correctly enforced — these pin it,
+not RED-first, since the primitive is already correct; the positive/negative pairing keeps them
+non-vacuous). riot-core clippy `--tests` + fmt clean. Baseline: full workspace `--all-features`
+GREEN on main `1f6ecb2` (all binaries pass, 1 known-ignored). Committed on branch, pushed, PR #82
+opened. Awaiting CI, then self-merge (tests-only, additive, low-risk — within overnight guardrail).
+
+## Task 3 — direct unit tests for `tai_j2000_micros_from_unix_seconds` (DONE, batched into PR #82)
+**Why:** the production converter added with the #76 fix was exercised only INDIRECTLY through the
+`delegate_editor_section` FFI contract. New file `crates/riot-core/tests/clock_conversion.rs` pins it
+directly: (1) agrees exactly with the live `system_snapshot` tai_j2000_micros for the same unix
+seconds; (2) one Unix second == exactly 1_000_000 micros (pins the UNIT — the #76 seconds/micros
+mixup); (3) output is in the micros domain (>1e12), not seconds; (4) strictly increasing (justifies
+the FFI keeping its expiry guard in seconds); (5) pre-J2000 (unix 0 = 1970) fails closed
+`ClockUnavailable`; (6) u64::MAX out-of-range fails closed. 6/6 green (the pre-J2000 + overflow
+fail-closed edges confirmed, not just asserted). New file, non-contended. Batched onto the same
+branch/PR #82 (both are tests-only core hardening) to save a CI cycle; PR retitled accordingly.
