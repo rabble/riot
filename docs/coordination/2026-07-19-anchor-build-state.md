@@ -24,9 +24,12 @@ read its **Coordinator Addendum** for the M1–M5 milestone phasing + pilot defe
 | 003A core listing authority boundary | ✅ done | `145283c` |
 | 003B tickets/listings/authority | ✅ done + security-reviewed | `584b5a6` |
 | 004 descriptors/receipts/82-limits/control | ✅ done | `d1304e9` |
-| **005 routed paginated `sync/2`** | 🔄 **IN PROGRESS** (coder subagent building `sync2.rs` + fsm/duplex tests) | — |
-| 006A/006B conformance vectors (Rust/TS + native) | ⛔ blocked on the pre-006 confirmation checklist below | — |
-| 007 multi-ALPN iroh router | not started (opens `riot-transport`) | — |
+| 005 routed paginated `sync/2` | ✅ done (133 crate tests) | `80a8a2a` |
+| WU-003B security hardening | ✅ done (lifetime-cap + indefinite tests; phantom-guard doc) | `00a6a5f` |
+| 006A/006B conformance vectors (Rust/TS + native) | ⛔ **NEXT — blocked on the pre-006 confirmation checklist below** | — |
+| 007 multi-ALPN iroh router | not started (opens `riot-transport`) — **independent of the 006 freeze, buildable now** | — |
+
+**M1 protocol core (001–005) is COMPLETE + hardened.** Remaining M1: 006 (gated on checklist) + 007 (independent).
 
 ## NEXT STEPS (in order)
 1. **When WU-005 lands:** run `cargo test -p riot-anchor-protocol --all-features` (independent verify),
@@ -56,7 +59,11 @@ canonical conventions and MUST be confirmed before 006 freezes vectors:
   (last two inferred). **CONFIRM the exact four.** `HostingStatus` vocab = only `committed` (matches
   the Commit terminal outcome `["committed", hosting_receipt]`, low risk). `*BodyV1` lead-with-version
   layouts (WU-002 convention).
-- **WU-005:** see its builder report for any newly-flagged labels/layouts (append here on landing).
+- **WU-005 (`80a8a2a`):** frame positional layouts (leading snake_case frame-name discriminant,
+  implicit v2, no per-frame version int); opaque `ticket_core_bytes`/`session_id`(≤32)/`entry_id`(≤128)
+  bounds; `EntriesChunk.bundle_bytes` = canonical array of per-item byte strings (≤64 items/≤2 MiB
+  each/≤8 MiB total); `MAX_SYNC2_FRAME_BYTES` = 8 MiB + 64 KiB framing slack. No new digest labels
+  (reused `riot/sync-snapshot/v2` + `riot/sync-ids-page/v2`).
 
 ## Security posture (from the WU-003B trust-root review)
 `admit_public_site_ticket` is strong (no forge/downgrade/replay found). `resolve_listing` is a pure
