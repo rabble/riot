@@ -1728,6 +1728,235 @@ mod resolve_composite_tests {
         );
     }
 
+    // ---- Delivery: followed-site SYNC session (Option C, WU2) ----
+
+    /// A durable (SQLite) profile. Followed-site sync is durable-only: the owner
+    /// serves the full signed form, which the in-memory join drops — it lives
+    /// only in durable storage.
+    fn durable_profile() -> (tempfile::TempDir, Arc<MobileProfile>) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db_path = dir.path().join("riot.sqlite");
+        let profile = crate::mobile_state::open_local_profile_with_database(
+            db_path.to_string_lossy().into_owned(),
+        )
+        .expect("durable profile");
+        (dir, profile)
+    }
+
+    fn take_followed(profile: &Arc<MobileProfile>, id: u64) -> Vec<u8> {
+        crate::mobile_state::followed_sync_take_outbound_frame(&profile.inner, id)
+            .expect("take frame")
+            .expect("a frame is queued")
+    }
+
+    /// (WU2 · R3) The followed-site SESSION open is gated on a Following record —
+    /// distinct from Option B's import-bundle gate. A root the profile does not
+    /// follow cannot even open a session, so no offer is built and no frames flow.
+    #[test]
+    fn opening_a_followed_site_session_requires_a_following_record() {
+        let (_dir, profile) = durable_profile();
+        let root = [0x42u8; 32];
+
+        assert!(
+            crate::mobile_state::open_followed_site_sync_session(&profile.inner, root).is_err(),
+            "no Following record must refuse to open a followed-site session (R3)"
+        );
+
+        profile.follow_site_for_test(root.to_vec()).unwrap();
+        assert!(
+            crate::mobile_state::open_followed_site_sync_session(&profile.inner, root).is_ok(),
+            "with a Following record the session opens (an empty offer is valid)"
+        );
+    }
+
+    /// (WU2 · positive + R4) End-to-end followed-site SYNC: a durable owner serves
+    /// its /mod records over a followed-site session; a durable follower (holding
+    /// a Following record AND a separate active community) drives the session,
+    /// imports the owner's /mod bundle, and advances OFF ModerationLoading — while
+    /// its community sync inventory stays byte-identical. This is the automatic
+    /// delivery Option B could only do by hand, and R4 (the community offer is
+    /// untouched by an owned-namespace import) is the isolation property that
+    /// makes it safe.
+    #[test]
+    fn a_followed_site_sync_delivers_owner_mod_records_without_touching_the_community_inventory() {
+        use crate::mobile_api::SyncOutcomeKind;
+        use crate::mobile_state::{
+            followed_sync_accept_import, followed_sync_begin, followed_sync_receive_frame,
+            open_followed_site_sync_session,
+        };
+
+        let (masthead, _sealed, root) = sealed_masthead();
+        let manifest = manifest_wire(&masthead, vec![masthead_member(root)]);
+
+        // Owner: durable, holds the /mod records, follows its own site to serve them.
+        let (_owner_dir, owner) = durable_profile();
+        let (tomb, tomb_id) = tombstone(&masthead, b"t1", [0x77; 32], [0x88; 32]);
+        let epoch = heartbeat(&masthead, 1, now_unix(), &[tomb_id]);
+        import_owned(&owner, root, &tomb);
+        import_owned(&owner, root, &epoch);
+        owner.follow_site_for_test(root.to_vec()).unwrap();
+
+        // Follower: durable, with a REAL active community (non-empty sync
+        // inventory to protect) and a Following record for the site.
+        let (_follower_dir, follower) = durable_profile();
+        wire_post(&follower);
+        follower.follow_site_for_test(root.to_vec()).unwrap();
+
+        let inventory_before =
+            with_active(&follower.inner, |p| Ok(p.sync_inventory.clone())).unwrap();
+        assert!(
+            !inventory_before.is_empty(),
+            "the follower has a community offer to protect"
+        );
+        assert_eq!(
+            call_resolve_at(&follower, &manifest, root, now_unix()).degradation,
+            SiteDegradation::ModerationLoading,
+            "before sync the follower has no /mod records → held at ModerationLoading"
+        );
+
+        // Drive the followed-site sync: follower initiates, owner responds. Same
+        // ByteSyncSession handshake as community sync, on the separate slot.
+        let fid = open_followed_site_sync_session(&follower.inner, root).unwrap();
+        let oid = open_followed_site_sync_session(&owner.inner, root).unwrap();
+        assert_eq!(
+            followed_sync_begin(&follower.inner, fid).unwrap().kind,
+            SyncOutcomeKind::FrameReady
+        );
+        followed_sync_receive_frame(&owner.inner, oid, take_followed(&follower, fid)).unwrap();
+        followed_sync_receive_frame(&follower.inner, fid, take_followed(&owner, oid)).unwrap();
+        followed_sync_receive_frame(&owner.inner, oid, take_followed(&follower, fid)).unwrap();
+        let review =
+            followed_sync_receive_frame(&follower.inner, fid, take_followed(&owner, oid)).unwrap();
+        assert_eq!(
+            review.kind,
+            SyncOutcomeKind::ReviewImport,
+            "the follower reviews the owner's /mod bundle"
+        );
+
+        followed_sync_accept_import(&follower.inner, fid).unwrap();
+
+        // The follower now holds the owner's /mod records and advances off loading.
+        assert_eq!(
+            held_mod_count(&follower, root),
+            2,
+            "both owner /mod records committed into the follower store"
+        );
+        assert_ne!(
+            call_resolve_at(&follower, &manifest, root, now_unix()).degradation,
+            SiteDegradation::ModerationLoading,
+            "the synced /mod bundle advances the follower off ModerationLoading"
+        );
+
+        // R4: the community sync inventory is byte-identical — owned-namespace
+        // records never entered the active community's peer offer set.
+        let inventory_after =
+            with_active(&follower.inner, |p| Ok(p.sync_inventory.clone())).unwrap();
+        assert_eq!(
+            inventory_before, inventory_after,
+            "a followed-site import must leave the community offer byte-identical (R4)"
+        );
+    }
+
+    /// (WU2 · R2 / family gate) A followed-site session that receives a bundle
+    /// carrying a NON-owned entry (here a real communal newswire post, served by
+    /// a peer over a session keyed on that communal namespace) is rejected — only
+    /// owned /mod + /articles may ride the channel. The follower commits nothing.
+    /// This drives the same `is_owned_moderation || is_owned_editorial` gate the
+    /// merged Option B import proved, but through the sync import path.
+    #[test]
+    fn a_followed_site_sync_rejects_a_bundle_carrying_a_non_owned_entry() {
+        use crate::mobile_api::SyncOutcomeKind;
+        use crate::mobile_state::{
+            followed_sync_begin, followed_sync_receive_frame, open_followed_site_sync_session,
+        };
+
+        // A peer holds a communal newswire post and serves its namespace.
+        let (_peer_dir, peer) = durable_profile();
+        let (wire_ns, post_id, _author) = wire_post(&peer);
+        peer.follow_site_for_test(wire_ns.to_vec()).unwrap();
+
+        // A follower that follows the same namespace and drives the sync.
+        let (_follower_dir, follower) = durable_profile();
+        follower.follow_site_for_test(wire_ns.to_vec()).unwrap();
+
+        let fid = open_followed_site_sync_session(&follower.inner, wire_ns).unwrap();
+        let pid = open_followed_site_sync_session(&peer.inner, wire_ns).unwrap();
+
+        followed_sync_begin(&follower.inner, fid).unwrap();
+        followed_sync_receive_frame(&peer.inner, pid, take_followed(&follower, fid)).unwrap();
+        followed_sync_receive_frame(&follower.inner, fid, take_followed(&peer, pid)).unwrap();
+        followed_sync_receive_frame(&peer.inner, pid, take_followed(&follower, fid)).unwrap();
+        let outcome =
+            followed_sync_receive_frame(&follower.inner, fid, take_followed(&peer, pid)).unwrap();
+
+        // The follower rejects the import internally (the family gate fails, so it
+        // emits a rejection frame rather than a review). It must NEVER surface the
+        // communal entry for review.
+        assert_ne!(
+            outcome.kind,
+            SyncOutcomeKind::ReviewImport,
+            "a communal entry offered over a followed-site session must never be reviewed"
+        );
+        // Nothing was committed: the follower does not hold the communal post.
+        let committed = with_active(&follower.inner, |p| {
+            let prefix = Path::from_slices(&[b"newswire", b"v1"]).unwrap();
+            Ok(p.store
+                .entries_with_prefix_in_namespace(&wire_ns, &prefix)
+                .map_err(|_| MobileError::Internal)?
+                .iter()
+                .any(|(id, _, _)| *id == post_id))
+        })
+        .unwrap();
+        assert!(
+            !committed,
+            "the rejected bundle must leave no non-owned entry in the follower store"
+        );
+    }
+
+    /// (WU2 · R2 backstop) The second structural gate UNDER the family gate: a
+    /// followed-site session is `ByteSyncSession::new(root, offer)`, which rejects
+    /// any received entry whose namespace != root (sync/state.rs). So a frame from
+    /// a DIFFERENT site's session cannot inject that site's records — the session
+    /// refuses it at receive, before admission or the family gate even run.
+    #[test]
+    fn a_followed_site_session_rejects_a_foreign_namespace_frame() {
+        use crate::mobile_state::{
+            followed_sync_begin, followed_sync_receive_frame, followed_sync_take_outbound_frame,
+            open_followed_site_sync_session,
+        };
+
+        // A follower for site O.
+        let (_masthead_o, _so, root_o) = sealed_masthead();
+        let (_follower_dir, follower) = durable_profile();
+        follower.follow_site_for_test(root_o.to_vec()).unwrap();
+        let fid = open_followed_site_sync_session(&follower.inner, root_o).unwrap();
+
+        // A peer running a session for a DIFFERENT site X, holding an X /mod record.
+        let (masthead_x, _sx, root_x) = sealed_masthead();
+        let (revoke_x, _id) = revoke(&masthead_x, b"r1", [9; 32]);
+        let (_peer_dir, peer) = durable_profile();
+        import_owned(&peer, root_x, &revoke_x);
+        peer.follow_site_for_test(root_x.to_vec()).unwrap();
+        let xid = open_followed_site_sync_session(&peer.inner, root_x).unwrap();
+
+        // The peer's X-session summary frame, fed into the follower's O session.
+        followed_sync_begin(&peer.inner, xid).unwrap();
+        let foreign_frame = followed_sync_take_outbound_frame(&peer.inner, xid)
+            .unwrap()
+            .expect("peer queued an X summary frame");
+
+        // The O session must not admit an X-namespace frame — the ByteSyncSession
+        // namespace backstop rejects it (returns an error or a rejected outcome).
+        match followed_sync_receive_frame(&follower.inner, fid, foreign_frame) {
+            Err(_) => {}
+            Ok(outcome) => assert_eq!(
+                outcome.kind,
+                crate::mobile_api::SyncOutcomeKind::Rejected,
+                "a foreign-namespace frame must be rejected by the followed-site session"
+            ),
+        }
+    }
+
     #[test]
     fn trust_tier_maps_and_open_wire_is_never_editorial() {
         assert_eq!(

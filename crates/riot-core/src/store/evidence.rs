@@ -113,6 +113,22 @@ impl EvidenceRepository {
                 .map(Some),
         }
     }
+
+    pub(crate) fn signed_entries_in_namespace(
+        &self,
+        namespace_id: &[u8; 32],
+    ) -> Result<Option<Vec<crate::willow::SignedWillowEntry>>, SessionError> {
+        match self {
+            // `None`, NOT an empty Vec: the in-memory join deliberately retains
+            // no capability/signature token (join.rs), so a memory-backed store
+            // CANNOT reconstruct the signed form — it is not "nothing to offer",
+            // it is "this store cannot answer". Callers must treat `None` as an
+            // explicit no-durable-store signal, never as an empty offer.
+            Self::Memory(_) => Ok(None),
+            #[cfg(feature = "sqlite")]
+            Self::Sqlite(sqlite) => sqlite.signed_entries_in_namespace(namespace_id).map(Some),
+        }
+    }
 }
 
 #[cfg(feature = "sqlite")]
@@ -324,6 +340,68 @@ impl SqliteEvidenceStore {
         self.database
             .write_transaction(WriteEstimate::new(bytes, page_headroom), |transaction| {
                 persist_transaction(transaction, mutation)
+            })
+            .map_err(session_error)
+    }
+
+    fn signed_entries_in_namespace(
+        &self,
+        namespace_id: &[u8; 32],
+    ) -> Result<Vec<crate::willow::SignedWillowEntry>, SessionError> {
+        self.database
+            .read_connection(|connection| {
+                let mut statement = connection
+                    .prepare(
+                        "SELECT l.entry_id, a.entry_bytes, a.capability_bytes,
+                                a.signature_bytes, l.payload
+                         FROM live_entries l
+                         JOIN accepted_entries a
+                           ON a.namespace_id = l.namespace_id AND a.entry_id = l.entry_id
+                         WHERE l.namespace_id = ?1
+                         ORDER BY l.entry_id",
+                    )
+                    .map_err(map_sqlite_error)?;
+                let rows = statement
+                    .query_map(params![namespace_id], |row| {
+                        Ok((
+                            row.get::<_, Vec<u8>>(0)?,
+                            row.get::<_, Vec<u8>>(1)?,
+                            row.get::<_, Vec<u8>>(2)?,
+                            row.get::<_, Vec<u8>>(3)?,
+                            row.get::<_, Option<Vec<u8>>>(4)?,
+                        ))
+                    })
+                    .map_err(map_sqlite_error)?
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(map_sqlite_error)?;
+                rows.into_iter()
+                    .map(
+                        |(id, entry_bytes, capability_bytes, signature_bytes, payload)| {
+                            let id: EntryId = id
+                                .try_into()
+                                .map_err(|_| super::DatabaseError::CorruptDatabase)?;
+                            // The stored bytes are the SAME artifact verified at
+                            // import; this is a corruption tripwire, not a re-verify.
+                            // Bytes are handed back verbatim, never re-encoded.
+                            let entry = decode_entry_canonic(&entry_bytes)
+                                .map_err(|_| super::DatabaseError::CorruptDatabase)?;
+                            if crate::willow::entry_id(&entry_bytes) != id
+                                || entry.namespace_id().as_bytes() != namespace_id
+                            {
+                                return Err(super::DatabaseError::CorruptDatabase);
+                            }
+                            let signature: [u8; 64] = signature_bytes
+                                .try_into()
+                                .map_err(|_| super::DatabaseError::CorruptDatabase)?;
+                            Ok(crate::willow::SignedWillowEntry {
+                                entry_bytes,
+                                capability_bytes,
+                                signature,
+                                payload_bytes: payload.unwrap_or_default(),
+                            })
+                        },
+                    )
+                    .collect()
             })
             .map_err(session_error)
     }
