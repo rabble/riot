@@ -141,3 +141,33 @@ Delivered tonight: the UX state-refresh doc (Task 1), the trust-copy verificatio
   still capped at five declared files.
 - Guardrail note: the live Compose commands are future local acceptance criteria in the plan. This
   overnight session did not run them, deploy, touch production, or delete any real data.
+
+### Task 3 — plan gate iteration 2 (FAIL) and final repair
+
+- Three new isolated read-only reviewers evaluated commit `3c9cd63`. Scope/Alignment passed.
+  Completeness failed only because WU-006B claimed production bootstrap packaging before WU-012C
+  owned it. Feasibility additionally found the missing daemon-to-renderer production adapter, an
+  invalid exact PlistBuddy assertion, unowned chaos-harness seams, and incomplete macOS bootstrap
+  packaging.
+- Repaired the bootstrap sequence: WU-006B now proves development fixture agreement only; WU-012C
+  owns iOS/Android Release-fails-closed application packaging; new WU-012D owns the corresponding
+  macOS application resource and shared-loader compatibility. The graph now encodes those
+  dependencies and the macOS scope is explicitly compatibility, not an invented third product UI.
+- Added WU-020C, a five-file production daemon/renderer boundary with a canonical durable job
+  envelope, fsync+atomic rename protocol, networkless long-running renderer sidecar, daemon-only
+  hostile-output validation/publication, and deterministic duplicate/crash/restart/partial-output
+  recovery. Deployment images and live Compose now depend on that runtime rather than a fake port.
+- Fixed the iOS background identifier probe to address array element `:0`, matching PlistBuddy's
+  actual output format. Verified the macOS test target and scheme names directly from the checked-in
+  Xcode scheme before retaining the exact `-only-testing:RiotKitTests-macOS/...` command.
+- Moved every deterministic-harness seam into its production-owning unit: repository clock/failpoint
+  (WU-013B), `WorkChallengeVerifier` (WU-014), gossip scheduler/clock (WU-018B), `AnchorKeyStore`,
+  ingress limiters, and control/sync transports (WU-019), and renderer adapter (WU-020C). WU-027 is
+  now strictly server-side test composition and cannot edit production code or claim native-client
+  lifecycle coverage.
+- Assumption: filesystem spooling is the narrowest auditable local IPC for a networkless renderer;
+  a container socket, subprocess shell, or renderer-owned publication was rejected because each
+  widens renderer authority and complicates crash-safe ownership transfer.
+- Next gate action: commit this final revision and run iteration 3, the configured maximum. All
+  three independent reviewers must pass; otherwise implementation remains blocked for morning
+  escalation rather than bypassing the mandatory gate.

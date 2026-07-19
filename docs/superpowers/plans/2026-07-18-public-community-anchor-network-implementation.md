@@ -29,9 +29,10 @@
 WU-001 ─→ WU-002 ─→ WU-003A ─→ WU-003B ─→ WU-004 ─→ WU-005 ─→ WU-006A ─→ WU-006B
                                                    │         │                    │
                                                    └─────────┴──────────────→ WU-007
+WU-006B ────────────────────────────────────────────────────────────────→ WU-012C
 
 WU-001 ─→ WU-008 ─→ WU-009 ─→ WU-010A ─→ WU-010B ─┐
-WU-003B ─→ WU-011A ─→ WU-011B ─→ WU-011C ─→ WU-012A ─→ WU-012B ─→ WU-012C
+WU-003B ─→ WU-011A ─→ WU-011B ─→ WU-011C ─→ WU-012A ─→ WU-012B ─→ WU-012C ─→ WU-012D
 WU-005 ────────────────────────────────→ WU-011C
 WU-009 ─────────────────────────────────────────────→ WU-012A
                                                       │
@@ -48,13 +49,14 @@ WU-007/WU-014/WU-015/WU-015B/WU-016 ──────────────�
 WU-017B/WU-018B ────────────────────────────────────┴→ WU-019
 
 WU-017B ─→ WU-020P
-WU-015/WU-016/WU-017B/WU-020P ─→ WU-020A ─→ WU-020B ─→ WU-021A ─→ WU-021B
+WU-015/WU-016/WU-017B/WU-020P ─→ WU-020A ─→ WU-020B
 WU-020P ─────────────────────────────────→ WU-020B
-WU-019/WU-017B ─────────────────────────────────────────────→ WU-021B
-WU-012C/WU-021B ─→ WU-022A ─→ WU-022B ─→ WU-022C ─→ WU-022C2 ─→ WU-022D
+WU-020A/WU-020B ─→ WU-020C ─→ WU-021A ─→ WU-021B
+WU-019/WU-017B/WU-020C ───────────────────────────→ WU-021B
+WU-012D/WU-021B ─→ WU-022A ─→ WU-022B ─→ WU-022C ─→ WU-022C2 ─→ WU-022D
 WU-012C/WU-021B ─→ WU-023A ─→ WU-023B ─→ WU-023C
-WU-019/WU-020B/WU-021B ─→ WU-026A ─→ WU-026B
-WU-016/WU-018B/WU-019/WU-020B/WU-021B/WU-022D/WU-023C/WU-026B ─→ WU-027
+WU-019/WU-020C/WU-021B ─→ WU-026A ─→ WU-026B
+WU-016/WU-018B/WU-019/WU-020C/WU-021B/WU-022D/WU-023C/WU-026B ─→ WU-027
 WU-027 ─→ WU-028
 ```
 
@@ -69,11 +71,11 @@ Parallel execution is allowed only where this graph and non-overlapping file sco
 | Slice 3 — scalable client storage, profile worker/lifecycle, anchor repository, idempotent control, CAS/receipt recovery, atomic ordinary listing, emergency removal | WU-008–WU-010B, WU-013A–WU-016 |
 | Slice 4 — signed plural feeds, authenticated cursors, descriptor rotation, configured-peer attestation, bounded gossip | WU-011C, WU-017B–WU-018B |
 | Slice 5 — immutable text projection, hostile-output validation, ordinary HTTPS, byte-identical v2 handoff and legacy compatibility | WU-020P–WU-021B |
-| Slice 6 — process runtime, cancellable UniFFI states, durable background reconciliation, verified runtime bootstrap packaging, defaults/configuration, Explore/Follow/Publish/relist/source-change on both native platforms, and shared-Swift macOS compatibility | WU-009, WU-011A–WU-012C, WU-022A–WU-023C |
+| Slice 6 — process runtime, cancellable UniFFI states, durable background reconciliation, verified runtime bootstrap packaging, defaults/configuration, Explore/Follow/Publish/relist/source-change on iOS and Android, and shared-Swift/resource macOS compatibility | WU-009, WU-011A–WU-012D, WU-022A–WU-023C |
 | Slice 7 — all compiled ceilings, ingress/load shedding, deployment/recovery, deterministic system/load proof | WU-013A–WU-013B, WU-016, WU-019, WU-026A–WU-028 |
 | Definition of Done — plural independent accountless hosting and failure survival | WU-012A–WU-012B, WU-015, WU-018A–WU-018B, WU-022A–WU-023C, WU-027 |
 | Definition of Done — no hosting/listing coupling; atomic listing/replay, owner recovery, and exact Meadowcap authority | WU-003A–WU-003B, WU-015–WU-017B |
-| Definition of Done — root-signed cold bootstrap, durable floors, exact O/C/W local/anchor atomicity | WU-003B, WU-008, WU-011A–WU-012C, WU-013A–WU-015 |
+| Definition of Done — root-signed cold bootstrap, durable floors, exact O/C/W local/anchor atomicity | WU-003B, WU-008, WU-011A–WU-012D, WU-013A–WU-015 |
 | Definition of Done — recoverable control, removal, checkpoint, rotation, replica-source and startup lifecycles | WU-004, WU-014–WU-018B |
 | Definition of Done — bounded public iroh/HTTPS, renderer, and operational resource use | WU-007, WU-016, WU-019–WU-021B, WU-026A–WU-027 |
 | Definition of Done — typed post-consent storage/recovery and durable per-destination outcomes | WU-008–WU-012B, WU-022A–WU-023B |
@@ -337,9 +339,9 @@ pub enum Sync2Action { Send(Sync2Frame), Admit(EntriesChunk), PromoteDirection, 
 - Swift and Kotlin independently verify the same canonical bytes, digest/preimage distinctions, signatures, HMAC inputs, response nesting, peer roles, and sentinels as Rust/TypeScript.
 - One-bit and alternate-grammar mutations fail on every platform.
 - No platform redefines protocol labels or truncates identifiers.
-- Both native targets embed and validate the development bootstrap resource; a release build accepts
-  only a separately supplied, package-signed production resource with at least three live
-  descriptors across two operators/failure domains.
+- Both native test targets embed and validate the development bootstrap resource. This unit proves
+  cross-language fixture agreement only; production application resource verification/injection is
+  deliberately owned by WU-012C/WU-012D.
 
 - [ ] **RED:** Add native consumers/resource wiring and observe missing vector assertions or target resources.
 - [ ] **GREEN:** Make each platform consume both checked-in fixtures without asking Rust for expected values; all expected native cases are already fixed by WU-006A.
@@ -676,6 +678,34 @@ pub enum LocalMutationOutcome { Busy { active_operation_id: [u8; 32], retry_afte
   and `(cd apps/android && ./gradlew :app:assembleDebug)`.
 - [ ] Commit as `build(native): inject verified anchor bootstrap resources`.
 
+### WU-012D: macOS production bootstrap resource injection
+
+**Spec:** Anchor Bootstrap and Management; shared-Swift macOS application compatibility.
+
+**Files:**
+
+- Modify: `apps/macos/Riot.xcodeproj/project.pbxproj`
+- Create: `apps/macos/RiotTests/AnchorBootstrapResourceTests.swift`
+- Modify: `scripts/anchor/bootstrap-resource-contract.sh`
+
+**DoD:**
+
+- The macOS application target uses WU-012C's same Release-fails-closed external resource injection,
+  runtime filename, canonical verifier, and absence/tampering/development rejection; no
+  operator-specific bytes or paths are committed.
+- The shared `AnchorFlows` loader receives byte-identical verified bootstrap input on iOS and macOS.
+  macOS shared models can construct real anchor clients when its product surface invokes them; the
+  existing macOS UI is not expanded by this unit.
+
+- [ ] **RED:** Extend `bootstrap-resource-contract.sh` and add the macOS resource test; observe that
+  the macOS app package lacks the injected runtime resource.
+- [ ] **GREEN:** Add the deterministic build phase/resource reference and byte-identity verifier to
+  the macOS application target using WU-012C's generated FFI surface.
+- [ ] Run `sh scripts/anchor/bootstrap-resource-contract.sh`,
+  `xcodebuild test -project apps/macos/Riot.xcodeproj -scheme RiotKit-macOS -destination 'platform=macOS' -only-testing:RiotKitTests-macOS/AnchorBootstrapResourceTests`,
+  and `xcodebuild build -project apps/macos/Riot.xcodeproj -scheme Riot-macOS -destination 'platform=macOS'`.
+- [ ] Commit as `build(macos): inject verified anchor bootstrap resource`.
+
 ### WU-013A: Anchor crate and forward-only schema
 
 **Spec:** Anchor Repository; Open Hosting Resource Contract; deployment migration/recovery.
@@ -713,6 +743,8 @@ pub enum LocalMutationOutcome { Busy { active_operation_id: [u8; 32], retry_afte
 - WAL/foreign keys/full durability, logical/physical/metadata/WAL/staging/idempotency/conflict/log/static independent accounting, immutable read snapshots, deployment token/lease, and readiness recovery are enforced.
 - Payload dedup never reduces per-community logical charge.
 - Expired staging and deterministic eviction obey signed retention horizons.
+- An injected monotonic/wall clock and named repository failpoint boundary are production interfaces,
+  default to the real clock/no-op failpoints, and are exercised here before WU-027 composes them.
 
 - [ ] **RED:** Add deployment-lease clone, all-class ceiling, cross-community dedup, immutable snapshot, eviction-order, and crash-recovery tests over WU-013A's migrated schema.
 - [ ] **GREEN:** Implement the repository service layer; handlers in later units may not access raw connections.
@@ -738,6 +770,9 @@ pub enum LocalMutationOutcome { Busy { active_operation_id: [u8; 32], retry_afte
 - Prepare atomically stores operation, base generation, staged O/C/W, deterministic namespace tokens, exact Prepared response, expiry, and originating kind.
 - GetOperation exposes exact prepared/terminal lifecycle across restart/expiry/unknown IDs.
 - Work challenges/stamps bind every required coordinate and pressure policy.
+- Work verification is behind an injected `WorkChallengeVerifier` production interface whose default
+  performs the real bounded proof check; tests may supply deterministic accept/refuse outcomes
+  without bypassing admission ordering.
 
 - [ ] **RED:** Add ordering spies, collision/replay, restart, pre-claim retry-through-success, changed stamp, token derivation/rotation, pressure-band, and GetOperation lifecycle tests in `control_prepare.rs`.
 - [ ] **GREEN:** Implement control admission service over `AnchorRepository`, idempotency index, work verifier, Describe/challenge/Prepare/GetOperation handlers.
@@ -898,6 +933,8 @@ WU-018A authenticated peer records. This unit cannot begin before all four are c
 - One-use challenge/attestation binds current source/destination descriptors, peer session generation, immutable source generation/snapshots, key, root, and connection.
 - Source change emits authenticated `stale_source`; destination atomically terminalizes staging/tokens/Prepare mapping. Session close/rotation/restart yields `peer_context_changed`.
 - Client requests never trigger background fanout; scheduler respects peer/session/hour budgets and reaches deterministic three-anchor quiescence.
+- Gossip scheduling is behind an injected production scheduler/clock interface. The default uses
+  real bounded timers; deterministic tests drive eligible jobs without sleeps or private hooks.
 
 - [ ] **RED:** Add reflection/role/exporter/replay/stale hello, descriptor refresh, challenge double-use, source mutation, connection loss, rotation, crash-orphan, gossip loop, and three-anchor convergence tests in `peer_auth.rs`.
 - [ ] **GREEN:** Implement peer service, startup invalidation, replica adapter, and deterministic scheduler over WU-018A types.
@@ -926,6 +963,10 @@ must route the real service implementations; stub handlers are not an acceptable
 - Iroh and TCP/TLS/HTTP limits begin before expensive allocation and release permits across every error/timeout path.
 - HTTP is TLS 1.3 + HTTP/1.1 only; methods, Range, upgrade, compression, header count/line/aggregate, keep-alive count, idle/absolute lifetime, queues, rates, DB snapshots, CPU/wall, and response bytes are bounded.
 - Logs omit forbidden material, share byte/file caps, rotate/delete safely, and cannot consume authoritative headroom.
+- `AnchorKeyStore`, accepted-connection/TLS/HTTP limiters, and control/sync transports are explicit
+  injected production interfaces. The default key store loads key material through an inherited
+  descriptor or configured secret path, never a CLI value/environment echo; deterministic tests
+  inject ephemeral keys and prove diagnostics/logs contain neither key bytes nor secret paths.
 
 - [ ] **RED:** Add handshake churn, slow ClientHello/header/frame/trickle/write, stream abuse, 65 headers, long field, method/Range/upgrade/compression, queue/rate/snapshot/response exhaustion, permit leaks, and log-saturation tests while a reserved removal completes.
 - [ ] **GREEN:** Define validated daemon configuration beside its lifecycle in `daemon.rs`, then wire admission partitions, ALPN handlers, graceful shutdown, readiness/liveness, and bounded logging.
@@ -945,16 +986,17 @@ must route the real service implementations; stub handlers are not an acceptable
 
 **DoD:**
 
-- `AnchorWebSnapshotV1` and its bounded nested text/route/record types live in the dependency-light
-  protocol crate, have canonical positional CBOR and hostile/golden vectors, and contain no database,
-  network, filesystem, credentials, owner HTML, or executable content.
+- `AnchorWebSnapshotV1`, `AnchorRenderJobV1`, `AnchorRenderResultV1`, and their bounded nested
+  text/route/record/manifest/status types live in the dependency-light protocol crate, have canonical
+  positional CBOR and hostile/golden vectors, and contain no database, network, filesystem,
+  credentials, owner HTML, or executable content.
 - Both daemon and renderer depend on this one type/codec. The renderer never depends on
   `riot-anchor`; the daemon and renderer cannot define parallel snapshot grammars.
 
-- [ ] **RED:** Add size/count/text/path/profile/unknown-field/canonicality vectors and a dependency
-  test proving the snapshot module does not pull SQLite/network/server crates; observe the missing
-  shared type.
-- [ ] **GREEN:** Implement the bounded snapshot codec/CDDL and export it from
+- [ ] **RED:** Add size/count/text/path/profile/job/result/manifest/status/unknown-field/canonicality
+  vectors and a dependency test proving the snapshot module does not pull SQLite/network/server
+  crates; observe the missing shared types.
+- [ ] **GREEN:** Implement the bounded snapshot/job/result codecs and CDDL and export them from
   `riot-anchor-protocol`.
 - [ ] Run `cargo test -p riot-anchor-protocol --test web_snapshot_vectors --test dependency_boundary`.
 - [ ] Commit as `feat(anchor): define shared web snapshot contract`.
@@ -1009,6 +1051,45 @@ must route the real service implementations; stub handlers are not an acceptable
   `sh scripts/conference/gateway-smoke.sh`.
 - [ ] Commit as `feat(anchor): publish isolated static web projections`.
 
+### WU-020C: Production daemon-to-renderer job adapter
+
+**Spec:** Safe Web Projection process boundary, immutable publication ownership, and renderer crash recovery.
+
+**Depends on:** WU-020A daemon publication service and WU-020B renderer binary.
+
+**Files:**
+
+- Create: `crates/riot-anchor/src/renderer_adapter.rs`
+- Modify: `crates/riot-anchor/src/lib.rs`
+- Modify: `crates/riot-anchor-renderer/src/main.rs`
+- Create: `crates/riot-anchor/tests/renderer_adapter.rs`
+- Create: `scripts/anchor/renderer-runtime-contract.sh`
+
+**DoD:**
+
+- The production renderer port uses WU-020P's canonical `AnchorRenderJobV1`/`AnchorRenderResultV1`
+  shared-filesystem envelope carrying `AnchorWebSnapshotV1`, a content-derived idempotency key,
+  deadline, and bounded output contract. The daemon fsyncs then atomically renames each input into
+  the renderer-only queue.
+- The networkless renderer sidecar watches only its input/staging/output mounts, renders into a
+  job-scoped staging directory, fsyncs content plus a canonical manifest/status record, and atomically
+  renames the completed result. It cannot read the database, daemon secrets, or published tree.
+- The daemon alone validates WU-020A's manifest and transfers immutable files into the published
+  generation. It never invokes a shell, mounts a container socket, or grants the renderer publication
+  authority.
+- Duplicate jobs, daemon/renderer restart, timeout, renderer crash, partial output, stale staging,
+  corrupt status, and post-validation mutation converge deterministically to one publication or a
+  typed retry/refusal with bounded cleanup. Compose supervises the long-running sidecar in WU-026B.
+
+- [ ] **RED:** Add adapter and runtime-contract tests; observe that WU-020A's fake renderer port has
+  no production implementation and WU-020B cannot consume durable jobs.
+- [ ] **GREEN:** Implement the atomic spool/status protocol, the renderer watch loop, bounded
+  recovery/cleanup, and the production `ProjectionRenderer` adapter without adding daemon authority
+  to the sidecar.
+- [ ] Run `cargo test -p riot-anchor --test renderer_adapter --test projection_publish`,
+  `cargo test -p riot-anchor-renderer`, and `sh scripts/anchor/renderer-runtime-contract.sh`.
+- [ ] Commit as `feat(anchor): connect isolated renderer job runtime`.
+
 ### WU-021A: Canonical v2 handoff protocol
 
 **Spec:** Canonical Web-to-App Handoff wire contract and legacy discrimination.
@@ -1035,7 +1116,7 @@ must route the real service implementations; stub handlers are not an acceptable
 
 **Spec:** HTTPS API table; web-to-app journey states; public security headers.
 
-**Depends on:** WU-017B directory services, WU-019 bounded TLS/HTTP ingress, WU-020B validated
+**Depends on:** WU-017B directory services, WU-019 bounded TLS/HTTP ingress, WU-020C production
 projections, and WU-021A handoff codec. HTTPS handlers must be installed into WU-019's real daemon,
 not exercised only as detached functions.
 
@@ -1169,7 +1250,7 @@ not exercised only as detached functions.
 - [ ] Run
   `xcodebuild test -project apps/ios/Riot.xcodeproj -scheme RiotKit -destination 'platform=iOS Simulator,name=iPhone 17 Pro,OS=26.2,arch=arm64' -derivedDataPath build/ios-derived -only-testing:RiotTests/ProfileRecoveryTests`,
   `xcodebuild build -project apps/ios/Riot.xcodeproj -scheme Riot -destination 'platform=iOS Simulator,name=iPhone 17 Pro,OS=26.2,arch=arm64' -derivedDataPath build/ios-app-derived`, and
-  `/usr/libexec/PlistBuddy -c 'Print :BGTaskSchedulerPermittedIdentifiers' build/ios-app-derived/Build/Products/Debug-iphonesimulator/Riot.app/Info.plist | grep -Fx 'org.riot.anchor.reconcile'`.
+  `/usr/libexec/PlistBuddy -c 'Print :BGTaskSchedulerPermittedIdentifiers:0' build/ios-app-derived/Build/Products/Debug-iphonesimulator/Riot.app/Info.plist | grep -Fx 'org.riot.anchor.reconcile'`.
 - [ ] Commit as `build(ios): declare bounded anchor reconciliation task`.
 
 ### WU-022D: macOS shared-Swift integration closure
@@ -1270,7 +1351,7 @@ not exercised only as detached functions.
 
 **Spec:** Deployment and Recovery Contract; renderer isolation boundary; reproducible release inputs.
 
-**Depends on:** WU-019 daemon binary, WU-020B renderer binary, and WU-021B installed HTTPS service.
+**Depends on:** WU-019 daemon binary, WU-020C production renderer runtime, and WU-021B installed HTTPS service.
 The image contract builds the completed public service, not an earlier daemon without its routes.
 
 **Files:**
@@ -1296,6 +1377,8 @@ The image contract builds the completed public service, not an earlier daemon wi
 - `image-contract.sh` always requires a local OCI builder, builds both images from the locked
   workspace, and inspects user, entrypoint, layers, exposed ports, and filesystem allowlists.
   Missing Docker/buildx is a blocking external prerequisite, never a passing static-only mode.
+- The renderer image entrypoint runs WU-020C's durable sidecar watch loop; the image contract invokes
+  `renderer-runtime-contract.sh` against its mounted queue and rejects a one-shot/demo-only renderer.
 
 - [ ] **RED:** Add `scripts/anchor/image-contract.sh`; run it and observe failure because both
   Dockerfiles and their pinned/locked/non-root contracts are absent.
@@ -1369,19 +1452,19 @@ The image contract builds the completed public service, not an earlier daemon wi
 - Performance tests measure directory/descriptor/recovery/failover targets without nondeterministic sleeps.
 - Deployment contract verifies container isolation/readiness configuration.
 - This is a test-only integration unit. Every required production seam is created and tested by its
-  owning WU before WU-027. If a production seam is missing, WU-027 stops and opens a separately
-  scoped corrective WU against the owning files; it never edits production code outside this scope.
+  owning WU before WU-027; those owning units cannot commit while their named seam is absent.
+  WU-027 only composes the already-landed public interfaces and never edits production code.
 - The parameterized matrix is the active non-pilot subset only: authority/Meadowcap, tickets,
   hosting/listing/removal, sync, peer/gossip, directory/cursors, HTTPS/renderer/handoff,
-  client/native lifecycle, overload/failpoints/recovery, and three-anchor failure/convergence.
+  overload/failpoints/recovery, and three-anchor failure/convergence.
   Pilot collector/recruitment/measurement/denominator/export/withdrawal cases and pilot key-store
   seams are explicitly excluded.
 
 - [ ] **RED:** Add every active non-pilot Edge-Case Matrix row as a named parameterized case; the
   first run fails because the harness/orchestration is absent, never because a test is skipped.
-- [ ] **GREEN:** Compose the already-landed clock, key-store, repository failpoint, control/sync
-  transport, accepted-socket/TLS/HTTP limiter, gossip scheduler, renderer, work verifier, and profile
-  runtime seams until every active case exercises a public service interface.
+- [ ] **GREEN:** Compose WU-013B's clock/repository failpoints, WU-014's work verifier, WU-018B's
+  gossip scheduler, WU-019's key store/control-sync transports/accepted-socket/TLS/HTTP limiters, and
+  WU-020C's renderer adapter until every active server case exercises a public service interface.
 - [ ] Run `cargo test -p riot-anchor --test three_anchor_system --test adversarial_load`,
   `cargo test -p riot-anchor --test hosting_failpoints --test listing_failpoints --test checkpoint_recovery`,
   `sh scripts/anchor/image-contract.sh`, and `sh scripts/anchor/deployment-contract.sh`.
@@ -1531,6 +1614,7 @@ cargo run -p xtask -- validate-contracts
 (cd apps/gateway && python3 -m unittest discover -s tests)
 sh scripts/conference/gateway-smoke.sh
 sh scripts/anchor/bootstrap-resource-contract.sh
+sh scripts/anchor/renderer-runtime-contract.sh
 sh scripts/conference/build-native-core.sh
 xcodebuild test -project apps/ios/Riot.xcodeproj -scheme RiotKit -destination 'platform=iOS Simulator,name=iPhone 17 Pro,OS=26.2,arch=arm64' -derivedDataPath build/ios-derived
 xcodebuild build -project apps/ios/Riot.xcodeproj -scheme Riot -destination 'platform=iOS Simulator,name=iPhone 17 Pro,OS=26.2,arch=arm64' -derivedDataPath build/ios-app-derived
@@ -1577,7 +1661,7 @@ capability arrives sooner and each milestone is independently valuable:
 | **M1 — Protocol + transport** | WU-001–007 | Canonical wire, routed `sync/2`, ALPN router, cross-language vectors. No product yet; pure foundation, fully `cargo test`/vector-verifiable. |
 | **M2 — Hosting MVP** | WU-008–012, WU-013–016 | A community can be *hosted on an anchor and followed by a client* — the first real capability. Client storage + core storage-ownership + anchor repo/commit/removal. |
 | **M3 — Directory + web + handoff** | WU-011C, WU-017B–021 | Discovery (signed directory/search) + safe web projection + v2 web→app handoff. The "reach" half. |
-| **M4 — Native UX** | WU-022–023 | Explore / Follow / Publish / host-management on iOS + Android + macOS. |
+| **M4 — Native UX** | WU-012D, WU-022–023 | Explore / Follow / Publish / host-management on iOS + Android, with shared-source and verified-resource compatibility on macOS. |
 | **Production operations** | WU-026A–028 | Reproducible OCI images, isolated deployment, deterministic system/load proof, CI/inventory/release closure. |
 | **Pilot (DEFERRED; not a milestone in this plan)** | Reserved former WU-024–025 | Privacy-preserving pilot. **Do not build until M2–M4 are real and a live pilot is actually scheduled.** |
 
