@@ -64,11 +64,12 @@ canonical conventions and MUST be confirmed before 006 freezes vectors:
 - **WU-003B (`584b5a6`):** `SITE_MANIFEST_DIGEST_LABEL`, `TERMINAL_CAPABILITY_DIGEST_LABEL`, and the
   manifest-digest preimage (design binds a manifest digest but never specifies its preimage). All
   domain-separated + fail-closed (safe), but frozen at 006.
-- **WU-004 (`d1304e9`):** `EnabledRole` tokens — design says "roles have at most the four defined
-  values" (spec line 1353) but never enumerates them; builder used `host/mirror/directory/gossip`
-  (last two inferred). **CONFIRM the exact four.** `HostingStatus` vocab = only `committed` (matches
-  the Commit terminal outcome `["committed", hosting_receipt]`, low risk). `*BodyV1` lead-with-version
-  layouts (WU-002 convention).
+- **WU-004 (`d1304e9`):** `EnabledRole` tokens — ✅ **OWNER-CONFIRMED 2026-07-19:
+  `host` / `mirror` / `directory` / `gossip`** (`host`+`mirror` are spec-explicit at design line 3131
+  "roles contain both `host` and `mirror`"; `directory`+`gossip` from the architecture box + the
+  `PullDirectory*`/gossip ops). Code already matches (`records.rs::EnabledRole`); frozen into WU-006A
+  vectors. `HostingStatus` vocab = only `committed` (matches `["committed", hosting_receipt]`, low
+  risk). `*BodyV1` lead-with-version layouts (WU-002 convention).
 - **WU-005 (`80a8a2a`):** frame positional layouts (leading snake_case frame-name discriminant,
   implicit v2, no per-frame version int); opaque `ticket_core_bytes`/`session_id`(≤32)/`entry_id`(≤128)
   bounds; `EntriesChunk.bundle_bytes` = canonical array of per-item byte strings (≤64 items/≤2 MiB
