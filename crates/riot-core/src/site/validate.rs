@@ -275,6 +275,7 @@ mod tests {
             },
             version: 1,
             layout: SiteLayout::SiteDefault,
+            sections: vec![],
         };
         encode_site_manifest(&manifest).expect("encode manifest")
     }
@@ -504,6 +505,7 @@ mod tests {
             },
             version: 1,
             layout: SiteLayout::SiteDefault,
+            sections: vec![],
         };
         let payload = encode_site_manifest(&manifest).expect("encode");
         let entry = Entry::builder()

@@ -42,6 +42,7 @@ fn site_manifest() -> SiteManifestV1 {
         },
         version: 1,
         layout: SiteLayout::SiteDefault,
+        sections: vec![],
     }
 }
 

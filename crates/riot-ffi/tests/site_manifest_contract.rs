@@ -101,6 +101,7 @@ fn three_member_manifest(
         },
         version: 9,
         layout: SiteLayout::SiteDefault,
+        sections: vec![],
     }
 }
 
@@ -160,6 +161,7 @@ fn rule_key_structure_mismatch_resolves_member_unverified() {
         },
         version: 3,
         layout: SiteLayout::SiteDefault,
+        sections: vec![],
     });
 
     let resolved = resolve_site_manifest(
