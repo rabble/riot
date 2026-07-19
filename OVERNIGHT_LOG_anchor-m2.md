@@ -37,3 +37,10 @@ session.
 ## Log
 
 ### Task 1 — bearings + plan + worktree (done). Dispatching WU-013A (anchor crate + forward-only schema).
+
+### Task 2 — WU-013A DONE (commit 76bc966), PR #80 opened
+riot-anchor crate + forward-only schema (30 tables, fail-closed version refusal). 13 tests green;
+workspace builds; validate-contracts PASS (manifest sha refreshed for the new Cargo.lock entry).
+Pushed to overnight/2026-07-20-anchor-m2; PR #80 (growing — M2 server chain accumulates here).
+
+### Task 3 — WU-013B (repository quotas/accounting/eviction/recovery) dispatched (general-purpose)
