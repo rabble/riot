@@ -731,6 +731,31 @@ public final class RiotProfileRepository {
         try newswireDecodeShareReference(encoded: encoded)
     }
 
+    // MARK: - Followed composite sites (Option C HTTP-pull)
+
+    /// Follows a composite indymedia site from a root-signed `riot://site/v1/...`
+    /// ticket. The core parses + verifies (signature, expiry) and persists the
+    /// `Following` record carrying the ticket's signed HTTPS `url=`; a bad ticket
+    /// throws. A thin forward — the trust logic lives in the FFI.
+    @discardableResult
+    public func followSite(ticket: String) throws -> FollowedSiteRow {
+        try profile.followSite(ticket: ticket)
+    }
+
+    /// Every composite site the user follows, as author-less rows. Metadata only.
+    public func listFollowedSites() throws -> [FollowedSiteRow] {
+        try profile.listFollowedSites()
+    }
+
+    /// Imports an owner-signed `/mod` + `/articles` bundle pulled for a followed
+    /// site. The core re-verifies every entry against `root` (owner cap +
+    /// Following-gate + family-gate) before committing — the pulled bytes are
+    /// untrusted until it does.
+    @discardableResult
+    public func importFollowedSiteBundle(bytes: Data, root: Data) throws -> ImportSummary {
+        try profile.importFollowedSiteBundle(bytes: bytes, followedSiteRoot: root)
+    }
+
     public func signAlert(in space: RiotSpace, draft: AlertDraft) throws -> RiotEntry {
         guard persisted.space == space else { throw RepositoryError.spaceMismatch }
         let record = try profile.createDraftAlert(
