@@ -39,6 +39,7 @@ class NewswireScreenTest {
         verificationIds = emptyList(),
         correctionIds = emptyList(),
         treatment = treatment,
+        reactions = emptyList(),
     )
 
     private fun comment(id: String, parent: String) = NewswireProjectedComment(

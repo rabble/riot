@@ -11,10 +11,10 @@ use crate::willow::{
 
 use super::path::{classify_newswire_path, newswire_path, NewswirePathKind};
 use super::{
-    decode_editorial_action, decode_news_comment, decode_news_post, decode_space_descriptor,
-    encode_editorial_action, encode_news_comment, encode_news_post, encode_space_descriptor,
-    EditorialActionV1, NewsCommentV1, NewsPostV1, NewswireError, SpaceDescriptorV1,
-    MAX_NEWSWIRE_PAYLOAD_BYTES,
+    decode_editorial_action, decode_news_comment, decode_news_post, decode_news_reaction,
+    decode_space_descriptor, encode_editorial_action, encode_news_comment, encode_news_post,
+    encode_news_reaction, encode_space_descriptor, EditorialActionV1, NewsCommentV1, NewsPostV1,
+    NewsReactionV1, NewswireError, SpaceDescriptorV1, MAX_NEWSWIRE_PAYLOAD_BYTES,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -23,6 +23,7 @@ pub enum NewswirePayload {
     NewsPost(NewsPostV1),
     EditorialAction(EditorialActionV1),
     NewsComment(NewsCommentV1),
+    NewsReaction(NewsReactionV1),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -115,6 +116,7 @@ fn encode_payload(payload: &NewswirePayload) -> Result<Vec<u8>, NewswireError> {
         NewswirePayload::NewsPost(value) => encode_news_post(value),
         NewswirePayload::EditorialAction(value) => encode_editorial_action(value),
         NewswirePayload::NewsComment(value) => encode_news_comment(value),
+        NewswirePayload::NewsReaction(value) => encode_news_reaction(value),
     }
     .map_err(|_| NewswireError::ModelInvalid)
 }
@@ -130,6 +132,9 @@ fn payload_path_kind(payload: &NewswirePayload) -> NewswirePathKind {
         },
         NewswirePayload::NewsComment(comment) => NewswirePathKind::Comment {
             space_descriptor_entry_id: comment.space_descriptor_entry_id,
+        },
+        NewswirePayload::NewsReaction(reaction) => NewswirePathKind::Reaction {
+            space_descriptor_entry_id: reaction.space_descriptor_entry_id,
         },
     }
 }
@@ -262,6 +267,26 @@ fn require_comment_authority(
     Ok(())
 }
 
+/// A reaction is admitted exactly like a comment: the author must be a communal
+/// member of the descriptor's namespace, and the reaction must name that
+/// descriptor. There is NO roster requirement and NO owned capability — a
+/// reaction is communal. The `parent_entry_id` is unchecked here (the parent
+/// may not be held yet); projection resolves it and drops danglers.
+fn require_reaction_authority(
+    author: &EvidenceAuthor,
+    descriptor: &VerifiedNewswireRecord,
+    reaction: &NewsReactionV1,
+) -> Result<(), NewswireError> {
+    let descriptor_payload = descriptor_context(descriptor)?;
+    if reaction.space_descriptor_entry_id != descriptor.entry_id() {
+        return Err(NewswireError::DuplicatedFieldMismatch);
+    }
+    if author.namespace_id().as_bytes() != &descriptor_payload.namespace_id {
+        return Err(NewswireError::AuthorityInvalid);
+    }
+    Ok(())
+}
+
 pub fn create_signed_space_descriptor(
     author: &EvidenceAuthor,
     descriptor: SpaceDescriptorV1,
@@ -303,6 +328,16 @@ pub fn create_signed_news_comment(
     require_comment_authority(author, descriptor, &comment)?;
     let snapshot = system_snapshot().map_err(|_| NewswireError::ClockUnavailable)?;
     build_signed(author, snapshot, NewswirePayload::NewsComment(comment))
+}
+
+pub fn create_signed_news_reaction(
+    author: &EvidenceAuthor,
+    descriptor: &VerifiedNewswireRecord,
+    reaction: NewsReactionV1,
+) -> Result<SignedNewswireRecord, NewswireError> {
+    require_reaction_authority(author, descriptor, &reaction)?;
+    let snapshot = system_snapshot().map_err(|_| NewswireError::ClockUnavailable)?;
+    build_signed(author, snapshot, NewswirePayload::NewsReaction(reaction))
 }
 
 #[cfg(feature = "conformance")]
@@ -362,6 +397,20 @@ pub fn create_signed_news_comment_with_clock(
         .snapshot()
         .map_err(|_| NewswireError::ClockUnavailable)?;
     build_signed(author, snapshot, NewswirePayload::NewsComment(comment))
+}
+
+#[cfg(feature = "conformance")]
+pub fn create_signed_news_reaction_with_clock(
+    author: &EvidenceAuthor,
+    descriptor: &VerifiedNewswireRecord,
+    clock: &dyn crate::willow::ClockSource,
+    reaction: NewsReactionV1,
+) -> Result<SignedNewswireRecord, NewswireError> {
+    require_reaction_authority(author, descriptor, &reaction)?;
+    let snapshot = clock
+        .snapshot()
+        .map_err(|_| NewswireError::ClockUnavailable)?;
+    build_signed(author, snapshot, NewswirePayload::NewsReaction(reaction))
 }
 
 pub fn inspect_news_record(
@@ -471,6 +520,16 @@ fn inspect_verified_components_bounded(
                 return Err(NewswireError::DuplicatedFieldMismatch);
             }
             NewswirePayload::NewsComment(comment)
+        }
+        NewswirePathKind::Reaction {
+            space_descriptor_entry_id,
+        } => {
+            let reaction =
+                decode_news_reaction(payload_bytes).map_err(|_| NewswireError::ModelInvalid)?;
+            if reaction.space_descriptor_entry_id != space_descriptor_entry_id {
+                return Err(NewswireError::DuplicatedFieldMismatch);
+            }
+            NewswirePayload::NewsReaction(reaction)
         }
     };
 
@@ -901,6 +960,15 @@ mod tests {
         }
     }
 
+    fn reaction(space_descriptor_entry_id: EntryId, parent_entry_id: EntryId) -> NewsReactionV1 {
+        NewsReactionV1 {
+            space_descriptor_entry_id,
+            parent_entry_id,
+            kind: super::super::ReactionKind::Solidarity,
+            active: true,
+        }
+    }
+
     #[test]
     fn comment_is_admitted_communally_like_a_post_no_roster_required() {
         let organizer = generate_space_organizer_author().unwrap();
@@ -1062,6 +1130,92 @@ mod tests {
         assert_eq!(
             inspect_news_record(&delegated_signed),
             Err(NewswireError::CapabilityInvalid)
+        );
+    }
+
+    #[test]
+    fn reaction_is_admitted_communally_like_a_post_no_roster_required() {
+        let organizer = generate_space_organizer_author().unwrap();
+        let namespace_id = *organizer.namespace_id().as_bytes();
+        // A community member who is NOT in the editorial roster.
+        let member = generate_communal_author_for_namespace(namespace_id).unwrap();
+        let descriptor_record = build_signed(
+            &organizer,
+            snapshot(90),
+            NewswirePayload::SpaceDescriptor(descriptor(namespace_id, vec![])),
+        )
+        .unwrap();
+        let verified = inspect_news_record(&descriptor_record.signed).unwrap();
+
+        let value = reaction(verified.entry_id(), [0x55; 32]);
+        require_reaction_authority(&member, &verified, &value).unwrap();
+        let record = create_signed_news_reaction(&member, &verified, value.clone()).unwrap();
+        let inspected = inspect_news_record(&record.signed).unwrap();
+        assert!(matches!(
+            inspected.payload(),
+            NewswirePayload::NewsReaction(held) if *held == value
+        ));
+        assert_eq!(inspected.signer_id(), *member.subspace_id().as_bytes());
+    }
+
+    #[test]
+    fn reaction_authority_rejects_foreign_member_and_wrong_descriptor_binding() {
+        let organizer = generate_space_organizer_author().unwrap();
+        let other = generate_space_organizer_author().unwrap();
+        let namespace_id = *organizer.namespace_id().as_bytes();
+        let descriptor_record = build_signed(
+            &organizer,
+            snapshot(91),
+            NewswirePayload::SpaceDescriptor(descriptor(namespace_id, vec![])),
+        )
+        .unwrap();
+        let verified = inspect_news_record(&descriptor_record.signed).unwrap();
+
+        let outsider =
+            generate_communal_author_for_namespace(*other.namespace_id().as_bytes()).unwrap();
+        assert_eq!(
+            require_reaction_authority(
+                &outsider,
+                &verified,
+                &reaction(verified.entry_id(), [1; 32])
+            ),
+            Err(NewswireError::AuthorityInvalid)
+        );
+        assert_eq!(
+            create_signed_news_reaction(
+                &outsider,
+                &verified,
+                reaction(verified.entry_id(), [1; 32])
+            ),
+            Err(NewswireError::AuthorityInvalid)
+        );
+
+        let member = generate_communal_author_for_namespace(namespace_id).unwrap();
+        assert_eq!(
+            require_reaction_authority(&member, &verified, &reaction([9; 32], [1; 32])),
+            Err(NewswireError::DuplicatedFieldMismatch)
+        );
+    }
+
+    #[test]
+    fn reaction_whose_path_space_differs_from_payload_is_rejected() {
+        let organizer = generate_space_organizer_author().unwrap();
+        let member =
+            generate_communal_author_for_namespace(*organizer.namespace_id().as_bytes()).unwrap();
+        // Payload names space [1;32] but the path is built for space [2;32].
+        let value = reaction([1; 32], [3; 32]);
+        let payload_bytes = encode_news_reaction(&value).unwrap();
+        let wrong_space_path = newswire_path(
+            NewswirePathKind::Reaction {
+                space_descriptor_entry_id: [2; 32],
+            },
+            71,
+            &william3_digest(&payload_bytes),
+        )
+        .unwrap();
+        assert_eq!(
+            inspect_news_record(&sign_raw(&member, wrong_space_path, 71, payload_bytes)),
+            Err(NewswireError::DuplicatedFieldMismatch)
         );
     }
 

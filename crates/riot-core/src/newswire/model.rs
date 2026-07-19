@@ -11,6 +11,7 @@ pub const SPACE_SCHEMA: &str = "org.riot.newswire.space/1";
 pub const POST_SCHEMA: &str = "org.riot.newswire.post/1";
 pub const ACTION_SCHEMA: &str = "org.riot.newswire.editorial-action/1";
 pub const COMMENT_SCHEMA: &str = "org.riot.newswire.comment/1";
+pub const REACTION_SCHEMA: &str = "org.riot.newswire.reaction/1";
 pub const MAX_NEWSWIRE_PAYLOAD_BYTES: usize = 131_072;
 
 const MAX_SPACE_NAME_BYTES: usize = 256;
@@ -94,6 +95,32 @@ pub struct NewsCommentV1 {
     pub parent_entry_id: [u8; 32],
     pub body: String,
     pub language: String,
+}
+
+/// A closed, integer-tagged reaction vocabulary. Deliberately small and fixed
+/// (no free-form emoji) so the payload stays canonical and comparable across
+/// clients, exactly like `EditorialActionKind`. `Ord` follows the tag order
+/// (`Support < Solidarity < Important < Grief`) so projected tallies sort
+/// deterministically.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ReactionKind {
+    Support = 0,
+    Solidarity = 1,
+    Important = 2,
+    Grief = 3,
+}
+
+/// A communal reaction on a newswire post. Author-controlled (not
+/// editor-moderated): dedup is per (author subspace, parent, kind), latest
+/// entry wins. `active = false` retracts a prior reaction (toggle).
+/// `parent_entry_id` names the POST; a reaction on a non-post (comment or
+/// reaction) is dropped by projection, exactly like a reply-to-a-reply.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewsReactionV1 {
+    pub space_descriptor_entry_id: [u8; 32],
+    pub parent_entry_id: [u8; 32],
+    pub kind: ReactionKind,
+    pub active: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -567,6 +594,74 @@ fn validate_comment(comment: &NewsCommentV1) -> Result<(), NewswireModelError> {
     Ok(())
 }
 
+pub fn encode_news_reaction(reaction: &NewsReactionV1) -> Result<Vec<u8>, NewswireModelError> {
+    validate_reaction(reaction)?;
+    encode_bounded(|e| {
+        e.map(5)?;
+        e.u8(0)?.str(REACTION_SCHEMA)?;
+        e.u8(1)?.bytes(&reaction.space_descriptor_entry_id)?;
+        e.u8(2)?.bytes(&reaction.parent_entry_id)?;
+        e.u8(3)?.u8(reaction.kind as u8)?;
+        e.u8(4)?.bool(reaction.active)?;
+        Ok(())
+    })
+}
+
+pub fn decode_news_reaction(input: &[u8]) -> Result<NewsReactionV1, NewswireModelError> {
+    check_input_size(input)?;
+    let mut d = Decoder::new(input);
+    let pairs = definite_map(&mut d)?;
+    if pairs > 5 {
+        return Err(NewswireModelError::Malformed);
+    }
+
+    let mut schema = None;
+    let mut space_descriptor_entry_id = None;
+    let mut parent_entry_id = None;
+    let mut kind = None;
+    let mut active = None;
+    let mut last_key = None;
+
+    for _ in 0..pairs {
+        let key = decode_ordered_key(&mut d, &mut last_key)?;
+        match key {
+            0 => schema = Some(decode_text(&mut d, "schema", 1, 64)?),
+            1 => space_descriptor_entry_id = Some(decode_id32(&mut d)?),
+            2 => parent_entry_id = Some(decode_id32(&mut d)?),
+            3 => {
+                let raw = d.u8().map_err(|_| NewswireModelError::Malformed)?;
+                kind = Some(reaction_kind_from_u8(raw)?);
+            }
+            4 => active = Some(d.bool().map_err(|_| NewswireModelError::Malformed)?),
+            other => return Err(NewswireModelError::UnknownKey(other)),
+        }
+    }
+    finish_input(&d, input)?;
+    if schema.as_deref() != Some(REACTION_SCHEMA) {
+        return Err(NewswireModelError::WrongSchema);
+    }
+
+    let reaction = NewsReactionV1 {
+        space_descriptor_entry_id: space_descriptor_entry_id
+            .ok_or(NewswireModelError::MissingKey(1))?,
+        parent_entry_id: parent_entry_id.ok_or(NewswireModelError::MissingKey(2))?,
+        kind: kind.ok_or(NewswireModelError::MissingKey(3))?,
+        active: active.ok_or(NewswireModelError::MissingKey(4))?,
+    };
+    validate_reaction(&reaction)?;
+    prove_canonical(input, encode_news_reaction(&reaction)?)?;
+    Ok(reaction)
+}
+
+/// A reaction has no free-form fields to bound — `kind` is a closed enum and
+/// `active` is a bool, both validated structurally by the decoder. This exists
+/// to mirror the encode/decode symmetry of the other families (validate before
+/// encode, validate after decode) so a future field cannot be added without a
+/// validation hook already threaded through both paths.
+fn validate_reaction(_reaction: &NewsReactionV1) -> Result<(), NewswireModelError> {
+    Ok(())
+}
+
 fn validate_space(descriptor: &SpaceDescriptorV1) -> Result<(), NewswireModelError> {
     check_text("name", &descriptor.name, 1, MAX_SPACE_NAME_BYTES)?;
     check_text("summary", &descriptor.summary, 1, MAX_SPACE_SUMMARY_BYTES)?;
@@ -1017,6 +1112,16 @@ fn editorial_action_kind_from_u8(value: u8) -> Result<EditorialActionKind, Newsw
     }
 }
 
+fn reaction_kind_from_u8(value: u8) -> Result<ReactionKind, NewswireModelError> {
+    match value {
+        0 => Ok(ReactionKind::Support),
+        1 => Ok(ReactionKind::Solidarity),
+        2 => Ok(ReactionKind::Important),
+        3 => Ok(ReactionKind::Grief),
+        _ => Err(NewswireModelError::InvalidEnum("reaction_kind")),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1066,6 +1171,15 @@ mod tests {
             parent_entry_id: [0x22; 32],
             body: "I was there — the square filled by nine.".into(),
             language: "en".into(),
+        }
+    }
+
+    fn reaction() -> NewsReactionV1 {
+        NewsReactionV1 {
+            space_descriptor_entry_id: [0x11; 32],
+            parent_entry_id: [0x22; 32],
+            kind: ReactionKind::Solidarity,
+            active: true,
         }
     }
 
@@ -1191,6 +1305,118 @@ mod tests {
         assert_eq!(
             decode_news_comment(&missing_body),
             Err(NewswireModelError::MissingKey(3))
+        );
+    }
+
+    #[test]
+    fn reaction_round_trips_every_kind_and_both_toggle_states() {
+        for kind in [
+            ReactionKind::Support,
+            ReactionKind::Solidarity,
+            ReactionKind::Important,
+            ReactionKind::Grief,
+        ] {
+            for active in [true, false] {
+                let mut value = reaction();
+                value.kind = kind;
+                value.active = active;
+                let bytes = encode_news_reaction(&value).unwrap();
+                assert_eq!(decode_news_reaction(&bytes).unwrap(), value);
+            }
+        }
+    }
+
+    #[test]
+    fn reaction_canonicality_table_rejects_hostile_encodings() {
+        let canonical = encode_news_reaction(&reaction()).unwrap();
+
+        // Five pairs, but the final key is 99 instead of 4 — an unknown key is
+        // rejected before the arity guard could ever see it.
+        let unknown = {
+            let mut bytes = Vec::new();
+            let mut encoder = Encoder::new(&mut bytes);
+            encoder.map(5).unwrap();
+            encoder.u8(0).unwrap().str(REACTION_SCHEMA).unwrap();
+            encoder.u8(1).unwrap().bytes(&[0x11; 32]).unwrap();
+            encoder.u8(2).unwrap().bytes(&[0x22; 32]).unwrap();
+            encoder.u8(3).unwrap().u8(1).unwrap();
+            encoder.u8(99).unwrap().bool(true).unwrap();
+            bytes
+        };
+
+        let mut trailing = canonical.clone();
+        trailing.push(0);
+
+        let mut indefinite_map = vec![0xbf];
+        indefinite_map.extend_from_slice(&canonical[1..]);
+        indefinite_map.push(0xff);
+
+        let mut widened_key = Vec::with_capacity(canonical.len() + 1);
+        widened_key.push(canonical[0]);
+        widened_key.extend_from_slice(&[0x18, 0x00]); // key 0 as two-byte int
+        widened_key.extend_from_slice(&canonical[2..]);
+
+        let mut wrong_schema = canonical.clone();
+        let schema_position = wrong_schema
+            .windows(REACTION_SCHEMA.len())
+            .position(|window| window == REACTION_SCHEMA.as_bytes())
+            .unwrap();
+        wrong_schema[schema_position] = b'x';
+
+        let unknown_kind = {
+            let mut bytes = Vec::new();
+            let mut encoder = Encoder::new(&mut bytes);
+            encoder.map(5).unwrap();
+            encoder.u8(0).unwrap().str(REACTION_SCHEMA).unwrap();
+            encoder.u8(1).unwrap().bytes(&[0x11; 32]).unwrap();
+            encoder.u8(2).unwrap().bytes(&[0x22; 32]).unwrap();
+            encoder.u8(3).unwrap().u8(4).unwrap();
+            encoder.u8(4).unwrap().bool(true).unwrap();
+            bytes
+        };
+
+        let arity_six = {
+            let mut bytes = Vec::new();
+            let mut encoder = Encoder::new(&mut bytes);
+            encoder.map(6).unwrap();
+            encoder.u8(0).unwrap().str(REACTION_SCHEMA).unwrap();
+            encoder.u8(1).unwrap().bytes(&[0x11; 32]).unwrap();
+            encoder.u8(2).unwrap().bytes(&[0x22; 32]).unwrap();
+            encoder.u8(3).unwrap().u8(1).unwrap();
+            encoder.u8(4).unwrap().bool(true).unwrap();
+            encoder.u8(5).unwrap().u8(0).unwrap();
+            bytes
+        };
+
+        let cases = [
+            (unknown, NewswireModelError::UnknownKey(99)),
+            (trailing, NewswireModelError::TrailingBytes),
+            (indefinite_map, NewswireModelError::NonCanonical),
+            (widened_key, NewswireModelError::NonCanonical),
+            (wrong_schema, NewswireModelError::WrongSchema),
+            (
+                unknown_kind,
+                NewswireModelError::InvalidEnum("reaction_kind"),
+            ),
+            (arity_six, NewswireModelError::Malformed),
+        ];
+        for (bytes, expected) in cases {
+            assert_eq!(decode_news_reaction(&bytes), Err(expected));
+        }
+
+        let missing_active = {
+            let mut bytes = Vec::new();
+            let mut encoder = Encoder::new(&mut bytes);
+            encoder.map(4).unwrap();
+            encoder.u8(0).unwrap().str(REACTION_SCHEMA).unwrap();
+            encoder.u8(1).unwrap().bytes(&[0x11; 32]).unwrap();
+            encoder.u8(2).unwrap().bytes(&[0x22; 32]).unwrap();
+            encoder.u8(3).unwrap().u8(1).unwrap();
+            bytes
+        };
+        assert_eq!(
+            decode_news_reaction(&missing_active),
+            Err(NewswireModelError::MissingKey(4))
         );
     }
 
