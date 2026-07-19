@@ -16,3 +16,4 @@
 //! bounded shutdown — is unit-testable with fakes and no live network.
 
 pub mod runtime;
+pub mod safe_dial;
