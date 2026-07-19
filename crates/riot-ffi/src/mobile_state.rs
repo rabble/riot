@@ -4477,6 +4477,44 @@ mod tests {
         .unwrap();
     }
 
+    /// WU2 regression (community path byte-identical): a COMMUNITY sync session
+    /// must reproduce today exactly now that `StoredSyncSession` carries a
+    /// `followed_root`. It is `None` for the community session, and the community
+    /// drive still begins normally. The FULL two-party community drive stays
+    /// covered UNCHANGED by the `mobile_contract` integration test — this makes
+    /// the "None reproduces today exactly" property unmissable in-crate.
+    #[test]
+    fn a_community_sync_session_carries_no_followed_root_and_begins_normally() {
+        use crate::mobile_api::SyncOutcomeKind;
+        let profile = open_local_profile().unwrap();
+        create_public_space(&profile.inner, "Community".into()).unwrap();
+        let _session = open_sync_session(&profile.inner).unwrap();
+
+        let id = with_active(&profile.inner, |profile| {
+            let community = profile
+                .sync_session
+                .as_ref()
+                .expect("community session open");
+            assert!(
+                community.followed_root.is_none(),
+                "a community sync session must carry followed_root = None"
+            );
+            assert!(
+                sync_session_is_active(profile),
+                "the community session is active exactly as before"
+            );
+            Ok(community.id)
+        })
+        .unwrap();
+
+        // The community drive still starts identically (FrameReady summary).
+        assert_eq!(
+            sync_begin(&profile.inner, id).unwrap().kind,
+            SyncOutcomeKind::FrameReady,
+            "the community sync drive is unchanged by the followed_root field"
+        );
+    }
+
     /// WU2: on a memory-backed profile the signed form is unavailable
     /// (`signed_entries_in_namespace` -> None), so the offer builder fails closed
     /// rather than returning an empty offer that would silently sync nothing.

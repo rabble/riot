@@ -1913,6 +1913,50 @@ mod resolve_composite_tests {
         );
     }
 
+    /// (WU2 · R2 backstop) The second structural gate UNDER the family gate: a
+    /// followed-site session is `ByteSyncSession::new(root, offer)`, which rejects
+    /// any received entry whose namespace != root (sync/state.rs). So a frame from
+    /// a DIFFERENT site's session cannot inject that site's records — the session
+    /// refuses it at receive, before admission or the family gate even run.
+    #[test]
+    fn a_followed_site_session_rejects_a_foreign_namespace_frame() {
+        use crate::mobile_state::{
+            followed_sync_begin, followed_sync_receive_frame, followed_sync_take_outbound_frame,
+            open_followed_site_sync_session,
+        };
+
+        // A follower for site O.
+        let (_masthead_o, _so, root_o) = sealed_masthead();
+        let (_follower_dir, follower) = durable_profile();
+        follower.follow_site_for_test(root_o.to_vec()).unwrap();
+        let fid = open_followed_site_sync_session(&follower.inner, root_o).unwrap();
+
+        // A peer running a session for a DIFFERENT site X, holding an X /mod record.
+        let (masthead_x, _sx, root_x) = sealed_masthead();
+        let (revoke_x, _id) = revoke(&masthead_x, b"r1", [9; 32]);
+        let (_peer_dir, peer) = durable_profile();
+        import_owned(&peer, root_x, &revoke_x);
+        peer.follow_site_for_test(root_x.to_vec()).unwrap();
+        let xid = open_followed_site_sync_session(&peer.inner, root_x).unwrap();
+
+        // The peer's X-session summary frame, fed into the follower's O session.
+        followed_sync_begin(&peer.inner, xid).unwrap();
+        let foreign_frame = followed_sync_take_outbound_frame(&peer.inner, xid)
+            .unwrap()
+            .expect("peer queued an X summary frame");
+
+        // The O session must not admit an X-namespace frame — the ByteSyncSession
+        // namespace backstop rejects it (returns an error or a rejected outcome).
+        match followed_sync_receive_frame(&follower.inner, fid, foreign_frame) {
+            Err(_) => {}
+            Ok(outcome) => assert_eq!(
+                outcome.kind,
+                crate::mobile_api::SyncOutcomeKind::Rejected,
+                "a foreign-namespace frame must be rejected by the followed-site session"
+            ),
+        }
+    }
+
     #[test]
     fn trust_tier_maps_and_open_wire_is_never_editorial() {
         assert_eq!(
