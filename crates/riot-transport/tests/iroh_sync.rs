@@ -19,7 +19,7 @@ async fn require_arti_ticket_fails_closed_before_any_dial() {
     // A require:arti site, a client with only iroh: dial_with_ticket must REFUSE
     // before opening a connection — the peer here is reachable, yet no sync runs.
     let key = ed25519_dalek::SigningKey::from_bytes(&[9u8; 32]);
-    let ticket = mint(&key, [0x11; 32], "arti", 1, 10_000, [0x22; 32], None);
+    let ticket = mint(&key, [0x11; 32], "arti", 1, 10_000, [0x22; 32], None, None);
 
     let follower = bind().await.unwrap();
     let seed = bind().await.unwrap();

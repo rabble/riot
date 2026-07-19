@@ -9,6 +9,7 @@ pub mod manifest;
 pub mod moderation;
 pub mod moderation_entry;
 pub mod resolve;
+pub mod ticket;
 pub mod validate;
 pub mod version_floor;
 

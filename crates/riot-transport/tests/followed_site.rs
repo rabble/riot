@@ -112,7 +112,16 @@ async fn connect_followed_site_delivers_and_admits_over_real_iroh() {
 
     // A valid, signed, floor:none ticket for the site — the fail-closed gate admits it.
     let ticket_key = ed25519_dalek::SigningKey::from_bytes(&[7u8; 32]);
-    let ticket = mint(&ticket_key, root, "none", 1, u64::MAX, [0u8; 32], None);
+    let ticket = mint(
+        &ticket_key,
+        root,
+        "none",
+        1,
+        u64::MAX,
+        [0u8; 32],
+        None,
+        None,
+    );
     let caps = Capabilities {
         iroh: true,
         arti: false,
@@ -158,7 +167,16 @@ async fn connect_followed_site_fails_closed_and_admits_nothing() {
     let store = session.create_store().expect("store");
 
     let ticket_key = ed25519_dalek::SigningKey::from_bytes(&[7u8; 32]);
-    let ticket = mint(&ticket_key, root, "arti", 1, u64::MAX, [0u8; 32], None);
+    let ticket = mint(
+        &ticket_key,
+        root,
+        "arti",
+        1,
+        u64::MAX,
+        [0u8; 32],
+        None,
+        None,
+    );
     let caps = Capabilities {
         iroh: true,
         arti: false,

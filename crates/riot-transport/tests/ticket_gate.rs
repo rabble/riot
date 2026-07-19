@@ -18,7 +18,7 @@ fn caps(iroh: bool, arti: bool) -> Capabilities {
 
 #[test]
 fn valid_none_floor_ticket_verifies_and_admits_an_iroh_dial() {
-    let t = mint(&root(), NS, "none", 1, 10_000, DIGEST, None);
+    let t = mint(&root(), NS, "none", 1, 10_000, DIGEST, None, None);
     assert!(t.verify());
     assert_eq!(t.floor(), Floor::None);
     assert_eq!(admit_dial(&t, &caps(true, false), 1_000, 0), Ok(()));
@@ -26,7 +26,7 @@ fn valid_none_floor_ticket_verifies_and_admits_an_iroh_dial() {
 
 #[test]
 fn a_tampered_signature_never_dials() {
-    let mut t = mint(&root(), NS, "none", 1, 10_000, DIGEST, None);
+    let mut t = mint(&root(), NS, "none", 1, 10_000, DIGEST, None, None);
     t.sig[0] ^= 0x01;
     assert!(!t.verify());
     assert_eq!(
@@ -38,7 +38,7 @@ fn a_tampered_signature_never_dials() {
 #[test]
 fn a_flipped_require_floor_breaks_the_signature() {
     // The attacker's core move: strip require:arti -> none to leak the IP.
-    let mut t = mint(&root(), NS, "arti", 1, 10_000, DIGEST, None);
+    let mut t = mint(&root(), NS, "arti", 1, 10_000, DIGEST, None, None);
     t.require_raw = "none".to_string(); // downgrade in place
     assert!(
         !t.verify(),
@@ -53,7 +53,7 @@ fn a_flipped_require_floor_breaks_the_signature() {
 #[test]
 fn require_arti_without_arti_fails_closed_never_falls_back_to_iroh() {
     // THE activist-safety test: an arti-only site is never dialed over iroh.
-    let t = mint(&root(), NS, "arti", 1, 10_000, DIGEST, None);
+    let t = mint(&root(), NS, "arti", 1, 10_000, DIGEST, None, None);
     assert!(t.verify());
     assert_eq!(
         admit_dial(&t, &caps(true, false), 1_000, 0),
@@ -65,7 +65,7 @@ fn require_arti_without_arti_fails_closed_never_falls_back_to_iroh() {
 
 #[test]
 fn an_expired_ticket_is_refused() {
-    let t = mint(&root(), NS, "none", 1, 500, DIGEST, None);
+    let t = mint(&root(), NS, "none", 1, 500, DIGEST, None, None);
     assert_eq!(
         admit_dial(&t, &caps(true, false), 1_000, 0),
         Err(TransportBlocked::Expired)
@@ -76,7 +76,7 @@ fn an_expired_ticket_is_refused() {
 fn an_epoch_below_the_durable_floor_is_a_rollback() {
     // A returning follower who has seen epoch 5 refuses a validly-signed epoch-2
     // ticket (an owner tightened require, an attacker replays the old floor).
-    let t = mint(&root(), NS, "none", 2, 10_000, DIGEST, None);
+    let t = mint(&root(), NS, "none", 2, 10_000, DIGEST, None, None);
     assert!(t.verify());
     assert_eq!(
         admit_dial(&t, &caps(true, false), 1_000, 5),
@@ -86,7 +86,7 @@ fn an_epoch_below_the_durable_floor_is_a_rollback() {
 
 #[test]
 fn an_unknown_floor_token_fails_closed_not_parsed_as_none() {
-    let t = mint(&root(), NS, "nym", 1, 10_000, DIGEST, None);
+    let t = mint(&root(), NS, "nym", 1, 10_000, DIGEST, None, None);
     assert!(t.verify());
     assert!(matches!(t.floor(), Floor::Unknown(_)));
     assert!(matches!(
@@ -97,7 +97,16 @@ fn an_unknown_floor_token_fails_closed_not_parsed_as_none() {
 
 #[test]
 fn ticket_encode_parse_round_trips_and_survives_verification() {
-    let t = mint(&root(), NS, "arti", 3, 10_000, DIGEST, Some("hint".into()));
+    let t = mint(
+        &root(),
+        NS,
+        "arti",
+        3,
+        10_000,
+        DIGEST,
+        Some("hint".into()),
+        None,
+    );
     let parsed = parse(&t.encode()).expect("parse");
     assert_eq!(parsed, t);
     assert!(parsed.verify());
