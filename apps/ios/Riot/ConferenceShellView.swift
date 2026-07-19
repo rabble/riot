@@ -199,6 +199,7 @@ private struct OnboardingView: View {
 private struct OnboardingWelcomeView: View {
     @Environment(\.colorScheme) private var colorScheme
     let onContinue: () -> Void
+    @State private var isExplainerPresented = false
 
     var body: some View {
         ScrollView {
@@ -217,15 +218,100 @@ private struct OnboardingWelcomeView: View {
                             .font(.riot(.body, size: 15, relativeTo: .callout))
                             .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
 
+                        // Two first-class paths. Both lead to setup, which offers
+                        // create + join-by-link/QR + follow-a-site + find-nearby —
+                        // so first run is never create-only. There is no global
+                        // directory to browse (no central server by design); you
+                        // find communities by a shared link, a site URL, or nearby.
                         Button("Get started", action: onContinue)
                             .buttonStyle(.riotPrimary)
                             .accessibilityIdentifier("onboarding-get-started")
+                        Button("Join or find a community", action: onContinue)
+                            .buttonStyle(.riotSecondary)
+                            .accessibilityIdentifier("onboarding-join-or-find")
+
+                        Button("How Riot works") { isExplainerPresented = true }
+                            .buttonStyle(.plain)
+                            .font(.riot(.body, size: 15, relativeTo: .callout))
+                            .foregroundStyle(RiotTheme.pink(for: colorScheme))
+                            .accessibilityIdentifier("onboarding-how-it-works")
                     }
                 }
             }
             .padding(20)
         }
         .riotHeader(eyebrow: "Riot", "Welcome")
+        .sheet(isPresented: $isExplainerPresented) {
+            OnboardingExplainerView(onClose: { isExplainerPresented = false })
+        }
+    }
+
+    private func eyebrow(_ text: String) -> some View {
+        Text(text)
+            .font(.riot(.mono, size: 12, relativeTo: .caption))
+            .textCase(.uppercase)
+            .tracking(1)
+            .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
+    }
+}
+
+/// The in-app "How Riot works" explainer, reachable from the welcome screen.
+/// Self-contained (no network) — it mirrors the web `/about` points so a new user
+/// understands the model (no servers, signed posts, many mirrors, verify in app)
+/// before they create or join. Copy is display-only; it asserts nothing about
+/// trust the app doesn't already verify.
+private struct OnboardingExplainerView: View {
+    @Environment(\.colorScheme) private var colorScheme
+    let onClose: () -> Void
+
+    private let points: [(title: String, body: String)] = [
+        ("No servers, no accounts",
+         "Your identity is a cryptographic key, not a login. You post, and your posts are signed by you."),
+        ("Publishing is peer-to-peer",
+         "Signed posts travel directly between phones and volunteer seeds. There is no central publishing server to raid, subpoena, or coerce."),
+        ("Many mirrors, not one site",
+         "Any website can carry a copy of your community's posts. Block or seize one and the others stand — there is no single address to take down."),
+        ("Signed, not trusted",
+         "Every post is signed by its author, and the app checks the signatures. A mirror can show you content but cannot forge it, alter it, or fake an author."),
+        ("Web is reach, the app is proof",
+         "Read over the plain web anywhere. When a story matters, open it in the app — it re-checks every signature against the community's key."),
+    ]
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                RiotCard {
+                    VStack(alignment: .leading, spacing: 12) {
+                        eyebrow("How this works")
+                        Text("How Riot works")
+                            .font(.riot(.body, size: 24, relativeTo: .title2))
+                            .foregroundStyle(RiotTheme.ink(for: colorScheme))
+                            .accessibilityAddTraits(.isHeader)
+                        Text("Riot lets a community publish and carry its own reporting — censorship-resistant on the web, verified in the app.")
+                            .font(.riot(.body, size: 15, relativeTo: .callout))
+                            .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
+
+                        ForEach(Array(points.enumerated()), id: \.offset) { _, point in
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(point.title)
+                                    .font(.riot(.body, size: 17, relativeTo: .body))
+                                    .foregroundStyle(RiotTheme.ink(for: colorScheme))
+                                Text(point.body)
+                                    .font(.riot(.body, size: 15, relativeTo: .callout))
+                                    .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
+                            }
+                            .accessibilityElement(children: .combine)
+                        }
+
+                        Button("Done", action: onClose)
+                            .buttonStyle(.riotPrimary)
+                            .accessibilityIdentifier("explainer-done")
+                    }
+                }
+            }
+            .padding(20)
+        }
+        .riotHeader(eyebrow: "Riot", "How it works")
     }
 
     private func eyebrow(_ text: String) -> some View {
