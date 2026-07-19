@@ -29,7 +29,9 @@ pub enum Floor {
 }
 
 impl Floor {
-    fn parse(raw: &str) -> Self {
+    /// Parse a `require` floor token. An unrecognized token is `Unknown` (fails
+    /// closed), never silently `None`.
+    pub fn parse(raw: &str) -> Self {
         match raw {
             "none" => Floor::None,
             "arti" => Floor::Arti,
