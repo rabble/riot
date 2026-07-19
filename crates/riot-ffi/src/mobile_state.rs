@@ -2088,7 +2088,7 @@ fn namespace_live_ids(
 /// sync requires a durable profile.
 // Consumed by the followed-site drive fns below (FFI-wired in WU4).
 #[allow(dead_code)]
-fn build_followed_site_offer(
+pub(crate) fn build_followed_site_offer(
     profile: &LocalProfile,
     namespace_id: &[u8; 32],
 ) -> Result<Vec<SignedWillowEntry>, MobileError> {
