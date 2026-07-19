@@ -17,7 +17,7 @@ Plan: `docs/superpowers/plans/2026-07-14-community-first-shell.md`
 
 | Agent | Unit | Files | Status | Claimed |
 |---|---|---|---|---|
-| overnight-quality-gates | Compact-flow quality-gate recovery | `crates/xtask/src/verify_newswire_export.rs`, `COLLABORATION.md`, `OVERNIGHT_LOG.md` (coverage test targets will be claimed explicitly after the report identifies them) | **CLAIMED — reproducing strict-Clippy and Tarpaulin regressions on `overnight/2026-07-19`; no threshold reduction, exclusions, FFI, native projects, deploy, or push.** | 2026-07-19 |
+| overnight-quality-gates | Compact-flow quality-gate recovery | `crates/xtask/src/verify_newswire_export.rs`, `COLLABORATION.md`, `OVERNIGHT_LOG.md` | **DONE / PARTIAL — strict Clippy fixed and committed as `72fd949`; focused verifier tests 6/6, fmt, and full strict Clippy green. Coverage root-caused at 95.36% (11,037/11,574): the 97% baseline predates 537 measured Jul-18 transport lines. No transport files were claimed or edited because the mandatory plan-review gate exhausted 3 iterations without consensus. No threshold/exclusion/FFI/native/deploy/push change.** | 2026-07-19 |
 | coordinator | P1 — native core rebuild | `build/native/**`, `build/generated/**` (generated; not tracked) | **DONE** — all 5 artifacts rebuilt, `nm` confirms newswire symbols (were 0) | 2026-07-14 |
 | agent-p2-inflight | P2 — land in-flight iOS/Android work + tests | 20 files across `apps/ios` + `apps/android` | **DONE** — committed `cb90b14`. iOS 198 / Android 110, 0 new failures | 2026-07-14 |
 | agent-p3-coverage-2 | P3 — Rust coverage baseline | tests only | **DONE** — 94.60%→96.47% (`2040ccc`, `e43286c`). 121 lines remain, all unreachable; found 3 phantom guards | 2026-07-14 |

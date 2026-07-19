@@ -1,5 +1,63 @@
 # Overnight Log — 2026-07-19
 
+## Final morning summary — quality-gate continuation
+
+### Done and tested
+
+- Read all 123 repository Markdown files and all 11 Divine context Markdown
+  files before continuing; inventoried the installed workflow skills and
+  confirmed there are no repo-local skills.
+- Fixed the three Rust 1.95 strict-Clippy failures in xtask verifier tests
+  without changing verifier behavior, fixtures, canonical bytes, dependencies,
+  or warning policy. Commit: `72fd949`.
+- Fresh evidence: the six focused verifier tests passed, formatting passed,
+  and
+  `cargo clippy --workspace --all-targets --all-features -- -D warnings`
+  passed.
+- Generated a fresh full Tarpaulin JSON report. Every executed test passed and
+  coverage measured **95.36% (11,037/11,574)**.
+
+### Open or blocked
+
+- The authoritative local Tarpaulin floor remains **97%**, so task completion
+  is still blocked. The floor was recorded on Jul-15 at 9,309/9,571 before the
+  Jul-18 transport slice added 537 measured lines. The largest new gaps are
+  `seed.rs` (99), `riot-follow.rs` (40), `riot-seed.rs` (34), and iroh
+  transport paths; this is denominator drift, not a compact-UX regression.
+- A focused transport-coverage implementation plan went through the mandatory
+  three-reviewer gate three times. It did not reach consensus: the final
+  feasibility review showed that a six-file test-only scope has 251 uncovered
+  lines but cannot guarantee the required 190-line gain without making more
+  than 61 currently unreachable CLI/network lines testable. The final
+  completeness review also required an unconditional red-path commit/claim
+  disposition. Per `AGENTS.md`, I did not implement or bypass a gate-exhausted
+  multi-file plan.
+- Physical two-phone radio proof, production/deploy work, actively owned
+  composite/native work, Android parity, remote push, and discovery/index work
+  remain intentionally untouched.
+
+### Assumptions to review
+
+- Preserved the existing `overnight/2026-07-19` history. I fetched origin but
+  did not run the ledger's rebase instruction because the user's newer
+  guardrail forbids history rewrites.
+- Did not merge newer `origin/main` (`1f6ecb2`) into this 20-commit-ahead
+  overnight branch; main contains concurrent transport/router/composite work
+  that changes the relevant denominator and collision surface.
+- Treated `.coverage-thresholds.json` as authoritative over stale 94%, 94.6%,
+  and 100% claims in older docs. No floor was lowered and no file was excluded.
+
+### Suggested next steps
+
+1. Rebase or merge this work through the maintainer-approved integration path,
+   then remeasure coverage against the current transport/router code.
+2. Approve a re-grounded transport coverage plan that explicitly makes enough
+   CLI/seed/network behavior testable to cover at least 190 net lines, including
+   any new guard lines in the denominator.
+3. After the gate is green, reconcile the stale coverage statements in
+   `AGENTS.md`, `CLAUDE.md`, `README.md`,
+   `docs/ci/coverage-gate-findings.md`, and the old collaboration ledger.
+
 ## Continuation — repository quality gates
 
 - Re-read all 123 repository Markdown files and all 11 Markdown files in
@@ -50,6 +108,34 @@
   `docs/ci/coverage-gate-findings.md`, the Jul-16 Newswire plans,
   Superpowers systematic-debugging, TDD, and
   verification-before-completion.
+
+### Task: diagnose the Tarpaulin regression and review a safe repair
+
+- Ran a complete instrumented workspace test with JSON reporting. All executed
+  tests passed; measured coverage was 95.36% (11,037/11,574), matching the
+  earlier overnight result.
+- Root cause: `.coverage-thresholds.json` records 97.26% (9,309/9,571) on
+  Jul-15. The Jul-18 transport slice subsequently added 537 measured lines.
+  Current uncovered transport totals include 99/99 in `seed.rs`, 40/40 in
+  `riot-follow.rs`, 34/34 in `riot-seed.rs`, 49/87 in `iroh.rs`, 16/49 in
+  `lib.rs`, and 13/111 in `ticket.rs`. At least 190 net existing lines must be
+  covered to reach 97%.
+- Rejected alternatives: lowering the ratchet, excluding binaries or transport,
+  adding fake assertions, editing high-traffic FFI/core files, or merging
+  concurrent transport work. Each would violate the coverage policy, product
+  safety, ownership rules, or overnight guardrails.
+- Used the metaswarm plan-review gate because the repair would touch at least
+  three files. Iteration 1 found missing exact claims, `cargo check`, logging,
+  and named doc disposition. Iteration 2 found missing top-summary and
+  edge-assertion detail. Iteration 3 passed scope but failed feasibility and
+  completeness: the bounded test-only scope could not guarantee 190 net lines,
+  and the failure path needed an unconditional commit/claim disposition.
+- Skipped implementation after the third failed iteration. This is a mandatory
+  process blocker, not a missing credential; bypassing it or silently widening
+  CLI/network architecture was rejected. No transport file was edited.
+- Open question for morning: should coverage recovery be re-grounded after
+  integrating current `origin/main`, or should this older overnight branch get
+  a separately approved CLI/transport testability refactor?
 
 ## Combined morning summary
 - Restored the pre-existing red iOS baseline (`CommunityRelationship` exhaustiveness
