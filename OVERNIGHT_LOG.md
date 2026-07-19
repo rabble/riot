@@ -3,7 +3,7 @@
 ## Done and tested
 
 - Rebased PR #68's branch onto `origin/main` at
-  `09bcf1ff6bb1a596bec787edf27db651b2f196f4` in an isolated worktree, with
+  `9ec76fa79b60b64a04d5dd43668aad0487fa3b20` in an isolated worktree, with
   backup ref `backup/pr68-pre-rebase-2026-07-20` preserving the old remote tip
   `a9cebaf`.
 - Integrated all four local compact-UX commits. The final delta keeps the
@@ -22,8 +22,9 @@
   floor in `.coverage-thresholds.json`. This is denominator drift across the
   current workspace, not a compact-UX test regression; no floor or exclusion
   was changed.
-- GitHub CI and final merge readiness must be observed after the lease-protected
-  PR branch update. This task updates PR #68 but does not merge it.
+- PR #68 was merged concurrently at `96968a6` with all five GitHub CI jobs
+  green. Updating its head branch cannot alter the immutable merged PR; the UX
+  delta therefore needs a successor PR to land on `main`.
 - Physical-device radio behavior and production/deployment work remain outside
   this integration and were not attempted.
 
@@ -41,8 +42,8 @@
 
 ## Suggested next steps
 
-1. Let PR #68's exact GitHub CI jobs finish and address only failures caused by
-   this branch.
+1. Open a successor PR from the updated #68 head branch for the rebased compact
+   UX delta, then address only failures caused by that delta.
 2. Repair the repository-wide coverage ratchet in a separately reviewed lane;
    current uncovered code spans anchor protocol, mobile FFI, and transport/CLI
    boundaries and is not a safe incidental UX change.
@@ -991,11 +992,13 @@ _(Summary goes at the TOP when done. Task entries append below in order.)_
   active session repurposed the pre-existing PR worktree during a build. The
   dirty main checkout and that session's worktree were left untouched. A
   reversible backup ref preserves the pre-rebase remote head.
-- Rebased remote PR #68 head `a9cebaf` onto `origin/main`
+- First rebased remote PR #68 head `a9cebaf` onto `origin/main`
   `09bcf1ff6bb1a596bec787edf27db651b2f196f4`. Xcode-project conflicts proved
   main already registered the permanent owned-site creation surface; the
   historical temporary `CompositeSiteSurface` add/delete replayed to net zero
-  and was removed from the final series.
+  and was removed from the final series. The final pre-push fetch found main
+  had advanced to `9ec76fa79b60b64a04d5dd43668aad0487fa3b20`; all five UX
+  commits replayed onto it without conflict.
 - Replayed local commits `8ce2d84`, `d4f090c`, `72fd949`, and `38713e3`, then
   resolved additive UX conflicts. `ConferenceShellView` keeps compact
   Join/Create/Demo onboarding plus current Follow-a-site. `NewswireEditorial`
@@ -1037,6 +1040,11 @@ _(Summary goes at the TOP when done. Task entries append below in order.)_
   `guides/coding-standards.md`, `guides/git-workflow.md`, and
   `guides/testing-patterns.md`, but this checkout has no `guides/` directory.
   The available specific scripts and current source-of-truth files were used.
+- Remote-state note: before the final push, GitHub reported PR #68 already
+  merged at `96968a6` with Rust, LLVM coverage, gateway, web, and Android CI
+  green. Its branch had also moved from `a9cebaf` to squash `8b309d6`; that
+  lease was preserved rather than overwritten blindly. A branch push can no
+  longer change the merged PR, so the compact UX delta requires a successor PR.
 - Open morning question: should the 97% Tarpaulin recovery be re-grounded as a
   dedicated cross-crate task now that current main contains substantially more
   anchor, FFI, and transport code than the Jul-15 measurement?
