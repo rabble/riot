@@ -398,39 +398,81 @@ pub fn os_entropy() -> EntropyFn {
     })
 }
 
-/// Bind the PUBLIC anchor endpoint, advertising exactly the ALPNs the `router`
-/// serves.
+/// The ALPNs this daemon's endpoints advertise. Just the control ALPN for
+/// increment 1. DEFERRED(WU-019 increment 2): add `ALPN_SYNC_V2` when the DATA
+/// path lands (and register its handler in [`serve`]).
+fn anchor_alpns() -> Vec<Vec<u8>> {
+    vec![ALPN_ANCHOR_V1.to_vec()]
+}
+
+fn bind_io_error(error: impl core::fmt::Display) -> DaemonError {
+    DaemonError::Transport(TransportError::Io(std::io::Error::other(error.to_string())))
+}
+
+/// Bind the PUBLIC anchor endpoint (relay + discovery, dialable across NAT).
 ///
 /// NOTE: the transport crate's `iroh::bind_public` hard-codes the `riot/sync/1`
-/// ALPN, so it cannot serve `riot/anchor/1`. We therefore build the public
-/// endpoint here (the `daemon` module is the only place iroh may be used
-/// directly) with the same public `N0` preset — relay + discovery, dialable
-/// across NAT — but advertising `router.alpns()` so the control ALPN is
+/// ALPN, so it cannot serve `riot/anchor/1`. We build the public endpoint here
+/// (the `daemon` module is the only place iroh may be used directly) with the
+/// same public `N0` preset but advertising the anchor control ALPN so it is
 /// negotiable.
-async fn bind_anchor_endpoint(
-    secret: [u8; 32],
-    router: &AlpnRouter,
-) -> Result<iroh::Endpoint, DaemonError> {
+async fn bind_anchor_endpoint(secret: [u8; 32]) -> Result<iroh::Endpoint, DaemonError> {
     use iroh::endpoint::presets;
     use iroh::{Endpoint, SecretKey};
     Endpoint::builder(presets::N0)
         .secret_key(SecretKey::from_bytes(&secret))
-        .alpns(router.alpns())
+        .alpns(anchor_alpns())
         .bind()
         .await
-        .map_err(|error| {
-            DaemonError::Transport(TransportError::Io(std::io::Error::other(error.to_string())))
-        })
+        .map_err(bind_io_error)
 }
 
-/// Run the anchor daemon until `shutdown` resolves.
+/// Bind a LOCAL anchor endpoint (direct only, `N0DisableRelay` — no relay/DNS),
+/// advertising the control ALPN. This is the in-process / LAN counterpart of
+/// [`bind_anchor_endpoint`], used by end-to-end tests (and any local-only
+/// deployment) that dial the daemon directly by address.
+pub async fn bind_local_anchor_endpoint(secret: [u8; 32]) -> Result<iroh::Endpoint, DaemonError> {
+    use iroh::endpoint::presets;
+    use iroh::{Endpoint, SecretKey};
+    Endpoint::builder(presets::N0DisableRelay)
+        .secret_key(SecretKey::from_bytes(&secret))
+        .alpns(anchor_alpns())
+        .bind()
+        .await
+        .map_err(bind_io_error)
+}
+
+/// Run the anchor daemon on a freshly bound PUBLIC endpoint until `shutdown`
+/// resolves. Thin wrapper over [`serve`] that owns the public bind.
+pub async fn run<P, S>(
+    config: DaemonConfig,
+    service: AnchorControlService<P, S>,
+    entropy: EntropyFn,
+    shutdown: impl Future<Output = ()> + Send,
+) -> Result<(), DaemonError>
+where
+    P: AdmissionPolicy + Send + 'static,
+    S: OperatorSigner + Send + 'static,
+{
+    let endpoint = bind_anchor_endpoint(config.endpoint_secret_key).await?;
+    serve(endpoint, config, service, entropy, shutdown).await
+}
+
+/// Serve the control plane on an already-bound `endpoint` until `shutdown`
+/// resolves.
 ///
 /// Startup: open the repository, acquire the single-writer deployment lease
 /// (fail-closed if another live holder holds it), run readiness recovery, spawn
-/// the control actor, register the `riot/anchor/1` handler, and bind the public
-/// endpoint. Then accept connections in a loop; a single failing connection
-/// (unknown ALPN, timeout, busy) is logged and does not stop the loop.
-pub async fn run<P, S>(
+/// the control actor, and register the `riot/anchor/1` handler. Then accept
+/// connections in a loop; a single failing connection (unknown ALPN, timeout,
+/// busy) is logged and does not stop the loop. The `endpoint` must advertise the
+/// control ALPN (use [`bind_anchor_endpoint`] / [`bind_local_anchor_endpoint`]).
+///
+/// Taking the endpoint as a parameter is the test seam: an end-to-end test binds
+/// a LOCAL endpoint, drives real connections through the accept loop + handler +
+/// actor, and signals `shutdown` to stop.
+pub async fn serve<P, S>(
+    endpoint: iroh::Endpoint,
     config: DaemonConfig,
     service: AnchorControlService<P, S>,
     entropy: EntropyFn,
@@ -464,8 +506,6 @@ where
     // (ALPN_SYNC_V2) on this same router. The router is intentionally left
     // extensible for it.
 
-    let endpoint = bind_anchor_endpoint(config.endpoint_secret_key, &router).await?;
-
     tokio::pin!(shutdown);
     loop {
         tokio::select! {
@@ -481,4 +521,106 @@ where
 
     endpoint.close().await;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use riot_anchor_protocol::authority::TicketReason;
+
+    fn core() -> PublicSiteTicketV2Core {
+        PublicSiteTicketV2Core {
+            root_id: [0u8; 32],
+            o_namespace_id: [0u8; 32],
+            c_namespace_id: [0u8; 32],
+            w_namespace_id: [0u8; 32],
+            manifest_digest: [0u8; 32],
+            manifest_version: 0,
+            min_sync_version: 2,
+            manifest_required_transport: TransportFloor::RequireNone,
+            transport_floor: TransportFloor::RequireNone,
+            transport_epoch: 0,
+            issued_unix_seconds: 0,
+            expiry_unix_seconds: 100,
+        }
+    }
+
+    #[test]
+    fn map_authority_error_covers_each_distinguished_variant() {
+        let policy = TicketRootAuthorityPolicy::new(2);
+        let mut arti = core();
+        arti.transport_floor = TransportFloor::RequireArti;
+        assert_eq!(
+            policy.map_authority_error(&arti, 50, AuthorityError::UnsupportedTransport),
+            ControlRefusal::UnsupportedTransport {
+                required_mode: TransportMode::RequireArti,
+                observed_mode: TransportMode::RequireNone,
+            }
+        );
+        assert_eq!(
+            policy.map_authority_error(&core(), 50, AuthorityError::UnsupportedVersion),
+            ControlRefusal::UnsupportedVersion {
+                supported_versions: vec![2],
+            }
+        );
+        assert_eq!(
+            policy.map_authority_error(&core(), 250, AuthorityError::ExpiredTicket),
+            ControlRefusal::TicketExpired {
+                expires_at: 100,
+                observed_at: 250,
+            }
+        );
+        // Every other authority fault collapses to invalid_ticket_authority.
+        for other in [
+            AuthorityError::InvalidTicket(TicketReason::Signature),
+            AuthorityError::InvalidTicket(TicketReason::Root),
+            AuthorityError::InvalidTicket(TicketReason::Structure),
+            AuthorityError::EpochRollback,
+            AuthorityError::ManifestMismatch,
+        ] {
+            assert_eq!(
+                policy.map_authority_error(&core(), 50, other),
+                ControlRefusal::InvalidTicketAuthority
+            );
+        }
+    }
+
+    #[test]
+    fn required_transport_mode_prefers_ticket_floor_then_manifest() {
+        let mut arti_floor = core();
+        arti_floor.transport_floor = TransportFloor::RequireArti;
+        assert_eq!(
+            ticket_required_transport_mode(&arti_floor),
+            TransportMode::RequireArti
+        );
+
+        let mut arti_manifest = core();
+        arti_manifest.manifest_required_transport = TransportFloor::RequireArti;
+        assert_eq!(
+            ticket_required_transport_mode(&arti_manifest),
+            TransportMode::RequireArti
+        );
+
+        assert_eq!(
+            ticket_required_transport_mode(&core()),
+            TransportMode::RequireNone
+        );
+    }
+
+    #[test]
+    fn daemon_error_display_and_from_impls() {
+        let repo: DaemonError = AnchorRepositoryError::LeaseExpired.into();
+        assert!(matches!(repo, DaemonError::Repository(_)));
+        assert!(repo.to_string().contains("repository"));
+
+        let transport: DaemonError = TransportError::UnknownAlpn.into();
+        assert!(matches!(transport, DaemonError::Transport(_)));
+        assert!(transport.to_string().contains("transport"));
+    }
+
+    #[test]
+    fn unix_now_is_after_2023() {
+        // Sanity: the clock returns a plausible present-day unix timestamp.
+        assert!(unix_now() > 1_700_000_000);
+    }
 }
