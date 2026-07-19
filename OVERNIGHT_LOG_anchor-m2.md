@@ -74,3 +74,15 @@ staged_entries, item_bytes. **Trust-root security criterion SATISFIED for hostin
 ### Task 6 — WU-015B (atomic ordinary listing) dispatched
 Emphasized the resolve_listing HIGH finding: verify entry sig + delegate-grant sig + Meadowcap chain +
 ticket-coordinate self-check BEFORE constructing AdmittedListingEnvelopeV1; 3 security refusal tests.
+
+### Task 6 — WU-015B DONE (commit ecdedbb, pushed #80)
+Atomic ordinary listing: verification-before-admit fully implements the resolve_listing HIGH finding
+(real verify_entry + root-binding + grant-sig verify + ticket coordinate self-check; 4 security tests
+incl. seal-seizure attack refused). One-txn inclusion/receipt/projection-invalidation; failpoint all-
+or-nothing; refresh retains history. 83 tests; no new dep. Schema: listing_floors + directory_projection.
+FLAG (morning): SubmitListingV1 wire body has no field for the entry/grant sigs the anchor verifies —
+service takes explicit RawListingSubmission; wire decode adapter is a later WU (real protocol gap).
+
+### Task 7 — WU-016 (reserved removal + crash-safe checkpoints) dispatched — FINAL hosting-MVP unit
+Has a plan "Human Checkpoint C" (failpoint matrix / reserved-lane fairness / max-size removal) — can't
+run interactively overnight; will build+verify + surface the evidence for morning review.
