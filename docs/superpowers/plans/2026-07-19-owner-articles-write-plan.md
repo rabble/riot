@@ -171,9 +171,9 @@ fn same_version_conflicting_content_is_equivocation_alarm() {
 fn publish_leaves_sync_inventory_unchanged() {
     // mirror importing_a_mod_bundle_leaves_the_sync_inventory_unchanged: snapshot sync_inventory, publish, assert equal
     let (profile, key, sealed) = durable_owned_site();
-    let before = profile.sync_inventory_snapshot_for_test();  // reuse the same accessor the mod-bundle test uses
+    let before = with_active(&profile.inner, |p| Ok(p.sync_inventory.len())).unwrap();  // inline like importing_a_mod_bundle_leaves_the_sync_inventory_unchanged (no named accessor exists)
     profile.publish_site_manifest(sealed, key, members(), vec![b"news".to_vec()], transport(), 1).unwrap();
-    assert_eq!(profile.sync_inventory_snapshot_for_test(), before);
+    assert_eq!(with_active(&profile.inner, |p| Ok(p.sync_inventory.len())).unwrap(), before);
 }
 #[test]
 fn publish_on_in_memory_profile_fails_closed() {
@@ -182,7 +182,7 @@ fn publish_on_in_memory_profile_fails_closed() {
     assert!(profile.publish_site_manifest(sealed, key, members(), vec![b"news".to_vec()], transport(), 1).is_err());
 }
 ```
-(`durable_owned_site`/`in_memory_owned_site` are thin test helpers wrapping the existing `durable_profile()`/`open_local_profile()` + `create_owned_site`; `sync_inventory_snapshot_for_test` reuses whatever accessor `importing_a_mod_bundle_leaves_the_sync_inventory_unchanged` already uses — grep it, don't invent a new one.)
+(`durable_owned_site`/`in_memory_owned_site` are thin test helpers wrapping the existing `durable_profile()`/`open_local_profile()` + `create_owned_site`; the sync_inventory snapshot uses the inline `with_active(&profile.inner, |p| Ok(p.sync_inventory.len()))` pattern from the sibling test — no named accessor exists.)
 - [ ] **Step 2 — Run FAIL** (`publish_site_manifest` undefined).
 - [ ] **Step 3 — Implement.** Add the `#[uniffi::export]` method on `MobileProfile` per design §4.0. Skeleton (fill from `author_moderation` + `admit_manifest_version`):
 ```rust
@@ -202,7 +202,7 @@ pub fn publish_site_manifest(&self, sealed_root: Vec<u8>, mut wrapping_key: Vec<
         // NOT profile.store (EvidenceStore). In-memory profiles (db == None) fail closed.
         let db = profile.db.as_ref().ok_or(MobileError::InvalidInput /* or a DurableRequired variant */)?;
         // GATE on the floor BEFORE any commit (confirm admit_manifest_version's exact arg shape when implementing):
-        match admit_manifest_version(db, root, &manifest)? {
+        match admit_manifest_version(db, &root, &manifest)?  // match admit_manifest_version(db, root, &manifest)?root: match admit_manifest_version(db, root, &manifest)?[u8;32] {
             VersionFloorOutcome::Accepted => {}
             VersionFloorOutcome::RollbackRejected => return Err(MobileError::ManifestRollback),
             VersionFloorOutcome::RequireDowngradeRejected => return Err(MobileError::ManifestRequireDowngrade),
@@ -307,6 +307,14 @@ fn hold_nulls_all_article_content() {
     assert!(feed.articles.iter().all(|a| a.headline.is_none() && a.body.is_none()));
 }
 #[test]
+fn warn_degradation_preserves_article_content() {
+    // §7: mild variants yield warn WITH content — resolve must NOT null under Warn (only Hold nulls)
+    let fx = fixture_with_degradation(CompositeDegradation::EditorialOnly, /*one ordinary article H/D/B/by*/);
+    let feed = resolve_article_feed_from_store(&fx.store, &fx.signed_manifest, &fx.root, fx.now);
+    assert!(matches!(feed.render, ArticleFeedRender::Warn(_)));
+    assert!(feed.articles.iter().all(|a| a.headline.is_some() && a.body.is_some())); // content preserved
+}
+#[test]
 fn hidden_article_is_placeholder_ordinary_is_content() { /* treatment set, body None for hidden; Some for ordinary render */ }
 #[test]
 fn one_malformed_article_does_not_blank_the_feed() { /* two good + one undecodable → 2 articles returned */ }
@@ -363,8 +371,30 @@ fn create_article_rejects_a_foreign_signed_manifest_wire() { /* a manifest wire 
 - [ ] **Step 2 — FAIL. Step 3 — Implement:** the `#[uniffi::export]` method + the records/enums: `pub enum SiteArticleFeedRender { Render, Warn(SiteDegradation), Hold(SiteDegradation) }` (PascalCase — clippy `-D warnings`); `pub struct ResolvedArticle { entry_id, author_subspace, section, headline: Option<String>, dek, body, byline, treatment: SiteItemTreatment }`; `pub struct ResolvedArticleFeed { render: SiteArticleFeedRender, site_display: String, articles: Vec<ResolvedArticle> }`; a `From<ArticleFeedRender> for SiteArticleFeedRender` mapping. `site_display` from the resolved manifest/site context.
 - [ ] **Step 4 — PASS. Commit**: `feat(ffi): resolve_site_articles + article FFI records`.
 
-### Task 4.3: offer includes the authored article (durable)
-- [ ] RED (durable profile): after `create_site_article`, `build_followed_site_offer(root)` includes the `/articles` entry. PASS (already exported by the offer — this is a regression lock). Commit `test(ffi): offer carries authored articles`.
+### Task 4.3: offer includes the authored article + full follower round-trip (durable)
+- [ ] **Step 1 — RED (durable):** after `create_site_article`, `build_followed_site_offer(root)` includes the `/articles` entry (regression lock).
+- [ ] **Step 2 — RED (durable, §7 deferred-reach criterion — cross-profile):**
+```rust
+#[test]
+fn followed_article_round_trips_owner_to_follower_with_fields_intact() {
+    // OWNER: publish manifest (section "news"), author an article
+    let (owner, okey, osealed) = durable_owned_site();
+    owner.publish_site_manifest(osealed.clone(), okey.clone(), members(), vec![b"news".to_vec()], transport(), 1).unwrap();
+    let (me,mc,ms,mp) = published_manifest_wire(&owner, root_of(&osealed));
+    owner.create_site_article(osealed.clone(), okey.clone(), me.clone(), mc.clone(), ms.clone(), mp.clone(),
+        "news".into(), "Headline".into(), "Dek".into(), "Body text".into(), "by".into()).unwrap();
+    let offer = build_followed_site_offer(&owner, &root_of(&osealed)).unwrap();
+    // FOLLOWER: a SECOND, distinct durable profile that FOLLOWS the site, imports the bundle, resolves
+    let follower = durable_profile();
+    follower.follow_site_for_test(root_of(&osealed).to_vec()).unwrap();      // existing test seam (Following record)
+    follower.import_followed_site_bundle(offer, root_of(&osealed).to_vec()).unwrap();
+    let feed = follower.resolve_site_articles(me, mc, ms, mp, hex(&root_of(&osealed)), NOW).unwrap();
+    let a = feed.articles.iter().find(|a| a.section == "news").unwrap();
+    assert_eq!((a.headline.as_deref(), a.dek.as_deref(), a.body.as_deref(), a.byline.as_deref()),
+               (Some("Headline"), Some("Dek"), Some("Body text"), Some("by")));  // fields survive the real bundle round-trip
+}
+```
+- [ ] **Step 3** — both PASS (offer export + import admission are pre-existing; this proves the NEW article codec survives a real cross-profile bundle round-trip, not just same-store resolve). **Commit**: `test(ffi): article offer→follower round-trip, fields intact`.
 
 ### Task 4.4: wrapping-key zeroization
 - [ ] RED: `create_site_article` and `publish_site_manifest` zero the passed key buffer before return (mirror the existing zeroization assertion pattern). PASS. Commit `test(ffi): article/manifest FFI zeroize wrapping key`.
