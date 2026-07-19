@@ -1937,7 +1937,8 @@ fn map_author_error(error: WillowError) -> MobileError {
         WillowError::ClockUnavailable => MobileError::ClockUnavailable,
         WillowError::InvalidAlert(_)
         | WillowError::NamespaceNotCommunal
-        | WillowError::DelegationAreaEscapesArticles => MobileError::InvalidInput,
+        | WillowError::DelegationAreaEscapesArticles
+        | WillowError::DelegationAreaEscapesDirectory => MobileError::InvalidInput,
         WillowError::SealedIdentityInvalid | WillowError::SealedMastheadInvalid => {
             MobileError::InvalidInput
         }
