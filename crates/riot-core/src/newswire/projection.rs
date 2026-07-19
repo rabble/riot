@@ -161,6 +161,10 @@ pub struct NewswireProjection {
 }
 
 type ProjectionKey = (u64, EntryId);
+/// Total order for reaction latest-wins: (tai_micros, retraction-wins-tie flag,
+/// entry_id). Wider than [`ProjectionKey`] so an exact-timestamp react+unreact
+/// resolves deterministically to the retraction.
+type ReactionRank = (u64, u8, EntryId);
 
 /// The plaintext half of a projected post, either carried through verbatim or
 /// wholly redacted when the post is Hidden or Tombstoned. Keeping this in one
@@ -398,10 +402,8 @@ pub fn project(
     // Ordering key is (tai_micros, retraction-wins-tie flag, entry_id) — a total
     // order, wider than ProjectionKey so an exact-timestamp react+unreact resolves
     // deterministically to the retraction.
-    let mut latest_reactions: BTreeMap<
-        ([u8; 32], EntryId, ReactionKind),
-        ((u64, u8, EntryId), bool),
-    > = BTreeMap::new();
+    let mut latest_reactions: BTreeMap<([u8; 32], EntryId, ReactionKind), (ReactionRank, bool)> =
+        BTreeMap::new();
     for eligible in reactions {
         let parent = eligible.reaction.parent_entry_id;
         if !eligible_post_ids.contains(&parent) || tombstoned_post_ids.contains(&parent) {
