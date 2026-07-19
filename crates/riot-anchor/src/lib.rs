@@ -25,5 +25,8 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
+pub mod control;
+pub mod idempotency;
 pub mod repository;
 pub mod schema;
+pub mod work;

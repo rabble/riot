@@ -255,9 +255,26 @@ const MIGRATION_ONE: &str = r#"
 
     CREATE TABLE idempotency_key_index (
         control_request_digest BLOB PRIMARY KEY NOT NULL CHECK (length(control_request_digest) = 32),
+        idempotency_key BLOB NOT NULL UNIQUE CHECK (length(idempotency_key) = 16),
         result_class INTEGER NOT NULL CHECK (result_class IN (0, 1)),
+        claim_state INTEGER NOT NULL DEFAULT 0 CHECK (claim_state BETWEEN 0 AND 2),
+        operation_id BLOB CHECK (operation_id IS NULL OR length(operation_id) = 32),
+        lease_expires_at INTEGER CHECK (lease_expires_at IS NULL OR lease_expires_at >= 0),
         created_at INTEGER NOT NULL CHECK (created_at >= 0),
         expires_at INTEGER NOT NULL CHECK (expires_at >= created_at)
+    ) STRICT;
+
+    CREATE TABLE operations (
+        operation_id BLOB PRIMARY KEY NOT NULL CHECK (length(operation_id) = 32),
+        originating_kind INTEGER NOT NULL CHECK (originating_kind IN (0, 1)),
+        token_secret_epoch INTEGER NOT NULL CHECK (token_secret_epoch >= 0),
+        base_generation INTEGER NOT NULL CHECK (base_generation >= 0),
+        operation_status INTEGER NOT NULL DEFAULT 0 CHECK (operation_status BETWEEN 0 AND 2),
+        created_at INTEGER NOT NULL CHECK (created_at >= 0),
+        operation_expiry INTEGER NOT NULL CHECK (operation_expiry > created_at),
+        retention_deadline INTEGER NOT NULL CHECK (retention_deadline >= operation_expiry),
+        prepare_response_bytes BLOB NOT NULL CHECK (length(prepare_response_bytes) > 0 AND length(prepare_response_bytes) <= 16384),
+        terminal_result_bytes BLOB CHECK (terminal_result_bytes IS NULL OR (length(terminal_result_bytes) > 0 AND length(terminal_result_bytes) <= 16384))
     ) STRICT;
 
     CREATE TABLE ordinary_results (
@@ -319,6 +336,8 @@ const MIGRATION_ONE: &str = r#"
         ON removal_slots(slot_index) WHERE claimed_by_community IS NULL;
     CREATE INDEX idx_staged_operations_deadline ON staged_operations(stage_deadline);
     CREATE INDEX idx_idempotency_expires ON idempotency_key_index(expires_at);
+    CREATE INDEX idx_idempotency_key ON idempotency_key_index(idempotency_key);
+    CREATE INDEX idx_operations_retention ON operations(retention_deadline);
     CREATE INDEX idx_directory_inclusions_community ON directory_inclusions(community_id);
 
     INSERT INTO operator_state(
@@ -423,6 +442,7 @@ mod tests {
         "hosting_receipts",
         "staged_operations",
         "idempotency_key_index",
+        "operations",
         "ordinary_results",
         "reserved_results",
         "anchor_peers",
@@ -440,6 +460,8 @@ mod tests {
         "idx_removal_slots_unclaimed",
         "idx_staged_operations_deadline",
         "idx_idempotency_expires",
+        "idx_idempotency_key",
+        "idx_operations_retention",
         "idx_directory_inclusions_community",
     ];
 

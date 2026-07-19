@@ -21,3 +21,13 @@ license = "AGPL-3.0-or-later"
 riot-anchor-protocol = { path = "../riot-anchor-protocol" }
 riot-core = { path = "../riot-core" }
 rusqlite = { workspace = true }
+# HMAC-SHA256 for deterministic namespace-token derivation (design
+# "riot/namespace-token/v1"). Reuses the WORKSPACE `sha2` pin already resolved
+# via `riot-core`; adds a dependency EDGE only, no new crate to the lock tree.
+sha2 = { workspace = true }
+
+[dev-dependencies]
+# Test-only operator signer: produces real Ed25519 work-challenge signatures the
+# protocol's `WorkStampV1::verify` accepts. Production signer wiring (operator
+# key management) lands with a later work unit.
+ed25519-dalek = { workspace = true }

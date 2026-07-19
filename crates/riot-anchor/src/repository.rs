@@ -323,6 +323,155 @@ pub struct PayloadOutcome {
     pub physical_charged: bool,
 }
 
+/// The claim state of an idempotency-index row (design "Claimed | Prepared |
+/// Terminal").
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IdempotencyClaimState {
+    /// A winning claim with a 30-second lease and no result yet.
+    Claimed,
+    /// The claim created a long-running operation and points at it.
+    Prepared,
+    /// The claim reached a byte-identical terminal outcome.
+    Terminal,
+}
+
+impl IdempotencyClaimState {
+    fn to_code(self) -> i64 {
+        match self {
+            IdempotencyClaimState::Claimed => 0,
+            IdempotencyClaimState::Prepared => 1,
+            IdempotencyClaimState::Terminal => 2,
+        }
+    }
+
+    fn from_code(code: i64) -> Option<Self> {
+        match code {
+            0 => Some(IdempotencyClaimState::Claimed),
+            1 => Some(IdempotencyClaimState::Prepared),
+            2 => Some(IdempotencyClaimState::Terminal),
+            _ => None,
+        }
+    }
+}
+
+/// A retained idempotency-index row. The `control_request_digest` is the retained
+/// digest a replay must match exactly; an unequal digest under the same key is
+/// `idempotency_conflict` (the caller compares, never this layer).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IdempotencyRow {
+    /// The retained `control_request_digest` bound to this key.
+    pub control_request_digest: [u8; 32],
+    /// `0` ordinary, `1` reserved-removal partition.
+    pub result_class: u8,
+    /// The claim's lifecycle state.
+    pub claim_state: IdempotencyClaimState,
+    /// The long-running operation this claim created, if `Prepared`/`Terminal`.
+    pub operation_id: Option<[u8; 32]>,
+    /// The `Claimed` lease expiry, if any.
+    pub lease_expires_at: Option<u64>,
+}
+
+/// The originating long-running Prepare kind of an operation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OperationKind {
+    /// `prepare_host`.
+    Host,
+    /// `prepare_replica`.
+    Replica,
+}
+
+impl OperationKind {
+    fn to_code(self) -> i64 {
+        match self {
+            OperationKind::Host => 0,
+            OperationKind::Replica => 1,
+        }
+    }
+
+    fn from_code(code: i64) -> Option<Self> {
+        match code {
+            0 => Some(OperationKind::Host),
+            1 => Some(OperationKind::Replica),
+            _ => None,
+        }
+    }
+}
+
+/// The lifecycle status of a stored operation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OperationStatus {
+    /// Prepared and actively staged.
+    Prepared,
+    /// Committed with a retained receipt.
+    Committed,
+    /// Terminally refused.
+    Refused,
+}
+
+impl OperationStatus {
+    fn to_code(self) -> i64 {
+        match self {
+            OperationStatus::Prepared => 0,
+            OperationStatus::Committed => 1,
+            OperationStatus::Refused => 2,
+        }
+    }
+
+    fn from_code(code: i64) -> Option<Self> {
+        match code {
+            0 => Some(OperationStatus::Prepared),
+            1 => Some(OperationStatus::Committed),
+            2 => Some(OperationStatus::Refused),
+            _ => None,
+        }
+    }
+}
+
+/// A durable long-running operation record (the Prepare lifecycle row).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredOperation {
+    /// The stable 256-bit operation id.
+    pub operation_id: [u8; 32],
+    /// The originating Prepare kind.
+    pub originating_kind: OperationKind,
+    /// The token-secret epoch the namespace tokens were derived under.
+    pub token_secret_epoch: u32,
+    /// The captured base site generation.
+    pub base_generation: u64,
+    /// The current lifecycle status.
+    pub status: OperationStatus,
+    /// The operation expiry (Unix seconds); tokens are accepted only before it.
+    pub operation_expiry: u64,
+    /// The retention deadline (`operation_expiry + 24h`) after which the mapping
+    /// is reclaimable.
+    pub retention_deadline: u64,
+    /// The exact canonical `ControlResponseV1(prepare success)` bytes.
+    pub prepare_response_bytes: Vec<u8>,
+    /// The exact canonical terminal outcome bytes, if terminalized.
+    pub terminal_result_bytes: Option<Vec<u8>>,
+}
+
+/// The fields required to atomically create a prepared operation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewPreparedOperation {
+    /// The stable operation id.
+    pub operation_id: [u8; 32],
+    /// The originating Prepare kind.
+    pub originating_kind: OperationKind,
+    /// The token-secret epoch.
+    pub token_secret_epoch: u32,
+    /// The captured base site generation.
+    pub base_generation: u64,
+    /// The creation time (Unix seconds).
+    pub created_at: u64,
+    /// The operation expiry (Unix seconds).
+    pub operation_expiry: u64,
+    /// The retention deadline (Unix seconds).
+    pub retention_deadline: u64,
+    /// The exact canonical prepared response bytes.
+    pub prepare_response_bytes: Vec<u8>,
+}
+
 /// The durable anchor repository: the single owner of raw SQL access.
 pub struct AnchorRepository {
     connection: Connection,
@@ -618,6 +767,24 @@ impl AnchorRepository {
         Ok(candidates)
     }
 
+    /// Load a stored operation by its stable id (read-only). `GetOperation` uses
+    /// this; it never looks up an idempotency key.
+    pub fn load_operation(
+        &self,
+        operation_id: &[u8; 32],
+    ) -> Result<Option<StoredOperation>, AnchorRepositoryError> {
+        self.connection
+            .query_row(
+                "SELECT operation_id, originating_kind, token_secret_epoch, base_generation, \
+                 operation_status, operation_expiry, retention_deadline, prepare_response_bytes, \
+                 terminal_result_bytes FROM operations WHERE operation_id = ?1",
+                params![operation_id.as_slice()],
+                map_stored_operation,
+            )
+            .optional()
+            .map_err(AnchorRepositoryError::from)
+    }
+
     /// Open an immutable, point-in-time read snapshot. WAL keeps the reader's
     /// view consistent even while the writer commits. Only available for
     /// file-backed repositories.
@@ -872,6 +1039,130 @@ impl RepoTransaction<'_> {
         Ok(())
     }
 
+    /// Look up an idempotency-index row by its 128-bit key (read within this
+    /// transaction). This is the constant-time-lookup input to the admission
+    /// state machine; the caller compares the retained digest.
+    pub fn lookup_idempotency(
+        &self,
+        idempotency_key: &[u8; 16],
+    ) -> Result<Option<IdempotencyRow>, AnchorRepositoryError> {
+        self.transaction
+            .query_row(
+                "SELECT control_request_digest, result_class, claim_state, operation_id, \
+                 lease_expires_at FROM idempotency_key_index WHERE idempotency_key = ?1",
+                params![idempotency_key.as_slice()],
+                map_idempotency_row,
+            )
+            .optional()
+            .map_err(AnchorRepositoryError::from)
+    }
+
+    /// Atomically claim an idempotency key: insert the retained digest and state,
+    /// charging one row to [`AccountingClass::Idempotency`]. This is the durable
+    /// claim boundary — every cheap and expensive admission check must have
+    /// already passed.
+    #[allow(clippy::too_many_arguments)]
+    pub fn claim_idempotency(
+        &mut self,
+        control_request_digest: &[u8; 32],
+        idempotency_key: &[u8; 16],
+        result_class: u8,
+        claim_state: IdempotencyClaimState,
+        operation_id: Option<&[u8; 32]>,
+        lease_expires_at: Option<u64>,
+        created_at: u64,
+        expires_at: u64,
+    ) -> Result<(), AnchorRepositoryError> {
+        self.charge(AccountingClass::Idempotency, 1)?;
+        self.transaction.execute(
+            "INSERT INTO idempotency_key_index(control_request_digest, idempotency_key, result_class, \
+             claim_state, operation_id, lease_expires_at, created_at, expires_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                control_request_digest.as_slice(),
+                idempotency_key.as_slice(),
+                result_class as i64,
+                claim_state.to_code(),
+                operation_id.map(|id| id.to_vec()),
+                lease_expires_at.map(|value| value as i64),
+                created_at as i64,
+                expires_at as i64
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Insert a prepared operation row (the Prepare lifecycle record). Charges
+    /// nothing to staging here: WU-014 stages no bytes; sync bytes attach later.
+    pub fn insert_operation(
+        &mut self,
+        operation: &NewPreparedOperation,
+    ) -> Result<(), AnchorRepositoryError> {
+        self.transaction.execute(
+            "INSERT INTO operations(operation_id, originating_kind, token_secret_epoch, \
+             base_generation, operation_status, created_at, operation_expiry, retention_deadline, \
+             prepare_response_bytes, terminal_result_bytes) \
+             VALUES (?1, ?2, ?3, ?4, 0, ?5, ?6, ?7, ?8, NULL)",
+            params![
+                operation.operation_id.as_slice(),
+                operation.originating_kind.to_code(),
+                operation.token_secret_epoch as i64,
+                operation.base_generation as i64,
+                operation.created_at as i64,
+                operation.operation_expiry as i64,
+                operation.retention_deadline as i64,
+                operation.prepare_response_bytes.as_slice()
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Load a stored operation within this transaction (used to reconstruct a
+    /// byte-identical Prepared replay before rolling back).
+    pub fn load_operation(
+        &self,
+        operation_id: &[u8; 32],
+    ) -> Result<Option<StoredOperation>, AnchorRepositoryError> {
+        self.transaction
+            .query_row(
+                "SELECT operation_id, originating_kind, token_secret_epoch, base_generation, \
+                 operation_status, operation_expiry, retention_deadline, prepare_response_bytes, \
+                 terminal_result_bytes FROM operations WHERE operation_id = ?1",
+                params![operation_id.as_slice()],
+                map_stored_operation,
+            )
+            .optional()
+            .map_err(AnchorRepositoryError::from)
+    }
+
+    /// Terminalize an operation: record its exact terminal outcome bytes and flip
+    /// both the operation status and its idempotency mapping to `Terminal`. Used
+    /// by session-close / security-exception handling.
+    pub fn terminalize_operation(
+        &mut self,
+        operation_id: &[u8; 32],
+        status: OperationStatus,
+        terminal_result_bytes: &[u8],
+    ) -> Result<(), AnchorRepositoryError> {
+        self.transaction.execute(
+            "UPDATE operations SET operation_status = ?2, terminal_result_bytes = ?3 \
+             WHERE operation_id = ?1",
+            params![
+                operation_id.as_slice(),
+                status.to_code(),
+                terminal_result_bytes
+            ],
+        )?;
+        self.transaction.execute(
+            "UPDATE idempotency_key_index SET claim_state = ?2 WHERE operation_id = ?1",
+            params![
+                operation_id.as_slice(),
+                IdempotencyClaimState::Terminal.to_code()
+            ],
+        )?;
+        Ok(())
+    }
+
     /// Commit the SQLite transaction and durably apply the pending accounting.
     pub fn commit(self) -> Result<(), AnchorRepositoryError> {
         let RepoTransaction {
@@ -885,6 +1176,74 @@ impl RepoTransaction<'_> {
         }
         Ok(())
     }
+}
+
+fn blob32(value: Vec<u8>) -> Result<[u8; 32], rusqlite::Error> {
+    <[u8; 32]>::try_from(value.as_slice()).map_err(|_| {
+        rusqlite::Error::FromSqlConversionFailure(
+            0,
+            rusqlite::types::Type::Blob,
+            "expected 32-byte blob".into(),
+        )
+    })
+}
+
+fn map_idempotency_row(row: &rusqlite::Row<'_>) -> Result<IdempotencyRow, rusqlite::Error> {
+    let control_request_digest = blob32(row.get::<_, Vec<u8>>(0)?)?;
+    let result_class: i64 = row.get(1)?;
+    let claim_state = IdempotencyClaimState::from_code(row.get(2)?).ok_or_else(|| {
+        rusqlite::Error::FromSqlConversionFailure(
+            2,
+            rusqlite::types::Type::Integer,
+            "invalid claim_state".into(),
+        )
+    })?;
+    let operation_id = row.get::<_, Option<Vec<u8>>>(3)?.map(blob32).transpose()?;
+    let lease_expires_at = row
+        .get::<_, Option<i64>>(4)?
+        .map(|value| value.max(0) as u64);
+    Ok(IdempotencyRow {
+        control_request_digest,
+        result_class: result_class.max(0) as u8,
+        claim_state,
+        operation_id,
+        lease_expires_at,
+    })
+}
+
+fn map_stored_operation(row: &rusqlite::Row<'_>) -> Result<StoredOperation, rusqlite::Error> {
+    let operation_id = blob32(row.get::<_, Vec<u8>>(0)?)?;
+    let originating_kind = OperationKind::from_code(row.get(1)?).ok_or_else(|| {
+        rusqlite::Error::FromSqlConversionFailure(
+            1,
+            rusqlite::types::Type::Integer,
+            "invalid originating_kind".into(),
+        )
+    })?;
+    let token_secret_epoch: i64 = row.get(2)?;
+    let base_generation: i64 = row.get(3)?;
+    let status = OperationStatus::from_code(row.get(4)?).ok_or_else(|| {
+        rusqlite::Error::FromSqlConversionFailure(
+            4,
+            rusqlite::types::Type::Integer,
+            "invalid operation_status".into(),
+        )
+    })?;
+    let operation_expiry: i64 = row.get(5)?;
+    let retention_deadline: i64 = row.get(6)?;
+    let prepare_response_bytes: Vec<u8> = row.get(7)?;
+    let terminal_result_bytes: Option<Vec<u8>> = row.get(8)?;
+    Ok(StoredOperation {
+        operation_id,
+        originating_kind,
+        token_secret_epoch: token_secret_epoch.max(0) as u32,
+        base_generation: base_generation.max(0) as u64,
+        status,
+        operation_expiry: operation_expiry.max(0) as u64,
+        retention_deadline: retention_deadline.max(0) as u64,
+        prepare_response_bytes,
+        terminal_result_bytes,
+    })
 }
 
 /// An immutable, point-in-time read snapshot backed by its own read-only
