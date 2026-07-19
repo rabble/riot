@@ -553,6 +553,7 @@ fn validated_manifest() -> ValidatedManifest {
         },
         version: 4,
         layout: SiteLayout::SiteDefault,
+        sections: vec![],
     };
     ValidatedManifest {
         members: manifest
