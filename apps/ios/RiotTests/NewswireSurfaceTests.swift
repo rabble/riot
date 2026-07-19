@@ -28,12 +28,28 @@ final class NewswireSurfaceTests: XCTestCase {
     /// what `RiotProfileRepository`'s Newswire extension does, so the model under
     /// test exercises the genuine core rejection.
     private final class LiveNewswire: NewswireProjecting, NewswireEditorialActing,
-        NewswireEditorAuthorityChecking, NewswireCommenting {
+        NewswireEditorAuthorityChecking, NewswireCommenting, NewswireReacting {
         let profile: MobileProfile
         init(_ profile: MobileProfile) { self.profile = profile }
 
         func projectNewswire(spaceDescriptorEntryID: String) throws -> NewswireProjectionView {
             try profile.projectNewswireSpace(spaceDescriptorEntryId: spaceDescriptorEntryID)
+        }
+
+        /// The genuine communal-reaction signer — identical to the shipping
+        /// `RiotProfileRepository` wrapper, so an admission is genuinely core's.
+        func toggleNewswireReaction(
+            spaceDescriptorEntryID: String,
+            parentEntryID: String,
+            kind: String,
+            active: Bool
+        ) throws -> NewswireSignedRecord {
+            try profile.toggleNewswireReaction(
+                spaceDescriptorEntryId: spaceDescriptorEntryID,
+                parentEntryId: parentEntryID,
+                kind: kind,
+                active: active
+            )
         }
 
         /// The genuine communal-reply signer — identical to the shipping
@@ -110,7 +126,8 @@ final class NewswireSurfaceTests: XCTestCase {
     private func liveModel(
         profile: MobileProfile,
         spaceID: String,
-        withCommenter: Bool = true
+        withCommenter: Bool = true,
+        withReactor: Bool = true
     ) throws -> NewswireSurfaceModel {
         let live = LiveNewswire(profile)
         return NewswireSurfaceModel(
@@ -120,7 +137,8 @@ final class NewswireSurfaceTests: XCTestCase {
             spaceDescriptorEntryID: spaceID,
             communityName: "Riverside",
             myKeyHex: RiotDirectoryRow.hex(try profile.profile().whoami().id),
-            commenter: withCommenter ? live : nil
+            commenter: withCommenter ? live : nil,
+            reactor: withReactor ? live : nil
         )
     }
 
@@ -752,6 +770,114 @@ final class NewswireSurfaceTests: XCTestCase {
         XCTAssertEqual(reply.parentID, post.entryId, "identity survives the redaction")
     }
 
+    // MARK: - Communal reactions (Layer 3)
+
+    /// The tally→bar mapping: the surface reads each projected post's `reactions`
+    /// verbatim (core's ascending-by-kind order), and a kind with no tally reads as
+    /// zero so the bar can draw every kind, not only the ones already reacted to.
+    func testReactionTalliesMapToTheBarAndAbsentKindsReadZero() {
+        let post = projectedPost(
+            id: "p1", headline: "Report", treatment: .ordinary,
+            reactions: [
+                NewswireReactionTally(kind: "support", count: 3),
+                NewswireReactionTally(kind: "grief", count: 1),
+            ])
+        let model = NewswireSurfaceModel(
+            projector: FixedProjector(projection(openWire: [post], frontPage: [])),
+            editor: ThrowingEditor(), authority: StubAuthority(),
+            spaceDescriptorEntryID: "desc", communityName: "R", myKeyHex: "aa".repeated(32))
+        model.load()
+        // Read verbatim, in core's order — the surface never re-tallies or re-sorts.
+        XCTAssertEqual(model.reactions(under: "p1").map(\.kind), ["support", "grief"])
+        XCTAssertEqual(model.reactionCount(post: "p1", kind: .support), 3)
+        XCTAssertEqual(model.reactionCount(post: "p1", kind: .grief), 1)
+        // Kinds with no tally read as zero so the bar draws all four.
+        XCTAssertEqual(model.reactionCount(post: "p1", kind: .solidarity), 0)
+        XCTAssertEqual(model.reactionCount(post: "p1", kind: .important), 0)
+        // The four kinds are the closed set the bar iterates, in fixed order.
+        XCTAssertEqual(ReactionKind.allCases.map(\.rawValue),
+                       ["support", "solidarity", "important", "grief"])
+    }
+
+    /// `toggleReaction` calls the reactor with the tapped kind and `active: true`
+    /// the first time, and `active: false` on the next tap of the same kind — the
+    /// session-local active state flips only after core accepts, and drives the
+    /// pink selection.
+    func testToggleReactionCallsTheReactorWithTheRightKindAndActiveThenRetracts() {
+        let reactor = RecordingReactor()
+        let post = projectedPost(id: "p1", headline: "Report", treatment: .ordinary)
+        let model = NewswireSurfaceModel(
+            projector: FixedProjector(projection(openWire: [post], frontPage: [])),
+            editor: ThrowingEditor(), authority: StubAuthority(),
+            spaceDescriptorEntryID: "desc", communityName: "R", myKeyHex: "aa".repeated(32),
+            reactor: reactor)
+        model.load()
+        XCTAssertTrue(model.canReact, "a wired reactor + descriptor ⇒ the reaction bar is offered")
+        let row = NewswirePostRow(post)
+
+        // First tap ⇒ react (active: true) with the exact kind name, and the
+        // session marks it active.
+        XCTAssertEqual(model.toggleReaction(post: row, kind: .support), .reacted)
+        XCTAssertEqual(reactor.calls.count, 1)
+        XCTAssertEqual(reactor.calls.first?.kind, "support")
+        XCTAssertEqual(reactor.calls.first?.active, true)
+        XCTAssertEqual(reactor.calls.first?.parent, "p1")
+        XCTAssertTrue(model.isReacted(post: "p1", kind: .support))
+
+        // Second tap of the same kind ⇒ retract (active: false), and the session
+        // clears it.
+        XCTAssertEqual(model.toggleReaction(post: row, kind: .support), .retracted)
+        XCTAssertEqual(reactor.calls.last?.active, false)
+        XCTAssertFalse(model.isReacted(post: "p1", kind: .support))
+        // A different kind is independent — still inactive, never toggled.
+        XCTAssertFalse(model.isReacted(post: "p1", kind: .grief))
+    }
+
+    /// Without a wired reactor the bar is hidden and a direct toggle is a defensive
+    /// no-op — the reaction analogue of the absent-commenter reply guard.
+    func testReactionBarIsHiddenWithoutAWiredReactor() {
+        let model = NewswireSurfaceModel(
+            projector: FixedProjector(projection(openWire: [], frontPage: [])),
+            editor: ThrowingEditor(), authority: StubAuthority(),
+            spaceDescriptorEntryID: "desc", communityName: "R", myKeyHex: "aa".repeated(32))
+        model.load()
+        XCTAssertFalse(model.canReact, "no reactor wired ⇒ the reaction bar is hidden")
+        let row = NewswirePostRow(projectedPost(id: "p1", headline: "x", treatment: .ordinary))
+        XCTAssertEqual(model.toggleReaction(post: row, kind: .support), .unavailable)
+    }
+
+    /// A reaction toggled through the model reaches core, and on reload the post's
+    /// tally reflects it; retracting removes it. Driven through the REAL core (like
+    /// the reply end-to-end test), so the round-trip is genuinely core's, not a
+    /// stub's. A reaction is communal, so the founder (or any member) may react —
+    /// `canReact` is independent of editor status.
+    func testAReactionIsSignedThroughCoreAndTheTallyReflectsItThenRetracts() throws {
+        let profile = try openLocalProfile()
+        let space = try profile.createNewswireSpace(input: spaceInput("Reactions"))
+        let post = try profile.createNewswirePost(input: postInput(space.entryId, "What did you see?"))
+        let model = try liveModel(profile: profile, spaceID: space.entryId)
+        model.load()
+        XCTAssertTrue(model.canReact, "a wired reactor + descriptor ⇒ the reaction bar is offered")
+
+        guard case let .postsButNoFeature(openWire) = model.wire,
+              let row = openWire.first(where: { $0.id == post.entryId }) else {
+            return XCTFail("the post should be on the open wire")
+        }
+        XCTAssertEqual(model.reactionCount(post: row.id, kind: .support), 0, "no reaction yet")
+
+        // React ⇒ the tally reflects one supporter and the session marks it active.
+        XCTAssertEqual(model.toggleReaction(post: row, kind: .support), .reacted)
+        XCTAssertEqual(model.reactionCount(post: row.id, kind: .support), 1,
+                       "the tally reflects the reaction through core")
+        XCTAssertTrue(model.isReacted(post: row.id, kind: .support))
+
+        // Retract ⇒ the tally drops back to zero (latest-wins per author).
+        XCTAssertEqual(model.toggleReaction(post: row, kind: .support), .retracted)
+        XCTAssertEqual(model.reactionCount(post: row.id, kind: .support), 0,
+                       "retraction removes this author's reaction")
+        XCTAssertFalse(model.isReacted(post: row.id, kind: .support))
+    }
+
     // MARK: - Repository authority wrapper (Unit 4b, consumes Unit 4a)
 
     private func openRepository() throws -> RiotProfileRepository {
@@ -799,14 +925,15 @@ final class NewswireSurfaceTests: XCTestCase {
 
     private func projectedPost(
         id: String, headline: String?, treatment: NewswirePostTreatment,
-        correctionIDs: [String] = []
+        correctionIDs: [String] = [], reactions: [NewswireReactionTally] = []
     ) -> NewswireProjectedPost {
         NewswireProjectedPost(
             entryId: id, author: author(), taiJ2000Micros: 1,
             headline: headline, body: headline == nil ? nil : "body", language: "en",
             coarseLocation: nil, eventTimeUnixSeconds: nil, expiresAtUnixSeconds: nil,
             sourceClaims: [], operationalProfile: nil, aiAssisted: false,
-            verificationIds: [], correctionIds: correctionIDs, treatment: treatment)
+            verificationIds: [], correctionIds: correctionIDs, treatment: treatment,
+            reactions: reactions)
     }
 
     private func projectedAction(
@@ -854,6 +981,19 @@ final class NewswireSurfaceTests: XCTestCase {
         }
         func newswireIsEditor(spaceDescriptorEntryID: String, subjectID: String) throws -> Bool {
             throw NSError(domain: "test", code: 1)   // load() maps the throw to isEditor == false
+        }
+    }
+
+    /// Records each reaction toggle it is handed (parent, kind, active) and returns
+    /// a canned signed record, so a test can assert the model calls core with the
+    /// exact kind name and direction without a store.
+    private final class RecordingReactor: NewswireReacting {
+        var calls: [(parent: String, kind: String, active: Bool)] = []
+        func toggleNewswireReaction(
+            spaceDescriptorEntryID: String, parentEntryID: String, kind: String, active: Bool
+        ) throws -> NewswireSignedRecord {
+            calls.append((parentEntryID, kind, active))
+            return NewswireSignedRecord(entryId: "11".repeated(32), signedBytes: Data([1, 2, 3]))
         }
     }
 

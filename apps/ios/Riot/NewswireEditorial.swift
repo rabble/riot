@@ -41,6 +41,34 @@ public enum EditorialActionKind: String, CaseIterable, Equatable, Sendable, Iden
     }
 }
 
+// MARK: - Communal reaction kind (app-side mirror)
+
+/// The four communal reaction kinds, mirrored on the app side so the reaction
+/// bar, the labels, and the FFI wire string are reasoned about in one place.
+/// `rawValue` is the exact lowercase name core admits
+/// (`support`/`solidarity`/`important`/`grief`); nothing else constructs the wire
+/// string, so the mapping is pinned here once — the reaction analogue of
+/// `EditorialActionKind`. `allCases` is the fixed left-to-right order the bar
+/// draws, independent of which kinds a given post happens to carry a tally for.
+public enum ReactionKind: String, CaseIterable, Equatable, Sendable, Identifiable {
+    case support
+    case solidarity
+    case important
+    case grief
+
+    public var id: String { rawValue }
+
+    /// The person-facing label shown on the toggle.
+    public var label: String {
+        switch self {
+        case .support: "Support"
+        case .solidarity: "Solidarity"
+        case .important: "Important"
+        case .grief: "Grief"
+        }
+    }
+}
+
 // MARK: - Closed editorial field table
 
 /// Whether a field is forbidden or required for a given action — the closed
@@ -264,6 +292,22 @@ public protocol NewswireCommenting {
     ) throws -> NewswireSignedRecord
 }
 
+/// The one call the surface makes to toggle a communal reaction. Like a reply, a
+/// reaction is communal — core admits it for any member of the space, not only
+/// editors — so, exactly like `NewswireCommenting`, there is no roster gate here.
+/// `active: false` retracts this author's reaction of that kind (latest-wins).
+/// `RiotProfileRepository` conforms; tests inject a stub, and the real repository
+/// is exercised end-to-end in the FFI tests so the admission is genuinely core's.
+public protocol NewswireReacting {
+    @discardableResult
+    func toggleNewswireReaction(
+        spaceDescriptorEntryID: String,
+        parentEntryID: String,
+        kind: String,
+        active: Bool
+    ) throws -> NewswireSignedRecord
+}
+
 /// The one read the editorial surface makes to decide whether to OFFER a control:
 /// core's descriptor-authenticated roster answer, identical to the authority core
 /// enforces at admission (Unit 4a's shared `is_editorial_authority`). An unknown /
@@ -373,6 +417,21 @@ public enum NewswireCommentOutcome: Equatable, Sendable {
     case unavailable
     /// Core refused to sign (closed store or clock). The draft is preserved so
     /// the person loses nothing.
+    case rejected
+}
+
+/// The result of toggling a communal reaction from the surface.
+public enum NewswireReactionOutcome: Equatable, Sendable {
+    /// The reaction was added (active) and committed locally; pending exchange
+    /// with peers.
+    case reacted
+    /// This device's reaction of that kind was retracted (`active: false`).
+    case retracted
+    /// No reactor is wired (a preview/test construction) — the reaction bar is
+    /// hidden in that case, so this is a defensive answer, never a user path.
+    case unavailable
+    /// Core refused to sign (closed store or clock). The session-local active
+    /// state is left unchanged.
     case rejected
 }
 
@@ -566,12 +625,32 @@ public final class NewswireSurfaceModel: ObservableObject {
     /// on every `load()`; empty whenever the projection is unavailable.
     @Published public private(set) var commentsByParent: [String: [NewswireCommentRow]] = [:]
 
+    /// Communal reaction tallies for the space, keyed by each post's entry id and
+    /// kept in core's ascending-by-kind order. The reaction analogue of
+    /// `commentsByParent`: repopulated on every `load()`, empty whenever the
+    /// projection is unavailable. Read straight from each projected post's
+    /// `reactions` — the surface never re-tallies.
+    @Published public private(set) var reactionsByPost: [String: [NewswireReactionTally]] = [:]
+
+    /// The `(post, kind)` pairs this device has toggled ON this session — the only
+    /// "active" signal available until core exposes a per-viewer `reacted_by_me`
+    /// in the projection (the reactions plan defers that until a viewer seam
+    /// exists). Optimistic and session-local: it drives the pink selection and
+    /// decides whether the next tap sends `active: false` (retract) or
+    /// `active: true` (react). It is deliberately NOT presented as core's truth —
+    /// reactions made on other devices are not reflected here, and it resets on
+    /// reopen.
+    private var reactedByMe: Set<String> = []
+
     private let projector: NewswireProjecting
     private let editor: NewswireEditorialActing
     private let authority: NewswireEditorAuthorityChecking
     /// The communal-reply signer. `nil` in preview/test constructions that never
     /// exercise replying — the reply affordance is then hidden by `canComment`.
     private let commenter: NewswireCommenting?
+    /// The communal-reaction signer. `nil` in preview/test constructions that
+    /// never exercise reacting — the reaction bar is then hidden by `canReact`.
+    private let reactor: NewswireReacting?
     private var spaceDescriptorEntryID: String
     private let myKeyHex: String
     public let communityName: String
@@ -606,12 +685,14 @@ public final class NewswireSurfaceModel: ObservableObject {
         initialDraftKind: EditorialActionKind = .feature,
         descriptorResolver: (() -> String?)? = nil,
         seenCursor: SeenCursorStore? = nil,
-        commenter: NewswireCommenting? = nil
+        commenter: NewswireCommenting? = nil,
+        reactor: NewswireReacting? = nil
     ) {
         self.projector = projector
         self.editor = editor
         self.authority = authority
         self.commenter = commenter
+        self.reactor = reactor
         self.spaceDescriptorEntryID = spaceDescriptorEntryID
         self.communityName = communityName
         self.myKeyHex = myKeyHex
@@ -672,6 +753,76 @@ public final class NewswireSurfaceModel: ObservableObject {
             byParent[comment.parentEntryId, default: []].append(NewswireCommentRow(comment))
         }
         return byParent
+    }
+
+    /// Whether the surface may OFFER a reaction bar. Communal like a reply, so
+    /// this is independent of `isEditor` — it needs only a wired reactor and a
+    /// descriptor to react within. Core still decides admission at signing time.
+    public var canReact: Bool {
+        reactor != nil && !spaceDescriptorEntryID.isEmpty
+    }
+
+    /// The reaction tallies to draw under `postID`, ascending by kind as core
+    /// returned them. Empty when the post has none — never `nil`.
+    public func reactions(under postID: String) -> [NewswireReactionTally] {
+        reactionsByPost[postID] ?? []
+    }
+
+    /// The count for one kind on a post, `0` when core reports no tally for it —
+    /// so the bar can draw every kind, not only the ones already reacted to.
+    public func reactionCount(post postID: String, kind: ReactionKind) -> Int {
+        Int(reactionsByPost[postID]?.first { $0.kind == kind.rawValue }?.count ?? 0)
+    }
+
+    /// Whether THIS device has this reaction active this session — drives the pink
+    /// selection. Session-local optimistic state (see `reactedByMe`), never a
+    /// claim about core's projection.
+    public func isReacted(post postID: String, kind: ReactionKind) -> Bool {
+        reactedByMe.contains(Self.reactionKey(post: postID, kind: kind))
+    }
+
+    /// The session-local key for one `(post, kind)` reaction toggle.
+    private static func reactionKey(post: String, kind: ReactionKind) -> String {
+        "\(post)|\(kind.rawValue)"
+    }
+
+    /// Toggles this device's communal reaction of `kind` on `post`, then reloads
+    /// so the tally updates. The direction is the inverse of the session-local
+    /// active state: an active reaction is retracted (`active: false`), an inactive
+    /// one is added (`active: true`). The local state flips ONLY after core
+    /// accepts, so a refusal leaves both the tally and the pink selection
+    /// unchanged and the person can retry. A no-op (`.unavailable`) when no reactor
+    /// is wired — the bar is hidden in that case, so this is defensive.
+    @discardableResult
+    public func toggleReaction(post: NewswirePostRow, kind: ReactionKind) -> NewswireReactionOutcome {
+        guard let reactor else { return .unavailable }
+        let key = Self.reactionKey(post: post.id, kind: kind)
+        let nowActive = !reactedByMe.contains(key)
+        do {
+            _ = try reactor.toggleNewswireReaction(
+                spaceDescriptorEntryID: spaceDescriptorEntryID,
+                parentEntryID: post.id,
+                kind: kind.rawValue,
+                active: nowActive
+            )
+            if nowActive { reactedByMe.insert(key) } else { reactedByMe.remove(key) }
+            load()
+            return nowActive ? .reacted : .retracted
+        } catch {
+            return .rejected
+        }
+    }
+
+    /// Reads each projected post's `reactions` into a per-post map, de-duplicating
+    /// front-page/open-wire overlap by entry id (a featured post is still on the
+    /// wire) so a post's tallies are counted once. The surface never re-tallies —
+    /// it re-shapes core's already-ordered list.
+    static func groupReactions(_ projection: NewswireProjectionView) -> [String: [NewswireReactionTally]] {
+        var byPost: [String: [NewswireReactionTally]] = [:]
+        for post in projection.openWire + projection.frontPage {
+            byPost[post.entryId] = post.reactions
+        }
+        return byPost
     }
 
     /// Whether the surface may OFFER an editorial control — UI visibility only.
@@ -746,6 +897,7 @@ public final class NewswireSurfaceModel: ObservableObject {
             wire = .offlineStale
             history = []
             commentsByParent = [:]
+            reactionsByPost = [:]
             unread = .none
             descriptorRecoverable = false
             return
@@ -757,6 +909,7 @@ public final class NewswireSurfaceModel: ObservableObject {
             wire = .from(projection)
             history = projection.editorialHistory.map(EditorialHistoryRow.init)
             commentsByParent = Self.groupComments(projection.comments)
+            reactionsByPost = Self.groupReactions(projection)
             // Unread is a per-device read against the seen cursor for THIS
             // descriptor — a pure function of what the projection now shows and
             // how far the reader had caught up. Recomputed here (never mutated by
@@ -772,6 +925,7 @@ public final class NewswireSurfaceModel: ObservableObject {
             wire = .offlineStale
             history = []
             commentsByParent = [:]
+            reactionsByPost = [:]
             unread = .none
             descriptorRecoverable = true
         }
@@ -1083,9 +1237,61 @@ public struct NewswireSurfaceView: View {
                         .accessibilityIdentifier("editorial-action-\(post.id)")
                 }
             }
+            reactionBar(for: post)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityIdentifier("wire-post-\(post.id)")
+    }
+
+    /// The communal reaction bar beneath a post's actions: one compact toggle per
+    /// reaction kind, in `ReactionKind.allCases` order, each showing its live count
+    /// and pink when this device has it active this session. Drawn only when the
+    /// surface can react (a wired reactor + a descriptor), so a preview or a
+    /// closed profile gains no bar — the same gating as the Reply affordance.
+    @ViewBuilder
+    private func reactionBar(for post: NewswirePostRow) -> some View {
+        if model.canReact {
+            HStack(spacing: 8) {
+                ForEach(ReactionKind.allCases) { kind in
+                    reactionToggle(for: post, kind: kind)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .accessibilityIdentifier("reaction-bar-\(post.id)")
+        }
+    }
+
+    /// One reaction toggle: the kind's label plus its count when nonzero, pink when
+    /// this device has it active. A tap toggles it through the model, which asks
+    /// core and reloads the tally. Addressable per kind + post so a UI test can
+    /// assert exactly which reaction was tapped, and labeled for VoiceOver.
+    private func reactionToggle(for post: NewswirePostRow, kind: ReactionKind) -> some View {
+        let active = model.isReacted(post: post.id, kind: kind)
+        let count = model.reactionCount(post: post.id, kind: kind)
+        return Button {
+            model.toggleReaction(post: post, kind: kind)
+        } label: {
+            HStack(spacing: 4) {
+                Text(kind.label)
+                if count > 0 {
+                    Text("\(count)")
+                }
+            }
+            .font(.riot(.mono, size: 11, relativeTo: .caption2))
+            .textCase(.uppercase)
+            .tracking(0.5)
+            .padding(.horizontal, 9)
+            .padding(.vertical, 5)
+            .foregroundStyle(
+                active ? RiotTheme.pink(for: colorScheme) : RiotTheme.inkSoft(for: colorScheme))
+            .background(RiotTheme.paper2(for: colorScheme))
+            .clipShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .frame(minHeight: 44)
+        .accessibilityIdentifier("reaction-\(kind.rawValue)-\(post.id)")
+        .accessibilityLabel("\(kind.label), \(count) \(count == 1 ? "person" : "people")")
+        .accessibilityAddTraits(active ? .isSelected : [])
     }
 
     /// The communal replies under one post, indented and time-ordered as core

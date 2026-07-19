@@ -1472,6 +1472,28 @@ public extension RiotProfileRepository {
         )
     }
 
+    /// Toggles this profile's communal reaction of `kind` on `parentEntryID` and
+    /// imports it through the same preview/plan/commit path as a reply. Like a
+    /// reply a reaction is communal — no editorial role is required — so core
+    /// admits it for any member of the space; `active: false` retracts this
+    /// author's reaction of that kind (latest-wins per author). `kind` is one of
+    /// the closed wire names (`support`/`solidarity`/`important`/`grief`); an
+    /// unknown name is refused by core as invalid input.
+    @discardableResult
+    func toggleNewswireReaction(
+        spaceDescriptorEntryID: String,
+        parentEntryID: String,
+        kind: String,
+        active: Bool
+    ) throws -> NewswireSignedRecord {
+        try profile.toggleNewswireReaction(
+            spaceDescriptorEntryId: spaceDescriptorEntryID,
+            parentEntryId: parentEntryID,
+            kind: kind,
+            active: active
+        )
+    }
+
     /// The collective view of a newswire space: the open wire (all non-expired
     /// posts, newest-first) and the front page (ordinary posts with an active
     /// Feature action). `Hidden`/`Tombstoned` posts arrive with `body == nil`.
@@ -1544,6 +1566,12 @@ extension RiotProfileRepository: NewswireEditorialActing {}
 /// reply for any member of the space (no editorial role) and drops it from the
 /// projection if the parent post is not held.
 extension RiotProfileRepository: NewswireCommenting {}
+
+/// The live signer for a communal reaction — it forwards to core, which admits
+/// the reaction for any member of the space (no editorial role) and retracts this
+/// author's reaction of that kind on `active: false`. The same communal contract
+/// as a reply.
+extension RiotProfileRepository: NewswireReacting {}
 
 /// The live owner-moderation signer — it loads the device wrapping key
 /// transiently (reset after use) and hands the sealed masthead + action to core,
