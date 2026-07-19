@@ -1,8 +1,12 @@
 //! Reserved path regions for a composite-site owned masthead namespace `O`.
 //!
-//! `/manifest`         — the signed site manifest (Unit 2), never delegated.
-//! `/articles/<sect>/` — editorial articles; the ONLY region delegated to editors.
-//! `/mod/`             — moderation records (Unit 3), never delegated to editors.
+//! `/manifest`          — the signed site manifest (Unit 2), never delegated.
+//! `/articles/<sect>/`  — editorial articles; the ONLY region delegated to editors.
+//! `/mod/`              — moderation records (Unit 3), never delegated to editors.
+//! `/directory/listing` — the community listing record (anchor network); the
+//!                        ONLY listable coordinate. `/directory` is delegatable
+//!                        to a dedicated listing key, disjoint from every region
+//!                        above.
 
 use willow25::entry::Entry;
 use willow25::groupings::{Keylike, Namespaced};
@@ -14,6 +18,10 @@ pub const ARTICLES_COMPONENT: &[u8] = b"articles";
 pub const MANIFEST_COMPONENT: &[u8] = b"manifest";
 /// First path component of the moderation region.
 pub const MOD_COMPONENT: &[u8] = b"mod";
+/// First path component of the reserved listing/directory region.
+pub const DIRECTORY_COMPONENT: &[u8] = b"directory";
+/// Second path component of the community listing record (`/directory/listing`).
+pub const LISTING_COMPONENT: &[u8] = b"listing";
 
 /// True iff `path`'s first component is exactly `articles` (the delegatable region).
 /// A delegated editor cap's granted area path MUST satisfy this; `/manifest` and
@@ -22,6 +30,29 @@ pub fn is_under_articles(path: &Path) -> bool {
     path.components()
         .next()
         .is_some_and(|first| first.as_ref() == ARTICLES_COMPONENT)
+}
+
+/// True iff `path`'s first component is exactly `directory` (the delegatable
+/// listing region). A dedicated listing delegate cap's granted area path MUST
+/// satisfy this; `/manifest`, `/mod/`, `/articles`, and the empty/root path must
+/// not, so a listing delegation can never reach them and an editorial cap rooted
+/// under `/articles` can never authorize a listing.
+pub fn is_under_directory(path: &Path) -> bool {
+    path.components()
+        .next()
+        .is_some_and(|first| first.as_ref() == DIRECTORY_COMPONENT)
+}
+
+/// True iff `path` is exactly `/directory/listing` — the one listable coordinate.
+/// Authority over arbitrary `/directory` children is NOT interpreted as a new
+/// listing record; the admission layer requires this exact two-component path.
+pub fn is_directory_listing(path: &Path) -> bool {
+    let mut components = path.components();
+    matches!(
+        (components.next(), components.next(), components.next()),
+        (Some(first), Some(second), None)
+            if first.as_ref() == DIRECTORY_COMPONENT && second.as_ref() == LISTING_COMPONENT
+    )
 }
 
 /// True iff `entry` is an owned composite-site editorial entry — its namespace

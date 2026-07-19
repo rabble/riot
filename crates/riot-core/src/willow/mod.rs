@@ -38,8 +38,9 @@ pub use identity::{
 pub use masthead::OwnedMasthead;
 pub use owned::OwnedRoot;
 pub use site_paths::{
-    is_owned_moderation_entry, is_under_articles, is_under_mod, ARTICLES_COMPONENT,
-    MANIFEST_COMPONENT, MOD_COMPONENT,
+    is_directory_listing, is_owned_moderation_entry, is_under_articles, is_under_directory,
+    is_under_mod, ARTICLES_COMPONENT, DIRECTORY_COMPONENT, LISTING_COMPONENT, MANIFEST_COMPONENT,
+    MOD_COMPONENT,
 };
 
 // Conformance-only injection surface: absent from the release riot-ffi graph.
@@ -80,6 +81,8 @@ pub enum WillowError {
     SealedMastheadInvalid,
     /// A section delegation was requested for an area whose path escapes `/articles/`.
     DelegationAreaEscapesArticles,
+    /// A listing delegation was requested for an area whose path escapes `/directory`.
+    DelegationAreaEscapesDirectory,
     /// A moderation delegation was requested for an area whose path escapes `/mod/`.
     DelegationAreaEscapesMod,
 }

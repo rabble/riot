@@ -1,0 +1,394 @@
+; riot-anchor-v1.cddl
+; Machine-readable transcription of the canonical positional-CBOR grammar for
+; the Riot public community anchor network (design:
+; docs/superpowers/specs/2026-07-18-public-community-anchor-network-design.md,
+; "Canonical Anchor Records"). CDDL and code must agree with the design; neither
+; may add a tag, field, alternate map form, or numeric discriminant.
+;
+; Encoding conventions (normative prose; enforced in code by decode->re-encode):
+;   * a product type `NameVn { a, b, c }` encodes as the positional array
+;     [n, a, b, c]; a protocol-version-scoped `Name { a, b, c }` encodes as
+;     [a, b, c], always in displayed field order.
+;   * an optional field is `null` or its one typed value; it never changes the
+;     array length.
+;   * a closed enum value is its exact lowercase ASCII snake_case name (tstr).
+;   * a sum variant encodes as [variant_name, *variant_fields].
+;   * a field whose schema name ends in `_bytes` is a CBOR byte string carrying
+;     separately-canonical bytes; every other nested typed field is embedded as a
+;     CBOR value, not double-encoded.
+;   * unordered sets encode as arrays sorted by complete canonical element bytes;
+;     ordered lists retain their specified semantic order.
+;   * decoders reject unknown versions, unknown enum/sum names, duplicate set
+;     elements, non-canonical encodings, maps, indefinite lengths, and trailing
+;     bytes.
+;
+; Digest construction (see src/digest.rs):
+;   digest_v1(label, canonical) =
+;     BLAKE3(u16be(len(label)) || label || u64be(len(canonical)) || canonical)
+;
+; Later work units extend this file with concrete record rules (authority,
+; control, sync2, directory, peer). WU-002 defines only the shared envelope
+; wrappers used across those records; their inner bodies appear as `any` here
+; until the owning work unit replaces them with an exact rule.
+
+; A 64-byte Ed25519 signature.
+signature-64 = bstr .size 64
+
+; OperatorSignedEnvelopeV1<T> = canonical_cbor([1, T, exactly_64_signature_bytes])
+operator-signed-envelope-v1 = [1, any, signature-64]
+
+; AdmittedListingEnvelopeV1 = canonical_cbor([
+;   1,
+;   canonical_signed_listing_entry_bytes,
+;   canonical_capability_chain_bytes,
+;   null / canonical_delegate_grant_bytes
+; ])
+admitted-listing-envelope-v1 = [1, bstr, bstr, null / bstr]
+
+; RootSignedTicketCoreEnvelopeV2 =
+;   canonical_cbor([2, PublicSiteTicketV2Core, exactly_64_root_signature_bytes])
+root-signed-ticket-core-envelope-v2 = [2, any, signature-64]
+
+; ControlDigestBodyV1 = canonical_cbor([1, operation_kind, semantic_body])
+control-digest-body-v1 = [1, tstr, any]
+
+; ---------------------------------------------------------------------------
+; WU-003B — authority records: tickets, listings, delegate grants.
+; Layout: docs/research/2026-07-18-wu003b-record-layout-proposal.md, with the
+; three OWNER-LOCKED wire decisions applied.
+; ---------------------------------------------------------------------------
+
+; A 32-byte id / digest / key.
+bytes-32 = bstr .size 32
+
+; TransportFloor: closed, ORDERED enum, wire = snake_case tstr. The colon form
+; `require:none` / `require:arti` from the design prose maps to these tokens
+; (a colon is not a valid snake_case discriminant). require_none < require_arti.
+transport-floor = "require_none" / "require_arti"
+
+; PublicSiteTicketV2Core (OWNER-LOCKED decision 1: IMPLICIT schema/version — NO
+; leading version field; version is carried by envelope tag 2 + signing domain
+; "riot/public-site-ticket/v2"). Canonical core <= 768 bytes. min_sync_version
+; MUST be 2. Signed by the O root:
+;   Sign("riot/public-site-ticket/v2" || canonical_cbor(core))
+public-site-ticket-v2-core = [
+  bytes-32,          ; root_id (full O root key; also the signer)
+  bytes-32,          ; o_namespace_id
+  bytes-32,          ; c_namespace_id
+  bytes-32,          ; w_namespace_id
+  bytes-32,          ; manifest_digest
+  uint,              ; manifest_version
+  uint,              ; min_sync_version (== 2)
+  transport-floor,   ; manifest_required_transport
+  transport-floor,   ; transport_floor (>= manifest_required_transport)
+  uint,              ; transport_epoch (u32)
+  uint,              ; issued_unix_seconds
+  uint,              ; expiry_unix_seconds (inclusive; <= issued + 90 days)
+]
+
+; RootSignedTicketCoreEnvelopeV2 = [2, <core embedded as a CBOR value>, sig-64].
+; root_signed_ticket_core_digest =
+;   digest_v1("riot/public-site-ticket-signed-core/v2", canonical(envelope)).
+root-signed-ticket-core-envelope-v2 = [2, public-site-ticket-v2-core, signature-64]
+
+; CommunityListingV1 — payload at O:/directory/listing. Explicit schema tstr.
+; OWNER-LOCKED decision 2: ticket_core_bytes = canonical
+; RootSignedTicketCoreEnvelopeV2 bytes (bstr), so the O-root signature is
+; independently re-verifiable from the listing alone.
+; OWNER-LOCKED decision 3: topic_tags and languages are SORTED CANONICAL SETS.
+community-listing-v1 = [
+  "riot/community-listing/1",   ; schema
+  bytes-32,          ; root_id
+  bytes-32,          ; o_namespace_id
+  bytes-32,          ; c_namespace_id
+  bytes-32,          ; w_namespace_id
+  bytes-32,          ; manifest_digest
+  uint,              ; manifest_version
+  bstr,              ; ticket_core_bytes (canonical root-signed-ticket-core envelope)
+  uint,              ; listing_epoch (u32)
+  uint,              ; listing_revision (u32)
+  bool,              ; listed (false = unlisting tombstone)
+  tstr,              ; title (<= 120 UTF-8 bytes)
+  tstr,              ; summary (<= 512 bytes)
+  [* (bstr .size (0..32))],   ; topic_tags: sorted set, <= 8 entries
+  [* (tstr)],                 ; languages: sorted set, <= 8 BCP-47 tags <= 35 bytes
+  null / (bstr .size (0..16)),; region (optional coarse region)
+  uint,              ; issued_unix_seconds
+  uint,              ; expiry_unix_seconds (inclusive)
+]
+
+; ListingDelegateGrantV1 — root-signed, IMPLICIT version (signing domain carries
+; it). Signed by the O root:
+;   Sign("riot/listing-delegate-grant/v1" || canonical_cbor(grant))
+; terminal_capability_digest =
+;   digest_v1("riot/listing-terminal-capability/v1", terminal_capability_canonical).
+listing-delegate-grant-v1 = [
+  bytes-32,          ; root_id (the O root)
+  bytes-32,          ; delegate_key (listing key subspace)
+  bytes-32,          ; terminal_capability_digest
+  uint,              ; listing_epoch (u32; exactly one)
+  uint,              ; issued_unix_seconds
+  uint,              ; expiry_unix_seconds (cannot outlive the Meadowcap range)
+]
+
+; ---------------------------------------------------------------------------
+; WU-004 — anchor identity, descriptors, receipts, limits, work stamp, and the
+; riot/anchor/1 control plane. Design: "Canonical Anchor Records",
+; "AnchorDescriptorV1", "HostingReceiptV1", "ListingReceiptV1", "Anchor Keys",
+; "riot/anchor/1: Control Plane", "Refusals", "Admission work stamp".
+;
+; LAYOUT DECISIONS (design gives field lists, not byte layouts; chosen per the
+; NameVn -> [n, ...] convention, flagged for pre-WU-006 confirmation): every
+; *BodyV1 leads with version 1; OperatorVerificationKeyV1 = [1, "ed25519", key];
+; DescriptorEnvelopeV1 = [1, body, cur_sig, null/pred_sig]; DescriptorFloor is a
+; bare 4-tuple; ReplicaSourceAttestation manifest_digest_and_version =
+; [digest, version]; ordered_namespace_host_plan = the O/C/W namespace-id triple;
+; directory feed inclusions / checkpoint / snapshot-record payloads are opaque
+; canonical byte strings owned by WU-005/006.
+; AMBIGUITIES (flagged): EnabledRole confirms only host + mirror (directory,
+; gossip inferred); HostingStatus vocabulary is not enumerated (committed only).
+
+bytes-16 = bstr .size 16     ; 128-bit idempotency / operation key
+bytes-64 = bstr .size 64     ; Ed25519 signature (alias of signature-64)
+
+; --- keys + generic operator-signed envelope ---
+operator-verification-key-v1 = [1, "ed25519", bytes-32]
+
+; OperatorSignedEnvelopeV1<T> = [1, T, signature-64]; each concrete body below
+; supplies T. Signing domain is that body type's stated bare-label prefix.
+
+; --- descriptors ---
+enabled-role = "directory" / "gossip" / "host" / "mirror"   ; sorted-canonical set members
+
+anchor-descriptor-body-v1 = [
+  1,
+  bytes-32,                        ; anchor_id (recomputed + checked)
+  bytes-32,                        ; genesis_operator_public_key
+  bytes-32,                        ; genesis_random_256_bits
+  operator-verification-key-v1,    ; current_operator_verification_key
+  bytes-32,                        ; current_operator_key_id
+  uint,                            ; descriptor_epoch
+  null / bytes-32,                 ; previous_descriptor_digest (null only @ epoch 0)
+  bytes-32,                        ; current_iroh_endpoint_id
+  tstr,                            ; https_origin (<= 255 bytes)
+  tstr,                            ; operator_display_label (<= 64 bytes)
+  tstr,                            ; self_reported_failure_domain_label (<= 64 bytes)
+  [* uint],                        ; supported_control_versions (sorted set, <= 16)
+  [* uint],                        ; supported_sync_versions (sorted set, <= 16)
+  [* enabled-role],                ; enabled_roles (sorted set, <= 4)
+  bytes-32,                        ; limit_profile_digest
+  null / operator-verification-key-v1, ; predecessor key (null only @ epoch 0)
+  uint,                            ; issued_at
+  uint,                            ; expires_at
+]
+
+; current_signature = Sign(current_key, "riot/anchor-descriptor/v1" || body)
+; predecessor_signature = Sign(pred_key,
+;   "riot/anchor-descriptor-transition/v1" || BLAKE3(body))
+descriptor-envelope-v1 = [1, anchor-descriptor-body-v1, bytes-64, null / bytes-64]
+
+; The pinned floor tuple (AnchorId, epoch, descriptor_digest, verification key).
+descriptor-floor = [bytes-32, uint, bytes-32, operator-verification-key-v1]
+
+; --- limit profile (82 rows; limit_id is the numeric stable ID 1..=82) ---
+limit-value = uint / [uint, uint]     ; scalar or slash-compound
+limit-row = [uint, limit-value, limit-value]   ; [limit_id, effective, absolute]
+anchor-limit-profile-v1 = [1, uint, [82* limit-row]]   ; [1, profile_epoch, rows]
+
+; --- receipts ---
+namespace-result = [bytes-32, bytes-32, uint]   ; [namespace_id, snapshot_digest, entry_count]
+hosting-status = "committed"                     ; vocabulary not enumerated in design
+
+; HostingReceiptV1 = OperatorSignedEnvelopeV1<hosting-receipt-body-v1>
+; Sign("riot/hosting-receipt/v1" || body).
+hosting-receipt-body-v1 = [
+  1, bytes-32, bytes-32, uint, bytes-32, bytes-32, bytes-32, bytes-32, uint,
+  uint, uint, [3* namespace-result], hosting-status, uint, uint, bytes-32
+]
+
+; ListingReceiptV1 = OperatorSignedEnvelopeV1<listing-receipt-body-v1>
+; Sign("riot/listing-receipt/v1" || body).
+listing-receipt-body-v1 = [
+  1, bytes-32, bytes-32, uint, bytes-32, bytes-32, bytes-32, uint, uint, uint,
+  uint, uint, bytes-16
+]
+
+; --- admission work challenge + stamp ---
+control-operation-kind = "describe" / "get_work_challenge" / "prepare_host" /
+  "commit_host" / "submit_listing" / "prepare_replica" / "pull_directory_feed" /
+  "pull_directory_snapshot" / "get_operation"
+
+; WorkChallengeV1 = OperatorSignedEnvelopeV1<work-challenge-body-v1>
+; Sign("riot/anchor-work-challenge/v1" || body); difficulty in 0..24.
+work-challenge-body-v1 = [
+  1, bytes-32, bytes-32, uint, bytes-32, control-operation-kind, bytes-16,
+  bytes-32, bytes-32, bytes-32, uint, uint, uint, uint
+]
+
+; proof = BLAKE3("riot/anchor-work-proof/v1" || work_challenge_digest || u64be(counter))
+work-stamp-v1 = [1, bstr, uint, bytes-32]   ; [1, challenge_envelope_bytes, counter, proof_bytes]
+
+; --- replica ---
+replica-prepare-challenge-v1 = [1, bytes-32, bytes-32, bytes-16, bytes-32, uint, uint]
+
+; ReplicaSourceAttestationV1 = OperatorSignedEnvelopeV1<replica-source-attestation-body-v1>
+; Sign("riot/replica-source-attestation/v1" || body).
+replica-source-attestation-body-v1 = [
+  1, bytes-32, bytes-32, uint, bytes-32, bytes-32, bytes-32, bytes-32, bytes-16,
+  bytes-32, [bytes-32, uint], bytes-32, uint, [3* bytes-32], uint, uint
+]
+
+; --- app-embedded bootstrap ---
+bootstrap-descriptor-v1 = [1, descriptor-floor, tstr, [* enabled-role]]
+anchor-bootstrap-v1 = [1, [* bootstrap-descriptor-v1]]   ; >= 3 across >= 2 operators; <= 16
+
+; --- control request semantic bodies (ControlDigestBodyV1 = [1, kind, body]) ---
+work-stamp-slot = null / work-stamp-v1
+semantic-describe = [1]
+semantic-get-work-challenge = [1, control-operation-kind, bytes-16, bytes-32, bytes-32]
+semantic-prepare-host = [1, root-signed-ticket-core-envelope-v2, [3* bytes-32], work-stamp-slot]
+semantic-commit-host = [1, bytes-32, [3* bytes-32]]
+semantic-submit-listing = [1, bstr, work-stamp-slot]
+semantic-prepare-replica = [
+  1, replica-prepare-challenge-v1,
+  [1, replica-source-attestation-body-v1, bytes-64],
+  root-signed-ticket-core-envelope-v2, [3* bytes-32]
+]
+semantic-pull-feed = [1, uint, uint]        ; [1, after_sequence, limit<=32]
+semantic-pull-snapshot = [1, bytes-32, null / bstr]
+semantic-get-operation = [1, bytes-32]
+control-semantic-body = semantic-describe / semantic-get-work-challenge /
+  semantic-prepare-host / semantic-commit-host / semantic-submit-listing /
+  semantic-prepare-replica / semantic-pull-feed / semantic-pull-snapshot /
+  semantic-get-operation
+
+; ControlRequestV1 = [1, operation_kind, idempotency_key, semantic_body]
+control-request-v1 = [1, control-operation-kind, bytes-16, control-semantic-body]
+
+; --- control success payloads ---
+effective-operation-limits = [82* [uint, limit-value]]   ; [limit_id, effective] ascending
+success-describe = [1, descriptor-envelope-v1, anchor-limit-profile-v1]
+success-get-work-challenge = [1, [1, work-challenge-body-v1, bytes-64]]
+success-prepare = [
+  1, bytes-32, uint, [3* bytes-32], [3* bytes-32], [3* bytes-32], uint,
+  effective-operation-limits, uint
+]
+success-commit-host = [1, [1, hosting-receipt-body-v1, bytes-64]]
+success-submit-listing = [1, [1, listing-receipt-body-v1, bytes-64]]
+feed-page = ["page", [* bstr], uint, uint, bytes-32, bool]
+feed-checkpoint-required = ["checkpoint_required", bstr, bstr]
+success-pull-feed = [1, feed-page / feed-checkpoint-required]
+success-pull-snapshot = [1, bstr, null / bstr, null / bstr, bool]
+terminal-operation-outcome =
+  ["committed", [1, hosting-receipt-body-v1, bytes-64]] / ["refused", control-refusal]
+get-operation-state =
+  ["prepared", uint, success-prepare] / ["terminal", terminal-operation-outcome]
+success-get-operation = [1, bytes-32, ("prepare_host" / "prepare_replica"), get-operation-state]
+
+; ControlResponseV1 = [1, operation_kind, outcome]
+control-outcome = ["success", any] / ["refused", control-refusal]
+control-response-v1 = [1, control-operation-kind, control-outcome]
+
+; --- closed refusal matrix ---
+; ControlRefusal = [code, subject, retryable, retry_after_seconds/null, details].
+; subject, retryable, retry-after nullness, and details shape are a closed
+; function of code; unknown cross-pairings fail decoding.
+refusal-subject = "ticket" / "manifest" / "listing" / "namespace" / "capacity" /
+  "version" / "transport" / "operation" / "work" / "peer"
+transport-mode = "require_none" / "require_arti" / "unsupported_other"
+storage-class = "profile_total" / "site_logical_bytes" / "entries_per_namespace" /
+  "item_payload" / "bundle"
+peer-side = "source" / "destination"
+peer-context-reason = "descriptor_rotation" / "configuration_rotation" /
+  "transport_loss" / "orderly_shutdown" / "process_restart"
+checkpoint-reason = "unknown" / "reclaimed" / "snapshot_missing" / "digest_mismatch"
+cursor-kind = "feed" / "snapshot"
+cursor-reason = "malformed" / "after_head" / "wrong_checkpoint" /
+  "wrong_generation" / "regressed" / "expired"
+peer-auth-stage = "descriptor_exchange" / "hello_validation" / "channel_binding" /
+  "initiator_proof" / "responder_proof" / "configured_rule"
+control-refusal = [tstr, refusal-subject, bool, null / uint, [+ any]]
+
+; --- directory snapshot cursor ---
+; cursor_tag = HMAC-SHA256(cursor_secret,
+;   u16be(33) || "riot/directory-snapshot-cursor/v1" || u64be(len(body)) || body)
+snapshot-cursor-body-v1 = [1, bytes-32, uint, uint, null / bytes-32, uint, uint, uint]
+snapshot-cursor-v1 = [1, snapshot-cursor-body-v1, bytes-32]
+
+; ===========================================================================
+; WU-005 riot/sync/2: routed paginated reconciliation
+;
+; Every frame is a positional array whose first element is a closed snake_case
+; frame-name discriminant. The module is version-scoped v2: per-frame version
+; integers are implicit; only OpenNamespace carries a negotiated protocol_version.
+; entry-id is opaque full canonical entry-ID bytes (<= 128). A page is a strictly
+; ascending set of <= 256 entry-ids. bundle bytes are separately-canonical (a CBOR
+; array of <= 64 per-item byte strings, each <= 2 MiB, total <= 8 MiB).
+; ===========================================================================
+entry-id = bstr .size (0..128)
+
+; OpenNamespace mode: read_committed carries nothing; the staged modes carry the
+; operation ID and the unguessable 256-bit per-namespace token.
+sync2-mode =
+    ["read_committed"] /
+    ["host_reconcile_staged", bytes-32, bytes-32] /
+    ["replica_into_staged", bytes-32, bytes-32]
+
+sync2-phase = "anchor_to_client" / "client_to_anchor" / "source_to_destination"
+sync2-mode-tag = "read_committed" / "host_reconcile_staged" / "replica_into_staged"
+sync2-admission-subject = "authority" / "bundle" / "entry"
+sync2-frame-name = "open_namespace" / "snapshot_start" / "ids_page" / "need_entries" /
+  "page_needs_complete" / "entries_chunk" / "page_complete" / "direction_complete" /
+  "namespace_complete" / "refuse"
+
+; snapshot_digest = BLAKE3("riot/sync-snapshot/v2" ||
+;   u32be(len(namespace_id)) || namespace_id || u64be(entry_count) ||
+;   u64be(logical_bytes) || for each sorted id: u32be(len(id)) || id)
+; page_digest = digest_v1("riot/sync-ids-page/v2", canonical_bytes(ids_page frame))
+open-namespace = ["open_namespace", uint, bstr .size (0..32), bstr, bytes-32, sync2-mode]
+snapshot-start = ["snapshot_start", sync2-phase, bytes-32, bytes-32, uint, uint]
+ids-page = ["ids_page", sync2-phase, bytes-32, null / entry-id, [*256 entry-id], bool]
+need-entries = ["need_entries", sync2-phase, bytes-32, uint, [*64 entry-id]]
+page-needs-complete = ["page_needs_complete", sync2-phase, bytes-32]
+entries-chunk = ["entries_chunk", sync2-phase, bytes-32, uint, uint, bool, bstr]
+page-complete = ["page_complete", sync2-phase, bytes-32]
+direction-complete = ["direction_complete", sync2-phase, bytes-32]
+namespace-complete = ["namespace_complete", sync2-mode-tag, bytes-32]
+
+; The chunk bundle payload: a canonical CBOR array of per-item byte strings.
+sync2-bundle = [*64 bstr]
+
+; The closed sync refusal matrix. Unlike control-refusal there is NO subject
+; column: Refuse = [code, retryable, retry_after_seconds/null, details]. Only
+; "busy" is retryable (with a nonzero delay); every other code is terminal with a
+; null retry_after. details shape is a closed function of code; unknown
+; code/detail pairings fail decoding.
+sync2-ticket-reason = "signature" / "root" / "structure"
+sync2-refuse = ["refuse", tstr, bool, null / uint, [+ any]]
+; details by code:
+;   unsupported_version    ["version", [*16 uint]]                (sorted ascending)
+;   invalid_ticket         ["ticket", sync2-ticket-reason]
+;   expired_ticket         ["ticket_expiry", uint, uint]
+;   transport_mismatch     ["transport", transport-mode, transport-mode]
+;   namespace_not_member   ["namespace", bytes-32]
+;   manifest_mismatch      ["manifest", bytes-32, bytes-32]
+;   invalid_mode           ["mode", sync2-mode-tag]
+;   operation_not_found    ["operation", bytes-32]
+;   invalid_namespace_token ["namespace_token", bytes-32]
+;   operation_expired      ["operation_expiry", bytes-32, uint, uint]
+;   unexpected_frame       ["frame", sync2-phase, [*sync2-frame-name], sync2-frame-name]
+;   cursor_regression      ["cursor", null / entry-id, entry-id]
+;   page_mismatch          ["page", bytes-32, bytes-32]
+;   snapshot_mismatch      ["snapshot", bytes-32, bytes-32]
+;   stale_source           ["source_state", uint, uint, [*16 bytes-32]]
+;   request_mismatch       ["request", uint]
+;   chunk_mismatch         ["chunk", uint, uint, uint]
+;   frame_oversize         ["encoded_size", uint, uint]
+;   admission_failed       ["admission", sync2-admission-subject]
+;   quota_exceeded         ["quota", uint, limit-value, limit-value]
+;   busy                   ["capacity", uint]
+;   peer_context_changed   ["peer_context", peer-side, bytes-32, null / bytes-32, peer-context-reason]
+
+sync2-frame = open-namespace / snapshot-start / ids-page / need-entries /
+  page-needs-complete / entries-chunk / page-complete / direction-complete /
+  namespace-complete / sync2-refuse

@@ -2331,6 +2331,7 @@ fn map_author_error(error: WillowError) -> MobileError {
         WillowError::InvalidAlert(_)
         | WillowError::NamespaceNotCommunal
         | WillowError::DelegationAreaEscapesArticles
+        | WillowError::DelegationAreaEscapesDirectory
         | WillowError::DelegationAreaEscapesMod => MobileError::InvalidInput,
         WillowError::SealedIdentityInvalid | WillowError::SealedMastheadInvalid => {
             MobileError::InvalidInput

@@ -13,11 +13,20 @@ use riot_core::sync::{ByteSyncOutcome, ByteSyncSession, SyncError, MAX_SYNC_FRAM
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 pub mod iroh;
+pub mod router;
 pub mod seed;
 pub mod ticket;
 
-/// The sync ALPN — the application protocol negotiated on an iroh connection.
+/// The v1 sync ALPN — the reconcile protocol negotiated on an iroh connection.
 pub const ALPN: &[u8] = b"riot/sync/1";
+
+/// The v2 routed-paginated sync ALPN (design "`riot/sync/2`"). The handler is
+/// supplied by the anchor crate; this crate only routes it.
+pub const ALPN_SYNC_V2: &[u8] = b"riot/sync/2";
+
+/// The anchor control-plane ALPN (design "`riot/anchor/1`: Control Plane"). The
+/// exact 13-byte ASCII value bound into the peer-proof transcript.
+pub const ALPN_ANCHOR_V1: &[u8] = b"riot/anchor/1";
 
 #[derive(Debug)]
 pub enum TransportError {
@@ -28,6 +37,19 @@ pub enum TransportError {
     /// The pre-connection gate refused to dial (fail-closed, §5.1-5.3). No
     /// connection was opened — this is a REFUSAL, not a network failure.
     Blocked(ticket::TransportBlocked),
+    /// The peer negotiated an ALPN this endpoint does not route (or none at all).
+    /// The connection is closed WITHOUT allocating a protocol session.
+    UnknownAlpn,
+    /// No session permit was available: the endpoint is at its concurrent-session
+    /// ceiling. The connection is closed without allocating a session.
+    Busy,
+    /// The peer opened a forbidden second application stream (bidirectional) or
+    /// any unidirectional stream. Each connection carries exactly one session and
+    /// one bi-stream; a violation resets and closes the connection.
+    StreamViolation,
+    /// A bounded-lifecycle deadline elapsed (which one is carried). Cancellation
+    /// releases the session permit and all per-session resources.
+    Timeout(router::Deadline),
     Io(std::io::Error),
     Sync(SyncError),
 }
@@ -44,6 +66,12 @@ impl std::fmt::Display for TransportError {
             Self::FrameTooLarge => write!(f, "sync frame exceeds MAX_SYNC_FRAME_BYTES"),
             Self::StreamClosed => write!(f, "peer closed the stream mid-exchange"),
             Self::Blocked(b) => write!(f, "dial refused (fail-closed): {b}"),
+            Self::UnknownAlpn => write!(f, "peer negotiated an unrouted ALPN"),
+            Self::Busy => write!(f, "session ceiling reached; connection refused"),
+            Self::StreamViolation => {
+                write!(f, "peer opened a forbidden second/unidirectional stream")
+            }
+            Self::Timeout(d) => write!(f, "bounded lifecycle deadline elapsed: {d:?}"),
             Self::Io(e) => write!(f, "transport io: {e}"),
             Self::Sync(e) => write!(f, "reconcile error: {e:?}"),
         }

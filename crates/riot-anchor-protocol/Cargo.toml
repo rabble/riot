@@ -1,0 +1,27 @@
+[package]
+name = "riot-anchor-protocol"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Canonical, dependency-neutral wire layer for the Riot public community anchor network."
+license = "AGPL-3.0-or-later"
+
+# Dependency-neutral by contract: this crate is the shared canonical frames,
+# records, state enums, and codecs. It depends on `riot-core` with default
+# features DISABLED (so the client-side SQLite/rusqlite feature never enters the
+# graph) and on nothing that ties it to storage, HTTP, an async runtime, a P2P
+# transport, FFI, or a platform. `tests/dependency_boundary.rs` enforces this.
+[dependencies]
+riot-core = { path = "../riot-core", default-features = false }
+minicbor = { workspace = true }
+blake3 = { workspace = true }
+# Ed25519 root-signature verification for `PublicSiteTicketV2Core` admission.
+# This is the SAME primitive the rest of the workspace (riot-core, willow25)
+# already uses, and it is pure-Rust (wasm-safe), so it does not violate the
+# crate's dependency-neutrality contract. It DOES add a Cargo.lock dependency
+# edge, which changes the lockfile the `validate-contracts` xtask pins — the
+# manifest sha256 must be refreshed when this lands.
+ed25519-dalek = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
