@@ -27,8 +27,8 @@ use riot_core::site::{
 };
 use riot_core::willow::site_paths::{ARTICLES_COMPONENT, MOD_COMPONENT};
 use riot_core::willow::{
-    encode_capability, system_snapshot, ClockSnapshot, OwnedMasthead, Path, SignedWillowEntry,
-    SubspaceId,
+    encode_capability, system_snapshot, tai_j2000_micros_from_unix_seconds, ClockSnapshot,
+    OwnedMasthead, Path, SignedWillowEntry, SubspaceId,
 };
 use willow25::groupings::{Area, Keylike, TimeRange};
 
@@ -181,21 +181,30 @@ pub fn delegate_editor_section(
             .map_err(|_| MobileError::InvalidInput)?;
         let editor_id = subspace_id_from_hex(&editor_subspace_id)?;
 
-        let now = system_snapshot()
-            .map_err(|_| MobileError::ClockUnavailable)?
-            .unix_seconds;
+        let snap = system_snapshot().map_err(|_| MobileError::ClockUnavailable)?;
         // A degenerate or already-elapsed time box mints nothing (and avoids an
         // inverted-range construction). The owner must give the editor real time.
-        if expires_unix_seconds <= now {
+        // Compared in the product wall-clock unit the caller supplied.
+        if expires_unix_seconds <= snap.unix_seconds {
             return Err(MobileError::InvalidInput);
         }
+
+        // The cap's TimeRange MUST be in the entry-time unit — TAI/J2000
+        // microseconds — not Unix seconds. Real Willow entries are stamped in
+        // micros (~8.3e14 for 2026); a seconds bound (~1.7e9) would exclude every
+        // real editorial entry, so the cap would authorise nothing. Convert both
+        // bounds through the same clock path the entry writer uses. The seconds
+        // guard above and the conversion's monotonicity keep now_micros < expires.
+        let now_micros = snap.tai_j2000_micros;
+        let expires_micros = tai_j2000_micros_from_unix_seconds(expires_unix_seconds)
+            .map_err(|_| MobileError::InvalidInput)?;
 
         let path = Path::from_slices(&[ARTICLES_COMPONENT, section.as_bytes()])
             .map_err(|_| MobileError::InvalidInput)?;
         let area = Area::new(
             Some(editor_id.clone()),
             path,
-            TimeRange::new(now.into(), Some(expires_unix_seconds.into())),
+            TimeRange::new(now_micros.into(), Some(expires_micros.into())),
         );
 
         let cap = masthead

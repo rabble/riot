@@ -52,6 +52,19 @@ fn snapshot_from_unix_duration(
         .and_then(|seconds| snapshot_from_unix_seconds_internal(seconds, 60))
 }
 
+/// Convert a UTC Unix-seconds wall-clock reading into TAI/J2000 microseconds —
+/// the unit every Willow entry `Timestamp` uses (see `tai_j2000_micros`). This
+/// is the production converter for turning a caller-supplied wall-clock instant
+/// (e.g. a capability expiry) into the entry-time domain; it takes the SAME
+/// pinned-hifitime path as the live snapshot, so a converted expiry and a real
+/// entry timestamp are directly comparable. Out-of-range / pre-J2000 readings
+/// map to `CLOCK_UNAVAILABLE`. The conversion is strictly increasing in
+/// `unix_seconds`, so ordering is preserved across the unit change.
+pub fn tai_j2000_micros_from_unix_seconds(unix_seconds: u64) -> Result<u64, WillowError> {
+    let seconds = i64::try_from(unix_seconds).map_err(|_| WillowError::ClockUnavailable)?;
+    Ok(snapshot_from_unix_seconds_internal(seconds, 0)?.tai_j2000_micros)
+}
+
 // ---------------------------------------------------------------------------
 // Conformance-only injection surface (feature-gated; absent from release).
 // ---------------------------------------------------------------------------
