@@ -597,4 +597,98 @@ mod tests {
         // Re-encoding the decoded value reproduces the exact bytes.
         assert_eq!(encode_site_manifest(&decoded).unwrap(), bytes);
     }
+
+    #[test]
+    fn non_empty_sections_round_trip() {
+        let mut m = sample_manifest();
+        m.sections = vec![b"news".to_vec(), b"analysis".to_vec()];
+        let bytes = encode_site_manifest(&m).unwrap();
+        assert_eq!(decode_site_manifest(&bytes).unwrap().sections, m.sections);
+        assert_eq!(
+            encode_site_manifest(&decode_site_manifest(&bytes).unwrap()).unwrap(),
+            bytes
+        );
+    }
+
+    /// Encode top-level keys 0-6 exactly as `encode_site_manifest` does, but
+    /// always under a fixed `map(8)` header (the caller appends key 7).
+    /// Mirrors the real encoder's key-by-key shape so the only difference
+    /// from a genuine encoding is what the caller does with key 7.
+    fn encode_manifest_prefix(buffer: &mut Vec<u8>, m: &SiteManifestV1) {
+        let mut e = Encoder::new(buffer);
+        e.map(8).unwrap();
+        e.u8(0).unwrap().str(SITE_MANIFEST_SCHEMA).unwrap();
+        e.u8(1).unwrap().bytes(&m.root).unwrap();
+        e.u8(2).unwrap().array(m.members.len() as u64).unwrap();
+        for member in &m.members {
+            e.map(4).unwrap();
+            e.u8(0).unwrap().bytes(&member.ns).unwrap();
+            e.u8(1).unwrap().u64(member.role.to_code()).unwrap();
+            e.u8(2).unwrap().u64(member.rule.to_code()).unwrap();
+            e.u8(3).unwrap().u64(member.display.to_code()).unwrap();
+        }
+        e.u8(3)
+            .unwrap()
+            .array(m.moderation_path.len() as u64)
+            .unwrap();
+        for component in &m.moderation_path {
+            e.bytes(component).unwrap();
+        }
+        e.u8(4).unwrap().map(2).unwrap();
+        e.u8(0)
+            .unwrap()
+            .array(m.transport_policy.allow.len() as u64)
+            .unwrap();
+        for transport in &m.transport_policy.allow {
+            e.u64(transport.to_code()).unwrap();
+        }
+        e.u8(1)
+            .unwrap()
+            .u64(m.transport_policy.require.to_code())
+            .unwrap();
+        e.u8(5).unwrap().u64(m.version).unwrap();
+        e.u8(6).unwrap().u64(m.layout.to_code()).unwrap();
+    }
+
+    /// Hand-encode a manifest carrying key 7 present with a 0-length array —
+    /// the shape `encode_site_manifest` never produces (it omits key 7
+    /// entirely when `sections` is empty).
+    fn encode_manifest_with_forced_empty_sections_key() -> Vec<u8> {
+        let m = sample_manifest();
+        let mut buffer = Vec::new();
+        encode_manifest_prefix(&mut buffer, &m);
+        let mut e = Encoder::new(&mut buffer);
+        e.u8(7).unwrap().array(0).unwrap();
+        buffer
+    }
+
+    /// Hand-encode a manifest whose key-7 array header claims `claimed_len`
+    /// elements but supplies none — proves the bound is checked before any
+    /// allocation/element read is attempted.
+    fn encode_manifest_claiming_section_count(claimed_len: u64) -> Vec<u8> {
+        let m = sample_manifest();
+        let mut buffer = Vec::new();
+        encode_manifest_prefix(&mut buffer, &m);
+        let mut e = Encoder::new(&mut buffer);
+        e.u8(7).unwrap().array(claimed_len).unwrap();
+        buffer
+    }
+
+    #[test]
+    fn key7_present_but_empty_array_is_rejected_non_canonical() {
+        let bytes = encode_manifest_with_forced_empty_sections_key();
+        assert!(matches!(
+            decode_site_manifest(&bytes),
+            Err(SiteManifestError::NonCanonical)
+        ));
+    }
+
+    #[test]
+    fn oversize_section_count_rejected_before_alloc() {
+        let bytes = encode_manifest_claiming_section_count(MAX_SECTIONS as u64 + 1);
+        assert!(matches!(
+            decode_site_manifest(&bytes),
+            Err(SiteManifestError::TooManyEntries("sections"))
+        ));
+    }
 }
