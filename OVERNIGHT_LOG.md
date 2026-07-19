@@ -119,3 +119,25 @@ Delivered tonight: the UX state-refresh doc (Task 1), the trust-copy verificatio
 - Assumption: preserving the approved pilot requirements in the design is sufficient until a pilot
   is scheduled; keeping half-executable pilot work in this active plan was rejected because it
   repeatedly caused false completeness claims and depended on unavailable humans/fixtures.
+
+### Task 2 — plan gate iteration 1 (FAIL) and repair
+
+- Three fresh isolated read-only Codex reviewers ran independently through the external-tools
+  adapter because the built-in agent tree was at its thread limit. Verdicts: Feasibility FAIL,
+  Completeness FAIL, Scope/Alignment FAIL.
+- Repaired every blocking finding:
+  - added WU-020P so daemon and isolated renderer share one dependency-neutral canonical
+    `AnchorWebSnapshotV1` rather than depending on the server or duplicating a grammar;
+  - added WU-012C for real Release-fails-closed bootstrap verification/injection into iOS and
+    Android application packages, plus required WU-022A/WU-023A runtime loading;
+  - replaced the ineffective nested generic `.dockerignore` with Dockerfile-specific ignore files
+    while retaining repository root as build context;
+  - made OCI image build/inspection and a live local isolated Compose readiness/isolation/restart/
+    recovery probe mandatory. Missing Docker blocks that future WU; static config cannot pass it;
+  - replaced every gate-flagged native prose check with exact xcodebuild/Gradle/PlistBuddy commands;
+  - restricted WU-027 to the named active non-pilot matrix and existing production seams, and made it
+    test-only. A missing production seam returns to a separately scoped owning WU.
+- This revision adds two focused units (WU-012C and WU-020P); there are now 46 active units, each
+  still capped at five declared files.
+- Guardrail note: the live Compose commands are future local acceptance criteria in the plan. This
+  overnight session did not run them, deploy, touch production, or delete any real data.

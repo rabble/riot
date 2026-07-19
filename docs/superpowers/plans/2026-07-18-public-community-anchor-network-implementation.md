@@ -31,7 +31,7 @@ WU-001 ─→ WU-002 ─→ WU-003A ─→ WU-003B ─→ WU-004 ─→ WU-005 �
                                                    └─────────┴──────────────→ WU-007
 
 WU-001 ─→ WU-008 ─→ WU-009 ─→ WU-010A ─→ WU-010B ─┐
-WU-003B ─→ WU-011A ─→ WU-011B ─→ WU-011C ─→ WU-012A ─→ WU-012B
+WU-003B ─→ WU-011A ─→ WU-011B ─→ WU-011C ─→ WU-012A ─→ WU-012B ─→ WU-012C
 WU-005 ────────────────────────────────→ WU-011C
 WU-009 ─────────────────────────────────────────────→ WU-012A
                                                       │
@@ -47,10 +47,12 @@ WU-007/WU-013B/WU-015/WU-018A ────────────────�
 WU-007/WU-014/WU-015/WU-015B/WU-016 ───────────────┐
 WU-017B/WU-018B ────────────────────────────────────┴→ WU-019
 
-WU-015/WU-016/WU-017B ─→ WU-020A ─→ WU-020B ─→ WU-021A ─→ WU-021B
+WU-017B ─→ WU-020P
+WU-015/WU-016/WU-017B/WU-020P ─→ WU-020A ─→ WU-020B ─→ WU-021A ─→ WU-021B
+WU-020P ─────────────────────────────────→ WU-020B
 WU-019/WU-017B ─────────────────────────────────────────────→ WU-021B
-WU-012B/WU-021B ─→ WU-022A ─→ WU-022B ─→ WU-022C ─→ WU-022C2 ─→ WU-022D
-WU-012B/WU-021B ─→ WU-023A ─→ WU-023B ─→ WU-023C
+WU-012C/WU-021B ─→ WU-022A ─→ WU-022B ─→ WU-022C ─→ WU-022C2 ─→ WU-022D
+WU-012C/WU-021B ─→ WU-023A ─→ WU-023B ─→ WU-023C
 WU-019/WU-020B/WU-021B ─→ WU-026A ─→ WU-026B
 WU-016/WU-018B/WU-019/WU-020B/WU-021B/WU-022D/WU-023C/WU-026B ─→ WU-027
 WU-027 ─→ WU-028
@@ -66,12 +68,12 @@ Parallel execution is allowed only where this graph and non-overlapping file sco
 | Slice 2 — routed/paginated sync, immutable snapshots, exact refusals, one-way/staged directions | WU-005, WU-007, WU-015 |
 | Slice 3 — scalable client storage, profile worker/lifecycle, anchor repository, idempotent control, CAS/receipt recovery, atomic ordinary listing, emergency removal | WU-008–WU-010B, WU-013A–WU-016 |
 | Slice 4 — signed plural feeds, authenticated cursors, descriptor rotation, configured-peer attestation, bounded gossip | WU-011C, WU-017B–WU-018B |
-| Slice 5 — immutable text projection, hostile-output validation, ordinary HTTPS, byte-identical v2 handoff and legacy compatibility | WU-020A–WU-021B |
-| Slice 6 — process runtime, cancellable UniFFI states, durable background reconciliation, defaults/configuration, Explore/Follow/Publish/relist/source-change on both native platforms, and shared-Swift macOS compatibility | WU-009, WU-011A–WU-012B, WU-022A–WU-023C |
+| Slice 5 — immutable text projection, hostile-output validation, ordinary HTTPS, byte-identical v2 handoff and legacy compatibility | WU-020P–WU-021B |
+| Slice 6 — process runtime, cancellable UniFFI states, durable background reconciliation, verified runtime bootstrap packaging, defaults/configuration, Explore/Follow/Publish/relist/source-change on both native platforms, and shared-Swift macOS compatibility | WU-009, WU-011A–WU-012C, WU-022A–WU-023C |
 | Slice 7 — all compiled ceilings, ingress/load shedding, deployment/recovery, deterministic system/load proof | WU-013A–WU-013B, WU-016, WU-019, WU-026A–WU-028 |
 | Definition of Done — plural independent accountless hosting and failure survival | WU-012A–WU-012B, WU-015, WU-018A–WU-018B, WU-022A–WU-023C, WU-027 |
 | Definition of Done — no hosting/listing coupling; atomic listing/replay, owner recovery, and exact Meadowcap authority | WU-003A–WU-003B, WU-015–WU-017B |
-| Definition of Done — root-signed cold bootstrap, durable floors, exact O/C/W local/anchor atomicity | WU-003B, WU-008, WU-011A–WU-011B, WU-013A–WU-015 |
+| Definition of Done — root-signed cold bootstrap, durable floors, exact O/C/W local/anchor atomicity | WU-003B, WU-008, WU-011A–WU-012C, WU-013A–WU-015 |
 | Definition of Done — recoverable control, removal, checkpoint, rotation, replica-source and startup lifecycles | WU-004, WU-014–WU-018B |
 | Definition of Done — bounded public iroh/HTTPS, renderer, and operational resource use | WU-007, WU-016, WU-019–WU-021B, WU-026A–WU-027 |
 | Definition of Done — typed post-consent storage/recovery and durable per-destination outcomes | WU-008–WU-012B, WU-022A–WU-023B |
@@ -369,7 +371,9 @@ pub enum Sync2Action { Send(Sync2Frame), Admit(EntriesChunk), PromoteDirection, 
 
 - [ ] **RED:** Add router tests covering every ALPN, unknown ALPN, stream-count violations, trickle/stall deadlines, permit release, and deterministic exporter context.
 - [ ] **GREEN:** Refactor endpoint binding and accept into `AlpnRouter`, retaining the sync/1 wrapper.
-- [ ] Run `cargo test -p riot-transport` and host-target feature checks here; WU-012B performs iOS/Android iroh/Tokio cross-compilation once `riot-ffi` actually reaches `riot-client-net`.
+- [ ] Run `cargo test -p riot-transport --all-features` and
+  `cargo check -p riot-transport --all-targets --all-features`; WU-012B performs iOS/Android
+  iroh/Tokio cross-compilation once `riot-ffi` actually reaches `riot-client-net`.
 - [ ] Commit as `feat(transport): route bounded anchor protocols`.
 
 ### WU-008: Scalable client site repository and migrations
@@ -491,7 +495,7 @@ pub enum LocalMutationOutcome { Busy { active_operation_id: [u8; 32], retry_afte
 
 - [ ] **RED:** Add concurrent mutation, queued/running close, child-handle-after-close, same-path reopen, endpoint-survives-profile-close, timeout recovery, and exact close replay tests.
 - [ ] **GREEN:** Add `MobileProfileRuntime`, async close export, runtime states, cancellable-operation registry, and strict drain/revoke/join order over WU-010A's leases.
-- [ ] Run all `riot-ffi` tests, especially persistence, imports, sync, registry, and close lifecycle.
+- [ ] Run `cargo test -p riot-ffi --all-features`.
 - [ ] **Human checkpoint B:** Present migration/backup proof, lock-order instrumentation, close traces, and existing-feature regression results.
 - [ ] Commit as `refactor(ffi): add explicit profile close lifecycle`.
 
@@ -626,11 +630,51 @@ pub enum LocalMutationOutcome { Busy { active_operation_id: [u8; 32], retry_afte
 
 - [ ] **RED:** Add FFI contract tests for every enum variant, sorted map encoding, callback terminality, consent/retry/cancel, weak lease, process-runtime lifetime, bounded background-run deadline, and close interaction.
 - [ ] **GREEN:** Export WU-012A records, enums, callbacks/streams, and operation handles through `anchor_ffi.rs`; extend the native build script's dependency-closure assertion to require `riot-client-net`/iroh/Tokio and reject server-only crates.
-- [ ] Run `cargo test -p riot-ffi --test anchor_operation_contract`, the full `riot-ffi` suite, and `sh scripts/conference/build-native-core.sh` for every checked-in Apple/Android target.
+- [ ] Run `cargo test -p riot-ffi --test anchor_operation_contract --all-features`,
+  `cargo test -p riot-ffi --all-features`, and `sh scripts/conference/build-native-core.sh`.
 - [ ] **Human checkpoint A:** Present protocol vectors, Cargo feature graphs, ALPN traces, native
   iOS/Android iroh/Tokio cross-compilation, and acceptance of the operator-supplied production
   bootstrap resource.
 - [ ] Commit as `feat(ffi): expose typed plural anchor operations`.
+
+### WU-012C: Production bootstrap verification and native resource injection
+
+**Spec:** Anchor Bootstrap and Management; release resource fail-closed contract.
+
+**Files:**
+
+- Modify: `crates/riot-ffi/src/anchor_ffi.rs`
+- Create: `crates/riot-ffi/tests/anchor_bootstrap_contract.rs`
+- Modify: `apps/ios/Riot.xcodeproj/project.pbxproj`
+- Modify: `apps/android/app/build.gradle.kts`
+- Create: `scripts/anchor/bootstrap-resource-contract.sh`
+
+**DoD:**
+
+- UniFFI exposes the canonical bootstrap verifier/parser from WU-004/WU-006 without transferring
+  signature, descriptor-chain, diversity-floor, or development-resource policy to Swift/Kotlin.
+- Debug/test builds may embed the visibly development-only fixture. Release builds require
+  `RIOT_ANCHOR_BOOTSTRAP_FILE`, copy it as the single runtime bootstrap resource, verify it during the
+  build, and fail before packaging if it is absent, development-marked, unsigned, expired,
+  below three descriptors/two operators/two failure domains, or mismatched after copy.
+- The iOS application resources phase and Android application assets—not only RiotTests/host-JVM
+  tests—contain the injected runtime resource. Neither build file references an operator-specific
+  source path or commits production bytes.
+- WU-022A and WU-023A load this packaged resource through the generated verifier before constructing
+  any directory/host client; no hard-coded host list exists in native code.
+
+- [ ] **RED:** Add `anchor_bootstrap_contract.rs` and `bootstrap-resource-contract.sh`; run both
+  against Debug and Release packaging and observe that application targets lack a verified runtime
+  bootstrap and Release does not fail closed.
+- [ ] **GREEN:** Export the verifier and add deterministic resource-copy/verification build phases
+  for iOS and Android. The contract creates an ephemeral fixed-test signed input, proves it reaches
+  both application packages byte-identically, proves the development fixture is rejected in Release,
+  and proves absence/tampering fails before packaging.
+- [ ] Run `cargo test -p riot-ffi --test anchor_bootstrap_contract`,
+  `sh scripts/anchor/bootstrap-resource-contract.sh`,
+  `xcodebuild build -project apps/ios/Riot.xcodeproj -scheme Riot -configuration Debug -destination 'platform=iOS Simulator,name=iPhone 17 Pro,OS=26.2,arch=arm64' -derivedDataPath build/ios-app-derived`,
+  and `(cd apps/android && ./gradlew :app:assembleDebug)`.
+- [ ] Commit as `build(native): inject verified anchor bootstrap resources`.
 
 ### WU-013A: Anchor crate and forward-only schema
 
@@ -888,6 +932,33 @@ must route the real service implementations; stub handlers are not an acceptable
 - [ ] Run `cargo test -p riot-anchor --test ingress_limits --test control_prepare --test hosting_commit --test hosting_failpoints --test listing_submit --test listing_failpoints --test removal_reserve --test checkpoint_recovery --test directory_feed --test peer_auth`.
 - [ ] Commit as `feat(anchor): serve bounded public ingress`.
 
+### WU-020P: Dependency-neutral web snapshot contract
+
+**Spec:** Safe Web Projection typed daemon→renderer boundary.
+
+**Files:**
+
+- Create: `crates/riot-anchor-protocol/src/web_snapshot.rs`
+- Modify: `crates/riot-anchor-protocol/src/lib.rs`
+- Modify: `crates/riot-anchor-protocol/schema/riot-anchor-v1.cddl`
+- Create: `crates/riot-anchor-protocol/tests/web_snapshot_vectors.rs`
+
+**DoD:**
+
+- `AnchorWebSnapshotV1` and its bounded nested text/route/record types live in the dependency-light
+  protocol crate, have canonical positional CBOR and hostile/golden vectors, and contain no database,
+  network, filesystem, credentials, owner HTML, or executable content.
+- Both daemon and renderer depend on this one type/codec. The renderer never depends on
+  `riot-anchor`; the daemon and renderer cannot define parallel snapshot grammars.
+
+- [ ] **RED:** Add size/count/text/path/profile/unknown-field/canonicality vectors and a dependency
+  test proving the snapshot module does not pull SQLite/network/server crates; observe the missing
+  shared type.
+- [ ] **GREEN:** Implement the bounded snapshot codec/CDDL and export it from
+  `riot-anchor-protocol`.
+- [ ] Run `cargo test -p riot-anchor-protocol --test web_snapshot_vectors --test dependency_boundary`.
+- [ ] Commit as `feat(anchor): define shared web snapshot contract`.
+
 ### WU-020A: Typed web snapshot and daemon publication service
 
 **Spec:** Safe Web Projection steps 1 and 4; immutable daemon ownership transfer.
@@ -900,7 +971,8 @@ must route the real service implementations; stub handlers are not an acceptable
 
 **DoD:**
 
-- Rust reads one admitted immutable repository snapshot and emits bounded typed `AnchorWebSnapshotV1`.
+- Rust reads one admitted immutable repository snapshot and emits WU-020P's bounded
+  `riot_anchor_protocol::AnchorWebSnapshotV1`.
 - The daemon validates output manifests and performs no-follow copy/hash/fsync/read-only ownership transfer before atomic generation publication.
 - Output validation rejects links/devices/sockets/path escapes/case collisions/extras/MIME/size/count/digest changes and post-validation mutation.
 - Direct projections follow currently hosted admitted records: unlisting or ticket expiry leaves them readable, hosting eviction removes them, and record/manifest/moderation/hosting changes invalidate exactly the affected content generation.
@@ -923,7 +995,8 @@ must route the real service implementations; stub handlers are not an acceptable
 
 **DoD:**
 
-- Renderer has no database/network code or credentials and reads only `AnchorWebSnapshotV1`.
+- Renderer depends on `riot-anchor-protocol` only, has no database/network/server code or credentials,
+  and reads only WU-020P's `AnchorWebSnapshotV1`.
 - Text/attribute escaping, canonical-ID routes, exact hashed stylesheet, no executable owner content, and unknown-profile omission are enforced.
 - Output manifest lists every path/length/BLAKE3/MIME and stays within file/byte/inode limits.
 - Existing gateway fixtures remain byte-pinned and unchanged.
@@ -1006,13 +1079,19 @@ not exercised only as detached functions.
 - Publish maintains stable per-anchor rows for hosting/listing/unlisting/refresh/source-change/relist/countdown/cancellation/receipts.
 - Host management starts with verified defaults and supports add/verify/consent, enable/disable/remove/reset and replacement semantics.
 - `RiotProfileRepository` exposes generated async anchor operations and an awaited, idempotent profile close without relying on wrapper disposal.
+- The model loads WU-012C's packaged runtime bootstrap through the generated verifier before
+  constructing anchor clients; missing/invalid/development-in-Release resources produce a typed
+  unavailable state without dialing.
 - iOS and macOS RiotKit targets compile the new shared anchor model in the same commit that creates it.
 - VoiceOver/keyboard focus is retained, rows do not reorder under focus, live announcements are polite, countdown announcements are sparse, reduced motion is respected, and QR has copy/share alternatives.
 
 - [ ] **RED:** Add injected-port model tests for every state/copy/action, focus-preserving row identity, install-return, cancellation, recovery, configuration intent, and awaited close ordering.
 - [ ] **GREEN:** Implement pure model projections in `AnchorFlows.swift`, expose generated operations/async close through the repository, and register the shared source in both Apple RiotKit targets without refactoring the existing local app directory.
 - [ ] Update project files only in the commit work unit if sources are not synchronized automatically; validate `git diff` excludes user workspace state.
-- [ ] Run iOS RiotKit tests and the macOS RiotKit compile target.
+- [ ] Run
+  `xcodebuild test -project apps/ios/Riot.xcodeproj -scheme RiotKit -destination 'platform=iOS Simulator,name=iPhone 17 Pro,OS=26.2,arch=arm64' -derivedDataPath build/ios-derived -only-testing:RiotTests/AnchorFlowsTests`
+  and
+  `xcodebuild build -project apps/macos/Riot.xcodeproj -scheme RiotKit-macOS -destination 'platform=macOS' -derivedDataPath build/macos-derived`.
 - [ ] Commit as `feat(ios): add public host states and profile lifecycle`.
 
 ### WU-022B: iOS Explore, Follow, Publish, handoff, and host management
@@ -1036,7 +1115,10 @@ not exercised only as detached functions.
 
 - [ ] **RED:** Extend profile recovery/lifecycle tests with injected close ports for lock, reset, replacement, concurrent close, timeout-recoverable, and same-path reopen; extend WU-022A's suite with handoff and shell tests.
 - [ ] **GREEN:** Wire the shell, app URL lifecycle, model reset/replacement, handoff consent, and host flows through WU-022A's repository/model adapter.
-- [ ] Run RiotKit tests and build the Riot app.
+- [ ] Run
+  `xcodebuild test -project apps/ios/Riot.xcodeproj -scheme RiotKit -destination 'platform=iOS Simulator,name=iPhone 17 Pro,OS=26.2,arch=arm64' -derivedDataPath build/ios-derived -only-testing:RiotTests/AnchorFlowsTests -only-testing:RiotTests/ProfileRecoveryTests`
+  and
+  `xcodebuild build -project apps/ios/Riot.xcodeproj -scheme Riot -destination 'platform=iOS Simulator,name=iPhone 17 Pro,OS=26.2,arch=arm64' -derivedDataPath build/ios-app-derived`.
 - [ ] Commit as `feat(ios): integrate public host flows and awaited close`.
 
 ### WU-022C: iOS process runtime and bounded background reconciliation
@@ -1061,7 +1143,11 @@ not exercised only as detached functions.
 
 - [ ] **RED:** Add injected process-runtime/background-task tests for startup once, multiple profiles, close ordering, due/not-due, duplicate wake, expiration, restart resumption, persisted retry, and next-task scheduling.
 - [ ] **GREEN:** Add the thin task adapter to the iOS Xcode target and wire process-runtime/profile-lease lifetime through `RiotApp`/`RiotAppModel`.
-- [ ] Run RiotKit tests and build the Riot app; verify the new source appears in the compiled target.
+- [ ] Run
+  `xcodebuild test -project apps/ios/Riot.xcodeproj -scheme RiotKit -destination 'platform=iOS Simulator,name=iPhone 17 Pro,OS=26.2,arch=arm64' -derivedDataPath build/ios-derived -only-testing:RiotTests/ProfileRecoveryTests`
+  and
+  `xcodebuild build -project apps/ios/Riot.xcodeproj -scheme Riot -destination 'platform=iOS Simulator,name=iPhone 17 Pro,OS=26.2,arch=arm64' -derivedDataPath build/ios-app-derived`;
+  `ProfileRecoveryTests` must instantiate `AnchorBackgroundTasks`, so zero target membership is a compile failure.
 - [ ] Commit as `feat(ios): run bounded background anchor reconciliation`.
 
 ### WU-022C2: iOS background registration contract
@@ -1080,7 +1166,10 @@ not exercised only as detached functions.
 
 - [ ] **RED:** Add a bundle-configuration contract test that reads the built plist and fails while WU-022C's identifier is absent.
 - [ ] **GREEN:** Declare the exact permitted identifier in `Info.plist` without widening background capabilities.
-- [ ] Run RiotKit tests, inspect the built plist, and build the Riot app.
+- [ ] Run
+  `xcodebuild test -project apps/ios/Riot.xcodeproj -scheme RiotKit -destination 'platform=iOS Simulator,name=iPhone 17 Pro,OS=26.2,arch=arm64' -derivedDataPath build/ios-derived -only-testing:RiotTests/ProfileRecoveryTests`,
+  `xcodebuild build -project apps/ios/Riot.xcodeproj -scheme Riot -destination 'platform=iOS Simulator,name=iPhone 17 Pro,OS=26.2,arch=arm64' -derivedDataPath build/ios-app-derived`, and
+  `/usr/libexec/PlistBuddy -c 'Print :BGTaskSchedulerPermittedIdentifiers' build/ios-app-derived/Build/Products/Debug-iphonesimulator/Riot.app/Info.plist | grep -Fx 'org.riot.anchor.reconcile'`.
 - [ ] Commit as `build(ios): declare bounded anchor reconciliation task`.
 
 ### WU-022D: macOS shared-Swift integration closure
@@ -1119,10 +1208,12 @@ not exercised only as detached functions.
 - Host-JVM-testable Android models expose the same state distinctions, consent, per-anchor outcomes, host management, handoff preservation, retry/cancel/recovery, copy, and accessibility semantics as iOS.
 - Content descriptions distinguish partial/stale/refused/expired/unreachable; focus row keys stay stable; countdown and reduced-motion behavior match the contract.
 - `RiotController` exposes the generated async anchor port without duplicating Rust policy, and Gradle contains the coroutine runtime required by generated UniFFI bindings.
+- `AnchorFlows` loads WU-012C's packaged runtime bootstrap through the generated verifier before
+  constructing anchor clients; invalid/missing resources remain typed unavailable without dialing.
 
 - [ ] **RED:** Add fake-port tests mirroring the iOS matrix and verify no state collapses to generic error/zero results.
 - [ ] **GREEN:** Implement pure state mapping and view builders in `AnchorFlows.kt`, expose the generated port from `RiotController`, and add generated async-binding coroutine support to Gradle.
-- [ ] Run Gradle unit tests and assemble after regenerating native bindings.
+- [ ] Run `(cd apps/android && ./gradlew :app:testDebugUnitTest :app:assembleDebug)`.
 - [ ] Commit as `feat(android): add plural public host state models`.
 
 ### WU-023B: Android anchor flows and `riot:` handoff integration
@@ -1146,7 +1237,7 @@ not exercised only as detached functions.
 
 - [ ] **RED:** Add an instrumentation test that launches a canonical `riot:` v2 intent, verifies byte-preserving pending state and consent, then covers cancel, recreation, malformed input, and successful apply; extend binding semantics with cancel-before-close, awaited profile shutdown, idempotent second close, and no post-close callback cases.
 - [ ] **GREEN:** Add the manifest filter, make `RiotController` the explicit async profile-shutdown owner, and wire `MainActivity` to await that owner while integrating WU-023A models/generated ports for first-run, switcher, host management, and handoff lifecycle.
-- [ ] Run Gradle unit, assemble, AndroidTest assemble, and connected tests.
+- [ ] Run `(cd apps/android && ./gradlew :app:testDebugUnitTest :app:assembleDebug :app:assembleDebugAndroidTest :app:connectedDebugAndroidTest)`.
 - [ ] Commit as `feat(android): integrate public host flows and handoff`.
 
 ### WU-023C: Android process runtime and bounded background reconciliation
@@ -1170,7 +1261,7 @@ not exercised only as detached functions.
 
 - [ ] **RED:** Add fake runtime/worker tests for startup once, profile-before-runtime close, due/not-due, unique work, stop/timeout, process restart, persisted retry, and exact rescheduling.
 - [ ] **GREEN:** Add the application runtime owner, WorkManager adapter/configuration, lifecycle wiring, and manifest registration over generated UniFFI calls.
-- [ ] Run Gradle unit, assemble, AndroidTest assemble, and connected tests.
+- [ ] Run `(cd apps/android && ./gradlew :app:testDebugUnitTest :app:assembleDebug :app:assembleDebugAndroidTest :app:connectedDebugAndroidTest)`.
 - [ ] **Human checkpoint D:** Demonstrate web→iOS/Android handoff, background restart/resume, partial-source Explore, one-anchor failover, per-row publish cancellation, and accessible relist/source-change states.
 - [ ] Commit as `feat(android): run bounded background anchor reconciliation`.
 
@@ -1186,8 +1277,8 @@ The image contract builds the completed public service, not an earlier daemon wi
 
 - Create: `deploy/riot-anchor/Dockerfile.anchor`
 - Create: `deploy/riot-anchor/Dockerfile.renderer`
-- Create: `deploy/riot-anchor/.dockerignore`
-- Create: `deploy/riot-anchor/README.md`
+- Create: `deploy/riot-anchor/Dockerfile.anchor.dockerignore`
+- Create: `deploy/riot-anchor/Dockerfile.renderer.dockerignore`
 - Create: `scripts/anchor/image-contract.sh`
 
 **DoD:**
@@ -1199,15 +1290,21 @@ The image contract builds the completed public service, not an earlier daemon wi
   `SOURCE_DATE_EPOCH` and revision argument.
 - The daemon and renderer are separate images. The renderer image contains no daemon, SQLite,
   network client, shell, or credential-loading surface.
-- Static contract checks run without a daemon; when a local OCI builder is available the same script
-  builds both images from the locked workspace and inspects user, entrypoint, layers, exposed ports,
-  and filesystem allowlists.
+- Both builds use repository root as context with Dockerfile-specific deny-by-default ignore files,
+  so the locked workspace manifests and only the source/assets needed by that image are available;
+  the nested ignore files are selected by Docker for their matching `-f` path.
+- `image-contract.sh` always requires a local OCI builder, builds both images from the locked
+  workspace, and inspects user, entrypoint, layers, exposed ports, and filesystem allowlists.
+  Missing Docker/buildx is a blocking external prerequisite, never a passing static-only mode.
 
 - [ ] **RED:** Add `scripts/anchor/image-contract.sh`; run it and observe failure because both
   Dockerfiles and their pinned/locked/non-root contracts are absent.
-- [ ] **GREEN:** Add both multi-stage Dockerfiles, the deny-by-default build context, and documented
-  build arguments. Make the script fail on an unpinned `FROM`, unlocked Cargo build, root user,
-  unexpected runtime binary, renderer network tool/library, writable root, or undeclared port.
+- [ ] **GREEN:** Add both multi-stage Dockerfiles and matching Dockerfile-specific deny-by-default
+  ignore files. Make the script run
+  `docker build --file deploy/riot-anchor/Dockerfile.anchor --tag riot-anchor:test .` and
+  `docker build --file deploy/riot-anchor/Dockerfile.renderer --tag riot-anchor-renderer:test .`,
+  then fail on an unpinned `FROM`, unlocked Cargo build, root user, unexpected runtime binary,
+  renderer network tool/library, writable root, undeclared port, or missing required workspace input.
 - [ ] Run `sh scripts/anchor/image-contract.sh`.
 - [ ] Commit as `build(anchor): add reproducible daemon and renderer images`.
 
@@ -1236,10 +1333,20 @@ The image contract builds the completed public service, not an earlier daemon wi
 
 - [ ] **RED:** Add `scripts/anchor/deployment-contract.sh` first and observe it fail on the absent Compose/config/runbook. It must reject shared network, writable root, missing quota/seccomp/readiness, unbounded log sink, or missing secret path.
 - [ ] **GREEN:** Add deployment manifests/config/runbook and wire only the daemon/renderer images and probes.
-- [ ] Run `sh scripts/anchor/image-contract.sh`, `sh scripts/anchor/deployment-contract.sh`, and
-  `docker compose -f deploy/riot-anchor/compose.yaml config --quiet`. If Docker is unavailable,
-  record that external-tool blocker; the two shell contracts still must pass and this WU cannot be
-  marked operationally rehearsed until the Compose command runs.
+- [ ] Run `sh scripts/anchor/image-contract.sh`,
+  `docker compose -p riot-anchor-contract -f deploy/riot-anchor/compose.yaml config --quiet`,
+  `docker compose -p riot-anchor-contract -f deploy/riot-anchor/compose.yaml up --build --detach --wait`,
+  `sh scripts/anchor/deployment-contract.sh --live riot-anchor-contract`,
+  `docker compose -p riot-anchor-contract -f deploy/riot-anchor/compose.yaml restart riot-anchor`,
+  and `sh scripts/anchor/deployment-contract.sh --live --require-recovered riot-anchor-contract`.
+  The live contract must enter both containers, prove the renderer's empty network namespace,
+  unprivileged UID, seccomp/read-only-root/quota mounts and absence of daemon/published-tree access,
+  prove daemon readiness is withheld until migration/recovery/publication complete, verify the
+  persistent test database survives restart, and exercise graceful drain/recovery. It uses only the
+  dedicated `riot-anchor-contract` local project and ephemeral test credentials/data. After evidence
+  capture, run
+  `docker compose -p riot-anchor-contract -f deploy/riot-anchor/compose.yaml down --volumes --remove-orphans`;
+  failure or unavailable Docker blocks WU completion.
 - [ ] Commit as `ops(anchor): add hardened deployment and recovery runbook`.
 
 ### WU-027: Deterministic network, failpoint, and load harness
@@ -1261,9 +1368,20 @@ The image contract builds the completed public service, not an earlier daemon wi
 - Adversarial HTTP/iroh/control/sync/removal/render/log loads remain within compiled permits/bytes/deadlines and do not starve reserved removal.
 - Performance tests measure directory/descriptor/recovery/failover targets without nondeterministic sleeps.
 - Deployment contract verifies container isolation/readiness configuration.
+- This is a test-only integration unit. Every required production seam is created and tested by its
+  owning WU before WU-027. If a production seam is missing, WU-027 stops and opens a separately
+  scoped corrective WU against the owning files; it never edits production code outside this scope.
+- The parameterized matrix is the active non-pilot subset only: authority/Meadowcap, tickets,
+  hosting/listing/removal, sync, peer/gossip, directory/cursors, HTTPS/renderer/handoff,
+  client/native lifecycle, overload/failpoints/recovery, and three-anchor failure/convergence.
+  Pilot collector/recruitment/measurement/denominator/export/withdrawal cases and pilot key-store
+  seams are explicitly excluded.
 
-- [ ] **RED:** Add the complete Edge-Case Matrix as named parameterized cases; first run must expose missing integration seams or behaviors rather than skip.
-- [ ] **GREEN:** Complete production seam injection and harness orchestration until every case exercises a public service interface.
+- [ ] **RED:** Add every active non-pilot Edge-Case Matrix row as a named parameterized case; the
+  first run fails because the harness/orchestration is absent, never because a test is skipped.
+- [ ] **GREEN:** Compose the already-landed clock, key-store, repository failpoint, control/sync
+  transport, accepted-socket/TLS/HTTP limiter, gossip scheduler, renderer, work verifier, and profile
+  runtime seams until every active case exercises a public service interface.
 - [ ] Run `cargo test -p riot-anchor --test three_anchor_system --test adversarial_load`,
   `cargo test -p riot-anchor --test hosting_failpoints --test listing_failpoints --test checkpoint_recovery`,
   `sh scripts/anchor/image-contract.sh`, and `sh scripts/anchor/deployment-contract.sh`.
@@ -1412,7 +1530,7 @@ cargo clippy --workspace --all-features --all-targets -- -D warnings
 cargo run -p xtask -- validate-contracts
 (cd apps/gateway && python3 -m unittest discover -s tests)
 sh scripts/conference/gateway-smoke.sh
-sh scripts/anchor/image-contract.sh
+sh scripts/anchor/bootstrap-resource-contract.sh
 sh scripts/conference/build-native-core.sh
 xcodebuild test -project apps/ios/Riot.xcodeproj -scheme RiotKit -destination 'platform=iOS Simulator,name=iPhone 17 Pro,OS=26.2,arch=arm64' -derivedDataPath build/ios-derived
 xcodebuild build -project apps/ios/Riot.xcodeproj -scheme Riot -destination 'platform=iOS Simulator,name=iPhone 17 Pro,OS=26.2,arch=arm64' -derivedDataPath build/ios-app-derived
@@ -1420,7 +1538,13 @@ xcodebuild test -project apps/macos/Riot.xcodeproj -scheme RiotKit-macOS -destin
 xcodebuild build -project apps/macos/Riot.xcodeproj -scheme Riot-macOS -destination 'platform=macOS'
 (cd apps/android && ./gradlew :app:testDebugUnitTest :app:assembleDebug :app:assembleDebugAndroidTest :app:connectedDebugAndroidTest)
 scripts/web/coverage.sh
+sh scripts/anchor/image-contract.sh
 sh scripts/anchor/deployment-contract.sh
+docker compose -p riot-anchor-contract -f deploy/riot-anchor/compose.yaml up --build --detach --wait
+sh scripts/anchor/deployment-contract.sh --live riot-anchor-contract
+docker compose -p riot-anchor-contract -f deploy/riot-anchor/compose.yaml restart riot-anchor
+sh scripts/anchor/deployment-contract.sh --live --require-recovered riot-anchor-contract
+docker compose -p riot-anchor-contract -f deploy/riot-anchor/compose.yaml down --volumes --remove-orphans
 ```
 
 Then verify:
@@ -1439,7 +1563,7 @@ Then verify:
 ## Coordinator Addendum — Phasing, Deferrals & Risk (2026-07-19)
 
 This addendum originally layered guidance over the frozen sequence. The 2026-07-19 plan repair now
-integrates that guidance into the active graph: pilot WU-024/025 are a non-executable archive,
+integrates that guidance into the active graph: pilot WU-024/025 are reserved and absent,
 deployment is split into WU-026A/B, and M1–M4 plus production operations are the only active scope.
 Purpose: ship value incrementally, defer what depends on the real world, and gate units that can
 hurt the already-shipping app.
