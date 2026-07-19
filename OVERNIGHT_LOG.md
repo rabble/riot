@@ -1,3 +1,61 @@
+# Anchor Plan Repair — Morning Summary (2026-07-20)
+
+## Done and tested
+
+- Read all 136 repository Markdown documents and the Divine shared context, inventoried applicable
+  skills, isolated this lane from concurrent work, and repaired the public-community-anchor plan in
+  three review iterations on branch `overnight/2026-07-19-anchor-plan`.
+- Committed three reviewable revisions: `6c936fd`, `3c9cd63`, and final reviewed candidate
+  `68d438b`. The repaired plan removes pilot work from active scope, makes Meadowcap listing
+  authority explicit, adds real native bootstrap packaging, defines reproducible isolated
+  deployment, and adds the previously missing production daemon/renderer job boundary.
+- Structural evidence for `68d438b`: 48 active work units, maximum five declared files per unit,
+  clean `git diff --check`, exact native/deployment commands, and no implementation/production
+  mutations.
+- Mandatory plan gate iteration 3: **Completeness PASS; Scope/Alignment PASS; Feasibility FAIL.**
+  Three fresh read-only reviewers inspected the same committed SHA in isolated worktrees.
+
+## Open / blocked
+
+- The plan is **not approved for new implementation dispatch**. The configured three-iteration gate
+  ceiling is exhausted, so repository policy requires human escalation rather than a fourth
+  unapproved review.
+- Four feasibility blockers remain:
+  1. WU-001–WU-007 are already landed but still appear as unchecked executable RED/GREEN work;
+     their named missing-file failures can no longer be reproduced. Mark them completed/historical
+     and make the execution frontier explicit.
+  2. WU-010A removes `LocalProfile.store`, but its five-file scope omits
+     `crates/riot-ffi/src/site_ffi.rs`, which directly accesses that field. Split a bounded
+     site-FFI storage-command migration unit (and re-audit all direct accesses).
+  3. WU-012D requires the `AnchorFlows` loader before WU-022A creates it. Keep WU-012D responsible
+     for macOS package-resource injection; move loader consumption proof to WU-022A/WU-022D.
+  4. WU-027 says server-only but its RED step claims every non-pilot design edge-case row, including
+     native/profile/bootstrap UX cases. Restrict WU-027 to the enumerated server matrix and map the
+     remaining active rows to their native/client owning units.
+- Separate live anchor branches have already landed WU-013A/WU-013B and are implementing WU-014.
+  This lane deliberately did not collide with or duplicate that work.
+
+## Assumptions to review
+
+- Used `overnight/2026-07-19-anchor-plan` because the exact requested branch was already occupied by
+  unrelated overnight UX work; histories were not combined or rewritten.
+- Followed the newer incident-specific “never stash/autostash” guidance over the stale collaboration
+  rule recommending `--autostash`.
+- Treated the privacy pilot as a separately gated future plan. Public hosting, publishing,
+  discovery, gossip, web mirrors, Meadowcap enforcement, and native public-host UX remain active.
+- Filesystem spooling remains the proposed daemon/renderer IPC because it preserves a networkless
+  sidecar and daemon-only publication authority without a shell or container socket.
+
+## Suggested next steps
+
+1. Authorize one post-escalation repair/review cycle for the four bounded changes above.
+2. Rebase the repaired plan conceptually onto current M2 reality by marking landed units and naming
+   the active frontier; do not replay already-landed RED steps.
+3. Let the existing WU-014 lane finish and receive its independent adversarial review; do not start
+   another implementation from this unapproved plan candidate.
+
+---
+
 # Overnight Log — 2026-07-19
 
 ## MORNING SUMMARY
@@ -171,3 +229,28 @@ Delivered tonight: the UX state-refresh doc (Task 1), the trust-copy verificatio
 - Next gate action: commit this final revision and run iteration 3, the configured maximum. All
   three independent reviewers must pass; otherwise implementation remains blocked for morning
   escalation rather than bypassing the mandatory gate.
+
+### Task 4 — plan gate iteration 3 (ESCALATED)
+
+- Ran three fresh isolated read-only reviews against committed candidate `68d438b`.
+  Completeness passed with no warnings. Scope/Alignment passed with one non-blocking observation
+  that the renderer IPC complexity is proportional to the approved isolation/recovery contract.
+- Feasibility failed with four blocking findings:
+  - the plan presents already-landed WU-001–WU-007 as runnable unchecked work, so their stated RED
+    failures are no longer reproducible;
+  - WU-010A removes `LocalProfile.store` without owning the direct accesses in
+    `crates/riot-ffi/src/site_ffi.rs`, and adding that file would exceed its five-file scope;
+  - WU-012D claims loader use before WU-022A creates `AnchorFlows.swift`;
+  - WU-027's server-only file scope conflicts with its claim to execute every active non-pilot
+    design edge-case row, several of which are client/native lifecycle cases.
+- The reviewer independently confirmed the graph is otherwise acyclic, all declared scopes are at
+  most five files, external Docker/native/bootstrap prerequisites are surfaced, and pilot work is
+  isolated.
+- **Blocked/escalated by process, not by missing information:** this was the configured third and
+  final iteration. Did not run a fourth review, weaken the gate, or dispatch implementation.
+- Proposed bounded morning repair: mark landed M1 units historical/completed; split a site-FFI
+  storage-command migration unit; move macOS loader proof to WU-022A/WU-022D; narrow WU-027 to its
+  enumerated server matrix and trace native rows to their owning units.
+- Current repository coordination: WU-013A and WU-013B have landed on other branches and WU-014 is
+  active elsewhere. No duplicate implementation was started and no production/deployment action
+  occurred.
