@@ -44,3 +44,10 @@ workspace builds; validate-contracts PASS (manifest sha refreshed for the new Ca
 Pushed to overnight/2026-07-20-anchor-m2; PR #80 (growing — M2 server chain accumulates here).
 
 ### Task 3 — WU-013B (repository quotas/accounting/eviction/recovery) dispatched (general-purpose)
+
+### Task 3 — WU-013B DONE (commit 8c1a3d3, pushed to #80)
+AnchorRepository (WAL+FK+FULL, 9 accounting classes ceiling-enforced, payload dedup logical-full/
+physical-once, deployment lease clone/steal/mismatch, immutable snapshots, deterministic eviction,
+crash recovery). 12 repo + 13 schema tests green; no new dep. Added the missing deployment_lease table.
+
+### Task 4 — WU-014 (control admission/idempotency/work/Prepare) dispatched
