@@ -395,15 +395,26 @@ pub fn project(
     // ordered by (time, entry_id) exactly like every other family. A reaction
     // whose parent is not an eligible, non-tombstoned post is dangling and is
     // dropped — this also drops reactions on comments and on other reactions.
-    let mut latest_reactions: BTreeMap<([u8; 32], EntryId, ReactionKind), (ProjectionKey, bool)> =
-        BTreeMap::new();
+    // Ordering key is (tai_micros, retraction-wins-tie flag, entry_id) — a total
+    // order, wider than ProjectionKey so an exact-timestamp react+unreact resolves
+    // deterministically to the retraction.
+    let mut latest_reactions: BTreeMap<
+        ([u8; 32], EntryId, ReactionKind),
+        ((u64, u8, EntryId), bool),
+    > = BTreeMap::new();
     for eligible in reactions {
         let parent = eligible.reaction.parent_entry_id;
         if !eligible_post_ids.contains(&parent) || tombstoned_post_ids.contains(&parent) {
             continue;
         }
+        // Latest-wins by time; on an EXACT timestamp tie a retraction
+        // (`active == false`) wins — you can always un-react, and it makes a
+        // react+unreact in the same microsecond deterministic (never decided by
+        // the arbitrary content-hash entry_id). entry_id is the final tiebreak so
+        // the order is total and identical across clients.
         let key = (
             eligible.record.tai_j2000_micros(),
+            u8::from(!eligible.reaction.active),
             eligible.record.entry_id(),
         );
         let map_key = (eligible.record.signer_id(), parent, eligible.reaction.kind);
