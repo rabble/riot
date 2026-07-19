@@ -202,7 +202,7 @@ pub fn publish_site_manifest(&self, sealed_root: Vec<u8>, mut wrapping_key: Vec<
         // NOT profile.store (EvidenceStore). In-memory profiles (db == None) fail closed.
         let db = profile.db.as_ref().ok_or(MobileError::InvalidInput /* or a DurableRequired variant */)?;
         // GATE on the floor BEFORE any commit (confirm admit_manifest_version's exact arg shape when implementing):
-        match admit_manifest_version(db, &root, &manifest)?  // match admit_manifest_version(db, root, &manifest)?root: match admit_manifest_version(db, root, &manifest)?[u8;32] {
+        match admit_manifest_version(db, &root, &manifest)? {  // &root: &[u8;32]
             VersionFloorOutcome::Accepted => {}
             VersionFloorOutcome::RollbackRejected => return Err(MobileError::ManifestRollback),
             VersionFloorOutcome::RequireDowngradeRejected => return Err(MobileError::ManifestRequireDowngrade),
