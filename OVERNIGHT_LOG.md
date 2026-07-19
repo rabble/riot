@@ -1,3 +1,61 @@
+# Anchor Plan Repair — Morning Summary (2026-07-20)
+
+## Done and tested
+
+- Read all 136 repository Markdown documents and the Divine shared context, inventoried applicable
+  skills, isolated this lane from concurrent work, and repaired the public-community-anchor plan in
+  three review iterations on branch `overnight/2026-07-19-anchor-plan`.
+- Committed three reviewable revisions: `6c936fd`, `3c9cd63`, and final reviewed candidate
+  `68d438b`. The repaired plan removes pilot work from active scope, makes Meadowcap listing
+  authority explicit, adds real native bootstrap packaging, defines reproducible isolated
+  deployment, and adds the previously missing production daemon/renderer job boundary.
+- Structural evidence for `68d438b`: 48 active work units, maximum five declared files per unit,
+  clean `git diff --check`, exact native/deployment commands, and no implementation/production
+  mutations.
+- Mandatory plan gate iteration 3: **Completeness PASS; Scope/Alignment PASS; Feasibility FAIL.**
+  Three fresh read-only reviewers inspected the same committed SHA in isolated worktrees.
+
+## Open / blocked
+
+- The plan is **not approved for new implementation dispatch**. The configured three-iteration gate
+  ceiling is exhausted, so repository policy requires human escalation rather than a fourth
+  unapproved review.
+- Four feasibility blockers remain:
+  1. WU-001–WU-007 are already landed but still appear as unchecked executable RED/GREEN work;
+     their named missing-file failures can no longer be reproduced. Mark them completed/historical
+     and make the execution frontier explicit.
+  2. WU-010A removes `LocalProfile.store`, but its five-file scope omits
+     `crates/riot-ffi/src/site_ffi.rs`, which directly accesses that field. Split a bounded
+     site-FFI storage-command migration unit (and re-audit all direct accesses).
+  3. WU-012D requires the `AnchorFlows` loader before WU-022A creates it. Keep WU-012D responsible
+     for macOS package-resource injection; move loader consumption proof to WU-022A/WU-022D.
+  4. WU-027 says server-only but its RED step claims every non-pilot design edge-case row, including
+     native/profile/bootstrap UX cases. Restrict WU-027 to the enumerated server matrix and map the
+     remaining active rows to their native/client owning units.
+- Separate live anchor branches have already landed WU-013A/WU-013B and are implementing WU-014.
+  This lane deliberately did not collide with or duplicate that work.
+
+## Assumptions to review
+
+- Used `overnight/2026-07-19-anchor-plan` because the exact requested branch was already occupied by
+  unrelated overnight UX work; histories were not combined or rewritten.
+- Followed the newer incident-specific “never stash/autostash” guidance over the stale collaboration
+  rule recommending `--autostash`.
+- Treated the privacy pilot as a separately gated future plan. Public hosting, publishing,
+  discovery, gossip, web mirrors, Meadowcap enforcement, and native public-host UX remain active.
+- Filesystem spooling remains the proposed daemon/renderer IPC because it preserves a networkless
+  sidecar and daemon-only publication authority without a shell or container socket.
+
+## Suggested next steps
+
+1. Authorize one post-escalation repair/review cycle for the four bounded changes above.
+2. Rebase the repaired plan conceptually onto current M2 reality by marking landed units and naming
+   the active frontier; do not replay already-landed RED steps.
+3. Let the existing WU-014 lane finish and receive its independent adversarial review; do not start
+   another implementation from this unapproved plan candidate.
+
+---
+
 # Overnight Log — 2026-07-19
 
 ## MORNING SUMMARY
@@ -66,3 +124,133 @@ Ran the iOS half of the baseline (RiotKit build+test, iOS app build) to catch re
 
 ## Status: iOS-UX lane complete + main's iOS build un-broken
 Delivered tonight: the UX state-refresh doc (Task 1), the trust-copy verification (Task 2, no change needed), and — the real win — the two #59 regression fixes that restore a green iOS build (Task 3). Branch `overnight/2026-07-19` is pushed with a PR flagging the red-main urgency. Remaining backlog is contended (web `/2`, deploy), owner-blocked (TF hardware, ratifications), or large/architectural (notifications, discovery/index, Android parity) — none safe to touch overnight per guardrails. Nothing further safe to execute; wrapping with the honest summary above.
+
+---
+
+## Anchor network plan-repair session — 2026-07-19
+
+### Task 0 — bearings, documentation, skills, and collision avoidance
+
+- Read all 136 Markdown files visible in the repository, following their cross-references, before
+  editing. Used the repository instructions plus `divine-context`, `metaswarm:start`,
+  `superpowers:using-superpowers`, `superpowers:dispatching-parallel-agents`,
+  `superpowers:using-git-worktrees`, `superpowers:writing-plans`,
+  `metaswarm:plan-review-gate`, `metaswarm:orchestrated-execution`,
+  `superpowers:test-driven-development`, and `superpowers:verification-before-completion`.
+- Current code and the 2026-07-19 anchor build-state/addendum supersede older branch-era status.
+  M1 is complete on `origin/main` at `1f6ecb2`; M2–M4 are the active product trunk; pilot WU-024/025
+  and pilot-only operations are deferred until a scheduled pilot has human coordinators and signed
+  public fixtures.
+- Found two concurrent WU-013A implementations already editing `riot-anchor` in separate worktrees.
+  I did not touch their files. This lane repairs the governing plan and mandatory gate only.
+- **Branch assumption:** the requested exact branch `overnight/2026-07-19` is already checked out by
+  the UX overnight session and contains unrelated committed work. Reusing or rewriting it would
+  violate shared-checkout safety, so this isolated lane uses
+  `overnight/2026-07-19-anchor-plan` from current `origin/main`. Alternative rejected: move the
+  existing branch or combine unrelated histories.
+- **Process-doc conflict:** `COLLABORATION.md` says to use `git pull --rebase --autostash`, but the
+  newer anchor incident report proves the stash stack is shared and records a recovered foreign
+  stash loss. Followed the newer, more specific rule: never stash/autostash in this repository.
+- No project-local `SKILL.md` or `skills/` directory exists; the installed skills named above are
+  the applicable repository workflow.
+- Open questions for morning review: archive or reconcile stale collaboration claims; decide
+  whether the deferred pilot should become a separate spec immediately or only when scheduled.
+
+### Task 1 — repair the failed implementation plan
+
+- Used the writing-plans and plan-review-gate requirements plus the latest failed feasibility/
+  completeness findings. Reordered the canonical signed-directory protocol to WU-011C before the
+  real client directory adapter and ordinary listing. Added explicit dependencies for directory,
+  replica/gossip, daemon routing, HTTPS, and deployment.
+- Replaced the fake-port-only client directory approach with a production adapter that consumes and
+  verifies WU-011C canonical signed records/cursors over safe dialing; fake transports are test-only.
+- Added a non-publicly-constructible `VerifiedListingAuthority` proof-token acceptance criterion so
+  WU-015B cannot call the listing state machine before Willow entry/grant/Meadowcap/root verification.
+- Split production packaging into reproducible daemon/renderer OCI images (WU-026A) and isolated
+  deployment/recovery (WU-026B), with exact shell/Compose contracts and five-file work-unit ceilings.
+- Removed pilot work from the active graph, traceability, operations, CI, secrets, release contract,
+  and system tests. Former WU-024/025 are reserved for a separate future design/plan; this explicitly
+  avoids pretending the missing collector report/native measurement boundaries are implemented.
+- Replaced the gate-flagged vague verification phrases with named test/script commands in the
+  affected units. Structural self-check: 44 active WUs; every unit declares at most five files;
+  `git diff --check` is clean.
+- Assumption: preserving the approved pilot requirements in the design is sufficient until a pilot
+  is scheduled; keeping half-executable pilot work in this active plan was rejected because it
+  repeatedly caused false completeness claims and depended on unavailable humans/fixtures.
+
+### Task 2 — plan gate iteration 1 (FAIL) and repair
+
+- Three fresh isolated read-only Codex reviewers ran independently through the external-tools
+  adapter because the built-in agent tree was at its thread limit. Verdicts: Feasibility FAIL,
+  Completeness FAIL, Scope/Alignment FAIL.
+- Repaired every blocking finding:
+  - added WU-020P so daemon and isolated renderer share one dependency-neutral canonical
+    `AnchorWebSnapshotV1` rather than depending on the server or duplicating a grammar;
+  - added WU-012C for real Release-fails-closed bootstrap verification/injection into iOS and
+    Android application packages, plus required WU-022A/WU-023A runtime loading;
+  - replaced the ineffective nested generic `.dockerignore` with Dockerfile-specific ignore files
+    while retaining repository root as build context;
+  - made OCI image build/inspection and a live local isolated Compose readiness/isolation/restart/
+    recovery probe mandatory. Missing Docker blocks that future WU; static config cannot pass it;
+  - replaced every gate-flagged native prose check with exact xcodebuild/Gradle/PlistBuddy commands;
+  - restricted WU-027 to the named active non-pilot matrix and existing production seams, and made it
+    test-only. A missing production seam returns to a separately scoped owning WU.
+- This revision adds two focused units (WU-012C and WU-020P); there are now 46 active units, each
+  still capped at five declared files.
+- Guardrail note: the live Compose commands are future local acceptance criteria in the plan. This
+  overnight session did not run them, deploy, touch production, or delete any real data.
+
+### Task 3 — plan gate iteration 2 (FAIL) and final repair
+
+- Three new isolated read-only reviewers evaluated commit `3c9cd63`. Scope/Alignment passed.
+  Completeness failed only because WU-006B claimed production bootstrap packaging before WU-012C
+  owned it. Feasibility additionally found the missing daemon-to-renderer production adapter, an
+  invalid exact PlistBuddy assertion, unowned chaos-harness seams, and incomplete macOS bootstrap
+  packaging.
+- Repaired the bootstrap sequence: WU-006B now proves development fixture agreement only; WU-012C
+  owns iOS/Android Release-fails-closed application packaging; new WU-012D owns the corresponding
+  macOS application resource and shared-loader compatibility. The graph now encodes those
+  dependencies and the macOS scope is explicitly compatibility, not an invented third product UI.
+- Added WU-020C, a five-file production daemon/renderer boundary with a canonical durable job
+  envelope, fsync+atomic rename protocol, networkless long-running renderer sidecar, daemon-only
+  hostile-output validation/publication, and deterministic duplicate/crash/restart/partial-output
+  recovery. Deployment images and live Compose now depend on that runtime rather than a fake port.
+- Fixed the iOS background identifier probe to address array element `:0`, matching PlistBuddy's
+  actual output format. Verified the macOS test target and scheme names directly from the checked-in
+  Xcode scheme before retaining the exact `-only-testing:RiotKitTests-macOS/...` command.
+- Moved every deterministic-harness seam into its production-owning unit: repository clock/failpoint
+  (WU-013B), `WorkChallengeVerifier` (WU-014), gossip scheduler/clock (WU-018B), `AnchorKeyStore`,
+  ingress limiters, and control/sync transports (WU-019), and renderer adapter (WU-020C). WU-027 is
+  now strictly server-side test composition and cannot edit production code or claim native-client
+  lifecycle coverage.
+- Assumption: filesystem spooling is the narrowest auditable local IPC for a networkless renderer;
+  a container socket, subprocess shell, or renderer-owned publication was rejected because each
+  widens renderer authority and complicates crash-safe ownership transfer.
+- Next gate action: commit this final revision and run iteration 3, the configured maximum. All
+  three independent reviewers must pass; otherwise implementation remains blocked for morning
+  escalation rather than bypassing the mandatory gate.
+
+### Task 4 — plan gate iteration 3 (ESCALATED)
+
+- Ran three fresh isolated read-only reviews against committed candidate `68d438b`.
+  Completeness passed with no warnings. Scope/Alignment passed with one non-blocking observation
+  that the renderer IPC complexity is proportional to the approved isolation/recovery contract.
+- Feasibility failed with four blocking findings:
+  - the plan presents already-landed WU-001–WU-007 as runnable unchecked work, so their stated RED
+    failures are no longer reproducible;
+  - WU-010A removes `LocalProfile.store` without owning the direct accesses in
+    `crates/riot-ffi/src/site_ffi.rs`, and adding that file would exceed its five-file scope;
+  - WU-012D claims loader use before WU-022A creates `AnchorFlows.swift`;
+  - WU-027's server-only file scope conflicts with its claim to execute every active non-pilot
+    design edge-case row, several of which are client/native lifecycle cases.
+- The reviewer independently confirmed the graph is otherwise acyclic, all declared scopes are at
+  most five files, external Docker/native/bootstrap prerequisites are surfaced, and pilot work is
+  isolated.
+- **Blocked/escalated by process, not by missing information:** this was the configured third and
+  final iteration. Did not run a fourth review, weaken the gate, or dispatch implementation.
+- Proposed bounded morning repair: mark landed M1 units historical/completed; split a site-FFI
+  storage-command migration unit; move macOS loader proof to WU-022A/WU-022D; narrow WU-027 to its
+  enumerated server matrix and trace native rows to their owning units.
+- Current repository coordination: WU-013A and WU-013B have landed on other branches and WU-014 is
+  active elsewhere. No duplicate implementation was started and no production/deployment action
+  occurred.
