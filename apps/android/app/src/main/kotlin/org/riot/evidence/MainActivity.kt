@@ -17,6 +17,9 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
+import java.io.IOException
+import java.net.HttpURLConnection
+import java.net.URL
 import uniffi.riot_ffi.CurrentEntry
 import org.riot.evidence.apps.AppBundleCodec
 import org.riot.evidence.apps.AppResourceResolver
@@ -48,6 +51,10 @@ class MainActivity : Activity() {
     private lateinit var directory: DirectoryController
     private var runningApp: Pair<InstalledApp, AppWebViewHost>? = null
     private var pendingAppManifest: ByteArray? = null
+
+    // Per-followed-site "Imported N records" feedback, keyed by root, shown after a
+    // successful refresh-import so the pull's payoff is visible across a re-render.
+    private val followSiteImports = mutableMapOf<String, String>()
 
     // Local new-content notifications (PR1 infra, wired live here). The notifier is
     // pure + a thin scheduler; the seen cursor is per-device SharedPreferences.
@@ -247,6 +254,7 @@ class MainActivity : Activity() {
             ConferenceSurface.APP_DIRECTORY -> showDirectory()
             ConferenceSurface.INCIDENT_BOARD -> showBoard()
             ConferenceSurface.NEWSWIRE -> showNewswire()
+            ConferenceSurface.FOLLOW_SITES -> showFollowSites()
             ConferenceSurface.COMPOSE_AND_SIGN -> showCompose()
             ConferenceSurface.IMPORT_PREVIEW -> showImportPreview()
             ConferenceSurface.CONNECTION -> showConnection()
@@ -730,6 +738,138 @@ class MainActivity : Activity() {
         }
     }
 
+    /**
+     * Follow a composite indymedia site by pasting its `riot://site/v1/...` ticket,
+     * and manage the sites already followed. The ticket's signature + expiry are
+     * verified in the core `follow_site` (this layer only screens scheme + length),
+     * so there is no local preview — a screened ticket is followed directly and its
+     * row appears in the list below.
+     *
+     * Each followed row can pull the owner-signed bundle over HTTPS ("Refresh from
+     * site") and import it — the pulled bytes are UNTRUSTED until the core
+     * re-verifies every entry (owner cap + Following-gate + family-gate). A site
+     * that requires an unavailable transport (`require:arti`) shows "Requires Tor —
+     * unavailable" and offers NO fetch button: this screen HONORS the core's
+     * fetch-time arti gate, never re-implements it.
+     */
+    private fun showFollowSites() {
+        content.addView(body(
+            "Follow a composite site by pasting the ticket someone shared. " +
+                "Riot verifies the ticket's signature before following.",
+        ))
+        val input = EditText(this).apply { hint = "riot://site/v1/…" }
+        content.addView(input)
+        content.addView(action("Follow this site") { followSiteFromPaste(input) })
+
+        val displays = controller.listFollowedSites().map { FollowedSiteDisplay.from(it) }
+        if (displays.isEmpty()) {
+            content.addView(body(
+                "You aren't following any sites yet. Paste a site ticket above to start.",
+            ))
+            return
+        }
+        content.addView(heading("Following"))
+        displays.forEach { renderFollowedSite(it) }
+    }
+
+    private fun followSiteFromPaste(input: EditText) {
+        val screened = try {
+            FollowSiteModel.screen(input.text.toString())
+        } catch (error: FollowSiteScreenException) {
+            status.text = FOLLOW_SITE_REFUSAL
+            return
+        }
+        try {
+            controller.followSite(screened)
+            input.text = null
+            status.text = "Following site"
+            show(ConferenceSurface.FOLLOW_SITES)
+        } catch (error: Exception) {
+            // Core answers a tampered/expired/foreign ticket with an opaque refusal;
+            // nothing changed on this device.
+            status.text = FOLLOW_SITE_REFUSAL
+        }
+    }
+
+    private fun renderFollowedSite(display: FollowedSiteDisplay) {
+        content.addView(body("${display.title}\n${display.stateLabel}"))
+        if (display.transportBlocked) {
+            content.addView(body("Requires Tor — unavailable"))
+            return
+        }
+        val url = display.fetchUrl
+        if (display.canRefresh && url != null) {
+            content.addView(action("Refresh from site") { refreshFollowedSite(display.root, url) })
+        }
+        followSiteImports[display.root]?.let { content.addView(body(it)) }
+    }
+
+    /**
+     * Pull the owner-signed bundle for a followed site over HTTPS and import it. The
+     * fetch runs off the main thread; the UNTRUSTED bytes are handed to
+     * `importFollowedSiteBundle`, which re-verifies every entry before anything
+     * lands, so a bad mirror can only serve stale/empty, never forge. On success the
+     * row shows honest "Imported N records" feedback; any network/import failure
+     * surfaces a refusal and changes nothing.
+     */
+    private fun refreshFollowedSite(root: String, fetchUrl: String) {
+        val rootBytes = FollowSiteModel.hexBytes(root)
+        if (rootBytes == null) {
+            status.text = FOLLOW_SITE_FETCH_REFUSAL
+            return
+        }
+        status.text = "Refreshing from site…"
+        Thread {
+            val bytes = try {
+                httpGetBundle(fetchUrl)
+            } catch (error: Exception) {
+                null
+            }
+            runOnUiThread {
+                if (bytes == null) {
+                    status.text = FOLLOW_SITE_FETCH_REFUSAL
+                    return@runOnUiThread
+                }
+                try {
+                    val summary = controller.importFollowedSiteBundle(bytes, rootBytes)
+                    val feedback = FollowedSiteDisplay.importedSummary(summary.imported.toInt())
+                    followSiteImports[root] = feedback
+                    status.text = feedback
+                    show(ConferenceSurface.FOLLOW_SITES)
+                } catch (error: Exception) {
+                    status.text = FOLLOW_SITE_FETCH_REFUSAL
+                }
+            }
+        }.start()
+    }
+
+    /**
+     * Bounded HTTPS GET of an owner-signed bundle. Only HTTPS is allowed (no
+     * cleartext leak of the follow); the response is read through [BoundedInput] so
+     * a hostile mirror cannot exhaust memory before the core ever inspects the bytes.
+     */
+    private fun httpGetBundle(fetchUrl: String): ByteArray {
+        val url = URL(fetchUrl)
+        if (!url.protocol.equals("https", ignoreCase = true)) {
+            throw IOException("refused non-HTTPS site URL")
+        }
+        val connection = (url.openConnection() as HttpURLConnection).apply {
+            requestMethod = "GET"
+            connectTimeout = FOLLOW_SITE_TIMEOUT_MS
+            readTimeout = FOLLOW_SITE_TIMEOUT_MS
+            instanceFollowRedirects = true
+        }
+        try {
+            val code = connection.responseCode
+            if (code !in 200..299) throw IOException("HTTP $code")
+            return connection.inputStream.use {
+                BoundedInput.read(it, MAX_FOLLOW_SITE_BUNDLE_BYTES)
+            }
+        } finally {
+            connection.disconnect()
+        }
+    }
+
     private fun showConnection() {
         val visibleState = syncState ?: nearby.state
         content.addView(body(visibleState.message))
@@ -808,5 +948,15 @@ class MainActivity : Activity() {
         const val PICK_APP_BUNDLE = 12
         const val MAX_APP_MANIFEST_BYTES = 4_096
         const val POST_NOTIFICATIONS_REQUEST = 13
+
+        // Follow-a-site (Option C HTTP-pull).
+        const val FOLLOW_SITE_TIMEOUT_MS = 15_000
+        const val MAX_FOLLOW_SITE_BUNDLE_BYTES = 8 * 1024 * 1024
+        const val FOLLOW_SITE_REFUSAL =
+            "Riot couldn't follow from that ticket. It may be expired, incomplete, or not a " +
+                "Riot site ticket — check you pasted the whole thing and try again."
+        const val FOLLOW_SITE_FETCH_REFUSAL =
+            "Riot couldn't refresh from that site right now. The mirror may be unreachable or " +
+                "the bundle didn't verify; nothing on this device changed."
     }
 }
