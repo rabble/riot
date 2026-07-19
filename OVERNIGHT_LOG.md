@@ -66,3 +66,56 @@ Ran the iOS half of the baseline (RiotKit build+test, iOS app build) to catch re
 
 ## Status: iOS-UX lane complete + main's iOS build un-broken
 Delivered tonight: the UX state-refresh doc (Task 1), the trust-copy verification (Task 2, no change needed), and — the real win — the two #59 regression fixes that restore a green iOS build (Task 3). Branch `overnight/2026-07-19` is pushed with a PR flagging the red-main urgency. Remaining backlog is contended (web `/2`, deploy), owner-blocked (TF hardware, ratifications), or large/architectural (notifications, discovery/index, Android parity) — none safe to touch overnight per guardrails. Nothing further safe to execute; wrapping with the honest summary above.
+
+---
+
+## Anchor network plan-repair session — 2026-07-19
+
+### Task 0 — bearings, documentation, skills, and collision avoidance
+
+- Read all 136 Markdown files visible in the repository, following their cross-references, before
+  editing. Used the repository instructions plus `divine-context`, `metaswarm:start`,
+  `superpowers:using-superpowers`, `superpowers:dispatching-parallel-agents`,
+  `superpowers:using-git-worktrees`, `superpowers:writing-plans`,
+  `metaswarm:plan-review-gate`, `metaswarm:orchestrated-execution`,
+  `superpowers:test-driven-development`, and `superpowers:verification-before-completion`.
+- Current code and the 2026-07-19 anchor build-state/addendum supersede older branch-era status.
+  M1 is complete on `origin/main` at `1f6ecb2`; M2–M4 are the active product trunk; pilot WU-024/025
+  and pilot-only operations are deferred until a scheduled pilot has human coordinators and signed
+  public fixtures.
+- Found two concurrent WU-013A implementations already editing `riot-anchor` in separate worktrees.
+  I did not touch their files. This lane repairs the governing plan and mandatory gate only.
+- **Branch assumption:** the requested exact branch `overnight/2026-07-19` is already checked out by
+  the UX overnight session and contains unrelated committed work. Reusing or rewriting it would
+  violate shared-checkout safety, so this isolated lane uses
+  `overnight/2026-07-19-anchor-plan` from current `origin/main`. Alternative rejected: move the
+  existing branch or combine unrelated histories.
+- **Process-doc conflict:** `COLLABORATION.md` says to use `git pull --rebase --autostash`, but the
+  newer anchor incident report proves the stash stack is shared and records a recovered foreign
+  stash loss. Followed the newer, more specific rule: never stash/autostash in this repository.
+- No project-local `SKILL.md` or `skills/` directory exists; the installed skills named above are
+  the applicable repository workflow.
+- Open questions for morning review: archive or reconcile stale collaboration claims; decide
+  whether the deferred pilot should become a separate spec immediately or only when scheduled.
+
+### Task 1 — repair the failed implementation plan
+
+- Used the writing-plans and plan-review-gate requirements plus the latest failed feasibility/
+  completeness findings. Reordered the canonical signed-directory protocol to WU-011C before the
+  real client directory adapter and ordinary listing. Added explicit dependencies for directory,
+  replica/gossip, daemon routing, HTTPS, and deployment.
+- Replaced the fake-port-only client directory approach with a production adapter that consumes and
+  verifies WU-011C canonical signed records/cursors over safe dialing; fake transports are test-only.
+- Added a non-publicly-constructible `VerifiedListingAuthority` proof-token acceptance criterion so
+  WU-015B cannot call the listing state machine before Willow entry/grant/Meadowcap/root verification.
+- Split production packaging into reproducible daemon/renderer OCI images (WU-026A) and isolated
+  deployment/recovery (WU-026B), with exact shell/Compose contracts and five-file work-unit ceilings.
+- Removed pilot work from the active graph, traceability, operations, CI, secrets, release contract,
+  and system tests. Former WU-024/025 are reserved for a separate future design/plan; this explicitly
+  avoids pretending the missing collector report/native measurement boundaries are implemented.
+- Replaced the gate-flagged vague verification phrases with named test/script commands in the
+  affected units. Structural self-check: 44 active WUs; every unit declares at most five files;
+  `git diff --check` is clean.
+- Assumption: preserving the approved pilot requirements in the design is sufficient until a pilot
+  is scheduled; keeping half-executable pilot work in this active plan was rejected because it
+  repeatedly caused false completeness claims and depended on unavailable humans/fixtures.

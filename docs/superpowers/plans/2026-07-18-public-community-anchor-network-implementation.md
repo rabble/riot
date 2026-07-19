@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use `metaswarm:orchestrated-execution` to implement this plan work-unit by work-unit. Steps use checkbox (`- [ ]`) syntax for tracking. Every work unit follows IMPLEMENT → VALIDATE → fresh ADVERSARIAL REVIEW → COMMIT; every implementation starts with the named failing tests.
 
-**Goal:** Deliver the approved plural public-anchor network end to end: canonical protocols, scalable local and anchor persistence, bounded internet transport, directory/gossip, safe web mirrors and handoff, native plural-host UX, and the privacy-preserving pilot/operations contract.
+**Goal:** Deliver the approved plural public-anchor network through production-ready hosting, discovery/gossip, safe web mirrors and handoff, and native plural-host UX. The privacy-preserving pilot is explicitly outside this active plan and requires its own future spec→plan review when a live pilot is scheduled.
 
 **Architecture:** `riot-anchor-protocol` is the dependency-light canonical wire layer. `riot-core` owns all client profile persistence through a serialized storage command port; `riot-client-net` owns the process-singleton internet runtime; `riot-anchor` owns server persistence, ingress, hosting, directory, gossip, and HTTP; a separate renderer binary consumes immutable typed snapshots. Native shells consume typed UniFFI state and never implement authority or retry semantics.
 
@@ -31,35 +31,29 @@ WU-001 ─→ WU-002 ─→ WU-003A ─→ WU-003B ─→ WU-004 ─→ WU-005 �
                                                    └─────────┴──────────────→ WU-007
 
 WU-001 ─→ WU-008 ─→ WU-009 ─→ WU-010A ─→ WU-010B ─┐
-WU-003B ─→ WU-011A ─→ WU-011B ─→ WU-012A ─→ WU-012B
-WU-009 ────────────────────────────────→ WU-012A
-                                                    │
-                                                    ├→ WU-022A/WU-023A
+WU-003B ─→ WU-011A ─→ WU-011B ─→ WU-011C ─→ WU-012A ─→ WU-012B
+WU-005 ────────────────────────────────→ WU-011C
+WU-009 ─────────────────────────────────────────────→ WU-012A
+                                                      │
+                                                      ├→ WU-022A/WU-023A
 WU-004 ─→ WU-013A ─→ WU-013B ─→ WU-014 ─→ WU-015 ─→ WU-015B ─→ WU-016
 WU-005 ───────────────────────────────────────────→ WU-015
-                                                    │
-                                                    ├───────────────┐
-WU-005 ────────────────────────────────→ WU-017A ─→ WU-017B
-WU-017A ───────────────────────────────→ WU-015B
+                                                      │
+                                                      ├───────────────┐
+WU-011C/WU-013B/WU-015B/WU-016 ────────────────────→ WU-017B
+WU-011C ────────────────────────────────────────────→ WU-015B
 WU-007 ────────────────────────────────→ WU-018A ─→ WU-018B
-                                                    │
-                                                    ├───────────────┤
-WU-013B ───────────────────────────────→ WU-019 ───┘
-WU-013B/WU-015B/WU-016 ────────────────→ WU-017B
-WU-013B ───────────────────────────────→ WU-018B
-WU-007/WU-014/WU-015/WU-015B ─────────→ WU-019
-WU-016 ────────────────────────────────→ WU-019
+WU-007/WU-013B/WU-015/WU-018A ─────────────────────→ WU-018B
+WU-007/WU-014/WU-015/WU-015B/WU-016 ───────────────┐
+WU-017B/WU-018B ────────────────────────────────────┴→ WU-019
 
-WU-015/WU-017B ─→ WU-020A ─→ WU-020B ─→ WU-021A ─→ WU-021B
+WU-015/WU-016/WU-017B ─→ WU-020A ─→ WU-020B ─→ WU-021A ─→ WU-021B
+WU-019/WU-017B ─────────────────────────────────────────────→ WU-021B
 WU-012B/WU-021B ─→ WU-022A ─→ WU-022B ─→ WU-022C ─→ WU-022C2 ─→ WU-022D
 WU-012B/WU-021B ─→ WU-023A ─→ WU-023B ─→ WU-023C
-WU-004/WU-010B ─→ WU-024A ─→ WU-024B ─→ WU-025A ─→ WU-025B/WU-025C
-WU-025B ─→ WU-025D
-WU-024A ─→ WU-024C; WU-024B/WU-024C ─→ WU-026
-WU-012B ────────────────────────────────────────────→ WU-025A
-WU-022D ─→ WU-025B; WU-023C ─→ WU-025C
-WU-019/WU-020B/WU-024B/WU-025A ─→ WU-026
-all functional WUs ─→ WU-027 ─→ WU-028
+WU-019/WU-020B/WU-021B ─→ WU-026A ─→ WU-026B
+WU-016/WU-018B/WU-019/WU-020B/WU-021B/WU-022D/WU-023C/WU-026B ─→ WU-027
+WU-027 ─→ WU-028
 ```
 
 Parallel execution is allowed only where this graph and non-overlapping file scopes permit it. Commits remain sequential.
@@ -71,18 +65,28 @@ Parallel execution is allowed only where this graph and non-overlapping file sco
 | Slice 1 — authority records, positional grammar, tickets, descriptors, receipts, identity digests, cross-language agreement | WU-001–WU-004, WU-006A–WU-006B |
 | Slice 2 — routed/paginated sync, immutable snapshots, exact refusals, one-way/staged directions | WU-005, WU-007, WU-015 |
 | Slice 3 — scalable client storage, profile worker/lifecycle, anchor repository, idempotent control, CAS/receipt recovery, atomic ordinary listing, emergency removal | WU-008–WU-010B, WU-013A–WU-016 |
-| Slice 4 — signed plural feeds, authenticated cursors, descriptor rotation, configured-peer attestation, bounded gossip | WU-017A–WU-018B |
+| Slice 4 — signed plural feeds, authenticated cursors, descriptor rotation, configured-peer attestation, bounded gossip | WU-011C, WU-017B–WU-018B |
 | Slice 5 — immutable text projection, hostile-output validation, ordinary HTTPS, byte-identical v2 handoff and legacy compatibility | WU-020A–WU-021B |
 | Slice 6 — process runtime, cancellable UniFFI states, durable background reconciliation, defaults/configuration, Explore/Follow/Publish/relist/source-change on both native platforms, and shared-Swift macOS compatibility | WU-009, WU-011A–WU-012B, WU-022A–WU-023C |
-| Slice 7 — all compiled ceilings, ingress/load shedding, pilot recruitment/enrollment/export/withdrawal, deployment/recovery, deterministic system/load proof | WU-013A–WU-013B, WU-016, WU-019, WU-024A–WU-025D, WU-026–WU-028 |
+| Slice 7 — all compiled ceilings, ingress/load shedding, deployment/recovery, deterministic system/load proof | WU-013A–WU-013B, WU-016, WU-019, WU-026A–WU-028 |
 | Definition of Done — plural independent accountless hosting and failure survival | WU-012A–WU-012B, WU-015, WU-018A–WU-018B, WU-022A–WU-023C, WU-027 |
 | Definition of Done — no hosting/listing coupling; atomic listing/replay, owner recovery, and exact Meadowcap authority | WU-003A–WU-003B, WU-015–WU-017B |
 | Definition of Done — root-signed cold bootstrap, durable floors, exact O/C/W local/anchor atomicity | WU-003B, WU-008, WU-011A–WU-011B, WU-013A–WU-015 |
 | Definition of Done — recoverable control, removal, checkpoint, rotation, replica-source and startup lifecycles | WU-004, WU-014–WU-018B |
-| Definition of Done — bounded public iroh/HTTPS, renderer, and operational resource use | WU-007, WU-016, WU-019–WU-021B, WU-026–WU-027 |
+| Definition of Done — bounded public iroh/HTTPS, renderer, and operational resource use | WU-007, WU-016, WU-019–WU-021B, WU-026A–WU-027 |
 | Definition of Done — typed post-consent storage/recovery and durable per-destination outcomes | WU-008–WU-012B, WU-022A–WU-023B |
-| Definition of Done — single-credential recruitment, opt-in unlinkable pilot aggregates, and exact validity thresholds | WU-024A–WU-025D, WU-027 |
 | Definition of Done — every quality/coverage gate | WU-028 |
+
+### Explicitly deferred scope
+
+The pilot recruitment, enrollment, aggregate export, withdrawal, retention, and collector-side
+validity/threshold-reporting requirements are not part of this active implementation plan. Historical
+WU numbers 024–025 are reserved and intentionally absent below. They may be planned only after M2–M4
+are real and a live pilot has approved human coordinators, a contact-handling policy, fixed-role
+credential batches, exact native measurement-event boundaries, collector-side aggregate validity
+rules, and signed production fixtures. That future work requires a separate design update,
+implementation plan, design review gate, and plan review gate; no worker may infer pilot behavior
+from the archived design text or implement it under WU-026–WU-028.
 
 ## Work Unit Decomposition
 
@@ -106,7 +110,8 @@ Parallel execution is allowed only where this graph and non-overlapping file sco
 
 - [ ] **RED:** Add `dependency_boundary.rs` asserting parsed `cargo metadata` has no forbidden package reachable from `riot-anchor-protocol`; run `cargo test -p riot-anchor-protocol --test dependency_boundary` and observe the missing package/manifest failure.
 - [ ] **GREEN:** Add the crate with crate-level safety/documentation attributes only. Each later protocol work unit adds its own `pub mod` declaration in `lib.rs` in the same commit that creates the module, so the crate remains buildable at every commit.
-- [ ] Run `cargo check -p riot-anchor-protocol --no-default-features` and the focused dependency test.
+- [ ] Run `cargo check -p riot-anchor-protocol --no-default-features` and
+  `cargo test -p riot-anchor-protocol --test dependency_boundary`.
 - [ ] Commit as `build(anchor): establish protocol dependency boundary`.
 
 ### WU-002: Positional CBOR codec and protocol identity digests
@@ -141,7 +146,7 @@ pub trait CanonicalRecord: Sized {
 }
 ```
 
-- [ ] **RED:** Add hostile fixtures for maps, indefinite containers, numeric enum tags, swapped fields, duplicate set members, non-minimal integers, nested-byte substitution, trailing bytes, and every identity digest; run the focused test and observe missing codec/digest symbols.
+- [ ] **RED:** Add hostile fixtures for maps, indefinite containers, numeric enum tags, swapped fields, duplicate set members, non-minimal integers, nested-byte substitution, trailing bytes, and every identity digest; run `cargo test -p riot-anchor-protocol --test canonical_codec` and observe missing codec/digest symbols.
 - [ ] **GREEN:** Implement the bounded positional codec helpers, domain-separated digest helpers, and CDDL transcription.
 - [ ] Run `cargo test -p riot-anchor-protocol --test canonical_codec`.
 - [ ] Commit as `feat(anchor): add canonical protocol codec and digests`.
@@ -203,7 +208,7 @@ pub fn resolve_listing(
 ) -> Result<ListingTransition, AuthorityError>;
 ```
 
-- [ ] **RED:** Add the Slice 1 authority failures, including editorial capability misuse, max-revision delegate/root recovery, coordinate disagreement, expiry equality, and unsupported Arti; run the focused test and observe failures.
+- [ ] **RED:** Add the Slice 1 authority failures, including editorial capability misuse, max-revision delegate/root recovery, coordinate disagreement, expiry equality, and unsupported Arti; run `cargo test -p riot-anchor-protocol --test authority_records` and observe failures.
 - [ ] **GREEN:** Implement canonical records plus pure admission/resolution using WU-003A's core authority predicates without changing v1 tickets.
 - [ ] Run `cargo test -p riot-anchor-protocol --test authority_records` and `cargo test -p riot-core site`.
 - [ ] Commit as `feat(anchor): enforce ticket and listing authority`.
@@ -249,7 +254,7 @@ pub fn verify_descriptor_chain(
 
 - [ ] **RED:** Add golden/hostile tests in `control_vectors.rs` for all operation bodies, response nesting, 82 limits, every refusal row, work preimages, receipt signatures, bootstrap bounds, and descriptor genesis/rotation/chain failures.
 - [ ] **GREEN:** Implement the control record family and exact validators from the normative tables.
-- [ ] Run the three focused protocol tests.
+- [ ] Run `cargo test -p riot-anchor-protocol --test control_vectors --test authority_records --test canonical_codec`.
 - [ ] Commit as `feat(anchor): define descriptors receipts and control protocol`.
 
 ### WU-005: Routed paginated `riot/sync/2`
@@ -285,7 +290,8 @@ pub enum Sync2Action { Send(Sync2Frame), Admit(EntriesChunk), PromoteDirection, 
 
 - [ ] **RED:** Add exact codec/hostile/FSM traces in `sync2_fsm.rs` and 257+/maximum-item duplex tests for O/C/W, cursor overlap, request/chunk mismatch, early EOF, admission rollback, stale source, and one-way mutation.
 - [ ] **GREEN:** Implement the canonical frames, snapshot/page digests, transport-independent FSM, staging callbacks, and duplex harness.
-- [ ] Run both focused tests and preserve every `sync/1` test unchanged.
+- [ ] Run `cargo test -p riot-anchor-protocol --test sync2_fsm --test sync2_duplex` and
+  `cargo test -p riot-transport --test iroh_sync`.
 - [ ] Commit as `feat(anchor): add routed paginated sync v2`.
 
 ### WU-006A: Rust and TypeScript conformance vectors
@@ -305,7 +311,8 @@ pub enum Sync2Action { Send(Sync2Frame), Admit(EntriesChunk), PromoteDirection, 
 - Rust emits and consumes one deterministic checked-in vector fixture.
 - A real TypeScript implementation independently verifies canonical bytes, digest/preimage distinctions, signatures, HMAC inputs, response nesting, peer roles, and all sentinels; the existing Node test runner imports it through Node 26's built-in type stripping.
 - One-bit and alternate-grammar mutations fail without calling Rust for expected values.
-- A deterministic three-descriptor development bootstrap exercises package-resource parsing; release validation refuses to call it a public-pilot default set.
+- A deterministic three-descriptor development bootstrap exercises package-resource parsing;
+  release validation refuses to call it a production default set.
 
 - [ ] **RED:** Add Rust/Node consumers and observe failure because the fixture is absent.
 - [ ] **GREEN:** Generate deterministic protocol/bootstrap fixtures from protocol constructors and review them into source control; the existing `scripts/web/test/*.test.mjs` test glob discovers the TypeScript-backed Node test without changing `package.json` or `package-lock.json`.
@@ -328,11 +335,16 @@ pub enum Sync2Action { Send(Sync2Frame), Admit(EntriesChunk), PromoteDirection, 
 - Swift and Kotlin independently verify the same canonical bytes, digest/preimage distinctions, signatures, HMAC inputs, response nesting, peer roles, and sentinels as Rust/TypeScript.
 - One-bit and alternate-grammar mutations fail on every platform.
 - No platform redefines protocol labels or truncates identifiers.
-- Both native targets embed and validate the development bootstrap resource; a release build accepts only a separately supplied, package-signed public-pilot resource with at least three live descriptors across two operators/failure domains.
+- Both native targets embed and validate the development bootstrap resource; a release build accepts
+  only a separately supplied, package-signed production resource with at least three live
+  descriptors across two operators/failure domains.
 
 - [ ] **RED:** Add native consumers/resource wiring and observe missing vector assertions or target resources.
 - [ ] **GREEN:** Make each platform consume both checked-in fixtures without asking Rust for expected values; all expected native cases are already fixed by WU-006A.
-- [ ] Run the focused iOS and Android vector/resource tests immediately; this unit does not claim iroh/Tokio native cross-compilation, which becomes executable only in WU-012B.
+- [ ] Run
+  `xcodebuild test -project apps/ios/Riot.xcodeproj -scheme RiotKit -destination 'platform=iOS Simulator,name=iPhone 17 Pro,OS=26.2,arch=arm64' -only-testing:RiotTests/AnchorProtocolVectorTests`
+  and `(cd apps/android && ./gradlew :app:testDebugUnitTest --tests org.riot.evidence.AnchorProtocolVectorTest)`;
+  this unit does not claim iroh/Tokio native cross-compilation, which becomes executable only in WU-012B.
 - [ ] Commit as `test(anchor): pin native protocol vectors`.
 
 ### WU-007: Multi-ALPN iroh router and bounded stream lifecycle
@@ -392,7 +404,7 @@ pub trait SiteReplicaRepository: Send + Sync {
 
 - [ ] **RED:** Add migration, quota, overflow, cancellation, crash/reopen, backup/restore, payload-reference, CAS, and atomic O/C/W promotion tests.
 - [ ] **GREEN:** Add schema migration and repository implementation through `RiotDatabase` transactions.
-- [ ] Run the focused repository, lifecycle, corruption, and backup suites.
+- [ ] Run `cargo test -p riot-core --test client_site_repository --test sqlite_backup_restore --test sqlite_lifecycle --test sqlite_integrity_fail_closed --all-features`.
 - [ ] Commit as `feat(core): add scalable client site repository`.
 
 ### WU-009: Core-owned profile storage command port
@@ -430,7 +442,8 @@ pub enum LocalMutationOutcome { Busy { active_operation_id: [u8; 32], retry_afte
 
 - [ ] **RED:** Add queue-full, second mutation, cancel-before/after-start, lock-order, generation discard, shutdown, reopen-after-commit, and public module-export tests in `profile_storage_worker.rs`.
 - [ ] **GREEN:** Implement memory/SQLite constructors, opaque handle generations, worker ownership, mutation gate, leases, and registry move; register/export the module through `store/mod.rs`.
-- [ ] Run both focused suites plus all existing profile/registry/evidence tests.
+- [ ] Run `cargo test -p riot-core --test profile_storage_worker --all-features` and
+  `cargo test -p riot-core --all-features`.
 - [ ] Commit as `refactor(core): centralize profile storage ownership`.
 
 ### WU-010A: FFI storage ownership migration
@@ -454,7 +467,8 @@ pub enum LocalMutationOutcome { Busy { active_operation_id: [u8; 32], retry_afte
 
 - [ ] **RED:** Add raw-owner, child strong-owner, lock-order, generation-race, and database-under-ProfileState tests.
 - [ ] **GREEN:** Route existing evidence/registry flows through `ProfileStorageCommand`, delete durable FFI registry ownership, and retain only opaque handle IDs/projections.
-- [ ] Run the focused ownership suite plus all FFI persistence/import/sync/registry tests.
+- [ ] Run `cargo test -p riot-ffi --test profile_storage_ownership --all-features` and
+  `cargo test -p riot-ffi --all-features`.
 - [ ] Commit as `refactor(ffi): adopt core storage command port`.
 
 ### WU-010B: Explicit profile runtime and close lifecycle
@@ -524,6 +538,31 @@ pub enum LocalMutationOutcome { Busy { active_operation_id: [u8; 32], retry_afte
 - [ ] Run `cargo test -p riot-client-net`.
 - [ ] Commit as `feat(client-net): verify bootstrap before safe dialing`.
 
+### WU-011C: Signed directory feed and cursor protocol
+
+**Spec:** Directory Feeds and Search wire records; feed checkpoint/cursor recovery.
+
+**Files:**
+
+- Create: `crates/riot-anchor-protocol/src/directory.rs`
+- Modify: `crates/riot-anchor-protocol/src/lib.rs`
+- Modify: `crates/riot-anchor-protocol/schema/riot-anchor-v1.cddl`
+- Create: `crates/riot-anchor-protocol/tests/directory_vectors.rs`
+
+**DoD:**
+
+- Empty/first sentinels, signed inclusions, receipts, checkpoints, current-key snapshot records,
+  authenticated feed/snapshot cursors, compaction floors, and every cursor failure are canonical.
+- Rotation coordinates and current-key reissuance records are independently verifiable.
+- Client and server work units consume these canonical types directly; neither defines a private
+  directory grammar or treats JSON projections as authority.
+
+- [ ] **RED:** Add golden/hostile tests for sentinel/link order, feed forks, every cursor reason,
+  snapshot state digest, checkpoint chain, inclusion/receipt coordinate, and current-key reissuance.
+- [ ] **GREEN:** Implement directory record/cursor codecs, signing preimages, verification, and CDDL.
+- [ ] Run `cargo test -p riot-anchor-protocol --test directory_vectors`.
+- [ ] Commit as `feat(anchor): define signed directory protocol`.
+
 ### WU-012A: Typed plural client operations
 
 **Spec:** Typed Client Operation Results; legal mutation boundaries.
@@ -547,10 +586,23 @@ pub enum LocalMutationOutcome { Busy { active_operation_id: [u8; 32], retry_afte
 - Foreground and platform-bounded background callers use the same runner; expiration/cancellation stops network work at the supplied deadline while retaining exact next-due/recovery state.
 - Configuration admits at most 32 distinct normalized hosts; configuration-change arrays are deduplicated and sorted before persistence or emission.
 - A merged directory cursor is bound to the normalized query and exact source set that created it; reuse with a different query or source set is rejected before any source request.
+- The production `DirectorySourceAdapter` uses WU-011C's signed feed/snapshot records and
+  authenticated cursors over WU-011B's verified safe-dial transport. It verifies source signatures,
+  checkpoint continuity, cursor binding, expiry/floors, and result bounds before yielding typed
+  cards. Fake ports remain test-only and cannot be selected by production constructors.
 
-- [ ] **RED:** Add module unit tests with fake ports for every design transition, plural partial outcomes, stale-source three-attempt retry, relist windows, per-row cancellation, local busy/recovery, profile close, due/not-due claims, restart resumption, partial-source scheduled runs, bounded-window expiry, persisted retry, 33rd-host rejection, normalized-host deduplication, sorted `ConfigurationChange` output, and merged-cursor rejection for both changed query and changed source set.
-- [ ] **GREEN:** Implement injected port traits, foreground state machines, and `reconcile.rs`'s deadline-bounded durable scheduler over WU-011's runtime and WU-009's core storage command port.
-- [ ] Run `cargo test -p riot-client-net`.
+- [ ] **RED:** Add module unit tests with fake byte transports for every design transition, plural
+  partial outcomes, signature/checkpoint/floor/cursor failures, stale-source three-attempt retry,
+  relist windows, per-row cancellation, local busy/recovery, profile close, due/not-due claims,
+  restart resumption, partial-source scheduled runs, bounded-window expiry, persisted retry,
+  33rd-host rejection, normalized-host deduplication, sorted `ConfigurationChange` output, and
+  merged-cursor rejection for both changed query and changed source set. Add a production-constructor
+  test that proves the adapter emits and consumes WU-011C canonical bytes rather than a fake schema.
+- [ ] **GREEN:** Implement the real protocol-backed `DirectorySourceAdapter`, injected byte-transport
+  test seam, foreground state machines, and `reconcile.rs`'s deadline-bounded durable scheduler over
+  WU-011's runtime and WU-009's core storage command port.
+- [ ] Run `cargo test -p riot-client-net` and
+  `cargo test -p riot-anchor-protocol --test directory_vectors`.
 - [ ] Commit as `feat(client-net): add typed plural operations`.
 
 ### WU-012B: UniFFI anchor operations and event streams
@@ -575,7 +627,9 @@ pub enum LocalMutationOutcome { Busy { active_operation_id: [u8; 32], retry_afte
 - [ ] **RED:** Add FFI contract tests for every enum variant, sorted map encoding, callback terminality, consent/retry/cancel, weak lease, process-runtime lifetime, bounded background-run deadline, and close interaction.
 - [ ] **GREEN:** Export WU-012A records, enums, callbacks/streams, and operation handles through `anchor_ffi.rs`; extend the native build script's dependency-closure assertion to require `riot-client-net`/iroh/Tokio and reject server-only crates.
 - [ ] Run `cargo test -p riot-ffi --test anchor_operation_contract`, the full `riot-ffi` suite, and `sh scripts/conference/build-native-core.sh` for every checked-in Apple/Android target.
-- [ ] **Human checkpoint A:** Present protocol vectors, Cargo feature graphs, ALPN traces, native iOS/Android iroh/Tokio cross-compilation, and acceptance of the operator-supplied public-pilot bootstrap and signed pilot-configuration resources.
+- [ ] **Human checkpoint A:** Present protocol vectors, Cargo feature graphs, ALPN traces, native
+  iOS/Android iroh/Tokio cross-compilation, and acceptance of the operator-supplied production
+  bootstrap resource.
 - [ ] Commit as `feat(ffi): expose typed plural anchor operations`.
 
 ### WU-013A: Anchor crate and forward-only schema
@@ -643,7 +697,7 @@ pub enum LocalMutationOutcome { Busy { active_operation_id: [u8; 32], retry_afte
 
 - [ ] **RED:** Add ordering spies, collision/replay, restart, pre-claim retry-through-success, changed stamp, token derivation/rotation, pressure-band, and GetOperation lifecycle tests in `control_prepare.rs`.
 - [ ] **GREEN:** Implement control admission service over `AnchorRepository`, idempotency index, work verifier, Describe/challenge/Prepare/GetOperation handlers.
-- [ ] Run both focused suites.
+- [ ] Run `cargo test -p riot-anchor --test control_prepare --test repository_foundation`.
 - [ ] Commit as `feat(anchor): implement recoverable control prepare`.
 
 ### WU-015: Staged sync admission, composite Commit, and receipt recovery
@@ -667,7 +721,8 @@ pub enum LocalMutationOutcome { Busy { active_operation_id: [u8; 32], retry_afte
 
 - [ ] **RED:** Add every named stage/promotion failpoint, all Commit refusal rows, same-base races, manifest equivocation/transport mismatch, stale source/base, operation expiry, and lost-receipt tests.
 - [ ] **GREEN:** Adapt `Sync2Repository` to anchor staging and implement final validation/CAS/promotion/receipt recovery.
-- [ ] Run focused hosting suites and sync2 duplex tests against the real repository adapter.
+- [ ] Run `cargo test -p riot-anchor --test hosting_commit --test hosting_failpoints` and
+  `cargo test -p riot-anchor-protocol --test sync2_duplex`.
 - [ ] Commit as `feat(anchor): commit composite hosting atomically`.
 
 ### WU-015B: Atomic ordinary listing submission and replay
@@ -687,10 +742,23 @@ pub enum LocalMutationOutcome { Busy { active_operation_id: [u8; 32], retry_afte
 - One repository transaction claims the global idempotency key, appends exactly one signed inclusion, updates current listing state, invalidates the affected directory/search projection generation, creates the signed listing receipt, and stores the byte-identical terminal operation result.
 - Same-key/same-body retry returns the stored terminal bytes without a second inclusion; same-key/changed-body retry conflicts without result disclosure.
 - Crash at every transaction failpoint is wholly absent or wholly committed. Lost delivery is recoverable through `GetOperation`; refresh replaces current state while retaining the signed feed history required by the design.
+- The Willow-owning admission adapter verifies the listing entry signature, root-signed delegate grant,
+  complete Meadowcap capability chain (`is_valid`/`does_authorise`), exact root/listing coordinate,
+  grant epoch/time, and embedded ticket/root signature before constructing a
+  non-publicly-constructible `VerifiedListingAuthority` proof token. The transaction service accepts
+  that token rather than unverified listing bytes; `resolve_listing` is unreachable from a caller
+  that has not completed all signature/capability checks.
 
-- [ ] **RED:** Add ordinary submit, refresh, listing-before-hosting, stale generation, changed-body replay, lost-delivery, and same-key retry tests; inject a failpoint at every durable mutation and assert zero partial state, one inclusion, one projection-generation invalidation, and byte-identical receipt/terminal replay.
-- [ ] **GREEN:** Implement the ordinary `SubmitListing` service exclusively through `AnchorRepository`'s transaction boundary and WU-014's shared admission/idempotency machinery.
-- [ ] Run `cargo test -p riot-anchor --test listing_submit --test listing_failpoints` plus WU-014 control, WU-015 hosting, and WU-017A directory-vector suites.
+- [ ] **RED:** Add ordinary submit, refresh, listing-before-hosting, stale generation, changed-body
+  replay, lost-delivery, and same-key retry tests; add hostile mutations for entry/grant/cap/root
+  signatures, receiver/area/time/root/epoch/ticket mismatches, and a compile-fail/private-constructor
+  assertion for `VerifiedListingAuthority`; inject a failpoint at every durable mutation and assert
+  zero partial state, one inclusion, one projection-generation invalidation, and byte-identical
+  receipt/terminal replay.
+- [ ] **GREEN:** Implement the verified listing-authority adapter and ordinary `SubmitListing`
+  service exclusively through `AnchorRepository`'s transaction boundary and WU-014's shared
+  admission/idempotency machinery.
+- [ ] Run `cargo test -p riot-anchor --test listing_submit --test listing_failpoints --test control_prepare --test hosting_commit --test hosting_failpoints` and `cargo test -p riot-anchor-protocol --test directory_vectors`.
 - [ ] Commit as `feat(anchor): submit ordinary listings atomically`.
 
 ### WU-016: Reserved owner removal and crash-safe checkpoints
@@ -715,34 +783,17 @@ pub enum LocalMutationOutcome { Busy { active_operation_id: [u8; 32], retry_afte
 
 - [ ] **RED:** Add reservation races, two-cycle relist, cross-class keys, invalid-candidate saturation, aggregate cap, maximum-record exhaustion, every checkpoint publication/reclaim failpoint, and lost terminal delivery tests.
 - [ ] **GREEN:** Implement removal scheduler, slots, work records, immutable files, recovery, and bounded maintenance.
-- [ ] Run both focused suites under forced SQLite/WAL ceilings.
+- [ ] Run `cargo test -p riot-anchor --test removal_reserve --test checkpoint_recovery`.
 - [ ] **Human checkpoint C:** Present storage failpoint matrix, reserved-lane fairness metrics, and maximum-size removal evidence.
 - [ ] Commit as `feat(anchor): guarantee recoverable owner removal`.
-
-### WU-017A: Signed directory feed and cursor protocol
-
-**Spec:** Directory Feeds and Search wire records; feed checkpoint/cursor recovery.
-
-**Files:**
-
-- Create: `crates/riot-anchor-protocol/src/directory.rs`
-- Modify: `crates/riot-anchor-protocol/src/lib.rs`
-- Modify: `crates/riot-anchor-protocol/schema/riot-anchor-v1.cddl`
-- Create: `crates/riot-anchor-protocol/tests/directory_vectors.rs`
-
-**DoD:**
-
-- Empty/first sentinels, signed inclusions, receipts, checkpoints, current-key snapshot records, authenticated feed/snapshot cursors, compaction floors, and every cursor failure are canonical.
-- Rotation coordinates and current-key reissuance records are independently verifiable.
-
-- [ ] **RED:** Add golden/hostile tests for sentinel/link order, feed forks, every cursor reason, snapshot state digest, checkpoint chain, inclusion/receipt coordinate, and current-key reissuance.
-- [ ] **GREEN:** Implement directory record/cursor codecs, signing preimages, verification, and CDDL.
-- [ ] Run `cargo test -p riot-anchor-protocol --test directory_vectors`.
-- [ ] Commit as `feat(anchor): define signed directory protocol`.
 
 ### WU-017B: Directory persistence, search, and visibility
 
 **Spec:** Directory Feeds and Search behavior; listing/hosting separation; plural search.
+
+**Depends on:** WU-011C canonical directory records, WU-013B repository services, WU-015B ordinary
+listing transactions, and WU-016 removal/checkpoint recovery. This unit cannot begin before all four
+are committed.
 
 **Files:**
 
@@ -759,7 +810,7 @@ pub enum LocalMutationOutcome { Busy { active_operation_id: [u8; 32], retry_afte
 
 - [ ] **RED:** Add feed fork/reorder, sentinel, stale/after-head/malformed/wrong checkpoint/generation/regressed/expired cursor, conflicting listing, listing-before-hosting, rotation, suspension/restore, cache-at-expiry, unlist-directory-only, emergency compaction, and deterministic search-merge cases in `directory_feed.rs`.
 - [ ] **GREEN:** Implement repository-backed inclusion/checkpoint/snapshot/search/visibility services in one cohesive directory module.
-- [ ] Run the focused anchor suite plus WU-017A vectors.
+- [ ] Run `cargo test -p riot-anchor --test directory_feed --test listing_submit --test removal_reserve --test checkpoint_recovery` and `cargo test -p riot-anchor-protocol --test directory_vectors`.
 - [ ] Commit as `feat(anchor): publish signed plural directory feeds`.
 
 ### WU-018A: Configured-peer protocol and channel binding
@@ -787,6 +838,9 @@ pub enum LocalMutationOutcome { Busy { active_operation_id: [u8; 32], retry_afte
 
 **Spec:** PrepareReplica lifecycle; Gossip amplification boundary; TDD Slice 4.
 
+**Depends on:** WU-007 ALPN router, WU-013B repository services, WU-015 staging/commit adapter, and
+WU-018A authenticated peer records. This unit cannot begin before all four are committed.
+
 **Files:**
 
 - Create: `crates/riot-anchor/src/peer.rs`
@@ -803,12 +857,16 @@ pub enum LocalMutationOutcome { Busy { active_operation_id: [u8; 32], retry_afte
 
 - [ ] **RED:** Add reflection/role/exporter/replay/stale hello, descriptor refresh, challenge double-use, source mutation, connection loss, rotation, crash-orphan, gossip loop, and three-anchor convergence tests in `peer_auth.rs`.
 - [ ] **GREEN:** Implement peer service, startup invalidation, replica adapter, and deterministic scheduler over WU-018A types.
-- [ ] Run the focused anchor suite plus WU-018A vectors.
+- [ ] Run `cargo test -p riot-anchor --test peer_auth --test repository_foundation --test hosting_commit` and `cargo test -p riot-anchor-protocol --test peer_vectors`.
 - [ ] Commit as `feat(anchor): add authenticated bounded gossip`.
 
 ### WU-019: Bounded daemon ingress and control/sync serving
 
 **Spec:** Public iroh and HTTPS admission; encoded bounds; Privacy and Logging.
+
+**Depends on:** WU-007 router, WU-014 control admission, WU-015 hosting sync, WU-015B listing,
+WU-016 reserved removal, WU-017B directory services, and WU-018B peer/gossip services. The daemon
+must route the real service implementations; stub handlers are not an acceptable intermediate.
 
 **Files:**
 
@@ -827,7 +885,7 @@ pub enum LocalMutationOutcome { Busy { active_operation_id: [u8; 32], retry_afte
 
 - [ ] **RED:** Add handshake churn, slow ClientHello/header/frame/trickle/write, stream abuse, 65 headers, long field, method/Range/upgrade/compression, queue/rate/snapshot/response exhaustion, permit leaks, and log-saturation tests while a reserved removal completes.
 - [ ] **GREEN:** Define validated daemon configuration beside its lifecycle in `daemon.rs`, then wire admission partitions, ALPN handlers, graceful shutdown, readiness/liveness, and bounded logging.
-- [ ] Run ingress tests and all anchor control/sync suites through the daemon boundary.
+- [ ] Run `cargo test -p riot-anchor --test ingress_limits --test control_prepare --test hosting_commit --test hosting_failpoints --test listing_submit --test listing_failpoints --test removal_reserve --test checkpoint_recovery --test directory_feed --test peer_auth`.
 - [ ] Commit as `feat(anchor): serve bounded public ingress`.
 
 ### WU-020A: Typed web snapshot and daemon publication service
@@ -872,7 +930,10 @@ pub enum LocalMutationOutcome { Busy { active_operation_id: [u8; 32], retry_afte
 
 - [ ] **RED:** Add unit tests in `main.rs` for hostile strings in every context, HTML/SVG/attribute injection, unknown profiles, canonical routes, CSP stylesheet hash, file-count, and byte limits.
 - [ ] **GREEN:** Add the workspace renderer binary and pure text templates/output manifest.
-- [ ] Run renderer tests plus existing gateway unittest/smoke and WU-020A's fake/real renderer adapter contract.
+- [ ] Run `cargo test -p riot-anchor-renderer`,
+  `cargo test -p riot-anchor --test projection_publish`,
+  `(cd apps/gateway && python3 -m unittest discover -s tests)`, and
+  `sh scripts/conference/gateway-smoke.sh`.
 - [ ] Commit as `feat(anchor): publish isolated static web projections`.
 
 ### WU-021A: Canonical v2 handoff protocol
@@ -901,11 +962,16 @@ pub enum LocalMutationOutcome { Busy { active_operation_id: [u8; 32], retry_afte
 
 **Spec:** HTTPS API table; web-to-app journey states; public security headers.
 
+**Depends on:** WU-017B directory services, WU-019 bounded TLS/HTTP ingress, WU-020B validated
+projections, and WU-021A handoff codec. HTTPS handlers must be installed into WU-019's real daemon,
+not exercised only as detached functions.
+
 **Files:**
 
 - Create: `crates/riot-anchor/src/http.rs`
 - Modify: `crates/riot-anchor/src/lib.rs`
 - Create: `crates/riot-anchor/tests/http_api.rs`
+- Create: `scripts/anchor/http-route-contract.sh`
 
 **DoD:**
 
@@ -914,9 +980,11 @@ pub enum LocalMutationOutcome { Busy { active_operation_id: [u8; 32], retry_afte
 - WU-021A handoffs are served with no query/cookie/fingerprint/redirect and preserve root/destination across install return.
 - CSP/HSTS/nosniff/Permissions-Policy/frame/referrer headers apply to success and error responses.
 
-- [ ] **RED:** Add every GET/HEAD method/path/status/shape (including byte-identical headers/status and an empty HEAD body), rejection of all other methods, cursor 409, overload, response ceiling, cache expiry, security header, installed/no-app/install-unavailable/expired/malformed/destination-absent, and legacy-link compatibility test in `http_api.rs`.
+- [ ] **RED:** Add every GET/HEAD method/path/status/shape (including byte-identical headers/status and an empty HEAD body), rejection of all other methods, cursor 409, overload, response ceiling, cache expiry, security header, installed/no-app/install-unavailable/expired/malformed/destination-absent, and legacy-link compatibility test in `http_api.rs`. Add `http-route-contract.sh` to start the bounded test daemon with deterministic certificates/data and probe the public socket; observe failure before the handlers are installed.
 - [ ] **GREEN:** Implement service-backed handlers and handoff/install page controls over WU-021A's codec.
-- [ ] Run both focused suites and a browserless end-to-end HTTPS route rehearsal.
+- [ ] Run `cargo test -p riot-anchor --test http_api --test projection_publish --test ingress_limits`,
+  `cargo test -p riot-anchor-protocol --test handoff_vectors`, and
+  `sh scripts/anchor/http-route-contract.sh`.
 - [ ] Commit as `feat(anchor): serve directory web and v2 handoff`.
 
 ### WU-022A: iOS anchor state models and profile lifecycle adapter
@@ -1106,171 +1174,44 @@ pub enum LocalMutationOutcome { Busy { active_operation_id: [u8; 32], retry_afte
 - [ ] **Human checkpoint D:** Demonstrate web→iOS/Android handoff, background restart/resume, partial-source Explore, one-anchor failover, per-row publish cancellation, and accessible relist/source-change states.
 - [ ] Commit as `feat(android): run bounded background anchor reconciliation`.
 
-### WU-024A: Canonical pilot protocol
 
-**Spec:** Privacy-compatible pilot record and signature contract.
+### WU-026A: Reproducible daemon and renderer OCI images
 
-**Files:**
+**Spec:** Deployment and Recovery Contract; renderer isolation boundary; reproducible release inputs.
 
-- Create: `crates/riot-anchor-protocol/src/pilot.rs`
-- Modify: `crates/riot-anchor-protocol/src/lib.rs`
-- Modify: `crates/riot-anchor-protocol/schema/riot-anchor-v1.cddl`
-- Create: `crates/riot-anchor-protocol/tests/pilot_vectors.rs`
-- Create: `fixtures/anchor/pilot-config-development-v1.cbor`
-
-**DoD:**
-
-- Invitation/enrollment/token/export/withdrawal records, signatures, keyed lookup/commitment, sequence bounds, fixed roles, cumulative metrics digest, exact replay coordinates, and one-bit-invalid vectors are canonical.
-- `PilotConfigurationV1` canonically pins window, validity, redirect-free safe-dial collector origin, collector Ed25519 verification key/key ID, configuration authority key ID, and package signature; the visibly development-only fixture exercises parsing without being release-eligible.
-- Pilot types expose no Riot/community/anchor/query/IP/device identifiers.
-
-- [ ] **RED:** Add golden/hostile tests for every body/preimage/signature/HMAC/digest, signed configuration authority/key/origin/window/validity binding, maximum sequence, role mutation, duplicate/unknown fields, and one-bit invalidity.
-- [ ] **GREEN:** Implement bounded canonical pilot records/configuration verification and generate the deterministic development fixture from fixed test authority material.
-- [ ] Run `cargo test -p riot-anchor-protocol --test pilot_vectors`.
-- [ ] Commit as `feat(pilot): define canonical aggregate protocol`.
-
-### WU-024B: Replay-safe pilot collector
-
-**Spec:** Collector repository, key retention, enrollment/export/withdrawal, and bounded HTTP state machine.
+**Depends on:** WU-019 daemon binary, WU-020B renderer binary, and WU-021B installed HTTPS service.
+The image contract builds the completed public service, not an earlier daemon without its routes.
 
 **Files:**
 
-- Create: `crates/riot-pilot-collector/Cargo.toml`
-- Create: `crates/riot-pilot-collector/src/lib.rs`
-- Create: `crates/riot-pilot-collector/src/main.rs`
-- Modify: `Cargo.toml`
-- Modify: `Cargo.lock`
+- Create: `deploy/riot-anchor/Dockerfile.anchor`
+- Create: `deploy/riot-anchor/Dockerfile.renderer`
+- Create: `deploy/riot-anchor/.dockerignore`
+- Create: `deploy/riot-anchor/README.md`
+- Create: `scripts/anchor/image-contract.sh`
 
 **DoD:**
 
-- Collector stores one pseudonym per single-use invitation, highest export only, independent withdrawal sequence, and bounded keyed replay receipts; withdrawal deletes contribution and cannot be reversed.
-- Window HMAC/signing keys are backed up and retained until all dependent rows expire; readiness fails without them.
-- One POST application/cbor per TLS connection with exact Content-Length/body deadline and no transfer encoding/compression/trailing bytes is enforced.
+- Multi-stage builds use digest-pinned builder/runtime bases, `cargo build --locked`, an explicit
+  target triple, and only the expected stripped binary/config-support files in each runtime image.
+- Runtime images are unprivileged, contain no compiler/package manager/source tree/secrets, declare
+  only required writable mount points, and set deterministic OCI metadata from an explicit
+  `SOURCE_DATE_EPOCH` and revision argument.
+- The daemon and renderer are separate images. The renderer image contains no daemon, SQLite,
+  network client, shell, or credential-loading surface.
+- Static contract checks run without a daemon; when a local OCI builder is available the same script
+  builds both images from the locked workspace and inspects user, entrypoint, layers, exposed ports,
+  and filesystem allowlists.
 
-- [ ] **RED:** Add unit/integration tests inside `lib.rs` for every invitation/export/withdrawal replay, conflict, overflow, monotonicity, signature, window/key retention, HTTP parser, crash, and deletion/recount case from Slice 7.
-- [ ] **GREEN:** Implement the collector repository/ingress over WU-024A's canonical records using the same bounded admission primitives without joining anchor logs.
-- [ ] Run `cargo test -p riot-pilot-collector` and protocol vectors.
-- [ ] Commit as `feat(pilot): add replay-safe aggregate collector`.
+- [ ] **RED:** Add `scripts/anchor/image-contract.sh`; run it and observe failure because both
+  Dockerfiles and their pinned/locked/non-root contracts are absent.
+- [ ] **GREEN:** Add both multi-stage Dockerfiles, the deny-by-default build context, and documented
+  build arguments. Make the script fail on an unpinned `FROM`, unlocked Cargo build, root user,
+  unexpected runtime binary, renderer network tool/library, writable root, or undeclared port.
+- [ ] Run `sh scripts/anchor/image-contract.sh`.
+- [ ] Commit as `build(anchor): add reproducible daemon and renderer images`.
 
-### WU-024C: Authoritative pilot recruitment ledger
-
-**Spec:** Trusted recruitment procedure; one credential per consenting participant; coordinator concurrency.
-
-**Files:**
-
-- Create: `crates/riot-pilot-recruitment/Cargo.toml`
-- Create: `crates/riot-pilot-recruitment/src/lib.rs`
-- Create: `crates/riot-pilot-recruitment/src/main.rs`
-- Modify: `Cargo.toml`
-- Modify: `Cargo.lock`
-
-**DoD:**
-
-- A separate internal service and SQLite ledger serve every coordinator for a pilot window; it never shares a database, key, origin, log, or identifier with the collector.
-- One transaction binds normalized human consent contact, immutable permitted role flags, window, and `credential_issued`; decline writes no issuance, concurrent coordinators cannot issue twice, and role changes are deferred to a later window.
-- Fixed-role credential batches are preloaded by commitment and shuffled before assignment; the ledger atomically consumes exactly one matching unissued commitment without recording credential bytes, scratch-card order, client key, token, or pseudonym.
-- Coordinator authentication/authorization, request idempotency, audit retention, backup/restore, readiness, bounded ingress, and redacted logs follow the operational contract.
-
-- [ ] **RED:** Add unit/integration tests inside `lib.rs` for decline, exact replay, conflicting contact/role/window, fixed-role exhaustion, concurrent two-coordinator issuance, crash at every transaction boundary, backup/restore, unauthorized coordinator, and forbidden-field/log scans.
-- [ ] **GREEN:** Implement the isolated repository, coordinator API, credential-commitment batch loader, atomic issuance transaction, readiness, and bounded service entry point.
-- [ ] Run `cargo test -p riot-pilot-recruitment` plus WU-024A protocol vectors.
-- [ ] Commit as `feat(pilot): add authoritative recruitment ledger`.
-
-### WU-025A: Native pilot state, metrics formulas, and UniFFI
-
-**Spec:** PilotParticipantRecordV1; event boundaries/denominators; cancellation state contract.
-
-**Files:**
-
-- Create: `crates/riot-core/src/store/pilot.rs`
-- Modify: `crates/riot-core/src/store/schema.rs`
-- Modify: `crates/riot-core/src/store/mod.rs`
-- Modify: `crates/riot-client-net/src/operations.rs`
-- Modify: `crates/riot-ffi/src/anchor_ffi.rs`
-
-**DoD:**
-
-- Protected profile storage owns the only invitation/key/token/request/metrics/sequence/receipt copies and enforces state presence invariants.
-- Enrollment/export/withdrawal persist exact requests before I/O and recover byte-identically after loss.
-- Phase-specific cancel semantics preserve ambiguous credentials and use recovery/withdrawal rather than destructive discard.
-- Local aggregate contains only allowed counters/categories/coarse buckets; formulas and denominator minima are exact and zero/subminimum is Inconclusive.
-- Higher exports are component-wise monotonic and acknowledged only after durable sequence/receipt update.
-- Before invitation import or any collector I/O, the client loads the embedded configuration, verifies its package signature against the compiled configuration-authority key, enforces window/validity and collector key ID, then safe-dials only the pinned redirect-free origin; invalid/missing/development configuration in a Release build fails closed without network or profile mutation.
-
-- [ ] **RED:** Add focused unit tests in `store/pilot.rs` and `operations.rs` for configuration signature/key/window/origin/expiry/development-release rejection before dial, consent decline, every retry/terminal state, response loss, pre/post-send cancellation, local busy, crash, sequence max, withdrawal after max export, retention completion, denominator/formula, and forbidden fields.
-- [ ] **GREEN:** Add trusted embedded configuration loading, client storage migration, participant state machine, metrics reducer, UniFFI projection, and safe-dialed collector operation adapter.
-- [ ] Run focused pilot tests plus backup/restore and profile-close suites.
-- [ ] Commit as `feat(client): add private pilot participation state`.
-
-### WU-025B: iOS pilot consent, export, and withdrawal
-
-**Spec:** Pilot participant accessible UX and phase-specific cancellation.
-
-**Files:**
-
-- Create: `apps/ios/Riot/Pilot/PilotParticipation.swift`
-- Modify: `apps/ios/Riot/AppModel.swift`
-- Create: `apps/ios/RiotTests/PilotParticipationTests.swift`
-- Modify: `apps/ios/Riot.xcodeproj/project.pbxproj`
-- Modify: `apps/macos/Riot.xcodeproj/project.pbxproj`
-
-**DoD:**
-
-- Invitation import, plain-language consent/privacy/roles/expiry, aggregate preview, export confirmation, retry timing, recovery, withdrawal, retention completion, and technical details map exhaustively from UniFFI state.
-- Cancel before send deletes locally; cancel after possible enrollment recovers then withdraws; cancel export withdraws; withdrawal dismissal preserves automatic exact retry.
-- Focus, VoiceOver labels, live announcements, and receipt/deletion-limit explanations satisfy the accessibility contract.
-- Both Apple RiotKit targets compile the shared pilot model and updated app model in the same commit; macOS does not expose the iOS-only pilot surface.
-
-- [ ] **RED:** Add pure state/view-model tests for every participant state, crash recovery projection, phase-specific cancel, overload/local busy, dismissal/reopen, and accessible copy/focus identifier.
-- [ ] **GREEN:** Implement the shared pilot model/view in one focused file, wire generated operations into the app model, and register it in both Apple RiotKit targets with the macOS surface compile-time isolated.
-- [ ] Run focused iOS tests and both Apple RiotKit compile targets.
-- [ ] Commit as `feat(ios): add private pilot participation flow`.
-
-### WU-025C: Android pilot consent, export, and withdrawal
-
-**Spec:** Pilot participant accessible UX and phase-specific cancellation.
-
-**Files:**
-
-- Create: `apps/android/app/src/main/kotlin/org/riot/evidence/PilotParticipation.kt`
-- Modify: `apps/android/app/src/main/kotlin/org/riot/evidence/RiotController.kt`
-- Modify: `apps/android/app/src/main/kotlin/org/riot/evidence/MainActivity.kt`
-- Create: `apps/android/app/src/test/kotlin/org/riot/evidence/PilotParticipationTest.kt`
-
-**DoD:**
-
-- Android exposes the same participant states, copy, cancellation/recovery, receipts, overload/local-busy timing, withdrawal, retention explanation, and accessibility distinctions as iOS.
-- Protected material remains exclusively behind core/UniFFI and activity teardown cannot discard an ambiguous request.
-
-- [ ] **RED:** Add host-JVM tests mirroring WU-025B's complete transition/copy/accessibility matrix.
-- [ ] **GREEN:** Implement pure Kotlin projections/view builders and wire controller/activity actions to UniFFI operations.
-- [ ] Run Android unit/assemble/connected gates after binding regeneration.
-- [ ] Commit as `feat(android): add private pilot participation flow`.
-
-### WU-025D: iOS pilot surface and final macOS compatibility closure
-
-**Spec:** Pilot participant accessible UX; existing shared-Swift platform compatibility.
-
-**Files:**
-
-- Modify: `apps/ios/Riot/AppModel.swift`
-- Modify: `apps/ios/Riot/ConferenceShellView.swift`
-- Modify: `apps/ios/RiotTests/PilotParticipationTests.swift`
-- Modify: `apps/macos/Riot.xcodeproj/project.pbxproj`
-- Create: `apps/macos/RiotTests/PilotSharedCompileTests.swift`
-
-**DoD:**
-
-- iOS exposes the complete consent/export/withdrawal journey from WU-025B models, while the unchanged macOS product surface compiles shared `AppModel`/`ConferenceShellView` with pilot-only presentation explicitly unavailable.
-- Portable pilot state and generated UniFFI types compile in macOS RiotKit; iOS-only navigation, accessibility announcements, and lifecycle adapters remain platform guarded.
-- Both Apple projects build after the final shared Swift modifications, and macOS compile-contract tests prevent a later iOS-only type reference from breaking the shared target.
-
-- [ ] **RED:** Extend iOS journey tests and add a macOS compile-contract test covering shared app/shell model construction with pilot presentation unavailable.
-- [ ] **GREEN:** Wire the iOS shell surface, add explicit platform guards, and register the portable macOS compile test without adding a macOS pilot product feature.
-- [ ] Run iOS RiotKit tests/app build plus both `RiotKit-macOS` tests and `Riot-macOS` build.
-- [ ] Commit as `build(apple): close pilot shared-source integration`.
-
-### WU-026: Deployment, readiness, recovery, and operator runbooks
+### WU-026B: Deployment, readiness, recovery, and operator runbook
 
 **Spec:** Deployment and Recovery Contract; Privacy and Logging; round-18 runbook note.
 
@@ -1279,25 +1220,31 @@ pub enum LocalMutationOutcome { Busy { active_operation_id: [u8; 32], retry_afte
 - Create: `deploy/riot-anchor/compose.yaml`
 - Create: `deploy/riot-anchor/riot-anchor.example.toml`
 - Create: `deploy/riot-anchor/renderer-seccomp.json`
-- Create: `docs/operations/public-anchor-pilot-runbook.md`
+- Create: `docs/operations/public-anchor-runbook.md`
 - Create: `scripts/anchor/deployment-contract.sh`
 
 **DoD:**
 
 - Compose separates daemon/renderer network namespaces and mounts, uses unprivileged read-only renderer root, quota-limited temp volume, daemon-owned published tree, persistent DB, secrets, health/readiness, and bounded logs.
-- Collector and recruitment ledger deploy as separate origins, identities, keys, databases, networks, backups, readiness probes, and log sinks; no joinable identifier crosses their boundary.
+- Compose consumes only WU-026A's daemon and renderer images; it contains no pilot collector or
+  recruitment service.
 - Readiness probe verifies the security boundary rather than trusting declarative settings.
-- Runbook covers bootstrap of at least three anchors/two operators/two failure domains, keys/rotation, backups/restore, clone lease, migration/rollback compatibility, graceful drain, capacity/removal telemetry, incident handling, and pilot recruitment/retention.
+- Runbook covers bootstrap of at least three anchors/two operators/two failure domains, keys/rotation,
+  backups/restore, clone lease, migration/rollback compatibility, graceful drain,
+  capacity/removal telemetry, and incident handling.
 - Example config contains no secret and every required production value/env path is documented.
 
 - [ ] **RED:** Add `scripts/anchor/deployment-contract.sh` first and observe it fail on the absent Compose/config/runbook. It must reject shared network, writable root, missing quota/seccomp/readiness, unbounded log sink, or missing secret path.
-- [ ] **GREEN:** Add deployment manifests/config/runbooks and wire daemon/renderer/collector/recruitment images and probes.
-- [ ] Manually inspect rendered Compose config and run the readiness enforcement probe in a local isolated deployment.
-- [ ] Commit as `ops(anchor): add hardened deployment and pilot runbook`.
+- [ ] **GREEN:** Add deployment manifests/config/runbook and wire only the daemon/renderer images and probes.
+- [ ] Run `sh scripts/anchor/image-contract.sh`, `sh scripts/anchor/deployment-contract.sh`, and
+  `docker compose -f deploy/riot-anchor/compose.yaml config --quiet`. If Docker is unavailable,
+  record that external-tool blocker; the two shell contracts still must pass and this WU cannot be
+  marked operationally rehearsed until the Compose command runs.
+- [ ] Commit as `ops(anchor): add hardened deployment and recovery runbook`.
 
 ### WU-027: Deterministic network, failpoint, and load harness
 
-**Spec:** Deterministic Test Harness; Performance and Pilot Contract; Edge-Case Matrix.
+**Spec:** Deterministic Test Harness; Performance Contract; Edge-Case Matrix.
 
 **Files:**
 
@@ -1314,11 +1261,12 @@ pub enum LocalMutationOutcome { Busy { active_operation_id: [u8; 32], retry_afte
 - Adversarial HTTP/iroh/control/sync/removal/render/log loads remain within compiled permits/bytes/deadlines and do not starve reserved removal.
 - Performance tests measure directory/descriptor/recovery/failover targets without nondeterministic sleeps.
 - Deployment contract verifies container isolation/readiness configuration.
-- Pilot system tests use the production recruitment and collector interfaces to prove concurrent coordinator single issuance, fixed roles, cross-service unlinkability, and enrollment/export/withdrawal recovery.
 
 - [ ] **RED:** Add the complete Edge-Case Matrix as named parameterized cases; first run must expose missing integration seams or behaviors rather than skip.
 - [ ] **GREEN:** Complete production seam injection and harness orchestration until every case exercises a public service interface.
-- [ ] Run three-anchor, adversarial-load, deployment-contract, and targeted failpoint suites.
+- [ ] Run `cargo test -p riot-anchor --test three_anchor_system --test adversarial_load`,
+  `cargo test -p riot-anchor --test hosting_failpoints --test listing_failpoints --test checkpoint_recovery`,
+  `sh scripts/anchor/image-contract.sh`, and `sh scripts/anchor/deployment-contract.sh`.
 - [ ] **Human checkpoint E:** Present deterministic convergence trace, anchor-loss rehearsal, ingress/removal load charts, recovery timing, and deployment probe output.
 - [ ] Commit as `test(anchor): add deterministic system and load harness`.
 
@@ -1336,15 +1284,19 @@ pub enum LocalMutationOutcome { Busy { active_operation_id: [u8; 32], retry_afte
 
 **DoD:**
 
-- CI runs protocol/anchor/collector/recruitment/renderer tests, native feature-closure checks, deployment contracts, and coverage floors.
+- CI runs protocol/anchor/renderer tests, native feature-closure checks, image/deployment contracts,
+  and coverage floors. Native device/build gates remain local because CI is Linux-only.
 - Native packaging builds `riot-client-net` transitively for all checked-in Apple/Android targets and proves no server/renderer/anchor daemon dependency in any native resolved graph.
 - `xtask validate-contracts` checks protocol CDDL/vectors, dependency closure, compiled limit registry, schema/version compatibility, and legacy pins.
-- The public-pilot Release contract requires and verifies both `fixtures/anchor/bootstrap-public-pilot-v1.cbor` and package-signed `fixtures/anchor/pilot-config-public-v1.cbor`; debug/test builds use visibly development-only resources and cannot be mislabeled as pilot-ready.
+- Release packaging refuses the visibly development-only bootstrap resource and requires an
+  operator-supplied, package-signed bootstrap satisfying the compiled three-anchor/two-operator/
+  two-failure-domain diversity floor. Pilot configuration is not a trunk release input.
 - Inventory and release checklist describe every new service, schema, command, required secret, operator checkpoint, and rollback floor.
-- Every Definition of Done item maps to a passing automated test or the named deployment/pilot rehearsal evidence.
+- Every active Definition of Done item maps to a passing automated test or the named deployment rehearsal evidence.
 
 - [ ] **RED:** Extend contract/CI tests first and observe failures for absent checks/jobs.
-- [ ] **GREEN:** Wire all crates, binaries, scripts, packaging, inventory, and release evidence.
+- [ ] **GREEN:** Wire all active crates, binaries, scripts, packaging, inventory, and release evidence;
+  assert no deferred pilot crate/service/config is introduced.
 - [ ] Run every quality gate listed below with no skipped required suite and no coverage-floor reduction.
 - [ ] Run a fresh final adversarial review across the complete design, plan, combined diff, generated bindings, deployment manifests, and test evidence.
 - [ ] Commit as `chore(anchor): close integration and release gates`.
@@ -1380,9 +1332,8 @@ The control and sync APIs are the exact CBOR operation/frame tables in the appro
 | Anchor peer | descriptor chain/hello/proof | Bounded chain → fresh current floors → TLS exporter transcript → mutual proof/config rule |
 | Public HTTPS | socket/TLS/request | Pre-handshake permits/rates/timeouts → HTTP/1-only parser ceilings → handler/snapshot/CPU/response ceilings |
 | Renderer | typed snapshot and output tree | No network/DB → bounded typed text → detached mount → no-follow copy/hash/fsync/read-only transfer |
-| Pilot collector | one CBOR POST | TLS/parser/rate/CPU/body bounds → signatures/window/key → transactional replay/sequence checks |
 
-Production secrets are loaded by file descriptor/path or injected key-store interface: anchor operator key, iroh endpoint key, namespace-token HMAC epochs, cursor HMAC epochs, TLS key/certificate, deployment instance token/lease credentials, pilot collector signing key, and per-window invitation/deletion HMAC keys. They never live in TOML examples, SQLite community tables, logs, web snapshots, handoff URLs, or crash reports.
+Production secrets are loaded by file descriptor/path or injected key-store interface: anchor operator key, iroh endpoint key, namespace-token HMAC epochs, cursor HMAC epochs, TLS key/certificate, and deployment instance token/lease credentials. They never live in TOML examples, SQLite community tables, logs, web snapshots, handoff URLs, or crash reports.
 
 ## User Flows and Wireframes
 
@@ -1432,14 +1383,17 @@ Every loading/empty/partial/stale/overloaded/unreachable/refused/expired/busy/re
 - SQLite is embedded/bundled; no external database exists.
 - Renderer uses a local OCI runtime supporting isolated network namespaces, read-only roots, seccomp, and volume quotas.
 - Optional reverse proxy/CDN must declare log retention/byte caps equivalent to the daemon or readiness fails.
-- Pilot collector and WU-024C recruitment ledger use separate origins, identities, keys, databases, networks, and logs. Tests run locally; a live pilot additionally requires approved human coordinators, contact-handling policy, fixed-role credential batches, and operator-supplied `fixtures/anchor/pilot-config-public-v1.cbor` signed by the compiled configuration authority.
-- The repository can create and test `fixtures/anchor/bootstrap-development-v1.cbor` without external authority. Before a public-pilot Release build, operators must supply `fixtures/anchor/bootstrap-public-pilot-v1.cbor` containing at least three currently valid signed descriptors from at least two real operators and two operator-verified failure domains. Checkpoint A validates this input; if it is unavailable, debug/system implementation continues but WU-028's public-pilot release contract fails closed rather than shipping development hosts.
-- The repository can create the visibly development-only pilot configuration fixture from fixed test keys. A public-pilot Release additionally requires a non-development configuration whose authority signature, collector origin/key ID, window, and validity pass WU-024A/WU-025A verification; absent or invalid input fails the release contract before packaging.
+- The repository can create and test `fixtures/anchor/bootstrap-development-v1.cbor` without external
+  authority. A production release requires an operator-supplied, package-signed bootstrap containing
+  at least three currently valid signed descriptors from at least two real operators and two
+  operator-verified failure domains. Checkpoint A validates this input; if it is unavailable,
+  debug/system implementation continues but WU-028's production release contract fails closed rather
+  than shipping development hosts.
 - No account, payment, invitation for hosting, Tor/Arti, arbitrary media renderer, global firehose, or canonical ranking service is introduced.
 
 ## Human Checkpoints
 
-1. **A — protocol/transport closure:** cross-language vectors, feature graphs, ALPN traces, native cross-compilation, and acceptance of the operator-supplied public-pilot bootstrap and signed pilot-configuration resources.
+1. **A — protocol/transport closure:** cross-language vectors, feature graphs, ALPN traces, native cross-compilation, and acceptance of the operator-supplied production bootstrap resource.
 2. **B — client storage migration:** migrations/backups, lock-order proof, explicit close behavior, regression suites.
 3. **C — anchor persistence/security:** failpoint matrix, removal fairness/capacity, maximum-record emergency path.
 4. **D — user journey:** web→native handoff, plural Explore, failover, publish/relist/source-change accessibility.
@@ -1458,6 +1412,7 @@ cargo clippy --workspace --all-features --all-targets -- -D warnings
 cargo run -p xtask -- validate-contracts
 (cd apps/gateway && python3 -m unittest discover -s tests)
 sh scripts/conference/gateway-smoke.sh
+sh scripts/anchor/image-contract.sh
 sh scripts/conference/build-native-core.sh
 xcodebuild test -project apps/ios/Riot.xcodeproj -scheme RiotKit -destination 'platform=iOS Simulator,name=iPhone 17 Pro,OS=26.2,arch=arm64' -derivedDataPath build/ios-derived
 xcodebuild build -project apps/ios/Riot.xcodeproj -scheme Riot -destination 'platform=iOS Simulator,name=iPhone 17 Pro,OS=26.2,arch=arm64' -derivedDataPath build/ios-app-derived
@@ -1472,7 +1427,8 @@ Then verify:
 
 - no required test executed zero cases or was silently skipped;
 - generated bindings are current;
-- native resolved graphs exclude `riot-anchor`, `riot-anchor-renderer`, `riot-pilot-collector`, `riot-pilot-recruitment`, Hyper/rustls server adapters, and renderer dependencies;
+- native resolved graphs exclude `riot-anchor`, `riot-anchor-renderer`, Hyper/rustls server adapters,
+  renderer dependencies, and every deferred pilot crate/service name;
 - `git diff --check` is clean;
 - combined diff contains no unrelated user files;
 - `SERVICE-INVENTORY.md`, migrations, protocol CDDL/vectors, deployment config, and release checklist agree;
@@ -1482,9 +1438,11 @@ Then verify:
 
 ## Coordinator Addendum — Phasing, Deferrals & Risk (2026-07-19)
 
-Additive guidance layered ON TOP of the frozen work-unit sequence above; it changes nothing inside a
-WU. Purpose: make a ~28-unit, 5-crate build ship value incrementally, defer what depends on the real
-world, and gate the units that can hurt the already-shipping app.
+This addendum originally layered guidance over the frozen sequence. The 2026-07-19 plan repair now
+integrates that guidance into the active graph: pilot WU-024/025 are a non-executable archive,
+deployment is split into WU-026A/B, and M1–M4 plus production operations are the only active scope.
+Purpose: ship value incrementally, defer what depends on the real world, and gate units that can
+hurt the already-shipping app.
 
 ### Ship in milestones, not all-or-nothing
 The plan currently lands as one block behind Checkpoint E. Group the WUs into shippable milestones so
@@ -1494,19 +1452,20 @@ capability arrives sooner and each milestone is independently valuable:
 | --- | --- | --- |
 | **M1 — Protocol + transport** | WU-001–007 | Canonical wire, routed `sync/2`, ALPN router, cross-language vectors. No product yet; pure foundation, fully `cargo test`/vector-verifiable. |
 | **M2 — Hosting MVP** | WU-008–012, WU-013–016 | A community can be *hosted on an anchor and followed by a client* — the first real capability. Client storage + core storage-ownership + anchor repo/commit/removal. |
-| **M3 — Directory + web + handoff** | WU-017–021 | Discovery (signed directory/search) + safe web projection + v2 web→app handoff. The "reach" half. |
+| **M3 — Directory + web + handoff** | WU-011C, WU-017B–021 | Discovery (signed directory/search) + safe web projection + v2 web→app handoff. The "reach" half. |
 | **M4 — Native UX** | WU-022–023 | Explore / Follow / Publish / host-management on iOS + Android + macOS. |
-| **M5 — Pilot (DEFERRED)** | WU-024–025, pilot parts of 026/027 | Privacy-preserving pilot. **Do not build until M2–M4 are real and a live pilot is actually scheduled.** |
+| **Production operations** | WU-026A–028 | Reproducible OCI images, isolated deployment, deterministic system/load proof, CI/inventory/release closure. |
+| **Pilot (DEFERRED; not a milestone in this plan)** | Reserved former WU-024–025 | Privacy-preserving pilot. **Do not build until M2–M4 are real and a live pilot is actually scheduled.** |
 
 M2, M3, M4 each deliver a usable product without the pilot. Treat M1→M4 as the trunk.
 
-### Defer the pilot (WU-024/025 + pilot-only ops)
+### Defer the pilot (reserved former WU-024/025)
 The pilot recruitment ledger + collector depend on things that don't exist yet: **approved human
 coordinators, a contact-handling policy, fixed-role credential batches, and operator-supplied
 signed public-pilot fixtures** (`bootstrap-public-pilot-v1.cbor`, `pilot-config-public-v1.cbor`).
 Building the infrastructure now freezes a large, privacy-sensitive surface long before it can run.
-Carve it into its own spec→plan and revisit when a pilot is scheduled. The development-only fixtures
-and the release-fails-closed contract already keep the trunk honest without the pilot code present.
+Carve it into its own spec→plan and revisit when a pilot is scheduled. Production operations
+WU-026A–028 explicitly exclude pilot services, configs, tests, and release claims.
 
 ### Native "Final Verification" is LOCAL-ONLY — say so
 CI is Linux-only. `xcodebuild test/build`, `gradlew …connectedDebugAndroidTest`, and
