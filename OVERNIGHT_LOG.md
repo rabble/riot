@@ -1,5 +1,56 @@
 # Overnight Log — 2026-07-19
 
+## Continuation — repository quality gates
+
+- Re-read all 123 repository Markdown files and all 11 Markdown files in
+  `/Users/rabble/code/divine/divine-context` before continuing. The repo has
+  no local `skills/` directory or `SKILL.md`; applicable installed skills are
+  metaswarm start/orchestration plus Superpowers systematic debugging, TDD,
+  and verification-before-completion.
+- Selected the only safe, unclaimed, non-architectural lane: reproduce and
+  repair the compact-flow branch's strict-Clippy and coverage gates. New UX,
+  composite/native, interaction-frame, deploy, and physical-radio work are
+  skipped because they are either already landed, actively owned in another
+  worktree, architecture-sensitive, externally blocked, or outside the
+  overnight guardrails.
+- Source-of-truth conflicts found: `.coverage-thresholds.json` requires 97%
+  Tarpaulin and records 97.26%, while `AGENTS.md`, `CLAUDE.md`, `README.md`,
+  `docs/ci/coverage-gate-findings.md`, and the old collaboration ledger cite
+  obsolete 94–100% values. The threshold file wins; the floor will not be
+  lowered.
+- Assumption: preserve the existing `overnight/2026-07-19` history and repair
+  its current `d4f090c` tip. `origin/main` is newer (`1f6ecb2`) but merging it
+  would pull in concurrent composite/native work and create avoidable
+  collisions. The ledger asks for `git pull --rebase --autostash`, but the
+  user's newer guardrail forbids rewriting history; a non-mutating
+  `git fetch origin --prune` was used instead.
+- Open question for morning review: several source-of-truth docs need
+  reconciliation once the actual post-fix measurements are known.
+
+### Task: restore strict Clippy
+
+- Reproduced the failure with the exact required command:
+  `cargo clippy --workspace --all-targets --all-features -- -D warnings`.
+  Rust 1.95 reported one `cmp_owned` and two `manual_strip` errors, all in
+  test-only tampering setup in `verify_newswire_export.rs`.
+- Root cause: the Jul-17 tests constructed an owned `serde_json::Value` only
+  to compare a borrowed ID, and manually sliced a prefix already tested by
+  `starts_with`. The verifier, canonical bytes, signatures, fixture hashes,
+  and production behavior were not involved.
+- Applied the smallest behavior-preserving fix: compare borrowed string views
+  and use `strip_prefix('0')` in the two tamper helpers. No warning allowance,
+  dependency, exclusion, or production-path change was added.
+- TDD/verification evidence: the strict Clippy command was the failing RED;
+  the existing six focused verifier tests exercise both modified tamper
+  branches. After the edit,
+  `cargo test -p xtask --all-features verify_newswire_export::tests -- --nocapture`
+  passed 6/6, `cargo fmt --all -- --check` passed, and the full strict Clippy
+  command passed.
+- Docs/skills used: `AGENTS.md`, `CLAUDE.md`,
+  `docs/ci/coverage-gate-findings.md`, the Jul-16 Newswire plans,
+  Superpowers systematic-debugging, TDD, and
+  verification-before-completion.
+
 ## Combined morning summary
 - Restored the pre-existing red iOS baseline (`CommunityRelationship` exhaustiveness
   and stale connection-copy assertion), then implemented the approved compact
