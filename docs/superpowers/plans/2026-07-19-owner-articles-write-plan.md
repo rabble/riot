@@ -45,11 +45,13 @@ Sequential dependency: **0 → 1 → 2 → 3 → 4 → {5a, 5b}**. 5a (reader) n
 
 **Files:** Modify `crates/riot-core/src/site/manifest.rs`; Test: same file's `#[cfg(test)]`.
 
+**PRE-REQ (Feasibility): `manifest.rs` has NO `#[cfg(test)]` module today.** Task 0.1 builds it: add `#[cfg(test)] mod tests { use super::*; fn sample_manifest() -> SiteManifestV1 { SiteManifestV1 { root: [7u8;32], members: vec![/* one Masthead member, mirror the existing manifest literals grepped elsewhere */], moderation_path: vec![b"mod".to_vec()], transport_policy: TransportPolicyV1{ allow: vec![], require: RequireTransport::None }, version: 1, sections: vec![] } } }`. All new tests live here.
+
 - [ ] **Step 1 — RED test: a current 7-key manifest still decodes, absent key 7 → empty sections.**
 ```rust
 #[test]
 fn manifest_without_sections_decodes_as_empty_and_round_trips() {
-    let m = sample_manifest(); // existing test helper building a valid SiteManifestV1
+    let m = sample_manifest();
     let bytes = encode_site_manifest(&m).unwrap();
     let decoded = decode_site_manifest(&bytes).unwrap();
     assert!(decoded.sections.is_empty());
@@ -66,20 +68,21 @@ if !manifest.sections.is_empty() {
 }
 ```
 - [ ] **Step 5 — Decode: default before loop, bound-before-allocate, add key-7 arm.** In `decode_site_manifest`, before the key loop initialize `let mut sections: Vec<Vec<u8>> = Vec::new();` (default empty — NOT an `Option` with `MissingKey`). Bump the pairs guard `if pairs > 7` → `if pairs > 8`. Add a match arm mirroring `decode_members`' bound-before-allocate idiom:
+**Use the REAL `SiteManifestError` variants (Feasibility): `{InputTooLarge, TooManyEntries(&'static str), FieldTooLarge(&'static str), UnknownKey(u64), DuplicateOrMisorderedKey(u64), MissingKey(u64), WrongSchema, InvalidEnum(&'static str), NonCanonical, TrailingBytes, Malformed}`** — there is NO `IndefiniteLength`/`TooLong`/`NotCanonical`. Mirror `decode_members`' exact idiom:
 ```rust
 7 => {
-    let len = d.array()?.ok_or(SiteManifestError::IndefiniteLength)?;
-    if len as usize > MAX_SECTIONS { return Err(SiteManifestError::TooLong); }
+    let len = d.array()?.ok_or(SiteManifestError::Malformed)?;      // indefinite length → Malformed (mirror decode_members)
+    if len as usize > MAX_SECTIONS { return Err(SiteManifestError::TooManyEntries("sections")); }
     let mut v = Vec::with_capacity(len as usize);
     for _ in 0..len {
         let s = d.bytes()?.to_vec();
-        if s.is_empty() || s.len() > MAX_SECTION_BYTES { return Err(SiteManifestError::TooLong); }
+        if s.is_empty() || s.len() > MAX_SECTION_BYTES { return Err(SiteManifestError::FieldTooLarge("section")); }
         v.push(s);
     }
     sections = v;
 }
 ```
-Assign `sections` into the constructed `SiteManifestV1` (no `.ok_or(MissingKey)` — it defaults empty). Keep the trailing `prove_canonical(input, encode_site_manifest(&manifest)?)?;` unchanged — it now rejects a present-but-empty key 7 for free (encode omits it, so re-encode differs → non-canonical).
+Assign `sections` into the constructed `SiteManifestV1` (no `.ok_or(MissingKey)` — it defaults empty). Keep the trailing `prove_canonical(input, encode_site_manifest(&manifest)?)?;` unchanged — it now rejects a present-but-empty key 7 for free (encode omits it, so re-encode differs → `NonCanonical`). (Confirm `decode_members`' actual variant choices when implementing and match them.)
 - [ ] **Step 6 — Run, expect PASS**: `cargo test -p riot-core manifest_without_sections`.
 - [ ] **Step 7 — Commit**: `git add crates/riot-core/src/site/manifest.rs && git commit -m "feat(site): manifest sections field (CBOR key 7, omit-when-empty)"`
 
@@ -99,23 +102,17 @@ fn non_empty_sections_round_trip() {
 fn key7_present_but_empty_array_is_rejected_non_canonical() {
     // hand-encode a manifest that emits key 7 with a 0-length array
     let bytes = encode_manifest_with_forced_empty_sections_key(); // test helper: map(8) + empty key-7 array
-    assert!(matches!(decode_site_manifest(&bytes), Err(SiteManifestError::NotCanonical)));
-}
-#[test]
-fn manifest_identity_differs_iff_sections_differ() {
-    let mut a = sample_manifest(); a.sections = vec![b"news".to_vec()];
-    let mut b = a.clone(); b.sections = vec![b"news".to_vec(), b"ops".to_vec()];
-    assert_ne!(manifest_identity(&encode_site_manifest(&a).unwrap()),
-               manifest_identity(&encode_site_manifest(&b).unwrap()));
+    assert!(matches!(decode_site_manifest(&bytes), Err(SiteManifestError::NonCanonical)));
 }
 #[test]
 fn oversize_section_count_rejected_before_alloc() {
     let bytes = encode_manifest_claiming_section_count(MAX_SECTIONS as u64 + 1); // header claims too many
-    assert!(matches!(decode_site_manifest(&bytes), Err(SiteManifestError::TooLong)));
+    assert!(matches!(decode_site_manifest(&bytes), Err(SiteManifestError::TooManyEntries("sections"))));
 }
 ```
+NOTE (Feasibility): `manifest_identity` is **private** (`version_floor.rs:106`), takes `&SiteManifestV1` (not bytes), and has an unbound generic — it CANNOT be called from `manifest.rs`'s test module. The "identity differs iff sections differ" property is therefore verified **behaviorally** at the floor level in Task 0.4's `same_version_conflicting_content_is_equivocation_alarm` test (two same-version manifests differing only in `sections` → `EquivocationAlarm`), not by a direct call here.
 - [ ] **Step 2 — Run, expect FAIL** (helpers/reject-path missing).
-- [ ] **Step 3 — Implement** the three tiny test helpers (`encode_manifest_with_forced_empty_sections_key`, `encode_manifest_claiming_section_count`) in the test module using a raw `minicbor::Encoder`; confirm the `NotCanonical` variant name matches the actual `SiteManifestError` (grep — if the codebase calls it e.g. `NonCanonical`, use that). The reject paths are already implemented in Task 0.1 (bound-before-alloc) and by `prove_canonical` (present-empty).
+- [ ] **Step 3 — Implement** the two tiny test helpers (`encode_manifest_with_forced_empty_sections_key`, `encode_manifest_claiming_section_count`) in the test module using a raw `minicbor::Encoder`. The reject paths are already implemented in Task 0.1 (bound-before-alloc → `TooManyEntries`) and by `prove_canonical` (present-empty → `NonCanonical`).
 - [ ] **Step 4 — Run, expect PASS**. **Step 5 — Commit**: `feat(site): manifest sections canonicity + DoS-bound tests`.
 
 ### Task 0.3: `section_is_declared` shared validator
@@ -138,25 +135,54 @@ fn section_is_declared_accepts_declared_rejects_undeclared() {
 
 **Files:** Modify `crates/riot-ffi/src/site_ffi.rs` (+ `ResolvedSiteManifest.sections`). Mirror `author_moderation` (open_sealed → build → sign → import) but gate on the floor.
 
-- [ ] **Step 1 — RED tests** (in `site_ffi.rs` `#[cfg(test)]`, DURABLE profile — the floor needs the DB; mirror an existing durable-profile test helper):
+- [ ] **Step 1 — RED tests** (in `site_ffi.rs` `#[cfg(test)]`, DURABLE profile — the floor needs `LocalProfile.db`; mirror the existing `durable_profile()` helper at `site_ffi.rs:1731`). **Store-unchanged is asserted via `resolve_site_articles`/`resolve_site_manifest` observable state, NOT a nonexistent `debug_store_bytes` — assert the manifest the resolver returns is still the pre-rejection one (same version/sections):**
 ```rust
+fn declared(feed_or_manifest) -> (u64, Vec<String>) { /* pull (version, sections) from resolve_site_manifest */ }
+
 #[test]
 fn publish_then_higher_version_admits_lower_rolls_back() {
-    let (profile, key, sealed) = durable_owned_site();
+    let (profile, key, sealed) = durable_owned_site();  // wraps durable_profile() + create_owned_site
     let out1 = profile.publish_site_manifest(sealed.clone(), key.clone(), members(), vec![b"news".to_vec()], transport(), 1).unwrap();
     assert_eq!(out1.sections, vec!["news".to_string()]);
-    // higher version with a new section admits
-    profile.publish_site_manifest(sealed.clone(), key.clone(), members(), vec![b"news".to_vec(), b"ops".to_vec()], transport(), 2).unwrap();
-    // lower version is a rollback refusal, store byte-unchanged
-    let before = profile.debug_store_bytes();
+    profile.publish_site_manifest(sealed.clone(), key.clone(), members(), vec![b"news".to_vec(), b"ops".to_vec()], transport(), 2).unwrap();  // higher admits
+    let before = declared(resolve_manifest(&profile));  // (2, [news, ops])
     assert!(matches!(profile.publish_site_manifest(sealed.clone(), key.clone(), members(), vec![b"news".to_vec()], transport(), 1), Err(MobileError::ManifestRollback)));
-    assert_eq!(profile.debug_store_bytes(), before);
+    assert_eq!(declared(resolve_manifest(&profile)), before);  // unchanged: still v2
 }
 #[test]
-fn publish_leaves_sync_inventory_unchanged() { /* mirror importing_a_mod_bundle_leaves_the_sync_inventory_unchanged */ }
+fn require_downgrade_rejected_leaves_manifest_unchanged() {
+    // publish v1 with require: Arti (strict), then attempt a higher version that lowers require to None
+    let (profile, key, sealed) = durable_owned_site();
+    profile.publish_site_manifest(sealed.clone(), key.clone(), members(), vec![b"news".to_vec()], transport_arti(), 1).unwrap();
+    let before = declared(resolve_manifest(&profile));
+    assert!(matches!(profile.publish_site_manifest(sealed.clone(), key.clone(), members(), vec![b"news".to_vec()], transport_none(), 2), Err(MobileError::ManifestRequireDowngrade)));
+    assert_eq!(declared(resolve_manifest(&profile)), before);  // unchanged
+}
 #[test]
-fn same_version_conflicting_content_is_equivocation_alarm() { /* Err(MobileError::ManifestEquivocation), store unchanged */ }
+fn same_version_conflicting_content_is_equivocation_alarm() {
+    let (profile, key, sealed) = durable_owned_site();
+    profile.publish_site_manifest(sealed.clone(), key.clone(), members(), vec![b"news".to_vec()], transport(), 1).unwrap();
+    let before = declared(resolve_manifest(&profile));
+    // SAME version 1, different sections → conflicting content at the same version
+    assert!(matches!(profile.publish_site_manifest(sealed.clone(), key.clone(), members(), vec![b"news".to_vec(), b"ops".to_vec()], transport(), 1), Err(MobileError::ManifestEquivocation)));
+    assert_eq!(declared(resolve_manifest(&profile)), before);  // unchanged; alarm surfaced distinctly (own variant)
+}
+#[test]
+fn publish_leaves_sync_inventory_unchanged() {
+    // mirror importing_a_mod_bundle_leaves_the_sync_inventory_unchanged: snapshot sync_inventory, publish, assert equal
+    let (profile, key, sealed) = durable_owned_site();
+    let before = profile.sync_inventory_snapshot_for_test();  // reuse the same accessor the mod-bundle test uses
+    profile.publish_site_manifest(sealed, key, members(), vec![b"news".to_vec()], transport(), 1).unwrap();
+    assert_eq!(profile.sync_inventory_snapshot_for_test(), before);
+}
+#[test]
+fn publish_on_in_memory_profile_fails_closed() {
+    // durable-only: LocalProfile.db is None for an in-memory profile → publish returns an error, never a silent no-op
+    let (profile, key, sealed) = in_memory_owned_site();
+    assert!(profile.publish_site_manifest(sealed, key, members(), vec![b"news".to_vec()], transport(), 1).is_err());
+}
 ```
+(`durable_owned_site`/`in_memory_owned_site` are thin test helpers wrapping the existing `durable_profile()`/`open_local_profile()` + `create_owned_site`; `sync_inventory_snapshot_for_test` reuses whatever accessor `importing_a_mod_bundle_leaves_the_sync_inventory_unchanged` already uses — grep it, don't invent a new one.)
 - [ ] **Step 2 — Run FAIL** (`publish_site_manifest` undefined).
 - [ ] **Step 3 — Implement.** Add the `#[uniffi::export]` method on `MobileProfile` per design §4.0. Skeleton (fill from `author_moderation` + `admit_manifest_version`):
 ```rust
@@ -172,8 +198,11 @@ pub fn publish_site_manifest(&self, sealed_root: Vec<u8>, mut wrapping_key: Vec<
     let payload = encode_site_manifest(&manifest).map_err(|_| MobileError::InvalidInput)?;
     let signed = /* authorise_owner_entry at [MANIFEST_COMPONENT] over payload — mirror author_moderation's signing */;
     with_active(&self.inner, |profile| {
-        // GATE on the floor BEFORE any commit:
-        match admit_manifest_version(&profile.store, root, &manifest)? {
+        // Durable-only: the floor lives on LocalProfile.db (RiotDatabase impls VersionFloorStore, version_floor.rs:176),
+        // NOT profile.store (EvidenceStore). In-memory profiles (db == None) fail closed.
+        let db = profile.db.as_ref().ok_or(MobileError::InvalidInput /* or a DurableRequired variant */)?;
+        // GATE on the floor BEFORE any commit (confirm admit_manifest_version's exact arg shape when implementing):
+        match admit_manifest_version(db, root, &manifest)? {
             VersionFloorOutcome::Accepted => {}
             VersionFloorOutcome::RollbackRejected => return Err(MobileError::ManifestRollback),
             VersionFloorOutcome::RequireDowngradeRejected => return Err(MobileError::ManifestRequireDowngrade),
@@ -203,10 +232,10 @@ fn article_round_trips_and_rejects_oversize() {
     let path = Path::from_slices(&[ARTICLES_COMPONENT, b"news", b"id"]).unwrap();
     assert_eq!(decode_article(&path, &bytes).unwrap(), a);
     let mut big = a.clone(); big.body = "x".repeat(MAX_BODY_BYTES + 1);
-    assert!(matches!(encode_article(&big), Err(ArticleRecordError::TooLong))); // enforced on ENCODE
+    assert!(matches!(encode_article(&big), Err(ArticleRecordError::FieldTooLarge("body")))); // enforced on ENCODE
 }
 ```
-- [ ] **Step 2 — FAIL** (module absent). **Step 3 — Create `article.rs`:** module doc mirroring `moderation.rs`'s; `pub const MAX_SECTION_BYTES` (re-export from manifest or redefine 64), `MAX_HEADLINE_BYTES=256`, `MAX_DEK_BYTES=1024`, `MAX_BYLINE_BYTES=128`, `MAX_BODY_BYTES=65_536`; `pub const ARTICLE_RECORD_SCHEMA: &str = "org.riot.site.article/1";`; `pub struct OwnedArticleV1 { section, headline, dek, body, byline }`; `pub enum ArticleRecordError { TooLong, NotCanonical, NotUnderArticles, Malformed, IndefiniteLength }` (match the moderation error taxonomy names). `encode_article` returns `Result<Vec<u8>, ArticleRecordError>` and checks every field bound BEFORE encoding (return `TooLong`); it emits a tagged canonical map (schema key 0, then section/headline/dek/body/byline as ordered integer keys) — mirror `encode_moderation_record`'s key-by-key shape.
+- [ ] **Step 2 — FAIL** (module absent). **Step 3 — Create `article.rs`:** module doc mirroring `moderation.rs`'s; `pub const MAX_SECTION_BYTES` (re-export from manifest or redefine 64), `MAX_HEADLINE_BYTES=256`, `MAX_DEK_BYTES=1024`, `MAX_BYLINE_BYTES=128`, `MAX_BODY_BYTES=65_536`; `pub const ARTICLE_RECORD_SCHEMA: &str = "org.riot.site.article/1";`; `pub struct OwnedArticleV1 { section, headline, dek, body, byline }`; **`ArticleRecordError` mirrors the REAL `ModerationRecordError` taxonomy (`moderation.rs:151-165`) plus per-field bound + path variants:** `pub enum ArticleRecordError { InputTooLarge, FieldTooLarge(&'static str), UnknownKey(u64), DuplicateOrMisorderedKey(u64), MissingKey(u64), WrongSchema, InvalidEnum(&'static str), NonCanonical, TrailingBytes, Malformed, NotUnderArticles }`. `encode_article` returns `Result<Vec<u8>, ArticleRecordError>` and checks every field bound BEFORE encoding (return `FieldTooLarge("<field>")`); it emits a tagged canonical map (schema key 0, then section/headline/dek/body/byline as ordered integer keys) — mirror `encode_moderation_record`'s key-by-key shape.
 - [ ] **Step 3b — `decode_article(path, payload)`:** first `if !is_under_articles(path) { return Err(NotUnderArticles); }` (belt-and-suspenders, mirrors `read_moderation_record`'s `is_under_mod`); then strict canonical decode with per-field bound checks (reject `TooLong` on decode too); finish with `prove_canonical`-style re-encode-compare (mirror `decode_moderation_record`).
 - [ ] **Step 4 — PASS. Step 5 — Register** in `site/mod.rs` (`mod article; pub use article::*;`). **Step 6 — Commit**: `feat(site): OwnedArticleV1 record + canonical codec`.
 
@@ -313,9 +342,13 @@ fn import_owned_article_leaves_sync_inventory_unchanged() { /* mirror importing_
 #[test]
 fn create_article_with_declared_section_succeeds_undeclared_rejected() {
     let (p, key, sealed) = durable_owned_site();
-    let mw = p.publish_site_manifest(sealed.clone(), key.clone(), members(), vec![b"news".to_vec()], transport(), 1).unwrap();
-    let signed_manifest = p.last_manifest_wire(); // the 4-field wire just published
-    assert!(p.create_site_article(sealed.clone(), key.clone(), signed_manifest.0, signed_manifest.1, signed_manifest.2, signed_manifest.3,
+    p.publish_site_manifest(sealed.clone(), key.clone(), members(), vec![b"news".to_vec()], transport(), 1).unwrap();
+    // The signed manifest wire (entry/cap/sig/payload) is read back from the store's O:/manifest entry via a test
+    // helper `published_manifest_wire(&p, root) -> (Vec<u8>,Vec<u8>,Vec<u8>,Vec<u8>)` (build it in Task 4.1 Step 3 by
+    // scanning the store for the MANIFEST_COMPONENT entry and returning its four wire fields — the same shape the app
+    // obtains after publishing). NOT a nonexistent `last_manifest_wire`.
+    let (me, mc, ms, mp) = published_manifest_wire(&p, root);
+    assert!(p.create_site_article(sealed.clone(), key.clone(), me, mc, ms, mp,
         "news".into(), "H".into(), "".into(), "B".into(), "".into()).is_ok());
     assert!(matches!(p.create_site_article(/* same but */ "sports".into(), ..), Err(MobileError::InvalidInput)));
 }
@@ -340,6 +373,28 @@ fn create_article_rejects_a_foreign_signed_manifest_wire() { /* a manifest wire 
 - [ ] **Step 1** — enumerate every new/changed `#[uniffi::export]` type in this plan: `SiteManifestOutcome`, `SiteArticleOutcome`, `SiteArticleFeedRender`, `ResolvedArticle`, `ResolvedArticleFeed`, `ResolvedSiteManifest.sections`, methods `publish_site_manifest`/`create_site_article`/`resolve_site_articles`, `MobileError::{ManifestRollback,ManifestRequireDowngrade,ManifestEquivocation}`.
 - [ ] **Step 2** — `cargo run --locked -p xtask -- generate-bindings`. **Step 3** — `sh scripts/conference/build-native-core.sh` (or at minimum the three Apple slices per the overnight rebuild recipe). **Step 4** — `cargo test --workspace --all-features` green; `cargo clippy --workspace --all-features -- -D warnings` clean; `cargo tarpaulin --workspace --all-features --fail-under <thresholds.tarpaulin.lines>` meets the floor. **Step 5 — Commit** (regen + staticlib together): `chore(ffi): regen bindings + native core for article/manifest surface`.
 
+### Task 4.6: offer family-filter + clearer diagnostic (design §9 — explicit plan instruction)
+
+**Files:** Modify `crates/riot-ffi/src/mobile_state.rs` (`build_followed_site_offer` ~2091-2131). Design §9 directs the plan to add this because publishing manifests + articles makes the stray-`/manifest` whole-offer-failure edge likelier.
+
+- [ ] **Step 1 — RED tests** (durable profile):
+```rust
+#[test]
+fn offer_includes_only_owned_mod_and_articles_family() {
+    // author a /mod record + an /articles record + publish a /manifest; the offer bundles /mod + /articles,
+    // and a stray non-family entry in the namespace does NOT fail the whole offer.
+    let offer = build_followed_site_offer(profile, &root).unwrap();
+    assert!(offer_contains_family(&offer, /*mod+articles*/));
+}
+#[test]
+fn offer_failure_has_a_specific_diagnostic_not_generic_session_limit() {
+    // force an encode_bundle failure; assert the error is a differentiated variant, not the confusing MobileError::SessionLimit
+    assert!(!matches!(build_followed_site_offer(bad_profile, &root), Err(MobileError::SessionLimit)));
+}
+```
+- [ ] **Step 2 — FAIL. Step 3 — Implement:** in `build_followed_site_offer`, filter the walked live-entry set to the owned-site family (`is_owned_moderation_entry(e) || is_owned_editorial_entry(e)`, plus the `/manifest` entry the follower needs — decide per design: the follower's family gate excludes `/manifest`, so exclude it from the offer too and document that followers get the manifest via the caller-supplied wire, matching the read path). Map an `encode_bundle` failure to a differentiated `MobileError` variant with a clear message instead of the generic `SessionLimit`.
+- [ ] **Step 4 — PASS. Commit**: `fix(ffi): offer family-filter + clearer diagnostic (design §9)`.
+
 ---
 
 ## Unit 5a — Native reader (iOS view + Android logic parity)
@@ -350,20 +405,39 @@ fn create_article_rejects_a_foreign_signed_manifest_wire() { /* a manifest wire 
 func testHoldShowsNoContentWarnShowsBannerRenderShowsClean() {
     XCTAssertEqual(CompositeArticleReaderModel.from(feed(.hold(.moderationLoading), articles: [ordinary()])).rows, [.held])
     XCTAssertTrue(CompositeArticleReaderModel.from(feed(.warn(.editorialOnly), articles: [ordinary()])).showsBanner)
-    XCTAssertEqual(CompositeArticleReaderModel.from(feed(.render, articles: [])).rows, [.empty]) // empty state
+    XCTAssertEqual(CompositeArticleReaderModel.from(feed(.render, articles: [])).rows, [.empty]) // render + empty
+}
+func testWarnEmptyIsDistinctFromRenderEmpty() {  // G4
+    let m = CompositeArticleReaderModel.from(feed(.warn(.editorialOnly), articles: []))
+    XCTAssertTrue(m.showsBanner)              // warn banner present
+    XCTAssertEqual(m.rows, [.empty])          // AND the empty state, composed (verdict outer, empty inner)
 }
 func testBylineNeverRendersAsStandaloneAuthor() {
     let rows = CompositeArticleReaderModel.from(feed(.render, articles: [ordinary(byline: "Jane, Reuters")], site: "The Wire")).rows
-    // the mapped attribution string is always subordinated to site_display, never a bare "By Jane, Reuters"
-    XCTAssertTrue(rows.contains { $0.attribution == "Jane, Reuters — on The Wire" })
-    XCTAssertFalse(rows.contains { $0.attribution == "By Jane, Reuters" })
+    XCTAssertTrue(rows.contains { $0.attribution == "Jane, Reuters — on The Wire" })   // subordinated to site_display
+    XCTAssertFalse(rows.contains { $0.attribution == "By Jane, Reuters" })             // never a standalone author
 }
-func testHiddenVsTombstonedDistinctPlaceholders() { /* two distinct strings */ }
+func testAuthorSubspaceRevealAffordanceIsPresent() {  // G2 — §4.6/§7 HARD requirement
+    // every rendered article row carries a reveal action exposing the crypto signing identity (author_subspace),
+    // distinct from the display byline. Pure-logic: the mapped row has a non-nil `revealIdentity` == the article's author_subspace hex.
+    let row = CompositeArticleReaderModel.from(feed(.render, articles: [ordinary(authorSubspace: "ab12…")], site: "The Wire")).rows.first!
+    XCTAssertEqual(row.revealIdentity, "ab12…")
+}
+func testArticlesAreGroupedUnderDeclaredSectionHeaders() {  // G3 — §8 5a
+    // feed carries section-ordered articles; the model emits a section-header row before each section's articles.
+    let m = CompositeArticleReaderModel.from(feed(.render, sectionsInOrder: ["news","ops"], articles: [ordinary(section: "ops"), ordinary(section: "news")]))
+    XCTAssertEqual(m.sectionHeaders, ["news", "ops"])  // declared order, header per non-empty section
+}
+func testHiddenVsTombstonedDistinctPlaceholders() {
+    let hidden = CompositeArticleReaderModel.from(feed(.render, articles: [moderated(.hidden)])).rows.first!
+    let tomb = CompositeArticleReaderModel.from(feed(.render, articles: [moderated(.tombstoned)])).rows.first!
+    XCTAssertNotEqual(hidden.placeholder, tomb.placeholder)  // two distinct strings
+}
 ```
-- [ ] **Step 2 — FAIL. Step 3 — Implement** the pure `CompositeArticleReaderModel.from(_ feed: ResolvedArticleFeed)` (verdict→rows, byline invariant, empty/held/warn states, distinct placeholders) + a thin `CompositeArticleReaderView`. Register both files in BOTH pbxproj (RiotKit target in ios + macos), per the PR #68 pattern. **Step 4 — Run** `xcodebuild test -scheme RiotKit …`; `plutil -lint` both pbxproj. **Commit**: `feat(ios): composite article reader (verdict-honest, byline-pinned)`.
+- [ ] **Step 2 — FAIL. Step 3 — Implement** the pure `CompositeArticleReaderModel.from(_ feed: ResolvedArticleFeed)`: verdict→rows (hold→no content, warn→banner+content, render→clean); **section-header grouping** in declared order; byline subordinated to `feed.site_display`; a per-row **`revealIdentity`** carrying the article's `author_subspace` (the hard-requirement reveal affordance — a tap surfaces the crypto identity, distinct from byline); empty/held/warn states (warn+empty composes); distinct hidden/tombstoned placeholders. Thin `CompositeArticleReaderView` renders it (section headers, and the reveal as a tappable disclosure). Register both files in BOTH pbxproj (RiotKit target in ios + macos), per the PR #68 pattern. **Step 4 — Run** `xcodebuild test -scheme RiotKit …`; `plutil -lint` both pbxproj. **Commit**: `feat(ios): composite article reader (verdict/byline/section-headers/identity-reveal)`.
 
 ### Task 5a.2: Android logic parity (`apps/android/…/CompositeArticle.kt`)
-- [ ] **Step 1** — `cargo run -p xtask -- generate-bindings` (Kotlin twin of the new records). **Step 2 — RED** JUnit (`CompositeArticleTest.kt`): the pure Kotlin `CompositeArticleReaderModel.from(...)` mirrors the iOS mapping (hold→no content, warn→banner, byline subordinated, distinct placeholders, empty state). **Step 3 — Implement** the pure Kotlin (no Compose — logic parity only, per PR #68). **Step 4 — Run** `cd apps/android && ./gradlew :app:testDebugUnitTest`. **Commit**: `feat(android): composite article reader logic parity`.
+- [ ] **Step 1** — `cargo run -p xtask -- generate-bindings` (Kotlin twin of the new records). **Step 2 — RED** JUnit (`CompositeArticleTest.kt`): the pure Kotlin `CompositeArticleReaderModel.from(...)` mirrors the FULL iOS mapping — hold→no content, warn→banner (incl. warn+empty), byline subordinated to `site_display` (never standalone), **`revealIdentity` == author_subspace present** (§4.6 hard requirement), **section-header grouping in declared order**, distinct hidden/tombstoned placeholders, empty state. **Step 3 — Implement** the pure Kotlin (no Compose — logic parity only, per PR #68). **Step 4 — Run** `cd apps/android && ./gradlew :app:testDebugUnitTest`. **Commit**: `feat(android): composite article reader logic parity`.
 
 ---
 
