@@ -1,7 +1,7 @@
 # Riot Compact Core Flow Design
 
-**Date:** 2026-07-19  
-**Status:** Approved by Product, Architecture, UX, Security, and CTO/TDD  
+**Date:** 2026-07-19
+**Status:** Approved by Product, Architecture, UX, Security, and CTO/TDD
 **Scope:** iOS and shared macOS SwiftUI surfaces only
 
 ## Problem

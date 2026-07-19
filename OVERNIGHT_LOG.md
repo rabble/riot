@@ -1,3 +1,56 @@
+# PR #68 Rebase + Compact UX Integration — Morning Summary (2026-07-20)
+
+## Done and tested
+
+- Rebased PR #68's branch onto `origin/main` at
+  `09bcf1ff6bb1a596bec787edf27db651b2f196f4` in an isolated worktree, with
+  backup ref `backup/pr68-pre-rebase-2026-07-20` preserving the old remote tip
+  `a9cebaf`.
+- Integrated all four local compact-UX commits. The final delta keeps the
+  compact community-first onboarding and Newswire reading flow while retaining
+  current-main's newer Follow-a-site entry point and reaction bar.
+- Fresh green gates: `cargo fmt`, workspace check, strict all-target Clippy,
+  full workspace tests, contract validation, gateway 47/47, web unit 38/38,
+  generated bindings, all five native Rust archives, Android unit tests, shared
+  Swift tests, iOS simulator build, and generic iOS device build.
+- The complete instrumented Tarpaulin test corpus passed. Coverage measured
+  **94.65% (18,539/19,586)**.
+
+## Open / blocked
+
+- The authoritative local coverage gate remains red: 94.65% is below the 97%
+  floor in `.coverage-thresholds.json`. This is denominator drift across the
+  current workspace, not a compact-UX test regression; no floor or exclusion
+  was changed.
+- GitHub CI and final merge readiness must be observed after the lease-protected
+  PR branch update. This task updates PR #68 but does not merge it.
+- Physical-device radio behavior and production/deployment work remain outside
+  this integration and were not attempted.
+
+## Assumptions to review
+
+- Treated the user's explicit request to update PR #68 after rebasing as
+  authorization for `--force-with-lease`, never unguarded force push.
+- Replayed the complete local UX series, including its strict-Clippy repair and
+  quality-gate diagnosis, because all four commits were part of the identified
+  local UX work.
+- Dropped the rebased PR's net-zero add/delete pair after proving its original
+  native surface had already landed on `main` through later changes.
+- Preserved both sides of additive conflicts: compact flow plus Follow-a-site
+  onboarding, and compact Newswire detail plus reactions on ordinary posts.
+
+## Suggested next steps
+
+1. Let PR #68's exact GitHub CI jobs finish and address only failures caused by
+   this branch.
+2. Repair the repository-wide coverage ratchet in a separately reviewed lane;
+   current uncovered code spans anchor protocol, mobile FFI, and transport/CLI
+   boundaries and is not a safe incidental UX change.
+3. Reconcile the missing `guides/` references in `AGENTS.md` and the stale
+   Jul-15 coverage measurement after the dedicated coverage work lands.
+
+---
+
 # Anchor Plan Repair — Morning Summary (2026-07-20)
 
 ## Done and tested
@@ -924,3 +977,66 @@ _(Summary goes at the TOP when done. Task entries append below in order.)_
   deployment-target warnings.
 - No production systems, remote branches, databases, dependencies, or protocol
   behavior were touched.
+
+## Task: rebase PR #68 and integrate the local compact UX series
+
+- Docs/skills used: all repository Markdown and linked Divine context already
+  inventoried in this log; `AGENTS.md`; `.coverage-thresholds.json`;
+  `.github/workflows/ci.yml`; `README.md`; `apps/ios/README.md`;
+  `scripts/ios-check.sh`; `scripts/conference/build-native-core.sh`;
+  `scripts/web/coverage.sh`; Divine context; Metaswarm start/orchestrated
+  execution; Superpowers worktree isolation, systematic debugging, and
+  verification-before-completion.
+- Created isolated worktree `/private/tmp/riot-pr68-rebase-ux` because another
+  active session repurposed the pre-existing PR worktree during a build. The
+  dirty main checkout and that session's worktree were left untouched. A
+  reversible backup ref preserves the pre-rebase remote head.
+- Rebased remote PR #68 head `a9cebaf` onto `origin/main`
+  `09bcf1ff6bb1a596bec787edf27db651b2f196f4`. Xcode-project conflicts proved
+  main already registered the permanent owned-site creation surface; the
+  historical temporary `CompositeSiteSurface` add/delete replayed to net zero
+  and was removed from the final series.
+- Replayed local commits `8ce2d84`, `d4f090c`, `72fd949`, and `38713e3`, then
+  resolved additive UX conflicts. `ConferenceShellView` keeps compact
+  Join/Create/Demo onboarding plus current Follow-a-site. `NewswireEditorial`
+  keeps compact read/treatment detail plus the newer reaction bar for ordinary
+  posts. Test fixtures retain both richer post fields and reaction tallies.
+- Assumption: additive current-main functionality takes precedence over either
+  side's older exclusive layout. Rejected alternatives: discarding Follow a
+  site, discarding reactions, restoring removed inline reply controls, or
+  replaying the already-landed temporary native surface.
+- Removed two Markdown hard-break trailing spaces so the complete PR diff
+  passes `git diff --check`. No dependency, protocol, database, production, or
+  deployment change was introduced.
+- Verification:
+  - `plutil -lint` passed for both Xcode projects.
+  - `cargo fmt --all -- --check`, `cargo check --workspace --all-features`,
+    `cargo clippy --workspace --all-targets --all-features -- -D warnings`,
+    `cargo test --workspace --all-features`, and
+    `cargo run -p xtask -- validate-contracts` passed.
+  - Gateway unit tests passed 47/47; web unit tests passed 38/38.
+  - `cargo run --locked -p xtask -- generate-bindings` and
+    `scripts/conference/build-native-core.sh` passed for iOS device/simulator,
+    macOS arm64, and Android arm64/x86_64.
+  - Android `:app:testDebugUnitTest` passed after supplying the installed SDK
+    via environment variables. The first attempt failed before compilation
+    only because the isolated worktree correctly lacked machine-local
+    `local.properties`.
+  - `scripts/ios-check.sh test`, `sim`, and `ios` passed after building the
+    documented native prerequisites. The first shared-Swift attempt reached the
+    linker and failed only because the fresh worktree did not yet contain
+    `build/native/macos/libriot_ffi.a`.
+  - `scripts/web/coverage.sh` ran all instrumented tests successfully but
+    stopped at Tarpaulin: 94.65% (18,539/19,586) versus the authoritative 97%
+    floor. The prior 95.36% log entry was from the smaller pre-integration
+    workspace. No threshold was lowered.
+- Existing non-fatal warnings remain: WebKit delegate near-match, Swift actor
+  isolation warnings in older code/tests, deprecated Android WebView settings,
+  and native archive deployment-target warnings.
+- Docs issue: `AGENTS.md` names `guides/build-validation.md`,
+  `guides/coding-standards.md`, `guides/git-workflow.md`, and
+  `guides/testing-patterns.md`, but this checkout has no `guides/` directory.
+  The available specific scripts and current source-of-truth files were used.
+- Open morning question: should the 97% Tarpaulin recovery be re-grounded as a
+  dedicated cross-crate task now that current main contains substantially more
+  anchor, FFI, and transport code than the Jul-15 measurement?
