@@ -355,6 +355,15 @@ pub fn decode_site_manifest(input: &[u8]) -> Result<SiteManifestV1, SiteManifest
     Ok(manifest)
 }
 
+// ---------- shared validators ----------
+
+/// Whether `section` was declared in `manifest.sections`. The single shared
+/// authority used both at article-write time (reject an undeclared section)
+/// and at feed-projection time (grouping) — no per-wrapper courtesy check.
+pub fn section_is_declared(manifest: &SiteManifestV1, section: &[u8]) -> bool {
+    !section.is_empty() && manifest.sections.iter().any(|s| s == section)
+}
+
 fn decode_members(d: &mut Decoder<'_>) -> Result<Vec<SiteMemberV1>, SiteManifestError> {
     let len = definite_array(d)?;
     if len as usize > MAX_SITE_MEMBERS {
@@ -690,5 +699,14 @@ mod tests {
             decode_site_manifest(&bytes),
             Err(SiteManifestError::TooManyEntries("sections"))
         ));
+    }
+
+    #[test]
+    fn section_is_declared_accepts_declared_rejects_undeclared() {
+        let mut m = sample_manifest();
+        m.sections = vec![b"news".to_vec()];
+        assert!(section_is_declared(&m, b"news"));
+        assert!(!section_is_declared(&m, b"sports"));
+        assert!(!section_is_declared(&m, b"")); // empty never declared
     }
 }
