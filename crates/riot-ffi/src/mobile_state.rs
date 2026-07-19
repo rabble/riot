@@ -1733,11 +1733,26 @@ fn active_namespace_live_ids(
         return profile.store.live_entry_ids().map_err(map_core_error);
     };
     let namespace_id = parse_entry_id(&space.namespace_id)?;
+    namespace_live_ids(profile, &namespace_id)
+}
+
+/// The live entry ids in `namespace_id` — the active-community scoping of
+/// `active_namespace_live_ids` generalized to ANY namespace, so a followed
+/// site's owned namespace can be queried the same way. It is a namespace-scoped
+/// prefix query and therefore can never return another namespace's ids: the
+/// same offer-isolation property the community inventory relies on, applied per
+/// namespace. Reads only; the community `sync_inventory` and its equality guard
+/// are never touched by this helper. `active_namespace_live_ids` delegates here
+/// for the active namespace, so that path stays byte-identical.
+fn namespace_live_ids(
+    profile: &LocalProfile,
+    namespace_id: &[u8; 32],
+) -> Result<Vec<riot_core::willow::EntryId>, MobileError> {
     let all_prefix =
         riot_core::willow::Path::from_slices(&[]).map_err(|_| MobileError::Internal)?;
     Ok(profile
         .store
-        .entries_with_prefix_in_namespace(&namespace_id, &all_prefix)
+        .entries_with_prefix_in_namespace(namespace_id, &all_prefix)
         .map_err(map_core_error)?
         .into_iter()
         .map(|(id, _, _)| id)
@@ -3961,6 +3976,53 @@ mod tests {
                     riot_core::apps::index::AppIndexSlot::Bundle { .. }
                 ]
             ));
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    /// WU1 regression: extracting `namespace_live_ids` must leave the active
+    /// community path byte-identical. `active_namespace_live_ids` now delegates
+    /// to the generalized helper for the active namespace; the two must agree on
+    /// exactly the same live-id set. This is the load-bearing check that the
+    /// isolation-critical inventory scoping did not change behavior.
+    #[test]
+    fn namespace_live_ids_matches_active_scoping_for_the_active_namespace() {
+        let profile = open_local_profile().unwrap();
+        let space = create_public_space(&profile.inner, "Regression".into()).unwrap();
+        let active_ns = parse_entry_id(&space.namespace_id).unwrap();
+        let (manifest, bundle) = riot_core::apps::starter::STARTER_CATALOG[0];
+        let installed = install_app(&profile.inner, manifest.to_vec(), bundle.to_vec()).unwrap();
+        let app_id = hex(&installed.app_id_bytes);
+        for index in 0..3u8 {
+            app_data_put(
+                &profile.inner,
+                app_id.clone(),
+                format!("items/{index}"),
+                vec![index],
+            )
+            .unwrap();
+        }
+
+        with_active(&profile.inner, |profile| {
+            let mut via_active = active_namespace_live_ids(profile)?;
+            let mut via_generic = namespace_live_ids(profile, &active_ns)?;
+            via_active.sort_unstable();
+            via_generic.sort_unstable();
+            assert!(
+                !via_active.is_empty(),
+                "the active namespace holds live entries to compare"
+            );
+            assert_eq!(
+                via_active, via_generic,
+                "delegation must be byte-identical for the active namespace"
+            );
+            // A namespace this profile does not hold has no live ids — the
+            // per-namespace query cannot reach into the active namespace's set.
+            assert!(
+                namespace_live_ids(profile, &[0xABu8; 32])?.is_empty(),
+                "an unheld namespace yields no live ids"
+            );
             Ok(())
         })
         .unwrap();
