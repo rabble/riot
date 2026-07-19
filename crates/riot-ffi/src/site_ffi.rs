@@ -919,6 +919,30 @@ impl MobileProfile {
             Ok(ImportSummary { imported: count })
         })
     }
+
+    /// Export this owner's PUBLIC signed followed-site bundle for
+    /// `followed_site_root`: the owned /mod + /articles records in their full
+    /// signed form, encoded as ONE bundle. This is the "reach" artifact rabble's
+    /// HTTP-pull model publishes to a static mirror — a follower fetches it over
+    /// UNTRUSTED HTTPS and imports it via `import_followed_site_bundle`, which
+    /// re-verifies every entry against the owner cap rooted at the site (the sole
+    /// trust anchor; a hostile mirror can only serve stale/empty, never forge).
+    ///
+    /// Owner-side and DURABLE-ONLY: the signed form lives only in durable storage
+    /// (the in-memory join drops cap/sig), so this fails closed on a memory
+    /// profile. The exported bytes are exactly what `import_followed_site_bundle`
+    /// consumes — produce and consume are symmetric.
+    pub fn export_followed_site_offer(
+        &self,
+        followed_site_root: Vec<u8>,
+    ) -> Result<Vec<u8>, MobileError> {
+        let root = <[u8; 32]>::try_from(followed_site_root.as_slice())
+            .map_err(|_| MobileError::InvalidInput)?;
+        with_active(&self.inner, |profile| {
+            let offer = crate::mobile_state::build_followed_site_offer(profile, &root)?;
+            riot_core::import::encode_bundle(&offer).map_err(|_| MobileError::Internal)
+        })
+    }
 }
 
 /// Map the canonical core admission refusal onto the FFI error: a fail-closed
@@ -1926,6 +1950,103 @@ mod resolve_composite_tests {
                 "a foreign-namespace frame must be rejected by the followed-site session"
             ),
         }
+    }
+
+    // ---- Serve side: export_followed_site_offer (the HTTP-pull artifact) ----
+
+    /// The exported bundle is exactly what import_followed_site_bundle consumes:
+    /// an owner exports its signed /mod bundle, a following follower imports the
+    /// bytes (as if fetched over untrusted HTTPS) and advances off
+    /// ModerationLoading. Produce and consume are symmetric.
+    #[test]
+    fn exported_offer_round_trips_through_import_into_a_following_follower() {
+        let (masthead, _sealed, root) = sealed_masthead();
+        let manifest = manifest_wire(&masthead, vec![masthead_member(root)]);
+
+        // Owner: durable, holds a /mod bundle (tombstone + attesting heartbeat).
+        let (_owner_dir, owner) = durable_profile();
+        let (tomb, tomb_id) = tombstone(&masthead, b"t1", [0x77; 32], [0x88; 32]);
+        let epoch = heartbeat(&masthead, 1, now_unix(), &[tomb_id]);
+        import_owned(&owner, root, &tomb);
+        import_owned(&owner, root, &epoch);
+
+        let bundle = owner
+            .export_followed_site_offer(root.to_vec())
+            .expect("export");
+        assert!(
+            !bundle.is_empty(),
+            "the export carries the owner's signed records"
+        );
+
+        // A following follower imports the fetched bytes via Option B.
+        let (_follower_dir, follower) = durable_profile();
+        follower.follow_site_for_test(root.to_vec()).unwrap();
+        assert_eq!(
+            call_resolve_at(&follower, &manifest, root, now_unix()).degradation,
+            SiteDegradation::ModerationLoading,
+            "before delivery the follower has no /mod → held at ModerationLoading"
+        );
+
+        let summary = follower
+            .import_followed_site_bundle(bundle, root.to_vec())
+            .expect("import the fetched bundle");
+        assert_eq!(summary.imported, 2, "both exported records were admitted");
+        assert_ne!(
+            call_resolve_at(&follower, &manifest, root, now_unix()).degradation,
+            SiteDegradation::ModerationLoading,
+            "the exported+served bundle advances the follower off ModerationLoading"
+        );
+    }
+
+    /// Durable-only: a memory owner cannot reconstruct the signed form
+    /// (the join drops cap/sig), so the export fails closed rather than emitting
+    /// an unsigned or empty bundle.
+    #[test]
+    fn export_followed_site_offer_fails_closed_on_a_memory_owner() {
+        let (masthead, _sealed, root) = sealed_masthead();
+        let owner = open_local_profile().unwrap();
+        let (tomb, _id) = tombstone(&masthead, b"t1", [0x77; 32], [0x88; 32]);
+        import_owned(&owner, root, &tomb);
+
+        assert!(
+            owner.export_followed_site_offer(root.to_vec()).is_err(),
+            "a memory owner cannot export a signed bundle — fail closed"
+        );
+    }
+
+    /// THE HTTP-pull-specific attack: a mirror re-serving an OLD but validly-signed
+    /// bundle to hide a newer state cannot fake Current — the stale heartbeat falls
+    /// outside the freshness window, so the follower HOLDS at ModerationLoading
+    /// (fail-closed), never rendering the stale bundle as up-to-date.
+    #[test]
+    fn a_stale_served_bundle_holds_at_moderation_loading_not_false_current() {
+        let (masthead, _sealed, root) = sealed_masthead();
+        let manifest = manifest_wire(&masthead, vec![masthead_member(root)]);
+
+        let (_owner_dir, owner) = durable_profile();
+        let stamped = now_unix();
+        let (tomb, tomb_id) = tombstone(&masthead, b"t1", [0x77; 32], [0x88; 32]);
+        let epoch = heartbeat(&masthead, 1, stamped, &[tomb_id]);
+        import_owned(&owner, root, &tomb);
+        import_owned(&owner, root, &epoch);
+        let bundle = owner
+            .export_followed_site_offer(root.to_vec())
+            .expect("export");
+
+        let (_follower_dir, follower) = durable_profile();
+        follower.follow_site_for_test(root.to_vec()).unwrap();
+        follower
+            .import_followed_site_bundle(bundle, root.to_vec())
+            .expect("import stale bundle");
+
+        // Resolve LATER — past the freshness window — as if the mirror keeps
+        // serving this same old bundle long after the owner moved on.
+        let stale_now = stamped + riot_core::site::moderation::MODERATION_FRESHNESS_WINDOW_SECS + 1;
+        assert_eq!(
+            call_resolve_at(&follower, &manifest, root, stale_now).degradation,
+            SiteDegradation::ModerationLoading,
+            "a stale served bundle (old heartbeat) HOLDS at ModerationLoading, never false Current"
+        );
     }
 
     #[test]
