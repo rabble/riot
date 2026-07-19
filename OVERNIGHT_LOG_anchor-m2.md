@@ -110,3 +110,11 @@ sync_service 72%, listing 77%, removal 80%, repository 88% (206 missed, biggest 
 NOTE for morning: the pre-existing riot-transport runnable binaries (riot-seed/riot-follow/seed.rs at
 0%, iroh 61%) are a standing coverage drag — a coverage-exclusion policy for runnable-node binaries is
 worth an owner decision (I did NOT touch it — won't game the ratchet unattended).
+
+### Task 8b — #80 coverage FIXED (commit 9b652fd)
+Coverage subagent fan-out (9 module-scoped edge-test files, 120 tests) raised riot-anchor line
+coverage 85.59%->97.20% (every file >=92%); 231 tests pass; clippy/fmt clean; no src changed, no
+floor lowered. Genuinely-unreachable lines (phantom guards, debug_assert(false) arms, ?-error edges
+needing fault injection) documented, not fabricated. Multi-agent shared-worktree note: a peer revised
+sync_service_edges.rs concurrently while I was diagnosing the same make_item-namespace bug — re-ran
+instead of double-fixing. Pushed; #80 llvm-cov re-running.
