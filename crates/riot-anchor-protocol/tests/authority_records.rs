@@ -132,6 +132,50 @@ fn ticket_envelope_rejects_indefinite_and_trailing() {
 }
 
 #[test]
+fn ticket_envelope_rejects_an_actual_indefinite_length_container() {
+    // The canonical envelope is a definite 3-array (head 0x83). Rewrite the outer
+    // array to the indefinite form `0x9f … 0xff` with the SAME three elements — a
+    // container that still parses but is non-canonical — and confirm it is rejected
+    // (the prior test only appended a trailing byte; this pins indefinite rejection).
+    let sk = signing_key(7);
+    let canonical = sign_core(&sk, core_for(root_pubkey(&sk)))
+        .encode_canonical()
+        .unwrap();
+    assert_eq!(canonical[0], 0x83, "definite 3-element array head");
+    let mut hostile = canonical.clone();
+    hostile[0] = 0x9f; // indefinite array start
+    hostile.push(0xff); // break
+    assert_eq!(
+        decode_canonical::<RootSignedTicketCoreEnvelopeV2>(&hostile, 1024).unwrap_err(),
+        CodecError::IndefiniteLength
+    );
+}
+
+#[test]
+fn admit_rejects_ticket_exceeding_90_day_lifetime() {
+    // A root-signed ticket whose validity window exceeds the 90-day cap is
+    // structure-rejected by `admit` (the lifetime cap is checked before expiry, so
+    // a far-future expiry hits the cap, not `ExpiredTicket`).
+    let sk = signing_key(9);
+    let mut core = core_for(root_pubkey(&sk));
+    core.issued_unix_seconds = 500;
+    core.expiry_unix_seconds = 500 + 91 * 24 * 60 * 60; // 91 days > 90-day cap
+    let env = sign_core(&sk, core);
+    let root = root_pubkey(&sk);
+    assert_eq!(
+        admit_public_site_ticket(
+            &env,
+            None,
+            &TransportFloor::RequireNone,
+            &no_epoch_floor(root),
+            1000,
+        )
+        .unwrap_err(),
+        AuthorityError::InvalidTicket(TicketReason::Structure)
+    );
+}
+
+#[test]
 fn ticket_transport_token_rejects_unknown_variant() {
     // Replace the transport_floor token with a bogus tstr and confirm rejection.
     // Build a core, encode, then hand-craft a malformed transport token.

@@ -13,6 +13,18 @@ manifest binding when a manifest is present; invented digest labels are domain-s
 CLOSED (not exploitable); `u32::MAX` delegate-pin prevented; no cross-protocol sig reuse (ticket vs
 grant domains diverge at byte 5).
 
+## STATUS (2026-07-19, after WU-005)
+- **DONE** (commit follows): items 1 (partial — the two REACHABLE test gaps: 90-day cap +
+  real indefinite-length container) and 3 (phantom-guard doc-comment). The third "test gap"
+  (drive `admit`'s oversize branch) is NOT writable — that branch is the phantom guard itself
+  (unreachable for the fixed-size core), so it is documented rather than tested.
+- **DEFERRED to WU-015**: item 2 (`resolve_listing` `ticket_core_bytes` self-check). Reason: the
+  shared test helper `listing_for` embeds a DUMMY `ticket_core_bytes` (`[0x01,0x02,0x03]`), so the
+  self-check would break every existing resolve test until that helper embeds a real consistent
+  envelope. That rework belongs with WU-015, where the caller-side entry/grant/capability signature
+  verification lands anyway (and `core_for`/`listing_for` already share identical coordinates, so
+  `listing_for` can embed `sign_core(sk, core_for(root))` directly). Tracked as a WU-015 criterion.
+
 ## QUEUED — apply in a hardening commit AFTER WU-004 lands (do NOT edit the crate while WU-004 builds)
 1. **Close 3 test gaps in `tests/authority_records.rs`** (the "every hostile encoding rejected" claim
    is currently weaker than named):

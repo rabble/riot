@@ -241,6 +241,12 @@ pub fn admit_public_site_ticket(
     let core_canonical = core
         .encode_canonical()
         .map_err(|_| AuthorityError::InvalidTicket(TicketReason::Structure))?;
+    // Defense-in-depth. NOTE: `PublicSiteTicketV2Core` has only fixed-size fields
+    // (five 32-byte ids, fixed ints, two closed transport tokens), so its canonical
+    // encoding is always ~200-240 bytes and this bound is UNREACHABLE for the fixed
+    // core — a phantom guard kept in case a variable-length field is ever added. The
+    // 768-byte bound does real work at the `CommunityListingV1.ticket_core_bytes`
+    // layer, not here. (See docs/research/2026-07-19-wu003b-security-findings.md.)
     if core_canonical.len() > MAX_TICKET_CORE_BYTES {
         return Err(AuthorityError::InvalidTicket(TicketReason::Structure));
     }
