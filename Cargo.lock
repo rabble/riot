@@ -3498,7 +3498,9 @@ dependencies = [
 name = "riot-client-net"
 version = "0.1.0"
 dependencies = [
+ "ed25519-dalek 2.2.0",
  "iroh",
+ "riot-anchor-protocol",
  "riot-transport",
  "tokio",
 ]

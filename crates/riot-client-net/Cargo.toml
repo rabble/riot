@@ -21,3 +21,15 @@ iroh = "1.0.2"
 # Reuse the vetted, fail-closed endpoint `bind` helper rather than re-deriving
 # it here. This is the only workspace edge riot-client-net needs for 011A.
 riot-transport = { path = "../riot-transport" }
+# WU-011B: the canonical, dependency-neutral wire layer. Reused for the
+# SECURITY-CRITICAL `admit_public_site_ticket` (ticket-first verification +
+# `require:none` transport equality) and the descriptor identity types, rather
+# than re-deriving that logic here. Already resolved in the workspace lock; this
+# only adds a dependency edge (no new package version).
+riot-anchor-protocol = { path = "../riot-anchor-protocol" }
+
+[dev-dependencies]
+# Tests construct genuinely root-signed v2 tickets (a downgraded/arti/expired
+# ticket still carries a VALID signature so it reaches the transport/version
+# gate). Same primitive + workspace version the protocol crate already uses.
+ed25519-dalek = { workspace = true }
