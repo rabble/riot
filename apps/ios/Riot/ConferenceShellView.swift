@@ -250,6 +250,7 @@ private struct OnboardingSetupView: View {
     @State private var displayName = ""
     @State private var demoFailure: String?
     @State private var isJoinPresented = false
+    @State private var isFollowSitePresented = false
 
     private var trimmedCommunity: String {
         communityName.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -300,6 +301,10 @@ private struct OnboardingSetupView: View {
                             .buttonStyle(.riotSecondary)
                             .accessibilityIdentifier("launch-join-by-reference")
 
+                        Button("Follow a site") { isFollowSitePresented = true }
+                            .buttonStyle(.riotSecondary)
+                            .accessibilityIdentifier("launch-follow-site")
+
                         Button("Find one nearby") { model.select(.nearby) }
                             .buttonStyle(.riotSecondary)
                             .accessibilityIdentifier("find-nearby")
@@ -327,6 +332,11 @@ private struct OnboardingSetupView: View {
             // The same paste/QR join sheet the in-app chooser uses, so onboarding's
             // join path is the identical code and core call, never a duplicate.
             JoinByReferenceSheet(model: model, onClose: { isJoinPresented = false })
+        }
+        .sheet(isPresented: $isFollowSitePresented) {
+            // Follow a composite indymedia site by ticket, and refresh the sites
+            // already followed — the same code the in-app surfaces will reuse.
+            FollowSiteSheet(model: model, onClose: { isFollowSitePresented = false })
         }
         .onAppear { displayName = model.claimedName ?? "" }
     }

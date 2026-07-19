@@ -180,6 +180,10 @@ public final class RiotAppModel: ObservableObject {
     @Published public private(set) var communityUnavailable: CommunityUnavailable?
     @Published public private(set) var entries: [RiotEntry] = []
     @Published public private(set) var apps: [RiotSpaceApp] = []
+    /// The composite indymedia sites this person follows (author-less rows from
+    /// `list_followed_sites`), surfaced by ``FollowSiteSheet``. Distinct from
+    /// communities — a followed site holds no posting author here.
+    @Published public private(set) var followedSites: [FollowedSiteRow] = []
     @Published public private(set) var connectionStatus: RiotConnectionStatus = .offline
     @Published public private(set) var errorMessage: String?
 
@@ -466,6 +470,7 @@ public final class RiotAppModel: ObservableObject {
         refreshDisplayNames()
         // Joining a space makes this person a MEMBER of it, not its organizer.
         refreshOrganizerState()
+        reloadFollowedSites()
     }
 
     /// Opens (or restores) the on-device profile and installs the starter tools.
@@ -739,6 +744,60 @@ public final class RiotAppModel: ObservableObject {
         }
     }
 
+    // MARK: - Followed composite sites (Option C HTTP-pull)
+
+    /// Re-reads the followed-sites list from the store. Cheap metadata read; safe
+    /// to call after a follow, a refresh-import, or a profile open.
+    public func reloadFollowedSites() {
+        followedSites = (try? repository?.listFollowedSites()) ?? []
+    }
+
+    /// Follows a composite indymedia site from a pasted/scanned `riot://site/v1/...`
+    /// ticket. The CORE verifies the ticket's signature and expiry and persists the
+    /// `Following` record (this layer only screened the scheme + length); a refusal
+    /// surfaces in ``errorMessage`` and changes nothing. On success the followed
+    /// list reloads so the new row is visible immediately.
+    public func followSite(ticket rawTicket: String) {
+        guard let repository else { return }
+        do {
+            let ticket = try FollowSiteModel().screen(ticket: rawTicket)
+            _ = try repository.followSite(ticket: ticket)
+            errorMessage = nil
+            reloadFollowedSites()
+        } catch {
+            errorMessage = Self.followSiteRefusal
+        }
+    }
+
+    /// Pulls the owner-signed bundle for a followed site over HTTPS and imports it.
+    /// The pulled bytes are UNTRUSTED: `import_followed_site_bundle` re-verifies
+    /// every entry (owner cap + Following-gate + family-gate) before anything lands,
+    /// so a bad mirror can only serve stale/empty, never forge. A transport-blocked
+    /// site is never routed here (its row offers no refresh and carries no URL). A
+    /// network or import failure surfaces in ``errorMessage`` and changes nothing.
+    @MainActor
+    public func refreshFollowedSite(root: String, fetchURL: String) async {
+        guard let repository else { return }
+        guard let url = URL(string: fetchURL),
+              let rootBytes = FollowSiteModel.hexBytes(root) else {
+            errorMessage = Self.followSiteFetchRefusal
+            return
+        }
+        do {
+            let (data, response) = try await URLSession.shared.data(from: url)
+            guard let http = response as? HTTPURLResponse,
+                  (200..<300).contains(http.statusCode) else {
+                errorMessage = Self.followSiteFetchRefusal
+                return
+            }
+            _ = try repository.importFollowedSiteBundle(bytes: data, root: Data(rootBytes))
+            errorMessage = nil
+            reloadFollowedSites()
+        } catch {
+            errorMessage = Self.followSiteFetchRefusal
+        }
+    }
+
     /// The outcome of the last `riot://open?...` verify link the app was handed,
     /// or `nil` when none is pending. The shell presents it as an HONEST verify
     /// result (see ``RiotOpenOutcome``) — a "verified" badge only for a post this
@@ -813,6 +872,12 @@ public final class RiotAppModel: ObservableObject {
     /// the sentence names the likely causes rather than guessing at one.
     private static let joinRefusal =
         "Riot couldn’t join from that link. It may be incomplete or not a Riot community reference — check you pasted the whole thing and try again."
+
+    private static let followSiteRefusal =
+        "Riot couldn’t follow from that ticket. It may be expired, incomplete, or not a Riot site ticket — check you pasted the whole thing and try again."
+
+    private static let followSiteFetchRefusal =
+        "Riot couldn’t refresh from that site right now. The mirror may be unreachable or the bundle didn’t verify; nothing on this device changed."
 
     /// Seals every held community's author under the secure-store wrapping key so
     /// the communities survive a reopen. Best-effort — called after create; a
