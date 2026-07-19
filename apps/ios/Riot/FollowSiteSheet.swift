@@ -22,6 +22,9 @@ public struct FollowSiteSheet: View {
     @State private var screenedTicket: String?
     @State private var errorText: String?
     @State private var refreshing: Set<String> = []
+    /// Per-site "Imported N records" feedback, keyed by root, shown after a
+    /// successful refresh so the pull's payoff is visible.
+    @State private var lastImport: [String: Int] = [:]
 
     #if os(iOS)
     @State private var mode: Mode = .paste
@@ -239,6 +242,12 @@ public struct FollowSiteSheet: View {
                         .buttonStyle(.riotSecondary)
                         .accessibilityIdentifier("follow-site-row-refresh")
                     }
+                    if let count = lastImport[display.root] {
+                        Text("Imported \(count) record\(count == 1 ? "" : "s")")
+                            .font(.riot(.body, size: 12, relativeTo: .caption))
+                            .foregroundStyle(.secondary)
+                            .accessibilityIdentifier("follow-site-row-imported")
+                    }
                 }
             }
         }
@@ -247,10 +256,17 @@ public struct FollowSiteSheet: View {
 
     private func refresh(root: String, url: String) {
         refreshing.insert(root)
+        errorText = nil
         Task {
-            await model.refreshFollowedSite(root: root, fetchURL: url)
+            let imported = await model.refreshFollowedSite(root: root, fetchURL: url)
             refreshing.remove(root)
-            errorText = model.errorMessage
+            if let imported {
+                lastImport[root] = imported
+                errorText = nil
+            } else {
+                lastImport[root] = nil
+                errorText = model.errorMessage
+            }
         }
     }
 

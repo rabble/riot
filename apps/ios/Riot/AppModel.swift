@@ -775,26 +775,34 @@ public final class RiotAppModel: ObservableObject {
     /// so a bad mirror can only serve stale/empty, never forge. A transport-blocked
     /// site is never routed here (its row offers no refresh and carries no URL). A
     /// network or import failure surfaces in ``errorMessage`` and changes nothing.
+    ///
+    /// Returns the number of records the core admitted + committed (the
+    /// `ImportSummary` count) so the row can show honest "Imported N records"
+    /// feedback that the pull actually landed; `nil` on any failure.
     @MainActor
-    public func refreshFollowedSite(root: String, fetchURL: String) async {
-        guard let repository else { return }
+    @discardableResult
+    public func refreshFollowedSite(root: String, fetchURL: String) async -> Int? {
+        guard let repository else { return nil }
         guard let url = URL(string: fetchURL),
               let rootBytes = FollowSiteModel.hexBytes(root) else {
             errorMessage = Self.followSiteFetchRefusal
-            return
+            return nil
         }
         do {
             let (data, response) = try await URLSession.shared.data(from: url)
             guard let http = response as? HTTPURLResponse,
                   (200..<300).contains(http.statusCode) else {
                 errorMessage = Self.followSiteFetchRefusal
-                return
+                return nil
             }
-            _ = try repository.importFollowedSiteBundle(bytes: data, root: Data(rootBytes))
+            let summary = try repository.importFollowedSiteBundle(
+                bytes: data, root: Data(rootBytes))
             errorMessage = nil
             reloadFollowedSites()
+            return Int(summary.imported)
         } catch {
             errorMessage = Self.followSiteFetchRefusal
+            return nil
         }
     }
 
