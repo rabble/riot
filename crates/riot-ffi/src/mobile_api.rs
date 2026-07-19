@@ -212,6 +212,20 @@ pub enum MobileError {
     /// for recovery. The chooser preserves the row and offers recovery — it is
     /// never dropped, and a switch never silently lands on a different community.
     CommunityUnavailable,
+    /// `publish_site_manifest` refused: the incoming `version` is below the
+    /// durable per-root floor (rollback). No store write occurred — the prior
+    /// manifest, if any, is unchanged.
+    ManifestRollback,
+    /// `publish_site_manifest` refused: a higher `version` lowered the mandatory
+    /// transport `require` floor below the durable per-root floor (a distinct
+    /// attack — it passes the version check yet strips a privacy guarantee). No
+    /// store write occurred.
+    ManifestRequireDowngrade,
+    /// `publish_site_manifest` refused: a conflicting owner signature was seen
+    /// at the SAME version as the durable floor — a compromise signal (e.g. a
+    /// second device holding the masthead secret), surfaced as a distinct alarm
+    /// rather than folded into a routine `InvalidInput`. No store write occurred.
+    ManifestEquivocation,
 }
 
 impl std::fmt::Display for MobileError {
@@ -235,6 +249,9 @@ impl std::fmt::Display for MobileError {
             Self::LegacyProfileCannotOrganize => "LEGACY_PROFILE_CANNOT_ORGANIZE",
             Self::Database => "DATABASE_ERROR",
             Self::CommunityUnavailable => "COMMUNITY_UNAVAILABLE",
+            Self::ManifestRollback => "MANIFEST_ROLLBACK",
+            Self::ManifestRequireDowngrade => "MANIFEST_REQUIRE_DOWNGRADE",
+            Self::ManifestEquivocation => "MANIFEST_EQUIVOCATION",
         };
         f.write_str(code)
     }

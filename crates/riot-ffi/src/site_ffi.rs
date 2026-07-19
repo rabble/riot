@@ -19,14 +19,18 @@ use riot_core::site::moderation::{
     compute_mod_set_digest, ModEpoch, ModerationRecord, Revoke, Tombstone,
 };
 use riot_core::site::{
-    create_signed_moderation_record, evaluate_freshness, item_treatment, read_moderation_record,
-    resolve_degradation, resolve_trust_tier, validate_site_manifest, CompositeDegradation,
-    DegradationInputs, HeldModerationRecord, MemberClassification, RequireTransport,
-    SignedModerationRecord, SiteDisplay, SiteRole, SiteRule, SiteTransport, TrustTier,
-    ValidatedManifest, VersionFloorOutcome,
+    admit_manifest_version, create_signed_moderation_record, encode_site_manifest,
+    evaluate_freshness, item_treatment, read_moderation_record, resolve_degradation,
+    resolve_trust_tier, validate_site_manifest, CompositeDegradation, DegradationInputs,
+    HeldModerationRecord, MemberClassification, RequireTransport, SignedModerationRecord,
+    SiteDisplay, SiteLayout, SiteManifestV1, SiteMemberV1, SiteRole, SiteRule, SiteTransport,
+    TransportPolicyV1, TrustTier, ValidatedManifest, VersionFloorOutcome,
 };
-use riot_core::willow::site_paths::{ARTICLES_COMPONENT, MOD_COMPONENT};
-use riot_core::willow::{system_snapshot, ClockSnapshot, OwnedMasthead, Path, SignedWillowEntry};
+use riot_core::willow::site_paths::{ARTICLES_COMPONENT, MANIFEST_COMPONENT, MOD_COMPONENT};
+use riot_core::willow::{
+    encode_capability, encode_entry, system_snapshot, ClockSnapshot, Entry, OwnedMasthead, Path,
+    SignedWillowEntry,
+};
 use willow25::groupings::Keylike;
 
 use crate::community_registry::Relationship;
@@ -182,6 +186,9 @@ pub struct ResolvedSiteManifest {
     pub status: ManifestValidationStatus,
     /// Diagnostic reason when `status == ManifestInvalid`, else `None`.
     pub invalid_reason: Option<String>,
+    /// Named content sections the owner has declared, UTF-8 lossy (§4.0). Empty
+    /// when the manifest declares none (omitted-when-empty on the wire).
+    pub sections: Vec<String>,
 }
 
 fn role_token(role: SiteRole) -> String {
@@ -257,7 +264,18 @@ fn project(validated: ValidatedManifest) -> ResolvedSiteManifest {
         moderation_path: manifest.moderation_path.iter().map(|c| hex(c)).collect(),
         status,
         invalid_reason: None,
+        sections: sections_to_strings(&manifest.sections),
     }
+}
+
+/// Lossy UTF-8 projection of raw section-name bytes for the shells (mirrors how
+/// `moderation_path` components are projected — never assumed to be UTF-8 on
+/// the wire, but rendered as text for display).
+fn sections_to_strings(sections: &[Vec<u8>]) -> Vec<String> {
+    sections
+        .iter()
+        .map(|s| String::from_utf8_lossy(s).into_owned())
+        .collect()
 }
 
 /// Validate an owner-signed site manifest (Unit 2 signer + member checks,
@@ -295,8 +313,360 @@ pub fn resolve_site_manifest(
             moderation_path: Vec::new(),
             status: ManifestValidationStatus::ManifestInvalid,
             invalid_reason: Some(error.to_string()),
+            sections: Vec::new(),
         }),
     }
+}
+
+// ---------------------------------------------------------------------------
+// Task 0.4 — publish_site_manifest: owner-signed, version-floor-gated commit.
+//
+// `OwnedMasthead::open_sealed` -> build `SiteManifestV1` -> `encode_site_manifest`
+// -> `authorise_owner_entry` at `[MANIFEST_COMPONENT]` (owner-only, same
+// masthead-secret guarantee as `/mod` and `/articles`) -> `admit_manifest_version`
+// GATES the store commit: on `Accepted` commit via `import_owned_manifest`; on ANY
+// other outcome (`RollbackRejected` / `RequireDowngradeRejected` /
+// `EquivocationAlarm`) return the matching error and perform NO store write — do
+// NOT copy `import_owned_mod`'s unconditional-commit shape (mod records have no
+// floor). The durable floor lives on `LocalProfile.db` (RiotDatabase, which impls
+// `VersionFloorStore`), NOT `profile.store` (EvidenceStore); an in-memory profile
+// (`db == None`) fails closed. `publish_site_manifest` does NOT touch
+// `sync_inventory` (same cross-community isolation as `import_owned_mod`).
+// ---------------------------------------------------------------------------
+
+/// One member to bind into a published manifest. Mirrors `ResolvedSiteMember`'s
+/// stable string tokens (role/rule/display) so the write and read shapes agree —
+/// a caller round-trips exactly what it reads from `ResolvedSiteManifest`.
+/// `ns` is the member namespace id, lowercase hex (64 chars).
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct SiteMemberInput {
+    pub ns: String,
+    pub role: String,
+    pub rule: String,
+    pub display: String,
+}
+
+impl SiteMemberInput {
+    fn into_core(self) -> Result<SiteMemberV1, MobileError> {
+        Ok(SiteMemberV1 {
+            ns: parse_id(&self.ns)?,
+            role: parse_role_token(&self.role)?,
+            rule: parse_rule_token(&self.rule)?,
+            display: parse_display_token(&self.display)?,
+        })
+    }
+}
+
+/// The transport policy to publish. Mirrors `ResolvedSiteManifest`'s
+/// `allow_transports` / `require_transport` string tokens.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct TransportPolicyInput {
+    pub allow: Vec<String>,
+    pub require: String,
+}
+
+impl TransportPolicyInput {
+    fn into_core(self) -> Result<TransportPolicyV1, MobileError> {
+        Ok(TransportPolicyV1 {
+            allow: self
+                .allow
+                .iter()
+                .map(|token| parse_transport_token(token))
+                .collect::<Result<Vec<_>, _>>()?,
+            require: parse_require_token(&self.require)?,
+        })
+    }
+}
+
+/// The result of a successful `publish_site_manifest`: the version-floor-gated
+/// commit that landed.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct SiteManifestOutcome {
+    /// Site root (owned namespace id), lowercase hex (64 chars).
+    pub root: String,
+    /// The published manifest's monotonic version.
+    pub version: u64,
+    /// The declared sections, UTF-8 lossy (mirrors `ResolvedSiteManifest`'s
+    /// projection of raw section bytes).
+    pub sections: Vec<String>,
+}
+
+/// Inverse of `role_token`: a known token parses to its variant; an
+/// `unknown-<n>` echo parses back to `Unknown(n)`; anything else is refused —
+/// a caller must use a token this surface actually produced, never an
+/// arbitrary string coerced into a role code.
+fn parse_role_token(token: &str) -> Result<SiteRole, MobileError> {
+    match token {
+        "masthead" => Ok(SiteRole::Masthead),
+        "comments" => Ok(SiteRole::Comments),
+        "open-wire" => Ok(SiteRole::OpenWire),
+        other => parse_unknown_token(other).map(SiteRole::Unknown),
+    }
+}
+
+/// Inverse of `rule_token` (see `parse_role_token`).
+fn parse_rule_token(token: &str) -> Result<SiteRule, MobileError> {
+    match token {
+        "owned-write" => Ok(SiteRule::OwnedWrite),
+        "communal-open" => Ok(SiteRule::CommunalOpen),
+        other => parse_unknown_token(other).map(SiteRule::Unknown),
+    }
+}
+
+/// Inverse of `display_token` (see `parse_role_token`).
+fn parse_display_token(token: &str) -> Result<SiteDisplay, MobileError> {
+    match token {
+        "front-articles" => Ok(SiteDisplay::FrontArticles),
+        "under-articles" => Ok(SiteDisplay::UnderArticles),
+        "wire-column" => Ok(SiteDisplay::WireColumn),
+        other => parse_unknown_token(other).map(SiteDisplay::Unknown),
+    }
+}
+
+/// Inverse of `transport_token` (see `parse_role_token`).
+fn parse_transport_token(token: &str) -> Result<SiteTransport, MobileError> {
+    match token {
+        "iroh" => Ok(SiteTransport::Iroh),
+        "arti" => Ok(SiteTransport::Arti),
+        other => parse_unknown_token(other).map(SiteTransport::Unknown),
+    }
+}
+
+/// Inverse of `require_token`. CLOSED enum (mirrors `RequireTransport`): an
+/// unknown value is a hard reject, never an `Unknown` echo — the durable
+/// require-monotonicity floor needs a total order over every accepted value.
+fn parse_require_token(token: &str) -> Result<RequireTransport, MobileError> {
+    match token {
+        "none" => Ok(RequireTransport::None),
+        "arti" => Ok(RequireTransport::Arti),
+        _ => Err(MobileError::InvalidInput),
+    }
+}
+
+/// Parse an `unknown-<n>` token back into its raw code. Any other shape is
+/// refused.
+fn parse_unknown_token(token: &str) -> Result<u64, MobileError> {
+    token
+        .strip_prefix("unknown-")
+        .and_then(|raw| raw.parse::<u64>().ok())
+        .ok_or(MobileError::InvalidInput)
+}
+
+#[uniffi::export]
+impl MobileProfile {
+    /// Publish an owner-signed site manifest at `O:/manifest`, GATED on the
+    /// durable per-root version floor (`admit_manifest_version`): the store
+    /// commit happens ONLY on `Accepted`. A rollback, a require-downgrade, or a
+    /// same-version conflicting signature (equivocation) is refused with NO
+    /// store write — the prior manifest, if any, is left exactly as it was.
+    ///
+    /// Durable-only: the floor lives in `LocalProfile.db` (the SQLite-backed
+    /// `RiotDatabase`), so an in-memory profile fails closed rather than
+    /// silently skipping the floor. Requires the site's sealed masthead +
+    /// wrapping key, exactly like `create_site_moderation_action`. Both the
+    /// wrapping key and the opened key copy are zeroed after the call.
+    pub fn publish_site_manifest(
+        &self,
+        sealed_root: Vec<u8>,
+        mut wrapping_key: Vec<u8>,
+        members: Vec<SiteMemberInput>,
+        sections: Vec<Vec<u8>>,
+        transport: TransportPolicyInput,
+        version: u64,
+    ) -> Result<SiteManifestOutcome, MobileError> {
+        let result = self.publish_manifest(
+            &sealed_root,
+            &wrapping_key,
+            members,
+            sections,
+            transport,
+            version,
+        );
+        wrapping_key.iter_mut().for_each(|b| *b = 0);
+        result
+    }
+}
+
+impl MobileProfile {
+    fn publish_manifest(
+        &self,
+        sealed_root: &[u8],
+        wrapping_key: &[u8],
+        members: Vec<SiteMemberInput>,
+        sections: Vec<Vec<u8>>,
+        transport: TransportPolicyInput,
+        version: u64,
+    ) -> Result<SiteManifestOutcome, MobileError> {
+        let mut key = exact_key(wrapping_key)?;
+        let masthead = OwnedMasthead::open_sealed(&key, sealed_root);
+        key.iter_mut().for_each(|b| *b = 0);
+        let masthead = masthead.map_err(|_| MobileError::InvalidInput)?;
+        let root = *masthead.namespace_id().as_bytes();
+
+        let members = members
+            .into_iter()
+            .map(SiteMemberInput::into_core)
+            .collect::<Result<Vec<_>, _>>()?;
+        let transport_policy = transport.into_core()?;
+        let manifest = SiteManifestV1 {
+            root,
+            members,
+            moderation_path: vec![MOD_COMPONENT.to_vec()],
+            transport_policy,
+            version,
+            layout: SiteLayout::SiteDefault,
+            sections,
+        };
+        let payload = encode_site_manifest(&manifest).map_err(|_| MobileError::InvalidInput)?;
+
+        let snapshot = system_snapshot().map_err(|_| MobileError::ClockUnavailable)?;
+        let path = Path::from_slices(&[MANIFEST_COMPONENT]).map_err(|_| MobileError::Internal)?;
+        let entry = Entry::builder()
+            .namespace_id(masthead.namespace_id().clone())
+            .subspace_id(masthead.owner_subspace_id())
+            .path(path)
+            .timestamp(snapshot.tai_j2000_micros)
+            .payload(&payload)
+            .build();
+        let authorised = masthead
+            .authorise_owner_entry(entry)
+            .map_err(|_| MobileError::InvalidInput)?;
+        let token = authorised.authorisation_token();
+        let signature: ed25519_dalek::Signature = token.signature().clone().into();
+        let signed = SignedWillowEntry {
+            entry_bytes: encode_entry(authorised.entry()),
+            capability_bytes: encode_capability(token.capability()),
+            signature: signature.to_bytes(),
+            payload_bytes: payload,
+        };
+
+        with_active(&self.inner, |profile| {
+            // Durable-only: the floor lives on `LocalProfile.db` (RiotDatabase
+            // impls `VersionFloorStore`), NOT `profile.store` (EvidenceStore).
+            // An in-memory profile (`db == None`) fails closed rather than
+            // silently skipping the floor.
+            let db = profile.db.as_ref().ok_or(MobileError::InvalidInput)?;
+            match admit_manifest_version(db, &root, &manifest).map_err(|_| MobileError::Database)? {
+                VersionFloorOutcome::Accepted => {}
+                VersionFloorOutcome::RollbackRejected => return Err(MobileError::ManifestRollback),
+                VersionFloorOutcome::RequireDowngradeRejected => {
+                    return Err(MobileError::ManifestRequireDowngrade)
+                }
+                VersionFloorOutcome::EquivocationAlarm => {
+                    return Err(MobileError::ManifestEquivocation)
+                }
+            }
+            import_owned_manifest(db, root, &signed)?;
+            Ok(SiteManifestOutcome {
+                root: hex(&root),
+                version,
+                sections: sections_to_strings(&manifest.sections),
+            })
+        })
+    }
+}
+
+/// Import an owner-signed `/manifest` record through the followed-root
+/// admission path (the owner follows their own site) — the version-floor-gated
+/// commit for `publish_site_manifest`. Mirrors `import_owned_mod`'s admission
+/// shape exactly, but is called ONLY after `admit_manifest_version` has already
+/// returned `Accepted`: the floor gates the commit, this function performs it
+/// unconditionally once reached. It does NOT touch `profile.sync_inventory` —
+/// the same cross-community isolation as `import_owned_mod`.
+/// Persist the version-floor-accepted signed manifest wire for `root` into the
+/// durable `local_state` KV — the SAME primitive `admit_manifest_version`
+/// itself uses for the floor record (`RiotDatabase::local_state`/
+/// `set_local_state`), under a DISTINCT key.
+///
+/// This is NOT an `EvidenceStore` admission (`import_owned_mod`'s shape):
+/// `/manifest` is deliberately excluded from `import/bundle.rs`'s owned-namespace
+/// schema gate (`schema_ok` there only admits `/articles` and `/mod` — see its
+/// doc comment, "The reserved `/manifest` carries no schema here and is
+/// refused"), so it can never travel through `encode_bundle`/`decode_bundle`,
+/// the mechanism `import_owned_mod` relies on. This is consistent with the rest
+/// of the design: no surface ever reads a manifest back OUT of the general
+/// store either (`resolve_site_manifest`/`resolve_composite_site` take an
+/// explicit signed wire argument, never scan for `/manifest`) — the durable
+/// state this call maintains is owner-device-local memory of what it last
+/// published, gated by the floor, exactly like the floor's own persistence.
+/// Because it never touches `EvidenceStore`, it structurally cannot touch
+/// `sync_inventory` (a distinct, `EvidenceStore`-derived concept) — the
+/// isolation `import_owned_mod` enforces procedurally is here true by
+/// construction.
+fn import_owned_manifest(
+    db: &riot_core::store::RiotDatabase,
+    root: [u8; 32],
+    signed: &SignedWillowEntry,
+) -> Result<(), MobileError> {
+    db.set_local_state(
+        &manifest_state_key(&root),
+        &encode_signed_manifest_wire(signed),
+    )
+    .map_err(|_| MobileError::Database)
+}
+
+/// The `local_state` key under which the last floor-accepted manifest wire for
+/// `site_root` is persisted. Distinct from `admit_manifest_version`'s own
+/// `"site/vfloor/<hex>"` floor key (`version_floor.rs::floor_key`) — this one
+/// carries the full wire, the floor carries only its compact identity digest.
+fn manifest_state_key(site_root: &[u8; 32]) -> String {
+    let mut key = String::with_capacity(14 + 64);
+    key.push_str("site/manifest/");
+    for byte in site_root {
+        key.push(char::from_digit((byte >> 4) as u32, 16).expect("nibble"));
+        key.push(char::from_digit((byte & 0x0f) as u32, 16).expect("nibble"));
+    }
+    key
+}
+
+/// A minimal canonical single-record encoding of a `SignedWillowEntry`, for
+/// `local_state` KV persistence ONLY. Deliberately NOT the multi-item bundle
+/// format (`riot_core::import::encode_bundle`/`decode_bundle`) — that format's
+/// schema gate refuses `/manifest` by design (see `import_owned_manifest`), so
+/// it is unusable here. This encoding carries no admission semantics of its
+/// own: it is read back only by this profile's own device, from its own
+/// `local_state`, never treated as externally-supplied evidence.
+fn encode_signed_manifest_wire(signed: &SignedWillowEntry) -> Vec<u8> {
+    let mut buffer = Vec::new();
+    let mut encoder = minicbor::Encoder::new(&mut buffer);
+    encoder
+        .array(4)
+        .and_then(|e| e.bytes(&signed.entry_bytes))
+        .and_then(|e| e.bytes(&signed.capability_bytes))
+        .and_then(|e| e.bytes(&signed.signature))
+        .and_then(|e| e.bytes(&signed.payload_bytes))
+        .expect("encoding into a Vec<u8> is infallible");
+    buffer
+}
+
+/// Inverse of `encode_signed_manifest_wire`. Rejects anything malformed
+/// (wrong shape, wrong signature length) rather than panicking — the bytes
+/// come from this device's own durable storage, but corruption is still
+/// handled, not assumed away.
+///
+/// `cfg(test)`-only for now: no production surface reads a persisted manifest
+/// back today (consistent with the rest of the design — `resolve_site_manifest`
+/// / `resolve_composite_site` take an explicit signed wire, never scan for
+/// `/manifest`); the test helper `stored_manifest` is the only current reader,
+/// asserting a rejected publish left the persisted wire unchanged. A future
+/// manifest-export/read-back path would promote this out of `cfg(test)`.
+#[cfg(test)]
+fn decode_signed_manifest_wire(bytes: &[u8]) -> Result<SignedWillowEntry, MobileError> {
+    let mut decoder = minicbor::Decoder::new(bytes);
+    if decoder.array().map_err(|_| MobileError::Internal)? != Some(4) {
+        return Err(MobileError::Internal);
+    }
+    let entry_bytes = decoder.bytes().map_err(|_| MobileError::Internal)?.to_vec();
+    let capability_bytes = decoder.bytes().map_err(|_| MobileError::Internal)?.to_vec();
+    let signature = <[u8; 64]>::try_from(decoder.bytes().map_err(|_| MobileError::Internal)?)
+        .map_err(|_| MobileError::Internal)?;
+    let payload_bytes = decoder.bytes().map_err(|_| MobileError::Internal)?.to_vec();
+    Ok(SignedWillowEntry {
+        entry_bytes,
+        capability_bytes,
+        signature,
+        payload_bytes,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -2131,5 +2501,242 @@ mod resolve_composite_tests {
     fn restore_with_wrong_key_fails() {
         let created = create_owned_site(vec![0x01; 32]).expect("create should succeed");
         assert!(restore_owned_site(vec![0x02; 32], created.sealed_root).is_err());
+    }
+
+    // ---- Task 0.4: publish_site_manifest (owner-sign -> version-floor-gated) ----
+
+    /// A durable profile holding a fresh sealed masthead, ready for
+    /// `publish_site_manifest`. Returns the `TempDir` too — it must be kept
+    /// alive by the caller for the SQLite file backing `profile` to stay valid.
+    fn durable_owned_site() -> (
+        tempfile::TempDir,
+        Arc<MobileProfile>,
+        Vec<u8>,
+        Vec<u8>,
+        [u8; 32],
+    ) {
+        let (dir, profile) = durable_profile();
+        let created = create_owned_site(WRAP_KEY.to_vec()).expect("create owned site");
+        let root = unhex(&created.namespace_id);
+        (dir, profile, WRAP_KEY.to_vec(), created.sealed_root, root)
+    }
+
+    /// An in-memory profile (no durable database) holding a fresh sealed
+    /// masthead — `publish_site_manifest` must fail closed on it (no durable
+    /// floor to gate against).
+    fn in_memory_owned_site() -> (Arc<MobileProfile>, Vec<u8>, Vec<u8>, [u8; 32]) {
+        let profile = open_local_profile().expect("in-memory profile");
+        let created = create_owned_site(WRAP_KEY.to_vec()).expect("create owned site");
+        let root = unhex(&created.namespace_id);
+        (profile, WRAP_KEY.to_vec(), created.sealed_root, root)
+    }
+
+    fn members() -> Vec<SiteMemberInput> {
+        vec![]
+    }
+
+    fn transport() -> TransportPolicyInput {
+        transport_none()
+    }
+
+    fn transport_none() -> TransportPolicyInput {
+        TransportPolicyInput {
+            allow: vec![],
+            require: "none".to_string(),
+        }
+    }
+
+    fn transport_arti() -> TransportPolicyInput {
+        TransportPolicyInput {
+            allow: vec![],
+            require: "arti".to_string(),
+        }
+    }
+
+    /// The `(version, sections)` of whatever manifest wire is currently
+    /// persisted for `root` in `local_state` (`import_owned_manifest`'s write
+    /// target — see its doc comment for why `/manifest` is persisted there and
+    /// not through the general `EvidenceStore` admission path). This is a
+    /// TEST-ONLY introspection: no production surface reads a persisted
+    /// manifest back today (every real caller re-validates an explicit signed
+    /// wire it already holds). This helper exists solely to observe "did a
+    /// rejected publish leave the persisted manifest alone", which no
+    /// production FFI call answers (no `debug_store_bytes` exists).
+    fn stored_manifest(profile: &Arc<MobileProfile>, root: [u8; 32]) -> (u64, Vec<String>) {
+        with_active(&profile.inner, |p| {
+            let db = p.db.as_ref().expect("durable profile has a database");
+            let bytes = db
+                .local_state(&manifest_state_key(&root))
+                .map_err(|_| MobileError::Internal)?
+                .expect("a manifest has been accepted");
+            let signed = decode_signed_manifest_wire(&bytes)?;
+            let manifest = riot_core::site::decode_site_manifest(&signed.payload_bytes)
+                .expect("decode manifest");
+            Ok((manifest.version, sections_to_strings(&manifest.sections)))
+        })
+        .expect("read stored manifest")
+    }
+
+    /// (1) A higher version admits and advances the floor; a subsequent LOWER
+    /// version is refused as a rollback, with no store write — the manifest the
+    /// store holds is still the higher-version one.
+    #[test]
+    fn publish_then_higher_version_admits_lower_rolls_back() {
+        let (_dir, profile, key, sealed, root) = durable_owned_site();
+        let out1 = profile
+            .publish_site_manifest(
+                sealed.clone(),
+                key.clone(),
+                members(),
+                vec![b"news".to_vec()],
+                transport(),
+                1,
+            )
+            .expect("v1 publishes (first sight seeds the floor)");
+        assert_eq!(out1.sections, vec!["news".to_string()]);
+
+        profile
+            .publish_site_manifest(
+                sealed.clone(),
+                key.clone(),
+                members(),
+                vec![b"news".to_vec(), b"ops".to_vec()],
+                transport(),
+                2,
+            )
+            .expect("v2 admits (higher version)");
+        let before = stored_manifest(&profile, root);
+        assert_eq!(before, (2, vec!["news".to_string(), "ops".to_string()]));
+
+        assert!(matches!(
+            profile.publish_site_manifest(
+                sealed.clone(),
+                key.clone(),
+                members(),
+                vec![b"news".to_vec()],
+                transport(),
+                1,
+            ),
+            Err(MobileError::ManifestRollback)
+        ));
+        assert_eq!(
+            stored_manifest(&profile, root),
+            before,
+            "a rejected rollback must leave the stored manifest unchanged"
+        );
+    }
+
+    /// (2) A higher version that LOWERS the mandatory transport `require` floor
+    /// is refused distinctly from a plain rollback, with no store write.
+    #[test]
+    fn require_downgrade_rejected_leaves_manifest_unchanged() {
+        let (_dir, profile, key, sealed, root) = durable_owned_site();
+        profile
+            .publish_site_manifest(
+                sealed.clone(),
+                key.clone(),
+                members(),
+                vec![b"news".to_vec()],
+                transport_arti(),
+                1,
+            )
+            .expect("v1 publishes with a strict transport floor");
+        let before = stored_manifest(&profile, root);
+
+        assert!(matches!(
+            profile.publish_site_manifest(
+                sealed.clone(),
+                key.clone(),
+                members(),
+                vec![b"news".to_vec()],
+                transport_none(),
+                2,
+            ),
+            Err(MobileError::ManifestRequireDowngrade)
+        ));
+        assert_eq!(
+            stored_manifest(&profile, root),
+            before,
+            "a rejected require-downgrade must leave the stored manifest unchanged"
+        );
+    }
+
+    /// (3) SAME version, conflicting content (different sections -> different
+    /// owner signature) raises the equivocation alarm as its own outcome, with
+    /// no store write.
+    #[test]
+    fn same_version_conflicting_content_is_equivocation_alarm() {
+        let (_dir, profile, key, sealed, root) = durable_owned_site();
+        profile
+            .publish_site_manifest(
+                sealed.clone(),
+                key.clone(),
+                members(),
+                vec![b"news".to_vec()],
+                transport(),
+                1,
+            )
+            .expect("v1 publishes");
+        let before = stored_manifest(&profile, root);
+
+        assert!(matches!(
+            profile.publish_site_manifest(
+                sealed.clone(),
+                key.clone(),
+                members(),
+                vec![b"news".to_vec(), b"ops".to_vec()],
+                transport(),
+                1,
+            ),
+            Err(MobileError::ManifestEquivocation)
+        ));
+        assert_eq!(
+            stored_manifest(&profile, root),
+            before,
+            "an equivocation alarm must leave the stored manifest unchanged"
+        );
+    }
+
+    /// (4) ISOLATION INVARIANT: publishing a manifest leaves the community sync
+    /// inventory UNCHANGED — owned-ns records must never enter the active
+    /// community's peer offer set (mirrors
+    /// `importing_a_mod_bundle_leaves_the_sync_inventory_unchanged`).
+    #[test]
+    fn publish_leaves_sync_inventory_unchanged() {
+        let (_dir, profile, key, sealed, _root) = durable_owned_site();
+        let before = with_active(&profile.inner, |p| Ok(p.sync_inventory.len())).unwrap();
+        profile
+            .publish_site_manifest(
+                sealed,
+                key,
+                members(),
+                vec![b"news".to_vec()],
+                transport(),
+                1,
+            )
+            .expect("v1 publishes");
+        assert_eq!(
+            with_active(&profile.inner, |p| Ok(p.sync_inventory.len())).unwrap(),
+            before,
+            "publishing a manifest must NOT touch the community sync inventory"
+        );
+    }
+
+    /// (5) Durable-only: `LocalProfile.db` is `None` for an in-memory profile,
+    /// so `publish_site_manifest` fails closed rather than silently skipping
+    /// the version floor.
+    #[test]
+    fn publish_on_in_memory_profile_fails_closed() {
+        let (profile, key, sealed, _root) = in_memory_owned_site();
+        assert!(profile
+            .publish_site_manifest(
+                sealed,
+                key,
+                members(),
+                vec![b"news".to_vec()],
+                transport(),
+                1,
+            )
+            .is_err());
     }
 }

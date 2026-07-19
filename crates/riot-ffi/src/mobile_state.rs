@@ -131,7 +131,11 @@ pub(crate) struct LocalProfile {
     /// The durable database handle — a cheap `Arc` clone; the session owns a twin
     /// sharing the same connection, lease, and reader pool. `None` for in-memory
     /// profiles, whose registry then lives only in this struct for the session.
-    db: Option<riot_core::store::RiotDatabase>,
+    // pub(crate) so `publish_site_manifest` (site_ffi.rs) can reach the durable
+    // per-root version floor (`RiotDatabase` impls `VersionFloorStore`) — that
+    // floor is NOT on `store` (EvidenceStore); an in-memory profile (`None`)
+    // must fail closed rather than silently skipping the floor.
+    pub(crate) db: Option<riot_core::store::RiotDatabase>,
     /// The held communities and which one is active (Unit 3). Source of truth in
     /// memory; mirrored to `local_state` on every mutation when `db` is `Some`.
     // pub(crate) so the site-follow importer can read the Following gate and stamp
