@@ -783,7 +783,9 @@ private struct CommunityShellView: View {
             seenCursor: SeenCursorStore(),
             // Communal reply signer — the same repository, or nil (reply hidden)
             // when no profile is open.
-            commenter: model.profileRepository
+            commenter: model.profileRepository,
+            // Communal reaction signer — same repository; nil hides the reaction bar.
+            reactor: model.profileRepository
         ))
     }
 
