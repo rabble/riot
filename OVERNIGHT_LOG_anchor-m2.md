@@ -63,3 +63,14 @@ FLAG for morning: Prepared response stores derived tokens (byte-identical replay
 ### Task 5 — WU-015 (staged sync + composite Commit + receipt recovery) dispatched
 Emphasized: REAL Meadowcap/entry verification (not stub) per the trust-root security criterion; forged-
 entry-refused test; atomic O/C/W promotion+CAS+receipt+token-invalidation; failpoint all-or-nothing.
+
+### Task 5 — WU-015 DONE (commit a05eb7f, pushed #80)
+Composite hosting commit: REAL Meadowcap verify (riot_core::willow::verify_entry) at ingress + re-
+verified at commit; forged entry refused. Atomic O/C/W promotion+CAS+receipt+token-invalidation in one
+txn; failpoint all-or-nothing; generation CAS one-winner; byte-identical receipt reconstruction across
+restart. 69 tests. Dep: willow25 edge (0 new pkgs); sha refreshed. Schema: site_generation,
+staged_entries, item_bytes. **Trust-root security criterion SATISFIED for hosting.**
+
+### Task 6 — WU-015B (atomic ordinary listing) dispatched
+Emphasized the resolve_listing HIGH finding: verify entry sig + delegate-grant sig + Meadowcap chain +
+ticket-coordinate self-check BEFORE constructing AdmittedListingEnvelopeV1; 3 security refusal tests.
