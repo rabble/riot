@@ -1073,6 +1073,20 @@ extension RiotProfileRepository: CommunityRegistry {
     public func communityRegistryQuarantined() throws -> Bool {
         try profile.communityRegistryQuarantined()
     }
+
+    // MARK: - Owned site (composite-site masthead, WU-006 Task 8a)
+
+    /// Mints a fresh owned masthead namespace and seals it under this
+    /// profile's wrapping key, exactly as `persistCommunities`/`sealIdentity`
+    /// do. No business logic beyond the call: the caller (the creation flow,
+    /// once it exists) is responsible for showing the §9.3 seizure disclosure
+    /// (`OwnedSiteSeizureDisclosureView`) and gating this call on
+    /// `OwnedSiteCreationGate.canMint` BEFORE invoking it.
+    public func createOwnedSite() throws -> CreatedSite {
+        try Self.withWrappingKey(from: keyStore) { wrappingKey in
+            try RiotKit.createOwnedSite(wrappingKey: wrappingKey)
+        }
+    }
 }
 
 public enum RepositoryError: Error {
