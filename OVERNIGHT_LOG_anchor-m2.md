@@ -1,5 +1,50 @@
 # Overnight Work Log — 2026-07-20 (Anchor M2: hosting MVP, server crate)
 
+## ☀️ MORNING SUMMARY
+
+**Built the entire anchor M2 hosting-MVP SERVER core overnight — greenfield `riot-anchor` crate, all
+pure Rust, all verified.**
+
+**DONE + TESTED:**
+- **`riot-anchor` hosting-MVP core (WU-013A–016)** on **PR #80** — forward-only SQLite schema (30+
+  tables, fail-closed version refusal) → repository (WAL, 9 independent accounting classes, payload
+  dedup logical-full/physical-once, deployment lease, immutable snapshots, deterministic eviction,
+  crash recovery) → control admission/idempotency/work/Prepare (cheap-before-durable ordering) →
+  composite hosting Commit (**REAL Meadowcap `verify_entry` — forged entries refused; the trust-root
+  security criterion satisfied**, atomic O/C/W promotion + generation-CAS one-winner + receipt
+  recovery) → atomic listing (full `resolve_listing` verification: entry+grant+capability sigs +
+  ticket self-check + seal-seizure attack refused) → reserved removal + crash-safe checkpoints.
+  **231 tests** (111 DoD + 120 coverage-completion), riot-anchor line coverage **97.2%**, clippy/fmt
+  clean, validate-contracts green.
+- **WU-011A client-net runtime** — **MERGED to main (#84, `099c215`)**: process-singleton
+  `RiotApplicationRuntime`, per-profile leases, injected-factory test seam (7 tests).
+
+**OPEN / for you:**
+- **#80 is finishing CI** (coverage fix just pushed; riot-anchor 97.2% lifts the workspace above the
+  95% floor). Should merge green — a watcher is arming to land it.
+- **DELIBERATELY NOT DONE (needs supervised review):** WU-008–010 client-storage-ownership refactor
+  (rewrites the SHIPPING app's persistence/import/sync/close — highest blast radius; Checkpoint B).
+- **Human Checkpoint C** (WU-016 storage-failpoint / lane-fairness / max-size-removal evidence) is in
+  the tests but wasn't presented interactively — review at leisure.
+
+**Assumptions / flags to review:**
+1. **Coverage-exclusion policy (your call):** the pre-existing `riot-transport` runnable binaries
+   (`riot-seed`/`riot-follow`/`seed.rs` at 0%, `iroh.rs` 61%) are a standing drag on the workspace
+   llvm-cov floor. I did NOT touch coverage config (won't game the ratchet unattended) — worth an
+   explicit exclude-runnable-binaries decision.
+2. **`SubmitListingV1` wire gap (real):** its body carries only the envelope bytes — no field for the
+   entry sig or grant sig the anchor must verify. The service takes an explicit `RawListingSubmission`;
+   a wire→service decode adapter is a later WU.
+3. WU-014 stores derived tokens in the Prepared response for byte-identical replay (vs design's
+   re-derive-on-read) — a future hardening; derivation/rotation is real+tested.
+4. WU-016's `reserve_visibility_slot` (two-slot rule) isn't yet wired into `listing.rs`'s accept path
+   (still uses naive `claim_removal_slot`) — a ~1-line follow-up.
+
+**Suggested next steps:** land #80 → WU-011B (safe dialing) + WU-012 (client-net→FFI, touches the
+shipping app — supervised) → then the deferred client-storage refactor (008–010) supervised → M2 done.
+
+---
+
 Append-only. Newest at bottom. Morning summary goes at TOP when done. (Distinct filename — the tracked
 `OVERNIGHT_LOG.md` belongs to the 2026-07-19 session; not clobbering it.)
 Branch: `overnight/2026-07-20-anchor-m2` (off origin/main @ 1f6ecb2, which has anchor M1 complete).
