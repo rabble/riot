@@ -12,6 +12,7 @@ class ConferenceSurfaceTest {
                 "App directory",
                 "Incident board",
                 "Newswire",
+                "Follow a site",
                 "Compose & sign",
                 "Import preview",
                 "Connection",

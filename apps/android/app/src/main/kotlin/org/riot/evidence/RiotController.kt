@@ -10,6 +10,8 @@ import uniffi.riot_ffi.AlertSeverity
 import uniffi.riot_ffi.AlertUrgency
 import uniffi.riot_ffi.CommunityRow
 import uniffi.riot_ffi.CurrentEntry
+import uniffi.riot_ffi.FollowedSiteRow
+import uniffi.riot_ffi.ImportSummary
 import uniffi.riot_ffi.MobileImportPreview
 import uniffi.riot_ffi.MobileProfile
 import uniffi.riot_ffi.NewswireEditorialActionInput
@@ -252,6 +254,18 @@ class RiotController(filesDir: File) : AutoCloseable {
 
     fun projectNewswire(spaceDescriptorEntryId: String): NewswireProjectionView =
         profile.projectNewswireSpace(spaceDescriptorEntryId)
+
+    // Followed composite sites (Option C HTTP-pull). Thin passthroughs to the
+    // merged core FFI — the ticket's signature/expiry and every pulled record are
+    // verified in core, never here. followSite persists a Following record;
+    // importFollowedSiteBundle re-verifies UNTRUSTED pulled bytes (owner cap +
+    // Following-gate + family-gate) before anything lands.
+    fun followSite(ticket: String): FollowedSiteRow = profile.followSite(ticket)
+
+    fun listFollowedSites(): List<FollowedSiteRow> = profile.listFollowedSites()
+
+    fun importFollowedSiteBundle(bytes: ByteArray, followedSiteRoot: ByteArray): ImportSummary =
+        profile.importFollowedSiteBundle(bytes, followedSiteRoot)
 
     fun entries(): List<CurrentEntry> = profile.listCurrentEntries()
 
