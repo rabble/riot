@@ -1500,6 +1500,45 @@ public extension SiteTrustTier {
     }
 }
 
+/// The badge identity for one resolved item's trust tier — a SECURITY-relevant
+/// type, not decoration: an open-wire or comment item must never be able to
+/// wear editorial's badge or tint, so `for(_:)` is required to produce a
+/// distinct `badgeSymbol` AND a distinct `tintToken` per tier (an open-wire
+/// item can never be confused for an editorial one at a glance). `tintToken`
+/// names a `RiotTheme` color function rather than holding a `Color` directly,
+/// so this type stays plain `Equatable`/`Hashable` and testable without a
+/// `ColorScheme`; `tint(for:)` resolves it at render time.
+public struct CompositeSiteTierStyle: Equatable, Hashable, Sendable {
+    /// Stable per-tier token: doubles as the accessibility-identifier suffix.
+    public let token: String
+    public let badgeSymbol: String
+    public let tintToken: String
+
+    public static func `for`(_ tier: SiteTrustTier) -> CompositeSiteTierStyle {
+        switch tier {
+        case .editorial:
+            CompositeSiteTierStyle(
+                token: "editorial", badgeSymbol: "checkmark.seal.fill", tintToken: "pink")
+        case .openWire:
+            CompositeSiteTierStyle(
+                token: "open-wire", badgeSymbol: "antenna.radiowaves.left.and.right",
+                tintToken: "blue")
+        case .comment:
+            CompositeSiteTierStyle(
+                token: "comment", badgeSymbol: "bubble.left.fill", tintToken: "inkSoft")
+        }
+    }
+
+    /// Resolves `tintToken` to a themed color for the given color scheme.
+    public func tint(for scheme: ColorScheme) -> Color {
+        switch tintToken {
+        case "pink": RiotTheme.pink(for: scheme)
+        case "blue": RiotTheme.blue(for: scheme)
+        default: RiotTheme.inkSoft(for: scheme)
+        }
+    }
+}
+
 // MARK: - Composite-site owner moderation authoring (fix #4, write path)
 
 /// Which moderation action the site owner is authoring. Mirrors the newswire

@@ -950,6 +950,60 @@ final class CompositeSiteReadModelTests: XCTestCase {
             XCTAssertNotNil(model.bannerMessage, "\(degradation) still explains itself")
         }
     }
+
+    // MARK: - Trust-tier visual style (anti-impersonation)
+    //
+    // `CompositeSiteTierStyle` is a SECURITY-relevant UI type, not decoration: an
+    // open-wire or comment item must never be able to wear editorial's badge or
+    // tint, so `for(_:)` is required to produce visually DISTINCT values per tier
+    // — these assertions were migrated from the (now-deleted) parallel
+    // `CompositeSiteSurfaceTests` suite, which duplicated this canonical surface.
+
+    func testEditorialAndOpenWireProduceDistinctTierStyles() {
+        let editorial = CompositeSiteTierStyle.for(.editorial)
+        let openWire = CompositeSiteTierStyle.for(.openWire)
+
+        XCTAssertNotEqual(editorial, openWire, "open-wire must not be styled like editorial")
+        XCTAssertNotEqual(
+            openWire.badgeSymbol, editorial.badgeSymbol,
+            "an open-wire item must not carry the editorial badge symbol")
+        XCTAssertNotEqual(
+            openWire.tintToken, editorial.tintToken,
+            "an open-wire item must not carry the editorial tint")
+    }
+
+    func testEditorialAndCommentProduceDistinctTierStyles() {
+        let editorial = CompositeSiteTierStyle.for(.editorial)
+        let comment = CompositeSiteTierStyle.for(.comment)
+
+        XCTAssertNotEqual(comment, editorial, "a comment must not be styled like editorial")
+        XCTAssertNotEqual(
+            comment.badgeSymbol, editorial.badgeSymbol,
+            "a comment must not carry the editorial badge symbol")
+        XCTAssertNotEqual(
+            comment.tintToken, editorial.tintToken, "a comment must not carry the editorial tint")
+    }
+
+    func testAllThreeTrustTiersProduceDistinctTierStyles() {
+        let styles = [
+            CompositeSiteTierStyle.for(.editorial),
+            CompositeSiteTierStyle.for(.openWire),
+            CompositeSiteTierStyle.for(.comment),
+        ]
+        XCTAssertEqual(Set(styles).count, 3, "each trust tier must have a visually distinct style")
+        XCTAssertEqual(
+            Set(styles.map(\.badgeSymbol)).count, 3, "each trust tier must have a distinct badge symbol")
+        XCTAssertEqual(
+            Set(styles.map(\.tintToken)).count, 3, "each trust tier must have a distinct tint")
+    }
+
+    func testTierStylesHaveNonEmptyBadgeAndTint() {
+        for tier: SiteTrustTier in [.editorial, .openWire, .comment] {
+            let style = CompositeSiteTierStyle.for(tier)
+            XCTAssertFalse(style.badgeSymbol.isEmpty, "\(tier) must have a badge symbol")
+            XCTAssertFalse(style.tintToken.isEmpty, "\(tier) must have a tint")
+        }
+    }
 }
 
 /// Fix #4 write path — the owner moderation authoring model. Validates drafts
