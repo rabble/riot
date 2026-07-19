@@ -24,7 +24,12 @@ fn path(parts: &[&[u8]]) -> Path {
     Path::from_slices(parts).expect("path")
 }
 
-fn entry_at(namespace: &NamespaceId, subspace: SubspaceId, parts: &[&[u8]], timestamp: u64) -> Entry {
+fn entry_at(
+    namespace: &NamespaceId,
+    subspace: SubspaceId,
+    parts: &[&[u8]],
+    timestamp: u64,
+) -> Entry {
     Entry::builder()
         .namespace_id(namespace.clone())
         .subspace_id(subspace)
@@ -40,24 +45,40 @@ fn entry_at(namespace: &NamespaceId, subspace: SubspaceId, parts: &[&[u8]], time
 
 #[test]
 fn directory_region_is_disjoint_from_articles_manifest_mod() {
-    assert!(is_under_directory(&path(&[DIRECTORY_COMPONENT, LISTING_COMPONENT])));
+    assert!(is_under_directory(&path(&[
+        DIRECTORY_COMPONENT,
+        LISTING_COMPONENT
+    ])));
     assert!(!is_under_directory(&path(&[ARTICLES_COMPONENT, b"news"])));
     assert!(!is_under_directory(&path(&[MANIFEST_COMPONENT])));
     assert!(!is_under_directory(&path(&[MOD_COMPONENT, b"x"])));
     assert!(!is_under_directory(&path(&[])));
 
     // And the converse: a listing coordinate is not under /articles.
-    assert!(!is_under_articles(&path(&[DIRECTORY_COMPONENT, LISTING_COMPONENT])));
+    assert!(!is_under_articles(&path(&[
+        DIRECTORY_COMPONENT,
+        LISTING_COMPONENT
+    ])));
 }
 
 #[test]
 fn is_directory_listing_matches_only_the_exact_coordinate() {
-    assert!(is_directory_listing(&path(&[DIRECTORY_COMPONENT, LISTING_COMPONENT])));
+    assert!(is_directory_listing(&path(&[
+        DIRECTORY_COMPONENT,
+        LISTING_COMPONENT
+    ])));
     // Arbitrary /directory children are NOT the listing record type.
-    assert!(!is_directory_listing(&path(&[DIRECTORY_COMPONENT, b"other"])));
+    assert!(!is_directory_listing(&path(&[
+        DIRECTORY_COMPONENT,
+        b"other"
+    ])));
     // Neither the bare prefix nor a deeper path.
     assert!(!is_directory_listing(&path(&[DIRECTORY_COMPONENT])));
-    assert!(!is_directory_listing(&path(&[DIRECTORY_COMPONENT, LISTING_COMPONENT, b"extra"])));
+    assert!(!is_directory_listing(&path(&[
+        DIRECTORY_COMPONENT,
+        LISTING_COMPONENT,
+        b"extra"
+    ])));
     assert!(!is_directory_listing(&path(&[ARTICLES_COMPONENT, b"news"])));
 }
 
@@ -87,12 +108,12 @@ fn owner_zero_delegation_cap_authorizes_the_listing() {
 // A dedicated /directory-scoped listing delegation: what it can and cannot do.
 // ---------------------------------------------------------------------------
 
-fn listing_delegate(
-    m: &OwnedMasthead,
-    key: &SubspaceSecret,
-    time: TimeRange,
-) -> WriteCapability {
-    let area = Area::new(Some(key.corresponding_subspace_id()), path(&[DIRECTORY_COMPONENT]), time);
+fn listing_delegate(m: &OwnedMasthead, key: &SubspaceSecret, time: TimeRange) -> WriteCapability {
+    let area = Area::new(
+        Some(key.corresponding_subspace_id()),
+        path(&[DIRECTORY_COMPONENT]),
+        time,
+    );
     m.delegate_listing(key.corresponding_subspace_id(), area)
         .expect("delegate listing under /directory")
 }
@@ -107,7 +128,12 @@ fn listing_delegate_can_write_the_listing_but_not_other_regions() {
     assert_eq!(cap.granted_namespace(), m.namespace_id());
 
     // POSITIVE: /directory/listing authorises.
-    let good = entry_at(m.namespace_id(), id.clone(), &[DIRECTORY_COMPONENT, LISTING_COMPONENT], 5);
+    let good = entry_at(
+        m.namespace_id(),
+        id.clone(),
+        &[DIRECTORY_COMPONENT, LISTING_COMPONENT],
+        5,
+    );
     assert!(
         good.into_authorised_entry(&cap, &key).is_ok(),
         "listing delegate authorises O:/directory/listing"
@@ -137,9 +163,16 @@ fn editorial_cap_cannot_authorize_a_listing() {
         path(&[ARTICLES_COMPONENT, b"news"]),
         unbounded(),
     );
-    let editorial = m.delegate_section(editor_id.clone(), area).expect("delegate section");
+    let editorial = m
+        .delegate_section(editor_id.clone(), area)
+        .expect("delegate section");
 
-    let listing = entry_at(m.namespace_id(), editor_id, &[DIRECTORY_COMPONENT, LISTING_COMPONENT], 5);
+    let listing = entry_at(
+        m.namespace_id(),
+        editor_id,
+        &[DIRECTORY_COMPONENT, LISTING_COMPONENT],
+        5,
+    );
     assert!(
         listing.into_authorised_entry(&editorial, &editor).is_err(),
         "an /articles editorial cap must never authorise O:/directory/listing"
@@ -173,7 +206,12 @@ fn listing_delegate_receiver_mismatch_fails() {
     // receiver, so authorisation fails.
     let other = SubspaceSecret::from_bytes(&[99u8; 32]);
     let other_id = other.corresponding_subspace_id();
-    let entry = entry_at(m.namespace_id(), other_id, &[DIRECTORY_COMPONENT, LISTING_COMPONENT], 5);
+    let entry = entry_at(
+        m.namespace_id(),
+        other_id,
+        &[DIRECTORY_COMPONENT, LISTING_COMPONENT],
+        5,
+    );
     assert!(
         entry.into_authorised_entry(&cap, &other).is_err(),
         "a listing signed by a non-receiver subspace must not authorise"
@@ -187,7 +225,12 @@ fn listing_delegate_time_escape_fails() {
     let id = key.corresponding_subspace_id();
     // Bounded window [100, 200); an entry timestamped 1000 escapes it.
     let cap = listing_delegate(&m, &key, TimeRange::new(100u64.into(), Some(200u64.into())));
-    let entry = entry_at(m.namespace_id(), id, &[DIRECTORY_COMPONENT, LISTING_COMPONENT], 1_000);
+    let entry = entry_at(
+        m.namespace_id(),
+        id,
+        &[DIRECTORY_COMPONENT, LISTING_COMPONENT],
+        1_000,
+    );
     assert!(
         entry.into_authorised_entry(&cap, &key).is_err(),
         "a listing timestamped outside the delegation window must not authorise"
