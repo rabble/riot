@@ -3,6 +3,7 @@ members = [
     "crates/riot-app-cli",
     "crates/riot-anchor",
     "crates/riot-anchor-protocol",
+    "crates/riot-client-net",
     "crates/riot-core",
     "crates/riot-transport",
     "crates/riot-ffi",
