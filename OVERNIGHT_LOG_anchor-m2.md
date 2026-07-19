@@ -51,3 +51,15 @@ physical-once, deployment lease clone/steal/mismatch, immutable snapshots, deter
 crash recovery). 12 repo + 13 schema tests green; no new dep. Added the missing deployment_lease table.
 
 ### Task 4 — WU-014 (control admission/idempotency/work/Prepare) dispatched
+
+### Task 4 — WU-014 DONE (commit 200b4ba, pushed #80)
+Control admission (cheap-before-durable ordering pinned by spy test), idempotency Novel/ReplayEqual/
+Conflict, PrepareHost atomic store + HMAC-SHA256 namespace tokens (epoched TokenSecretRing),
+GetOperation lifecycle survives restart. 43 tests green. Deps sha2+ed25519-dalek edges (0 new pkgs);
+manifest sha refreshed. Schema: operations table + idempotency claim_state.
+FLAG for morning: Prepared response stores derived tokens (byte-identical replay) vs design's
+"re-derive on read" — future hardening, derivation/rotation is real+tested.
+
+### Task 5 — WU-015 (staged sync + composite Commit + receipt recovery) dispatched
+Emphasized: REAL Meadowcap/entry verification (not stub) per the trust-root security criterion; forged-
+entry-refused test; atomic O/C/W promotion+CAS+receipt+token-invalidation; failpoint all-or-nothing.
