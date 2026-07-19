@@ -8,7 +8,10 @@ publish = false
 # This crate is a thin adapter: iroh Connection ⇄ ByteSyncSession ⇄ ReconcileSession.
 [dependencies]
 iroh = "1.0.2"
-riot-core = { path = "../riot-core" }
+# The transport needs only the pure reconcile/sync surface of riot-core, never
+# its SQLite store — mirror the anchor crate and keep the default `sqlite`
+# feature OFF so the adapter stays lean and wasm-agnostic at this boundary.
+riot-core = { path = "../riot-core", default-features = false }
 tokio = { version = "1.53.0", features = ["rt-multi-thread", "macros", "io-util", "time"] }
 # Ticket floor is ROOT-SIGNED and verified before any dial (§5.1) — pure crypto.
 ed25519-dalek = { workspace = true }
