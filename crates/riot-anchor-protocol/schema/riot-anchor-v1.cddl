@@ -314,3 +314,81 @@ control-refusal = [tstr, refusal-subject, bool, null / uint, [+ any]]
 ;   u16be(33) || "riot/directory-snapshot-cursor/v1" || u64be(len(body)) || body)
 snapshot-cursor-body-v1 = [1, bytes-32, uint, uint, null / bytes-32, uint, uint, uint]
 snapshot-cursor-v1 = [1, snapshot-cursor-body-v1, bytes-32]
+
+; ===========================================================================
+; WU-005 riot/sync/2: routed paginated reconciliation
+;
+; Every frame is a positional array whose first element is a closed snake_case
+; frame-name discriminant. The module is version-scoped v2: per-frame version
+; integers are implicit; only OpenNamespace carries a negotiated protocol_version.
+; entry-id is opaque full canonical entry-ID bytes (<= 128). A page is a strictly
+; ascending set of <= 256 entry-ids. bundle bytes are separately-canonical (a CBOR
+; array of <= 64 per-item byte strings, each <= 2 MiB, total <= 8 MiB).
+; ===========================================================================
+entry-id = bstr .size (0..128)
+
+; OpenNamespace mode: read_committed carries nothing; the staged modes carry the
+; operation ID and the unguessable 256-bit per-namespace token.
+sync2-mode =
+    ["read_committed"] /
+    ["host_reconcile_staged", bytes-32, bytes-32] /
+    ["replica_into_staged", bytes-32, bytes-32]
+
+sync2-phase = "anchor_to_client" / "client_to_anchor" / "source_to_destination"
+sync2-mode-tag = "read_committed" / "host_reconcile_staged" / "replica_into_staged"
+sync2-admission-subject = "authority" / "bundle" / "entry"
+sync2-frame-name = "open_namespace" / "snapshot_start" / "ids_page" / "need_entries" /
+  "page_needs_complete" / "entries_chunk" / "page_complete" / "direction_complete" /
+  "namespace_complete" / "refuse"
+
+; snapshot_digest = BLAKE3("riot/sync-snapshot/v2" ||
+;   u32be(len(namespace_id)) || namespace_id || u64be(entry_count) ||
+;   u64be(logical_bytes) || for each sorted id: u32be(len(id)) || id)
+; page_digest = digest_v1("riot/sync-ids-page/v2", canonical_bytes(ids_page frame))
+open-namespace = ["open_namespace", uint, bstr .size (0..32), bstr, bytes-32, sync2-mode]
+snapshot-start = ["snapshot_start", sync2-phase, bytes-32, bytes-32, uint, uint]
+ids-page = ["ids_page", sync2-phase, bytes-32, null / entry-id, [*256 entry-id], bool]
+need-entries = ["need_entries", sync2-phase, bytes-32, uint, [*64 entry-id]]
+page-needs-complete = ["page_needs_complete", sync2-phase, bytes-32]
+entries-chunk = ["entries_chunk", sync2-phase, bytes-32, uint, uint, bool, bstr]
+page-complete = ["page_complete", sync2-phase, bytes-32]
+direction-complete = ["direction_complete", sync2-phase, bytes-32]
+namespace-complete = ["namespace_complete", sync2-mode-tag, bytes-32]
+
+; The chunk bundle payload: a canonical CBOR array of per-item byte strings.
+sync2-bundle = [*64 bstr]
+
+; The closed sync refusal matrix. Unlike control-refusal there is NO subject
+; column: Refuse = [code, retryable, retry_after_seconds/null, details]. Only
+; "busy" is retryable (with a nonzero delay); every other code is terminal with a
+; null retry_after. details shape is a closed function of code; unknown
+; code/detail pairings fail decoding.
+sync2-ticket-reason = "signature" / "root" / "structure"
+sync2-refuse = ["refuse", tstr, bool, null / uint, [+ any]]
+; details by code:
+;   unsupported_version    ["version", [*16 uint]]                (sorted ascending)
+;   invalid_ticket         ["ticket", sync2-ticket-reason]
+;   expired_ticket         ["ticket_expiry", uint, uint]
+;   transport_mismatch     ["transport", transport-mode, transport-mode]
+;   namespace_not_member   ["namespace", bytes-32]
+;   manifest_mismatch      ["manifest", bytes-32, bytes-32]
+;   invalid_mode           ["mode", sync2-mode-tag]
+;   operation_not_found    ["operation", bytes-32]
+;   invalid_namespace_token ["namespace_token", bytes-32]
+;   operation_expired      ["operation_expiry", bytes-32, uint, uint]
+;   unexpected_frame       ["frame", sync2-phase, [*sync2-frame-name], sync2-frame-name]
+;   cursor_regression      ["cursor", null / entry-id, entry-id]
+;   page_mismatch          ["page", bytes-32, bytes-32]
+;   snapshot_mismatch      ["snapshot", bytes-32, bytes-32]
+;   stale_source           ["source_state", uint, uint, [*16 bytes-32]]
+;   request_mismatch       ["request", uint]
+;   chunk_mismatch         ["chunk", uint, uint, uint]
+;   frame_oversize         ["encoded_size", uint, uint]
+;   admission_failed       ["admission", sync2-admission-subject]
+;   quota_exceeded         ["quota", uint, limit-value, limit-value]
+;   busy                   ["capacity", uint]
+;   peer_context_changed   ["peer_context", peer-side, bytes-32, null / bytes-32, peer-context-reason]
+
+sync2-frame = open-namespace / snapshot-start / ids-page / need-entries /
+  page-needs-complete / entries-chunk / page-complete / direction-complete /
+  namespace-complete / sync2-refuse

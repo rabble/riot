@@ -22,6 +22,7 @@ pub mod codec;
 pub mod control;
 pub mod digest;
 pub mod records;
+pub mod sync2;
 
 pub use codec::{decode_canonical, CanonicalRecord, CodecError};
 pub use digest::digest_v1;
