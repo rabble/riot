@@ -278,6 +278,7 @@ mod tests {
             },
             version: 1,
             layout: SiteLayout::SiteDefault,
+            sections: vec![],
         }
     }
 

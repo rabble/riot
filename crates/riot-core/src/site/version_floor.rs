@@ -233,6 +233,7 @@ mod tests {
             },
             version,
             layout: SiteLayout::SiteDefault,
+            sections: vec![],
         }
     }
 

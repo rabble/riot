@@ -1045,6 +1045,7 @@ mod resolve_composite_tests {
             },
             version: 1,
             layout: SiteLayout::SiteDefault,
+            sections: vec![],
         };
         let payload = encode_site_manifest(&manifest).expect("encode manifest");
         owner_sign(masthead, &[MANIFEST_COMPONENT], 1_000, &payload).0
