@@ -14,7 +14,6 @@
 
 use std::collections::BTreeSet;
 
-use riot_core::import::{decode_bundle_with_root, BundleDecodeOutcome, ItemStatus};
 use riot_core::newswire::PostTreatment;
 use riot_core::site::moderation::{
     compute_mod_set_digest, ModEpoch, ModerationRecord, Revoke, Tombstone,
@@ -26,13 +25,8 @@ use riot_core::site::{
     SignedModerationRecord, SiteDisplay, SiteRole, SiteRule, SiteTransport, TrustTier,
     ValidatedManifest, VersionFloorOutcome,
 };
-use riot_core::willow::site_paths::{
-    is_owned_editorial_entry, is_owned_moderation_entry, ARTICLES_COMPONENT, MOD_COMPONENT,
-};
-use riot_core::willow::{
-    decode_entry_canonic, system_snapshot, ClockSnapshot, Entry, OwnedMasthead, Path,
-    SignedWillowEntry,
-};
+use riot_core::willow::site_paths::{ARTICLES_COMPONENT, MOD_COMPONENT};
+use riot_core::willow::{system_snapshot, ClockSnapshot, OwnedMasthead, Path, SignedWillowEntry};
 use willow25::groupings::Keylike;
 
 use crate::community_registry::Relationship;
@@ -896,44 +890,21 @@ impl MobileProfile {
                 return Err(MobileError::ImportRejected);
             }
 
-            // 2. Decode under the followed root + FAMILY gate (all-or-nothing).
-            let decoded = match decode_bundle_with_root(&bytes, Some(root)) {
-                BundleDecodeOutcome::Decoded(decoded) => decoded,
-                BundleDecodeOutcome::Rejected(_) => return Err(MobileError::ImportRejected),
-            };
-            let mut count = 0u32;
-            for item in &decoded.items {
-                // A non-admissible item (owned entry not rooted at `root`, forged
-                // cap, etc.) makes the whole followed-site bundle untrustworthy.
-                let ItemStatus::Valid(_) = &item.status else {
-                    return Err(MobileError::ImportRejected);
-                };
-                let entry = decode_entry_canonic(item.frame.entry_bytes())
-                    .map_err(|_| MobileError::ImportRejected)?;
-                if !is_followed_site_family(&entry) {
-                    return Err(MobileError::ImportRejected);
-                }
-                count += 1;
-            }
-            if count == 0 {
-                return Err(MobileError::ImportRejected);
-            }
-
-            // 3. Admit + commit through the proven followed-root path. Owned /mod
-            //    and /articles are admitted under a cap rooted at `root`.
+            // 2 + 3. Admit + commit through the SINGLE canonical followed-site
+            //    gate (riot_core::site::admit_followed_site_frame): decode under
+            //    the followed root + family-gate to owned /mod + /articles +
+            //    eligible-count check + commit. The manual (here), the WU2 sync
+            //    session, and the WU3 transport follower all route through this
+            //    one gate, so the security boundary cannot drift between them.
             profile.preview = None;
             profile.plan = None;
-            let preview = crate::mobile_state::inspect_core_with_root(
+            let count = riot_core::site::admit_followed_site_frame(
                 &profile.store,
+                root,
                 &bytes,
                 "site-follow-import",
-                Some(root),
-            )?;
-            let plan = preview.plan_all().map_err(|_| MobileError::Internal)?;
-            use riot_core::session::CommitOutcome;
-            match plan.commit().map_err(|_| MobileError::Internal)? {
-                CommitOutcome::Committed(_) | CommitOutcome::NoChanges(_) => {}
-            }
+            )
+            .map_err(map_followed_site_admit_error)?;
 
             // 4. sync_inventory is intentionally NOT touched: owned-namespace records
             //    must stay out of the active community's peer offer set (the
@@ -950,15 +921,15 @@ impl MobileProfile {
     }
 }
 
-/// Whether `entry` is an owned composite-site record a followed-site bundle may
-/// carry: `/mod` (moderation) or `/articles` (editorial) only. Least-privilege —
-/// these are exactly the families a STORE READER consumes (resolve_composite_site
-/// reads /mod freshness + /articles items). The manifest is validated from a
-/// caller argument, never read from the store, so admitting owned /manifest here
-/// would be dead admission that only widens the surface — excluded. Anything else
-/// (a communal alert/newswire entry) is never admissible here.
-fn is_followed_site_family(entry: &Entry) -> bool {
-    is_owned_moderation_entry(entry) || is_owned_editorial_entry(entry)
+/// Map the canonical core admission refusal onto the FFI error: a fail-closed
+/// `Rejected` is `ImportRejected`; an underlying store fault keeps its mapped code.
+fn map_followed_site_admit_error(error: riot_core::site::FollowedSiteAdmitError) -> MobileError {
+    match error {
+        riot_core::site::FollowedSiteAdmitError::Rejected => MobileError::ImportRejected,
+        riot_core::site::FollowedSiteAdmitError::Store(error) => {
+            crate::mobile_state::map_core_error(error)
+        }
+    }
 }
 
 // These tests live IN-CRATE (not crates/riot-ffi/tests/) on purpose: owner /mod/

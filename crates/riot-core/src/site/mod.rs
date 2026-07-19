@@ -4,12 +4,15 @@
 //! (independent of admission), member classification, and the durable version
 //! floor arrive in sibling modules.
 
+pub mod follow;
 pub mod manifest;
 pub mod moderation;
 pub mod moderation_entry;
 pub mod resolve;
 pub mod validate;
 pub mod version_floor;
+
+pub use follow::{admit_followed_site_frame, is_followed_site_family, FollowedSiteAdmitError};
 
 pub use moderation_entry::{
     create_signed_moderation_record, ModerationSignError, SignedModerationRecord,
