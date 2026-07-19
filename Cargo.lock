@@ -3483,6 +3483,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "riot-client-net"
+version = "0.1.0"
+dependencies = [
+ "iroh",
+ "riot-transport",
+ "tokio",
+]
+
+[[package]]
 name = "riot-conformance"
 version = "0.1.0"
 dependencies = [
