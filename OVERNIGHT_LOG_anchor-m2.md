@@ -98,3 +98,15 @@ reserve_visibility_slot outstanding.
 **M2 hosting-MVP core = riot-anchor crate: WU-013A..016, 111 tests, on PR #80. Awaiting CI to merge.**
 Remaining M2 (NOT done overnight): WU-008-010 (client-storage-ownership refactor — high blast radius,
 supervised only) + WU-011/012 (client-net). Server hosting core is complete.
+
+### Task 8 — WU-011A DONE (PR #84) + #80 coverage blocker
+WU-011A (client-net runtime): 7 tests, injected-factory seam, PR #84 (off origin/main).
+#80 CI: Rust/clippy/contracts/Android/Web all PASS; only **llvm-cov line floor (95%) FAILED** — workspace
+94.23%. Cause: riot-anchor is a large new crate at **85.59% line coverage** (649 missed of 4503) — each
+WU hit its DoD tests but didn't chase full branch/error coverage. Math: lifting riot-anchor to ~95%
+(-424 missed) puts workspace at ~95.4%, clearing the floor. Dispatched a coverage-completion subagent
+(real error/refusal/failpoint-branch tests, NOT floor-lowering/line-touching). Lowest files:
+sync_service 72%, listing 77%, removal 80%, repository 88% (206 missed, biggest absolute).
+NOTE for morning: the pre-existing riot-transport runnable binaries (riot-seed/riot-follow/seed.rs at
+0%, iroh 61%) are a standing coverage drag — a coverage-exclusion policy for runnable-node binaries is
+worth an owner decision (I did NOT touch it — won't game the ratchet unattended).
