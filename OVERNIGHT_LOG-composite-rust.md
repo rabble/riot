@@ -1,5 +1,53 @@
 # Overnight Log — 2026-07-19 — composite Rust/FFI lane
 
+## MORNING SUMMARY
+
+**Lane:** composite-site Rust core/FFI — the non-native, non-contended lane (the iOS-UX session
+owned `OVERNIGHT_LOG.md`; PR #68 owned composite native UI; new specs `article-authoring-flow` +
+`cross-space-activity-log` landed by other sessions → those tracks avoided).
+
+**DONE + MERGED to main:**
+- **Earlier this session (before the overnight brief):** shipped `delegate_editor_section` FFI
+  (owner mints a section-scoped, time-boxed `/articles/` editor write-cap) — PR **#72** — then a
+  post-merge adversarial security review caught a real blocking bug (the cap's `TimeRange` was built
+  in Unix **seconds**, but Willow entries are timestamped in TAI/J2000 **microseconds**, so the cap
+  authorised zero real entries). Fixed forward — PR **#76** (added the production converter
+  `tai_j2000_micros_from_unix_seconds`; rewrote the tests to stamp fixtures in the production unit,
+  RED-then-GREEN). Both merged, main green.
+- **Overnight (this brief):** verified the Rust **green baseline** on `main` (`1f6ecb2`): fmt clean,
+  full `cargo test --workspace --all-features` GREEN, contracts pass. Then shipped **PR #82**
+  (merged, `dabb2c1`) — **3 tests-only core-hardening suites, 21 new tests, no production change:**
+  1. `section_authority_boundary.rs` — the `/articles` editor-delegation authority boundary
+     (receiver-binding, **time-escape**, section-scoping, cross-region, belt) — the mirror of the
+     existing `listing_authority_boundary.rs` that `delegate_section` was missing; the time-escape
+     case is the core-level guarantee behind the #76 FFI bug.
+  2. `clock_conversion.rs` — direct tests for the #76 converter (agrees with `system_snapshot`,
+     1 s == 1_000_000 µs, micros-domain, strictly increasing, fail-closed on pre-J2000 / overflow).
+  3. `masthead_sealing_boundary.rs` — the owner root-secret at-rest envelope (`seal`/`open_sealed`):
+     tag/ciphertext/nonce tamper, corrupted-magic, truncation/empty/over-long — all fail-closed.
+
+**Assumptions to review:** (a) used a separate log file `OVERNIGHT_LOG-composite-rust.md` because
+another live session owns the root `OVERNIGHT_LOG.md` (appending would collide on merge). (b) used
+branch `overnight/2026-07-19-composite-rust` because the plain `overnight/2026-07-19` name was taken
+by that session. (c) self-merged #82 under the overnight guardrail (own work, CI-green, tests-only,
+additive, new files) — no production code touched. (d) stopped the test-hardening lane at 3 suites
+rather than pad with marginal tests (guardrail: no busywork).
+
+**Flag for the owner (not fixed — out of my lane):** `cargo clippy --all-targets` surfaces 3 lints
+in **xtask TEST code** ("owned instance just for comparison"; "stripping a prefix manually" ×2). CI's
+clippy is `--workspace --all-features` (NO `--all-targets`), so it never lints test code — these are
+pre-existing latent lints CI doesn't gate. A one-shot `clippy --all-targets` cleanup PR would clear
+them.
+
+**Suggested next steps:** the composite editorial WRITE path (`create_owned_article` /
+`owned_site_is_editor`) is designed (`2026-07-19-article-authoring-flow-design.md`) and was being
+built by another session tonight — check whether it landed before starting more editorial FFI. The
+`delegate_editor_section` primitive + these boundary suites are the owner-side prerequisites; the
+editor-receiver side (scan/inspect/accept an `EditorInvite`) and the article write path remain.
+
+---
+
+
 > **Why a separate log file:** `OVERNIGHT_LOG.md` at the repo root is actively owned by
 > another live overnight session (the iOS-UX lane — their morning summary is on `main`).
 > Appending to the same file from my branch would collide on merge. This session logs
