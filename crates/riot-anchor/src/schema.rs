@@ -162,6 +162,10 @@ const MIGRATION_ONE: &str = r#"
         request_digest BLOB CHECK (request_digest IS NULL OR length(request_digest) = 32),
         removal_state INTEGER NOT NULL DEFAULT 0 CHECK (removal_state BETWEEN 0 AND 3),
         removal_result BLOB CHECK (removal_result IS NULL OR length(removal_result) <= 4096),
+        removal_idempotency_key BLOB CHECK (removal_idempotency_key IS NULL OR length(removal_idempotency_key) = 16),
+        removal_operation_id BLOB CHECK (removal_operation_id IS NULL OR length(removal_operation_id) = 32),
+        checkpoint_work_id BLOB CHECK (checkpoint_work_id IS NULL OR length(checkpoint_work_id) = 32),
+        terminal_expires_at INTEGER CHECK (terminal_expires_at IS NULL OR terminal_expires_at >= 0),
         FOREIGN KEY (claimed_by_community) REFERENCES communities(community_id)
     ) STRICT;
 
@@ -227,7 +231,16 @@ const MIGRATION_ONE: &str = r#"
         publication_phase INTEGER NOT NULL CHECK (publication_phase BETWEEN 0 AND 6),
         temp_filename TEXT CHECK (temp_filename IS NULL OR length(temp_filename) > 0),
         published_filename TEXT CHECK (published_filename IS NULL OR length(published_filename) > 0),
-        created_at INTEGER NOT NULL CHECK (created_at >= 0)
+        created_at INTEGER NOT NULL CHECK (created_at >= 0),
+        frozen_state_generation INTEGER NOT NULL DEFAULT 0 CHECK (frozen_state_generation >= 0),
+        covered_head_sequence INTEGER NOT NULL DEFAULT 0 CHECK (covered_head_sequence >= 0),
+        covered_head_inclusion_digest BLOB CHECK (covered_head_inclusion_digest IS NULL OR length(covered_head_inclusion_digest) = 32),
+        previous_checkpoint_digest BLOB CHECK (previous_checkpoint_digest IS NULL OR length(previous_checkpoint_digest) = 32),
+        snapshot_generation_id INTEGER NOT NULL DEFAULT 0 CHECK (snapshot_generation_id >= 0),
+        canonical_checkpoint_body BLOB CHECK (canonical_checkpoint_body IS NULL OR length(canonical_checkpoint_body) > 0),
+        checkpoint_envelope BLOB CHECK (checkpoint_envelope IS NULL OR length(checkpoint_envelope) > 0),
+        checkpoint_digest BLOB CHECK (checkpoint_digest IS NULL OR length(checkpoint_digest) = 32),
+        published_content_hash BLOB CHECK (published_content_hash IS NULL OR length(published_content_hash) = 32)
     ) STRICT;
 
     CREATE TABLE checkpoint_work_members (
@@ -235,8 +248,17 @@ const MIGRATION_ONE: &str = r#"
         member_position INTEGER NOT NULL CHECK (member_position >= 0),
         community_id BLOB NOT NULL CHECK (length(community_id) = 32),
         frozen_head_digest BLOB NOT NULL CHECK (length(frozen_head_digest) = 32),
+        snapshot_record_bytes BLOB NOT NULL DEFAULT X'00' CHECK (length(snapshot_record_bytes) > 0),
         PRIMARY KEY (work_id, member_position),
         FOREIGN KEY (work_id) REFERENCES checkpoint_work(work_id) ON DELETE CASCADE
+    ) STRICT;
+
+    CREATE TABLE checkpoint_covered_removals (
+        work_id BLOB NOT NULL CHECK (length(work_id) = 32),
+        removal_slot_index INTEGER NOT NULL,
+        PRIMARY KEY (work_id, removal_slot_index),
+        FOREIGN KEY (work_id) REFERENCES checkpoint_work(work_id) ON DELETE CASCADE,
+        FOREIGN KEY (removal_slot_index) REFERENCES removal_slots(slot_index)
     ) STRICT;
 
     CREATE TABLE hosting_receipts (
@@ -472,6 +494,7 @@ mod tests {
         "snapshot_members",
         "checkpoint_work",
         "checkpoint_work_members",
+        "checkpoint_covered_removals",
         "hosting_receipts",
         "staged_operations",
         "staged_entries",

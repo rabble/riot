@@ -1300,6 +1300,29 @@ impl RepoTransaction<'_> {
         Ok(next_length)
     }
 
+    /// Set the singleton directory-feed head to an explicit digest and length (the
+    /// logical floor a checkpoint advances to). Used only by crash-safe checkpoint
+    /// advancement, which supplies a frozen head — never a re-invented one.
+    pub fn advance_feed_head_to(
+        &mut self,
+        head_digest: &[u8; 32],
+        feed_length: u64,
+        updated_at: u64,
+    ) -> Result<(), AnchorRepositoryError> {
+        self.transaction.execute(
+            "INSERT INTO directory_feed_heads(feed_id, head_digest, feed_length, updated_at) \
+             VALUES (1, ?1, ?2, ?3) ON CONFLICT(feed_id) DO UPDATE SET \
+             head_digest = excluded.head_digest, feed_length = excluded.feed_length, \
+             updated_at = excluded.updated_at",
+            params![
+                head_digest.as_slice(),
+                feed_length as i64,
+                updated_at as i64
+            ],
+        )?;
+        Ok(())
+    }
+
     /// The current directory/search projection generation (0 if never invalidated).
     pub fn projection_generation(&self) -> Result<u64, AnchorRepositoryError> {
         let generation: Option<i64> = self
@@ -1385,6 +1408,37 @@ impl RepoTransaction<'_> {
                 claim_state.to_code(),
                 operation_id.map(|id| id.to_vec()),
                 lease_expires_at.map(|value| value as i64),
+                created_at as i64,
+                expires_at as i64
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Atomically claim an idempotency key in the **reserved removal partition**
+    /// (`result_class = 1`). Unlike [`Self::claim_idempotency`], this never charges
+    /// the ordinary [`AccountingClass::Idempotency`] row ceiling: the index is sized
+    /// for the ordinary ceiling *plus* `2 * L` exclusively reserved entries, so an
+    /// owner removal can claim its key even when ordinary idempotency rows are
+    /// exhausted. A reserved key and an ordinary key can never collide (both share
+    /// the same unique key column) and neither discloses the other's stored result.
+    #[allow(clippy::too_many_arguments)]
+    pub fn claim_idempotency_reserved(
+        &mut self,
+        control_request_digest: &[u8; 32],
+        idempotency_key: &[u8; 16],
+        claim_state: IdempotencyClaimState,
+        created_at: u64,
+        expires_at: u64,
+    ) -> Result<(), AnchorRepositoryError> {
+        self.transaction.execute(
+            "INSERT INTO idempotency_key_index(control_request_digest, idempotency_key, result_class, \
+             claim_state, operation_id, lease_expires_at, created_at, expires_at) \
+             VALUES (?1, ?2, 1, ?3, NULL, NULL, ?4, ?5)",
+            params![
+                control_request_digest.as_slice(),
+                idempotency_key.as_slice(),
+                claim_state.to_code(),
                 created_at as i64,
                 expires_at as i64
             ],
@@ -1760,6 +1814,510 @@ impl RepoTransaction<'_> {
             .map_err(AnchorRepositoryError::from)
     }
 
+    // ---- Reserved owner-removal slot lifecycle (WU-016) --------------------
+
+    /// Load one removal slot's durable state, read within this transaction.
+    pub fn load_removal_slot(
+        &self,
+        slot_index: u32,
+    ) -> Result<Option<RemovalSlot>, AnchorRepositoryError> {
+        self.transaction
+            .query_row(
+                "SELECT slot_index, removal_state, claimed_by_community, claimed_root_key, \
+                 request_digest, removal_idempotency_key, checkpoint_work_id, terminal_expires_at \
+                 FROM removal_slots WHERE slot_index = ?1",
+                params![slot_index],
+                map_removal_slot,
+            )
+            .optional()
+            .map_err(AnchorRepositoryError::from)
+    }
+
+    /// The removal slot a community currently owns in the `ReservedForListedRoot`
+    /// state (the slot its live listing reserved), if any.
+    pub fn reserved_slot_for_community(
+        &self,
+        community_id: &[u8; 32],
+    ) -> Result<Option<RemovalSlot>, AnchorRepositoryError> {
+        self.transaction
+            .query_row(
+                "SELECT slot_index, removal_state, claimed_by_community, claimed_root_key, \
+                 request_digest, removal_idempotency_key, checkpoint_work_id, terminal_expires_at \
+                 FROM removal_slots WHERE claimed_by_community = ?1 AND removal_state = 1 \
+                 ORDER BY slot_index ASC LIMIT 1",
+                params![community_id.as_slice()],
+                map_removal_slot,
+            )
+            .optional()
+            .map_err(AnchorRepositoryError::from)
+    }
+
+    /// Count the removal slots a root currently owns that count toward its
+    /// per-root two-slot budget: its live reservation, any committed removal, and
+    /// every *unexpired* retained Terminal result. Expired Terminal slots are not
+    /// counted (they are reclaimable).
+    pub fn count_owned_removal_slots(
+        &self,
+        root_key: &[u8; 32],
+        now: u64,
+    ) -> Result<u32, AnchorRepositoryError> {
+        let count: i64 = self.transaction.query_row(
+            "SELECT COUNT(*) FROM removal_slots WHERE claimed_root_key = ?1 \
+             AND removal_state IN (1, 2, 3) \
+             AND (terminal_expires_at IS NULL OR terminal_expires_at > ?2)",
+            params![root_key.as_slice(), now as i64],
+            |row| row.get(0),
+        )?;
+        Ok(count.max(0) as u32)
+    }
+
+    /// The earliest retained-Terminal expiry a root owns (the earliest time a
+    /// two-slot-blocked relist could next reserve capacity), if any.
+    pub fn earliest_owned_terminal_expiry(
+        &self,
+        root_key: &[u8; 32],
+    ) -> Result<Option<u64>, AnchorRepositoryError> {
+        let value: Option<i64> = self
+            .transaction
+            .query_row(
+                "SELECT MIN(terminal_expires_at) FROM removal_slots \
+                 WHERE claimed_root_key = ?1 AND removal_state = 3 \
+                 AND terminal_expires_at IS NOT NULL",
+                params![root_key.as_slice()],
+                |row| row.get(0),
+            )
+            .optional()?
+            .flatten();
+        Ok(value.map(|v| v.max(0) as u64))
+    }
+
+    /// Atomically reserve one of the `2 * L` free slots for a root that is
+    /// becoming visible, enforcing the exact per-root two-slot rule. Returns
+    /// [`SlotReservation::Reserved`] with the claimed index, or
+    /// [`SlotReservation::Blocked`] (listing stays hosted-but-invisible and the
+    /// caller returns `removal_replay_window`) when the root already owns two
+    /// slots or no global slot is free.
+    pub fn reserve_visibility_slot(
+        &mut self,
+        community_id: &[u8; 32],
+        root_key: &[u8; 32],
+        request_digest: &[u8; 32],
+        now: u64,
+    ) -> Result<SlotReservation, AnchorRepositoryError> {
+        if self.count_owned_removal_slots(root_key, now)? >= 2 {
+            return Ok(SlotReservation::Blocked {
+                earliest_retry_at: self.earliest_owned_terminal_expiry(root_key)?,
+            });
+        }
+        let free: Option<u32> = self
+            .transaction
+            .query_row(
+                "SELECT slot_index FROM removal_slots WHERE claimed_by_community IS NULL \
+                 ORDER BY slot_index ASC LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let Some(slot) = free else {
+            return Ok(SlotReservation::Blocked {
+                earliest_retry_at: self.earliest_owned_terminal_expiry(root_key)?,
+            });
+        };
+        self.transaction.execute(
+            "UPDATE removal_slots SET claimed_by_community = ?1, claimed_root_key = ?2, \
+             request_digest = ?3, removal_state = 1, removal_idempotency_key = NULL, \
+             removal_operation_id = NULL, checkpoint_work_id = NULL, terminal_expires_at = NULL, \
+             removal_result = NULL WHERE slot_index = ?4",
+            params![
+                community_id.as_slice(),
+                root_key.as_slice(),
+                request_digest.as_slice(),
+                slot
+            ],
+        )?;
+        Ok(SlotReservation::Reserved(slot))
+    }
+
+    /// Transition a reserved slot to `Committed`: a removal whose exact terminal
+    /// result will be produced by a later covering checkpoint. Binds the removal's
+    /// idempotency key, request digest, operation id, and checkpoint work id.
+    pub fn commit_removal_slot(
+        &mut self,
+        slot_index: u32,
+        removal_operation_id: &[u8; 32],
+        idempotency_key: &[u8; 16],
+        request_digest: &[u8; 32],
+        checkpoint_work_id: &[u8; 32],
+    ) -> Result<(), AnchorRepositoryError> {
+        self.transaction.execute(
+            "UPDATE removal_slots SET removal_state = 2, removal_operation_id = ?2, \
+             removal_idempotency_key = ?3, request_digest = ?4, checkpoint_work_id = ?5 \
+             WHERE slot_index = ?1 AND removal_state = 1",
+            params![
+                slot_index,
+                removal_operation_id.as_slice(),
+                idempotency_key.as_slice(),
+                request_digest.as_slice(),
+                checkpoint_work_id.as_slice()
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Transition a reserved-or-committed slot directly to `Terminal`, recording
+    /// its exact result bytes and 24-hour retention expiry. This is the
+    /// ack-durable transition; physical compaction is not on this path.
+    pub fn terminalize_removal_slot(
+        &mut self,
+        slot_index: u32,
+        idempotency_key: &[u8; 16],
+        request_digest: &[u8; 32],
+        expires_at: u64,
+        result_bytes: &[u8],
+    ) -> Result<(), AnchorRepositoryError> {
+        self.transaction.execute(
+            "UPDATE removal_slots SET removal_state = 3, removal_idempotency_key = ?2, \
+             request_digest = ?3, terminal_expires_at = ?4, removal_result = ?5, \
+             checkpoint_work_id = NULL WHERE slot_index = ?1 AND removal_state IN (1, 2)",
+            params![
+                slot_index,
+                idempotency_key.as_slice(),
+                request_digest.as_slice(),
+                expires_at as i64,
+                result_bytes
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Terminalize a checkpoint-covered `Committed` removal, preserving its
+    /// original idempotency key, request digest, and exact frozen result, and only
+    /// stamping the 24-hour Terminal retention expiry. Idempotent: a slot already
+    /// `Terminal` is left unchanged, so a checkpoint advance can be re-run safely.
+    pub fn terminalize_covered_removal(
+        &mut self,
+        slot_index: u32,
+        expires_at: u64,
+    ) -> Result<(), AnchorRepositoryError> {
+        self.transaction.execute(
+            "UPDATE removal_slots SET removal_state = 3, terminal_expires_at = ?2, \
+             checkpoint_work_id = NULL WHERE slot_index = ?1 AND removal_state = 2",
+            params![slot_index, expires_at as i64],
+        )?;
+        Ok(())
+    }
+
+    /// Release a slot back to `Free`, clearing every binding column. Used by
+    /// expiry / terminal-suspension / operator-terminal-removal and idempotent
+    /// startup cleanup of abandoned reservations.
+    pub fn release_removal_slot(&mut self, slot_index: u32) -> Result<(), AnchorRepositoryError> {
+        self.transaction.execute(
+            "UPDATE removal_slots SET claimed_by_community = NULL, claimed_root_key = NULL, \
+             request_digest = NULL, removal_state = 0, removal_idempotency_key = NULL, \
+             removal_operation_id = NULL, checkpoint_work_id = NULL, terminal_expires_at = NULL, \
+             removal_result = NULL WHERE slot_index = ?1",
+            params![slot_index],
+        )?;
+        Ok(())
+    }
+
+    /// The `ReservedForListedRoot` slot indices whose owning community no longer
+    /// has a live listing row — abandoned reservations startup cleanup releases.
+    pub fn abandoned_reserved_slots(&self) -> Result<Vec<u32>, AnchorRepositoryError> {
+        let mut statement = self.transaction.prepare(
+            "SELECT slot_index FROM removal_slots WHERE removal_state = 1 \
+             AND claimed_by_community IS NOT NULL \
+             AND claimed_by_community NOT IN (SELECT community_id FROM listings) \
+             ORDER BY slot_index ASC",
+        )?;
+        let rows = statement.query_map([], |row| row.get::<_, i64>(0))?;
+        let mut slots = Vec::new();
+        for row in rows {
+            slots.push(row?.max(0) as u32);
+        }
+        Ok(slots)
+    }
+
+    /// Delete a community's current listing row (its visibility), retaining the
+    /// removal slot and the signed feed history.
+    pub fn delete_listing(&mut self, community_id: &[u8; 32]) -> Result<(), AnchorRepositoryError> {
+        self.transaction.execute(
+            "DELETE FROM listings WHERE community_id = ?1",
+            params![community_id.as_slice()],
+        )?;
+        Ok(())
+    }
+
+    /// Store the byte-identical reserved-removal terminal result, keyed by its
+    /// `control_request_digest` and bound to the removal slot. Never consumes
+    /// ordinary idempotency capacity.
+    pub fn store_reserved_result(
+        &mut self,
+        control_request_digest: &[u8; 32],
+        removal_slot_index: u32,
+        result_bytes: &[u8],
+    ) -> Result<(), AnchorRepositoryError> {
+        self.transaction.execute(
+            "INSERT INTO reserved_results(control_request_digest, removal_slot_index, result_bytes) \
+             VALUES (?1, ?2, ?3)",
+            params![
+                control_request_digest.as_slice(),
+                removal_slot_index,
+                result_bytes
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// The stored reserved-removal terminal result for a `control_request_digest`.
+    pub fn reserved_result(
+        &self,
+        control_request_digest: &[u8; 32],
+    ) -> Result<Option<Vec<u8>>, AnchorRepositoryError> {
+        self.transaction
+            .query_row(
+                "SELECT result_bytes FROM reserved_results WHERE control_request_digest = ?1",
+                params![control_request_digest.as_slice()],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(AnchorRepositoryError::from)
+    }
+
+    // ---- Emergency-reserve permit / limit lookups (WU-016) -----------------
+
+    /// The seeded fixed value of a named emergency reserve (design's
+    /// `emergency_reserves` partitions: the reserved verifier / writer permits and
+    /// the checkpoint worker).
+    pub fn emergency_reserve_value(
+        &self,
+        reserve_name: &str,
+    ) -> Result<Option<u64>, AnchorRepositoryError> {
+        let value: Option<i64> = self
+            .transaction
+            .query_row(
+                "SELECT default_value FROM emergency_reserves WHERE reserve_name = ?1",
+                params![reserve_name],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(value.map(|v| v.max(0) as u64))
+    }
+
+    // ---- Checkpoint work lifecycle (WU-016) --------------------------------
+
+    /// Insert a frozen checkpoint-work plan (phase `Planned`) with its ordered,
+    /// immutable snapshot members and covered committed-removal slots. Later
+    /// site/listing changes cannot mutate this frozen work.
+    pub fn insert_checkpoint_work(
+        &mut self,
+        plan: &CheckpointPlan,
+    ) -> Result<(), AnchorRepositoryError> {
+        self.transaction.execute(
+            "INSERT INTO checkpoint_work(work_id, publication_phase, temp_filename, \
+             published_filename, created_at, frozen_state_generation, covered_head_sequence, \
+             covered_head_inclusion_digest, previous_checkpoint_digest, snapshot_generation_id, \
+             canonical_checkpoint_body, checkpoint_envelope, checkpoint_digest, \
+             published_content_hash) \
+             VALUES (?1, 0, NULL, NULL, ?2, ?3, ?4, ?5, ?6, ?7, ?8, NULL, NULL, NULL)",
+            params![
+                plan.work_id.as_slice(),
+                plan.created_at as i64,
+                plan.frozen_state_generation as i64,
+                plan.covered_head_sequence as i64,
+                plan.covered_head_inclusion_digest.as_slice(),
+                plan.previous_checkpoint_digest.map(|d| d.to_vec()),
+                plan.snapshot_generation_id as i64,
+                plan.canonical_checkpoint_body.as_slice()
+            ],
+        )?;
+        for (position, member) in plan.ordered_members.iter().enumerate() {
+            self.transaction.execute(
+                "INSERT INTO checkpoint_work_members(work_id, member_position, community_id, \
+                 frozen_head_digest, snapshot_record_bytes) VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![
+                    plan.work_id.as_slice(),
+                    position as i64,
+                    member.community_id.as_slice(),
+                    member.frozen_head_digest.as_slice(),
+                    member.snapshot_record_bytes.as_slice()
+                ],
+            )?;
+        }
+        for slot in &plan.covered_removal_slots {
+            self.transaction.execute(
+                "INSERT INTO checkpoint_covered_removals(work_id, removal_slot_index) \
+                 VALUES (?1, ?2)",
+                params![plan.work_id.as_slice(), *slot],
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Load a checkpoint-work row (its persisted phase and frozen identities),
+    /// read within this transaction.
+    pub fn load_checkpoint_work(
+        &self,
+        work_id: &[u8; 32],
+    ) -> Result<Option<CheckpointWorkRow>, AnchorRepositoryError> {
+        self.transaction
+            .query_row(
+                "SELECT work_id, publication_phase, temp_filename, published_filename, created_at, \
+                 frozen_state_generation, covered_head_sequence, covered_head_inclusion_digest, \
+                 previous_checkpoint_digest, snapshot_generation_id, canonical_checkpoint_body, \
+                 checkpoint_envelope, checkpoint_digest, published_content_hash \
+                 FROM checkpoint_work WHERE work_id = ?1",
+                params![work_id.as_slice()],
+                map_checkpoint_work,
+            )
+            .optional()
+            .map_err(AnchorRepositoryError::from)
+    }
+
+    /// The ordered frozen snapshot members of a checkpoint work.
+    pub fn checkpoint_work_members(
+        &self,
+        work_id: &[u8; 32],
+    ) -> Result<Vec<CheckpointMember>, AnchorRepositoryError> {
+        let mut statement = self.transaction.prepare(
+            "SELECT community_id, frozen_head_digest, snapshot_record_bytes \
+             FROM checkpoint_work_members WHERE work_id = ?1 ORDER BY member_position ASC",
+        )?;
+        let rows = statement.query_map(params![work_id.as_slice()], |row| {
+            Ok(CheckpointMember {
+                community_id: blob32(row.get::<_, Vec<u8>>(0)?)?,
+                frozen_head_digest: blob32(row.get::<_, Vec<u8>>(1)?)?,
+                snapshot_record_bytes: row.get::<_, Vec<u8>>(2)?,
+            })
+        })?;
+        let mut members = Vec::new();
+        for row in rows {
+            members.push(row?);
+        }
+        Ok(members)
+    }
+
+    /// The covered committed-removal slot indices of a checkpoint work, ascending.
+    pub fn checkpoint_covered_removals(
+        &self,
+        work_id: &[u8; 32],
+    ) -> Result<Vec<u32>, AnchorRepositoryError> {
+        let mut statement = self.transaction.prepare(
+            "SELECT removal_slot_index FROM checkpoint_covered_removals \
+             WHERE work_id = ?1 ORDER BY removal_slot_index ASC",
+        )?;
+        let rows = statement.query_map(params![work_id.as_slice()], |row| row.get::<_, i64>(0))?;
+        let mut slots = Vec::new();
+        for row in rows {
+            slots.push(row?.max(0) as u32);
+        }
+        Ok(slots)
+    }
+
+    /// Record the operator-signed checkpoint envelope + digest (phase `Signed`).
+    pub fn set_checkpoint_signed(
+        &mut self,
+        work_id: &[u8; 32],
+        checkpoint_envelope: &[u8],
+        checkpoint_digest: &[u8; 32],
+    ) -> Result<(), AnchorRepositoryError> {
+        self.transaction.execute(
+            "UPDATE checkpoint_work SET publication_phase = 1, checkpoint_envelope = ?2, \
+             checkpoint_digest = ?3 WHERE work_id = ?1 AND publication_phase = 0",
+            params![
+                work_id.as_slice(),
+                checkpoint_envelope,
+                checkpoint_digest.as_slice()
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Record the reserved temp/final publication names before any filesystem
+    /// write, so recovery can find and reclaim an unpublished temp tree.
+    pub fn set_checkpoint_names(
+        &mut self,
+        work_id: &[u8; 32],
+        temp_filename: &str,
+        published_filename: &str,
+    ) -> Result<(), AnchorRepositoryError> {
+        self.transaction.execute(
+            "UPDATE checkpoint_work SET temp_filename = ?2, published_filename = ?3 \
+             WHERE work_id = ?1",
+            params![work_id.as_slice(), temp_filename, published_filename],
+        )?;
+        Ok(())
+    }
+
+    /// Persist `FilesPublished` with the validated final content hash (only after
+    /// the atomic filesystem rename + parent fsync completed).
+    pub fn set_checkpoint_files_published(
+        &mut self,
+        work_id: &[u8; 32],
+        published_content_hash: &[u8; 32],
+    ) -> Result<(), AnchorRepositoryError> {
+        self.transaction.execute(
+            "UPDATE checkpoint_work SET publication_phase = 2, published_content_hash = ?2 \
+             WHERE work_id = ?1 AND publication_phase = 1",
+            params![work_id.as_slice(), published_content_hash.as_slice()],
+        )?;
+        Ok(())
+    }
+
+    /// Advance a checkpoint work to `FloorAdvanced` (phase 2 → 3). Called within
+    /// the same transaction that switches the checkpoint pointer, advances the
+    /// floor, and terminalizes the covered removals.
+    pub fn set_checkpoint_phase_floor_advanced(
+        &mut self,
+        work_id: &[u8; 32],
+    ) -> Result<(), AnchorRepositoryError> {
+        self.transaction.execute(
+            "UPDATE checkpoint_work SET publication_phase = 3 WHERE work_id = ?1 \
+             AND publication_phase = 2",
+            params![work_id.as_slice()],
+        )?;
+        Ok(())
+    }
+
+    /// Persist the terminal `Reclaimed` phase after all bounded physical
+    /// maintenance completes.
+    pub fn set_checkpoint_reclaimed(
+        &mut self,
+        work_id: &[u8; 32],
+    ) -> Result<(), AnchorRepositoryError> {
+        self.transaction.execute(
+            "UPDATE checkpoint_work SET publication_phase = 4 WHERE work_id = ?1 \
+             AND publication_phase = 3",
+            params![work_id.as_slice()],
+        )?;
+        Ok(())
+    }
+
+    /// Insert a published directory checkpoint (its signed bytes at a generation).
+    pub fn insert_directory_checkpoint(
+        &mut self,
+        checkpoint_generation: u64,
+        signed_bytes: &[u8],
+        created_at: u64,
+    ) -> Result<(), AnchorRepositoryError> {
+        self.transaction.execute(
+            "INSERT OR IGNORE INTO directory_checkpoints(checkpoint_generation, signed_bytes, created_at) \
+             VALUES (?1, ?2, ?3)",
+            params![checkpoint_generation as i64, signed_bytes, created_at as i64],
+        )?;
+        Ok(())
+    }
+
+    /// The highest published directory-checkpoint generation (0 if none).
+    pub fn latest_checkpoint_generation(&self) -> Result<u64, AnchorRepositoryError> {
+        let value: i64 = self.transaction.query_row(
+            "SELECT COALESCE(MAX(checkpoint_generation), 0) FROM directory_checkpoints",
+            [],
+            |row| row.get(0),
+        )?;
+        Ok(value.max(0) as u64)
+    }
+
     /// Commit the SQLite transaction and durably apply the pending accounting.
     pub fn commit(self) -> Result<(), AnchorRepositoryError> {
         let RepoTransaction {
@@ -1788,6 +2346,176 @@ pub struct CurrentListing {
     pub last_host_refresh_at: u64,
     /// The removal slot this listed root owns.
     pub removal_slot_index: u32,
+}
+
+/// The lifecycle state of one of the `2 * L` preprovisioned removal slots
+/// (design "RemovalSlot = Free | ReservedForListedRoot | Committed | Terminal").
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RemovalSlotState {
+    /// Unclaimed and available.
+    Free,
+    /// Reserved for a currently listed root; only that root can consume it.
+    ReservedForListedRoot,
+    /// A removal is committed and awaiting a checkpoint to terminalize it.
+    Committed,
+    /// The removal reached its exact terminal result, retained until expiry.
+    Terminal,
+}
+
+impl RemovalSlotState {
+    /// The stable integer code stored in `removal_slots.removal_state`.
+    #[must_use]
+    pub fn to_code(self) -> i64 {
+        match self {
+            RemovalSlotState::Free => 0,
+            RemovalSlotState::ReservedForListedRoot => 1,
+            RemovalSlotState::Committed => 2,
+            RemovalSlotState::Terminal => 3,
+        }
+    }
+
+    fn from_code(code: i64) -> Option<Self> {
+        match code {
+            0 => Some(RemovalSlotState::Free),
+            1 => Some(RemovalSlotState::ReservedForListedRoot),
+            2 => Some(RemovalSlotState::Committed),
+            3 => Some(RemovalSlotState::Terminal),
+            _ => None,
+        }
+    }
+}
+
+/// A read of one removal slot's durable state.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemovalSlot {
+    /// The physical slot index.
+    pub slot_index: u32,
+    /// The current lifecycle state.
+    pub state: RemovalSlotState,
+    /// The community that owns the slot, if claimed.
+    pub claimed_by_community: Option<[u8; 32]>,
+    /// The root key that owns the slot, if claimed.
+    pub claimed_root_key: Option<[u8; 32]>,
+    /// The bound `control_request_digest`, if claimed.
+    pub request_digest: Option<[u8; 32]>,
+    /// The bound owner-removal idempotency key, once Committed/Terminal.
+    pub removal_idempotency_key: Option<[u8; 16]>,
+    /// The linked checkpoint work id, once Committed.
+    pub checkpoint_work_id: Option<[u8; 32]>,
+    /// The Terminal-state retention expiry (Unix seconds).
+    pub terminal_expires_at: Option<u64>,
+}
+
+/// The outcome of a per-root visibility slot reservation
+/// ([`RepoTransaction::reserve_visibility_slot`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SlotReservation {
+    /// One free slot was atomically reserved for the root; its index.
+    Reserved(u32),
+    /// The root already owns two slots, or no global slot is free. The listing
+    /// stays hosted-but-invisible; the caller returns `removal_replay_window`.
+    Blocked {
+        /// The earliest retained-Terminal expiry that could free capacity, if any.
+        earliest_retry_at: Option<u64>,
+    },
+}
+
+/// The durable publication phase of a checkpoint work record (design
+/// "Planned | Signed | FilesPublished | FloorAdvanced | Reclaimed").
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CheckpointPhase {
+    /// The immutable plan is frozen; nothing is signed or published.
+    Planned,
+    /// The operator signed the frozen body; envelope + digest are stored.
+    Signed,
+    /// The signed files are validated, fsynced, and atomically renamed into place.
+    FilesPublished,
+    /// The database pointer/floor advanced and covered removals are terminalized.
+    FloorAdvanced,
+    /// All bounded physical maintenance completed.
+    Reclaimed,
+}
+
+impl CheckpointPhase {
+    fn from_code(code: i64) -> Option<Self> {
+        match code {
+            0 => Some(CheckpointPhase::Planned),
+            1 => Some(CheckpointPhase::Signed),
+            2 => Some(CheckpointPhase::FilesPublished),
+            3 => Some(CheckpointPhase::FloorAdvanced),
+            4 => Some(CheckpointPhase::Reclaimed),
+            _ => None,
+        }
+    }
+}
+
+/// One frozen ordered snapshot member of a checkpoint plan.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CheckpointMember {
+    /// The member community.
+    pub community_id: [u8; 32],
+    /// The community's frozen directory head digest at plan time.
+    pub frozen_head_digest: [u8; 32],
+    /// The immutable snapshot-member record bytes frozen for publication.
+    pub snapshot_record_bytes: Vec<u8>,
+}
+
+/// The immutable inputs frozen by one checkpoint planning transaction.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CheckpointPlan {
+    /// The stable checkpoint-work id.
+    pub work_id: [u8; 32],
+    /// The wall-clock creation time frozen into the plan (never re-invented).
+    pub created_at: u64,
+    /// The frozen state generation the checkpoint covers.
+    pub frozen_state_generation: u64,
+    /// The covered directory-feed head sequence.
+    pub covered_head_sequence: u64,
+    /// The covered directory-feed head inclusion digest.
+    pub covered_head_inclusion_digest: [u8; 32],
+    /// The previous published checkpoint digest, if any.
+    pub previous_checkpoint_digest: Option<[u8; 32]>,
+    /// The snapshot generation id this checkpoint publishes.
+    pub snapshot_generation_id: u64,
+    /// The canonical checkpoint body bytes (signed later).
+    pub canonical_checkpoint_body: Vec<u8>,
+    /// The frozen ordered snapshot members.
+    pub ordered_members: Vec<CheckpointMember>,
+    /// The covered committed-removal slot indices terminalized at advance.
+    pub covered_removal_slots: Vec<u32>,
+}
+
+/// A read of a checkpoint-work row's persisted phase and frozen identities.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CheckpointWorkRow {
+    /// The stable work id.
+    pub work_id: [u8; 32],
+    /// The current durable phase.
+    pub phase: CheckpointPhase,
+    /// The reserved temp publication name, once set.
+    pub temp_filename: Option<String>,
+    /// The reserved final publication name, once set.
+    pub published_filename: Option<String>,
+    /// The frozen creation time.
+    pub created_at: u64,
+    /// The frozen state generation.
+    pub frozen_state_generation: u64,
+    /// The covered feed head sequence.
+    pub covered_head_sequence: u64,
+    /// The covered feed head inclusion digest.
+    pub covered_head_inclusion_digest: Option<[u8; 32]>,
+    /// The previous checkpoint digest.
+    pub previous_checkpoint_digest: Option<[u8; 32]>,
+    /// The snapshot generation id.
+    pub snapshot_generation_id: u64,
+    /// The canonical checkpoint body bytes.
+    pub canonical_checkpoint_body: Option<Vec<u8>>,
+    /// The stored operator-signed checkpoint envelope bytes.
+    pub checkpoint_envelope: Option<Vec<u8>>,
+    /// The stored checkpoint digest.
+    pub checkpoint_digest: Option<[u8; 32]>,
+    /// The validated published content hash.
+    pub published_content_hash: Option<[u8; 32]>,
 }
 
 /// The stable integer code for a listing authority class (`0` root-owned, `1`
@@ -1843,6 +2571,83 @@ fn map_current_listing(row: &rusqlite::Row<'_>) -> Result<CurrentListing, rusqli
         expires_at: expires_at.max(0) as u64,
         last_host_refresh_at: last_host_refresh_at.max(0) as u64,
         removal_slot_index: removal_slot_index.max(0) as u32,
+    })
+}
+
+fn blob16(value: Vec<u8>) -> Result<[u8; 16], rusqlite::Error> {
+    <[u8; 16]>::try_from(value.as_slice()).map_err(|_| {
+        rusqlite::Error::FromSqlConversionFailure(
+            0,
+            rusqlite::types::Type::Blob,
+            "expected 16-byte blob".into(),
+        )
+    })
+}
+
+fn map_removal_slot(row: &rusqlite::Row<'_>) -> Result<RemovalSlot, rusqlite::Error> {
+    let slot_index: i64 = row.get(0)?;
+    let state = RemovalSlotState::from_code(row.get(1)?).ok_or_else(|| {
+        rusqlite::Error::FromSqlConversionFailure(
+            1,
+            rusqlite::types::Type::Integer,
+            "invalid removal_state".into(),
+        )
+    })?;
+    let claimed_by_community = row.get::<_, Option<Vec<u8>>>(2)?.map(blob32).transpose()?;
+    let claimed_root_key = row.get::<_, Option<Vec<u8>>>(3)?.map(blob32).transpose()?;
+    let request_digest = row.get::<_, Option<Vec<u8>>>(4)?.map(blob32).transpose()?;
+    let removal_idempotency_key = row.get::<_, Option<Vec<u8>>>(5)?.map(blob16).transpose()?;
+    let checkpoint_work_id = row.get::<_, Option<Vec<u8>>>(6)?.map(blob32).transpose()?;
+    let terminal_expires_at = row.get::<_, Option<i64>>(7)?.map(|v| v.max(0) as u64);
+    Ok(RemovalSlot {
+        slot_index: slot_index.max(0) as u32,
+        state,
+        claimed_by_community,
+        claimed_root_key,
+        request_digest,
+        removal_idempotency_key,
+        checkpoint_work_id,
+        terminal_expires_at,
+    })
+}
+
+fn map_checkpoint_work(row: &rusqlite::Row<'_>) -> Result<CheckpointWorkRow, rusqlite::Error> {
+    let work_id = blob32(row.get::<_, Vec<u8>>(0)?)?;
+    let phase = CheckpointPhase::from_code(row.get(1)?).ok_or_else(|| {
+        rusqlite::Error::FromSqlConversionFailure(
+            1,
+            rusqlite::types::Type::Integer,
+            "invalid publication_phase".into(),
+        )
+    })?;
+    let temp_filename: Option<String> = row.get(2)?;
+    let published_filename: Option<String> = row.get(3)?;
+    let created_at: i64 = row.get(4)?;
+    let frozen_state_generation: i64 = row.get(5)?;
+    let covered_head_sequence: i64 = row.get(6)?;
+    let covered_head_inclusion_digest =
+        row.get::<_, Option<Vec<u8>>>(7)?.map(blob32).transpose()?;
+    let previous_checkpoint_digest = row.get::<_, Option<Vec<u8>>>(8)?.map(blob32).transpose()?;
+    let snapshot_generation_id: i64 = row.get(9)?;
+    let canonical_checkpoint_body: Option<Vec<u8>> = row.get(10)?;
+    let checkpoint_envelope: Option<Vec<u8>> = row.get(11)?;
+    let checkpoint_digest = row.get::<_, Option<Vec<u8>>>(12)?.map(blob32).transpose()?;
+    let published_content_hash = row.get::<_, Option<Vec<u8>>>(13)?.map(blob32).transpose()?;
+    Ok(CheckpointWorkRow {
+        work_id,
+        phase,
+        temp_filename,
+        published_filename,
+        created_at: created_at.max(0) as u64,
+        frozen_state_generation: frozen_state_generation.max(0) as u64,
+        covered_head_sequence: covered_head_sequence.max(0) as u64,
+        covered_head_inclusion_digest,
+        previous_checkpoint_digest,
+        snapshot_generation_id: snapshot_generation_id.max(0) as u64,
+        canonical_checkpoint_body,
+        checkpoint_envelope,
+        checkpoint_digest,
+        published_content_hash,
     })
 }
 
