@@ -11,9 +11,10 @@ use crate::willow::{
 
 use super::path::{classify_newswire_path, newswire_path, NewswirePathKind};
 use super::{
-    decode_editorial_action, decode_news_post, decode_space_descriptor, encode_editorial_action,
-    encode_news_post, encode_space_descriptor, EditorialActionV1, NewsPostV1, NewswireError,
-    SpaceDescriptorV1, MAX_NEWSWIRE_PAYLOAD_BYTES,
+    decode_editorial_action, decode_news_comment, decode_news_post, decode_space_descriptor,
+    encode_editorial_action, encode_news_comment, encode_news_post, encode_space_descriptor,
+    EditorialActionV1, NewsCommentV1, NewsPostV1, NewswireError, SpaceDescriptorV1,
+    MAX_NEWSWIRE_PAYLOAD_BYTES,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -21,6 +22,7 @@ pub enum NewswirePayload {
     SpaceDescriptor(SpaceDescriptorV1),
     NewsPost(NewsPostV1),
     EditorialAction(EditorialActionV1),
+    NewsComment(NewsCommentV1),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -112,6 +114,7 @@ fn encode_payload(payload: &NewswirePayload) -> Result<Vec<u8>, NewswireError> {
         NewswirePayload::SpaceDescriptor(value) => encode_space_descriptor(value),
         NewswirePayload::NewsPost(value) => encode_news_post(value),
         NewswirePayload::EditorialAction(value) => encode_editorial_action(value),
+        NewswirePayload::NewsComment(value) => encode_news_comment(value),
     }
     .map_err(|_| NewswireError::ModelInvalid)
 }
@@ -124,6 +127,9 @@ fn payload_path_kind(payload: &NewswirePayload) -> NewswirePathKind {
         },
         NewswirePayload::EditorialAction(action) => NewswirePathKind::EditorialAction {
             space_descriptor_entry_id: action.space_descriptor_entry_id,
+        },
+        NewswirePayload::NewsComment(comment) => NewswirePathKind::Comment {
+            space_descriptor_entry_id: comment.space_descriptor_entry_id,
         },
     }
 }
@@ -209,6 +215,15 @@ fn require_post_authority(
     Ok(())
 }
 
+/// Whether `subject_id` carries editorial authority in `descriptor`. This is
+/// the sole admission rule shared by `require_action_authority` (the signing
+/// gate) and the FFI display predicate, so the read-path answer can never
+/// diverge from what the write-path enforces. There is no founder
+/// special-case: a founder absent from the roster is not an editor.
+pub fn is_editorial_authority(descriptor: &SpaceDescriptorV1, subject_id: &[u8; 32]) -> bool {
+    descriptor.editorial_roster.contains(subject_id)
+}
+
 fn require_action_authority(
     author: &EvidenceAuthor,
     descriptor: &VerifiedNewswireRecord,
@@ -220,8 +235,28 @@ fn require_action_authority(
     }
     let signer_id = *author.subspace_id().as_bytes();
     if author.namespace_id().as_bytes() != &descriptor_payload.namespace_id
-        || !descriptor_payload.editorial_roster.contains(&signer_id)
+        || !is_editorial_authority(descriptor_payload, &signer_id)
     {
+        return Err(NewswireError::AuthorityInvalid);
+    }
+    Ok(())
+}
+
+/// A comment is admitted exactly like a post: the author must be a communal
+/// member of the descriptor's namespace, and the comment must name that
+/// descriptor. There is NO roster requirement and NO owned capability — a
+/// reply is communal. The `parent_entry_id` is unchecked here (the parent may
+/// not be held yet); projection resolves it and drops danglers.
+fn require_comment_authority(
+    author: &EvidenceAuthor,
+    descriptor: &VerifiedNewswireRecord,
+    comment: &NewsCommentV1,
+) -> Result<(), NewswireError> {
+    let descriptor_payload = descriptor_context(descriptor)?;
+    if comment.space_descriptor_entry_id != descriptor.entry_id() {
+        return Err(NewswireError::DuplicatedFieldMismatch);
+    }
+    if author.namespace_id().as_bytes() != &descriptor_payload.namespace_id {
         return Err(NewswireError::AuthorityInvalid);
     }
     Ok(())
@@ -258,6 +293,16 @@ pub fn create_signed_editorial_action(
     require_action_authority(author, descriptor, &action)?;
     let snapshot = system_snapshot().map_err(|_| NewswireError::ClockUnavailable)?;
     build_signed(author, snapshot, NewswirePayload::EditorialAction(action))
+}
+
+pub fn create_signed_news_comment(
+    author: &EvidenceAuthor,
+    descriptor: &VerifiedNewswireRecord,
+    comment: NewsCommentV1,
+) -> Result<SignedNewswireRecord, NewswireError> {
+    require_comment_authority(author, descriptor, &comment)?;
+    let snapshot = system_snapshot().map_err(|_| NewswireError::ClockUnavailable)?;
+    build_signed(author, snapshot, NewswirePayload::NewsComment(comment))
 }
 
 #[cfg(feature = "conformance")]
@@ -303,6 +348,20 @@ pub fn create_signed_editorial_action_with_clock(
         .snapshot()
         .map_err(|_| NewswireError::ClockUnavailable)?;
     build_signed(author, snapshot, NewswirePayload::EditorialAction(action))
+}
+
+#[cfg(feature = "conformance")]
+pub fn create_signed_news_comment_with_clock(
+    author: &EvidenceAuthor,
+    descriptor: &VerifiedNewswireRecord,
+    clock: &dyn crate::willow::ClockSource,
+    comment: NewsCommentV1,
+) -> Result<SignedNewswireRecord, NewswireError> {
+    require_comment_authority(author, descriptor, &comment)?;
+    let snapshot = clock
+        .snapshot()
+        .map_err(|_| NewswireError::ClockUnavailable)?;
+    build_signed(author, snapshot, NewswirePayload::NewsComment(comment))
 }
 
 pub fn inspect_news_record(
@@ -403,6 +462,16 @@ fn inspect_verified_components_bounded(
             }
             NewswirePayload::EditorialAction(action)
         }
+        NewswirePathKind::Comment {
+            space_descriptor_entry_id,
+        } => {
+            let comment =
+                decode_news_comment(payload_bytes).map_err(|_| NewswireError::ModelInvalid)?;
+            if comment.space_descriptor_entry_id != space_descriptor_entry_id {
+                return Err(NewswireError::DuplicatedFieldMismatch);
+            }
+            NewswirePayload::NewsComment(comment)
+        }
     };
 
     Ok(VerifiedNewswireRecord {
@@ -465,6 +534,25 @@ mod tests {
             signature: signature.to_bytes(),
             payload_bytes,
         }
+    }
+
+    #[test]
+    fn is_editorial_authority_matches_admission() {
+        let organizer = generate_space_organizer_author().unwrap();
+        let ns = *organizer.namespace_id().as_bytes();
+        let editor = generate_communal_author_for_namespace(ns).unwrap();
+        let editor_id = *editor.subspace_id().as_bytes();
+        let outsider = generate_communal_author_for_namespace(ns).unwrap();
+        let outsider_id = *outsider.subspace_id().as_bytes();
+        let d = descriptor(ns, vec![editor_id]);
+        assert!(is_editorial_authority(&d, &editor_id));
+        assert!(!is_editorial_authority(&d, &outsider_id));
+        let empty = descriptor(ns, vec![]);
+        assert!(
+            !is_editorial_authority(&empty, &ns),
+            "founder+empty roster is false (matches admission)"
+        );
+        assert!(!is_editorial_authority(&empty, &outsider_id));
     }
 
     #[test]
@@ -801,6 +889,179 @@ mod tests {
         assert_eq!(
             inspect_news_record(&same_length_digest_mismatch),
             Err(NewswireError::PayloadDigestMismatch)
+        );
+    }
+
+    fn comment(space_descriptor_entry_id: EntryId, parent_entry_id: EntryId) -> NewsCommentV1 {
+        NewsCommentV1 {
+            space_descriptor_entry_id,
+            parent_entry_id,
+            body: "Communal reply from the crowd.".into(),
+            language: "en".into(),
+        }
+    }
+
+    #[test]
+    fn comment_is_admitted_communally_like_a_post_no_roster_required() {
+        let organizer = generate_space_organizer_author().unwrap();
+        let namespace_id = *organizer.namespace_id().as_bytes();
+        // A community member who is NOT in the editorial roster.
+        let member = generate_communal_author_for_namespace(namespace_id).unwrap();
+        let descriptor_record = build_signed(
+            &organizer,
+            snapshot(60),
+            NewswirePayload::SpaceDescriptor(descriptor(namespace_id, vec![])),
+        )
+        .unwrap();
+        let verified = inspect_news_record(&descriptor_record.signed).unwrap();
+
+        let value = comment(verified.entry_id(), [0x55; 32]);
+        require_comment_authority(&member, &verified, &value).unwrap();
+        let record = create_signed_news_comment(&member, &verified, value.clone()).unwrap();
+        let inspected = inspect_news_record(&record.signed).unwrap();
+        assert!(matches!(
+            inspected.payload(),
+            NewswirePayload::NewsComment(held) if *held == value
+        ));
+        assert_eq!(inspected.signer_id(), *member.subspace_id().as_bytes());
+    }
+
+    #[test]
+    fn comment_authority_rejects_foreign_member_and_wrong_descriptor_binding() {
+        let organizer = generate_space_organizer_author().unwrap();
+        let other = generate_space_organizer_author().unwrap();
+        let namespace_id = *organizer.namespace_id().as_bytes();
+        let descriptor_record = build_signed(
+            &organizer,
+            snapshot(61),
+            NewswirePayload::SpaceDescriptor(descriptor(namespace_id, vec![])),
+        )
+        .unwrap();
+        let verified = inspect_news_record(&descriptor_record.signed).unwrap();
+
+        let outsider =
+            generate_communal_author_for_namespace(*other.namespace_id().as_bytes()).unwrap();
+        assert_eq!(
+            require_comment_authority(&outsider, &verified, &comment(verified.entry_id(), [1; 32])),
+            Err(NewswireError::AuthorityInvalid)
+        );
+        assert_eq!(
+            create_signed_news_comment(&outsider, &verified, comment(verified.entry_id(), [1; 32])),
+            Err(NewswireError::AuthorityInvalid)
+        );
+
+        let member = generate_communal_author_for_namespace(namespace_id).unwrap();
+        assert_eq!(
+            require_comment_authority(&member, &verified, &comment([9; 32], [1; 32])),
+            Err(NewswireError::DuplicatedFieldMismatch)
+        );
+    }
+
+    #[test]
+    fn comment_whose_path_space_differs_from_payload_is_rejected() {
+        let organizer = generate_space_organizer_author().unwrap();
+        let member =
+            generate_communal_author_for_namespace(*organizer.namespace_id().as_bytes()).unwrap();
+        // Payload names space [1;32] but the path is built for space [2;32].
+        let value = comment([1; 32], [3; 32]);
+        let payload_bytes = encode_news_comment(&value).unwrap();
+        let wrong_space_path = newswire_path(
+            NewswirePathKind::Comment {
+                space_descriptor_entry_id: [2; 32],
+            },
+            70,
+            &william3_digest(&payload_bytes),
+        )
+        .unwrap();
+        assert_eq!(
+            inspect_news_record(&sign_raw(&member, wrong_space_path, 70, payload_bytes)),
+            Err(NewswireError::DuplicatedFieldMismatch)
+        );
+    }
+
+    #[test]
+    fn comment_carrying_an_owned_or_delegated_capability_is_rejected() {
+        use crate::willow::OwnedMasthead;
+
+        // A comment signed by a site owner's OWNED capability — never communal.
+        let masthead = OwnedMasthead::generate().unwrap();
+        let value = comment([7; 32], [8; 32]);
+        let payload_bytes = encode_news_comment(&value).unwrap();
+        let digest = william3_digest(&payload_bytes);
+        let path = newswire_path(
+            NewswirePathKind::Comment {
+                space_descriptor_entry_id: [7; 32],
+            },
+            80,
+            &digest,
+        )
+        .unwrap();
+        let entry = Entry::builder()
+            .namespace_id(masthead.namespace_id().clone())
+            .subspace_id(masthead.owner_subspace_id())
+            .path(path)
+            .timestamp(80)
+            .payload(&payload_bytes)
+            .build();
+        let authorised = masthead.authorise_owner_entry(entry).unwrap();
+        let token = authorised.authorisation_token();
+        let signature: ed25519_dalek::Signature = token.signature().clone().into();
+        let owned_signed = SignedWillowEntry {
+            entry_bytes: encode_entry(authorised.entry()),
+            capability_bytes: encode_capability(token.capability()),
+            signature: signature.to_bytes(),
+            payload_bytes: payload_bytes.clone(),
+        };
+        assert_eq!(
+            inspect_news_record(&owned_signed),
+            Err(NewswireError::CapabilityInvalid)
+        );
+
+        // A comment signed under a communal capability that carries a delegation
+        // — the closed inspector admits only zero-delegation communal caps.
+        let delegator = generate_space_organizer_author().unwrap();
+        let namespace_id = *delegator.namespace_id().as_bytes();
+        let receiver = generate_communal_author_for_namespace(namespace_id).unwrap();
+        let digest2 = william3_digest(&payload_bytes);
+        let path2 = newswire_path(
+            NewswirePathKind::Comment {
+                space_descriptor_entry_id: [7; 32],
+            },
+            81,
+            &digest2,
+        )
+        .unwrap();
+        let mut delegated = delegator.write_capability();
+        // A communal cap is scoped to the delegator's own subspace, so the
+        // delegated area is that subspace (never the full area).
+        delegated
+            .try_delegate(
+                delegator.subspace_secret(),
+                Area::new_subspace_area(delegator.subspace_id()),
+                receiver.subspace_id(),
+            )
+            .unwrap();
+        let entry2 = Entry::builder()
+            .namespace_id(delegator.namespace_id().clone())
+            .subspace_id(delegator.subspace_id())
+            .path(path2)
+            .timestamp(81)
+            .payload(&payload_bytes)
+            .build();
+        let authorised2 = entry2
+            .into_authorised_entry(&delegated, receiver.subspace_secret())
+            .unwrap();
+        let token2 = authorised2.authorisation_token();
+        let signature2: ed25519_dalek::Signature = token2.signature().clone().into();
+        let delegated_signed = SignedWillowEntry {
+            entry_bytes: encode_entry(authorised2.entry()),
+            capability_bytes: encode_capability(token2.capability()),
+            signature: signature2.to_bytes(),
+            payload_bytes,
+        };
+        assert_eq!(
+            inspect_news_record(&delegated_signed),
+            Err(NewswireError::CapabilityInvalid)
         );
     }
 

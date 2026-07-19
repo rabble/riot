@@ -250,7 +250,6 @@ private struct OnboardingSetupView: View {
     @State private var displayName = ""
     @State private var demoFailure: String?
     @State private var isJoinPresented = false
-    @State private var pastedReference = ""
 
     private var trimmedCommunity: String {
         communityName.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -297,9 +296,9 @@ private struct OnboardingSetupView: View {
                         .disabled(trimmedCommunity.isEmpty)
                         .accessibilityIdentifier("create-community")
 
-                        Button("Join with a link") { isJoinPresented = true }
+                        Button("Join with a link or QR") { isJoinPresented = true }
                             .buttonStyle(.riotSecondary)
-                            .accessibilityIdentifier("onboarding-join")
+                            .accessibilityIdentifier("launch-join-by-reference")
 
                         Button("Find one nearby") { model.select(.nearby) }
                             .buttonStyle(.riotSecondary)
@@ -325,13 +324,9 @@ private struct OnboardingSetupView: View {
             }
         }
         .sheet(isPresented: $isJoinPresented) {
-            // Reuse the community chooser's paste-to-join sheet verbatim, so the
-            // onboarding join path is the same code (and same core call) as the
-            // in-app join, never a duplicate.
-            CommunityJoinSheet(model: model, pastedReference: $pastedReference) {
-                isJoinPresented = false
-                pastedReference = ""
-            }
+            // The same paste/QR join sheet the in-app chooser uses, so onboarding's
+            // join path is the identical code and core call, never a duplicate.
+            JoinByReferenceSheet(model: model, onClose: { isJoinPresented = false })
         }
         .onAppear { displayName = model.claimedName ?? "" }
     }
@@ -380,7 +375,204 @@ private struct OnboardingSetupView: View {
 /// something. Dismissible — the recovery already happened and the app is usable;
 /// this only tells the person what was set aside (never deleted). Never a dead
 /// error.
-private struct RecoveryNoticeBanner: View {
+/// The owner moderation sheet: author a Revoke/Tombstone at O:/mod/, review the
+/// complete (untruncated) identifiers, and sign — core auto-publishes the coupled
+/// heartbeat. Shown only to an owner (the model is constructed with the site's
+/// sealed masthead). Mirrors the editorial-action sheet. On success it surfaces the
+/// signed action + heartbeat records; their `signedBytes` are the propagation
+/// payload the app hands onward (owned-namespace /mod/ has no automatic sync yet),
+/// so they are shown, never silently dropped.
+struct SiteModerationSheet: View {
+    @ObservedObject var model: SiteModerationModel
+    let onClose: () -> Void
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
+        composer
+            .riotHeader(eyebrow: "Moderate", "Owner moderation")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Close", action: onClose) }
+            }
+    }
+
+    private var composer: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                Picker("Action", selection: $model.draft.kind) {
+                    ForEach(SiteModerationTargetKind.allCases) { kind in
+                        Text(kind.label).tag(kind)
+                    }
+                }
+                .accessibilityIdentifier("mod-kind-picker")
+
+                switch model.draft.kind {
+                case .revoke:
+                    field("Author key", text: $model.draft.authorKey, id: "mod-author-key")
+                case .tombstone:
+                    field("Namespace", text: $model.draft.targetNamespace, id: "mod-target-namespace")
+                    field("Target entry", text: $model.draft.targetEntry, id: "mod-target-entry")
+                }
+
+                reviewCard
+                signButton
+                outcomeNotice
+            }
+            .padding(20)
+        }
+    }
+
+    @ViewBuilder
+    private var reviewCard: some View {
+        if case let .success(review) = model.review() {
+            RiotCard {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("Review before signing")
+                        .font(.riot(.mono, size: 12, relativeTo: .caption))
+                        .textCase(.uppercase)
+                        .tracking(1)
+                        .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
+                    ForEach(review.rows, id: \.label) { row in
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(row.label)
+                                .font(.riot(.mono, size: 11, relativeTo: .caption2))
+                                .textCase(.uppercase)
+                                .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
+                            Text(row.value)
+                                .font(.riot(.mono, size: 13, relativeTo: .footnote))
+                                .foregroundStyle(RiotTheme.ink(for: colorScheme))
+                                .textSelection(.enabled)
+                        }
+                    }
+                }
+            }
+            .accessibilityIdentifier("mod-review")
+        }
+    }
+
+    @ViewBuilder
+    private var signButton: some View {
+        let isReady: Bool = {
+            if case .success = model.review() { return true }
+            return false
+        }()
+        Button("Sign and publish") {
+            if case .signed = model.sign() { /* stays open to show the outcome */ }
+        }
+        .buttonStyle(.riotPrimary)
+        .frame(minHeight: 44)
+        .disabled(!isReady)
+        .accessibilityIdentifier("mod-sign")
+    }
+
+    @ViewBuilder
+    private var outcomeNotice: some View {
+        switch model.lastSignOutcome {
+        case let .signed(outcome):
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Signed. A fresh moderation heartbeat was published.")
+                    .font(.riot(.body, size: 13, relativeTo: .caption))
+                    .foregroundStyle(RiotTheme.ink(for: colorScheme))
+                // The signed bytes are the propagation payload — surfaced, not dropped.
+                Text("Share \(outcome.action.signedBytes.count + outcome.epoch.signedBytes.count) bytes to sync this to followers.")
+                    .font(.riot(.mono, size: 11, relativeTo: .caption2))
+                    .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
+            }
+            .accessibilityIdentifier("mod-signed")
+        case let .invalid(violation):
+            Text(violation.message)
+                .font(.riot(.body, size: 13, relativeTo: .caption))
+                .foregroundStyle(RiotTheme.pink(for: colorScheme))
+                .accessibilityIdentifier("mod-violation")
+        case .rejected:
+            Text("That action was not accepted. Your draft is kept.")
+                .font(.riot(.body, size: 13, relativeTo: .caption))
+                .foregroundStyle(RiotTheme.pink(for: colorScheme))
+                .accessibilityIdentifier("mod-rejected")
+        case .none:
+            EmptyView()
+        }
+    }
+
+    private func field(_ label: String, text: Binding<String>, id: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(label)
+                .font(.riot(.mono, size: 12, relativeTo: .caption))
+                .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
+            TextField(label, text: text, axis: .vertical)
+                .font(.riot(.mono, size: 13, relativeTo: .footnote))
+                .accessibilityIdentifier(id)
+        }
+    }
+}
+
+/// The composite-site read surface: the honest-degradation banner (the SAME
+/// `RecoveryNoticeBanner` the shell uses) over the accountable rows. When the
+/// model reports a hold — critically, `.moderationLoading` — the rows are visually
+/// GATED (dimmed and non-interactive behind the banner) so not-yet-trustworthy
+/// content is never presented as clean. The hold is a security control enforced by
+/// the model (`isContentHeld`), independent of whether the banner is dismissed.
+struct CompositeSiteReadView: View {
+    private let model: CompositeSiteReadModel
+    @State private var bannerDismissed = false
+    @Environment(\.colorScheme) private var colorScheme
+
+    init(model: CompositeSiteReadModel) {
+        self.model = model
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            if let message = model.bannerMessage, !bannerDismissed {
+                RecoveryNoticeBanner(message: message, onDismiss: { bannerDismissed = true })
+                    .accessibilityIdentifier("composite-degradation-banner")
+            }
+            if model.items.isEmpty {
+                Text("No posts on this site yet.")
+                    .font(.riot(.body, size: 14, relativeTo: .footnote))
+                    .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
+            } else {
+                VStack(alignment: .leading, spacing: 10) {
+                    ForEach(model.items) { row in compositeRow(row) }
+                }
+                .opacity(model.isContentHeld ? 0.4 : 1)
+                .disabled(model.isContentHeld)
+                .accessibilityIdentifier(
+                    model.isContentHeld ? "composite-content-held" : "composite-content-shown")
+            }
+        }
+        .accessibilityIdentifier("composite-site-read")
+    }
+
+    @ViewBuilder
+    private func compositeRow(_ row: CompositeItemRow) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            switch row.display {
+            case .ordinary:
+                Text(row.tier.label)
+                    .font(.riot(.body, size: 15, relativeTo: .headline))
+                    .foregroundStyle(RiotTheme.ink(for: colorScheme))
+            case .hiddenInterstitial:
+                Text(NewswireTreatmentCopy.hiddenTitle)
+                    .font(.riot(.body, size: 13, relativeTo: .caption))
+                    .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
+            case .tombstoned:
+                Text(NewswireTreatmentCopy.tombstoneTitle)
+                    .font(.riot(.body, size: 13, relativeTo: .caption))
+                    .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
+            }
+            Text(row.authorTag)
+                .font(.riot(.mono, size: 11, relativeTo: .caption2))
+                .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityIdentifier("composite-item-\(row.id)")
+    }
+}
+
+/// The honest-degradation notice banner (§4.7 recovery convention). Internal so
+/// the composite-site read surface can reuse the exact same banner for its
+/// moderation-loading / degraded states.
+struct RecoveryNoticeBanner: View {
     let message: String
     let onDismiss: () -> Void
     @Environment(\.colorScheme) private var colorScheme
@@ -403,7 +595,7 @@ private struct RecoveryNoticeBanner: View {
             .accessibilityLabel("Dismiss")
         }
         .padding(12)
-        .background(RiotTheme.paper(for: colorScheme))
+        .background(RiotTheme.paper2(for: colorScheme))
         .overlay(alignment: .bottom) {
             Rectangle().fill(.orange.opacity(0.4)).frame(height: 1)
         }
@@ -530,7 +722,16 @@ private struct CommunityShellView: View {
     /// Presented when a community-change is requested with an unsaved draft.
     @State private var confirmingLeave = false
 
+    /// Turns local store-changed events into new-content notifications: a system
+    /// alert when the app is backgrounded, a subtle in-app banner when it is
+    /// foregrounded. There is no server/push in this P2P app — the only trigger is
+    /// a LOCAL event (accepted nearby sync, or foregrounding), both of which arrive
+    /// through `AppRuntimeView.dataChangedNotification`.
+    @StateObject private var notifier = LocalNotifier.makeDefault()
+
     @Environment(\.colorScheme) private var colorScheme
+    /// Foreground vs background — decides system-notify vs in-app banner.
+    @Environment(\.scenePhase) private var scenePhase
 
     init(model: RiotAppModel, community: CommunityContext) {
         _model = ObservedObject(wrappedValue: model)
@@ -558,13 +759,21 @@ private struct CommunityShellView: View {
 
         let wireProjector: NewswireProjecting = model.profileRepository ?? UnavailableWireProjector()
         let editor: NewswireEditorialActing = model.profileRepository ?? UnavailableEditor()
+        let authority: NewswireEditorAuthorityChecking = model.profileRepository ?? UnavailableEditor()
         _newswire = StateObject(wrappedValue: NewswireSurfaceModel(
             projector: wireProjector,
             editor: editor,
+            authority: authority,
             spaceDescriptorEntryID: community.newswireDescriptorEntryID ?? "",
             communityName: community.name,
             myKeyHex: me.id,
-            roster: community.editorialRoster
+            descriptorResolver: { [weak model] in model?.rederivedNewswireDescriptorID() },
+            // Per-device seen state lives in the standard defaults, keyed per
+            // community — never the Willow store, never the FFI.
+            seenCursor: SeenCursorStore(),
+            // Communal reply signer — the same repository, or nil (reply hidden)
+            // when no profile is open.
+            commenter: model.profileRepository
         ))
     }
 
@@ -575,6 +784,18 @@ private struct CommunityShellView: View {
     var body: some View {
         adaptiveShell
             .background(keyboardShortcuts)
+            // A subtle in-app banner when new content arrives while the app is on
+            // screen — the foreground counterpart to a backgrounded system alert.
+            .overlay(alignment: .top) { newContentBanner }
+            // Ask for notification permission at a relevant first moment: the reader
+            // already has a community (this shell is on screen), never on cold launch.
+            .task { await notifier.requestAuthorizationIfNeeded() }
+            // The one local trigger: an accepted nearby sync or a foregrounding both
+            // post this. Recompute unread (reusing the seen-cursor) and let the
+            // notifier decide system-notify / banner / nothing.
+            .onReceive(NotificationCenter.default.publisher(for: AppRuntimeView.dataChangedNotification)) { _ in
+                handleStoreChanged()
+            }
             // Leaving/switching this community cancels the old coordinator's
             // pairing, transfer, and callbacks before the shell is rebuilt for the
             // next community (nav design §"Nearby security and lifecycle").
@@ -606,6 +827,72 @@ private struct CommunityShellView: View {
             .sheet(isPresented: $model.isCommunityChooserPresented) {
                 CommunityChooserView(model: model)
             }
+            // Join with a link or QR — raised from the chooser's "Join another" row
+            // (and, on the launch screen, its own button). Presented at the shell so
+            // both entry points share one sheet and one core call.
+            .sheet(isPresented: $model.isJoinByReferencePresented) {
+                JoinByReferenceSheet(model: model, onClose: model.dismissJoinByReference)
+            }
+            // Create another community — the chooser's "Create a community" row.
+            .sheet(isPresented: createCommunityBinding) {
+                CreateCommunitySheet(model: model, onClose: model.dismissCreateCommunity)
+            }
+    }
+
+    private var createCommunityBinding: Binding<Bool> {
+        Binding(
+            get: { model.isCreateCommunityRequested },
+            set: { if !$0 { model.dismissCreateCommunity() } }
+        )
+    }
+
+    /// A local store-changed event landed (accepted sync or foregrounding).
+    /// Refresh the wire — which recomputes `newswire.unread` against the per-device
+    /// seen cursor using the SAME what's-new logic Home draws from — then hand that
+    /// fresh unread to the notifier along with the current foreground/background
+    /// phase. Scoped to the selected community: that is the one wire this shell has
+    /// projected. (Multi-community background notification would iterate every
+    /// joined community's projection — deferred with the multi-community registry.)
+    private func handleStoreChanged() {
+        newswire.load()
+        let phase: NotifierPhase = scenePhase == .active ? .active : .background
+        Task {
+            await notifier.evaluate(
+                communityID: community.id,
+                communityName: community.name,
+                unread: newswire.unread,
+                phase: phase
+            )
+        }
+    }
+
+    /// The foreground new-content banner: a subtle, tappable, auto-dismissing toast
+    /// ("N new in <community>"). Tapping it (or a few seconds) clears it; the badge
+    /// and delta on Home carry the durable cue. Nothing renders when there is no
+    /// banner to show.
+    @ViewBuilder
+    private var newContentBanner: some View {
+        if let banner = notifier.banner {
+            Text(banner.text)
+                .font(.riot(.mono, size: 13, relativeTo: .footnote))
+                .foregroundStyle(RiotTheme.paper(for: colorScheme))
+                .padding(.horizontal, 16)
+                .padding(.vertical, 10)
+                .background(
+                    Capsule().fill(RiotTheme.pink(for: colorScheme))
+                )
+                .padding(.top, 8)
+                .shadow(radius: 6, y: 2)
+                .onTapGesture { notifier.dismissBanner() }
+                .transition(.move(edge: .top).combined(with: .opacity))
+                .accessibilityIdentifier("new-content-banner")
+                .task(id: banner.id) {
+                    // Auto-dismiss after a few seconds; a route change or a tap
+                    // clears it sooner. Cancelled if a newer banner replaces this one.
+                    try? await Task.sleep(nanoseconds: 4_000_000_000)
+                    notifier.dismissBanner()
+                }
+        }
     }
 
     // MARK: Adaptive presentation
@@ -625,29 +912,63 @@ private struct CommunityShellView: View {
     private var macShell: some View {
         NavigationSplitView {
             VStack(spacing: 0) {
-                List(RiotDestination.phoneTabs, selection: sidebarSelection) { destination in
-                    Label(destination.title, systemImage: destination.systemImage)
-                        .tag(destination)
+                // Custom sidebar rows instead of a List: the macOS List selection
+                // highlight follows the system accent (blue) and can't be retinted
+                // reliably, so we paint our own pink-on-select rows in the app's
+                // own palette — fully coherent, no system accent.
+                VStack(spacing: 4) {
+                    ForEach(RiotDestination.phoneTabs) { destination in
+                        let selected = navigation.destination == destination
+                        Button { changeRoute(to: destination) } label: {
+                            Label(destination.title, systemImage: destination.systemImage)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 7)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(selected ? RiotTheme.paper(for: colorScheme) : RiotTheme.ink(for: colorScheme))
+                        .background(selected ? RiotTheme.pink(for: colorScheme) : Color.clear)
+                        .clipShape(RoundedRectangle(cornerRadius: 6))
                         .accessibilityIdentifier("route-\(destination.rawValue)")
+                        .accessibilityAddTraits(selected ? .isSelected : [])
+                    }
                 }
+                .padding(8)
+                Spacer()
                 Divider()
                 identityFooter
                     .padding(12)
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(RiotTheme.paper(for: colorScheme))
             .navigationTitle(community.name)
         } detail: {
-            if let tool = runningTool, let repository = model.profileRepository {
-                AppRuntimeView(
-                    repository: repository,
-                    appIDHex: tool.appIDHex,
-                    appName: tool.name,
-                    onClose: closeTool
-                )
-                .onExitCommand(perform: escape)
-            } else {
-                routeView(navigation.destination)
+            Group {
+                if let tool = runningTool, let repository = model.profileRepository {
+                    AppRuntimeView(
+                        repository: repository,
+                        appIDHex: tool.appIDHex,
+                        appName: tool.name,
+                        onClose: closeTool
+                    )
+                    .onExitCommand(perform: escape)
+                } else {
+                    routeView(navigation.destination)
+                }
             }
+            // The route/tool views set their own paper on iOS via phoneShell;
+            // on macOS the split-view detail is system-white unless we paint it.
+            // Hide the scroll surface so the paper shows; constrain the content to
+            // a readable centered column so it reads like a feed, not a stretched
+            // phone; and back the whole pane paper.
+            .scrollContentBackground(.hidden)
+            .frame(maxWidth: 760)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(RiotTheme.paper(for: colorScheme).ignoresSafeArea())
         }
+        // Kill the macOS system-blue accent everywhere else it might leak.
+        .tint(RiotTheme.pink(for: colorScheme))
     }
 
     private var sidebarSelection: Binding<RiotDestination?> {
@@ -676,8 +997,10 @@ private struct CommunityShellView: View {
     #else
     /// iPhone: a header with the community name and the two identity controls,
     /// the four routes kept alive in a ZStack (the tab-lifecycle performance
-    /// contract), a connection bar, and the bottom tab bar. Opening a tool
-    /// presents it full-screen — never the phone's card sheet for a tool.
+    /// contract), a connection bar, and the bottom tab bar. Opening a tool is a
+    /// navigation PUSH onto the Tools stack — so the community header and the tab
+    /// bar (both outside every route's stack) stay on screen and the person never
+    /// loses context. A tool never covers the shell as a bare full-screen sheet.
     private var phoneShell: some View {
         VStack(spacing: 0) {
             communityHeader
@@ -685,26 +1008,59 @@ private struct CommunityShellView: View {
                 ForEach(RiotDestination.phoneTabs) { destination in
                     NavigationStack {
                         routeView(destination)
+                            // The running tool lives on the Tools stack only, so
+                            // "Open" always lands under Tools with a "‹ Tools"
+                            // back button, wherever it was invoked from.
+                            .navigationTitle(destination == .tools ? "Tools" : "")
+                            .navigationDestination(
+                                item: destination == .tools ? toolNavigation : .constant(nil)
+                            ) { tool in
+                                toolHost(tool)
+                            }
                     }
                     .opacity(navigation.destination == destination ? 1 : 0)
                     .allowsHitTesting(navigation.destination == destination)
                 }
             }
-            connectionDisclosureBar
-            RiotTabBar(selection: tabSelection)
+            RiotTabBar(selection: tabSelection, unreadBadges: unreadBadges)
         }
         .background(RiotTheme.paper(for: colorScheme).ignoresSafeArea())
-        .fullScreenCover(item: $runningTool) { tool in
-            if let repository = model.profileRepository {
-                AppRuntimeView(
-                    repository: repository,
-                    appIDHex: tool.appIDHex,
-                    appName: tool.name,
-                    onClose: closeTool
-                )
-            } else {
-                Color.clear.onAppear { closeTool() }
+    }
+
+    /// The per-tab unread badges. Home carries the newswire's unread count, but
+    /// only while the reader is somewhere else — a "come back, there's new" cue,
+    /// not a badge on the screen you are already looking at (Home marks itself seen
+    /// on appear). Other routes carry none yet.
+    private var unreadBadges: [RiotDestination: Int] {
+        let homeUnread = navigation.destination == .home ? 0 : newswire.unread.count
+        return homeUnread > 0 ? [.home: homeUnread] : [:]
+    }
+
+    /// Drives the tool push on the Tools stack. Tapping the automatic back button
+    /// clears `runningTool`; routing that through this binding also runs the focus
+    /// + session teardown, so a back tap and a programmatic close (invalidation,
+    /// a missing repository) share the one close path.
+    private var toolNavigation: Binding<RiotSpaceApp?> {
+        Binding(
+            get: { runningTool },
+            set: { newValue in
+                if newValue == nil, runningTool != nil { _ = focus.close() }
+                runningTool = newValue
             }
+        )
+    }
+
+    @ViewBuilder
+    private func toolHost(_ tool: RiotSpaceApp) -> some View {
+        if let repository = model.profileRepository {
+            AppRuntimeView(
+                repository: repository,
+                appIDHex: tool.appIDHex,
+                appName: tool.name,
+                onClose: { toolNavigation.wrappedValue = nil }
+            )
+        } else {
+            Color.clear.onAppear { closeTool() }
         }
     }
 
@@ -724,16 +1080,16 @@ private struct CommunityShellView: View {
             .accessibilityLabel(ShellIdentityDestination.yourProfile.label)
             .accessibilityIdentifier(ShellIdentityDestination.yourProfile.accessibilityID)
 
-            // The community name is the chooser's entry point — "Your communities"
-            // is one action away here (nav design Slice 3).
+            Spacer()
+
+            // Community switcher — icon only. The community name is shown once,
+            // in the designed Home header, so this top row carries just the
+            // controls. Keeps the `community-name` id the nav tests tap.
             Button { model.openCommunityChooser() } label: {
-                Text(community.name)
-                    .font(.riot(.body, size: 18, relativeTo: .headline))
-                    .foregroundStyle(RiotTheme.ink(for: colorScheme))
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .accessibilityAddTraits(.isHeader)
+                Image(systemName: "rectangle.stack")
+                    .font(.system(size: 20))
             }
-            .buttonStyle(.plain)
+            .accessibilityLabel("Your communities")
             .accessibilityIdentifier("community-name")
 
             Button { identitySheet = .communitySettings } label: {
@@ -748,27 +1104,6 @@ private struct CommunityShellView: View {
         .background(RiotTheme.paper2(for: colorScheme))
     }
 
-    private var connectionDisclosureBar: some View {
-        VStack(spacing: 3) {
-            if let me = model.me {
-                Text("You are \(me.rendered)")
-                    .font(.riot(.mono, size: 11, relativeTo: .caption2))
-                    .foregroundStyle(RiotTheme.ink(for: colorScheme))
-                    .accessibilityIdentifier("identity-chip")
-            }
-            Text(model.connectionDisclosure)
-                .font(.riot(.mono, size: 11, relativeTo: .caption2))
-                .textCase(.uppercase)
-                .tracking(0.5)
-                .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
-        }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 8)
-        .background(RiotTheme.paper2(for: colorScheme))
-        .overlay(alignment: .top) {
-            Rectangle().fill(RiotTheme.line(for: colorScheme)).frame(height: 1)
-        }
-    }
     #endif
 
     // MARK: Routes
@@ -795,6 +1130,10 @@ private struct CommunityShellView: View {
     // MARK: Tool lifecycle + focus
 
     private func openTool(_ app: RiotSpaceApp, fromCardID cardID: String) {
+        // Always surface the tool under Tools so it inherits that tab's context
+        // (community header + tab bar stay put). A Home shortcut and the Tools
+        // list therefore open a tool the same way — never a contextless cover.
+        model.select(.tools)
         focus.open(toolID: cardID)
         runningTool = app
     }
@@ -864,6 +1203,7 @@ private struct HomeRouteView: View {
     @ObservedObject var newswire: NewswireSurfaceModel
     let onOpenTool: (RiotSpaceApp, String) -> Void
     @Environment(\.colorScheme) private var colorScheme
+    @State private var showRejoinSheet = false
 
     private var shortcuts: [RiotSpaceApp] { HomeShortcuts.deterministic(from: model.apps) }
 
@@ -875,12 +1215,30 @@ private struct HomeRouteView: View {
                 // always-public Editorial history — is the answer to "what is
                 // happening here?" It reads the same core projection every platform
                 // does, so a reader sees the identical front page as its peers.
-                NewswireSurfaceView(model: newswire)
+                // The offlineStale forward paths lead somewhere real: rejoin with a
+                // link (Unit 1's sheet) or sync with a peer (the existing Nearby
+                // screen) — never a dead no-op button and never a silent retry loop.
+                NewswireSurfaceView(
+                    model: newswire,
+                    onSyncWithPeer: { model.select(.nearby) },
+                    onRejoinWithLink: { showRejoinSheet = true }
+                )
+                // The single Home entry point for this community's signed alerts —
+                // the only tappable alert surface (the Nearby count is a diagnostic).
+                AlertsListView(entries: model.entries,
+                               activeNamespaceID: model.space?.namespaceID ?? "",
+                               displayName: { model.rendered(for: $0) })
                 PostUpdateView(model: composer)
             }
             .padding(20)
         }
+        // The persistent top bar already names the community; Home names the
+        // PLACE within it ("what is happening here?") so the community name is
+        // not printed twice on the same screen.
         .riotHeader(eyebrow: "Community", model.space?.title ?? "Home")
+        .sheet(isPresented: $showRejoinSheet) {
+            JoinByReferenceSheet(model: model, onClose: { showRejoinSheet = false })
+        }
     }
 
     @ViewBuilder
@@ -947,6 +1305,55 @@ private struct ShellRecoveryInline: View {
 
 // MARK: - Identity sheets
 
+/// Create another community from inside the app — the chooser's "Create a community"
+/// row. Mirrors the onboarding create card and calls the same `createCommunity`, so
+/// the in-app and first-run create paths are one flow, never a dead no-op.
+private struct CreateCommunitySheet: View {
+    @ObservedObject var model: RiotAppModel
+    let onClose: () -> Void
+    @State private var communityName = ""
+
+    private var trimmed: String { communityName.trimmingCharacters(in: .whitespacesAndNewlines) }
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    RiotCard {
+                        VStack(alignment: .leading, spacing: 12) {
+                            Text("Name your community")
+                                .font(.riot(.body, size: 17, relativeTo: .body))
+                            TextField("Community name", text: $communityName)
+                                .font(.riot(.body, size: 17, relativeTo: .body))
+                                .accessibilityIdentifier("create-community-name-field")
+                            Button("Create a community") {
+                                model.createCommunity(
+                                    CommunityCreationRequest(
+                                        name: trimmed,
+                                        editorialRoster: model.me.map { [$0.id] } ?? []
+                                    )
+                                )
+                                if model.errorMessage == nil { onClose() }
+                            }
+                            .buttonStyle(.riotPrimary)
+                            .disabled(trimmed.isEmpty)
+                            .accessibilityIdentifier("create-community-confirm")
+                        }
+                    }
+                }
+                .padding(20)
+            }
+            .riotHeader(eyebrow: "Community", "Create a community")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel", action: onClose)
+                        .accessibilityIdentifier("create-community-cancel")
+                }
+            }
+        }
+    }
+}
+
 /// "Your profile" — editing this person's identity, moved out of the way of
 /// everyday community content (nav design: manage identity in context).
 private struct YourProfileSheet: View {
@@ -1004,6 +1411,7 @@ private struct CommunitySettingsSheet: View {
     let onClose: () -> Void
     @Environment(\.colorScheme) private var colorScheme
     @State private var showingTechnical = false
+    @State private var isSharePresented = false
 
     var body: some View {
         ScrollView {
@@ -1028,6 +1436,10 @@ private struct CommunitySettingsSheet: View {
                 }
                 .accessibilityIdentifier("community-technical-details")
 
+                Button("Share this community") { isSharePresented = true }
+                    .buttonStyle(.riotSecondary)
+                    .accessibilityIdentifier("share-community")
+
                 Button("Leave this community", role: .destructive, action: onLeave)
                     .buttonStyle(.riotSecondary)
                     .accessibilityIdentifier("leave-community")
@@ -1037,6 +1449,18 @@ private struct CommunitySettingsSheet: View {
         .riotHeader(eyebrow: "Community", ShellIdentityDestination.communitySettings.label)
         .toolbar {
             ToolbarItem(placement: .confirmationAction) { Button("Done", action: onClose) }
+        }
+        .sheet(isPresented: $isSharePresented) {
+            ShareCommunitySheet(
+                community: community,
+                resolveEncoded: { id in
+                    guard let repository = model.profileRepository else {
+                        throw RepositoryError.profileClosed
+                    }
+                    return try repository.newswireShareReference(spaceDescriptorEntryID: id).encoded
+                },
+                onClose: { isSharePresented = false }
+            )
         }
     }
 
@@ -1072,7 +1496,7 @@ private struct UnavailableWireProjector: NewswireProjecting {
     }
 }
 
-private struct UnavailableEditor: NewswireEditorialActing {
+private struct UnavailableEditor: NewswireEditorialActing, NewswireEditorAuthorityChecking {
     func createNewswireEditorialAction(
         spaceDescriptorEntryID: String,
         targetEntryID: String,
@@ -1081,6 +1505,10 @@ private struct UnavailableEditor: NewswireEditorialActing {
         correctionText: String?
     ) throws -> NewswireSignedRecord {
         throw RepositoryError.profileClosed
+    }
+
+    func newswireIsEditor(spaceDescriptorEntryID: String, subjectID: String) throws -> Bool {
+        throw RepositoryError.profileClosed   // no live profile ⇒ never an editor (load() maps to false)
     }
 }
 
@@ -1256,7 +1684,7 @@ private struct ConnectionStatusView: View {
                             .textCase(.uppercase)
                             .tracking(1)
                             .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
-                        LabeledContent("Signed alerts", value: "\(model.entries.count)")
+                        LabeledContent("Alerts on this device", value: "\(model.entries.count)")
                         LabeledContent("Renderer", value: "incident-board/1")
                     }
                 }

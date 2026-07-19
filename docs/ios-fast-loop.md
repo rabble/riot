@@ -41,3 +41,18 @@ compile-correctness and the final iOS confirm.
 Agents doing iOS SwiftUI changes should compile-loop with `ios-check.sh fast`
 (and `test`), and run `ios-check.sh ios` only once before handing off — not a
 full iOS device build per edit.
+
+## Fresh-worktree prerequisite (generated FFI)
+
+A brand-new worktree has no generated FFI. Before the FIRST app build in it:
+
+```sh
+cargo run -p xtask -- generate-bindings                       # writes build/generated/riot-ffi/
+cargo build -p riot-ffi --lib --release --target aarch64-apple-darwin
+cp target/aarch64-apple-darwin/release/libriot_ffi.a build/native/macos/libriot_ffi.a
+```
+
+Without these, `ios-check.sh fast` fails with "Build input file cannot be found:
+build/generated/riot-ffi/riot_ffi.swift" (missing binding) or a linker error
+(missing macOS staticlib). This is the same generated-`build/`-tree dependency
+that keeps the native app builds out of CI (`docs/ci/native-ci-requirements.md`).

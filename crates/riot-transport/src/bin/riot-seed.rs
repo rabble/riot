@@ -42,10 +42,10 @@ async fn main() {
     let endpoint = bind_public(node_key).await.expect("bind public endpoint");
     let id = node_id(&endpoint);
 
-    // Wait for a dialable address, then carry NodeId + direct addrs in the hint
-    // (direct dial on LAN/public; discovery-by-id as fallback).
-    let addr = dialable_addr(&endpoint).await;
-    let hint = endpoint_addr_hint(&addr);
+    // Wait until addressable, then build the hint from the endpoint's REAL bound
+    // port (direct dial on LAN/tailnet; discovery-by-id for a public seed).
+    let _ = dialable_addr(&endpoint).await;
+    let hint = endpoint_addr_hint(&endpoint);
     let exp = 4_000_000_000u64; // long dev-testnet expiry
     let ticket = site.ticket(hint, 1, exp);
 

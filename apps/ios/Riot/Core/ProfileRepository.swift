@@ -43,7 +43,7 @@ public struct RiotEntry: Codable, Equatable, Identifiable, Sendable {
 /// manifest fields plus this profile's trust decision. `appIDHex` is the
 /// content-derived id (lowercased hex) used to address the app's resources
 /// and data.
-public struct RiotSpaceApp: Equatable, Sendable, Identifiable {
+public struct RiotSpaceApp: Equatable, Hashable, Sendable, Identifiable {
     public let appIDHex: String
     public let name: String
     public let description: String
@@ -1309,6 +1309,48 @@ extension RiotProfileRepository: DirectoryPorting {
         return try spaceApp(app)
     }
 
+    /// Installs a tool from a manifest+bundle pair the organizer chose from a
+    /// file — the "Add a tool" flow. Rust's `installApp` is the integrity oracle;
+    /// we then decode the bundle for serving and confirm its entry point before
+    /// retaining a resolver. The pair is written to the profile snapshot as a
+    /// carried pack so it survives a relaunch (the store is in-memory), and the
+    /// held-apps change is posted so Tools refreshes.
+    ///
+    /// Installing turns NOTHING on. The tool joins the held apps UNTRUSTED, so the
+    /// review sheet (`AppReviewSheet`) still stands between it and a WebView —
+    /// exactly like `getCarriedApp`. There is no auto-trust here by design.
+    @discardableResult
+    public func installApp(manifest: Data, bundle: Data) throws -> RiotSpaceApp {
+        // Admission first: a pair Rust refuses is never retained or written to disk.
+        let record = try appRuntime.installApp(manifestBytes: manifest, bundleBytes: bundle)
+        let app = try Self.retain(record: record, bundle: bundle)
+
+        if let existing = installed.firstIndex(where: {
+            $0.record.appId.lowercased() == record.appId.lowercased()
+        }) {
+            installed[existing] = app
+        } else {
+            installed.append(app)
+        }
+
+        let pack = PersistedAppPack(
+            appIDHex: record.appId.lowercased(),
+            manifest: manifest,
+            bundle: bundle
+        )
+        persisted.carriedApps.removeAll { $0.appIDHex == pack.appIDHex }
+        persisted.carriedApps.append(pack)
+        try storage.save(persisted)
+
+        // Held and saved; anything showing held apps (the Tools card, the only
+        // route to Open) is stale as of this line. Posted after the save so no
+        // observer can read a set a later throw would undo — same ordering as
+        // getCarriedApp.
+        NotificationCenter.default.post(name: .riotHeldAppsDidChange, object: self)
+
+        return try spaceApp(app)
+    }
+
     /// Passes an app on to the current space with this profile as carrier.
     /// Sharing never turns the app on for anyone: the organizer on the other
     /// side still makes their own decision.
@@ -1411,6 +1453,25 @@ public extension RiotProfileRepository {
         ))
     }
 
+    /// Signs a communal reply to `parentEntryID` and imports it through the same
+    /// preview/plan/commit path as a post. A reply is communal — no editorial
+    /// role is required — so core admits it for any member of the space; it is
+    /// dropped from the projection if the parent post is not held.
+    @discardableResult
+    func createNewswireComment(
+        spaceDescriptorEntryID: String,
+        parentEntryID: String,
+        body: String,
+        language: String
+    ) throws -> NewswireSignedRecord {
+        try profile.createNewswireComment(
+            spaceDescriptorEntryId: spaceDescriptorEntryID,
+            parentEntryId: parentEntryID,
+            body: body,
+            language: language
+        )
+    }
+
     /// The collective view of a newswire space: the open wire (all non-expired
     /// posts, newest-first) and the front page (ordinary posts with an active
     /// Feature action). `Hidden`/`Tombstoned` posts arrive with `body == nil`.
@@ -1432,6 +1493,14 @@ public extension RiotProfileRepository {
     /// bytes, so a substituted community name or roster is detectable on import.
     func newswireShareReference(spaceDescriptorEntryID: String) throws -> NewswireShareReference {
         try profile.newswireShareReference(spaceDescriptorEntryId: spaceDescriptorEntryID)
+    }
+
+    /// True iff `subjectID` may take editorial actions in the space identified by
+    /// `spaceDescriptorEntryID` — core's descriptor-authenticated roster answer
+    /// (Unit 4a), the SAME authority core enforces at admission. An unknown /
+    /// not-yet-synced descriptor returns `false`, never a throw.
+    func newswireIsEditor(spaceDescriptorEntryID: String, subjectID: String) throws -> Bool {
+        try profile.newswireIsEditor(descriptorEntryId: spaceDescriptorEntryID, subjectId: subjectID)
     }
 }
 
@@ -1470,6 +1539,37 @@ extension RiotProfileRepository: NewswireProjecting {}
 /// The live signer for the editorial surface — it hands the action straight to
 /// core, whose roster check (not any UI state) is what actually authorizes it.
 extension RiotProfileRepository: NewswireEditorialActing {}
+
+/// The live signer for a communal reply — it forwards to core, which admits the
+/// reply for any member of the space (no editorial role) and drops it from the
+/// projection if the parent post is not held.
+extension RiotProfileRepository: NewswireCommenting {}
+
+/// The live owner-moderation signer — it loads the device wrapping key
+/// transiently (reset after use) and hands the sealed masthead + action to core,
+/// which signs at O:/mod/ under the owner cap and auto-publishes the coupled
+/// heartbeat. Ownership is proven by possession of `sealedRoot` + the wrapping
+/// key; core refuses a masthead the key cannot open.
+extension RiotProfileRepository: SiteModerationAuthoring {
+    @discardableResult
+    public func authorSiteModeration(
+        sealedRoot: Data,
+        action: SiteModerationAction
+    ) throws -> SiteModerationOutcome {
+        try Self.withWrappingKey(from: keyStore) { wrappingKey in
+            try profile.createSiteModerationAction(
+                sealedRoot: sealedRoot,
+                wrappingKey: wrappingKey,
+                action: action
+            )
+        }
+    }
+}
+
+/// The live editor-authority read for the editorial surface — it forwards to
+/// core's descriptor-authenticated roster answer (Unit 4a), the same authority
+/// core enforces at admission. Visibility only; core is the signing gate.
+extension RiotProfileRepository: NewswireEditorAuthorityChecking {}
 
 private extension RiotEntry {
     init(_ entry: CurrentEntry) {

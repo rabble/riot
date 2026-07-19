@@ -49,6 +49,17 @@ class RiotController(filesDir: File) : AutoCloseable {
     var currentSpace: PublicSpace? = null
         private set
 
+    /**
+     * The local "store changed" signal — the Android twin of iOS's
+     * `dataChangedNotification`. Fired after an accepted nearby sync is persisted.
+     * The UI layer (which knows the foreground phase and the seen cursor) sets
+     * this and drives `LocalNotifier.evaluate`; it is null until the
+     * notifications + unread go-live PR (with `SeenCursorStore` and the newswire
+     * screen) connects it. Kept as a plain callback so this controller stays free
+     * of notification/UI concerns.
+     */
+    var onDataChanged: (() -> Unit)? = null
+
     init {
         val snapshot = store.load()
         profile = openProfile(snapshot)
@@ -225,6 +236,20 @@ class RiotController(filesDir: File) : AutoCloseable {
         NewswireEditorialActionInput(spaceDescriptorEntryId, targetEntryId, kind, reason, correctionText),
     )
 
+    /**
+     * Signs a communal reply to a post (or another reply) on the open wire. Like
+     * every newswire write this goes straight to [MobileProfile]; core is the
+     * authorization boundary and refuses a reply whose parent it does not hold, so
+     * this THROWS for a dangling parent — the surface never re-decides admission.
+     */
+    fun createNewswireComment(
+        spaceDescriptorEntryId: String,
+        parentEntryId: String,
+        body: String,
+        language: String = "en",
+    ): NewswireSignedRecord =
+        profile.createNewswireComment(spaceDescriptorEntryId, parentEntryId, body, language)
+
     fun projectNewswire(spaceDescriptorEntryId: String): NewswireProjectionView =
         profile.projectNewswireSpace(spaceDescriptorEntryId)
 
@@ -326,12 +351,16 @@ class RiotController(filesDir: File) : AutoCloseable {
         }
     }
 
-    private fun persistAcceptedSync(bundle: ByteArray, entries: List<CurrentEntry>) =
+    private fun persistAcceptedSync(bundle: ByteArray, entries: List<CurrentEntry>) {
         mutatePersisted { snapshot ->
             val prospective = mergeAcceptedSync(snapshot, bundle, entries)
             TemporaryKey.useOwned(PersistedProfileCodec.encode(prospective)) { Unit }
             prospective
         }
+        // New content just landed and was persisted — surface the local signal the
+        // notifier hooks. Best-effort and side-effect-only; never blocks the sync.
+        onDataChanged?.invoke()
+    }
 
     private fun openProfile(snapshot: PersistedProfile?): MobileProfile {
         val state = snapshot?.identityState ?: return openLocalProfileWithDatabase(databasePath)

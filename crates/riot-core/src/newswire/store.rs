@@ -87,12 +87,19 @@ pub fn load_space_records(
         .map_err(|_| NewswireStoreError::StoreQueryFailed)?;
     let actions = Path::from_slices(&[b"newswire", b"v1", &descriptor_id, b"actions"])
         .map_err(|_| NewswireStoreError::StoreQueryFailed)?;
+    let comments = Path::from_slices(&[b"newswire", b"v1", &descriptor_id, b"comments"])
+        .map_err(|_| NewswireStoreError::StoreQueryFailed)?;
     let mut entries = store
         .entries_with_prefix_in_namespace(&namespace_id, &posts)
         .map_err(|_| NewswireStoreError::StoreQueryFailed)?;
     entries.extend(
         store
             .entries_with_prefix_in_namespace(&namespace_id, &actions)
+            .map_err(|_| NewswireStoreError::StoreQueryFailed)?,
+    );
+    entries.extend(
+        store
+            .entries_with_prefix_in_namespace(&namespace_id, &comments)
             .map_err(|_| NewswireStoreError::StoreQueryFailed)?,
     );
     let records = decode_scanned_entries(descriptor_id, entries)?;
@@ -155,6 +162,7 @@ fn decode_scanned_entries(
         let pinned_descriptor = match record.payload() {
             NewswirePayload::NewsPost(post) => post.space_descriptor_entry_id,
             NewswirePayload::EditorialAction(action) => action.space_descriptor_entry_id,
+            NewswirePayload::NewsComment(comment) => comment.space_descriptor_entry_id,
             NewswirePayload::SpaceDescriptor(_) => {
                 return Err(NewswireStoreError::DescriptorMismatch);
             }
@@ -205,8 +213,8 @@ fn decode_scanned_entry(
 mod tests {
     use super::*;
     use crate::newswire::{
-        create_signed_news_post, create_signed_space_descriptor, inspect_news_record, NewsPostV1,
-        SignedNewswireRecord, SpaceDescriptorV1,
+        create_signed_news_comment, create_signed_news_post, create_signed_space_descriptor,
+        inspect_news_record, NewsCommentV1, NewsPostV1, SignedNewswireRecord, SpaceDescriptorV1,
     };
     use crate::willow::{
         decode_entry_canonic, generate_communal_author_for_namespace,
@@ -333,6 +341,55 @@ mod tests {
         let records = records();
         assert_eq!(
             decode_scanned_entries([0x91; 32], vec![records.post]),
+            Err(NewswireStoreError::DescriptorMismatch)
+        );
+    }
+
+    #[test]
+    fn signed_comment_decodes_and_pins_to_its_descriptor() {
+        let organizer = generate_space_organizer_author().expect("organizer");
+        let namespace_id = *organizer.namespace_id().as_bytes();
+        let writer =
+            generate_communal_author_for_namespace(namespace_id).expect("namespace writer");
+        let descriptor = create_signed_space_descriptor(
+            &organizer,
+            SpaceDescriptorV1 {
+                namespace_id,
+                name: "Unit Newswire".into(),
+                summary: "Comment scan fixture.".into(),
+                languages: vec!["en".into()],
+                geographic_tags: vec![],
+                topic_tags: vec![],
+                editorial_roster: vec![],
+                predecessor: None,
+                successor: None,
+            },
+        )
+        .expect("descriptor");
+        let verified = inspect_news_record(&descriptor.signed).expect("verified descriptor");
+        let comment = create_signed_news_comment(
+            &writer,
+            &verified,
+            NewsCommentV1 {
+                space_descriptor_entry_id: descriptor.entry_id,
+                parent_entry_id: [0x77; 32],
+                body: "Reply on the wire.".into(),
+                language: "en".into(),
+            },
+        )
+        .expect("comment");
+
+        let decoded =
+            decode_scanned_entries(descriptor.entry_id, vec![tuple(&comment)]).expect("decoded");
+        assert_eq!(decoded.len(), 1);
+        assert!(matches!(
+            decoded[0].payload(),
+            NewswirePayload::NewsComment(_)
+        ));
+
+        // A comment pinned to a different descriptor is rejected by the scan.
+        assert_eq!(
+            decode_scanned_entries([0x91; 32], vec![tuple(&comment)]),
             Err(NewswireStoreError::DescriptorMismatch)
         );
     }

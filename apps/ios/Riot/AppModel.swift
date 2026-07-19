@@ -358,7 +358,7 @@ public final class RiotAppModel: ObservableObject {
 
     public var connectionDisclosure: String {
         switch connectionStatus {
-        case .offline: "Offline · local device only"
+        case .offline: "Not connected"
         case let .nearby(peer): "Nearby · \(peer)"
         }
     }
@@ -600,6 +600,26 @@ public final class RiotAppModel: ObservableObject {
         }
     }
 
+    /// Re-derives the active community's newswire descriptor id from the registry
+    /// on demand — the offlineStale "Try again" path. Returns nil when the community
+    /// still carries none (a nearby-joined community), which is what puts the wire
+    /// into its forward-path (rejoin / sync) state instead of a silent re-loop.
+    /// Publishes the fresh value so the shell and Home agree. This is the same
+    /// `listCommunities()` derivation `reload()` performs, callable without a full
+    /// reload so the wire picks up a descriptor that just landed.
+    @discardableResult
+    public func rederivedNewswireDescriptorID() -> String? {
+        guard let repository, let namespaceID = space?.namespaceID else {
+            newswireDescriptorEntryID = nil
+            return nil
+        }
+        let derived = (try? repository.listCommunities())?
+            .first { $0.namespaceId == namespaceID }?
+            .descriptorEntryId
+        newswireDescriptorEntryID = derived
+        return derived
+    }
+
     /// Re-reads the held communities for the chooser. A failure leaves the last
     /// list rather than blanking the chooser.
     private func refreshCommunities() {
@@ -614,6 +634,42 @@ public final class RiotAppModel: ObservableObject {
 
     /// Dismisses the chooser without changing communities.
     public func dismissCommunityChooser() { isCommunityChooserPresented = false }
+
+    /// Whether the join-by-reference sheet (paste / QR) is presented. Raised from the
+    /// chooser's "Join another" row and the Launch screen so both entry points share
+    /// one sheet and one core call.
+    @Published public var isJoinByReferencePresented = false
+
+    /// Whether the chooser's "Create a community" action asked the shell to present
+    /// the create flow. A real intent, not a dead no-op.
+    @Published public private(set) var isCreateCommunityRequested = false
+
+    /// Chooser "Find one nearby": close the chooser and route to the Nearby surface
+    /// (the wired replacement for the old dead `{}` no-op at the call site).
+    public func findNearby() {
+        isCommunityChooserPresented = false
+        select(.nearby)
+    }
+
+    /// Chooser "Join another" / Launch "Join with a link or QR": present the
+    /// join-by-reference sheet.
+    public func requestJoinByReference() {
+        isCommunityChooserPresented = false
+        isJoinByReferencePresented = true
+    }
+
+    /// Dismisses the join-by-reference sheet.
+    public func dismissJoinByReference() { isJoinByReferencePresented = false }
+
+    /// Chooser "Create a community": close the chooser and ask the shell to present
+    /// the create flow (the wired replacement for the old dead `{}` no-op).
+    public func requestCreateCommunity() {
+        isCommunityChooserPresented = false
+        isCreateCommunityRequested = true
+    }
+
+    /// Dismisses the create flow the chooser raised.
+    public func dismissCreateCommunity() { isCreateCommunityRequested = false }
 
     /// Switches to another held community. The switch cancels in-flight work and
     /// fails closed in core; here we reload everything the screens draw so the
@@ -664,6 +720,22 @@ public final class RiotAppModel: ObservableObject {
             reload()
         } catch {
             errorMessage = Self.joinRefusal
+        }
+    }
+
+    /// Commits a previewed join from the join-by-reference sheet (paste or QR). The
+    /// preview already passed `JoinReferenceModel` validation, so the raw string is
+    /// known-good; this only decides between JOIN and SWITCH: a namespace already
+    /// held routes to a switch (never a duplicate row), otherwise it follows the
+    /// established `joinAdditionalCommunity` path. Business logic stays in the
+    /// repository/FFI — this forwards.
+    public func commitJoin(preview: JoinPreview) {
+        guard let repository else { return }
+        let held = (try? repository.listCommunities())?.map(\.namespaceId) ?? []
+        if JoinReferenceModel().isAlreadyJoined(namespaceIdHex: preview.namespaceIdHex, within: held) {
+            switchCommunity(namespaceID: preview.namespaceIdHex)
+        } else {
+            joinAdditionalCommunity(shareReference: preview.encoded)
         }
     }
 
@@ -1023,6 +1095,29 @@ public final class RiotAppModel: ObservableObject {
             errorMessage = Self.approvalFailureMessage(error)
         }
         refreshOrganizerState()
+    }
+
+    /// Adds a tool the organizer chose from a file, then refreshes Tools so the
+    /// new tool shows with its "Review" action. Installing turns nothing on — the
+    /// tool is UNTRUSTED until the organizer approves it in `AppReviewSheet`; this
+    /// method never trusts. A rejected file surfaces a plain message rather than
+    /// the silent no-op that let a failed install "just not appear".
+    public func installTool(manifest: Data, bundle: Data) {
+        guard let repository else { return }
+        do {
+            _ = try repository.installApp(manifest: manifest, bundle: bundle)
+            errorMessage = nil
+            refreshApps()
+        } catch {
+            errorMessage = Self.toolImportFailureMessage(error)
+        }
+    }
+
+    /// Why a chosen file could not be added as a tool, in words a person can act
+    /// on. Deliberately not `approvalFailureMessage` — that copy is about the
+    /// organizer trust gate, not a malformed file.
+    static func toolImportFailureMessage(_ error: Error) -> String {
+        "That file couldn’t be added as a tool. Choose the tool’s manifest, then its bundle."
     }
 
     /// Revokes trust for an app in the current space. Organizer-gated like

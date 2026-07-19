@@ -5,8 +5,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::willow::{system_snapshot, ClockSnapshot, EntryId};
 
 use super::{
-    EditorialActionKind, EditorialActionV1, NewsPostV1, NewswirePayload, OperationalProfileV1,
-    VerifiedNewswireRecord,
+    EditorialActionKind, EditorialActionV1, NewsCommentV1, NewsPostV1, NewswirePayload,
+    OperationalProfileV1, VerifiedNewswireRecord,
 };
 
 pub const MAX_PROJECTED_RECORDS: usize = 1_024;
@@ -104,6 +104,23 @@ pub struct ProjectedPost {
     pub treatment: PostTreatment,
 }
 
+/// A projected communal reply, grouped under its parent post by
+/// `parent_entry_id`. `body` is `None` when the comment is Hidden or
+/// Tombstoned by an active editorial action; `language`, identity and ordering
+/// survive redaction so the row stays accountable — the same discipline as a
+/// redacted post. Only comments whose parent is an eligible post appear here;
+/// a reply to a comment or to an unheld/expired post is dropped.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectedComment {
+    pub entry_id: EntryId,
+    pub parent_entry_id: EntryId,
+    pub author_id: [u8; 32],
+    pub tai_j2000_micros: u64,
+    pub body: Option<String>,
+    pub language: String,
+    pub treatment: PostTreatment,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProjectedEditorialAction {
     pub entry_id: EntryId,
@@ -121,6 +138,10 @@ pub struct NewswireProjection {
     pub open_wire: Vec<ProjectedPost>,
     pub front_page: Vec<ProjectedPost>,
     pub earlier: Vec<ProjectedPost>,
+    /// Communal replies across the whole space, each carrying its
+    /// `parent_entry_id`. Flat and time-sorted within each parent; the client
+    /// groups them under the post rows. Dangling replies are already dropped.
+    pub comments: Vec<ProjectedComment>,
     pub future_quarantine: Vec<EntryId>,
     pub editorial_history: Vec<ProjectedEditorialAction>,
 }
@@ -174,6 +195,11 @@ struct EligibleAction<'a> {
     active: bool,
 }
 
+struct EligibleComment<'a> {
+    record: &'a VerifiedNewswireRecord,
+    comment: &'a NewsCommentV1,
+}
+
 pub fn project(
     descriptor: &VerifiedNewswireRecord,
     records: &[VerifiedNewswireRecord],
@@ -217,6 +243,7 @@ pub fn project(
         .collect::<BTreeSet<_>>();
     let mut posts = Vec::new();
     let mut actions = Vec::new();
+    let mut comments = Vec::new();
     let mut future = Vec::new();
 
     for record in distinct.into_values() {
@@ -247,6 +274,15 @@ pub fn project(
                     });
                 }
             }
+            NewswirePayload::NewsComment(comment)
+                if comment.space_descriptor_entry_id == descriptor_id =>
+            {
+                if record.tai_j2000_micros() > future_cutoff {
+                    future.push(key);
+                } else {
+                    comments.push(EligibleComment { record, comment });
+                }
+            }
             _ => {}
         }
     }
@@ -259,9 +295,17 @@ pub fn project(
         .iter()
         .map(|post| post.record.entry_id())
         .collect::<BTreeSet<_>>();
+    let eligible_comment_ids = comments
+        .iter()
+        .map(|comment| comment.record.entry_id())
+        .collect::<BTreeSet<_>>();
+    // An editorial action is active when it targets an eligible post OR an
+    // eligible comment — moderation reaches communal replies exactly as it
+    // reaches posts (per content, never per person).
     for action in &mut actions {
         if action.action.kind != EditorialActionKind::Retract {
-            action.active = eligible_post_ids.contains(&action.action.target_entry_id);
+            action.active = eligible_post_ids.contains(&action.action.target_entry_id)
+                || eligible_comment_ids.contains(&action.action.target_entry_id);
         }
     }
 
@@ -296,7 +340,8 @@ pub fn project(
         }
     }
 
-    let plaintext_redacted_post_ids = actions
+    // Every entry id — post OR comment — an active hide/tombstone redacts.
+    let plaintext_redacted_target_ids = actions
         .iter()
         .filter(|action| {
             action.active
@@ -318,7 +363,7 @@ pub fn project(
             kind: action.action.kind,
             reason: action.action.reason.clone(),
             correction_text: if action.action.kind == EditorialActionKind::Correct
-                && plaintext_redacted_post_ids.contains(&action.action.target_entry_id)
+                && plaintext_redacted_target_ids.contains(&action.action.target_entry_id)
             {
                 None
             } else {
@@ -417,10 +462,68 @@ pub fn project(
     }
     featured.sort_by_key(|post| std::cmp::Reverse(post.0));
 
+    let mut projected_comments = Vec::new();
+    for eligible in comments {
+        // Flat v1: a reply attaches to a POST. A parent that is not an eligible
+        // post — unheld, expired, wrong-space, or itself a comment — makes this
+        // reply dangling, and it is dropped rather than orphaned or crashed.
+        if !eligible_post_ids.contains(&eligible.comment.parent_entry_id) {
+            continue;
+        }
+        let comment_id = eligible.record.entry_id();
+        let targeted = actions
+            .iter()
+            .filter(|action| action.active && action.action.target_entry_id == comment_id)
+            .collect::<Vec<_>>();
+        let hide_ids = targeted
+            .iter()
+            .filter(|action| action.action.kind == EditorialActionKind::Hide)
+            .map(|action| action.record.entry_id())
+            .collect::<Vec<_>>();
+        let tombstone_ids = targeted
+            .iter()
+            .filter(|action| action.action.kind == EditorialActionKind::Tombstone)
+            .map(|action| action.record.entry_id())
+            .collect::<Vec<_>>();
+        let treatment = if !tombstone_ids.is_empty() {
+            PostTreatment::Tombstoned {
+                actions: tombstone_ids,
+            }
+        } else if !hide_ids.is_empty() {
+            PostTreatment::Hidden { actions: hide_ids }
+        } else {
+            PostTreatment::Ordinary
+        };
+        // A hidden or tombstoned reply surrenders its body but keeps identity,
+        // ordering and language — the same redaction contract as a post.
+        let body = if treatment == PostTreatment::Ordinary {
+            Some(eligible.comment.body.clone())
+        } else {
+            None
+        };
+        projected_comments.push(ProjectedComment {
+            entry_id: comment_id,
+            parent_entry_id: eligible.comment.parent_entry_id,
+            author_id: eligible.record.signer_id(),
+            tai_j2000_micros: eligible.record.tai_j2000_micros(),
+            body,
+            language: eligible.comment.language.clone(),
+            treatment,
+        });
+    }
+    projected_comments.sort_by(|a, b| {
+        (a.parent_entry_id, a.tai_j2000_micros, a.entry_id).cmp(&(
+            b.parent_entry_id,
+            b.tai_j2000_micros,
+            b.entry_id,
+        ))
+    });
+
     Ok(NewswireProjection {
         open_wire,
         front_page: featured.into_iter().map(|(_, post)| post).collect(),
         earlier,
+        comments: projected_comments,
         future_quarantine: future.into_iter().map(|(_, entry_id)| entry_id).collect(),
         editorial_history,
     })
@@ -1248,6 +1351,151 @@ mod tests {
         assert_eq!(view.open_wire[0].treatment, PostTreatment::Ordinary);
         assert!(view.front_page.is_empty());
         assert!(view.editorial_history.is_empty());
+    }
+
+    fn comment_bound_to(
+        entry_id: EntryId,
+        time: u64,
+        parent_entry_id: EntryId,
+        descriptor_id: EntryId,
+        signer_id: [u8; 32],
+    ) -> VerifiedNewswireRecord {
+        record(
+            entry_id,
+            NAMESPACE,
+            signer_id,
+            time,
+            NewswirePayload::NewsComment(NewsCommentV1 {
+                space_descriptor_entry_id: descriptor_id,
+                parent_entry_id,
+                body: format!("Reply {entry_id:?}"),
+                language: "en".into(),
+            }),
+        )
+    }
+
+    fn comment(entry_id: EntryId, time: u64, parent_entry_id: EntryId) -> VerifiedNewswireRecord {
+        comment_bound_to(entry_id, time, parent_entry_id, id(1), AUTHOR)
+    }
+
+    #[test]
+    fn comments_group_under_parent_flat_and_time_sorted() {
+        let view = projection(&[
+            post(id(2), 100, None),
+            post(id(3), 110, None),
+            comment(id(20), 300, id(2)),
+            comment(id(21), 200, id(2)),
+            comment(id(22), 250, id(3)),
+        ]);
+        assert_eq!(
+            view.comments
+                .iter()
+                .map(|c| (c.entry_id, c.parent_entry_id, c.body.clone()))
+                .collect::<Vec<_>>(),
+            vec![
+                (id(21), id(2), Some(format!("Reply {:?}", id(21)))),
+                (id(20), id(2), Some(format!("Reply {:?}", id(20)))),
+                (id(22), id(3), Some(format!("Reply {:?}", id(22)))),
+            ]
+        );
+        assert_eq!(view.comments[0].author_id, AUTHOR);
+        assert_eq!(view.comments[0].language, "en");
+        assert_eq!(view.comments[0].treatment, PostTreatment::Ordinary);
+    }
+
+    #[test]
+    fn dangling_and_reply_to_comment_are_dropped_without_crashing() {
+        let view = projection(&[
+            post(id(2), 100, Some(clock().unix_seconds)), // expired -> in `earlier`, still eligible
+            comment(id(20), 200, id(2)),                  // parent expired-but-eligible -> KEPT
+            comment(id(30), 210, id(999)),                // unknown parent -> dropped
+            comment(id(31), 220, id(20)),                 // reply to a comment -> dropped
+            comment_bound_to(id(32), 230, id(2), id(777), AUTHOR), // wrong space -> dropped
+        ]);
+        assert_eq!(
+            view.comments.iter().map(|c| c.entry_id).collect::<Vec<_>>(),
+            vec![id(20)]
+        );
+        // The parent post is off the open wire (expired) but the reply survives.
+        assert_eq!(view.earlier[0].entry_id, id(2));
+    }
+
+    #[test]
+    fn editor_tombstone_redacts_a_comment_body_keeping_identity() {
+        let view = projection(&[
+            post(id(2), 100, None),
+            comment(id(20), 200, id(2)),
+            action(id(30), 300, id(20), EditorialActionKind::Tombstone),
+        ]);
+        let row = &view.comments[0];
+        assert_eq!(row.entry_id, id(20));
+        assert_eq!(row.parent_entry_id, id(2));
+        assert_eq!(row.author_id, AUTHOR);
+        assert_eq!(row.tai_j2000_micros, 200);
+        assert_eq!(row.body, None);
+        assert_eq!(row.language, "en");
+        assert_eq!(
+            row.treatment,
+            PostTreatment::Tombstoned {
+                actions: vec![id(30)]
+            }
+        );
+        // The moderation act is honestly recorded and active.
+        let mod_action = view
+            .editorial_history
+            .iter()
+            .find(|a| a.entry_id == id(30))
+            .unwrap();
+        assert!(mod_action.active);
+        assert_eq!(mod_action.target_entry_id, id(20));
+    }
+
+    #[test]
+    fn hide_by_non_editor_leaves_comment_ordinary() {
+        // A hide signed by someone NOT in the roster has no collective effect.
+        let view = projection(&[
+            post(id(2), 100, None),
+            comment(id(20), 200, id(2)),
+            action_bound_to(
+                id(30),
+                300,
+                id(20),
+                EditorialActionKind::Hide,
+                [0x99; 32],
+                id(1),
+            ),
+        ]);
+        assert_eq!(view.comments[0].treatment, PostTreatment::Ordinary);
+        assert_eq!(view.comments[0].body, Some(format!("Reply {:?}", id(20))));
+        assert!(view.editorial_history.is_empty());
+    }
+
+    #[test]
+    fn future_comment_is_quarantined_like_a_post() {
+        let cutoff = clock().tai_j2000_micros + MAX_FUTURE_SKEW_MICROS;
+        let view = projection(&[post(id(2), 100, None), comment(id(20), cutoff + 1, id(2))]);
+        assert!(view.comments.is_empty());
+        assert_eq!(view.future_quarantine, vec![id(20)]);
+    }
+
+    #[test]
+    fn comment_permutations_produce_equal_projection() {
+        let records = vec![
+            post(id(2), 100, None),
+            post(id(3), 110, None),
+            comment(id(20), 300, id(2)),
+            comment(id(21), 200, id(2)),
+            comment(id(22), 250, id(3)),
+            action(id(30), 400, id(20), EditorialActionKind::Hide),
+        ];
+        let expected = projection(&records);
+        assert_eq!(expected.comments.len(), 3);
+        let mut reversed = records.clone();
+        reversed.reverse();
+        assert_eq!(projection(&reversed), expected);
+        let mut rotated = records;
+        rotated.rotate_left(2);
+        assert_eq!(projection(&rotated), expected);
     }
 
     #[test]

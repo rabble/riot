@@ -31,9 +31,9 @@ use riot_core::willow::{
 use crate::community_registry::{CommunityRecord, Relationship, REGISTRY_KEY};
 use crate::mobile_api::{
     AlertCertainty, AlertDraftInput, AlertDraftRecord, AlertFreshness, AlertSeverity, AlertUrgency,
-    CommunityRelationship, CommunityRow, CurrentEntry, ImportAcceptance, MobileError,
-    MobileImportPlan, MobileImportPreview, MobileProfile, MobileSyncSession, PublicIdentity,
-    PublicSpace, SignedAlert, SyncOutcome, SyncOutcomeKind,
+    CommunityRelationship, CommunityRow, CurrentEntry, FollowedSiteRow, ImportAcceptance,
+    MobileError, MobileImportPlan, MobileImportPreview, MobileProfile, MobileSyncSession,
+    PublicIdentity, PublicSpace, SignedAlert, SyncOutcome, SyncOutcomeKind,
 };
 
 pub(crate) enum ProfileState {
@@ -73,8 +73,20 @@ pub(crate) struct LocalProfile {
     pub(crate) preview: Option<StoredPreview>,
     pub(crate) plan: Option<StoredPlan>,
     entries: Vec<CurrentEntry>,
-    sync_inventory: Vec<SignedWillowEntry>,
+    // pub(crate) so the site-follow-import test can assert the isolation invariant:
+    // an owned-namespace bundle import must leave the community sync inventory
+    // UNCHANGED. Only mutated via prospective/install_sync_inventory.
+    pub(crate) sync_inventory: Vec<SignedWillowEntry>,
     sync_session: Option<StoredSyncSession>,
+    /// A SECOND, independent sync slot for followed-site sync (Option C).
+    /// Physically separate from `sync_session` so the community session, its
+    /// generation guard, and the isolation-critical `sync_inventory` equality
+    /// check are never entangled with owned-namespace delivery. Its offer is the
+    /// just-in-time `build_followed_site_offer(root)` — never stored.
+    // WU2 lands the mechanism + in-crate tests; the FFI handle that reads this
+    // slot in production is WU4 (`follow_site`), so it is dead outside tests today.
+    #[allow(dead_code)]
+    followed_site_session: Option<StoredSyncSession>,
     next_handle_id: u64,
     /// Installed apps with their canonical manifest/bundle bytes (dedup +
     /// cap accounting; the display record is returned to the caller at
@@ -122,7 +134,9 @@ pub(crate) struct LocalProfile {
     db: Option<riot_core::store::RiotDatabase>,
     /// The held communities and which one is active (Unit 3). Source of truth in
     /// memory; mirrored to `local_state` on every mutation when `db` is `Some`.
-    registry: crate::community_registry::CommunityRegistry,
+    // pub(crate) so the site-follow importer can read the Following gate and stamp
+    // last-sync; only ever mutated via registry methods + persist_registry.
+    pub(crate) registry: crate::community_registry::CommunityRegistry,
     /// Inactive per-community authors, unsealed and parked by namespace. The
     /// ACTIVE community's author is `self.author`, never duplicated here (the
     /// author is deliberately not `Clone`). A community's sealed author is
@@ -209,6 +223,15 @@ struct StoredSyncSession {
     community_generation: u64,
     bridge: ByteSyncSession,
     pending: Option<StoredSyncImport>,
+    /// `None` for a community sync session (the active-community path, byte
+    /// identical to before this field existed). `Some(root)` marks a
+    /// FOLLOWED-SITE session: its import admits owned records under
+    /// `followed_root = root` (the site), family-gated to /mod + /articles, and
+    /// its accept commits WITHOUT touching `sync_inventory` (owned-namespace
+    /// records must never enter the active community's peer offer set).
+    // Read only through the followed-site drive fns, which are FFI-wired in WU4.
+    #[allow(dead_code)]
+    followed_root: Option<[u8; 32]>,
 }
 
 struct StoredSyncImport {
@@ -390,6 +413,7 @@ fn profile_with_author_and_db(
             entries: Vec::new(),
             sync_inventory: Vec::new(),
             sync_session: None,
+            followed_site_session: None,
             next_handle_id: 1,
             installed_apps: Vec::new(),
             app_trust_markers: Vec::new(),
@@ -949,6 +973,7 @@ pub(crate) fn list_current_entries(
                     && !is_profile_prefixed(entry.path())
                     && !riot_core::newswire::is_newswire_prefix(entry.path())
                     && !riot_core::willow::site_paths::is_owned_editorial_entry(entry)
+                    && !riot_core::willow::site_paths::is_owned_moderation_entry(entry)
             })
             .map(|(id, _, _)| id)
             .collect();
@@ -1215,6 +1240,7 @@ pub(crate) fn open_sync_session(
             community_generation: profile.community_generation,
             bridge,
             pending: None,
+            followed_root: None,
         });
         Ok(Arc::new(MobileSyncSession {
             inner: Arc::clone(inner),
@@ -1453,6 +1479,298 @@ fn sync_session_is_active(profile: &LocalProfile) -> bool {
     handle_generation_is_current(profile, generation)
 }
 
+// ---------------------------------------------------------------------------
+// Followed-site sync (Option C, WU2): a SECOND, independent sync session keyed
+// on a followed composite site's owned namespace `root`. It reuses the
+// ByteSyncSession frame protocol and the proven owned-admission core, but on a
+// SEPARATE slot with two deliberate divergences from the community path:
+//   1. import admits under `followed_root = root` (the SITE, not the active
+//      community) and family-gates to owned /mod + /articles only (least
+//      privilege, mirrors Option B's import_followed_site_bundle);
+//   2. accept commits WITHOUT touching `sync_inventory` — owned-namespace
+//      records must never enter the active community's peer offer set.
+// The offer is `build_followed_site_offer(root)`, computed just-in-time and
+// never stored (the C1a isolation property: no second unstamped set exists).
+// The community drive fns above are untouched. Not yet FFI-exported; WU4 wraps
+// this in a uniffi handle behind `follow_site(ticket)`.
+// ---------------------------------------------------------------------------
+
+#[allow(dead_code)] // FFI caller is WU4; exercised by in-crate tests today
+pub(crate) fn open_followed_site_sync_session(
+    inner: &Arc<Mutex<ProfileState>>,
+    root: [u8; 32],
+) -> Result<u64, MobileError> {
+    with_active(inner, |profile| {
+        drop_stale_handles(profile);
+        // Drop a followed-site session left over from a previous community
+        // (WU5 will refine the switch/lifetime interaction; invalidating on a
+        // stale generation is the safe-closed default for WU2).
+        if profile
+            .followed_site_session
+            .as_ref()
+            .is_some_and(|session| session.community_generation != profile.community_generation)
+        {
+            profile.followed_site_session = None;
+        }
+        if profile.preview.is_some() || profile.plan.is_some() {
+            return Err(MobileError::InvalidInput);
+        }
+        if profile.followed_site_session.is_some() {
+            return Err(MobileError::InvalidInput);
+        }
+        // FOLLOWING GATE (R3): the central security check — refuse to open a
+        // followed-site session for a root this profile does not follow, so a
+        // hostile ticket can never make the app sync an unfollowed owned
+        // namespace. Mirrors Option B's import_followed_site_bundle gate.
+        let following = profile
+            .registry
+            .find(&root)
+            .is_some_and(|record| record.relationship == Relationship::Following);
+        if !following {
+            return Err(MobileError::ImportRejected);
+        }
+        let offer = build_followed_site_offer(profile, &root)?;
+        let bridge = ByteSyncSession::new(root, offer).map_err(map_sync_error)?;
+        let sync_id = profile.alloc_handle_id()?;
+        profile.followed_site_session = Some(StoredSyncSession {
+            id: sync_id,
+            community_generation: profile.community_generation,
+            bridge,
+            pending: None,
+            followed_root: Some(root),
+        });
+        Ok(sync_id)
+    })
+}
+
+#[allow(dead_code)] // FFI caller is WU4; exercised by in-crate tests today
+fn active_followed_mut(
+    profile: &mut LocalProfile,
+    sync_id: u64,
+) -> Result<&mut StoredSyncSession, MobileError> {
+    let captured = match profile.followed_site_session.as_ref() {
+        Some(session) if session.id == sync_id => Some(session.community_generation),
+        _ => None,
+    };
+    if let Some(generation) = captured {
+        if !handle_generation_is_current(profile, generation) {
+            profile.followed_site_session = None;
+            return Err(MobileError::ObjectClosed);
+        }
+    }
+    profile
+        .followed_site_session
+        .as_mut()
+        .filter(|session| session.id == sync_id)
+        .ok_or(MobileError::ObjectClosed)
+}
+
+#[allow(dead_code)] // FFI caller is WU4; exercised by in-crate tests today
+pub(crate) fn followed_sync_begin(
+    inner: &Arc<Mutex<ProfileState>>,
+    sync_id: u64,
+) -> Result<SyncOutcome, MobileError> {
+    with_active(inner, |profile| {
+        let session = active_followed_mut(profile, sync_id)?;
+        let outcome = session.bridge.begin().map_err(map_sync_error)?;
+        outcome_without_import(outcome, session.bridge.is_terminal())
+    })
+}
+
+#[allow(dead_code)] // FFI caller is WU4; exercised by in-crate tests today
+pub(crate) fn followed_sync_receive_frame(
+    inner: &Arc<Mutex<ProfileState>>,
+    sync_id: u64,
+    frame_bytes: Vec<u8>,
+) -> Result<SyncOutcome, MobileError> {
+    with_active(inner, |profile| {
+        let outcome = active_followed_mut(profile, sync_id)?
+            .bridge
+            .receive_bytes(&frame_bytes)
+            .map_err(map_sync_error)?;
+        match outcome {
+            ByteSyncOutcome::ImportBundle(bundle_bytes) => {
+                match prepare_followed_site_import(profile, sync_id, &bundle_bytes) {
+                    Ok(outcome) => Ok(outcome),
+                    Err(error) => {
+                        let code = if matches!(
+                            error,
+                            MobileError::StoreFull | MobileError::SessionLimit
+                        ) {
+                            2
+                        } else {
+                            1
+                        };
+                        let session = active_followed_mut(profile, sync_id)?;
+                        let outcome = session
+                            .bridge
+                            .import_rejected(code)
+                            .map_err(map_sync_error)?;
+                        outcome_without_import(outcome, session.bridge.is_terminal())
+                    }
+                }
+            }
+            other => {
+                let terminal = active_followed_mut(profile, sync_id)?.bridge.is_terminal();
+                let terminal_without_frame =
+                    terminal && !matches!(other, ByteSyncOutcome::FrameReady);
+                let result = outcome_without_import(other, terminal);
+                if terminal_without_frame {
+                    profile.followed_site_session = None;
+                }
+                result
+            }
+        }
+    })
+}
+
+#[allow(dead_code)] // FFI caller is WU4; exercised by in-crate tests today
+fn prepare_followed_site_import(
+    profile: &mut LocalProfile,
+    sync_id: u64,
+    bundle_bytes: &[u8],
+) -> Result<SyncOutcome, MobileError> {
+    let root = active_followed_mut(profile, sync_id)?
+        .followed_root
+        .ok_or(MobileError::Internal)?;
+    let namespace_hex = hex(&root);
+    let inspectable = inspectable_entries(bundle_bytes, &namespace_hex)?;
+    // FAMILY GATE (R2): a followed-site bundle may carry ONLY owned /mod +
+    // /articles. Any other family (a communal alert/newswire entry, a profile
+    // card, a third namespace's entry) makes the whole bundle untrustworthy —
+    // reject it all-or-nothing. Routed through the SAME canonical predicate the
+    // manual (Option B) and transport (WU3) paths use, so the gate cannot drift.
+    for item in &inspectable {
+        let entry = riot_core::willow::decode_entry_canonic(&item.signed.entry_bytes)
+            .map_err(|_| MobileError::ImportRejected)?;
+        if !riot_core::site::is_followed_site_family(&entry) {
+            return Err(MobileError::ImportRejected);
+        }
+    }
+    let entries: Vec<_> = inspectable
+        .iter()
+        .filter_map(|item| item.current.clone())
+        .collect();
+    let sync_entries: Vec<_> = inspectable.into_iter().map(|item| item.signed).collect();
+    profile.preview = None;
+    profile.plan = None;
+    // Admit under the SITE root (not the active community): owned /mod +
+    // /articles are admitted under a cap rooted at `root`. This is the same
+    // owned-admission core Option B proved; only the root wiring differs from
+    // the community path's `followed_root = active namespace`.
+    let preview =
+        inspect_core_with_root(&profile.store, bundle_bytes, "site-follow-sync", Some(root))?;
+    if preview.eligible_count().map_err(map_core_error)? != sync_entries.len() {
+        return Err(MobileError::ImportRejected);
+    }
+    // DELIBERATELY no prospective_sync_inventory: owned-namespace records must
+    // never enter the community offer set.
+    active_followed_mut(profile, sync_id)?.pending = Some(StoredSyncImport {
+        preview,
+        entries: entries.clone(),
+        sync_entries,
+    });
+    Ok(SyncOutcome {
+        kind: SyncOutcomeKind::ReviewImport,
+        entries,
+        rejection_code: None,
+        terminal: false,
+        import_bundle_bytes: Some(bundle_bytes.to_vec()),
+    })
+}
+
+#[allow(dead_code)] // FFI caller is WU4; exercised by in-crate tests today
+pub(crate) fn followed_sync_take_outbound_frame(
+    inner: &Arc<Mutex<ProfileState>>,
+    sync_id: u64,
+) -> Result<Option<Vec<u8>>, MobileError> {
+    with_active(inner, |profile| {
+        let (frame, terminal) = {
+            let session = active_followed_mut(profile, sync_id)?;
+            let frame = session.bridge.take_outbound_frame();
+            (frame, session.bridge.is_terminal())
+        };
+        if terminal && frame.is_some() {
+            profile.followed_site_session = None;
+        }
+        Ok(frame)
+    })
+}
+
+#[allow(dead_code)] // FFI caller is WU4; exercised by in-crate tests today
+pub(crate) fn followed_sync_accept_import(
+    inner: &Arc<Mutex<ProfileState>>,
+    sync_id: u64,
+) -> Result<SyncOutcome, MobileError> {
+    with_active(inner, |profile| {
+        let entries = {
+            let pending = active_followed_mut(profile, sync_id)?
+                .pending
+                .as_ref()
+                .ok_or(MobileError::InvalidInput)?;
+            pending.entries.clone()
+        };
+        {
+            let pending = active_followed_mut(profile, sync_id)?
+                .pending
+                .as_ref()
+                .ok_or(MobileError::InvalidInput)?;
+            let plan = pending.preview.plan_all().map_err(map_core_error)?;
+            match plan.commit().map_err(map_core_error)? {
+                CommitOutcome::Committed(_) | CommitOutcome::NoChanges(_) => {}
+            }
+        }
+        active_followed_mut(profile, sync_id)?.pending = None;
+        for entry in entries {
+            remember_entry(&mut profile.entries, entry);
+        }
+        // DELIBERATELY NOT install_sync_inventory: this is the one divergence
+        // from the community accept. Owned-namespace records committed here must
+        // not enter the active community's peer offer set — the isolation
+        // invariant the community `install_sync_inventory` equality guard
+        // protects. `track_committed_entry` is likewise not called.
+        let session = active_followed_mut(profile, sync_id)?;
+        let outcome = session.bridge.import_accepted().map_err(map_sync_error)?;
+        outcome_without_import(outcome, session.bridge.is_terminal())
+    })
+}
+
+#[allow(dead_code)] // FFI caller is WU4; exercised by in-crate tests today
+pub(crate) fn followed_sync_reject_import(
+    inner: &Arc<Mutex<ProfileState>>,
+    sync_id: u64,
+    code: u8,
+) -> Result<SyncOutcome, MobileError> {
+    with_active(inner, |profile| {
+        let session = active_followed_mut(profile, sync_id)?;
+        if session.pending.take().is_none() {
+            return Err(MobileError::InvalidInput);
+        }
+        let outcome = session
+            .bridge
+            .import_rejected(code)
+            .map_err(map_sync_error)?;
+        outcome_without_import(outcome, session.bridge.is_terminal())
+    })
+}
+
+#[allow(dead_code)] // FFI caller is WU4; exercised by in-crate tests today
+pub(crate) fn followed_sync_cancel(
+    inner: &Arc<Mutex<ProfileState>>,
+    sync_id: u64,
+) -> Result<(), MobileError> {
+    with_active(inner, |profile| {
+        match profile.followed_site_session.as_ref() {
+            Some(session) if session.id == sync_id => {
+                profile.followed_site_session = None;
+                Ok(())
+            }
+            Some(_) => Err(MobileError::ObjectClosed),
+            None => Ok(()),
+        }
+    })
+}
+
 fn outcome_without_import(
     outcome: ByteSyncOutcome,
     terminal: bool,
@@ -1563,7 +1881,8 @@ fn inspectable_entries(
             || riot_core::apps::index::classify_app_index_path(decoded_entry.path()).is_some()
             || is_profile_prefixed(decoded_entry.path())
             || riot_core::newswire::is_newswire_prefix(decoded_entry.path())
-            || riot_core::willow::site_paths::is_owned_editorial_entry(&decoded_entry);
+            || riot_core::willow::site_paths::is_owned_editorial_entry(&decoded_entry)
+            || riot_core::willow::site_paths::is_owned_moderation_entry(&decoded_entry);
         let current = if is_non_alert {
             None
         } else {
@@ -1726,15 +2045,89 @@ fn active_namespace_live_ids(
         return profile.store.live_entry_ids().map_err(map_core_error);
     };
     let namespace_id = parse_entry_id(&space.namespace_id)?;
+    namespace_live_ids(profile, &namespace_id)
+}
+
+/// The live entry ids in `namespace_id` — the active-community scoping of
+/// `active_namespace_live_ids` generalized to ANY namespace, so a followed
+/// site's owned namespace can be queried the same way. It is a namespace-scoped
+/// prefix query and therefore can never return another namespace's ids: the
+/// same offer-isolation property the community inventory relies on, applied per
+/// namespace. Reads only; the community `sync_inventory` and its equality guard
+/// are never touched by this helper. `active_namespace_live_ids` delegates here
+/// for the active namespace, so that path stays byte-identical.
+fn namespace_live_ids(
+    profile: &LocalProfile,
+    namespace_id: &[u8; 32],
+) -> Result<Vec<riot_core::willow::EntryId>, MobileError> {
     let all_prefix =
         riot_core::willow::Path::from_slices(&[]).map_err(|_| MobileError::Internal)?;
     Ok(profile
         .store
-        .entries_with_prefix_in_namespace(&namespace_id, &all_prefix)
+        .entries_with_prefix_in_namespace(namespace_id, &all_prefix)
         .map_err(map_core_error)?
         .into_iter()
         .map(|(id, _, _)| id)
         .collect())
+}
+
+/// The just-in-time followed-site OFFER for `namespace_id`: exactly that
+/// namespace's live entries in their full signed form, read verbatim from the
+/// durable store — the entries a followed-site sync session hands to a peer.
+///
+/// This is the C1a primitive that keeps the community-isolation invariant
+/// untouched: the offer is DERIVED here and RETURNED, never stored in
+/// `profile.sync_inventory`. So no second unstamped set exists that a later
+/// community switch could offer to the wrong peer. It applies the SAME
+/// discipline as `install_sync_inventory`, but per namespace: the offer must
+/// equal EXACTLY `namespace_live_ids(namespace_id)` (fail closed otherwise), and
+/// the same `MAX_SYNC_IDS` / `MAX_SYNC_INVENTORY_BYTES` ceilings.
+///
+/// Fails closed on a memory-backed store: `signed_entries_in_namespace` returns
+/// `None` (the join drops cap/sig), so an offer cannot be built — followed-site
+/// sync requires a durable profile.
+// Consumed by the followed-site drive fns below (FFI-wired in WU4).
+#[allow(dead_code)]
+pub(crate) fn build_followed_site_offer(
+    profile: &LocalProfile,
+    namespace_id: &[u8; 32],
+) -> Result<Vec<SignedWillowEntry>, MobileError> {
+    // Durable-only: `None` is the explicit "no signed form on a memory store"
+    // signal — never treat it as an empty offer.
+    let signed = profile
+        .store
+        .signed_entries_in_namespace(namespace_id)
+        .map_err(map_core_error)?
+        .ok_or(MobileError::Internal)?;
+
+    let mut live_ids = namespace_live_ids(profile, namespace_id)?;
+    live_ids.sort_unstable();
+
+    let mut offer = signed;
+    offer.retain(|entry| {
+        live_ids
+            .binary_search(&entry_id(&entry.entry_bytes))
+            .is_ok()
+    });
+    offer.sort_unstable_by_key(|entry| entry_id(&entry.entry_bytes));
+    let offer_ids: Vec<_> = offer
+        .iter()
+        .map(|entry| entry_id(&entry.entry_bytes))
+        .collect();
+    // The per-namespace analog of the `install_sync_inventory` equality guard.
+    // The offer MUST be exactly this namespace's live set — no more (would leak),
+    // no less (would silently under-serve). It is returned, not stored.
+    if offer_ids != live_ids {
+        return Err(MobileError::Internal);
+    }
+    if offer.len() > MAX_SYNC_IDS {
+        return Err(MobileError::SessionLimit);
+    }
+    let encoded = encode_bundle(&offer).map_err(|_| MobileError::SessionLimit)?;
+    if encoded.len() > MAX_SYNC_INVENTORY_BYTES {
+        return Err(MobileError::SessionLimit);
+    }
+    Ok(offer)
 }
 
 fn install_sync_inventory(
@@ -1909,7 +2302,7 @@ pub(crate) fn hex(bytes: &[u8]) -> String {
     value
 }
 
-fn map_core_error(error: riot_core::session::SessionError) -> MobileError {
+pub(crate) fn map_core_error(error: riot_core::session::SessionError) -> MobileError {
     use riot_core::session::SessionError;
 
     match error {
@@ -1938,7 +2331,8 @@ fn map_author_error(error: WillowError) -> MobileError {
         WillowError::InvalidAlert(_)
         | WillowError::NamespaceNotCommunal
         | WillowError::DelegationAreaEscapesArticles
-        | WillowError::DelegationAreaEscapesDirectory => MobileError::InvalidInput,
+        | WillowError::DelegationAreaEscapesDirectory
+        | WillowError::DelegationAreaEscapesMod => MobileError::InvalidInput,
         WillowError::SealedIdentityInvalid | WillowError::SealedMastheadInvalid => {
             MobileError::InvalidInput
         }
@@ -2121,6 +2515,8 @@ fn relationship_to_ffi(relationship: Relationship) -> CommunityRelationship {
         Relationship::Organizer => CommunityRelationship::Organizer,
         Relationship::Member => CommunityRelationship::Member,
         Relationship::PublicReader => CommunityRelationship::PublicReader,
+        Relationship::Following => CommunityRelationship::Following,
+        Relationship::Personal => CommunityRelationship::Personal,
     }
 }
 
@@ -2146,7 +2542,7 @@ fn community_row(profile: &LocalProfile, record: &CommunityRecord) -> CommunityR
 
 /// Encode and flush the registry to durable `local_state`. A no-op for an
 /// in-memory profile, whose registry lives only for the session.
-fn persist_registry(profile: &LocalProfile) -> Result<(), MobileError> {
+pub(crate) fn persist_registry(profile: &LocalProfile) -> Result<(), MobileError> {
     if let Some(db) = profile.db.as_ref() {
         db.set_local_state(REGISTRY_KEY, &profile.registry.encode())
             .map_err(map_database_error)?;
@@ -2182,6 +2578,8 @@ pub(crate) fn register_active_community(
         quarantined: false,
         last_activity_unix_seconds: None,
         last_sync_unix_seconds: None,
+        fetch_url: None,
+        require_floor: None,
     });
     profile.registry.active = Some(namespace_id);
     persist_registry(profile)?;
@@ -2216,6 +2614,7 @@ fn reproject_active(profile: &mut LocalProfile) -> Result<(), MobileError> {
             || is_profile_prefixed(entry.path())
             || riot_core::newswire::is_newswire_prefix(entry.path())
             || riot_core::willow::site_paths::is_owned_editorial_entry(&entry)
+            || riot_core::willow::site_paths::is_owned_moderation_entry(&entry)
         {
             continue;
         }
@@ -2303,6 +2702,10 @@ pub(crate) fn list_communities(
             .registry
             .communities
             .iter()
+            // Followed composite sites are author-less: they are surfaced through
+            // `list_followed_sites`, never as a `CommunityRow`. `Personal` stays
+            // IN (it is author-bearing and rides the community list).
+            .filter(|record| record.relationship != Relationship::Following)
             .map(|record| community_row(profile, record))
             .collect();
         let active_hex = active.map(|ns| hex(&ns));
@@ -2321,6 +2724,130 @@ pub(crate) fn list_communities(
         });
         Ok(rows)
     })
+}
+
+/// Build the author-less FFI row for one followed composite site. Rung 1 lands
+/// the fields + honest defaults: `state` is `"pending-first-sync"` (the post-follow
+/// default until a manifest resolves) and `transport_blocked` is `false`; both
+/// get their real transport-derived values on the ticket-follow path in Rung 5.
+fn followed_site_row(record: &CommunityRecord) -> FollowedSiteRow {
+    use riot_core::site::ticket::Floor;
+    // FETCH-TIME FAIL-CLOSED GATE: a `require:arti` (or unknown) site must never
+    // expose a clearnet-pullable url — HTTP-pulling it over clearnet would leak
+    // the follower's IP to the mirror, the exact harm require:arti prevents, and
+    // mobile has no Tor transport in v1. So ONLY a `none` floor surfaces the url;
+    // otherwise the row is transport_blocked and carries no fetch_url (the app has
+    // nothing to GET, stays held/unavailable — never a clearnet leak).
+    let floor = record.require_floor.as_deref().map(Floor::parse);
+    let clearnet_ok = matches!(floor, Some(Floor::None) | None);
+    let transport_blocked = matches!(floor, Some(Floor::Arti) | Some(Floor::Unknown(_)));
+    FollowedSiteRow {
+        root: hex(&record.namespace_id),
+        title: record.title.clone(),
+        state: if transport_blocked {
+            "transport-blocked".to_string()
+        } else {
+            "pending-first-sync".to_string()
+        },
+        transport_blocked,
+        fetch_url: clearnet_ok.then(|| record.fetch_url.clone()).flatten(),
+    }
+}
+
+/// Every composite indymedia site the user follows, as author-less rows. These
+/// are the `Following` registry records — the same records `list_communities`
+/// filters OUT — so a followed root surfaces here and nowhere else. Reads
+/// metadata only; never unseals anything.
+pub(crate) fn list_followed_sites(
+    inner: &Arc<Mutex<ProfileState>>,
+) -> Result<Vec<FollowedSiteRow>, MobileError> {
+    with_active(inner, |profile| {
+        Ok(profile
+            .registry
+            .communities
+            .iter()
+            .filter(|record| record.relationship == Relationship::Following)
+            .map(followed_site_row)
+            .collect())
+    })
+}
+
+/// Production follow-by-ticket (Option C HTTP-pull): parse + VERIFY a root-signed
+/// site ticket, then persist a `Following` registry record carrying the ticket's
+/// signed HTTPS `url=` fetch hint. The phone later pulls that url and imports the
+/// bytes through `import_followed_site_bundle` (which re-verifies every entry —
+/// the sole trust anchor; the url and its mirror are untrusted).
+///
+/// Verifies the root signature and expiry. A ticket with no `url=` still follows
+/// (fetch_url `None` → nothing to auto-pull, graceful). NOTE (v1 limits, flagged
+/// for follow-up): epoch-rollback protection needs a persisted per-site epoch
+/// floor, and a `require:arti` site should refuse a clearnet HTTP pull — both are
+/// out of this cut; the url is only a fetch hint and fetched bytes are re-verified.
+pub(crate) fn follow_site(
+    inner: &Arc<Mutex<ProfileState>>,
+    ticket_uri: String,
+) -> Result<FollowedSiteRow, MobileError> {
+    let ticket =
+        riot_core::site::ticket::parse(&ticket_uri).map_err(|_| MobileError::InvalidInput)?;
+    if !ticket.verify() {
+        return Err(MobileError::InvalidInput);
+    }
+    let now = system_snapshot().map_err(map_author_error)?.unix_seconds;
+    if now > ticket.exp {
+        return Err(MobileError::InvalidInput);
+    }
+
+    with_active(inner, |profile| {
+        profile.registry.upsert(CommunityRecord {
+            namespace_id: ticket.namespace,
+            title: "Followed site".to_string(),
+            relationship: Relationship::Following,
+            sealed_author: None,
+            descriptor_entry_id: None,
+            archived: false,
+            quarantined: false,
+            last_activity_unix_seconds: None,
+            last_sync_unix_seconds: None,
+            fetch_url: ticket.url.clone(),
+            require_floor: Some(ticket.require_raw.clone()),
+        });
+        persist_registry(profile)?;
+        let record = profile
+            .registry
+            .find(&ticket.namespace)
+            .ok_or(MobileError::Internal)?;
+        Ok(followed_site_row(record))
+    })
+}
+
+/// Test-only seam that persists a `Following` registry record for `root` and
+/// returns its lowercase-hex namespace id. It lives in a NON-`#[uniffi::export]`
+/// impl block so UniFFI never surfaces a test-only method across the FFI
+/// boundary. The production entry point is Rung 5's `follow_site(ticket)` (real
+/// ticket + transport parsing); Rung 1 only needs a persisted `Following` record
+/// to exercise the `list_followed_sites` / `list_communities`-exclusion paths.
+#[cfg(test)]
+impl MobileProfile {
+    pub(crate) fn follow_site_for_test(&self, root: Vec<u8>) -> Result<String, MobileError> {
+        let root: [u8; 32] = root.try_into().map_err(|_| MobileError::InvalidInput)?;
+        with_active(&self.inner, |profile| {
+            profile.registry.upsert(CommunityRecord {
+                namespace_id: root,
+                title: "Followed site".to_string(),
+                relationship: Relationship::Following,
+                sealed_author: None,
+                descriptor_entry_id: None,
+                archived: false,
+                quarantined: false,
+                last_activity_unix_seconds: None,
+                last_sync_unix_seconds: None,
+                fetch_url: None,
+                require_floor: None,
+            });
+            persist_registry(profile)?;
+            Ok(hex(&root))
+        })
+    }
 }
 
 pub(crate) fn active_community(
@@ -3891,5 +4418,335 @@ mod tests {
             Ok(())
         })
         .unwrap();
+    }
+
+    /// WU1 regression: extracting `namespace_live_ids` must leave the active
+    /// community path byte-identical. `active_namespace_live_ids` now delegates
+    /// to the generalized helper for the active namespace; the two must agree on
+    /// exactly the same live-id set. This is the load-bearing check that the
+    /// isolation-critical inventory scoping did not change behavior.
+    #[test]
+    fn namespace_live_ids_matches_active_scoping_for_the_active_namespace() {
+        let profile = open_local_profile().unwrap();
+        let space = create_public_space(&profile.inner, "Regression".into()).unwrap();
+        let active_ns = parse_entry_id(&space.namespace_id).unwrap();
+        let (manifest, bundle) = riot_core::apps::starter::STARTER_CATALOG[0];
+        let installed = install_app(&profile.inner, manifest.to_vec(), bundle.to_vec()).unwrap();
+        let app_id = hex(&installed.app_id_bytes);
+        for index in 0..3u8 {
+            app_data_put(
+                &profile.inner,
+                app_id.clone(),
+                format!("items/{index}"),
+                vec![index],
+            )
+            .unwrap();
+        }
+
+        with_active(&profile.inner, |profile| {
+            let mut via_active = active_namespace_live_ids(profile)?;
+            let mut via_generic = namespace_live_ids(profile, &active_ns)?;
+            via_active.sort_unstable();
+            via_generic.sort_unstable();
+            assert!(
+                !via_active.is_empty(),
+                "the active namespace holds live entries to compare"
+            );
+            assert_eq!(
+                via_active, via_generic,
+                "delegation must be byte-identical for the active namespace"
+            );
+            // A namespace this profile does not hold has no live ids — the
+            // per-namespace query cannot reach into the active namespace's set.
+            assert!(
+                namespace_live_ids(profile, &[0xABu8; 32])?.is_empty(),
+                "an unheld namespace yields no live ids"
+            );
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    /// A durable (SQLite) profile with a few live entries in its active
+    /// namespace. Followed-site sync is durable-only, so its tests need this.
+    fn durable_profile_with_entries(
+        tag: &str,
+    ) -> (tempfile::TempDir, Arc<MobileProfile>, [u8; 32]) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db_path = dir.path().join("riot.sqlite");
+        let profile =
+            open_local_profile_with_database(db_path.to_string_lossy().into_owned()).unwrap();
+        let space = create_public_space(&profile.inner, format!("{tag} space")).unwrap();
+        let active_ns = parse_entry_id(&space.namespace_id).unwrap();
+        let (manifest, bundle) = riot_core::apps::starter::STARTER_CATALOG[0];
+        let installed = install_app(&profile.inner, manifest.to_vec(), bundle.to_vec()).unwrap();
+        let app_id = hex(&installed.app_id_bytes);
+        for index in 0..2u8 {
+            app_data_put(
+                &profile.inner,
+                app_id.clone(),
+                format!("items/{index}"),
+                vec![index],
+            )
+            .unwrap();
+        }
+        (dir, profile, active_ns)
+    }
+
+    /// WU2: the followed-site offer is the namespace's live entries in their full
+    /// signed form, read verbatim — and byte-identical to what the community
+    /// inventory holds for that same namespace (the durable store is the source
+    /// for both). Building the offer must NOT mutate `sync_inventory` (the offer
+    /// is derived + returned, never stored — the C1a isolation property).
+    #[test]
+    fn build_followed_site_offer_returns_live_signed_entries_verbatim_without_touching_inventory() {
+        let (_dir, profile, active_ns) = durable_profile_with_entries("offer");
+
+        with_active(&profile.inner, |profile| {
+            let inventory_before = profile.sync_inventory.clone();
+            assert!(
+                !inventory_before.is_empty(),
+                "the active namespace holds live entries"
+            );
+
+            let offer = build_followed_site_offer(profile, &active_ns)?;
+
+            let mut offer_ids: Vec<_> = offer
+                .iter()
+                .map(|entry| entry_id(&entry.entry_bytes))
+                .collect();
+            let mut inventory_ids: Vec<_> = inventory_before
+                .iter()
+                .map(|entry| entry_id(&entry.entry_bytes))
+                .collect();
+            offer_ids.sort_unstable();
+            inventory_ids.sort_unstable();
+            assert_eq!(
+                offer_ids, inventory_ids,
+                "the offer for the active namespace is exactly its live id set"
+            );
+            for offered in &offer {
+                let matching = inventory_before
+                    .iter()
+                    .find(|held| entry_id(&held.entry_bytes) == entry_id(&offered.entry_bytes))
+                    .expect("every offered id is in the inventory");
+                assert_eq!(offered.entry_bytes, matching.entry_bytes);
+                assert_eq!(offered.capability_bytes, matching.capability_bytes);
+                assert_eq!(offered.signature, matching.signature);
+                assert_eq!(offered.payload_bytes, matching.payload_bytes);
+            }
+            assert_eq!(
+                profile.sync_inventory, inventory_before,
+                "building the offer must not mutate the community sync inventory"
+            );
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    /// WU2 regression (community path byte-identical): a COMMUNITY sync session
+    /// must reproduce today exactly now that `StoredSyncSession` carries a
+    /// `followed_root`. It is `None` for the community session, and the community
+    /// drive still begins normally. The FULL two-party community drive stays
+    /// covered UNCHANGED by the `mobile_contract` integration test — this makes
+    /// the "None reproduces today exactly" property unmissable in-crate.
+    #[test]
+    fn a_community_sync_session_carries_no_followed_root_and_begins_normally() {
+        use crate::mobile_api::SyncOutcomeKind;
+        let profile = open_local_profile().unwrap();
+        create_public_space(&profile.inner, "Community".into()).unwrap();
+        let _session = open_sync_session(&profile.inner).unwrap();
+
+        let id = with_active(&profile.inner, |profile| {
+            let community = profile
+                .sync_session
+                .as_ref()
+                .expect("community session open");
+            assert!(
+                community.followed_root.is_none(),
+                "a community sync session must carry followed_root = None"
+            );
+            assert!(
+                sync_session_is_active(profile),
+                "the community session is active exactly as before"
+            );
+            Ok(community.id)
+        })
+        .unwrap();
+
+        // The community drive still starts identically (FrameReady summary).
+        assert_eq!(
+            sync_begin(&profile.inner, id).unwrap().kind,
+            SyncOutcomeKind::FrameReady,
+            "the community sync drive is unchanged by the followed_root field"
+        );
+    }
+
+    /// WU2: on a memory-backed profile the signed form is unavailable
+    /// (`signed_entries_in_namespace` -> None), so the offer builder fails closed
+    /// rather than returning an empty offer that would silently sync nothing.
+    #[test]
+    fn build_followed_site_offer_fails_closed_on_a_memory_profile() {
+        let profile = open_local_profile().unwrap();
+        let space = create_public_space(&profile.inner, "Memory".into()).unwrap();
+        let active_ns = parse_entry_id(&space.namespace_id).unwrap();
+        let (manifest, bundle) = riot_core::apps::starter::STARTER_CATALOG[0];
+        let installed = install_app(&profile.inner, manifest.to_vec(), bundle.to_vec()).unwrap();
+        let app_id = hex(&installed.app_id_bytes);
+        app_data_put(&profile.inner, app_id, "items/0".into(), vec![0]).unwrap();
+
+        with_active(&profile.inner, |profile| {
+            assert!(
+                !namespace_live_ids(profile, &active_ns)?.is_empty(),
+                "the memory store has live entries, but no signed form",
+            );
+            assert!(
+                build_followed_site_offer(profile, &active_ns).is_err(),
+                "a memory profile cannot build a followed-site offer — fail closed"
+            );
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    fn site_ticket(
+        root: [u8; 32],
+        require: &str,
+        exp: u64,
+        url: Option<String>,
+    ) -> riot_core::site::ticket::Ticket {
+        let key = ed25519_dalek::SigningKey::from_bytes(&[7u8; 32]);
+        riot_core::site::ticket::mint(&key, root, require, 1, exp, [0u8; 32], None, url)
+    }
+
+    /// follow_site verifies a root-signed ticket and persists the Following record
+    /// with the ticket's signed HTTPS fetch url (Option C HTTP-pull).
+    #[test]
+    fn follow_site_verifies_a_ticket_and_persists_the_fetch_url() {
+        let profile = open_local_profile().unwrap();
+        create_public_space(&profile.inner, "Home".into()).unwrap();
+        let root = [0x55u8; 32];
+        let url = "https://mirror.example/s.bundle";
+        let ticket = site_ticket(root, "none", u64::MAX, Some(url.into()));
+
+        let row = follow_site(&profile.inner, ticket.encode()).expect("follow");
+        assert_eq!(row.root, hex(&root));
+        assert_eq!(row.fetch_url.as_deref(), Some(url));
+
+        let sites = list_followed_sites(&profile.inner).unwrap();
+        assert!(
+            sites
+                .iter()
+                .any(|s| s.root == hex(&root) && s.fetch_url.as_deref() == Some(url)),
+            "the followed site surfaces in list_followed_sites with its fetch url"
+        );
+    }
+
+    #[test]
+    fn follow_site_refuses_a_tampered_ticket() {
+        let profile = open_local_profile().unwrap();
+        create_public_space(&profile.inner, "Home".into()).unwrap();
+        let mut ticket = site_ticket([0x55u8; 32], "none", u64::MAX, Some("https://m/x".into()));
+        ticket.sig[0] ^= 0x01;
+        assert!(
+            follow_site(&profile.inner, ticket.encode()).is_err(),
+            "a bad-signature ticket is refused"
+        );
+    }
+
+    #[test]
+    fn follow_site_refuses_an_expired_ticket() {
+        let profile = open_local_profile().unwrap();
+        create_public_space(&profile.inner, "Home".into()).unwrap();
+        let ticket = site_ticket([0x55u8; 32], "none", 1, Some("https://m/x".into()));
+        assert!(
+            follow_site(&profile.inner, ticket.encode()).is_err(),
+            "an expired ticket is refused"
+        );
+    }
+
+    #[test]
+    fn follow_site_with_no_url_follows_with_none() {
+        let profile = open_local_profile().unwrap();
+        create_public_space(&profile.inner, "Home".into()).unwrap();
+        let ticket = site_ticket([0x66u8; 32], "none", u64::MAX, None);
+        let row = follow_site(&profile.inner, ticket.encode()).expect("follow");
+        assert!(
+            row.fetch_url.is_none(),
+            "a no-url ticket follows with fetch_url None (graceful)"
+        );
+    }
+
+    /// FETCH-TIME FAIL-CLOSED: a require:arti site follows (persisting leaks
+    /// nothing), but its row exposes NO clearnet fetch_url and is transport_blocked
+    /// — the app has nothing to HTTP-GET over clearnet, so no IP leak to a mirror.
+    #[test]
+    fn a_require_arti_site_follows_but_exposes_no_clearnet_fetch_url() {
+        let profile = open_local_profile().unwrap();
+        create_public_space(&profile.inner, "Home".into()).unwrap();
+        let root = [0x77u8; 32];
+        // The url is signed into the ticket, but the arti floor must gate it out.
+        let ticket = site_ticket(root, "arti", u64::MAX, Some("https://mirror/x".into()));
+
+        let row = follow_site(&profile.inner, ticket.encode()).expect("follow persists");
+        assert!(
+            row.transport_blocked,
+            "a require:arti site is transport-blocked on mobile (no Tor)"
+        );
+        assert!(
+            row.fetch_url.is_none(),
+            "a require:arti site exposes NO clearnet fetch url — fail-closed, no IP leak"
+        );
+
+        // And it still surfaces in the followed list, blocked + urlless.
+        let sites = list_followed_sites(&profile.inner).unwrap();
+        let listed = sites.iter().find(|s| s.root == hex(&root)).expect("listed");
+        assert!(listed.transport_blocked && listed.fetch_url.is_none());
+    }
+}
+
+// ===========================================================================
+// Spaces-first Rung 1: followed composite sites. These tests exercise the
+// `#[cfg(test)] follow_site_for_test` seam, which is INVISIBLE to integration
+// tests (they link the lib built without `cfg(test)`), so they must live inline
+// here where the seam is compiled in.
+// ===========================================================================
+#[cfg(test)]
+mod spaces_rung1 {
+    use crate::mobile_state::open_local_profile;
+
+    #[test]
+    fn a_followed_site_is_in_list_followed_sites_and_excluded_from_list_communities() {
+        let profile = open_local_profile().unwrap();
+        let root_hex = profile.follow_site_for_test(vec![0x11; 32]).unwrap();
+        // The followed site appears in the author-less followed list...
+        assert!(profile
+            .list_followed_sites()
+            .unwrap()
+            .iter()
+            .any(|r| r.root == root_hex));
+        // ...and NEVER as a CommunityRow (author-less → filtered out).
+        assert!(profile
+            .list_communities()
+            .unwrap()
+            .iter()
+            .all(|c| c.namespace_id != root_hex));
+    }
+
+    // Task 4 — exposure-boundary guard (Security S2): a followed-site row carries
+    // only public identifiers, never key material.
+    #[test]
+    fn followed_site_row_exposes_only_public_identifiers() {
+        let profile = open_local_profile().unwrap();
+        let root_hex = profile.follow_site_for_test(vec![0x22; 32]).unwrap();
+        let row = profile
+            .list_followed_sites()
+            .unwrap()
+            .into_iter()
+            .find(|r| r.root == root_hex)
+            .unwrap();
+        assert_eq!(row.root.len(), 64);
+        assert!(row.root.chars().all(|c| c.is_ascii_hexdigit()));
+        // Compile-time: FollowedSiteRow has no Vec<u8>/secret field — reviewed.
     }
 }

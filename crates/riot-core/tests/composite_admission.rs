@@ -29,7 +29,7 @@ use riot_core::import::{
 use riot_core::newswire::{inspect_news_record, NewswireError};
 use riot_core::session::{CommitOutcome, ImportContext, InspectOutcome, RiotSession};
 use riot_core::sync::{ReconcileSession, SyncAction, SyncFrame};
-use riot_core::willow::site_paths::{ARTICLES_COMPONENT, MANIFEST_COMPONENT};
+use riot_core::willow::site_paths::{ARTICLES_COMPONENT, MANIFEST_COMPONENT, MOD_COMPONENT};
 use riot_core::willow::{
     encode_capability, encode_entry, entry_id, Entry, NamespaceId, OwnedMasthead, Path,
     SignedWillowEntry, SubspaceId,
@@ -308,6 +308,36 @@ fn marker_bit_forgery_communal_cap_naming_owned_namespace_is_rejected() {
 }
 
 #[test]
+fn marker_bit_forgery_communal_cap_at_a_mod_path_is_rejected() {
+    // The /mod/-SPECIFIC guard for the session-import exemption this PR adds.
+    // `session.rs` admits an owned entry into the store when its path is under
+    // `/mod/` (`is_owned_moderation_entry`) — that exemption keys ONLY on the
+    // path, so its safety rests ENTIRELY on `verify_frame` rejecting a non-owner
+    // cap at a `/mod/` path. The sibling `article_path` marker-bit test above
+    // would NOT catch a `/mod/`-specific admission regression, so pin it here on
+    // the exact path the exemption trusts: a communal genesis cap NAMING the
+    // owned namespace at a `/mod/` path is rejected at the policy predicate
+    // (`UnsupportedCapability`), never by some incidental later check.
+    let site = manual_owned_site(0x53, 0x0e);
+    let attacker = SubspaceSecret::from_bytes(&[0x14; 32]);
+    let attacker_id = attacker.corresponding_subspace_id();
+    let communal = WriteCapability::new_communal(site.namespace_id.clone(), attacker_id.clone());
+    let entry = build_entry(
+        site.namespace_id.clone(),
+        attacker_id,
+        Path::from_slices(&[MOD_COMPONENT, b"revoke", b"forged"]).expect("mod path"),
+        100,
+        b"forged moderation payload",
+    );
+    let item = sign_into(entry, &communal, &attacker, b"forged moderation payload");
+    assert_rejected_code(
+        &item,
+        Some(site.root),
+        DiagnosticCode::UnsupportedCapability,
+    );
+}
+
+#[test]
 fn cross_namespace_cap_reuse_is_rejected_by_root_binding() {
     // A cap genuinely owned-rooted at site A, whose editor tries to author into
     // the FOLLOWED site B's owned namespace. The genesis namespace key != the
@@ -537,6 +567,147 @@ fn owned_editorial_import_without_followed_root_admits_nothing() {
         InspectOutcome::Rejected(_) => {}
     }
     assert_eq!(store.live_count().expect("live_count"), 0);
+}
+
+/// An owner-signed `/mod/` record for a manually-controlled owned site.
+fn owned_mod_item(site: &OwnedSite, slug: &[u8], payload: &[u8]) -> SignedWillowEntry {
+    let entry = build_entry(
+        site.namespace_id.clone(),
+        site.owner_secret.corresponding_subspace_id(),
+        Path::from_slices(&[MOD_COMPONENT, b"revoke", slug]).expect("mod path"),
+        100,
+        payload,
+    );
+    sign_into(entry, &site.owner_cap, &site.owner_secret, payload)
+}
+
+/// An owner-signed `/mod/` record is committed AND its payload retained via the
+/// followed-root import. Both halves are load-bearing and were previously
+/// missing: the session inspect path-binding admitted only owned `/articles/`,
+/// so a synced `/mod/` record was dropped, and payload retention likewise
+/// covered only editorial. The read-side resolver reconstructs the moderation
+/// record from the exact retained bytes (`read_moderation_record`), so a
+/// committed-but-unretained `/mod/` entry would be invisible to a follower and
+/// moderation could never resolve to `Current`. This guards the symmetric
+/// admission of owned moderation alongside owned editorial at the session gate.
+#[test]
+fn owned_moderation_is_committed_and_payload_retained_via_followed_root_import() {
+    let session = RiotSession::open().expect("session");
+    let store = session.create_store().expect("store");
+    let site = manual_owned_site(0x50, 0x1a);
+    let item = owned_mod_item(&site, b"id-1", b"opaque moderation payload");
+    let bundle = encode_bundle(std::slice::from_ref(&item)).expect("encode");
+
+    let preview = match store
+        .inspect(
+            &bundle,
+            ImportContext::with_followed_root("follow-site", site.root),
+        )
+        .expect("inspect")
+    {
+        InspectOutcome::Preview(p) => p,
+        InspectOutcome::Rejected(r) => panic!("owned /mod/ rejected: {r:?}"),
+    };
+    let plan = preview.plan_all().expect("plan_all");
+    match plan.commit().expect("commit") {
+        CommitOutcome::Committed(_) => {}
+        CommitOutcome::NoChanges(_) => panic!("owned /mod/ entry was dropped, not committed"),
+    }
+    assert_eq!(store.live_count().expect("live_count"), 1);
+
+    // Retention is the half a follower's resolver depends on.
+    let mod_prefix = Path::from_slices(&[MOD_COMPONENT]).expect("mod prefix");
+    let held = store
+        .entries_with_prefix_in_namespace(&site.root, &mod_prefix)
+        .expect("scan /mod/");
+    assert_eq!(
+        held.len(),
+        1,
+        "the /mod/ entry must be scannable in its namespace"
+    );
+    assert_eq!(
+        held[0].2.as_deref(),
+        Some(b"opaque moderation payload".as_slice()),
+        "the /mod/ payload must be RETAINED (not digest-only) so a follower can read it"
+    );
+}
+
+/// Fail-closed symmetry: a `/mod/` record imported with NO followed-root context
+/// admits nothing — owned moderation is bound to the followed site exactly like
+/// owned editorial, so a rootless import can never commit it.
+#[test]
+fn owned_moderation_import_without_followed_root_admits_nothing() {
+    let session = RiotSession::open().expect("session");
+    let store = session.create_store().expect("store");
+    let site = manual_owned_site(0x51, 0x1b);
+    let item = owned_mod_item(&site, b"id-1", b"opaque moderation payload");
+    let bundle = encode_bundle(std::slice::from_ref(&item)).expect("encode");
+
+    match store
+        .inspect(&bundle, ImportContext::new("plain-file-import"))
+        .expect("inspect")
+    {
+        InspectOutcome::Preview(p) => {
+            assert!(
+                p.plan_all().is_err(),
+                "no owned /mod/ entry may be eligible without a followed root"
+            );
+        }
+        InspectOutcome::Rejected(_) => {}
+    }
+    assert_eq!(store.live_count().expect("live_count"), 0);
+}
+
+/// DEFENSE IN DEPTH (end-to-end): the session inspect exemption that now admits
+/// owned `/mod/` must only ever trust an ALREADY-owner-verified entry. A communal
+/// genesis cap NAMING the owned namespace (marker-bit forgery) at a `/mod/` path
+/// is refused at `verify_frame` (`admissible_capability` requires an OWNED cap for
+/// an owned namespace), so it never becomes eligible and never commits — proven
+/// through the SAME `inspect_core_with_root(Some(root)) → plan_all` path the owner
+/// `/mod/` record commits through, not merely at the bundle gate. This closes the
+/// worry that the path-exemption could widen admission: the exemption is downstream
+/// of the owner-cap gate, and this asserts it end to end.
+#[test]
+fn a_communal_cap_cannot_land_a_mod_record_end_to_end() {
+    let session = RiotSession::open().expect("session");
+    let store = session.create_store().expect("store");
+    let site = manual_owned_site(0x52, 0x1c);
+    let attacker = SubspaceSecret::from_bytes(&[0x13; 32]);
+    let attacker_id = attacker.corresponding_subspace_id();
+    // A communal cap is unconditionally valid and can NAME the owned namespace id.
+    let communal = WriteCapability::new_communal(site.namespace_id.clone(), attacker_id.clone());
+    let entry = build_entry(
+        site.namespace_id.clone(),
+        attacker_id,
+        Path::from_slices(&[MOD_COMPONENT, b"revoke", b"forged"]).expect("mod path"),
+        100,
+        b"forged moderation payload",
+    );
+    let item = sign_into(entry, &communal, &attacker, b"forged moderation payload");
+    // Hand-frame the bytes: `encode_bundle`'s producer-side preflight would refuse
+    // to export this forgery, so we feed the gate raw bytes as a hostile peer would.
+    let bytes = frame_one(&item);
+
+    match store
+        .inspect(
+            &bytes,
+            ImportContext::with_followed_root("follow-site", site.root),
+        )
+        .expect("inspect")
+    {
+        InspectOutcome::Preview(p) => {
+            assert!(
+                p.plan_all().is_err(),
+                "a communal-cap /mod/ forgery must never be eligible for import"
+            );
+        }
+        InspectOutcome::Rejected(_) => {}
+    }
+    assert_eq!(
+        store.live_count().expect("live_count"),
+        0,
+        "a communal-cap /mod/ forgery must not commit"
+    );
 }
 
 // ---------- sync admission path (Task 2 — gate 3) ----------

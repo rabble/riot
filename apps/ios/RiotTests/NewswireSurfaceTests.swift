@@ -27,12 +27,35 @@ final class NewswireSurfaceTests: XCTestCase {
     /// Forwards the two editorial seams to a real `MobileProfile`. Identical to
     /// what `RiotProfileRepository`'s Newswire extension does, so the model under
     /// test exercises the genuine core rejection.
-    private final class LiveNewswire: NewswireProjecting, NewswireEditorialActing {
+    private final class LiveNewswire: NewswireProjecting, NewswireEditorialActing,
+        NewswireEditorAuthorityChecking, NewswireCommenting {
         let profile: MobileProfile
         init(_ profile: MobileProfile) { self.profile = profile }
 
         func projectNewswire(spaceDescriptorEntryID: String) throws -> NewswireProjectionView {
             try profile.projectNewswireSpace(spaceDescriptorEntryId: spaceDescriptorEntryID)
+        }
+
+        /// The genuine communal-reply signer — identical to the shipping
+        /// `RiotProfileRepository` wrapper, so an admission is genuinely core's.
+        func createNewswireComment(
+            spaceDescriptorEntryID: String,
+            parentEntryID: String,
+            body: String,
+            language: String
+        ) throws -> NewswireSignedRecord {
+            try profile.createNewswireComment(
+                spaceDescriptorEntryId: spaceDescriptorEntryID,
+                parentEntryId: parentEntryID,
+                body: body,
+                language: language
+            )
+        }
+
+        /// The genuine core predicate (Unit 4a) — identical to the shipping
+        /// `RiotProfileRepository` wrapper, so the model reads the real authority.
+        func newswireIsEditor(spaceDescriptorEntryID: String, subjectID: String) throws -> Bool {
+            try profile.newswireIsEditor(descriptorEntryId: spaceDescriptorEntryID, subjectId: subjectID)
         }
 
         func createNewswireEditorialAction(
@@ -78,22 +101,26 @@ final class NewswireSurfaceTests: XCTestCase {
         )
     }
 
-    /// A model wired to a real profile. `roster` empty ⇒ the founder is the sole
-    /// editor (core default); a stranger roster ⇒ the founder is NOT an editor.
+    /// A model whose authority is the LIVE core, keyed on the profile's REAL
+    /// whoami id (the old `myKeyHex: "aa"*32` never mattered because the replaced
+    /// static ignored the key for an empty roster — the predicate does not, so the
+    /// real id is load-bearing now). The roster lives in the descriptor created via
+    /// `spaceInput(_, roster:)`; the model reads it through the predicate, not a
+    /// passed array.
     private func liveModel(
         profile: MobileProfile,
         spaceID: String,
-        roster: [String]?,
-        myKeyHex: String = "aa".repeated(32)
-    ) -> NewswireSurfaceModel {
+        withCommenter: Bool = true
+    ) throws -> NewswireSurfaceModel {
         let live = LiveNewswire(profile)
         return NewswireSurfaceModel(
             projector: live,
             editor: live,
+            authority: live,
             spaceDescriptorEntryID: spaceID,
             communityName: "Riverside",
-            myKeyHex: myKeyHex,
-            roster: roster
+            myKeyHex: RiotDirectoryRow.hex(try profile.profile().whoami().id),
+            commenter: withCommenter ? live : nil
         )
     }
 
@@ -241,20 +268,141 @@ final class NewswireSurfaceTests: XCTestCase {
     func testMissingDescriptorIsOfflineStaleNeverAFabricatedEmptyWire() {
         // No descriptor id ⇒ the surface cannot honestly claim the wire is empty.
         let model = NewswireSurfaceModel(
-            projector: ThrowingProjector(), editor: ThrowingEditor(),
+            projector: ThrowingProjector(), editor: ThrowingEditor(), authority: ThrowingEditor(),
             spaceDescriptorEntryID: "", communityName: "Riverside",
-            myKeyHex: "aa".repeated(32), roster: [])
+            myKeyHex: "aa".repeated(32))
         model.load()
         XCTAssertEqual(model.wire, .offlineStale)
     }
 
     func testProjectionFailureIsOfflineStaleNeverARawError() {
         let model = NewswireSurfaceModel(
-            projector: ThrowingProjector(), editor: ThrowingEditor(),
+            projector: ThrowingProjector(), editor: ThrowingEditor(), authority: ThrowingEditor(),
             spaceDescriptorEntryID: "desc", communityName: "Riverside",
-            myKeyHex: "aa".repeated(32), roster: [])
+            myKeyHex: "aa".repeated(32))
         model.load()
         XCTAssertEqual(model.wire, .offlineStale)
+    }
+
+    // MARK: - Dead-end fixes (Unit 7)
+
+    func testPostsButNoFeatureOffersNoDeadButtonTheOpenWireIsTheNextAction() {
+        let post = projectedPost(id: "a1", headline: "Report", treatment: .ordinary)
+        let model = NewswireSurfaceModel(
+            projector: FixedProjector(projection(openWire: [post], frontPage: [])),
+            editor: ThrowingEditor(),
+            authority: StubAuthority(),                 // 4b seam; editor status irrelevant here
+            spaceDescriptorEntryID: "desc", communityName: "Riverside",
+            myKeyHex: "aa".repeated(32))
+        model.load()
+        guard case let .postsButNoFeature(openWire) = model.wire else {
+            return XCTFail("posts but no feature")
+        }
+        // The next action is the visible open wire, not a button.
+        XCTAssertFalse(openWire.isEmpty, "the open wire content IS the reachable next action")
+        XCTAssertTrue(model.forwardActions.isEmpty, "the dead 'Open wire' no-op button is gone")
+    }
+
+    func testEveryTerminalWireStateHasAReachableNextActionAndNoDeadNoOp() {
+        // emptyWire → post the first update; offlineStale → a forward path; the two
+        // content states → the content itself. No state offers a no-op button.
+        let empty = NewswireSurfaceModel(
+            projector: FixedProjector(projection(openWire: [], frontPage: [])),
+            editor: ThrowingEditor(), authority: StubAuthority(),
+            spaceDescriptorEntryID: "desc",
+            communityName: "R", myKeyHex: "aa".repeated(32))
+        empty.load()
+        XCTAssertEqual(empty.wire, .emptyWire)
+        XCTAssertEqual(empty.forwardActions, [.postFirstUpdate])
+    }
+
+    func testOfflineStaleReDerivesADescriptorThatLandedInsteadOfLooping() {
+        // Built with "" (the shell's pre-sync case), but the registry now HAS a
+        // descriptor (a joined/switched community whose sync just landed). load()
+        // must pick it up and project — not re-loop on the empty id.
+        let post = projectedPost(id: "a1", headline: "Landed", treatment: .ordinary)
+        let model = NewswireSurfaceModel(
+            projector: FixedProjector(projection(openWire: [post], frontPage: [])),
+            editor: ThrowingEditor(), authority: StubAuthority(),
+            spaceDescriptorEntryID: "", communityName: "Riverside",
+            myKeyHex: "aa".repeated(32),
+            descriptorResolver: { "desc-that-just-synced" })
+        model.load()
+        guard case .postsButNoFeature = model.wire else {
+            return XCTFail("a re-derived descriptor must project, not stay offlineStale")
+        }
+    }
+
+    func testOfflineStaleWithNoDerivableDescriptorOffersAForwardPathNotASilentLoop() {
+        // A nearby-joined community: it never gets a descriptorEntryId, so the
+        // resolver yields nil. The state must offer real forward paths and MUST NOT
+        // offer the silent .retry re-loop.
+        let model = NewswireSurfaceModel(
+            projector: ThrowingProjector(), editor: ThrowingEditor(), authority: StubAuthority(),
+            spaceDescriptorEntryID: "", communityName: "Riverside",
+            myKeyHex: "aa".repeated(32),
+            descriptorResolver: { nil })
+        model.load()
+        XCTAssertEqual(model.wire, .offlineStale)
+        XCTAssertFalse(model.forwardActions.contains(.retry),
+                       "no silent re-loop when there is nothing to re-derive")
+        XCTAssertFalse(model.forwardActions.isEmpty, "offlineStale is never a dead end")
+    }
+
+    func testKnownDescriptorThatIsMerelyOfflineStillOffersRetry() {
+        // A descriptor we DO have, but projection throws (transient offline). Retry
+        // is the honest action here — reproject the id we already hold.
+        let model = NewswireSurfaceModel(
+            projector: ThrowingProjector(), editor: ThrowingEditor(), authority: StubAuthority(),
+            spaceDescriptorEntryID: "desc", communityName: "Riverside",
+            myKeyHex: "aa".repeated(32))
+        model.load()
+        XCTAssertEqual(model.wire, .offlineStale)
+        XCTAssertEqual(model.forwardActions, [.retry])
+    }
+
+    func testPendingFirstSyncLeadsWithVerifiedPathAndKeepsNearbySecondary() {
+        let model = NewswireSurfaceModel(
+            projector: ThrowingProjector(), editor: ThrowingEditor(), authority: StubAuthority(),
+            spaceDescriptorEntryID: "", communityName: "Riverside",
+            myKeyHex: "aa".repeated(32),
+            descriptorResolver: { nil })
+        model.load()
+        let actions = model.forwardActions
+        XCTAssertEqual(actions.first, .rejoinWithLink, "the verified-working path is the headline")
+        XCTAssertFalse(actions.first?.isNearbyPath ?? true, "the red Nearby path is never first")
+        XCTAssertEqual(actions.last, .syncWithPeer, "Nearby is offered but secondary")
+        XCTAssertEqual(actions, [.rejoinWithLink, .syncWithPeer])
+    }
+
+    func testPendingSyncCopyIsHonestAndDistinctFromTransientOfflineCopy() {
+        // The pending-first-sync message explains WHY there is nothing yet and names
+        // the forward paths; it is not the same string as the transient-offline copy.
+        XCTAssertTrue(
+            NewswireWireCopy.pendingSyncMessage.localizedCaseInsensitiveContains("sync")
+            || NewswireWireCopy.pendingSyncMessage.localizedCaseInsensitiveContains("peer"))
+        XCTAssertNotEqual(NewswireWireCopy.pendingSyncMessage, NewswireWireCopy.offlineMessage)
+        XCTAssertNotEqual(NewswireWireCopy.pendingSyncTitle, NewswireWireCopy.offlineTitle)
+    }
+
+    func testOfflineStaleCopySelectionFollowsRecoverability() {
+        // Unrecoverable (pending first sync) → pending copy; recoverable (transient
+        // offline of a known descriptor) → the existing offline copy.
+        let pending = NewswireSurfaceModel(
+            projector: ThrowingProjector(), editor: ThrowingEditor(), authority: StubAuthority(),
+            spaceDescriptorEntryID: "", communityName: "R",
+            myKeyHex: "aa".repeated(32), descriptorResolver: { nil })
+        pending.load()
+        XCTAssertEqual(pending.offlineTitle, NewswireWireCopy.pendingSyncTitle)
+        XCTAssertEqual(pending.offlineMessage, NewswireWireCopy.pendingSyncMessage)
+
+        let offline = NewswireSurfaceModel(
+            projector: ThrowingProjector(), editor: ThrowingEditor(), authority: StubAuthority(),
+            spaceDescriptorEntryID: "desc", communityName: "R",
+            myKeyHex: "aa".repeated(32))
+        offline.load()
+        XCTAssertEqual(offline.offlineTitle, NewswireWireCopy.offlineTitle)
+        XCTAssertEqual(offline.offlineMessage, NewswireWireCopy.offlineMessage)
     }
 
     // MARK: - Treatment rendering
@@ -282,20 +430,51 @@ final class NewswireSurfaceTests: XCTestCase {
         XCTAssertNil(EditorialHistoryRow(feature).correctionLabel)
     }
 
-    // MARK: - Editor visibility (UI hint ONLY — never the authorization check)
+    // MARK: - Predicate-driven visibility (Unit 4b)
 
-    func testEditorVisibilityIsAPureHintDecoupledFromAuthorization() {
-        // Unknown roster (a joined/loaded community) ⇒ never offered a control.
-        XCTAssertFalse(EditorialAuthority.isRecognizedEditor(myKeyHex: "aa".repeated(32), roster: nil))
-        // Empty roster ⇒ core's founder-alone default ⇒ the founder is an editor.
-        XCTAssertTrue(EditorialAuthority.isRecognizedEditor(myKeyHex: "aa".repeated(32), roster: []))
-        // Named ⇒ editor iff the key is in the roster.
-        XCTAssertTrue(EditorialAuthority.isRecognizedEditor(
-            myKeyHex: "aa".repeated(32), roster: ["AA".repeated(32)]))  // case-insensitive
-        XCTAssertFalse(EditorialAuthority.isRecognizedEditor(
-            myKeyHex: "aa".repeated(32), roster: ["11".repeated(32)]))
-        // An empty key is never an editor.
-        XCTAssertFalse(EditorialAuthority.isRecognizedEditor(myKeyHex: "", roster: []))
+    func testFounderInTheStoredRosterIsOfferedControlsViaTheCorePredicate() throws {
+        let profile = try openLocalProfile()
+        let mineHex = RiotDirectoryRow.hex(try profile.profile().whoami().id)
+        let space = try profile.createNewswireSpace(input: spaceInput("Mine", roster: [mineHex]))
+        let model = try liveModel(profile: profile, spaceID: space.entryId)
+        model.load()
+        XCTAssertTrue(model.canOfferEditorialControls, "a roster member is offered controls")
+        XCTAssertNil(model.editorialControlsPendingNote, "an editor sees no pending note")
+    }
+
+    func testNonMemberIsNotOfferedControlsAndSeesNoMisleadingPendingNoteWhenSynced() throws {
+        let profile = try openLocalProfile()
+        let space = try profile.createNewswireSpace(input: spaceInput("Others", roster: ["11".repeated(32)]))
+        _ = try profile.createNewswirePost(input: postInput(space.entryId, "Report"))  // wire has content ⇒ synced
+        let model = try liveModel(profile: profile, spaceID: space.entryId)             // my key ∉ roster
+        model.load()
+        XCTAssertFalse(model.canOfferEditorialControls, "a non-member is not offered controls")
+        XCTAssertNil(model.editorialControlsPendingNote,
+                     "a synced non-editor is a reader, not told controls 'appear after sync'")
+    }
+
+    func testUnknownDescriptorShowsThePendingSyncNoteNotABareEmptyView() throws {
+        let profile = try openLocalProfile()
+        let mineHex = RiotDirectoryRow.hex(try profile.profile().whoami().id)
+        // A descriptor id we hold no descriptor for (a joined community pre-first-sync).
+        let live = LiveNewswire(profile)
+        let model = NewswireSurfaceModel(projector: live, editor: live, authority: live,
+            spaceDescriptorEntryID: "ab".repeated(32), communityName: "Pending", myKeyHex: mineHex)
+        model.load()  // projection fails ⇒ wire == .offlineStale; predicate ⇒ false
+        XCTAssertFalse(model.canOfferEditorialControls)
+        XCTAssertEqual(model.editorialControlsPendingNote,
+                       "Editorial controls appear after this community's first sync.")
+    }
+
+    func testEmptyDescriptorIdIsNeverAnEditorAndShowsNoNote() throws {
+        let profile = try openLocalProfile()
+        let live = LiveNewswire(profile)
+        let model = NewswireSurfaceModel(projector: live, editor: live, authority: live,
+            spaceDescriptorEntryID: "", communityName: "None",
+            myKeyHex: RiotDirectoryRow.hex(try profile.profile().whoami().id))
+        model.load()
+        XCTAssertFalse(model.canOfferEditorialControls)
+        XCTAssertNil(model.editorialControlsPendingNote, "no descriptor id at all ⇒ no editorial affordance or note")
     }
 
     // MARK: - REAL authorization end-to-end (through core)
@@ -304,9 +483,11 @@ final class NewswireSurfaceTests: XCTestCase {
     /// the six kinds through the model, and each takes effect in the projection.
     func testRecognizedEditorCanSignAllSixKindsAndEachTakesEffect() throws {
         let profile = try openLocalProfile()
-        let space = try profile.createNewswireSpace(input: spaceInput("Six Kinds"))
-        let model = liveModel(profile: profile, spaceID: space.entryId, roster: [])
-        XCTAssertTrue(model.canOfferEditorialControls, "the founder of a default-roster space is an editor")
+        let mineHex = RiotDirectoryRow.hex(try profile.profile().whoami().id)
+        let space = try profile.createNewswireSpace(input: spaceInput("Six Kinds", roster: [mineHex]))
+        let model = try liveModel(profile: profile, spaceID: space.entryId)
+        model.load()
+        XCTAssertTrue(model.canOfferEditorialControls, "the founder in the stored roster is an editor")
 
         // feature ⇒ the post reaches the front page.
         let featurePost = try profile.createNewswirePost(input: postInput(space.entryId, "Featured"))
@@ -366,7 +547,7 @@ final class NewswireSurfaceTests: XCTestCase {
         let space = try profile.createNewswireSpace(input: spaceInput("Delegated", roster: [stranger]))
         let post = try profile.createNewswirePost(input: postInput(space.entryId, "Standing report"))
 
-        let model = liveModel(profile: profile, spaceID: space.entryId, roster: [stranger])
+        let model = try liveModel(profile: profile, spaceID: space.entryId)
 
         model.draft = EditorialActionDraft(kind: .hide, reason: "I want this gone")
         let outcome = model.sign(targetEntryID: post.entryId)
@@ -382,6 +563,34 @@ final class NewswireSurfaceTests: XCTestCase {
         XCTAssertEqual(row.headline, "Standing report", "the payload must survive an unauthorized hide")
     }
 
+    /// Even if a bug FORCED the editorial control visible (authority seam stubbed to
+    /// true), the core still refuses a non-roster author's action and the post is
+    /// UNCHANGED — the display predicate is never the security boundary (design §4
+    /// defense-in-depth).
+    func testForcingControlsVisibleDoesNotLetANonEditorChangeAnything() throws {
+        struct AlwaysEditor: NewswireEditorAuthorityChecking {
+            func newswireIsEditor(spaceDescriptorEntryID: String, subjectID: String) throws -> Bool { true }
+        }
+        let stranger = "33".repeated(32)
+        let profile = try openLocalProfile()                       // my key ∉ roster
+        let space = try profile.createNewswireSpace(input: spaceInput("Forced", roster: [stranger]))
+        let post = try profile.createNewswirePost(input: postInput(space.entryId, "Untouched"))
+        let live = LiveNewswire(profile)
+        let model = NewswireSurfaceModel(projector: live, editor: live, authority: AlwaysEditor(),
+            spaceDescriptorEntryID: space.entryId, communityName: "Forced",
+            myKeyHex: RiotDirectoryRow.hex(try profile.profile().whoami().id))
+        model.load()
+        XCTAssertTrue(model.canOfferEditorialControls, "seam forced true ⇒ control shown (the bug we defend against)")
+
+        // …yet the action still fails at core and the post is unchanged.
+        model.draft = EditorialActionDraft(kind: .hide, reason: "force it")
+        XCTAssertEqual(model.sign(targetEntryID: post.entryId), .rejected)
+        let projection = try profile.projectNewswireSpace(spaceDescriptorEntryId: space.entryId)
+        let row = try XCTUnwrap(projection.openWire.first { $0.entryId == post.entryId })
+        XCTAssertEqual(row.treatment, .ordinary, "core, not the UI, is the gate")
+        XCTAssertEqual(row.headline, "Untouched")
+    }
+
     /// "UI visibility is never an authorization check." The two halves are proven
     /// INDEPENDENTLY on the same non-editor: the control is hidden AND, even when
     /// the sign is called directly (bypassing the hidden control), the post's
@@ -391,7 +600,8 @@ final class NewswireSurfaceTests: XCTestCase {
         let profile = try openLocalProfile()
         let space = try profile.createNewswireSpace(input: spaceInput("Independence", roster: [stranger]))
         let post = try profile.createNewswirePost(input: postInput(space.entryId, "Untouched"))
-        let model = liveModel(profile: profile, spaceID: space.entryId, roster: [stranger])
+        let model = try liveModel(profile: profile, spaceID: space.entryId)
+        model.load()
 
         // Half 1 — the control is not offered.
         XCTAssertFalse(model.canOfferEditorialControls)
@@ -408,9 +618,10 @@ final class NewswireSurfaceTests: XCTestCase {
     /// reports the field violation and signs nothing.
     func testAnInvalidDraftIsRejectedBeforeItEverReachesCore() throws {
         let profile = try openLocalProfile()
-        let space = try profile.createNewswireSpace(input: spaceInput("Validation"))
+        let mineHex = RiotDirectoryRow.hex(try profile.profile().whoami().id)
+        let space = try profile.createNewswireSpace(input: spaceInput("Validation", roster: [mineHex]))
         let post = try profile.createNewswirePost(input: postInput(space.entryId, "Report"))
-        let model = liveModel(profile: profile, spaceID: space.entryId, roster: [])
+        let model = try liveModel(profile: profile, spaceID: space.entryId)
 
         // feature with a reason ⇒ the closed table rejects it up front.
         model.draft = EditorialActionDraft(kind: .feature, reason: "not allowed")
@@ -446,6 +657,131 @@ final class NewswireSurfaceTests: XCTestCase {
         XCTAssertTrue(openWire.contains { $0.id == p2.entryId })
     }
 
+    // MARK: - Communal replies (comments)
+
+    /// A reply composed through the model reaches core, and on reload the surface
+    /// groups it under its parent post — carrying the body and a rendered author,
+    /// exactly as a post row does. A reply is communal, so the founder (or any
+    /// member) may post one; `canComment` is independent of editor status.
+    func testAReplyIsSignedAndGroupedUnderItsParentPost() throws {
+        let profile = try openLocalProfile()
+        try profile.profile().setDisplayName(name: "Bo")
+        let space = try profile.createNewswireSpace(input: spaceInput("Discussion"))
+        let post = try profile.createNewswirePost(input: postInput(space.entryId, "What did you see?"))
+        let model = try liveModel(profile: profile, spaceID: space.entryId)
+        model.load()
+        XCTAssertTrue(model.canComment, "a wired commenter + descriptor ⇒ the reply affordance is offered")
+
+        let outcome = model.submitComment(parentEntryID: post.entryId, body: "I was on the east side.")
+        guard case .posted = outcome else {
+            return XCTFail("a communal reply should post, got \(outcome)")
+        }
+
+        let replies = model.comments(under: post.entryId)
+        XCTAssertEqual(replies.count, 1)
+        let reply = try XCTUnwrap(replies.first)
+        XCTAssertEqual(reply.parentID, post.entryId)
+        XCTAssertEqual(reply.body, "I was on the east side.")
+        XCTAssertEqual(reply.display, .ordinary)
+        XCTAssertTrue(
+            reply.author.hasPrefix("Bo · "),
+            "the reply author is rendered by the same name path as a post author, got \(reply.author)")
+    }
+
+    /// A reply whose parent post is not held is dropped from the projection — the
+    /// surface never shows an orphan reply. Core signs it (it is a valid communal
+    /// record); projection is where the dangling parent is resolved away.
+    func testAReplyWithNoHeldParentNeverAppearsInTheSurface() throws {
+        let profile = try openLocalProfile()
+        let space = try profile.createNewswireSpace(input: spaceInput("Danglers"))
+        let model = try liveModel(profile: profile, spaceID: space.entryId)
+
+        let outcome = model.submitComment(parentEntryID: "ab".repeated(32), body: "Into the void.")
+        guard case .posted = outcome else {
+            return XCTFail("a well-formed reply signs even when its parent is unheld, got \(outcome)")
+        }
+        model.load()
+        XCTAssertTrue(
+            model.commentsByParent.isEmpty,
+            "a reply with no held parent must not surface")
+    }
+
+    /// An empty reply never reaches core, and a model with no commenter wired hides
+    /// the affordance and answers `.unavailable` if asked to submit anyway.
+    func testEmptyReplyIsBlockedAndAbsentCommenterHidesTheAffordance() throws {
+        let profile = try openLocalProfile()
+        let space = try profile.createNewswireSpace(input: spaceInput("Guards"))
+        let post = try profile.createNewswirePost(input: postInput(space.entryId, "Prompt"))
+
+        let model = try liveModel(profile: profile, spaceID: space.entryId)
+        model.load()
+        XCTAssertEqual(model.submitComment(parentEntryID: post.entryId, body: "   \n"), .empty)
+        XCTAssertTrue(model.comments(under: post.entryId).isEmpty)
+
+        let noCommenter = try liveModel(profile: profile, spaceID: space.entryId, withCommenter: false)
+        noCommenter.load()
+        XCTAssertFalse(noCommenter.canComment, "no commenter wired ⇒ the reply affordance is hidden")
+        XCTAssertEqual(
+            noCommenter.submitComment(parentEntryID: post.entryId, body: "hi"), .unavailable)
+    }
+
+    /// An editor tombstoning a reply redacts its body while keeping identity and
+    /// ordering — the same per-content moderation a post receives, never per person.
+    /// (Mirrors the Rust `editor_tombstone_redacts_a_comment_body`.)
+    func testAnEditorTombstoneRedactsAReplyBody() throws {
+        let profile = try openLocalProfile()
+        let mineHex = RiotDirectoryRow.hex(try profile.profile().whoami().id)
+        let space = try profile.createNewswireSpace(input: spaceInput("Moderated", roster: [mineHex]))
+        let post = try profile.createNewswirePost(input: postInput(space.entryId, "Open thread"))
+        let model = try liveModel(profile: profile, spaceID: space.entryId)
+        model.load()
+
+        guard case let .posted(commentID) = model.submitComment(
+            parentEntryID: post.entryId, body: "Names a private individual.") else {
+            return XCTFail("the reply should post")
+        }
+
+        // The founder is the sole editor and moderates the reply per content.
+        model.draft = EditorialActionDraft(kind: .tombstone, reason: "Names a private individual.")
+        XCTAssertSigned(model.sign(targetEntryID: commentID))
+        model.load()
+
+        let reply = try XCTUnwrap(model.comments(under: post.entryId).first { $0.id == commentID })
+        XCTAssertEqual(reply.display, .tombstoned)
+        XCTAssertNil(reply.body, "a tombstoned reply surrenders its body")
+        XCTAssertEqual(reply.parentID, post.entryId, "identity survives the redaction")
+    }
+
+    // MARK: - Repository authority wrapper (Unit 4b, consumes Unit 4a)
+
+    private func openRepository() throws -> RiotProfileRepository {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("newswire-editor-\(UUID().uuidString)", isDirectory: true)
+        let storage = try ProtectedProfileStorage(
+            fileURL: directory.appendingPathComponent("profile.json"))
+        return try RiotProfileRepository.open(storage: storage, keyStore: TestWrappingKeyStore())
+    }
+
+    /// The live repository wrapper answers with core's descriptor-authenticated
+    /// roster (Unit 4a): a roster member is an editor, a stranger is not, and an
+    /// unknown / not-yet-synced descriptor answers `false`, never a throw (that
+    /// defined false is what drives the pending-sync note in the model).
+    func testRepositoryWrapperMatchesTheCoreAuthorityForMemberAndNonMember() throws {
+        let repo = try openRepository()
+        let mineHex = try repo.me().id   // the founder's real subspace id, hex
+        // Founding roster = [me] (what ConferenceShellView seeds): I edit my own community.
+        let record = try repo.createNewswireSpace(
+            name: "Wrapped", summary: "News.", editorialRoster: [mineHex])
+        XCTAssertTrue(try repo.newswireIsEditor(
+            spaceDescriptorEntryID: record.entryId, subjectID: mineHex))
+        // A stranger key is NOT an editor.
+        XCTAssertFalse(try repo.newswireIsEditor(
+            spaceDescriptorEntryID: record.entryId, subjectID: "11".repeated(32)))
+        // An unknown / not-yet-synced descriptor id → false, NOT a throw.
+        XCTAssertFalse(try repo.newswireIsEditor(
+            spaceDescriptorEntryID: "ab".repeated(32), subjectID: mineHex))
+    }
+
     // MARK: - Fixtures & helpers
 
     private func projection(
@@ -453,7 +789,7 @@ final class NewswireSurfaceTests: XCTestCase {
     ) -> NewswireProjectionView {
         NewswireProjectionView(
             openWire: openWire, frontPage: frontPage, earlier: [],
-            editorialHistory: [], futureQuarantine: [])
+            comments: [], editorialHistory: [], futureQuarantine: [])
     }
 
     private func author(_ key: String = "ab".repeated(32)) -> NewswireAuthor {
@@ -496,12 +832,38 @@ final class NewswireSurfaceTests: XCTestCase {
             throw NSError(domain: "test", code: 1)
         }
     }
-    private struct ThrowingEditor: NewswireEditorialActing {
+    /// Returns a fixed projection so a wire-state can be driven without a store.
+    private struct FixedProjector: NewswireProjecting {
+        let projection: NewswireProjectionView
+        init(_ projection: NewswireProjectionView) { self.projection = projection }
+        func projectNewswire(spaceDescriptorEntryID: String) throws -> NewswireProjectionView {
+            projection
+        }
+    }
+    /// Satisfies Unit 4b's `authority:` seam for wire-state tests that don't exercise
+    /// editor gating — always "not an editor", so it never colors a wire-state result.
+    private struct StubAuthority: NewswireEditorAuthorityChecking {
+        func newswireIsEditor(spaceDescriptorEntryID: String, subjectID: String) throws -> Bool { false }
+    }
+    private struct ThrowingEditor: NewswireEditorialActing, NewswireEditorAuthorityChecking {
         func createNewswireEditorialAction(
             spaceDescriptorEntryID: String, targetEntryID: String,
             kind: NewswireEditorialActionKind, reason: String?, correctionText: String?
         ) throws -> NewswireSignedRecord {
             throw NSError(domain: "test", code: 1)
+        }
+        func newswireIsEditor(spaceDescriptorEntryID: String, subjectID: String) throws -> Bool {
+            throw NSError(domain: "test", code: 1)   // load() maps the throw to isEditor == false
+        }
+    }
+
+    private final class TestWrappingKeyStore: WrappingKeyStore {
+        private var key: Data?
+        func loadOrCreateWrappingKey() throws -> Data {
+            if let key { return key }
+            let created = Data(repeating: 0x5a, count: 32)
+            key = created
+            return created
         }
     }
 }
@@ -509,4 +871,196 @@ final class NewswireSurfaceTests: XCTestCase {
 private extension String {
     /// Repeats a two-char hex unit `count` times — a readable full 32-byte id.
     func repeated(_ count: Int) -> String { String(repeating: self, count: count) }
+}
+
+/// Fix #4 — the composite-site moderation READ model. The security property under
+/// test: a `.moderationLoading` verdict HOLDS the whole content surface (the banner
+/// is a control, not decoration), and moderated items render as accountable
+/// placeholders. Pure over core's `ResolvedCompositeSite` — no store, mirrors the
+/// Rust `resolve_composite_site` contract the model consumes.
+final class CompositeSiteReadModelTests: XCTestCase {
+    private func item(
+        _ id: String, _ treatment: SiteItemTreatment, tier: SiteTrustTier = .openWire
+    ) -> ResolvedSiteItem {
+        ResolvedSiteItem(
+            entryId: id, authorSubspace: "ab".repeated(32), trustTier: tier, treatment: treatment)
+    }
+
+    private func resolved(
+        _ degradation: SiteDegradation, items: [ResolvedSiteItem] = []
+    ) -> ResolvedCompositeSite {
+        ResolvedCompositeSite(
+            root: "cd".repeated(32), degradation: degradation, transportStatus: "available",
+            items: items, writerCapExpired: false)
+    }
+
+    /// THE security property: moderation-loading holds the surface. The whole
+    /// content column is gated (`isContentHeld`) and the banner explains why — a
+    /// present item is NEVER shown as trustworthy-clean under a hold.
+    func testModerationLoadingHoldsTheWholeSurface() {
+        let model = CompositeSiteReadModel.from(
+            resolved(.moderationLoading, items: [item("11".repeated(32), .ordinary)]))
+        XCTAssertTrue(model.isContentHeld, "moderation-loading must HOLD the content surface")
+        XCTAssertEqual(model.hold, .held(reason: .moderationLoading))
+        XCTAssertNotNil(model.bannerMessage, "the hold must be explained by a banner")
+        // The item is still present as a row (accountable), but the surface is held.
+        XCTAssertEqual(model.items.count, 1)
+    }
+
+    /// A fully-current site shows content: not held, no banner.
+    func testCurrentSiteShowsContentWithoutABanner() {
+        let model = CompositeSiteReadModel.from(
+            resolved(.none, items: [item("11".repeated(32), .ordinary)]))
+        XCTAssertFalse(model.isContentHeld)
+        XCTAssertEqual(model.hold, .shown)
+        XCTAssertNil(model.bannerMessage)
+    }
+
+    /// A tombstoned or hidden item renders as an accountable placeholder treatment,
+    /// never a silent disappearance — even on a current site.
+    func testModeratedItemsRenderAsAccountablePlaceholders() {
+        let model = CompositeSiteReadModel.from(
+            resolved(
+                .none,
+                items: [
+                    item("11".repeated(32), .tombstoned),
+                    item("22".repeated(32), .hidden),
+                    item("33".repeated(32), .ordinary),
+                ]))
+        XCTAssertEqual(model.items.map(\.display), [.tombstoned, .hiddenInterstitial, .ordinary])
+    }
+
+    /// An invalid manifest also holds the surface (a more-severe honest state), with
+    /// a banner — content is never shown as trustworthy without a valid manifest.
+    func testInvalidManifestHoldsTheSurface() {
+        let model = CompositeSiteReadModel.from(resolved(.manifestInvalid))
+        XCTAssertTrue(model.isContentHeld)
+        XCTAssertEqual(model.hold, .held(reason: .manifestInvalid))
+        XCTAssertNotNil(model.bannerMessage)
+    }
+
+    /// The mild states show content WITH a notice — held is reserved for states
+    /// where content must not be trusted, so a milder degradation never needlessly
+    /// blanks the surface.
+    func testMildDegradationShowsContentWithANotice() {
+        for degradation in [SiteDegradation.editorialOnly, .memberUnverified] {
+            let model = CompositeSiteReadModel.from(
+                resolved(degradation, items: [item("11".repeated(32), .ordinary)]))
+            XCTAssertFalse(model.isContentHeld, "\(degradation) should show content, not hold it")
+            XCTAssertNotNil(model.bannerMessage, "\(degradation) still explains itself")
+        }
+    }
+}
+
+/// Fix #4 write path — the owner moderation authoring model. Validates drafts
+/// into the FFI action, signs through the seam (core auto-publishes the coupled
+/// heartbeat), and — critically — RETAINS the outcome so the signed bytes stay
+/// reachable for propagation (owned-namespace /mod/ has no automatic follower sync
+/// yet). Pure over a stub seam; the real end-to-end round-trip is Rust-tested.
+@MainActor
+final class SiteModerationModelTests: XCTestCase {
+    private let root = "ab".repeated(32)
+    private let id32 = "cd".repeated(32)
+
+    /// A stub authoring seam: records the action it was handed and returns a canned
+    /// outcome (with non-empty signed bytes), or throws to simulate a core refusal.
+    private final class StubAuthoring: SiteModerationAuthoring {
+        var lastAction: SiteModerationAction?
+        var shouldThrow = false
+        func authorSiteModeration(sealedRoot: Data, action: SiteModerationAction) throws
+            -> SiteModerationOutcome
+        {
+            lastAction = action
+            if shouldThrow { throw NSError(domain: "test", code: 1) }
+            return SiteModerationOutcome(
+                action: SiteModerationSignedRecord(
+                    entryId: "11".repeated(32), signedBytes: Data([1, 2, 3])),
+                epoch: SiteModerationSignedRecord(
+                    entryId: "22".repeated(32), signedBytes: Data([4, 5, 6, 7])))
+        }
+    }
+
+    private func model(_ stub: StubAuthoring, kind: SiteModerationTargetKind) -> SiteModerationModel {
+        SiteModerationModel(
+            siteRoot: root, sealedRoot: Data([0x9]), authoring: stub, initialKind: kind)
+    }
+
+    /// A revoke needs a well-formed author key; a tombstone needs both a namespace
+    /// and an entry id. Malformed/empty targets are named, never reach core.
+    func testValidatorNamesEachMissingOrMalformedField() {
+        XCTAssertEqual(
+            SiteModerationValidator.validate(SiteModerationDraft(kind: .revoke)),
+            .failure(.authorKeyRequired))
+        XCTAssertEqual(
+            SiteModerationValidator.validate(SiteModerationDraft(kind: .revoke, authorKey: "nothex")),
+            .failure(.authorKeyMalformed))
+        XCTAssertEqual(
+            SiteModerationValidator.validate(SiteModerationDraft(kind: .tombstone, targetEntry: id32)),
+            .failure(.targetNamespaceRequired))
+        XCTAssertEqual(
+            SiteModerationValidator.validate(
+                SiteModerationDraft(kind: .tombstone, targetNamespace: id32, targetEntry: "short")),
+            .failure(.targetEntryMalformed))
+
+        if case let .success(action) = SiteModerationValidator.validate(
+            SiteModerationDraft(kind: .revoke, authorKey: id32.uppercased()))
+        {
+            XCTAssertEqual(action, .revoke(authorKey: id32))  // normalized lowercase
+        } else {
+            XCTFail("a 64-hex author key must validate")
+        }
+    }
+
+    /// A valid draft signs through the seam and the outcome is RETAINED — the
+    /// signed bytes of BOTH the action and the auto-published heartbeat stay
+    /// reachable on the model for the app to propagate.
+    func testSigningRetainsTheOutcomeAndItsSignedBytes() {
+        let stub = StubAuthoring()
+        let model = model(stub, kind: .tombstone)
+        model.draft.targetNamespace = id32
+        model.draft.targetEntry = id32
+
+        guard case let .signed(outcome) = model.sign() else {
+            return XCTFail("a valid tombstone draft should sign")
+        }
+        XCTAssertEqual(stub.lastAction, .tombstone(targetNamespace: id32, targetEntry: id32))
+        // The bytes are the propagation payload — surfaced, not dropped.
+        XCTAssertFalse(outcome.action.signedBytes.isEmpty)
+        XCTAssertFalse(outcome.epoch.signedBytes.isEmpty)
+        XCTAssertEqual(model.lastOutcome, outcome)
+    }
+
+    /// An invalid draft never reaches the seam.
+    func testInvalidDraftNeverReachesCore() {
+        let stub = StubAuthoring()
+        let model = model(stub, kind: .revoke)  // authorKey empty
+        XCTAssertEqual(model.sign(), .invalid(.authorKeyRequired))
+        XCTAssertNil(stub.lastAction, "an invalid draft must not be signed")
+        XCTAssertNil(model.lastOutcome)
+    }
+
+    /// A core refusal is surfaced and the draft is preserved.
+    func testCoreRefusalIsSurfacedAndDraftPreserved() {
+        let stub = StubAuthoring()
+        stub.shouldThrow = true
+        let model = model(stub, kind: .revoke)
+        model.draft.authorKey = id32
+        XCTAssertEqual(model.sign(), .rejected)
+        XCTAssertEqual(model.draft.authorKey, id32, "a refusal preserves the draft")
+        XCTAssertNil(model.lastOutcome)
+    }
+
+    /// The review shows the complete, untruncated identifiers — this is the signing
+    /// surface, where truncation would be a defect.
+    func testReviewShowsUntruncatedIdentifiers() {
+        let stub = StubAuthoring()
+        let model = model(stub, kind: .tombstone)
+        model.draft.targetNamespace = id32
+        model.draft.targetEntry = id32
+        guard case let .success(review) = model.review() else {
+            return XCTFail("a valid draft should review")
+        }
+        XCTAssertTrue(review.rows.contains { $0.value == id32 })
+        XCTAssertTrue(review.rows.contains { $0.label == "Site" && $0.value == root })
+    }
 }

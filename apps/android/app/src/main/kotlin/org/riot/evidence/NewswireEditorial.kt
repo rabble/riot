@@ -2,6 +2,7 @@ package org.riot.evidence
 
 import uniffi.riot_ffi.NewswireEditorialActionKind
 import uniffi.riot_ffi.NewswirePostTreatment
+import uniffi.riot_ffi.NewswireProjectedComment
 import uniffi.riot_ffi.NewswireProjectedEditorialAction
 import uniffi.riot_ffi.NewswireProjectedPost
 import uniffi.riot_ffi.NewswireProjectionView
@@ -240,6 +241,45 @@ data class NewswirePostRow(
     }
 }
 
+/**
+ * One communal reply, ready to draw indented under its parent post. Every field
+ * comes from core's projection; the surface only re-shapes, never re-decides. A
+ * hidden or tombstoned reply arrives with `body == null`, so the row draws the
+ * treatment interstitial instead of the words — the same redaction contract as a
+ * post. Twin of iOS `NewswireCommentRow`.
+ */
+data class NewswireCommentRow(
+    val id: String,
+    /** The post this reply hangs under. The surface groups core's flat list by
+     *  this id; core already dropped any reply with no held parent. */
+    val parentId: String,
+    val author: String,
+    val authorKeyHex: String,
+    val body: String?,
+    val display: NewswirePostDisplay,
+) {
+    companion object {
+        fun of(comment: NewswireProjectedComment) = NewswireCommentRow(
+            id = comment.entryId,
+            parentId = comment.parentEntryId,
+            author = comment.author.rendered,
+            authorKeyHex = comment.author.id,
+            body = comment.body,
+            display = NewswirePostDisplay.from(comment.treatment),
+        )
+
+        /** Groups core's flat, already-time-sorted comment list under each parent
+         *  post's entry id, preserving order — the surface never re-sorts. */
+        fun group(comments: List<NewswireProjectedComment>): Map<String, List<NewswireCommentRow>> {
+            val byParent = linkedMapOf<String, MutableList<NewswireCommentRow>>()
+            for (comment in comments) {
+                byParent.getOrPut(comment.parentEntryId) { mutableListOf() }.add(of(comment))
+            }
+            return byParent
+        }
+    }
+}
+
 data class EditorialHistoryRow(
     val id: String,
     val signer: String,
@@ -289,7 +329,19 @@ sealed class NewswireWireState(val accessibilityId: String) {
     data class PostsButNoFeature(val openWire: List<NewswirePostRow>) :
         NewswireWireState("newswire-no-feature")
     data class Featured(val frontPage: List<NewswirePostRow>, val openWire: List<NewswirePostRow>) :
-        NewswireWireState("newswire-featured")
+        NewswireWireState("newswire-featured") {
+        /** Front-page post ids whose comment thread + reply belong in the FEATURED
+         *  section — only those NOT also on the open wire. Core re-lists every
+         *  featured post on the open wire (featured ⊆ open wire), so this is empty
+         *  and the highlight stays headline-only, its thread rendered once on the
+         *  canonical open-wire row. Kept general so a thread is never doubled nor
+         *  orphaned if that guarantee ever changes. */
+        val featuredOnlyIds: Set<String>
+            get() {
+                val onWire = openWire.mapTo(mutableSetOf()) { it.id }
+                return frontPage.mapNotNullTo(mutableSetOf()) { row -> row.id.takeUnless { it in onWire } }
+            }
+    }
 
     companion object {
         fun from(projection: NewswireProjectionView): NewswireWireState {
@@ -302,4 +354,71 @@ sealed class NewswireWireState(val accessibilityId: String) {
             }
         }
     }
+}
+
+/** Projects a community's newswire by its descriptor entry id. A one-method seam
+ *  (`RiotController::projectNewswire`) so the screen resolver stays pure and
+ *  host-JVM testable without a native profile. */
+fun interface NewswireProjector {
+    fun project(descriptorEntryId: String): NewswireProjectionView
+}
+
+/**
+ * Everything one community's newswire renders: the [NewswireWireState] (front page
+ * / open wire structure) plus the communal replies grouped under each parent post.
+ * Comments are kept SEPARATE from the wire enum — they hang under posts across all
+ * wire states, so they are a cross-cutting map keyed by parent entry id, never a
+ * field of the post-structure enum (the Android twin of iOS's `commentsByParent`).
+ */
+data class NewswireSurface(
+    val wire: NewswireWireState,
+    val commentsByParent: Map<String, List<NewswireCommentRow>>,
+    val unread: NewswireUnread,
+) {
+    /** The replies to draw under [postId], in core's order; empty when none. */
+    fun comments(postId: String): List<NewswireCommentRow> = commentsByParent[postId] ?: emptyList()
+
+    companion object {
+        val OFFLINE = NewswireSurface(NewswireWireState.OfflineStale, emptyMap(), NewswireUnread.NONE)
+
+        /** One projection yields all three surfaces: the wire structure, the
+         *  replies grouped under their parent, and the per-device unread state
+         *  against [cursor] (the highest order key this device has marked seen). */
+        fun from(projection: NewswireProjectionView, cursor: ULong?) = NewswireSurface(
+            wire = NewswireWireState.from(projection),
+            commentsByParent = NewswireCommentRow.group(projection.comments),
+            unread = NewswireUnread.of(projection, cursor),
+        )
+    }
+}
+
+/**
+ * The screen-level resolver: turns the active community's descriptor (which may be
+ * null for a legacy space, or point at a wire that fails to project) into the
+ * [NewswireSurface] the screen renders. A null/blank descriptor or a projection
+ * that throws yields an offline-stale surface with no comments — the exact mirror
+ * of iOS's `try? projectNewswire(...)` → offlineStale fallback. Otherwise it
+ * delegates to [NewswireSurface.from]. Pure given the projector.
+ */
+object NewswireScreen {
+    fun resolve(descriptorEntryId: String?, cursor: ULong?, projector: NewswireProjector): NewswireSurface {
+        if (descriptorEntryId.isNullOrBlank()) return NewswireSurface.OFFLINE
+        // Any projection failure (an unavailable/stale wire, a core refusal) is an
+        // offline-stale surface, never a crash — matches iOS's `try?` fallback.
+        return try {
+            NewswireSurface.from(projector.project(descriptorEntryId), cursor)
+        } catch (_: Exception) {
+            NewswireSurface.OFFLINE
+        }
+    }
+}
+
+/**
+ * The one pre-submit rule the surface enforces before the native comment sign: a
+ * reply must be non-empty after trimming (whitespace-only is blocked). Pure and
+ * host-JVM testable even though the submit itself is native — the Kotlin twin of
+ * iOS `submitComment`'s `.empty` guard.
+ */
+object NewswireCommentValidator {
+    fun isSubmittable(body: String): Boolean = body.trim().isNotEmpty()
 }

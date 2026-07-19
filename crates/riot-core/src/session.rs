@@ -527,6 +527,34 @@ impl EvidenceStore {
             .live_entries_with_prefix_in_namespace(namespace_id, prefix))
     }
 
+    /// Every live entry in `namespace_id`, in its FULL signed form — the exact
+    /// persisted `entry_bytes` / `capability_bytes` / `signature` / payload,
+    /// read back verbatim from durable storage and NEVER re-encoded from a
+    /// decoded `Entry`. This is the offer source for followed-site sync, whose
+    /// owned-namespace entries never ride `sync_inventory`.
+    ///
+    /// **Durable-store only.** Returns `Some(entries)` on a SQLite-backed store,
+    /// and `None` — NOT `Some(vec![])` — on a memory-backed store. The in-memory
+    /// join deliberately drops the capability/signature token (see `join.rs`), so
+    /// a memory store cannot reconstruct the signed form at all. `None` is the
+    /// explicit "no durable store, cannot answer" signal so a caller can never
+    /// mistake an in-memory profile for one that legitimately has nothing to
+    /// offer. Followed-site sync therefore REQUIRES a durable profile.
+    ///
+    /// Re-encoding is deliberately avoided: a canonical re-encode "should" match
+    /// the imported bytes, but a single byte of drift would break the signature
+    /// or digest a peer verifies. Reading the stored bytes is proof-safe because
+    /// they are the same bytes verified on the way in.
+    pub fn signed_entries_in_namespace(
+        &self,
+        namespace_id: &[u8; 32],
+    ) -> Result<Option<Vec<crate::willow::SignedWillowEntry>>, SessionError> {
+        let st = self.inner.lock().map_err(|_| SessionError::Internal)?;
+        st.require_store(self.store_id)?;
+        st.evidence_repository
+            .signed_entries_in_namespace(namespace_id)
+    }
+
     /// Intentionally removes one accepted entry from the live/query view.
     /// The accepted identity and receipts remain; exact re-import may restore
     /// it through the ordinary admission pipeline.
@@ -719,13 +747,24 @@ impl EvidenceStore {
                 // check here.
                 let is_owned_editorial =
                     crate::willow::site_paths::is_owned_editorial_entry(authorised.entry());
+                // An owned composite-site moderation entry (`O:/mod/`): `verify_frame`
+                // already bound it to the followed site's owned cap (owner or a
+                // `/mod/`-scoped moderator) and to the `/mod/` region. Its payload is
+                // opaque here — the moderation-record schema is validated READ-SIDE
+                // (`moderation.rs::read_moderation_record`) — so, exactly like owned
+                // editorial, it binds by path alone and its payload must be retained
+                // for the resolver to read. Without this the sync/inspect path drops
+                // every synced `/mod/` record and a follower can never receive the
+                // moderation set.
+                let is_owned_moderation =
+                    crate::willow::site_paths::is_owned_moderation_entry(authorised.entry());
                 let valid_newswire = crate::newswire::is_newswire_prefix(path)
                     && crate::newswire::inspect_verified_components(
                         authorised.entry(),
                         item.frame.payload_bytes(),
                     )
                     .is_ok();
-                let path_matches = if is_owned_editorial || is_app_data {
+                let path_matches = if is_owned_editorial || is_owned_moderation || is_app_data {
                     // Both bind by path alone: the payload is opaque and embeds
                     // no identity a path could contradict.
                     true
@@ -779,7 +818,8 @@ impl EvidenceStore {
                         || app_index_slot.is_some()
                         || profile_subspace.is_some()
                         || valid_newswire
-                        || is_owned_editorial;
+                        || is_owned_editorial
+                        || is_owned_moderation;
                     verified.push(VerifiedEntry {
                         authorised,
                         entry_id: valid.entry_id,

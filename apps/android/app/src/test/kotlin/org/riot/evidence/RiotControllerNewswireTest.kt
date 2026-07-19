@@ -298,6 +298,7 @@ class RiotControllerNewswireTest {
         openWire = openWire,
         frontPage = frontPage,
         earlier = emptyList(),
+        comments = emptyList(),
         editorialHistory = emptyList(),
         futureQuarantine = emptyList(),
     )

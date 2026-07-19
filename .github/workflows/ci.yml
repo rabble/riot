@@ -105,3 +105,57 @@ jobs:
         run: npm ci --ignore-scripts
       - name: unit tests
         run: npm run test:web:unit
+
+  android:
+    name: Android (host-JVM unit tests)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Host-JVM unit tests only (:app:testDebugUnitTest). They construct core's
+      # projected records on the JVM and assert the client mapping — they never
+      # load libriot_ffi.so (UniFFI's Kotlin only calls System.loadLibrary when
+      # an FFI *function* runs, never when a generated record/enum is merely
+      # constructed). So this job needs the generated Kotlin bindings but NOT the
+      # cross-compiled Android .so ABIs — no NDK, no emulator, cheap on Ubuntu.
+      # It guards the class of break where a UniFFI record changes and the
+      # Android host-test helpers aren't updated (main went latently RED this way
+      # when iOS PR #53 added a `comments` field). See docs/ci/native-ci-requirements.md.
+
+      # AGP 9 and the Gradle 9.1 wrapper both require JDK 17.
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      # Provisions cmdline-tools and accepts all SDK licenses. AGP then
+      # auto-downloads the compileSdk 36 platform + build-tools it needs
+      # (android.builder.sdkDownload defaults on) against ANDROID_HOME/
+      # ANDROID_SDK_ROOT, which this action exports.
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      # rust-toolchain.toml pins channel 1.95.0; rustup honours it on first use.
+      # generate-bindings compiles xtask + riot-ffi metadata — no extra components.
+      - name: Install pinned Rust toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+
+      # Regenerates build/generated/riot-ffi/uniffi/**/riot_ffi.kt, which the
+      # Android main source set compiles against. Without this the app module
+      # cannot compile and the unit tests cannot run.
+      - name: Generate UniFFI Kotlin bindings
+        run: cargo run --locked -p xtask -- generate-bindings
+
+      # Gradle caching (wrapper dist + dependencies + build cache).
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      # Gradle reads the SDK path from ANDROID_HOME/ANDROID_SDK_ROOT (exported by
+      # setup-android) when local.properties is absent, so no sdk.dir file needed.
+      - name: Host-JVM unit tests
+        working-directory: apps/android
+        run: ./gradlew :app:testDebugUnitTest

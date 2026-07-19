@@ -1,8 +1,11 @@
 package org.riot.evidence
 
+import android.Manifest
 import android.app.Activity
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.graphics.Typeface
+import android.os.Build
 import android.os.Bundle
 import android.view.Gravity
 import android.view.View
@@ -13,6 +16,7 @@ import android.widget.HorizontalScrollView
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
+import android.widget.Toast
 import uniffi.riot_ffi.CurrentEntry
 import org.riot.evidence.apps.AppBundleCodec
 import org.riot.evidence.apps.AppResourceResolver
@@ -45,9 +49,26 @@ class MainActivity : Activity() {
     private var runningApp: Pair<InstalledApp, AppWebViewHost>? = null
     private var pendingAppManifest: ByteArray? = null
 
+    // Local new-content notifications (PR1 infra, wired live here). The notifier is
+    // pure + a thin scheduler; the seen cursor is per-device SharedPreferences.
+    private lateinit var notifier: LocalNotifier
+    private lateinit var seenCursor: SeenCursorStore
+    // Foreground/background phase for the notifier — plain lifecycle, never
+    // androidx.lifecycle (its transitive lifecycle-runtime is not in the offline graph).
+    private var foreground = false
+    // POST_NOTIFICATIONS is requested once per process, only on API 33+.
+    private var notificationPermissionRequested = false
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         controller = RiotController(filesDir)
+        seenCursor = SeenCursorStore(
+            SharedPreferencesSeenStore(getSharedPreferences("riot.newswire.seen", MODE_PRIVATE)),
+        )
+        notifier = LocalNotifier(AndroidNotificationScheduler(applicationContext))
+        // An accepted nearby sync (the only local "new content" event) drives the
+        // notifier. Fires on the sync thread → hop to the UI thread for evaluate.
+        controller.onDataChanged = { runOnUiThread { handleStoreChanged() } }
         apps = RiotAppsController(
             controller.openAppRuntime(),
             onInstalled = controller::onAppInstalled,
@@ -123,8 +144,52 @@ class MainActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
+        foreground = true
         // Foreground `watch` trigger (spec): re-fire app watchers on return.
         runningApp?.second?.notifyDataChanged()
+    }
+
+    override fun onPause() {
+        foreground = false
+        super.onPause()
+    }
+
+    /// A local store-changed event landed (accepted sync). Recompute the active
+    /// community's unread against its seen cursor and hand it to the notifier with
+    /// the current phase. Deliberately does NOT advance the cursor — only opening
+    /// the newswire screen marks seen — so new content arriving while the reader is
+    /// elsewhere (or on-screen) stays unread until they next open the wire. A
+    /// foreground evaluation yields an in-app banner (shown as a toast); a
+    /// background one posts a system notification through the scheduler.
+    private fun handleStoreChanged() {
+        val community = controller.activeCommunity() ?: return
+        val descriptor = community.descriptorEntryId ?: return
+        val unread = NewswireScreen.resolve(descriptor, seenCursor.cursor(descriptor)) {
+            controller.projectNewswire(it)
+        }.unread
+        notifier.evaluate(
+            communityId = community.namespaceId,
+            communityName = community.title,
+            unread = unread,
+            phase = if (foreground) NotifierPhase.ACTIVE else NotifierPhase.BACKGROUND,
+        )
+        notifier.banner?.let { banner ->
+            Toast.makeText(this, banner.text, Toast.LENGTH_SHORT).show()
+            notifier.dismissBanner()
+        }
+    }
+
+    /// Ask for POST_NOTIFICATIONS once, only on API 33+ and only if not already
+    /// granted — the twin of iOS's requestAuthorizationIfNeeded, fired when the
+    /// newswire surface first appears (the reader already has a community).
+    /// MainActivity extends the platform Activity, so this uses requestPermissions,
+    /// not androidx's registerForActivityResult.
+    private fun requestNotificationPermissionIfNeeded() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
+        if (notificationPermissionRequested) return
+        if (checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED) return
+        notificationPermissionRequested = true
+        requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), POST_NOTIFICATIONS_REQUEST)
     }
 
     @Suppress("DEPRECATION")
@@ -181,6 +246,7 @@ class MainActivity : Activity() {
             ConferenceSurface.SPACES -> showSpaces()
             ConferenceSurface.APP_DIRECTORY -> showDirectory()
             ConferenceSurface.INCIDENT_BOARD -> showBoard()
+            ConferenceSurface.NEWSWIRE -> showNewswire()
             ConferenceSurface.COMPOSE_AND_SIGN -> showCompose()
             ConferenceSurface.IMPORT_PREVIEW -> showImportPreview()
             ConferenceSurface.CONNECTION -> showConnection()
@@ -409,6 +475,150 @@ class MainActivity : Activity() {
         }
     }
 
+    /**
+     * The community newswire: the collective's published wire for the active
+     * community, shown exactly as core's signed, already-split projection presents
+     * it (front page / open wire), honoring editorial treatment (hidden and
+     * tombstoned posts are redacted to their interstitial). Communal replies are
+     * threaded under each post with a reply affordance; unread lands in a later
+     * PR. An unavailable/stale projection degrades to the offline-stale copy
+     * rather than crashing.
+     */
+    private fun showNewswire() {
+        val community = controller.activeCommunity()
+        if (community == null) {
+            content.addView(body(
+                "Join or create a community to see its newswire. " +
+                    "Everything you already hold stays available offline.",
+            ))
+            content.addView(action("Go to spaces") { show(ConferenceSurface.SPACES) })
+            return
+        }
+        requestNotificationPermissionIfNeeded()
+        content.addView(body(
+            "Wire for ${community.title}. Reports appear exactly as the " +
+                "collective's signed records present them.",
+        ))
+        val descriptor = community.descriptorEntryId
+        val surface = NewswireScreen.resolve(descriptor, descriptor?.let { seenCursor.cursor(it) }) {
+            controller.projectNewswire(it)
+        }
+        // The "N new" delta is computed against the OLD cursor so it is visible this
+        // visit; the cursor is then advanced below so the NEXT open reads zero.
+        if (surface.unread.hasUnread) {
+            content.addView(body("${surface.unread.count} new since you last looked"))
+        }
+        renderSurface(surface, descriptor)
+        // Opening the wire marks it seen: advance to the newest shown post. Monotonic
+        // and after render, so the delta survives this visit and clears next open.
+        if (descriptor != null) {
+            surface.unread.latestTimestamp?.let { seenCursor.advance(descriptor, it) }
+        }
+    }
+
+    private fun renderSurface(surface: NewswireSurface, descriptor: String?) {
+        when (val wire = surface.wire) {
+            NewswireWireState.OfflineStale -> {
+                content.addView(heading(NewswireWireCopy.OFFLINE_TITLE))
+                content.addView(body(NewswireWireCopy.OFFLINE_MESSAGE))
+                content.addView(action("Try again") { show(ConferenceSurface.NEWSWIRE) })
+            }
+            NewswireWireState.EmptyWire -> {
+                content.addView(heading(NewswireWireCopy.EMPTY_TITLE))
+                content.addView(body(NewswireWireCopy.EMPTY_MESSAGE))
+            }
+            is NewswireWireState.PostsButNoFeature -> {
+                content.addView(heading(NewswireWireCopy.NO_FEATURE_TITLE))
+                content.addView(body(NewswireWireCopy.NO_FEATURE_MESSAGE))
+                content.addView(heading(NewswireWireCopy.NO_FEATURE_LINK))
+                wire.openWire.forEach { renderPost(it, surface, descriptor, withThread = true) }
+            }
+            is NewswireWireState.Featured -> {
+                // A featured post is re-listed on the open wire, so its thread +
+                // reply render once — on the canonical open-wire row. The Featured
+                // highlight is headline-only unless the post is featured-only.
+                val featuredOwners = wire.featuredOnlyIds
+                content.addView(heading("Featured"))
+                wire.frontPage.forEach { renderPost(it, surface, descriptor, withThread = it.id in featuredOwners) }
+                content.addView(heading("Open wire"))
+                wire.openWire.forEach { renderPost(it, surface, descriptor, withThread = true) }
+            }
+        }
+    }
+
+    /** A post row and, when [withThread], its communal replies plus — for an
+     *  ordinary post on a projectable wire — a reply affordance. [withThread] is
+     *  false for a featured highlight whose thread lives on its open-wire row, so a
+     *  thread and reply box render exactly once per post. A redacted post shows no
+     *  reply control (you reply to visible reports, not withheld ones). */
+    private fun renderPost(
+        row: NewswirePostRow,
+        surface: NewswireSurface,
+        descriptor: String?,
+        withThread: Boolean,
+    ) {
+        content.addView(postView(row))
+        if (!withThread) return
+        surface.comments(row.id).forEach { content.addView(commentView(it)) }
+        if (row.display == NewswirePostDisplay.ORDINARY && descriptor != null) {
+            addReplyAffordance(descriptor, row.id)
+        }
+    }
+
+    /** One reply, indented under its parent. Hidden/tombstoned replies show only
+     *  their signed interstitial — never the withheld words — like a post. */
+    private fun commentView(comment: NewswireCommentRow): TextView {
+        val text = when (comment.display) {
+            NewswirePostDisplay.HIDDEN_INTERSTITIAL -> NewswireTreatmentCopy.HIDDEN_BODY
+            NewswirePostDisplay.TOMBSTONED -> NewswireTreatmentCopy.TOMBSTONE_BODY
+            NewswirePostDisplay.ORDINARY -> comment.body ?: ""
+        }
+        return body("↳ ${comment.author}\n$text").apply { setPadding(48, 8, 0, 8) }
+    }
+
+    private fun addReplyAffordance(descriptorEntryId: String, parentEntryId: String) {
+        val input = EditText(this).apply { hint = "Reply to the collective" }
+        content.addView(input)
+        content.addView(action("Post reply") {
+            val text = input.text.toString()
+            if (!NewswireCommentValidator.isSubmittable(text)) {
+                status.text = "A reply can't be empty."
+                return@action
+            }
+            runAction("Reply signed and posted") {
+                controller.createNewswireComment(descriptorEntryId, parentEntryId, text)
+                show(ConferenceSurface.NEWSWIRE)
+            }
+        })
+    }
+
+    /** One post row. A hidden or tombstoned post shows only its signed
+     *  interstitial — never the withheld headline — matching the treatment copy. */
+    private fun postView(row: NewswirePostRow): TextView = when (row.display) {
+        NewswirePostDisplay.HIDDEN_INTERSTITIAL ->
+            body("${NewswireTreatmentCopy.HIDDEN_TITLE}\n${NewswireTreatmentCopy.HIDDEN_BODY}")
+        NewswirePostDisplay.TOMBSTONED ->
+            body("${NewswireTreatmentCopy.TOMBSTONE_TITLE}\n${NewswireTreatmentCopy.TOMBSTONE_BODY}")
+        NewswirePostDisplay.ORDINARY -> body(ordinaryPostText(row))
+    }
+
+    private fun ordinaryPostText(row: NewswirePostRow): String {
+        val badges = buildList {
+            if (row.verificationCount > 0) add("Verified x${row.verificationCount}")
+            if (row.hasCorrection) add(EditorialCorrectionLabel.TEXT)
+            if (row.aiAssisted) add("AI-assisted")
+        }
+        return buildString {
+            append(row.headline ?: "(untitled report)")
+            append("\n")
+            append(row.author)
+            if (badges.isNotEmpty()) {
+                append("\n")
+                append(badges.joinToString(" • "))
+            }
+        }
+    }
+
     private fun showCompose() {
         content.addView(body("Model output stays editable. Nothing publishes until you review and sign."))
         val headline = EditText(this).apply { hint = "Alert headline" }
@@ -597,5 +807,6 @@ class MainActivity : Activity() {
         const val PICK_APP_MANIFEST = 11
         const val PICK_APP_BUNDLE = 12
         const val MAX_APP_MANIFEST_BYTES = 4_096
+        const val POST_NOTIFICATIONS_REQUEST = 13
     }
 }

@@ -12,13 +12,19 @@ use iroh::{Endpoint, EndpointAddr, SecretKey, TransportAddr, Watcher};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::time::{sleep, Duration};
 
+use riot_core::session::EvidenceStore;
+use riot_core::site::admit_followed_site_frame;
 use riot_core::sync::ByteSyncSession;
+use riot_core::willow::SignedWillowEntry;
 
 use crate::router::{
     AlpnRouter, BoundedStream, BoxRead, BoxWrite, Deadlines, Exporter, RouterConnection,
 };
 use crate::ticket::{admit_dial, Capabilities, Ticket};
 use crate::{pump, TransportError, ALPN};
+
+/// The route recorded for transport-delivered followed-site imports.
+const FOLLOWED_SITE_ROUTE: &str = "site-follow-transport";
 
 fn io_err<E: std::fmt::Display>(e: E) -> TransportError {
     TransportError::Io(std::io::Error::other(e.to_string()))
@@ -87,29 +93,43 @@ pub fn addr_from_node_id(node_id: [u8; 32]) -> Result<EndpointAddr, TransportErr
     Ok(EndpointAddr::from(key))
 }
 
-/// A ticket `node` hint carrying the NodeId AND any direct socket addresses:
-/// `<id_hex>@<ip:port>,<ip:port>`. The addresses let a follower dial directly
-/// (LAN, or a public seed) without waiting on DHT discovery; with no addresses
-/// it degrades to id-only (discovery). Untrusted — outside the ticket signature.
-pub fn endpoint_addr_hint(addr: &EndpointAddr) -> String {
-    let id = addr
-        .addrs
-        .iter()
-        .filter_map(|a| match a {
-            TransportAddr::Ip(s) => Some(s.to_string()),
-            _ => None,
-        })
-        .collect::<Vec<_>>();
-    let idhex: String = addr
-        .id
+/// A ticket `node` hint carrying the NodeId AND direct socket addresses:
+/// `<id_hex>@<ip:port>,<ip:port>`. Uses the endpoint's REAL bound UDP port (not
+/// the STUN-observed external port, which is invalid for a LAN/tailnet peer) —
+/// so a peer on the same LAN or tailnet dials directly and connects. For a
+/// public seed behind NAT, discovery-by-id (id-only hint) is the reachable path.
+/// Untrusted — outside the ticket signature.
+pub fn endpoint_addr_hint(endpoint: &Endpoint) -> String {
+    let idhex: String = endpoint
+        .id()
         .as_bytes()
         .iter()
         .map(|b| format!("{b:02x}"))
         .collect();
-    if id.is_empty() {
+
+    // The actual bound local ports (e.g. 0.0.0.0:54426) — what a same-network
+    // peer must dial, unlike the STUN-mapped port in watch_addr().
+    let bound_v4 = endpoint
+        .bound_sockets()
+        .into_iter()
+        .find(|s| s.is_ipv4())
+        .map(|s| s.port());
+
+    // The endpoint's interface IPs, re-homed onto the real bound port.
+    let mut seen = std::collections::BTreeSet::new();
+    for a in endpoint.addr().addrs {
+        if let TransportAddr::Ip(s) = a {
+            let port = bound_v4.unwrap_or_else(|| s.port());
+            if s.is_ipv4() {
+                seen.insert(format!("{}:{}", s.ip(), port));
+            }
+        }
+    }
+    let addrs: Vec<String> = seen.into_iter().collect();
+    if addrs.is_empty() {
         idhex
     } else {
-        format!("{idhex}@{}", id.join(","))
+        format!("{idhex}@{}", addrs.join(","))
     }
 }
 
@@ -244,6 +264,54 @@ pub async fn accept_with_router(
         .ok_or(TransportError::StreamClosed)?;
     let conn: Connection = incoming.await.map_err(io_err)?;
     router.dispatch(IrohConnection::new(conn)).await
+}
+
+/// Owner side (WU3): passively SERVE an owned site's offer to a follower over an
+/// accepted connection. Read-mostly v1 — the owner reseeds `offer` (what
+/// `build_followed_site_offer(root)` returns on a device) and does not ingest
+/// follower publishes (`|_| true` acknowledges without importing). A separate
+/// session keyed on the site `root`, distinct from any community sync.
+pub async fn serve_followed_site(
+    endpoint: &Endpoint,
+    root: [u8; 32],
+    offer: Vec<SignedWillowEntry>,
+) -> Result<ByteSyncSession, TransportError> {
+    let session = ByteSyncSession::new(root, offer).map_err(TransportError::Sync)?;
+    sync_accept(endpoint, session, |_| true).await
+}
+
+/// Follower side (WU3): dial a followed site through the FAIL-CLOSED ticket gate
+/// and admit every delivered bundle through the SINGLE canonical core gate
+/// (`admit_followed_site_frame`), committing owner /mod + /articles into `store`.
+///
+/// The ticket is verified BEFORE any packet: a ticket that fails its transport
+/// floor refuses without opening a connection. Every received bundle is admitted
+/// under `followed_root = root` and family-gated — the exact gate the manual
+/// (Option B) and sync-session (WU2) paths use, so nothing drifts.
+#[allow(clippy::too_many_arguments)]
+pub async fn connect_followed_site(
+    endpoint: &Endpoint,
+    peer: EndpointAddr,
+    ticket: &Ticket,
+    caps: &Capabilities,
+    now_unix: u64,
+    durable_epoch_floor: u64,
+    store: &EvidenceStore,
+    root: [u8; 32],
+    offer: Vec<SignedWillowEntry>,
+) -> Result<ByteSyncSession, TransportError> {
+    let session = ByteSyncSession::new(root, offer).map_err(TransportError::Sync)?;
+    dial_with_ticket(
+        endpoint,
+        ticket,
+        caps,
+        now_unix,
+        durable_epoch_floor,
+        peer,
+        session,
+        |bundle| admit_followed_site_frame(store, root, bundle, FOLLOWED_SITE_ROUTE).is_ok(),
+    )
+    .await
 }
 
 /// Both sides finish writing, then drain the peer to EOF, so neither tears the

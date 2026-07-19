@@ -304,4 +304,136 @@ final class PostUpdateTests: XCTestCase {
 
         XCTAssertNil(store.load())
     }
+
+    // MARK: - Mode picker (Unit 6)
+
+    @MainActor
+    func testModeSelectionSwitchesTheModel() {
+        let model = makeModel()
+        XCTAssertEqual(model.mode, .freeform, "the composer opens in Update mode")
+
+        model.mode = .operationalAlert
+        XCTAssertTrue(model.mode.requiresStricterFields)
+
+        model.mode = .operationalRequest
+        XCTAssertTrue(model.mode.requiresStricterFields)
+
+        model.mode = .freeform
+        XCTAssertFalse(model.mode.requiresStricterFields, "Update pulls in no extra fields")
+    }
+
+    @MainActor
+    func testModeLabelsAreOutcomeLanguageNotMechanism() {
+        XCTAssertEqual(ComposerMode.freeform.label, "Update")
+        XCTAssertEqual(ComposerMode.operationalAlert.label, "Alert")
+        XCTAssertEqual(ComposerMode.operationalRequest.label, "Request")
+        XCTAssertEqual(ComposerMode.allCases.count, 3, "the picker offers exactly Update/Alert/Request")
+    }
+
+    // MARK: - Operational fields visibility (Unit 6)
+
+    @MainActor
+    func testOperationalFieldsAreHiddenForUpdateAndShownForAlertAndRequest() {
+        let model = makeModel()
+        XCTAssertFalse(model.mode.requiresStricterFields, "Update: no operational fields")
+
+        model.mode = .operationalAlert
+        XCTAssertTrue(model.mode.requiresStricterFields, "Alert: operational fields shown")
+
+        model.mode = .operationalRequest
+        XCTAssertTrue(model.mode.requiresStricterFields, "Request: operational fields shown")
+    }
+
+    @MainActor
+    func testOperationalFieldBindingsFeedValidationAndTheSignedWrite() {
+        let publisher = StubPublisher()
+        let model = makeModel(publisher: publisher)
+        model.headline = "Tear gas at the south barricade"
+        model.body = "Move north; medics are staging by the fountain."
+        model.mode = .operationalAlert
+
+        // Fields empty → not ready.
+        guard case .needsOperationalFields = model.validation else {
+            return XCTFail("empty operational fields must not validate")
+        }
+
+        // The three inputs the view binds.
+        model.sourceClaims = ["Saw it myself"]     // source-claim field
+        model.coarseLocation = "South barricade"   // coarse-location field
+        model.expiresAt = Date(timeIntervalSince1970: 1_720_003_600)  // expiry picker
+
+        XCTAssertEqual(model.validation, .ready)
+        model.post()
+        XCTAssertEqual(publisher.lastRequest?.sourceClaims, ["Saw it myself"])
+        XCTAssertEqual(publisher.lastRequest?.coarseLocation, "South barricade")
+        XCTAssertEqual(publisher.lastRequest?.expiresAtUnixSeconds, 1_720_003_600)
+    }
+
+    // MARK: - Post is never dead-disabled (gate-r1 blocker, Unit 6)
+
+    @MainActor
+    func testAlertWithEmptyFieldsDisablesPostButShowsActionableGuidance() {
+        let model = makeModel()
+        model.headline = "Headline"
+        model.body = "Body"
+        // Update mode: ready, no guidance.
+        XCTAssertTrue(model.canPost)
+        XCTAssertNil(model.validationGuidance)
+
+        // Alert with nothing supplied: disabled, but NOT silently — guidance lists what's missing.
+        model.mode = .operationalAlert
+        XCTAssertFalse(model.canPost)
+        let guidance = try? XCTUnwrap(model.validationGuidance)
+        XCTAssertTrue(guidance?.contains("source") ?? false)
+        XCTAssertTrue(guidance?.contains("expiry") ?? false)
+        XCTAssertTrue(guidance?.contains("location") ?? false)
+    }
+
+    @MainActor
+    func testSupplyingOperationalFieldsEnablesPostAndClearsGuidance() {
+        let model = makeModel()
+        model.headline = "Headline"
+        model.body = "Body"
+        model.mode = .operationalRequest
+        XCTAssertFalse(model.canPost)
+
+        model.sourceClaims = ["A neighbour told me"]
+        model.coarseLocation = "North gate"
+        model.expiresAt = Date(timeIntervalSince1970: 1_720_003_600)
+
+        XCTAssertTrue(model.canPost, "Alert/Request must never strand Post once its fields are supplied")
+        XCTAssertNil(model.validationGuidance, "no guidance once ready")
+    }
+
+    // MARK: - Alert vs Request are distinct outcomes (design §10.5, Unit 6)
+
+    @MainActor
+    private func postWith(mode: ComposerMode, operational: Bool) -> NewswireOperationalProfile? {
+        let publisher = StubPublisher()
+        let model = makeModel(publisher: publisher)
+        model.headline = "H"
+        model.body = "B"
+        model.mode = mode
+        if operational {
+            model.sourceClaims = ["Saw it"]
+            model.coarseLocation = "The plaza"
+            model.expiresAt = Date(timeIntervalSince1970: 1_720_003_600)
+        }
+        XCTAssertTrue(model.canPost)
+        model.post()
+        return publisher.lastRequest?.operationalProfile
+    }
+
+    @MainActor
+    func testAlertAndRequestProduceDistinctOperationalProfiles() {
+        let alert = postWith(mode: .operationalAlert, operational: true)
+        let request = postWith(mode: .operationalRequest, operational: true)
+
+        guard case .alert = alert else { return XCTFail("Alert mode must emit an .alert overlay") }
+        guard case .request = request else { return XCTFail("Request mode must emit a .request overlay") }
+        XCTAssertNotEqual(alert, request, "Alert and Request must not collapse to the same core post")
+
+        // Update stays freeform — no overlay at all (operational fields irrelevant).
+        XCTAssertNil(postWith(mode: .freeform, operational: false))
+    }
 }
