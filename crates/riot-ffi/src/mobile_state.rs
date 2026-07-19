@@ -1638,13 +1638,12 @@ fn prepare_followed_site_import(
     // FAMILY GATE (R2): a followed-site bundle may carry ONLY owned /mod +
     // /articles. Any other family (a communal alert/newswire entry, a profile
     // card, a third namespace's entry) makes the whole bundle untrustworthy —
-    // reject it all-or-nothing. Same least-privilege set as Option B.
+    // reject it all-or-nothing. Routed through the SAME canonical predicate the
+    // manual (Option B) and transport (WU3) paths use, so the gate cannot drift.
     for item in &inspectable {
         let entry = riot_core::willow::decode_entry_canonic(&item.signed.entry_bytes)
             .map_err(|_| MobileError::ImportRejected)?;
-        let owned_family = riot_core::willow::site_paths::is_owned_moderation_entry(&entry)
-            || riot_core::willow::site_paths::is_owned_editorial_entry(&entry);
-        if !owned_family {
+        if !riot_core::site::is_followed_site_family(&entry) {
             return Err(MobileError::ImportRejected);
         }
     }
@@ -2303,7 +2302,7 @@ pub(crate) fn hex(bytes: &[u8]) -> String {
     value
 }
 
-fn map_core_error(error: riot_core::session::SessionError) -> MobileError {
+pub(crate) fn map_core_error(error: riot_core::session::SessionError) -> MobileError {
     use riot_core::session::SessionError;
 
     match error {
