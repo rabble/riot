@@ -558,9 +558,13 @@ struct CompositeSiteReadView: View {
         VStack(alignment: .leading, spacing: 3) {
             switch row.display {
             case .ordinary:
-                Text(row.tier.label)
+                let style = CompositeSiteTierStyle.for(row.tier)
+                Label(row.tier.label, systemImage: style.badgeSymbol)
                     .font(.riot(.body, size: 15, relativeTo: .headline))
-                    .foregroundStyle(RiotTheme.ink(for: colorScheme))
+                    .foregroundStyle(style.tint(for: colorScheme))
+                    .labelStyle(.titleAndIcon)
+                    .accessibilityIdentifier("composite-item-tier-\(style.token)")
+                    .accessibilityLabel("\(row.tier.label) trust tier")
             case .hiddenInterstitial:
                 Text(NewswireTreatmentCopy.hiddenTitle)
                     .font(.riot(.body, size: 13, relativeTo: .caption))
