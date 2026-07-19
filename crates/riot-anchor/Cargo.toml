@@ -20,6 +20,12 @@ license = "AGPL-3.0-or-later"
 [dependencies]
 riot-anchor-protocol = { path = "../riot-anchor-protocol" }
 riot-core = { path = "../riot-core" }
+# Alpha-pinned Willow crate (already in the lock tree via riot-core). Needed
+# DIRECTLY here only for `SubspaceSignature`, to reconstruct an
+# `AuthorisationToken` from an untrusted item's 64-byte signature and run
+# riot-core's REAL `verify_entry` Meadowcap/signature check at sync admission and
+# composite-Commit revalidation. Adds a dependency EDGE only, no new lock entry.
+willow25 = { workspace = true }
 rusqlite = { workspace = true }
 # HMAC-SHA256 for deterministic namespace-token derivation (design
 # "riot/namespace-token/v1"). Reuses the WORKSPACE `sha2` pin already resolved

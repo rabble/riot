@@ -26,7 +26,9 @@
 #![warn(missing_docs)]
 
 pub mod control;
+pub mod hosting;
 pub mod idempotency;
 pub mod repository;
 pub mod schema;
+pub mod sync_service;
 pub mod work;

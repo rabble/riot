@@ -86,7 +86,8 @@ const MIGRATION_ONE: &str = r#"
     CREATE TABLE communities (
         community_id BLOB PRIMARY KEY NOT NULL CHECK (length(community_id) = 32),
         created_at INTEGER NOT NULL CHECK (created_at >= 0),
-        logical_bytes INTEGER NOT NULL CHECK (logical_bytes >= 0)
+        logical_bytes INTEGER NOT NULL CHECK (logical_bytes >= 0),
+        site_generation INTEGER NOT NULL DEFAULT 0 CHECK (site_generation >= 0)
     ) STRICT;
 
     CREATE TABLE payloads (
@@ -139,6 +140,7 @@ const MIGRATION_ONE: &str = r#"
         payload_digest BLOB NOT NULL CHECK (length(payload_digest) = 32),
         payload_length INTEGER NOT NULL CHECK (payload_length >= 0),
         entry_bytes BLOB NOT NULL CHECK (length(entry_bytes) > 0),
+        item_bytes BLOB NOT NULL CHECK (length(item_bytes) > 0),
         PRIMARY KEY (namespace_id, entry_id),
         FOREIGN KEY (namespace_id) REFERENCES namespaces(namespace_id) ON DELETE CASCADE,
         FOREIGN KEY (payload_digest) REFERENCES payloads(payload_digest)
@@ -253,6 +255,21 @@ const MIGRATION_ONE: &str = r#"
         staged_bytes INTEGER NOT NULL CHECK (staged_bytes >= 0)
     ) STRICT;
 
+    CREATE TABLE staged_entries (
+        operation_id BLOB NOT NULL CHECK (length(operation_id) = 32),
+        namespace_id BLOB NOT NULL CHECK (length(namespace_id) = 32),
+        entry_id BLOB NOT NULL CHECK (length(entry_id) = 32),
+        subspace_id BLOB NOT NULL CHECK (length(subspace_id) = 32),
+        path_bytes BLOB NOT NULL,
+        timestamp_be BLOB NOT NULL CHECK (length(timestamp_be) = 8),
+        payload_digest BLOB NOT NULL CHECK (length(payload_digest) = 32),
+        payload_length INTEGER NOT NULL CHECK (payload_length >= 0),
+        entry_bytes BLOB NOT NULL CHECK (length(entry_bytes) > 0),
+        item_bytes BLOB NOT NULL CHECK (length(item_bytes) > 0),
+        PRIMARY KEY (operation_id, namespace_id, entry_id),
+        FOREIGN KEY (operation_id) REFERENCES staged_operations(operation_id) ON DELETE CASCADE
+    ) STRICT;
+
     CREATE TABLE idempotency_key_index (
         control_request_digest BLOB PRIMARY KEY NOT NULL CHECK (length(control_request_digest) = 32),
         idempotency_key BLOB NOT NULL UNIQUE CHECK (length(idempotency_key) = 16),
@@ -335,6 +352,7 @@ const MIGRATION_ONE: &str = r#"
     CREATE INDEX idx_removal_slots_unclaimed
         ON removal_slots(slot_index) WHERE claimed_by_community IS NULL;
     CREATE INDEX idx_staged_operations_deadline ON staged_operations(stage_deadline);
+    CREATE INDEX idx_staged_entries_op ON staged_entries(operation_id, namespace_id);
     CREATE INDEX idx_idempotency_expires ON idempotency_key_index(expires_at);
     CREATE INDEX idx_idempotency_key ON idempotency_key_index(idempotency_key);
     CREATE INDEX idx_operations_retention ON operations(retention_deadline);
@@ -441,6 +459,7 @@ mod tests {
         "checkpoint_work_members",
         "hosting_receipts",
         "staged_operations",
+        "staged_entries",
         "idempotency_key_index",
         "operations",
         "ordinary_results",
@@ -459,6 +478,7 @@ mod tests {
         "idx_listings_host_refresh",
         "idx_removal_slots_unclaimed",
         "idx_staged_operations_deadline",
+        "idx_staged_entries_op",
         "idx_idempotency_expires",
         "idx_idempotency_key",
         "idx_operations_retention",

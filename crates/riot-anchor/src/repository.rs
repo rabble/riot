@@ -472,6 +472,48 @@ pub struct NewPreparedOperation {
     pub prepare_response_bytes: Vec<u8>,
 }
 
+/// One committed entry as `(entry_id, item_bytes)` — the sortable sync inventory
+/// id and the full anchor-profile item a `sync/2` sender streams.
+pub type CommittedEntry = (Vec<u8>, Vec<u8>);
+
+/// A direction-private staged entry (or, once promoted, a committed entry). The
+/// `item_bytes` are the exact anchor-profile encoded item (entry + capability +
+/// signature + payload) whose length is the entry's logical contribution to a
+/// namespace snapshot digest.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StagedEntry {
+    /// The namespace this entry belongs to.
+    pub namespace_id: [u8; 32],
+    /// The full canonical entry id (the sortable sync inventory id).
+    pub entry_id: [u8; 32],
+    /// The entry's subspace id.
+    pub subspace_id: [u8; 32],
+    /// The entry's canonical path bytes.
+    pub path_bytes: Vec<u8>,
+    /// The entry's Willow timestamp, big-endian.
+    pub timestamp_be: [u8; 8],
+    /// The entry's payload digest.
+    pub payload_digest: [u8; 32],
+    /// The entry's payload length.
+    pub payload_length: u64,
+    /// The canonical `Entry` bytes.
+    pub entry_bytes: Vec<u8>,
+    /// The full anchor-profile item bytes (entry + proofs + payload).
+    pub item_bytes: Vec<u8>,
+}
+
+/// Outcome of a generation compare-and-swap.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GenerationCas {
+    /// The swap won: the base equalled the current generation and it advanced.
+    Committed,
+    /// The swap lost: the current generation did not equal the operation base.
+    Stale {
+        /// The current committed generation that blocked the swap.
+        current_generation: u64,
+    },
+}
+
 /// The durable anchor repository: the single owner of raw SQL access.
 pub struct AnchorRepository {
     connection: Connection,
@@ -780,6 +822,96 @@ impl AnchorRepository {
                  terminal_result_bytes FROM operations WHERE operation_id = ?1",
                 params![operation_id.as_slice()],
                 map_stored_operation,
+            )
+            .optional()
+            .map_err(AnchorRepositoryError::from)
+    }
+
+    /// The community's current committed `site_generation`, or `None` if the
+    /// community has never been hosted (no row). A `None` reads as generation `0`
+    /// for a first-host compare-and-swap.
+    pub fn site_generation(
+        &self,
+        community_id: &[u8; 32],
+    ) -> Result<Option<u64>, AnchorRepositoryError> {
+        let value: Option<i64> = self
+            .connection
+            .query_row(
+                "SELECT site_generation FROM communities WHERE community_id = ?1",
+                params![community_id.as_slice()],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(value.map(|generation| generation.max(0) as u64))
+    }
+
+    /// All direction-private staged entries for an operation's namespace, ordered
+    /// by ascending entry id (the sync inventory order).
+    pub fn staged_entries(
+        &self,
+        operation_id: &[u8; 32],
+        namespace_id: &[u8; 32],
+    ) -> Result<Vec<StagedEntry>, AnchorRepositoryError> {
+        let mut statement = self.connection.prepare(
+            "SELECT namespace_id, entry_id, subspace_id, path_bytes, timestamp_be, \
+             payload_digest, payload_length, entry_bytes, item_bytes FROM staged_entries \
+             WHERE operation_id = ?1 AND namespace_id = ?2 ORDER BY entry_id ASC",
+        )?;
+        let rows = statement.query_map(
+            params![operation_id.as_slice(), namespace_id.as_slice()],
+            map_staged_entry,
+        )?;
+        let mut entries = Vec::new();
+        for row in rows {
+            entries.push(row?);
+        }
+        Ok(entries)
+    }
+
+    /// Every committed entry of a namespace as `(entry_id, item_bytes)`, ordered
+    /// by ascending entry id (the sync inventory order). The `item_bytes` are the
+    /// full anchor-profile item a `sync/2` sender streams to a reader.
+    pub fn committed_entries(
+        &self,
+        namespace_id: &[u8; 32],
+    ) -> Result<Vec<CommittedEntry>, AnchorRepositoryError> {
+        let mut statement = self.connection.prepare(
+            "SELECT entry_id, item_bytes FROM entries WHERE namespace_id = ?1 ORDER BY entry_id ASC",
+        )?;
+        let rows = statement.query_map(params![namespace_id.as_slice()], |row| {
+            Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, Vec<u8>>(1)?))
+        })?;
+        let mut entries = Vec::new();
+        for row in rows {
+            entries.push(row?);
+        }
+        Ok(entries)
+    }
+
+    /// The count of committed entries in a namespace (`0` if the namespace row is
+    /// absent).
+    pub fn committed_entry_count(
+        &self,
+        namespace_id: &[u8; 32],
+    ) -> Result<u64, AnchorRepositoryError> {
+        let count: i64 = self.connection.query_row(
+            "SELECT COUNT(*) FROM entries WHERE namespace_id = ?1",
+            params![namespace_id.as_slice()],
+            |row| row.get(0),
+        )?;
+        Ok(count.max(0) as u64)
+    }
+
+    /// A stored hosting receipt's exact bytes, by receipt id.
+    pub fn hosting_receipt(
+        &self,
+        receipt_id: &[u8; 32],
+    ) -> Result<Option<Vec<u8>>, AnchorRepositoryError> {
+        self.connection
+            .query_row(
+                "SELECT receipt_bytes FROM hosting_receipts WHERE receipt_id = ?1",
+                params![receipt_id.as_slice()],
+                |row| row.get(0),
             )
             .optional()
             .map_err(AnchorRepositoryError::from)
@@ -1163,6 +1295,303 @@ impl RepoTransaction<'_> {
         Ok(())
     }
 
+    /// Ensure a direction-private staging row exists for an operation (idempotent
+    /// across the operation's three namespace sessions). Charges nothing; per-entry
+    /// bytes are charged by [`Self::stage_entry`].
+    pub fn ensure_staged_operation(
+        &mut self,
+        operation_id: &[u8; 32],
+        source_key: &[u8],
+        staged_at: u64,
+        stage_deadline: u64,
+    ) -> Result<(), AnchorRepositoryError> {
+        self.transaction.execute(
+            "INSERT OR IGNORE INTO staged_operations(operation_id, source_key, staged_at, stage_deadline, staged_bytes) \
+             VALUES (?1, ?2, ?3, ?4, 0)",
+            params![
+                operation_id.as_slice(),
+                source_key,
+                staged_at as i64,
+                stage_deadline as i64
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Admit one entry into an operation's direction-private staging, charging its
+    /// full item bytes to [`AccountingClass::Staging`] and bumping the operation's
+    /// staged-byte tally. The staged rows are never query-visible outside the
+    /// operation until the composite Commit promotes them.
+    pub fn stage_entry(
+        &mut self,
+        operation_id: &[u8; 32],
+        entry: &StagedEntry,
+    ) -> Result<(), AnchorRepositoryError> {
+        let item_len = entry.item_bytes.len() as u64;
+        self.charge(AccountingClass::Staging, item_len)?;
+        self.transaction.execute(
+            "INSERT INTO staged_entries(operation_id, namespace_id, entry_id, subspace_id, \
+             path_bytes, timestamp_be, payload_digest, payload_length, entry_bytes, item_bytes) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            params![
+                operation_id.as_slice(),
+                entry.namespace_id.as_slice(),
+                entry.entry_id.as_slice(),
+                entry.subspace_id.as_slice(),
+                entry.path_bytes.as_slice(),
+                entry.timestamp_be.as_slice(),
+                entry.payload_digest.as_slice(),
+                entry.payload_length as i64,
+                entry.entry_bytes.as_slice(),
+                entry.item_bytes.as_slice()
+            ],
+        )?;
+        self.transaction.execute(
+            "UPDATE staged_operations SET staged_bytes = staged_bytes + ?1 WHERE operation_id = ?2",
+            params![item_len as i64, operation_id.as_slice()],
+        )?;
+        Ok(())
+    }
+
+    /// The direction-private staged entries for an operation's namespace, ordered
+    /// by ascending entry id, read within this transaction.
+    pub fn staged_entries(
+        &self,
+        operation_id: &[u8; 32],
+        namespace_id: &[u8; 32],
+    ) -> Result<Vec<StagedEntry>, AnchorRepositoryError> {
+        let mut statement = self.transaction.prepare(
+            "SELECT namespace_id, entry_id, subspace_id, path_bytes, timestamp_be, \
+             payload_digest, payload_length, entry_bytes, item_bytes FROM staged_entries \
+             WHERE operation_id = ?1 AND namespace_id = ?2 ORDER BY entry_id ASC",
+        )?;
+        let rows = statement.query_map(
+            params![operation_id.as_slice(), namespace_id.as_slice()],
+            map_staged_entry,
+        )?;
+        let mut entries = Vec::new();
+        for row in rows {
+            entries.push(row?);
+        }
+        Ok(entries)
+    }
+
+    /// Every committed entry of a namespace as `(entry_id, item_bytes)`, ordered by
+    /// ascending entry id, read within this transaction.
+    pub fn committed_entries(
+        &self,
+        namespace_id: &[u8; 32],
+    ) -> Result<Vec<CommittedEntry>, AnchorRepositoryError> {
+        let mut statement = self.transaction.prepare(
+            "SELECT entry_id, item_bytes FROM entries WHERE namespace_id = ?1 ORDER BY entry_id ASC",
+        )?;
+        let rows = statement.query_map(params![namespace_id.as_slice()], |row| {
+            Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, Vec<u8>>(1)?))
+        })?;
+        let mut entries = Vec::new();
+        for row in rows {
+            entries.push(row?);
+        }
+        Ok(entries)
+    }
+
+    /// Delete every staged row for an operation (its staged-operation row and all
+    /// cascaded staged entries), releasing the reclaimed bytes to
+    /// [`AccountingClass::Staging`]. Used by every terminal Commit disposition.
+    pub fn delete_staging_for_operation(
+        &mut self,
+        operation_id: &[u8; 32],
+    ) -> Result<(), AnchorRepositoryError> {
+        let staged_bytes: Option<i64> = self
+            .transaction
+            .query_row(
+                "SELECT staged_bytes FROM staged_operations WHERE operation_id = ?1",
+                params![operation_id.as_slice()],
+                |row| row.get(0),
+            )
+            .optional()?;
+        // ON DELETE CASCADE removes the staged_entries rows.
+        self.transaction.execute(
+            "DELETE FROM staged_operations WHERE operation_id = ?1",
+            params![operation_id.as_slice()],
+        )?;
+        if let Some(bytes) = staged_bytes {
+            self.uncharge(AccountingClass::Staging, bytes.max(0) as u64);
+        }
+        Ok(())
+    }
+
+    /// Compare-and-swap a community's committed `site_generation`. If the community
+    /// row is absent it is created at `committed` only when `base == 0` (a first
+    /// host). Returns [`GenerationCas::Committed`] on a winning swap, or
+    /// [`GenerationCas::Stale`] with the blocking current generation otherwise.
+    pub fn commit_generation_cas(
+        &mut self,
+        community_id: &[u8; 32],
+        created_at: u64,
+        base_generation: u64,
+        committed_generation: u64,
+    ) -> Result<GenerationCas, AnchorRepositoryError> {
+        let current: Option<i64> = self
+            .transaction
+            .query_row(
+                "SELECT site_generation FROM communities WHERE community_id = ?1",
+                params![community_id.as_slice()],
+                |row| row.get(0),
+            )
+            .optional()?;
+        match current {
+            None => {
+                if base_generation != 0 {
+                    return Ok(GenerationCas::Stale {
+                        current_generation: 0,
+                    });
+                }
+                self.transaction.execute(
+                    "INSERT INTO communities(community_id, created_at, logical_bytes, site_generation) \
+                     VALUES (?1, ?2, 0, ?3)",
+                    params![
+                        community_id.as_slice(),
+                        created_at as i64,
+                        committed_generation as i64
+                    ],
+                )?;
+                Ok(GenerationCas::Committed)
+            }
+            Some(current) => {
+                let current = current.max(0) as u64;
+                if current != base_generation {
+                    return Ok(GenerationCas::Stale {
+                        current_generation: current,
+                    });
+                }
+                self.transaction.execute(
+                    "UPDATE communities SET site_generation = ?1 WHERE community_id = ?2",
+                    params![committed_generation as i64, community_id.as_slice()],
+                )?;
+                Ok(GenerationCas::Committed)
+            }
+        }
+    }
+
+    /// Promote one staged entry into committed state: ensure its namespace row,
+    /// add the payload reference (full logical charge, deduplicated physical), and
+    /// insert the committed entry, bumping the namespace live-entry count.
+    pub fn insert_committed_entry(
+        &mut self,
+        community_id: &[u8; 32],
+        namespace_kind: u8,
+        entry: &StagedEntry,
+    ) -> Result<(), AnchorRepositoryError> {
+        self.transaction.execute(
+            "INSERT OR IGNORE INTO namespaces(namespace_id, community_id, kind, live_entry_count) \
+             VALUES (?1, ?2, ?3, 0)",
+            params![
+                entry.namespace_id.as_slice(),
+                community_id.as_slice(),
+                namespace_kind as i64
+            ],
+        )?;
+        // Payload row must exist before the entry's payload_digest foreign key.
+        self.add_payload(community_id, &entry.payload_digest, entry.payload_length)?;
+        self.transaction.execute(
+            "INSERT INTO entries(namespace_id, entry_id, subspace_id, path_bytes, timestamp_be, \
+             payload_digest, payload_length, entry_bytes, item_bytes) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![
+                entry.namespace_id.as_slice(),
+                entry.entry_id.as_slice(),
+                entry.subspace_id.as_slice(),
+                entry.path_bytes.as_slice(),
+                entry.timestamp_be.as_slice(),
+                entry.payload_digest.as_slice(),
+                entry.payload_length as i64,
+                entry.entry_bytes.as_slice(),
+                entry.item_bytes.as_slice()
+            ],
+        )?;
+        self.transaction.execute(
+            "UPDATE namespaces SET live_entry_count = live_entry_count + 1 WHERE namespace_id = ?1",
+            params![entry.namespace_id.as_slice()],
+        )?;
+        Ok(())
+    }
+
+    /// Insert a signed hosting receipt bound to a community.
+    pub fn insert_hosting_receipt(
+        &mut self,
+        receipt_id: &[u8; 32],
+        community_id: &[u8; 32],
+        created_at: u64,
+        receipt_bytes: &[u8],
+    ) -> Result<(), AnchorRepositoryError> {
+        self.transaction.execute(
+            "INSERT INTO hosting_receipts(receipt_id, community_id, created_at, receipt_bytes) \
+             VALUES (?1, ?2, ?3, ?4)",
+            params![
+                receipt_id.as_slice(),
+                community_id.as_slice(),
+                created_at as i64,
+                receipt_bytes
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Set only an operation's terminal status and outcome bytes (the
+    /// operation-lifecycle `GetOperation` result). Unlike
+    /// [`Self::terminalize_operation`], this never touches the idempotency index —
+    /// a `CommitHost` has its own idempotency row and the originating Prepare row
+    /// must keep replaying its prepared response.
+    pub fn set_operation_terminal(
+        &mut self,
+        operation_id: &[u8; 32],
+        status: OperationStatus,
+        terminal_result_bytes: &[u8],
+    ) -> Result<(), AnchorRepositoryError> {
+        self.transaction.execute(
+            "UPDATE operations SET operation_status = ?2, terminal_result_bytes = ?3 \
+             WHERE operation_id = ?1",
+            params![
+                operation_id.as_slice(),
+                status.to_code(),
+                terminal_result_bytes
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Store a byte-identical ordinary terminal result keyed by its
+    /// `control_request_digest`, for exact same-key replay of a single-call
+    /// (e.g. `CommitHost`) request. The idempotency row must already be claimed.
+    pub fn store_ordinary_result(
+        &mut self,
+        control_request_digest: &[u8; 32],
+        result_bytes: &[u8],
+    ) -> Result<(), AnchorRepositoryError> {
+        self.transaction.execute(
+            "INSERT INTO ordinary_results(control_request_digest, result_bytes) VALUES (?1, ?2)",
+            params![control_request_digest.as_slice(), result_bytes],
+        )?;
+        Ok(())
+    }
+
+    /// The stored ordinary terminal result for a `control_request_digest`, read
+    /// within this transaction (exact replay of a terminalized single-call key).
+    pub fn ordinary_result(
+        &self,
+        control_request_digest: &[u8; 32],
+    ) -> Result<Option<Vec<u8>>, AnchorRepositoryError> {
+        self.transaction
+            .query_row(
+                "SELECT result_bytes FROM ordinary_results WHERE control_request_digest = ?1",
+                params![control_request_digest.as_slice()],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(AnchorRepositoryError::from)
+    }
+
     /// Commit the SQLite transaction and durably apply the pending accounting.
     pub fn commit(self) -> Result<(), AnchorRepositoryError> {
         let RepoTransaction {
@@ -1208,6 +1637,36 @@ fn map_idempotency_row(row: &rusqlite::Row<'_>) -> Result<IdempotencyRow, rusqli
         claim_state,
         operation_id,
         lease_expires_at,
+    })
+}
+
+fn map_staged_entry(row: &rusqlite::Row<'_>) -> Result<StagedEntry, rusqlite::Error> {
+    let namespace_id = blob32(row.get::<_, Vec<u8>>(0)?)?;
+    let entry_id = blob32(row.get::<_, Vec<u8>>(1)?)?;
+    let subspace_id = blob32(row.get::<_, Vec<u8>>(2)?)?;
+    let path_bytes: Vec<u8> = row.get(3)?;
+    let timestamp_bytes: Vec<u8> = row.get(4)?;
+    let timestamp_be = <[u8; 8]>::try_from(timestamp_bytes.as_slice()).map_err(|_| {
+        rusqlite::Error::FromSqlConversionFailure(
+            4,
+            rusqlite::types::Type::Blob,
+            "expected 8-byte timestamp".into(),
+        )
+    })?;
+    let payload_digest = blob32(row.get::<_, Vec<u8>>(5)?)?;
+    let payload_length: i64 = row.get(6)?;
+    let entry_bytes: Vec<u8> = row.get(7)?;
+    let item_bytes: Vec<u8> = row.get(8)?;
+    Ok(StagedEntry {
+        namespace_id,
+        entry_id,
+        subspace_id,
+        path_bytes,
+        timestamp_be,
+        payload_digest,
+        payload_length: payload_length.max(0) as u64,
+        entry_bytes,
+        item_bytes,
     })
 }
 
