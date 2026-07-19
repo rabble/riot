@@ -130,3 +130,187 @@ listing-delegate-grant-v1 = [
   uint,              ; issued_unix_seconds
   uint,              ; expiry_unix_seconds (cannot outlive the Meadowcap range)
 ]
+
+; ---------------------------------------------------------------------------
+; WU-004 — anchor identity, descriptors, receipts, limits, work stamp, and the
+; riot/anchor/1 control plane. Design: "Canonical Anchor Records",
+; "AnchorDescriptorV1", "HostingReceiptV1", "ListingReceiptV1", "Anchor Keys",
+; "riot/anchor/1: Control Plane", "Refusals", "Admission work stamp".
+;
+; LAYOUT DECISIONS (design gives field lists, not byte layouts; chosen per the
+; NameVn -> [n, ...] convention, flagged for pre-WU-006 confirmation): every
+; *BodyV1 leads with version 1; OperatorVerificationKeyV1 = [1, "ed25519", key];
+; DescriptorEnvelopeV1 = [1, body, cur_sig, null/pred_sig]; DescriptorFloor is a
+; bare 4-tuple; ReplicaSourceAttestation manifest_digest_and_version =
+; [digest, version]; ordered_namespace_host_plan = the O/C/W namespace-id triple;
+; directory feed inclusions / checkpoint / snapshot-record payloads are opaque
+; canonical byte strings owned by WU-005/006.
+; AMBIGUITIES (flagged): EnabledRole confirms only host + mirror (directory,
+; gossip inferred); HostingStatus vocabulary is not enumerated (committed only).
+
+bytes-16 = bstr .size 16     ; 128-bit idempotency / operation key
+bytes-64 = bstr .size 64     ; Ed25519 signature (alias of signature-64)
+
+; --- keys + generic operator-signed envelope ---
+operator-verification-key-v1 = [1, "ed25519", bytes-32]
+
+; OperatorSignedEnvelopeV1<T> = [1, T, signature-64]; each concrete body below
+; supplies T. Signing domain is that body type's stated bare-label prefix.
+
+; --- descriptors ---
+enabled-role = "directory" / "gossip" / "host" / "mirror"   ; sorted-canonical set members
+
+anchor-descriptor-body-v1 = [
+  1,
+  bytes-32,                        ; anchor_id (recomputed + checked)
+  bytes-32,                        ; genesis_operator_public_key
+  bytes-32,                        ; genesis_random_256_bits
+  operator-verification-key-v1,    ; current_operator_verification_key
+  bytes-32,                        ; current_operator_key_id
+  uint,                            ; descriptor_epoch
+  null / bytes-32,                 ; previous_descriptor_digest (null only @ epoch 0)
+  bytes-32,                        ; current_iroh_endpoint_id
+  tstr,                            ; https_origin (<= 255 bytes)
+  tstr,                            ; operator_display_label (<= 64 bytes)
+  tstr,                            ; self_reported_failure_domain_label (<= 64 bytes)
+  [* uint],                        ; supported_control_versions (sorted set, <= 16)
+  [* uint],                        ; supported_sync_versions (sorted set, <= 16)
+  [* enabled-role],                ; enabled_roles (sorted set, <= 4)
+  bytes-32,                        ; limit_profile_digest
+  null / operator-verification-key-v1, ; predecessor key (null only @ epoch 0)
+  uint,                            ; issued_at
+  uint,                            ; expires_at
+]
+
+; current_signature = Sign(current_key, "riot/anchor-descriptor/v1" || body)
+; predecessor_signature = Sign(pred_key,
+;   "riot/anchor-descriptor-transition/v1" || BLAKE3(body))
+descriptor-envelope-v1 = [1, anchor-descriptor-body-v1, bytes-64, null / bytes-64]
+
+; The pinned floor tuple (AnchorId, epoch, descriptor_digest, verification key).
+descriptor-floor = [bytes-32, uint, bytes-32, operator-verification-key-v1]
+
+; --- limit profile (82 rows; limit_id is the numeric stable ID 1..=82) ---
+limit-value = uint / [uint, uint]     ; scalar or slash-compound
+limit-row = [uint, limit-value, limit-value]   ; [limit_id, effective, absolute]
+anchor-limit-profile-v1 = [1, uint, [82* limit-row]]   ; [1, profile_epoch, rows]
+
+; --- receipts ---
+namespace-result = [bytes-32, bytes-32, uint]   ; [namespace_id, snapshot_digest, entry_count]
+hosting-status = "committed"                     ; vocabulary not enumerated in design
+
+; HostingReceiptV1 = OperatorSignedEnvelopeV1<hosting-receipt-body-v1>
+; Sign("riot/hosting-receipt/v1" || body).
+hosting-receipt-body-v1 = [
+  1, bytes-32, bytes-32, uint, bytes-32, bytes-32, bytes-32, bytes-32, uint,
+  uint, uint, [3* namespace-result], hosting-status, uint, uint, bytes-32
+]
+
+; ListingReceiptV1 = OperatorSignedEnvelopeV1<listing-receipt-body-v1>
+; Sign("riot/listing-receipt/v1" || body).
+listing-receipt-body-v1 = [
+  1, bytes-32, bytes-32, uint, bytes-32, bytes-32, bytes-32, uint, uint, uint,
+  uint, uint, bytes-16
+]
+
+; --- admission work challenge + stamp ---
+control-operation-kind = "describe" / "get_work_challenge" / "prepare_host" /
+  "commit_host" / "submit_listing" / "prepare_replica" / "pull_directory_feed" /
+  "pull_directory_snapshot" / "get_operation"
+
+; WorkChallengeV1 = OperatorSignedEnvelopeV1<work-challenge-body-v1>
+; Sign("riot/anchor-work-challenge/v1" || body); difficulty in 0..24.
+work-challenge-body-v1 = [
+  1, bytes-32, bytes-32, uint, bytes-32, control-operation-kind, bytes-16,
+  bytes-32, bytes-32, bytes-32, uint, uint, uint, uint
+]
+
+; proof = BLAKE3("riot/anchor-work-proof/v1" || work_challenge_digest || u64be(counter))
+work-stamp-v1 = [1, bstr, uint, bytes-32]   ; [1, challenge_envelope_bytes, counter, proof_bytes]
+
+; --- replica ---
+replica-prepare-challenge-v1 = [1, bytes-32, bytes-32, bytes-16, bytes-32, uint, uint]
+
+; ReplicaSourceAttestationV1 = OperatorSignedEnvelopeV1<replica-source-attestation-body-v1>
+; Sign("riot/replica-source-attestation/v1" || body).
+replica-source-attestation-body-v1 = [
+  1, bytes-32, bytes-32, uint, bytes-32, bytes-32, bytes-32, bytes-32, bytes-16,
+  bytes-32, [bytes-32, uint], bytes-32, uint, [3* bytes-32], uint, uint
+]
+
+; --- app-embedded bootstrap ---
+bootstrap-descriptor-v1 = [1, descriptor-floor, tstr, [* enabled-role]]
+anchor-bootstrap-v1 = [1, [* bootstrap-descriptor-v1]]   ; >= 3 across >= 2 operators; <= 16
+
+; --- control request semantic bodies (ControlDigestBodyV1 = [1, kind, body]) ---
+work-stamp-slot = null / work-stamp-v1
+semantic-describe = [1]
+semantic-get-work-challenge = [1, control-operation-kind, bytes-16, bytes-32, bytes-32]
+semantic-prepare-host = [1, root-signed-ticket-core-envelope-v2, [3* bytes-32], work-stamp-slot]
+semantic-commit-host = [1, bytes-32, [3* bytes-32]]
+semantic-submit-listing = [1, bstr, work-stamp-slot]
+semantic-prepare-replica = [
+  1, replica-prepare-challenge-v1,
+  [1, replica-source-attestation-body-v1, bytes-64],
+  root-signed-ticket-core-envelope-v2, [3* bytes-32]
+]
+semantic-pull-feed = [1, uint, uint]        ; [1, after_sequence, limit<=32]
+semantic-pull-snapshot = [1, bytes-32, null / bstr]
+semantic-get-operation = [1, bytes-32]
+control-semantic-body = semantic-describe / semantic-get-work-challenge /
+  semantic-prepare-host / semantic-commit-host / semantic-submit-listing /
+  semantic-prepare-replica / semantic-pull-feed / semantic-pull-snapshot /
+  semantic-get-operation
+
+; ControlRequestV1 = [1, operation_kind, idempotency_key, semantic_body]
+control-request-v1 = [1, control-operation-kind, bytes-16, control-semantic-body]
+
+; --- control success payloads ---
+effective-operation-limits = [82* [uint, limit-value]]   ; [limit_id, effective] ascending
+success-describe = [1, descriptor-envelope-v1, anchor-limit-profile-v1]
+success-get-work-challenge = [1, [1, work-challenge-body-v1, bytes-64]]
+success-prepare = [
+  1, bytes-32, uint, [3* bytes-32], [3* bytes-32], [3* bytes-32], uint,
+  effective-operation-limits, uint
+]
+success-commit-host = [1, [1, hosting-receipt-body-v1, bytes-64]]
+success-submit-listing = [1, [1, listing-receipt-body-v1, bytes-64]]
+feed-page = ["page", [* bstr], uint, uint, bytes-32, bool]
+feed-checkpoint-required = ["checkpoint_required", bstr, bstr]
+success-pull-feed = [1, feed-page / feed-checkpoint-required]
+success-pull-snapshot = [1, bstr, null / bstr, null / bstr, bool]
+terminal-operation-outcome =
+  ["committed", [1, hosting-receipt-body-v1, bytes-64]] / ["refused", control-refusal]
+get-operation-state =
+  ["prepared", uint, success-prepare] / ["terminal", terminal-operation-outcome]
+success-get-operation = [1, bytes-32, ("prepare_host" / "prepare_replica"), get-operation-state]
+
+; ControlResponseV1 = [1, operation_kind, outcome]
+control-outcome = ["success", any] / ["refused", control-refusal]
+control-response-v1 = [1, control-operation-kind, control-outcome]
+
+; --- closed refusal matrix ---
+; ControlRefusal = [code, subject, retryable, retry_after_seconds/null, details].
+; subject, retryable, retry-after nullness, and details shape are a closed
+; function of code; unknown cross-pairings fail decoding.
+refusal-subject = "ticket" / "manifest" / "listing" / "namespace" / "capacity" /
+  "version" / "transport" / "operation" / "work" / "peer"
+transport-mode = "require_none" / "require_arti" / "unsupported_other"
+storage-class = "profile_total" / "site_logical_bytes" / "entries_per_namespace" /
+  "item_payload" / "bundle"
+peer-side = "source" / "destination"
+peer-context-reason = "descriptor_rotation" / "configuration_rotation" /
+  "transport_loss" / "orderly_shutdown" / "process_restart"
+checkpoint-reason = "unknown" / "reclaimed" / "snapshot_missing" / "digest_mismatch"
+cursor-kind = "feed" / "snapshot"
+cursor-reason = "malformed" / "after_head" / "wrong_checkpoint" /
+  "wrong_generation" / "regressed" / "expired"
+peer-auth-stage = "descriptor_exchange" / "hello_validation" / "channel_binding" /
+  "initiator_proof" / "responder_proof" / "configured_rule"
+control-refusal = [tstr, refusal-subject, bool, null / uint, [+ any]]
+
+; --- directory snapshot cursor ---
+; cursor_tag = HMAC-SHA256(cursor_secret,
+;   u16be(33) || "riot/directory-snapshot-cursor/v1" || u64be(len(body)) || body)
+snapshot-cursor-body-v1 = [1, bytes-32, uint, uint, null / bytes-32, uint, uint, uint]
+snapshot-cursor-v1 = [1, snapshot-cursor-body-v1, bytes-32]

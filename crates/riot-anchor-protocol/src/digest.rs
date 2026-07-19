@@ -68,6 +68,9 @@ pub mod label {
     pub const HOSTING_RECEIPT: &[u8] = b"riot/hosting-receipt/v1";
     /// Listing-receipt signature domain: `Sign(label || canonical_cbor(receipt_body))`.
     pub const LISTING_RECEIPT: &[u8] = b"riot/listing-receipt/v1";
+    /// Replica-source-attestation signature domain:
+    /// `Sign(label || canonical_cbor(ReplicaSourceAttestationBodyV1))`.
+    pub const REPLICA_SOURCE_ATTESTATION_SIG: &[u8] = b"riot/replica-source-attestation/v1";
     /// Sync-snapshot digest domain (per-field length prefixes).
     pub const SYNC_SNAPSHOT: &[u8] = b"riot/sync-snapshot/v2";
     /// Namespace-token HMAC domain (label length hardcoded as `u16be(23)`).
@@ -193,6 +196,24 @@ pub fn namespace_token_hmac_input(
     out.extend_from_slice(namespace_id);
     out.extend_from_slice(&operation_expiry_unix_seconds.to_be_bytes());
     out.extend_from_slice(&token_secret_epoch.to_be_bytes());
+    out
+}
+
+/// The directory snapshot-cursor HMAC input (the preimage passed to HMAC-SHA256
+/// under the anchor's cursor secret). This module builds the input bytes only;
+/// the keyed MAC lives with the anchor server that holds the secret.
+///
+/// ```text
+/// u16be(33) || "riot/directory-snapshot-cursor/v1" ||
+/// u64be(byte_length(canonical_cbor(cursor_body))) ||
+/// canonical_cbor(cursor_body)
+/// ```
+pub fn snapshot_cursor_hmac_input(cursor_body_canonical: &[u8]) -> Vec<u8> {
+    let mut out = Vec::new();
+    out.extend_from_slice(&33u16.to_be_bytes());
+    out.extend_from_slice(label::DIRECTORY_SNAPSHOT_CURSOR);
+    out.extend_from_slice(&(cursor_body_canonical.len() as u64).to_be_bytes());
+    out.extend_from_slice(cursor_body_canonical);
     out
 }
 

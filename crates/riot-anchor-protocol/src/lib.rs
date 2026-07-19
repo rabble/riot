@@ -19,6 +19,7 @@
 
 pub mod authority;
 pub mod codec;
+pub mod control;
 pub mod digest;
 pub mod records;
 
@@ -35,4 +36,23 @@ pub use records::{
     ListingDelegateGrantV1, PublicSiteTicketV2Core, RootSignedTicketCoreEnvelopeV2, TransportFloor,
     COMMUNITY_LISTING_SCHEMA, MAX_DELEGATE_GRANT_BYTES, MAX_LISTING_ENVELOPE_BYTES,
     MAX_TICKET_CORE_BYTES,
+};
+
+pub use records::{
+    AnchorBootstrapV1, AnchorDescriptorBodyV1, AnchorLimitEntry, AnchorLimitId,
+    AnchorLimitProfileV1, AnchorSignedBody, BootstrapDescriptorV1, ControlOperationKind,
+    DescriptorEnvelopeV1, DescriptorFloor, EnabledRole, HostingReceiptBodyV1, HostingReceiptV1,
+    HostingStatus, LimitValue, ListingReceiptBodyV1, ListingReceiptV1, NamespaceResult,
+    OperatorSignedEnvelopeV1, OperatorVerificationKeyV1, ReplicaPrepareChallengeV1,
+    ReplicaSourceAttestationBodyV1, ReplicaSourceAttestationV1, WorkChallengeBodyV1,
+    WorkChallengeV1, WorkStampError, WorkStampV1, ALL_LIMIT_IDS,
+};
+
+pub use control::{
+    verify_descriptor_chain, CheckpointReason, ControlOperation, ControlOutcome, ControlRefusal,
+    ControlRequestV1, ControlResponseV1, ControlSuccess, CursorKind, CursorReason, DescriptorError,
+    EffectiveOperationLimits, FeedPullSuccessV1, GetOperationState, GetOperationSuccessV1,
+    PeerAuthStage, PeerContextReason, PeerSide, PrepareKind, PrepareSuccessV1, RefusalSubject,
+    RetryScope, SnapshotCursorBodyV1, SnapshotCursorV1, SnapshotPullSuccessV1, StorageClass,
+    TerminalOperationOutcome, TransportMode,
 };
