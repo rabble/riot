@@ -9,6 +9,7 @@ import uniffi.riot_ffi.AppRuntimeSession
 import uniffi.riot_ffi.AlertSeverity
 import uniffi.riot_ffi.AlertUrgency
 import uniffi.riot_ffi.CommunityRow
+import uniffi.riot_ffi.CreatedSite
 import uniffi.riot_ffi.CurrentEntry
 import uniffi.riot_ffi.MobileImportPreview
 import uniffi.riot_ffi.MobileProfile
@@ -23,6 +24,7 @@ import uniffi.riot_ffi.NewswireSpaceInput
 import uniffi.riot_ffi.ProfileSession
 import uniffi.riot_ffi.PublicSpace
 import uniffi.riot_ffi.PublicIdentity
+import uniffi.riot_ffi.ResolvedCompositeSite
 import uniffi.riot_ffi.openLocalProfile
 import uniffi.riot_ffi.openLocalProfileWithDatabase
 import uniffi.riot_ffi.openProfileFromSealedIdentity
@@ -252,6 +254,38 @@ class RiotController(filesDir: File) : AutoCloseable {
 
     fun projectNewswire(spaceDescriptorEntryId: String): NewswireProjectionView =
         profile.projectNewswireSpace(spaceDescriptorEntryId)
+
+    /**
+     * Resolve a composite site rooted at [root] from this profile's synced
+     * store, for rendering by [CompositeSiteReadModel.from]. A thin
+     * pass-through — no wrapping key is needed, and a validation/resolution
+     * problem is a STATE carried in the returned record's `degradation`,
+     * never a thrown error (WU-006 Tasks 1-3, Android parity with iOS
+     * `resolveCompositeSite`).
+     */
+    fun resolveCompositeSite(
+        entryBytes: ByteArray,
+        capabilityBytes: ByteArray,
+        signature: ByteArray,
+        payloadBytes: ByteArray,
+        root: ByteArray,
+        nowUnixSeconds: ULong,
+    ): ResolvedCompositeSite = profile.resolveCompositeSite(
+        entryBytes, capabilityBytes, signature, payloadBytes, root, nowUnixSeconds,
+    )
+
+    /**
+     * Mints a fresh owned masthead namespace and seals it under this
+     * profile's wrapping key, exactly as [persistCommunities] does. No
+     * business logic beyond the call: the caller (the creation flow) is
+     * responsible for showing the §9.3 seizure disclosure
+     * ([SiteSeizureDisclosure]) and gating this call on
+     * [OwnedSiteCreationGate.canMint] BEFORE invoking it — mirrors iOS
+     * `ProfileRepository.createOwnedSite()` (WU-006 Task 8a, Android parity).
+     * NOT wired to a reachable entry point yet (the owned masthead write path
+     * is deferred to Rung 5) — a minted site is currently inert.
+     */
+    fun createOwnedSite(): CreatedSite = withWrappingKey { key -> uniffi.riot_ffi.createOwnedSite(key) }
 
     fun entries(): List<CurrentEntry> = profile.listCurrentEntries()
 
