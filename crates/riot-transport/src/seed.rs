@@ -40,6 +40,7 @@ impl SiteState {
             exp,
             [0u8; 32],
             Some(node_hint),
+            None,
         )
     }
 

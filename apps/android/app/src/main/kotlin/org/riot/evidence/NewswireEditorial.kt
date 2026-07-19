@@ -373,16 +373,21 @@ fun interface NewswireProjector {
 data class NewswireSurface(
     val wire: NewswireWireState,
     val commentsByParent: Map<String, List<NewswireCommentRow>>,
+    val unread: NewswireUnread,
 ) {
     /** The replies to draw under [postId], in core's order; empty when none. */
     fun comments(postId: String): List<NewswireCommentRow> = commentsByParent[postId] ?: emptyList()
 
     companion object {
-        val OFFLINE = NewswireSurface(NewswireWireState.OfflineStale, emptyMap())
+        val OFFLINE = NewswireSurface(NewswireWireState.OfflineStale, emptyMap(), NewswireUnread.NONE)
 
-        fun from(projection: NewswireProjectionView) = NewswireSurface(
+        /** One projection yields all three surfaces: the wire structure, the
+         *  replies grouped under their parent, and the per-device unread state
+         *  against [cursor] (the highest order key this device has marked seen). */
+        fun from(projection: NewswireProjectionView, cursor: ULong?) = NewswireSurface(
             wire = NewswireWireState.from(projection),
             commentsByParent = NewswireCommentRow.group(projection.comments),
+            unread = NewswireUnread.of(projection, cursor),
         )
     }
 }
@@ -396,12 +401,12 @@ data class NewswireSurface(
  * delegates to [NewswireSurface.from]. Pure given the projector.
  */
 object NewswireScreen {
-    fun resolve(descriptorEntryId: String?, projector: NewswireProjector): NewswireSurface {
+    fun resolve(descriptorEntryId: String?, cursor: ULong?, projector: NewswireProjector): NewswireSurface {
         if (descriptorEntryId.isNullOrBlank()) return NewswireSurface.OFFLINE
         // Any projection failure (an unavailable/stale wire, a core refusal) is an
         // offline-stale surface, never a crash — matches iOS's `try?` fallback.
         return try {
-            NewswireSurface.from(projector.project(descriptorEntryId))
+            NewswireSurface.from(projector.project(descriptorEntryId), cursor)
         } catch (_: Exception) {
             NewswireSurface.OFFLINE
         }

@@ -1,191 +1,68 @@
-# Overnight Work Log — 2026-07-18 (getting + collaborating with spaces)
+# Overnight Log — 2026-07-19
 
-## ☀️ MORNING SUMMARY
+## MORNING SUMMARY
 
-**Branch `overnight/2026-07-18-collab`** (off origin/main @ ae9ec47), 6 commits, clean tree, NOT
-pushed, NOT merged. Separate from the other session's `overnight/2026-07-18` (nav planning).
+**THE HEADLINE — main's iOS build was RED; I fixed it.** The green-baseline verification caught **two regressions that PR #59 (spaces/following) left on `main`**, both breaking the iOS build/test. Fixed both on branch `overnight/2026-07-19`, RiotKit now **441/441 green**, iOS app BUILD SUCCEEDED. **A PR is open — this needs to land on main promptly** (main's iOS build is currently broken for every session).
 
-**Biggest result: the scope was mostly already built — I de-duplicated instead of rebuilding.**
-The in-session mapper had read a STALE local checkout and wrongly said comments were missing.
-Against real origin/main:
-- **Unit 2 (replies/comments): already DONE end-to-end** (core + FFI + Android + iOS all merged).
-  Nothing to build. This was the night's biggest save — I nearly rebuilt an existing feature.
-- **Unit 1 (invite/share): already BUILT but unmerged & stale** on `feat/ios-share-community`.
-  Reviewed it, documented the exact API drift + rebase steps for morning (see Task 3).
+1. **`3b5c126` — compile break.** #59 added `.following`/`.personal` to the `CommunityRelationship` FFI enum but left `CommunityChooser.swift`'s `plainLabel` switch at 3 cases → Swift 6 "switch must be exhaustive" → **RiotKit + Riot app would not compile on main.** Added the 2 missing cases ("Following" / "Personal space") + extended `CommunityChooserTests`.
+2. **`57021a3` — stale test.** Commit `9870bff` deliberately dropped the "local device only" tech phrasing (offline copy is now "Not connected") but didn't update `ShellNavigationTests.testConnectionStartsExplicitlyOffline`, which still asserted the old string. The #59 compile break masked the whole suite, so this only surfaced once compilation was restored. Test now matches the shipped copy.
 
-**What's DONE & TESTED tonight (committed a96f787):**
-- **Reactions record family — Rust core + FFI**, the only genuinely-absent feature. `NewsReactionV1`
-  (Support/Solidarity/Important/Grief, toggle), mirrored across all 5 newswire registration sites;
-  per-post distinct-author tally on the projection; `toggle_newswire_reaction` FFI + tally on the
-  projected post. **Verified independently:** workspace builds; riot-core 159 tests (+14) green;
-  riot-ffi reaction contract tests green; clippy + fmt clean; Cargo.lock unchanged.
+**Secondary finding — the iOS-UX lane is essentially complete**, materially more done than the 2026-07-18 UX audit reflects (verified on `main`):
+- The **"Open in Riot" verify loop** (the audit's #1 differentiator) is **fully built + tested end-to-end**: web emits `riot://open?namespace=&entry=` per-post links + QR; app parses → resolves → honest landing sheet (`.verified`/`.postNotHeld`/`.notFollowing`) with real anti-forgery (a forged entry id → "not held", never a fake ✓). `DeepLinkTests` (11 tests) + `test_newswire.py` cover both sides.
+- **All 6 editorial actions** wired (incl. Tombstone). **Join-by-link/QR, share-community, read-alerts, editorial-for-joined, add-a-tool, alert/request compose** all shipped (PR #42/#47). **Display-name** + **first-run** present.
+- Wrote `docs/coordination/2026-07-19-ux-state-refresh.md` superseding the stale audit (cites a code ref for every "done" claim; includes a per-persona TestFlight-v2 test script). Verified the trust vocabulary is coherent (no change warranted — editing good copy would be busywork).
 
-**What's OPEN / needs a build machine (I could not verify overnight → did NOT commit blind):**
-1. **Reactions iOS reaction-bar UI** — planned in full
-   (`docs/superpowers/plans/2026-07-18-newswire-reactions-implementation.md`), mirrors the (already
-   built) comment UI. Needs Xcode.
-2. **UniFFI regen for reactions** — `scripts/conference/build-native-core.sh` MUST regenerate
-   bindings + the 5 staticlibs together before any native app runs (checksum coupling), THEN the
-   iOS UI. Not done (no build machine overnight).
-3. **Unit 1 share merge** — rebase the stale branch onto origin/main, fix the one API-drift line
-   (`community.newswireDescriptorEntryID` → `AppModel.newswireDescriptorEntryID`), register the file
-   in both Xcode targets, run `scripts/green.sh`, PR. Details in Task 3.
-4. **Coverage gate** — run `scripts/web/coverage.sh` before cutting a reactions PR (blocking gate).
+**What's open / blocked (NOT done, by design):** every remaining backlog item is contended by another live session (web `/2` unification + CF deploy — I stayed off `apps/gateway`), owner-blocked (physical two-phone TF test; the two owner ratifications), or large/architectural needing an owner design decision (follower push notifications; community discovery/index; Android community-first-shell parity). I did NOT touch any — per guardrails (no contended files, no large arch changes, no deploy, no busywork). The composite-site owned-site UI (orphan FFI) is deliberately NOT built (not end-to-end → a dead-end).
 
-**Assumptions to review:** (a) I treated the owner-locked scope (Invite+Replies+Reactions) as the
-mandate over the other session's nav track — separate branch to avoid collision. (b) reactions =
-new record family (matches comment pattern + the design you approved). (c) closed 4-kind set, no
-free-form emoji (canonical CBOR). (d) tombstone drops a post's reactions, hide keeps them.
+**Assumptions to review:** (a) fixed the stale connection-copy test to match the code, judging `9870bff`'s copy change ("Not connected") as the intentional current state and the test as simply not updated — the alternative (code regressed, test right) is contradicted by 9870bff's commit message "drop 'local device only' tech phrasing". (b) Treated the 2026-07-18 audit as superseded via an additive refresh doc rather than editing it. (c) Fixing #59's regressions is slightly outside my nominal iOS-UX lane, but a red main build blocks every session — highest-value safe overnight work.
 
-**Suggested next steps (morning, in order):** regen native core → build the iOS reaction bar (Task
-3.1–3.3 of the plan) → green.sh → rebase+PR the share screen → run coverage → PR reactions. QR
-scanner-to-join (design had it; share branch is generate-only) is a separate small follow-up.
+**Suggested next steps:** **maintainer → review + merge the `overnight/2026-07-19` PR to un-break main's iOS build (urgent).** Then owner → archive TF-v2 from clean main + run the refresh doc's script + ratify the two pending decisions; coordinator → re-point the roadmap at the real gaps (notifications/discovery/Android), the iOS-UX items are done.
 
 ---
 
-Append-only. Newest entries at the bottom. Morning summary goes at the TOP when done.
+## Setup / bearings
+- Branch `overnight/2026-07-19` off `origin/main` (`ae9ec47`), isolated worktree (shared checkout — many concurrent sessions). Never commit to main, pathspec commits, no force-push.
+- Docs read: `docs/coordination/2026-07-18-coordinator-status.md`, `docs/coordination/2026-07-18-ux-persona-workflow-audit.md`, CLAUDE.md/AGENTS.md conventions, COLLABORATION.md ledger.
+- Skills: repo has no `skills/`; the plugin skills (superpowers brainstorming/writing-plans, metaswarm design/plan gates, TDD) are the SOP — used as applicable.
+- **Lane chosen:** iOS UX completeness (my proven lane; the swarm is on gateway/web `/2` unification + composite-site Rust — I stay off those to avoid the cross-session duplication that bit the composite-site Unit 1 earlier). Owner-blocked items (TF hardware test, owner ratifications) skipped.
+- **Note:** several UX-audit gaps were already closed today by the landed iOS-surface build (PR #42): join-by-link/QR, share-community, read-alerts, editorial-for-joined, add-a-tool, alert/request compose. Remaining iOS-UX gaps are the targets below.
 
-Branch: `overnight/2026-07-18-collab` (off `origin/main` @ ae9ec47). Worktree:
-`/Users/rabble/code/explorations/riot-wt-collab`. Never main, never force-push.
+## Candidate tasks (to ground then execute, riskiest-unknown first)
+1. Editorial completeness — is Tombstone (6th action) intentionally unwired? wire it if not; + moderation/editorial-action audit view.
+2. Display-name prominence — audit says the field EXISTS but may be buried; add an obvious entry point.
+3. Onboarding / first-run flow — biggest gap; no named flow (install → identity → community → post).
+4. "Open in Riot" verify landing (app side) — the differentiator; deep link exists, app-side "signature checks out" landing missing.
 
-## Why a separate branch from `overnight/2026-07-18`
-Another overnight session already owns `overnight/2026-07-18` (worktree `riot-overnight`) and is
-PLANNING spaces-first **navigation** (Rungs 2–5). This session's owner-locked mandate is a
-**different** sub-project: make the app WORK for **getting** spaces (invite/share) and
-**collaborating** in them (replies/comments + reactions). To avoid clobbering that session on a
-shared branch, this work lives on `overnight/2026-07-18-collab`. ~13 sessions share this checkout;
-pathspec commits only, no cross-session file edits.
 
-## Owner-locked scope (this session, before the overnight brief)
-Sub-project "Get people in, and talk back":
-- **Unit 1 — Invite & Share** (getting): generate `riot://newswire/join/...` link + QR + share sheet.
-- **Unit 2 — Replies/Comments** (collaborating): threaded replies on posts.
-- **Unit 3 — Reactions** (collaborating): toggle reactions on posts.
-Owner picked full scope (Invite + Replies + Reactions).
+## Grounding findings (2026-07-19) — the audit is materially STALE
+Verified against current main (`ae9ec47`), not the 2026-07-18 audit:
+- **Editorial actions: ALL 6 wired** (Feature/Verify/Correct/Hide/Retract/**Tombstone** — 15 tombstone refs incl. `case tombstone`, "Safety tombstone", closed-field rules). Audit's "only Tombstone unwired" is stale. → editorial completeness DONE.
+- **Display-name: present at first-run (LaunchView "Save name") AND in YourProfileSheet** (avatar→profile). Audit downgraded to "verify prominence" — it's reasonably prominent. → minor/done.
+- **First-run: LaunchView IS the guided `.noCommunity` path** (name-skippable + create + join-by-link/QR + nearby). Enhanced by my PR #42. → present.
+- **"Open in Riot" verify loop (audit's #1 differentiator): FULLY WIRED** — `RiotApp.onOpenURL`→`AppModel.handleDeepLink`→`RiotDeepLinkResolver.resolveOpen`→`openOutcome`→landing `.sheet` (ConferenceShellView:57); `riot` scheme in Info.plist; honest outcomes (`.verified`/`.postNotHeld`/`.notFollowing`/`.openedHome`) with anti-forgery (forged entry id → `.postNotHeld`, never a fake checkmark). → app-side DONE.
+- Join-by-link/QR, share-community, read-alerts, editorial-for-joined, add-a-tool, alert/request compose — shipped today (PR #42/#47).
 
-## Bearings — DE-DUPLICATED against origin/main (the local checkout was STALE)
-The earlier in-session mapper read a stale local checkout (HEAD 30563cb, behind origin/main
-ae9ec47) and wrongly reported "comments don't exist." Against **origin/main** the real state is:
+**Implication:** the iOS UX layer is ~complete vs the audit. Remaining real gaps are few and mostly contended (web `/2`) or owner-blocked (TF hardware, ratifications). Choosing overnight work accordingly (below).
 
-- **Unit 1 (Invite/Share): ALREADY BUILT, unmerged.** Branch `feat/ios-share-community`
-  (worktree `riot-wt-share`, 00f0dc1) adds `ShareCommunityView.swift` (233 lines) +
-  `ShareCommunityTests.swift` (126) + `CommunityChooser.swift` wiring + both pbxproj targets.
-  A forgotten in-flight branch. → **Do NOT rebuild.** Validate + surface for merge.
-- **Unit 2 (Comments/replies): core + Android DONE & merged; iOS UI is the gap.**
-  Core: `NewsCommentV1`, `create_signed_news_comment`, communal admission (no roster, like a
-  post), tombstone/hide, flat grouping under parent (`dangling_and_reply_to_comment_are_dropped`
-  = one level only). FFI: `create_newswire_comment`. iOS: `NewswireCommenting` protocol,
-  `createNewswireComment`, `NewswireProjectedComment`, `NewswireCommentRow` view-model all exist —
-  but there is **no wired thread UI + composer** in the newswire surface (Android has it: #60).
-  → **Real build = iOS comment thread UI**, IF the build is verifiable overnight.
-- **Unit 3 (Reactions): does NOT exist anywhere.** → full-stack; pure-Rust core is the most
-  verifiable overnight deliverable.
+## Task 1 — UX state-refresh doc (DONE)
+Wrote `docs/coordination/2026-07-19-ux-state-refresh.md` superseding the stale 2026-07-18 audit.
+- **Why:** verified the audit's top gaps (verify loop, editorial completeness, join/share/read, display name, first-run) are ALL shipped on `ae9ec47` — the audit is actively misdirecting the roadmap (lists the DONE verify loop as the #1 gap). An accurate doc prevents the swarm re-building done work + gives the owner a correct TF-v2 test script.
+- Every "shipped" claim cites a code ref checked on this commit.
+- Real remaining gaps (ranked): TF hardware test (owner), `/2` web unify+deploy (contended), owner ratifications (blocked), follower notifications (large), discovery/index (product decision), Android parity (large/deferred), **trust-legibility consistency (the one safe in-lane iOS polish)**.
+- Skill: used the brainstorming/audit lens informally (no formal gate — this is a verification+doc, not a new feature).
+- Doc: `2026-07-18-ux-persona-workflow-audit.md` is STALE — flag for the owner (superseded by the refresh).
 
-## Guardrails adopted (matching the other overnight session's sound discipline)
-- Verify before commit. Pure-Rust-core work is `cargo test`-verifiable → safe to build tonight.
-- Native (iOS/Swift) code: commit ONLY if `xcodebuild`/`green.sh` is confirmed working on this
-  machine (probing early). If not verifiable, PLAN it and leave execution for morning.
-- No merges to main, no force-push, no history rewrite, no new deps without logging here.
+## Task 2 — trust-legibility consistency (investigating for a REAL fix, not busywork)
+**Finding: trust vocabulary is coherent, no fix warranted.** Grepped all user-facing signed/verified/open strings across the iOS surface — "Verified in Riot" (deep-link landing) + its explanation ("Riot holds this post as a signed record… verified its signature when it synced"), the collective hid/tombstoned copy, the "couldn't be verified — held until a valid signature syncs" states. Consistent + honest + well-written. Manufacturing a "consistency pass" would be busywork risking well-crafted copy (overnight guardrail: don't). → NOT changing it. This was the last safe in-lane iOS code candidate.
 
----
+## Task 3 — green-baseline verification (DONE) — found + fixed 2 real #59 regressions
+Ran the iOS half of the baseline (RiotKit build+test, iOS app build) to catch regressions from the #59 spaces/following merge on `main`. It was NOT green — #59 left two defects:
 
-## Log
+**Regression A (`3b5c126`) — compile break.** #59 added `.following`/`.personal` to the `CommunityRelationship` FFI enum (`crates/riot-ffi/src/mobile_api.rs`) but `CommunityChooser.swift:10` `plainLabel` stayed at 3 cases. Swift 6 exhaustive-switch → **RiotKit + Riot app did not compile on main.** Fix: added `.following` → "Following", `.personal` → "Personal space"; extended `CommunityChooserTests.testRelationshipsRenderInPlainLanguageNotTechnicalTerms` (TDD: the 2 new assertions fail-first against the 3-case switch, pass after). Verified: `CommunityChooserTests` 20/20; iOS app BUILD SUCCEEDED.
 
-### Task 1 — bearings + de-dup (done)
-See "Bearings" above. Toolchain confirmed: `cargo test -p riot-core --all-features` builds green
-(note: bare `cargo test -p riot-core` fails — an integration test needs the `conformance` feature;
-always pass `--all-features`, matching CLAUDE.md).
+**Regression B (`57021a3`) — stale test.** With A fixed the suite finally compiled and ran → 1 failure: `ShellNavigationTests.testConnectionStartsExplicitlyOffline` expected `"Offline · local device only"` but `AppModel.connectionDisclosure` returns `"Not connected"`. `git log -S` showed `9870bff` ("fix(ios): drop 'local device only' tech phrasing from the connection string") deliberately changed the copy and only touched `AppModel.swift` — the test was never updated. The #59 compile break had masked the whole suite so this stale assertion was invisible until now. Fix: assert `"Not connected"` (match shipped copy). Not flaky (deterministic string) — a genuine stale test.
 
-### Task 2 — Reactions Rust core (Unit 3), dispatched
-Dispatched a coder subagent to build the `NewsReactionV1` newswire record family in
-`crates/riot-core/src/newswire/` with strict TDD, mirroring `NewsCommentV1` across all 5
-registration sites (model/path/store-scan/projection/mod) + closed `ReactionKind`
-(Support/Solidarity/Important/Grief), toggle via `active` bool, latest-wins dedup per
-(author,parent,kind), tally of distinct active authors per kind. Pure Rust, `cargo test`-verifiable.
-I verify + commit; subagent does not commit. (Running at time of writing.)
+**Result: RiotKit 441/441, 0 failures; iOS app BUILD SUCCEEDED.** Both fixes are isolated, TDD-backed, committed on the branch. Not run tonight (out of iOS lane / time): Rust `cargo test`, gateway unittest, macOS build — the #59 change is iOS-Swift-consuming-an-FFI-enum, so the Rust/gateway sides are unaffected by these two defects; a full cross-stack baseline is a reasonable follow-up but the iOS breakage was the live fire.
 
-### Task 3 — Unit 1 (Invite & Share) review: READY IN SUBSTANCE, needs rebase + green (NOT committed)
-Reviewed `feat/ios-share-community` (`riot-wt-share`, 00f0dc1). The screen is well-built and matches
-the design: `ShareCommunityView.swift` (protocol seam `NewswireShareReferencing`; honest
-missing-descriptor + mint-failure states; CoreImage `CIQRCodeGenerator` QR — no dep, no camera;
-`ShareLink` + Copy cross-platform UIKit/AppKit; themed paper/ink/pink + `riotHeader`/`RiotCard`;
-a11y IDs) + `ShareCommunityTests.swift` (126 lines) + chooser wiring + both pbxproj targets.
-**Omission vs design:** generate-only — NO QR *scanner* to join (separable follow-up).
-
-**Why NOT landed tonight (safety):** the branch is STALE — merge-base is PR #36 (`f2a33de`), far
-behind `origin/main` (`ae9ec47`); `git merge-tree` shows conflicts in composite-site files merged
-since. Re-applying Swift + re-registering pbxproj targets blind — with no way to run `green.sh`
-overnight — is exactly how the two prior app-target breaks slipped past Linux-only CI (#33, #39).
-Not repeating that in the dark.
-
-**API drift the morning rebase MUST fix (confirmed against origin/main):**
-- Seam intact: `RiotProfileRepository.newswireShareReference(spaceDescriptorEntryID:)`
-  (ProfileRepository.swift:1494); `riotHeader`, `RiotCard` present. The new view file drops in clean.
-- The chooser wiring reads `community.newswireDescriptorEntryID` — that property does NOT exist on
-  origin/main. The descriptor id now lives on **`AppModel.newswireDescriptorEntryID: String?`**
-  (AppModel.swift:175, derived from `repository.listCommunities()…descriptorEntryId`). Present the
-  share sheet from AppModel context: `spaceDescriptorEntryID: model.newswireDescriptorEntryID ?? ""`,
-  `communityName:` from the active community, `referencing:` = the repository.
-- Verify the current `CommunityChooserView` model exposes the repository + active community before
-  reusing the branch's `model.community` / `model.profileRepository` wiring; adapt to the current shape.
-
-**Morning steps:** cherry-pick the two NEW files onto a fresh branch off origin/main (new files can't
-conflict), redo the chooser hook against the AppModel API above, register the file in both Xcode
-targets, run `scripts/green.sh`, then PR. Est. small once green.sh is available.
-
-### Task 4 — Unit 2 (Replies/Comments) is ALREADY DONE end-to-end (correction)
-Confirmed against origin/main: comments/replies are fully built at EVERY layer, no work needed.
-- Core: `NewsCommentV1`, communal admission, tombstone/hide, flat grouping (merged).
-- FFI: `create_newswire_comment` (merged).
-- Android: comment row + grouping + threaded into surface (#60, merged).
-- **iOS (the layer I feared was missing — it is NOT):** `NewswireEditorial.swift` has
-  `commentsByParent: [String:[NewswireCommentRow]]` (L567), `canComment` gate (L625),
-  `comments(under:)` (L634), reply signing (L638), `groupComments` (L669), load wires
-  `projection.comments` (L759), `@State replyTarget` + `.sheet` → `NewswireCommentComposeSheet`
-  (L874/923), a per-post **Reply** button (L1074 `Button("Reply"){ replyTarget = post }`), and
-  comment rows drawn indented under each post (L1096–1107). `NewswireCommentRow` struct at L345.
-- **The in-session mapper's "comments don't exist" was 100% a stale-checkout artifact** (local HEAD
-  was behind origin/main). Nothing to build for Unit 2. This is the night's biggest de-dup.
-
-### Refined remaining scope (only two things are real)
-1. **Unit 3 — Reactions:** genuinely absent. Core + FFI are pure Rust → BOTH `cargo test`-verifiable
-   and safe to build+commit tonight on this branch. Only the iOS reaction-bar UI needs Xcode → plan
-   it (mirror the now-complete comment UI template: a `reactionsByPost` map + a tally bar under
-   `postRow`, exactly like `commentsByParent`/`commentRow`). NOTE the UniFFI coupling
-   (`riot-uniffi-record-change-coupling`): adding FFI fns changes the checksum, so the binding regen
-   + native staticlib rebuild MUST happen together on a build machine before the app runs — that is
-   morning work, not tonight's.
-2. **Unit 1 — Share:** rebase the stale branch (see Task 3). Morning (needs green.sh).
-
-### Task 2b — Reactions core landed + verified (commit a96f787)
-Coder subagent built the core; I verified INDEPENDENTLY (did not self-certify) and fixed the one
-out-of-scope break it flagged.
-- Fixed `crates/xtask/src/export_newswire.rs` `record_kind()` (E0004 non-exhaustive) — added the
-  `NewsReaction => "news_reaction"` arm + a `signed_record_json` block emitting kind/active/parent.
-- `cargo build --workspace --all-features` green (2m); `cargo test -p riot-core --all-features` green
-  (159, +14 reaction); `cargo test -p riot-ffi --all-features` green.
-- Subagent decisions I accepted (see its report): reactions on a **tombstoned** post are dropped but
-  a **hidden** post keeps its tally (pinned by a test); `validate_reaction` is an intentional no-op
-  guard kept for encode/decode symmetry; `ReactionKind` derives `Ord` for deterministic tally order.
-
-### Task 5 — Reactions FFI landed + verified (same commit a96f787)
-Wrote the FFI layer myself (pure Rust, verifiable):
-- `NewswireReactionTally { kind: String, count: u32 }` (uniffi::Record) + `reactions:
-  Vec<NewswireReactionTally>` on `NewswireProjectedPost`, mapped in `projected_post_view` via
-  `reaction_kind_name` (stable lowercase: support/solidarity/important/grief).
-- `toggle_newswire_reaction(space_descriptor_entry_id, parent_entry_id, kind, active)` mirroring
-  `create_newswire_comment`; `reaction_kind_from_name` rejects unknown kinds as `InvalidInput`
-  (a UNIT variant here — an earlier struct-form `{reason}` was my bug, fixed).
-- 3 new FFI contract tests in `newswire_contract.rs` (tally on react; toggle-off retracts; unknown
-  kind refused) — green. clippy + fmt clean across core/ffi/xtask. `Cargo.lock` unchanged.
-
-**UniFFI coupling reminder (`riot-uniffi-record-change-coupling`):** the added FFI fn + record
-changed the interface. Bindings + the 5 native staticlibs MUST be regenerated together
-(`scripts/conference/build-native-core.sh`) before ANY native app runs, or it aborts at runtime with
-a checksum mismatch. Not done tonight (that step + the iOS UI need a build machine / Xcode).
-
-### Coverage gate note
-`.coverage-thresholds.json` is a BLOCKING pre-PR gate (tarpaulin lines / llvm branches). New code is
-densely tested (14 core + 3 FFI), so the ratchet should hold, but I did NOT run the full tarpaulin
-composite overnight (long, and no PR is being cut on my branch tonight). **Morning:** run
-`scripts/web/coverage.sh` (or the CI coverage job) before opening a reactions PR.
+## Status: iOS-UX lane complete + main's iOS build un-broken
+Delivered tonight: the UX state-refresh doc (Task 1), the trust-copy verification (Task 2, no change needed), and — the real win — the two #59 regression fixes that restore a green iOS build (Task 3). Branch `overnight/2026-07-19` is pushed with a PR flagging the red-main urgency. Remaining backlog is contended (web `/2`, deploy), owner-blocked (TF hardware, ratifications), or large/architectural (notifications, discovery/index, Android parity) — none safe to touch overnight per guardrails. Nothing further safe to execute; wrapping with the honest summary above.
