@@ -64,3 +64,17 @@ the FFI keeping its expiry guard in seconds); (5) pre-J2000 (unix 0 = 1970) fail
 `ClockUnavailable`; (6) u64::MAX out-of-range fails closed. 6/6 green (the pre-J2000 + overflow
 fail-closed edges confirmed, not just asserted). New file, non-contended. Batched onto the same
 branch/PR #82 (both are tests-only core hardening) to save a CI cycle; PR retitled accordingly.
+
+## Task 4 — masthead at-rest sealing-envelope boundary (DONE, batched into PR #82)
+**Why:** `OwnedMasthead::seal`/`open_sealed` protect the owner's ROOT SECRET at rest
+(XChaCha20-Poly1305, `[MAGIC ‖ nonce ‖ ciphertext+tag]`). Inline tests covered only the happy
+roundtrip + wrong-key — no tamper / malformed-envelope coverage on a crown-jewel secret. New file
+`crates/riot-core/tests/masthead_sealing_boundary.rs`: control (clean blob opens), tag tamper,
+ciphertext tamper, nonce tamper (index into the real 24-byte nonce at 8..32, verified against
+`MASTHEAD_MAGIC = "RIOTMH\x01\0"`, 8 bytes — an earlier draft flipped a magic byte and mislabeled it),
+corrupted magic, truncated + empty, over-long — every rejection is the typed `SealedMastheadInvalid`,
+fail-closed, no panic, no partial masthead. 7/7 green. New file, non-contended. Batched into PR #82.
+
+**PR #82 is now 3 tests-only suites** (section authority boundary, clock conversion, sealing boundary)
+— all new files under `crates/riot-core/tests/`, no production change, no contention with the active
+article-authoring / native-UI sessions.
