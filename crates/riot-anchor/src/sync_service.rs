@@ -155,13 +155,29 @@ fn decode_item(bytes: &[u8]) -> Result<DecodedItem, ItemReject> {
     })
 }
 
-/// Verify one untrusted anchor-profile item end-to-end and project it to a
-/// [`StagedEntry`]. This is the anchor's trust boundary: it decodes the entry and
+/// The fully decoded and REAL-Meadowcap-verified parts of one anchor-profile item.
+/// Exposed so callers that need the entry's payload or authorising capability
+/// (e.g. the listing service's crypto-before-admit) can inspect them after the
+/// same checked verification [`verify_anchor_item`] performs.
+pub struct VerifiedAnchorItem {
+    /// The decoded, verified Willow entry.
+    pub entry: riot_core::willow::Entry,
+    /// Canonical entry bytes.
+    pub entry_bytes: Vec<u8>,
+    /// Canonical authorising Meadowcap capability bytes.
+    pub capability_bytes: Vec<u8>,
+    /// The 64-byte subspace signature.
+    pub signature: [u8; 64],
+    /// The carried payload bytes (integrity-checked against the entry).
+    pub payload_bytes: Vec<u8>,
+}
+
+/// Verify one untrusted anchor-profile item end-to-end and return its decoded,
+/// verified parts. This is the shared trust boundary: it decodes the entry and
 /// capability, rebuilds the authorisation token from the 64-byte signature, checks
 /// payload length + WILLIAM3 digest and byte bounds, and runs riot-core's checked
-/// [`verify_entry`] (the willow25 `PossiblyAuthorisedEntry` conversion). It NEVER
-/// trusts the client's assertion of authorisation.
-pub fn verify_anchor_item(item_bytes: &[u8]) -> Result<StagedEntry, ItemReject> {
+/// [`verify_entry`]. It NEVER trusts the client's assertion of authorisation.
+pub fn verify_anchor_item_parts(item_bytes: &[u8]) -> Result<VerifiedAnchorItem, ItemReject> {
     let decoded = decode_item(item_bytes)?;
 
     let entry =
@@ -184,13 +200,32 @@ pub fn verify_anchor_item(item_bytes: &[u8]) -> Result<StagedEntry, ItemReject> 
         return Err(ItemReject::DoesNotAuthorise);
     }
 
+    Ok(VerifiedAnchorItem {
+        entry,
+        entry_bytes: decoded.entry_bytes,
+        capability_bytes: decoded.capability_bytes,
+        signature: decoded.signature,
+        payload_bytes: decoded.payload_bytes,
+    })
+}
+
+/// Verify one untrusted anchor-profile item end-to-end and project it to a
+/// [`StagedEntry`]. This is the anchor's trust boundary: it decodes the entry and
+/// capability, rebuilds the authorisation token from the 64-byte signature, checks
+/// payload length + WILLIAM3 digest and byte bounds, and runs riot-core's checked
+/// [`verify_entry`] (the willow25 `PossiblyAuthorisedEntry` conversion). It NEVER
+/// trusts the client's assertion of authorisation.
+pub fn verify_anchor_item(item_bytes: &[u8]) -> Result<StagedEntry, ItemReject> {
+    let verified = verify_anchor_item_parts(item_bytes)?;
+    let entry = &verified.entry;
+
     let namespace_id = *entry.namespace_id().as_bytes();
-    let subspace_id = *Keylike::subspace_id(&entry).as_bytes();
-    let entry_id = canonical_entry_id(&decoded.entry_bytes);
+    let subspace_id = *Keylike::subspace_id(entry).as_bytes();
+    let entry_id = canonical_entry_id(&verified.entry_bytes);
     let timestamp_be = u64::from(entry.timestamp()).to_be_bytes();
     let payload_digest = *entry.payload_digest().as_bytes();
     let payload_length = entry.payload_length();
-    let path_bytes = encode_path(&entry);
+    let path_bytes = encode_path(entry);
 
     Ok(StagedEntry {
         namespace_id,
@@ -200,7 +235,7 @@ pub fn verify_anchor_item(item_bytes: &[u8]) -> Result<StagedEntry, ItemReject> 
         timestamp_be,
         payload_digest,
         payload_length,
-        entry_bytes: decoded.entry_bytes,
+        entry_bytes: verified.entry_bytes,
         item_bytes: item_bytes.to_vec(),
     })
 }

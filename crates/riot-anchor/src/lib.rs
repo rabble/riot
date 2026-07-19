@@ -28,6 +28,7 @@
 pub mod control;
 pub mod hosting;
 pub mod idempotency;
+pub mod listing;
 pub mod repository;
 pub mod schema;
 pub mod sync_service;

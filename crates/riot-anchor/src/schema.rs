@@ -346,6 +346,21 @@ const MIGRATION_ONE: &str = r#"
         is_fixed INTEGER NOT NULL CHECK (is_fixed IN (0, 1))
     ) STRICT;
 
+    CREATE TABLE listing_floors (
+        root_id BLOB PRIMARY KEY NOT NULL CHECK (length(root_id) = 32),
+        listing_epoch INTEGER NOT NULL CHECK (listing_epoch >= 0),
+        sealed INTEGER NOT NULL CHECK (sealed IN (0, 1)),
+        highest_revision INTEGER NOT NULL CHECK (highest_revision >= 0),
+        shown_digest BLOB CHECK (shown_digest IS NULL OR length(shown_digest) = 32),
+        shown_class INTEGER CHECK (shown_class IS NULL OR shown_class IN (0, 1)),
+        equivocated INTEGER NOT NULL CHECK (equivocated IN (0, 1))
+    ) STRICT;
+
+    CREATE TABLE directory_projection (
+        projection_id INTEGER PRIMARY KEY NOT NULL CHECK (projection_id = 1),
+        generation INTEGER NOT NULL CHECK (generation >= 0)
+    ) STRICT;
+
     CREATE INDEX idx_entries_payload_digest ON entries(payload_digest);
     CREATE INDEX idx_community_payload_refs_payload ON community_payload_refs(payload_digest);
     CREATE INDEX idx_listings_host_refresh ON listings(last_host_refresh_at);
@@ -469,6 +484,8 @@ mod tests {
         "replica_challenges",
         "consumed_attestations",
         "emergency_reserves",
+        "listing_floors",
+        "directory_projection",
     ];
 
     /// Every index the schema defines.

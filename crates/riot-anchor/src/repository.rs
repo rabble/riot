@@ -30,6 +30,8 @@ use std::path::{Path, PathBuf};
 
 use rusqlite::{params, Connection, OpenFlags, OptionalExtension, TransactionBehavior};
 
+use riot_anchor_protocol::authority::{AuthorityClass, ListingFloor};
+
 use crate::schema::{self, SchemaError};
 
 /// Number of independent accounting classes.
@@ -1171,6 +1173,172 @@ impl RepoTransaction<'_> {
         Ok(())
     }
 
+    /// Load the durable per-root listing floor (WU-015B), read within this
+    /// transaction. `None` means nothing has ever been admitted for this root; the
+    /// caller starts from [`ListingFloor::new`].
+    pub fn load_listing_floor(
+        &self,
+        root_id: &[u8; 32],
+    ) -> Result<Option<ListingFloor>, AnchorRepositoryError> {
+        self.transaction
+            .query_row(
+                "SELECT listing_epoch, sealed, highest_revision, shown_digest, shown_class, \
+                 equivocated FROM listing_floors WHERE root_id = ?1",
+                params![root_id.as_slice()],
+                |row| map_listing_floor(*root_id, row),
+            )
+            .optional()
+            .map_err(AnchorRepositoryError::from)
+    }
+
+    /// Persist the durable per-root listing floor (insert or replace). The floor
+    /// never rolls backward; the caller supplies the resolved next floor.
+    pub fn upsert_listing_floor(
+        &mut self,
+        floor: &ListingFloor,
+    ) -> Result<(), AnchorRepositoryError> {
+        let shown_class = floor.shown_class.map(authority_class_code);
+        self.transaction.execute(
+            "INSERT INTO listing_floors(root_id, listing_epoch, sealed, highest_revision, \
+             shown_digest, shown_class, equivocated) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) \
+             ON CONFLICT(root_id) DO UPDATE SET listing_epoch = excluded.listing_epoch, \
+             sealed = excluded.sealed, highest_revision = excluded.highest_revision, \
+             shown_digest = excluded.shown_digest, shown_class = excluded.shown_class, \
+             equivocated = excluded.equivocated",
+            params![
+                floor.root_id.as_slice(),
+                floor.epoch as i64,
+                floor.sealed as i64,
+                floor.highest_revision as i64,
+                floor.shown_digest.map(|d| d.to_vec()),
+                shown_class,
+                floor.equivocated as i64
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// The current listing row for a community, if it is listed.
+    pub fn current_listing(
+        &self,
+        community_id: &[u8; 32],
+    ) -> Result<Option<CurrentListing>, AnchorRepositoryError> {
+        self.transaction
+            .query_row(
+                "SELECT root_key, listed_at, expires_at, last_host_refresh_at, removal_slot_index \
+                 FROM listings WHERE community_id = ?1",
+                params![community_id.as_slice()],
+                map_current_listing,
+            )
+            .optional()
+            .map_err(AnchorRepositoryError::from)
+    }
+
+    /// Replace a listing's current visibility state (refresh), retaining its
+    /// already-reserved removal slot and the signed feed history.
+    pub fn update_listing(
+        &mut self,
+        community_id: &[u8; 32],
+        root_key: &[u8; 32],
+        listed_at: u64,
+        expires_at: u64,
+        last_host_refresh_at: u64,
+    ) -> Result<(), AnchorRepositoryError> {
+        self.transaction.execute(
+            "UPDATE listings SET root_key = ?2, listed_at = ?3, expires_at = ?4, \
+             last_host_refresh_at = ?5 WHERE community_id = ?1",
+            params![
+                community_id.as_slice(),
+                root_key.as_slice(),
+                listed_at as i64,
+                expires_at as i64,
+                last_host_refresh_at as i64
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// The current directory-feed head `(head_inclusion_digest, feed_length)`.
+    /// A never-advanced feed reports `(ZERO, 0)`.
+    pub fn feed_head(&self) -> Result<([u8; 32], u64), AnchorRepositoryError> {
+        let head = self
+            .transaction
+            .query_row(
+                "SELECT head_digest, feed_length FROM directory_feed_heads WHERE feed_id = 1",
+                [],
+                |row| {
+                    let digest = blob32(row.get::<_, Vec<u8>>(0)?)?;
+                    let length: i64 = row.get(1)?;
+                    Ok((digest, length.max(0) as u64))
+                },
+            )
+            .optional()?;
+        Ok(head.unwrap_or(([0u8; 32], 0)))
+    }
+
+    /// Advance the singleton directory-feed head by exactly one inclusion, setting
+    /// the new head digest and returning the new monotonic `feed_length` (the
+    /// admitted inclusion's sequence / `feed_coordinate`).
+    pub fn advance_feed_head(
+        &mut self,
+        new_head_digest: &[u8; 32],
+        updated_at: u64,
+    ) -> Result<u64, AnchorRepositoryError> {
+        let (_, current_length) = self.feed_head()?;
+        let next_length = current_length.saturating_add(1);
+        self.transaction.execute(
+            "INSERT INTO directory_feed_heads(feed_id, head_digest, feed_length, updated_at) \
+             VALUES (1, ?1, ?2, ?3) ON CONFLICT(feed_id) DO UPDATE SET \
+             head_digest = excluded.head_digest, feed_length = excluded.feed_length, \
+             updated_at = excluded.updated_at",
+            params![
+                new_head_digest.as_slice(),
+                next_length as i64,
+                updated_at as i64
+            ],
+        )?;
+        Ok(next_length)
+    }
+
+    /// The current directory/search projection generation (0 if never invalidated).
+    pub fn projection_generation(&self) -> Result<u64, AnchorRepositoryError> {
+        let generation: Option<i64> = self
+            .transaction
+            .query_row(
+                "SELECT generation FROM directory_projection WHERE projection_id = 1",
+                [],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(generation.unwrap_or(0).max(0) as u64)
+    }
+
+    /// Invalidate (bump) the directory/search projection generation by exactly one
+    /// and return the new value. This is the single projection-invalidation event a
+    /// visibility-changing listing transaction performs.
+    pub fn invalidate_projection_generation(&mut self) -> Result<u64, AnchorRepositoryError> {
+        self.transaction.execute(
+            "INSERT INTO directory_projection(projection_id, generation) VALUES (1, 1) \
+             ON CONFLICT(projection_id) DO UPDATE SET generation = generation + 1",
+            [],
+        )?;
+        self.projection_generation()
+    }
+
+    /// The number of retained signed directory inclusions for a community (its
+    /// signed feed history).
+    pub fn directory_inclusion_count(
+        &self,
+        community_id: &[u8; 32],
+    ) -> Result<u64, AnchorRepositoryError> {
+        let count: i64 = self.transaction.query_row(
+            "SELECT COUNT(*) FROM directory_inclusions WHERE community_id = ?1",
+            params![community_id.as_slice()],
+            |row| row.get(0),
+        )?;
+        Ok(count.max(0) as u64)
+    }
+
     /// Look up an idempotency-index row by its 128-bit key (read within this
     /// transaction). This is the constant-time-lookup input to the admission
     /// state machine; the caller compares the retained digest.
@@ -1605,6 +1773,77 @@ impl RepoTransaction<'_> {
         }
         Ok(())
     }
+}
+
+/// A community's current directory listing row (its bounded visibility state).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CurrentListing {
+    /// The listing root key.
+    pub root_key: [u8; 32],
+    /// When the current listing state was last set.
+    pub listed_at: u64,
+    /// Listing expiry (Unix seconds).
+    pub expires_at: u64,
+    /// The most recent host-refresh time.
+    pub last_host_refresh_at: u64,
+    /// The removal slot this listed root owns.
+    pub removal_slot_index: u32,
+}
+
+/// The stable integer code for a listing authority class (`0` root-owned, `1`
+/// delegated), matching the `listing_floors.shown_class` CHECK.
+fn authority_class_code(class: AuthorityClass) -> i64 {
+    match class {
+        AuthorityClass::RootOwned => 0,
+        AuthorityClass::Delegated => 1,
+    }
+}
+
+fn map_listing_floor(
+    root_id: [u8; 32],
+    row: &rusqlite::Row<'_>,
+) -> Result<ListingFloor, rusqlite::Error> {
+    let epoch: i64 = row.get(0)?;
+    let sealed: i64 = row.get(1)?;
+    let highest_revision: i64 = row.get(2)?;
+    let shown_digest = row.get::<_, Option<Vec<u8>>>(3)?.map(blob32).transpose()?;
+    let shown_class = match row.get::<_, Option<i64>>(4)? {
+        None => None,
+        Some(0) => Some(AuthorityClass::RootOwned),
+        Some(1) => Some(AuthorityClass::Delegated),
+        Some(_) => {
+            return Err(rusqlite::Error::FromSqlConversionFailure(
+                4,
+                rusqlite::types::Type::Integer,
+                "invalid shown_class".into(),
+            ))
+        }
+    };
+    let equivocated: i64 = row.get(5)?;
+    Ok(ListingFloor {
+        root_id,
+        epoch: epoch.max(0) as u32,
+        sealed: sealed != 0,
+        highest_revision: highest_revision.max(0) as u32,
+        shown_digest,
+        shown_class,
+        equivocated: equivocated != 0,
+    })
+}
+
+fn map_current_listing(row: &rusqlite::Row<'_>) -> Result<CurrentListing, rusqlite::Error> {
+    let root_key = blob32(row.get::<_, Vec<u8>>(0)?)?;
+    let listed_at: i64 = row.get(1)?;
+    let expires_at: i64 = row.get(2)?;
+    let last_host_refresh_at: i64 = row.get(3)?;
+    let removal_slot_index: i64 = row.get(4)?;
+    Ok(CurrentListing {
+        root_key,
+        listed_at: listed_at.max(0) as u64,
+        expires_at: expires_at.max(0) as u64,
+        last_host_refresh_at: last_host_refresh_at.max(0) as u64,
+        removal_slot_index: removal_slot_index.max(0) as u32,
+    })
 }
 
 fn blob32(value: Vec<u8>) -> Result<[u8; 32], rusqlite::Error> {
