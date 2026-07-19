@@ -68,6 +68,14 @@ const MIGRATION_ONE: &str = r#"
         descriptor_floor_generation INTEGER NOT NULL CHECK (descriptor_floor_generation >= 0)
     ) STRICT;
 
+    CREATE TABLE deployment_lease (
+        singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+        deployment_instance_token BLOB CHECK (deployment_instance_token IS NULL OR length(deployment_instance_token) = 32),
+        lease_holder_id BLOB CHECK (lease_holder_id IS NULL OR length(lease_holder_id) = 32),
+        lease_epoch INTEGER NOT NULL DEFAULT 0 CHECK (lease_epoch >= 0),
+        lease_expires_at INTEGER NOT NULL DEFAULT 0 CHECK (lease_expires_at >= 0)
+    ) STRICT;
+
     CREATE TABLE cursor_secret_epochs (
         epoch INTEGER PRIMARY KEY CHECK (epoch >= 0),
         secret_bytes BLOB NOT NULL CHECK (length(secret_bytes) = 32),
@@ -318,6 +326,8 @@ const MIGRATION_ONE: &str = r#"
         descriptor_bytes, descriptor_floor_generation
     ) VALUES (1, NULL, 1, 1, NULL, 0);
 
+    INSERT INTO deployment_lease(singleton) VALUES (1);
+
     INSERT INTO emergency_reserves(reserve_name, default_value, absolute_ceiling, is_fixed) VALUES
         ('removal_metadata_reserve', 805306368, 3221225472, 0),
         ('removal_wal_fsync_reserve', 805306368, 3221225472, 0),
@@ -390,6 +400,7 @@ mod tests {
     const EXPECTED_TABLES: &[&str] = &[
         "schema_migrations",
         "operator_state",
+        "deployment_lease",
         "cursor_secret_epochs",
         "communities",
         "manifests",
