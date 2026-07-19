@@ -3457,6 +3457,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "riot-anchor"
+version = "0.1.0"
+dependencies = [
+ "riot-anchor-protocol",
+ "riot-core",
+ "rusqlite",
+]
+
+[[package]]
 name = "riot-anchor-protocol"
 version = "0.1.0"
 dependencies = [

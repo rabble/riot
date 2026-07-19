@@ -1,0 +1,23 @@
+[package]
+name = "riot-anchor"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Server-only Riot public community anchor daemon: SQLite-backed AnchorRepository, admission, hosting, and directory publication."
+license = "AGPL-3.0-or-later"
+
+# SERVER crate. This is the anchor daemon's storage/host runtime. It reuses the
+# canonical wire layer (`riot-anchor-protocol`) and the shared verify/project
+# core (`riot-core`, default features — the daemon runs on native targets with
+# bundled SQLite), and persists to its OWN `AnchorRepository` schema (see
+# `schema.rs`).
+#
+# Dependency boundary: this crate is server-only and must NEVER be pulled into a
+# native app / FFI graph. That boundary is enforced structurally at WU-028; here
+# we simply do not declare any app, FFI, or platform-adapter dependency. All
+# SQLite access reuses the WORKSPACE `rusqlite` pin (already resolved via
+# `riot-core`) — no new/different version is introduced.
+[dependencies]
+riot-anchor-protocol = { path = "../riot-anchor-protocol" }
+riot-core = { path = "../riot-core" }
+rusqlite = { workspace = true }
