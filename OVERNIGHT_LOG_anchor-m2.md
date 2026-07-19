@@ -86,3 +86,15 @@ service takes explicit RawListingSubmission; wire decode adapter is a later WU (
 ### Task 7 — WU-016 (reserved removal + crash-safe checkpoints) dispatched — FINAL hosting-MVP unit
 Has a plan "Human Checkpoint C" (failpoint matrix / reserved-lane fairness / max-size removal) — can't
 run interactively overnight; will build+verify + surface the evidence for morning review.
+
+### Task 7 — WU-016 DONE (commit fcaec68, pushed #80). M2 HOSTING-MVP CORE COMPLETE.
+Reserved removal (per-root two-slot rule, fair two-lane scheduler + protected quarter + aggregate caps
++ emergency-reserve permits, max-size removal survives ordinary exhaustion) + crash-safe checkpoints
+(freeze->publish->advance, recovers at every failpoint, corrupt=fail-closed). 111 tests. Human
+Checkpoint C evidence in tests. Schema additions. Merged origin/main into #80 (no conflict,
+validate-contracts PASS). FLAG: listing.rs still uses naive claim_removal_slot — 1-line wire-up to
+reserve_visibility_slot outstanding.
+
+**M2 hosting-MVP core = riot-anchor crate: WU-013A..016, 111 tests, on PR #80. Awaiting CI to merge.**
+Remaining M2 (NOT done overnight): WU-008-010 (client-storage-ownership refactor — high blast radius,
+supervised only) + WU-011/012 (client-net). Server hosting core is complete.
