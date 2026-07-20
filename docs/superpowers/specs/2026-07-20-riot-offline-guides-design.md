@@ -280,7 +280,7 @@ Riot adds:
 - community relationships and per-community data identities;
 - public Newswire records and editorial actions;
 - community-approved, content-addressed mini-apps;
-- app-scoped data and hardened native execution;
+- app-scoped bridge access and hardened native execution;
 - preview, validation, and acceptance policy;
 - durable multi-community management;
 - product transport integrations and public export rendering; and
@@ -375,7 +375,7 @@ The closing status block uses explicit text headings, not badge color alone.
 - tested local-network/Bonjour peer exchange;
 - public gateway rendering from exported community data;
 - community-approved mini-app packages;
-- isolated per-app Willow data and hardened app execution; and
+- app-scoped bridge access and hardened app execution; and
 - fresh per-community author identities when joining another community.
 
 **Direction being built or still unverified:**
@@ -478,6 +478,10 @@ alternative. Shared core support is not presented as user-facing parity.
 
 ### Instruction format
 
+The opening contains a linked table of contents. Every task and troubleshooting
+section ends with **Back to contents**, so a person working under pressure never
+has to scroll through the full manual to choose another task.
+
 Each task uses:
 
 - a plain-language goal;
@@ -498,9 +502,16 @@ application bundle. It does not fetch help articles, fonts, analytics,
 screenshots, or configuration.
 
 External citations and project links are visibly marked **Opens in browser**.
-A deliberate tap hands an HTTP(S) URL to the system browser. If no connection
-exists, the bundled guide remains in place and complete; failing to open the
-browser never replaces or blanks the guide.
+Only an explicit main-frame link activation with a user gesture may hand a
+manifest-declared HTTP(S) destination to the system browser. Redirects, meta
+refreshes, subframes, downloads, new windows, and programmatic navigation never
+launch the browser. If no connection exists, the bundled guide remains in place
+and complete; failing to open the browser never replaces or blanks the guide.
+
+The rendered guide shows the tested app version and checked date. The public
+web copy tells people using an older installed build to prefer the bundled
+Using Riot guide that shipped with their app, because its labels match that
+version.
 
 ## Canonical guide bundle
 
@@ -530,9 +541,18 @@ rules, and stamped labels.
 - stable guide IDs;
 - titles;
 - entry-point paths;
+- the tested app version or version range;
 - checked dates;
-- content hashes; and
+- an exact per-file allowlist containing a normalized relative path, SHA-256
+  digest, and MIME type for both HTML entry points and every local asset;
+- an exact per-document allowlist of external HTTP(S) destinations; and
 - minimum reader schema version.
+
+`manifest.json` is not included in its own content map, avoiding a circular
+digest. Every target receives the manifest itself byte-for-byte. Paths use
+forward slashes, contain no empty, dot, dot-dot, query, fragment, encoded
+separator, absolute, or backslash component, and are compared after one
+specified canonicalization pass.
 
 ### Deterministic distribution
 
@@ -561,7 +581,9 @@ success is not treated as macOS evidence.
 
 The sync command is idempotent. A `--check` mode exits nonzero on missing,
 changed, additional, or stale target files. Hand-edited distribution copies are
-rejected.
+rejected. Generation stages and validates a complete target bundle before an
+atomic directory replacement, so interruption cannot leave packaging inputs
+partially updated.
 
 ## Native app integration
 
@@ -580,8 +602,24 @@ The entry points use the same labels on all platforms:
 - **Why Riot**
 - **Using Riot**
 
-Opening a guide preserves the person's current community and any safe draft
-state. Back or Close returns to the exact prior surface.
+Opening a guide preserves the person's current community and composer draft.
+Back or Close returns to the exact prior surface.
+
+The implementation plan defines the native presentation pattern per platform
+(push, sheet, activity, or window) and the exact Back/Close and keyboard
+behavior. The state contract is:
+
+| State | Required behavior |
+| --- | --- |
+| Active community | Unchanged while guides open and after return |
+| Composer draft | Preserved byte-for-byte |
+| Guide and section | Preserved across system-browser handoff and foregrounding |
+| Scroll position | Preserved per guide during cross-guide navigation |
+| App process restoration | Reopens safely to the prior Riot surface or the same bundled guide; never loses a draft |
+
+An invalid or unsupported local guide path shows: **This guide page isn't
+available in this copy of Riot.** It offers **Back to Help & Guides** and
+**Close guide**; it never exposes a raw URL, filesystem path, or WebView error.
 
 ### Apple reader
 
@@ -597,12 +635,22 @@ Swift source set. It is not `AppRuntimeView` and receives:
 The reader:
 
 - disables JavaScript;
-- loads only the bundled Guides directory;
+- registers a dedicated manifest-backed local guide scheme before loading;
+- resolves only an exact manifest-declared path whose bytes, SHA-256 digest, and
+  MIME type match;
 - applies a block-all network content rule before the document loads;
-- allows local guide navigation within the bundle;
-- intercepts deliberate HTTP(S) link activation and sends it to the system
-  browser; and
-- refuses every other navigation or subresource scheme.
+- allows cross-guide navigation only through explicit relative `index.html`
+  paths declared in the manifest;
+- sends an external destination to the system browser only for a main-frame
+  `.linkActivated` action with a user gesture and an exact allowlisted HTTP(S)
+  URL; and
+- refuses redirects, meta refreshes, subframes, downloads, new windows,
+  programmatic navigation, undeclared local files, and every other scheme.
+
+The resolver does not grant directory-wide file access. It rejects absolute
+paths, encoded dot segments or separators, backslashes, queries used as path
+confusion, traversal, symlinks escaping the guide root, digest mismatch, MIME
+mismatch, and initialization without the network block in place.
 
 The iOS and macOS project resource phases are updated separately and verified
 by inspecting the built `.app` bundles.
@@ -614,12 +662,20 @@ Android uses a dedicated documentation reader, separate from
 
 It:
 
-- reads from `assets/guides/` through a constrained local asset origin;
+- reads through a dedicated manifest-backed `WebViewAssetLoader.PathHandler` on
+  the constrained `appassets.androidplatform.net` origin;
 - disables JavaScript, DOM storage, mixed content, file-URL universal access,
-  and arbitrary content/file access;
-- permits only known guide entry points and local assets;
-- sends a deliberate HTTP(S) link activation to the system browser;
-- rejects automatic network/subresource loads; and
+  arbitrary content/file access, downloads, service workers, geolocation,
+  media capture, multiple windows, and network-dependent Safe Browsing calls;
+- resolves only exact manifest-declared local paths whose digest and MIME type
+  match, treating that one constrained HTTPS origin as local;
+- permits cross-guide navigation only through explicit relative `index.html`
+  paths;
+- sends an allowlisted external HTTP(S) destination to the system browser only
+  when `isForMainFrame` and `hasGesture` prove explicit link activation;
+- rejects redirects, meta refreshes, subframes, downloads, intents, custom
+  schemes, alternate origins, undeclared paths, encoded traversal, digest/MIME
+  mismatch, and automatic remote subresources; and
 - restores the prior Riot screen on Back.
 
 The packaged APK is inspected to prove both guide documents, the manifest, and
@@ -651,18 +707,20 @@ Both canonical documents require:
 - no user-derived HTML;
 - no inline or external JavaScript;
 - no remote fonts, images, styles, analytics, or other subresources;
-- a restrictive CSP with `default-src 'none'`, narrowly allowing the local
-  stylesheet and local images only if later required;
-- `connect-src 'none'`, `object-src 'none'`, `base-uri 'none'`, and
-  `form-action 'none'`;
+- the exact starting CSP `default-src 'none'; script-src 'none'; style-src
+  'self'; img-src 'none'; connect-src 'none'; object-src 'none'; frame-src
+  'none'; base-uri 'none'; form-action 'none'`;
 - a `no-referrer` policy;
 - explicit external-link labels;
 - `noopener noreferrer` when a web link opens a new context; and
 - no dependency on service workers or cached network content.
 
 The deployed web response headers are verified in addition to the document
-meta policy. Browser request logs must show no request until a person
-deliberately follows an external link.
+meta policy and add `frame-ancestors 'none'`. Before a person deliberately
+follows an external link, the exact allowed request set is the selected
+top-level guide document plus manifest-declared same-origin guide assets such as
+`assets/guide.css`. Cross-origin, redirected, remote, analytic, scripted, and
+undeclared requests are forbidden.
 
 ## Willow source alignment
 
@@ -704,12 +762,23 @@ written, failing tests establish:
 6. opening and closing a guide preserves the prior app state;
 7. local guide and cross-guide navigation works without connectivity;
 8. JavaScript and Riot bridges are absent from documentation readers;
-9. automatic HTTP(S), WebSocket, and remote-subresource requests are blocked;
-10. explicit external links leave through the system browser only;
-11. malformed or unknown guide paths fail closed with a local recovery view;
-12. semantic headings, skip links, accessible names, dynamic text, keyboard
+9. only manifest-declared local paths with matching SHA-256 and MIME type load;
+10. undeclared files, modified bytes, wrong MIME types, absolute paths, encoded
+    traversal, escaping symlinks, and alternate local origins fail closed;
+11. the document plus declared local stylesheet load while automatic remote,
+    redirected, WebSocket, and undeclared subresource requests are blocked;
+12. only allowlisted main-frame links with a user gesture leave through the
+    system browser;
+13. redirects, meta refresh, iframes, `target=_blank`, downloads, `data:`,
+    `javascript:`, `file:`, `intent:`, and custom schemes never launch an
+    external application;
+14. external-link failure and app backgrounding preserve the exact guide and
+    scroll position;
+15. malformed or unknown guide paths fail closed with the approved local
+    recovery view;
+16. semantic headings, skip links, accessible names, dynamic text, keyboard
     focus, and reduced motion pass focused checks; and
-13. current/planned and privacy boundary copy remains present in every target.
+17. current/planned and privacy boundary copy remains present in every target.
 
 The implementation plan must name the exact first failing test for each work
 unit before production code.
@@ -730,7 +799,8 @@ Implementation is complete only when:
 8. public Newswire plaintext, gateway browser trust, pseudonym correlation,
    cooperative read control, and non-recall boundaries are explicit;
 9. current and planned capabilities are labeled where first mentioned;
-10. the web pages make no runtime request before deliberate navigation;
+10. the web request set before deliberate external navigation is exactly the
+    top-level document plus manifest-declared same-origin assets;
 11. deployed CSP and referrer headers match the contract;
 12. phone and desktop screenshots show no clipping, overlap, or page-level
     horizontal overflow at 320 CSS pixels and target viewports;
@@ -766,10 +836,44 @@ After reading the relevant depth, at least five of six must correctly explain:
 - that public copies cannot be guaranteed to disappear; and
 - that Riot is a prototype without verified physical two-iPhone Bluetooth.
 
+Both participants in every audience group must reject the high-risk false
+claims below; the overall threshold cannot conceal a failed audience section.
 No participant may leave with the high-risk belief that current Riot public
 communities are end-to-end encrypted, anonymous, remotely recallable, fully
 production-ready, or already synchronized globally through the web gateway. A
 failure requires copy revision and a repeated review before deployment.
+
+### Practical guide usability gate
+
+Before release, test current installed builds with at least six representative
+participants, covering iOS, macOS, and Android with at least two people on each
+platform. Connectivity is disabled throughout the app tasks.
+
+The test records completion, time on task, assistance, copy/UI mismatch, and
+recovery outcome while participants:
+
+1. find **Help & Guides** from the first-run/no-community state without a hint;
+2. identify whether a named task works offline;
+3. complete the platform's exposed create-or-join flow;
+4. share or exchange a community through a route supported on that platform;
+5. explain and exercise preview-before-accept using the prepared peer fixture;
+6. recover from one documented permission or connection failure; and
+7. return to Riot without losing the active community, draft, guide section, or
+   scroll position.
+
+Release thresholds are:
+
+- 100% find Help & Guides within 60 seconds without assistance;
+- at least 85% unassisted task completion overall;
+- no platform has more than one failed supported task across its two
+  participants;
+- zero stale, nonexistent, or incorrectly platform-labeled UI instructions;
+- zero critical privacy misunderstandings; and
+- zero state-loss or network-dependency failures.
+
+Any missed threshold requires guide or product-copy revision and a complete
+retest of the affected platform. Results are retained with the packaged-artifact
+inspection, no-network rehearsal, and audience-comprehension evidence.
 
 ## Declared implementation scope
 
