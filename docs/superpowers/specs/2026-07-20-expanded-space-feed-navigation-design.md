@@ -1,7 +1,7 @@
 # Expanded-Space, Feed-First Navigation Design
 
 **Date:** 2026-07-20
-**Status:** User-approved design; design-review gate revision 2
+**Status:** User-approved design; design-review gate escalation after round 3
 **Scope:** Shared SwiftUI iPhone and macOS shell. No Rust, FFI, database-format, Android, or network-protocol changes.
 
 ## 1. Problem
@@ -159,6 +159,10 @@ Feed.
 The iPhone chooser exposes the same four add-space branches as macOS: Create
 community, Join with link or QR, Follow a site, and Find nearby.
 
+When a terminal followed-site status detail is pushed, the community tab bar is
+hidden. Back returns to the chooser/previous community shell; the followed site
+never appears scoped under Feed, People, Content, or Apps.
+
 This keeps route names and scope consistent across the shared SwiftUI shell
 without forcing desktop chrome onto a compact device.
 
@@ -175,8 +179,8 @@ without forcing desktop chrome onto a compact device.
   and accessibility state; color is never the only signal.
 - A row announces tier, name, relationship where relevant, availability, and
   unread state without exposing or truncating a namespace ID.
-- The selected space and selected child each expose the correct selected and
-  expanded accessibility traits.
+- The current community parent exposes active/expanded context; only the
+  canonical child or terminal row exposes semantic selection.
 - Dynamic Type and VoiceOver must not hide the child destinations or global
   profile action.
 - At accessibility Dynamic Type sizes, the existing iPhone tab bar keeps its
@@ -290,6 +294,11 @@ work without disclosing metadata. Teardown order is: invalidate token, clear
 callbacks, stop/disconnect transport, unregister the transition token, then
 construct the new scope.
 
+Lifecycle teardown and user intent are separate APIs:
+`invalidateAndStopScope()` never changes preference, while `pauseByUser()`
+stops the scope and persists paused intent. A community switch therefore cannot
+accidentally turn a lifecycle stop into a user pause.
+
 State maps to presentation exactly:
 
 - `idle`, `looking`, `connecting`, `gettingLatest`, `caughtUp`,
@@ -303,17 +312,34 @@ State maps to presentation exactly:
 - `.preview` presents the exact offered count with Add and Not now;
 - permission denial and `.failed` mark the footer with attention and open the
   existing Settings/Retry recovery; and
-- stopped or dismissed work stays inert until the person restarts discovery.
+- explicitly stopped work stays inert until the person restarts discovery;
+  dismissing a single interaction cannot accept or mutate that interaction.
 
-While paused, the footer says **Nearby exchange paused** and offers the
-secondary **Restart** action in its popover/settings detail. It never promotes
-Restart into Feed or primary navigation.
+Each platform has one concrete anchor:
+
+- macOS uses a `NearbyStatusButton` at the bottom of the spaces sidebar. Its
+  labels are **Nearby exchange on**, **N nearby**, **Nearby exchange paused**,
+  or **Nearby needs attention**. It exposes status/attention accessibility
+  value and opens `NearbyStatusPopover`.
+- iPhone uses a compact antenna status button in the community header, after
+  Settings. It has the same accessibility labels/value and opens
+  `NearbyStatusSheet`; healthy state is icon-only visually so it does not
+  compete with Feed.
+
+The popover/sheet owns peer inspection, Start/Stop, permission recovery, and
+Retry. While paused it offers the secondary **Restart** action. It never
+promotes Restart into Feed or primary navigation.
 
 The adapter serializes attention from the controller's single state: only one
 sheet/popover is active, and a newer state replaces or dismisses an obsolete
 one. macOS uses a popover for inspection/status and a sheet or confirmation
 dialog for consent; iPhone uses sheets/confirmation dialogs. These
 presentations do not replace the Feed.
+
+Dismissing peer confirmation cancels only that peer interaction. Declining a
+join cancels only that proposed join. **Not now** rejects only the previewed
+import. Discovery continues when preference is enabled; only the explicit Stop
+action calls `pauseByUser()` and requires Restart.
 
 Bilateral confirmation completes before either namespace metadata or sync
 frames are disclosed. Generation checks supplement rather than replace
@@ -366,6 +392,20 @@ enum SpaceSelectionState: Equatable, Sendable {
 distinct. The macOS spaces shell sits above the keyed community detail so a
 failed target cannot replace the entire sidebar.
 
+The one semantic `List(selection:)` value is:
+
+- `.communityDestination(namespaceID, destination)` for the selected Feed,
+  People, Content, or Apps child; or
+- `.followedSite(root)` for the terminal followed-site detail.
+
+The active community parent is styled and announced as **current community,
+expanded**, but does not carry `.isSelected`; only its child does. Activating a
+different community runs the switch and then selects its Feed child. Clicking
+the active parent or disclosure affordance changes expansion only and preserves
+child selection. Command-K focuses the active parent without changing semantic
+selection. Retry is a separate action inside an unavailable row; a failed
+target never becomes selected. VoiceOver tests assert one selected item.
+
 Space selection and local-destination selection flow as follows:
 
 ```text
@@ -397,6 +437,11 @@ enum CommunityActivationOutcome: Equatable, Sendable {
 }
 ```
 
+The repository API returns this outcome rather than throwing an
+indistinguishable switch error. It reconciles before recording recovery:
+target-active save failure becomes persistence degradation; target-unavailable
+is recorded only when the previous namespace remains active.
+
 If Rust activated the target but the Swift snapshot failed to persist, the
 shell follows the reconciled target and shows a persistence-recovery warning;
 it never continues drawing the old community over the new core context. If the
@@ -406,6 +451,20 @@ unknown namespace is a fail-closed mismatch: stale detail is removed and
 recovery names no content as active. When no previous community exists, the
 sidebar remains and the detail pane shows target-scoped recovery. Launch-level
 recovery is reserved for the case where there is no usable active context.
+
+`.activatedPersistenceDegraded` selects the target's Feed and shows a
+non-modal, VoiceOver-announced banner at the top of detail:
+**“Riot opened [community], but couldn’t save it for the next launch.”** Actions
+are **Try saving again** and **Technical details**. Dismiss hides the banner for
+the session but leaves an attention indicator on the active community row until
+saving succeeds.
+
+`.activeNamespaceMismatch` clears semantic selection and all stale content.
+On macOS the persistent detail pane, and on iPhone the full content area, show:
+**“Riot couldn’t confirm which community is open. No community content is being
+shown.”** Actions are **Try again**, **Start fresh** through the existing
+quarantine-preserving recovery, and **Technical details**. The state cannot be
+dismissed; Retry receives initial focus.
 
 Selecting a followed-site row never calls `switchToCommunity`. It selects the
 terminal followed-site status/refresh detail. On iPhone that detail is pushed
@@ -423,7 +482,9 @@ data-changed signal.
 `reload()` refreshes both raw community rows and followed-site rows.
 `refreshFromStore()` does the same, so bootstrap, sync import, follow/refresh,
 and community changes cannot leave either sidebar section stale.
-The two reads form one `SidebarSnapshot`, but each section preserves its
+The spaces root—not the keyed community detail—owns `SidebarSnapshot`,
+`SpaceSelectionState`, `NearbyDiscoveryPreference`, `NearbyScopeToken`, and
+transport invalidation. The two reads form one snapshot, but each section preserves its
 last-known rows if the other metadata call transiently fails; one failed list
 call cannot make unrelated retained rows appear to disappear.
 
@@ -454,7 +515,6 @@ struct CommunityContentCapabilities {
 struct CommunityContentAlertRow {
     let id: String
     let headline: String
-    let summary: String
     let createdAt: Date
     let expiresAt: Date
     let isActive: Bool
@@ -469,6 +529,9 @@ enum CommunityContentState {
 }
 ```
 
+The alert archive shows only fields provided by the verified alert projection.
+It does not require or synthesize a summary/body that the current FFI omits.
+
 The default Content view is one scroll surface with **Updates** first and
 **Alerts** second. Updates are de-duplicated by full entry ID and ordered by
 signed creation time descending across Front page, Open wire, and Earlier.
@@ -477,6 +540,11 @@ own empty copy; if both are empty the screen shows one library-level empty
 state. Record detail opens from the row. Editorial/treatment history and
 authorized editorial actions live in update detail, not as a third top-level
 collection.
+
+`.loading` shows a labeled progress indicator and no fabricated skeleton
+content. `.failed(code:)` shows **“Riot couldn’t open this community’s content
+library.”** with **Try again** and Technical details. It does not reuse rows
+from a different community; Feed and other destinations remain usable.
 
 Content is built only from current treatment-aware core projections. It never
 reconstructs raw payloads: hidden records remain interstitials, tombstoned
@@ -506,7 +574,10 @@ migration, FFI field, secret handling, or internet fallback.
 - **Public reader:** keep the row visible with an honest read-only-unavailable
   state; do not offer Feed/Content until a core read-only context exists.
 - **Followed site:** open status/refresh detail only. A blocked transport retains
-  the row and explains why Refresh is absent.
+  the row and explains why Refresh is absent. A session-local successful refresh
+  overlays pending-first-sync copy with **Imported N records this session** so
+  the same detail never claims both states; relaunch returns to the retained
+  core row state.
 - **Pending first sync:** open an honest Feed empty state that explains content
   has not arrived. Do not show fake posts or an empty white pane.
 - **Followed-site transport blocked:** retain the row with a text-and-icon
@@ -572,6 +643,8 @@ their targets consume them.
 - public-reader rows remain visible but cannot fabricate a selectable context;
 - followed rows select status detail without switching the active community;
 - unavailable rows remain present and carry actionable recovery state;
+- only a destination child or terminal followed row is semantically selected;
+  the current community parent is active/expanded but not selected;
 - unread badges do not change selection;
 - accessibility text includes name, tier, state, and unread count;
 - no technical ID is truncated or presented as a human label.
@@ -590,6 +663,8 @@ their targets consume them.
   closes stale tool/detail callbacks, and stops/rebinds the old sync scope;
 - a post-mutation persistence failure reconciles to the actual active namespace
   instead of showing stale old-community detail;
+- persistence degradation selects the actual target and provides Retry-save;
+  namespace mismatch clears stale content and provides non-dismissible recovery;
 - healthy sync creates no primary route or Feed card;
 - consent/import/failure states still require explicit review and cannot commit
   to a different community;
@@ -597,9 +672,13 @@ their targets consume them.
   with an invalid scope generation are inert and disconnect;
 - Stop survives routes, community switches, keyed-shell rebuilds, and relaunch
   until explicit Restart;
+- peer/join/preview dismissal cancels only that interaction and does not persist
+  Stop;
 - a failed deep-link switch emits no verified/detail outcome;
 - rapid A→B→C switching makes delayed A/B callbacks inert;
 - unavailable, pending, and degraded states never render a blank pane;
+- Content loading/failure and followed-site session-refresh overlays render the
+  specified honest states;
 - Command-K and Command-1 through Command-4 select the expected targets.
 
 ### 9.3 Accessibility and visual verification
@@ -725,3 +804,20 @@ revision. This version resolves its blockers by:
   active community, disclose metadata, present UI, or commit; and
 - persisting the person's Stop/Restart discovery preference across shell
   reconstruction and relaunch.
+
+Round 3 approved Product, Security, and CTO. Architecture and UX requested
+revision, exhausting the gate's three-round limit. This version resolves every
+reported blocker by:
+
+- removing the unsupported alert summary field;
+- defining exact macOS/iPhone sync anchors and interaction-dismissal behavior;
+- separating user pause from lifecycle invalidation;
+- making destination children the only semantic selection while the community
+  parent communicates current/expanded context;
+- defining persistence-degraded and namespace-mismatch copy, placement, actions,
+  dismissal, selection, and focus; and
+- completing Content loading/failure plus followed-site refresh-overlay states.
+
+Per metaswarm policy, proceeding beyond this point requires an explicit human
+override because the review-round limit is exhausted, even though the known
+round-3 blockers are addressed in the written design.
