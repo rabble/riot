@@ -10,14 +10,18 @@ const paths = {
   publicHome: resolve(root, "marketing/public/index.html"),
   protocols: resolve(root, "marketing/protocols/index.html"),
   publicProtocols: resolve(root, "marketing/public/protocols/index.html"),
+  swiftStory: resolve(root, "apps/ios/Riot/CommunityShell.swift"),
+  swiftPresentation: resolve(root, "apps/ios/Riot/ConferenceShellView.swift"),
 };
 
 const read = async (path) => readFile(path, "utf8");
-const [home, publicHome, protocols, publicProtocols] = await Promise.all([
+const [home, publicHome, protocols, publicProtocols, swiftStory, swiftPresentation] = await Promise.all([
   read(paths.home),
   read(paths.publicHome),
   read(paths.protocols),
   read(paths.publicProtocols),
+  read(paths.swiftStory),
+  read(paths.swiftPresentation),
 ]);
 
 assert.equal(home, publicHome, "homepage source and public mirror must be byte-identical");
@@ -129,5 +133,89 @@ for (const origin of sourceOrigins) {
 assert.doesNotMatch(protocols, /<(?:script|iframe|img|audio|video|source)\b[^>]*\bsrc=/i, "protocol page must not fetch runtime media or scripts");
 assert.doesNotMatch(protocols, /@import\s+url|url\(\s*["']?https?:/i, "protocol page must not fetch remote CSS assets");
 assert.doesNotMatch(protocols, /(?:plausible|google-analytics|googletagmanager|segment\.com|mixpanel)/i, "protocol page must not include analytics");
+
+// ---------- paired five-beat story (app + website must agree) ----------
+// The homepage "How it works" section opens with an ordered five-beat primer
+// that mirrors OnboardingExplainerStory in the app, so a person who meets Riot
+// on the web or in first run hears the same trust boundaries in the same order.
+const pairedStory = [
+  {
+    title: "No central account or publishing server",
+    required: ["cryptographic key", "single place Riot must publish"],
+  },
+  {
+    title: "Publishing moves peer to peer",
+    required: ["does not mean anonymous", "observe connections"],
+  },
+  {
+    title: "Many mirrors, not one site",
+    required: [
+      "display altered text",
+      "false attribution",
+      "accepts as the claimed author",
+    ],
+  },
+  {
+    title: "Signed records, checked in the app",
+    required: ["independently synced record", "not whether its claims are true"],
+  },
+  {
+    title: "Web for reach; the app for provenance",
+    required: ["instead of trusting what a mirror displayed"],
+  },
+];
+
+const howSection = home.match(/<section id="how">([\s\S]*?)<\/section>/)?.[1] ?? "";
+assert.match(howSection, /<h2>One story, wherever you meet Riot<\/h2>/, "how-section heading must introduce the paired story");
+
+const primer = howSection.match(/<ol class="story-beats"[^>]*>([\s\S]*?)<\/ol>/)?.[1] ?? "";
+const htmlBeats = [...primer.matchAll(/<li class="story-beat">([\s\S]*?)<\/li>/g)].map((m) => m[1]);
+assert.equal(htmlBeats.length, 5, "primer must contain five semantic list items");
+
+const swiftBeats = [...swiftStory.matchAll(/OnboardingExplainerPoint\(\s*title: "([^"]+)",\s*body: "([^"]+)"/g)].map(([, title, body]) => ({ title, body }));
+assert.equal(swiftBeats.length, 5, "Swift story must contain five explicit points");
+
+for (const [index, { title, required }] of pairedStory.entries()) {
+  const htmlBeat = htmlBeats[index];
+  const swiftBeat = swiftBeats[index];
+  assert.equal(swiftBeat.title, title, `Swift beat ${index + 1} title drift`);
+  assert.match(
+    htmlBeat,
+    new RegExp(`<h3>${title.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}</h3>`),
+    `homepage beat ${index + 1} heading drift`,
+  );
+  assert.match(htmlBeat, /<p>[\s\S]+<\/p>/, `homepage beat ${index + 1} needs body copy`);
+  for (const phrase of required) {
+    assert.ok(swiftBeat.body.includes(phrase), `Swift beat ${index + 1} missing: ${phrase}`);
+    assert.ok(htmlBeat.includes(phrase), `homepage beat ${index + 1} missing: ${phrase}`);
+  }
+}
+
+// The paired story exists to retire these unsafe claims. They must not return
+// anywhere in the native presentation or the homepage.
+for (const rejected of [
+  "safe to read from",
+  "cannot alter it",
+  "app is proof",
+  "proof stays in the app",
+  "No servers, no accounts",
+]) {
+  assert.ok(!swiftStory.includes(rejected), `unsafe Swift story claim: ${rejected}`);
+  assert.ok(!swiftPresentation.includes(rejected), `unsafe Swift presentation claim: ${rejected}`);
+  assert.ok(!home.includes(rejected), `unsafe homepage claim: ${rejected}`);
+}
+
+// The primer deliberately does not use progressive enhancement: it must render
+// identically with JavaScript disabled. The existing workflow may keep .reveal.
+assert.match(
+  home,
+  /<div class="workflow-head[^"]*"[^>]*>[\s\S]*<h3>What you do<\/h3>[\s\S]*What actually happens, screen by screen/,
+  "the workflow divider must separate the primer from the screen-by-screen steps",
+);
+assert.doesNotMatch(
+  home,
+  /<ol class="story-beats[^"]*\breveal\b/,
+  "paired primer must remain visible without JavaScript",
+);
 
 console.log("protocol marketing contracts: PASS");
