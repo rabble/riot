@@ -1,7 +1,7 @@
 # Paired App + Website Explainer Design
 
-**Date:** 2026-07-20  
-**Status:** Approved in conversation; design review revision 1  
+**Date:** 2026-07-20
+**Status:** Approved in conversation; design review revision 1
 **Branch:** `feat/onboarding-find-and-explainer`
 
 ## Problem
