@@ -37,13 +37,18 @@ use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, Semaphore};
+use tokio::task::JoinSet;
 
 use riot_anchor_protocol::authority::{admit_public_site_ticket, AuthorityError, TicketFloor};
-use riot_anchor_protocol::codec::CanonicalRecord;
-use riot_anchor_protocol::control::{ControlRefusal, PrepareHostV1, TransportMode};
-use riot_anchor_protocol::records::{PublicSiteTicketV2Core, TransportFloor};
-use riot_transport::iroh::accept_with_router;
+use riot_anchor_protocol::codec::{decode_canonical, CanonicalRecord};
+use riot_anchor_protocol::control::{
+    ControlRefusal, PrepareHostV1, TransportMode, MAX_CONTROL_FRAME_BYTES,
+};
+use riot_anchor_protocol::records::{
+    DescriptorEnvelopeV1, PublicSiteTicketV2Core, TransportFloor, MAX_DESCRIPTOR_ENVELOPE_BYTES,
+};
+use riot_transport::iroh::IrohConnection;
 use riot_transport::router::{AlpnRouter, BoundedStream, Deadlines, Exporter, Handler};
 use riot_transport::{TransportError, ALPN_ANCHOR_V1};
 
@@ -271,6 +276,7 @@ impl AdmissionPolicy for TicketRootAuthorityPolicy {
         &self,
         request: &PrepareHostV1,
         observed_at: u64,
+        highest_transport_epoch: Option<u32>,
     ) -> Result<PreparePlan, ControlRefusal> {
         let envelope = &request.root_signed_ticket_core;
 
@@ -285,7 +291,7 @@ impl AdmissionPolicy for TicketRootAuthorityPolicy {
             &TransportFloor::RequireNone,
             &TicketFloor {
                 root_id: envelope.core.root_id,
-                highest_transport_epoch: None,
+                highest_transport_epoch,
             },
             observed_at,
         )
@@ -354,6 +360,8 @@ pub enum DaemonError {
     Repository(AnchorRepositoryError),
     /// Binding the public endpoint or serving a connection failed.
     Transport(TransportError),
+    /// Persisted operator/descriptor state was malformed or incoherent.
+    Configuration(String),
 }
 
 impl core::fmt::Display for DaemonError {
@@ -361,6 +369,9 @@ impl core::fmt::Display for DaemonError {
         match self {
             Self::Repository(error) => write!(formatter, "anchor daemon repository error: {error}"),
             Self::Transport(error) => write!(formatter, "anchor daemon transport error: {error}"),
+            Self::Configuration(error) => {
+                write!(formatter, "anchor daemon configuration error: {error}")
+            }
         }
     }
 }
@@ -474,7 +485,7 @@ where
 pub async fn serve<P, S>(
     endpoint: iroh::Endpoint,
     config: DaemonConfig,
-    service: AnchorControlService<P, S>,
+    mut service: AnchorControlService<P, S>,
     entropy: EntropyFn,
     shutdown: impl Future<Output = ()> + Send,
 ) -> Result<(), DaemonError>
@@ -496,30 +507,85 @@ where
     // 1 acquires once at startup.
     repo.recover_readiness(now)?;
 
+    // Bind one canonical descriptor to this database. Restarts reuse those
+    // exact bytes; rebuilding epoch 0 from the wall clock would equivocate.
+    let proposed_descriptor = service
+        .descriptor()
+        .encode_canonical()
+        .map_err(|error| DaemonError::Configuration(error.to_string()))?;
+    let persisted_descriptor = repo.load_or_initialize_descriptor(
+        &service.descriptor().body.current_operator_key_id,
+        &proposed_descriptor,
+    )?;
+    let persisted_descriptor = decode_canonical::<DescriptorEnvelopeV1>(
+        &persisted_descriptor,
+        MAX_DESCRIPTOR_ENVELOPE_BYTES,
+    )
+    .map_err(|error| DaemonError::Configuration(error.to_string()))?;
+    service
+        .install_persisted_descriptor(persisted_descriptor, now)
+        .map_err(|error| DaemonError::Configuration(error.to_string()))?;
+
     let tx = spawn_control_actor(repo, service, entropy);
     let now_fn: NowFn = Arc::new(unix_now);
     let handler = control_handler(tx, now_fn);
 
-    let mut router = AlpnRouter::new(config.ingress.max_concurrent_control_sessions);
-    router.register(ALPN_ANCHOR_V1, Deadlines::control(), handler);
+    let max_sessions = config.ingress.max_concurrent_control_sessions;
+    let mut router = AlpnRouter::new(max_sessions);
+    router.register_with_max_frame(
+        ALPN_ANCHOR_V1,
+        Deadlines::control(),
+        MAX_CONTROL_FRAME_BYTES,
+        handler,
+    );
     // DEFERRED(WU-019 increment 2): register the `riot/sync/2` DATA-path handler
     // (ALPN_SYNC_V2) on this same router. The router is intentionally left
     // extensible for it.
 
+    let router = Arc::new(router);
+    // Bound incomplete handshakes as well as routed sessions. An accepted
+    // connection holds one permit from before its server-side handshake until
+    // dispatch ends; excess attempts are refused before allocating a task.
+    let ingress_permits = Arc::new(Semaphore::new(max_sessions));
+    let mut sessions = JoinSet::new();
     tokio::pin!(shutdown);
     loop {
         tokio::select! {
-            _ = &mut shutdown => break,
-            result = accept_with_router(&endpoint, &router) => {
+        _ = &mut shutdown => break,
+        Some(joined) = sessions.join_next(), if !sessions.is_empty() => {
+            if let Err(error) = joined {
+                eprintln!("anchor: control session task ended: {error}");
+            }
+        }
+        incoming = endpoint.accept() => {
+            let Some(incoming) = incoming else {
+                return Err(DaemonError::Transport(TransportError::StreamClosed));
+            };
+            let Ok(permit) = Arc::clone(&ingress_permits).try_acquire_owned() else {
+                incoming.refuse();
+                continue;
+            };
+            let router = Arc::clone(&router);
+            sessions.spawn(async move {
+                let result = match incoming.await {
+                    Ok(connection) => router.dispatch(IrohConnection::new(connection)).await,
+                    Err(error) => Err(TransportError::Io(std::io::Error::other(
+                        error.to_string(),
+                    ))),
+                };
                 if let Err(error) = result {
                     // A single connection failing must never kill the accept loop.
                     eprintln!("anchor: control connection ended: {error}");
                 }
+                drop(permit);
+            });
             }
         }
     }
 
     endpoint.close().await;
+    sessions.abort_all();
+    while sessions.join_next().await.is_some() {}
     Ok(())
 }
 

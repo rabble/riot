@@ -149,6 +149,7 @@ pub struct BoundedStream {
     send: BoxWrite,
     recv: BoxRead,
     deadlines: Deadlines,
+    max_frame_bytes: usize,
     /// True once any complete frame has been read (distinguishes the very first
     /// frame's `first_frame` budget from later frames' `idle` budget).
     seen_first_frame: bool,
@@ -160,11 +161,12 @@ pub struct BoundedStream {
 }
 
 impl BoundedStream {
-    fn new(send: BoxWrite, recv: BoxRead, deadlines: Deadlines) -> Self {
+    fn new(send: BoxWrite, recv: BoxRead, deadlines: Deadlines, max_frame_bytes: usize) -> Self {
         Self {
             send,
             recv,
             deadlines,
+            max_frame_bytes,
             seen_first_frame: false,
             frame_in_progress: false,
             frame_deadline: None,
@@ -186,7 +188,7 @@ impl BoundedStream {
         let mut len_bytes = [0u8; 4];
         self.fill(&mut len_bytes).await?;
         let len = u32::from_be_bytes(len_bytes) as usize;
-        if len > MAX_SYNC_FRAME_BYTES {
+        if len > self.max_frame_bytes {
             return Err(TransportError::FrameTooLarge);
         }
         let mut body = vec![0u8; len];
@@ -310,6 +312,7 @@ pub trait RouterConnection: Clone + Send + Sync + 'static {
 
 struct Registration {
     deadlines: Deadlines,
+    max_frame_bytes: usize,
     handler: Handler,
 }
 
@@ -334,10 +337,33 @@ impl AlpnRouter {
     }
 
     /// Register `handler` for `alpn` with its lifecycle `deadlines`. Replacing an
-    /// existing registration is allowed (last write wins).
+    /// existing registration is allowed (last write wins). The default frame
+    /// ceiling is the sync protocol's maximum; protocols with a smaller
+    /// canonical ceiling must use [`Self::register_with_max_frame`].
     pub fn register(&mut self, alpn: &[u8], deadlines: Deadlines, handler: Handler) {
-        self.handlers
-            .insert(alpn.to_vec(), Registration { deadlines, handler });
+        self.register_with_max_frame(alpn, deadlines, MAX_SYNC_FRAME_BYTES, handler);
+    }
+
+    /// Register a handler with a protocol-specific pre-allocation frame ceiling.
+    ///
+    /// The bound is checked immediately after the four-byte length prefix and
+    /// before allocating the body, so a smaller control protocol cannot inherit
+    /// the much larger sync allocation ceiling.
+    pub fn register_with_max_frame(
+        &mut self,
+        alpn: &[u8],
+        deadlines: Deadlines,
+        max_frame_bytes: usize,
+        handler: Handler,
+    ) {
+        self.handlers.insert(
+            alpn.to_vec(),
+            Registration {
+                deadlines,
+                max_frame_bytes,
+                handler,
+            },
+        );
     }
 
     /// Every ALPN this router routes, for `Endpoint::builder(..).alpns(..)`.
@@ -412,7 +438,7 @@ async fn run_session<C: RouterConnection>(
         },
     ));
 
-    let stream = BoundedStream::new(send, recv, reg.deadlines);
+    let stream = BoundedStream::new(send, recv, reg.deadlines, reg.max_frame_bytes);
     let handler_fut = (reg.handler)(stream, exporter);
 
     // The absolute lifetime bounds the whole session; the extra-stream watcher

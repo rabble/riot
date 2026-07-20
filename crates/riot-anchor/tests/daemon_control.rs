@@ -461,3 +461,55 @@ async fn ticket_with_wrong_min_sync_version_is_refused() {
         "min_sync_version != 2 must be refused unsupported_version",
     );
 }
+
+#[tokio::test]
+async fn lower_ticket_epoch_is_refused_after_a_higher_epoch_was_admitted() {
+    let router = built_router();
+    let (halves, mut peer_w, mut peer_r) = wire();
+    let conn = FakeConn::new(Some(ALPN_ANCHOR_V1), Some(halves));
+    let dispatch = tokio::spawn(async move { router.dispatch(conn).await });
+    let root = sk(9);
+
+    let higher = signed_ticket(&root, |core| {
+        core.transport_epoch = 5;
+    });
+    write_frame(
+        &mut peer_w,
+        &prepare_frame(d16(0x51), prepare_body_with_ticket(60, higher)),
+    )
+    .await;
+    let admitted = read_frame(&mut peer_r)
+        .await
+        .expect("higher-epoch response");
+    assert!(
+        matches!(
+            decode_canonical::<ControlResponseV1>(&admitted, MAX_CONTROL_FRAME_BYTES)
+                .unwrap()
+                .outcome,
+            ControlOutcome::Success(ControlSuccess::PrepareHost(_))
+        ),
+        "higher epoch must establish the durable floor",
+    );
+
+    let lower = signed_ticket(&root, |core| {
+        core.transport_epoch = 4;
+    });
+    write_frame(
+        &mut peer_w,
+        &prepare_frame(d16(0x52), prepare_body_with_ticket(70, lower)),
+    )
+    .await;
+    let refused = read_frame(&mut peer_r).await.expect("lower-epoch response");
+    assert!(
+        matches!(
+            decode_canonical::<ControlResponseV1>(&refused, MAX_CONTROL_FRAME_BYTES)
+                .unwrap()
+                .outcome,
+            ControlOutcome::Refused(ControlRefusal::InvalidTicketAuthority)
+        ),
+        "a lower signed transport epoch must fail closed",
+    );
+
+    drop(peer_w);
+    assert!(dispatch.await.unwrap().is_ok());
+}

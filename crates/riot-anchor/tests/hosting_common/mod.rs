@@ -298,6 +298,7 @@ impl AdmissionPolicy for DummyPolicy {
         &self,
         _request: &PrepareHostV1,
         _observed_at: u64,
+        _highest_transport_epoch: Option<u32>,
     ) -> Result<PreparePlan, ControlRefusal> {
         Ok(PreparePlan {
             community_root: d32(0),

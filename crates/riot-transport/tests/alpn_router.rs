@@ -215,6 +215,30 @@ async fn routes_each_registered_alpn_to_its_handler() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn a_protocol_specific_frame_ceiling_rejects_before_body_allocation() {
+    let mut router = AlpnRouter::new(1);
+    router.register_with_max_frame(
+        ALPN_ANCHOR_V1,
+        tiny_deadlines(),
+        64 * 1024,
+        read_n_frames_handler(1),
+    );
+
+    let (halves, mut peer_w, _peer_r) = wire();
+    let conn = FakeConn::new(Some(ALPN_ANCHOR_V1), Some(halves));
+    // Send only a length prefix. A correct pre-allocation ceiling rejects it
+    // immediately; it must not wait for or allocate the declared body.
+    peer_w
+        .write_all(&((64 * 1024 + 1) as u32).to_be_bytes())
+        .await
+        .unwrap();
+    peer_w.flush().await.unwrap();
+
+    let out = router.dispatch(conn).await;
+    assert!(matches!(out, Err(TransportError::FrameTooLarge)), "{out:?}");
+}
+
+#[tokio::test(start_paused = true)]
 async fn unknown_alpn_closes_without_allocating_a_session() {
     let mut router = AlpnRouter::new(2);
     router.register(ALPN, tiny_deadlines(), read_n_frames_handler(1));

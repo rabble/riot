@@ -140,6 +140,7 @@ pub trait AdmissionPolicy {
         &self,
         request: &PrepareHostV1,
         observed_at: u64,
+        highest_transport_epoch: Option<u32>,
     ) -> Result<PreparePlan, ControlRefusal>;
 
     /// The capacity gate (`admission_busy` / `admission_over_quota`). Runs after
@@ -197,6 +198,42 @@ impl<P: AdmissionPolicy, S: OperatorSigner> AnchorControlService<P, S> {
     /// The token secret ring (for rotation between operations).
     pub fn token_ring_mut(&mut self) -> &mut TokenSecretRing {
         &mut self.token_ring
+    }
+
+    /// The operator-signed descriptor currently served by `Describe`.
+    #[must_use]
+    pub fn descriptor(&self) -> &DescriptorEnvelopeV1 {
+        &self.context.descriptor
+    }
+
+    /// Install the descriptor recovered from the repository after validating
+    /// that it is the same anchor/operator/endpoint identity and is currently
+    /// usable. Persisted canonical bytes win over freshly resolved metadata
+    /// until explicit descriptor rotation is implemented.
+    pub fn install_persisted_descriptor(
+        &mut self,
+        descriptor: DescriptorEnvelopeV1,
+        now: u64,
+    ) -> Result<(), CodecError> {
+        let body = &descriptor.body;
+        let proposed_endpoint = self.context.descriptor.body.current_iroh_endpoint_id;
+        if body.anchor_id != self.context.anchor_id
+            || body.current_operator_key_id != self.context.operator_key_id
+            || body.current_operator_verification_key.public_key != self.context.operator_public_key
+            || body.current_iroh_endpoint_id != proposed_endpoint
+            || body.recomputed_anchor_id() != body.anchor_id
+            || body.issued_at >= body.expires_at
+            || now < body.issued_at
+            || now >= body.expires_at
+            || descriptor.verify_current().is_err()
+        {
+            return Err(CodecError::NonCanonical);
+        }
+        let digest = descriptor.descriptor_digest()?;
+        self.context.descriptor_epoch = body.descriptor_epoch;
+        self.context.descriptor_digest = digest;
+        self.context.descriptor = descriptor;
+        Ok(())
     }
 
     /// Handle one canonical control frame. `entropy` yields fresh 256-bit
@@ -347,7 +384,12 @@ impl<P: AdmissionPolicy, S: OperatorSigner> AnchorControlService<P, S> {
 
         // ORDER STEP 5a: authority (version/transport/profile/source-rate/
         // headroom/authority). A refusal here is pre-claim → roll back, no row.
-        let plan = match self.policy.authorize_prepare_host(request, now) {
+        let ticket_root = request.root_signed_ticket_core.core.root_id;
+        let highest_transport_epoch = transaction.highest_ticket_transport_epoch(&ticket_root)?;
+        let plan = match self
+            .policy
+            .authorize_prepare_host(request, now, highest_transport_epoch)
+        {
             Ok(plan) => plan,
             Err(refusal) => {
                 drop(transaction);
@@ -445,6 +487,10 @@ impl<P: AdmissionPolicy, S: OperatorSigner> AnchorControlService<P, S> {
             None,
             now,
             retention_deadline,
+        )?;
+        transaction.advance_ticket_transport_epoch(
+            &ticket_root,
+            request.root_signed_ticket_core.core.transport_epoch,
         )?;
         transaction.commit()?;
 

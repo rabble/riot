@@ -89,6 +89,7 @@ impl AdmissionPolicy for PassPolicy {
         &self,
         _request: &PrepareHostV1,
         _observed_at: u64,
+        _highest_transport_epoch: Option<u32>,
     ) -> Result<PreparePlan, ControlRefusal> {
         Ok(self.plan)
     }
