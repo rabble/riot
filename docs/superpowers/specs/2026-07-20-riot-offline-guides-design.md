@@ -1,7 +1,7 @@
 # Riot Marketing and Offline Guides Design
 
 Date: 2026-07-20
-Status: Visual revision approved by the user; renewed design review pending
+Status: Design review round 2 pending
 
 ## Product decision
 
@@ -17,8 +17,10 @@ with no internet connection.
 
 The web routes are:
 
+- `/` — the new paired-story marketing homepage;
 - `/why-riot/`
 - `/guide/`
+- `/protocols/` — the existing deep protocol field guide.
 
 The app presents both documents through a **Help & Guides** surface available
 before a person joins a community and from the ordinary in-community
@@ -129,47 +131,72 @@ that explains the underlying idea:
 
 | Audience depth | Riot evidence | Willow concept |
 | --- | --- | --- |
-| Communities | **Spaces** | Drop Format's ad-hoc transport chain |
-| Partners | **Apps** and **Checklist** | independent namespaces |
-| Builders | **Compose & Sign** | paths, timestamps, and subspaces |
+| Communities | current iOS **Home** | Drop Format's ad-hoc transport chain |
+| Partners | current iOS **Tools** with **Checklist** | independent community namespaces |
+| Builders | current iOS **Post an update** | paths, timestamps, and subspaces |
 
 The Willow art is explanatory evidence about the protocol, not a screenshot of
 Riot behavior. The community caption says that Willow data can be transported
 through improvised channels, while Riot's current tested path is
 Bonjour/local-network exchange; it does not claim that Riot currently imports
-Drop Format files from USB, email, messaging apps, or every channel shown.
+Drop Format files from USB, email, messaging apps, or every channel shown. The
+caption visibly labels Drop Format **Proposal**.
 
-The partner pairing explains that separate communities and applications can
-occupy independently controlled spaces. It does not imply confidentiality or
-automatic end-to-end encryption. The builder pairing explains how multiple
-authors contribute to a shared data model without requiring readers to learn
-signatures in the public copy.
+The partner pairing explains that separate Riot communities map to independent
+Willow namespaces. Riot mini-apps do not each receive an independent namespace:
+their current isolation comes from app-specific paths such as
+`apps/<app_id>/...` inside the selected community plus app-scoped native bridge
+policy. The pairing does not imply per-app namespaces, confidentiality,
+cryptographic isolation, or automatic end-to-end encryption. The builder
+pairing explains how multiple authors contribute to a shared data model without
+requiring readers to learn signatures in the public copy.
 
 All pairings:
 
 - use the full, unaltered Willow illustration rather than cropping,
   recoloring, tracing, or AI-modifying it;
-- show a real Riot screen captured from a build whose revision is recorded;
+- show a real Riot screen produced from a deterministic synthetic profile and
+  captured from the exact recorded iOS prototype build;
+- visibly label the screenshot platform, app version, and prototype status;
 - include a concise visible caption and the original upstream alternative text,
   preserved in both the rendered image and manifest;
 - repeat every material fact in prose so the image is never the only source;
+- present boundary prose and caption before the image pair in document order;
+- render each image as its own `figure` and `figcaption`;
+- place transparent Willow art on an opaque, high-contrast paper panel in every
+  theme without changing the upstream image bytes;
+- stack the two figures at narrow widths rather than shrinking them into an
+  unreadable row;
 - remain legible on a 320 CSS-pixel viewport and at desktop width; and
 - remain available byte-for-byte in every offline application bundle.
 
-The official Willow illustrations are licensed under the same
-`MIT OR Apache-2.0` terms as Willow's code, as explicitly confirmed by Rabble.
-The bundle records that license evidence, the exact upstream source URL and
-content identifier, SHA-256, original dimensions, attribution
-`Willow / worm-blossom`, and the unmodified upstream bytes. Both license texts
-and a human-readable third-party notice ship with every copy.
+Rabble explicitly confirmed on 2026-07-11 and again on 2026-07-20 that the
+official Willow illustrations are available under the same
+`MIT OR Apache-2.0` terms as Willow's code. That confirmation is the project
+decision to use the artwork. Before asset bytes enter a distributable guide,
+the canonical `docs/assets/willow/LICENSE-EVIDENCE.md` must make the basis
+auditable: copyright holder or authorized licensor, their authority over the
+exact artwork, grant date, durable evidence, exact asset IDs and SHA-256
+digests, license expression, required copyright and attribution text, NOTICE
+obligations or an explicit statement that none apply, acquisition reviewer,
+and license reviewer. If those fields cannot be recorded, distribution stops
+before vendoring and the guide uses original Riot-authored diagrams until the
+record is complete.
 
 The exact initial Willow asset set is:
 
-| Local ID | Official content-addressed source |
-| --- | --- |
-| `drop-adhoc-transport-chain` | `https://willowprotocol.org/assets/dropformat/159b061aafbc3396441ae875b6588693f67f35ba962cf851266242e114480cf5.png` |
-| `data-model-namespaces` | `https://willowprotocol.org/assets/data_model/7a2e8b02247a06101594b16f3994cf851f5a54be08548430a1c7e1eb125c23e9.png` |
-| `data-model-subspaces` | `https://willowprotocol.org/assets/data_model/1aa5504899909482194d395cdcc0bfdb1cb51f9b09c7d834ca2f7fc538b4d751.png` |
+| Local ID | Dimensions | Protocol status | Official content-addressed source |
+| --- | ---: | --- | --- |
+| `drop-adhoc-transport-chain` | 898 × 1353 | Drop Format: Proposal | `https://willowprotocol.org/assets/dropformat/02718468ec241a3adc2175ddb3ff04d93e1d1f59deb0b2c840da5fd01fa80246.png` |
+| `data-model-namespaces` | 1513 × 1134 | Data Model: Final | `https://willowprotocol.org/assets/data_model/7a2e8b02247a06101594b16f3994cf851f5a54be08548430a1c7e1eb125c23e9.png` |
+| `data-model-subspaces` | 1499 × 1363 | Data Model: Final | `https://willowprotocol.org/assets/data_model/1aa5504899909482194d395cdcc0bfdb1cb51f9b09c7d834ca2f7fc538b4d751.png` |
+
+For each asset, provenance records the official specification page, its
+protocol maturity, deployed content-addressed URL, byte digest, dimensions,
+verbatim alt text, the Willow website repository commit and source path where
+available, and any generated-output lineage. The deployed content-addressed
+bytes are the release artifact; the design does not falsely claim that a raw
+repository source image must be byte-identical after Willow's site build.
 
 ### Hero: "Community infrastructure that travels with people"
 
@@ -546,14 +573,56 @@ Each task uses:
 - one concise recovery path; and
 - a platform label when behavior differs.
 
-Screenshots are required supplements for the Spaces, Apps, Compose, and
-Checklist tasks where those surfaces exist in the shipped build. No instruction
-depends on recognizing an image, and screenshots must never show a feature
-state unavailable in the corresponding shipped build. Each capture records the
-source commit, app version, platform, device or simulator, viewport, capture
-date, and reviewer. Existing marketing screenshots may be reused only after
-that metadata and current-build correspondence are verified; stale captures
-are replaced.
+Screenshots are required supplements for four orientation surfaces per
+platform. The exact initial coverage matrix is:
+
+| Platform | Required current surfaces |
+| --- | --- |
+| iOS | **Home**, **Tools** with **Checklist**, **Post an update**, **Nearby** |
+| macOS | **Home**, **Tools** with **Checklist**, **Post an update**, **Nearby** |
+| Android | **Spaces**, **App directory** with **Checklist**, **Compose & sign**, **Connection** |
+
+The guide groups images inside the matching platform section. It never places
+an iOS or macOS screenshot beside Android-only labels, or the reverse. When a
+surface is unavailable in a shipped platform build, that platform's guide
+section states the absence and never substitutes another platform, but the
+initial twelve-capture release contract remains unmet and the change must
+return through design review.
+
+No instruction depends on recognizing an image, and screenshots must never show
+a feature state unavailable in the corresponding shipped build. Each canonical
+capture record contains:
+
+- the full 40-character source commit, which must exist and be an ancestor of
+  the release commit;
+- app semantic version and build number;
+- platform, OS version, physical or simulator/emulator model, pixel dimensions,
+  and scale;
+- deterministic capture command and fixture ID;
+- UTC capture time, capture reviewer, and privacy reviewer;
+- the exact relevant UI source-path set;
+- original-capture SHA-256;
+- bundled-derivative SHA-256 and deterministic derivation tool/version; and
+- a content-safety decision.
+
+Release validation fails if any relevant UI source path changed after the
+capture commit, the capture commit is not an ancestor, metadata is incomplete,
+or the guide's named labels differ from the current build. Failure requires a
+fresh capture and review.
+
+Every capture uses an isolated deterministic demo profile. It contains no real
+participant or community data, device or host label, location, address,
+notification, ticket, secret, reusable QR or join reference, account, or
+network identifier. A human privacy review checks the visible pixels.
+Riot-owned screenshots are deterministically re-encoded to remove EXIF, GPS,
+text/comment, timestamp, and other non-pixel metadata before bundling. The four
+existing generic marketing screenshots predate the current Apple navigation
+and are reference material only; they are not eligible for the new guides.
+
+Original captures, the typed capture manifest, capture logs, and privacy-review
+decisions are retained under `docs/evidence/guides/screenshots/`. Only the
+deterministic display derivatives enter `guides/assets/riot/` and the
+applications.
 
 ### Offline behavior
 
@@ -591,10 +660,21 @@ guides/
   assets/
     guide.css
     riot/
-      spaces.png
-      apps.png
-      compose.png
-      checklist.png
+      ios/
+        home.png
+        tools-checklist.png
+        post-update.png
+        nearby.png
+      macos/
+        home.png
+        tools-checklist.png
+        post-update.png
+        nearby.png
+      android/
+        spaces.png
+        app-directory-checklist.png
+        compose-sign.png
+        connection.png
     willow/
       drop-adhoc-transport-chain.png
       data-model-namespaces.png
@@ -609,6 +689,19 @@ stacks rather than duplicating the marketing homepage's large inline font
 payload. The visual language still reuses Riot's paper, ink, pink, blue, hard
 rules, and stamped labels.
 
+`docs/assets/willow/` is the sole provenance and license authority for official
+Willow art, following the approved Willow Visual Documentation System design.
+The guide bundle imports a validated three-asset subset and the canonical
+license files from that catalog without transformation. It does not create a
+second acquisition manifest. If the shared catalog has not yet been
+implemented, it is an explicit prerequisite work unit for this feature.
+
+The guide manifest references each Willow asset by the canonical catalog ID and
+catalog digest, then records only its local release path and bundle digest.
+Validation requires equality with the shared catalog for source URL, SHA-256,
+dimensions, verbatim alt text, attribution, license evidence, protocol ID,
+protocol maturity, and bytes. A field or byte mismatch fails the guide build.
+
 `manifest.json` contains:
 
 - schema version;
@@ -619,11 +712,9 @@ rules, and stamped labels.
 - checked dates;
 - an exact per-file allowlist containing a normalized relative path, SHA-256
   digest, and MIME type for both HTML entry points and every local asset;
-- capture metadata for each Riot screenshot;
-- for each Willow image, the exact upstream content-addressed URL, upstream
-  content identifier, original dimensions, license expression
-  `MIT OR Apache-2.0`, attribution `Willow / worm-blossom`, and a flag requiring
-  byte-for-byte upstream identity;
+- the complete typed capture record for each Riot screenshot;
+- the shared Willow catalog digest and, for each imported Willow image, its
+  canonical catalog ID, local path, and bundle digest;
 - an exact per-document allowlist of external HTTP(S) destinations; and
 - minimum reader schema version.
 
@@ -638,12 +729,14 @@ specified canonicalization pass.
 A checked-in Node script copies the canonical bundle without transformation to:
 
 ```text
+marketing/guides-manifest.json
 marketing/why-riot/
 marketing/guide/
 marketing/assets/guide.css
 marketing/assets/riot/
 marketing/assets/willow/
 marketing/notices/
+marketing/public/guides-manifest.json
 marketing/public/why-riot/
 marketing/public/guide/
 marketing/public/assets/guide.css
@@ -656,7 +749,9 @@ apps/android/app/src/main/assets/guides/
 
 The web copies adjust no content bytes. The canonical pages therefore use
 relative paths that work in all destinations. The deployment layout preserves
-the relative guide and asset paths.
+the relative guide and asset paths. Both web manifest destinations receive the
+canonical `guides/manifest.json` byte-for-byte and are included in sync-check,
+deployed-artifact, response-header, and mirror-drift verification.
 
 Apple uses the single copied bundle under
 `apps/ios/Riot/Resources/Guides/`. Both `apps/ios/Riot.xcodeproj` and
@@ -669,6 +764,26 @@ changed, additional, or stale target files. Hand-edited distribution copies are
 rejected. Generation stages and validates a complete target bundle before an
 atomic directory replacement, so interruption cannot leave packaging inputs
 partially updated.
+
+### Image performance budget
+
+Every bundled image is at most 1 MiB compressed and at most 1600 pixels on
+either axis. An exact upstream Willow image may contain at most 2.1 megapixels;
+a generated Riot display derivative may contain at most 1.2 megapixels. The
+three Willow images already fit those bounds and remain unmodified.
+Higher-resolution Riot captures are retained as review evidence outside the
+guide bundle, while deterministic display derivatives fit the bound and retain
+both original and derivative hashes in their capture record.
+
+Each HTML document declares intrinsic image width and height. Images below the
+first visible figure use native `loading="lazy"` and `decoding="async"`. The
+eager image set is at most 3 megapixels; the total declared images referenced
+by either guide are at most 15 megapixels and 6 MiB compressed. Bundle
+validation rejects a per-file, eager-set, per-document, or complete-bundle
+budget violation. Release rehearsal records cold offline open time on the
+oldest supported device class; each guide must show its title and first
+paragraph within one second and image decoding must add no more than 64 MiB to
+the documentation reader's measured resident memory.
 
 ## Native app integration
 
@@ -687,6 +802,15 @@ The entry points use the same labels on all platforms:
 - **Why Riot**
 - **Using Riot**
 
+Both guide footers contain **Third-party notices**. The Help & Guides surface
+also exposes **Third-party notices** as a subordinate legal-and-credits row, not
+as a third first-class guide card. The notices page displays the local
+attribution and license summary, renders the complete text of both bundled
+licenses, and identifies the exact Willow asset IDs. Its license sections are
+generated from the canonical license files into semantic `pre` blocks; tests
+decode the HTML text and require byte equality with those files so the visible
+notice cannot drift.
+
 Opening a guide preserves the person's current community and composer draft.
 Back or Close returns to the exact prior surface.
 
@@ -700,6 +824,7 @@ behavior. The state contract is:
 | Composer draft | Preserved byte-for-byte |
 | Guide and section | Preserved across system-browser handoff and foregrounding |
 | Scroll position | Preserved per guide during cross-guide navigation |
+| Notices return | Returns to the originating guide and exact section/scroll position, or to Help & Guides when opened there |
 | App process restoration | Reopens safely to the prior Riot surface or the same bundled guide; never loses a draft |
 
 An invalid or unsupported local guide path shows: **This guide page isn't
@@ -724,8 +849,8 @@ The reader:
 - resolves only an exact manifest-declared path whose bytes, SHA-256 digest, and
   MIME type match;
 - applies a block-all network content rule before the document loads;
-- allows cross-guide navigation only through explicit relative `index.html`
-  paths declared in the manifest;
+- allows guide and notices navigation only through explicit relative
+  `index.html` paths declared in the manifest;
 - sends an external destination to the system browser only for a main-frame
   `.linkActivated` action with a user gesture and an exact allowlisted HTTP(S)
   URL; and
@@ -754,8 +879,8 @@ It:
   media capture, multiple windows, and network-dependent Safe Browsing calls;
 - resolves only exact manifest-declared local paths whose digest and MIME type
   match, treating that one constrained HTTPS origin as local;
-- permits cross-guide navigation only through explicit relative `index.html`
-  paths;
+- permits guide and notices navigation only through explicit relative
+  `index.html` paths declared in the manifest;
 - sends an allowlisted external HTTP(S) destination to the system browser only
   when `isForMainFrame` and `hasGesture` prove explicit link activation;
 - rejects redirects, meta refreshes, subframes, downloads, intents, custom
@@ -767,24 +892,94 @@ The packaged APK is inspected to prove both guide documents, the notices page,
 the manifest, the stylesheet, every declared image, and both Willow license
 texts are present.
 
-## Public web integration
+## New marketing site
 
-The marketing homepage gains:
+The existing dependency-free Workers Assets site is rebuilt around the same
+paired story rather than merely gaining two navigation links. The new `/`
+homepage is the concise public entry point; `/why-riot/` carries the complete
+argument, `/guide/` carries the practical manual, and `/protocols/` remains the
+deep comparison.
 
-- a primary **Why Riot** navigation link;
-- a prominent **Why Riot is different** callout;
-- a **Using Riot** link; and
-- footer links to both guides.
+The homepage order is:
 
-The existing `/protocols/` route remains the deep protocol comparison. Why Riot
-links to it from the builder section rather than reproducing its matrix.
+1. **Community infrastructure that travels with people** — outcome-led hero,
+   visible **Prototype** label, and calls to **Why Riot** and **Using Riot**.
+2. **For communities** — current iOS Home evidence paired with Willow's
+   proposal-status ad-hoc transport chain and the accurate Riot boundary.
+3. **For partners** — current iOS Tools/Checklist evidence paired with community
+   namespaces, including the app-path isolation clarification.
+4. **For builders** — current iOS Post an update evidence paired with the Data
+   Model subspaces figure and a link to `/protocols/`.
+5. **One update, different paths** — the site-native current-versus-planned
+   status diagram.
+6. **Privacy through control, not secrecy** — public plaintext, metadata,
+   gateway trust, non-recall, and optional/future encryption boundaries.
+7. **Working now / direction being built** — the same prototype status contract
+   as Why Riot.
+8. **Learn and use Riot** — links to both complete guides, Third-party notices,
+   source, and build status.
+
+The homepage uses the same generated Riot derivatives and the same validated
+Willow catalog subset as the guides; it does not create another image copy or
+provenance record. A download or install call to action appears only when a
+real, reviewed release URL and platform requirement are present. Until then,
+the page says **Follow the build** and does not imply that a public app release
+exists.
+
+The public site's visual system follows the Divine brand constraints:
+
+- Bricolage Grotesque for display copy and Inter for reading copy, served only
+  from checked-in, same-origin font files;
+- candid, plain language with collective optimism and a small punk edge, without
+  startup, platform, or "ecosystem" jargon;
+- Phosphor icons when an icon is needed, with a visible text label;
+- Divine off-white, dark green, and green as the foundation, with Riot pink and
+  blue used only as secondary accents, plus paper, hard rules, and stamped
+  labels; no gradients or colors outside the approved palette; and
+- paired evidence that alternates its visual weight without changing the
+  audience order or separating a claim from its boundary.
+
+The homepage and its deployment mirror are byte-identical checked-in artifacts
+at `marketing/index.html` and `marketing/public/index.html`. They reference the
+generated guide assets in place rather than the four stale files under
+`marketing/assets/screenshots/`. Those legacy screenshots may remain for
+history until a separately reviewed cleanup, but no new public route may load
+or link to them. Homepage presentation lives in the checked-in same-origin
+`marketing/assets/site.css` and its byte-identical public mirror; font files are
+separate same-origin assets rather than data URLs.
 
 Responsive navigation must keep both **Why Riot** and **Protocols** reachable
 on small screens. The current rule that keeps only `.protocol-nav` visible must
 be intentionally revised and covered by tests.
 
-Both long pages provide a visible skip link to the main article. Guide jump
-links, native `details` disclosures, and heading order work without JavaScript.
+The homepage and both long pages provide a visible-on-focus skip link to the
+main content. Guide jump links, native `details` disclosures, and heading order
+work without JavaScript. The entire new marketing site is static: it removes
+the current homepage reveal script and does not add JavaScript, analytics,
+remote fonts, remote images, or remote styles.
+
+The homepage response uses a site-specific CSP with
+`default-src 'none'; script-src 'none'; style-src 'self'; font-src 'self';
+img-src 'self'; connect-src 'none'; object-src 'none'; frame-src 'none';
+base-uri 'none'; form-action 'none'; frame-ancestors 'none'`. It also uses
+`Referrer-Policy: no-referrer` and `X-Content-Type-Options: nosniff`. The guide
+documents retain their stricter no-font policy below.
+
+The checked-in deployment remains `marketing/wrangler.toml` with
+`marketing/public` as the Workers Assets directory. Publication uses the
+repository's Wrangler flow. After deployment, verification fetches `/`,
+`/why-riot/`, `/guide/`, `/notices/`, `/protocols/`,
+`/guides-manifest.json`, and every declared same-origin image; it validates
+expected headings, CSP/referrer/`nosniff` headers, MIME types, byte hashes,
+redirect behavior, and the absence of remote runtime requests. Wrangler success
+alone is not publication evidence.
+
+The release record captures the Wrangler deployment identifier, production
+origin, UTC publication time, deployed commit, and response evidence. It also
+proves that `/` contains all eight ordered sections, the three audience
+boundaries, and the exact current/planned and privacy qualifications; that no
+legacy screenshot URL is requested; and that an install call to action is
+absent unless its release metadata passed review.
 
 ## Web and embedded-document security
 
@@ -796,9 +991,19 @@ All three canonical HTML documents require:
 - only static, manifest-declared PNG images from the constrained local guide
   origin; SVG, APNG, HTML polyglots, and images with undeclared or mismatched
   bytes or MIME types fail closed;
-- every PNG must be a regular, non-symlink file, decode successfully, contain
-  no animation or trailing polyglot content, be at most 5 MiB, at most 8192
-  pixels on either axis, and at most 40 megapixels;
+- every PNG must be a regular, non-symlink file with the exact PNG signature,
+  one valid `IHDR` as the first chunk, valid declared dimensions/bit depth/color
+  type, bounded row bytes and decoded size, valid chunk lengths and CRCs, at
+  most one `PLTE` and `tRNS`, one or more `IDAT` chunks, exactly one terminal
+  `IEND`, and zero trailing bytes;
+- the only accepted chunk types are `IHDR`, `PLTE`, `tRNS`, `IDAT`, and `IEND`;
+  unknown critical chunks, text/comment/time/location metadata, and the APNG
+  `acTL`, `fcTL`, or `fdAT` chunks are rejected;
+- every image must satisfy the compressed, pixel, eager-set, document, bundle,
+  and measured-memory budgets above;
+- PNG responses use `image/png` with `X-Content-Type-Options: nosniff`, may load
+  only as manifest-declared image subresources, and are rejected as local
+  top-level documents;
 - the exact starting CSP `default-src 'none'; script-src 'none'; style-src
   'self'; img-src 'self'; connect-src 'none'; object-src 'none'; frame-src
   'none'; base-uri 'none'; form-action 'none'`;
@@ -808,9 +1013,10 @@ All three canonical HTML documents require:
 - no dependency on service workers or cached network content.
 
 The deployed web response headers are verified in addition to the document
-meta policy and add `frame-ancestors 'none'`. Before a person deliberately
-follows an external link, the exact allowed request set is the selected
-top-level guide document plus manifest-declared same-origin guide assets such as
+meta policy and add `frame-ancestors 'none'` and
+`X-Content-Type-Options: nosniff`. Before a person deliberately follows an
+external link, the exact allowed request set is the selected top-level guide
+document plus manifest-declared same-origin guide assets such as
 `assets/guide.css` and the declared PNGs. Cross-origin, redirected, remote,
 analytic, scripted, and undeclared requests are forbidden.
 
@@ -832,12 +1038,13 @@ The explanation is grounded in Willow's primary materials:
 
 The three Willow illustrations are acquired from the official, content-addressed
 Data Model and Drop Format asset URLs. They retain their exact upstream bytes,
-are visibly credited to `Willow / worm-blossom`, and ship with the same
-`MIT OR Apache-2.0` terms as Willow's code. The local license-evidence record
-captures Rabble's confirmation and the exact three-asset scope. The official
-source repository and Cargo package license metadata are retained as
-provenance; the guide never treats a file hash alone as proof of publisher
-identity.
+are visibly credited with the exact copyright and attribution text required by
+the accepted license evidence, and ship with both license texts only after the
+canonical license gate passes. The official source repository, specification
+page, generated-output lineage, and Cargo package license metadata are retained
+as separate provenance facts; none is treated alone as artwork permission or
+publisher authentication. A file hash proves byte identity, not publisher
+identity or copyright permission.
 
 Primary sources:
 
@@ -881,11 +1088,42 @@ written, failing tests establish:
 16. semantic headings, skip links, accessible names, image alternatives,
     captions, dynamic text, keyboard focus, and reduced motion pass focused
     checks;
-17. every Willow PNG matches its upstream content-addressed byte sequence and
-    ships with attribution, license evidence, and both license texts;
-18. every Riot screenshot has complete capture metadata and matches a reviewed
-    current-build surface; and
-19. current/planned and privacy boundary copy remains present in every target.
+17. the Drop Format transport asset is exactly the `02718468...` 898-by-1353
+    ad-hoc chain, not the `159b061a...` emblem, and all three Willow PNGs match
+    the shared catalog's URL, bytes, SHA-256, dimensions, verbatim alt text,
+    protocol maturity, attribution, and catalog digest;
+18. incomplete artwork authority, scope, grant, copyright, attribution, NOTICE,
+    reviewer, or license evidence stops before any Willow bytes enter a
+    distributable bundle;
+19. PNG fixtures with bad signatures, lengths, CRCs, duplicate or misplaced
+    structural chunks, APNG chunks, unknown critical chunks, text/time/location
+    metadata, decompression excess, wrong MIME, wrong hashes, or trailing bytes
+    fail closed;
+20. every Riot screenshot has the complete typed capture record, passes
+    platform/surface coverage, ancestor and relevant-source-path freshness
+    checks, contains only synthetic fixture data, has no prohibited metadata,
+    and records an approved pixel-level privacy review;
+21. per-image, eager-set, per-document, complete-bundle, offline-open-time, and
+    measured-memory budgets pass;
+22. Willow figures remain comprehensible on opaque paper panels in light, dark,
+    forced-colors, and increased-contrast modes at 200% zoom;
+23. **Third-party notices** is reachable from both guide footers and Help &
+    Guides, contains both full license texts, and returns with origin, section,
+    scroll, keyboard focus, and assistive-technology focus preserved;
+24. manual VoiceOver, TalkBack, macOS keyboard/screen-reader, dark-mode,
+    forced-colors, increased-contrast, and 200%-zoom passes cover every paired
+    figure and notices path; and
+25. current/planned and privacy boundary copy remains present in every target;
+26. the new homepage contains all eight sections in order, keeps every paired
+    claim with its boundary, uses only the generated current screenshot set,
+    and never references the four legacy screenshot URLs;
+27. the source and deployment homepage are byte-identical, the complete public
+    route set is present, and mobile navigation keeps Why Riot and Protocols
+    reachable without script;
+28. site-wide static-resource tests reject JavaScript, remote runtime assets,
+    non-approved fonts or icons, and gradients on layout surfaces; and
+29. a download or install call to action fails unless its exact reviewed release
+    URL, platform requirements, and release metadata are present.
 
 The implementation plan must name the exact first failing test for each work
 unit before production code.
@@ -896,28 +1134,55 @@ Implementation is complete only when:
 
 1. the guide sync script passes in `--check` mode;
 2. source, marketing, deployment, Apple, and Android guide bytes match the
-   manifest;
+   manifest, including the byte-identical
+   `marketing/guides-manifest.json` and public mirror;
 3. existing marketing protocol-page contracts remain green;
-4. new guide structural/security contracts pass;
-5. `/why-riot/` contains the three approved audience depths;
-6. `/guide/` contains every approved task and platform/status boundary;
-7. the two-path visual distinguishes nearby exchange, internet seed sync, and
+4. the source and public homepage are byte-identical, and `/` contains the eight
+   approved sections in order using Divine typography, icon, surface, voice,
+   and no-script constraints;
+5. no new public route references the four legacy generic screenshots;
+6. new guide structural/security contracts pass;
+7. `/why-riot/` contains the three approved audience depths;
+8. `/guide/` contains every approved task and platform/status boundary;
+9. the two-path visual distinguishes nearby exchange, internet seed sync, and
    public web rendering;
-8. all three audience pairings contain the approved Riot and Willow visuals,
-   accurate boundary captions, and equivalent prose;
-9. public Newswire plaintext, gateway browser trust, pseudonym correlation,
+10. all three audience pairings contain the approved Riot and Willow visuals,
+   platform/build labels, opaque Willow panels, accurate boundary captions, and
+   equivalent prose;
+11. the three Willow assets and license files import from the canonical shared
+   catalog with no field or byte drift, and the complete license-evidence gate
+   passes;
+12. all twelve platform-qualified Riot screenshot derivatives satisfy the
+    capture, synthetic-data, privacy, freshness, metadata, and platform-label
+    contracts;
+13. public Newswire plaintext, gateway browser trust, pseudonym correlation,
    cooperative read control, and non-recall boundaries are explicit;
-10. current and planned capabilities are labeled where first mentioned;
-11. the web request set before deliberate external navigation is exactly the
+14. current and planned capabilities are labeled where first mentioned;
+15. the web request set before deliberate external navigation is exactly the
     top-level document plus manifest-declared same-origin assets;
-12. deployed CSP and referrer headers match the contract;
-13. phone and desktop screenshots show no clipping, overlap, or page-level
+16. deployed CSP, `nosniff`, MIME, and referrer headers match the contract;
+17. phone and desktop screenshots show no clipping, overlap, or page-level
     horizontal overflow at 320 CSS pixels and target viewports;
-14. iOS tests and an iOS build pass;
-15. macOS tests and a macOS build pass;
-16. Android JVM tests, relevant instrumented tests, lint, and an APK build pass;
-17. built `.app` and APK artifacts contain the exact guide bundle; and
-18. repository formatting, linting, tests, and coverage floors remain green.
+18. image size, pixel, lazy/eager, document, bundle, offline-open-time, and
+    measured-memory budgets pass;
+19. notices discovery, full local license text, and state/focus-preserving
+    return behavior pass on web, iOS, macOS, and Android;
+20. the deployed production origin serves the complete route set with expected
+    headings, hashes, redirect behavior, headers, and zero remote runtime
+    requests;
+21. the release record contains the deployment identifier, production origin,
+    UTC publication time, deployed commit, and response evidence;
+22. phone and desktop marketing-site checks prove the paired story, navigation,
+    typography, contrast, focus, zoom, reduced-motion, and no-gradient surface
+    contracts;
+23. a public install call to action is absent unless reviewed release metadata
+    exists;
+24. automated and required manual visual/accessibility checks pass;
+25. iOS tests and an iOS build pass;
+26. macOS tests and a macOS build pass;
+27. Android JVM tests, relevant instrumented tests, lint, and an APK build pass;
+28. built `.app` and APK artifacts contain the exact guide bundle; and
+29. repository formatting, linting, tests, and coverage floors remain green.
 
 ### No-network rehearsal
 
@@ -927,7 +1192,11 @@ network connectivity disabled:
 - open both guides before joining a community;
 - open both guides from the chooser and an active community;
 - navigate between every local section;
-- verify essential text, every visual, licenses, and troubleshooting content;
+- open Third-party notices from each origin and verify both full license texts;
+- verify essential text, every visual, opaque Willow panels, platform labels,
+  licenses, and troubleshooting content;
+- verify lazy images appear without a network request, blank state, or scroll
+  jump;
 - return without losing current state; and
 - confirm no blank, spinner, failed-resource, or network-dependent surface.
 
@@ -944,6 +1213,12 @@ After reading the relevant depth, at least five of six must correctly explain:
 - that the public Newswire is plaintext and pseudonymity is not anonymity;
 - that public copies cannot be guaranteed to disappear; and
 - that Riot is a prototype without verified physical two-iPhone Bluetooth.
+
+For every pairing, participants answer two separate questions: what the Willow
+illustration demonstrates about the protocol, and what the adjacent Riot
+screenshot proves about the recorded current build. All six must keep those
+answers separate. Any transfer of a Willow possibility into a claim about
+current Riot requires caption or layout revision and a repeated review.
 
 Both participants in every audience group must reject the high-risk false
 claims below; the overall threshold cannot conceal a failed audience section.
@@ -989,12 +1264,17 @@ inspection, no-network rehearsal, and audience-comprehension evidence.
 Expected scope includes:
 
 - `guides/**`
+- the canonical shared `docs/assets/willow/**` catalog prerequisite defined by
+  the approved Willow Visual Documentation System
+- `docs/evidence/guides/screenshots/**`
 - `marketing/index.html`
 - `marketing/README.md`
 - marketing deployment/header configuration, including a generated `_headers`
   file if that is the supported Workers Assets mechanism
 - generated `marketing/why-riot/**`, `marketing/guide/**`, and public mirrors
 - generated marketing image, notices, and license mirrors
+- checked-in same-origin Bricolage Grotesque, Inter, and any Phosphor icon assets
+  used by the marketing site, plus their public mirrors and license notices
 - `scripts/guides/**`
 - focused marketing contract scripts
 - shared Apple guide reader, navigation, tests, and both Xcode project files
