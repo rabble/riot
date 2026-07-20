@@ -1,7 +1,7 @@
 # Riot Marketing and Offline Guides Design
 
 Date: 2026-07-20
-Status: Approved in conversation; design-review revision 1
+Status: Approved by the design review gate
 
 ## Product decision
 
