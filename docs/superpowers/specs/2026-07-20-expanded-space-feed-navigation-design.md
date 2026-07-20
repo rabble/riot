@@ -1,7 +1,7 @@
 # Expanded-Space, Feed-First Navigation Design
 
-**Date:** 2026-07-20  
-**Status:** User-approved design; pending metaswarm design-review gate  
+**Date:** 2026-07-20
+**Status:** User-approved design; design-review gate revision 1
 **Scope:** Shared SwiftUI iPhone and macOS shell. No Rust, FFI, database-format, Android, or network-protocol changes.
 
 ## 1. Problem
@@ -41,12 +41,12 @@ that document's separate detail navigation.
    destinations visibly nested under the active community, so that their scope
    is unambiguous, when they leave the Feed.
 4. **An organizer or editor** wants management actions to appear in the same
-   Content library that everyone can browse, so that authority adds capability
-   without creating a separate admin product, when core-derived authority
-   permits the action.
-5. **A person exchanging data nearby** wants healthy exchange to happen without
-   becoming the content focus, while still reviewing new peers and imports when
-   consent is required.
+   Content library available to every openable author-bearing community
+   context, so that authority adds capability without creating a separate admin
+   product, when core-derived authority permits the action.
+5. **A person exchanging data nearby** wants healthy exchange to stay ambient,
+   so that community content remains the focus while new peers and imports still
+   receive explicit review, when another Riot device is in range.
 6. **A person whose space cannot open** wants its row to remain visible with a
    recovery path, so that local corruption or incomplete sync never turns into
    lost-looking data or a blank pane.
@@ -101,13 +101,26 @@ destination that the new space does not support.
 
 The sidebar groups existing core-derived relationships into:
 
-- **Your space** — personal home rows;
 - **Communities** — organizer, member, and public-reader rows; and
 - **Following** — author-less followed-site rows.
 
-A community exposes Feed, People, Content, and Apps. Personal spaces and
-followed sites expose only destinations supported by their real model. The
-shell must not fabricate People, Apps, posting, or management capabilities.
+An available, author-bearing community exposes Feed, People, Content, and Apps.
+A public-reader row remains visible but unavailable in this shell slice:
+current core selection requires a held author and exposes alerts only for the
+active namespace. Its row says that read-only opening is not available on this
+device yet; the shell does not pretend that it can browse.
+
+A followed site is a terminal status/refresh row in this slice. Selecting it
+opens locally held metadata, transport state, last refresh result, and its
+verified refresh action when available. It has no fabricated Feed, Content,
+People, or Apps child. A later lower-layer slice may make it a read surface
+after the signed manifest needed by `resolve_composite_site` is durably
+available through the Swift repository boundary.
+
+`CommunityRelationship.personal` exists in the generated contract, but
+production code creates no Personal registry record. The **Your space** section
+is therefore omitted when empty and is not an acceptance requirement for this
+slice. Creating and selecting a personal home is deferred lower-layer work.
 
 ## 4. Platform behavior
 
@@ -118,9 +131,17 @@ runs the existing community transition gate, selects that row, expands it, and
 opens Feed. Selecting one of the expanded children changes only the active
 community destination.
 
-Only one space is expanded at a time. Collapsed rows may show an unread or
-attention badge, but badges never change selection. The footer contains global
-actions such as Add or create a space and Your profile.
+Only one available author-bearing community is expanded at a time. Collapsed
+rows may show an unread or attention badge, but badges never change selection.
+The footer's **Add or create a space** menu has four explicit branches: Create
+community, Join with link or QR, Follow a site, and Find nearby. **Your
+profile** is a separate global action.
+
+Every row has one anatomy: disclosure affordance when it has children, primary
+name, secondary relationship/state text, optional unread/attention badge, and
+an inline Retry only when unavailable. Rows and child actions have at least a
+44-point target. Long names wrap to two lines before truncating; they never
+push the badge or recovery action out of reach.
 
 Community settings remain contextual to the selected community. They appear as
 a secondary toolbar/header action rather than a peer destination.
@@ -137,9 +158,13 @@ without forcing desktop chrome onto a compact device.
 
 ### 4.3 Keyboard and accessibility
 
-- Command-K focuses/selects the space list.
+- Command-K focuses the selected row in the space `List`; if nothing is
+  selected, it focuses the first actionable row.
 - Command-1 through Command-4 select Feed, People, Content, and Apps.
-- Arrow-key navigation follows the visible tree order.
+- Arrow-key navigation and disclosure behavior come from a semantic
+  `List(selection:)` with `DisclosureGroup` community rows, not the current
+  custom `VStack` of buttons. Custom row backgrounds may preserve Riot's visual
+  selection treatment without replacing native outline/focus semantics.
 - Expansion, selection, unread state, and availability use text, icon/shape,
   and accessibility state; color is never the only signal.
 - A row announces tier, name, relationship where relevant, availability, and
@@ -148,6 +173,8 @@ without forcing desktop chrome onto a compact device.
   expanded accessibility traits.
 - Dynamic Type and VoiceOver must not hide the child destinations or global
   profile action.
+- At accessibility Dynamic Type sizes, the existing iPhone tab bar keeps its
+  two-by-two grid behavior.
 
 ## 5. Destination contracts
 
@@ -189,12 +216,13 @@ by the current core. The first version contains:
 The design does not invent generic files, pages, or media records that the core
 does not model.
 
-Capabilities are additive and authority-derived:
+Capabilities are additive and authority-derived for an author-bearing active
+community:
 
-- public readers browse;
 - members with a current author may publish an update;
 - recognized editors receive existing editorial actions;
-- organizers receive existing community management actions; and
+- organizers may open Community settings from Content/header context; app
+  approval stays in Apps rather than being duplicated in Content; and
 - no caller-supplied Boolean or stale Swift cache grants authority.
 
 Unauthorized controls are omitted, not disabled as a teasing dead end. Every
@@ -232,10 +260,32 @@ Existing consent and fail-closed behavior remain mandatory:
 - switching communities prepares and tears down the old community scope before
   the new one becomes active.
 
-When human action is required, the shell may present a transient sheet,
-popover, notification, or compact warning. A blocked or failed exchange offers
-plain-language recovery from that affordance. It does not replace the Feed with
-a sync screen.
+The community shell owns a `NearbyPresentationState` adapter over
+`NearbyConnectionState`. When an available community becomes active it starts
+discovery automatically, matching the current `ConnectionStatusView.onAppear`
+behavior. It also installs `onSpaceJoined`, reannouncement, and teardown
+callbacks before discovery begins.
+
+State maps to presentation exactly:
+
+- `idle`, `looking`, `connecting`, `gettingLatest`, `caughtUp`,
+  `alreadyCurrent`, `differentSpace`, `nothingToShare`, and `outOfRange` remain
+  quiet status; `nothingToShare` while an active community exists reannounces
+  that community exactly as the current route does;
+- discovered phones make the footer status actionable (`N nearby`); opening it
+  shows the existing peer list and Stop/Start controls;
+- inbound `.confirm` presents one peer-confirmation prompt;
+- a proposed space join presents one join-confirmation prompt;
+- `.preview` presents the exact offered count with Add and Not now;
+- permission denial and `.failed` mark the footer with attention and open the
+  existing Settings/Retry recovery; and
+- stopped or dismissed work stays inert until the person restarts discovery.
+
+The adapter serializes attention from the controller's single state: only one
+sheet/popover is active, and a newer state replaces or dismisses an obsolete
+one. macOS uses a popover for inspection/status and a sheet or confirmation
+dialog for consent; iPhone uses sheets/confirmation dialogs. These
+presentations do not replace the Feed.
 
 Feed recovery actions that previously navigated to Nearby instead open the
 same contextual sync/recovery presentation.
@@ -246,12 +296,14 @@ same contextual sync/recovery presentation.
 
 Add a pure, host-testable sidebar projection that merges:
 
-- `RiotAppModel.communities` / core `CommunityRow` values; and
+- raw core `CommunityRow` values, preserving typed
+  `CommunityRelationship` rather than classifying display strings; and
 - `RiotAppModel.followedSites` / core `FollowedSiteRow` values.
 
-The projection produces tiered rows, row state, supported children, unread
-badge, selected/expanded state, and accessibility text. It does not infer
-relationships, authority, or transport policy.
+The projection receives unread counts as a separate input because registry rows
+do not carry them. It produces tiered rows, row state, supported children,
+unread badge, selected/expanded state, and accessibility text. It does not
+infer relationships, authority, or transport policy.
 
 ### 7.2 Navigation state
 
@@ -260,23 +312,69 @@ Content, and Apps. Keep route selection separate from the broad
 `RiotAppModel.objectWillChange` stream, preserving the existing performance
 contract.
 
-Space selection and local-destination selection are distinct:
+Use typed identities and separate navigation from repository state:
+
+```swift
+enum SidebarItemID {
+    case community(namespaceID: String)
+    case followedSite(root: String)
+}
+
+enum SpaceSelectionState {
+    case none
+    case activeCommunity(namespaceID: String, destination: RiotDestination)
+    case followedSite(root: String)
+    case attemptingCommunity(target: String, previous: String?)
+    case failedCommunity(target: String, previous: String?, code: String)
+}
+```
+
+`coreActiveCommunity`, sidebar selection, and a failed target are deliberately
+distinct. The macOS spaces shell sits above the keyed community detail so a
+failed target cannot replace the entire sidebar.
+
+Space selection and local-destination selection flow as follows:
 
 ```text
 core registry/following lists
   → RiotAppModel reload
   → pure sidebar projection
   → select space
+  → SpaceSelectionState.attemptingCommunity
   → CommunityTransitionGate.prepare
   → repository switch/open
-  → keyed CommunityShellView
-  → Feed default
+  → success: keyed CommunityShellView + Feed default
+  → failure: old core context remains active; target row shows Retry
   → select child destination without switching core context
 ```
+
+When a switch fails and a previous community is active, sidebar/detail
+selection returns to that active community while the failed target row retains
+an inline attention state and Retry. When no previous community exists, the
+sidebar remains and the detail pane shows target-scoped recovery. Launch-level
+recovery is reserved for the case where there is no usable active context.
+
+Selecting a followed-site row never calls `switchToCommunity`. It selects the
+terminal followed-site status/refresh detail. On iPhone that detail is pushed
+from the chooser and Back returns to the previously active community shell.
+
+Within one community, route views keep their current retained ZStack lifecycle.
+Switching communities rebuilds the keyed shell, resets the local destination
+to Feed, and does not promise to retain scroll position or navigation stacks;
+community-keyed drafts remain preserved.
 
 Accepted store changes refresh the active Feed, Content projection, known
 contributors, unread counts, and relevant row badges through the existing local
 data-changed signal.
+
+`reload()` refreshes both raw community rows and followed-site rows.
+`refreshFromStore()` does the same, so bootstrap, sync import, follow/refresh,
+and community changes cannot leave either sidebar section stale.
+
+Deep-link activation returns an explicit success/result. Riot resolves or
+presents a held record only after the repository's active namespace equals the
+link namespace; a failed target switch leaves the old context active and emits
+no verified/detail outcome.
 
 ### 7.3 View reuse
 
@@ -287,6 +385,47 @@ The change recomposes existing views:
 - Apps reuses `DirectoryView` and `AppRuntimeView`; and
 - Content adapts existing locally held newswire/alert projections into an
   archive-oriented list with current authority-gated actions.
+
+`CommunityContentModel` is a host-testable projection with:
+
+```swift
+struct CommunityContentCapabilities {
+    let canPost: Bool
+    let canEditorialAct: Bool
+    let canOpenCommunitySettings: Bool
+}
+
+struct CommunityContentAlertRow {
+    let id: String
+    let headline: String
+    let summary: String
+    let createdAt: Date
+    let expiresAt: Date
+    let isActive: Bool
+}
+
+enum CommunityContentState {
+    case loading
+    case loaded(updates: [NewswirePostRow],
+                alerts: [CommunityContentAlertRow],
+                capabilities: CommunityContentCapabilities)
+    case failed(code: String)
+}
+```
+
+The default Content view is one scroll surface with **Updates** first and
+**Alerts** second. Updates are de-duplicated by full entry ID and ordered by
+signed creation time descending across Front page, Open wire, and Earlier.
+Alerts show active first, then expired, each newest first. Each section has its
+own empty copy; if both are empty the screen shows one library-level empty
+state. Record detail opens from the row. Editorial/treatment history and
+authorized editorial actions live in update detail, not as a third top-level
+collection.
+
+Content is built only from current treatment-aware core projections. It never
+reconstructs raw payloads: hidden records remain interstitials, tombstoned
+records expose no payload, correction plaintext remains redacted where the
+projection redacts it, and future-quarantined entries never enter the archive.
 
 The current modal `CommunityChooserView` remains useful on iPhone and as a
 fallback/add-space flow. It is no longer macOS's primary way to switch among
@@ -303,8 +442,12 @@ migration, FFI field, secret handling, or internet fallback.
 - **No spaces:** show the existing create/join/demo launch path. The sidebar
   never fabricates a selected row.
 - **Unavailable or quarantined community:** keep the row visible and marked.
-  Selecting its Retry action uses the existing in-place recovery path; an
-  unavailable row does not silently switch.
+  Selecting its Retry action uses target-row-scoped recovery. Rust's old active
+  context remains authoritative and the persistent sidebar never disappears.
+- **Public reader:** keep the row visible with an honest read-only-unavailable
+  state; do not offer Feed/Content until a core read-only context exists.
+- **Followed site:** open status/refresh detail only. A blocked transport retains
+  the row and explains why Refresh is absent.
 - **Pending first sync:** open an honest Feed empty state that explains content
   has not arrived. Do not show fake posts or an empty white pane.
 - **Followed-site transport blocked:** retain the row with a text-and-icon
@@ -320,7 +463,7 @@ migration, FFI field, secret handling, or internet fallback.
   failure does not alter Feed selection or imply data was accepted.
 - **Deep link:** switch to the held community through the transition gate,
   default to Feed, and open the named held record only after the existing local
-  verification path succeeds.
+  verification path and post-switch namespace equality both succeed.
 
 ## 9. Testing and verification
 
@@ -328,13 +471,42 @@ TDD is mandatory. Each implementation slice starts with a focused failing test,
 then the smallest production change, then refactoring with the focused suite
 green.
 
+The implementation plan must decompose the work into four landable RED/GREEN
+slices:
+
+1. **Typed sidebar/navigation projection** — pure raw-row grouping,
+   `SidebarItemID`, `SpaceSelectionState`, native outline semantics, and
+   target-row failure. RED: focused sidebar/selection model tests fail on
+   missing types and failure behavior. GREEN: pure models plus macOS root shell.
+2. **Feed/People/Content/Apps recomposition** — destination rename, Feed without
+   shortcuts, typed `CommunityContentModel`, and authority-adaptive detail.
+   RED: destination/content projection tests. GREEN: recomposed existing views.
+3. **Ambient sync and transition/deep-link safety** — shell-owned discovery and
+   exact presentation mapping, wrong-community admission, explicit switch
+   result, stale callback teardown. RED: state-mapping, failed deep-link,
+   A→B→C delayed-callback, and import-admission regressions. GREEN: relocate the
+   existing flows without weakening consent.
+4. **Adaptive/accessibility delivery** — iPhone tab alignment, semantic macOS
+   outline, Dynamic Type, keyboard commands, UI tests, and visual review. RED:
+   shell/UI assertions. GREEN: both platforms and target membership.
+
+Named seams include `CommunityRegistry` test stubs,
+`CommunityTransitionGate`, `NewswireProjecting`,
+`NewswireEditorAuthorityChecking`, `NewswirePostPublishing`,
+`NearbyTransportController`, and `NearbyImportAdmission`. New shared source and
+test files must be registered in both the iOS and macOS Xcode projects when
+their targets consume them.
+
 ### 9.1 Pure model tests
 
-- canonical tier order is Your space, Communities, Following;
+- visible tier order is Communities, then Following; the deferred empty Your
+  space tier is not rendered;
 - only the selected space expands;
 - selecting or switching a community defaults to Feed;
 - communities expose Feed, People, Content, and Apps in canonical order;
-- personal and followed rows expose only supported children;
+- followed rows expose no fabricated community children;
+- public-reader rows remain visible but cannot fabricate a selectable context;
+- followed rows select status detail without switching the active community;
 - unavailable rows remain present and carry actionable recovery state;
 - unread badges do not change selection;
 - accessibility text includes name, tier, state, and unread count;
@@ -347,13 +519,16 @@ green.
 - Feed contains alerts/newswire and no app-shortcut card;
 - Apps opens the existing directory/runtime under the selected community;
 - People is labeled and copied as Known contributors;
-- Content browses held updates/alerts and adapts actions for reader, member,
-  editor, and organizer authority;
+- Content browses held updates/alerts and adapts actions for member, editor, and
+  organizer authority where an author-bearing context exists;
+- hidden/tombstoned/future-quarantined content never regains raw payload;
 - community switching prepares before repository mutation, preserves drafts,
   closes stale tool/detail callbacks, and stops/rebinds the old sync scope;
 - healthy sync creates no primary route or Feed card;
 - consent/import/failure states still require explicit review and cannot commit
   to a different community;
+- a failed deep-link switch emits no verified/detail outcome;
+- rapid A→B→C switching makes delayed A/B callbacks inert;
 - unavailable, pending, and degraded states never render a blank pane;
 - Command-K and Command-1 through Command-4 select the expected targets.
 
@@ -367,32 +542,45 @@ green.
 
 ### 9.4 Commands
 
-Focused XCTest commands are defined by the implementation plan. The final
-Apple verification includes:
+Each plan slice names its exact `-only-testing` class before implementation.
+The final Apple verification includes the real iOS XCTest suite, simulator and
+device builds, macOS tests/build, repository green suite, and the coverage
+source of truth:
 
 ```sh
+xcodebuild test \
+  -project apps/ios/Riot.xcodeproj \
+  -scheme RiotKit \
+  -destination "platform=iOS Simulator,id=$(sh scripts/ios-check.sh simulator-id)" \
+  -derivedDataPath build/xcode-dd \
+  CODE_SIGNING_ALLOWED=NO
+sh scripts/ios-check.sh sim
+sh scripts/ios-check.sh ios
 sh scripts/ios-check.sh test
 sh scripts/ios-check.sh
 xcodebuild test \
   -project apps/macos/Riot.xcodeproj \
   -scheme RiotKit-macOS \
   -destination 'platform=macOS'
+sh scripts/green.sh
+sh scripts/web/coverage.sh
 ```
 
-Because this design changes no Rust or FFI code, workspace Rust verification is
-not a mechanical dependency of the shell slice. The repository's required
-pre-PR quality and coverage gates still run before delivery.
+`.coverage-thresholds.json` remains the single source of truth. No floor is
+lowered for this work.
 
 ## 10. Success and failure criteria
 
 The redesign succeeds when:
 
 - a macOS user can see and switch among all held spaces directly in the sidebar;
+- a seeded multi-space macOS usability fixture switches communities with one
+  direct sidebar action and no modal;
 - the active community alone expands and Feed is selected by default;
 - Feed is the dominant content surface and contains no app shortcut block;
 - People, Content, and Apps are visibly scoped to the active community;
-- Content adapts to current reader/member/editor/organizer authority without
-  inventing capabilities;
+- Content adapts to current member/editor/organizer authority without inventing
+  a public-reader context;
 - healthy synchronization has no primary navigation or content card;
 - all consent, wrong-community, and authority checks remain fail-closed; and
 - focused and full Apple verification plus visual review pass.
@@ -409,11 +597,16 @@ The redesign fails if:
 ## 11. Deliberate non-goals
 
 - Building a complete member/role directory.
+- Creating a production Personal registry record or personal-home detail.
+- Opening public-reader communities without an author-bearing core context.
+- Rendering followed-site content before its signed manifest has a durable
+  resolver path; this slice provides status and refresh only.
 - Adding generic files, pages, or media types to Content.
 - Changing Nostr/Willow records, Meadowcap authority, app approval, or signing.
 - Claiming operating-system background execution.
 - Adding internet relay fallback to nearby exchange.
 - Rebuilding the Android debug shell in this slice.
+- Sidebar search/filtering for very large space collections.
 - Redesigning the visual identity beyond the approved information hierarchy.
 
 ## 12. Alternatives considered
@@ -428,3 +621,17 @@ The redesign fails if:
    Rejected because it preserves the hierarchy inversion that prompted this
    work.
 
+## 13. Design-review revision record
+
+Round 1 approved Product and Security. Architecture, UX, and CTO requested
+revision. This version resolves their blockers by:
+
+- making Personal explicitly deferred and public-reader opening unavailable in
+  the no-core-change MVP;
+- defining terminal followed-site status/refresh selection;
+- separating core-active, sidebar-selected, attempting, and failed-target state;
+- moving every Nearby lifecycle and consent responsibility into a precise
+  shell-owned presentation contract;
+- defining Content ordering, states, capabilities, redaction, and detail flow;
+- requiring semantic `List`/`DisclosureGroup` accessibility behavior; and
+- adding an executable four-slice TDD ladder and complete pre-delivery commands.
