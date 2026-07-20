@@ -1,0 +1,6 @@
+# robots.txt for the Riot marketing site
+# The entire site is public; nothing is disallowed.
+User-agent: *
+Allow: /
+
+Sitemap: https://riot-protest-net-marketing.protestnet.workers.dev/sitemap.xml

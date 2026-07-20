@@ -1,0 +1,277 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Riot privacy: the marketing site runs no analytics, cookies, or accounts; the Riot app is local-first with no server round-trip for accepted data. Honest about what is and is not private today.">
+  <meta name="theme-color" content="#ff4f8b">
+  <title>Riot privacy — what is and is not private today</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%23f6f0e5'/%3E%3Ctext x='16' y='25' font-family='Impact,sans-serif' font-size='26' fill='%23ff4f8b' text-anchor='middle'%3ER%3C/text%3E%3C/svg%3E">
+  <style>
+    :root {
+      --paper: #f6f0e5;
+      --paper-2: #fffaf1;
+      --ink: #171614;
+      --muted: #605d57;
+      --pink: #ff4f8b;
+      --blue: #5b7cff;
+      --yellow: #ffdf3f;
+      --green: #a7e86d;
+      --line: #171614;
+      --shadow: 7px 7px 0 var(--ink);
+      --max: 1180px;
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      background: var(--paper);
+      font-family: "Arial", "Helvetica Neue", sans-serif;
+      font-size: 17px;
+      line-height: 1.58;
+    }
+    a { color: inherit; text-decoration-thickness: 2px; text-underline-offset: .18em; }
+    a:hover { text-decoration-color: var(--pink); }
+    a:focus-visible { outline: 4px solid var(--blue); outline-offset: 4px; }
+    h1, h2, h3, .brand, .poster {
+      font-family: Impact, Haettenschweiler, "Arial Narrow Bold", sans-serif;
+      font-weight: 900;
+      line-height: .98;
+      letter-spacing: .01em;
+      text-transform: uppercase;
+    }
+    h1 { max-width: 920px; margin: .25rem 0 1.25rem; font-size: clamp(3.2rem, 7.5vw, 6rem); }
+    h2 { margin: 0 0 1.2rem; font-size: clamp(2.2rem, 4.6vw, 3.6rem); }
+    h3 { margin: 0 0 .6rem; font-size: clamp(1.5rem, 2.4vw, 2rem); }
+    p { max-width: 74ch; }
+    .wrap { width: min(calc(100% - 40px), var(--max)); margin-inline: auto; }
+    .skip-link { position: absolute; top: -100px; left: 12px; z-index: 100; padding: 10px 14px; background: #fff; border: 2px solid; }
+    .skip-link:focus { top: 12px; }
+    .site-nav {
+      position: sticky;
+      top: 0;
+      z-index: 20;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 20px;
+      min-height: 66px;
+      padding: 10px max(20px, calc((100% - var(--max)) / 2));
+      border-bottom: 3px solid var(--ink);
+      background: var(--paper);
+    }
+    .brand { font-size: 1.8rem; text-decoration: none; }
+    .brand span { padding: 1px 7px; background: var(--pink); }
+    .nav-links { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 10px 20px; font: 700 .78rem/1.2 "Courier New", monospace; letter-spacing: .06em; text-transform: uppercase; }
+    .nav-links a { text-decoration: none; border-bottom: 2px solid transparent; }
+    .nav-links a:hover { border-color: var(--ink); }
+    .sitenav {
+      position: sticky; top: 0; z-index: 50;
+      background: var(--ink); color: var(--paper-2); border-bottom: 3px solid var(--ink);
+    }
+    .sitenav-bar { display: flex; align-items: center; justify-content: space-between; padding: 0 max(16px, calc((100% - var(--max)) / 2)); gap: 16px; }
+    .sitenav-brand { font-family: Impact, Haettenschweiler, "Arial Narrow Bold", sans-serif; font-size: 1.5rem; text-decoration: none; padding: 10px 0; white-space: nowrap; }
+    .sitenav-brand span { padding: 1px 7px; background: var(--pink); color: var(--paper-2); }
+    .sitenav-brand:hover { opacity: .8; }
+    .sitenav-links { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 0; font: 700 .72rem/1.2 "Courier New", monospace; letter-spacing: .06em; text-transform: uppercase; overflow-x: auto; }
+    .sitenav-links a { color: color-mix(in srgb, var(--paper-2) 80%, transparent); text-decoration: none; padding: 11px 14px; white-space: nowrap; display: inline-block; border-bottom: 3px solid transparent; }
+    .sitenav-links a:hover { color: var(--paper-2); border-bottom-color: var(--pink); }
+    .sitenav-links a[aria-current="page"] { color: var(--pink); border-bottom-color: var(--pink); }
+    @media (max-width: 760px) {
+      .sitenav-links { font-size: .66rem; }
+      .sitenav-links a { padding: 11px 9px; }
+    }
+    .section-toc { display: none; }
+    @media (min-width: 1480px) {
+      .section-toc {
+        display: flex; flex-direction: column; gap: 4px;
+        position: fixed; top: 70px; left: 20px; z-index: 30;
+        width: 148px; max-height: calc(100vh - 90px); overflow-y: auto;
+        padding: 14px 12px;
+        background: color-mix(in srgb, var(--paper) 92%, transparent);
+        border: 2px solid var(--ink); box-shadow: 5px 5px 0 var(--ink);
+        font: 700 .68rem/1.3 "Courier New", monospace; letter-spacing: .04em; text-transform: uppercase;
+      }
+      .section-toc .toc-label { margin: 0 0 8px; color: var(--pink); font-size: .62rem; letter-spacing: .1em; }
+      .section-toc a { color: var(--ink); text-decoration: none; padding: 5px 8px; border-left: 2px solid transparent; }
+      .section-toc a:hover { color: var(--pink); border-left-color: var(--pink); }
+    }
+    .hero { padding: clamp(60px, 9vw, 110px) 0 64px; border-bottom: 3px solid var(--ink); background: var(--pink); }
+    .kicker, .eyebrow { font: 700 .75rem/1.3 "Courier New", monospace; letter-spacing: .09em; text-transform: uppercase; }
+    .kicker { display: inline-block; margin: 0 0 1rem; padding: 7px 10px; border: 2px solid; background: var(--yellow); box-shadow: 4px 4px 0 var(--ink); }
+    .lede { max-width: 790px; margin: 0; font-size: clamp(1.12rem, 2vw, 1.4rem); font-weight: 700; }
+    section { padding: clamp(60px, 8vw, 100px) 0; border-bottom: 3px solid var(--ink); }
+    .dark { color: var(--paper-2); background: var(--ink); }
+    .yellow { background: var(--yellow); }
+    .green { background: var(--green); }
+    .blue { background: var(--blue); }
+    .section-intro { margin: 0 0 36px; color: var(--muted); font-size: 1.1rem; }
+    .dark .section-intro { color: #d9d4ca; }
+    .eyebrow { margin: 0 0 12px; }
+    .green .eyebrow, .yellow .eyebrow { color: var(--ink); }
+    .blue .eyebrow, .pink .eyebrow { color: var(--paper); }
+    .green .section-intro, .yellow .section-intro { color: color-mix(in srgb, var(--ink) 82%, transparent); }
+    .blue .section-intro, .pink .section-intro { color: color-mix(in srgb, var(--paper) 88%, transparent); }
+    .blue h2, .pink h2 { color: var(--paper); }
+    .blue a, .pink a { color: var(--paper); text-decoration: underline; }
+    .grid { display: grid; gap: 18px; }
+    .cards-2 { grid-template-columns: 1fr 1fr; }
+    .card { padding: 24px; border: 2px solid var(--ink); background: var(--paper-2); box-shadow: 5px 5px 0 var(--ink); }
+    .dark .card { background: #2a2825; color: var(--paper-2); }
+    .card p { margin: 0; }
+    .card p + p { margin-top: 12px; }
+    .card .label { display: block; margin-bottom: 10px; font: 700 .72rem/1.3 "Courier New", monospace; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+    .dark .card .label { color: #b8b3a8; }
+    .dark .card a { color: var(--pink); }
+    .checklist { list-style: none; padding: 0; margin: 0; }
+    .checklist li { position: relative; padding-left: 34px; margin-bottom: 12px; }
+    .checklist li::before { content: "✓"; position: absolute; left: 0; top: -2px; font-weight: 900; color: var(--pink); font-size: 1.2rem; }
+    .checklist.cross li::before { content: "✕"; color: var(--ink); }
+    .dark .checklist.cross li::before { color: var(--pink); }
+    .pull { padding: 26px 28px; border: 3px solid var(--ink); background: var(--yellow); box-shadow: var(--shadow); font-size: 1.1rem; font-weight: 700; }
+    .pull a { font-weight: 800; }
+    .source-note { margin-top: 24px; font-size: .92rem; color: var(--muted); }
+    .dark .source-note { color: #b8b3a8; }
+    footer { padding: 34px 20px; color: var(--paper-2); background: var(--ink); }
+    .footer-inner { width: min(100%, var(--max)); margin: auto; display: flex; flex-wrap: wrap; justify-content: space-between; gap: 16px; }
+    .footer-inner p { margin: 0; font: 700 .76rem/1.4 "Courier New", monospace; text-transform: uppercase; }
+    .footer-links a { text-decoration: none; }
+    .footer-links a:hover { text-decoration: underline; text-decoration-color: var(--pink); }
+    @media (max-width: 680px) {
+      body { font-size: 16px; }
+      .wrap { width: min(calc(100% - 28px), var(--max)); }
+      .site-nav { position: static; align-items: flex-start; padding: 10px 14px; }
+      .nav-links a:not(:last-child) { display: none; }
+      .hero { padding-top: 56px; }
+      h1 { font-size: clamp(2.5rem, 13vw, 4.2rem); }
+      .cards-2 { grid-template-columns: 1fr; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      html { scroll-behavior: auto; }
+    }
+  </style>
+</head>
+<body>
+  <a class="skip-link" href="#content">Skip to content</a>
+  <nav class="sitenav" aria-label="Site">
+    <div class="sitenav-bar">
+      <a href="/" class="sitenav-brand"><span>Riot</span></a>
+      <div class="sitenav-links">
+        <a href="/">Home</a>
+        <a href="/about/">About</a>
+        <a href="/privacy/" aria-current="page">Privacy</a>
+        <a href="/open-source/">Open source</a>
+        <a href="/community/">Community</a>
+        <a href="/protocols/">Protocol field guide</a>
+      </div>
+    </div>
+  </nav>
+  <aside class="section-toc" aria-label="On this page">
+    <p class="toc-label">On this page</p>
+    <a href="#site">This site</a>
+    <a href="#app">The app</a>
+    <a href="#boundaries">Boundaries</a>
+  </aside>
+
+  <main id="content">
+    <header class="hero">
+      <div class="wrap">
+        <p class="kicker">Privacy · what is and is not true today</p>
+        <h1>No overclaiming about privacy.</h1>
+        <p class="lede">Most privacy pages sell a feeling. This one states the current posture, separates the <b>marketing site</b> from the <b>Riot app</b>, and is explicit about what is not yet private. For the protocol-level comparison, see the <a href="/protocols/">protocol field guide</a>.</p>
+      </div>
+    </header>
+
+    <section class="green" id="site">
+      <div class="wrap">
+        <p class="eyebrow">riot.protest.net (this website)</p>
+        <h2>This site runs nothing behind your back.</h2>
+        <p class="section-intro">The Riot marketing site is a dependency-free static site deployed as Cloudflare Workers assets. It has no backend, no analytics, no cookies, no remote fonts, and no third-party runtime requests. You can verify this in your browser's network tab.</p>
+        <div class="grid cards-2">
+          <article class="card">
+            <span class="label">What runs in your browser</span>
+            <ul class="checklist">
+              <li>One static HTML file per page, with inline CSS.</li>
+              <li>Fonts embedded as base64 data on the home page; system fonts elsewhere.</li>
+              <li>One inline IntersectionObserver on the home page for scroll animation — no network calls.</li>
+              <li>No accounts, no login, no forms, no cookies set by this site.</li>
+            </ul>
+          </article>
+          <article class="card">
+            <span class="label">What this site does not do</span>
+            <ul class="checklist cross">
+              <li>No Google Analytics, Plausible, Segment, Mixpanel, or any tag manager.</li>
+              <li>No remote stylesheets, no remote scripts, no iframes.</li>
+              <li>No tracking pixels, no referrer harvesting, no fingerprinting.</li>
+              <li>No data passed to a third party. The only party that sees your request is Cloudflare's edge.</li>
+            </ul>
+          </article>
+        </div>
+        <p class="source-note">Cloudflare, as the Workers edge, can observe connection metadata (IP, time, requested path) as part of serving the request. That is the only third-party involvement; Riot does not add any of its own on top.</p>
+      </div>
+    </section>
+
+    <section class="dark" id="app">
+      <div class="wrap">
+        <p class="eyebrow">The Riot app (prototype, not shipped)</p>
+        <h2>Local-first. No server round-trip for accepted data.</h2>
+        <p class="section-intro">Riot is a community application runtime built on <a href="https://willowprotocol.org/" rel="noopener">Willow</a>. The design goal is that a community carries its own data and reconciles it between its own devices, with nothing accepted without a human looking at it first.</p>
+        <div class="grid cards-2">
+          <article class="card">
+            <span class="label">By design</span>
+            <ul class="checklist">
+              <li>No accounts: identity is local and signed, not issued by a server.</li>
+              <li>No server round-trip required to read or write data a device already holds.</li>
+              <li>Signed entries: authorship is verifiable without trusting any relay.</li>
+              <li>A community can keep using its tools locally when no server is reachable.</li>
+            </ul>
+          </article>
+          <article class="card">
+            <span class="label">What sync actually means</span>
+            <ul class="checklist">
+              <li>Sync is reconciliation between devices a community has chosen to connect — not an automatic upload to a central store.</li>
+              <li>What gets carried is defined by Willow's data model; see <a href="https://github.com/rabble/riot/blob/main/docs/architecture/willow-architecture.md" rel="noopener">willow-architecture.md</a> for the precise mapping.</li>
+              <li>The app itself runs no telemetry; there is no "phone home" path in the codebase.</li>
+            </ul>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section class="yellow" id="boundaries">
+      <div class="wrap">
+        <p class="eyebrow">What Riot does not provide yet</p>
+        <h2>Honest boundaries — do not rely on what is not shipped.</h2>
+        <p class="section-intro">Riot will not borrow privacy language from systems that have features Riot has not shipped. The boundaries below are the same ones stated in the <a href="/protocols/">protocol field guide</a>, restated here so they are easy to find.</p>
+        <div class="grid cards-2">
+          <article class="card">
+            <span class="label">Not confidential today</span>
+            <ul class="checklist cross">
+              <li>Current public spaces are not confidential. Treat anything in a public Riot space as publishable.</li>
+              <li>Private encrypted groups are not shipped. They are being reviewed under their own threat model before anything ships.</li>
+              <li>Anyone operating a relay can read what that relay stores. Local-first removes a mandatory home server; it does not encrypt the relay by default.</li>
+            </ul>
+          </article>
+          <article class="card">
+            <span class="label">Offline does not mean invisible</span>
+            <ul class="checklist cross">
+              <li>Local-first does not repeal radio range, device loss, or hostile peers. A seized or compromised device still holds whatever it holds.</li>
+              <li>Out-of-band identity verification (a QR code, a portable invite file) is still human work. Riot does not solve trust by itself.</li>
+              <li>Riot is not an audited, hardened tool. It is a prototype. Use established encrypted messengers for anything that must stay secret today.</li>
+            </ul>
+          </article>
+        </div>
+        <p class="pull">If a feature is not listed on this page as shipped, assume it is not. For how Riot compares to Briar, Matrix, Bitchat, and others on the privacy boundary specifically, see the <a href="/protocols/#profiles">protocol profiles</a>.</p>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <div class="footer-inner">
+      <p>Riot · a protest.net project · prototype</p>
+      <p class="footer-links"><a href="/">Home</a> · <a href="/about/">About</a> · <a href="/privacy/">Privacy</a> · <a href="/open-source/">Open source</a> · <a href="/community/">Community</a> · <a href="/protocols/">Protocol field guide</a></p>
+    </div>
+  </footer>
+</body>
+</html>

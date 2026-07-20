@@ -1,0 +1,288 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="About Riot: an offline-first app to keep publishing when the network goes down, built on Willow in the lineage of Indymedia, protest.net, and TXTMob.">
+  <meta name="theme-color" content="#ff4f8b">
+  <title>About Riot — keep publishing through the blackout</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%23f6f0e5'/%3E%3Ctext x='16' y='25' font-family='Impact,sans-serif' font-size='26' fill='%23ff4f8b' text-anchor='middle'%3ER%3C/text%3E%3C/svg%3E">
+  <style>
+    :root {
+      --paper: #f6f0e5;
+      --paper-2: #fffaf1;
+      --ink: #171614;
+      --muted: #605d57;
+      --pink: #ff4f8b;
+      --blue: #5b7cff;
+      --yellow: #ffdf3f;
+      --green: #a7e86d;
+      --line: #171614;
+      --shadow: 7px 7px 0 var(--ink);
+      --max: 1180px;
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      background: var(--paper);
+      font-family: "Arial", "Helvetica Neue", sans-serif;
+      font-size: 17px;
+      line-height: 1.58;
+    }
+    a { color: inherit; text-decoration-thickness: 2px; text-underline-offset: .18em; }
+    a:hover { text-decoration-color: var(--pink); }
+    a:focus-visible { outline: 4px solid var(--blue); outline-offset: 4px; }
+    h1, h2, h3, .brand, .poster {
+      font-family: Impact, Haettenschweiler, "Arial Narrow Bold", sans-serif;
+      font-weight: 900;
+      line-height: .98;
+      letter-spacing: .01em;
+      text-transform: uppercase;
+    }
+    h1 { max-width: 920px; margin: .25rem 0 1.25rem; font-size: clamp(3.4rem, 8vw, 6.5rem); }
+    h2 { margin: 0 0 1.2rem; font-size: clamp(2.3rem, 5vw, 4rem); }
+    h3 { margin: 0 0 .6rem; font-size: clamp(1.6rem, 2.6vw, 2.2rem); }
+    p { max-width: 74ch; }
+    .wrap { width: min(calc(100% - 40px), var(--max)); margin-inline: auto; }
+    .skip-link { position: absolute; top: -100px; left: 12px; z-index: 100; padding: 10px 14px; background: #fff; border: 2px solid; }
+    .skip-link:focus { top: 12px; }
+    .site-nav {
+      position: sticky;
+      top: 0;
+      z-index: 20;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 20px;
+      min-height: 66px;
+      padding: 10px max(20px, calc((100% - var(--max)) / 2));
+      border-bottom: 3px solid var(--ink);
+      background: var(--paper);
+    }
+    .brand { font-size: 1.8rem; text-decoration: none; }
+    .sitenav {
+      position: sticky; top: 0; z-index: 50;
+      background: var(--ink); color: var(--paper-2); border-bottom: 3px solid var(--ink);
+    }
+    .sitenav-bar { display: flex; align-items: center; justify-content: space-between; padding: 0 max(16px, calc((100% - var(--max)) / 2)); gap: 16px; }
+    .sitenav-brand { font-family: Impact, Haettenschweiler, "Arial Narrow Bold", sans-serif; font-size: 1.5rem; text-decoration: none; padding: 10px 0; white-space: nowrap; }
+    .sitenav-brand span { padding: 1px 7px; background: var(--pink); color: var(--paper-2); }
+    .sitenav-brand:hover { opacity: .8; }
+    .sitenav-links { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 0; font: 700 .72rem/1.2 "Courier New", monospace; letter-spacing: .06em; text-transform: uppercase; overflow-x: auto; }
+    .sitenav-links a { color: color-mix(in srgb, var(--paper-2) 80%, transparent); text-decoration: none; padding: 11px 14px; white-space: nowrap; display: inline-block; border-bottom: 3px solid transparent; }
+    .sitenav-links a:hover { color: var(--paper-2); border-bottom-color: var(--pink); }
+    .sitenav-links a[aria-current="page"] { color: var(--pink); border-bottom-color: var(--pink); }
+    @media (max-width: 760px) {
+      .sitenav-links { font-size: .66rem; }
+      .sitenav-links a { padding: 11px 9px; }
+    }
+    /* floating section TOC (desktop only) */
+    .section-toc { display: none; }
+    @media (min-width: 1480px) {
+      .section-toc {
+        display: flex; flex-direction: column; gap: 4px;
+        position: fixed; top: 70px; left: 20px; z-index: 30;
+        width: 148px; max-height: calc(100vh - 90px); overflow-y: auto;
+        padding: 14px 12px;
+        background: color-mix(in srgb, var(--paper) 92%, transparent);
+        border: 2px solid var(--ink); box-shadow: 5px 5px 0 var(--ink);
+        font: 700 .68rem/1.3 "Courier New", monospace; letter-spacing: .04em; text-transform: uppercase;
+      }
+      .section-toc .toc-label { margin: 0 0 8px; color: var(--pink); font-size: .62rem; letter-spacing: .1em; }
+      .section-toc a { color: var(--ink); text-decoration: none; padding: 5px 8px; border-left: 2px solid transparent; }
+      .section-toc a:hover { color: var(--pink); border-left-color: var(--pink); }
+    }
+    .hero { padding: clamp(60px, 9vw, 110px) 0 64px; border-bottom: 3px solid var(--ink); background: var(--pink); }
+    .kicker, .eyebrow { font: 700 .75rem/1.3 "Courier New", monospace; letter-spacing: .09em; text-transform: uppercase; }
+    .kicker { display: inline-block; margin: 0 0 1rem; padding: 7px 10px; border: 2px solid; background: var(--yellow); box-shadow: 4px 4px 0 var(--ink); }
+    .lede { max-width: 790px; margin: 0; font-size: clamp(1.12rem, 2vw, 1.4rem); font-weight: 700; }
+    section { padding: clamp(60px, 8vw, 100px) 0; border-bottom: 3px solid var(--ink); }
+    .dark { color: var(--paper-2); background: var(--ink); }
+    .yellow { background: var(--yellow); }
+    .green { background: var(--green); }
+    .blue { background: var(--blue); }
+    .section-intro { margin: 0 0 36px; color: var(--muted); font-size: 1.1rem; }
+    .dark .section-intro { color: #d9d4ca; }
+    .eyebrow { margin: 0 0 12px; }
+    /* Colored sections need explicit text colors — the default pink eyebrow and
+       muted intro are unreadable on these backgrounds.
+       Blue/pink are dark enough to need WHITE text; green/yellow stay dark (ink). */
+    .green .eyebrow, .yellow .eyebrow { color: var(--ink); }
+    .blue .eyebrow, .pink .eyebrow { color: var(--paper); }
+    .green .section-intro, .yellow .section-intro { color: color-mix(in srgb, var(--ink) 82%, transparent); }
+    .blue .section-intro, .pink .section-intro { color: color-mix(in srgb, var(--paper) 88%, transparent); }
+    .blue h2, .pink h2 { color: var(--paper); }
+    .blue a, .pink a { color: var(--paper); text-decoration: underline; }
+    .grid { display: grid; gap: 18px; }
+    .cards-3 { grid-template-columns: repeat(3, 1fr); }
+    .cards-2 { grid-template-columns: 1fr 1fr; }
+    .card { padding: 24px; border: 2px solid var(--ink); background: var(--paper-2); box-shadow: 5px 5px 0 var(--ink); }
+    .dark .card { background: #2a2825; color: var(--paper-2); border-color: var(--paper-2); }
+    .dark .card .label { color: #b8b3a8; }
+    .dark .card a { color: var(--pink); }
+    .card p { margin: 0; }
+    .card p + p { margin-top: 12px; }
+    .sources-line { margin-top: 16px; font: 700 .76rem/1.4 "Courier New", monospace; letter-spacing: .03em; text-transform: uppercase; }
+    .sources-line a { text-decoration: none; border-bottom: 2px solid currentColor; }
+    .pull { padding: 28px 30px; border: 3px solid var(--ink); background: var(--yellow); box-shadow: var(--shadow); font-size: 1.15rem; font-weight: 700; }
+    .pull a { font-weight: 800; }
+    footer { padding: 34px 20px; color: var(--paper-2); background: var(--ink); }
+    .footer-inner { width: min(100%, var(--max)); margin: auto; display: flex; flex-wrap: wrap; justify-content: space-between; gap: 16px; }
+    .footer-inner p { margin: 0; font: 700 .76rem/1.4 "Courier New", monospace; text-transform: uppercase; }
+    .footer-links a { text-decoration: none; }
+    .footer-links a:hover { text-decoration: underline; text-decoration-color: var(--pink); }
+    @media (max-width: 860px) {
+      .cards-3 { grid-template-columns: 1fr 1fr; }
+    }
+    @media (max-width: 680px) {
+      body { font-size: 16px; }
+      .wrap { width: min(calc(100% - 28px), var(--max)); }
+      .site-nav { position: static; align-items: flex-start; padding: 10px 14px; }
+      .nav-links a:not(:last-child) { display: none; }
+      .hero { padding-top: 56px; }
+      h1 { font-size: clamp(2.8rem, 14vw, 4.6rem); }
+      .cards-3, .cards-2 { grid-template-columns: 1fr; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      html { scroll-behavior: auto; }
+    }
+  </style>
+</head>
+<body>
+  <a class="skip-link" href="#content">Skip to content</a>
+  <nav class="sitenav" aria-label="Site">
+    <div class="sitenav-bar">
+      <a href="/" class="sitenav-brand"><span>Riot</span></a>
+      <div class="sitenav-links">
+        <a href="/">Home</a>
+        <a href="/about/" aria-current="page">About</a>
+        <a href="/privacy/">Privacy</a>
+        <a href="/open-source/">Open source</a>
+        <a href="/community/">Community</a>
+        <a href="/protocols/">Protocol field guide</a>
+      </div>
+    </div>
+  </nav>
+  <aside class="section-toc" aria-label="On this page">
+    <p class="toc-label">On this page</p>
+    <a href="#lineage">Lineage</a>
+    <a href="#publishing">Publishing</a>
+    <a href="#why">Why this exists</a>
+    <a href="#next">Honest gap</a>
+  </aside>
+
+  <main id="content">
+    <header class="hero">
+      <div class="wrap">
+        <p class="kicker">About Riot · a protest.net project</p>
+        <h1>Keep publishing when the network goes down.</h1>
+        <p class="lede">Riot is an offline-first app so communities can <b>create, verify, and carry</b> reporting, alerts, and decisions through a blackout or a seizure. It is new, but it comes from decades of helping movements publish and keep control of their own tools. The full builder story lives on the <a href="/#builder">home page</a>; how Riot compares to adjacent protocols is in the <a href="/protocols/">protocol field guide</a>.</p>
+      </div>
+    </header>
+
+    <section id="lineage">
+      <div class="wrap">
+        <p class="eyebrow">Where Riot comes from</p>
+        <h2>A lineage, not a lone project.</h2>
+        <p class="section-intro">Each of these came out of a real need that central platforms failed to meet. Riot inherits their goals and tries to avoid their dead ends.</p>
+        <div class="grid cards-3">
+          <article class="card">
+            <h3>Indymedia</h3>
+            <p>Open-publishing news for movements: anyone could upload audio, video, and reporting to a shared newswire, with editorial collective control. Prefigured federated, account-light, community-run media.</p>
+            <p class="sources-line"><a href="https://www.cjr.org/business_of_news/local-news-indymedia-network-25-anniversary.php" rel="noopener">CJR: 25th anniversary ↗</a></p>
+          </article>
+          <article class="card">
+            <h3>protest.net</h3>
+            <p>A structured calendar and organizing hub for demonstrations and direct action. Ran for years as a single, community-edited site before social platforms absorbed and then discarded that role.</p>
+            <p class="sources-line"><a href="https://www.protest.net/" rel="noopener">protest.net ↗</a></p>
+          </article>
+          <article class="card">
+            <h3>TXTMob</h3>
+            <p>Broadcast SMS alerts for affinity groups and mass mobilizations. Built so a trusted sender could reach a list fast during a convergence — the direct ancestor of Riot's alert tools.</p>
+            <p class="sources-line"><a href="https://en.wikipedia.org/wiki/Txtmob" rel="noopener">TXTMob background ↗</a></p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section class="green" id="publishing">
+      <div class="wrap">
+        <p class="eyebrow">The point of Riot</p>
+        <h2>Publish first. Carry it anywhere.</h2>
+        <p class="section-intro">Every earlier project in Riot's lineage was, at root, about getting movement information out when the usual channels would not carry it. Riot narrows that to one job: keep a community able to publish, verify, and merge its own information even when no server can be reached.</p>
+        <div class="grid cards-3">
+          <article class="card">
+            <h3>Open newswire</h3>
+            <p>A public space anyone in the community can publish to, in the Indymedia tradition — but carried on the community's own devices rather than one hosted site that can be seized or blocked.</p>
+          </article>
+          <article class="card">
+            <h3>Alerts and decisions</h3>
+            <p>Broadcast alerts in the TXTMob tradition, plus shared checklists, decisions, and events. Preload the tools before the crisis; keep using them locally inside it.</p>
+          </article>
+          <article class="card">
+            <h3>Verify and merge</h3>
+            <p>Nothing is accepted without a human looking at it first. Signed entries merge across devices so a community's record survives a raid on any single address.</p>
+          </article>
+        </div>
+        <p class="pull">This is publishing as mutual aid, not publishing as a platform. For the data model that makes it work, see the <a href="/protocols/">protocol field guide</a>.</p>
+      </div>
+    </section>
+
+    <section class="dark" id="builder-bridge">
+      <div class="wrap">
+        <p class="eyebrow">The builder</p>
+        <h2>@rabble, building Riot on Willow.</h2>
+        <p class="section-intro">The full builder history — protest.net, Indymedia, TXTMob, Odeo, Twitter, Planetary, Nos, and Divine — is on the home page. Riot is the next chapter, built on the <a href="https://willowprotocol.org/" rel="noopener">Willow</a> libraries rather than another centralized platform.</p>
+        <p class="pull">@rabble is building Riot using the Willow libraries. Riot does not claim that @rabble implemented Willow or authored the Willow protocol specification. <a href="/#builder">Read the full builder section ↗</a> · <a href="/protocols/">Compare Riot with neighboring protocols ↗</a></p>
+      </div>
+    </section>
+
+    <section class="yellow" id="why">
+      <div class="wrap">
+        <p class="eyebrow">Why this exists</p>
+        <h2>Seizure resistance is not theoretical.</h2>
+        <p class="section-intro">Riot is being built in the shadow of real government action against community-run publishing. Offline-first, self-carrying data is a direct response to that history, not a slogan.</p>
+        <div class="grid cards-2">
+          <article class="card">
+            <h3>2017 — Linksunten Indymedia</h3>
+            <p>Germany's interior ministry banned Linksunten Indymedia and police raided spaces associated with its alleged operators. A single hosted movement site was removed by state action on a single day.</p>
+            <p class="sources-line"><a href="https://theanarchistlibrary.org/mirror/c/cg/crimethinc-german-government-shuts-down-indymedia.bare.html" rel="noopener">2017 account ↗</a></p>
+          </article>
+          <article class="card">
+            <h3>2026 — complete-ban demand</h3>
+            <p>In June 2026, interior ministers from all 16 German states asked the federal government to examine a complete ban of de.indymedia.org, alongside seizures, hosting takedowns, and network blocks.</p>
+            <p class="sources-line"><a href="https://www.heise.de/en/news/Acute-threat-Interior-ministers-demand-complete-ban-of-Indymedia-11350956.html" rel="noopener">2026 report ↗</a></p>
+          </article>
+        </div>
+        <p class="pull">Local-first removes a mandatory home server; it does not repeal radio range, device loss, or hostile peers. But it does mean a raid on one address cannot take a community's data with it.</p>
+      </div>
+    </section>
+
+    <section class="blue" id="next">
+      <div class="wrap">
+        <p class="eyebrow">What Riot is not</p>
+        <h2>Honest about the gap.</h2>
+        <div class="grid cards-2">
+          <article class="card">
+            <h3>Not a shipping product yet</h3>
+            <p>Riot is a prototype in development. No app has shipped. The screenshots on the home page are real app screens from the iPhone simulator build — they are not evidence of sync over physical-device radios.</p>
+          </article>
+          <article class="card">
+            <h3>Not a universal protocol</h3>
+            <p>Riot is a community application runtime built on Willow, not a new universal social protocol. For a comparison with adjacent systems — AT Protocol, ActivityPub, Nostr, Matrix, Briar, and others — see the <a href="/protocols/">protocol field guide</a>.</p>
+          </article>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <div class="footer-inner">
+      <p>Riot · a protest.net project · prototype</p>
+      <p class="footer-links"><a href="/">Home</a> · <a href="/about/">About</a> · <a href="/privacy/">Privacy</a> · <a href="/open-source/">Open source</a> · <a href="/community/">Community</a> · <a href="/protocols/">Protocol field guide</a></p>
+    </div>
+  </footer>
+</body>
+</html>

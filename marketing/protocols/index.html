@@ -6,6 +6,7 @@
   <meta name="description" content="A source-backed field guide to Riot, Willow, AT Protocol, ActivityPub, DFOS, Nostr, Farcaster, Bitchat, Secure Scuttlebutt, Briar, and Matrix.">
   <meta name="theme-color" content="#ff4f8b">
   <title>Where Riot fits — a protocol field guide</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%23f6f0e5'/%3E%3Ctext x='16' y='25' font-family='Impact,sans-serif' font-size='26' fill='%23ff4f8b' text-anchor='middle'%3ER%3C/text%3E%3C/svg%3E">
   <style>
     :root {
       --paper: #f6f0e5;
@@ -66,6 +67,37 @@
     .nav-links { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 10px 20px; font: 700 .78rem/1.2 "Courier New", monospace; letter-spacing: .06em; text-transform: uppercase; }
     .nav-links a { text-decoration: none; border-bottom: 2px solid transparent; }
     .nav-links a:hover { border-color: var(--ink); }
+    .sitenav {
+      position: sticky; top: 0; z-index: 50;
+      background: var(--ink); color: var(--paper-2); border-bottom: 3px solid var(--ink);
+    }
+    .sitenav-bar { display: flex; align-items: center; justify-content: space-between; padding: 0 max(16px, calc((100% - var(--max)) / 2)); gap: 16px; }
+    .sitenav-brand { font-family: Impact, Haettenschweiler, "Arial Narrow Bold", sans-serif; font-size: 1.5rem; text-decoration: none; padding: 10px 0; white-space: nowrap; }
+    .sitenav-brand span { padding: 1px 7px; background: var(--pink); color: var(--paper-2); }
+    .sitenav-brand:hover { opacity: .8; }
+    .sitenav-links { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 0; font: 700 .72rem/1.2 "Courier New", monospace; letter-spacing: .06em; text-transform: uppercase; overflow-x: auto; }
+    .sitenav-links a { color: color-mix(in srgb, var(--paper-2) 80%, transparent); text-decoration: none; padding: 11px 14px; white-space: nowrap; display: inline-block; border-bottom: 3px solid transparent; }
+    .sitenav-links a:hover { color: var(--paper-2); border-bottom-color: var(--pink); }
+    .sitenav-links a[aria-current="page"] { color: var(--pink); border-bottom-color: var(--pink); }
+    @media (max-width: 760px) {
+      .sitenav-links { font-size: .66rem; }
+      .sitenav-links a { padding: 11px 9px; }
+    }
+    .section-toc { display: none; }
+    @media (min-width: 1480px) {
+      .section-toc {
+        display: flex; flex-direction: column; gap: 4px;
+        position: fixed; top: 70px; left: 20px; z-index: 30;
+        width: 148px; max-height: calc(100vh - 90px); overflow-y: auto;
+        padding: 14px 12px;
+        background: color-mix(in srgb, var(--paper) 92%, transparent);
+        border: 2px solid var(--ink); box-shadow: 5px 5px 0 var(--ink);
+        font: 700 .68rem/1.3 "Courier New", monospace; letter-spacing: .04em; text-transform: uppercase;
+      }
+      .section-toc .toc-label { margin: 0 0 8px; color: var(--pink); font-size: .62rem; letter-spacing: .1em; }
+      .section-toc a { color: var(--ink); text-decoration: none; padding: 5px 8px; border-left: 2px solid transparent; }
+      .section-toc a:hover { color: var(--pink); border-left-color: var(--pink); }
+    }
     .hero { padding: clamp(72px, 10vw, 136px) 0 74px; border-bottom: 3px solid var(--ink); background: var(--pink); }
     .kicker, .eyebrow, .stamp, .label { font: 700 .75rem/1.3 "Courier New", monospace; letter-spacing: .09em; text-transform: uppercase; }
     .kicker { display: inline-block; margin: 0 0 1rem; padding: 7px 10px; border: 2px solid; background: var(--yellow); box-shadow: 4px 4px 0 var(--ink); }
@@ -141,6 +173,8 @@
     footer { padding: 34px 20px; color: var(--paper-2); background: var(--ink); }
     .footer-inner { width: min(100%, var(--max)); margin: auto; display: flex; flex-wrap: wrap; justify-content: space-between; gap: 16px; }
     .footer-inner p { margin: 0; font: 700 .76rem/1.4 "Courier New", monospace; text-transform: uppercase; }
+    .footer-links a { text-decoration: none; }
+    .footer-links a:hover { text-decoration: underline; text-decoration-color: var(--pink); }
     @media (max-width: 980px) {
       .layer-grid { grid-template-columns: 1fr 1fr; }
       .situation-grid { grid-template-columns: 1fr 1fr; }
@@ -175,15 +209,25 @@
 </head>
 <body>
   <a class="skip-link" href="#content">Skip to content</a>
-  <nav class="site-nav" aria-label="Protocol field guide">
-    <a class="brand" href="/"><span>Riot</span></a>
-    <div class="nav-links">
-      <a href="#matrix-table">Compare</a>
-      <a href="#why-willow">Why Willow</a>
-      <a href="#profiles">Field guide</a>
-      <a href="/">Back to Riot</a>
+  <nav class="sitenav" aria-label="Site">
+    <div class="sitenav-bar">
+      <a href="/" class="sitenav-brand"><span>Riot</span></a>
+      <div class="sitenav-links">
+        <a href="/">Home</a>
+        <a href="/about/">About</a>
+        <a href="/privacy/">Privacy</a>
+        <a href="/open-source/">Open source</a>
+        <a href="/community/">Community</a>
+        <a href="/protocols/" aria-current="page">Protocol field guide</a>
+      </div>
     </div>
   </nav>
+  <aside class="section-toc" aria-label="On this page">
+    <p class="toc-label">On this page</p>
+    <a href="#matrix-table">Compare</a>
+    <a href="#why-willow">Why Willow</a>
+    <a href="#profiles">Field guide</a>
+  </aside>
 
   <main id="content">
     <header class="hero">
@@ -350,7 +394,7 @@
   </main>
 
   <footer>
-    <div class="footer-inner"><p>Riot · a protest.net project · prototype</p><p><a href="/">Riot home</a> · <a href="#content">Back to top</a></p></div>
+    <div class="footer-inner"><p>Riot · a protest.net project · prototype</p><p class="footer-links"><a href="/">Home</a> · <a href="/about/">About</a> · <a href="/privacy/">Privacy</a> · <a href="/open-source/">Open source</a> · <a href="/community/">Community</a> · <a href="#content">Back to top</a></p></div>
   </footer>
 </body>
 </html>

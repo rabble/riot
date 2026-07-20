@@ -1,0 +1,282 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Riot is open source under MIT (riot-anchor-protocol under AGPL-3.0-or-later). Built on Willow. Rust core, FFI, iOS/Android apps, and a gateway.">
+  <meta name="theme-color" content="#ff4f8b">
+  <title>Riot open source — MIT, on Willow, how the repo is organized</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%23f6f0e5'/%3E%3Ctext x='16' y='25' font-family='Impact,sans-serif' font-size='26' fill='%23ff4f8b' text-anchor='middle'%3ER%3C/text%3E%3C/svg%3E">
+  <style>
+    :root {
+      --paper: #f6f0e5;
+      --paper-2: #fffaf1;
+      --ink: #171614;
+      --muted: #605d57;
+      --pink: #ff4f8b;
+      --blue: #5b7cff;
+      --yellow: #ffdf3f;
+      --green: #a7e86d;
+      --line: #171614;
+      --shadow: 7px 7px 0 var(--ink);
+      --max: 1180px;
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      background: var(--paper);
+      font-family: "Arial", "Helvetica Neue", sans-serif;
+      font-size: 17px;
+      line-height: 1.58;
+    }
+    a { color: inherit; text-decoration-thickness: 2px; text-underline-offset: .18em; }
+    a:hover { text-decoration-color: var(--pink); }
+    a:focus-visible { outline: 4px solid var(--blue); outline-offset: 4px; }
+    h1, h2, h3, .brand, .poster {
+      font-family: Impact, Haettenschweiler, "Arial Narrow Bold", sans-serif;
+      font-weight: 900;
+      line-height: .98;
+      letter-spacing: .01em;
+      text-transform: uppercase;
+    }
+    h1 { max-width: 920px; margin: .25rem 0 1.25rem; font-size: clamp(3.2rem, 7.5vw, 6rem); }
+    h2 { margin: 0 0 1.2rem; font-size: clamp(2.2rem, 4.6vw, 3.6rem); }
+    h3 { margin: 0 0 .6rem; font-size: clamp(1.5rem, 2.4vw, 2rem); }
+    p { max-width: 74ch; }
+    code { padding: .08em .3em; border: 1px solid currentColor; background: #fff; font-size: .9em; font-family: "Courier New", monospace; }
+    .wrap { width: min(calc(100% - 40px), var(--max)); margin-inline: auto; }
+    .skip-link { position: absolute; top: -100px; left: 12px; z-index: 100; padding: 10px 14px; background: #fff; border: 2px solid; }
+    .skip-link:focus { top: 12px; }
+    .site-nav {
+      position: sticky;
+      top: 0;
+      z-index: 20;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 20px;
+      min-height: 66px;
+      padding: 10px max(20px, calc((100% - var(--max)) / 2));
+      border-bottom: 3px solid var(--ink);
+      background: var(--paper);
+    }
+    .brand { font-size: 1.8rem; text-decoration: none; }
+    .brand span { padding: 1px 7px; background: var(--pink); }
+    .nav-links { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 10px 20px; font: 700 .78rem/1.2 "Courier New", monospace; letter-spacing: .06em; text-transform: uppercase; }
+    .nav-links a { text-decoration: none; border-bottom: 2px solid transparent; }
+    .nav-links a:hover { border-color: var(--ink); }
+    .sitenav {
+      position: sticky; top: 0; z-index: 50;
+      background: var(--ink); color: var(--paper-2); border-bottom: 3px solid var(--ink);
+    }
+    .sitenav-bar { display: flex; align-items: center; justify-content: space-between; padding: 0 max(16px, calc((100% - var(--max)) / 2)); gap: 16px; }
+    .sitenav-brand { font-family: Impact, Haettenschweiler, "Arial Narrow Bold", sans-serif; font-size: 1.5rem; text-decoration: none; padding: 10px 0; white-space: nowrap; }
+    .sitenav-brand span { padding: 1px 7px; background: var(--pink); color: var(--paper-2); }
+    .sitenav-brand:hover { opacity: .8; }
+    .sitenav-links { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 0; font: 700 .72rem/1.2 "Courier New", monospace; letter-spacing: .06em; text-transform: uppercase; overflow-x: auto; }
+    .sitenav-links a { color: color-mix(in srgb, var(--paper-2) 80%, transparent); text-decoration: none; padding: 11px 14px; white-space: nowrap; display: inline-block; border-bottom: 3px solid transparent; }
+    .sitenav-links a:hover { color: var(--paper-2); border-bottom-color: var(--pink); }
+    .sitenav-links a[aria-current="page"] { color: var(--pink); border-bottom-color: var(--pink); }
+    @media (max-width: 760px) {
+      .sitenav-links { font-size: .66rem; }
+      .sitenav-links a { padding: 11px 9px; }
+    }
+    .section-toc { display: none; }
+    @media (min-width: 1480px) {
+      .section-toc {
+        display: flex; flex-direction: column; gap: 4px;
+        position: fixed; top: 70px; left: 20px; z-index: 30;
+        width: 148px; max-height: calc(100vh - 90px); overflow-y: auto;
+        padding: 14px 12px;
+        background: color-mix(in srgb, var(--paper) 92%, transparent);
+        border: 2px solid var(--ink); box-shadow: 5px 5px 0 var(--ink);
+        font: 700 .68rem/1.3 "Courier New", monospace; letter-spacing: .04em; text-transform: uppercase;
+      }
+      .section-toc .toc-label { margin: 0 0 8px; color: var(--pink); font-size: .62rem; letter-spacing: .1em; }
+      .section-toc a { color: var(--ink); text-decoration: none; padding: 5px 8px; border-left: 2px solid transparent; }
+      .section-toc a:hover { color: var(--pink); border-left-color: var(--pink); }
+    }
+    .hero { padding: clamp(60px, 9vw, 110px) 0 64px; border-bottom: 3px solid var(--ink); background: var(--pink); }
+    .kicker, .eyebrow { font: 700 .75rem/1.3 "Courier New", monospace; letter-spacing: .09em; text-transform: uppercase; }
+    .kicker { display: inline-block; margin: 0 0 1rem; padding: 7px 10px; border: 2px solid; background: var(--yellow); box-shadow: 4px 4px 0 var(--ink); }
+    .lede { max-width: 790px; margin: 0; font-size: clamp(1.12rem, 2vw, 1.4rem); font-weight: 700; }
+    section { padding: clamp(60px, 8vw, 100px) 0; border-bottom: 3px solid var(--ink); }
+    .dark { color: var(--paper-2); background: var(--ink); }
+    .yellow { background: var(--yellow); }
+    .green { background: var(--green); }
+    .blue { background: var(--blue); }
+    .section-intro { margin: 0 0 36px; color: var(--muted); font-size: 1.1rem; }
+    .dark .section-intro { color: #d9d4ca; }
+    .eyebrow { margin: 0 0 12px; }
+    .green .eyebrow, .yellow .eyebrow { color: var(--ink); }
+    .blue .eyebrow, .pink .eyebrow { color: var(--paper); }
+    .green .section-intro, .yellow .section-intro { color: color-mix(in srgb, var(--ink) 82%, transparent); }
+    .blue .section-intro, .pink .section-intro { color: color-mix(in srgb, var(--paper) 88%, transparent); }
+    .blue h2, .pink h2 { color: var(--paper); }
+    .blue a, .pink a { color: var(--paper); text-decoration: underline; }
+    .grid { display: grid; gap: 18px; }
+    .cards-2 { grid-template-columns: 1fr 1fr; }
+    .cards-3 { grid-template-columns: repeat(3, 1fr); }
+    .card { padding: 24px; border: 2px solid var(--ink); background: var(--paper-2); box-shadow: 5px 5px 0 var(--ink); }
+    .dark .card { background: #2a2825; color: var(--paper-2); border-color: var(--paper-2); }
+    .dark .card .label { color: #b8b3a8; }
+    .dark .card a { color: var(--pink); }
+    .card p { margin: 0; }
+    .card p + p { margin-top: 12px; }
+    .card .label { display: block; margin-bottom: 10px; font: 700 .72rem/1.3 "Courier New", monospace; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+    .repo-path { display: block; margin-top: 10px; font: 700 .82rem/1.3 "Courier New", monospace; color: var(--pink); word-break: break-all; }
+    .pull { padding: 26px 28px; border: 3px solid var(--ink); background: var(--yellow); box-shadow: var(--shadow); font-size: 1.1rem; font-weight: 700; }
+    .pull a { font-weight: 800; }
+    .actions { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 24px; }
+    .btn { display: inline-block; padding: 12px 20px; border: 3px solid var(--ink); background: var(--paper-2); color: var(--ink); text-decoration: none; font: 700 .8rem/1.2 "Courier New", monospace; letter-spacing: .06em; text-transform: uppercase; box-shadow: 4px 4px 0 var(--ink); }
+    .btn:hover { background: var(--pink); color: var(--paper-2); }
+    .btn.solid { background: var(--ink); color: var(--paper-2); }
+    .btn.solid:hover { background: var(--pink); }
+    footer { padding: 34px 20px; color: var(--paper-2); background: var(--ink); }
+    .footer-inner { width: min(100%, var(--max)); margin: auto; display: flex; flex-wrap: wrap; justify-content: space-between; gap: 16px; }
+    .footer-inner p { margin: 0; font: 700 .76rem/1.4 "Courier New", monospace; text-transform: uppercase; }
+    .footer-links a { text-decoration: none; }
+    .footer-links a:hover { text-decoration: underline; text-decoration-color: var(--pink); }
+    @media (max-width: 860px) {
+      .cards-3 { grid-template-columns: 1fr 1fr; }
+    }
+    @media (max-width: 680px) {
+      body { font-size: 16px; }
+      .wrap { width: min(calc(100% - 28px), var(--max)); }
+      .site-nav { position: static; align-items: flex-start; padding: 10px 14px; }
+      .nav-links a:not(:last-child) { display: none; }
+      .hero { padding-top: 56px; }
+      h1 { font-size: clamp(2.5rem, 13vw, 4.2rem); }
+      .cards-2, .cards-3 { grid-template-columns: 1fr; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      html { scroll-behavior: auto; }
+    }
+  </style>
+</head>
+<body>
+  <a class="skip-link" href="#content">Skip to content</a>
+  <nav class="sitenav" aria-label="Site">
+    <div class="sitenav-bar">
+      <a href="/" class="sitenav-brand"><span>Riot</span></a>
+      <div class="sitenav-links">
+        <a href="/">Home</a>
+        <a href="/about/">About</a>
+        <a href="/privacy/">Privacy</a>
+        <a href="/open-source/" aria-current="page">Open source</a>
+        <a href="/community/">Community</a>
+        <a href="/protocols/">Protocol field guide</a>
+      </div>
+    </div>
+  </nav>
+  <aside class="section-toc" aria-label="On this page">
+    <p class="toc-label">On this page</p>
+    <a href="#license">License</a>
+    <a href="#repo">Repo layout</a>
+    <a href="#build">Build</a>
+  </aside>
+
+  <main id="content">
+    <header class="hero">
+      <div class="wrap">
+        <p class="kicker">Open source · MIT, built on Willow</p>
+        <h1>Free, open source, and forkable.</h1>
+        <p class="lede">Riot is open source so communities can run, read, audit, adapt, and fork it — never dependent on a single company that can be pressured or bought. The code and this marketing site live at <a href="https://github.com/rabble/riot" rel="noopener">github.com/rabble/riot</a>.</p>
+        <div class="actions">
+          <a class="btn solid" href="https://github.com/rabble/riot" rel="noopener">Browse the repo ↗</a>
+          <a class="btn" href="/community/">Get involved</a>
+          <a class="btn" href="/protocols/">Protocol field guide</a>
+        </div>
+      </div>
+    </header>
+
+    <section class="green" id="license">
+      <div class="wrap">
+        <p class="eyebrow">License</p>
+        <h2>MIT for the project, with one AGPL exception.</h2>
+        <p class="section-intro">Most of the repository — including this marketing site — is licensed under the MIT license. One crate, <code>riot-anchor-protocol</code>, is licensed under AGPL-3.0-or-later, as declared in its Cargo.toml. Both are free, OSI-approved licenses; they differ in copyleft strength.</p>
+        <div class="grid cards-2">
+          <article class="card">
+            <span class="label">MIT (default, repo-wide)</span>
+            <p>Permissive. You can use, copy, modify, merge, publish, distribute, sublicense, and sell copies, including in proprietary software, provided the copyright and permission notice are included. See <code>/LICENSE</code> at the repo root.</p>
+            <span class="repo-path">github.com/rabble/riot/blob/main/LICENSE</span>
+          </article>
+          <article class="card">
+            <span class="label">AGPL-3.0-or-later (one crate)</span>
+            <p>Strong copyleft, network-protective. Anyone who modifies <code>riot-anchor-protocol</code> and serves it over the network must offer recipients the corresponding source. Stated in <code>crates/riot-anchor-protocol/Cargo.toml</code>.</p>
+            <span class="repo-path">crates/riot-anchor-protocol</span>
+          </article>
+        </div>
+        <p class="pull">The <a href="https://willowprotocol.org/" rel="noopener">Willow</a> protocol itself is independent of Riot. Riot builds on the Willow libraries; it does not claim to have authored the Willow specification. For how Riot's data model maps onto Willow, see <a href="https://github.com/rabble/riot/blob/main/docs/architecture/willow-architecture.md" rel="noopener">willow-architecture.md</a> and the <a href="/protocols/">protocol field guide</a>.</p>
+      </div>
+    </section>
+
+    <section class="dark" id="repo">
+      <div class="wrap">
+        <p class="eyebrow">How the repository is organized</p>
+        <h2>A Rust core, with native apps on top.</h2>
+        <p class="section-intro">The shared logic is Rust; each platform is a thin native shell over it via FFI. This keeps the signing, merge, and storage code in one auditable place rather than reimplemented per platform.</p>
+        <div class="grid cards-3">
+          <article class="card">
+            <span class="label">Core</span>
+            <h3>Rust workspace</h3>
+            <p>Shared protocol, storage, and merge logic. <code>cargo test --workspace --all-features</code> is the canonical test command.</p>
+            <span class="repo-path">crates/riot-core</span>
+          </article>
+          <article class="card">
+            <span class="label">FFI</span>
+            <h3>Native bindings</h3>
+            <p>Rust core exposed to Swift (iOS/macOS) and Kotlin (Android) through a generated FFI layer so apps stay thin.</p>
+            <span class="repo-path">crates/riot-ffi</span>
+          </article>
+          <article class="card">
+            <span class="label">Apps</span>
+            <h3>iOS, Android, gateway</h3>
+            <p>Native UIs and an optional gateway for Willow site content. The marketing site is separate from the gateway.</p>
+            <span class="repo-path">apps/ios · apps/android · apps/gateway</span>
+          </article>
+        </div>
+        <p class="section-intro" style="margin-top: 28px;">The development workflow — TDD, coverage thresholds, spec-driven work, and the orchestration agents — is documented in <code>AGENTS.md</code> at the repo root. It applies equally to human and agent contributors.</p>
+      </div>
+    </section>
+
+    <section class="yellow" id="build">
+      <div class="wrap">
+        <p class="eyebrow">Build and verify</p>
+        <h2>Read it, build it, check it yourself.</h2>
+        <p class="section-intro">Everything here can be reproduced locally from the repository. The commands below are the same ones the project's own checks run.</p>
+        <div class="grid cards-2">
+          <article class="card">
+            <span class="label">Rust core</span>
+            <h3>Test the workspace</h3>
+            <p>Run the full test suite and the lint/format checks that gate pull requests.</p>
+            <span class="repo-path">cargo test --workspace --all-features</span>
+            <span class="repo-path">cargo fmt --all -- --check &amp;&amp; cargo clippy</span>
+          </article>
+          <article class="card">
+            <span class="label">Marketing site</span>
+            <h3>Verify this site is dependency-free</h3>
+            <p>Run the contract check that enforces byte-identical mirrors, no remote fetches, and no analytics — then preview locally.</p>
+            <span class="repo-path">node scripts/marketing/protocol-page-contracts.mjs</span>
+            <span class="repo-path">python3 -m http.server 4173 --directory marketing/public</span>
+          </article>
+        </div>
+        <div class="actions">
+          <a class="btn solid" href="https://github.com/rabble/riot" rel="noopener">github.com/rabble/riot ↗</a>
+          <a class="btn" href="/community/">How to contribute</a>
+          <a class="btn" href="/protocols/">Protocol field guide</a>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <div class="footer-inner">
+      <p>Riot · a protest.net project · MIT-licensed · prototype</p>
+      <p class="footer-links"><a href="/">Home</a> · <a href="/about/">About</a> · <a href="/privacy/">Privacy</a> · <a href="/open-source/">Open source</a> · <a href="/community/">Community</a> · <a href="/protocols/">Protocol field guide</a></p>
+    </div>
+  </footer>
+</body>
+</html>
