@@ -280,6 +280,44 @@ final class ShellNavigationTests: XCTestCase {
         XCTAssertNil(OnboardingStep.welcome.back, "welcome is the first step; there is nowhere back to")
     }
 
+    /// The paired five-beat story pins Riot's trust boundaries in a single
+    /// ordered list, shared between the app's first-run explainer and the
+    /// marketing homepage. The order and the exact phrases matter: each beat
+    /// names what is actually verified versus what a mirror could lie about, so
+    /// drift here would re-introduce the unsafe "safe to read from / app is
+    /// proof" claims the story was written to replace.
+    func testExplainerStoryPinsOrderedTrustBoundaries() {
+        XCTAssertEqual(
+            OnboardingExplainerStory.points.map(\.title),
+            [
+                "No central account or publishing server",
+                "Publishing moves peer to peer",
+                "Many mirrors, not one site",
+                "Signed records, checked in the app",
+                "Web for reach; the app for provenance",
+            ]
+        )
+
+        let copy = OnboardingExplainerStory.points.map(\.body).joined(separator: " ")
+        XCTAssertTrue(copy.contains("does not mean anonymous"))
+        XCTAssertTrue(copy.contains("display altered text"))
+        XCTAssertTrue(copy.contains("false attribution"))
+        XCTAssertTrue(copy.contains("accepts as the claimed author"))
+        XCTAssertTrue(copy.contains("independently synced record"))
+        XCTAssertTrue(copy.contains("not whether its claims are true"))
+        XCTAssertFalse(copy.contains("safe to read from"))
+        XCTAssertFalse(copy.contains("cannot alter it"))
+        XCTAssertFalse(copy.contains("app is proof"))
+    }
+
+    /// The welcome screen offers two distinct paths into setup: a general
+    /// "get started" and a direct "join with a link or QR". Setup must be able
+    /// to tell them apart so the direct-join intent can present the real join
+    /// sheet immediately, instead of offering nearby as an onboarding exit.
+    func testWelcomeSetupIntentsAreDistinct() {
+        XCTAssertNotEqual(OnboardingSetupIntent.general, .join)
+    }
+
     func testSetupOrderAndUnsupportedNearbyBoundary() {
         XCTAssertEqual(OnboardingPresentation.actionOrder, [.join, .create, .demo])
         XCTAssertEqual(

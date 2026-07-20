@@ -408,10 +408,10 @@ def render_about(export: dict, css: str = NEWSPRINT_CSS) -> str:
 
   <h2>How Riot beats censorship</h2>
   <p class="point"><b>Many mirrors, not one site</b>This page is one copy of many. Block or seize one and the others stand; anyone can host another in minutes. There is no single address to take down.</p>
-  <p class="point"><b>Signed, not trusted</b>Every article and post is signed by its author. The Riot app checks the signatures. A mirror can show you the content but cannot forge it, alter it, or fake an author — so an untrusted host is safe to read from.</p>
-  <p class="point"><b>Publishing is peer-to-peer and hidden</b>Publishers use the Riot app; signed posts travel directly between phones and volunteer seeds. There is no central publishing server to raid, subpoena, or coerce. This website is only a window onto that network.</p>
+  <p class="point"><b>Signed records, checked in the app</b>A mirror can display altered text or false attribution in a browser. It cannot produce an independently synced signed record that Riot accepts as the claimed author. Riot checks record signatures and authorization; that establishes provenance, not whether a claim is true, current, complete, safe, or endorsed.</p>
+  <p class="point"><b>Publishing moves peer to peer</b>Publishers use Riot; signed posts travel between phones and volunteer seeds. Peer-to-peer does not mean anonymous: devices and infrastructure may observe connections. There is no single publishing server that owns the newswire.</p>
   <p class="point"><b>Readers stay out of the graph</b>Reading over the plain web — especially through a Tor / onion gateway — keeps you off the peer-to-peer network entirely. You are just someone who loaded a web page, not an identifiable node in the system.</p>
-  <p class="point"><b>Verify when it matters</b>A hostile mirror could lie to casual web readers. When a story matters, open it in the Riot app — it re-checks every signature against the collective's key. Web is reach; the app is proof.</p>
+  <p class="point"><b>Verify when it matters</b>When provenance matters, open the story in Riot and read the independently synced record instead of trusting what a mirror displayed. The web provides reach; the app checks the record.</p>
 
   <p class="point"><a class="cta" href="{uri}">Open this newswire in Riot →</a></p>
 </main>

@@ -150,9 +150,20 @@ class NewswireRenderTest(unittest.TestCase):
     def test_about_page_covers_the_collective_and_censorship_model(self) -> None:
         page = nw.render_about(self.export)
         self.assertIn("Many mirrors", page)
-        self.assertIn("Signed, not trusted", page)
+        self.assertIn("Signed records, checked in the app", page)
+        self.assertIn("independently synced record", page)
+        self.assertIn("display altered text", page)
+        self.assertIn("false attribution", page)
+        self.assertIn("provenance", page.lower())
+        self.assertIn("does not mean anonymous", page.lower())
         self.assertIn(f'/author/{"a" * 64}/', page)
         self.assertIn("connect-src 'none'", page)
+        # The about page must not retire into the unsafe claims the paired
+        # story was written to replace.
+        self.assertNotIn("safe to read from", page)
+        self.assertNotIn("cannot alter it", page)
+        self.assertNotIn("app is proof", page.lower())
+        self.assertNotIn("peer-to-peer and hidden", page.lower())
 
     def test_footer_links_to_about(self) -> None:
         self.assertIn('href="/about/"', self.page)

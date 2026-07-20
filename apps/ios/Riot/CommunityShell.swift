@@ -125,7 +125,10 @@ public enum Onboarding {
 /// flow does not end on a screen, it ends by landing in the shell with a real
 /// community, so there is deliberately no third step and no "finish" button.
 public enum OnboardingStep: Int, CaseIterable, Equatable, Sendable {
-    /// What Riot is, in plain indymedia terms. The only action is "Get started".
+    /// What Riot is, in plain indymedia terms. Offers a general "Get started"
+    /// path and a direct "Join with a link or QR" path; setup carries the
+    /// chosen intent so the direct-join path can present the real join sheet
+    /// instead of offering nearby as an onboarding exit.
     case welcome
     /// Name yourself (skippable) and create or join a community (required to
     /// leave onboarding). Reuses the display-name and create/join paths.
@@ -144,6 +147,58 @@ public enum OnboardingStep: Int, CaseIterable, Equatable, Sendable {
     public var back: OnboardingStep? {
         rawValue == 0 ? nil : OnboardingStep(rawValue: rawValue - 1)
     }
+}
+
+/// One beat of the paired "How Riot works" story. The story is the single
+/// ordered mental model shared between the app's first-run explainer and the
+/// marketing homepage, so a person who meets Riot either way hears the same
+/// trust boundaries in the same order.
+public struct OnboardingExplainerPoint: Equatable, Sendable {
+    public let title: String
+    public let body: String
+
+    init(title: String, body: String) {
+        self.title = title
+        self.body = body
+    }
+}
+
+/// The canonical five-beat story. Order and exact phrasing are pinned by
+/// `ShellNavigationTests.testExplainerStoryPinsOrderedTrustBoundaries` and by
+/// the cross-surface marketing contract, because each beat deliberately
+/// separates what the app verifies from what a browser mirror could lie about.
+/// Do not reorder or rephrase without updating both of those checks.
+public enum OnboardingExplainerStory {
+    public static let points: [OnboardingExplainerPoint] = [
+        OnboardingExplainerPoint(
+            title: "No central account or publishing server",
+            body: "Your identity is a cryptographic key, not a service login. Volunteer seeds, anchors, and mirrors can run on servers, but none owns your identity or is the single place Riot must publish."
+        ),
+        OnboardingExplainerPoint(
+            title: "Publishing moves peer to peer",
+            body: "Signed posts move between phones and volunteer seeds. Peer-to-peer does not mean anonymous: devices and infrastructure may observe connections."
+        ),
+        OnboardingExplainerPoint(
+            title: "Many mirrors, not one site",
+            body: "Websites are replaceable views, not the authority. A mirror can display altered text or false attribution, but it cannot produce an independently synced signed record Riot accepts as the claimed author."
+        ),
+        OnboardingExplainerPoint(
+            title: "Signed records, checked in the app",
+            body: "Riot checks the signature and authorization of the independently synced record. That establishes who signed an unchanged admitted record—not whether its claims are true, current, complete, safe, or endorsed."
+        ),
+        OnboardingExplainerPoint(
+            title: "Web for reach; the app for provenance",
+            body: "Use the web to reach readers. When provenance matters, read the independently synced record in Riot instead of trusting what a mirror displayed."
+        ),
+    ]
+}
+
+/// Which welcome path a person chose, carried into setup so the direct-join
+/// path can present the real join sheet immediately rather than treating
+/// nearby as an onboarding exit. `general` is the plain "Get started" flow.
+public enum OnboardingSetupIntent: Equatable, Sendable {
+    case general
+    case join
 }
 
 // MARK: - Deterministic Home shortcuts

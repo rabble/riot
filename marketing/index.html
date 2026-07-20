@@ -278,6 +278,45 @@ section { padding: clamp(56px, 9vw, 100px) 0; }
 @media (max-width: 540px) { .forgrid { grid-template-columns: 1fr; } }
 
 /* ---------- how it works ---------- */
+.story-beats {
+  list-style: none;
+  counter-reset: story;
+  margin: 44px 0 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  border: 2px solid var(--ink);
+}
+.story-beat {
+  counter-increment: story;
+  min-width: 0;
+  padding: clamp(22px, 4vw, 34px);
+  border-right: 2px solid var(--ink);
+  border-bottom: 2px solid var(--ink);
+}
+.story-beat::before {
+  content: "0" counter(story);
+  display: block;
+  margin-bottom: 14px;
+  color: var(--pink);
+  font: 700 12px/1 'Space Mono', monospace;
+  letter-spacing: 0.1em;
+}
+.story-beat h3 {
+  margin: 0 0 10px;
+  font-family: 'Anton', sans-serif;
+  font-size: clamp(23px, 3vw, 32px);
+  line-height: 1;
+  text-transform: uppercase;
+}
+.story-beat p { margin: 0; color: var(--ink-soft); }
+.workflow-head { margin-top: 60px; }
+.workflow-head h3 { margin: 0; font-size: clamp(28px, 4vw, 44px); }
+.workflow-head p { margin: 8px 0 0; color: var(--ink-soft); }
+@media (max-width: 700px) {
+  .story-beats { grid-template-columns: minmax(0, 1fr); }
+  .story-beat { border-right: 0; }
+}
 .steps { margin-top: 48px; display: grid; grid-template-columns: repeat(3, 1fr); gap: 40px; }
 .step .snum {
   font-family: 'Anton', sans-serif; font-size: 64px; line-height: 1; color: var(--paper2);
@@ -516,8 +555,34 @@ footer.colophon {
   <div class="wrap">
     <div class="section-head reveal">
       <p class="eyebrow">How it works</p>
-      <h2>What actually happens, screen by screen</h2>
-      <p class="section-intro">No accounts, no server round-trip, nothing accepted without you looking at it first. This is the real flow, not a diagram of an idealized one.</p>
+      <h2>One story, wherever you meet Riot</h2>
+      <p class="section-intro">Five beats hold the whole mental model — what Riot actually verifies, and what a browser mirror could lie about. Read the web for reach; open the app when provenance matters. The screen-by-screen workflow follows below.</p>
+    </div>
+    <ol class="story-beats" aria-label="How Riot works in five parts">
+      <li class="story-beat">
+        <h3>No central account or publishing server</h3>
+        <p>Your identity is a cryptographic key, not a service login. Volunteer seeds, anchors, and mirrors can run on servers, but none owns your identity or is the single place Riot must publish.</p>
+      </li>
+      <li class="story-beat">
+        <h3>Publishing moves peer to peer</h3>
+        <p>Signed posts move between phones and volunteer seeds. Peer-to-peer does not mean anonymous: devices and infrastructure may observe connections.</p>
+      </li>
+      <li class="story-beat">
+        <h3>Many mirrors, not one site</h3>
+        <p>Websites are replaceable views, not the authority. A mirror can display altered text or false attribution, but it cannot produce an independently synced signed record Riot accepts as the claimed author.</p>
+      </li>
+      <li class="story-beat">
+        <h3>Signed records, checked in the app</h3>
+        <p>Riot checks the signature and authorization of the independently synced record. That establishes who signed an unchanged admitted record—not whether its claims are true, current, complete, safe, or endorsed.</p>
+      </li>
+      <li class="story-beat">
+        <h3>Web for reach; the app for provenance</h3>
+        <p>Use the web to reach readers. When provenance matters, read the independently synced record in Riot instead of trusting what a mirror displayed.</p>
+      </li>
+    </ol>
+    <div class="workflow-head reveal">
+      <h3>What you do</h3>
+      <p>What actually happens, screen by screen</p>
     </div>
     <div class="steps reveal">
       <div class="step">
