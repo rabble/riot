@@ -597,7 +597,7 @@ private func encControlResponse(_ f: Fields) -> [UInt8] {
     return w.bytes
 }
 
-private let RECORD_ENCODERS: [String: (Fields) -> [UInt8]] = [
+private nonisolated(unsafe) let RECORD_ENCODERS: [String: (Fields) -> [UInt8]] = [
     "OperatorVerificationKeyV1": encOperatorKey,
     "PublicSiteTicketV2Core": encPublicSiteTicketCore,
     "RootSignedTicketCoreEnvelopeV2": encRootSignedTicketCoreEnvelope,

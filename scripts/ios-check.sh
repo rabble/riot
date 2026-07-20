@@ -33,6 +33,20 @@ cd "$ROOT"
 DD="${RIOT_DERIVED_DATA:-$ROOT/build/xcode-dd}"
 CMD="${1:-fast}"
 
+resolve_simulator_id() {
+  if [ -n "${RIOT_IOS_SIMULATOR_ID:-}" ]; then
+    printf '%s\n' "$RIOT_IOS_SIMULATOR_ID"
+    return
+  fi
+  xcrun simctl list devices available |
+    awk '/^[[:space:]]+iPhone 17 Pro \(/ {
+      gsub(/[()]/, "", $4)
+      id = $4
+    } END {
+      if (id != "") print id
+    }'
+}
+
 # Build-only, no signing, no index store — we want the compiler's verdict fast.
 set -- -derivedDataPath "$DD" -quiet \
        COMPILER_INDEX_STORE_ENABLE=NO CODE_SIGNING_ALLOWED=NO
@@ -48,8 +62,21 @@ case "$CMD" in
       -destination 'platform=macOS' "$@"
     ;;
   sim)
+    SIMULATOR_ID=$(resolve_simulator_id)
+    if [ -z "$SIMULATOR_ID" ]; then
+      echo "No available iPhone 17 Pro simulator. Set RIOT_IOS_SIMULATOR_ID." >&2
+      exit 2
+    fi
     xcodebuild build -project apps/ios/Riot.xcodeproj -scheme Riot \
-      -destination 'platform=iOS Simulator,name=iPhone 17 Pro' "$@"
+      -destination "platform=iOS Simulator,id=$SIMULATOR_ID" "$@"
+    ;;
+  simulator-id)
+    SIMULATOR_ID=$(resolve_simulator_id)
+    if [ -z "$SIMULATOR_ID" ]; then
+      echo "No available iPhone 17 Pro simulator. Set RIOT_IOS_SIMULATOR_ID." >&2
+      exit 2
+    fi
+    printf '%s\n' "$SIMULATOR_ID"
     ;;
   ios)
     echo "full iOS device build (the final gate) — DerivedData: $DD"
@@ -60,7 +87,7 @@ case "$CMD" in
     rm -rf "$DD" && echo "removed $DD"
     ;;
   *)
-    echo "usage: ios-check.sh [fast|test|sim|ios|clean]" >&2
+    echo "usage: ios-check.sh [fast|test|sim|simulator-id|ios|clean]" >&2
     exit 2
     ;;
 esac

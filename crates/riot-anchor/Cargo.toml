@@ -32,8 +32,40 @@ rusqlite = { workspace = true }
 # via `riot-core`; adds a dependency EDGE only, no new crate to the lock tree.
 sha2 = { workspace = true }
 
+# --- Daemon runtime (WU-019, gated behind the OFF-by-default `daemon` feature) --
+# These are the ONLY iroh/tokio edges in this crate, and they exist solely so the
+# `riot-anchor` BINARY can bind a public endpoint and serve the `riot/anchor/1`
+# control ALPN. The pure library core (repository/control/hosting/...) stays
+# iroh/tokio-free: `cargo test -p riot-anchor` (no feature) never compiles them,
+# so the existing 218 tests are unaffected and fast. All four crates already
+# resolve in the workspace lock (via riot-transport / riot-client-net), so no NEW
+# lock package is introduced — only dependency EDGES (which do re-hash Cargo.lock;
+# see the manifest sha refresh in fixtures/manifest.json).
+tokio = { version = "1.53.0", features = ["rt-multi-thread", "macros", "sync", "time", "signal"], optional = true }
+iroh = { version = "1.0.2", optional = true }
+riot-transport = { path = "../riot-transport", optional = true }
+# REAL operator signer: produces Ed25519 signatures over the control-plane signing
+# preimages (work challenges, descriptors). Same crate/type the tests use; the
+# daemon loads the secret from operator config instead of a fixed test key.
+ed25519-dalek = { workspace = true, optional = true }
+# OS entropy for anchor-minted ids (operation id, challenge nonce) in the running
+# daemon. Tests inject deterministic entropy and never pull this.
+getrandom = { version = "0.2", optional = true }
+
+[features]
+default = []
+# Enables the daemon runtime modules (`daemon`, `admission`) and their network
+# stack. The `riot-anchor` binary requires it; the library builds without it.
+daemon = ["dep:tokio", "dep:iroh", "dep:riot-transport", "dep:ed25519-dalek", "dep:getrandom"]
+
+[[bin]]
+name = "riot-anchor"
+path = "src/main.rs"
+required-features = ["daemon"]
+
 [dev-dependencies]
 # Test-only operator signer: produces real Ed25519 work-challenge signatures the
-# protocol's `WorkStampV1::verify` accepts. Production signer wiring (operator
-# key management) lands with a later work unit.
+# protocol's `WorkStampV1::verify` accepts. Available to ALL tests (unconditional
+# dev-dep) so the existing 218 control/hosting tests keep compiling without the
+# `daemon` feature.
 ed25519-dalek = { workspace = true }

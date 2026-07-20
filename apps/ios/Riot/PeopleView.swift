@@ -19,11 +19,11 @@ public protocol NewswireContributorProjecting {
 /// or "present"; the fallback name "member · tag" a nameless author renders to
 /// is a NAME, produced by the core resolver, never a membership label.
 public enum PeopleStrings {
-    public static let title = "Contributors"
+    public static let title = "Known contributors"
     public static let organizerBadge = "Organizer"
-    public static let emptyTitle = "No contributors yet"
+    public static let emptyTitle = "No known contributors yet"
     public static let emptyMessage =
-        "Contributors appear here once people post updates. Be the first."
+        "Known contributors appear here once people post updates."
     public static let emptyActionLabel = "Post the first update"
     public static let unavailableMessage =
         "This community's contributors are unavailable right now. Try again."
@@ -32,6 +32,20 @@ public enum PeopleStrings {
     /// and plural so "1 contribution" never reads as "1 contributions".
     public static func contributions(_ count: UInt32) -> String {
         count == 1 ? "1 contribution" : "\(count) contributions"
+    }
+}
+
+public struct PersonRowAccessibilityValue: Equatable, Sendable {
+    public let label: String
+}
+
+public enum PersonRowAccessibility {
+    public static func summary(_ row: PersonRow) -> PersonRowAccessibilityValue {
+        PersonRowAccessibilityValue(label: row.accessibilityLabel)
+    }
+
+    public static func technicalLabel(_ row: PersonRow) -> String {
+        "Technical details for \(row.rendered)"
     }
 }
 
@@ -147,18 +161,30 @@ public final class PeopleSurfaceModel: ObservableObject {
 public struct PeopleView: View {
     @ObservedObject private var model: PeopleSurfaceModel
     private let onPostUpdate: () -> Void
+    private let composerFocus: FocusState<ComposerOrigin?>.Binding
+    @Environment(\.colorScheme) private var colorScheme
 
-    public init(model: PeopleSurfaceModel, onPostUpdate: @escaping () -> Void = {}) {
+    public init(
+        model: PeopleSurfaceModel,
+        onPostUpdate: @escaping () -> Void,
+        composerFocus: FocusState<ComposerOrigin?>.Binding
+    ) {
         self.model = model
         self.onPostUpdate = onPostUpdate
+        self.composerFocus = composerFocus
     }
 
     public var body: some View {
         Group {
             switch model.state {
             case let .populated(rows):
-                List(rows) { row in
-                    PersonRowView(row: row)
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 12) {
+                        ForEach(rows) { row in
+                            RiotCard { PersonRowView(row: row) }
+                        }
+                    }
+                    .padding(20)
                 }
             case let .empty(empty):
                 emptyState(empty)
@@ -166,32 +192,44 @@ public struct PeopleView: View {
                 unavailableState(message)
             }
         }
-        .navigationTitle(PeopleStrings.title)
+        .riotHeader(eyebrow: "Community", PeopleStrings.title)
         .onAppear { model.load() }
     }
 
     private func emptyState(_ empty: EmptyPeopleState) -> some View {
-        VStack(spacing: 12) {
-            Text(empty.title).font(.headline)
-            Text(empty.message)
-                .font(.subheadline)
-                .multilineTextAlignment(.center)
-                .foregroundStyle(.secondary)
-            Button(empty.actionLabel, action: onPostUpdate)
-                .frame(minHeight: 44)
+        ScrollView {
+            RiotCard {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text(empty.title)
+                        .font(.riot(.body, size: 17, relativeTo: .headline))
+                    Text(empty.message)
+                        .font(.riot(.body, size: 15, relativeTo: .callout))
+                        .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
+                    Button(empty.actionLabel, action: onPostUpdate)
+                        .buttonStyle(.riotPrimary)
+                        .frame(minHeight: 44)
+                        .focused(composerFocus, equals: .people)
+                        .accessibilityIdentifier("people-post-first-update")
+                }
+            }
+            .padding(20)
         }
-        .padding()
     }
 
     private func unavailableState(_ message: String) -> some View {
-        VStack(spacing: 12) {
-            Text(message)
-                .font(.subheadline)
-                .multilineTextAlignment(.center)
-            Button("Try again") { model.load() }
-                .frame(minHeight: 44)
+        ScrollView {
+            RiotCard {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text(message)
+                        .font(.riot(.body, size: 15, relativeTo: .callout))
+                    Button("Try again") { model.load() }
+                        .buttonStyle(.riotPrimary)
+                        .frame(minHeight: 44)
+                        .accessibilityIdentifier("people-retry")
+                }
+            }
+            .padding(20)
         }
-        .padding()
     }
 }
 
@@ -200,31 +238,33 @@ public struct PeopleView: View {
 private struct PersonRowView: View {
     let row: PersonRow
     @State private var showsTechnicalDetails = false
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack {
-                Text(row.rendered).font(.body)
-                if row.isOrganizer {
-                    Text(PeopleStrings.organizerBadge)
-                        .font(.caption)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(Capsule().fill(Color.accentColor.opacity(0.2)))
+        VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: 4) {
+                HStack {
+                    Text(row.rendered)
+                        .font(.riot(.body, size: 17, relativeTo: .headline))
+                    if row.isOrganizer {
+                        RiotBadge(PeopleStrings.organizerBadge)
+                    }
+                    Spacer()
                 }
-                Spacer()
+                Text(PeopleStrings.contributions(row.contributionCount))
+                    .font(.riot(.mono, size: 11, relativeTo: .caption2))
+                    .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
             }
-            Text(PeopleStrings.contributions(row.contributionCount))
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel(PersonRowAccessibility.summary(row).label)
+
             DisclosureGroup("Technical details", isExpanded: $showsTechnicalDetails) {
-                Text(row.id)
-                    .font(.caption.monospaced())
+                Text(verbatim: row.id)
+                    .font(.riot(.mono, size: 12, relativeTo: .caption))
                     .textSelection(.enabled)
             }
+            .accessibilityLabel(PersonRowAccessibility.technicalLabel(row))
         }
         .frame(minHeight: 44)
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(row.accessibilityLabel)
     }
 }

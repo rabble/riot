@@ -44,6 +44,17 @@ final class PostUpdateTests: XCTestCase {
         func clear() { stored = nil; clearCount += 1 }
     }
 
+    @MainActor
+    private final class StubContextProvider: PublishingContextProviding {
+        var context: PublishingContext?
+
+        init(context: PublishingContext?) {
+            self.context = context
+        }
+
+        func currentPublishingContext() -> PublishingContext? { context }
+    }
+
     // MARK: - Fixtures
 
     private static func person(_ name: String = "Ana", tag: String = "a3f91122") -> RiotPerson {
@@ -58,13 +69,17 @@ final class PostUpdateTests: XCTestCase {
     private func makeModel(
         identity: PublishingIdentity? = nil,
         publisher: StubPublisher = StubPublisher(),
-        store: MemoryDraftStore = MemoryDraftStore()
+        store: MemoryDraftStore = MemoryDraftStore(),
+        expectedCommunityID: String? = nil,
+        contextProvider: (any PublishingContextProviding)? = nil
     ) -> PostUpdateViewModel {
         PostUpdateViewModel(
             identity: identity ?? .persistent(Self.person()),
             community: Self.community(),
             publisher: publisher,
-            draftStore: store
+            draftStore: store,
+            expectedCommunityID: expectedCommunityID,
+            contextProvider: contextProvider
         )
     }
 
@@ -135,7 +150,10 @@ final class PostUpdateTests: XCTestCase {
             return XCTFail("a successful post lands in .posted")
         }
         XCTAssertEqual(update.entryID, publisher.record.entryId)
-        XCTAssertEqual(update.exchangeStatus, "Pending nearby exchange")
+        XCTAssertEqual(
+            update.exchangeStatus,
+            "Saved and signed on this device. Exchange with someone nearby to share it."
+        )
         XCTAssertNil(model.errorMessage)
 
         // A posted draft leaves nothing to restore.
@@ -156,6 +174,59 @@ final class PostUpdateTests: XCTestCase {
 
         XCTAssertEqual(publisher.callCount, 1)
         XCTAssertFalse(model.canPost, "the composer is spent once the post is committed")
+    }
+
+    @MainActor
+    func testPostingFailsClosedWhenLiveCommunityNoLongerMatchesReview() {
+        let publisher = StubPublisher()
+        let provider = StubContextProvider(
+            context: PublishingContext(
+                communityID: "community-b",
+                identity: .persistent(Self.person("Bo")),
+                community: PostingCommunity(
+                    name: "Another community",
+                    spaceDescriptorEntryID: String(repeating: "f", count: 64)
+                )
+            )
+        )
+        let model = makeModel(
+            publisher: publisher,
+            expectedCommunityID: "community-a",
+            contextProvider: provider
+        )
+        model.headline = "Headline"
+        model.body = "Body"
+
+        model.post()
+
+        XCTAssertEqual(publisher.callCount, 0)
+        XCTAssertEqual(model.status, .editing)
+        XCTAssertEqual(model.errorMessage, PostUpdateViewModel.publishingContextFailureMessage)
+    }
+
+    @MainActor
+    func testRefreshingContextUpdatesIdentityAndNewlyArrivedDescriptor() {
+        let provider = StubContextProvider(
+            context: PublishingContext(
+                communityID: "community-a",
+                identity: .persistent(Self.person("Bo")),
+                community: PostingCommunity(
+                    name: "Riverside Mutual Aid",
+                    spaceDescriptorEntryID: String(repeating: "f", count: 64)
+                )
+            )
+        )
+        let model = makeModel(
+            expectedCommunityID: "community-a",
+            contextProvider: provider
+        )
+
+        XCTAssertTrue(model.refreshPublishingContext())
+        XCTAssertEqual(model.review.identityLabel, "Bo · a3f91122")
+        XCTAssertEqual(
+            model.community.spaceDescriptorEntryID,
+            String(repeating: "f", count: 64)
+        )
     }
 
     // MARK: - Failure preserves the draft behind a fixed message
@@ -275,6 +346,106 @@ final class PostUpdateTests: XCTestCase {
         XCTAssertEqual(restored.headline, "Half a headline")
         XCTAssertEqual(restored.body, "Half a body")
         XCTAssertTrue(restored.aiAssisted)
+    }
+
+    func testLegacyFiveFieldDraftDefaultsToUpdateWithoutExpiry() throws {
+        let data = Data(
+            #"{"headline":"H","body":"B","aiAssisted":false,"sourceClaims":[],"coarseLocation":""}"#
+                .utf8
+        )
+
+        let draft = try JSONDecoder().decode(PostDraft.self, from: data)
+
+        XCTAssertEqual(draft.mode, .freeform)
+        XCTAssertNil(draft.expiresAtUnixSeconds)
+    }
+
+    @MainActor
+    func testOperationalDraftRestoresModeAndExpiry() {
+        let store = MemoryDraftStore()
+        let first = makeModel(store: store)
+        first.headline = "Bridge closed"
+        first.body = "Use the north crossing"
+        first.mode = .operationalAlert
+        first.sourceClaims = ["eyewitness"]
+        first.coarseLocation = "south bridge"
+        first.expiresAt = Date(timeIntervalSince1970: 1_800_000_000)
+
+        first.persistDraft()
+        let restored = makeModel(store: store)
+
+        XCTAssertEqual(restored.mode, .operationalAlert)
+        XCTAssertEqual(restored.expiresAt?.timeIntervalSince1970, 1_800_000_000)
+    }
+
+    func testOperationalDraftModeAndExpirySurviveJSONRoundTrip() throws {
+        let original = PostDraft(
+            headline: "Bridge closed",
+            body: "Use the north crossing",
+            aiAssisted: false,
+            sourceClaims: ["eyewitness"],
+            coarseLocation: "south bridge",
+            mode: .operationalAlert,
+            expiresAtUnixSeconds: 1_800_000_000
+        )
+
+        let encoded = try JSONEncoder().encode(original)
+        let restored = try JSONDecoder().decode(PostDraft.self, from: encoded)
+
+        XCTAssertEqual(restored, original)
+        XCTAssertEqual(restored.mode, .operationalAlert)
+        XCTAssertEqual(restored.expiresAtUnixSeconds, 1_800_000_000)
+    }
+
+    func testModeOrExpiryAloneMakesADraftNonEmpty() {
+        XCTAssertFalse(
+            PostDraft(
+                headline: "", body: "", aiAssisted: false,
+                sourceClaims: [], coarseLocation: "",
+                mode: .operationalAlert, expiresAtUnixSeconds: nil
+            ).isEmpty
+        )
+        XCTAssertFalse(
+            PostDraft(
+                headline: "", body: "", aiAssisted: false,
+                sourceClaims: [], coarseLocation: "",
+                mode: .freeform, expiresAtUnixSeconds: 1_800_000_000
+            ).isEmpty
+        )
+    }
+
+    func testModeControlStacksAtAccessibilitySizes() {
+        XCTAssertEqual(PostModeControlLayout.resolve(isAccessibilitySize: false), .segmented)
+        XCTAssertEqual(PostModeControlLayout.resolve(isAccessibilitySize: true), .vertical)
+    }
+
+    @MainActor
+    func testPostAnotherClearsEveryFieldAndDoesNotPublishAgain() {
+        let publisher = StubPublisher()
+        let store = MemoryDraftStore()
+        let model = makeModel(publisher: publisher, store: store)
+        model.headline = "Bridge closed"
+        model.body = "Use the north crossing"
+        model.aiAssisted = true
+        model.mode = .operationalAlert
+        model.sourceClaims = ["eyewitness"]
+        model.coarseLocation = "south bridge"
+        model.expiresAt = Date(timeIntervalSince1970: 1_800_000_000)
+        model.post()
+
+        model.postAnother()
+
+        XCTAssertEqual(model.headline, "")
+        XCTAssertEqual(model.body, "")
+        XCTAssertFalse(model.aiAssisted)
+        XCTAssertEqual(model.mode, .freeform)
+        XCTAssertEqual(model.sourceClaims, [])
+        XCTAssertEqual(model.coarseLocation, "")
+        XCTAssertNil(model.expiresAt)
+        XCTAssertNil(model.errorMessage)
+        XCTAssertEqual(model.status, .editing)
+        XCTAssertEqual(publisher.callCount, 1)
+        XCTAssertEqual(store.clearCount, 2)
     }
 
     /// A successful post is not re-persisted as a draft — there is nothing to

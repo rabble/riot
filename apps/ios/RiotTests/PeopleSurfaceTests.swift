@@ -84,7 +84,12 @@ final class PeopleSurfaceTests: XCTestCase {
             }
         }
         // And it names itself for what it is.
-        XCTAssertEqual(PeopleStrings.title, "Contributors")
+        XCTAssertEqual(PeopleStrings.title, "Known contributors")
+        XCTAssertEqual(PeopleStrings.emptyTitle, "No known contributors yet")
+        XCTAssertEqual(
+            PeopleStrings.emptyMessage,
+            "Known contributors appear here once people post updates."
+        )
     }
 
     func testStateHasNoPresenceConcept() {
@@ -111,10 +116,19 @@ final class PeopleSurfaceTests: XCTestCase {
     }
 
     func testAccessibilityLabelSpeaksTheRenderedName() {
-        let row = PersonRow(Self.contributor("Ana", tag: "a3f91122", organizer: true, count: 3))
+        let row = PersonRow(Self.contributor("Ana", tag: "a3f91122", organizer: true, count: 2))
         // The spoken line leads with the rendered name, states organizer as a
         // WORD (never color alone), and gives the content-derived count.
-        XCTAssertEqual(row.accessibilityLabel, "Ana · a3f91122, Organizer, 3 contributions")
+        XCTAssertEqual(row.accessibilityLabel, "Ana · a3f91122, Organizer, 2 contributions")
+        XCTAssertEqual(
+            PersonRowAccessibility.summary(row).label,
+            "Ana · a3f91122, Organizer, 2 contributions"
+        )
+        XCTAssertEqual(
+            PersonRowAccessibility.technicalLabel(row),
+            "Technical details for Ana · a3f91122"
+        )
+        XCTAssertFalse(PersonRowAccessibility.summary(row).label.contains(row.id))
     }
 
     // MARK: - Organizer only from the coordinate
@@ -154,7 +168,7 @@ final class PeopleSurfaceTests: XCTestCase {
         guard case let .empty(empty) = PeopleSurfaceState.from([]) else {
             return XCTFail("an empty community must show the empty state, not .populated([])")
         }
-        XCTAssertEqual(empty.title, "No contributors yet")
+        XCTAssertEqual(empty.title, "No known contributors yet")
         XCTAssertFalse(empty.actionLabel.isEmpty)
         XCTAssertEqual(empty.actionLabel, "Post the first update")
         XCTAssertFalse(empty.message.isEmpty)

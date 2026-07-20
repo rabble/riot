@@ -83,50 +83,173 @@ public enum AlertsListState: Equatable, Sendable {
     }
 }
 
+public enum ActiveAlertsPresentation: Equatable, Sendable {
+    case hidden
+    case visible(rows: [AlertRow], allRows: [AlertRow])
+
+    public static func from(
+        _ entries: [RiotEntry],
+        activeNamespaceID: String,
+        now: Date
+    ) -> Self {
+        let nowSeconds = UInt64(max(0, now.timeIntervalSince1970))
+        let rows = entries
+            .filter {
+                $0.namespaceID.caseInsensitiveCompare(activeNamespaceID) == .orderedSame
+                    && $0.expiresAt > nowSeconds
+            }
+            .map { AlertRow($0, activeNamespaceID: activeNamespaceID, now: now) }
+            .sorted { lhs, rhs in
+                if lhs.isOrganizer != rhs.isOrganizer { return lhs.isOrganizer }
+                if lhs.entry.createdAt != rhs.entry.createdAt {
+                    return lhs.entry.createdAt > rhs.entry.createdAt
+                }
+                return lhs.entry.entryID < rhs.entry.entryID
+            }
+        guard !rows.isEmpty else { return .hidden }
+        return .visible(rows: Array(rows.prefix(2)), allRows: rows)
+    }
+
+    public var overflowLabel: String? {
+        guard case let .visible(_, allRows) = self, allRows.count > 2 else { return nil }
+        return "View all \(allRows.count) active alerts"
+    }
+
+    public var nextExpiryDate: Date? {
+        guard case let .visible(_, allRows) = self else { return nil }
+        return allRows.map {
+            Date(timeIntervalSince1970: TimeInterval($0.entry.expiresAt))
+        }.min()
+    }
+}
+
+public enum HomePresentation {
+    public enum Section: Equatable, Sendable {
+        case activeAlerts
+        case post
+        case newswire
+        case tools
+    }
+
+    public static func sections(
+        wireHasPosts: Bool,
+        alerts: ActiveAlertsPresentation,
+        hasTools: Bool
+    ) -> [Section] {
+        var result: [Section] = []
+        if case .visible = alerts { result.append(.activeAlerts) }
+        if wireHasPosts { result.append(.post) }
+        result.append(.newswire)
+        if hasTools { result.append(.tools) }
+        return result
+    }
+}
+
+public enum AlertsAccessibility {
+    public static let viewAll = "active-alerts-view-all"
+    public static let done = "active-alerts-done"
+}
+
+/// The expiry wait is injected so tests can advance an otherwise-idle Home
+/// without waiting for wall-clock time. SwiftUI owns cancellation by keying the
+/// task to the next expiry and by tearing down the keyed community shell.
+public struct ActiveAlertsClock: Sendable {
+    public let now: @Sendable () -> Date
+    public let sleepUntil: @Sendable (Date) async throws -> Void
+
+    public init(
+        now: @escaping @Sendable () -> Date,
+        sleepUntil: @escaping @Sendable (Date) async throws -> Void
+    ) {
+        self.now = now
+        self.sleepUntil = sleepUntil
+    }
+
+    public static let live = ActiveAlertsClock(
+        now: { Date() },
+        sleepUntil: { expiry in
+            let delay = max(0, expiry.timeIntervalSinceNow)
+            let cappedDelay = min(delay, TimeInterval(UInt64.max) / 1_000_000_000)
+            try await Task.sleep(nanoseconds: UInt64(cappedDelay * 1_000_000_000))
+        }
+    )
+}
+
+public enum ActiveAlertsExpiryRefresh {
+    public static func wait(
+        until expiry: Date,
+        clock: ActiveAlertsClock
+    ) async throws -> Date {
+        try await clock.sleepUntil(expiry)
+        try Task.checkCancellation()
+        return clock.now()
+    }
+}
+
 /// The single Home entry point for a community's signed alerts. Renders
 /// `AlertsListState` inside a `RiotCard`, organizer-first rows, each opening
 /// `AlertDetailSheet`. Headline + signer render as plain `Text(verbatim:)` — no
 /// markdown auto-link. The signer line leads with the core-verified `signerTag` +
 /// organizer badge; the optional self-claimed display name is secondary decoration.
 public struct AlertsListView: View {
-    public let entries: [RiotEntry]
-    public let activeNamespaceID: String
+    public let presentation: ActiveAlertsPresentation
     /// Self-claimed display name for a signer, if known — decoration only.
     public let displayName: (String) -> String?
     @State private var selected: RiotEntry?
+    @State private var showingAll = false
+    @FocusState private var overflowFocused: Bool
+    @AccessibilityFocusState private var overflowAccessibilityFocused: Bool
     @Environment(\.colorScheme) private var colorScheme
 
-    public init(entries: [RiotEntry], activeNamespaceID: String,
-                displayName: @escaping (String) -> String? = { _ in nil }) {
-        self.entries = entries
-        self.activeNamespaceID = activeNamespaceID
+    public init(
+        presentation: ActiveAlertsPresentation,
+        displayName: @escaping (String) -> String? = { _ in nil }
+    ) {
+        self.presentation = presentation
         self.displayName = displayName
     }
 
+    @ViewBuilder
     public var body: some View {
-        RiotCard {
-            VStack(alignment: .leading, spacing: 12) {
-                Text(AlertsStrings.title.uppercased())
-                    .font(.riot(.mono, size: 12, relativeTo: .caption)).tracking(1)
-                    .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
-                switch AlertsListState.from(entries, activeNamespaceID: activeNamespaceID) {
-                case .empty(let empty):
-                    Text(empty.title).font(.riot(.body, size: 15, relativeTo: .callout))
-                        .foregroundStyle(RiotTheme.ink(for: colorScheme))
-                    Text(empty.message).font(.riot(.body, size: 13, relativeTo: .caption))
+        switch presentation {
+        case .hidden:
+            EmptyView()
+        case let .visible(rows, allRows):
+            RiotCard {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("Active alerts")
+                        .font(.riot(.mono, size: 12, relativeTo: .caption)).tracking(1)
+                        .textCase(.uppercase)
                         .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
-                case .populated(let rows):
                     ForEach(rows) { row in
                         Button { selected = row.entry } label: { rowLabel(row) }
                             .buttonStyle(.riotSecondary)
                             .accessibilityIdentifier("alert-\(row.id)")
                     }
+                    if let overflowLabel = presentation.overflowLabel {
+                        Button(overflowLabel) { showingAll = true }
+                            .buttonStyle(.riotSecondary)
+                            .frame(minHeight: 44)
+                            .focused($overflowFocused)
+                            .accessibilityFocused($overflowAccessibilityFocused)
+                            .accessibilityIdentifier(AlertsAccessibility.viewAll)
+                    }
                 }
             }
-        }
-        .accessibilityIdentifier("home-alerts-card")
-        .sheet(item: $selected) { entry in
-            AlertDetailSheet(detail: AlertDetail(entry: entry), onClose: { selected = nil })
+            .accessibilityIdentifier("home-alerts-card")
+            .sheet(item: $selected) { entry in
+                AlertDetailSheet(detail: AlertDetail(entry: entry), onClose: { selected = nil })
+            }
+            .sheet(isPresented: $showingAll, onDismiss: {
+                overflowFocused = true
+                overflowAccessibilityFocused = true
+            }) {
+                AllActiveAlertsSheet(
+                    rows: allRows,
+                    displayName: displayName,
+                    onDone: { showingAll = false }
+                )
+            }
         }
     }
 
@@ -143,6 +266,53 @@ public struct AlertsListView: View {
                 Text(row.freshness).font(.riot(.mono, size: 11, relativeTo: .caption2))
             }
             .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
+        }
+    }
+}
+
+/// Owns detail presentation while the overflow sheet is open. Keeping this
+/// selection local avoids asking the already-presenting Home card to stack a
+/// second sheet, which is unreliable on compact-width devices.
+private struct AllActiveAlertsSheet: View {
+    let rows: [AlertRow]
+    let displayName: (String) -> String?
+    let onDone: () -> Void
+    @State private var selected: RiotEntry?
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
+        NavigationStack {
+            List(rows) { row in
+                Button { selected = row.entry } label: {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(verbatim: row.headline)
+                            .font(.riot(.body, size: 17, relativeTo: .body))
+                        HStack(spacing: 6) {
+                            if row.isOrganizer {
+                                Text(AlertsStrings.organizerBadge)
+                                    .font(.riot(.mono, size: 11, relativeTo: .caption2))
+                            }
+                            Text(verbatim: displayName(row.signerID) ?? row.signerTag)
+                                .font(.riot(.mono, size: 11, relativeTo: .caption2))
+                            Spacer()
+                            Text(row.freshness)
+                                .font(.riot(.mono, size: 11, relativeTo: .caption2))
+                        }
+                        .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
+                    }
+                }
+                .accessibilityIdentifier("all-alert-\(row.id)")
+            }
+            .navigationTitle("Active alerts")
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done", action: onDone)
+                        .accessibilityIdentifier(AlertsAccessibility.done)
+                }
+            }
+        }
+        .sheet(item: $selected) { entry in
+            AlertDetailSheet(detail: AlertDetail(entry: entry), onClose: { selected = nil })
         }
     }
 }
