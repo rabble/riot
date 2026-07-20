@@ -22,6 +22,33 @@ final class RiotTabNavigationUITests: XCTestCase {
             "a unique UI-test run must always begin at first-run onboarding"
         )
         capture("01-first-run")
+
+        // The welcome screen offers a "How Riot works" explainer that renders the
+        // shared five-beat story, and a direct "Join with a link or QR" path that
+        // must open the real join sheet (not offer nearby as an exit). Exercise
+        // both before entering setup, then return to Get started so the rest of
+        // the flow runs exactly once.
+        let howItWorks = app.buttons["onboarding-how-it-works"]
+        XCTAssertTrue(howItWorks.waitForExistence(timeout: 5))
+        howItWorks.tap()
+
+        XCTAssertTrue(app.staticTexts["No central account or publishing server"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Web for reach; the app for provenance"].exists)
+        app.buttons["explainer-done"].tap()
+        XCTAssertTrue(getStarted.waitForExistence(timeout: 5))
+
+        let directJoin = app.buttons["onboarding-join-by-reference"]
+        XCTAssertTrue(directJoin.waitForExistence(timeout: 5))
+        directJoin.tap()
+        XCTAssertTrue(
+            app.textFields["join-reference-field"].waitForExistence(timeout: 5),
+            "the join welcome action must open the real link/QR join sheet"
+        )
+        app.buttons["join-reference-done"].tap()
+        XCTAssertFalse(app.buttons["find-nearby"].exists)
+        app.buttons["onboarding-back"].tap()
+        XCTAssertTrue(getStarted.waitForExistence(timeout: 5))
+
         getStarted.tap()
 
         XCTAssertFalse(

@@ -212,21 +212,39 @@ struct OpenInRiotVerifyView: View {
 private struct OnboardingView: View {
     @ObservedObject var model: RiotAppModel
     @State private var step: OnboardingStep = .first
+    @State private var setupIntent: OnboardingSetupIntent = .general
 
     var body: some View {
         switch step {
         case .welcome:
-            OnboardingWelcomeView(onContinue: { step = .setup })
+            OnboardingWelcomeView(
+                onContinue: {
+                    setupIntent = .general
+                    step = .setup
+                },
+                onJoin: {
+                    setupIntent = .join
+                    step = .setup
+                }
+            )
         case .setup:
-            OnboardingSetupView(model: model, onBack: { step = .welcome })
+            OnboardingSetupView(
+                model: model,
+                intent: setupIntent,
+                onBack: { step = .welcome }
+            )
         }
     }
 }
 
-/// Screen one: what Riot is, in plain indymedia terms. One action — get started.
+/// Screen one: what Riot is, in plain indymedia terms. Two entry actions: a
+/// general "Get started" and a direct "Join with a link or QR"; plus a "How
+/// Riot works" explainer that renders the shared five-beat story.
 private struct OnboardingWelcomeView: View {
     @Environment(\.colorScheme) private var colorScheme
     let onContinue: () -> Void
+    let onJoin: () -> Void
+    @State private var isExplainerPresented = false
 
     var body: some View {
         ScrollView {
@@ -238,22 +256,33 @@ private struct OnboardingWelcomeView: View {
                             .font(.riot(.body, size: 24, relativeTo: .title2))
                             .foregroundStyle(RiotTheme.ink(for: colorScheme))
                             .accessibilityAddTraits(.isHeader)
-                        Text("Reach the web, prove it in the app. No servers, no accounts.")
+                        Text("Reach people on the web. Check record provenance in the app—without a central account or single publishing server.")
                             .font(.riot(.body, size: 17, relativeTo: .body))
                             .foregroundStyle(RiotTheme.ink(for: colorScheme))
-                        Text("Riot is a place to report what's happening where you are — an update, an alert, a call to show up — and have your community carry it. Your posts are signed by you and shared device to device. The web can mirror them; the proof stays in the app.")
+                        Text("Riot helps a community report what is happening and carry signed records between devices. A browser mirror may display altered text or false attribution; when provenance matters, read the independently synced record in Riot.")
                             .font(.riot(.body, size: 15, relativeTo: .callout))
                             .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
+
+                        Button("How Riot works", action: { isExplainerPresented = true })
+                            .buttonStyle(.riotSecondary)
+                            .accessibilityIdentifier("onboarding-how-it-works")
 
                         Button("Get started", action: onContinue)
                             .buttonStyle(.riotPrimary)
                             .accessibilityIdentifier("onboarding-get-started")
+
+                        Button("Join with a link or QR", action: onJoin)
+                            .buttonStyle(.riotSecondary)
+                            .accessibilityIdentifier("onboarding-join-by-reference")
                     }
                 }
             }
             .padding(20)
         }
         .riotHeader(eyebrow: "Riot", "Welcome")
+        .sheet(isPresented: $isExplainerPresented) {
+            OnboardingExplainerView(onClose: { isExplainerPresented = false })
+        }
     }
 
     private func eyebrow(_ text: String) -> some View {
@@ -265,6 +294,45 @@ private struct OnboardingWelcomeView: View {
     }
 }
 
+/// The "How Riot works" explainer. Renders the shared five-beat story from
+/// `OnboardingExplainerStory` so the app and website present one mental model.
+/// Wrapped in a NavigationStack with a toolbar Done action (matching
+/// JoinByReferenceSheet) so Done stays reachable at large Dynamic Type sizes.
+private struct OnboardingExplainerView: View {
+    @Environment(\.colorScheme) private var colorScheme
+    let onClose: () -> Void
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                RiotCard {
+                    VStack(alignment: .leading, spacing: 20) {
+                        ForEach(OnboardingExplainerStory.points, id: \.title) { point in
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(point.title)
+                                    .font(.riot(.body, size: 17, relativeTo: .body))
+                                    .foregroundStyle(RiotTheme.ink(for: colorScheme))
+                                    .accessibilityAddTraits(.isHeader)
+                                Text(point.body)
+                                    .font(.riot(.body, size: 15, relativeTo: .callout))
+                                    .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
+                            }
+                        }
+                    }
+                }
+                .padding(20)
+            }
+            .riotHeader(eyebrow: "Riot", "How it works")
+            .safeAreaInset(edge: .bottom) {
+                Button("Done", action: onClose)
+                    .buttonStyle(.riotPrimary)
+                    .accessibilityIdentifier("explainer-done")
+                    .padding(20)
+            }
+        }
+    }
+}
+
 /// Screen two: name yourself (skippable) and create or join a community
 /// (required to leave onboarding). The display name reuses the existing
 /// `setDisplayName` path; create reuses `createCommunity`; join reuses the exact
@@ -273,6 +341,7 @@ private struct OnboardingWelcomeView: View {
 private struct OnboardingSetupView: View {
     @ObservedObject var model: RiotAppModel
     @Environment(\.colorScheme) private var colorScheme
+    let intent: OnboardingSetupIntent
     let onBack: () -> Void
     @State private var displayName = ""
     @State private var demoFailure: String?
@@ -280,6 +349,7 @@ private struct OnboardingSetupView: View {
     @State private var isCreatePresented = false
     @State private var isJoinPresented = false
     @State private var isFollowSitePresented = false
+    @State private var hasAppliedInitialIntent = false
     @AccessibilityFocusState private var nameErrorFocused: Bool
 
     var body: some View {
@@ -346,11 +416,14 @@ private struct OnboardingSetupView: View {
             .padding(20)
         }
         .riotHeader(eyebrow: "Riot", "Welcome")
-        .toolbar {
-            ToolbarItem(placement: .cancellationAction) {
+        .safeAreaInset(edge: .bottom) {
+            HStack {
                 Button("Back", action: onBack)
+                    .buttonStyle(.riotSecondary)
                     .accessibilityIdentifier("onboarding-back")
+                Spacer()
             }
+            .padding(20)
         }
         .sheet(isPresented: $isJoinPresented) {
             JoinByReferenceSheet(model: model, onClose: { isJoinPresented = false })
@@ -365,7 +438,14 @@ private struct OnboardingSetupView: View {
                 onClose: { isCreatePresented = false }
             )
         }
-        .onAppear { displayName = model.claimedName ?? "" }
+        .onAppear {
+            displayName = model.claimedName ?? ""
+            guard !hasAppliedInitialIntent else { return }
+            hasAppliedInitialIntent = true
+            if intent == .join {
+                isJoinPresented = true
+            }
+        }
     }
 
     private func perform(_ exit: OnboardingExit, action: @escaping () -> Void) {

@@ -72,11 +72,11 @@ public struct JoinByReferenceSheet: View {
                 .padding(20)
             }
             .riotHeader(eyebrow: "Follow", "Join with a link")
-            .toolbar {
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Done", action: onClose)
-                        .accessibilityIdentifier("join-reference-done")
-                }
+            .safeAreaInset(edge: .bottom) {
+                Button("Done", action: onClose)
+                    .buttonStyle(.riotPrimary)
+                    .accessibilityIdentifier("join-reference-done")
+                    .padding(20)
             }
         }
     }
