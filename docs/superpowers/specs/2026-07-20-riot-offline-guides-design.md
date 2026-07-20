@@ -1,7 +1,7 @@
 # Riot Marketing and Offline Guides Design
 
 Date: 2026-07-20
-Status: Design review round 3 pending
+Status: Human decision required after three design-review rounds
 
 ## Product decision
 
@@ -158,8 +158,10 @@ All pairings:
 - show a real Riot screen produced from a deterministic synthetic profile and
   captured from the exact recorded iOS prototype build;
 - visibly label the screenshot platform, app version, and prototype status;
-- include a concise visible caption and the original upstream alternative text,
-  preserved in both the rendered image and manifest;
+- give Riot screenshots concise purpose-based alternative text, leaving visible
+  UI detail to the adjacent caption and prose;
+- include a concise visible caption and preserve each Willow illustration's
+  original upstream alternative text verbatim in both HTML and the manifest;
 - repeat every material fact in prose so the image is never the only source;
 - present boundary prose and caption before the image pair in document order;
 - render each image as its own `figure` and `figcaption`;
@@ -286,7 +288,7 @@ The opportunity is framed through:
 
 - community media without one canonical publishing server;
 - local coordination that remains useful when infrastructure fails;
-- community-specific software ecosystems;
+- tools each community chooses;
 - future continuity between field exchange and remote internet sync; and
 - shared foundations for mutual aid, tenant organizing, clinics, cooperatives,
   disaster response, protests, and independent media.
@@ -836,6 +838,8 @@ sections are generated from the canonical license files into semantic `pre`
 blocks; tests decode the HTML text and require byte equality with those files
 so the visible notice cannot drift. The app copy labels the font entries
 **Marketing website only** rather than implying the offline reader loads them.
+License blocks use `white-space: pre-wrap` and overflow wrapping so they never
+cause page-level horizontal scrolling at phone width or high zoom.
 
 Opening a guide preserves the person's current community and composer draft.
 Back or Close returns to the exact prior surface.
@@ -960,9 +964,11 @@ The public site's visual system follows the Divine brand constraints:
   startup, platform, or "ecosystem" jargon;
 - no icons in the initial site; any future icon must come from Phosphor and
   retain a visible text label;
-- Divine off-white, dark green, and green as the foundation, with Riot pink and
-  blue used only as secondary accents, plus paper, hard rules, and stamped
-  labels; no gradients or colors outside the approved palette; and
+- Divine off-white `#F9F7F6`, dark green `#07241B`, and green `#27C58B` as the
+  foundation, with approved Divine Pink `#FF7FAF` and Blue `#34BBF1` used only
+  as Riot secondary accents, plus paper, hard rules, and stamped labels; no
+  gradients or colors outside the approved palette;
+- no all-caps headings or paragraphs and no right-aligned copy; and
 - paired evidence that alternates its visual weight without changing the
   audience order or separating a claim from its boundary.
 
@@ -1009,9 +1015,14 @@ The same `site.css` and branded font files restyle `/protocols/` so the public
 marketing site is visually coherent. Its source-backed editorial comparison,
 citations, route, headings, and existing contract assertions remain intact.
 This is a presentation migration, not replacement of the protocol comparison.
+Its comparison table is a named, keyboard-scrollable region with a visible
+overflow cue at narrow widths; row headers, sticky headings, captions, and
+focus outlines remain usable at 320 CSS pixels and 200% zoom.
 The canonical offline Why Riot, Using Riot, and notices documents deliberately
 retain their system-font stack and stricter no-font CSP so they remain small and
-self-contained in the apps.
+self-contained in the apps. They remain visibly related through the same
+foundational colors, spacing rhythm, link treatment, evidence labels, and
+status language.
 
 Responsive navigation must keep both **Why Riot** and **Protocols** reachable
 on small screens. The current rule that keeps only `.protocol-nav` visible must
@@ -1030,52 +1041,87 @@ base-uri 'none'; form-action 'none'; frame-ancestors 'none'`. It also uses
 `Referrer-Policy: no-referrer` and `X-Content-Type-Options: nosniff`. The guide
 documents retain their stricter no-font policy below.
 
-The checked-in deployment remains `marketing/wrangler.toml` with
-`marketing/public` as the Workers Assets directory and declares the exact
-custom-domain route:
+Deployment uses two intentionally separate checked-in Wrangler configurations:
 
-```toml
-routes = [
-  { pattern = "riot.divine.video", custom_domain = true }
-]
-```
+- `marketing/wrangler.toml` is the safe default preview configuration. It uses
+  `marketing/public`, the distinct worker name
+  `riot-protest-net-marketing-preview`, `workers_dev = true`, and no route or
+  custom domain.
+- `marketing/wrangler.production.toml` uses the production worker name
+  `riot-protest-net-marketing`, `workers_dev = false`, the same assets
+  directory, and only the explicit
+  `{ pattern = "riot.divine.video", custom_domain = true }` route.
 
-Publication uses the repository's Wrangler flow. The sole accepted production
-origin is `https://riot.divine.video`; a `workers.dev` URL or deployment
-identifier is preview evidence only. After deployment, verification fetches
-`/`, `/why-riot/`, `/guide/`, `/notices/`, `/protocols/`,
-`/guides-manifest.json`, and every declared same-origin image and font. It
-validates expected headings, CSP/referrer/`nosniff` headers, MIME types, byte
-hashes, canonical redirect behavior, and the absence of remote runtime
-requests. Wrangler success alone is not publication evidence.
+`scripts/marketing/deploy.mjs preview` runs
+`npx wrangler deploy --config wrangler.toml`, records the immutable preview URL
+and artifact hash, and performs the complete route, header, hash, TLS, and
+no-remote-request checks without touching `riot.divine.video`.
+`scripts/marketing/deploy.mjs production --preflight <record-sha256>` is the
+only supported production command. It refuses to invoke
+`npx wrangler deploy --config wrangler.production.toml` unless the referenced
+preflight record is complete, matches the exact local artifact and commit, and
+still matches live authoritative control-plane state immediately before
+mutation. The safe default `npx wrangler deploy` can therefore never bind the
+production hostname.
+
+The sole accepted production origin is `https://riot.divine.video`; a
+`workers.dev` URL or deployment identifier is preview evidence only. After
+production deployment, verification fetches `/`, `/why-riot/`, `/guide/`,
+`/notices/`, `/protocols/`, `/guides-manifest.json`, and every declared
+same-origin image and font. It validates expected headings,
+CSP/referrer/`nosniff` headers, MIME types, byte hashes, canonical redirect
+behavior, and the absence of remote runtime requests. Wrangler success alone is
+not publication evidence.
 
 The hostname currently resolves through Divine's Fastly wildcard and serves the
 Riot profile surface, including a public NIP-05 response at
-`/.well-known/nostr.json`. Before cutover, release tooling records the exact DNS
-record, TTL, TLS certificate, response headers, homepage hash, and NIP-05 bytes.
-The static deployment preserves this exact identity mapping:
-`riot` →
+`/.well-known/nostr.json`. The profile declares the verified identity
+`_@riot.divine.video`. Before cutover, release tooling records the authoritative
+Cloudflare zone state, including whether an explicit `riot` record exists,
+record IDs, types, values, proxy state and TTLs; the active Fastly wildcard
+target and service/TLS availability; the live TLS certificate, response
+headers, homepage hash; and the complete canonical
+`/.well-known/nostr.json?name=_` response.
+
+The static deployment preserves only this reviewed identity mapping:
+`_` →
 `4691d54f806fbf625ab9e9fc73294759c1f056b62b49a97b3c68ae814e2e4535`,
 with `application/json`, `Access-Control-Allow-Origin: *`, and no redirect. A
 pre-cutover mismatch blocks publication and requires explicit review; the
 deployment never overwrites a changed identity mapping from stale checked-in
-data.
+data. Requests with no query and `name=_` return the same mapping. `name=riot`,
+unknown, empty, repeated, or malformed names are not included in `names` and
+cannot inherit the `_` pubkey.
 
 Cutover may replace the existing Fastly-targeted DNS record only after the
-preview artifact passes. If DNS, TLS, identity, route, header, hash, or
-no-remote-request verification fails, release tooling restores the recorded
-Fastly DNS state and verifies rollback before reporting failure. Publication is
-complete only when DNS no longer selects the generic profile route,
-`https://riot.divine.video` serves the reviewed site and complete route set over
-valid TLS, and the preserved NIP-05 mapping passes.
+preview artifact passes. The release re-reads Cloudflare's authoritative zone
+and custom-domain state and uses compare-and-swap semantics: any concurrent
+change from the recorded snapshot aborts without mutation. The existing Fastly
+service and TLS configuration remain available for at least the maximum
+relevant TTL.
+
+If DNS, TLS, identity, route, header, hash, or no-remote-request verification
+fails, rollback first removes the Cloudflare custom-domain binding, then removes
+any explicit `riot` override created by cutover or restores the exact
+pre-existing record by provider record ID and prior fields. It never invents an
+explicit CNAME when the original state relied on the wildcard. After the
+authoritative state is exact, it waits through the recorded TTL/propagation
+window and verifies authoritative DNS plus at least two independent recursive
+resolvers, Fastly HTML and TLS, and the canonical `_` NIP-05 response before
+reporting rollback success. Publication is complete only when DNS no longer
+selects the generic profile route, `https://riot.divine.video` serves the
+reviewed site and complete route set over valid TLS, and the `_` NIP-05 mapping
+passes.
 
 The release record captures the Wrangler deployment identifier, exact production
-origin, UTC publication time, deployed commit, pre/post-cutover DNS and TLS
-evidence, NIP-05 evidence, rollback record or not-needed result, and response
-evidence. It also proves that `/` contains all eight ordered sections, the three
-audience boundaries, and the exact current/planned and privacy qualifications;
-that no legacy screenshot URL is requested; and that an install call to action
-is absent unless its release metadata passed review.
+origin, UTC publication time, deployed commit, preview/preflight artifact hashes,
+pre/post-cutover provider and resolver DNS state, Cloudflare custom-domain
+binding state, Fastly/TLS evidence, canonical `_` NIP-05 evidence, rollback
+record or not-needed result, and response evidence. It also proves that `/`
+contains all eight ordered sections, the three audience boundaries, and the
+exact current/planned and privacy qualifications; that no legacy screenshot URL
+is requested; and that an install call to action is absent unless its release
+metadata passed review.
 
 ## Web and embedded-document security
 
@@ -1228,8 +1274,10 @@ written, failing tests establish:
     source/public/deployed mirrors, all required copyright and OFL notices are
     visible, and undeclared or unused font/icon files fail;
 31. the release preflight and acceptance checks require the exact
-    `https://riot.divine.video` origin, valid DNS/TLS cutover, complete route
-    set, preserved full NIP-05 mapping, and verified rollback on failure; and
+    `https://riot.divine.video` origin, route-free preview configuration,
+    preflight artifact binding, compare-and-swap DNS/TLS cutover, complete route
+    set, the full `_` NIP-05 mapping with unknown names unmapped, and ordered
+    custom-domain/DNS rollback on failure; and
 32. a download or install call to action fails unless its exact reviewed release
     URL, platform requirements, and release metadata are present.
 
@@ -1283,25 +1331,32 @@ Implementation is complete only when:
 21. notices discovery, all four full local license files, accurate asset scope,
     and state/focus-preserving
     return behavior pass on web, iOS, macOS, and Android;
-22. `https://riot.divine.video` serves the complete route set with valid DNS and
-    TLS, expected headings, hashes, canonical redirect behavior, headers,
-    preserved full NIP-05 mapping, and zero remote runtime requests;
-23. failed cutover verification restores and proves the exact recorded Fastly
-    DNS state before failure is reported;
-24. the release record contains the deployment identifier, exact production
-    origin, UTC publication time, deployed commit, pre/post DNS and TLS state,
-    NIP-05 evidence, rollback result, and response evidence;
-25. phone and desktop marketing-site checks prove the paired story, navigation,
+22. the default preview deploy has a distinct worker name, no route/custom
+    domain, cannot mutate `riot.divine.video`, and produces a complete preflight
+    record bound to the exact artifact and commit;
+23. `https://riot.divine.video` serves the complete route set with valid
+    authoritative and recursive DNS and TLS, expected headings, hashes,
+    canonical redirect behavior, headers, the full `_` NIP-05 mapping, no
+    mapping for unknown names, and zero remote runtime requests;
+24. failed cutover verification removes the Cloudflare custom-domain binding,
+    deletes or restores explicit records to exact provider state, waits through
+    propagation, and proves the Fastly wildcard, HTML, TLS, and canonical `_`
+    identity before failure is reported;
+25. the release record contains the deployment identifier, exact production
+    origin, UTC publication time, deployed commit, preview/preflight hashes,
+    provider and resolver DNS state, Cloudflare binding state, Fastly/TLS state,
+    canonical `_` NIP-05 evidence, rollback result, and response evidence;
+26. phone and desktop marketing-site checks prove the paired story, navigation,
     typography, contrast, focus, zoom, reduced-motion, and no-gradient surface
     contracts;
-26. a public install call to action is absent unless reviewed release metadata
+27. a public install call to action is absent unless reviewed release metadata
     exists;
-27. automated and required manual visual/accessibility checks pass;
-28. iOS tests and an iOS build pass;
-29. macOS tests and a macOS build pass;
-30. Android JVM tests, relevant instrumented tests, lint, and an APK build pass;
-31. built `.app` and APK artifacts contain the exact guide bundle; and
-32. repository formatting, linting, tests, and coverage floors remain green.
+28. automated and required manual visual/accessibility checks pass;
+29. iOS tests and an iOS build pass;
+30. macOS tests and a macOS build pass;
+31. Android JVM tests, relevant instrumented tests, lint, and an APK build pass;
+32. built `.app` and APK artifacts contain the exact guide bundle; and
+33. repository formatting, linting, tests, and coverage floors remain green.
 
 ### No-network rehearsal
 
@@ -1396,8 +1451,10 @@ Expected scope includes:
 - `marketing/index.html`
 - `marketing/protocols/index.html`
 - `marketing/README.md`
-- marketing deployment/header configuration, including a generated `_headers`
-  file if that is the supported Workers Assets mechanism
+- the route-free `marketing/wrangler.toml`, explicit
+  `marketing/wrangler.production.toml`, deployment/preflight/rollback tooling,
+  and header configuration including a generated `_headers` file if that is the
+  supported Workers Assets mechanism
 - the exact `marketing/.well-known/nostr.json` identity mirror and its public
   deployment copy
 - generated `marketing/why-riot/**`, `marketing/guide/**`, and public mirrors
