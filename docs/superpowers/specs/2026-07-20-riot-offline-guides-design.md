@@ -1,7 +1,7 @@
 # Riot Marketing and Offline Guides Design
 
 Date: 2026-07-20
-Status: Design review round 2 pending
+Status: Design review round 3 pending
 
 ## Product decision
 
@@ -180,8 +180,10 @@ exact artwork, grant date, durable evidence, exact asset IDs and SHA-256
 digests, license expression, required copyright and attribution text, NOTICE
 obligations or an explicit statement that none apply, acquisition reviewer,
 and license reviewer. If those fields cannot be recorded, distribution stops
-before vendoring and the guide uses original Riot-authored diagrams until the
-record is complete.
+before vendoring and the release returns through design review. This design has
+no silent or pre-approved substitute artwork path: the paired story, captions,
+manifests, tests, and acceptance criteria all require these exact three Willow
+assets.
 
 The exact initial Willow asset set is:
 
@@ -478,8 +480,14 @@ closing block is a summary, not a correction.
 
 - **Communities:** open Using Riot, view the current prototype evidence, or
   follow development.
-- **Partners:** read the status/evidence section and project contact path.
+- **Partners:** read the status/evidence section or follow the public build.
 - **Builders:** open the Protocol field guide or source repository.
+
+The initial release links **source repository** to
+`https://github.com/rabble/riot` and **build status** to
+`https://github.com/rabble/riot/actions`. It does not promise a partner contact
+path because no reviewed destination has been supplied. Adding one requires an
+explicit destination and copy review.
 
 No call to action requires connectivity for understanding the guide itself.
 
@@ -682,6 +690,9 @@ guides/
       LICENSE-EVIDENCE.md
       LICENSE-MIT
       LICENSE-APACHE
+    licenses/
+      Bricolage-Grotesque-OFL-1.1.txt
+      Inter-OFL-1.1.txt
 ```
 
 The documents use semantic HTML and shared local CSS. They use system font
@@ -735,6 +746,7 @@ marketing/guide/
 marketing/assets/guide.css
 marketing/assets/riot/
 marketing/assets/willow/
+marketing/assets/licenses/
 marketing/notices/
 marketing/public/guides-manifest.json
 marketing/public/why-riot/
@@ -742,6 +754,7 @@ marketing/public/guide/
 marketing/public/assets/guide.css
 marketing/public/assets/riot/
 marketing/public/assets/willow/
+marketing/public/assets/licenses/
 marketing/public/notices/
 apps/ios/Riot/Resources/Guides/
 apps/android/app/src/main/assets/guides/
@@ -785,6 +798,17 @@ oldest supported device class; each guide must show its title and first
 paragraph within one second and image decoding must add no more than 64 MiB to
 the documentation reader's measured resident memory.
 
+The benchmark matrix is fixed to an iPhone SE (2nd generation) on iOS 17, a
+base 8 GiB Apple M1 Mac on macOS 14, and a 2 GiB API 26 Android emulator using
+the repository's deterministic device profile. Each uses the release build,
+airplane/no-network mode, a terminated app process, and five cold opens per
+guide. Instrumentation records monotonic time from user activation until the
+title and first paragraph are painted, plus reader-process resident memory
+immediately before activation and peak resident memory during the next five
+seconds. Every run, not merely the median, must meet both thresholds. The
+implementation plan assigns a named owner to each benchmark and accessibility
+rehearsal.
+
 ## Native app integration
 
 ### Help & Guides entry points
@@ -805,11 +829,13 @@ The entry points use the same labels on all platforms:
 Both guide footers contain **Third-party notices**. The Help & Guides surface
 also exposes **Third-party notices** as a subordinate legal-and-credits row, not
 as a third first-class guide card. The notices page displays the local
-attribution and license summary, renders the complete text of both bundled
-licenses, and identifies the exact Willow asset IDs. Its license sections are
-generated from the canonical license files into semantic `pre` blocks; tests
-decode the HTML text and require byte equality with those files so the visible
-notice cannot drift.
+attribution and license summary, identifies the exact Willow and marketing-font
+asset IDs and their distribution scope, and renders the complete text of the
+Willow MIT and Apache licenses plus both font-specific OFL files. Its license
+sections are generated from the canonical license files into semantic `pre`
+blocks; tests decode the HTML text and require byte equality with those files
+so the visible notice cannot drift. The app copy labels the font entries
+**Marketing website only** rather than implying the offline reader loads them.
 
 Opening a guide preserves the person's current community and composer draft.
 Back or Close returns to the exact prior surface.
@@ -932,12 +958,43 @@ The public site's visual system follows the Divine brand constraints:
   from checked-in, same-origin font files;
 - candid, plain language with collective optimism and a small punk edge, without
   startup, platform, or "ecosystem" jargon;
-- Phosphor icons when an icon is needed, with a visible text label;
+- no icons in the initial site; any future icon must come from Phosphor and
+  retain a visible text label;
 - Divine off-white, dark green, and green as the foundation, with Riot pink and
   blue used only as secondary accents, plus paper, hard rules, and stamped
   labels; no gradients or colors outside the approved palette; and
 - paired evidence that alternates its visual weight without changing the
   audience order or separating a claim from its boundary.
+
+The initial marketing asset catalog is exact:
+
+| Local file | Upstream version and immutable source | Bytes | SHA-256 | Use |
+| --- | --- | ---: | --- | --- |
+| `assets/fonts/bricolage-grotesque-latin.woff2` | Google Fonts Bricolage Grotesque v9, `https://fonts.gstatic.com/s/bricolagegrotesque/v9/3y9H6as8bTXq_nANBjzKo3IeZx8z6up5BeSl5jBNz_19PpbpMXuECpwUxJBOm_OJWiawA1XphjhQYg.woff2` | 41,236 | `4fd48b2c1ab27220e71f15f990550261b35245c3bdfd8d8025b4bdac0459ee2d` | normal 700 and 800 headings |
+| `assets/fonts/inter-latin.woff2` | Google Fonts Inter v20, `https://fonts.gstatic.com/s/inter/v20/UcC73FwrK3iLTeHuS_nVMrMxCp50SjIa1ZL7W0Q5nw.woff2` | 48,432 | `c940764593d0fe5d596be327ca7558855e018039fb78509aa21921fd3644c3e4` | normal 400 and 600 copy/UI |
+
+Both files are distributed under SIL Open Font License 1.1. Bricolage
+Grotesque carries `Copyright 2022 The Bricolage Grotesque Project Authors
+(https://github.com/ateliertriay/bricolage)`; Inter carries `Copyright 2020 The
+Inter Project Authors (https://github.com/rsms/inter)`. Their complete,
+unmodified license files are pinned respectively to Google Fonts commits
+`6ce172f74aa355ea43eb964fa4a91570a4d3064d` and
+`0b58fb370093f9a9f4ff785d94405710b79de67c`, with license-file SHA-256 values
+`4b5a7d8f37f5602621c8a8d7358a6a2e71317e6c231c661e15aef0275d3e07ba`
+and `5b9321a4298cfeb6b34354164a1c3afc3db114569984c502b9b35d988fd58c57`.
+
+`marketing/assets/third-party-manifest.json` is the canonical typed catalog for
+those two font files and two license files. It records local path, official
+source, upstream version or commit, byte count, SHA-256, MIME type, family,
+style, weight declarations, license expression, copyright, acquisition time,
+acquisition reviewer, and a distinct license reviewer. Its
+`marketing/public/assets/third-party-manifest.json` mirror and every cataloged
+asset are byte-identical and hash-verified locally and after deployment.
+
+The initial design uses no Phosphor glyph, font, SVG, or other icon asset.
+Navigation and calls to action use visible text and typographic separators.
+Tests reject any icon asset or icon-only control; adding one requires an updated
+catalog, license/notice record, accessible name, and design review.
 
 The homepage and its deployment mirror are byte-identical checked-in artifacts
 at `marketing/index.html` and `marketing/public/index.html`. They reference the
@@ -947,6 +1004,14 @@ history until a separately reviewed cleanup, but no new public route may load
 or link to them. Homepage presentation lives in the checked-in same-origin
 `marketing/assets/site.css` and its byte-identical public mirror; font files are
 separate same-origin assets rather than data URLs.
+
+The same `site.css` and branded font files restyle `/protocols/` so the public
+marketing site is visually coherent. Its source-backed editorial comparison,
+citations, route, headings, and existing contract assertions remain intact.
+This is a presentation migration, not replacement of the protocol comparison.
+The canonical offline Why Riot, Using Riot, and notices documents deliberately
+retain their system-font stack and stricter no-font CSP so they remain small and
+self-contained in the apps.
 
 Responsive navigation must keep both **Why Riot** and **Protocols** reachable
 on small screens. The current rule that keeps only `.protocol-nav` visible must
@@ -966,20 +1031,51 @@ base-uri 'none'; form-action 'none'; frame-ancestors 'none'`. It also uses
 documents retain their stricter no-font policy below.
 
 The checked-in deployment remains `marketing/wrangler.toml` with
-`marketing/public` as the Workers Assets directory. Publication uses the
-repository's Wrangler flow. After deployment, verification fetches `/`,
-`/why-riot/`, `/guide/`, `/notices/`, `/protocols/`,
-`/guides-manifest.json`, and every declared same-origin image; it validates
-expected headings, CSP/referrer/`nosniff` headers, MIME types, byte hashes,
-redirect behavior, and the absence of remote runtime requests. Wrangler success
-alone is not publication evidence.
+`marketing/public` as the Workers Assets directory and declares the exact
+custom-domain route:
 
-The release record captures the Wrangler deployment identifier, production
-origin, UTC publication time, deployed commit, and response evidence. It also
-proves that `/` contains all eight ordered sections, the three audience
-boundaries, and the exact current/planned and privacy qualifications; that no
-legacy screenshot URL is requested; and that an install call to action is
-absent unless its release metadata passed review.
+```toml
+routes = [
+  { pattern = "riot.divine.video", custom_domain = true }
+]
+```
+
+Publication uses the repository's Wrangler flow. The sole accepted production
+origin is `https://riot.divine.video`; a `workers.dev` URL or deployment
+identifier is preview evidence only. After deployment, verification fetches
+`/`, `/why-riot/`, `/guide/`, `/notices/`, `/protocols/`,
+`/guides-manifest.json`, and every declared same-origin image and font. It
+validates expected headings, CSP/referrer/`nosniff` headers, MIME types, byte
+hashes, canonical redirect behavior, and the absence of remote runtime
+requests. Wrangler success alone is not publication evidence.
+
+The hostname currently resolves through Divine's Fastly wildcard and serves the
+Riot profile surface, including a public NIP-05 response at
+`/.well-known/nostr.json`. Before cutover, release tooling records the exact DNS
+record, TTL, TLS certificate, response headers, homepage hash, and NIP-05 bytes.
+The static deployment preserves this exact identity mapping:
+`riot` →
+`4691d54f806fbf625ab9e9fc73294759c1f056b62b49a97b3c68ae814e2e4535`,
+with `application/json`, `Access-Control-Allow-Origin: *`, and no redirect. A
+pre-cutover mismatch blocks publication and requires explicit review; the
+deployment never overwrites a changed identity mapping from stale checked-in
+data.
+
+Cutover may replace the existing Fastly-targeted DNS record only after the
+preview artifact passes. If DNS, TLS, identity, route, header, hash, or
+no-remote-request verification fails, release tooling restores the recorded
+Fastly DNS state and verifies rollback before reporting failure. Publication is
+complete only when DNS no longer selects the generic profile route,
+`https://riot.divine.video` serves the reviewed site and complete route set over
+valid TLS, and the preserved NIP-05 mapping passes.
+
+The release record captures the Wrangler deployment identifier, exact production
+origin, UTC publication time, deployed commit, pre/post-cutover DNS and TLS
+evidence, NIP-05 evidence, rollback record or not-needed result, and response
+evidence. It also proves that `/` contains all eight ordered sections, the three
+audience boundaries, and the exact current/planned and privacy qualifications;
+that no legacy screenshot URL is requested; and that an install call to action
+is absent unless its release metadata passed review.
 
 ## Web and embedded-document security
 
@@ -1108,8 +1204,9 @@ written, failing tests establish:
 22. Willow figures remain comprehensible on opaque paper panels in light, dark,
     forced-colors, and increased-contrast modes at 200% zoom;
 23. **Third-party notices** is reachable from both guide footers and Help &
-    Guides, contains both full license texts, and returns with origin, section,
-    scroll, keyboard focus, and assistive-technology focus preserved;
+    Guides, contains the four complete license files with accurate asset scope,
+    and returns with origin, section, scroll, keyboard focus, and
+    assistive-technology focus preserved;
 24. manual VoiceOver, TalkBack, macOS keyboard/screen-reader, dark-mode,
     forced-colors, increased-contrast, and 200%-zoom passes cover every paired
     figure and notices path; and
@@ -1120,9 +1217,20 @@ written, failing tests establish:
 27. the source and deployment homepage are byte-identical, the complete public
     route set is present, and mobile navigation keeps Why Riot and Protocols
     reachable without script;
-28. site-wide static-resource tests reject JavaScript, remote runtime assets,
-    non-approved fonts or icons, and gradients on layout surfaces; and
-29. a download or install call to action fails unless its exact reviewed release
+28. public marketing-page tests reject JavaScript, remote runtime assets,
+    non-cataloged fonts or icons, and gradients on layout surfaces, while
+    canonical guide tests require their documented system-font/no-font-resource
+    exception;
+29. `/protocols/` uses the branded site stylesheet and font catalog without
+    changing its editorial comparison, citations, headings, route, or existing
+    contract assertions;
+30. every font and license byte matches the exact third-party catalog and
+    source/public/deployed mirrors, all required copyright and OFL notices are
+    visible, and undeclared or unused font/icon files fail;
+31. the release preflight and acceptance checks require the exact
+    `https://riot.divine.video` origin, valid DNS/TLS cutover, complete route
+    set, preserved full NIP-05 mapping, and verified rollback on failure; and
+32. a download or install call to action fails unless its exact reviewed release
     URL, platform requirements, and release metadata are present.
 
 The implementation plan must name the exact first failing test for each work
@@ -1141,48 +1249,59 @@ Implementation is complete only when:
    approved sections in order using Divine typography, icon, surface, voice,
    and no-script constraints;
 5. no new public route references the four legacy generic screenshots;
-6. new guide structural/security contracts pass;
-7. `/why-riot/` contains the three approved audience depths;
-8. `/guide/` contains every approved task and platform/status boundary;
-9. the two-path visual distinguishes nearby exchange, internet seed sync, and
+6. `/protocols/` uses the shared branded marketing stylesheet and fonts while
+   preserving its editorial comparison, citations, headings, route, and
+   existing contract assertions;
+7. the exact two-font/two-license third-party catalog, source/public mirrors,
+   hashes, MIME types, copyrights, reviewer records, and notices pass, with no
+   Phosphor or other icon asset present;
+8. new guide structural/security contracts pass, including the intentional
+   system-font and no-font-resource contract;
+9. `/why-riot/` contains the three approved audience depths;
+10. `/guide/` contains every approved task and platform/status boundary;
+11. the two-path visual distinguishes nearby exchange, internet seed sync, and
    public web rendering;
-10. all three audience pairings contain the approved Riot and Willow visuals,
+12. all three audience pairings contain the approved Riot and Willow visuals,
    platform/build labels, opaque Willow panels, accurate boundary captions, and
    equivalent prose;
-11. the three Willow assets and license files import from the canonical shared
+13. the three Willow assets and license files import from the canonical shared
    catalog with no field or byte drift, and the complete license-evidence gate
    passes;
-12. all twelve platform-qualified Riot screenshot derivatives satisfy the
+14. all twelve platform-qualified Riot screenshot derivatives satisfy the
     capture, synthetic-data, privacy, freshness, metadata, and platform-label
     contracts;
-13. public Newswire plaintext, gateway browser trust, pseudonym correlation,
+15. public Newswire plaintext, gateway browser trust, pseudonym correlation,
    cooperative read control, and non-recall boundaries are explicit;
-14. current and planned capabilities are labeled where first mentioned;
-15. the web request set before deliberate external navigation is exactly the
+16. current and planned capabilities are labeled where first mentioned;
+17. the web request set before deliberate external navigation is exactly the
     top-level document plus manifest-declared same-origin assets;
-16. deployed CSP, `nosniff`, MIME, and referrer headers match the contract;
-17. phone and desktop screenshots show no clipping, overlap, or page-level
+18. deployed CSP, `nosniff`, MIME, and referrer headers match the contract;
+19. phone and desktop screenshots show no clipping, overlap, or page-level
     horizontal overflow at 320 CSS pixels and target viewports;
-18. image size, pixel, lazy/eager, document, bundle, offline-open-time, and
+20. image size, pixel, lazy/eager, document, bundle, offline-open-time, and
     measured-memory budgets pass;
-19. notices discovery, full local license text, and state/focus-preserving
+21. notices discovery, all four full local license files, accurate asset scope,
+    and state/focus-preserving
     return behavior pass on web, iOS, macOS, and Android;
-20. the deployed production origin serves the complete route set with expected
-    headings, hashes, redirect behavior, headers, and zero remote runtime
-    requests;
-21. the release record contains the deployment identifier, production origin,
-    UTC publication time, deployed commit, and response evidence;
-22. phone and desktop marketing-site checks prove the paired story, navigation,
+22. `https://riot.divine.video` serves the complete route set with valid DNS and
+    TLS, expected headings, hashes, canonical redirect behavior, headers,
+    preserved full NIP-05 mapping, and zero remote runtime requests;
+23. failed cutover verification restores and proves the exact recorded Fastly
+    DNS state before failure is reported;
+24. the release record contains the deployment identifier, exact production
+    origin, UTC publication time, deployed commit, pre/post DNS and TLS state,
+    NIP-05 evidence, rollback result, and response evidence;
+25. phone and desktop marketing-site checks prove the paired story, navigation,
     typography, contrast, focus, zoom, reduced-motion, and no-gradient surface
     contracts;
-23. a public install call to action is absent unless reviewed release metadata
+26. a public install call to action is absent unless reviewed release metadata
     exists;
-24. automated and required manual visual/accessibility checks pass;
-25. iOS tests and an iOS build pass;
-26. macOS tests and a macOS build pass;
-27. Android JVM tests, relevant instrumented tests, lint, and an APK build pass;
-28. built `.app` and APK artifacts contain the exact guide bundle; and
-29. repository formatting, linting, tests, and coverage floors remain green.
+27. automated and required manual visual/accessibility checks pass;
+28. iOS tests and an iOS build pass;
+29. macOS tests and a macOS build pass;
+30. Android JVM tests, relevant instrumented tests, lint, and an APK build pass;
+31. built `.app` and APK artifacts contain the exact guide bundle; and
+32. repository formatting, linting, tests, and coverage floors remain green.
 
 ### No-network rehearsal
 
@@ -1192,7 +1311,8 @@ network connectivity disabled:
 - open both guides before joining a community;
 - open both guides from the chooser and an active community;
 - navigate between every local section;
-- open Third-party notices from each origin and verify both full license texts;
+- open Third-party notices from each origin and verify all four full license
+  files and their accurate distribution scope;
 - verify essential text, every visual, opaque Willow panels, platform labels,
   licenses, and troubleshooting content;
 - verify lazy images appear without a network request, blank state, or scroll
@@ -1205,6 +1325,12 @@ network connectivity disabled:
 Before public deployment, conduct a lightweight moderated or questionnaire
 review with at least six people: two community/organizer readers, two
 partner/journalist readers, and two builder/protocol readers.
+
+The concise homepage is the first stimulus. Before opening Why Riot,
+participants identify which of its three paths is for them and distinguish the
+Willow possibility from the current Riot evidence in that pairing. They then
+open the matching deeper section for the remaining questions. The release
+record keeps homepage and deeper-guide results separately.
 
 After reading the relevant depth, at least five of six must correctly explain:
 
@@ -1268,13 +1394,16 @@ Expected scope includes:
   the approved Willow Visual Documentation System
 - `docs/evidence/guides/screenshots/**`
 - `marketing/index.html`
+- `marketing/protocols/index.html`
 - `marketing/README.md`
 - marketing deployment/header configuration, including a generated `_headers`
   file if that is the supported Workers Assets mechanism
+- the exact `marketing/.well-known/nostr.json` identity mirror and its public
+  deployment copy
 - generated `marketing/why-riot/**`, `marketing/guide/**`, and public mirrors
 - generated marketing image, notices, and license mirrors
-- checked-in same-origin Bricolage Grotesque, Inter, and any Phosphor icon assets
-  used by the marketing site, plus their public mirrors and license notices
+- the exact two checked-in same-origin font files, two OFL license files,
+  third-party manifest, shared site stylesheet, and their public mirrors
 - `scripts/guides/**`
 - focused marketing contract scripts
 - shared Apple guide reader, navigation, tests, and both Xcode project files
