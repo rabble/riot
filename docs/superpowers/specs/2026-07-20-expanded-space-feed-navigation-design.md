@@ -1,7 +1,7 @@
 # Expanded-Space, Feed-First Navigation Design
 
 **Date:** 2026-07-20
-**Status:** User-approved design; design-review gate revision 1
+**Status:** User-approved design; design-review gate revision 2
 **Scope:** Shared SwiftUI iPhone and macOS shell. No Rust, FFI, database-format, Android, or network-protocol changes.
 
 ## 1. Problem
@@ -60,7 +60,7 @@ Spaces remain the first-level navigation. Only the active space expands to
 show its supported local destinations.
 
 ```text
-YOUR SPACE
+YOUR SPACE                     ← conditional; empty in this slice
   Rabble
 
 COMMUNITIES
@@ -117,6 +117,9 @@ People, or Apps child. A later lower-layer slice may make it a read surface
 after the signed manifest needed by `resolve_composite_site` is durably
 available through the Swift repository boundary.
 
+The last refresh result is session-local unless a separate persistence design
+lands later; the row never implies that transient feedback survives relaunch.
+
 `CommunityRelationship.personal` exists in the generated contract, but
 production code creates no Personal registry record. The **Your space** section
 is therefore omitted when empty and is not an acceptance requirement for this
@@ -152,6 +155,9 @@ The phone cannot use a persistent sidebar, so it keeps the community selector
 in the header. The bottom destinations align with the same product model:
 Feed, People, Content, and Apps. Selecting a different community defaults to
 Feed.
+
+The iPhone chooser exposes the same four add-space branches as macOS: Create
+community, Join with link or QR, Follow a site, and Find nearby.
 
 This keeps route names and scope consistent across the shared SwiftUI shell
 without forcing desktop chrome onto a compact device.
@@ -266,6 +272,24 @@ discovery automatically, matching the current `ConnectionStatusView.onAppear`
 behavior. It also installs `onSpaceJoined`, reannouncement, and teardown
 callbacks before discovery begins.
 
+Automatic discovery is gated by a device-local
+`NearbyDiscoveryPreference`. It defaults to enabled to preserve current
+behavior. An explicit Stop sets the preference to paused; paused survives route
+changes, community switches, keyed-shell reconstruction, and app relaunch
+until the person explicitly chooses Restart. The preference contains no
+community or peer identity.
+
+Every active transport scope receives a typed
+`NearbyScopeToken(generation, communityID)`. The owner above the keyed
+`CommunityShellView` increments and invalidates the generation before stopping
+or switching. BLE discovery, local-network discovery, route selection, pairing
+decisions, coordinator state, space adoption, preview, import acceptance, and
+data-changed callbacks capture the token and require equality before reading
+`currentSpace` or changing UI/store state. A mismatch cancels/disconnects that
+work without disclosing metadata. Teardown order is: invalidate token, clear
+callbacks, stop/disconnect transport, unregister the transition token, then
+construct the new scope.
+
 State maps to presentation exactly:
 
 - `idle`, `looking`, `connecting`, `gettingLatest`, `caughtUp`,
@@ -281,11 +305,19 @@ State maps to presentation exactly:
   existing Settings/Retry recovery; and
 - stopped or dismissed work stays inert until the person restarts discovery.
 
+While paused, the footer says **Nearby exchange paused** and offers the
+secondary **Restart** action in its popover/settings detail. It never promotes
+Restart into Feed or primary navigation.
+
 The adapter serializes attention from the controller's single state: only one
 sheet/popover is active, and a newer state replaces or dismisses an obsolete
 one. macOS uses a popover for inspection/status and a sheet or confirmation
 dialog for consent; iPhone uses sheets/confirmation dialogs. These
 presentations do not replace the Feed.
+
+Bilateral confirmation completes before either namespace metadata or sync
+frames are disclosed. Generation checks supplement rather than replace
+`MutualConfirmationGate` and `NearbyImportAdmission`.
 
 Feed recovery actions that previously navigated to Nearby instead open the
 same contextual sync/recovery presentation.
@@ -315,12 +347,13 @@ contract.
 Use typed identities and separate navigation from repository state:
 
 ```swift
-enum SidebarItemID {
+enum SidebarItemID: Hashable, Sendable {
     case community(namespaceID: String)
+    case communityDestination(namespaceID: String, destination: RiotDestination)
     case followedSite(root: String)
 }
 
-enum SpaceSelectionState {
+enum SpaceSelectionState: Equatable, Sendable {
     case none
     case activeCommunity(namespaceID: String, destination: RiotDestination)
     case followedSite(root: String)
@@ -344,13 +377,33 @@ core registry/following lists
   → CommunityTransitionGate.prepare
   → repository switch/open
   → success: keyed CommunityShellView + Feed default
-  → failure: old core context remains active; target row shows Retry
+  → thrown error: reconcile actual active namespace
+      → target active: degraded success + persistence recovery
+      → previous active: target row shows Retry
+      → other/unknown active: fail-closed mismatch recovery
   → select child destination without switching core context
 ```
 
-When a switch fails and a previous community is active, sidebar/detail
-selection returns to that active community while the failed target row retains
-an inline attention state and Retry. When no previous community exists, the
+Community activation never equates a thrown error with "the old context is
+still active." The repository reconciles every outcome against
+`activeCommunity()` after the mutation attempt:
+
+```swift
+enum CommunityActivationOutcome: Equatable, Sendable {
+    case activated(namespaceID: String)
+    case activatedPersistenceDegraded(namespaceID: String, code: String)
+    case targetUnavailable(target: String, previous: String?, code: String)
+    case activeNamespaceMismatch(expected: String, actual: String?)
+}
+```
+
+If Rust activated the target but the Swift snapshot failed to persist, the
+shell follows the reconciled target and shows a persistence-recovery warning;
+it never continues drawing the old community over the new core context. If the
+old namespace remains active, sidebar/detail selection returns to it while the
+failed target row retains inline attention and Retry. An unexpected third or
+unknown namespace is a fail-closed mismatch: stale detail is removed and
+recovery names no content as active. When no previous community exists, the
 sidebar remains and the detail pane shows target-scoped recovery. Launch-level
 recovery is reserved for the case where there is no usable active context.
 
@@ -370,11 +423,14 @@ data-changed signal.
 `reload()` refreshes both raw community rows and followed-site rows.
 `refreshFromStore()` does the same, so bootstrap, sync import, follow/refresh,
 and community changes cannot leave either sidebar section stale.
+The two reads form one `SidebarSnapshot`, but each section preserves its
+last-known rows if the other metadata call transiently fails; one failed list
+call cannot make unrelated retained rows appear to disappear.
 
-Deep-link activation returns an explicit success/result. Riot resolves or
-presents a held record only after the repository's active namespace equals the
-link namespace; a failed target switch leaves the old context active and emits
-no verified/detail outcome.
+Deep-link activation consumes `CommunityActivationOutcome`. Riot resolves or
+presents a held record only for `.activated` or
+`.activatedPersistenceDegraded` after a second active-namespace equality check.
+Unavailable or mismatch outcomes emit no verified/detail result.
 
 ### 7.3 View reuse
 
@@ -426,6 +482,9 @@ Content is built only from current treatment-aware core projections. It never
 reconstructs raw payloads: hidden records remain interstitials, tombstoned
 records expose no payload, correction plaintext remains redacted where the
 projection redacts it, and future-quarantined entries never enter the archive.
+Post, editorial, and tool callbacks retain their expected full community
+identity or execution-session scope and recheck it at commit; hiding a stale
+control is not treated as authorization or cancellation by itself.
 
 The current modal `CommunityChooserView` remains useful on iPhone and as a
 fallback/add-space flow. It is no longer macOS's primary way to switch among
@@ -458,6 +517,9 @@ migration, FFI field, secret handling, or internet fallback.
   that disappears must not leave a stale callback capable of committing.
 - **Community switch with a draft:** persist the old community's draft through
   the transition gate; never repoint it to the new community.
+- **Failure after core activation:** reconcile to `activeCommunity()`. Follow a
+  target that actually activated with a degraded-persistence warning; never
+  draw the old detail over a new core namespace.
 - **Community leave/removal:** retain the existing destructive discard guard.
 - **Sync requiring attention:** show one contextual affordance. Dismissal or
   failure does not alter Feed selection or imply data was accepted.
@@ -483,9 +545,11 @@ slices:
    RED: destination/content projection tests. GREEN: recomposed existing views.
 3. **Ambient sync and transition/deep-link safety** — shell-owned discovery and
    exact presentation mapping, wrong-community admission, explicit switch
-   result, stale callback teardown. RED: state-mapping, failed deep-link,
-   A→B→C delayed-callback, and import-admission regressions. GREEN: relocate the
-   existing flows without weakening consent.
+   reconciliation result, generation-guarded callback teardown, and persistent
+   Stop intent. RED: state mapping, failure-after-core-activation, failed
+   deep-link, A→B→C delayed callbacks, Stop→switch→switch-back→relaunch, and
+   import-admission regressions. GREEN: relocate the existing flows without
+   weakening consent.
 4. **Adaptive/accessibility delivery** — iPhone tab alignment, semantic macOS
    outline, Dynamic Type, keyboard commands, UI tests, and visual review. RED:
    shell/UI assertions. GREEN: both platforms and target membership.
@@ -524,9 +588,15 @@ their targets consume them.
 - hidden/tombstoned/future-quarantined content never regains raw payload;
 - community switching prepares before repository mutation, preserves drafts,
   closes stale tool/detail callbacks, and stops/rebinds the old sync scope;
+- a post-mutation persistence failure reconciles to the actual active namespace
+  instead of showing stale old-community detail;
 - healthy sync creates no primary route or Feed card;
 - consent/import/failure states still require explicit review and cannot commit
   to a different community;
+- stale BLE, local-route, pairing, coordinator, preview, and import callbacks
+  with an invalid scope generation are inert and disconnect;
+- Stop survives routes, community switches, keyed-shell rebuilds, and relaunch
+  until explicit Restart;
 - a failed deep-link switch emits no verified/detail outcome;
 - rapid A→B→C switching makes delayed A/B callbacks inert;
 - unavailable, pending, and degraded states never render a blank pane;
@@ -554,6 +624,13 @@ xcodebuild test \
   -destination "platform=iOS Simulator,id=$(sh scripts/ios-check.sh simulator-id)" \
   -derivedDataPath build/xcode-dd \
   CODE_SIGNING_ALLOWED=NO
+xcodebuild test \
+  -project apps/ios/Riot.xcodeproj \
+  -scheme Riot \
+  -destination "platform=iOS Simulator,id=$(sh scripts/ios-check.sh simulator-id)" \
+  -only-testing:RiotUITests/ExpandedSpaceNavigationUITests \
+  -derivedDataPath build/xcode-ui-dd \
+  CODE_SIGNING_ALLOWED=NO
 sh scripts/ios-check.sh sim
 sh scripts/ios-check.sh ios
 sh scripts/ios-check.sh test
@@ -567,13 +644,16 @@ sh scripts/web/coverage.sh
 ```
 
 `.coverage-thresholds.json` remains the single source of truth. No floor is
-lowered for this work.
+lowered for this work. Verification must confirm the UI-test command executed a
+nonzero test count; a zero-test success is a failure.
 
 ## 10. Success and failure criteria
 
 The redesign succeeds when:
 
-- a macOS user can see and switch among all held spaces directly in the sidebar;
+- a macOS user can see every held row and directly switch among every available
+  author-bearing community in the sidebar; followed-site rows open status
+  detail, while public-reader and unavailable rows remain visible and truthful;
 - a seeded multi-space macOS usability fixture switches communities with one
   direct sidebar action and no modal;
 - the active community alone expands and Feed is selected by default;
@@ -635,3 +715,13 @@ revision. This version resolves their blockers by:
 - defining Content ordering, states, capabilities, redaction, and detail flow;
 - requiring semantic `List`/`DisclosureGroup` accessibility behavior; and
 - adding an executable four-slice TDD ladder and complete pre-delivery commands.
+
+Round 2 approved Product, Architecture, UX, and CTO. Security requested
+revision. This version resolves its blockers by:
+
+- reconciling every switch against the actual active namespace, including a
+  distinct degraded-success outcome for post-activation persistence failure;
+- generation-guarding every asynchronous Nearby callback before it may read the
+  active community, disclose metadata, present UI, or commit; and
+- persisting the person's Stop/Restart discovery preference across shell
+  reconstruction and relaunch.
