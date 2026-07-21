@@ -55,10 +55,10 @@ is a concise boundary reference, and no page presents a disaster scene as its ce
 Evidence file:
 
 ```text
-634f4d5d5e651abe4d7cf8c6546781a8e5c03986e1e73d9984dfe7e0865da0a7  /tmp/visual-review/riot-human-capacity/browser-evidence.json
+7d3cde65dd7eb11ff7d7daacb102e64ef8423f4e07d072feb2f07ed0830a2a09  /tmp/visual-review/riot-human-capacity/browser-evidence.json
 ```
 
-Preview origin: `http://127.0.0.1:51722`. Each route began and ended with an empty Playwright
+Preview origin: `http://127.0.0.1:53146`. Each route began and ended with an empty Playwright
 cookie jar, returned an empty `document.cookie`, and received no `Set-Cookie` response header.
 Every observed request used that exact loopback origin. `/` requested only itself and the six local
 `/assets/screenshots/*.png` files; each other route requested only its own document.
@@ -76,21 +76,24 @@ transfer-encoding: chunked
 
 | Route | Status | Date header | Cookies before/after | Request count |
 |---|---:|---|---|---:|
-| `/` | 200 | Tue, 21 Jul 2026 21:56:25 GMT | `[]` / `[]` | 7 |
-| `/why-riot/` | 200 | Tue, 21 Jul 2026 21:56:27 GMT | `[]` / `[]` | 1 |
-| `/guide/` | 200 | Tue, 21 Jul 2026 21:56:28 GMT | `[]` / `[]` | 1 |
-| `/about/` | 200 | Tue, 21 Jul 2026 21:56:29 GMT | `[]` / `[]` | 1 |
-| `/privacy/` | 200 | Tue, 21 Jul 2026 21:56:30 GMT | `[]` / `[]` | 1 |
-| `/open-source/` | 200 | Tue, 21 Jul 2026 21:56:31 GMT | `[]` / `[]` | 1 |
-| `/community/` | 200 | Tue, 21 Jul 2026 21:56:32 GMT | `[]` / `[]` | 1 |
-| `/releases/` | 200 | Tue, 21 Jul 2026 21:56:33 GMT | `[]` / `[]` | 1 |
-| `/protocols/` | 200 | Tue, 21 Jul 2026 21:56:34 GMT | `[]` / `[]` | 1 |
+| `/` | 200 | Tue, 21 Jul 2026 22:08:58 GMT | `[]` / `[]` | 7 |
+| `/why-riot/` | 200 | Tue, 21 Jul 2026 22:08:59 GMT | `[]` / `[]` | 1 |
+| `/guide/` | 200 | Tue, 21 Jul 2026 22:09:00 GMT | `[]` / `[]` | 1 |
+| `/about/` | 200 | Tue, 21 Jul 2026 22:09:01 GMT | `[]` / `[]` | 1 |
+| `/privacy/` | 200 | Tue, 21 Jul 2026 22:09:02 GMT | `[]` / `[]` | 1 |
+| `/open-source/` | 200 | Tue, 21 Jul 2026 22:09:02 GMT | `[]` / `[]` | 1 |
+| `/community/` | 200 | Tue, 21 Jul 2026 22:09:03 GMT | `[]` / `[]` | 1 |
+| `/releases/` | 200 | Tue, 21 Jul 2026 22:09:04 GMT | `[]` / `[]` | 1 |
+| `/protocols/` | 200 | Tue, 21 Jul 2026 22:09:04 GMT | `[]` / `[]` | 1 |
 
 `/resilience/` returned a direct `404` with no `Location` header. The contract also verified absent
 source/public resilience directories, static cookie/storage/beacon/network predicates, safe resource
 schemes, valid `srcset` descriptors, decoded SVG-favicon safety, and no off-origin subresources.
 
-The complete browser evidence, verbatim:
+The final evidence above was refreshed after a copy-only prerequisite clarification. For durable
+comparison, the complete preceding browser-boundary pass is preserved verbatim below; it exercised
+the same route, cookie, header, and network predicates and has SHA-256
+`634f4d5d5e651abe4d7cf8c6546781a8e5c03986e1e73d9984dfe7e0865da0a7`:
 
 ```json
 {

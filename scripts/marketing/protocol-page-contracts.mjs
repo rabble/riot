@@ -109,6 +109,8 @@ assert.doesNotMatch(home, /<h1[^>]*>People are the infrastructure\.<\/h1>/i, "ho
 assert.match(home, /Riot is a home for public conversation, community decisions, shared tools, and collective\s+memory(?:—|&mdash;)carried by the people who make it matter\./i, "homepage needs the approved support line");
 assert.match(home, /class="hero-actions"[\s\S]*href="\/why-riot\/"[^>]*>Why Riot exists/i, "homepage hero needs a prominent Why Riot action");
 assert.match(home, /festival|community meal|neighborhood publication|cooperative decision/i, "homepage must show value in ordinary community life");
+assert.doesNotMatch(home, /<\/b>\s*Nearby devices can connect/i, "homepage nearby exchange must name compatibility and path availability prerequisites");
+assert.match(home, /Compatible nearby devices can connect when a local transport is actually available/i, "homepage nearby exchange must state its prerequisites");
 assert.match(home, /class="hero-stamp">Prototype/i, "hero must carry a visible Prototype label");
 assert.doesNotMatch(home, /<script/i, "homepage must remain script-free");
 assert.doesNotMatch(home, /ecosystem/i, "homepage must not use 'ecosystem' jargon");
