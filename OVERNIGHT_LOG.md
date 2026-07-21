@@ -1048,3 +1048,33 @@ _(Summary goes at the TOP when done. Task entries append below in order.)_
 - Open morning question: should the 97% Tarpaulin recovery be re-grounded as a
   dedicated cross-crate task now that current main contains substantially more
   anchor, FFI, and transport code than the Jul-15 measurement?
+
+## 2026-07-22 — Compact community/app/page navigation design
+
+- Created isolated branch `overnight/2026-07-22` from current `origin/main` in
+  the global worktree directory, preserving unrelated local Xcode, test, and
+  screenshot changes in the main checkout.
+- Read and followed the community-first navigation and app-runtime designs,
+  Divine shared context, and the `brainstorming`, `visual-review`,
+  `systematic-debugging`, `test-driven-development`, `using-git-worktrees`,
+  and metaswarm gate skills.
+- Root cause: macOS sidebar route selection changes the selected route without
+  clearing `runningTool`, while the detail pane always renders a non-nil tool.
+  The WebView also has no host-visible nested-page state. The native Close
+  closure itself clears the tool, so replacing only its styling would not fix
+  ordinary sidebar navigation.
+- Wrote `docs/superpowers/specs/2026-07-22-compact-tool-breadcrumb-design.md`.
+  It replaces the large Close row with `community › app › page`, makes the
+  community crumb open the existing chooser, makes the app crumb reload the
+  verified entry point, and falls back to `🏘 › 🧰 › 📄` through
+  `ViewThatFits` while retaining full accessibility labels.
+- Assumption: this change is macOS-specific because iPhone already retains the
+  community header and a NavigationStack back path; adding the same row there
+  would duplicate chrome. The shared WebView location plumbing remains safe to
+  reuse later.
+- Rejected alternative: an icon-only Close control would save space but still
+  hide the community/app/page hierarchy and would leave sidebar routing broken.
+- Baseline verification: `cargo build --workspace --all-features` and
+  `cargo test --workspace --all-features` passed before implementation.
+- No blocked work or document conflict at this stage. The design and plan gates
+  remain required before source implementation.
