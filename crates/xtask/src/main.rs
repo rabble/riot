@@ -654,6 +654,24 @@ fn check_fixture_manifest(root: &Path, failures: &mut Vec<String>) {
         ),
     }
 
+    // The Meadowcap capability vector fixture must be frozen by hash.
+    match (
+        env["meadowcap_vectors_sha256"].as_str(),
+        std::fs::read(root.join("fixtures/willow/meadowcap-vectors.json")),
+    ) {
+        (Some(recorded), Ok(actual_bytes)) if !recorded.is_empty() => {
+            let actual = sha256_hex(&actual_bytes);
+            if recorded != actual {
+                failures.push(format!(
+                    "fixtures/manifest.json: meadowcap_vectors_sha256 mismatch (recorded {recorded}, actual {actual})"
+                ));
+            }
+        }
+        _ => failures.push(
+            "fixtures/manifest.json: meadowcap_vectors_sha256 missing/empty or vectors file unreadable".into(),
+        ),
+    }
+
     // Ceilings are exact frozen values from the Revision 5 limits table.
     // Presence alone is not enough: a mutated value is a contract violation.
     let ceilings = &doc["ceilings"];
