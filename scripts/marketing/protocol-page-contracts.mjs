@@ -330,6 +330,7 @@ const forbiddenClaims = [
   /\bguaranteed (?:delivery|discovery|synchroni[sz]ation|persistence|recovery|availability)\b/i,
   /\banonymous by default\b/i, /\bprivate by default\b/i, /\bproduction[- ]ready\b/i,
   /\bfield[- ]proven\b/i, /\boperating at scale\b/i, /\bno company that can revoke access\b/i,
+  /\ba raid on one address cannot take a community's data\b/i,
 ];
 for (const [name, content] of Object.entries(claimAuditInputs)) for (const pattern of forbiddenClaims) assert.doesNotMatch(content, pattern, `${name} contains unsafe absolute claim ${pattern}`);
 for (const [name, content] of Object.entries(productDocs)) {
