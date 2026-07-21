@@ -1,7 +1,7 @@
 # Riot Human-Capacity Marketing Reframe
 
 **Date:** 2026-07-22  
-**Status:** Design review candidate, revision 4
+**Status:** Design review candidate, revision 5
 
 **Scope:** Reframe `/why-riot/`, compact `/privacy/`, clarify the homepage hero, and reconcile
 site-wide claims and navigation. No application, protocol, or deployment behavior changes.
@@ -77,6 +77,13 @@ This change adds no route and no redirect.
   `marketing/README.md`; the current README is stale and omits `/why-riot/`, `/guide/`, and
   `/releases/` in several places.
 
+The contract migration is explicit: retain `allSitePaths` as the nine-route footer and mirror
+inventory; add `primaryNavPaths` containing every route except `/privacy/`; replace the current
+top-navigation loop over `allSitePaths` with a loop over `primaryNavPaths`; and add an assertion that
+the extracted `<nav class="sitenav">` block does not contain `href="/privacy/"`. The requirement
+that the existing suite remains green means its intended coverage remains green after these obsolete
+expectations are replaced—not that old and new navigation rules must both pass.
+
 ### Route Roles
 
 - `/`: concise product overview and entry point. It may demonstrate the app and architecture, but
@@ -151,13 +158,18 @@ Use four human verbs:
 - **Publish:** public updates, community media, and local knowledge.
 - **Meet:** proposals, discussion, polls, decisions, and the resulting record. Riot is not a live
   audio/video meeting service.
-- **Coordinate:** checklists, boards, schedules, needs, offers, and shared work.
-- **Carry:** keep useful community state and installed tools on participants' devices and move them
-  through paths available to them.
+- **Coordinate:** use the bundled checklist, supply board, roll call, and quick poll. Broader
+  schedules, needs-and-offers workflows, and locally adapted tools are examples of direction unless
+  separately evidenced.
+- **Carry:** keep already-held community state and installed tools useful on a functioning device.
+  A subordinate status list distinguishes portable handoff, nearby exchange, gateways, and anchors.
 
-Status appears as a small label on each card, not as the visual headline. Publish, Meet, Coordinate,
-and local Carry are **Available in the prototype**. The labels qualify the software, not the social
-practice.
+Status appears as a small text label on each card, not as the visual headline and never through color
+alone. Publish, meeting artifacts, the four named bundled tools, and local use of already-held state
+are **Available in the prototype**. The Carry card also lists: portable file/share-link/QR-assisted
+handoff—**Available in the prototype**; nearby peer exchange—**Tested locally**; public gateway
+rendering—**Available in the prototype**; public-anchor discovery and remote sync—**In
+development**. The labels qualify software behavior, not the social practice.
 
 ### 4. The future is a practice
 
@@ -199,7 +211,11 @@ Keep one compact boundary panel:
 - exchange requires a compatible peer or transport that is actually available.
 
 Recommend established encrypted messengers for material that must remain secret today. Link to
-`/privacy/` and `/protocols/` for detail.
+`/privacy/` and `/protocols/` for detail. The actionable recommendation is: **For an ordinary
+internet-connected conversation that must remain secret, use a purpose-built end-to-end encrypted
+messenger such as Signal; choose any safety tool for your actual threat model.** Link “Signal” to
+`https://signal.org/` with `rel="noopener"`; do not imply a blanket safety guarantee or Riot/Solnit
+endorsement.
 
 ### 7. Invitation — Build it with us
 
@@ -215,16 +231,18 @@ Solnit endorses Riot.
 
 The page remains at `/privacy/` and becomes a concise reference with this hierarchy:
 
-1. **Public means public.** Public community content is meant to circulate. Riot does not currently
-   ship private encrypted groups.
+1. **Public means public.** Current public Newswire content is plaintext, readable and copyable by
+   recipients and infrastructure that handles it, and has no confidential public-read boundary.
+   Riot does not currently ship private encrypted groups.
 2. **What local-first changes—and what it does not.** Reduce mandatory centralized collection and
    explain local custody, while naming metadata, radio presence, device compromise, copied data,
    pseudonymity, and gateway-presentation risks.
 3. **This website.** Preserve the verifiable disclosure: no Riot analytics, cookies, accounts,
    remote fonts, third-party scripts, tracking pixels, or fingerprinting; Cloudflare can observe
    ordinary request metadata while serving the site.
-4. **Where to go next.** Link to Why Riot for purpose, Protocols for details, and an established
-   encrypted-messenger recommendation for secrets.
+4. **Where to go next.** Link to Why Riot for purpose, Protocols for details, and Signal's official
+   site with the same threat-model caveat for an ordinary internet-connected conversation that must
+   remain secret.
 
 Remove the current defensive hero, the large website-first section, duplicated product manifesto,
 and repeated capability tables. The page should remain easy to cite when someone asks a precise
@@ -255,7 +273,15 @@ Use these labels consistently across the changed pages:
 | Production scale or field-proven resilience | Direction, not shipped |
 
 The full matrix is an editorial and test contract. The rendered Why Riot page should show only the
-labels needed beside claims, not reproduce this table as a dominant technical section.
+labels needed beside the exact claims named above, not reproduce this table as a dominant technical
+section. Site-wide prose outside those claims is audited for unsafe absolutes but does not need a
+status badge on every sentence.
+
+Status markup is deterministic: every rendered status uses
+`<span class="chip" data-status="prototype|local|development|direction">Exact label</span>`. The
+contract extracts the four Tools for the Commons cards and asserts their exact label/text pairings,
+then checks the compact Carry sub-list separately. No other prose is classified as “material” by an
+automated status rule.
 
 ## Site-Wide Claim Audit
 
@@ -273,8 +299,27 @@ Positive claims name their mechanism and prerequisite. Already-held data may rem
 functioning device. Exchange requires an available compatible path. A lost gateway need not erase
 copies participants already hold, but Riot does not guarantee that any complete copy exists.
 
-Automated tests cover a finite, case-insensitive pattern set. Semantic equivalents remain a required
-human editorial check.
+Automated tests use this exact case-insensitive pattern inventory across the nine editorial pages:
+
+```text
+\buncensorable\b
+\bunstoppable\b
+impossible to shut down
+cannot be shut down
+nothing (?:anyone|anybody|someone) can (?:seize|pressure|switch off)
+\balways available\b
+works? from zero signal
+nothing (?:gets|is) (?:silently )?lost
+\bpreserves? everything\b
+\bguaranteed (?:delivery|discovery|synchroni[sz]ation|persistence|recovery|availability)\b
+\banonymous by default\b
+\bprivate by default\b
+\bproduction[- ]ready\b
+\bfield[- ]proven\b
+\boperating at scale\b
+```
+
+Semantic equivalents remain a required human editorial check.
 
 ## Visual and Accessibility Requirements
 
@@ -289,6 +334,9 @@ human editorial check.
 - No JavaScript is required for meaning or navigation.
 - No remote scripts, stylesheets, fonts, images, media, iframes, analytics, beacons, cookies, or
   tracking endpoints.
+- No `javascript:` URLs, inline event-handler attributes, external SVG references, meta-refresh
+  redirects, or forms/form actions.
+- External links that use `target="_blank"` must also use `rel="noopener"`.
 
 ## TDD and Acceptance Criteria
 
@@ -303,8 +351,8 @@ The new assertions must fail before HTML implementation. After implementation th
 1. all nine source pages have byte-identical `marketing/public/` mirrors;
 2. no `/resilience/` source or public route is introduced;
 3. Why Riot and Privacy have their exact origin-relative canonical links;
-4. all nine source pages and mirrors include Why Riot in primary navigation and omit Privacy from
-   primary navigation;
+4. all nine source pages and mirrors include Why Riot in `primaryNavPaths`, omit Privacy from the
+   extracted primary-navigation block, and retain Privacy in `allSitePaths` for footer checks;
 5. every footer preserves reachability to all other routes, including Privacy;
 6. sitemap and `marketing/README.md` contain the exact nine-route inventory;
 7. homepage hero is distinct from Why Riot and links prominently to `/why-riot/`;
@@ -313,10 +361,18 @@ The new assertions must fail before HTML implementation. After implementation th
 9. the code-native illustration is present, accessible, local, and dependency-free;
 10. Privacy begins with public-space truth, keeps app/device/metadata boundaries, puts website
     disclosure later, and links back to purpose and technical detail;
-11. every material capability claim carries the required status language;
-12. the bounded forbidden-claim patterns do not occur across any editorial page;
+11. the four human-verb cards and Carry sub-list use the exact deterministic status markup and
+    label/text pairings defined above;
+12. every exact forbidden-claim pattern in the Site-Wide Claim Audit is absent across all nine
+    editorial pages;
 13. changed pages include no remote runtime or asset dependency;
-14. the existing marketing contract suite remains green.
+14. changed pages contain no `javascript:` URL, inline event handler, external SVG reference,
+    meta-refresh redirect, or form; external blank-target links include `rel="noopener"`;
+15. the existing marketing contract suite remains green after these legacy assertions are retired:
+    the old homepage headline `Community infrastructure that travels with people`; the old Why Riot
+    audience labels `Depth one`, `Depth two`, and `Depth three`; and the old required phrases
+    `Privacy through control, not secrecy`, `One update, different paths`, and
+    `Direction being built or still unverified`. Their replacement assertions are criteria 7–12.
 
 Add `"test:marketing": "node scripts/marketing/protocol-page-contracts.mjs"` to `package.json` and
 run it as a distinct blocking step in the existing CI web job after `npm run test:web:unit`.
@@ -330,7 +386,24 @@ npm run test:marketing
 
 Then serve `marketing/public/` locally and visually review `/`, `/why-riot/`, and `/privacy/` at
 1456×900 and 390×844. Verify navigation wrapping, hierarchy, contrast, illustration behavior, lack
-of horizontal overflow, and that technical/status material remains subordinate.
+of horizontal overflow, and that technical/status material remains subordinate. Record the six
+screenshots under `/tmp/visual-review/riot-human-capacity/`. At 390 px, use Playwright evaluation to
+require `document.documentElement.scrollWidth <= document.documentElement.clientWidth`. Capture a
+forced-colors screenshot where Chromium supports the emulation; otherwise record the unsupported
+check explicitly. Inspect computed foreground/background pairs with the existing palette and record
+WCAG AA results in the implementation review notes.
+
+After visual verification, run a first-read editorial gate with three fresh reviewers who receive
+only the rendered Why Riot page—not this specification. Each must correctly answer all four:
+
+1. What kind of ordinary community life is Riot trying to support?
+2. What four kinds of work does Riot make easier?
+3. Why might the same tools matter when conditions become difficult?
+4. What is not currently guaranteed or private?
+
+Passing threshold: all three reviewers answer all four substantially correctly and none describes
+Riot primarily as a privacy messenger, disaster-survival product, or protocol project. This is the
+observable, non-analytics test of the intended reader outcome.
 
 Deployment is outside scope. Do not mutate production or claim the live site changed.
 
@@ -351,6 +424,12 @@ product argument, worsen crowded mobile navigation, and leave site-wide claim co
 Revision 4 follows the approved comparison: reframe `/why-riot/`, keep `/privacy/` concise and
 factual, add no route, clarify the homepage hero, make ordinary collective life visible, and audit
 claims across the current nine-page site.
+
+The first review of revision 4 approved its architecture and security direction, then requested
+deterministic migration of legacy contract assertions, narrower status claims for Coordinate and
+Carry, explicit plaintext/readable/copyable privacy language, a finite forbidden-claim pattern set,
+static-content injection checks, and an observable first-read comprehension gate. Revision 5 adds
+those contracts.
 
 ## Primary Sources
 
