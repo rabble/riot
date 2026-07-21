@@ -672,25 +672,29 @@ byte-identical. Checklist keeps its existing frozen paths. V2 source lives under
 `fixtures/apps/v2/<slug>/`, preventing any redesign task from editing a legacy
 source directory by accident.
 
-Existing persisted profiles without `starterCatalogGeneration` migrate to
-generation 1. They reinstall their legacy starter pairs from the non-advertised
-resolver on bootstrap and are never auto-installed or auto-trusted into v2.
-Fresh profiles record generation 2 and receive only v2. Android profiles that
-already carry exact v1 bytes keep those bytes; the legacy resolver is a verified
-fallback, not a replacement for persisted user-held content.
+For backward compatibility, an absent `starterCatalogGeneration` is itself the
+durable encoding of generation 1; migration writes no marker and consumes zero
+profile bytes. On every bootstrap, the host resolves the eight exact legacy
+pairs from the immutable, non-advertised catalog and installs them into the
+runtime without appending duplicate bytes to the carried-app profile field.
+Persisted trust IDs are then reapplied exactly as the previous release did.
+Existing Android profiles that already carry an exact v1 pair keep it; exact-ID
+deduplication counts and installs the pair once, with the carried bytes taking
+precedence after catalog equality verification.
 
-The migration is a resumable transaction: write an in-progress generation-1
-marker, install each missing legacy pair in deterministic catalog order using
-idempotent exact-ID checks, atomically replace the marker with generation 1 only
-after the complete set is resolvable, then restore carried apps. A crash at any
-point repeats the same checks without duplicate entries, partial directory
-advertising, trust changes, or v2 installation. Fresh generation-2 creation uses
-the equivalent marker discipline.
+Fresh profiles atomically record generation 2 before receiving only the v2
+catalog. An explicit generation 1 value is accepted but never required for old
+profiles. An in-progress fresh-profile marker resumes deterministically after a
+crash; an absent marker can never be “partially migrated” because it always
+means generation 1. Catalog resolution changes no directory timestamps, trust,
+or profile bytes.
 
-Fault-injection tests terminate the process and fail the storage write after
-every marker write and every per-app install boundary. Reopening must converge
-to the same complete catalog, ordering, trust state, and generation marker as an
-uninterrupted run.
+Fault-injection tests terminate the process and fail storage after every fresh
+generation-2 marker/install boundary. Reopening converges to the same catalog,
+ordering, and trust state. A previous Android v3 profile at exactly 4,194,240
+bytes must restart, resolve and launch trusted legacy apps, revoke an existing
+trust decision without growth, reject a growth-requiring grant with no state
+change, and retain all data with the marker still absent.
 
 The current v2 directory listing is still visible to an existing organizer as
 an optional redesign. Installing it starts a distinct app-data namespace. No
@@ -706,24 +710,29 @@ budget is 2 MiB, leaving at least 927,461 bytes for carried/custom pairs in a
 full coexistence profile. The count limit therefore permits up to sixteen
 carried/custom apps only when their bytes fit the aggregate quota.
 
-Every install path—file, starter, legacy resolver, directory, and nearby—uses
-one durable admission transaction:
+Every new-ID install path—file, optional starter, directory, and nearby—uses one
+durable admission transaction. Bootstrap restoration of the generation-selected
+built-in catalog or an already-held exact ID is idempotent restoration, not new
+admission, and adds no persisted pair bytes:
 
 1. a new pure core inspection validates the exact pair and derives its app ID
    without installing, trusting, registering, or writing it;
 2. while holding the profile persistence lock, a shared pure core admission
    report computes the prospective count and aggregate pair bytes so Apple and
    Android cannot diverge; each host also computes its full serialized profile
-   size;
+   size. Android's production `encodedSize` uses the exact target codec version
+   and includes identity state, generation metadata, alerts, app data, strings,
+   lengths, and framing; conformance tests require it to equal actual encoding
+   byte-for-byte;
 3. count above 32 or pair bytes above 3 MiB reject before any runtime, trust,
    serving-store, or disk mutation; Android additionally rejects if the exact
    prospective encoded profile exceeds its existing 4 MiB-minus-64-byte codec
    ceiling;
-4. after preflight, the host atomically persists the validated pair as untrusted,
-   then admits it to core and the serving store; a post-persist admission failure
-   atomically restores the prior profile and never exposes the card; and
-5. trust is a separate durable transaction and cannot become active in core
-   unless its persisted decision succeeds.
+4. after preflight, the host atomically persists either the validated opaque pair
+   or an exact immutable built-in catalog reference as untrusted, then admits it
+   to core and the serving store; a post-persist admission failure atomically
+   restores the prior profile and never exposes the card; and
+5. trust uses the separate grant/revoke state machines below.
 
 A crash after the durable pair write is safe: restart revalidates and restores
 the untrusted pair before showing it. A storage-write failure retains the prior
@@ -739,14 +748,82 @@ at every transaction boundary, restart, and mixed legacy/current/custom order.
 Size fixtures include 1 MiB canonical maximum bundles rather than only the small
 built-ins. Riot never quarantines or evicts a valid installed app to make room.
 
+If an unexpected post-persist admission failure is followed by rollback-storage
+failure, Riot closes the profile and exposes no app card in that process. The
+durable untrusted pair is an explicit recoverable state: restart revalidates and
+admits it or quarantines the pair through the existing recovery path; it never
+becomes trusted implicitly.
+
 A valid pre-upgrade profile that already exceeds 3 MiB is grandfathered for
 restore only: Riot restores every prior exact ID and the required v1 catalog,
 marks the profile storage-full, and admits no new ID until usage falls below the
 quota. Reinstalling the identical held pair and changing trust remain allowed
-because neither grows bytes. Migration never deletes or refuses an existing
-tool merely to make the new quota true. Tests cover an over-quota 16-app
+when the exact prospective serialization does not grow past its existing valid
+size: revocation is zero-growth/shrinking, while a growth-requiring new grant is
+rejected before core trust changes. Migration never deletes or refuses an
+existing tool merely to make the new quota true. Tests cover an over-quota 16-app
 previous-release profile on Apple and the largest valid previous-release Android
 profile.
+
+### Durable trust and app-data transactions
+
+Install, trust grant, trust revoke, profile switch, and every app-data write use
+one profile authority/persistence lock on each host. A bridge operation cannot
+interleave while trust or profile generation changes. Core adds side-effect-free
+prepare calls that validate current authority and return a generation-bound
+token; finalize is idempotent and cannot produce a recoverable failure while the
+same lock and generation remain valid.
+
+Trust grant is persistence-first:
+
+1. the native row enters **Turning on…** and cannot launch;
+2. core prepares the exact held app/organizer grant without changing trust;
+3. the host preflights and atomically persists the prospective trusted-ID set;
+   storage failure leaves disk and core untrusted; and
+4. core finalizes trust and only then exposes **Open**. The durable write is the
+   linearization point: a crash afterward restarts trusted and reapplies the
+   same exact ID.
+
+Trust revoke is also persistence-first but fail-closed:
+
+1. the row enters **Turning off…**, new launches are blocked, and the shared
+   lock prevents mounted bridge calls from crossing the boundary;
+2. core prepares revocation, then the host atomically removes the trusted ID;
+   storage failure leaves the existing runtime/trust unchanged and reports that
+   nothing changed; and
+3. core finalizes by invalidating every execution session for the app before
+   removing runtime trust, then the host destroys the WebView before releasing
+   the lock. A crash after durable removal terminates the process and restarts
+   untrusted.
+
+An unexpected finalize invariant failure closes the whole profile and rebuilds
+runtime state from the already-durable profile before any tool can reopen; Riot
+does not roll a durable decision backward or report a failed action that will
+reverse on restart. Fault injection covers before/after prepare, persistence,
+finalize, session invalidation, WebView destruction, process termination, and
+profile rebuild for both grant and revoke.
+
+App-data mutation uses an equivalent prepare/persist/finalize protocol rather
+than today's commit-live-then-save receipt order:
+
+1. under the shared lock, `prepare_app_data_put` revalidates the execution
+   generation, key, and value and returns a signed receipt/token without
+   changing the live Willow store;
+2. the host replaces the prospective persisted `(app_id, key)` receipt, applies
+   its exact encoded-size rules, and rejects storage exhaustion before mutation;
+3. the host atomically persists the receipt; failure discards the prepared token
+   and leaves both live and restarted state unchanged; and
+4. core idempotently finalizes the prepared receipt into the live store. The
+   durable write is the linearization point, so a crash before finalize replays
+   exactly that receipt on restart without minting a second entry.
+
+Apple and Android expose the same transaction semantics even though only
+Android has the fixed 4,194,240-byte codec ceiling. Exact-boundary tests cover
+replacement and new keys, concurrent writes/installs/revokes, disk failure, a
+grandfathered storage-full profile, the largest permitted Photo Wall receipt,
+live reads immediately after the result, and reads after restart. A reported
+failure always preserves both the exact draft and the prior committed live and
+durable value.
 
 ### Existing-user presentation
 
@@ -771,8 +848,15 @@ Tools never presents two unlabeled cards with the same name.
 - Count-full copy is: “This profile already has 32 tools. Riot made no changes.”
   Storage-full copy is: “This tool does not fit in this profile's remaining
   offline tool storage. Riot kept your current tools and made no changes.” The
-  two conditions are never collapsed into one error. Removal/archive UX is a
-  separate design; this work never silently discards a tool.
+  two conditions are never collapsed into one error. Every file, starter,
+  directory, and nearby source presents the same copy as an announced native
+  error and retains focus on its originating action.
+- A non-quota persistence failure says: “Riot couldn't save this tool on this
+  device. Your current tools did not change. Try again.” A grandfathered profile
+  shows a quiet **Offline tool storage is full; existing tools still work**
+  status before another install attempt.
+- Removal/archive UX is a separate design; this work never silently discards a
+  tool.
 
 Checklist is a special compatibility boundary. Its existing source, manifest,
 bundle, and app ID remain byte-for-byte frozen. The unified Checklist is a new
@@ -823,6 +907,8 @@ cycles do not re-announce identical text.
 | Write pending | Inline form status: **Saving…**, **Posting…**, **Sending…**, **Publishing…**, **Preparing…**, or **Sharing…** as specified by the app state table. | Submit and Cancel are disabled only for the irreversible pending interval; other duplicate mutation paths are locked. Focus stays on the submit control. |
 | Write success | Brief polite status using the visible noun, for example **Event saved.** | Focus moves to the new/updated row or its detail heading. |
 | Write failure | Inline alert: **Couldn't <save/post/send/share> that. Your draft is still here. Try again.** Raw errors are never shown. | **Try again** is the same guarded submit path; focus moves to the alert, then the next Tab reaches the first invalid/retry-relevant field. Exact fields and prepared photo remain. |
+| Offline storage full on write | Inline alert: **This profile's offline storage is full. Your draft is still here. Riot made no changes.** | No automatic retry. Focus moves to the alert; **Back to Tools** remains available and exact fields/prepared photo remain while mounted. |
+| Device persistence failure | Inline alert: **Riot couldn't save that on this device. Your draft is still here and your shared information did not change. Try again.** | **Try again** reruns the complete durable transaction. Live and restarted reads still return the prior committed value. |
 | Malformed synchronized row | No per-row warning and no raw payload. Valid rows continue. | If all rows are rejected, the normal global/filter empty state appears; diagnostics count only a bounded category code, never content. |
 | Selected row deleted by sync | Return to the valid root/filter unless an active edit conflict already requires draft preservation. | Focus moves to the root heading and a polite **That item is no longer available.** status. Wiki's existing editing-conflict exception remains authoritative. |
 
@@ -905,6 +991,12 @@ the non-advertised legacy resolver, starter-generation migration, 32-app FFI
 cap, current/legacy presentation descriptors, and generated inventory report.
 REFACTOR keeps catalog lookup, authorization, admission, and storage keyed only
 by app ID.
+
+The same slice starts with failing cross-platform tests for trust grant/revoke
+and app-data prepare/persist/finalize ordering. It proves that no reported
+failure changes live or restarted values, that revoke blocks concurrent bridge
+calls, and that the old Android commit-before-save sequence is no longer
+reachable before any visual app migration begins.
 
 ### 2. Shared visual, theme, and host-font contracts
 
@@ -1056,7 +1148,7 @@ baseline/configuration drift.
 | Budget | Limit |
 | --- | ---: |
 | One encoded v2 app bundle | ≤ 256 KiB and ≤ 24 resources (below canonical 1 MiB/32 limits) |
-| Complete eight-app v2 catalog | ≤ 2 MiB encoded |
+| Complete eight-app v2 catalog | ≤ 2 MiB as the sum of its eight manifest + bundle pairs; identical app IDs count once |
 | Immutable host-font pack | exactly 729,472 bytes; no additional font bytes |
 | Current + legacy catalogs + host-font app-size growth | ≤ 3 MiB measured from each final native package against its pre-change package, including compiler/resource duplication |
 | One peer-shared v2 manifest/bundle pair | ≤ 256 KiB |
@@ -1168,6 +1260,11 @@ an easier tool cannot hide a failed journey in another.
   generated current/legacy inventory and allowlist audits.
 - Existing sandbox, trust, invalidation, malformed-row, draft-preservation, and
   no-network tests remain green.
+- Trust grants, revokes, and app-data writes use the shared locked
+  prepare/persist/finalize protocol. Faults and storage exhaustion before the
+  durable linearization point leave live and restarted state unchanged; revokes
+  cannot race a mounted bridge call; no failed write can appear live and vanish
+  on restart.
 - The app-size, mount-time, first-paint, memory, peer-share, and installed-profile
   budgets in this spec pass on the named release device classes.
 - The moderated offline usability study meets every threshold in this spec,
