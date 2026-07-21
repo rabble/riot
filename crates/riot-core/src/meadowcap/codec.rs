@@ -123,7 +123,10 @@ mod tests {
         assert_eq!(cap.genesis().access_mode(), AccessMode::Read);
 
         let bytes = encode_read_capability(&cap);
-        assert_eq!(decode_read_capability_canonic(&bytes).expect("round-trip"), cap);
+        assert_eq!(
+            decode_read_capability_canonic(&bytes).expect("round-trip"),
+            cap
+        );
     }
 }
 

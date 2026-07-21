@@ -4,12 +4,14 @@
 //! `willow25`/`meadowcap`. Regenerate intentionally with REGEN=1 (see below).
 
 use riot_core::meadowcap::codec::{
-    decode_read_capability_bounded, decode_read_capability_canonic, decode_write_capability_bounded,
-    encode_read_capability,
+    decode_read_capability_bounded, decode_read_capability_canonic,
+    decode_write_capability_bounded, encode_read_capability,
 };
 use riot_core::meadowcap::create::{new_communal_read, new_communal_write, new_owned_write};
 use riot_core::meadowcap::delegate::delegate_write;
-use riot_core::meadowcap::fingerprint::{read_capability_fingerprint, write_capability_fingerprint};
+use riot_core::meadowcap::fingerprint::{
+    read_capability_fingerprint, write_capability_fingerprint,
+};
 use riot_core::meadowcap::MeadowcapError;
 use riot_core::willow::{encode_capability, tai_j2000_micros_from_unix_seconds};
 use ufotofu::codec_prelude::EncodableExt;
@@ -122,8 +124,14 @@ fn build_vectors() -> serde_json::Value {
         Some(editor_id.clone()),
         Path::from_slices(&[b"articles", b"news"]).expect("path"),
         TimeRange::new(
-            tai_j2000_micros_from_unix_seconds(1_700_000_000).unwrap().into(),
-            Some(tai_j2000_micros_from_unix_seconds(1_800_000_000).unwrap().into()),
+            tai_j2000_micros_from_unix_seconds(1_700_000_000)
+                .unwrap()
+                .into(),
+            Some(
+                tai_j2000_micros_from_unix_seconds(1_800_000_000)
+                    .unwrap()
+                    .into(),
+            ),
         ),
     );
     let delegated = delegate_write(&owned, &owner, area, editor_id).expect("attenuate");
@@ -391,8 +399,14 @@ fn delegation_chain_signature_tamper_is_rejected() {
         None,
         Path::from_slices(&[b"articles"]).expect("path"),
         TimeRange::new(
-            tai_j2000_micros_from_unix_seconds(1_700_000_000).unwrap().into(),
-            Some(tai_j2000_micros_from_unix_seconds(1_800_000_000).unwrap().into()),
+            tai_j2000_micros_from_unix_seconds(1_700_000_000)
+                .unwrap()
+                .into(),
+            Some(
+                tai_j2000_micros_from_unix_seconds(1_800_000_000)
+                    .unwrap()
+                    .into(),
+            ),
         ),
     );
     let one_hop = delegate_write(&genesis, &owner, area1, mid_id.clone()).expect("hop1");
@@ -403,8 +417,14 @@ fn delegation_chain_signature_tamper_is_rejected() {
         Some(leaf.clone()),
         Path::from_slices(&[b"articles", b"news"]).expect("path"),
         TimeRange::new(
-            tai_j2000_micros_from_unix_seconds(1_700_000_000).unwrap().into(),
-            Some(tai_j2000_micros_from_unix_seconds(1_800_000_000).unwrap().into()),
+            tai_j2000_micros_from_unix_seconds(1_700_000_000)
+                .unwrap()
+                .into(),
+            Some(
+                tai_j2000_micros_from_unix_seconds(1_800_000_000)
+                    .unwrap()
+                    .into(),
+            ),
         ),
     );
     let two_hop = delegate_write(&one_hop, &mid, area2, leaf).expect("hop2");
@@ -444,7 +464,9 @@ fn seeded_generative_attenuation_never_expands_authority() {
             Some(receiver.clone()),
             Path::from_slices(&[b"articles"]).expect("path"),
             TimeRange::new(
-                tai_j2000_micros_from_unix_seconds(1_700_000_000).unwrap().into(),
+                tai_j2000_micros_from_unix_seconds(1_700_000_000)
+                    .unwrap()
+                    .into(),
                 Some(
                     // (seed + 1): seed 0 would make start == end, an EMPTY
                     // TimeRange, and willow's Area::new panics on EmptyGrouping.
@@ -478,8 +500,14 @@ fn seeded_generative_invalid_trees_are_all_rejected() {
             Some(receiver.clone()),
             Path::from_slices(&[b"articles"]).expect("path"),
             TimeRange::new(
-                tai_j2000_micros_from_unix_seconds(1_700_000_000).unwrap().into(),
-                Some(tai_j2000_micros_from_unix_seconds(1_800_000_000).unwrap().into()),
+                tai_j2000_micros_from_unix_seconds(1_700_000_000)
+                    .unwrap()
+                    .into(),
+                Some(
+                    tai_j2000_micros_from_unix_seconds(1_800_000_000)
+                        .unwrap()
+                        .into(),
+                ),
             ),
         );
         let valid =
@@ -510,8 +538,13 @@ fn seeded_generative_invalid_trees_are_all_rejected() {
         let mut signer = SubspaceSecret::from_bytes(&[4u8; 32]);
         for i in 0..17u8 {
             let next = SubspaceSecret::from_bytes(&[seed.wrapping_add(i).wrapping_add(1); 32]);
-            deep = delegate_write(&deep, &signer, Area::full(), next.corresponding_subspace_id())
-                .expect("hop");
+            deep = delegate_write(
+                &deep,
+                &signer,
+                Area::full(),
+                next.corresponding_subspace_id(),
+            )
+            .expect("hop");
             signer = next;
         }
         assert_eq!(

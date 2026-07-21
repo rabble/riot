@@ -16,7 +16,10 @@ pub fn new_communal_read(namespace: NamespaceId, user_key: SubspaceId) -> ReadCa
 /// An owned write capability granting `Area::full()` of the owned namespace,
 /// received by `user_key`. `namespace_secret` is the owned-namespace root; it
 /// stays inside `riot-core` and never crosses FFI.
-pub fn new_owned_write(namespace_secret: &NamespaceSecret, user_key: SubspaceId) -> WriteCapability {
+pub fn new_owned_write(
+    namespace_secret: &NamespaceSecret,
+    user_key: SubspaceId,
+) -> WriteCapability {
     WriteCapability::new_owned(namespace_secret, user_key)
 }
 

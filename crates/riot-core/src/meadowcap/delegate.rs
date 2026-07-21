@@ -115,8 +115,16 @@ mod tests {
             delegate_read(&cap, &owner, narrow.clone(), editor_id.clone()).expect("attenuate read");
         assert_eq!(delegated.receiver(), &editor_id, "receiver moved to editor");
         assert_eq!(delegated.delegations().len(), 1, "chain depth incremented");
-        assert_eq!(delegated.granted_area(), narrow, "granted area narrowed to the delegated area");
-        assert_ne!(delegated.granted_area(), Area::full(), "granted area is no longer full");
+        assert_eq!(
+            delegated.granted_area(),
+            narrow,
+            "granted area narrowed to the delegated area"
+        );
+        assert_ne!(
+            delegated.granted_area(),
+            Area::full(),
+            "granted area is no longer full"
+        );
 
         // Happy-path bounded read decode returns the same valid capability.
         let bytes = encode_read_capability(&delegated);
@@ -171,7 +179,12 @@ mod tests {
         let cap = delegate_write(&cap, &owner, narrow, mid_id.clone()).expect("narrow");
         let widen = Area::full();
         assert_eq!(
-            delegate_write(&cap, &mid, widen, SubspaceSecret::from_bytes(&[10u8; 32]).corresponding_subspace_id()),
+            delegate_write(
+                &cap,
+                &mid,
+                widen,
+                SubspaceSecret::from_bytes(&[10u8; 32]).corresponding_subspace_id()
+            ),
             Err(MeadowcapError::AuthorityExpanding)
         );
     }
@@ -208,7 +221,11 @@ mod time_unit_tests {
     use willow25::entry::Entry;
     use willow25::prelude::{NamespaceSecret, Path, TimeRange};
 
-    fn entry_at_micros(ns_secret: &NamespaceSecret, subspace: willow25::prelude::SubspaceId, micros: u64) -> Entry {
+    fn entry_at_micros(
+        ns_secret: &NamespaceSecret,
+        subspace: willow25::prelude::SubspaceId,
+        micros: u64,
+    ) -> Entry {
         Entry::builder()
             .namespace_id(ns_secret.corresponding_namespace_id())
             .subspace_id(subspace)
@@ -235,12 +252,21 @@ mod time_unit_tests {
             Some(owner_id.clone()),
             Path::from_slices(&[b"articles"]).expect("path"),
             TimeRange::new(
-                tai_j2000_micros_from_unix_seconds(unix - 86_400).unwrap().into(),
-                Some(tai_j2000_micros_from_unix_seconds(unix + 86_400).unwrap().into()),
+                tai_j2000_micros_from_unix_seconds(unix - 86_400)
+                    .unwrap()
+                    .into(),
+                Some(
+                    tai_j2000_micros_from_unix_seconds(unix + 86_400)
+                        .unwrap()
+                        .into(),
+                ),
             ),
         );
         let good = delegate_write(&cap, &owner, good_area, owner_id.clone()).expect("attenuate");
-        assert!(good.includes(&entry), "micros-domain cap must cover a micros entry");
+        assert!(
+            good.includes(&entry),
+            "micros-domain cap must cover a micros entry"
+        );
 
         // TRAP: the same window built from RAW SECONDS. J2000 micros for 2023
         // are ~7.3e17; a range ending at ~1.7e9 seconds ends astronomically
@@ -251,6 +277,9 @@ mod time_unit_tests {
             TimeRange::new((unix - 86_400).into(), Some((unix + 86_400).into())),
         );
         let bad = delegate_write(&cap, &owner, bad_area, owner_id).expect("attenuate");
-        assert!(!bad.includes(&entry), "raw-seconds cap must cover NOTHING real");
+        assert!(
+            !bad.includes(&entry),
+            "raw-seconds cap must cover NOTHING real"
+        );
     }
 }

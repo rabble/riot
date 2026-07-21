@@ -49,7 +49,11 @@ mod tests {
     use crate::meadowcap::create::{new_communal_read, new_owned_write};
     use willow25::prelude::{NamespaceId, NamespaceSecret, Path, SubspaceSecret};
 
-    fn entry_in(ns: &NamespaceId, subspace: willow25::prelude::SubspaceId, path: &[&[u8]]) -> Entry {
+    fn entry_in(
+        ns: &NamespaceId,
+        subspace: willow25::prelude::SubspaceId,
+        path: &[&[u8]],
+    ) -> Entry {
         Entry::builder()
             .namespace_id(ns.clone())
             .subspace_id(subspace)
@@ -64,7 +68,11 @@ mod tests {
         let ns = NamespaceSecret::from_bytes(&[3u8; 32]);
         let owner = SubspaceSecret::from_bytes(&[4u8; 32]);
         let cap = new_owned_write(&ns, owner.corresponding_subspace_id());
-        let entry = entry_in(&ns.corresponding_namespace_id(), owner.corresponding_subspace_id(), &[b"manifest"]);
+        let entry = entry_in(
+            &ns.corresponding_namespace_id(),
+            owner.corresponding_subspace_id(),
+            &[b"manifest"],
+        );
         let authorised = entry
             .clone()
             .into_authorised_entry(&cap, &owner)
@@ -73,14 +81,21 @@ mod tests {
         assert!(token_authorises_entry(&entry, token));
 
         // A different subspace's entry under the same token must not verify.
-        let other = entry_in(&ns.corresponding_namespace_id(), SubspaceSecret::from_bytes(&[9u8; 32]).corresponding_subspace_id(), &[b"manifest"]);
+        let other = entry_in(
+            &ns.corresponding_namespace_id(),
+            SubspaceSecret::from_bytes(&[9u8; 32]).corresponding_subspace_id(),
+            &[b"manifest"],
+        );
         assert!(!token_authorises_entry(&other, token));
 
         // WRONG NAMESPACE: the same signed token must not authorise an entry
         // whose namespace differs from the capability's granted namespace.
         let wrong_ns = NamespaceSecret::from_bytes(&[77u8; 32]).corresponding_namespace_id();
         let cross = entry_in(&wrong_ns, owner.corresponding_subspace_id(), &[b"manifest"]);
-        assert!(!token_authorises_entry(&cross, token), "cross-namespace entry must fail");
+        assert!(
+            !token_authorises_entry(&cross, token),
+            "cross-namespace entry must fail"
+        );
     }
 
     #[test]
@@ -96,6 +111,9 @@ mod tests {
         assert!(!read_request_covered(&cap, &ns, &Area::full()));
         // WRONG NAMESPACE, otherwise-contained area -> not covered.
         let other_ns = NamespaceId::from_bytes(&[24u8; 32]);
-        assert!(!read_request_covered(&cap, &other_ns, &inside), "cross-namespace read must fail");
+        assert!(
+            !read_request_covered(&cap, &other_ns, &inside),
+            "cross-namespace read must fail"
+        );
     }
 }

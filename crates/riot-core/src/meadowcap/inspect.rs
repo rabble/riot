@@ -6,7 +6,9 @@ use willow25::authorisation::raw::AccessMode as RawAccessMode;
 use willow25::authorisation::{ReadCapability, WriteCapability};
 use willow25::prelude::{Area, NamespaceId, SubspaceId};
 
-use super::fingerprint::{read_capability_fingerprint, write_capability_fingerprint, CapabilityFingerprint};
+use super::fingerprint::{
+    read_capability_fingerprint, write_capability_fingerprint, CapabilityFingerprint,
+};
 use super::{AccessMode, CapabilityKind};
 
 /// Immutable, typed, non-secret facts about a capability. Never exposes secret
