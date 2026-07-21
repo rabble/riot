@@ -35,7 +35,7 @@ The hierarchy must stay understandable without exposing app IDs, namespace IDs, 
 **SO THAT:** they can see or switch their joined communities without first finding a Close control  
 **WHEN:** the tool detail is open on macOS
 
-Selecting the community crumb opens the existing community chooser. Dismissing the chooser keeps the current tool and page. Selecting another community uses the existing guarded community-transition path, which tears down the old tool runtime and switches community scope.
+Selecting the community crumb opens the existing community chooser. Dismissing the chooser keeps the same mounted WebView and current page. Selecting another community while a tool is mounted first presents a conservative Stay-or-Switch confirmation: “Switch communities? Any unsaved changes in <app> will be lost.” “Stay” leaves the chooser and runtime untouched; “Switch” uses the existing community-transition path, which tears down the old runtime and switches community scope. Because the host cannot inspect an app's in-memory edit state, this guard appears whenever a different community is chosen from a mounted tool, not only when the host guesses that a draft exists.
 
 ### UC2: Return to an app's root
 
@@ -55,7 +55,7 @@ Wiki handles the event by explicitly selecting its page index and setting an `ex
 **SO THAT:** the open tool never traps or masks them  
 **WHEN:** they select a sidebar destination
 
-Every shell-route selection closes the running tool before showing the selected route, on macOS sidebar/keyboard navigation and iPhone tab navigation alike. Escape retains the documented behavior of returning from the tool to Tools. The existing `ToolFocusRestoration` bookkeeping is cleared through the same close path; applying the returned identifier to actual UI focus is not implemented today and is not claimed by this change.
+Every macOS sidebar or Command-1 through Command-4 route selection closes the running tool before showing the selected route. Escape retains the documented behavior of returning from the tool to Tools. The existing `ToolFocusRestoration` bookkeeping is cleared through the same close path; applying the returned identifier to actual UI focus is not implemented today and is not claimed by this change. iPhone tab selection remains unchanged and continues preserving the Tools NavigationStack while another tab is temporarily selected.
 
 ### UC4: Stay oriented in narrow windows
 
@@ -95,6 +95,8 @@ SwiftUI `ViewThatFits(in: .horizontal)` chooses between the complete names and t
 - App: `🧰`, accessibility label “Return to <app> home” when actionable, otherwise “<app>”.
 - Page: `📄`, accessibility label “Current page: <page>”.
 
+Each compact crumb also exposes macOS hover help with its complete community, app, or page name, so sighted pointer users can recover the names without resizing.
+
 The compact row preserves the same hit targets by padding controls inside the 36-point row. Emoji do not replace accessible text.
 
 ### Existing alternatives
@@ -109,21 +111,23 @@ The host observes the WebView's existing document title. No new privileged messa
 
 - Root title: `<app name>` (for example, `Wiki`).
 - Nested title: `<page name> — <app name>` (for example, `Meeting guide — Wiki`).
-- The host accepts a nested page only when the normalized title ends with the exact app-name suffix.
-- The page portion is trimmed, must contain no Unicode control or newline characters, and must be no more than 120 extended grapheme clusters, matching Wiki's existing page-title limit.
+- A pure `AppPageLocation` parser first canonicalizes both title and app name to Unicode NFC, then trims leading/trailing Unicode whitespace from the whole title, rejects all Unicode general categories `Cc` (control) and `Cf` (format, including bidi controls), and finally matches the exact ` — <NFC app name>` suffix.
+- The host accepts a nested page only when that normalized title ends with the exact normalized app-name suffix.
+- The page portion is trimmed again, must be non-empty, and must be no more than 120 Swift `Character` values (extended grapheme clusters). This is an independent native-chrome bound; Wiki's existing JavaScript content validation continues using its own UTF-16-code-unit bound.
 - Empty titles, root-equal titles, malformed suffixes, controls, or over-bound titles do not create a page crumb.
 - Unrecognized titles fall back to app-only navigation rather than displaying untrusted or malformed chrome.
 
 Wiki updates `document.title` whenever `selectedKey` changes. Other apps remain app-only until they adopt the same title convention; the host behavior is backwards compatible.
 
-The app-root action evaluates one constant script that dispatches `riot:navigate-root` with no payload. It neither changes the current URL, relaxes `AppRuntimeCoordinator`'s navigation lock, accepts page-provided script, nor permits external navigation. The host clears the native page crumb immediately when it dispatches the event, and accepts later title callbacks only from the still-mounted coordinator.
+The app-root action evaluates one constant script that dispatches `riot:navigate-root` with no payload and returns the page's resulting `document.title`. It neither changes the current URL, relaxes `AppRuntimeCoordinator`'s navigation lock, accepts page-provided script, nor permits external navigation. Native state is updated only by parsing the returned title or a later KVO title callback. If evaluation fails, or an app does not handle the event and returns the same nested title, the existing page crumb remains accurate and actionable so the person can retry. Root/malformed titles clear a previously valid page; duplicate identical parsed locations are coalesced.
 
 ## State and component boundaries
 
 ### `CommunityShellView`
 
 - Passes `community.name` and `model.openCommunityChooser` into the macOS runtime host.
-- Treats selecting any sidebar destination as a tool-close transition before applying the route.
+- Treats selecting any macOS sidebar or keyboard destination as a tool-close transition before applying the route; iPhone's tab-selection path is unchanged.
+- Presents the chooser with the current community ID, mounted app name, and a guarded selection closure. Choosing a different community while a tool is mounted requires the Stay-or-Switch confirmation before calling `model.switchCommunity`.
 - Keeps the existing community-transition gate, focus bookkeeping, and Escape behavior authoritative.
 
 ### `AppRuntimeView` / `AppHostView`
@@ -134,9 +138,9 @@ The app-root action evaluates one constant script that dispatches `riot:navigate
 
 ### `AppWebView` / `AppRuntimeCoordinator`
 
-- Owns an `NSKeyValueObservation` on `WKWebView.title` and reports document-title changes to the host on the main actor.
-- Stores the last processed root-navigation generation. `updateNSView`/`updateUIView` forward a newer generation to the coordinator, which dispatches only the constant root event and clears the native page state before doing so.
-- Ignores title callbacks after teardown and removes title observation during the existing idempotent teardown.
+- Owns an `NSKeyValueObservation` on `WKWebView.title` through a weak coordinator capture and reports document-title changes to the host on the main actor.
+- Stores the initial and last processed root-navigation generations. `updateNSView`/`updateUIView` ignore the initial and duplicate generations; a newer generation dispatches only the constant root event, parses the returned document title, and leaves the prior location intact on evaluation failure.
+- Ignores root requests and title callbacks after teardown; invalidates and nils title observation during the existing idempotent teardown and again defensively in `deinit`.
 
 ### Wiki fixture
 
@@ -150,11 +154,11 @@ The app-root action evaluates one constant script that dispatches `riot:navigate
 - If the title observation is late, missing, malformed, or fails, the breadcrumb safely shows only community and app.
 - If a selected Wiki page disappears during sync, Wiki's existing reconciliation returns to the index and resets the title to `Wiki`.
 - If trust is revoked, the existing invalidation notification closes the runtime; breadcrumb code does not bypass or delay it.
-- If the community chooser is dismissed, the current runtime remains mounted.
-- If another community is selected, the existing transition preparation clears `runningTool` before rebuilding community-scoped state.
+- If the community chooser is dismissed or “Stay” is selected, the current runtime and page remain mounted.
+- If another community is selected while a tool is mounted, the explicit confirmation precedes the existing transition preparation that clears `runningTool` and rebuilds community-scoped state.
 - Repeated root selections are idempotent from the user's perspective. The app crumb is disabled/absent as an action at root, avoiding unnecessary events.
 - Very long names switch the complete breadcrumb to emoji; identifiers are never truncated into ambiguous strings.
-- Opening and dismissing the chooser preserves the mounted WebView instance and current page; switching communities uses the existing teardown path.
+- Opening and dismissing the chooser preserves the mounted WebView instance and current page; confirmed switching uses the existing teardown path.
 - Wiki's ancestor app action has the same editing semantics as its existing “All pages” action: leaving the page exits edit mode. Adding a new unsaved-edit prompt is outside this navigation repair.
 
 ## Accessibility and keyboard behavior
@@ -164,38 +168,41 @@ The app-root action evaluates one constant script that dispatches `riot:navigate
 - The current page has header/current-location semantics but no button trait.
 - Full and compact variants expose the same accessibility meaning; only one variant exists in the rendered accessibility tree.
 - Keyboard focus order is community, app when actionable, then WebView content.
-- Escape closes to Tools as before. Command-1 through Command-4 also work while a tool is open because the route transition now clears the tool first.
+- Escape closes to Tools as before. On macOS, Command-1 through Command-4 also work while a tool is open because the route transition now clears the tool first.
 
 ## Security and privacy
 
 - The breadcrumb displays only community/app/page display strings, never Nostr/Willow identifiers or signing material.
-- Page titles come from already trusted local app content but are still parsed and bounded before entering native chrome.
-- Root navigation reuses the verified resolver and existing `riot-app` navigation policy; no network capability, new scheme, or additional bridge permission is introduced.
-- Opening the chooser uses existing authorization and unsaved-draft transition handling.
+- Page titles are app-controlled display metadata, not authenticated page identity. They never authorize storage, community selection, or navigation policy and are normalized, parsed, and bounded before entering native chrome.
+- Root navigation dispatches one constant payload-free DOM event inside the already trust-gated runtime; no network capability, new scheme, page-supplied script, or additional bridge permission is introduced.
+- Opening the chooser uses existing authorization; switching from a mounted runtime adds an explicit possible-edit-loss confirmation before existing transition teardown.
 
 ## TDD and verification
 
-Implementation follows explicit red-green cycles:
+Implementation follows four explicit red-green-refactor slices:
 
-1. Add pure tests for document-title parsing: root, valid nested page, wrong app suffix, empty, controls, and length bound.
-2. Add shell-navigation tests proving a route selection while a tool is open yields a close-then-route action and clears the existing invoking-tool bookkeeping.
-3. Add WebKit host tests proving a nested document-title change reaches the coordinator callback, late callbacks after teardown are ignored, and a root request dispatches only the fixed payload-free DOM event.
-4. Add Wiki JavaScript assertions for root/detail title changes and for no first-page rebound at both narrow and wide viewport widths, then repack and run the committed starter-artifact drift test.
-5. Add a macOS UI test or inspectable presentation tests for full and emoji breadcrumb variants, action labels, and removal of `app-close`.
-6. Run focused Swift tests, both Apple builds, strict repository formatting/lint checks, the full Rust workspace test suite, and the starter artifact audit.
-7. Capture a macOS screenshot at normal and constrained widths and confirm one compact row, no oversized Close button, correct hierarchy, and working sidebar/chooser/app-root actions.
+1. **Location and presentation.** RED: create `apps/ios/RiotTests/AppBreadcrumbTests.swift` with pure parser-state assertions for root, valid nested page, exact/wrong suffix, NFC equivalence, whitespace order, `Cc`/`Cf` and bidi rejection, 120/121-Character boundaries, and valid-page-then-root/malformed clearing. Add inspectable presentation assertions for full/emoji labels, hover help, and action accessibility. GREEN: add `AppPageLocation` and `AppBreadcrumbView`, replacing `app-close`. REFACTOR: centralize normalization and coalesce equal location updates.
+2. **WebKit location/root lifecycle.** RED: in the same test file, reuse the `SpyDataBridge`, `NavProbe`, `makeWebView`, and `loadEntryPoint` patterns already proven in `AppRuntimeHostTests`; cover title KVO delivery plus initial-generation no-op, newer-generation dispatch, duplicate-generation no-op, returned-root-title clearing, returned-nested-title preservation, evaluation-failure preservation, and post-teardown no dispatch/callback. GREEN: add the weak KVO observation, generation handling, fixed event script, result parsing, and teardown. REFACTOR: keep one main-actor location delivery method for KVO and evaluation results.
+3. **Shell and chooser safety.** RED: add pure mac-route transition and chooser-switch-decision tests proving macOS close-then-route, iPhone preservation, current-community no-op, chooser cancellation/runtime preservation, and Stay versus confirmed Switch when a tool is mounted. GREEN: isolate `changeMacRoute`, inject the chooser selection closure, and add the conservative confirmation. REFACTOR: route Escape/sidebar/keyboard through the existing single `closeTool` bookkeeping path.
+4. **Wiki adoption.** RED: extend the real Wiki WebView test fixture for root/detail titles, payload-free root-event handling, and no first-page rebound below and above 640 points. GREEN: add `explicitIndex`, title updates, and the event listener. REFACTOR: funnel “All pages”, deleted-page recovery, and the host event through one `openIndex` function; repack with `scripts/apps/repack-starter.sh`.
+
+`AppBreadcrumbTests.swift` is registered in both `apps/ios/Riot.xcodeproj/project.pbxproj` (`RiotTests`) and `apps/macos/Riot.xcodeproj/project.pbxproj` (`RiotKitTests-macOS`). This makes the parser, coordinator lifecycle, presentation contract, and mac route transition execute under macOS rather than relying on an absent macOS UI-test target. Pixel fitting and live actions are additionally verified by launching the macOS app and capturing normal/constrained screenshots.
+
+After focused tests, run both Apple builds/tests, starter drift/audit, formatting, strict Clippy, the full Rust workspace tests, and the authoritative `scripts/web/coverage.sh` threshold-reading coverage gate. Any failure in normal-width, constrained-width, keyboard, chooser, app-root, accessibility, artifact drift, build, test, lint, or coverage journeys blocks completion/PR.
 
 ## Acceptance criteria
 
 - The macOS tool host shows `community › app` at root and adds `› page` for a conforming nested app page.
 - Selecting the community crumb opens the existing community chooser.
+- Choosing a different community from a mounted tool requires Stay-or-Switch confirmation; cancel/Stay preserves the same runtime and page.
 - Selecting the app crumb from a nested page returns to the app index and remains there at both narrow and wide viewport widths.
-- Home, Tools, People, and Nearby all replace a running tool with the selected route.
+- On macOS, Home, Tools, People, and Nearby all replace a running tool with the selected route; iPhone tab state remains unchanged.
 - The hierarchy automatically collapses to `🏘 › 🧰 › 📄` when full labels do not fit and keeps full accessibility labels.
 - The breadcrumb occupies at most 36 points vertically and never wraps.
 - Escape, trust invalidation, community switching, WebView teardown, and iPhone navigation continue to behave as documented.
 - Wiki source and packed starter artifacts remain deterministic and pass drift checks.
 - No external navigation or new app permission is introduced; the only host-to-app addition is the constant payload-free `riot:navigate-root` event.
+- All three ancestor tasks—open chooser, return to app index, leave through macOS shell navigation—complete without the removed Close control or visible protocol identifiers.
 
 ## Out of scope
 
