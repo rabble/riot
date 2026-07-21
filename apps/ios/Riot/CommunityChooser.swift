@@ -217,6 +217,7 @@ public enum CommunitySelectionShortcut {
 /// the shell.
 public struct CommunityChooserView: View {
     @ObservedObject private var model: RiotAppModel
+    @State private var isGuidePresented = false
 
     public init(model: RiotAppModel) {
         self.model = model
@@ -249,11 +250,20 @@ public struct CommunityChooserView: View {
                     Button("Join with a link or QR") { model.requestJoinByReference() }
                         .accessibilityIdentifier("chooser-join-another")
                 }
+                // Help & Guides (offline-guides design): the manual is reachable
+                // before and between communities, not only from inside one.
+                Section {
+                    Button(UsingRiotGuide.entryLabel) { isGuidePresented = true }
+                        .accessibilityIdentifier("chooser-using-riot")
+                }
             }
             .navigationTitle("Your communities")
             .toolbar {
                 Button("Done") { model.dismissCommunityChooser() }
                     .accessibilityIdentifier("chooser-done")
+            }
+            .sheet(isPresented: $isGuidePresented) {
+                UsingRiotGuideView(onClose: { isGuidePresented = false })
             }
         }
     }

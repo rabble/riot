@@ -245,6 +245,7 @@ private struct OnboardingWelcomeView: View {
     let onContinue: () -> Void
     let onJoin: () -> Void
     @State private var isExplainerPresented = false
+    @State private var isGuidePresented = false
 
     var body: some View {
         ScrollView {
@@ -267,6 +268,10 @@ private struct OnboardingWelcomeView: View {
                             .buttonStyle(.riotSecondary)
                             .accessibilityIdentifier("onboarding-how-it-works")
 
+                        Button(UsingRiotGuide.entryLabel, action: { isGuidePresented = true })
+                            .buttonStyle(.riotSecondary)
+                            .accessibilityIdentifier("onboarding-using-riot")
+
                         Button("Get started", action: onContinue)
                             .buttonStyle(.riotPrimary)
                             .accessibilityIdentifier("onboarding-get-started")
@@ -282,6 +287,9 @@ private struct OnboardingWelcomeView: View {
         .riotHeader(eyebrow: "Riot", "Welcome")
         .sheet(isPresented: $isExplainerPresented) {
             OnboardingExplainerView(onClose: { isExplainerPresented = false })
+        }
+        .sheet(isPresented: $isGuidePresented) {
+            UsingRiotGuideView(onClose: { isGuidePresented = false })
         }
     }
 
@@ -1783,6 +1791,7 @@ private struct CommunitySettingsSheet: View {
     @Environment(\.colorScheme) private var colorScheme
     @State private var showingTechnical = false
     @State private var isSharePresented = false
+    @State private var isGuidePresented = false
 
     var body: some View {
         ScrollView {
@@ -1811,6 +1820,12 @@ private struct CommunitySettingsSheet: View {
                     .buttonStyle(.riotSecondary)
                     .accessibilityIdentifier("share-community")
 
+                // The manual doubles as the recovery route from settings
+                // (offline-guides design: Help & Guides from community settings).
+                Button(UsingRiotGuide.entryLabel) { isGuidePresented = true }
+                    .buttonStyle(.riotSecondary)
+                    .accessibilityIdentifier("settings-using-riot")
+
                 Button("Leave this community", role: .destructive, action: onLeave)
                     .buttonStyle(.riotSecondary)
                     .accessibilityIdentifier("leave-community")
@@ -1822,6 +1837,9 @@ private struct CommunitySettingsSheet: View {
             .padding(20)
         }
         .riotHeader(eyebrow: "Community", ShellIdentityDestination.communitySettings.label)
+        .sheet(isPresented: $isGuidePresented) {
+            UsingRiotGuideView(onClose: { isGuidePresented = false })
+        }
         .sheet(isPresented: $isSharePresented) {
             ShareCommunitySheet(
                 community: community,
