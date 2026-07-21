@@ -48,7 +48,7 @@ const exactStatusText = {
 };
 ```
 
-Assert exact primary-nav order/set on all source pages and mirrors, exact nine-route footer sets including self-links, exact nine-path sitemap and README inventories, no `/resilience/` directory/link/sitemap route, distinct homepage and Why Riot H1s, origin-relative canonical links, the Why Riot section/status contracts, Privacy's public-first hierarchy, the code-native illustration accessibility contract, and exact participation/Solnit links. The homepage assertion must require an ordinary-life use case and copy establishing that Riot matters before shutdown or disruption, rather than merely removing unsafe absolute language.
+Assert exact primary-nav order/set on all source pages and mirrors, exact nine-route footer sets including self-links, and exact nine-path sitemap and README inventories. Call `stat()` separately for `marketing/resilience` and `marketing/public/resilience` and require each rejection to have `code === "ENOENT"`; also require no normalized `/resilience/` link or sitemap route. Assert distinct homepage and Why Riot H1s, origin-relative canonical links, the Why Riot section/status contracts, Privacy's public-first hierarchy, the code-native illustration accessibility contract, and exact participation/Solnit links. The homepage assertion must require an ordinary-life use case and copy establishing that Riot matters before shutdown or disruption, rather than merely removing unsafe absolute language.
 
 - [ ] **Step 3: Add the finite site-wide claim and resource-safety audit**
 
