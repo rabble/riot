@@ -2,6 +2,7 @@
 //! namespace-scoped data bridge apps use to read/write their own Willow
 //! entries. Kept separate from `import/` (evidence-only).
 
+pub mod admission;
 pub mod bridge;
 pub mod bundle;
 pub mod directory;
