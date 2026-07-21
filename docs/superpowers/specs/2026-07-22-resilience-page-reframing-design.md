@@ -1,7 +1,7 @@
 # Riot Resilience Page Reframing Design
 
 **Date:** 2026-07-22  
-**Status:** Design review candidate, revision 2
+**Status:** Design review candidate, revision 3
 
 **Scope:** Riot marketing site narrative and route structure only
 
@@ -14,8 +14,8 @@ fail. Privacy remains an honest product boundary, but it is not Riot's primary p
 The page should celebrate the society described in Rebecca Solnit's *A Paradise Built in Hell*:
 people commonly respond to disruption with solidarity, improvisation, generosity, mutual aid, and
 new forms of local civic life. Riot does not create that capacity or replace community. Riot builds
-tools that help communities practice it every day, carry it through disruption, and extend it across
-more people and places.
+tools that help communities practice it every day and carry it through disruption; helping those
+practices reach more people and places is the project's direction, not a current scale claim.
 
 This is not collapse romanticism. Disaster is harmful. The hopeful claim is that cooperative civic
 capacity already exists, and tools can help people cultivate and use it before, during, and after a
@@ -65,7 +65,8 @@ security product, or catastrophe checklist.
 ## Framing Principles
 
 1. **Human capacity first.** People already know how to cooperate, improvise, care, and organize.
-   Riot helps that capacity travel and scale.
+   Riot helps that capacity travel between people and places. Supporting it at broader scale is a
+   direction for the project, not a current deployment claim.
 2. **Everyday life first.** Communities should practice shared publishing, meetings, decisions, and
    mutual aid before a crisis. Riot is not an emergency-only application.
 3. **Celebration without romanticizing harm.** Disruption is real and often unjust. The hopeful
@@ -136,7 +137,8 @@ relationships and tools, not the page's emotional center.
 Only after the social purpose is clear should the page explain the technical model:
 
 - community data can be held by participants rather than only by a service;
-- signed records let Riot clients check authorship independently;
+- signed records let Riot clients check that a record came from a particular key independently;
+  a valid signature does not establish a person's identity or make the content true or legitimate;
 - local reading and writing can continue against data already held;
 - nearby and portable exchange provide additional paths;
 - public hosts and ordinary web mirrors can improve reach and discovery without becoming the sole
@@ -186,8 +188,9 @@ participation, experimentation, and local adaptation rather than consumption of 
 ## Route and Navigation Design
 
 - Add `/resilience/` as the canonical route and label it **Resilience** in site navigation.
-- The new page declares exactly
-  `<link rel="canonical" href="https://riot.protest.net/resilience/">`.
+- The new page declares exactly `<link rel="canonical" href="/resilience/">`. The origin-relative
+  canonical resolves correctly on the configured Workers origin and on any separately approved
+  custom domain; this marketing-only change does not assume or mutate DNS, TLS, or route ownership.
 - Preserve `/privacy/` as a static compatibility alias. Its HTML is byte-identical to
   `/resilience/`, including the canonical link to `/resilience/`; therefore an old bookmark loads
   the complete new page rather than a stale privacy essay or an unverified client-side redirect.
@@ -195,7 +198,10 @@ participation, experimentation, and local adaptation rather than consumption of 
   `marketing/resilience/index.html`, `marketing/privacy/index.html`,
   `marketing/public/resilience/index.html`, and `marketing/public/privacy/index.html`.
 - Add `/resilience/` to the sitemap and retain `/privacy/` while it remains a compatibility route.
-- Update `marketing/README.md` so route ownership and the compatibility behavior are explicit.
+- Reconcile all stale route, mirror, navigation, preview, and crawl-metadata statements in
+  `marketing/README.md`. Its source and public inventories must include both `/releases/` and
+  `/resilience/`; its navigation description must reflect the site-wide **Resilience** link; and its
+  route, sitemap, and local-preview examples must describe the compatibility alias accurately.
 - Site-wide navigation-label changes are mechanical scope. Do not rewrite unrelated page content.
 
 The current editorial-page inventory for the navigation contract is exactly:
@@ -292,9 +298,9 @@ The following claims are forbidden both verbatim and in semantic equivalents:
 - production-ready, audited, field-proven, or operating at scale.
 
 Positive claims must name the bounded mechanism: local usefulness of already-held data, independent
-signature checks, more than one possible exchange path, and replaceable hosts. The page may describe
-the future Riot is trying to build, but aspirations use “being built,” “aim,” or the exact status
-labels above rather than present-tense guarantees.
+signature checks that prove only control of a particular key, more than one possible exchange path,
+and replaceable hosts. The page may describe the future Riot is trying to build, but aspirations use
+“being built,” “aim,” or the exact status labels above rather than present-tense guarantees.
 
 ## Verification and Acceptance Criteria
 
@@ -311,7 +317,8 @@ changing dependencies.
 Automated contracts must verify:
 
 1. byte identity across all four canonical/compatibility source/public files;
-2. exactly one absolute canonical link to `https://riot.protest.net/resilience/` in that content;
+2. exactly one origin-relative canonical link, `<link rel="canonical" href="/resilience/">`, in that
+   content;
 3. `/resilience/` appears in the sitemap;
 4. all eight explicitly inventoried source pages and all eight public mirrors include the
    **Resilience** label linked to `/resilience/` in primary navigation;
@@ -319,9 +326,17 @@ Automated contracts must verify:
    section, website disclosure, source attribution, and participation links;
 6. every capability in the matrix appears with its required exact status label, and the explicit
    device/data/peer/transport limitations appear;
-7. forbidden absolute and guarantee claims in **Claim Safety** do not appear;
-8. the page contains no remote script, analytics, cookie, or tracking dependency;
-9. the full existing marketing contract suite remains green through both
+7. a bounded, case-insensitive set of forbidden claim patterns covers at least `uncensorable`,
+   `unstoppable`, `cannot be shut down`, `impossible to shut down`, `always available`, `always
+   online`, `guaranteed delivery`, `guaranteed discovery`, `guaranteed persistence`, `guaranteed
+   recovery`, `anonymous`, `private by default`, `production-ready`, `field-proven`, and `operating
+   at scale`; semantic equivalents that evade those finite patterns remain a required human
+   editorial-review check rather than a falsely comprehensive automated test;
+8. the signed-record copy says that signatures prove control of a key, not identity, truth, or
+   legitimacy;
+9. the page contains no remote runtime or asset dependency, including remote scripts, stylesheets,
+   fonts, images, media, iframes, analytics, beacons, cookies, or tracking endpoints;
+10. the full existing marketing contract suite remains green through both
    `node scripts/marketing/protocol-page-contracts.mjs` and `npm run test:web:unit`.
 
 Editorial review succeeds when a first-time reader can answer, from the page alone:
@@ -348,7 +363,11 @@ Revision 1 established the human-first thesis and page structure. The first five
 the narrative sound but requested: exact compatibility-route behavior, an explicit capability/status
 matrix, stronger availability and censorship-resistance boundaries, ordinary joyful life ahead of
 crisis language, an exact page inventory, and a named test/CI gate. Revision 2 incorporates each of
-those requests.
+those requests. The second review approved the product and security framing, then found two blockers:
+an accidental present-tense “scale” implication and an absolute canonical host outside the static
+site's configuration. Revision 3 makes scale explicitly directional, uses an origin-relative
+canonical route, reconciles every stale README inventory statement, bounds automated forbidden-claim
+patterns, rejects signature-as-truth implications, and tests every form of remote runtime asset.
 
 ## Primary Sources
 
