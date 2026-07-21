@@ -133,6 +133,10 @@ pub(crate) struct LocalProfile {
     /// bootstrap resolves and is NEVER derived from a community, author, or
     /// device identifier. Distinct from `app_execution_generation` above, which
     /// is a per-session sandbox-invalidation counter.
+    // Recorded at construction; its first production reader (durable persistence
+    // + generation-gated auto-install) lands in WU-001N, so it is dead outside
+    // the inline generation test today — mirrors `followed_site_session` above.
+    #[allow(dead_code)]
     starter_catalog_generation: Option<u8>,
     /// The durable database handle — a cheap `Arc` clone; the session owns a twin
     /// sharing the same connection, lease, and reader pool. `None` for in-memory
@@ -2443,7 +2447,10 @@ fn install_pair(
 
     use riot_core::apps::admission::{preflight, AdmissionOutcome};
 
-    let already_held = profile.installed_apps.iter().any(|app| app.app_id == app_id);
+    let already_held = profile
+        .installed_apps
+        .iter()
+        .any(|app| app.app_id == app_id);
     let held_aggregate_bytes: usize = profile
         .installed_apps
         .iter()

@@ -283,5 +283,8 @@ fn generation_one_bootstraps_legacy_and_two_bootstraps_current() {
     };
     assert_eq!(ids(bootstrap_catalog(None)), ids(LEGACY_BUILTIN_CATALOG));
     assert_eq!(ids(bootstrap_catalog(Some(1))), ids(LEGACY_BUILTIN_CATALOG));
-    assert_eq!(ids(bootstrap_catalog(Some(2))), ids(CURRENT_STARTER_CATALOG));
+    assert_eq!(
+        ids(bootstrap_catalog(Some(2))),
+        ids(CURRENT_STARTER_CATALOG)
+    );
 }

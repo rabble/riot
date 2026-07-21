@@ -22,5 +22,7 @@ fn inventory_entries_carry_app_id_and_pair_sha256_and_byte_sizes() {
 fn until_v2_lands_current_and_legacy_share_membership_per_id() {
     // Same bytes today => each app ID is a member of BOTH catalogs.
     let inv = catalog_inventory(CURRENT_STARTER_CATALOG, LEGACY_BUILTIN_CATALOG);
-    assert!(inv.iter().all(|e| e.membership.current && e.membership.legacy));
+    assert!(inv
+        .iter()
+        .all(|e| e.membership.current && e.membership.legacy));
 }
