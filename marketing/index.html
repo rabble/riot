@@ -517,7 +517,7 @@ section { padding: clamp(56px, 9vw, 100px) 0; }
 .status-row { display: grid; grid-template-columns: 160px 1fr; gap: 20px; padding: 18px 0; border-bottom: 2px solid rgba(255,255,255,0.4); align-items: baseline; }
 .status-row .schip { font-family: 'Space Mono', monospace; font-size: 11.5px; letter-spacing: 0.06em; text-transform: uppercase; border: 2px solid #fff; padding: 5px 10px; display: inline-block; width: fit-content; }
 .status-row .schip.done { background: #fff; color: var(--pink); }
-.status-band .chip.direction { color:#fff; border-color:#fff; }
+.status-band .chip.development,.status-band .chip.direction { color:#fff; border-color:#fff; }
 .status-row h4 { font-family: 'Anton', sans-serif; text-transform: uppercase; font-size: 19px; margin: 0 0 6px; color: #fff; letter-spacing: -0.005em; }
 .status-row p { margin: 0; font-size: 14.5px; color: rgba(255,255,255,0.85); max-width: 62ch; }
 @media (max-width: 620px) { .status-row { grid-template-columns: 1fr; } }
@@ -594,9 +594,9 @@ footer.colophon .footer-links a:hover { text-decoration: underline; text-decorat
   letter-spacing: 0.08em; text-transform: uppercase;
   border: 2px solid var(--ink); padding: 2px 8px; white-space: nowrap;
 }
-.chip.working { background: var(--blue); border-color: var(--blue); color: #fff; }
-.chip.prototype { background: var(--pink); border-color: var(--pink); color: #fff; }
-.chip.direction { background: transparent; border-color: var(--line-strong); color: var(--ink-soft); }
+.chip.prototype { background: var(--blue); border-color: var(--blue); color: #fff; }
+.chip.local { background: var(--pink); border-color: var(--pink); color: #fff; }
+.chip.development,.chip.direction { background: transparent; border-color: var(--line-strong); color: var(--ink-soft); }
 .hero-jumps {
   margin: 18px 0 0; font-family: 'Space Mono', ui-monospace, monospace;
   font-size: 13px; letter-spacing: 0.04em; text-transform: uppercase; color: var(--ink-soft);
@@ -758,11 +758,11 @@ footer.colophon .footer-links a:hover { text-decoration: underline; text-decorat
         <tr><th scope="col">Conventional platform</th><th scope="col">Riot's direction</th></tr>
       </thead>
       <tbody>
-        <tr><td>The service holds the canonical community database</td><td>Participants carry community state <span class="chip working">Working now</span></td></tr>
-        <tr><td>Offline means waiting for the service to return</td><td>Local reading and writing continue <span class="chip working">Working now</span></td></tr>
-        <tr><td>A server outage cuts off the product</td><td>Nearby exchange can continue locally <span class="chip prototype">Tested prototype</span></td></tr>
-        <tr><td>Extensions belong to the platform</td><td>Communities approve and carry their own tools <span class="chip working">Working now</span></td></tr>
-        <tr><td>A domain and hosted account anchor identity</td><td>Willow data carries community continuity <span class="chip direction">Direction</span></td></tr>
+        <tr><td>The service holds the canonical community database</td><td>Participants carry community state <span class="chip prototype">Available in the prototype</span></td></tr>
+        <tr><td>Offline means waiting for the service to return</td><td>Local reading and writing continue <span class="chip prototype">Available in the prototype</span></td></tr>
+        <tr><td>A server outage cuts off the product</td><td>Nearby exchange can continue locally <span class="chip local">Tested locally</span></td></tr>
+        <tr><td>Extensions belong to the platform</td><td>Communities approve and carry their own tools <span class="chip prototype">Available in the prototype</span></td></tr>
+        <tr><td>A domain and hosted account anchor identity</td><td>Willow data carries community continuity <span class="chip direction">Direction, not shipped</span></td></tr>
       </tbody>
     </table>
   </div>
@@ -931,12 +931,12 @@ footer.colophon .footer-links a:hover { text-decoration: underline; text-decorat
       <div class="path-split">
         <div class="path-branch">
           <h4>Nearby / local exchange</h4>
-          <span class="chip prototype">Working prototype</span>
+          <span class="chip local">Tested locally</span>
           <p>Devices on the same local network find each other and exchange updates directly — with preview before anything is accepted.</p>
         </div>
         <div class="path-branch">
           <h4>Internet seed</h4>
-          <span class="chip direction">Architecture in progress</span>
+          <span class="chip development">In development</span>
           <p>A server-mediated path carrying Willow updates between remote Riot devices. Being built — not an integrated product capability today.</p>
         </div>
       </div>
@@ -1052,12 +1052,12 @@ footer.colophon .footer-links a:hover { text-decoration: underline; text-decorat
     <div class="path-split">
       <div class="path-branch">
         <h4>Open Newswire</h4>
-        <span class="chip working">Public by design</span>
+        <span class="chip prototype">Available in the prototype</span>
         <p>Open publishing for alerts, mutual aid, reporting, and community publications — meant to circulate, plaintext, with transparent editorial actions as a lens rather than a gate.</p>
       </div>
       <div class="path-branch">
         <h4>Encrypted private groups</h4>
-        <span class="chip direction">Planned</span>
+        <span class="chip direction">Direction, not shipped</span>
         <p>Private, encrypted spaces for affinity groups, coops, and crews are a separate planned system with its own threat model. They are not part of today's prototype.</p>
       </div>
     </div>
@@ -1143,26 +1143,28 @@ footer.colophon .footer-links a:hover { text-decoration: underline; text-decorat
     </div>
     <div class="status-cols">
       <div class="status-col">
-        <h3><span class="chip working">Working in the prototype</span></h3>
+        <h3><span class="chip prototype">Available in the prototype</span></h3>
         <ul>
           <li>Durable core support for creating, following, switching, archiving, restoring, and reopening multiple communities</li>
           <li>Native iOS community chooser and link/QR join flows</li>
           <li>Local Newswire creation and durable display</li>
           <li>Human confirmation and preview-before-accept import in nearby flows</li>
-          <li>Tested local-network (Bonjour) peer exchange</li>
           <li>Public gateway rendering from exported community data</li>
           <li>Community-approved mini-app packages</li>
           <li>App-scoped bridge access and hardened app execution</li>
           <li>Fresh per-community author identities when joining another community</li>
         </ul>
+        <h3><span class="chip local">Tested locally</span></h3>
+        <ul><li>Local-network (Bonjour) peer exchange; physical two-iPhone Bluetooth remains unverified</li></ul>
       </div>
       <div class="status-col">
-        <h3><span class="chip direction">Direction being built or still unverified</span></h3>
+        <h3><span class="chip development">In development</span></h3>
+        <ul><li>Integrated remote Riot-device synchronization through an internet seed</li></ul>
+        <h3><span class="chip direction">Direction, not shipped</span></h3>
         <ul>
           <li>Encrypted private groups</li>
           <li>Confidentiality for public communities</li>
           <li>Full deletion from devices that already copied public content</li>
-          <li>Integrated remote Riot-device synchronization through an internet seed</li>
           <li>Production scale, audited security, or an availability guarantee</li>
           <li>Full interoperability with every Willow draft and transport</li>
           <li>Physical two-iPhone Bluetooth exchange</li>

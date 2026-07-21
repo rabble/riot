@@ -351,6 +351,10 @@ assert.doesNotMatch(whyRiot, /<script\b/i, "Why Riot must be script-free");
 assert.doesNotMatch(whyRiot, /ecosystem/i, "why-riot must not use 'ecosystem' jargon");
 
 const exactStatusText = { prototype: "Available in the prototype", local: "Tested locally", development: "In development", direction: "Direction, not shipped" };
+const allowedStatusText = new Set(Object.values(exactStatusText));
+for (const [, text] of home.matchAll(/<span\s+class="chip[^"]*"[^>]*>([^<]+)<\/span>/gi)) {
+  assert.ok(allowedStatusText.has(text.trim()), `homepage status label must use the approved taxonomy: ${text.trim()}`);
+}
 const toolsBlock = block(whyRiot, /<section\b[^>]*id="tools"[^>]*>[\s\S]*?<\/section>/i, "Why Riot tools section");
 const capabilityArticle = (capability) => block(toolsBlock, new RegExp(`<article\\b[^>]*data-capability="${capability}"[^>]*>[\\s\\S]*?<\\/article>`, "i"), `${capability} capability`);
 const chipMatches = (html) => [...html.matchAll(/<span\s+class="chip"\s+data-status="(prototype|local|development|direction)">([^<]+)<\/span>/gi)].map(([, status, text]) => ({ status, text: text.trim() }));
