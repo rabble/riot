@@ -22,8 +22,8 @@ artifacts, not site assets.
 
 | Capture | Viewport | SHA-256 |
 |---|---:|---|
-| `/tmp/visual-review/riot-human-capacity/home-desktop.png` | 1456×900 | `39b8e740cca5d7d7b611d32f9cf0c2780007b5227161f374eeb56afeec659acd` |
-| `/tmp/visual-review/riot-human-capacity/home-mobile.png` | 390×844 | `cc7190b5295b8f5a8353f599b7ccd5502fcf025ee5a962927779d8adb0a348ef` |
+| `/tmp/visual-review/riot-human-capacity/home-desktop.png` | 1456×900 | `de5ce6cdc0b02867b642757cf6a89aec1307998bd074e966469bd116a8414b4d` |
+| `/tmp/visual-review/riot-human-capacity/home-mobile.png` | 390×844 | `c9b0b75d3b2b6613f906a9b158da44005864c0d4e56a33f79d37f6781f19435e` |
 | `/tmp/visual-review/riot-human-capacity/why-riot-desktop.png` | 1456×900 | `fbb1d6572b0d6322f457347152f3ec7f8fd7644698c592774e52e0eba365da04` |
 | `/tmp/visual-review/riot-human-capacity/why-riot-mobile.png` | 390×844 | `a868474bb03bb6feac231160259a61930a4c0a690776a9b8f99080c5975dff88` |
 | `/tmp/visual-review/riot-human-capacity/privacy-desktop.png` | 1456×900 | `1b2facef19e927f464d9887f9fdc4ad5b9c6bf459b357566f2f6ca0b6535f56b` |
@@ -36,7 +36,7 @@ Additional checks:
 | Why Riot forced colors, 1456×900 | usable; no overflow | `b6cf3ae6a292461a7c774187365a8187cb921e941a5bfa0ecb672178273d7377` |
 | Privacy forced colors, 1456×900 | usable; no overflow | `c9984779bf85afa8f9c6eaeaf28e6defa87a7813b81f7e9a27a9258b36e22f81` |
 | Why Riot without CSS, 390×844 | no overflow; SVG precedes Tools section | `a46cf47525257b97f88581a215cfa0b4ff99fa3d646b795a5cb81376b02ac9da` |
-| Complete visual evidence JSON | recorded | `4ec5314908e2deb7e3316b52ea5317f81d0f95c7b4aa3b876effdbbe550e164d` |
+| Complete visual evidence JSON | recorded | `c46adbd8c32494f08aeac3bc2e2a29716e3e9596d19c9fce4e0ec027c3d4b3df` |
 
 Contrast evaluation inspected every visible text node against the nearest flat background at both
 viewports. Results were: Home 26 unique pairs and zero failures at each viewport; Why Riot 21
@@ -55,10 +55,10 @@ is a concise boundary reference, and no page presents a disaster scene as its ce
 Evidence file:
 
 ```text
-0ce4f601183cfcb0b72af3c317990519d07e7afb44528940da7581ac0aedb6d2  /tmp/visual-review/riot-human-capacity/browser-evidence.json
+6f021dd40735ba9e813f2cfb61d010c8c3162d5e80ebb3de1e522ad5b8116a7e  /tmp/visual-review/riot-human-capacity/browser-evidence.json
 ```
 
-Preview origin: `http://127.0.0.1:54668`. Each route began and ended with an empty Playwright
+Preview origin: `http://127.0.0.1:49368`. Each route began and ended with an empty Playwright
 cookie jar, returned an empty `document.cookie`, and received no `Set-Cookie` response header.
 Every observed request used that exact loopback origin. `/` requested only itself and the six local
 `/assets/screenshots/*.png` files; each other route requested only its own document.
@@ -76,15 +76,15 @@ transfer-encoding: chunked
 
 | Route | Status | Date header | Cookies before/after | Request count |
 |---|---:|---|---|---:|
-| `/` | 200 | Tue, 21 Jul 2026 21:28:59 GMT | `[]` / `[]` | 7 |
-| `/why-riot/` | 200 | Tue, 21 Jul 2026 21:29:00 GMT | `[]` / `[]` | 1 |
-| `/guide/` | 200 | Tue, 21 Jul 2026 21:29:01 GMT | `[]` / `[]` | 1 |
-| `/about/` | 200 | Tue, 21 Jul 2026 21:29:01 GMT | `[]` / `[]` | 1 |
-| `/privacy/` | 200 | Tue, 21 Jul 2026 21:29:02 GMT | `[]` / `[]` | 1 |
-| `/open-source/` | 200 | Tue, 21 Jul 2026 21:29:03 GMT | `[]` / `[]` | 1 |
-| `/community/` | 200 | Tue, 21 Jul 2026 21:29:03 GMT | `[]` / `[]` | 1 |
-| `/releases/` | 200 | Tue, 21 Jul 2026 21:29:04 GMT | `[]` / `[]` | 1 |
-| `/protocols/` | 200 | Tue, 21 Jul 2026 21:29:04 GMT | `[]` / `[]` | 1 |
+| `/` | 200 | Tue, 21 Jul 2026 21:37:33 GMT | `[]` / `[]` | 7 |
+| `/why-riot/` | 200 | Tue, 21 Jul 2026 21:37:34 GMT | `[]` / `[]` | 1 |
+| `/guide/` | 200 | Tue, 21 Jul 2026 21:37:35 GMT | `[]` / `[]` | 1 |
+| `/about/` | 200 | Tue, 21 Jul 2026 21:37:36 GMT | `[]` / `[]` | 1 |
+| `/privacy/` | 200 | Tue, 21 Jul 2026 21:37:37 GMT | `[]` / `[]` | 1 |
+| `/open-source/` | 200 | Tue, 21 Jul 2026 21:37:38 GMT | `[]` / `[]` | 1 |
+| `/community/` | 200 | Tue, 21 Jul 2026 21:37:39 GMT | `[]` / `[]` | 1 |
+| `/releases/` | 200 | Tue, 21 Jul 2026 21:37:39 GMT | `[]` / `[]` | 1 |
+| `/protocols/` | 200 | Tue, 21 Jul 2026 21:37:40 GMT | `[]` / `[]` | 1 |
 
 `/resilience/` returned a direct `404` with no `Location` header. The contract also verified absent
 source/public resilience directories, static cookie/storage/beacon/network predicates, safe resource
@@ -233,12 +233,12 @@ Primary impression is practical community infrastructure, not privacy, disaster 
 The fresh audit directory contained only the following ordered artifacts and the audit prompt.
 
 ```text
-918a956e84a854705240dec1d243e87b788b18e96f491af907441ac91d021bb0  marketing/public/index.html
+56a8ab3780b992d97577b0b257fb47b05fac5d426ac87a72133eb3b90afd44ce  marketing/public/index.html
 b209f0073f39d4feee8ebb33fc681d2c002748f607004eaac371c2b75bf77ce9  marketing/public/why-riot/index.html
 2585319772c6247d21c82bf15ac7bb119bfef7ef157585e14196069033cc0932  marketing/public/guide/index.html
 e6860f9863c057d35431859e763d3811076ce3173e6f3638c9faf8664b4afbe5  marketing/public/about/index.html
 ee6594d510d91f0e50fd57974661e5986824b7d91e7a5b866991670512e4bca4  marketing/public/privacy/index.html
-9e84e66ba44f48d2ce18160ff15f5359800f457a989a4b9ce871d5d8bf94594d  marketing/public/open-source/index.html
+2469a37de9060c132086c76b17feaf4bdfbe6e6ab61f2498b4bfddeea0564964  marketing/public/open-source/index.html
 34e5f8eae3e10c0f19b2427e86e8f881e5e71f37f57679f2139a133a37fc272d  marketing/public/community/index.html
 33113bd9ffb19b4f4ee2215fcfc759e04a08d4e21fb3ffceb4d2658b87a747bb  marketing/public/releases/index.html
 d2e7843cf12ba9da3534a6bf782de4d50c5ac2391c86954644fd3587441b00b1  marketing/public/protocols/index.html
@@ -246,7 +246,7 @@ f1bac257953347d8903055a4e1252673726a2f24b38c3b2b8cca816aeff7ab83  README.md
 a4662882ce7500fba005d284afadef9a4834aaf3d3506e3245dec3351e96e35f  docs/product/product-brief.md
 ```
 
-Session: `019f8693-7161-7731-bfad-a54986312a57`
+Session: `019f869d-295c-70d2-9e90-54c1c5209db1`
 
 Prompt SHA-256: `0cf03d185fe906bab2bc5c85c8f4b82c37d95947e6f38ff708ce59a1f1ba93db`
 
@@ -273,4 +273,3 @@ Returned JSON, verbatim:
 ```
 
 Verdict: **PASS with zero findings**.
-
