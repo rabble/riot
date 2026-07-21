@@ -1,52 +1,119 @@
-# Riot Resilience Page Reframing Design
+# Riot Human-Capacity Marketing Reframe
 
 **Date:** 2026-07-22  
-**Status:** Design review approved; pending user approval
+**Status:** Design review candidate, revision 4
 
-**Scope:** Riot marketing site narrative and route structure only
+**Scope:** Reframe `/why-riot/`, compact `/privacy/`, clarify the homepage hero, and reconcile
+site-wide claims and navigation. No application, protocol, or deployment behavior changes.
 
-## Purpose
+## Decision Summary
 
-Reframe Riot's current privacy page around the human capacity Riot exists to support: people making
-useful, joyful, cooperative life together, especially when ordinary institutions and infrastructure
-fail. Privacy remains an honest product boundary, but it is not Riot's primary promise.
+Riot's central story is not perfect privacy or merely keeping software available during failure. It
+is the human capacity to make useful, joyful, cooperative life together. Riot builds public tools
+for that capacity: conversation, publishing, meetings, decisions, coordination, shared knowledge,
+and collective memory that communities can hold and carry themselves.
 
-The page should celebrate the society described in Rebecca Solnit's *A Paradise Built in Hell*:
-people commonly respond to disruption with solidarity, improvisation, generosity, mutual aid, and
-new forms of local civic life. Riot does not create that capacity or replace community. Riot builds
-tools that help communities practice it every day and carry it through disruption; helping those
-practices reach more people and places is the project's direction, not a current scale claim.
+The canonical human story belongs at the existing `/why-riot/` route. Do not create
+`/resilience/`. The live site already uses `/why-riot/` for the product argument and `/guide/` for
+task instructions; another manifesto route would duplicate both the homepage and Why Riot while
+making an already crowded navigation worse.
 
-This is not collapse romanticism. Disaster is harmful. The hopeful claim is that cooperative civic
-capacity already exists, and tools can help people cultivate and use it before, during, and after a
-crisis.
+Keep `/privacy/` as a short, factual reference. Public Riot communities are public, private
+encrypted groups are not shipped, and the marketing site's limited data posture remains worth
+stating. Privacy is a boundary, not the product's headline.
 
-## Audience and Use Cases
+## Intellectual and Emotional Frame
 
-### Community member
+The page draws from Rebecca Solnit's *A Paradise Built in Hell*: during disruption, people often
+respond with solidarity, improvisation, generosity, and new forms of civic life. The page must not
+romanticize disaster. Its subject is the cooperative capacity people already practice in ordinary
+life—at meals, meetings, festivals, kitchens, gardens, publications, repair days, mutual-aid work,
+and neighborhood assemblies.
 
-A neighbor, organizer, cooperative member, local journalist, or mutual-aid participant wants to
-understand what Riot is for, so that they can recognize it as shared civic infrastructure rather than
-another social platform or privacy messenger. This matters during ordinary community life as well as
-during outages, censorship, disaster, or institutional failure.
+Riot does not create community, trust, truth, or solidarity. It gives communities adaptable tools
+with which to practice, record, and carry their own work. Technology is enabling material, never the
+protagonist.
 
-### Potential partner
+The desired register is collective optimism with practical specificity: abundant, handmade,
+inviting, and a little punk. It must not sound like a platform promising “connection,” a corporate
+business-continuity product, a bunker checklist, or disaster cosplay.
 
-A community organization, library, newsroom, cooperative, clinic, disaster-response group, or civic
-institution wants to understand what Riot enables, so that they can imagine using or shaping tools
-for meetings, publishing, coordination, shared knowledge, and community memory without surrendering
-the work to one permanent provider.
+## Audience
 
-### Technical visitor
+- **Community participants and organizers** should recognize ordinary activities they already do
+  and see Riot as a place to publish, decide, coordinate, remember, and make tools together.
+- **Potential partners**—libraries, newsrooms, cooperatives, clinics, mutual-aid groups, and civic
+  institutions—should understand the value of infrastructure a community can possess rather than
+  merely access.
+- **Builders and technically curious readers** should understand the bounded mechanism and current
+  status without having protocols dominate the story.
 
-A technically knowledgeable visitor wants an honest account of how Riot's architecture supports the
-social purpose, so that they can distinguish present capability, tested prototype behavior, and
-future direction without making privacy or censorship-resistance assumptions the project cannot
-support.
+## Site Architecture
 
-## Editorial Thesis
+The current editorial routes are:
 
-The hero statement is:
+1. `/`
+2. `/why-riot/`
+3. `/guide/`
+4. `/about/`
+5. `/privacy/`
+6. `/open-source/`
+7. `/community/`
+8. `/releases/`
+9. `/protocols/`
+
+This change adds no route and no redirect.
+
+### Navigation
+
+- Keep **Why Riot** in primary navigation.
+- Keep **Using Riot**, **About**, **Open source**, **Community**, **Get the app**, and
+  **Protocol field guide** in primary navigation.
+- Remove **Privacy** from primary navigation so it no longer reads as a peer of the core product
+  story. Keep `/privacy/` linked in every footer and from relevant boundary sections.
+- Preserve the existing rule that every page footer reaches every other editorial route, with a
+  page permitted to omit its own self-link.
+- Update the explicit page inventories and navigation assertions in the marketing contract and
+  `marketing/README.md`; the current README is stale and omits `/why-riot/`, `/guide/`, and
+  `/releases/` in several places.
+
+### Route Roles
+
+- `/`: concise product overview and entry point. It may demonstrate the app and architecture, but
+  its hero must not duplicate Why Riot.
+- `/why-riot/`: canonical social purpose and human-capacity story.
+- `/guide/`: task-oriented instructions for the current prototype.
+- `/about/`: lineage, project history, and builder.
+- `/privacy/`: compact factual privacy and safety reference.
+- `/protocols/`: technical comparisons, source ledger, and deeper trust boundaries.
+
+Add `<link rel="canonical" href="/why-riot/">` to Why Riot and
+`<link rel="canonical" href="/privacy/">` to Privacy. Origin-relative links work on the configured
+Workers origin and any separately approved custom domain without making DNS or TLS assumptions.
+
+## Homepage Changes
+
+The homepage remains a product overview rather than becoming the full Solnit essay.
+
+Replace its duplicate hero with:
+
+> **Community tools that travel with people.**
+
+Supporting direction:
+
+> Riot is a home for public conversation, community decisions, shared tools, and collective
+> memory—carried by the people who make it matter.
+
+The hero should link prominently to `/why-riot/` with an invitation such as **Why Riot exists**.
+Keep the current app screenshots and product demonstrations. Make only targeted copy changes beyond
+the hero: remove absolute availability or preservation claims and avoid presenting shutdown as the
+only reason communities need Riot.
+
+## Why Riot Narrative
+
+### 1. Hero — People are the infrastructure
+
+The H1 is:
 
 > **People are the infrastructure.**
 
@@ -54,322 +121,236 @@ The supporting thesis is:
 
 > Every day, people make a community through meals, meetings, stories, decisions, celebrations,
 > care, and shared work. Riot helps them publish what they know, decide together, coordinate what
-> needs doing, and carry their collective memory. When conditions change, the knowledge and tools
-> already held by the community can remain useful instead of belonging only to a service.
+> needs doing, and carry their collective memory.
 
-The page speaks about people before protocols. Technology appears as enabling material, not the
-protagonist. The page should feel celebratory, abundant, practical, and invitational: closer to a
-festival, community kitchen, neighborhood assembly, or collectively built future than to a bunker,
-security product, or catastrophe checklist.
-
-## Framing Principles
-
-1. **Human capacity first.** People already know how to cooperate, improvise, care, and organize.
-   Riot helps that capacity travel between people and places. Supporting it at broader scale is a
-   direction for the project, not a current deployment claim.
-2. **Everyday life first.** Communities should practice shared publishing, meetings, decisions, and
-   mutual aid before a crisis. Riot is not an emergency-only application.
-3. **Celebration without romanticizing harm.** Disruption is real and often unjust. The hopeful
-   subject is what people build together, not the disaster itself.
-4. **Autonomy without isolation.** A community should be able to leave a provider or route around
-   failed infrastructure without leaving one another.
-5. **Tools, not technological salvation.** Riot does not manufacture trust, solidarity, legitimacy,
-   or truth. It supports human processes and preserves their work.
-6. **No privacy theater.** Public Riot spaces are public. Resilience is not anonymity, secrecy,
-   invulnerability, or protection from a compromised device.
-7. **No absolute claims.** Avoid “uncensorable,” “unstoppable,” “cannot be shut down,” and similar
-   promises. Describe removal of single points of control and the availability of multiple paths.
-
-## Narrative Structure and Copy Direction
-
-### 1. Hero — People are the infrastructure
-
-The hero establishes that people, relationships, knowledge, and cooperative practice are the real
-network. It should name concrete activity: sharing information, holding meetings, making decisions,
-organizing food and transport, publishing local knowledge, caring for neighbors, and remembering
-what the community learned.
-
-The hero must not lead with privacy, censorship, cryptography, protocols, offline mode, or product
-limitations. A short status label may still say that Riot is a prototype built in the open.
+The hero may carry one quiet label: **Prototype, built in the open**. It must not lead with outages,
+privacy, Willow, cryptography, servers, censorship, or product limitations.
 
 ### 2. A community is something people do
 
-Show the positive civic world Riot supports:
+Show ordinary collective life before disruption:
 
-- public conversations and community media;
-- assemblies, meetings, proposals, and decisions;
-- needs-and-offers boards, schedules, supplies, and shared work;
-- local guides, histories, corrections, and collective memory;
-- small community-made tools that fit local practice.
+- a block party or festival;
+- a community kitchen, garden, or repair day;
+- a cooperative or neighborhood meeting;
+- a local publication, history, or guide;
+- needs-and-offers boards, rides, schedules, and shared work;
+- proposals, decisions, corrections, and community memory.
 
-Lead with ordinary, joyful life: a block party, community kitchen, neighborhood publication,
-cooperative meeting, festival, repair day, shared garden, or volunteer rota. Disruption examples
-come later. Avoid reducing community life to emergency alerts or protest logistics.
+Use an original, code-native inline illustration or collage in the established poster palette to
+make the social world visible. It should suggest several people cooking, meeting, publishing,
+gardening, making music, or sharing work—not a heroic individual, phone network, server diagram,
+padlock, protest confrontation, or disaster scene. The illustration must be meaningful decoration
+with concise accessible text or `aria-hidden="true"` when adjacent prose carries the meaning. It
+must add no remote asset or runtime dependency.
 
 ### 3. Tools for the commons
 
-Present the four human verbs here, while the page is still grounded in ordinary life:
+Use four human verbs:
 
-- **Publish:** share signed public updates and community media.
-- **Meet:** propose, discuss, decide, and keep the resulting record. Riot supports the artifacts and
-  outcomes of meetings; it is not a live audio/video meeting service.
-- **Coordinate:** use community-made checklists, boards, schedules, and shared local knowledge.
-- **Carry:** keep useful community state and tools on participants' devices and move them through
-  paths available to them.
+- **Publish:** public updates, community media, and local knowledge.
+- **Meet:** proposals, discussion, polls, decisions, and the resulting record. Riot is not a live
+  audio/video meeting service.
+- **Coordinate:** checklists, boards, schedules, needs, offers, and shared work.
+- **Carry:** keep useful community state and installed tools on participants' devices and move them
+  through paths available to them.
 
-Every verb must carry one of the exact status labels defined in the capability matrix below. The
-copy must not collapse a working prototype, locally tested transport, active development, and
-longer-term direction into one implied promise.
+Status appears as a small label on each card, not as the visual headline. Publish, Meet, Coordinate,
+and local Carry are **Available in the prototype**. The labels qualify the software, not the social
+practice.
 
-### 4. Build capacity before conditions change
+### 4. The future is a practice
 
-Explain that resilient coordination comes from relationships and habits already in use. A tool used
-for a neighborhood event, cooperative decision, local publication, or volunteer rota is also a tool
-people understand when conditions become difficult.
+Explain that communities become resilient by using shared habits and tools in ordinary life. A tool
+used for a festival rota, cooperative decision, neighborhood publication, or community meal is
+already familiar when conditions become difficult.
 
-This section rejects both “panic” mythology and disaster cosplay. Riot's intended contribution is
-continuity: the community does not have to invent its information practices from scratch at the
-worst moment. Ordinary use remains the subject; crisis resilience is a consequence of practiced
-relationships and tools, not the page's emotional center.
+Disruption enters here, after the positive world is established. Disaster is harmful; the hopeful
+subject is what people already know how to build together.
 
-### 5. A community should not depend on one service
+### 5. More than one path
 
-Only after the social purpose is clear should the page explain the technical model:
+Explain the mechanism briefly and in plain language:
 
-- community data can be held by participants rather than only by a service;
-- signed records let Riot clients check that a record came from a particular key independently;
-  a valid signature does not establish a person's identity or make the content true or legitimate;
-- local reading and writing can continue against data already held;
-- nearby and portable exchange provide additional paths;
-- public hosts and ordinary web mirrors can improve reach and discovery without becoming the sole
-  owner of community identity or history.
+- participants can hold community data instead of only accessing a service;
+- signed records let Riot verify that a record came from a particular key, not that it is true;
+- already-held data and installed tools can remain locally useful on functioning devices;
+- files, QR-assisted handoffs, nearby exchange, public gateways, and anchors provide different
+  possible paths with different current status;
+- hosts improve reach and discovery without owning community identity or history.
 
-Phrase this as graceful degradation and replaceability, not a guarantee that every path always
-works. “A community can walk away from infrastructure without walking away from itself” is a design
-aim, not a current or absolute availability claim.
+This section should be materially shorter than the current Why Riot builder and transport sections.
+Link to `/protocols/` for the detailed model.
 
-Qualify continuity precisely: locally held data and installed tools may remain useful on a
-functioning device; exchange requires a compatible peer or transport that is actually available.
-Riot does not guarantee delivery, reachability, availability, persistence, recovery, or resistance
-to blocking. Data a device never received cannot be recovered from local storage.
+The central aspiration may be stated as: **A community should be able to leave a provider without
+leaving one another.** Label it as an aim, not a guarantee.
 
-### 6. Honest boundaries — resilience is not secrecy
+### 6. Honest boundaries
 
-Keep this section compact but prominent enough to prevent a false safety inference:
+Keep one compact boundary panel:
 
-- current public spaces should be treated as publishable;
-- Riot does not currently ship private encrypted groups;
+- public Riot spaces should be treated as publishable;
+- private encrypted groups are not shipped;
 - pseudonymity is not anonymity;
-- hosts, gateways, network operators, and nearby observers may see connection metadata;
-- devices retain what they hold and compromised devices remain a risk;
-- Riot is a prototype, not an audited hardened safety tool.
+- gateways, hosts, networks, nearby observers, and compromised devices remain risks;
+- a signature proves control of a key, not identity, truth, or legitimacy;
+- Riot is a prototype, not an audited hardened safety tool;
+- local usefulness depends on a functioning device and data already received;
+- exchange requires a compatible peer or transport that is actually available.
 
-The section must also say that resilience depends on functioning devices, data already received,
-and at least one suitable route when exchange is needed. It must not imply that Riot works without
-any device, peer, transport, or previously held data.
+Recommend established encrypted messengers for material that must remain secret today. Link to
+`/privacy/` and `/protocols/` for detail.
 
-Recommend established encrypted messengers for anything that must remain secret today. Link the
-protocol field guide for detailed comparisons.
+### 7. Invitation — Build it with us
 
-### 7. This website
+End with participation, not purchase. Invite communities to experiment, adapt tools, contribute,
+and practice the future together. Link to `/guide/`, `/community/`, `/releases/`, and the source
+repository.
 
-Move the marketing-site privacy disclosure to a short final section. Preserve the verifiable facts:
-no Riot analytics, cookies, accounts, remote fonts, third-party scripts, tracking pixels, or
-fingerprinting; Cloudflare can observe ordinary request metadata while serving the site.
+Add a small **Intellectual lineage** note crediting Rebecca Solnit and *A Paradise Built in Hell*.
+Paraphrase rather than quote, link to the publisher or an authorized interview, and do not imply
+Solnit endorses Riot.
 
-This disclosure supports the project's values without defining the whole project.
+## Privacy Page
 
-### 8. Invitation
+The page remains at `/privacy/` and becomes a concise reference with this hierarchy:
 
-End with an invitation to build and practice this future together. Link to the app release,
-community/contribution page, and open-source repository. The call to action should invite
-participation, experimentation, and local adaptation rather than consumption of a finished service.
+1. **Public means public.** Public community content is meant to circulate. Riot does not currently
+   ship private encrypted groups.
+2. **What local-first changes—and what it does not.** Reduce mandatory centralized collection and
+   explain local custody, while naming metadata, radio presence, device compromise, copied data,
+   pseudonymity, and gateway-presentation risks.
+3. **This website.** Preserve the verifiable disclosure: no Riot analytics, cookies, accounts,
+   remote fonts, third-party scripts, tracking pixels, or fingerprinting; Cloudflare can observe
+   ordinary request metadata while serving the site.
+4. **Where to go next.** Link to Why Riot for purpose, Protocols for details, and an established
+   encrypted-messenger recommendation for secrets.
 
-## Route and Navigation Design
+Remove the current defensive hero, the large website-first section, duplicated product manifesto,
+and repeated capability tables. The page should remain easy to cite when someone asks a precise
+privacy question.
 
-- Add `/resilience/` as the canonical route and label it **Resilience** in site navigation.
-- The new page declares exactly `<link rel="canonical" href="/resilience/">`. The origin-relative
-  canonical resolves correctly on the configured Workers origin and on any separately approved
-  custom domain; this marketing-only change does not assume or mutate DNS, TLS, or route ownership.
-- Preserve `/privacy/` as a static compatibility alias. Its HTML is byte-identical to
-  `/resilience/`, including the canonical link to `/resilience/`; therefore an old bookmark loads
-  the complete new page rather than a stale privacy essay or an unverified client-side redirect.
-- All four files are byte-identical:
-  `marketing/resilience/index.html`, `marketing/privacy/index.html`,
-  `marketing/public/resilience/index.html`, and `marketing/public/privacy/index.html`.
-- Add `/resilience/` to the sitemap and retain `/privacy/` while it remains a compatibility route.
-- Reconcile all stale route, mirror, navigation, preview, and crawl-metadata statements in
-  `marketing/README.md`. Its source and public inventories must include both `/releases/` and
-  `/resilience/`; its navigation description must reflect the site-wide **Resilience** link; and its
-  route, sitemap, and local-preview examples must describe the compatibility alias accurately.
-- Site-wide navigation-label changes are mechanical scope. Do not rewrite unrelated page content.
+## Product-Status Contract
 
-The current editorial-page inventory for the navigation contract is exactly:
+Use these labels consistently across the changed pages:
 
-1. `marketing/index.html` (`/`)
-2. `marketing/about/index.html` (`/about/`)
-3. `marketing/privacy/index.html` (`/privacy/`, compatibility alias)
-4. `marketing/resilience/index.html` (`/resilience/`)
-5. `marketing/open-source/index.html` (`/open-source/`)
-6. `marketing/community/index.html` (`/community/`)
-7. `marketing/releases/index.html` (`/releases/`)
-8. `marketing/protocols/index.html` (`/protocols/`)
+- **Available in the prototype:** exercised through the current app or bundled tool; no production,
+  audit, or deployment-scale claim.
+- **Tested locally:** verified through tests, simulator, loopback, or same-machine rehearsal; not
+  proven in the relevant physical multi-device/radio setting.
+- **In development:** code or design exists, but the end-to-end promise is incomplete.
+- **Direction, not shipped:** intended capability that must not be relied on today.
 
-The contract applies to each source file and its exact `marketing/public/` mirror. If another
-editorial route is merged before implementation begins, the implementer must add that route to the
-same explicit inventory rather than silently omitting it.
+| Claim | Required status |
+|---|---|
+| Publish signed public updates and community media | Available in the prototype |
+| Meeting artifacts, polls, discussion, decisions, and shared records | Available in the prototype |
+| Bundled checklists, supply board, roll call, and quick poll | Available in the prototype |
+| Local use of already-held state and installed tools | Available in the prototype |
+| Portable file, share-link, or QR-assisted handoff | Available in the prototype |
+| Nearby peer exchange | Tested locally |
+| Public gateway rendering from exports | Available in the prototype |
+| Replaceable public-anchor discovery and remote sync | In development |
+| Private encrypted groups | Direction, not shipped |
+| Production scale or field-proven resilience | Direction, not shipped |
 
-The duplicate compatibility page is intentional because the current static Workers-assets setup has
-no checked-in request router or proven HTTP redirect mechanism. A future infrastructure change may
-replace it with an HTTP redirect after that behavior is independently verified.
+The full matrix is an editorial and test contract. The rendered Why Riot page should show only the
+labels needed beside claims, not reproduce this table as a dominant technical section.
 
-## Visual Design
+## Site-Wide Claim Audit
 
-Retain the existing Riot marketing visual system: poster typography, strong color fields, hard
-borders, compact cards, visible focus states, reduced-motion support, and responsive single-column
-layouts. This is a narrative reframe, not a visual rebrand.
+Audit all nine editorial source pages and mirrors for unsafe absolutes. Remove or qualify claims
+equivalent to:
 
-Use warm, collective imagery in language and structure. Do not add stock disaster photography,
-surveillance imagery, padlocks, shields, server diagrams, or heroic lone-user imagery. No new image
-asset is required.
-
-## Source Attribution
-
-Credit Rebecca Solnit and *A Paradise Built in Hell* in a small “Further reading / intellectual
-lineage” note. Paraphrase the book's thesis and link to the publisher or an authorized author
-interview. Do not imply Solnit's endorsement of Riot and do not turn the page into a book summary.
-
-The page may also express the Walkaway-compatible principle that people should be able to leave an
-institution or provider while retaining their relationships and shared work, but it should not add a
-Cory Doctorow attribution unless the final copy makes a specific, sourced claim.
-
-## Accessibility and Failure Behavior
-
-- Preserve semantic headings, landmark elements, skip link, keyboard-visible focus, and logical
-  source order.
-- Navigation labels must remain meaningful without visual context.
-- External reading links use `rel="noopener"`.
-- The page remains fully useful without JavaScript, remote assets, cookies, or analytics.
-- On narrow screens, every card and call to action remains readable without horizontal page scroll.
-- If `/resilience/` is missing from the deployment mirror, the contract test fails before deploy.
-- If the source/deployment copies drift, the contract test fails before deploy.
-
-## Product-status Contract
-
-The page uses these four labels and no invented near-synonyms:
-
-- **Available in the prototype:** exercised through a current Riot app or bundled tool, but not a
-  claim of production readiness, audit, or broad field deployment.
-- **Tested locally:** verified in automated tests, simulators, loopback, or same-machine rehearsal;
-  not yet proven in the relevant physical multi-device/radio setting.
-- **In development:** code or design work exists, but the end-to-end user promise is incomplete.
-- **Direction, not shipped:** an intended capability that must not be relied on today.
-
-The page's human verbs and infrastructure claims map to those labels as follows:
-
-| Claim on the page | Required status | Permitted meaning and evidence boundary |
-|---|---|---|
-| Publish signed public updates and community media | Available in the prototype | Current open-newswire create/sign/read flows; still a prototype. |
-| Meet through proposals, polls, discussion, decisions, and a shared record | Available in the prototype | Bundled tools and records support meeting work; no live audio/video claim. |
-| Coordinate with checklists, boards, and shared local knowledge | Available in the prototype | Current bundled checklist, supply-board, roll-call, and quick-poll tools; do not promise every example named in the product brief. |
-| Carry locally held state and installed tools for local use | Available in the prototype | Reading/writing data already on a functioning device; no delivery or recovery guarantee. |
-| Move data by portable file, share link, or QR-assisted handoff | Available in the prototype | Current export/import and sharing surfaces; QR can encode a handoff/link and is not itself proof of radio transfer. |
-| Exchange over nearby peer transport | Tested locally | Loopback/simulator/same-machine Bonjour evidence only; no claim of proven physical two-phone radio exchange. |
-| Render public community material through an ordinary web gateway | Available in the prototype | Current gateway and smoke tests; browsers rely on the gateway's presentation and availability. |
-| Discover and sync through replaceable public community anchors | In development | Anchor protocol/client/daemon work exists; do not describe a production anchor network or guaranteed discovery. |
-| Use private encrypted groups | Direction, not shipped | Architectural direction only. Current public spaces are public. |
-| Extend these practices “at scale” | Direction, not shipped | Product aspiration, never evidence of current deployment, capacity, or reach. |
-
-The README and product brief describe private groups architecturally, while current marketing and
-implementation status say they are not shipped. This page follows the current implementation status
-and labels private encrypted groups **Direction, not shipped**; it does not silently convert the
-architectural description into a product claim.
-
-## Claim Safety
-
-The following claims are forbidden both verbatim and in semantic equivalents:
-
-- uncensorable, unstoppable, impossible to shut down, or “no one can block it”;
-- always available, always online, or guaranteed to survive an outage;
-- guaranteed delivery, discovery, reachability, synchronization, persistence, or recovery;
-- preserves everything or recovers data that no participant already received;
-- works without functioning devices, available peers/transports, or locally held data;
+- uncensorable, unstoppable, impossible to shut down, or nothing anyone can switch off;
+- always available, guaranteed to work offline, or works without any prerequisite;
+- nothing is ever lost, preserves everything, or recovers unseen data;
+- guaranteed delivery, discovery, synchronization, persistence, or recovery;
 - anonymous, confidential, or private-by-default public spaces;
 - production-ready, audited, field-proven, or operating at scale.
 
-Positive claims must name the bounded mechanism: local usefulness of already-held data, independent
-signature checks that prove only control of a particular key, more than one possible exchange path,
-and replaceable hosts. The page may describe the future Riot is trying to build, but aspirations use
-“being built,” “aim,” or the exact status labels above rather than present-tense guarantees.
+Positive claims name their mechanism and prerequisite. Already-held data may remain useful on a
+functioning device. Exchange requires an available compatible path. A lost gateway need not erase
+copies participants already hold, but Riot does not guarantee that any complete copy exists.
 
-## Verification and Acceptance Criteria
+Automated tests cover a finite, case-insensitive pattern set. Semantic equivalents remain a required
+human editorial check.
 
-TDD uses the existing contract file. First extend
-`scripts/marketing/protocol-page-contracts.mjs` with the new assertions and run
-`node scripts/marketing/protocol-page-contracts.mjs`; it must fail before the HTML work exists.
-After implementation, the same command must pass.
+## Visual and Accessibility Requirements
+
+- Retain the existing poster typography, flat color fields, hard borders, visible focus, and
+  responsive card system.
+- Preserve skip links, semantic landmarks, logical heading order, keyboard navigation,
+  reduced-motion behavior, and readable narrow-screen layouts.
+- Verify text and interactive-element contrast against WCAG AA and inspect forced-colors behavior.
+- The inline illustration must not create horizontal overflow at 390 px or obscure content when CSS
+  is unavailable.
+- Keep capability labels visually subordinate to the human narrative.
+- No JavaScript is required for meaning or navigation.
+- No remote scripts, stylesheets, fonts, images, media, iframes, analytics, beacons, cookies, or
+  tracking endpoints.
+
+## TDD and Acceptance Criteria
+
+Extend `scripts/marketing/protocol-page-contracts.mjs` first and run:
+
+```sh
+node scripts/marketing/protocol-page-contracts.mjs
+```
+
+The new assertions must fail before HTML implementation. After implementation they must verify:
+
+1. all nine source pages have byte-identical `marketing/public/` mirrors;
+2. no `/resilience/` source or public route is introduced;
+3. Why Riot and Privacy have their exact origin-relative canonical links;
+4. all nine source pages and mirrors include Why Riot in primary navigation and omit Privacy from
+   primary navigation;
+5. every footer preserves reachability to all other routes, including Privacy;
+6. sitemap and `marketing/README.md` contain the exact nine-route inventory;
+7. homepage hero is distinct from Why Riot and links prominently to `/why-riot/`;
+8. Why Riot contains the exact H1, ordinary-life section, four human verbs, practice section,
+   compact mechanism and boundary sections, Solnit attribution, and participation links;
+9. the code-native illustration is present, accessible, local, and dependency-free;
+10. Privacy begins with public-space truth, keeps app/device/metadata boundaries, puts website
+    disclosure later, and links back to purpose and technical detail;
+11. every material capability claim carries the required status language;
+12. the bounded forbidden-claim patterns do not occur across any editorial page;
+13. changed pages include no remote runtime or asset dependency;
+14. the existing marketing contract suite remains green.
 
 Add `"test:marketing": "node scripts/marketing/protocol-page-contracts.mjs"` to `package.json` and
-add a distinct `npm run test:marketing` step to the `web` job in `.github/workflows/ci.yml`, after
-`npm run test:web:unit`. This makes the marketing contract a blocking pull-request check without
-changing dependencies.
+run it as a distinct blocking step in the existing CI web job after `npm run test:web:unit`.
 
-Automated contracts must verify:
+Implementation verification also includes:
 
-1. byte identity across all four canonical/compatibility source/public files;
-2. exactly one origin-relative canonical link, `<link rel="canonical" href="/resilience/">`, in that
-   content;
-3. `/resilience/` appears in the sitemap;
-4. all eight explicitly inventoried source pages and all eight public mirrors include the
-   **Resilience** label linked to `/resilience/` in primary navigation;
-5. the resilience page contains the required hero, human-activity sections, honest-boundaries
-   section, website disclosure, source attribution, and participation links;
-6. every capability in the matrix appears with its required exact status label, and the explicit
-   device/data/peer/transport limitations appear;
-7. a bounded, case-insensitive set of forbidden claim patterns covers at least `uncensorable`,
-   `unstoppable`, `cannot be shut down`, `impossible to shut down`, `always available`, `always
-   online`, `guaranteed delivery`, `guaranteed discovery`, `guaranteed persistence`, `guaranteed
-   recovery`, `anonymous`, `private by default`, `production-ready`, `field-proven`, and `operating
-   at scale`; semantic equivalents that evade those finite patterns remain a required human
-   editorial-review check rather than a falsely comprehensive automated test;
-8. the signed-record copy says that signatures prove control of a key, not identity, truth, or
-   legitimacy;
-9. the page contains no remote runtime or asset dependency, including remote scripts, stylesheets,
-   fonts, images, media, iframes, analytics, beacons, cookies, or tracking endpoints;
-10. the full existing marketing contract suite remains green through both
-   `node scripts/marketing/protocol-page-contracts.mjs` and `npm run test:web:unit`.
+```sh
+npm run test:web:unit
+npm run test:marketing
+```
 
-Editorial review succeeds when a first-time reader can answer, from the page alone:
+Then serve `marketing/public/` locally and visually review `/`, `/why-riot/`, and `/privacy/` at
+1456×900 and 390×844. Verify navigation wrapping, hierarchy, contrast, illustration behavior, lack
+of horizontal overflow, and that technical/status material remains subordinate.
 
-- What kind of society and community activity is Riot trying to support?
-- What does Riot make easier in ordinary life and during disruption?
-- What currently works, what is prototype/direction, and what privacy should not be assumed?
-
-Failure means the page still reads primarily as a privacy disclaimer, a disaster-survival product, a
-technical architecture explainer, or a claim that software itself creates community.
+Deployment is outside scope. Do not mutate production or claim the live site changed.
 
 ## Scope Boundaries
 
-This change does not alter Riot protocols, application behavior, privacy guarantees, deployment
-architecture, analytics policy, or product status. It does not implement encrypted groups, anchors,
-new sync transports, redirects, or telemetry. It changes marketing structure and copy, adds the
-canonical resilience route plus a static compatibility route, updates mirrors/navigation/sitemap,
-and strengthens automated editorial contracts and their existing CI job. Deployment and post-deploy
-checks are outside this change; no production mutation is authorized by this design.
+This work changes marketing HTML, its exact public mirrors, sitemap, marketing documentation,
+contract tests, package scripts, and the existing CI web job. It does not change Riot protocols,
+application behavior, cryptography, privacy guarantees, anchor behavior, sync transports,
+deployment configuration, DNS, TLS, telemetry, or production state.
 
-## Design Review History
+## Review History
 
-Revision 1 established the human-first thesis and page structure. The first five-role review found
-the narrative sound but requested: exact compatibility-route behavior, an explicit capability/status
-matrix, stronger availability and censorship-resistance boundaries, ordinary joyful life ahead of
-crisis language, an exact page inventory, and a named test/CI gate. Revision 2 incorporates each of
-those requests. The second review approved the product and security framing, then found two blockers:
-an accidental present-tense “scale” implication and an absolute canonical host outside the static
-site's configuration. Revision 3 makes scale explicitly directional, uses an origin-relative
-canonical route, reconciles every stale README inventory statement, bounds automated forbidden-claim
-patterns, rejects signature-as-truth implications, and tests every form of remote runtime asset.
-The third five-role gate approved the design unanimously: Product Manager, Architect, Editorial/UX,
-Security, and CTO/implementation readiness reported no blockers.
+Revisions 1–3 proposed a new `/resilience/` route and a `/privacy/` compatibility alias. The design
+gate approved that version before `/why-riot/` and `/guide/` were merged into the current site.
+Comparison with the deployed site showed that the route would duplicate the existing canonical
+product argument, worsen crowded mobile navigation, and leave site-wide claim conflicts untouched.
+
+Revision 4 follows the approved comparison: reframe `/why-riot/`, keep `/privacy/` concise and
+factual, add no route, clarify the homepage hero, make ordinary collective life visible, and audit
+claims across the current nine-page site.
 
 ## Primary Sources
 
@@ -377,5 +358,5 @@ Security, and CTO/implementation readiness reported no blockers.
   <https://www.penguinrandomhouse.com/books/301070/a-paradise-built-in-hell-by-rebecca-solnit/>
 - Rebecca Solnit interview on disaster, community, and everyday civic confidence:
   <https://www.aarp.org/advocacy/the-author-speaks-disaster-strikes-people-shine-2010/>
-- Riot product grounding: `docs/product/product-brief.md`, `README.md`, and
-  `docs/architecture/willow-architecture.md`.
+- Riot product grounding: `README.md`, `docs/product/product-brief.md`,
+  `docs/architecture/willow-architecture.md`, and the current marketing pages.
