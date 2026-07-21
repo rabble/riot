@@ -256,6 +256,12 @@ a:focus-visible, button:focus-visible { outline: 3px solid var(--pink); outline-
 .phone-frame.thumb { width: 72px; border-width: 3px; border-radius: 15px; box-shadow: 4px 5px 0 var(--pink); }
 .phone-frame.thumb::after { top: 3px; height: 5px; border-radius: 0 0 4px 4px; }
 .phone-frame.thumb:nth-child(2) { transform: translateX(8px); }
+/* desktop window frames for the hero (macOS app shots) */
+.win-frame { position: relative; z-index: 2; overflow: hidden; margin: 0; background: var(--paper); border: 3px solid var(--ink); box-shadow: 10px 11px 0 var(--blue); }
+.win-frame img { display: block; width: 100%; height: auto; }
+.win-frame.main { width: 320px; transform: translateX(-22px) rotate(-2deg); }
+.win-frame.thumb { width: 104px; border-width: 2px; box-shadow: 5px 6px 0 var(--pink); }
+.win-frame.thumb:nth-child(2) { transform: translateX(8px); }
 .proof-tag {
   position: absolute;
   z-index: 5;
@@ -283,6 +289,8 @@ a:focus-visible, button:focus-visible { outline: 3px solid var(--pink); outline-
   .hero-thumbs { top: 25px; right: 4px; gap: 8px; }
   .phone-frame.thumb { width: 54px; border-width: 2px; border-radius: 11px; box-shadow: 3px 4px 0 var(--pink); }
   .phone-frame.thumb::after { top: 2px; height: 4px; }
+  .win-frame.main { width: 232px; transform: translateX(-16px) rotate(-2deg); }
+  .win-frame.thumb { width: 80px; box-shadow: 3px 4px 0 var(--pink); }
   .proof-tag { right: 4px; bottom: 6px; max-width: 148px; font-size: 9px; }
 }
 @media (max-width: 540px) {
@@ -721,22 +729,22 @@ footer.colophon .footer-links a:hover { text-decoration: underline; text-decorat
         <p class="hero-lineage">In the lineage of Indymedia, protest.net, and TXTMob. <a href="/about/">Read the lineage →</a></p>
       </div>
     </div>
-    <div class="device-scene" aria-label="Real Riot app screens from the iPhone simulator build">
-      <figure class="phone-frame main">
-        <img src="/assets/screenshots/spaces.png" width="1206" height="2622" alt="Riot Spaces screen showing a mutual-aid community and its tools">
+    <div class="device-scene" aria-label="Real Riot app screens from the desktop build">
+      <figure class="win-frame main">
+        <img src="/assets/screenshots/app-events.png" width="1362" height="1870" alt="Riot Events tool showing a community garden workday and courtyard supper with RSVPs">
       </figure>
-      <div class="hero-thumbs" aria-label="More Riot miniapp screens">
-        <figure class="phone-frame thumb">
-          <img src="/assets/screenshots/apps.png" width="1206" height="2622" alt="Riot's organizer-approved apps screen">
+      <div class="hero-thumbs" aria-label="More Riot app screens">
+        <figure class="win-frame thumb">
+          <img src="/assets/screenshots/app-decisions.png" width="1362" height="1870" alt="Riot Decisions tool voting on how to make a school crossing safer">
         </figure>
-        <figure class="phone-frame thumb">
-          <img src="/assets/screenshots/compose.png" width="1206" height="2622" alt="Composing a message in Riot">
+        <figure class="win-frame thumb">
+          <img src="/assets/screenshots/app-dispatches.png" width="1362" height="1870" alt="Riot Dispatches community newswire with neighborhood notes">
         </figure>
-        <figure class="phone-frame thumb">
-          <img src="/assets/screenshots/checklist.png" width="1206" height="2622" alt="A shared checklist running inside Riot">
+        <figure class="win-frame thumb">
+          <img src="/assets/screenshots/app-photos.png" width="1362" height="1870" alt="Riot Photo wall sharing a street-feast image">
         </figure>
       </div>
-      <span class="proof-tag">Real app screens<br>from the iPhone simulator build</span>
+      <span class="proof-tag">Real screens<br>from the Riot desktop build</span>
     </div>
   </div>
   <div class="contrast-scroll">

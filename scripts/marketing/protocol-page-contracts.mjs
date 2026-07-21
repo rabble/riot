@@ -75,7 +75,7 @@ for (const name of [
 
 assert.doesNotMatch(home, /hero-mesh|mesh-edges|mesh-nodes/, "approved Hero C must replace the abstract mesh");
 assert.match(home, /\.hero-grid\s*\{[^}]*align-items:\s*start/i, "desktop hero copy and devices must be top-aligned");
-assert.match(home, /class="device-scene"[\s\S]*class="phone-frame main"[\s\S]*\/assets\/screenshots\/spaces\.png/i);
+assert.match(home, /class="device-scene"[\s\S]*class="win-frame main"[\s\S]*\/assets\/screenshots\/app-events\.png/i);
 
 // ---------- reframed homepage (offline-guides design, 2026-07-20) ----------
 // The homepage tells the paired story in eight ordered sections. Order is the
@@ -125,10 +125,10 @@ assert.doesNotMatch(home, /<script/i, "homepage must not contain JavaScript");
 for (const guidePath of ["/why-riot/", "/guide/"]) {
   assert.ok(home.includes(`href="${guidePath}"`), `homepage must link to ${guidePath}`);
 }
-for (const name of ["apps", "compose", "checklist"]) {
-  assert.match(home, new RegExp(`class="phone-frame thumb"[\\s\\S]*?/assets/screenshots/${name}\\.png`, "i"), `missing ${name} supporting phone`);
+for (const name of ["app-decisions", "app-dispatches", "app-photos"]) {
+  assert.match(home, new RegExp(`class="win-frame thumb"[\\s\\S]*?/assets/screenshots/${name}\\.png`, "i"), `missing ${name} supporting screen`);
 }
-assert.match(home, /Real app screens[\s\S]*iPhone simulator build/i);
+assert.match(home, /Real screens[\s\S]*Riot desktop build/i);
 assert.match(home, /More than a social feed[\s\S]*Communities carry their own tools[\s\S]*checklists, alerts, decisions, events/i);
 assert.match(home, /@media\s*\(max-width:\s*860px\)[\s\S]*\.device-scene/i, "Hero C needs a mobile device composition");
 
