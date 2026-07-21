@@ -69,6 +69,19 @@ final class AppBreadcrumbTests: XCTestCase {
         XCTAssertEqual(labels.full, ["North · South", "Wiki · Fake"])
     }
 
+    func testBreadcrumbActionsAndAccessibilityFollowTheCurrentLevel() {
+        let root = AppBreadcrumbLabels(community: "Riverside", app: "Wiki", page: nil)
+        XCTAssertFalse(root.isAppRootActionAvailable)
+        XCTAssertEqual(root.communityAccessibilityLabel, "Choose community, current community: Riverside")
+        XCTAssertEqual(root.appAccessibilityLabel, "Wiki")
+        XCTAssertNil(root.pageAccessibilityLabel)
+
+        let page = AppBreadcrumbLabels(community: "Riverside", app: "Wiki", page: "Meeting guide")
+        XCTAssertTrue(page.isAppRootActionAvailable)
+        XCTAssertEqual(page.appAccessibilityLabel, "Return to Wiki home")
+        XCTAssertEqual(page.pageAccessibilityLabel, "Current page: Meeting guide")
+    }
+
     func testRoutePolicyClosesOnlyOnMacOS() {
         #if os(macOS)
         XCTAssertTrue(ToolRoutePolicy.closesMountedToolBeforeRoute)
@@ -118,6 +131,31 @@ final class AppBreadcrumbTests: XCTestCase {
             switchCommunity: { calls.append("switch") }
         )
         XCTAssertTrue(calls.isEmpty)
+    }
+
+    func testOptionalDestinationExitPreservesToolUnlessPlatformRequiresClose() {
+        var calls: [String] = []
+        MountedToolExit.perform(
+            when: false,
+            closeTool: { calls.append("close") },
+            then: { calls.append("route") }
+        )
+        XCTAssertEqual(calls, ["route"])
+
+        calls.removeAll()
+        MountedToolExit.perform(
+            when: true,
+            closeTool: { calls.append("close") },
+            then: { calls.append("route") }
+        )
+        XCTAssertEqual(calls, ["close", "route"])
+    }
+
+    func testCommunitySwitchWarningNamesUnsavedChangesAndMountedApp() {
+        XCTAssertEqual(
+            CommunityChooserCopy.switchWarning(appName: "Wiki"),
+            "Any unsaved changes in Wiki will be lost."
+        )
     }
 
     @MainActor

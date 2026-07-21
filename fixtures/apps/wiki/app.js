@@ -66,7 +66,7 @@ function paint() {
   const onPhone = window.matchMedia("(max-width: 640px)").matches;
   if (!explicitIndex && !selectedKey && valid.length && !onPhone) selectedKey = valid[0].key;
   let selected = valid.find((row) => row.key === selectedKey);
-  if (selectedKey && !selected && !editing) { selectedKey = ""; editConflict = false; requestAnimationFrame(() => indexView.focus()); }
+  if (selectedKey && !selected && !editing) { explicitIndex = true; selectedKey = ""; editConflict = false; requestAnimationFrame(() => indexView.focus()); }
   selected = valid.find((row) => row.key === selectedKey);
   const conflict = Boolean(editing && selectedKey && !selected);
   if (editConflict && !conflict && error.textContent.includes("changed or disappeared")) clearError();

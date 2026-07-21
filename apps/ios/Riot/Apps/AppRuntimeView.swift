@@ -43,6 +43,16 @@ struct AppBreadcrumbLabels: Equatable {
 
     var full: [String] { [community, app, page].compactMap { $0 } }
     var compact: [String] { page == nil ? ["🏘", "🧰"] : ["🏘", "🧰", "📄"] }
+    var isAppRootActionAvailable: Bool { page != nil }
+    var communityAccessibilityLabel: String {
+        "Choose community, current community: \(community)"
+    }
+    var appAccessibilityLabel: String {
+        isAppRootActionAvailable ? "Return to \(app) home" : app
+    }
+    var pageAccessibilityLabel: String? {
+        page.map { "Current page: \($0)" }
+    }
 
     private static func safeLevel(_ value: String) -> String {
         value.replacingOccurrences(of: "›", with: "·")
@@ -112,24 +122,36 @@ private struct AppBreadcrumbView: View {
         HStack(spacing: 7) {
             crumbButton(
                 compact ? "🏘" : labels.community,
-                fullLabel: labels.community,
+                accessibilityLabel: labels.communityAccessibilityLabel,
+                help: labels.community,
                 identifier: "breadcrumb-community",
                 action: onCommunity
             )
             separator
-            crumbButton(
-                compact ? "🧰" : labels.app,
-                fullLabel: labels.app,
-                identifier: "breadcrumb-app",
-                action: onAppRoot
-            )
+            if labels.isAppRootActionAvailable {
+                crumbButton(
+                    compact ? "🧰" : labels.app,
+                    accessibilityLabel: labels.appAccessibilityLabel,
+                    help: labels.app,
+                    identifier: "breadcrumb-app",
+                    action: onAppRoot
+                )
+            } else {
+                currentLevel(
+                    compact ? "🧰" : labels.app,
+                    accessibilityLabel: labels.appAccessibilityLabel,
+                    help: labels.app,
+                    identifier: "breadcrumb-app"
+                )
+            }
             if let page = labels.page {
                 separator
-                Text(compact ? "📄" : page)
-                    .lineLimit(1)
-                    .accessibilityLabel(page)
-                    .accessibilityIdentifier("breadcrumb-page")
-                    .help(page)
+                currentLevel(
+                    compact ? "📄" : page,
+                    accessibilityLabel: labels.pageAccessibilityLabel ?? page,
+                    help: page,
+                    identifier: "breadcrumb-page"
+                )
             }
         }
         .font(.riot(.mono, size: 12, relativeTo: .caption))
@@ -138,17 +160,38 @@ private struct AppBreadcrumbView: View {
 
     private func crumbButton(
         _ title: String,
-        fullLabel: String,
+        accessibilityLabel: String,
+        help: String,
         identifier: String,
         action: @escaping () -> Void
     ) -> some View {
         Button(action: action) {
-            Text(title).lineLimit(1)
+            Text(title)
+                .lineLimit(1)
+                .padding(.horizontal, 4)
+                .frame(minHeight: 36)
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .accessibilityLabel(fullLabel)
+        .foregroundStyle(RiotTheme.pink(for: colorScheme))
+        .accessibilityLabel(accessibilityLabel)
         .accessibilityIdentifier(identifier)
-        .help(fullLabel)
+        .help(help)
+    }
+
+    private func currentLevel(
+        _ title: String,
+        accessibilityLabel: String,
+        help: String,
+        identifier: String
+    ) -> some View {
+        Text(title)
+            .lineLimit(1)
+            .fontWeight(.semibold)
+            .accessibilityLabel(accessibilityLabel)
+            .accessibilityIdentifier(identifier)
+            .accessibilityAddTraits(.isHeader)
+            .help(help)
     }
 
     private var separator: some View {

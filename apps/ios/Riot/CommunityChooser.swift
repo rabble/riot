@@ -234,9 +234,24 @@ enum CommunityChooserConfirmation: Equatable {
     }
 }
 
+enum CommunityChooserCopy {
+    static func switchWarning(appName: String) -> String {
+        "Any unsaved changes in \(appName) will be lost."
+    }
+}
+
 public enum MountedToolExit {
     public static func perform(closeTool: () -> Void, then action: () -> Void) {
         closeTool()
+        action()
+    }
+
+    public static func perform(
+        when shouldClose: Bool,
+        closeTool: () -> Void,
+        then action: () -> Void
+    ) {
+        if shouldClose { closeTool() }
         action()
     }
 }
@@ -340,7 +355,7 @@ public struct CommunityChooserView: View {
                 Button("Stay", role: .cancel) { pendingSwitch = nil }
             } message: {
                 if let mountedAppName {
-                    Text("\(mountedAppName) will close before the other community opens.")
+                    Text(CommunityChooserCopy.switchWarning(appName: mountedAppName))
                 }
             }
         }

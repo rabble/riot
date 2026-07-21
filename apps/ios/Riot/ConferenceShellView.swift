@@ -1059,15 +1059,24 @@ private struct CommunityShellView: View {
                         }
                     },
                     onFindNearby: {
-                        MountedToolExit.perform(closeTool: closeTool) { model.findNearby() }
+                        MountedToolExit.perform(
+                            when: ToolRoutePolicy.closesMountedToolBeforeRoute,
+                            closeTool: closeTool
+                        ) { model.findNearby() }
                     },
                     onCreateCommunity: {
-                        MountedToolExit.perform(closeTool: closeTool) {
+                        MountedToolExit.perform(
+                            when: ToolRoutePolicy.closesMountedToolBeforeRoute,
+                            closeTool: closeTool
+                        ) {
                             model.requestCreateCommunity()
                         }
                     },
                     onJoinByReference: {
-                        MountedToolExit.perform(closeTool: closeTool) {
+                        MountedToolExit.perform(
+                            when: ToolRoutePolicy.closesMountedToolBeforeRoute,
+                            closeTool: closeTool
+                        ) {
                             model.requestJoinByReference()
                         }
                     }

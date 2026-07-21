@@ -90,6 +90,18 @@ test("Wiki app-root navigation preserves an editing conflict draft", async ({ pa
   await expect(page).toHaveTitle("Meeting guide — Wiki");
 });
 
+test("Wiki stays at its index when a selected page disappears outside editing", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.goto("/apps/wiki/?state=seeded");
+  await expect(page).toHaveTitle("Meeting guide — Wiki");
+
+  await page.evaluate(() => window.__miniappPreview.remoteDelete("pages/meeting-guide"));
+
+  await expect(page).toHaveTitle("Wiki");
+  await expect(page.locator("#page-index")).toBeVisible();
+  await expect(page.locator('[aria-current="page"]')).toHaveCount(0);
+});
+
 test("Photo Wall primary flow", async ({ page }) => {
   await page.goto("/apps/photo-wall/?state=seeded");
   await page.getByLabel("Caption").fill("Fresh paint on the library shelves");
