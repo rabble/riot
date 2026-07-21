@@ -241,8 +241,8 @@
             <li>Tap the community name at the top of the screen to open <b>“Your communities”</b>.</li>
             <li>Tap the community you want.</li>
           </ol>
-          <p class="expect"><strong>Expect:</strong> that community opens where you left it. Your posting identity is separate in each community by design — your name in one community does not link you to another.</p>
-          <p class="recover"><strong>If it fails:</strong> a community marked “Needs recovery before it can open.” offers <b>Retry</b> — Riot quarantines rather than deletes, so retrying is safe.</p>
+          <p class="expect"><strong>Expect:</strong> that community opens where you left it. Riot uses a separate posting identity in each community; that separation alone does not prevent correlation.</p>
+          <p class="recover"><strong>If it fails:</strong> a community marked “Needs recovery before it can open.” offers <b>Retry</b>. Riot keeps the affected data in quarantine during recovery instead of deliberately deleting it; recovery may still fail.</p>
         </div>
         <div class="task">
           <h3>Leave a community</h3>
@@ -270,8 +270,8 @@
             <li>Write your update. You can review exactly what will be signed before it is saved.</li>
             <li>Tap <b>“Post an update”</b> at the bottom to sign and save it.</li>
           </ol>
-          <p class="expect"><strong>Expect:</strong> saved and signed on this device. Posting never needs a connection — delivery happens later, when devices sync, nearby today.</p>
-          <p class="recover"><strong>If it fails:</strong> your draft is safe — review it and try again. Drafts survive closing the composer and the app.</p>
+          <p class="expect"><strong>Expect:</strong> saved and signed on this device without a server connection. Delivery requires later exchange through a compatible path, with nearby local-network exchange available in the prototype.</p>
+          <p class="recover"><strong>If it fails:</strong> Riot stores the draft on this device so you can review and try again. Closing the composer or app normally preserves the current draft, but device or app failure can still lose local data.</p>
         </div>
         <div class="task">
           <h3>Read with the right expectations</h3>
@@ -297,7 +297,7 @@
             <li>If new updates are offered, review the preview, then tap <b>“Add … updates”</b> to take them — or <b>“Not now”</b> to decline.</li>
             <li>Tap <b>“Stop”</b> to end discovery when you are done.</li>
           </ol>
-          <p class="expect"><strong>Expect:</strong> “Synced” — you both carry the same updates, including posts either of you collected from others earlier. Accepted updates merge; nothing you already have is overwritten.</p>
+          <p class="expect"><strong>Expect:</strong> “Synced” after the compatible session completes. Accepted updates merge with local state rather than replacing the whole community; this is not a backup or complete-copy guarantee.</p>
           <p class="recover"><strong>If it fails:</strong> “They are in a different space, so nothing was shared” means you are in different communities — switch to the same one and reconnect.</p>
         </div>
         <div class="task">
@@ -385,7 +385,7 @@
         </div>
         <div class="task">
           <h3>A community “Needs recovery before it can open.”</h3>
-          <p>In <b>“Your communities”</b>, tap <b>Retry</b> on the affected community. If it cannot recover, the rest of your communities keep working — the affected data is quarantined, never deleted. You can rejoin the same community with its link; quarantine keeps the old data aside instead of destroying it.</p>
+          <p>In <b>“Your communities”</b>, tap <b>Retry</b> on the affected community. Riot's recovery path keeps the affected data in quarantine rather than deliberately deleting it. If recovery fails, rejoining with the same community link may restore access to records that a reachable participant still holds; quarantine is not a recovery guarantee.</p>
         </div>
         <div class="task">
           <h3>Share link unavailable</h3>
