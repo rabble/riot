@@ -44,7 +44,9 @@ Selecting the community crumb opens the existing community chooser. Dismissing t
 **SO THAT:** they can return to that app's index  
 **WHEN:** a page crumb is present
 
-Selecting the app crumb reloads the verified app entry point in the existing sandboxed WebView. This is a generic root operation: it does not give native code app-specific data access and works even if an app has no nested pages. At the app root the app crumb is the current level and is not presented as an enabled action.
+Selecting the app crumb sends the fixed, payload-free `riot:navigate-root` DOM event into the existing sandboxed WebView. An app that exposes a nested page adopts that event as its root-navigation contract. This does not give native code app-specific data access. At the app root the app crumb is the current level and is not presented as an enabled action.
+
+Wiki handles the event by explicitly selecting its page index and setting an `explicitIndex` state. That state suppresses Wiki's current wide-layout first-page auto-selection until the person deliberately opens a page. Initial wide-layout launch may still select the first page, but an explicit app-crumb action always settles at the index and does not rebound into that first page.
 
 ### UC3: Leave a tool through ordinary shell navigation
 
@@ -53,7 +55,7 @@ Selecting the app crumb reloads the verified app entry point in the existing san
 **SO THAT:** the open tool never traps or masks them  
 **WHEN:** they select a sidebar destination
 
-Every sidebar route selection closes the running tool before showing the selected route. Escape retains the documented behavior of returning from the tool to Tools. Focus restoration continues to use the existing `ToolFocusRestoration` path.
+Every shell-route selection closes the running tool before showing the selected route, on macOS sidebar/keyboard navigation and iPhone tab navigation alike. Escape retains the documented behavior of returning from the tool to Tools. The existing `ToolFocusRestoration` bookkeeping is cleared through the same close path; applying the returned identifier to actual UI focus is not implemented today and is not claimed by this change.
 
 ### UC4: Stay oriented in narrow windows
 
@@ -77,7 +79,7 @@ The emoji are visual fallbacks only. Accessibility labels remain the full names 
 
 - Height target: 36 points, including a one-pixel bottom divider.
 - Community crumb: plain text button using `community.name`; opens “Your communities”.
-- App crumb: plain text button using `appName` only when a nested page is current; reloads the app root.
+- App crumb: plain text button using `appName` only when a nested page is current; requests the app root through the fixed DOM event.
 - Page crumb: plain current-location text; no misleading button behavior.
 - Separators: subdued `›` glyphs, hidden from accessibility.
 - The current level uses the normal ink color and semibold weight. Ancestor actions use the pink link color with a plain button style.
@@ -87,7 +89,7 @@ At an app root, the hierarchy is `community › app`; there is no duplicate page
 
 ### Compact presentation
 
-SwiftUI `ViewThatFits(in: .horizontal)` chooses between the complete names and the emoji representation based on actual available width rather than a hard-coded window breakpoint.
+SwiftUI `ViewThatFits(in: .horizontal)` chooses between the complete names and the emoji representation based on actual available width rather than a hard-coded window breakpoint. The full candidate uses uncompressed intrinsic horizontal sizing (`fixedSize(horizontal: true, vertical: false)`), so long labels make that candidate fail instead of silently truncating or compressing it.
 
 - Community: `🏘`, accessibility label “Choose community, current community: <name>”.
 - App: `🧰`, accessibility label “Return to <app> home” when actionable, otherwise “<app>”.
@@ -108,12 +110,13 @@ The host observes the WebView's existing document title. No new privileged messa
 - Root title: `<app name>` (for example, `Wiki`).
 - Nested title: `<page name> — <app name>` (for example, `Meeting guide — Wiki`).
 - The host accepts a nested page only when the normalized title ends with the exact app-name suffix.
-- Empty titles, root-equal titles, control characters, or titles over the bounded display length do not create a page crumb.
+- The page portion is trimmed, must contain no Unicode control or newline characters, and must be no more than 120 extended grapheme clusters, matching Wiki's existing page-title limit.
+- Empty titles, root-equal titles, malformed suffixes, controls, or over-bound titles do not create a page crumb.
 - Unrecognized titles fall back to app-only navigation rather than displaying untrusted or malformed chrome.
 
 Wiki updates `document.title` whenever `selectedKey` changes. Other apps remain app-only until they adopt the same title convention; the host behavior is backwards compatible.
 
-The app-root action reloads `AppRuntimeLaunch.entryPoint` through the existing `riot-app://<verified-app-id>/...` URL. It neither relaxes `AppRuntimeCoordinator`'s navigation lock nor permits external navigation. Reload state is local UI state and contains no secrets.
+The app-root action evaluates one constant script that dispatches `riot:navigate-root` with no payload. It neither changes the current URL, relaxes `AppRuntimeCoordinator`'s navigation lock, accepts page-provided script, nor permits external navigation. The host clears the native page crumb immediately when it dispatches the event, and accepts later title callbacks only from the still-mounted coordinator.
 
 ## State and component boundaries
 
@@ -121,7 +124,7 @@ The app-root action reloads `AppRuntimeLaunch.entryPoint` through the existing `
 
 - Passes `community.name` and `model.openCommunityChooser` into the macOS runtime host.
 - Treats selecting any sidebar destination as a tool-close transition before applying the route.
-- Keeps the existing community-transition gate, focus restoration, and Escape behavior authoritative.
+- Keeps the existing community-transition gate, focus bookkeeping, and Escape behavior authoritative.
 
 ### `AppRuntimeView` / `AppHostView`
 
@@ -131,13 +134,14 @@ The app-root action reloads `AppRuntimeLaunch.entryPoint` through the existing `
 
 ### `AppWebView` / `AppRuntimeCoordinator`
 
-- Reports bounded document-title changes to the host on the main actor.
-- Reloads only the already-verified entry URL when the root-navigation token advances.
-- Removes title observation during the existing idempotent teardown.
+- Owns an `NSKeyValueObservation` on `WKWebView.title` and reports document-title changes to the host on the main actor.
+- Stores the last processed root-navigation generation. `updateNSView`/`updateUIView` forward a newer generation to the coordinator, which dispatches only the constant root event and clears the native page state before doing so.
+- Ignores title callbacks after teardown and removes title observation during the existing idempotent teardown.
 
 ### Wiki fixture
 
 - Sets the root or nested document title from already-validated page data.
+- Handles `riot:navigate-root` with an explicit index state that prevents wide-window auto-selection from undoing the action; opening any page clears that state.
 - Keeps its existing in-app “All pages” action for local context and accessibility.
 - Is repacked through `scripts/apps/repack-starter.sh`; committed source and CBOR artifacts must remain in sync.
 
@@ -148,8 +152,10 @@ The app-root action reloads `AppRuntimeLaunch.entryPoint` through the existing `
 - If trust is revoked, the existing invalidation notification closes the runtime; breadcrumb code does not bypass or delay it.
 - If the community chooser is dismissed, the current runtime remains mounted.
 - If another community is selected, the existing transition preparation clears `runningTool` before rebuilding community-scoped state.
-- Repeated root selections are idempotent from the user's perspective. The app crumb is disabled/absent as an action at root, avoiding unnecessary reloads.
+- Repeated root selections are idempotent from the user's perspective. The app crumb is disabled/absent as an action at root, avoiding unnecessary events.
 - Very long names switch the complete breadcrumb to emoji; identifiers are never truncated into ambiguous strings.
+- Opening and dismissing the chooser preserves the mounted WebView instance and current page; switching communities uses the existing teardown path.
+- Wiki's ancestor app action has the same editing semantics as its existing “All pages” action: leaving the page exits edit mode. Adding a new unsaved-edit prompt is outside this navigation repair.
 
 ## Accessibility and keyboard behavior
 
@@ -172,9 +178,9 @@ The app-root action reloads `AppRuntimeLaunch.entryPoint` through the existing `
 Implementation follows explicit red-green cycles:
 
 1. Add pure tests for document-title parsing: root, valid nested page, wrong app suffix, empty, controls, and length bound.
-2. Add shell-navigation tests proving a route selection while a tool is open yields a close-then-route action and preserves focus restoration semantics.
-3. Add WebKit host tests proving a nested document-title change reaches the coordinator callback and a root request loads only the verified entry URL.
-4. Add Wiki JavaScript assertions for root/detail title changes, then repack and run the committed starter-artifact drift test.
+2. Add shell-navigation tests proving a route selection while a tool is open yields a close-then-route action and clears the existing invoking-tool bookkeeping.
+3. Add WebKit host tests proving a nested document-title change reaches the coordinator callback, late callbacks after teardown are ignored, and a root request dispatches only the fixed payload-free DOM event.
+4. Add Wiki JavaScript assertions for root/detail title changes and for no first-page rebound at both narrow and wide viewport widths, then repack and run the committed starter-artifact drift test.
 5. Add a macOS UI test or inspectable presentation tests for full and emoji breadcrumb variants, action labels, and removal of `app-close`.
 6. Run focused Swift tests, both Apple builds, strict repository formatting/lint checks, the full Rust workspace test suite, and the starter artifact audit.
 7. Capture a macOS screenshot at normal and constrained widths and confirm one compact row, no oversized Close button, correct hierarchy, and working sidebar/chooser/app-root actions.
@@ -183,13 +189,13 @@ Implementation follows explicit red-green cycles:
 
 - The macOS tool host shows `community › app` at root and adds `› page` for a conforming nested app page.
 - Selecting the community crumb opens the existing community chooser.
-- Selecting the app crumb from a nested page returns to the verified app entry point.
+- Selecting the app crumb from a nested page returns to the app index and remains there at both narrow and wide viewport widths.
 - Home, Tools, People, and Nearby all replace a running tool with the selected route.
 - The hierarchy automatically collapses to `🏘 › 🧰 › 📄` when full labels do not fit and keeps full accessibility labels.
 - The breadcrumb occupies at most 36 points vertically and never wraps.
 - Escape, trust invalidation, community switching, WebView teardown, and iPhone navigation continue to behave as documented.
 - Wiki source and packed starter artifacts remain deterministic and pass drift checks.
-- No external navigation or new app permission is introduced.
+- No external navigation or new app permission is introduced; the only host-to-app addition is the constant payload-free `riot:navigate-root` event.
 
 ## Out of scope
 
