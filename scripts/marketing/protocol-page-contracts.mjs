@@ -98,9 +98,12 @@ assert.match(anchorProtocolCargo, /^license\s*=\s*"AGPL-3\.0-or-later"/m, "riot-
 for (const [name, content] of Object.entries({ openSource, community, marketingReadme })) {
   assert.doesNotMatch(content, /\bone AGPL crate\b/i, `${name} must not undercount AGPL exceptions`);
 }
-for (const [name, content] of Object.entries({ openSource, marketingReadme })) {
-  assert.match(content, /crates\/riot-anchor(?:\/|\b)/i, `${name} must identify riot-anchor as AGPL`);
-  assert.match(content, /crates\/riot-anchor-protocol(?:\/|\b)/i, `${name} must identify riot-anchor-protocol as AGPL`);
+for (const [name, content] of Object.entries({ openSource, community, marketingReadme })) {
+  assert.match(
+    content,
+    /(?:crates\/)?riot-anchor(?!-protocol)(?:\/Cargo\.toml)?[\s\S]{0,500}(?:crates\/)?riot-anchor-protocol(?:\/Cargo\.toml)?[\s\S]{0,500}AGPL-3\.0-or-later/i,
+    `${name} must identify both distinct AGPL crate exceptions`,
+  );
 }
 
 for (const name of [
