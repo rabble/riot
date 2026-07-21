@@ -1,7 +1,7 @@
 # Riot Resilience Page Reframing Design
 
 **Date:** 2026-07-22  
-**Status:** Design review candidate, revision 3
+**Status:** Design review approved; pending user approval
 
 **Scope:** Riot marketing site narrative and route structure only
 
@@ -368,6 +368,8 @@ an accidental present-tense “scale” implication and an absolute canonical ho
 site's configuration. Revision 3 makes scale explicitly directional, uses an origin-relative
 canonical route, reconciles every stale README inventory statement, bounds automated forbidden-claim
 patterns, rejects signature-as-truth implications, and tests every form of remote runtime asset.
+The third five-role gate approved the design unanimously: Product Manager, Architect, Editorial/UX,
+Security, and CTO/implementation readiness reported no blockers.
 
 ## Primary Sources
 
