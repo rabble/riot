@@ -43,7 +43,6 @@ pub(crate) enum ProfileState {
 
 const MAX_RETAINED_DRAFTS: usize = 64;
 const MAX_SELECTED_ENTRY_IDS: usize = 64;
-const MAX_INSTALLED_APPS: usize = 16;
 const MAX_APP_TRUST_MARKERS: usize = 256;
 /// The complete retained inventory must fit one protocol bundle. This caps
 /// aggregate proof/payload retention at 8 MiB before any session clones it.
@@ -2418,14 +2417,28 @@ fn install_pair(
     let app_id = verify_app_pair(&manifest_bytes, &bundle_bytes).map_err(map_apps_error)?;
     let manifest = decode_manifest(&manifest_bytes).map_err(map_apps_error)?;
 
-    if !profile
+    use riot_core::apps::admission::{preflight, AdmissionOutcome};
+
+    let already_held = profile.installed_apps.iter().any(|app| app.app_id == app_id);
+    let held_aggregate_bytes: usize = profile
         .installed_apps
         .iter()
-        .any(|app| app.app_id == app_id)
-    {
-        if profile.installed_apps.len() >= MAX_INSTALLED_APPS {
-            return Err(MobileError::SessionLimit);
-        }
+        .map(|app| app.manifest_bytes.len() + app.bundle_bytes.len())
+        .sum();
+    let pair_bytes = manifest_bytes.len() + bundle_bytes.len();
+
+    match preflight(
+        profile.installed_apps.len(),
+        held_aggregate_bytes,
+        already_held,
+        pair_bytes,
+    ) {
+        AdmissionOutcome::RefuseCount => return Err(MobileError::SessionLimit),
+        AdmissionOutcome::RefuseBytes => return Err(MobileError::StoreFull),
+        AdmissionOutcome::Admit => {}
+    }
+
+    if !already_held {
         profile.installed_apps.push(StoredInstalledApp {
             app_id,
             manifest_bytes,

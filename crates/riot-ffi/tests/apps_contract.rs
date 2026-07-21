@@ -1915,3 +1915,141 @@ fn stale_approval_generation_fails_an_op_carrying_the_old_generation() {
         .app_data_put("k2".to_string(), b"v2".to_vec())
         .expect("a current-generation session commits normally");
 }
+
+// --- WU-001: 32-app count cap + 3 MiB aggregate byte quota ---
+
+/// A distinct, tiny, valid manifest+bundle pair. A unique name + unique resource
+/// bytes give a unique app id. Each pair is a few hundred bytes — far under the
+/// 3 MiB / 32 ≈ 96 KiB per-pair budget, so 32 of them never trip the byte quota
+/// before the count cap.
+fn distinct_small_pair(index: usize) -> (Vec<u8>, Vec<u8>) {
+    use riot_core::apps::bundle::{encode_app_bundle, AppBundle, AppResource};
+    use riot_core::apps::manifest::{encode_manifest, AppManifest};
+    use riot_core::willow::generate_communal_author;
+
+    let author = generate_communal_author().expect("author");
+    let bundle = AppBundle {
+        entry_point: "index.html".to_string(),
+        resources: vec![AppResource {
+            path: "index.html".to_string(),
+            content_type: "text/html".to_string(),
+            bytes: format!("<html>app {index}</html>").into_bytes(),
+        }],
+    };
+    let manifest = AppManifest {
+        name: format!("App {index}"),
+        description: "distinct".to_string(),
+        version: "1.0.0".to_string(),
+        author: author.identity(),
+        permissions: vec!["own-app-data".to_string()],
+        entry_point: "index.html".to_string(),
+    };
+    (
+        encode_manifest(&manifest).expect("manifest"),
+        encode_app_bundle(&bundle).expect("bundle"),
+    )
+}
+
+/// A distinct, valid pair whose bundle is ~900 KiB (well under the 1 MiB
+/// per-bundle `MAX_BUNDLE_TOTAL_BYTES`). Four of these sum past the 3 MiB
+/// aggregate quota while the count stays far below 32, so the refusal is on
+/// bytes, not count. (Three ~1 MiB bundles cannot reliably exceed 3 MiB because
+/// each single bundle is capped at 1 MiB, hence four smaller ones.)
+fn big_pair(index: usize) -> (Vec<u8>, Vec<u8>) {
+    use riot_core::apps::bundle::{encode_app_bundle, AppBundle, AppResource};
+    use riot_core::apps::manifest::{encode_manifest, AppManifest};
+    use riot_core::willow::generate_communal_author;
+
+    let author = generate_communal_author().expect("author");
+    let mut bytes = vec![b'a'; 900_000];
+    // Keep each bundle distinct so it gets a distinct app id.
+    bytes.extend_from_slice(format!("<!-- {index} -->").as_bytes());
+    let bundle = AppBundle {
+        entry_point: "index.html".to_string(),
+        resources: vec![AppResource {
+            path: "index.html".to_string(),
+            content_type: "text/html".to_string(),
+            bytes,
+        }],
+    };
+    let manifest = AppManifest {
+        name: format!("Big {index}"),
+        description: "large".to_string(),
+        version: "1.0.0".to_string(),
+        author: author.identity(),
+        permissions: vec!["own-app-data".to_string()],
+        entry_point: "index.html".to_string(),
+    };
+    (
+        encode_manifest(&manifest).expect("manifest"),
+        encode_app_bundle(&bundle).expect("bundle"),
+    )
+}
+
+#[test]
+fn install_count_cap_is_thirty_two_not_sixteen() {
+    // Install 32 distinct valid pairs, then assert the 33rd is refused with the
+    // count-specific error (SessionLimit), not the byte error.
+    let profile = open_local_profile().expect("profile");
+    let runtime = profile.app_runtime();
+    for index in 0..32 {
+        let (manifest, bundle) = distinct_small_pair(index);
+        runtime
+            .install_app(manifest, bundle)
+            .unwrap_or_else(|error| panic!("app {index} refused within cap: {error:?}"));
+    }
+    let (manifest, bundle) = distinct_small_pair(32);
+    let err = runtime
+        .install_app(manifest, bundle)
+        .expect_err("33rd refused");
+    assert!(matches!(err, MobileError::SessionLimit));
+}
+
+#[test]
+fn install_refuses_when_aggregate_pair_bytes_exceed_three_mib() {
+    // Install large-but-valid pairs whose running total crosses 3 MiB before the
+    // count cap; assert StoreFull (byte-specific), distinct from SessionLimit.
+    let profile = open_local_profile().expect("profile");
+    let runtime = profile.app_runtime();
+    // Three ~900 KiB pairs (~2.7 MiB aggregate) still fit.
+    for index in 0..3 {
+        let (manifest, bundle) = big_pair(index);
+        runtime
+            .install_app(manifest, bundle)
+            .unwrap_or_else(|error| panic!("big pair {index} refused early: {error:?}"));
+    }
+    // The fourth crosses 3 MiB aggregate (~3.6 MiB) with count still at 3 << 32.
+    let (manifest, bundle) = big_pair(3);
+    let err = runtime
+        .install_app(manifest, bundle)
+        .expect_err("aggregate over 3 MiB refused");
+    assert!(matches!(err, MobileError::StoreFull));
+}
+
+#[test]
+fn reinstalling_a_held_pair_is_idempotent_at_the_cap() {
+    // Fill to 32, then reinstall a held ID: succeeds, count unchanged (a new ID
+    // still refuses on count afterwards).
+    let profile = open_local_profile().expect("profile");
+    let runtime = profile.app_runtime();
+    let first_pair = distinct_small_pair(0);
+    runtime
+        .install_app(first_pair.0.clone(), first_pair.1.clone())
+        .expect("first install");
+    for index in 1..32 {
+        let (manifest, bundle) = distinct_small_pair(index);
+        runtime
+            .install_app(manifest, bundle)
+            .unwrap_or_else(|error| panic!("app {index} refused within cap: {error:?}"));
+    }
+    // Reinstalling the already-held pair 0 is idempotent, not a limit failure.
+    runtime
+        .install_app(first_pair.0, first_pair.1)
+        .expect("reinstalling a held pair at the cap");
+    // A genuinely new 33rd distinct app still refuses on count.
+    let (manifest, bundle) = distinct_small_pair(32);
+    assert!(matches!(
+        runtime.install_app(manifest, bundle),
+        Err(MobileError::SessionLimit)
+    ));
+}
