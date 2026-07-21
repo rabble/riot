@@ -58,6 +58,8 @@ Read all nine source pages plus `README.md` and `docs/product/product-brief.md`.
 
 Start a Node HTTP server rooted at `marketing/public/`, launch Chromium, and visit all nine routes in a fresh context. Before navigation attach request/response listeners; after navigation scroll the complete page and wait for idle. Assert an empty cookie jar before and after, no `Set-Cookie`, no resource request outside the loopback origin, safe resolved anchor protocols/fragments, and safe resolved DOM resource URLs. Always close page, context, browser, and server in `finally` blocks.
 
+For every route, capture every request URL, every response's ordered header entries, and every normalized `performance.getEntriesByType("resource")` entry. Re-run the static predicates against the homepage script text for `fetch(`, `sendBeacon(`, `XMLHttpRequest`, `WebSocket(`, `localStorage`, `sessionStorage`, and `document.cookie`; in Chromium also require `document.cookie === ""` and the context cookie jar to remain empty. Persist the browser observations in a deterministic JSON object that Task 4 can hash and quote in the committed review report.
+
 - [ ] **Step 5: Add the npm and CI entry points**
 
 Add the exact script:
@@ -215,17 +217,27 @@ Verify `npx playwright --version`; install Chromium only if unavailable. Serve `
 
 For every standard capture assert `document.documentElement.scrollWidth <= document.documentElement.clientWidth`. Inspect heading order, keyboard focus, reduced motion, navigation wrapping, SVG behavior, and status hierarchy. Walk visible text/control computed colors at both sizes, resolve flat backgrounds, calculate WCAG ratios (4.5:1 normal, 3:1 large/bold), and manually resolve any transparent-background ambiguity.
 
+On `/why-riot/` at 390×844, remove every `<style>` and stylesheet `<link>` after load to simulate unavailable CSS. Capture `why-riot-no-css.png`, assert no horizontal overflow, confirm the inline illustration remains in logical DOM order, and verify its intrinsic markup neither overlaps nor hides the following prose. Record the screenshot hash and result in the report.
+
 - [ ] **Step 3: Record durable browser and screenshot evidence**
 
-Create the review report with exact capture commands, route, viewport, screenshot path, SHA-256, overflow result, forced-colors support/outcome, computed color pairs and ratios, ordered request origins and response headers for all nine routes, cookie-jar results, and SHA-256 of `marketing/public/why-riot/index.html` plus the evidence itself.
+Create the review report with exact capture commands, route, viewport, screenshot path, SHA-256, overflow result, no-CSS result, forced-colors support/outcome, computed color pairs and ratios, every request URL, ordered response headers, ordered performance-resource entries for all nine routes, `document.cookie` and browser-context cookie-jar results, and SHA-256 of `marketing/public/why-riot/index.html` plus the browser-evidence JSON itself.
 
 - [ ] **Step 4: Run three isolated first-read reviews**
 
-Using three fresh independent sessions that receive only the exact Why Riot mirror bytes and the design's exact role prompt, collect verbatim JSON for Community participant/organizer, Potential partner/institution, and Builder/technical reader. Record session IDs, exact prompts and prompt hashes, verbatim answers, element-by-element orchestrator scoring, and require 4/4, 5/5, and 5/5 respectively with no privacy/disaster/protocol-first primary impression.
+Use the configured external Codex CLI, whose health check was `ready` during planning, as the explicit isolation mechanism. Run the adapter health command before the gate:
+
+```sh
+/Users/rabble/.codex/plugins/cache/metaswarm-marketplace/metaswarm/0.12.0/skills/external-tools/adapters/codex.sh health
+```
+
+For each reader role create a fresh mode-0700 temporary directory containing only a byte-for-byte copy of `marketing/public/why-riot/index.html` and that role's exact prompt; do not run from the repository. Invoke a new `codex exec --sandbox read-only --json -C "$role_dir" "$prompt"` process for each role, preserving its distinct `thread_id` and raw JSONL. The prompt explicitly forbids external sources and names the single local HTML input. Do not reuse or resume sessions, expose earlier responses, include the design, or mount the repository. If the adapter health check is not ready, use a fresh in-product reviewer thread with the same single-file input; the verification cannot pass without four genuinely isolated session IDs.
+
+Collect verbatim JSON for Community participant/organizer, Potential partner/institution, and Builder/technical reader. Record session IDs, exact prompts and prompt hashes, verbatim answers, element-by-element orchestrator scoring, and require 4/4, 5/5, and 5/5 respectively with no privacy/disaster/protocol-first primary impression.
 
 - [ ] **Step 5: Run one isolated semantic claim audit**
 
-Give a fourth fresh session only the ordered nine public HTML files, `README.md`, `docs/product/product-brief.md`, and the exact audit prompt from the design. Record ordered file hashes, prompt/hash, session ID, verbatim JSON, and require `PASS` with zero findings.
+Create a fourth mode-0700 temporary directory containing only the ordered nine public HTML files, `README.md`, `docs/product/product-brief.md`, and the exact audit prompt from the design. Run a new read-only Codex CLI process from that directory with no repository mount or prior-session context. Record ordered file hashes, prompt/hash, raw JSONL/thread ID, verbatim result JSON, and require `PASS` with zero findings.
 
 - [ ] **Step 6: Fix and re-run any failed verification**
 
