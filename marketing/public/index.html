@@ -331,6 +331,16 @@ section { padding: clamp(56px, 9vw, 100px) 0; }
 @media (max-width: 900px) { .buildgrid { grid-template-columns: 1fr 1fr; } }
 @media (max-width: 540px) { .buildgrid { grid-template-columns: 1fr; } }
 
+/* ---------- app screens gallery ---------- */
+.screensgrid { margin-top: 44px; display: grid; grid-template-columns: repeat(3, 1fr); gap: clamp(18px, 3vw, 32px); }
+.screenshot { margin: 0; display: flex; flex-direction: column; }
+.screenshot img { width: 100%; height: auto; display: block; border: 2px solid var(--ink); box-shadow: 8px 8px 0 var(--pink); }
+.screenshot figcaption { margin-top: 16px; }
+.screenshot figcaption b { display: block; font-family: 'Anton', sans-serif; font-size: 20px; text-transform: uppercase; letter-spacing: -0.005em; line-height: 1; margin-bottom: 6px; }
+.screenshot figcaption span { font-size: 14px; color: var(--ink-soft); }
+@media (max-width: 860px) { .screensgrid { grid-template-columns: 1fr 1fr; } }
+@media (max-width: 540px) { .screensgrid { grid-template-columns: 1fr; } }
+
 /* ---------- how it works ---------- */
 .story-beats {
   list-style: none;
@@ -694,6 +704,43 @@ footer.colophon .footer-links a:hover { text-decoration: underline; text-decorat
         <p>No platform gatekeeper, no billionaire's servers, no government's cloud. Organizers approve what runs; members carry it on their own devices.</p>
       </div>
     </div>
+  </div>
+</section>
+
+<section id="screens">
+  <div class="wrap">
+    <div class="section-head reveal">
+      <p class="eyebrow">See it running</p>
+      <h2>Different apps, one community, no cloud.</h2>
+      <p class="section-intro">Live screens from the Riot desktop build. Each one is a separate app a community carries — events, decisions, a newswire, a photo wall, shared checklists — all running on-device and syncing phone to phone.</p>
+    </div>
+    <div class="screensgrid reveal">
+      <figure class="screenshot">
+        <img src="/assets/screenshots/app-home.png" width="1362" height="1870" alt="Riot desktop Home screen listing a community's tools: Events, Decisions, Chat, and Wiki">
+        <figcaption><b>Home</b><span>Every tool the community runs, in one place.</span></figcaption>
+      </figure>
+      <figure class="screenshot">
+        <img src="/assets/screenshots/app-events.png" width="1362" height="1870" alt="Riot Events app showing a community garden workday and courtyard supper with RSVPs">
+        <figcaption><b>Events</b><span>Put a time on the calendar and see who is in.</span></figcaption>
+      </figure>
+      <figure class="screenshot">
+        <img src="/assets/screenshots/app-decisions.png" width="1362" height="1870" alt="Riot Decisions app voting on how to make a school crossing safer">
+        <figcaption><b>Decisions</b><span>Propose options, vote, decide together.</span></figcaption>
+      </figure>
+      <figure class="screenshot">
+        <img src="/assets/screenshots/app-dispatches.png" width="1362" height="1870" alt="Riot Dispatches newswire with neighborhood notes about routes and a water table">
+        <figcaption><b>Dispatches</b><span>A community newswire — longer notes worth keeping.</span></figcaption>
+      </figure>
+      <figure class="screenshot">
+        <img src="/assets/screenshots/app-photos.png" width="1362" height="1870" alt="Riot Photo wall sharing an image of a long table set for a street feast">
+        <figcaption><b>Photo wall</b><span>Share what the community is looking at.</span></figcaption>
+      </figure>
+      <figure class="screenshot">
+        <img src="/assets/screenshots/app-checklist.png" width="1362" height="1870" alt="Riot shared checklist with tasks to pick up lunch, reserve the venue, and remind people">
+        <figcaption><b>Checklist</b><span>Shared to-dos anyone in the space can add to.</span></figcaption>
+      </figure>
+    </div>
+    <p class="section-intro" style="margin-top: 32px;">Real screens from the Riot desktop build. The app is in active development — <a href="/releases/">get the current build</a>.</p>
   </div>
 </section>
 
