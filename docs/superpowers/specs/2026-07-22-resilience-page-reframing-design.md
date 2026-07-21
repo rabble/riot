@@ -1,7 +1,7 @@
 # Riot Human-Capacity Marketing Reframe
 
 **Date:** 2026-07-22  
-**Status:** Design review candidate, revision 11
+**Status:** Design review candidate, revision 12
 
 **Scope:** Reframe `/why-riot/`, compact `/privacy/`, clarify the homepage hero, and reconcile
 site-wide claims and navigation. No application, protocol, or deployment behavior changes.
@@ -446,6 +446,10 @@ For CSS `url(...)`, permit origin-local relative/root-relative URLs and existing
 URI scheme including `http:`, `https:`, `ftp:`, `file:`, and `blob:`. Ordinary external anchor
 citations are outside this resource allowlist and remain permitted.
 
+Parse every `srcset` as a comma-separated candidate list according to its URL-plus-descriptor shape;
+validate every candidate URL independently against the same allowlist, reject an empty or malformed
+candidate, and never validate only the first token or the unsplit attribute string.
+
 ## TDD and Acceptance Criteria
 
 Extend `scripts/marketing/protocol-page-contracts.mjs` first and run:
@@ -548,6 +552,8 @@ visit, and no request origin other than the chosen loopback preview origin. Also
 `document.cookie`, storage, beacon, and network-call predicates. These checks prove the built static
 artifact's behavior. The copy deliberately does not promise that an independently configured edge
 can never add headers or cookies; live post-deploy verification remains a separate deployment gate.
+Write the ordered response-header and request-origin evidence into the committed implementation
+report and include its SHA-256 alongside the screenshot evidence.
 
 The six standard files are `home-desktop.png`, `home-mobile.png`, `why-riot-desktop.png`,
 `why-riot-mobile.png`, `privacy-desktop.png`, and `privacy-mobile.png`. Forced-colors captures are
@@ -699,6 +705,9 @@ use a strict scheme allowlist. Revision 10 adds both without changing product be
 The seventh security pass requested an HTTP/browser test for the no-cookie disclosure. Revision 11
 limits the claim to Riot's static code, names Cloudflare's edge boundary, and adds local response,
 cookie-jar, and request-origin verification.
+
+The eighth security pass requested candidate-by-candidate `srcset` validation and durable request/
+header evidence. Revision 12 adds both.
 
 ## Primary Sources
 
