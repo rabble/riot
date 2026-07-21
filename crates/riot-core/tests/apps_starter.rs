@@ -262,3 +262,26 @@ fn current_catalog_is_seeded_from_legacy_bytes_until_v2_lands() {
         .collect();
     assert_eq!(current, legacy);
 }
+
+use riot_core::apps::starter::bootstrap_catalog;
+
+#[test]
+fn generation_one_bootstraps_legacy_and_two_bootstraps_current() {
+    // None == generation 1 (durable zero-byte encoding); Some(1) also legacy;
+    // Some(2) == fresh/current. `const`-derived references have no stable
+    // address (rustc may duplicate a const's allocation, and does so across
+    // crate boundaries), so `std::ptr::eq` is unreliable here — identity is
+    // asserted instead by the derived app-ID set of the selected catalog.
+    // CURRENT and LEGACY share bytes this WU, so all three pass today; once a
+    // Slice-4 WU re-points a CURRENT entry the sets diverge and a mis-wired arm
+    // fails here.
+    let ids = |cat| {
+        verify_starter_catalog(cat)
+            .into_iter()
+            .map(|a| a.app_id)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(ids(bootstrap_catalog(None)), ids(LEGACY_BUILTIN_CATALOG));
+    assert_eq!(ids(bootstrap_catalog(Some(1))), ids(LEGACY_BUILTIN_CATALOG));
+    assert_eq!(ids(bootstrap_catalog(Some(2))), ids(CURRENT_STARTER_CATALOG));
+}

@@ -114,6 +114,19 @@ pub const LEGACY_BUILTIN_CATALOG: &[(&[u8], &[u8])] = &[
 /// same-crate `demo_fixture.rs` uses.
 pub const STARTER_CATALOG: &[(&[u8], &[u8])] = CURRENT_STARTER_CATALOG;
 
+/// Selects the built-in catalog a profile bootstraps by its persisted starter
+/// generation. `None` is the durable encoding of generation 1 (an old profile
+/// that predates the marker); it and an explicit `Some(1)` resolve the frozen
+/// legacy built-ins. Generation 2 (fresh profiles) resolves the current v2
+/// starters. Any unknown future generation falls back to legacy: an old binary
+/// must never advertise a catalog it cannot fully resolve.
+pub fn bootstrap_catalog(generation: Option<u8>) -> &'static [(&'static [u8], &'static [u8])] {
+    match generation {
+        Some(2) => CURRENT_STARTER_CATALOG,
+        _ => LEGACY_BUILTIN_CATALOG,
+    }
+}
+
 /// Decodes and integrity-checks every pair; invalid pairs are silently
 /// excluded, mirroring the import path's treatment of invalid items.
 pub fn verify_starter_catalog(pairs: &[(&[u8], &[u8])]) -> Vec<IndexedApp> {
