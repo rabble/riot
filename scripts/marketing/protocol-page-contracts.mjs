@@ -547,7 +547,7 @@ let browser;
 try {
   browser = await chromium.launch({ headless: true });
   for (const route of allSitePaths) {
-    const context = await browser.newContext();
+    const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
     const page = await context.newPage();
     const requests = [];
     const responses = [];
@@ -569,11 +569,14 @@ try {
       await Promise.all(responseTasks);
       const dom = await page.evaluate(() => ({
         cookie: document.cookie,
+        scrollWidth: document.documentElement.scrollWidth,
+        clientWidth: document.documentElement.clientWidth,
         resources: performance.getEntriesByType("resource").map((entry) => entry.name).sort(),
         anchors: [...document.querySelectorAll("a[href]")].map((anchor) => ({ raw: anchor.getAttribute("href"), resolved: anchor.href })),
         resourceUrls: [...document.querySelectorAll("script[src],link[href],img[src],iframe[src],audio[src],video[src],video[poster],source[src],object[data],embed[src],svg use[href],svg image[href],svg feImage[href],svg use[xlink\\:href],svg image[xlink\\:href],svg feImage[xlink\\:href]")].flatMap((element) => [element.src, element.href?.baseVal ?? element.href, element.getAttribute("xlink:href"), element.data, element.poster].filter((value) => typeof value === "string" && value)),
       }));
       assert.equal(dom.cookie, "", `${route} document.cookie must be empty`);
+      assert.ok(dom.scrollWidth <= dom.clientWidth, `${route} must not overflow horizontally at 390px (${dom.scrollWidth} > ${dom.clientWidth})`);
       const cookiesAfter = await context.cookies();
       assert.deepEqual(cookiesAfter, [], `${route} cookie jar must remain empty`);
       for (const url of requests) assert.equal(new URL(url).origin, previewOrigin, `${route} made off-origin request: ${url}`);
@@ -586,7 +589,7 @@ try {
         if (url.startsWith("data:image/svg+xml")) continue;
         assert.equal(new URL(url, previewOrigin).origin, previewOrigin, `${route} resolved off-origin resource: ${url}`);
       }
-      browserEvidence.routes.push({ route, cookiesBefore, cookiesAfter, documentCookie: dom.cookie, requests: [...new Set(requests)].sort(), responses: responses.sort((a, b) => a.url.localeCompare(b.url)), resources: dom.resources });
+      browserEvidence.routes.push({ route, viewport: { width: 390, height: 844 }, scrollWidth: dom.scrollWidth, clientWidth: dom.clientWidth, cookiesBefore, cookiesAfter, documentCookie: dom.cookie, requests: [...new Set(requests)].sort(), responses: responses.sort((a, b) => a.url.localeCompare(b.url)), resources: dom.resources });
     } finally { await context.close(); }
   }
   const response = await fetch(`${previewOrigin}/resilience/`, { redirect: "manual" });

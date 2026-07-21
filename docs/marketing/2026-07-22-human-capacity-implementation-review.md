@@ -20,22 +20,72 @@ Playwright rendered the committed public mirror from a loopback-only static prev
 standard captures had no horizontal overflow. Screenshot files are reproducible temporary review
 artifacts, not site assets.
 
+Repeat the standard, forced-colors, no-CSS, and overflow captures from the repository root with:
+
+```sh
+set -eu
+evidence=/tmp/visual-review/riot-human-capacity
+mkdir -p "$evidence"
+python3 -m http.server 4173 --bind 127.0.0.1 --directory marketing/public >"$evidence/server.log" 2>&1 &
+server_pid=$!
+trap 'kill "$server_pid" 2>/dev/null || true' EXIT HUP INT TERM
+export RIOT_VISUAL_ORIGIN=http://127.0.0.1:4173/
+until curl --fail --silent --output /dev/null "$RIOT_VISUAL_ORIGIN"; do sleep 0.1; done
+node --input-type=module <<'NODE'
+import assert from "node:assert/strict";
+import { chromium } from "@playwright/test";
+import { mkdir } from "node:fs/promises";
+
+const origin = process.env.RIOT_VISUAL_ORIGIN;
+const evidence = "/tmp/visual-review/riot-human-capacity";
+const browser = await chromium.launch({ headless: true });
+await mkdir(evidence, { recursive: true });
+const captures = [["home", "/"], ["why-riot", "/why-riot/"], ["privacy", "/privacy/"]];
+for (const [size, viewport] of [["desktop", { width: 1456, height: 900 }], ["mobile", { width: 390, height: 844 }]]) {
+  for (const [name, route] of captures) {
+    const page = await browser.newPage({ viewport, reducedMotion: "reduce" });
+    await page.goto(new URL(route, origin).href, { waitUntil: "networkidle" });
+    const dimensions = await page.evaluate(() => ({ scrollWidth: document.documentElement.scrollWidth, clientWidth: document.documentElement.clientWidth }));
+    assert.ok(dimensions.scrollWidth <= dimensions.clientWidth, `${name}-${size} horizontal overflow`);
+    await page.screenshot({ path: `${evidence}/${name}-${size}.png`, animations: "disabled" });
+    await page.close();
+  }
+}
+for (const [name, route] of captures.slice(1)) {
+  const context = await browser.newContext({ viewport: { width: 1456, height: 900 }, forcedColors: "active", reducedMotion: "reduce" });
+  const page = await context.newPage();
+  await page.goto(new URL(route, origin).href, { waitUntil: "networkidle" });
+  await page.screenshot({ path: `${evidence}/${name}-forced-colors.png`, animations: "disabled" });
+  await context.close();
+}
+const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
+await page.goto(new URL("/why-riot/", origin).href, { waitUntil: "networkidle" });
+await page.evaluate(() => document.querySelectorAll("style,link[rel='stylesheet']").forEach((element) => element.remove()));
+const noCss = await page.evaluate(() => ({ scrollWidth: document.documentElement.scrollWidth, clientWidth: document.documentElement.clientWidth }));
+assert.ok(noCss.scrollWidth <= noCss.clientWidth, "why-riot-no-css horizontal overflow");
+await page.screenshot({ path: `${evidence}/why-riot-no-css.png`, animations: "disabled" });
+await browser.close();
+NODE
+npm run test:marketing
+shasum -a 256 "$evidence"/*.png "$evidence/browser-evidence.json"
+```
+
 | Capture | Viewport | SHA-256 |
 |---|---:|---|
-| `/tmp/visual-review/riot-human-capacity/home-desktop.png` | 1456×900 | `ecc24510cfb5e41348af5015ea544f0ef37338b2cc45b10b88b2ef473ecafb43` |
-| `/tmp/visual-review/riot-human-capacity/home-mobile.png` | 390×844 | `3317ac0748221935d6ec95356616cda9be5e25be67774aa2e2467357ab031865` |
-| `/tmp/visual-review/riot-human-capacity/why-riot-desktop.png` | 1456×900 | `fbb1d6572b0d6322f457347152f3ec7f8fd7644698c592774e52e0eba365da04` |
-| `/tmp/visual-review/riot-human-capacity/why-riot-mobile.png` | 390×844 | `a868474bb03bb6feac231160259a61930a4c0a690776a9b8f99080c5975dff88` |
-| `/tmp/visual-review/riot-human-capacity/privacy-desktop.png` | 1456×900 | `1b2facef19e927f464d9887f9fdc4ad5b9c6bf459b357566f2f6ca0b6535f56b` |
-| `/tmp/visual-review/riot-human-capacity/privacy-mobile.png` | 390×844 | `c808fbce5781ca9356edb59d69cbe70b6a38542d0ac4e72478fe8e2b4f466789` |
+| `/tmp/visual-review/riot-human-capacity/home-desktop.png` | 1456×900 | `9c85b2540b3614fcd662373858630319d4c731a7694bdbf5546b96157a4b5b9d` |
+| `/tmp/visual-review/riot-human-capacity/home-mobile.png` | 390×844 | `2783461c2dca678d40088af451c28cbf91ef1a226c2939cb5312c46e1d00e1cc` |
+| `/tmp/visual-review/riot-human-capacity/why-riot-desktop.png` | 1456×900 | `9979d814ba6b2906f69a5b4df734f0abf430d18f22dfe0cdb82a48d7386d1b7b` |
+| `/tmp/visual-review/riot-human-capacity/why-riot-mobile.png` | 390×844 | `fc4b8f65ab98e8901528f5a41337493a90e04e5ad80b972d7ee2353c03910682` |
+| `/tmp/visual-review/riot-human-capacity/privacy-desktop.png` | 1456×900 | `b151ec571c9906e73b034df1532dc981c85594727d24d2b4de1a5f9b54c0ce26` |
+| `/tmp/visual-review/riot-human-capacity/privacy-mobile.png` | 390×844 | `08893494f42708d9643f85adcbda0d3339da8d377987a977c663ddd202f545dc` |
 
 Additional checks:
 
 | Check | Result | SHA-256 |
 |---|---|---|
-| Why Riot forced colors, 1456×900 | usable; no overflow | `b6cf3ae6a292461a7c774187365a8187cb921e941a5bfa0ecb672178273d7377` |
-| Privacy forced colors, 1456×900 | usable; no overflow | `c9984779bf85afa8f9c6eaeaf28e6defa87a7813b81f7e9a27a9258b36e22f81` |
-| Why Riot without CSS, 390×844 | no overflow; SVG precedes Tools section | `a46cf47525257b97f88581a215cfa0b4ff99fa3d646b795a5cb81376b02ac9da` |
+| Why Riot forced colors, 1456×900 | usable; no overflow | `afdc3d5a9a59aee39def580ea6f3b821b5aa2172e8dc80579d70cf5a95b38a35` |
+| Privacy forced colors, 1456×900 | usable; no overflow | `738acbaa9228b9da1fcbf6d7caa0e4f90a62f466f62b7c2b59bde7d92f56ae77` |
+| Why Riot without CSS, 390×844 | no overflow; SVG precedes Tools section | `d765af3ddac6ac9dd8b9495999adbcfe776a2021cd84b7cd34d4cdb26bd06848` |
 | Complete visual evidence JSON | recorded | `c46adbd8c32494f08aeac3bc2e2a29716e3e9596d19c9fce4e0ec027c3d4b3df` |
 
 Contrast evaluation inspected every visible text node against the nearest flat background at both
@@ -55,10 +105,10 @@ is a concise boundary reference, and no page presents a disaster scene as its ce
 Evidence file:
 
 ```text
-7d3cde65dd7eb11ff7d7daacb102e64ef8423f4e07d072feb2f07ed0830a2a09  /tmp/visual-review/riot-human-capacity/browser-evidence.json
+bbaa8f6b1dd879ce347aa742c0ded1c7ebfbfa6156464ae01963a860f7a9684d  /tmp/visual-review/riot-human-capacity/browser-evidence.json
 ```
 
-Preview origin: `http://127.0.0.1:53146`. Each route began and ended with an empty Playwright
+Preview origin: `http://127.0.0.1:55130`. Each route began and ended with an empty Playwright
 cookie jar, returned an empty `document.cookie`, and received no `Set-Cookie` response header.
 Every observed request used that exact loopback origin. `/` requested only itself and the six local
 `/assets/screenshots/*.png` files; each other route requested only its own document.
@@ -74,25 +124,25 @@ keep-alive: timeout=5
 transfer-encoding: chunked
 ```
 
-| Route | Status | Date header | Cookies before/after | Request count |
-|---|---:|---|---|---:|
-| `/` | 200 | Tue, 21 Jul 2026 22:08:58 GMT | `[]` / `[]` | 7 |
-| `/why-riot/` | 200 | Tue, 21 Jul 2026 22:08:59 GMT | `[]` / `[]` | 1 |
-| `/guide/` | 200 | Tue, 21 Jul 2026 22:09:00 GMT | `[]` / `[]` | 1 |
-| `/about/` | 200 | Tue, 21 Jul 2026 22:09:01 GMT | `[]` / `[]` | 1 |
-| `/privacy/` | 200 | Tue, 21 Jul 2026 22:09:02 GMT | `[]` / `[]` | 1 |
-| `/open-source/` | 200 | Tue, 21 Jul 2026 22:09:02 GMT | `[]` / `[]` | 1 |
-| `/community/` | 200 | Tue, 21 Jul 2026 22:09:03 GMT | `[]` / `[]` | 1 |
-| `/releases/` | 200 | Tue, 21 Jul 2026 22:09:04 GMT | `[]` / `[]` | 1 |
-| `/protocols/` | 200 | Tue, 21 Jul 2026 22:09:04 GMT | `[]` / `[]` | 1 |
+| Route | Status | Date header | 390px layout | Cookies before/after | Request count |
+|---|---:|---|---:|---|---:|
+| `/` | 200 | Tue, 21 Jul 2026 22:18:35 GMT | 390 / 390 | `[]` / `[]` | 7 |
+| `/why-riot/` | 200 | Tue, 21 Jul 2026 22:18:37 GMT | 390 / 390 | `[]` / `[]` | 1 |
+| `/guide/` | 200 | Tue, 21 Jul 2026 22:18:38 GMT | 390 / 390 | `[]` / `[]` | 1 |
+| `/about/` | 200 | Tue, 21 Jul 2026 22:18:39 GMT | 390 / 390 | `[]` / `[]` | 1 |
+| `/privacy/` | 200 | Tue, 21 Jul 2026 22:18:40 GMT | 390 / 390 | `[]` / `[]` | 1 |
+| `/open-source/` | 200 | Tue, 21 Jul 2026 22:18:41 GMT | 390 / 390 | `[]` / `[]` | 1 |
+| `/community/` | 200 | Tue, 21 Jul 2026 22:18:42 GMT | 390 / 390 | `[]` / `[]` | 1 |
+| `/releases/` | 200 | Tue, 21 Jul 2026 22:18:43 GMT | 390 / 390 | `[]` / `[]` | 1 |
+| `/protocols/` | 200 | Tue, 21 Jul 2026 22:18:45 GMT | 390 / 390 | `[]` / `[]` | 1 |
 
 `/resilience/` returned a direct `404` with no `Location` header. The contract also verified absent
 source/public resilience directories, static cookie/storage/beacon/network predicates, safe resource
 schemes, valid `srcset` descriptors, decoded SVG-favicon safety, and no off-origin subresources.
 
-The final evidence above was refreshed after a copy-only prerequisite clarification. For durable
-comparison, the complete preceding browser-boundary pass is preserved verbatim below; it exercised
-the same route, cookie, header, and network predicates and has SHA-256
+The final evidence above was refreshed after the prerequisite clarification and addition of the
+390px layout assertion. For durable comparison, the complete preceding browser-boundary pass is
+preserved verbatim below; it exercised the same route, cookie, header, and network predicates and has SHA-256
 `634f4d5d5e651abe4d7cf8c6546781a8e5c03986e1e73d9984dfe7e0865da0a7`:
 
 ```json
