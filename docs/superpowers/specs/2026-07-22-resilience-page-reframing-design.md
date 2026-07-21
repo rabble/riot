@@ -1,7 +1,7 @@
 # Riot Human-Capacity Marketing Reframe
 
 **Date:** 2026-07-22  
-**Status:** Design review candidate, revision 8
+**Status:** Design review candidate, revision 9
 
 **Scope:** Reframe `/why-riot/`, compact `/privacy/`, clarify the homepage hero, and reconcile
 site-wide claims and navigation. No application, protocol, or deployment behavior changes.
@@ -83,9 +83,12 @@ inventory; add `primaryNavPaths` with this exact ordered set:
 `["/", "/why-riot/", "/guide/", "/about/", "/open-source/", "/community/", "/releases/",
 "/protocols/"]`; replace the current
 top-navigation loop over `allSitePaths` with a loop over `primaryNavPaths`; and add an assertion that
-the set of local route hrefs extracted from every `<nav class="sitenav">` block equals that exact
+the set of local route hrefs extracted only from the nested
+`<div class="sitenav-links">...</div>` block equals that exact
 ordered list and set—no reordering, missing, or additional local route—and does not contain
-`href="/privacy/"`. A local href is normalized with `new URL(href, "https://local.invalid")` by
+`href="/privacy/"`. The separate `.sitenav-brand` root link is deliberately excluded, so it does not
+duplicate the visible Home item. A local href is normalized with
+`new URL(href, "https://local.invalid")` by
 discarding query and fragment, converting a terminal `/index.html` to `/`, and ensuring every
 non-root path has one trailing slash. The requirement
 that the existing suite remains green means its intended coverage remains green after these obsolete
@@ -406,6 +409,7 @@ All pages: \sping\s*=
 All pages: <meta\b[^>]*http-equiv\s*=\s*["']?refresh
 All pages: <form\b
 All pages: <base\b
+All pages: \ssrcdoc\s*=
 All pages: <(?:use|image|feImage)\b[^>]*(?:href|xlink:href)\s*=\s*["'](?:https?:)?//
 All pages: <(?:script|link|img|iframe|audio|video|source|object|embed)\b[^>]*(?:src|srcset|href|data|poster)\s*=\s*["'](?:https?:)?//
 All pages: @import\s+url|url\(\s*["']?(?:https?:)?//
@@ -414,11 +418,14 @@ All pages: (?:plausible|google-analytics|googletagmanager|segment\.com|mixpanel|
 Homepage script: fetch\s*\(|sendBeacon\s*\(|XMLHttpRequest|WebSocket\s*\(|localStorage|sessionStorage|document\.cookie
 ```
 
-Inline `<svg>` and `data:`-URI favicons/images are explicitly allowed. Ordinary external `<a href>`
+Inline `<svg>` and `data:image/svg+xml` favicon links are explicitly allowed. Ordinary external `<a href>`
 citations are allowed and are not runtime resource dependencies. For every `data:image/svg+xml`
 attribute, the contract decodes percent encoding or base64, then applies the external-resource,
 `javascript:`, inline-handler, `<script>`, `<foreignObject>`, and `<base>` predicates to the decoded
-SVG. Decode failure is a test failure.
+SVG. Decode failure is a test failure. For HTML attributes named `src`, `srcset`, `href`, `data`, or
+`poster`, any `data:` value is rejected unless it is the `href` of a `<link rel="icon">` whose MIME
+is exactly `image/svg+xml` and whose decoded SVG passes those checks. Existing CSS-embedded
+`data:font/...` values remain allowed because they are font bytes, not active HTML documents.
 
 ## TDD and Acceptance Criteria
 
@@ -466,6 +473,26 @@ The new assertions must fail before HTML implementation. After implementation th
 16. `README.md` and `docs/product/product-brief.md` label private encrypted groups
     **Direction, not shipped**, consistent with the protocol field guide and current implementation.
 
+The legacy-test migration replaces four complete regions in
+`scripts/marketing/protocol-page-contracts.mjs`, rather than deleting individual assertions ad hoc:
+
+1. Replace the entire block beginning
+   `// ---------- reframed homepage (offline-guides design, 2026-07-20) ----------` through the
+   `/guide/` homepage-link loop immediately before the `for (const name of ["apps", ...])` screenshot
+   assertions. Keep the screenshot, builder, source, field-guide, and remaining homepage contracts.
+2. Replace the entire `// --- Unified footer nav across all pages` block through its closing loop
+   with footer-block extraction and exact nine-route equality, including self-links.
+3. Replace the entire `// --- Site-wide top nav` block through its closing loop with extraction of
+   `.sitenav-links` and exact `primaryNavPaths` ordered-array/set equality.
+4. Replace the Why Riot portion of `// --- Guide pages: paired-story depths + honest boundaries`
+   from that heading through `assert.doesNotMatch(whyRiot, /ecosystem/i, ...)`. Keep the following
+   Using Riot guide assertions. The replacement is acceptance criteria 8–12 and the exact status
+   element contract.
+
+These region replacements are exhaustive for legacy exact-copy conflicts. Existing assertions
+outside the four named regions remain unless the new finite security/route checks strictly subsume
+them. The RED run occurs after the replacement assertions are written and before HTML changes.
+
 Add `"test:marketing": "node scripts/marketing/protocol-page-contracts.mjs"` to `package.json` and
 run it as a distinct blocking step in the existing CI web job after `npm run test:web:unit`.
 
@@ -475,6 +502,9 @@ Implementation verification also includes:
 npm run test:web:unit
 npm run test:marketing
 ```
+
+Before Playwright review, verify `npx playwright --version`; if Chromium is unavailable, run
+`npx playwright install chromium`. Do not install other browsers.
 
 Then serve `marketing/public/` locally and visually review `/`, `/why-riot/`, and `/privacy/` at
 1456×900 and 390×844. Verify navigation wrapping, hierarchy, contrast, illustration behavior, lack
@@ -625,6 +655,10 @@ The fourth review approved product and architecture but requested exact absence/
 Revision 8 adds them. Its request to replace the H1 was rejected because “People are the
 infrastructure” is explicitly user-approved; the required adjacent ordinary-life thesis addresses
 the stated concern without overriding the user's creative decision.
+
+The fifth review approved product and UX, then requested `.sitenav-links` extraction, exhaustive
+legacy assertion-region replacement, and rejection of active HTML data URLs and `srcdoc`. Revision 9
+adds those last implementation contracts.
 
 ## Primary Sources
 
