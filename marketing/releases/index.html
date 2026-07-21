@@ -3,9 +3,9 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="description" content="Riot is free and open source, built on Willow. Browse the repo, fork it, run it, audit it. Rust core, FFI, iOS/Android apps, and a gateway.">
+  <meta name="description" content="Get Riot — macOS and Android builds from GitHub Releases, and TestFlight for iOS beta when it opens. Honest about what is and is not released yet.">
   <meta name="theme-color" content="#ff4f8b">
-  <title>Riot open source — free, on Willow, how the repo is organized</title>
+  <title>Riot releases — get the app, macOS, Android, TestFlight</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%23f6f0e5'/%3E%3Ctext x='16' y='25' font-family='Impact,sans-serif' font-size='26' fill='%23ff4f8b' text-anchor='middle'%3ER%3C/text%3E%3C/svg%3E">
   <style>
     :root {
@@ -126,7 +126,9 @@
     .card p { margin: 0; }
     .card p + p { margin-top: 12px; }
     .card .label { display: block; margin-bottom: 10px; font: 700 .72rem/1.3 "Courier New", monospace; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
-    .repo-path { display: block; margin-top: 10px; font: 700 .82rem/1.3 "Courier New", monospace; color: var(--pink); word-break: break-all; }
+    .status-chip { display: inline-block; margin: 0 0 12px; padding: 5px 10px; border: 2px solid var(--ink); background: var(--paper-2); font: 700 .7rem/1.2 "Courier New", monospace; letter-spacing: .08em; text-transform: uppercase; box-shadow: 3px 3px 0 var(--ink); }
+    .status-chip.planned { background: var(--yellow); }
+    .status-chip.live { background: var(--green); }
     .pull { padding: 26px 28px; border: 3px solid var(--ink); background: var(--yellow); box-shadow: var(--shadow); font-size: 1.1rem; font-weight: 700; }
     .pull a { font-weight: 800; }
     .actions { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 24px; }
@@ -134,6 +136,8 @@
     .btn:hover { background: var(--pink); color: var(--paper-2); }
     .btn.solid { background: var(--ink); color: var(--paper-2); }
     .btn.solid:hover { background: var(--pink); }
+    .btn[aria-disabled="true"] { opacity: .55; cursor: not-allowed; box-shadow: 4px 4px 0 var(--muted); }
+    .btn[aria-disabled="true"]:hover { background: var(--paper-2); color: var(--ink); }
     footer { padding: 34px 20px; color: var(--paper-2); background: var(--ink); }
     .footer-inner { width: min(100%, var(--max)); margin: auto; display: flex; flex-wrap: wrap; justify-content: space-between; gap: 16px; }
     .footer-inner p { margin: 0; font: 700 .76rem/1.4 "Courier New", monospace; text-transform: uppercase; }
@@ -165,96 +169,111 @@
         <a href="/">Home</a>
         <a href="/about/">About</a>
         <a href="/privacy/">Privacy</a>
-        <a href="/open-source/" aria-current="page">Open source</a>
+        <a href="/open-source/">Open source</a>
         <a href="/community/">Community</a>
-        <a href="/releases/">Get the app</a>
+        <a href="/releases/" aria-current="page">Get the app</a>
         <a href="/protocols/">Protocol field guide</a>
       </div>
     </div>
   </nav>
   <aside class="section-toc" aria-label="On this page">
     <p class="toc-label">On this page</p>
-    <a href="#license">License</a>
-    <a href="#repo">Repo layout</a>
-    <a href="#build">Build</a>
+    <a href="#desktop-mobile">Mac &amp; Android</a>
+    <a href="#ios">iOS &amp; TestFlight</a>
+    <a href="#honest">Honest status</a>
   </aside>
 
   <main id="content">
     <header class="hero">
       <div class="wrap">
-        <p class="kicker">Open source · free, built on Willow</p>
-        <h1>Free, open source, and forkable.</h1>
-        <p class="lede">Riot is open source so communities can run, read, audit, adapt, and fork it — never dependent on a single company that can be pressured or bought. The code and this marketing site live at <a href="https://github.com/rabble/riot" rel="noopener">github.com/rabble/riot</a>.</p>
+        <p class="kicker">Releases · get the app</p>
+        <h1>Get Riot.</h1>
+        <p class="lede">Riot is in active development. When builds are cut, macOS and Android packages attach to a GitHub Release and appear here automatically; iOS beta will run through TestFlight. Nothing on this page is a finished, audited product — read the honest status below before you install anything.</p>
         <div class="actions">
-          <a class="btn solid" href="https://github.com/rabble/riot" rel="noopener">Browse the repo ↗</a>
-          <a class="btn" href="/community/">Get involved</a>
-          <a class="btn" href="/protocols/">Protocol field guide</a>
+          <a class="btn solid" href="https://github.com/rabble/riot/releases" rel="noopener">Browse releases on GitHub ↗</a>
+          <a class="btn" href="/community/">Follow the build</a>
+          <a class="btn" href="/open-source/">Build from source</a>
         </div>
       </div>
     </header>
 
-    <section class="green" id="license">
+    <section class="green" id="desktop-mobile">
       <div class="wrap">
-        <p class="eyebrow">License</p>
-        <h2>Free and open source.</h2>
-        <p class="section-intro">Riot is free software. You can run it, read it, copy it, change it, and share it — no paywalls, no proprietary lock-in, no company that can revoke access. The full source lives at <a href="https://github.com/rabble/riot" rel="noopener">github.com/rabble/riot</a>, and the license terms are in the <a href="https://github.com/rabble/riot/blob/main/LICENSE" rel="noopener">LICENSE file</a> at the repo root.</p>
-        <p class="pull">Free as in speech, not just free as in beer. Fork it, audit it, adapt it for your community, or run your own. The <a href="https://willowprotocol.org/" rel="noopener">Willow</a> protocol it builds on is independently licensed and open too.</p>
-      </div>
-    </section>
-
-    <section class="dark" id="repo">
-      <div class="wrap">
-        <p class="eyebrow">How the repository is organized</p>
-        <h2>A Rust core, with native apps on top.</h2>
-        <p class="section-intro">The shared logic is Rust; each platform is a thin native shell over it via FFI. This keeps the signing, merge, and storage code in one auditable place rather than reimplemented per platform.</p>
-        <div class="grid cards-3">
-          <article class="card">
-            <span class="label">Core</span>
-            <h3>Rust workspace</h3>
-            <p>Shared protocol, storage, and merge logic. <code>cargo test --workspace --all-features</code> is the canonical test command.</p>
-            <span class="repo-path">crates/riot-core</span>
-          </article>
-          <article class="card">
-            <span class="label">FFI</span>
-            <h3>Native bindings</h3>
-            <p>Rust core exposed to Swift (iOS/macOS) and Kotlin (Android) through a generated FFI layer so apps stay thin.</p>
-            <span class="repo-path">crates/riot-ffi</span>
-          </article>
-          <article class="card">
-            <span class="label">Apps</span>
-            <h3>iOS, Android, gateway</h3>
-            <p>Native UIs and an optional gateway for Willow site content. The marketing site is separate from the gateway.</p>
-            <span class="repo-path">apps/ios · apps/android · apps/gateway</span>
-          </article>
-        </div>
-        <p class="section-intro" style="margin-top: 28px;">The development workflow — TDD, coverage thresholds, spec-driven work, and the orchestration agents — is documented in <code>AGENTS.md</code> at the repo root. It applies equally to human and agent contributors.</p>
-      </div>
-    </section>
-
-    <section class="yellow" id="build">
-      <div class="wrap">
-        <p class="eyebrow">Build and verify</p>
-        <h2>Read it, build it, check it yourself.</h2>
-        <p class="section-intro">Everything here can be reproduced locally from the repository. The commands below are the same ones the project's own checks run.</p>
+        <p class="eyebrow">macOS &amp; Android</p>
+        <h2>Desktop and Android, from GitHub Releases.</h2>
+        <p class="section-intro">Native packages attach to the <a href="https://github.com/rabble/riot/releases" rel="noopener">releases page on GitHub</a> as they are cut. The buttons below point at the latest release; if no release has been published yet, they land on the releases index.</p>
         <div class="grid cards-2">
           <article class="card">
-            <span class="label">Rust core</span>
-            <h3>Test the workspace</h3>
-            <p>Run the full test suite and the lint/format checks that gate pull requests.</p>
-            <span class="repo-path">cargo test --workspace --all-features</span>
-            <span class="repo-path">cargo fmt --all -- --check &amp;&amp; cargo clippy</span>
+            <span class="label">macOS</span>
+            <h3>Download for Mac</h3>
+            <p>A <code>.dmg</code> / <code>.app</code> build of the native macOS shell over the Rust core, attached to the latest GitHub Release.</p>
+            <div class="actions">
+              <a class="btn solid" href="https://github.com/rabble/riot/releases/latest" rel="noopener">Latest release ↗</a>
+              <a class="btn" href="https://github.com/rabble/riot/releases" rel="noopener">All releases ↗</a>
+            </div>
           </article>
           <article class="card">
-            <span class="label">Marketing site</span>
-            <h3>Verify this site is dependency-free</h3>
-            <p>Run the contract check that enforces byte-identical mirrors, no remote fetches, and no analytics — then preview locally.</p>
-            <span class="repo-path">node scripts/marketing/protocol-page-contracts.mjs</span>
-            <span class="repo-path">python3 -m http.server 4173 --directory marketing/public</span>
+            <span class="label">Android</span>
+            <h3>Download for Android</h3>
+            <p>An <code>.apk</code> (and, when published, a Play Store link) for the native Android shell, attached to the latest GitHub Release.</p>
+            <div class="actions">
+              <a class="btn solid" href="https://github.com/rabble/riot/releases/latest" rel="noopener">Latest release ↗</a>
+              <a class="btn" href="https://github.com/rabble/riot/releases" rel="noopener">All releases ↗</a>
+            </div>
           </article>
         </div>
+        <p class="section-intro" style="margin-top: 28px;">If the buttons above land on an empty releases list, no build has been published yet. The page fills in automatically the moment a <code>.dmg</code> or <code>.apk</code> is attached to a GitHub Release — no manual update to this site required.</p>
+      </div>
+    </section>
+
+    <section class="yellow" id="ios">
+      <div class="wrap">
+        <p class="eyebrow">iOS &amp; TestFlight</p>
+        <h2>iPhone — TestFlight, when it opens.</h2>
+        <p class="section-intro">iOS beta will run through Apple TestFlight. It is not open yet. There is no invite link to share today, and we will not put a fake signup form on this page.</p>
+        <div class="grid cards-2">
+          <article class="card">
+            <span class="status-chip planned">Coming soon</span>
+            <h3>TestFlight beta</h3>
+            <p>When the iOS build is ready for outside testers, a public TestFlight invite link goes here. Until then, the box below is intentionally inert.</p>
+            <div class="actions">
+              <span class="btn" aria-disabled="true">TestFlight invite — not yet</span>
+            </div>
+          </article>
+          <article class="card">
+            <span class="label">In the meantime</span>
+            <h3>Follow along</h3>
+            <p>Build progress and the TestFlight opening announcement will post through the community channels.</p>
+            <div class="actions">
+              <a class="btn solid" href="/community/">See the community page</a>
+              <a class="btn" href="/open-source/">Build from source</a>
+            </div>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section class="dark" id="honest">
+      <div class="wrap">
+        <p class="eyebrow">Honest status</p>
+        <h2>What "get the app" means today.</h2>
+        <p class="section-intro">Riot is a prototype in active development. Anything you install from this page is an early build, not a finished or audited product.</p>
+        <div class="grid cards-2">
+          <article class="card">
+            <span class="label">Today</span>
+            <h3>No published release yet</h3>
+            <p>The GitHub releases page is the source of truth. If it is empty, there is nothing to install. The home page screenshots are real app screens from the iPhone simulator build — they are not evidence of sync over physical-device radios.</p>
+          </article>
+          <article class="card">
+            <span class="label">When builds appear</span>
+            <h3>Treat them as prototypes</h3>
+            <p>Do not rely on early builds for anything that must stay secret. Private encrypted groups are not shipped; current public spaces are not confidential. Use established encrypted messengers for sensitive communication. See the <a href="/privacy/">privacy stance</a>.</p>
+          </article>
+        </div>
+        <p class="pull">Free, open source, and forkable. If you want to run Riot before a binary ships, the <a href="/open-source/">source and build instructions</a> are public — <code>cargo test --workspace --all-features</code> is the canonical verification command.</p>
         <div class="actions">
           <a class="btn solid" href="https://github.com/rabble/riot" rel="noopener">github.com/rabble/riot ↗</a>
-          <a class="btn" href="/community/">How to contribute</a>
+          <a class="btn" href="/about/">Why Riot exists</a>
           <a class="btn" href="/protocols/">Protocol field guide</a>
         </div>
       </div>
@@ -263,8 +282,8 @@
 
   <footer>
     <div class="footer-inner">
-      <p>Riot · a protest.net project · free and open source · prototype</p>
-      <p class="footer-links"><a href="/">Home</a> · <a href="/about/">About</a> · <a href="/privacy/">Privacy</a> · <a href="/open-source/">Open source</a> · <a href="/community/">Community</a> · <a href="/releases/">Get the app</a> · <a href="/protocols/">Protocol field guide</a></p>
+      <p>Riot · a protest.net project · prototype</p>
+      <p class="footer-links"><a href="/">Home</a> · <a href="/about/">About</a> · <a href="/privacy/">Privacy</a> · <a href="/open-source/">Open source</a> · <a href="/community/">Community</a> · <a href="/protocols/">Protocol field guide</a></p>
     </div>
   </footer>
 </body>

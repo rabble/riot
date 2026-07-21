@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Riot — Publish Through the Blackout</title>
-<meta name="description" content="Riot is an offline-first app for protests, disasters, and mutual aid — built to create, verify, and carry information when the network can't be trusted.">
+<title>Riot — Build the web they can't shut down</title>
+<meta name="description" content="Riot lets a community run its own internet — wikis, websites, news, social feeds, group decisions, and events — carried phone to phone. No servers to seize, no company to pressure, no switch for anyone to flip.">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%23f6f0e5'/%3E%3Ctext x='16' y='25' font-family='Impact,sans-serif' font-size='26' fill='%23ff4f8b' text-anchor='middle'%3ER%3C/text%3E%3C/svg%3E">
 <style>
 
@@ -322,6 +322,15 @@ section { padding: clamp(56px, 9vw, 100px) 0; }
 @media (max-width: 900px) { .forgrid { grid-template-columns: 1fr 1fr; } }
 @media (max-width: 540px) { .forgrid { grid-template-columns: 1fr; } }
 
+/* ---------- what you can build ---------- */
+.buildgrid { margin-top: 44px; display: grid; grid-template-columns: repeat(3, 1fr); gap: 2px; background: var(--line-strong); border: 2px solid var(--line-strong); }
+.buildcard { background: var(--paper); padding: 30px 24px; min-height: 190px; display: flex; flex-direction: column; }
+.buildcard .bnum { font-family: 'Space Mono', monospace; font-size: 12px; color: var(--pink); margin-bottom: 14px; }
+.buildcard h3 { font-family: 'Anton', sans-serif; font-size: 24px; text-transform: uppercase; letter-spacing: -0.005em; margin: 0 0 10px; color: var(--ink); line-height: 1; }
+.buildcard p { font-size: 14.5px; color: var(--ink-soft); margin: 0; }
+@media (max-width: 900px) { .buildgrid { grid-template-columns: 1fr 1fr; } }
+@media (max-width: 540px) { .buildgrid { grid-template-columns: 1fr; } }
+
 /* ---------- how it works ---------- */
 .story-beats {
   list-style: none;
@@ -559,6 +568,7 @@ footer.colophon .footer-links a:hover { text-decoration: underline; text-decorat
       <a href="/privacy/">Privacy</a>
       <a href="/open-source/">Open source</a>
       <a href="/community/">Community</a>
+      <a href="/releases/">Get the app</a>
       <a href="/protocols/">Protocol field guide</a>
     </div>
   </div>
@@ -574,17 +584,17 @@ footer.colophon .footer-links a:hover { text-decoration: underline; text-decorat
 </aside>
 
 <header class="hero wrap">
-  <span class="hero-stamp">In development — not yet released</span>
+  <span class="hero-stamp">A free internet you carry with you</span>
   <div class="hero-grid">
     <div class="hero-copy">
       <div class="hero-headline-wrap">
-        <h1 class="poster">When the internet goes down, keep publishing.</h1>
+        <h1 class="poster">Build the web they can't shut down.</h1>
       </div>
-      <p class="lede">Riot is an offline&#8209;first app for protests, disasters, and mutual aid — built to <b>create, verify, and carry</b> information when the network can't be trusted. Preload it before the crisis. Publish, sync, and merge from inside it during the crisis.</p>
+      <p class="lede">Riot is how a community runs its own internet — <b>wikis, websites, news, social feeds, group decisions, and events</b> — and carries all of it phone to phone. No servers to seize. No company to pressure. No switch for anyone to flip.</p>
       <div class="hero-actions">
-        <a class="btn solid" href="#whatis">What Riot is</a>
+        <a class="btn solid" href="#whatis">What you can build</a>
         <a class="btn outline" href="#how">See how it works</a>
-        <a class="btn outline" href="/about/">About the project</a>
+        <a class="btn outline" href="/releases/">Get the app</a>
       </div>
       <div class="hero-details">
         <p class="hero-details-kicker">More than a social feed</p>
@@ -616,30 +626,40 @@ footer.colophon .footer-links a:hover { text-decoration: underline; text-decorat
 <section id="whatis">
   <div class="wrap">
     <div class="section-head reveal">
-      <p class="eyebrow">What Riot is</p>
-      <h2>A community runtime for carrying information through a blackout.</h2>
-      <p class="section-intro">Riot is being built for the moments a community most needs to publish and coordinate — and least can afford to depend on a server someone else controls. Honest about what that means today, and what it does not mean yet.</p>
+      <p class="eyebrow">What you can build</p>
+      <h2>A whole community internet — owned by the people who use it.</h2>
+      <p class="section-intro">Not one app for one crowd. A Riot space is a runtime your community fills with the tools it needs. Every one of them keeps working with no server, no signal, and no one's permission — signed so authorship is verifiable, built on the <a href="https://willowprotocol.org/" target="_blank" rel="noopener">Willow</a> mergeable-data protocol, free and open source under MIT.</p>
     </div>
-    <div class="whatis reveal">
-      <article class="whatis-card is">
-        <p class="wtag">Riot is</p>
-        <ul>
-          <li>Offline-first: read and write what your device already holds, no server round-trip required.</li>
-          <li>Signed: authorship is verifiable without trusting any relay. Nothing is accepted until a human looks at it first.</li>
-          <li>A community runtime: a space carries shared state and the small apps its organizers approve — checklists, alerts, decisions, events.</li>
-          <li>Built on the <a href="https://willowprotocol.org/" target="_blank" rel="noopener">Willow</a> mergeable-data protocol, in the lineage of Indymedia, protest.net, and TXTMob.</li>
-          <li>Free and open source under MIT. <a href="/open-source/">Read the code →</a></li>
-        </ul>
+    <div class="buildgrid reveal">
+      <article class="buildcard">
+        <div class="bnum">01</div>
+        <h3>Wikis</h3>
+        <p>Shared, editable knowledge — know-your-rights guides, playbooks, contact lists. Everyone's edits merge; nothing is silently lost or overwritten.</p>
       </article>
-      <article class="whatis-card isnot">
-        <p class="wtag">Riot is not (yet)</p>
-        <ul>
-          <li>A shipping product. It is a prototype in active development; there is nothing to download yet.</li>
-          <li>Confidential by default. Current public spaces are not confidential; private encrypted groups are not shipped.</li>
-          <li>A universal social protocol. It is a community application runtime — see the <a href="/protocols/">protocol field guide</a>.</li>
-          <li>An audited, hardened tool. Use established encrypted messengers for anything that must stay secret today. <a href="/privacy/">Read the privacy stance →</a></li>
-          <li>A finished answer. It is a direction, checked against how this work has <b>actually</b> behaved in the field. <a href="#evidence">See the evidence →</a></li>
-        </ul>
+      <article class="buildcard">
+        <div class="bnum">02</div>
+        <h3>Websites</h3>
+        <p>Publish pages your community actually owns. A site is a signed namespace carried by its readers' devices — there is no host to take offline.</p>
+      </article>
+      <article class="buildcard">
+        <div class="bnum">03</div>
+        <h3>News</h3>
+        <p>Open publishing in the Indymedia lineage. Post to a newswire, or run a masthead where subscribers' phones are the printing press. Curation is a lens, not a gate.</p>
+      </article>
+      <article class="buildcard">
+        <div class="bnum">04</div>
+        <h3>Social feeds</h3>
+        <p>Post, follow, react, reply — a social network with no platform underneath it and no company that can lock you out or read your graph for sale.</p>
+      </article>
+      <article class="buildcard">
+        <div class="bnum">05</div>
+        <h3>Group decisions</h3>
+        <p>Proposals, votes, and consensus that live in the space itself — so a crew or a coop can decide together without depending on anyone's server staying up.</p>
+      </article>
+      <article class="buildcard">
+        <div class="bnum">06</div>
+        <h3>Events</h3>
+        <p>Promote actions as structured, discoverable records — times, places, RSVPs — in the lineage of protest.net. They spread device to device, not through an ad platform.</p>
       </article>
     </div>
   </div>
@@ -650,7 +670,7 @@ footer.colophon .footer-links a:hover { text-decoration: underline; text-decorat
     <div class="section-head reveal">
       <p class="eyebrow">Explore the project</p>
       <h2>The rest of the site, in one place.</h2>
-      <p class="section-intro">Five pages, all linked from the top and bottom of every page. Start anywhere.</p>
+      <p class="section-intro">Six pages, all linked from the top and bottom of every page. Start anywhere.</p>
     </div>
     <div class="explore reveal">
       <a class="explore-card" href="/about/">
@@ -681,6 +701,12 @@ footer.colophon .footer-links a:hover { text-decoration: underline; text-decorat
         <span class="etag">No overclaiming</span>
         <h3>Privacy</h3>
         <p>What this site runs (nothing behind your back) and what the app is and is not yet.</p>
+        <span class="earrow" aria-hidden="true">→</span>
+      </a>
+      <a class="explore-card" href="/releases/">
+        <span class="etag">Get the app</span>
+        <h3>Releases</h3>
+        <p>macOS and Android builds from GitHub Releases, and TestFlight for iOS when it opens.</p>
         <span class="earrow" aria-hidden="true">→</span>
       </a>
     </div>
@@ -900,8 +926,8 @@ footer.colophon .footer-links a:hover { text-decoration: underline; text-decorat
   <div class="wrap">
     <div class="section-head reveal">
       <p class="eyebrow">Status</p>
-      <h2>Honest about where this stands</h2>
-      <p class="section-intro">Riot is in active development. This page describes the direction, not a finished product — there is nothing to download yet.</p>
+      <h2>Built in the open</h2>
+      <p class="section-intro">Riot is being built right now, in public — every increment lands on the <a href="/releases/">releases page</a> as it ships. Here is what is live and what is next.</p>
     </div>
     <div class="status-list reveal">
       <div class="status-row">
@@ -942,8 +968,8 @@ footer.colophon .footer-links a:hover { text-decoration: underline; text-decorat
 </section>
 
 <footer class="colophon">
-  <span>Riot — in development. No app has shipped. Built by <a href="https://github.com/rabble" target="_blank" rel="noopener">@rabble</a>. · A protest.net project.</span>
-  <span class="footer-links"><a href="/about/">About</a> · <a href="/privacy/">Privacy</a> · <a href="/open-source/">Open source</a> · <a href="/community/">Community</a> · <a href="/protocols/">Protocol field guide</a></span>
+  <span>Riot — in development. Early builds on the <a href="/releases/">releases page</a>. Built by <a href="https://github.com/rabble" target="_blank" rel="noopener">@rabble</a>. · A protest.net project.</span>
+  <span class="footer-links"><a href="/about/">About</a> · <a href="/privacy/">Privacy</a> · <a href="/open-source/">Open source</a> · <a href="/community/">Community</a> · <a href="/releases/">Get the app</a> · <a href="/protocols/">Protocol field guide</a></span>
 </footer>
 
 <script>

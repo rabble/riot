@@ -15,7 +15,7 @@ const paths = {
 };
 // Secondary pages (source + byte-identical public mirror). Each is dependency-free
 // and reuses the protocols-page design system (system fonts, no runtime media/scripts).
-const secondaryPages = ["about", "privacy", "open-source", "community"];
+const secondaryPages = ["about", "privacy", "open-source", "community", "releases"];
 const secondary = Object.fromEntries(
   secondaryPages.flatMap((name) => [
     [name, resolve(root, `marketing/${name}/index.html`)],
@@ -34,6 +34,7 @@ const {
   home, publicHome, protocols, publicProtocols,
   about, publicAbout, privacy, publicPrivacy,
   "open-source": openSource, publicOpenSource, community, publicCommunity,
+  releases, publicReleases,
 } = await readAll(allPaths);
 // Paired explainer (#92): the iOS story/presentation sources must match the
 // five-beat copy the website claims. Read them so later assertions can pin both sides.
@@ -169,9 +170,9 @@ assert.doesNotMatch(protocols, /(?:plausible|google-analytics|googletagmanager|s
 // route can reach all the others. A page may omit its own self-link (a "Home"
 // link on the home page adds nothing). The link set is the single source of
 // truth for "all pages".
-const allSitePaths = ["/", "/about/", "/privacy/", "/open-source/", "/community/", "/protocols/"];
-const pageOwnPath = { home: "/", protocols: "/protocols/", about: "/about/", privacy: "/privacy/", "open-source": "/open-source/", community: "/community/" };
-const pageContents = { home, protocols, about, privacy, "open-source": openSource, community };
+const allSitePaths = ["/", "/about/", "/privacy/", "/open-source/", "/community/", "/releases/", "/protocols/"];
+const pageOwnPath = { home: "/", protocols: "/protocols/", about: "/about/", privacy: "/privacy/", "open-source": "/open-source/", community: "/community/", releases: "/releases/" };
+const pageContents = { home, protocols, about, privacy, "open-source": openSource, community, releases };
 for (const [pageName, content] of Object.entries(pageContents)) {
   for (const sitePath of allSitePaths) {
     if (sitePath === pageOwnPath[pageName]) continue;
@@ -213,7 +214,7 @@ for (const [pageName, content] of Object.entries(pageContents)) {
 // The four secondary pages follow the protocols-page rule: no runtime
 // media/scripts, no remote CSS, no analytics, and the accessibility landmarks
 // every page shares.
-for (const [pageName, content] of Object.entries({ about, privacy, "open-source": openSource, community })) {
+for (const [pageName, content] of Object.entries({ about, privacy, "open-source": openSource, community, releases })) {
   for (const landmark of ["<main", "<nav", "<h1", "<footer"]) {
     assert.ok(content.includes(landmark), `${pageName} page must include ${landmark}`);
   }
