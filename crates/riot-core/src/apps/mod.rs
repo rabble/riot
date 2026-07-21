@@ -9,6 +9,7 @@ pub mod directory;
 pub mod endorse;
 pub mod entry;
 pub mod index;
+pub mod inventory;
 pub mod manifest;
 pub mod starter;
 pub mod trust;
