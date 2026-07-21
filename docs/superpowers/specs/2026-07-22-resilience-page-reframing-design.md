@@ -1,7 +1,7 @@
 # Riot Human-Capacity Marketing Reframe
 
 **Date:** 2026-07-22  
-**Status:** Design review candidate, revision 5
+**Status:** Design review candidate, revision 6
 
 **Scope:** Reframe `/why-riot/`, compact `/privacy/`, clarify the homepage hero, and reconcile
 site-wide claims and navigation. No application, protocol, or deployment behavior changes.
@@ -78,9 +78,12 @@ This change adds no route and no redirect.
   `/releases/` in several places.
 
 The contract migration is explicit: retain `allSitePaths` as the nine-route footer and mirror
-inventory; add `primaryNavPaths` containing every route except `/privacy/`; replace the current
+inventory; add `primaryNavPaths` with this exact ordered set:
+`["/", "/why-riot/", "/guide/", "/about/", "/open-source/", "/community/", "/releases/",
+"/protocols/"]`; replace the current
 top-navigation loop over `allSitePaths` with a loop over `primaryNavPaths`; and add an assertion that
-the extracted `<nav class="sitenav">` block does not contain `href="/privacy/"`. The requirement
+the set of local route hrefs extracted from every `<nav class="sitenav">` block equals that exact
+set—no missing or additional local route—and does not contain `href="/privacy/"`. The requirement
 that the existing suite remains green means its intended coverage remains green after these obsolete
 expectations are replaced—not that old and new navigation rules must both pass.
 
@@ -334,9 +337,31 @@ Semantic equivalents remain a required human editorial check.
 - No JavaScript is required for meaning or navigation.
 - No remote scripts, stylesheets, fonts, images, media, iframes, analytics, beacons, cookies, or
   tracking endpoints.
-- No `javascript:` URLs, inline event-handler attributes, external SVG references, meta-refresh
-  redirects, or forms/form actions.
+- Why Riot and Privacy contain no `<script>` elements. The homepage may retain its existing
+  non-networked IntersectionObserver reveal script, but the contract continues to require that it
+  makes no fetch, beacon, storage, cookie, analytics, or remote-resource call.
+- No `javascript:` URLs, inline event-handler attributes, `ping` attributes, external SVG
+  references, meta-refresh redirects, or forms/form actions.
 - External links that use `target="_blank"` must also use `rel="noopener"`.
+
+The static contract uses these exact case-insensitive predicates:
+
+```text
+Why Riot / Privacy only: <script\b
+All pages: javascript:
+All pages: \son[a-z]+\s*=
+All pages: \sping\s*=
+All pages: <meta\b[^>]*http-equiv\s*=\s*["']?refresh
+All pages: <form\b
+All pages: <use\b[^>]*(?:href|xlink:href)\s*=\s*["']https?://
+All pages: <(?:script|link|img|iframe|audio|video|source|object|embed)\b[^>]*(?:src|href|data)\s*=\s*["']https?://
+All pages: @import\s+url|url\(\s*["']?https?://
+All pages, loader URL/tag context only: plausible|google-analytics|googletagmanager|segment\.com|mixpanel|hotjar|clarity
+Homepage script: fetch\s*\(|sendBeacon\s*\(|XMLHttpRequest|WebSocket\s*\(|localStorage|sessionStorage|document\.cookie
+```
+
+Inline `<svg>` and `data:`-URI favicons/images are explicitly allowed. Ordinary external `<a href>`
+citations are allowed and are not runtime resource dependencies.
 
 ## TDD and Acceptance Criteria
 
@@ -351,10 +376,13 @@ The new assertions must fail before HTML implementation. After implementation th
 1. all nine source pages have byte-identical `marketing/public/` mirrors;
 2. no `/resilience/` source or public route is introduced;
 3. Why Riot and Privacy have their exact origin-relative canonical links;
-4. all nine source pages and mirrors include Why Riot in `primaryNavPaths`, omit Privacy from the
-   extracted primary-navigation block, and retain Privacy in `allSitePaths` for footer checks;
+4. local route hrefs extracted from every source and mirror primary-navigation block have exact set
+   equality with `primaryNavPaths`; Privacy is absent there and retained in `allSitePaths` footer
+   checks;
 5. every footer preserves reachability to all other routes, including Privacy;
-6. sitemap and `marketing/README.md` contain the exact nine-route inventory;
+6. sitemap and `marketing/README.md` contain the exact nine-route inventory; sitemap `<loc>` path
+   count is nine and its normalized path set equals `allSitePaths` with neither missing nor extra
+   routes;
 7. homepage hero is distinct from Why Riot and links prominently to `/why-riot/`;
 8. Why Riot contains the exact H1, ordinary-life section, four human verbs, practice section,
    compact mechanism and boundary sections, Solnit attribution, and participation links;
@@ -366,8 +394,8 @@ The new assertions must fail before HTML implementation. After implementation th
 12. every exact forbidden-claim pattern in the Site-Wide Claim Audit is absent across all nine
     editorial pages;
 13. changed pages include no remote runtime or asset dependency;
-14. changed pages contain no `javascript:` URL, inline event handler, external SVG reference,
-    meta-refresh redirect, or form; external blank-target links include `rel="noopener"`;
+14. the exact static-content predicates above pass; external blank-target links include
+    `rel="noopener"`;
 15. the existing marketing contract suite remains green after these legacy assertions are retired:
     the old homepage headline `Community infrastructure that travels with people`; the old Why Riot
     audience labels `Depth one`, `Depth two`, and `Depth three`; and the old required phrases
@@ -391,19 +419,55 @@ screenshots under `/tmp/visual-review/riot-human-capacity/`. At 390 px, use Play
 require `document.documentElement.scrollWidth <= document.documentElement.clientWidth`. Capture a
 forced-colors screenshot where Chromium supports the emulation; otherwise record the unsupported
 check explicitly. Inspect computed foreground/background pairs with the existing palette and record
-WCAG AA results in the implementation review notes.
+WCAG AA results in the committed
+`docs/marketing/2026-07-22-human-capacity-implementation-review.md`. That report records each
+screenshot path, SHA-256, viewport, overflow result, forced-colors support/outcome, inspected color
+pairs and ratios, and any issue found. Screenshots remain reproducible `/tmp` artifacts rather than
+large committed binaries; the committed report and exact capture commands preserve the evidence
+needed to repeat them.
 
-After visual verification, run a first-read editorial gate with three fresh reviewers who receive
-only the rendered Why Riot page—not this specification. Each must correctly answer all four:
+After visual verification, run a first-read editorial gate with three fresh, mutually independent
+review sessions. Each receives only the rendered Why Riot page—not this specification, prior review
+answers, or another reviewer's context. Assign one declared reader role per session:
+
+- **Community participant/organizer**
+- **Potential partner/institution**
+- **Builder/technical reader**
+
+Every reviewer answers these four shared questions:
 
 1. What kind of ordinary community life is Riot trying to support?
 2. What four kinds of work does Riot make easier?
 3. Why might the same tools matter when conditions become difficult?
 4. What is not currently guaranteed or private?
 
-Passing threshold: all three reviewers answer all four substantially correctly and none describes
-Riot primarily as a privacy messenger, disaster-survival product, or protocol project. This is the
-observable, non-analytics test of the intended reader outcome.
+The partner also answers: **What can a community possess rather than merely access, and why does
+that matter?** The builder also answers: **What bounded mechanism and current-status distinctions
+make the claim plausible?**
+
+Scoring is deterministic, one point per required element:
+
+- Q1: names at least two ordinary-life examples and people/community—not software—as the subject.
+- Q2: names Publish, Meet, Coordinate, and Carry or unmistakable equivalents.
+- Q3: says familiar, already-used relationships/tools/data remain useful; does not claim guaranteed
+  operation.
+- Q4: names public plaintext/non-confidential content plus at least two of no anonymity guarantee,
+  device/metadata exposure, incomplete transports, unaudited prototype, or no delivery/persistence
+  guarantee.
+- Partner Q5: identifies participant-held data/tools/community memory and reduced dependence on one
+  provider, without claiming total independence.
+- Builder Q5: identifies local replicas/signed records/multiple possible paths plus at least two
+  distinct statuses from prototype, locally tested, in development, or not shipped.
+
+Passing threshold: the community reviewer scores 4/4; partner and builder score 5/5; no reviewer
+describes Riot primarily as a privacy messenger, disaster-survival product, or protocol project.
+Commit each role, verbatim answer, element-by-element score, verdict, session identifier, and prompt
+hash in `docs/marketing/2026-07-22-human-capacity-implementation-review.md`.
+
+A fourth fresh editorial-auditor session receives all nine rendered page texts plus the semantic
+claim-safety categories, but not implementation commentary. It records any semantic equivalent that
+evades the finite patterns. Passing requires zero unqualified unsafe claims. Commit its prompt hash,
+verdict, and findings to the same report. This is the human half of the site-wide claim audit.
 
 Deployment is outside scope. Do not mutate production or claim the live site changed.
 
@@ -430,6 +494,11 @@ deterministic migration of legacy contract assertions, narrower status claims fo
 Carry, explicit plaintext/readable/copyable privacy language, a finite forbidden-claim pattern set,
 static-content injection checks, and an observable first-read comprehension gate. Revision 5 adds
 those contracts.
+
+The second review approved the narrative and route architecture, then requested exact primary-nav
+and sitemap set equality, deterministic no-tracking predicates, and reproducible audience-specific
+reader and semantic-audit evidence. Revision 6 defines each one and names the committed review
+artifact.
 
 ## Primary Sources
 
