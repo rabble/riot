@@ -1,7 +1,7 @@
 # Riot Human-Capacity Marketing Reframe
 
 **Date:** 2026-07-22  
-**Status:** Design review candidate, revision 9
+**Status:** Design review candidate, revision 10
 
 **Scope:** Reframe `/why-riot/`, compact `/privacy/`, clarify the homepage hero, and reconcile
 site-wide claims and navigation. No application, protocol, or deployment behavior changes.
@@ -77,6 +77,8 @@ This change adds no route and no redirect.
 - Update the explicit page inventories and navigation assertions in the marketing contract and
   `marketing/README.md`; the current README is stale and omits `/why-riot/`, `/guide/`, and
   `/releases/` in several places.
+- Update every source-file, public-mirror, sitemap, and local-preview list in `marketing/README.md`
+  to enumerate all nine routes, not only its `## Routes` summary.
 
 The contract migration is explicit: retain `allSitePaths` as the nine-route footer and mirror
 inventory; add `primaryNavPaths` with this exact ordered set:
@@ -107,6 +109,8 @@ expectations are replaced—not that old and new navigation rules must both pass
 Add `<link rel="canonical" href="/why-riot/">` to Why Riot and
 `<link rel="canonical" href="/privacy/">` to Privacy. Origin-relative links work on the configured
 Workers origin and any separately approved custom domain without making DNS or TLS assumptions.
+This intentionally produces a canonical URL relative to whichever approved host serves the static
+bytes; selecting one preferred absolute production origin is a deployment decision outside scope.
 
 ## Homepage Changes
 
@@ -336,10 +340,12 @@ create/read/import flows, bundled tools, tested local-network exchange, and gate
 also state that private encrypted groups are not shipped.
 
 The root `README.md` and `docs/product/product-brief.md` currently describe private groups as one of
-two product modes without marking implementation status. This change updates both documents to label
-that mode **Direction, not shipped** while preserving the architecture. No application behavior
-changes. After the edit, repository documentation must not imply that private encrypted groups are a
-current capability.
+two product modes without marking implementation status. They also use absolute “no server to raid”
+or “no server to seize” language. This change updates both documents to label private groups
+**Direction, not shipped** and qualifies those seizure-resistance claims: participant-held copies and
+replaceable gateways can reduce dependence on one server, but Riot does not guarantee that a
+complete reachable copy exists or that publishing, access, persistence, or censorship resistance
+survives. No application behavior changes.
 
 ## Site-Wide Claim Audit
 
@@ -357,7 +363,8 @@ Positive claims name their mechanism and prerequisite. Already-held data may rem
 functioning device. Exchange requires an available compatible path. A lost gateway need not erase
 copies participants already hold, but Riot does not guarantee that any complete copy exists.
 
-Automated tests use this exact case-insensitive pattern inventory across the nine editorial pages:
+Automated tests use this exact case-insensitive pattern inventory across the nine editorial pages,
+`README.md`, and `docs/product/product-brief.md`:
 
 ```text
 \buncensorable\b
@@ -427,6 +434,16 @@ SVG. Decode failure is a test failure. For HTML attributes named `src`, `srcset`
 is exactly `image/svg+xml` and whose decoded SVG passes those checks. Existing CSS-embedded
 `data:font/...` values remain allowed because they are font bytes, not active HTML documents.
 
+Resource URL validation is allowlist-based, not regex-only. Extract resource-bearing values from
+`script[src]`, `link[href]`, `img[src|srcset]`, `iframe[src|srcdoc]`, `audio[src]`, `video[src|poster]`,
+`source[src|srcset]`, `object[data]`, `embed[src]`, and SVG `use|image|feImage[href|xlink:href]`.
+Permit only origin-local relative/root-relative URLs with no URI scheme and no `//` prefix. The sole
+HTML-attribute exception is the decoded and validated `data:image/svg+xml` favicon described above.
+For CSS `url(...)`, permit origin-local relative/root-relative URLs and existing
+`data:font/woff2;base64,...` font bytes; reject every other `data:` MIME, protocol-relative value, or
+URI scheme including `http:`, `https:`, `ftp:`, `file:`, and `blob:`. Ordinary external anchor
+citations are outside this resource allowlist and remain permitted.
+
 ## TDD and Acceptance Criteria
 
 Extend `scripts/marketing/protocol-page-contracts.mjs` first and run:
@@ -461,7 +478,7 @@ The new assertions must fail before HTML implementation. After implementation th
 11. the four human-verb cards and Carry sub-list use the exact deterministic status markup and
     label/text pairings defined above;
 12. every exact forbidden-claim pattern in the Site-Wide Claim Audit is absent across all nine
-    editorial pages;
+    editorial pages, `README.md`, and `docs/product/product-brief.md`;
 13. changed pages include no remote runtime or asset dependency;
 14. the exact static-content predicates above pass; external blank-target links include
     `rel="noopener"`;
@@ -471,7 +488,8 @@ The new assertions must fail before HTML implementation. After implementation th
     `Privacy through control, not secrecy`, `One update, different paths`, and
     `Direction being built or still unverified`. Their replacement assertions are criteria 7–12.
 16. `README.md` and `docs/product/product-brief.md` label private encrypted groups
-    **Direction, not shipped**, consistent with the protocol field guide and current implementation.
+    **Direction, not shipped**, and replace “no server to raid/seize” absolutes with the bounded
+    participant-copy, replaceable-gateway, and no-guarantee language defined above.
 
 The legacy-test migration replaces four complete regions in
 `scripts/marketing/protocol-page-contracts.mjs`, rather than deleting individual assertions ad hoc:
@@ -582,7 +600,8 @@ tool thread/session identifier and receives no earlier reviewer output. The repo
 complete rendered-file hash, exact prompt, its SHA-256, returned JSON verbatim, orchestrator scores,
 and session identifier so another reviewer can repeat the procedure.
 
-A fourth fresh editorial-auditor session receives these exact ordered public-mirror files plus this
+A fourth fresh editorial-auditor session receives these exact ordered public-mirror files and two
+product documents plus this
 exact
 prompt, but not implementation commentary:
 
@@ -596,10 +615,12 @@ marketing/public/open-source/index.html
 marketing/public/community/index.html
 marketing/public/releases/index.html
 marketing/public/protocols/index.html
+README.md
+docs/product/product-brief.md
 ```
 
 ```text
-Review only the attached nine rendered marketing HTML files. Find present-tense or absolute claims
+Review only the attached nine rendered marketing HTML files and two product Markdown documents. Find present-tense or absolute claims
 that mean any of: impossible to censor or shut down; always available; guaranteed delivery,
 discovery, synchronization, persistence, or recovery; nothing can be lost; anonymous,
 confidential, or private-by-default public spaces; audited, field-proven, production-ready, or
@@ -609,7 +630,7 @@ which category it violates.
 ```
 
 Passing requires `PASS` with zero findings. The report stores the complete prompt and SHA-256,
-ordered SHA-256 list for the nine reviewed HTML files, returned JSON verbatim, and fresh session
+ordered SHA-256 list for the eleven reviewed files, returned JSON verbatim, and fresh session
 identifier. This is the reproducible human half of the site-wide claim audit.
 
 Deployment is outside scope. Do not mutate production or claim the live site changed.
@@ -659,6 +680,10 @@ the stated concern without overriding the user's creative decision.
 The fifth review approved product and UX, then requested `.sitenav-links` extraction, exhaustive
 legacy assertion-region replacement, and rejection of active HTML data URLs and `srcdoc`. Revision 9
 adds those last implementation contracts.
+
+The sixth review approved architecture, UX, product, and implementation readiness. Security
+requested that the seizure-resistance audit cover the two product documents and that resource URLs
+use a strict scheme allowlist. Revision 10 adds both without changing product behavior.
 
 ## Primary Sources
 
