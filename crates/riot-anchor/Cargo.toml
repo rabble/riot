@@ -31,9 +31,25 @@ rusqlite = { workspace = true }
 # "riot/namespace-token/v1"). Reuses the WORKSPACE `sha2` pin already resolved
 # via `riot-core`; adds a dependency EDGE only, no new crate to the lock tree.
 sha2 = { workspace = true }
-
-[dev-dependencies]
-# Test-only operator signer: produces real Ed25519 work-challenge signatures the
-# protocol's `WorkStampV1::verify` accepts. Production signer wiring (operator
-# key management) lands with a later work unit.
+# WU-019 increment 1: the runnable control-plane daemon. iroh + tokio are
+# confined to `daemon.rs`/`main.rs` (never `riot-anchor-protocol`, which
+# forbids them by test, and never the hosting/control/repository core, which
+# stays transport-free). `riot-transport` supplies the multi-ALPN router and
+# the QUIC accept primitive; this crate binds its OWN endpoint (with the
+# router's exact ALPN set) rather than reusing `riot-transport::iroh`'s
+# `bind_public`/`bind_seed`, which hardcode the `riot/sync/1` ALPN only.
+riot-transport = { path = "../riot-transport" }
+iroh = "1.0.2"
+tokio = { version = "1.53.0", features = ["rt-multi-thread", "macros", "sync", "signal", "time"] }
+# OS randomness for control-plane entropy (operation ids, challenge nonces).
+# Already in the lock tree via riot-transport; adds a dependency EDGE only.
+getrandom = "0.2"
+# The daemon's operator signing key (Ed25519). Promoted from a test-only
+# dev-dependency: production wiring needs a real `OperatorSigner`, not just the
+# test fixture. Reuses the WORKSPACE pin already resolved via riot-transport —
+# no new lock entry.
 ed25519-dalek = { workspace = true }
+
+[[bin]]
+name = "riot-anchor"
+path = "src/main.rs"

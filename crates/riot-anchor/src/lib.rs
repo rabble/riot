@@ -25,8 +25,10 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
+pub mod admission;
 pub mod checkpoint;
 pub mod control;
+pub mod daemon;
 pub mod hosting;
 pub mod idempotency;
 pub mod listing;
