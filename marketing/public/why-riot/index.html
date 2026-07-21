@@ -1,0 +1,469 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Why Riot: community infrastructure that travels with people. One story at three depths — for communities, for partners, for builders — with every claim labeled current or planned.">
+  <meta name="theme-color" content="#ff4f8b">
+  <title>Why Riot — community infrastructure that travels with people</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%23f6f0e5'/%3E%3Ctext x='16' y='25' font-family='Impact,sans-serif' font-size='26' fill='%23ff4f8b' text-anchor='middle'%3ER%3C/text%3E%3C/svg%3E">
+  <style>
+    :root {
+      --paper: #f6f0e5;
+      --paper-2: #fffaf1;
+      --ink: #171614;
+      --muted: #605d57;
+      --pink: #ff4f8b;
+      --blue: #5b7cff;
+      --yellow: #ffdf3f;
+      --green: #a7e86d;
+      --line: #171614;
+      --shadow: 7px 7px 0 var(--ink);
+      --max: 1180px;
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      background: var(--paper);
+      font-family: "Arial", "Helvetica Neue", sans-serif;
+      font-size: 17px;
+      line-height: 1.58;
+    }
+    a { color: inherit; text-decoration-thickness: 2px; text-underline-offset: .18em; }
+    a:hover { text-decoration-color: var(--pink); }
+    a:focus-visible { outline: 4px solid var(--blue); outline-offset: 4px; }
+    h1, h2, h3, .brand, .poster {
+      font-family: Impact, Haettenschweiler, "Arial Narrow Bold", sans-serif;
+      font-weight: 900;
+      line-height: .98;
+      letter-spacing: .01em;
+      text-transform: uppercase;
+    }
+    h1 { max-width: 920px; margin: .25rem 0 1.25rem; font-size: clamp(3rem, 7vw, 5.6rem); }
+    h2 { margin: 0 0 1.2rem; font-size: clamp(2.1rem, 4.6vw, 3.6rem); }
+    h3 { margin: 0 0 .6rem; font-size: clamp(1.4rem, 2.4vw, 1.9rem); }
+    h4 { margin: 1.4rem 0 .4rem; font: 700 .8rem/1.3 "Courier New", monospace; letter-spacing: .09em; text-transform: uppercase; color: var(--muted); }
+    p { max-width: 74ch; }
+    ul { max-width: 74ch; }
+    .wrap { width: min(calc(100% - 40px), var(--max)); margin-inline: auto; }
+    .skip-link { position: absolute; top: -100px; left: 12px; z-index: 100; padding: 10px 14px; background: #fff; border: 2px solid; }
+    .skip-link:focus { top: 12px; }
+    .sitenav {
+      position: sticky; top: 0; z-index: 50;
+      background: var(--ink); color: var(--paper-2); border-bottom: 3px solid var(--ink);
+    }
+    .sitenav-bar { display: flex; align-items: center; justify-content: space-between; padding: 0 max(16px, calc((100% - var(--max)) / 2)); gap: 16px; }
+    .sitenav-brand { font-family: Impact, Haettenschweiler, "Arial Narrow Bold", sans-serif; font-size: 1.5rem; text-decoration: none; padding: 10px 0; white-space: nowrap; }
+    .sitenav-brand span { padding: 1px 7px; background: var(--pink); color: var(--paper-2); }
+    .sitenav-brand:hover { opacity: .8; }
+    .sitenav-links { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 0; font: 700 .72rem/1.2 "Courier New", monospace; letter-spacing: .06em; text-transform: uppercase; overflow-x: auto; }
+    .sitenav-links a { color: color-mix(in srgb, var(--paper-2) 80%, transparent); text-decoration: none; padding: 11px 14px; white-space: nowrap; display: inline-block; border-bottom: 3px solid transparent; }
+    .sitenav-links a:hover { color: var(--paper-2); border-bottom-color: var(--pink); }
+    .sitenav-links a[aria-current="page"] { color: var(--pink); border-bottom-color: var(--pink); }
+    @media (max-width: 760px) {
+      .sitenav-links { font-size: .66rem; }
+      .sitenav-links a { padding: 11px 9px; }
+    }
+    .section-toc { display: none; }
+    @media (min-width: 1480px) {
+      .section-toc {
+        display: flex; flex-direction: column; gap: 4px;
+        position: fixed; top: 70px; left: 20px; z-index: 30;
+        width: 148px; max-height: calc(100vh - 90px); overflow-y: auto;
+        padding: 14px 12px;
+        background: color-mix(in srgb, var(--paper) 92%, transparent);
+        border: 2px solid var(--ink); box-shadow: 5px 5px 0 var(--ink);
+        font: 700 .68rem/1.3 "Courier New", monospace; letter-spacing: .04em; text-transform: uppercase;
+      }
+      .section-toc .toc-label { margin: 0 0 8px; color: var(--pink); font-size: .62rem; letter-spacing: .1em; }
+      .section-toc a { color: var(--ink); text-decoration: none; padding: 5px 8px; border-left: 2px solid transparent; }
+      .section-toc a:hover { color: var(--pink); border-left-color: var(--pink); }
+    }
+    .hero { padding: clamp(60px, 9vw, 110px) 0 64px; border-bottom: 3px solid var(--ink); background: var(--pink); }
+    .hero, .hero h1, .hero .lede { color: var(--paper-2); }
+    .kicker, .eyebrow { font: 700 .75rem/1.3 "Courier New", monospace; letter-spacing: .09em; text-transform: uppercase; }
+    .kicker { display: inline-block; margin: 0 0 1rem; padding: 7px 10px; border: 2px solid var(--ink); background: var(--yellow); box-shadow: 4px 4px 0 var(--ink); color: var(--ink); }
+    .lede { max-width: 790px; margin: 0; font-size: clamp(1.12rem, 2vw, 1.4rem); font-weight: 700; }
+    .hero-jumps { margin: 26px 0 0; font: 700 .78rem/1.6 "Courier New", monospace; letter-spacing: .06em; text-transform: uppercase; }
+    .hero-jumps a { margin-right: 16px; color: var(--paper-2); }
+    section { padding: clamp(60px, 8vw, 100px) 0; border-bottom: 3px solid var(--ink); }
+    .dark { color: var(--paper-2); background: var(--ink); }
+    .yellow { background: var(--yellow); }
+    .section-intro { margin: 0 0 36px; color: var(--muted); font-size: 1.1rem; }
+    .dark .section-intro { color: #d9d4ca; }
+    .yellow .section-intro { color: color-mix(in srgb, var(--ink) 82%, transparent); }
+    .eyebrow { margin: 0 0 12px; color: var(--pink); }
+    .yellow .eyebrow { color: var(--ink); }
+    .dark .eyebrow { color: var(--pink); }
+    .chip {
+      display: inline-block; vertical-align: middle;
+      font: 700 .62rem/1.2 "Courier New", monospace; letter-spacing: .08em; text-transform: uppercase;
+      border: 2px solid var(--ink); padding: 2px 8px; white-space: nowrap; background: var(--paper-2); color: var(--ink);
+    }
+    .chip.working { background: var(--green); }
+    .chip.prototype { background: var(--yellow); }
+    .chip.direction { background: var(--paper); color: var(--muted); }
+    .dark .chip { border-color: var(--paper-2); }
+    .grid { display: grid; gap: 18px; }
+    .cards-2 { grid-template-columns: 1fr 1fr; }
+    .card { padding: 24px; border: 2px solid var(--ink); background: var(--paper-2); box-shadow: 5px 5px 0 var(--ink); }
+    .dark .card { background: #2a2825; color: var(--paper-2); border-color: var(--paper-2); }
+    .card p { margin: 0; }
+    .card p + p { margin-top: 12px; }
+    .pull { padding: 28px 30px; border: 3px solid var(--ink); background: var(--yellow); box-shadow: var(--shadow); font-size: 1.15rem; font-weight: 700; max-width: 900px; }
+    .table-scroll { overflow-x: auto; margin: 26px 0 0; }
+    table.compare { width: 100%; min-width: 560px; border-collapse: collapse; background: var(--paper-2); border: 2px solid var(--ink); }
+    table.compare caption { text-align: left; padding: 0 0 10px; font: 700 .72rem/1.4 "Courier New", monospace; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+    table.compare th, table.compare td { text-align: left; vertical-align: top; padding: 12px 14px; border-bottom: 2px solid var(--ink); border-right: 2px solid var(--ink); font-size: .95rem; }
+    table.compare th { font: 700 .72rem/1.4 "Courier New", monospace; letter-spacing: .08em; text-transform: uppercase; background: var(--paper); }
+    table.compare tr > *:last-child { border-right: 0; }
+    table.compare tbody tr:last-child > * { border-bottom: 0; }
+    .dark table.compare, .dark table.compare th { background: #2a2825; border-color: var(--paper-2); color: var(--paper-2); }
+    .dark table.compare th, .dark table.compare td { border-color: var(--paper-2); }
+    .pathfig { margin: 26px 0 0; border: 3px solid var(--ink); background: var(--paper-2); padding: clamp(18px, 4vw, 34px); box-shadow: var(--shadow); }
+    .pathfig ol { margin: 0; padding: 0; list-style: none; font: 700 .85rem/1.5 "Courier New", monospace; }
+    .pathfig ol li { padding: 5px 0; }
+    .pathfig .down { color: var(--muted); }
+    .path-split { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin: 12px 0; }
+    @media (max-width: 700px) { .path-split { grid-template-columns: 1fr; } }
+    .path-branch { border: 2px solid var(--ink); background: var(--paper); padding: 16px 18px; }
+    .path-branch h4 { margin: 0 0 8px; color: var(--ink); }
+    .path-branch p { margin: 10px 0 0; font-size: .95rem; color: var(--muted); }
+    .pathnote { margin: 18px 0 0; padding-top: 16px; border-top: 2px solid var(--ink); font-size: .98rem; color: var(--muted); }
+    details.underhood { margin: 30px 0 0; border: 2px solid var(--ink); background: var(--paper-2); box-shadow: 5px 5px 0 var(--ink); }
+    details.underhood summary { cursor: pointer; padding: 16px 20px; font: 700 .8rem/1.3 "Courier New", monospace; letter-spacing: .07em; text-transform: uppercase; }
+    details.underhood .body { padding: 4px 20px 20px; }
+    .status-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 28px; margin-top: 10px; }
+    @media (max-width: 820px) { .status-cols { grid-template-columns: 1fr; } }
+    .status-col ul { margin: 12px 0 0; padding: 0; list-style: none; }
+    .status-col li { padding: 8px 0; border-bottom: 2px solid color-mix(in srgb, var(--ink) 22%, transparent); font-size: .98rem; }
+    .checked-date { font: 700 .72rem/1.4 "Courier New", monospace; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
+    footer { padding: 34px 20px; color: var(--paper-2); background: var(--ink); }
+    .footer-inner { width: min(100%, var(--max)); margin: auto; display: flex; flex-wrap: wrap; justify-content: space-between; gap: 16px; }
+    .footer-inner p { margin: 0; font: 700 .76rem/1.4 "Courier New", monospace; text-transform: uppercase; }
+    .footer-links a { text-decoration: none; }
+    .footer-links a:hover { text-decoration: underline; text-decoration-color: var(--pink); }
+    @media (max-width: 680px) {
+      body { font-size: 16px; }
+      .wrap { width: min(calc(100% - 28px), var(--max)); }
+      .hero { padding-top: 56px; }
+      h1 { font-size: clamp(2.6rem, 13vw, 4.2rem); }
+      .cards-2 { grid-template-columns: 1fr; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      html { scroll-behavior: auto; }
+    }
+  </style>
+</head>
+<body>
+  <a class="skip-link" href="#content">Skip to content</a>
+  <nav class="sitenav" aria-label="Site">
+    <div class="sitenav-bar">
+      <a href="/" class="sitenav-brand"><span>Riot</span></a>
+      <div class="sitenav-links">
+        <a href="/">Home</a>
+        <a href="/why-riot/" aria-current="page">Why Riot</a>
+        <a href="/guide/">Using Riot</a>
+        <a href="/about/">About</a>
+        <a href="/privacy/">Privacy</a>
+        <a href="/open-source/">Open source</a>
+        <a href="/community/">Community</a>
+        <a href="/releases/">Get the app</a>
+        <a href="/protocols/">Protocol field guide</a>
+      </div>
+    </div>
+  </nav>
+  <aside class="section-toc" aria-label="On this page">
+    <p class="toc-label">On this page</p>
+    <a href="#communities">Communities</a>
+    <a href="#partners">Partners</a>
+    <a href="#paths">One update</a>
+    <a href="#builders">Builders</a>
+    <a href="#privacy">Privacy</a>
+    <a href="#status">Status</a>
+    <a href="#next">Next steps</a>
+  </aside>
+
+  <header class="hero">
+    <div class="wrap">
+      <span class="kicker">Prototype — read this first</span>
+      <h1>Community infrastructure that travels with people</h1>
+      <p class="lede">Most community software works only while its company, server, and internet connection remain available. Riot keeps the useful parts — publishing, coordination, shared tools, and community memory — on people's own devices.</p>
+      <p class="hero-jumps">One story, three depths:
+        <a href="#communities">For communities</a>
+        <a href="#partners">For partners</a>
+        <a href="#builders">For builders</a>
+      </p>
+    </div>
+  </header>
+
+  <main id="content">
+
+    <section id="promise">
+      <div class="wrap">
+        <p class="eyebrow">The promise</p>
+        <h2>Information, tools, and memory that travel with the people</h2>
+        <p class="section-intro">Riot lets a community's information, tools, and memory travel with its people, even when the internet or a central service is unavailable.</p>
+        <p>Most collaborative products bind their authoritative state to a company account, server, relay network, or hosted database. Riot uses <a href="https://willowprotocol.org/" target="_blank" rel="noopener">Willow</a> so community data can remain useful on participants' devices and can be carried over different available paths.</p>
+        <p>Three internet roles are worth keeping separate as you read: a <b>public web gateway</b> renders an exported view for ordinary web readers; an <b>internet seed or sync server</b> carries Willow updates between remote Riot devices; and a <b>nearby transport</b> carries Willow updates directly between local devices. The current prototype supports local creation, local persistence, tested local-network (Bonjour) exchange, and public web rendering from exports. The server-mediated sync path between remote Riot devices is architectural direction with work in progress — not an integrated current product capability.</p>
+        <div class="table-scroll">
+          <table class="compare">
+            <caption>A conventional platform vs. Riot's direction</caption>
+            <thead>
+              <tr><th scope="col">Conventional platform</th><th scope="col">Riot's direction</th></tr>
+            </thead>
+            <tbody>
+              <tr><td>The service holds the canonical community database</td><td>Participants carry community state <span class="chip working">Working now</span></td></tr>
+              <tr><td>Offline means waiting for the service to return</td><td>Local reading and writing continue <span class="chip working">Working now</span></td></tr>
+              <tr><td>A server outage cuts off the product</td><td>Nearby exchange can continue locally <span class="chip prototype">Tested prototype</span></td></tr>
+              <tr><td>Extensions belong to the platform</td><td>Communities approve and carry their own tools <span class="chip working">Working now</span></td></tr>
+              <tr><td>A domain and hosted account anchor identity</td><td>Willow data carries community continuity <span class="chip direction">Direction</span></td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <section id="communities">
+      <div class="wrap">
+        <p class="eyebrow">Depth one · for communities and organizers</p>
+        <h2>Your community should still work when the network doesn't</h2>
+        <p class="section-intro">Think of a tenants union carrying alerts, meeting changes, rides, and checklists. Disaster responders carrying shelter maps and supply requests into disconnected areas. A mutual-aid network coordinating needs, offers, schedules, and knowledge. An independent publication keeping and re-sharing its material when its website is blocked or a gateway disappears. These are examples of what Riot is designed to enable — not claims of completed field validation for each kind of organization.</p>
+        <div class="grid cards-2">
+          <div class="card">
+            <h3>Keep working locally</h3>
+            <p>Reading, writing, organizing, and preparing updates happen on the device. No server round-trip is required for your community's ordinary work.</p>
+          </div>
+          <div class="card">
+            <h3>Exchange without internet</h3>
+            <p>Nearby devices can connect, review offered updates, and choose whether to add them. Current evidence is prototype local-network (Bonjour) testing; physical two-iPhone Bluetooth exchange remains unverified. <span class="chip prototype">Tested prototype</span></p>
+          </div>
+          <div class="card">
+            <h3>Publish a public web view</h3>
+            <p>The reference gateway can render exported public community content for ordinary browsers. It is not yet a live sync server for Riot devices. <span class="chip prototype">Working prototype</span></p>
+          </div>
+          <div class="card">
+            <h3>Carry more than messages</h3>
+            <p>A community can carry structured information and community-approved tools — checklists, wikis, events, decisions — not just a chat log.</p>
+          </div>
+          <div class="card">
+            <h3>Manage several communities</h3>
+            <p>Creating, following, switching, archiving, restoring, and reopening communities are supported in the core. The <a href="/guide/">Using Riot guide</a> names which screens are present on each platform.</p>
+          </div>
+          <div class="card">
+            <h3>Keep human control</h3>
+            <p>External updates are previewed before acceptance, and unapproved community tools do not execute. Nothing is accepted automatically.</p>
+          </div>
+        </div>
+        <p class="pull" style="margin-top:36px;">Riot turns every participating device into part of the community's library, newsroom, toolbox, and distribution network.</p>
+      </div>
+    </section>
+
+    <section id="partners" class="dark">
+      <div class="wrap">
+        <p class="eyebrow">Depth two · for partners, funders, and journalists</p>
+        <h2>Infrastructure communities can possess, not merely access</h2>
+        <p class="section-intro">The structural difference from a conventional platform is where continuity lives. A Riot community's Willow data carries its own continuity — it is not derived from a domain name or a hosted account. Participant devices provide shared custody of existing community information. Public gateways are replaceable views over exported public data. Communities choose their tools and editorial practices, and public Newswires can combine open publishing with transparent editorial actions rather than invisible ranking.</p>
+        <div class="grid cards-2">
+          <div class="card">
+            <h3>Community media</h3>
+            <p>Media without one canonical publishing server. A blocked website is a lost window, not a lost archive — the readers' devices still hold the material.</p>
+          </div>
+          <div class="card">
+            <h3>Coordination through failure</h3>
+            <p>Ordinary community infrastructure — boards, schedules, checklists — that remains locally useful during outages, shutdowns, or censorship.</p>
+          </div>
+          <div class="card">
+            <h3>Tools each community chooses</h3>
+            <p>Organizers approve the tools their community carries. There is no central app store deciding for every community at once.</p>
+          </div>
+          <div class="card">
+            <h3>Shared foundations</h3>
+            <p>The same substrate serves mutual aid, tenant organizing, clinics, cooperatives, disaster response, protests, and independent media — plus future continuity between field exchange and remote internet sync.</p>
+          </div>
+        </div>
+        <p style="margin-top:32px;">This section deliberately makes no claim of production readiness, completed security audits, guaranteed availability, completed remote-device sync, or confidentiality for the public Newswire. The <a href="#status">status section</a> lists exactly what is working and what is direction.</p>
+      </div>
+    </section>
+
+    <section id="paths" class="yellow">
+      <div class="wrap">
+        <p class="eyebrow">Status visual</p>
+        <h2>One update, different paths</h2>
+        <p class="section-intro">Willow does not tie an update to one network path. In the current prototype, nearby Riot devices can exchange updates over a local network, and exported public content can be rendered on the web. Remote Riot-device synchronization through an internet seed is the next transport path being built.</p>
+        <div class="pathfig">
+          <ol>
+            <li>You post or update something</li>
+            <li class="down" aria-hidden="true">↓</li>
+            <li>Riot publishes a Willow update</li>
+            <li class="down">The same update can then travel more than one way:</li>
+          </ol>
+          <div class="path-split">
+            <div class="path-branch">
+              <h4>Nearby / local exchange</h4>
+              <span class="chip prototype">Working prototype</span>
+              <p>Devices on the same local network find each other and exchange updates directly — with preview before anything is accepted.</p>
+            </div>
+            <div class="path-branch">
+              <h4>Internet seed</h4>
+              <span class="chip direction">Architecture in progress</span>
+              <p>A server-mediated path carrying Willow updates between remote Riot devices. Being built — not an integrated product capability today.</p>
+            </div>
+          </div>
+          <ol>
+            <li class="down" aria-hidden="true">↓</li>
+            <li>Riot devices reconcile the update</li>
+          </ol>
+          <p class="pathnote"><strong>Separate public window:</strong> exported public content is rendered by a web gateway for an ordinary browser. That gateway is a replaceable view for web readers — never a live Willow sync server for Riot devices, and never depicted as one here.</p>
+        </div>
+      </div>
+    </section>
+
+    <section id="builders">
+      <div class="wrap">
+        <p class="eyebrow">Depth three · for builders and protocol readers</p>
+        <h2>Willow separates shared data from the network carrying it</h2>
+        <p class="section-intro">Riot publishes your update into the community's Willow space. Willow is designed so the update is not permanently tied to one transport. Riot's current prototype carries updates locally; internet seed synchronization is the next path under development.</p>
+        <p class="pull">Offline and online do not need separate community databases. They can be different ways of carrying the same shared state.</p>
+        <details class="underhood">
+          <summary>Under the hood</summary>
+          <div class="body">
+            <h4>Willow provides</h4>
+            <ul>
+              <li>independent namespaces;</li>
+              <li>subspaces, paths, timestamps, and arbitrary payloads;</li>
+              <li>deterministic joins for partial replicas;</li>
+              <li>a data model independent of any one network transport; and</li>
+              <li>optional Meadowcap capability and Willow synchronization protocols.</li>
+            </ul>
+            <h4>Riot adds</h4>
+            <ul>
+              <li>community and profile semantics;</li>
+              <li>community relationships and per-community data identities;</li>
+              <li>public Newswire records and editorial actions;</li>
+              <li>community-approved, content-addressed mini-apps;</li>
+              <li>app-scoped bridge access and hardened native execution;</li>
+              <li>preview, validation, and acceptance policy;</li>
+              <li>durable multi-community management;</li>
+              <li>transport integrations and public export rendering; and</li>
+              <li>native interfaces for people who should never need to learn Willow.</li>
+            </ul>
+            <p>Willow itself does not define Riot profiles, communities, Newswires, moderation, mini-apps, gateways, or native sandbox behavior. Riot mini-apps do not each receive an independent Willow namespace: their current isolation comes from app-specific paths inside the selected community plus app-scoped native bridge policy — not per-app namespaces, cryptographic isolation, or automatic end-to-end encryption.</p>
+            <p><a href="/protocols/"><b>Compare Riot with adjacent protocols in the field guide →</b></a></p>
+          </div>
+        </details>
+      </div>
+    </section>
+
+    <section id="privacy">
+      <div class="wrap">
+        <p class="eyebrow">Privacy</p>
+        <h2>Privacy through control, not secrecy</h2>
+        <p class="section-intro">The public Newswire is intentionally semi-public and plaintext. Alerts, mutual aid requests, public reporting, and community publications are often meant to circulate. This page will not pretend that widely shared information is secret.</p>
+        <p>Riot is privacy-respecting, not secret by default. Public community updates are meant to circulate. Privacy comes from reducing centralized collection, keeping community data on participants' devices, supporting separate community identities, limiting what tools can access, and letting people exchange information without always exposing their activity to internet infrastructure.</p>
+        <p>Riot cannot promise anonymity, conceal public posts, or erase every copy after information has spread. Encrypted private groups are planned separately.</p>
+        <p class="pull">You control your participation and your local data — not every copy of public information once it has been shared.</p>
+        <h3 style="margin-top:44px;">Willow possibility vs. current Riot behavior</h3>
+        <div class="table-scroll">
+          <table class="compare">
+            <caption>The protocol can express more than Riot currently ships</caption>
+            <thead>
+              <tr><th scope="col">Willow can express or support</th><th scope="col">Current Riot public communities</th></tr>
+            </thead>
+            <tbody>
+              <tr><td>End-to-end encryptable data</td><td>Plaintext by design</td></tr>
+              <tr><td>Meadowcap scoped read/write capabilities</td><td>Write authority is checked; no confidential public read boundary</td></tr>
+              <tr><td>Confidential interest-overlap sync</td><td>Not the current public sync path</td></tr>
+              <tr><td>Logical destructive editing</td><td>No recall or secure erasure of copies already received</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p style="margin-top:26px;">On Meadowcap specifically: write authority travels with an entry and can be checked. Read authority is policy enforced by conforming replication peers. Read capabilities do not encrypt stored data by themselves; a malicious or authorized recipient can retain or re-share copied plaintext. Riot's public Newswire does not use Meadowcap as a confidentiality boundary.</p>
+        <h3 style="margin-top:36px;">What Riot does not hide</h3>
+        <ul>
+          <li>public Newswire content;</li>
+          <li>IP addresses or ordinary metadata visible to any internet service used;</li>
+          <li>nearby radio presence, device labels, proximity, and timing;</li>
+          <li>copies already carried away by another device, export, backup, or log; or</li>
+          <li>identity correlations caused by reused names, writing style, behavior, timing, proximity, or network metadata.</li>
+        </ul>
+        <p>Separate per-community keys provide pseudonym separation at the data layer, not an anonymity guarantee. Community mini-apps receive app-scoped bridge access and run behind strong native network restrictions; their data is not secret, and zero egress is not absolute — the current Apple host documents a residual WebRTC hardening boundary.</p>
+        <h3 style="margin-top:36px;">The public web reader's trust boundary</h3>
+        <p>Riot clients can independently validate canonical community data. The current public gateway renders a proof-free export for an ordinary browser. A browser reader therefore trusts the selected gateway's presentation — and may receive a view that is censored, stale, incomplete, fabricated, or incorrectly rendered. A gateway may also log connection metadata, like any website. "Replaceable" and "not the protocol authority" do not mean "cannot observe readers" or "cannot mislead a browser visitor."</p>
+      </div>
+    </section>
+
+    <section id="status" class="dark">
+      <div class="wrap">
+        <p class="eyebrow">Status</p>
+        <h2>Working in the prototype / direction being built</h2>
+        <p class="section-intro">Every material claim above carries its label where it first appears. This block is the summary, not a correction.</p>
+        <div class="status-cols">
+          <div class="status-col">
+            <h3>Working in the prototype</h3>
+            <ul>
+              <li>Durable core support for creating, following, switching, archiving, restoring, and reopening multiple communities</li>
+              <li>Native iOS community chooser and link/QR join flows</li>
+              <li>Local Newswire creation and durable display</li>
+              <li>Human confirmation and preview-before-accept import in nearby flows</li>
+              <li>Tested local-network (Bonjour) peer exchange</li>
+              <li>Public gateway rendering from exported community data</li>
+              <li>Community-approved mini-app packages</li>
+              <li>App-scoped bridge access and hardened app execution</li>
+              <li>Fresh per-community author identities when joining another community</li>
+            </ul>
+          </div>
+          <div class="status-col">
+            <h3>Direction being built or still unverified</h3>
+            <ul>
+              <li>Encrypted private groups</li>
+              <li>Confidentiality for public communities</li>
+              <li>Full deletion from devices that already copied public content</li>
+              <li>Integrated remote Riot-device synchronization through an internet seed / anchor data path</li>
+              <li>Production scale, audited security, or guaranteed availability</li>
+              <li>Full interoperability with every Willow draft and transport</li>
+              <li>Physical two-iPhone Bluetooth exchange</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="next">
+      <div class="wrap">
+        <p class="eyebrow">Next steps</p>
+        <h2>Where to go from here</h2>
+        <div class="grid cards-2">
+          <div class="card">
+            <h3>Communities</h3>
+            <p>Open <a href="/guide/">Using Riot</a> for task-by-task instructions on the current prototype, or follow development on the <a href="/releases/">releases page</a>.</p>
+          </div>
+          <div class="card">
+            <h3>Partners</h3>
+            <p>Read the <a href="#status">status section</a> above for exactly what is proven versus planned, or follow the public build in the <a href="https://github.com/rabble/riot" target="_blank" rel="noopener">source repository ↗</a>.</p>
+          </div>
+          <div class="card">
+            <h3>Builders</h3>
+            <p>Open the <a href="/protocols/">protocol field guide</a>, the <a href="https://github.com/rabble/riot" target="_blank" rel="noopener">source repository ↗</a>, or <a href="https://github.com/rabble/riot/actions" target="_blank" rel="noopener">build status ↗</a>.</p>
+          </div>
+          <div class="card">
+            <h3>Primary Willow sources</h3>
+            <p>Optional depth, not required reading: <a href="https://willowprotocol.org/" target="_blank" rel="noopener">willowprotocol.org ↗</a>, the <a href="https://willowprotocol.org/specs/data-model/" target="_blank" rel="noopener">Data Model ↗</a>, <a href="https://willowprotocol.org/specs/meadowcap/" target="_blank" rel="noopener">Meadowcap ↗</a>, <a href="https://willowprotocol.org/specs/confidential-sync/" target="_blank" rel="noopener">Confidential Sync ↗</a>, and <a href="https://willowprotocol.org/specs/drop-format/" target="_blank" rel="noopener">Drop Format ↗</a>.</p>
+          </div>
+        </div>
+        <p class="checked-date" style="margin-top:32px;">Checked 22 July 2026 · describes the current prototype; labels distinguish working, tested-prototype, and direction claims.</p>
+      </div>
+    </section>
+
+  </main>
+
+  <footer>
+    <div class="footer-inner">
+      <p>Riot · a protest.net project · prototype</p>
+      <p class="footer-links"><a href="/">Home</a> · <a href="/guide/">Using Riot</a> · <a href="/about/">About</a> · <a href="/privacy/">Privacy</a> · <a href="/open-source/">Open source</a> · <a href="/community/">Community</a> · <a href="/releases/">Get the app</a> · <a href="/protocols/">Protocol field guide</a></p>
+    </div>
+  </footer>
+</body>
+</html>
