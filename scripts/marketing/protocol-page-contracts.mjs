@@ -22,7 +22,16 @@ const secondary = Object.fromEntries(
     [`public${name[0].toUpperCase()}${name.slice(1)}`, resolve(root, `marketing/public/${name}/index.html`)],
   ]),
 );
-const allPaths = { ...paths, ...secondary };
+// Guide routes (offline-guides reframe, 2026-07-20 design): the paired-story
+// entry points. Text-first for now — the deterministic screenshot/Willow-art
+// pipeline ships separately; prose carries every material fact.
+const guides = {
+  whyRiot: resolve(root, "marketing/why-riot/index.html"),
+  publicWhyRiot: resolve(root, "marketing/public/why-riot/index.html"),
+  guide: resolve(root, "marketing/guide/index.html"),
+  publicGuide: resolve(root, "marketing/public/guide/index.html"),
+};
+const allPaths = { ...paths, ...secondary, ...guides };
 
 const read = async (path) => readFile(path, "utf8");
 const readAll = async (obj) => {
@@ -34,7 +43,7 @@ const {
   home, publicHome, protocols, publicProtocols,
   about, publicAbout, privacy, publicPrivacy,
   "open-source": openSource, publicOpenSource, community, publicCommunity,
-  releases, publicReleases,
+  releases, publicReleases, whyRiot, publicWhyRiot, guide, publicGuide,
 } = await readAll(allPaths);
 // Paired explainer (#92): the iOS story/presentation sources must match the
 // five-beat copy the website claims. Read them so later assertions can pin both sides.
@@ -50,8 +59,13 @@ for (const name of secondaryPages) {
   const mirror = allPaths[`public${name[0].toUpperCase()}${name.slice(1)}`];
   assert.equal(await read(src), await read(mirror), `${name} page source and public mirror must be byte-identical`);
 }
+assert.equal(whyRiot, publicWhyRiot, "why-riot page source and public mirror must be byte-identical");
+assert.equal(guide, publicGuide, "guide page source and public mirror must be byte-identical");
 
-for (const name of ["spaces", "apps", "compose", "checklist"]) {
+for (const name of [
+  "spaces", "apps", "compose", "checklist",
+  "app-home", "app-events", "app-decisions", "app-dispatches", "app-photos", "app-checklist",
+]) {
   const [sourceAsset, publicAsset] = await Promise.all([
     readFile(resolve(root, `marketing/assets/screenshots/${name}.png`)),
     readFile(resolve(root, `marketing/public/assets/screenshots/${name}.png`)),
@@ -61,11 +75,60 @@ for (const name of ["spaces", "apps", "compose", "checklist"]) {
 
 assert.doesNotMatch(home, /hero-mesh|mesh-edges|mesh-nodes/, "approved Hero C must replace the abstract mesh");
 assert.match(home, /\.hero-grid\s*\{[^}]*align-items:\s*start/i, "desktop hero copy and devices must be top-aligned");
-assert.match(home, /class="device-scene"[\s\S]*class="phone-frame main"[\s\S]*\/assets\/screenshots\/spaces\.png/i);
-for (const name of ["apps", "compose", "checklist"]) {
-  assert.match(home, new RegExp(`class="phone-frame thumb"[\\s\\S]*?/assets/screenshots/${name}\\.png`, "i"), `missing ${name} supporting phone`);
+assert.match(home, /class="device-scene"[\s\S]*class="win-frame main"[\s\S]*\/assets\/screenshots\/app-events\.png/i);
+
+// ---------- reframed homepage (offline-guides design, 2026-07-20) ----------
+// The homepage tells the paired story in eight ordered sections. Order is the
+// contract: hero → communities → partners → builders → paths → privacy →
+// status → learn. Extra sections (how, evidence, builder) may interleave but
+// never reorder the eight.
+{
+  const orderedMarkers = [
+    "Community infrastructure that travels with people",
+    '<section id="communities">',
+    '<section id="screens">',
+    '<section id="partners"',
+    '<section id="builders">',
+    '<section id="paths">',
+    '<section id="privacy">',
+    '<section id="status"',
+    '<section id="learn">',
+  ];
+  let cursor = -1;
+  for (const marker of orderedMarkers) {
+    const at = home.indexOf(marker);
+    assert.ok(at > cursor, `homepage section out of order or missing: ${marker}`);
+    cursor = at;
+  }
 }
-assert.match(home, /Real app screens[\s\S]*iPhone simulator build/i);
+// Visible prototype label in the hero, per the design's honesty rules.
+assert.match(home, /class="hero-stamp">Prototype/i, "hero must carry a visible Prototype label");
+// Before/after comparison with per-row scope labels.
+assert.match(home, /<table class="contrast">[\s\S]*Participants carry community state[\s\S]*Nearby exchange can continue locally[\s\S]*Willow data carries community continuity/i, "hero must contain the conventional-vs-Riot comparison");
+// Claims are labeled where they first appear, not only in a closing block.
+for (const phrase of [
+  "not yet a live sync server",
+  "Plaintext by design",
+  "pseudonymity is not anonymity",
+  "planned separately",
+  "Physical two-iPhone Bluetooth remains unverified",
+  "Working in the prototype",
+  "Direction being built or still unverified",
+]) {
+  assert.ok(home.includes(phrase), `homepage missing honest boundary: ${phrase}`);
+}
+// Voice rule: no startup/platform "ecosystem" jargon anywhere in the copy.
+assert.doesNotMatch(home, /ecosystem/i, "homepage must not use 'ecosystem' jargon");
+// The reframed homepage is fully static — the old reveal script is gone.
+assert.doesNotMatch(home, /<script/i, "homepage must not contain JavaScript");
+// Both guides are reachable from the homepage.
+for (const guidePath of ["/why-riot/", "/guide/"]) {
+  assert.ok(home.includes(`href="${guidePath}"`), `homepage must link to ${guidePath}`);
+}
+for (const name of ["app-decisions", "app-dispatches", "app-photos"]) {
+  assert.match(home, new RegExp(`class="win-frame thumb"[\\s\\S]*?/assets/screenshots/${name}\\.png`, "i"), `missing ${name} supporting screen`);
+}
+assert.match(home, /Real screens[\s\S]*Riot desktop build/i);
 assert.match(home, /More than a social feed[\s\S]*Communities carry their own tools[\s\S]*checklists, alerts, decisions, events/i);
 assert.match(home, /@media\s*\(max-width:\s*860px\)[\s\S]*\.device-scene/i, "Hero C needs a mobile device composition");
 
@@ -92,7 +155,7 @@ const homeLinks = home.match(/href="\/protocols\/"/g) ?? [];
 // original editorial intent (topnav, callout, technically-curious panel, footer).
 assert.ok(homeLinks.length >= 4, `homepage must contain at least four /protocols/ paths (found ${homeLinks.length})`);
 assert.match(home, /class="sitenav-links"[\s\S]*href="\/protocols\/"[^>]*>Protocol field guide</i, "homepage sitenav must link to the protocol field guide");
-assert.match(home, /class="protocol-callout reveal"[\s\S]*Where does Riot fit\?[\s\S]*Compare Riot, Willow, and neighboring protocols/i);
+assert.match(home, /class="protocol-callout"[\s\S]*Where does Riot fit\?[\s\S]*Compare Riot, Willow, and neighboring protocols/i);
 assert.match(home, /For the technically curious[\s\S]*Compare Riot with adjacent protocols/i);
 assert.match(home, /<footer[\s\S]*Protocol field guide/i);
 
@@ -170,9 +233,9 @@ assert.doesNotMatch(protocols, /(?:plausible|google-analytics|googletagmanager|s
 // route can reach all the others. A page may omit its own self-link (a "Home"
 // link on the home page adds nothing). The link set is the single source of
 // truth for "all pages".
-const allSitePaths = ["/", "/about/", "/privacy/", "/open-source/", "/community/", "/releases/", "/protocols/"];
-const pageOwnPath = { home: "/", protocols: "/protocols/", about: "/about/", privacy: "/privacy/", "open-source": "/open-source/", community: "/community/", releases: "/releases/" };
-const pageContents = { home, protocols, about, privacy, "open-source": openSource, community, releases };
+const allSitePaths = ["/", "/why-riot/", "/guide/", "/about/", "/privacy/", "/open-source/", "/community/", "/releases/", "/protocols/"];
+const pageOwnPath = { home: "/", protocols: "/protocols/", about: "/about/", privacy: "/privacy/", "open-source": "/open-source/", community: "/community/", releases: "/releases/", "why-riot": "/why-riot/", guide: "/guide/" };
+const pageContents = { home, protocols, about, privacy, "open-source": openSource, community, releases, "why-riot": whyRiot, guide };
 for (const [pageName, content] of Object.entries(pageContents)) {
   for (const sitePath of allSitePaths) {
     if (sitePath === pageOwnPath[pageName]) continue;
@@ -214,7 +277,7 @@ for (const [pageName, content] of Object.entries(pageContents)) {
 // The four secondary pages follow the protocols-page rule: no runtime
 // media/scripts, no remote CSS, no analytics, and the accessibility landmarks
 // every page shares.
-for (const [pageName, content] of Object.entries({ about, privacy, "open-source": openSource, community, releases })) {
+for (const [pageName, content] of Object.entries({ about, privacy, "open-source": openSource, community, releases, "why-riot": whyRiot, guide })) {
   for (const landmark of ["<main", "<nav", "<h1", "<footer"]) {
     assert.ok(content.includes(landmark), `${pageName} page must include ${landmark}`);
   }
@@ -223,6 +286,46 @@ for (const [pageName, content] of Object.entries({ about, privacy, "open-source"
   assert.doesNotMatch(content, /@import\s+url|url\(\s*["']?https?:/i, `${pageName} page must not fetch remote CSS assets`);
   assert.doesNotMatch(content, /<(?:script|link|img|iframe)[^>]+(?:plausible|google-analytics|googletagmanager|segment\.com|mixpanel|hotjar|clarity)/i, `${pageName} page must not load analytics`);
   assert.doesNotMatch(content, /(?:plausible|google-analytics|googletagmanager|segment\.com|mixpanel|hotjar|clarity)\.[a-z0-9-]+\/(?:[a-z0-9-]+\.js|analytics|track|beacon)/i, `${pageName} page must not reference an analytics endpoint`);
+}
+
+// --- Guide pages: paired-story depths + honest boundaries --------------------
+// Why Riot is one story at three depths; each depth is labeled, and the
+// privacy/status boundaries appear in the page, not only in a closing block.
+for (const marker of [
+  "for communities and organizers",
+  "for partners, funders, and journalists",
+  "for builders and protocol readers",
+]) {
+  assert.ok(whyRiot.toLowerCase().includes(marker), `why-riot missing audience depth label: ${marker}`);
+}
+for (const phrase of [
+  "Privacy through control, not secrecy",
+  "Plaintext by design",
+  "not an anonymity guarantee",
+  "cannot promise anonymity",
+  "not yet a live sync server",
+  "One update, different paths",
+  "Working in the prototype",
+  "Direction being built or still unverified",
+  "does not use Meadowcap as a confidentiality boundary",
+]) {
+  assert.ok(whyRiot.includes(phrase), `why-riot missing honest boundary: ${phrase}`);
+}
+assert.doesNotMatch(whyRiot, /ecosystem/i, "why-riot must not use 'ecosystem' jargon");
+
+// Using Riot is a task manual for the current app: linked contents, per-task
+// offline/connection notes, platform labels, and an explicit not-yet list.
+for (const phrase of [
+  "Back to contents",
+  "Works offline",
+  "Needs a connection or permission",
+  "What is not available yet",
+  "Troubleshooting",
+]) {
+  assert.ok(guide.includes(phrase), `guide missing manual structure: ${phrase}`);
+}
+for (const platform of ["iOS", "macOS", "Android"]) {
+  assert.ok(guide.includes(platform), `guide missing platform notes for ${platform}`);
 }
 
 // --- Sitemap + robots --------------------------------------------------------
