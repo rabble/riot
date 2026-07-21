@@ -105,6 +105,10 @@ jobs:
         run: npm ci --ignore-scripts
       - name: unit tests
         run: npm run test:web:unit
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps chromium
+      - name: marketing contracts
+        run: npm run test:marketing
 
   android:
     name: Android (host-JVM unit tests)
