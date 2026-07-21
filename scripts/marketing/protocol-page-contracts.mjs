@@ -551,7 +551,8 @@ try {
       }));
     });
     try {
-      assert.deepEqual(await context.cookies(), [], `${route} cookie jar must start empty`);
+      const cookiesBefore = await context.cookies();
+      assert.deepEqual(cookiesBefore, [], `${route} cookie jar must start empty`);
       const navigation = await page.goto(`${previewOrigin}${route}`, { waitUntil: "networkidle" });
       assert.equal(navigation?.status(), 200, `${route} must return 200`);
       assert.equal(navigation?.request().redirectedFrom(), null, `${route} must not redirect`);
@@ -565,7 +566,8 @@ try {
         resourceUrls: [...document.querySelectorAll("script[src],link[href],img[src],iframe[src],audio[src],video[src],video[poster],source[src],object[data],embed[src],svg use[href],svg image[href],svg feImage[href],svg use[xlink\\:href],svg image[xlink\\:href],svg feImage[xlink\\:href]")].flatMap((element) => [element.src, element.href?.baseVal ?? element.href, element.getAttribute("xlink:href"), element.data, element.poster].filter((value) => typeof value === "string" && value)),
       }));
       assert.equal(dom.cookie, "", `${route} document.cookie must be empty`);
-      assert.deepEqual(await context.cookies(), [], `${route} cookie jar must remain empty`);
+      const cookiesAfter = await context.cookies();
+      assert.deepEqual(cookiesAfter, [], `${route} cookie jar must remain empty`);
       for (const url of requests) assert.equal(new URL(url).origin, previewOrigin, `${route} made off-origin request: ${url}`);
       for (const response of responses) assert.ok(!response.headers.some(([name]) => name.toLowerCase() === "set-cookie"), `${route} response set a cookie`);
       for (const anchor of dom.anchors) {
@@ -576,7 +578,7 @@ try {
         if (url.startsWith("data:image/svg+xml")) continue;
         assert.equal(new URL(url, previewOrigin).origin, previewOrigin, `${route} resolved off-origin resource: ${url}`);
       }
-      browserEvidence.routes.push({ route, requests: [...new Set(requests)].sort(), responses: responses.sort((a, b) => a.url.localeCompare(b.url)), resources: dom.resources });
+      browserEvidence.routes.push({ route, cookiesBefore, cookiesAfter, documentCookie: dom.cookie, requests: [...new Set(requests)].sort(), responses: responses.sort((a, b) => a.url.localeCompare(b.url)), resources: dom.resources });
     } finally { await context.close(); }
   }
   const response = await fetch(`${previewOrigin}/resilience/`, { redirect: "manual" });
