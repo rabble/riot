@@ -292,6 +292,12 @@ tool.
   those constraints, it wraps to two rows capped at 112 CSS pixels. Chat may
   always use two rows at maximum text size so Latest, the labeled field, and
   Send remain complete.
+- Two-row distribution is fixed across the suite. When destinations and an
+  action coexist, destinations share the row nearest content and the primary
+  action occupies the safe-area/bottom row. A contextual Cancel/submit pair
+  normally shares one row; if it must wrap, Cancel is the full-width top row and
+  submit the full-width bottom row. Chat places Latest on the top row and the
+  labeled field plus Send on the bottom row. No app chooses another wrap order.
 
 ### Contextual views
 
@@ -438,23 +444,22 @@ current stored choice is checked and labeled “Current”; Night Garden is labe
 ### Light and dark scheme resolver
 
 The palette choice and light/dark scheme are separate. Riot stores only the
-palette; it never adds a second scheme preference. A mounted tool follows the
-WebView's `prefers-color-scheme`, which the host must configure to match its
-effective native appearance. The current iOS host follows the system and must
-propagate a system appearance change to a mounted WebView without reload or
-draft loss. The current macOS host and Android app are explicitly light-locked,
-so they resolve light until those native hosts adopt dark appearance. Their
-dark values remain required and preview-tested so a future native appearance
-change cannot expose an incomplete theme.
+palette; it never adds a second scheme preference. The current iOS, macOS, and
+Android apps are all explicitly light-locked, so every shipping mounted tool
+resolves the light table in this release. This work does not remove or override
+those app-level locks and does not change the appearance of Riot's global
+surfaces. Dark values are required contract-tested assets, not a currently
+selectable user experience.
 
 The shared stylesheet sets `color-scheme: light dark`, defines light roles at
 the root, and replaces every role inside one
 `@media (prefers-color-scheme: dark)` block. The test-only preview `scheme`
 parameter emulates this media result; it is never read by a packaged app or
-stored. If a host cannot propagate its effective appearance reliably, it fails
-the release gate. An injection or lookup failure at runtime falls back to the
-static Night Garden light/dark media rules rather than injecting an unreviewed
-scheme or reloading an active draft.
+stored. A future change that removes any native light lock must separately
+review the complete native shell, configure its WebView media environment to
+match, and prove live transitions without reload or draft loss. An injection or
+lookup failure in this release falls back to static light Night Garden rather
+than injecting an unreviewed scheme or reloading an active draft.
 
 ### Presets
 
@@ -581,10 +586,11 @@ does not gain app-data access beyond calls each app already makes explicitly.
 ### Immutable host font pack and CSP
 
 Fonts are not duplicated into eight content-addressed bundles. Riot exposes one
-immutable host-owned `RiotToolFonts.v1` pack at reserved same-origin paths such
-as `/.riot/fonts/Anton-Regular.ttf`. App packers reject the reserved `/.riot/`
-prefix, so bundle content can never shadow host assets. The resolver serves a
-font only when:
+immutable host-owned `RiotToolFonts.v1` pack at reserved same-origin URL paths
+such as `/.riot/fonts/Anton-Regular.ttf`. App packers reject both the normalized
+URL prefix `/.riot/` and the bundle-relative prefix `.riot/` before encoding,
+so bundle content can never shadow host assets. The resolver serves a font only
+when:
 
 1. the mounted app ID is in the generated allowlist of the exact eight reviewed
    v2 IDs;
@@ -681,6 +687,11 @@ point repeats the same checks without duplicate entries, partial directory
 advertising, trust changes, or v2 installation. Fresh generation-2 creation uses
 the equivalent marker discipline.
 
+Fault-injection tests terminate the process and fail the storage write after
+every marker write and every per-app install boundary. Reopening must converge
+to the same complete catalog, ordering, trust state, and generation marker as an
+uninterrupted run.
+
 The current v2 directory listing is still visible to an existing organizer as
 an optional redesign. Installing it starts a distinct app-data namespace. No
 host-side copying, aliasing, name-based lookup, or cross-ID read permission is
@@ -765,7 +776,7 @@ cycles do not re-announce identical text.
 | Initial load | Inline status: **Loading shared information…** Existing cached rows render as soon as available; no skeleton implies remote network progress. | Root toolbar is present; mutation actions disabled. No focus steal. |
 | Delayed identity | Compact persistent status above content: **Getting your local identity ready… You can read while Riot gets contribution tools ready.** | Read/filter actions work; mutations disabled. Polite announcement once. |
 | Identity failure/read-only | Hard-bordered notice: **Read-only: Riot couldn't verify your identity on this device. Your shared information is still here.** | **Try again** reruns the app's identity initialization once per activation; **Back to Tools** remains native. Focus moves to the notice only after a user-requested retry fails. |
-| Globally empty | App-specific noun in the shared pattern: **Nothing here yet.** Supporting line explains the first useful contribution and says **Use <action label> in Tool actions below.** It does not render a second button-like control. | The one interactive create/add control remains in the fixed Tool actions region and is reachable before content. |
+| Globally empty | App-specific noun in the shared pattern: **Nothing here yet.** Supporting line explains the first useful contribution and says **Use <action label> in Tool actions.** It does not render a second button-like control. | The one interactive create/add control remains in the fixed Tool actions region and is reachable before content. |
 | Filter empty | **No <filter> items here.** It never says the underlying tool is empty. | **Show all** returns to the default root filter and focuses its heading. |
 | Write pending | Inline form status: **Saving…**, **Posting…**, **Sending…**, **Publishing…**, **Preparing…**, or **Sharing…** as specified by the app state table. | Submit and Cancel are disabled only for the irreversible pending interval; other duplicate mutation paths are locked. Focus stays on the submit control. |
 | Write success | Brief polite status using the visible noun, for example **Event saved.** | Focus moves to the new/updated row or its detail heading. |
@@ -959,11 +970,17 @@ fail cheaply. Apple real-device/simulator visual work remains a recorded
 protected local release gate because native CI is not present in this checkout;
 it cannot be skipped for release.
 
+The repack script gains a non-mutating `--check` mode that rebuilds into a
+temporary directory and byte-compares sources, generated legacy mirrors,
+artifacts, catalogs, IDs, and capability allowlists. CI and release gates use
+that mode; the mutating command remains an explicit developer regeneration
+step.
+
 The complete local gate is:
 
 ```text
 npm run test:apps
-scripts/apps/repack-starter.sh
+scripts/apps/repack-starter.sh --check
 sh scripts/ios-check.sh fast
 sh scripts/ios-check.sh test
 sh scripts/ios-check.sh sim
@@ -990,7 +1007,7 @@ All are blocking release budgets measured from clean local state:
 | One encoded v2 app bundle | ≤ 256 KiB and ≤ 24 resources (below canonical 1 MiB/32 limits) |
 | Complete eight-app v2 catalog | ≤ 2 MiB encoded |
 | Immutable host-font pack | exactly 729,472 bytes; no additional font bytes |
-| Current + legacy catalogs + host-font app-size growth | ≤ 3 MiB per native package |
+| Current + legacy catalogs + host-font app-size growth | ≤ 3 MiB measured from each final native package against its pre-change package, including compiler/resource duplication |
 | One peer-shared v2 manifest/bundle pair | ≤ 256 KiB |
 | Installed-profile app bytes | ≤ 32 MiB under the 32-app/1 MiB-per-app hard bounds |
 | Local cold mount to first useful paint | p95 ≤ 750 ms |
@@ -1037,7 +1054,8 @@ open/navigate/return journey; assignments then balance create/edit, theme,
 legacy coexistence, keyboard, screen-reader, and maximum-text tasks. Events is a
 hard continuation gate: any failed navigation, keyboard, performance, or
 coexistence criterion revises and retests the shared system before another tool
-migrates.
+migrates. The report publishes results both in aggregate and per assigned tool;
+an easier tool cannot hide a failed journey in another.
 
 ## Acceptance criteria
 
@@ -1060,9 +1078,9 @@ migrates.
 - Night Garden is the default, and all six themes can be chosen under Tool
   appearance while offline using the specified preview/commit/cancel/reset
   interaction. Arbitrary custom colors are not accepted.
-- Palette and scheme resolve independently: iOS follows live system appearance
-  without remounting, the current light-locked macOS and Android hosts remain
-  light, and preview scheme overrides never enter a packaged app.
+- Palette and scheme resolve independently: all current native hosts remain
+  light-locked, dark tokens are contract-tested for a separately reviewed future
+  host change, and preview scheme overrides never enter a packaged app.
 - Theme choices are scoped by an opaque local appearance profile, do not sync,
   and do not affect what peers see. Only exact reviewed v2 IDs receive the
   low-sensitivity theme key; frozen v1 and third-party apps receive no theme.
