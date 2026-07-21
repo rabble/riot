@@ -624,10 +624,14 @@ Every capture uses an isolated deterministic demo profile. It contains no real
 participant or community data, device or host label, location, address,
 notification, ticket, secret, reusable QR or join reference, account, or
 network identifier. A human privacy review checks the visible pixels.
-Riot-owned screenshots are deterministically re-encoded to remove EXIF, GPS,
-text/comment, timestamp, and other non-pixel metadata before bundling. The four
-existing generic marketing screenshots predate the current Apple navigation
-and are reference material only; they are not eligible for the new guides.
+The full-resolution evidence capture and bundled derivative are both
+deterministically re-encoded to remove EXIF, GPS, text/comment, timestamp, and
+other non-pixel metadata before they enter the public repository. Any raw
+device capture exists only in temporary review staging and is deleted after the
+sanitized full-resolution evidence copy passes pixel and metadata review. The
+four existing generic marketing screenshots predate the current Apple
+navigation and are reference material only; they are not eligible for the new
+guides.
 
 Original captures, the typed capture manifest, capture logs, and privacy-review
 decisions are retained under `docs/evidence/guides/screenshots/`. Only the
@@ -642,7 +646,7 @@ articles, fonts, analytics, images, or configuration.
 
 External citations and project links are visibly marked **Opens in browser**.
 Only an explicit main-frame link activation with a user gesture may hand a
-manifest-declared HTTP(S) destination to the system browser. Redirects, meta
+manifest-declared HTTPS destination to the system browser. Redirects, meta
 refreshes, subframes, downloads, new windows, and programmatic navigation never
 launch the browser. If no connection exists, the bundled guide remains in place
 and complete; failing to open the browser never replaces or blanks the guide.
@@ -654,9 +658,9 @@ version.
 
 ## Canonical guide bundle
 
-### Source of truth
+### Assembled release bundle
 
-The canonical, dependency-free bundle lives under:
+The canonical, dependency-free distribution artifact lives under:
 
 ```text
 guides/
@@ -703,6 +707,33 @@ stacks rather than duplicating the marketing homepage's large inline font
 payload. The visual language still reuses Riot's paper, ink, pink, blue, hard
 rules, and stamped labels.
 
+`guides/` is checked in, but it is an assembled output rather than the sole
+authoring authority. The deterministic input graph is:
+
+| Input authority | Produces |
+| --- | --- |
+| `guides-src/why-riot/`, `guides-src/guide/`, `guides-src/notices/`, and `guides-src/assets/guide.css` | authored semantic page structure, prose, navigation, captions, and guide styling |
+| `docs/assets/willow/` | the validated three-image Willow subset, attribution, evidence, and MIT/Apache license bytes |
+| `docs/evidence/guides/screenshots/` | privacy-approved full-resolution Riot captures, typed capture records, and deterministic display derivatives |
+| pinned Google Fonts sources plus the canonical Riot font-byte catalog | the three complete OFL texts and exact distribution-scope records used by notices |
+| release metadata supplied to the build | tested app versions, checked dates, schema versions, and final content hashes |
+
+`node scripts/guides/build.mjs` is the only assembly and mirroring entry point.
+It validates every authority first, creates a fresh staging tree, imports the
+validated Willow and Riot bytes, generates the notices document from the
+authored template and complete license files, emits the other HTML and CSS,
+then generates `manifest.json` last from the complete staged file set. It
+validates the finished staging tree before atomically replacing `guides/`, then
+mirrors that exact tree and manifest into the marketing, Apple, and Android
+targets. A failure before final validation changes no checked-in output.
+
+Authored inputs, evidence authorities, `guides/`, and every distribution mirror
+are checked in. `node scripts/guides/build.mjs --check` performs the same full
+assembly in a temporary directory without mutation and byte-compares all
+generated outputs. It rejects missing, stale, modified, additional, or
+hand-edited files anywhere in `guides/` or a mirror. There is no independent
+copy-only generator that can bypass canonical assembly.
+
 `docs/assets/willow/` is the sole provenance and license authority for official
 Willow art, following the approved Willow Visual Documentation System design.
 The guide bundle imports a validated three-asset subset and the canonical
@@ -729,18 +760,25 @@ protocol maturity, and bytes. A field or byte mismatch fails the guide build.
 - the complete typed capture record for each Riot screenshot;
 - the shared Willow catalog digest and, for each imported Willow image, its
   canonical catalog ID, local path, and bundle digest;
-- an exact per-document allowlist of external HTTP(S) destinations; and
+- an exact per-document allowlist of external HTTPS destinations; and
 - minimum reader schema version.
 
 `manifest.json` is not included in its own content map, avoiding a circular
 digest. Every target receives the manifest itself byte-for-byte. Paths use
 forward slashes, contain no empty, dot, dot-dot, query, fragment, encoded
 separator, absolute, or backslash component, and are compared after one
-specified canonicalization pass.
+specified canonicalization pass. Manifest paths are ASCII and use only
+`[a-z0-9._/-]`; request paths containing a percent sign, non-ASCII byte,
+control byte, query, or fragment are rejected before comparison rather than
+decoded or normalized. Apple and Android implementations share the same
+byte-level conformance fixtures. External links must parse as HTTPS with no
+userinfo and must serialize exactly to the allowlisted URL; there is no HTTP
+fallback.
 
 ### Deterministic distribution
 
-A checked-in Node script copies the canonical bundle without transformation to:
+After successful assembly, the same checked-in Node command copies the
+canonical bundle without transformation to:
 
 ```text
 marketing/guides-manifest.json
@@ -775,11 +813,11 @@ Apple uses the single copied bundle under
 resource build phases. macOS resource presence is tested separately; iOS
 success is not treated as macOS evidence.
 
-The sync command is idempotent. A `--check` mode exits nonzero on missing,
-changed, additional, or stale target files. Hand-edited distribution copies are
-rejected. Generation stages and validates a complete target bundle before an
-atomic directory replacement, so interruption cannot leave packaging inputs
-partially updated.
+The assembly-and-sync command is idempotent. Its `--check` mode exits nonzero on
+missing, changed, additional, or stale canonical or target files. Hand-edited
+assembled and distribution copies are rejected. Generation stages and
+validates complete bundles before atomic directory replacement, so interruption
+cannot leave packaging inputs partially updated.
 
 ### Image performance budget
 
@@ -885,7 +923,7 @@ The reader:
 - allows guide and notices navigation only through explicit relative
   `index.html` paths declared in the manifest;
 - sends an external destination to the system browser only for a main-frame
-  `.linkActivated` action with a user gesture and an exact allowlisted HTTP(S)
+  `.linkActivated` action with a user gesture and an exact allowlisted HTTPS
   URL; and
 - refuses redirects, meta refreshes, subframes, downloads, new windows,
   programmatic navigation, undeclared local files, and every other scheme.
@@ -914,7 +952,7 @@ It:
   match, treating that one constrained HTTPS origin as local;
 - permits guide and notices navigation only through explicit relative
   `index.html` paths declared in the manifest;
-- sends an allowlisted external HTTP(S) destination to the system browser only
+- sends an allowlisted external HTTPS destination to the system browser only
   when `isForMainFrame` and `hasGesture` prove explicit link activation;
 - rejects redirects, meta refreshes, subframes, downloads, intents, custom
   schemes, alternate origins, undeclared paths, encoded traversal, digest/MIME
@@ -1050,21 +1088,46 @@ The homepage response uses a site-specific CSP with
 img-src 'self'; connect-src 'none'; object-src 'none'; frame-src 'none';
 base-uri 'none'; form-action 'none'; frame-ancestors 'none'`. It also uses
 `Referrer-Policy: no-referrer` and `X-Content-Type-Options: nosniff`. The guide
-documents retain their stricter no-font policy below.
+documents retain their stricter no-font policy below. A restrictive
+`Permissions-Policy` disables camera, microphone, geolocation, payment, USB,
+accelerometer, gyroscope, and other unused browser capabilities.
 
 Deployment keeps the existing checked-in `marketing/wrangler.toml`. It names
 the existing `riot-protest-net-marketing` Worker and serves
 `marketing/public`; no second production configuration, DNS mutation, custom
 domain creation, or unrelated identity endpoint is part of this work.
-Local review uses the static site or `npx wrangler dev`. Production publication
-uses the existing `npx wrangler deploy` flow from `marketing/` only after the
-exact public artifact and commit pass preflight.
+The root `package.json` pins Wrangler exactly at tested version `4.50.0`, and
+`package-lock.json` locks its transitive dependency graph. Local review and
+production tooling invoke only that installed binary through
+`npm exec --offline -- wrangler`; an unpinned `npx` download is forbidden.
+Preflight requires the exact CLI version, records the lockfile integrity for
+the installed package, and verifies that `deploy`, `deployments status --json`,
+and `rollback` are available before any release action. Local review uses the
+static site or the locked `wrangler dev` command. Production publication uses
+the locked `wrangler deploy` flow only after the exact public artifact and
+commit pass preflight.
+
+Production credentials exist only in a protected release environment and use
+the minimum Cloudflare account and Workers permissions supported for this
+Worker. Preview and unreviewed commands receive no production token. All
+authorized production deployments run through one non-cancelling concurrency
+group for `riot-protest-net-marketing`; the release command refuses to run
+outside that environment or without its exclusive lease. The lease identifier,
+credential scope description, and command actor are recorded without recording
+the credential itself.
 
 The sole accepted production origin is `https://riot.protest.net`. Before a
-deploy, release tooling records the currently active Worker version identifier,
-the reviewed commit, the complete artifact hash set, the live origin and route
-hashes, and the preflight result. Publication updates the existing Worker in
-place; the already configured hostname binding is not changed.
+deploy, release tooling reads machine-readable `deployments status --json` and
+requires exactly one version receiving 100% of production traffic. After
+acquiring the exclusive lease and immediately before mutation, it re-reads that
+state and requires it to equal the recorded baseline. It records the baseline
+version identifier, reviewed commit, complete artifact hash set, live origin
+and route hashes, and preflight result. Publication updates the existing Worker
+in place; the already configured hostname binding is not changed. The deploy
+result and a fresh status read must identify one new version at 100% traffic.
+Before the first production release with this workflow, the same locked CLI and
+tooling must successfully deploy and roll back a non-production rehearsal
+Worker, proving restoration of its static assets, headers, and route hashes.
 
 After deployment, verification fetches `/`, `/why-riot/`, `/guide/`,
 `/notices/`, `/protocols/`, `/guides-manifest.json`, and every declared
@@ -1074,14 +1137,20 @@ behavior, TLS, and the absence of remote runtime requests. Wrangler success
 alone is not publication evidence.
 
 If route, header, hash, TLS, or no-remote-request verification fails, release
-tooling rolls the Worker back to the exact pre-deploy version identifier and
-reruns the live checks. It reports rollback success only after
-`https://riot.protest.net` again serves the recorded pre-deploy route and
-artifact hashes. This rollback changes no DNS or hostname binding.
+tooling first re-reads production status while holding the lease. It rolls back
+only when exactly one version receives 100% traffic and that version is the
+failed version created by this release. If the active state differs, automatic
+rollback stops and escalates without overwriting the intervening deployment.
+An allowed rollback targets the exact baseline version identifier and reruns
+the live checks. It reports rollback success only after production status and
+`https://riot.protest.net` both match the recorded baseline version, routes,
+and artifact hashes. This rollback changes no DNS or hostname binding.
 
 The release record captures the pre-deploy and deployed Worker version
-identifiers, exact production origin, UTC publication time, deployed commit,
-artifact and preflight hashes, live TLS/header/route/hash evidence, and rollback
+identifiers and traffic percentages, lease identifier, actor, Wrangler version
+and package integrity, credential-scope description, exact production origin,
+UTC publication time, deployed commit, artifact and preflight hashes, live
+TLS/header/route/hash evidence, all concurrency precondition reads, and rollback
 record or not-needed result. It also proves that `/` contains all eight ordered
 sections, the three audience boundaries, and the exact current/planned and
 privacy qualifications; that no legacy screenshot URL is requested; and that
@@ -1168,7 +1237,8 @@ in the offline bundle, not required reading.
 Implementation follows red-green-refactor. Before reader or navigation code is
 written, failing tests establish:
 
-1. canonical-to-target byte and manifest-hash equality;
+1. deterministic source/evidence-to-canonical assembly, canonical-to-target
+   byte equality, and manifest-hash equality;
 2. stale, missing, extra, and modified distribution-copy rejection;
 3. both Apple projects register and package the guide resources;
 4. the Android asset set and packaged APK contain the exact guide revision;
@@ -1178,12 +1248,15 @@ written, failing tests establish:
 8. JavaScript and Riot bridges are absent from documentation readers;
 9. only manifest-declared local paths with matching SHA-256 and MIME type load;
 10. undeclared files, modified bytes, wrong MIME types, absolute paths, encoded
-    traversal, escaping symlinks, and alternate local origins fail closed;
+    traversal, percent signs, non-ASCII/control bytes, escaping symlinks, and
+    alternate local origins fail identically against shared Node, Swift, and
+    Kotlin conformance vectors;
 11. the document plus declared local stylesheet and PNGs load while automatic
     remote, redirected, WebSocket, and undeclared subresource requests are
     blocked;
-12. only allowlisted main-frame links with a user gesture leave through the
-    system browser;
+12. only exact canonical HTTPS allowlisted main-frame links with a user gesture
+    leave through the system browser; HTTP, userinfo, and alternate
+    serializations fail closed;
 13. redirects, meta refresh, iframes, `target=_blank`, downloads, `data:`,
     `javascript:`, `file:`, `intent:`, and custom schemes never launch an
     external application;
@@ -1239,9 +1312,12 @@ written, failing tests establish:
     visible, and undeclared or unused font/icon files fail;
 31. the release preflight and acceptance checks require the exact
     `https://riot.protest.net` origin, the existing Worker configuration,
-    preflight binding to the exact artifact and commit, a recorded active
-    pre-deploy Worker version, the complete route set, and verified rollback to
-    that version on failure; and
+    locked Wrangler `4.50.0`, preflight binding to the exact artifact and
+    commit, an exclusive protected release lease, exactly one machine-read
+    active pre-deploy Worker version at 100% traffic, immediate baseline
+    revalidation, the complete route set, a successful non-production rollback
+    rehearsal, and compare-before-rollback protection against overwriting an
+    intervening deployment; and
 32. a download or install call to action fails unless its exact reviewed release
     URL, platform requirements, and release metadata are present.
 
@@ -1252,7 +1328,8 @@ unit before production code.
 
 Implementation is complete only when:
 
-1. the guide sync script passes in `--check` mode;
+1. the guide assembly-and-sync script reproduces the complete canonical bundle
+   and every mirror in `--check` mode;
 2. source, marketing, deployment, Apple, and Android guide bytes match the
    manifest, including the byte-identical
    `marketing/guides-manifest.json` and public mirror;
@@ -1279,15 +1356,17 @@ Implementation is complete only when:
 13. the three Willow assets and license files import from the canonical shared
    catalog with no field or byte drift, and the complete license-evidence gate
    passes;
-14. all twelve platform-qualified Riot screenshot derivatives satisfy the
-    capture, synthetic-data, privacy, freshness, metadata, and platform-label
-    contracts;
+14. all twelve platform-qualified Riot full-resolution evidence captures and
+    derivatives satisfy the capture, synthetic-data, privacy, freshness,
+    metadata-removal, and platform-label contracts, with no raw device capture
+    committed;
 15. public Newswire plaintext, gateway browser trust, pseudonym correlation,
    cooperative read control, and non-recall boundaries are explicit;
 16. current and planned capabilities are labeled where first mentioned;
 17. the web request set before deliberate external navigation is exactly the
     top-level document plus manifest-declared same-origin assets;
-18. deployed CSP, `nosniff`, MIME, and referrer headers match the contract;
+18. deployed CSP, `Permissions-Policy`, `nosniff`, MIME, and referrer headers
+    match the contract;
 19. phone and desktop screenshots show no clipping, overlap, or page-level
     horizontal overflow at 320 CSS pixels and target viewports;
 20. image size, pixel, lazy/eager, document, bundle, offline-open-time, and
@@ -1296,17 +1375,24 @@ Implementation is complete only when:
     and state/focus-preserving
     return behavior pass on web, iOS, macOS, and Android;
 22. preflight uses the checked-in `marketing/wrangler.toml`, is bound to the
-    exact public artifact and commit, records the active pre-deploy Worker
-    version, and performs no DNS or hostname-binding mutation;
+    exact public artifact and commit, verifies and invokes only locked Wrangler
+    `4.50.0`, records its package integrity and protected release lease, reads
+    exactly one active pre-deploy Worker version at 100% traffic from
+    `deployments status --json`, revalidates the baseline immediately before
+    deploy, and performs no DNS or hostname-binding mutation;
 23. `https://riot.protest.net` serves the complete route set with valid TLS,
     expected headings, hashes, canonical redirect behavior, headers, and zero
     remote runtime requests;
-24. failed post-deploy verification restores the exact recorded pre-deploy
-    Worker version and proves the prior live route and artifact hashes before
-    failure is reported;
+24. failed post-deploy verification rolls back only while the exclusive lease
+    is held and current production status still equals the failed version; an
+    intervening version stops automatic rollback, while an allowed rollback
+    restores the exact baseline version and proves its prior live route and
+    artifact hashes before failure is reported;
 25. the release record contains the pre-deploy and deployed Worker version
-    identifiers, exact production origin, UTC publication time, deployed
-    commit, artifact/preflight hashes, TLS/header/route/hash evidence, rollback
+    identifiers and traffic percentages, lease, actor, CLI version and package
+    integrity, credential-scope description, exact production origin, UTC
+    publication time, deployed commit, artifact/preflight hashes, all
+    concurrency precondition reads, TLS/header/route/hash evidence, rollback
     result, and response evidence;
 26. phone and desktop marketing-site checks prove the paired story, navigation,
     typography, contrast, focus, zoom, reduced-motion, and no-gradient surface
@@ -1406,6 +1492,7 @@ inspection, no-network rehearsal, and audience-comprehension evidence.
 
 Expected scope includes:
 
+- `guides-src/**`
 - `guides/**`
 - the canonical shared `docs/assets/willow/**` catalog prerequisite defined by
   the approved Willow Visual Documentation System
@@ -1413,6 +1500,9 @@ Expected scope includes:
 - `marketing/index.html`
 - `marketing/protocols/index.html`
 - `marketing/README.md`
+- root `package.json` and `package-lock.json` changes that pin the exact tested
+  Wrangler CLI
+- a protected, serialized marketing release workflow and its focused tests
 - the existing `marketing/wrangler.toml`, Worker-version-aware
   deployment/preflight/rollback tooling, and header configuration including a
   generated `_headers` file if that is the supported Workers Assets mechanism
