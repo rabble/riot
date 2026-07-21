@@ -55,10 +55,10 @@ is a concise boundary reference, and no page presents a disaster scene as its ce
 Evidence file:
 
 ```text
-6f021dd40735ba9e813f2cfb61d010c8c3162d5e80ebb3de1e522ad5b8116a7e  /tmp/visual-review/riot-human-capacity/browser-evidence.json
+e1ed0611b009a531a66c522619c51df2d404d775854bfb2dd9d4010f75cc20d8  /tmp/visual-review/riot-human-capacity/browser-evidence.json
 ```
 
-Preview origin: `http://127.0.0.1:49368`. Each route began and ended with an empty Playwright
+Preview origin: `http://127.0.0.1:50605`. Each route began and ended with an empty Playwright
 cookie jar, returned an empty `document.cookie`, and received no `Set-Cookie` response header.
 Every observed request used that exact loopback origin. `/` requested only itself and the six local
 `/assets/screenshots/*.png` files; each other route requested only its own document.
@@ -76,15 +76,15 @@ transfer-encoding: chunked
 
 | Route | Status | Date header | Cookies before/after | Request count |
 |---|---:|---|---|---:|
-| `/` | 200 | Tue, 21 Jul 2026 21:37:33 GMT | `[]` / `[]` | 7 |
-| `/why-riot/` | 200 | Tue, 21 Jul 2026 21:37:34 GMT | `[]` / `[]` | 1 |
-| `/guide/` | 200 | Tue, 21 Jul 2026 21:37:35 GMT | `[]` / `[]` | 1 |
-| `/about/` | 200 | Tue, 21 Jul 2026 21:37:36 GMT | `[]` / `[]` | 1 |
-| `/privacy/` | 200 | Tue, 21 Jul 2026 21:37:37 GMT | `[]` / `[]` | 1 |
-| `/open-source/` | 200 | Tue, 21 Jul 2026 21:37:38 GMT | `[]` / `[]` | 1 |
-| `/community/` | 200 | Tue, 21 Jul 2026 21:37:39 GMT | `[]` / `[]` | 1 |
-| `/releases/` | 200 | Tue, 21 Jul 2026 21:37:39 GMT | `[]` / `[]` | 1 |
-| `/protocols/` | 200 | Tue, 21 Jul 2026 21:37:40 GMT | `[]` / `[]` | 1 |
+| `/` | 200 | Tue, 21 Jul 2026 21:46:50 GMT | `[]` / `[]` | 7 |
+| `/why-riot/` | 200 | Tue, 21 Jul 2026 21:50:51 GMT | `[]` / `[]` | 1 |
+| `/guide/` | 200 | Tue, 21 Jul 2026 21:50:52 GMT | `[]` / `[]` | 1 |
+| `/about/` | 200 | Tue, 21 Jul 2026 21:50:53 GMT | `[]` / `[]` | 1 |
+| `/privacy/` | 200 | Tue, 21 Jul 2026 21:50:54 GMT | `[]` / `[]` | 1 |
+| `/open-source/` | 200 | Tue, 21 Jul 2026 21:50:54 GMT | `[]` / `[]` | 1 |
+| `/community/` | 200 | Tue, 21 Jul 2026 21:50:55 GMT | `[]` / `[]` | 1 |
+| `/releases/` | 200 | Tue, 21 Jul 2026 21:50:56 GMT | `[]` / `[]` | 1 |
+| `/protocols/` | 200 | Tue, 21 Jul 2026 21:50:57 GMT | `[]` / `[]` | 1 |
 
 `/resilience/` returned a direct `404` with no `Location` header. The contract also verified absent
 source/public resilience directories, static cookie/storage/beacon/network predicates, safe resource
@@ -236,7 +236,7 @@ The fresh audit directory contained only the following ordered artifacts and the
 56a8ab3780b992d97577b0b257fb47b05fac5d426ac87a72133eb3b90afd44ce  marketing/public/index.html
 b209f0073f39d4feee8ebb33fc681d2c002748f607004eaac371c2b75bf77ce9  marketing/public/why-riot/index.html
 2585319772c6247d21c82bf15ac7bb119bfef7ef157585e14196069033cc0932  marketing/public/guide/index.html
-e6860f9863c057d35431859e763d3811076ce3173e6f3638c9faf8664b4afbe5  marketing/public/about/index.html
+0d0fce89d7ca62d1a450de21f212afd34ac49c1c5e40321852470774c3107d54  marketing/public/about/index.html
 ee6594d510d91f0e50fd57974661e5986824b7d91e7a5b866991670512e4bca4  marketing/public/privacy/index.html
 2469a37de9060c132086c76b17feaf4bdfbe6e6ab61f2498b4bfddeea0564964  marketing/public/open-source/index.html
 34e5f8eae3e10c0f19b2427e86e8f881e5e71f37f57679f2139a133a37fc272d  marketing/public/community/index.html
@@ -246,7 +246,7 @@ f1bac257953347d8903055a4e1252673726a2f24b38c3b2b8cca816aeff7ab83  README.md
 a4662882ce7500fba005d284afadef9a4834aaf3d3506e3245dec3351e96e35f  docs/product/product-brief.md
 ```
 
-Session: `019f869d-295c-70d2-9e90-54c1c5209db1`
+Session: `019f86a9-abdb-78b2-bb66-62c6fa03a552`
 
 Prompt SHA-256: `0cf03d185fe906bab2bc5c85c8f4b82c37d95947e6f38ff708ce59a1f1ba93db`
 
@@ -262,9 +262,8 @@ finding. Return JSON with verdict PASS or FAIL and findings containing route, ex
 which category it violates.
 ```
 
-The same fresh session was given one continuation directive after its inspection output filled the
-CLI capture: `Do not run more commands. Complete the requested audit and return only the final JSON
-object now.` No files, criteria, implementation commentary, or prior audit results were added.
+The fresh session completed the audit in one pass. No implementation commentary or prior audit
+results were included in its isolated input.
 
 Returned JSON, verbatim:
 

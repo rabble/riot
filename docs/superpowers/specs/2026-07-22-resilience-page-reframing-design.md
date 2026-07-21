@@ -1,6 +1,6 @@
 # Riot Human-Capacity Marketing Reframe
 
-**Date:** 2026-07-22  
+**Date:** 2026-07-22
 **Status:** Approved for implementation
 
 **Scope:** Reframe `/why-riot/`, compact `/privacy/`, clarify the homepage hero, and reconcile
