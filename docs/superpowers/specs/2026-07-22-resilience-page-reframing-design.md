@@ -1,7 +1,7 @@
 # Riot Human-Capacity Marketing Reframe
 
 **Date:** 2026-07-22  
-**Status:** Design review candidate, revision 13
+**Status:** Design review candidate, revision 14
 
 **Scope:** Reframe `/why-riot/`, compact `/privacy/`, clarify the homepage hero, and reconcile
 site-wide claims and navigation. No application, protocol, or deployment behavior changes.
@@ -456,6 +456,12 @@ and browser URL normalization are applied; inspect resolved DOM resource propert
 trusting raw regex output. The browser-level network gate below is authoritative if a static parser
 and Chromium resolution differ.
 
+In the Chromium pass, enumerate every resolved `a[href]` after HTML character-reference decoding.
+Permit only `http:` and `https:` URLs (including the loopback origin) plus same-document fragment
+links. Reject `javascript:`, `data:`, `vbscript:`, `file:`, `blob:`, and every other scheme. This
+anchor check is separate from resource loading because dangerous navigation URLs need not generate a
+request until clicked.
+
 ## TDD and Acceptance Criteria
 
 Extend `scripts/marketing/protocol-page-contracts.mjs` first and run:
@@ -721,6 +727,9 @@ header evidence. Revision 12 adds both.
 The ninth security pass requested browser-equivalent URL normalization and all-route HTTP coverage.
 Revision 13 makes Chromium's resolved DOM and observed network behavior the authoritative backstop
 and exercises every editorial route.
+
+The tenth security pass requested resolved-anchor scheme validation after character-reference
+decoding. Revision 14 allowlists HTTP(S) and fragments and rejects every active or unknown scheme.
 
 ## Primary Sources
 
