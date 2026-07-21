@@ -1,7 +1,7 @@
 # Riot Human-Capacity Marketing Reframe
 
 **Date:** 2026-07-22  
-**Status:** Design review candidate, revision 14
+**Status:** Approved for implementation
 
 **Scope:** Reframe `/why-riot/`, compact `/privacy/`, clarify the homepage hero, and reconcile
 site-wide claims and navigation. No application, protocol, or deployment behavior changes.
@@ -730,6 +730,8 @@ and exercises every editorial route.
 
 The tenth security pass requested resolved-anchor scheme validation after character-reference
 decoding. Revision 14 allowlists HTTP(S) and fragments and rejects every active or unknown scheme.
+The final gate is approved across Product Manager, Architect, Editorial/UX, Security, and
+CTO/implementation readiness.
 
 ## Primary Sources
 
