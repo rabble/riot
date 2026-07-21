@@ -22,8 +22,8 @@ artifacts, not site assets.
 
 | Capture | Viewport | SHA-256 |
 |---|---:|---|
-| `/tmp/visual-review/riot-human-capacity/home-desktop.png` | 1456×900 | `de5ce6cdc0b02867b642757cf6a89aec1307998bd074e966469bd116a8414b4d` |
-| `/tmp/visual-review/riot-human-capacity/home-mobile.png` | 390×844 | `c9b0b75d3b2b6613f906a9b158da44005864c0d4e56a33f79d37f6781f19435e` |
+| `/tmp/visual-review/riot-human-capacity/home-desktop.png` | 1456×900 | `ecc24510cfb5e41348af5015ea544f0ef37338b2cc45b10b88b2ef473ecafb43` |
+| `/tmp/visual-review/riot-human-capacity/home-mobile.png` | 390×844 | `3317ac0748221935d6ec95356616cda9be5e25be67774aa2e2467357ab031865` |
 | `/tmp/visual-review/riot-human-capacity/why-riot-desktop.png` | 1456×900 | `fbb1d6572b0d6322f457347152f3ec7f8fd7644698c592774e52e0eba365da04` |
 | `/tmp/visual-review/riot-human-capacity/why-riot-mobile.png` | 390×844 | `a868474bb03bb6feac231160259a61930a4c0a690776a9b8f99080c5975dff88` |
 | `/tmp/visual-review/riot-human-capacity/privacy-desktop.png` | 1456×900 | `1b2facef19e927f464d9887f9fdc4ad5b9c6bf459b357566f2f6ca0b6535f56b` |
@@ -55,10 +55,10 @@ is a concise boundary reference, and no page presents a disaster scene as its ce
 Evidence file:
 
 ```text
-e1ed0611b009a531a66c522619c51df2d404d775854bfb2dd9d4010f75cc20d8  /tmp/visual-review/riot-human-capacity/browser-evidence.json
+634f4d5d5e651abe4d7cf8c6546781a8e5c03986e1e73d9984dfe7e0865da0a7  /tmp/visual-review/riot-human-capacity/browser-evidence.json
 ```
 
-Preview origin: `http://127.0.0.1:50605`. Each route began and ended with an empty Playwright
+Preview origin: `http://127.0.0.1:51722`. Each route began and ended with an empty Playwright
 cookie jar, returned an empty `document.cookie`, and received no `Set-Cookie` response header.
 Every observed request used that exact loopback origin. `/` requested only itself and the six local
 `/assets/screenshots/*.png` files; each other route requested only its own document.
@@ -76,19 +76,25 @@ transfer-encoding: chunked
 
 | Route | Status | Date header | Cookies before/after | Request count |
 |---|---:|---|---|---:|
-| `/` | 200 | Tue, 21 Jul 2026 21:46:50 GMT | `[]` / `[]` | 7 |
-| `/why-riot/` | 200 | Tue, 21 Jul 2026 21:50:51 GMT | `[]` / `[]` | 1 |
-| `/guide/` | 200 | Tue, 21 Jul 2026 21:50:52 GMT | `[]` / `[]` | 1 |
-| `/about/` | 200 | Tue, 21 Jul 2026 21:50:53 GMT | `[]` / `[]` | 1 |
-| `/privacy/` | 200 | Tue, 21 Jul 2026 21:50:54 GMT | `[]` / `[]` | 1 |
-| `/open-source/` | 200 | Tue, 21 Jul 2026 21:50:54 GMT | `[]` / `[]` | 1 |
-| `/community/` | 200 | Tue, 21 Jul 2026 21:50:55 GMT | `[]` / `[]` | 1 |
-| `/releases/` | 200 | Tue, 21 Jul 2026 21:50:56 GMT | `[]` / `[]` | 1 |
-| `/protocols/` | 200 | Tue, 21 Jul 2026 21:50:57 GMT | `[]` / `[]` | 1 |
+| `/` | 200 | Tue, 21 Jul 2026 21:56:25 GMT | `[]` / `[]` | 7 |
+| `/why-riot/` | 200 | Tue, 21 Jul 2026 21:56:27 GMT | `[]` / `[]` | 1 |
+| `/guide/` | 200 | Tue, 21 Jul 2026 21:56:28 GMT | `[]` / `[]` | 1 |
+| `/about/` | 200 | Tue, 21 Jul 2026 21:56:29 GMT | `[]` / `[]` | 1 |
+| `/privacy/` | 200 | Tue, 21 Jul 2026 21:56:30 GMT | `[]` / `[]` | 1 |
+| `/open-source/` | 200 | Tue, 21 Jul 2026 21:56:31 GMT | `[]` / `[]` | 1 |
+| `/community/` | 200 | Tue, 21 Jul 2026 21:56:32 GMT | `[]` / `[]` | 1 |
+| `/releases/` | 200 | Tue, 21 Jul 2026 21:56:33 GMT | `[]` / `[]` | 1 |
+| `/protocols/` | 200 | Tue, 21 Jul 2026 21:56:34 GMT | `[]` / `[]` | 1 |
 
 `/resilience/` returned a direct `404` with no `Location` header. The contract also verified absent
 source/public resilience directories, static cookie/storage/beacon/network predicates, safe resource
 schemes, valid `srcset` descriptors, decoded SVG-favicon safety, and no off-origin subresources.
+
+The complete browser evidence, verbatim:
+
+```json
+{"origin":"http://127.0.0.1:51722","routes":[{"route":"/","cookiesBefore":[],"cookiesAfter":[],"documentCookie":"","requests":["http://127.0.0.1:51722/","http://127.0.0.1:51722/assets/screenshots/app-checklist.png","http://127.0.0.1:51722/assets/screenshots/app-decisions.png","http://127.0.0.1:51722/assets/screenshots/app-dispatches.png","http://127.0.0.1:51722/assets/screenshots/app-events.png","http://127.0.0.1:51722/assets/screenshots/app-home.png","http://127.0.0.1:51722/assets/screenshots/app-photos.png"],"responses":[{"url":"http://127.0.0.1:51722/","status":200,"headers":[["cache-control","no-store"],["connection","keep-alive"],["content-type","text/html; charset=utf-8"],["date","Tue, 21 Jul 2026 21:56:25 GMT"],["keep-alive","timeout=5"],["transfer-encoding","chunked"]]},{"url":"http://127.0.0.1:51722/assets/screenshots/app-checklist.png","status":200,"headers":[["cache-control","no-store"],["connection","keep-alive"],["content-type","image/png"],["date","Tue, 21 Jul 2026 21:56:26 GMT"],["keep-alive","timeout=5"],["transfer-encoding","chunked"]]},{"url":"http://127.0.0.1:51722/assets/screenshots/app-decisions.png","status":200,"headers":[["cache-control","no-store"],["connection","keep-alive"],["content-type","image/png"],["date","Tue, 21 Jul 2026 21:56:26 GMT"],["keep-alive","timeout=5"],["transfer-encoding","chunked"]]},{"url":"http://127.0.0.1:51722/assets/screenshots/app-dispatches.png","status":200,"headers":[["cache-control","no-store"],["connection","keep-alive"],["content-type","image/png"],["date","Tue, 21 Jul 2026 21:56:26 GMT"],["keep-alive","timeout=5"],["transfer-encoding","chunked"]]},{"url":"http://127.0.0.1:51722/assets/screenshots/app-events.png","status":200,"headers":[["cache-control","no-store"],["connection","keep-alive"],["content-type","image/png"],["date","Tue, 21 Jul 2026 21:56:26 GMT"],["keep-alive","timeout=5"],["transfer-encoding","chunked"]]},{"url":"http://127.0.0.1:51722/assets/screenshots/app-home.png","status":200,"headers":[["cache-control","no-store"],["connection","keep-alive"],["content-type","image/png"],["date","Tue, 21 Jul 2026 21:56:26 GMT"],["keep-alive","timeout=5"],["transfer-encoding","chunked"]]},{"url":"http://127.0.0.1:51722/assets/screenshots/app-photos.png","status":200,"headers":[["cache-control","no-store"],["connection","keep-alive"],["content-type","image/png"],["date","Tue, 21 Jul 2026 21:56:26 GMT"],["keep-alive","timeout=5"],["transfer-encoding","chunked"]]}],"resources":["http://127.0.0.1:51722/assets/screenshots/app-checklist.png","http://127.0.0.1:51722/assets/screenshots/app-decisions.png","http://127.0.0.1:51722/assets/screenshots/app-dispatches.png","http://127.0.0.1:51722/assets/screenshots/app-events.png","http://127.0.0.1:51722/assets/screenshots/app-home.png","http://127.0.0.1:51722/assets/screenshots/app-photos.png"]},{"route":"/why-riot/","cookiesBefore":[],"cookiesAfter":[],"documentCookie":"","requests":["http://127.0.0.1:51722/why-riot/"],"responses":[{"url":"http://127.0.0.1:51722/why-riot/","status":200,"headers":[["cache-control","no-store"],["connection","keep-alive"],["content-type","text/html; charset=utf-8"],["date","Tue, 21 Jul 2026 21:56:27 GMT"],["keep-alive","timeout=5"],["transfer-encoding","chunked"]]}],"resources":[]},{"route":"/guide/","cookiesBefore":[],"cookiesAfter":[],"documentCookie":"","requests":["http://127.0.0.1:51722/guide/"],"responses":[{"url":"http://127.0.0.1:51722/guide/","status":200,"headers":[["cache-control","no-store"],["connection","keep-alive"],["content-type","text/html; charset=utf-8"],["date","Tue, 21 Jul 2026 21:56:28 GMT"],["keep-alive","timeout=5"],["transfer-encoding","chunked"]]}],"resources":[]},{"route":"/about/","cookiesBefore":[],"cookiesAfter":[],"documentCookie":"","requests":["http://127.0.0.1:51722/about/"],"responses":[{"url":"http://127.0.0.1:51722/about/","status":200,"headers":[["cache-control","no-store"],["connection","keep-alive"],["content-type","text/html; charset=utf-8"],["date","Tue, 21 Jul 2026 21:56:29 GMT"],["keep-alive","timeout=5"],["transfer-encoding","chunked"]]}],"resources":[]},{"route":"/privacy/","cookiesBefore":[],"cookiesAfter":[],"documentCookie":"","requests":["http://127.0.0.1:51722/privacy/"],"responses":[{"url":"http://127.0.0.1:51722/privacy/","status":200,"headers":[["cache-control","no-store"],["connection","keep-alive"],["content-type","text/html; charset=utf-8"],["date","Tue, 21 Jul 2026 21:56:30 GMT"],["keep-alive","timeout=5"],["transfer-encoding","chunked"]]}],"resources":[]},{"route":"/open-source/","cookiesBefore":[],"cookiesAfter":[],"documentCookie":"","requests":["http://127.0.0.1:51722/open-source/"],"responses":[{"url":"http://127.0.0.1:51722/open-source/","status":200,"headers":[["cache-control","no-store"],["connection","keep-alive"],["content-type","text/html; charset=utf-8"],["date","Tue, 21 Jul 2026 21:56:31 GMT"],["keep-alive","timeout=5"],["transfer-encoding","chunked"]]}],"resources":[]},{"route":"/community/","cookiesBefore":[],"cookiesAfter":[],"documentCookie":"","requests":["http://127.0.0.1:51722/community/"],"responses":[{"url":"http://127.0.0.1:51722/community/","status":200,"headers":[["cache-control","no-store"],["connection","keep-alive"],["content-type","text/html; charset=utf-8"],["date","Tue, 21 Jul 2026 21:56:32 GMT"],["keep-alive","timeout=5"],["transfer-encoding","chunked"]]}],"resources":[]},{"route":"/releases/","cookiesBefore":[],"cookiesAfter":[],"documentCookie":"","requests":["http://127.0.0.1:51722/releases/"],"responses":[{"url":"http://127.0.0.1:51722/releases/","status":200,"headers":[["cache-control","no-store"],["connection","keep-alive"],["content-type","text/html; charset=utf-8"],["date","Tue, 21 Jul 2026 21:56:33 GMT"],["keep-alive","timeout=5"],["transfer-encoding","chunked"]]}],"resources":[]},{"route":"/protocols/","cookiesBefore":[],"cookiesAfter":[],"documentCookie":"","requests":["http://127.0.0.1:51722/protocols/"],"responses":[{"url":"http://127.0.0.1:51722/protocols/","status":200,"headers":[["cache-control","no-store"],["connection","keep-alive"],["content-type","text/html; charset=utf-8"],["date","Tue, 21 Jul 2026 21:56:34 GMT"],["keep-alive","timeout=5"],["transfer-encoding","chunked"]]}],"resources":[]}],"resilience":{"status":404,"location":null}}
+```
 
 ## Isolated first-read reviews
 
@@ -233,7 +239,7 @@ Primary impression is practical community infrastructure, not privacy, disaster 
 The fresh audit directory contained only the following ordered artifacts and the audit prompt.
 
 ```text
-56a8ab3780b992d97577b0b257fb47b05fac5d426ac87a72133eb3b90afd44ce  marketing/public/index.html
+05f6dd79d36a92ff6cf7fc6d719d89a87793e6f235dfe2efab0e35f33e7427a0  marketing/public/index.html
 b209f0073f39d4feee8ebb33fc681d2c002748f607004eaac371c2b75bf77ce9  marketing/public/why-riot/index.html
 2585319772c6247d21c82bf15ac7bb119bfef7ef157585e14196069033cc0932  marketing/public/guide/index.html
 0d0fce89d7ca62d1a450de21f212afd34ac49c1c5e40321852470774c3107d54  marketing/public/about/index.html
@@ -246,7 +252,7 @@ f1bac257953347d8903055a4e1252673726a2f24b38c3b2b8cca816aeff7ab83  README.md
 a4662882ce7500fba005d284afadef9a4834aaf3d3506e3245dec3351e96e35f  docs/product/product-brief.md
 ```
 
-Session: `019f86a9-abdb-78b2-bb66-62c6fa03a552`
+Session: `019f86af-8a7d-7140-9336-e977880075ae`
 
 Prompt SHA-256: `0cf03d185fe906bab2bc5c85c8f4b82c37d95947e6f38ff708ce59a1f1ba93db`
 
