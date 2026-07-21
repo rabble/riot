@@ -301,6 +301,27 @@ public enum ToolRoutePolicy {
     }
 }
 
+/// Identity and synchronous teardown for one SwiftUI-hosted app runtime. Every
+/// replacement gets a new UUID so a torn-down representable cannot be reused,
+/// even when the same app is reopened immediately.
+@MainActor
+public struct AppRuntimeMountState {
+    public private(set) var teardownHandle = AppRuntimeTeardownHandle()
+    public private(set) var id = UUID()
+
+    public init() {}
+
+    public mutating func replace() {
+        teardownHandle.tearDownNow()
+        teardownHandle = AppRuntimeTeardownHandle()
+        id = UUID()
+    }
+
+    public func tearDownNow() {
+        teardownHandle.tearDownNow()
+    }
+}
+
 // MARK: - Focus restoration
 
 /// Remembers which tool card launched the running tool so focus returns to it

@@ -64,6 +64,11 @@ final class AppBreadcrumbTests: XCTestCase {
         XCTAssertEqual(labels.compact, ["🏘", "🧰"])
     }
 
+    func testDisplayedLevelsCannotDrawFakeBreadcrumbSeparators() {
+        let labels = AppBreadcrumbLabels(community: "North › South", app: "Wiki › Fake", page: nil)
+        XCTAssertEqual(labels.full, ["North · South", "Wiki · Fake"])
+    }
+
     func testRoutePolicyClosesOnlyOnMacOS() {
         #if os(macOS)
         XCTAssertTrue(ToolRoutePolicy.closesMountedToolBeforeRoute)
@@ -125,6 +130,25 @@ final class AppBreadcrumbTests: XCTestCase {
         XCTAssertEqual(calls, 1)
         handle.tearDownNow()
         XCTAssertEqual(calls, 1)
+    }
+
+    @MainActor
+    func testRuntimeReplacementTearsDownAndAlwaysChangesMountIdentity() {
+        var mount = AppRuntimeMountState()
+        let firstID = mount.id
+        let firstHandle = mount.teardownHandle
+        var tearDowns = 0
+        firstHandle.install(tearDown: { tearDowns += 1 }, navigateRoot: {})
+
+        mount.replace()
+
+        XCTAssertEqual(tearDowns, 1)
+        XCTAssertNotEqual(mount.id, firstID)
+        XCTAssertFalse(mount.teardownHandle === firstHandle)
+
+        let secondID = mount.id
+        mount.replace()
+        XCTAssertNotEqual(mount.id, secondID, "reopening the same app still needs a fresh WebView")
     }
 
     @MainActor

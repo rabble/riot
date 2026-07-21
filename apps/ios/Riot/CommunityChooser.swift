@@ -234,8 +234,8 @@ enum CommunityChooserConfirmation: Equatable {
     }
 }
 
-enum MountedToolExit {
-    static func perform(closeTool: () -> Void, then action: () -> Void) {
+public enum MountedToolExit {
+    public static func perform(closeTool: () -> Void, then action: () -> Void) {
         closeTool()
         action()
     }

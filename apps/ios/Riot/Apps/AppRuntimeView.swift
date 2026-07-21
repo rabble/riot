@@ -268,8 +268,8 @@ public struct AppRuntimeView: View {
 /// naming who is active in it, and the sandboxed WebView. On iPhone this is a
 /// PUSH under the Tools tab, so the "‹ Tools" back button and app-name title come
 /// from the enclosing `NavigationStack` and the community header + tab bar stay
-/// on screen. On macOS it lives in the split detail, where there is no back
-/// button, so it keeps an explicit Close.
+/// on screen. On macOS it lives in the split detail and uses a compact native
+/// community › app › page breadcrumb for location and escape routes.
 private struct AppHostView: View {
     let launch: AppRuntimeLaunch
     let appName: String
@@ -717,7 +717,7 @@ final class AppRuntimeCoordinator: NSObject, WKNavigationDelegate, WKUIDelegate 
     func webView(
         _ webView: WKWebView,
         decidePolicyFor navigationAction: WKNavigationAction,
-        decisionHandler: @escaping (WKNavigationActionPolicy) -> Void
+        decisionHandler: @escaping @MainActor @Sendable (WKNavigationActionPolicy) -> Void
     ) {
         let allowed = navigationAction.request.url?.scheme == AppSchemeHandler.scheme
         decisionHandler(allowed ? .allow : .cancel)

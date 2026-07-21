@@ -920,8 +920,7 @@ private struct CommunityShellView: View {
     /// The tool running in the detail pane (macOS) / full-screen (iPhone), and
     /// the card that opened it, so focus returns there on close.
     @State private var runningTool: RiotSpaceApp?
-    @State private var runtimeTeardownHandle = AppRuntimeTeardownHandle()
-    @State private var runtimeMountID = UUID()
+    @State private var runtimeMount = AppRuntimeMountState()
     @State private var focus = ToolFocusRestoration()
 
     @State private var identitySheet: ShellIdentityDestination?
@@ -1288,11 +1287,11 @@ private struct CommunityShellView: View {
                         appIDHex: tool.appIDHex,
                         appName: tool.name,
                         communityName: community.name,
-                        teardownHandle: runtimeTeardownHandle,
+                        teardownHandle: runtimeMount.teardownHandle,
                         onOpenCommunity: model.openCommunityChooser,
                         onClose: closeTool
                     )
-                    .id(runtimeMountID)
+                    .id(runtimeMount.id)
                     .onExitCommand(perform: escape)
                 } else {
                     routeView(navigation.destination)
@@ -1402,11 +1401,11 @@ private struct CommunityShellView: View {
                 appIDHex: tool.appIDHex,
                 appName: tool.name,
                 communityName: community.name,
-                teardownHandle: runtimeTeardownHandle,
+                teardownHandle: runtimeMount.teardownHandle,
                 onOpenCommunity: model.openCommunityChooser,
                 onClose: { toolNavigation.wrappedValue = nil }
             )
-            .id(runtimeMountID)
+            .id(runtimeMount.id)
         } else {
             Color.clear.onAppear { closeTool() }
         }
@@ -1496,14 +1495,12 @@ private struct CommunityShellView: View {
     }
 
     private func mountTool(_ app: RiotSpaceApp) {
-        runtimeTeardownHandle.tearDownNow()
-        runtimeTeardownHandle = AppRuntimeTeardownHandle()
-        runtimeMountID = UUID()
+        runtimeMount.replace()
         runningTool = app
     }
 
     private func closeTool() {
-        runtimeTeardownHandle.tearDownNow()
+        runtimeMount.tearDownNow()
         _ = focus.close()
         runningTool = nil
     }
