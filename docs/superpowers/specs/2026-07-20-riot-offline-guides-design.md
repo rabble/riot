@@ -1,7 +1,7 @@
 # Riot Marketing and Offline Guides Design
 
 Date: 2026-07-20
-Status: Human decision required after three design-review rounds
+Status: Corrected for `riot.protest.net`; user review pending
 
 ## Product decision
 
@@ -10,8 +10,8 @@ Ship two first-class Riot guides:
 1. **Why Riot** — the product, political, privacy, and Willow explanation; and
 2. **Using Riot** — practical, current-product instructions and recovery help.
 
-Both guides are published on the existing marketing site at
-`riot.divine.video` and bundled inside the iOS, macOS, and Android
+Both guides are published on Riot's existing marketing site at
+`riot.protest.net` and bundled inside the iOS, macOS, and Android
 applications. Every essential explanation and instruction must remain readable
 with no internet connection.
 
@@ -693,8 +693,9 @@ guides/
       LICENSE-MIT
       LICENSE-APACHE
     licenses/
-      Bricolage-Grotesque-OFL-1.1.txt
-      Inter-OFL-1.1.txt
+      Anton-OFL-1.1.txt
+      Work-Sans-OFL-1.1.txt
+      Space-Mono-OFL-1.1.txt
 ```
 
 The documents use semantic HTML and shared local CSS. They use system font
@@ -833,11 +834,13 @@ also exposes **Third-party notices** as a subordinate legal-and-credits row, not
 as a third first-class guide card. The notices page displays the local
 attribution and license summary, identifies the exact Willow and marketing-font
 asset IDs and their distribution scope, and renders the complete text of the
-Willow MIT and Apache licenses plus both font-specific OFL files. Its license
+Willow MIT and Apache licenses plus the three font-family OFL files. Its license
 sections are generated from the canonical license files into semantic `pre`
 blocks; tests decode the HTML text and require byte equality with those files
 so the visible notice cannot drift. The app copy labels the font entries
-**Marketing website only** rather than implying the offline reader loads them.
+with their actual target scope from the asset manifest and separately states
+that the offline guide reader itself uses system fonts and loads no font
+resource.
 License blocks use `white-space: pre-wrap` and overflow wrapping so they never
 cause page-level horizontal scrolling at phone width or high zoom.
 
@@ -956,51 +959,59 @@ real, reviewed release URL and platform requirement are present. Until then,
 the page says **Follow the build** and does not imply that a public app release
 exists.
 
-The public site's visual system follows the Divine brand constraints:
+The public site continues Riot's established flat, hard-bordered protest-zine
+visual system already shared by `riot.protest.net` and the native app.
 
-- Bricolage Grotesque for display copy and Inter for reading copy, served only
-  from checked-in, same-origin font files;
-- candid, plain language with collective optimism and a small punk edge, without
-  startup, platform, or "ecosystem" jargon;
-- no icons in the initial site; any future icon must come from Phosphor and
-  retain a visible text label;
-- Divine off-white `#F9F7F6`, dark green `#07241B`, and green `#27C58B` as the
-  foundation, with approved Divine Pink `#FF7FAF` and Blue `#34BBF1` used only
-  as Riot secondary accents, plus paper, hard rules, and stamped labels; no
-  gradients or colors outside the approved palette;
-- no all-caps headings or paragraphs and no right-aligned copy; and
-- paired evidence that alternates its visual weight without changing the
-  audience order or separating a claim from its boundary.
+- Anton is the poster/display face, Work Sans is the reading face, and Space
+  Mono is used for short structural labels, status stamps, and technical copy.
+- Short headings, labels, and stamps may use uppercase. Body copy remains
+  sentence case and left aligned.
+- Light mode uses paper `#eae6da`, secondary paper `#e1dccb`, ink `#17160f`,
+  soft ink `#4a473b`, blue `#22399f`, and pink `#d1216e`.
+- Dark mode uses paper `#131209`, secondary paper `#1c1a10`, ink `#efe9d8`,
+  soft ink `#beb69e`, blue `#6d84ff`, and pink `#ff5f9e`.
+- Two-pixel hard rules, paper panels, pink/blue offset accents, and stamped
+  labels carry the established visual rhythm. Layout surfaces use no gradient.
+- Copy is candid, plain, collective, and slightly punk without startup,
+  platform, or "ecosystem" jargon.
+- Paired evidence alternates visual weight without changing audience order or
+  separating a claim from its current/planned or privacy boundary.
 
-The initial marketing asset catalog is exact:
+The public site replaces its current inline base64 font payload with the exact
+canonical font bytes already checked into Riot at commit
+`0010e479dfc2b87319171710a7a5e8b4b599c49d`. The marketing copies are
+byte-identical to those files:
 
-| Local file | Upstream version and immutable source | Bytes | SHA-256 | Use |
+| Marketing file | Canonical Riot source | Bytes | SHA-256 | Use |
 | --- | --- | ---: | --- | --- |
-| `assets/fonts/bricolage-grotesque-latin.woff2` | Google Fonts Bricolage Grotesque v9, `https://fonts.gstatic.com/s/bricolagegrotesque/v9/3y9H6as8bTXq_nANBjzKo3IeZx8z6up5BeSl5jBNz_19PpbpMXuECpwUxJBOm_OJWiawA1XphjhQYg.woff2` | 41,236 | `4fd48b2c1ab27220e71f15f990550261b35245c3bdfd8d8025b4bdac0459ee2d` | normal 700 and 800 headings |
-| `assets/fonts/inter-latin.woff2` | Google Fonts Inter v20, `https://fonts.gstatic.com/s/inter/v20/UcC73FwrK3iLTeHuS_nVMrMxCp50SjIa1ZL7W0Q5nw.woff2` | 48,432 | `c940764593d0fe5d596be327ca7558855e018039fb78509aa21921fd3644c3e4` | normal 400 and 600 copy/UI |
+| `assets/fonts/Anton-Regular.ttf` | `apps/ios/Riot/Resources/Fonts/Anton-Regular.ttf` | 170,812 | `a4ba3a92350ebb031da0cb47630ac49eb265082ca1bc0450442f4a83ab947cab` | normal 400 poster/display |
+| `assets/fonts/WorkSans-Variable.ttf` | `apps/ios/Riot/Resources/Fonts/WorkSans-Variable.ttf` | 361,072 | `f50f61f2ba738e239442d40bf1069adb195c224b6a5a73a581fc2f3ed62a9f63` | variable-weight body/UI |
+| `assets/fonts/SpaceMono-Regular.ttf` | `apps/ios/Riot/Resources/Fonts/SpaceMono-Regular.ttf` | 99,356 | `95837e182baeeada83368f7748db28357f0a1b75c6b84ff7065b5edf933c8e18` | normal 400 structural copy |
+| `assets/fonts/SpaceMono-Bold.ttf` | `apps/ios/Riot/Resources/Fonts/SpaceMono-Bold.ttf` | 98,232 | `405e73d41afb7e5906efce206a326af5c956f38e255f35421c260e861e599c59` | normal 700 structural copy |
 
-Both files are distributed under SIL Open Font License 1.1. Bricolage
-Grotesque carries `Copyright 2022 The Bricolage Grotesque Project Authors
-(https://github.com/ateliertriay/bricolage)`; Inter carries `Copyright 2020 The
-Inter Project Authors (https://github.com/rsms/inter)`. Their complete,
-unmodified license files are pinned respectively to Google Fonts commits
-`6ce172f74aa355ea43eb964fa4a91570a4d3064d` and
-`0b58fb370093f9a9f4ff785d94405710b79de67c`, with license-file SHA-256 values
-`4b5a7d8f37f5602621c8a8d7358a6a2e71317e6c231c661e15aef0275d3e07ba`
-and `5b9321a4298cfeb6b34354164a1c3afc3db114569984c502b9b35d988fd58c57`.
+The four binaries and their family license texts are independently verified
+against the canonical Google Fonts repository at pinned commit
+`684b69db51d59a3137ec0152fa3a3afc6f1b3814`. All three families use the SIL
+Open Font License 1.1. The complete, unmodified family license files are:
+
+| Local license file | Canonical upstream path | SHA-256 | Required copyright line |
+| --- | --- | --- | --- |
+| `assets/licenses/Anton-OFL-1.1.txt` | `ofl/anton/OFL.txt` | `ee67e6ee22790b7929f1a3769ca2801d565c64b5a9096942c1adf5596de9c9e4` | `Copyright 2020 The Anton Project Authors (https://github.com/googlefonts/AntonFont.git)` |
+| `assets/licenses/Work-Sans-OFL-1.1.txt` | `ofl/worksans/OFL.txt` | `749aca05078664ce682dce1b1b10096ac397cb088c1a6df4e1bb56f0092a9272` | `Copyright 2019 The Work Sans Project Authors (https://github.com/weiweihuanghuang/Work-Sans)` |
+| `assets/licenses/Space-Mono-OFL-1.1.txt` | `ofl/spacemono/OFL.txt` | `8e4ee42b2553e1e01504e61cb0d46d148cd8c9e5eacaa3622a7df2d4f2955b9f` | `Copyright 2016 The Space Mono Project Authors (https://github.com/googlefonts/spacemono)` |
 
 `marketing/assets/third-party-manifest.json` is the canonical typed catalog for
-those two font files and two license files. It records local path, official
-source, upstream version or commit, byte count, SHA-256, MIME type, family,
-style, weight declarations, license expression, copyright, acquisition time,
-acquisition reviewer, and a distinct license reviewer. Its
+the four font files and three license files. It records local path, canonical
+Riot source where applicable, immutable upstream source, byte count, SHA-256,
+MIME type, family, style, weight declarations, license expression, copyright,
+acquisition time, acquisition reviewer, and a distinct license reviewer. Its
 `marketing/public/assets/third-party-manifest.json` mirror and every cataloged
 asset are byte-identical and hash-verified locally and after deployment.
 
-The initial design uses no Phosphor glyph, font, SVG, or other icon asset.
-Navigation and calls to action use visible text and typographic separators.
-Tests reject any icon asset or icon-only control; adding one requires an updated
-catalog, license/notice record, accessible name, and design review.
+The initial design uses no icon asset. Navigation and calls to action use
+visible text and typographic separators. Tests reject icon-only controls and
+undeclared icon bytes; adding an icon requires an updated asset catalog,
+license/notice record, accessible name, and design review.
 
 The homepage and its deployment mirror are byte-identical checked-in artifacts
 at `marketing/index.html` and `marketing/public/index.html`. They reference the
@@ -1020,9 +1031,9 @@ overflow cue at narrow widths; row headers, sticky headings, captions, and
 focus outlines remain usable at 320 CSS pixels and 200% zoom.
 The canonical offline Why Riot, Using Riot, and notices documents deliberately
 retain their system-font stack and stricter no-font CSP so they remain small and
-self-contained in the apps. They remain visibly related through the same
-foundational colors, spacing rhythm, link treatment, evidence labels, and
-status language.
+self-contained in the apps. They remain visibly related through Riot's paper,
+ink, pink, blue, spacing rhythm, link treatment, evidence labels, and status
+language.
 
 Responsive navigation must keep both **Why Riot** and **Protocols** reachable
 on small screens. The current rule that keeps only `.protocol-nav` visible must
@@ -1041,87 +1052,40 @@ base-uri 'none'; form-action 'none'; frame-ancestors 'none'`. It also uses
 `Referrer-Policy: no-referrer` and `X-Content-Type-Options: nosniff`. The guide
 documents retain their stricter no-font policy below.
 
-Deployment uses two intentionally separate checked-in Wrangler configurations:
+Deployment keeps the existing checked-in `marketing/wrangler.toml`. It names
+the existing `riot-protest-net-marketing` Worker and serves
+`marketing/public`; no second production configuration, DNS mutation, custom
+domain creation, or unrelated identity endpoint is part of this work.
+Local review uses the static site or `npx wrangler dev`. Production publication
+uses the existing `npx wrangler deploy` flow from `marketing/` only after the
+exact public artifact and commit pass preflight.
 
-- `marketing/wrangler.toml` is the safe default preview configuration. It uses
-  `marketing/public`, the distinct worker name
-  `riot-protest-net-marketing-preview`, `workers_dev = true`, and no route or
-  custom domain.
-- `marketing/wrangler.production.toml` uses the production worker name
-  `riot-protest-net-marketing`, `workers_dev = false`, the same assets
-  directory, and only the explicit
-  `{ pattern = "riot.divine.video", custom_domain = true }` route.
+The sole accepted production origin is `https://riot.protest.net`. Before a
+deploy, release tooling records the currently active Worker version identifier,
+the reviewed commit, the complete artifact hash set, the live origin and route
+hashes, and the preflight result. Publication updates the existing Worker in
+place; the already configured hostname binding is not changed.
 
-`scripts/marketing/deploy.mjs preview` runs
-`npx wrangler deploy --config wrangler.toml`, records the immutable preview URL
-and artifact hash, and performs the complete route, header, hash, TLS, and
-no-remote-request checks without touching `riot.divine.video`.
-`scripts/marketing/deploy.mjs production --preflight <record-sha256>` is the
-only supported production command. It refuses to invoke
-`npx wrangler deploy --config wrangler.production.toml` unless the referenced
-preflight record is complete, matches the exact local artifact and commit, and
-still matches live authoritative control-plane state immediately before
-mutation. The safe default `npx wrangler deploy` can therefore never bind the
-production hostname.
-
-The sole accepted production origin is `https://riot.divine.video`; a
-`workers.dev` URL or deployment identifier is preview evidence only. After
-production deployment, verification fetches `/`, `/why-riot/`, `/guide/`,
+After deployment, verification fetches `/`, `/why-riot/`, `/guide/`,
 `/notices/`, `/protocols/`, `/guides-manifest.json`, and every declared
 same-origin image and font. It validates expected headings,
 CSP/referrer/`nosniff` headers, MIME types, byte hashes, canonical redirect
-behavior, and the absence of remote runtime requests. Wrangler success alone is
-not publication evidence.
+behavior, TLS, and the absence of remote runtime requests. Wrangler success
+alone is not publication evidence.
 
-The hostname currently resolves through Divine's Fastly wildcard and serves the
-Riot profile surface, including a public NIP-05 response at
-`/.well-known/nostr.json`. The profile declares the verified identity
-`_@riot.divine.video`. Before cutover, release tooling records the authoritative
-Cloudflare zone state, including whether an explicit `riot` record exists,
-record IDs, types, values, proxy state and TTLs; the active Fastly wildcard
-target and service/TLS availability; the live TLS certificate, response
-headers, homepage hash; and the complete canonical
-`/.well-known/nostr.json?name=_` response.
+If route, header, hash, TLS, or no-remote-request verification fails, release
+tooling rolls the Worker back to the exact pre-deploy version identifier and
+reruns the live checks. It reports rollback success only after
+`https://riot.protest.net` again serves the recorded pre-deploy route and
+artifact hashes. This rollback changes no DNS or hostname binding.
 
-The static deployment preserves only this reviewed identity mapping:
-`_` →
-`4691d54f806fbf625ab9e9fc73294759c1f056b62b49a97b3c68ae814e2e4535`,
-with `application/json`, `Access-Control-Allow-Origin: *`, and no redirect. A
-pre-cutover mismatch blocks publication and requires explicit review; the
-deployment never overwrites a changed identity mapping from stale checked-in
-data. Requests with no query and `name=_` return the same mapping. `name=riot`,
-unknown, empty, repeated, or malformed names are not included in `names` and
-cannot inherit the `_` pubkey.
-
-Cutover may replace the existing Fastly-targeted DNS record only after the
-preview artifact passes. The release re-reads Cloudflare's authoritative zone
-and custom-domain state and uses compare-and-swap semantics: any concurrent
-change from the recorded snapshot aborts without mutation. The existing Fastly
-service and TLS configuration remain available for at least the maximum
-relevant TTL.
-
-If DNS, TLS, identity, route, header, hash, or no-remote-request verification
-fails, rollback first removes the Cloudflare custom-domain binding, then removes
-any explicit `riot` override created by cutover or restores the exact
-pre-existing record by provider record ID and prior fields. It never invents an
-explicit CNAME when the original state relied on the wildcard. After the
-authoritative state is exact, it waits through the recorded TTL/propagation
-window and verifies authoritative DNS plus at least two independent recursive
-resolvers, Fastly HTML and TLS, and the canonical `_` NIP-05 response before
-reporting rollback success. Publication is complete only when DNS no longer
-selects the generic profile route, `https://riot.divine.video` serves the
-reviewed site and complete route set over valid TLS, and the `_` NIP-05 mapping
-passes.
-
-The release record captures the Wrangler deployment identifier, exact production
-origin, UTC publication time, deployed commit, preview/preflight artifact hashes,
-pre/post-cutover provider and resolver DNS state, Cloudflare custom-domain
-binding state, Fastly/TLS evidence, canonical `_` NIP-05 evidence, rollback
-record or not-needed result, and response evidence. It also proves that `/`
-contains all eight ordered sections, the three audience boundaries, and the
-exact current/planned and privacy qualifications; that no legacy screenshot URL
-is requested; and that an install call to action is absent unless its release
-metadata passed review.
+The release record captures the pre-deploy and deployed Worker version
+identifiers, exact production origin, UTC publication time, deployed commit,
+artifact and preflight hashes, live TLS/header/route/hash evidence, and rollback
+record or not-needed result. It also proves that `/` contains all eight ordered
+sections, the three audience boundaries, and the exact current/planned and
+privacy qualifications; that no legacy screenshot URL is requested; and that
+an install call to action is absent unless its release metadata passed review.
 
 ## Web and embedded-document security
 
@@ -1250,7 +1214,7 @@ written, failing tests establish:
 22. Willow figures remain comprehensible on opaque paper panels in light, dark,
     forced-colors, and increased-contrast modes at 200% zoom;
 23. **Third-party notices** is reachable from both guide footers and Help &
-    Guides, contains the four complete license files with accurate asset scope,
+    Guides, contains the five complete license files with accurate asset scope,
     and returns with origin, section, scroll, keyboard focus, and
     assistive-technology focus preserved;
 24. manual VoiceOver, TalkBack, macOS keyboard/screen-reader, dark-mode,
@@ -1274,10 +1238,10 @@ written, failing tests establish:
     source/public/deployed mirrors, all required copyright and OFL notices are
     visible, and undeclared or unused font/icon files fail;
 31. the release preflight and acceptance checks require the exact
-    `https://riot.divine.video` origin, route-free preview configuration,
-    preflight artifact binding, compare-and-swap DNS/TLS cutover, complete route
-    set, the full `_` NIP-05 mapping with unknown names unmapped, and ordered
-    custom-domain/DNS rollback on failure; and
+    `https://riot.protest.net` origin, the existing Worker configuration,
+    preflight binding to the exact artifact and commit, a recorded active
+    pre-deploy Worker version, the complete route set, and verified rollback to
+    that version on failure; and
 32. a download or install call to action fails unless its exact reviewed release
     URL, platform requirements, and release metadata are present.
 
@@ -1294,15 +1258,15 @@ Implementation is complete only when:
    `marketing/guides-manifest.json` and public mirror;
 3. existing marketing protocol-page contracts remain green;
 4. the source and public homepage are byte-identical, and `/` contains the eight
-   approved sections in order using Divine typography, icon, surface, voice,
-   and no-script constraints;
+   approved sections in order using Riot's Anton/Work Sans/Space Mono,
+   paper/ink/pink/blue, hard-rule, voice, and no-script constraints;
 5. no new public route references the four legacy generic screenshots;
 6. `/protocols/` uses the shared branded marketing stylesheet and fonts while
    preserving its editorial comparison, citations, headings, route, and
    existing contract assertions;
-7. the exact two-font/two-license third-party catalog, source/public mirrors,
+7. the exact four-font/three-license third-party catalog, source/public mirrors,
    hashes, MIME types, copyrights, reviewer records, and notices pass, with no
-   Phosphor or other icon asset present;
+   undeclared icon asset present;
 8. new guide structural/security contracts pass, including the intentional
    system-font and no-font-resource contract;
 9. `/why-riot/` contains the three approved audience depths;
@@ -1328,24 +1292,22 @@ Implementation is complete only when:
     horizontal overflow at 320 CSS pixels and target viewports;
 20. image size, pixel, lazy/eager, document, bundle, offline-open-time, and
     measured-memory budgets pass;
-21. notices discovery, all four full local license files, accurate asset scope,
+21. notices discovery, all five full local license files, accurate asset scope,
     and state/focus-preserving
     return behavior pass on web, iOS, macOS, and Android;
-22. the default preview deploy has a distinct worker name, no route/custom
-    domain, cannot mutate `riot.divine.video`, and produces a complete preflight
-    record bound to the exact artifact and commit;
-23. `https://riot.divine.video` serves the complete route set with valid
-    authoritative and recursive DNS and TLS, expected headings, hashes,
-    canonical redirect behavior, headers, the full `_` NIP-05 mapping, no
-    mapping for unknown names, and zero remote runtime requests;
-24. failed cutover verification removes the Cloudflare custom-domain binding,
-    deletes or restores explicit records to exact provider state, waits through
-    propagation, and proves the Fastly wildcard, HTML, TLS, and canonical `_`
-    identity before failure is reported;
-25. the release record contains the deployment identifier, exact production
-    origin, UTC publication time, deployed commit, preview/preflight hashes,
-    provider and resolver DNS state, Cloudflare binding state, Fastly/TLS state,
-    canonical `_` NIP-05 evidence, rollback result, and response evidence;
+22. preflight uses the checked-in `marketing/wrangler.toml`, is bound to the
+    exact public artifact and commit, records the active pre-deploy Worker
+    version, and performs no DNS or hostname-binding mutation;
+23. `https://riot.protest.net` serves the complete route set with valid TLS,
+    expected headings, hashes, canonical redirect behavior, headers, and zero
+    remote runtime requests;
+24. failed post-deploy verification restores the exact recorded pre-deploy
+    Worker version and proves the prior live route and artifact hashes before
+    failure is reported;
+25. the release record contains the pre-deploy and deployed Worker version
+    identifiers, exact production origin, UTC publication time, deployed
+    commit, artifact/preflight hashes, TLS/header/route/hash evidence, rollback
+    result, and response evidence;
 26. phone and desktop marketing-site checks prove the paired story, navigation,
     typography, contrast, focus, zoom, reduced-motion, and no-gradient surface
     contracts;
@@ -1366,7 +1328,7 @@ network connectivity disabled:
 - open both guides before joining a community;
 - open both guides from the chooser and an active community;
 - navigate between every local section;
-- open Third-party notices from each origin and verify all four full license
+- open Third-party notices from each origin and verify all five full license
   files and their accurate distribution scope;
 - verify essential text, every visual, opaque Willow panels, platform labels,
   licenses, and troubleshooting content;
@@ -1451,15 +1413,12 @@ Expected scope includes:
 - `marketing/index.html`
 - `marketing/protocols/index.html`
 - `marketing/README.md`
-- the route-free `marketing/wrangler.toml`, explicit
-  `marketing/wrangler.production.toml`, deployment/preflight/rollback tooling,
-  and header configuration including a generated `_headers` file if that is the
-  supported Workers Assets mechanism
-- the exact `marketing/.well-known/nostr.json` identity mirror and its public
-  deployment copy
+- the existing `marketing/wrangler.toml`, Worker-version-aware
+  deployment/preflight/rollback tooling, and header configuration including a
+  generated `_headers` file if that is the supported Workers Assets mechanism
 - generated `marketing/why-riot/**`, `marketing/guide/**`, and public mirrors
 - generated marketing image, notices, and license mirrors
-- the exact two checked-in same-origin font files, two OFL license files,
+- the exact four checked-in same-origin font files, three OFL license files,
   third-party manifest, shared site stylesheet, and their public mirrors
 - `scripts/guides/**`
 - focused marketing contract scripts
