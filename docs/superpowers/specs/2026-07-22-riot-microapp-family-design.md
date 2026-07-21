@@ -148,8 +148,8 @@ or reduced-motion user
 labels, and stable focus after transitions
 **SO THAT:** a long chat, gallery, or wiki index does not trap them before the
 bottom controls
-**WHEN:** using any supported platform, viewport, color scheme, or software
-keyboard state
+**WHEN:** using any supported platform, viewport, the shipping light appearance,
+or software keyboard state; dark appearance is contract-preview coverage only
 
 The toolbar is visually bottom-aligned but precedes the unbounded content list
 in sequential focus order. Landmark navigation and a focus-visible “Skip to
@@ -698,15 +698,55 @@ host-side copying, aliasing, name-based lookup, or cross-ID read permission is
 introduced. A future explicit, reviewed migration design may address cross-
 version data.
 
-The FFI installed-app cap increases from 16 to 32, matching Android's existing
-persisted-profile cap. This bounded change permits eight v1 starters, eight v2
-tools, and up to sixteen carried/custom apps during transition. Installation at
-32 fails before mutation with the existing plain-language capacity error; Riot
-does not quarantine valid existing apps to make room. Boundary tests cover
-31→32 success, 32→33 refusal, restart, and mixed legacy/current/custom ordering.
-Current starters install first only for generation-2 profiles, required legacy
-pairs install first only for generation-1 profiles, then carried apps restore in
-their persisted order.
+The FFI installed-app count cap increases from 16 to 32, matching Android's
+existing persisted-profile count cap. A second cross-platform quota limits the
+sum of installed manifest and bundle byte lengths to exactly 3 MiB (3,145,728
+bytes). The eight frozen v1 pairs total 121,115 bytes today and the v2 catalog
+budget is 2 MiB, leaving at least 927,461 bytes for carried/custom pairs in a
+full coexistence profile. The count limit therefore permits up to sixteen
+carried/custom apps only when their bytes fit the aggregate quota.
+
+Every install path—file, starter, legacy resolver, directory, and nearby—uses
+one durable admission transaction:
+
+1. a new pure core inspection validates the exact pair and derives its app ID
+   without installing, trusting, registering, or writing it;
+2. while holding the profile persistence lock, a shared pure core admission
+   report computes the prospective count and aggregate pair bytes so Apple and
+   Android cannot diverge; each host also computes its full serialized profile
+   size;
+3. count above 32 or pair bytes above 3 MiB reject before any runtime, trust,
+   serving-store, or disk mutation; Android additionally rejects if the exact
+   prospective encoded profile exceeds its existing 4 MiB-minus-64-byte codec
+   ceiling;
+4. after preflight, the host atomically persists the validated pair as untrusted,
+   then admits it to core and the serving store; a post-persist admission failure
+   atomically restores the prior profile and never exposes the card; and
+5. trust is a separate durable transaction and cannot become active in core
+   unless its persisted decision succeeds.
+
+A crash after the durable pair write is safe: restart revalidates and restores
+the untrusted pair before showing it. A storage-write failure retains the prior
+file and prior runtime state. No path calls Rust's mutating `install_app` before
+the pure inspection and capacity preflight succeed. Current starters install
+first only for generation-2 profiles, required legacy pairs install first only
+for generation-1 profiles, then carried apps restore in persisted order.
+
+Boundary tests cover 31→32 count success, 32→33 count refusal, exactly
+3,145,728 aggregate pair bytes, quota-plus-one refusal, Android full-profile
+ceiling-minus-one/ceiling-plus-one, storage-write failure, process termination
+at every transaction boundary, restart, and mixed legacy/current/custom order.
+Size fixtures include 1 MiB canonical maximum bundles rather than only the small
+built-ins. Riot never quarantines or evicts a valid installed app to make room.
+
+A valid pre-upgrade profile that already exceeds 3 MiB is grandfathered for
+restore only: Riot restores every prior exact ID and the required v1 catalog,
+marks the profile storage-full, and admits no new ID until usage falls below the
+quota. Reinstalling the identical held pair and changing trust remain allowed
+because neither grows bytes. Migration never deletes or refuses an existing
+tool merely to make the new quota true. Tests cover an over-quota 16-app
+previous-release profile on Apple and the largest valid previous-release Android
+profile.
 
 ### Existing-user presentation
 
@@ -728,8 +768,10 @@ Tools never presents two unlabeled cards with the same name.
   review; it does not revoke v1.
 - An empty v2 state repeats once, without alarm styling: “This redesigned tool
   starts separately. If you used Legacy 1, it remains available in Tools.”
-- If capacity is full, the confirmation makes no change and explains that Riot
-  can keep at most 32 installed tools on this profile. Removal/archive UX is a
+- Count-full copy is: “This profile already has 32 tools. Riot made no changes.”
+  Storage-full copy is: “This tool does not fit in this profile's remaining
+  offline tool storage. Riot kept your current tools and made no changes.” The
+  two conditions are never collapsed into one error. Removal/archive UX is a
   separate design; this work never silently discards a tool.
 
 Checklist is a special compatibility boundary. Its existing source, manifest,
@@ -855,11 +897,14 @@ teardown, root-event, emoji fallback, and close-before-route tests remain intact
 
 RED tests open a previous-release generation-1 profile after restart and prove
 all eight v1 tools remain launchable with original IDs/data while no v2 app is
-auto-installed or trusted. Boundary fixtures combine eight legacy apps, eight
-current apps, and 15/16 custom apps to exercise 31→32 and 32→33. GREEN adds the
-non-advertised legacy resolver, starter-generation migration, 32-app FFI cap,
-current/legacy presentation descriptors, and generated inventory report.
-REFACTOR keeps catalog lookup, authorization, and storage keyed only by app ID.
+auto-installed or trusted. Boundary fixtures exercise the 31/32 count boundary,
+3 MiB logical-pair quota, Android full-profile codec ceiling, maximum-size
+bundles, storage failure, crash points, and grandfathered prior profiles. GREEN
+adds pure core inspection/admission reporting, atomic durable install/trust,
+the non-advertised legacy resolver, starter-generation migration, 32-app FFI
+cap, current/legacy presentation descriptors, and generated inventory report.
+REFACTOR keeps catalog lookup, authorization, admission, and storage keyed only
+by app ID.
 
 ### 2. Shared visual, theme, and host-font contracts
 
@@ -925,7 +970,8 @@ into HTML. Fixtures include:
 - duplicate taps, profile switch, malformed theme, origin mismatch, repeated
   root event, and trust revocation during a pending write; and
 - generation-1 legacy-only, generation-2 current-only, coexistence, and
-  capacity-full profiles.
+  count-full, storage-full, grandfathered-over-quota, and Android-codec-full
+  profiles.
 
 Seed data uses full synthetic IDs and deterministic timestamps. No fixture
 contains a real community title, person, draft, photo metadata, or profile key.
@@ -1000,7 +1046,12 @@ failure.
 
 ## Size and performance budgets
 
-All are blocking release budgets measured from clean local state:
+All are blocking release budgets measured from clean local state. Package-growth
+comparison uses pre-implementation commit `d8325fb`: Release arm64 unsigned iOS
+`.app`, Release arm64 ad-hoc-signed macOS `.app`, and unsigned universal Android
+release APK, built with the same pinned toolchains and default package
+compression on both sides. The measurement script records and rejects any
+baseline/configuration drift.
 
 | Budget | Limit |
 | --- | ---: |
@@ -1009,22 +1060,30 @@ All are blocking release budgets measured from clean local state:
 | Immutable host-font pack | exactly 729,472 bytes; no additional font bytes |
 | Current + legacy catalogs + host-font app-size growth | ≤ 3 MiB measured from each final native package against its pre-change package, including compiler/resource duplication |
 | One peer-shared v2 manifest/bundle pair | ≤ 256 KiB |
-| Installed-profile app bytes | ≤ 32 MiB under the 32-app/1 MiB-per-app hard bounds |
+| Aggregate installed manifest + bundle bytes | ≤ 3,145,728 logical bytes across at most 32 IDs; pre-upgrade over-quota profiles are restore-only grandfathered |
+| Android complete encoded profile | ≤ 4,194,240 bytes after every prospective mutation |
 | Local cold mount to first useful paint | p95 ≤ 750 ms |
 | Theme/toolbar script before app script | no unthemed first paint in 100 repeated cold mounts |
 | Additional peak private memory for one mounted tool | ≤ 32 MiB above pre-mount baseline |
 
-Timing and memory are recorded on the oldest supported iPhone/simulator class,
-oldest supported macOS hardware class available to release testing, and a low-
-end supported Android device. A regression over budget blocks release or
-requires a new reviewed design; it is not waived by a fast development machine.
+Timing uses an arm64 Release build and 100 clean cold mounts per tool/state on an
+iPhone SE (2nd generation) running the latest available iOS 17 patch, an M1
+MacBook Air running the latest macOS 14 patch, and a Pixel 2-class physical
+device running Android 8.0/API 26. Memory uses the same matrix and reports peak
+private/resident growth over the pre-mount baseline. The release report records
+exact hardware identifiers, OS/build numbers, thermal state, signing mode, and
+sample distributions. A regression over budget blocks release or requires a new
+reviewed design; it is not waived by a fast development machine.
 
 ## Moderated usability gate
 
 Before release, at least eight representative participants complete the core
 journeys with the network disabled: at least four phone and four desktop
 sessions, including at least two screen-reader/keyboard sessions and two at
-maximum text size (participants may satisfy more than one category).
+maximum text size (participants may satisfy more than one category). Phone
+assignments include at least two iOS and two Android sessions; desktop includes
+at least four macOS sessions. Results are reported per platform as well as per
+tool and in aggregate.
 
 Pass criteria:
 
@@ -1099,9 +1158,11 @@ an easier tool cannot hide a failed journey in another.
 - Fresh profiles receive only the v2 starter catalog. Existing profiles visibly
   separate launchable `<name> · Legacy 1` tools from `Redesigned · Version 2`,
   and the install warning states that their data namespaces remain separate.
-- The shared cap is 32 installed apps; 31→32 succeeds atomically, 32→33 refuses
-  before mutation, and restart preserves deterministic legacy/current/custom
-  ordering.
+- Shared admission enforces both 32 IDs and 3,145,728 logical pair bytes before
+  mutation; Android also preflights the full 4,194,240-byte encoded-profile
+  ceiling. Count-full and storage-full have distinct copy, maximum-size boundary
+  fixtures survive restart, and valid over-quota prior profiles restore without
+  loss while refusing new IDs.
 - Checklist v1 source, manifest, bundle, and pinned app ID remain unchanged.
 - v2 source and committed artifacts repack deterministically and pass the
   generated current/legacy inventory and allowlist audits.
