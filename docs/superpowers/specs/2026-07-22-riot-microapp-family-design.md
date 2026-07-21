@@ -286,9 +286,12 @@ tool.
 - The toolbar stays in the same location on phone and desktop. Wide tools may
   retain split content layouts above it; they do not turn the toolbar into an
   unrelated sidebar navigation system.
-- At 200% browser zoom or maximum supported platform text size, labels remain
-  visible in one toolbar row; its height may grow from 48 to 64 CSS pixels. It
-  never horizontally scrolls.
+- At 200% browser zoom or maximum supported platform text size, labels and
+  44-pixel targets remain visible without horizontal scrolling. The ordinary
+  toolbar grows from 48 to 64 CSS pixels; if verified reflow cannot preserve
+  those constraints, it wraps to two rows capped at 112 CSS pixels. Chat may
+  always use two rows at maximum text size so Latest, the labeled field, and
+  Send remain complete.
 
 ### Contextual views
 
@@ -300,12 +303,25 @@ Root navigation yields to contextual actions when appropriate:
 - Cancel never destroys a draft while a write is pending; and
 - a failed write keeps exact form input and returns focus to a useful field.
 
-Root navigation uses `position: fixed` with safe-area padding. Chat's composer
-and create/edit action bars use `position: sticky` at the end of the form so a
-software keyboard cannot cover the active field or submit controls. The real
-iOS and Android keyboard-open matrix is a blocking manual/device check; a
-platform that does not resize the WebView must scroll the focused field and
-sticky actions into the visible viewport rather than overlay them.
+Every state uses one canonical DOM shape: the active `<nav>` or
+`role="toolbar"` is the first interactive region in `<body>`, the Skip to
+content link follows it, and `<main>` follows the link. The toolbar is visually
+fixed at the bottom. In create/edit states, its Cancel and submit buttons sit
+outside `<main>` but target the named form with HTML's `form` attribute. In Chat,
+the first region is the complete composer form—Latest, labeled field, and
+Send—followed by the skip link and message `<main>`. There is no second sticky
+action bar at the end of a form.
+
+The shared helper reads `window.visualViewport` without persisting it. On its
+`resize` and `scroll` events it moves the fixed toolbar/composer above the
+occluded bottom inset, updates content padding, and calls non-animated
+`scrollIntoView({block: "center"})` for the focused form control only when that
+control would otherwise be outside the visual viewport. If `visualViewport` is
+unavailable, the platform must resize the WebView's layout viewport; otherwise
+that platform fails the release gate. Real iOS and Android checks cover the
+first, middle, and final fields of the longest form with the keyboard open,
+including maximum text size. The focused field and the Cancel/submit controls
+must be simultaneously reachable without dismissing the keyboard.
 
 The macOS app breadcrumb remains an additional ancestor route for nested pages.
 It does not replace local contextual actions that phone, Android, keyboard, and
@@ -322,7 +338,7 @@ decoration.
 | Needs & Offers | Root defaults to **Needs**; **Offers** is the other exclusive lane; **Add** opens a form whose first required choice is Need or Offer. Create shows **Cancel** and **Post item**, then **Posting…** while pending. Phone and desktop use the same one-lane destination model; desktop widens the selected lane rather than displaying an ambiguous two-lane current state. | Exchange-board rhythm; pink needs and quiet-green offers |
 | Events | Root defaults to **Upcoming**; **Going** filters events containing the current person's RSVP; **Add** opens create. Create shows **Cancel** and **Save event**, then **Saving…**. RSVP writes remain row actions and do not change the toolbar. An RSVP removed in Going uses the same next-row/filter-empty focus rule. | Calendar/date blocks and ticket-like left rules |
 | Decisions | **Vote** is the sole root/current destination even when no question exists; **Ask** is an action, not a second destination. Ask shows **Cancel** and **Post question**, then **Posting…**. Casting/changing a vote remains in Vote and announces the updated selection/tally. | One dominant question and honest tally bars |
-| Chat | The root has no fake destination tabs. Its shared bottom dock contains **Latest**, a labeled message field, and **Send**; Latest scrolls/focuses the newest message. The sticky dock moves above the software keyboard. Pending changes Send to **Sending…**; failure preserves the exact message and exposes **Try again**. | Dense conversational strips; no invented People screen |
+| Chat | The root has no fake destination tabs. Its shared bottom dock contains **Latest**, a labeled message field, and **Send**; Latest scrolls/focuses the newest message. The fixed dock moves above the software keyboard using the shared visual-viewport contract. Pending changes Send to **Sending…**; failure preserves the exact message and exposes **Try again**. | Dense conversational strips; no invented People screen |
 | Dispatches | Root defaults to **All**; **Mine** is an exclusive author filter; **Write** opens compose. Detail shows **All dispatches** as ancestor, **Read** as current, and **Write** as action. Compose shows **Cancel** and **Publish**, then **Publishing…**. A successful publish opens Read on the new dispatch. | Editorial rules and broad reading cards |
 | Wiki | Root defaults to **Pages**; **Recent** changes the index order to most-recently updated. On phone a selected page shows **Pages** as ancestor, **Read** as current, and **Edit** as action. On desktop the index remains visible beside detail; Pages/Recent controls only index ordering and the selected row, while **Edit** remains contextual. Edit shows **Cancel** and **Save**, then **Saving…**. The app breadcrumb and Pages action both enter explicit index state without wide-layout rebound. | Index-card edges and desktop list/detail split |
 | Photo Wall | Root defaults to **Photos**; **Mine** filters by current author; **Add** opens the picker/caption form. Create shows **Cancel** and **Share photo**, with **Preparing…** during local image work and **Sharing…** during the write. Failure preserves the prepared image and caption while the runtime remains mounted. | Slightly irregular framed grid with captions always available |
@@ -418,6 +434,27 @@ tool,” and returns to Tools. **Cancel** discards the preview. **Reset to Night
 Garden** selects the default but does not persist until Use this theme. The
 current stored choice is checked and labeled “Current”; Night Garden is labeled
 “Default.” The screen remains available when no tool is installed.
+
+### Light and dark scheme resolver
+
+The palette choice and light/dark scheme are separate. Riot stores only the
+palette; it never adds a second scheme preference. A mounted tool follows the
+WebView's `prefers-color-scheme`, which the host must configure to match its
+effective native appearance. The current iOS host follows the system and must
+propagate a system appearance change to a mounted WebView without reload or
+draft loss. The current macOS host and Android app are explicitly light-locked,
+so they resolve light until those native hosts adopt dark appearance. Their
+dark values remain required and preview-tested so a future native appearance
+change cannot expose an incomplete theme.
+
+The shared stylesheet sets `color-scheme: light dark`, defines light roles at
+the root, and replaces every role inside one
+`@media (prefers-color-scheme: dark)` block. The test-only preview `scheme`
+parameter emulates this media result; it is never read by a packaged app or
+stored. If a host cannot propagate its effective appearance reliably, it fails
+the release gate. An injection or lookup failure at runtime falls back to the
+static Night Garden light/dark media rules rather than injecting an unreviewed
+scheme or reloading an active draft.
 
 ### Presets
 
@@ -622,8 +659,10 @@ bundle exist; a plan or developer may not invent or pre-pin them.
 | Photo Wall | `photo-wall` | `ae1ac55cfe563dab67c4139ff2fc84fa59647e75848ffaa0132ef1110ff8066b` | `v2/photo-wall` → `photo-wall-v2` | 1.0.0 → 2.0.0 |
 
 The seven non-Checklist v1 pairs are copied byte-for-byte into
-`fixtures/apps/legacy/` before their authored v2 sources are introduced.
-Checklist keeps its existing frozen paths. V2 source lives under
+`fixtures/apps/legacy/` before their authored v2 sources are introduced. That
+directory is their sole editable-path authority; any retained root-level mirror
+is generated read-only output and the catalog audit must prove it is
+byte-identical. Checklist keeps its existing frozen paths. V2 source lives under
 `fixtures/apps/v2/<slug>/`, preventing any redesign task from editing a legacy
 source directory by accident.
 
@@ -633,6 +672,14 @@ resolver on bootstrap and are never auto-installed or auto-trusted into v2.
 Fresh profiles record generation 2 and receive only v2. Android profiles that
 already carry exact v1 bytes keep those bytes; the legacy resolver is a verified
 fallback, not a replacement for persisted user-held content.
+
+The migration is a resumable transaction: write an in-progress generation-1
+marker, install each missing legacy pair in deterministic catalog order using
+idempotent exact-ID checks, atomically replace the marker with generation 1 only
+after the complete set is resolvable, then restore carried apps. A crash at any
+point repeats the same checks without duplicate entries, partial directory
+advertising, trust changes, or v2 installation. Fresh generation-2 creation uses
+the equivalent marker discipline.
 
 The current v2 directory listing is still visible to an existing organizer as
 an optional redesign. Installing it starts a distinct app-data namespace. No
@@ -656,19 +703,20 @@ Tools never presents two unlabeled cards with the same name.
 
 - Current v2 cards are labeled **Redesigned · Version 2** and sort in the normal
   Tools group.
-- A v1 app appears under a collapsed but clearly counted **Legacy tools with
-  existing data** section when that profile holds its ID, trust, or app rows.
+- A v1 app appears under a collapsed but clearly counted **Legacy tools
+  (Version 1)** section when that profile holds its ID, trust, or app rows. The
+  label does not claim that every installed legacy namespace contains rows.
   Its card and runtime title use `<name> · Legacy 1`.
 - The v1 card remains launchable and offers no theme claim.
 - A v2 action is **Install redesigned version**, not Update.
 - Before install/trust, the confirmation says: “This is a separate version.
-  Your <name> Legacy 1 information stays there and will not appear here. You can
-  return to Legacy tools at any time.”
+  Legacy 1 remains available in Legacy tools. Information does not move between
+  versions.”
 - Cancel leaves v1 mounted/trusted state untouched. Confirm installs v2 through
   the ordinary verification path and then uses the existing organizer trust
   review; it does not revoke v1.
 - An empty v2 state repeats once, without alarm styling: “This redesigned tool
-  starts separately. Your Legacy 1 information is still available in Tools.”
+  starts separately. If you used Legacy 1, it remains available in Tools.”
 - If capacity is full, the confirmation makes no change and explains that Riot
   can keep at most 32 installed tools on this profile. Removal/archive UX is a
   separate design; this work never silently discards a tool.
@@ -717,7 +765,7 @@ cycles do not re-announce identical text.
 | Initial load | Inline status: **Loading shared information…** Existing cached rows render as soon as available; no skeleton implies remote network progress. | Root toolbar is present; mutation actions disabled. No focus steal. |
 | Delayed identity | Compact persistent status above content: **Getting your local identity ready… You can read while Riot gets contribution tools ready.** | Read/filter actions work; mutations disabled. Polite announcement once. |
 | Identity failure/read-only | Hard-bordered notice: **Read-only: Riot couldn't verify your identity on this device. Your shared information is still here.** | **Try again** reruns the app's identity initialization once per activation; **Back to Tools** remains native. Focus moves to the notice only after a user-requested retry fails. |
-| Globally empty | App-specific noun in the shared pattern: **Nothing here yet.** Supporting line explains the first useful contribution. | The create/add action is repeated in content and bottom actions; one is removed from sequential focus with `aria-hidden`/noninteractive duplication rules so it is announced once. |
+| Globally empty | App-specific noun in the shared pattern: **Nothing here yet.** Supporting line explains the first useful contribution and says **Use <action label> in Tool actions below.** It does not render a second button-like control. | The one interactive create/add control remains in the fixed Tool actions region and is reachable before content. |
 | Filter empty | **No <filter> items here.** It never says the underlying tool is empty. | **Show all** returns to the default root filter and focuses its heading. |
 | Write pending | Inline form status: **Saving…**, **Posting…**, **Sending…**, **Publishing…**, **Preparing…**, or **Sharing…** as specified by the app state table. | Submit and Cancel are disabled only for the irreversible pending interval; other duplicate mutation paths are locked. Focus stays on the submit control. |
 | Write success | Brief polite status using the visible noun, for example **Event saved.** | Focus moves to the new/updated row or its detail heading. |
@@ -811,6 +859,13 @@ drift, focus/target/reduced-motion requirements, and duplicated-header ban.
 GREEN adds canonical assets, preference stores, theme picker, allowlist report,
 host-font resolver, and document-start injection. REFACTOR keeps one typed theme
 descriptor per native platform and one canonical CSS source.
+
+Cross-platform conformance vectors cover reserved font-path normalization and
+must produce the same allow/deny result in Swift, Kotlin, and preview code:
+literal catalog paths; percent-encoded separators/dots; dot segments;
+backslashes; duplicate separators; queries; fragments; wrong origin; wrong app
+ID; wrong MIME; byte-count mismatch; and hash mismatch. Only the literal
+normalized catalog path for an allowlisted v2 ID succeeds.
 
 ### 3. Events vertical pilot
 
@@ -956,14 +1011,15 @@ maximum text size (participants may satisfy more than one category).
 
 Pass criteria:
 
-- at least 90% return to Tools and identify the current toolbar view within five
-  seconds without prompting;
-- at least 90% locate the first useful action within five seconds;
-- at least 85% complete and cancel a representative create/edit flow without
-  prompting;
+- at least 90% (8 of 8 at the minimum sample) return to Tools and identify the
+  current toolbar view within five seconds without prompting;
+- at least 90% (8 of 8 at the minimum sample) locate the first useful action
+  within five seconds;
+- at least 85% (7 of 8 at the minimum sample) complete and cancel a
+  representative create/edit flow without prompting;
 - 100% of recoverable write-failure attempts retain the exact supplied draft;
-- at least 90% change the theme while offline and correctly state when it takes
-  effect and who can see it;
+- at least 90% (8 of 8 at the minimum sample) change the theme while offline and
+  correctly state when it takes effect and who can see it;
 - 100% of existing-user participants distinguish Legacy 1 from Version 2 after
   reading the install warning and correctly locate their original data; and
 - zero participants believe selecting a theme changes peers, that v2 erased v1
@@ -973,6 +1029,15 @@ Unsupported attempts remain in the denominator. Timeouts, abandonment,
 prompts, wrong-version launches, clipped controls, inaccessible focus, or draft
 loss are recorded as failures. The same synthetic profile containing real v1
 rows and empty v2 rows is used for the coexistence journey.
+
+The moderated matrix exercises every redesigned tool at least once, includes at
+least two existing-user participants, and includes one recoverable write-
+failure attempt on each shipping platform. Each participant performs the common
+open/navigate/return journey; assignments then balance create/edit, theme,
+legacy coexistence, keyboard, screen-reader, and maximum-text tasks. Events is a
+hard continuation gate: any failed navigation, keyboard, performance, or
+coexistence criterion revises and retests the shared system before another tool
+migrates.
 
 ## Acceptance criteria
 
@@ -995,6 +1060,9 @@ rows and empty v2 rows is used for the coexistence journey.
 - Night Garden is the default, and all six themes can be chosen under Tool
   appearance while offline using the specified preview/commit/cancel/reset
   interaction. Arbitrary custom colors are not accepted.
+- Palette and scheme resolve independently: iOS follows live system appearance
+  without remounting, the current light-locked macOS and Android hosts remain
+  light, and preview scheme overrides never enter a packaged app.
 - Theme choices are scoped by an opaque local appearance profile, do not sync,
   and do not affect what peers see. Only exact reviewed v2 IDs receive the
   low-sensitivity theme key; frozen v1 and third-party apps receive no theme.
