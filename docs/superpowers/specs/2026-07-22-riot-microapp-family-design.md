@@ -1,7 +1,7 @@
 # Riot Microapp Family Design
 
 Date: 2026-07-22
-Status: User-approved direction; design review pending
+Status: User-approved direction; five-role design review approved
 
 ## Product decision
 
