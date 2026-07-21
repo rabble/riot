@@ -468,7 +468,10 @@ private struct OnboardingSetupView: View {
         do {
             _ = try loader.loadDemoSpace(bytes: bytes)
         } catch {
-            demoFailure = DemoModeCopy.loadFailed
+            // Say *why*: a refused load is almost always "a real space already
+            // exists" (the demo can't displace it) or "a sync is open", neither
+            // of which the old generic "Couldn't load" explained.
+            demoFailure = DemoModeCopy.reason(for: error)
         }
     }
 

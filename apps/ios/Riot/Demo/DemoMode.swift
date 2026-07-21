@@ -97,9 +97,30 @@ public enum DemoModeCopy {
     public static let hide = "Hide demo space"
     public static let loadFailed = "Couldn't load the demo space"
     public static let missingFixture = "Couldn't load the demo space"
+    /// A real community space already exists. The demo is refused rather than
+    /// displacing real data — load it on a fresh profile, or hide the demo first
+    /// if you're trying to reload it.
+    public static let refusedWhileSpaceExists =
+        "The demo can't load alongside a real space. Hide the demo first, or reset your profile."
+    /// A sync or in-flight import is open; the demo would clobber it.
+    public static let refusedWhileSyncActive =
+        "Finish or cancel the in-flight sync before loading the demo."
     /// Said plainly, because it is true and it is surprising.
     public static let hideExplanation =
         "Hiding stops listing the demo space. It doesn't erase it — reset the profile for that."
+
+    /// Maps an underlying load error to the plain-language reason the person can
+    /// act on, falling back to the generic message for anything unexpected.
+    public static func reason(for error: Error) -> String {
+        switch error as? MobileError {
+        case .ImportRejected:
+            return refusedWhileSpaceExists
+        case .InvalidInput:
+            return refusedWhileSyncActive
+        default:
+            return loadFailed
+        }
+    }
 }
 
 @MainActor
@@ -159,7 +180,7 @@ public struct DemoModeView: View {
             loadedSpace = try loader.loadDemoSpace(bytes: bytes)
         } catch {
             loadedSpace = nil
-            failure = DemoModeCopy.loadFailed
+            failure = DemoModeCopy.reason(for: error)
         }
     }
 
