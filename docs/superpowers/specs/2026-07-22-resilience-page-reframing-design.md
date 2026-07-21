@@ -1,7 +1,7 @@
 # Riot Human-Capacity Marketing Reframe
 
 **Date:** 2026-07-22  
-**Status:** Design review candidate, revision 10
+**Status:** Design review candidate, revision 11
 
 **Scope:** Reframe `/why-riot/`, compact `/privacy/`, clarify the homepage hero, and reconcile
 site-wide claims and navigation. No application, protocol, or deployment behavior changes.
@@ -208,7 +208,8 @@ Explain the mechanism briefly and in plain language:
 - already-held data and installed tools can remain locally useful on functioning devices;
 - files, QR-assisted handoffs, nearby exchange, public gateways, and anchors provide different
   possible paths with different current status;
-- hosts improve reach and discovery without owning community identity or history.
+- hosts can improve reach and discovery without becoming the sole authority for community identity
+  or the sole holder of its history.
 
 This section should be materially shorter than the current Why Riot builder and transport sections.
 Link to `/protocols/` for the detailed model.
@@ -258,9 +259,10 @@ The page remains at `/privacy/` and becomes a concise reference with this hierar
 2. **What local-first changes—and what it does not.** Reduce mandatory centralized collection and
    explain local custody, while naming metadata, radio presence, device compromise, copied data,
    pseudonymity, and gateway-presentation risks.
-3. **This website.** Preserve the verifiable disclosure: no Riot analytics, cookies, accounts,
-   remote fonts, third-party scripts, tracking pixels, or fingerprinting; Cloudflare can observe
-   ordinary request metadata while serving the site.
+3. **This website.** Preserve the verifiable disclosure: Riot's static page code sets no cookies and
+   includes no analytics, accounts, remote fonts, third-party scripts, tracking pixels, or
+   fingerprinting. Cloudflare can observe ordinary request metadata and controls edge response
+   headers; do not claim that static source inspection can guarantee every hosting-layer behavior.
 4. **Where to go next.** Link to Why Riot for purpose, Protocols for details, and Signal's official
    site with the same threat-model caveat for an ordinary internet-connected conversation that must
    remain secret.
@@ -490,6 +492,8 @@ The new assertions must fail before HTML implementation. After implementation th
 16. `README.md` and `docs/product/product-brief.md` label private encrypted groups
     **Direction, not shipped**, and replace “no server to raid/seize” absolutes with the bounded
     participant-copy, replaceable-gateway, and no-guarantee language defined above.
+17. local HTTP/browser checks find no `Set-Cookie`, no stored browser cookie, and no request outside
+    the loopback preview origin on Home, Why Riot, or Privacy.
 
 The legacy-test migration replaces four complete regions in
 `scripts/marketing/protocol-page-contracts.mjs`, rather than deleting individual assertions ad hoc:
@@ -537,6 +541,13 @@ screenshot path, SHA-256, viewport, overflow result, forced-colors support/outco
 pairs and ratios, and any issue found. Screenshots remain reproducible `/tmp` artifacts rather than
 large committed binaries; the committed report and exact capture commands preserve the evidence
 needed to repeat them.
+
+For each locally served route, capture every response header and browser request. Require no
+`Set-Cookie` response header, an empty Playwright browser-context cookie jar before and after the
+visit, and no request origin other than the chosen loopback preview origin. Also retain the static
+`document.cookie`, storage, beacon, and network-call predicates. These checks prove the built static
+artifact's behavior. The copy deliberately does not promise that an independently configured edge
+can never add headers or cookies; live post-deploy verification remains a separate deployment gate.
 
 The six standard files are `home-desktop.png`, `home-mobile.png`, `why-riot-desktop.png`,
 `why-riot-mobile.png`, `privacy-desktop.png`, and `privacy-mobile.png`. Forced-colors captures are
@@ -684,6 +695,10 @@ adds those last implementation contracts.
 The sixth review approved architecture, UX, product, and implementation readiness. Security
 requested that the seizure-resistance audit cover the two product documents and that resource URLs
 use a strict scheme allowlist. Revision 10 adds both without changing product behavior.
+
+The seventh security pass requested an HTTP/browser test for the no-cookie disclosure. Revision 11
+limits the claim to Riot's static code, names Cloudflare's edge boundary, and adds local response,
+cookie-jar, and request-origin verification.
 
 ## Primary Sources
 
