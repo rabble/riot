@@ -1,7 +1,7 @@
 # Riot Human-Capacity Marketing Reframe
 
 **Date:** 2026-07-22  
-**Status:** Design review candidate, revision 7
+**Status:** Design review candidate, revision 8
 
 **Scope:** Reframe `/why-riot/`, compact `/privacy/`, clarify the homepage hero, and reconcile
 site-wide claims and navigation. No application, protocol, or deployment behavior changes.
@@ -84,7 +84,10 @@ inventory; add `primaryNavPaths` with this exact ordered set:
 "/protocols/"]`; replace the current
 top-navigation loop over `allSitePaths` with a loop over `primaryNavPaths`; and add an assertion that
 the set of local route hrefs extracted from every `<nav class="sitenav">` block equals that exact
-set—no missing or additional local route—and does not contain `href="/privacy/"`. The requirement
+ordered list and set—no reordering, missing, or additional local route—and does not contain
+`href="/privacy/"`. A local href is normalized with `new URL(href, "https://local.invalid")` by
+discarding query and fragment, converting a terminal `/index.html` to `/`, and ensuring every
+non-root path has one trailing slash. The requirement
 that the existing suite remains green means its intended coverage remains green after these obsolete
 expectations are replaced—not that old and new navigation rules must both pass.
 
@@ -136,6 +139,11 @@ The supporting thesis is:
 
 The hero may carry one quiet label: **Prototype, built in the open**. It must not lead with outages,
 privacy, Willow, cryptography, servers, censorship, or product limitations.
+
+“People are the infrastructure” is an explicitly user-approved creative requirement. The ordinary-
+life thesis must appear immediately beneath it so “infrastructure” reads as relationships and shared
+practice, not people treated as technical resources. Reviewers may critique execution of that
+relationship but must not substitute a different H1.
 
 ### 2. A community is something people do
 
@@ -312,6 +320,11 @@ The exact card contract is:
 The contract extracts these bounded elements and asserts the exact chip value/text mapping plus the
 required phrases. No other prose is classified as “material” by an automated status rule.
 
+Presentation constraint: there is no separate rendered status table. The six Carry rows form one
+compact secondary list inside the Carry card; each row is at most 18 visible words before its text
+chip. Their type is no larger or heavier than body copy, and chips use the page's small label style.
+The four verbs and ordinary-life examples remain the dominant scan path.
+
 ## Authoritative Product Status
 
 Executable behavior and current conformance/status pages are authoritative over aspirational product
@@ -392,6 +405,7 @@ All pages: \son[a-z]+\s*=
 All pages: \sping\s*=
 All pages: <meta\b[^>]*http-equiv\s*=\s*["']?refresh
 All pages: <form\b
+All pages: <base\b
 All pages: <(?:use|image|feImage)\b[^>]*(?:href|xlink:href)\s*=\s*["'](?:https?:)?//
 All pages: <(?:script|link|img|iframe|audio|video|source|object|embed)\b[^>]*(?:src|srcset|href|data|poster)\s*=\s*["'](?:https?:)?//
 All pages: @import\s+url|url\(\s*["']?(?:https?:)?//
@@ -401,7 +415,10 @@ Homepage script: fetch\s*\(|sendBeacon\s*\(|XMLHttpRequest|WebSocket\s*\(|localS
 ```
 
 Inline `<svg>` and `data:`-URI favicons/images are explicitly allowed. Ordinary external `<a href>`
-citations are allowed and are not runtime resource dependencies.
+citations are allowed and are not runtime resource dependencies. For every `data:image/svg+xml`
+attribute, the contract decodes percent encoding or base64, then applies the external-resource,
+`javascript:`, inline-handler, `<script>`, `<foreignObject>`, and `<base>` predicates to the decoded
+SVG. Decode failure is a test failure.
 
 ## TDD and Acceptance Criteria
 
@@ -414,16 +431,20 @@ node scripts/marketing/protocol-page-contracts.mjs
 The new assertions must fail before HTML implementation. After implementation they must verify:
 
 1. all nine source pages have byte-identical `marketing/public/` mirrors;
-2. no `/resilience/` source or public route is introduced;
+2. `stat()` returns `ENOENT` for both `marketing/resilience` and
+   `marketing/public/resilience`; normalized sitemap paths and all internal hrefs also omit
+   `/resilience/`;
 3. Why Riot and Privacy have their exact origin-relative canonical links;
-4. local route hrefs extracted from every source and mirror primary-navigation block have exact set
-   equality with `primaryNavPaths`; Privacy is absent there and retained in `allSitePaths` footer
-   checks;
+4. normalized local route hrefs extracted from every source and mirror primary-navigation block have
+   exact ordered-array and set equality with `primaryNavPaths`; Privacy is absent there and retained
+   in `allSitePaths` footer checks;
 5. local hrefs extracted from every `<footer>` have exact set equality with all nine
    `allSitePaths`, including Privacy and the current page's self-link;
 6. sitemap and `marketing/README.md` contain the exact nine-route inventory; sitemap `<loc>` path
    count is nine and its normalized path set equals `allSitePaths` with neither missing nor extra
-   routes;
+   routes. For README, extract the text between `## Routes` and the next `##` heading, then collect
+   only list entries matching ``^- `([^`]+)` ``; the resulting ordered array and set must equal
+   `allSitePaths` exactly;
 7. homepage hero is distinct from Why Riot and links prominently to `/why-riot/`;
 8. Why Riot contains the exact H1, ordinary-life section, four human verbs, practice section,
    compact mechanism and boundary sections, Solnit attribution, and participation links;
@@ -531,8 +552,21 @@ tool thread/session identifier and receives no earlier reviewer output. The repo
 complete rendered-file hash, exact prompt, its SHA-256, returned JSON verbatim, orchestrator scores,
 and session identifier so another reviewer can repeat the procedure.
 
-A fourth fresh editorial-auditor session receives the nine rendered HTML files plus this exact
+A fourth fresh editorial-auditor session receives these exact ordered public-mirror files plus this
+exact
 prompt, but not implementation commentary:
+
+```text
+marketing/public/index.html
+marketing/public/why-riot/index.html
+marketing/public/guide/index.html
+marketing/public/about/index.html
+marketing/public/privacy/index.html
+marketing/public/open-source/index.html
+marketing/public/community/index.html
+marketing/public/releases/index.html
+marketing/public/protocols/index.html
+```
 
 ```text
 Review only the attached nine rendered marketing HTML files. Find present-tense or absolute claims
@@ -585,6 +619,12 @@ artifact.
 The third review approved architecture and UX, then found incomplete footer extraction, literal
 status, remote-resource, reader-evidence, and private-group documentation contracts. Revision 7
 defines each exact boundary and reconciles the aspirational docs with current implementation status.
+
+The fourth review approved product and architecture but requested exact absence/inventory checks,
+`<base>` and decoded data-SVG safety, ordered auditor inputs, and a status-density constraint.
+Revision 8 adds them. Its request to replace the H1 was rejected because “People are the
+infrastructure” is explicitly user-approved; the required adjacent ordinary-life thesis addresses
+the stated concern without overriding the user's creative decision.
 
 ## Primary Sources
 
