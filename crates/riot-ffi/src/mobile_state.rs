@@ -127,6 +127,13 @@ pub(crate) struct LocalProfile {
     /// what makes containment a mechanism, not a native-host policy: a stale
     /// session fails *before* it can touch data, with no way to assume authority.
     app_execution_generation: u64,
+    /// The starter-catalog generation this profile was created under. `None` is
+    /// the durable encoding of generation 1 (a profile predating this marker);
+    /// fresh profiles record `Some(2)`. It selects which built-in catalog
+    /// bootstrap resolves and is NEVER derived from a community, author, or
+    /// device identifier. Distinct from `app_execution_generation` above, which
+    /// is a per-session sandbox-invalidation counter.
+    starter_catalog_generation: Option<u8>,
     /// The durable database handle — a cheap `Arc` clone; the session owns a twin
     /// sharing the same connection, lease, and reader pool. `None` for in-memory
     /// profiles, whose registry then lives only in this struct for the session.
@@ -294,7 +301,9 @@ pub(crate) fn open_local_profile() -> Result<Arc<MobileProfile>, MobileError> {
         // organizer — and the identity is fixed before it is sealed, so creating a
         // space never rotates the signing key.
         let author = generate_space_organizer_author().map_err(map_author_error)?;
-        Ok(profile_with_author(store, author))
+        // Fresh profile: generation 2 (advertises + auto-installs the current
+        // catalog).
+        Ok(profile_with_author(store, author, Some(2)))
     })) {
         Ok(result) => result,
         Err(_) => Err(MobileError::Internal),
@@ -311,7 +320,9 @@ pub(crate) fn open_profile_from_sealed_identity(
             .map_err(map_author_error)?;
         let session = RiotSession::open().map_err(|_| MobileError::Internal)?;
         let store = session.create_store().map_err(|_| MobileError::Internal)?;
-        Ok(profile_with_author(store, author))
+        // Restore path: generation 1 (`None`) for this WU. WU-001N threads the
+        // persisted marker through the restore FFI signature.
+        Ok(profile_with_author(store, author, None))
     }));
     wrapping_key.zeroize();
     match result {
@@ -342,7 +353,13 @@ pub(crate) fn open_local_profile_with_database(
         let session = RiotSession::open_sqlite(database).map_err(|_| MobileError::Internal)?;
         let store = session.create_store().map_err(|_| MobileError::Internal)?;
         let author = generate_space_organizer_author().map_err(map_author_error)?;
-        Ok(profile_with_author_and_db(store, author, Some(db_handle)))
+        // Fresh durable profile: generation 2.
+        Ok(profile_with_author_and_db(
+            store,
+            author,
+            Some(db_handle),
+            Some(2),
+        ))
     })) {
         Ok(result) => result,
         Err(_) => Err(MobileError::Internal),
@@ -369,7 +386,8 @@ pub(crate) fn open_profile_from_sealed_identity_with_database(
             .map_err(map_author_error)?;
         let session = RiotSession::open_sqlite(database).map_err(|_| MobileError::Internal)?;
         let store = session.create_store().map_err(|_| MobileError::Internal)?;
-        let profile = profile_with_author_and_db(store, author, Some(db_handle));
+        // Restore path: generation 1 (`None`) for this WU (see WU-001N).
+        let profile = profile_with_author_and_db(store, author, Some(db_handle), None);
         // Durable multi-community restore: swap the active community's own sealed
         // author in over the just-restored primary identity, and reproject its
         // content, so a reopen lands on the same community with the same Home.
@@ -391,14 +409,19 @@ fn map_database_error(error: riot_core::store::DatabaseError) -> MobileError {
     MobileError::Database
 }
 
-fn profile_with_author(store: EvidenceStore, author: EvidenceAuthor) -> Arc<MobileProfile> {
-    profile_with_author_and_db(store, author, None)
+fn profile_with_author(
+    store: EvidenceStore,
+    author: EvidenceAuthor,
+    starter_catalog_generation: Option<u8>,
+) -> Arc<MobileProfile> {
+    profile_with_author_and_db(store, author, None, starter_catalog_generation)
 }
 
 fn profile_with_author_and_db(
     store: EvidenceStore,
     author: EvidenceAuthor,
     db: Option<riot_core::store::RiotDatabase>,
+    starter_catalog_generation: Option<u8>,
 ) -> Arc<MobileProfile> {
     let (registry, registry_quarantined) = load_registry(db.as_ref());
     Arc::new(MobileProfile {
@@ -420,6 +443,7 @@ fn profile_with_author_and_db(
             demo_mode: None,
             joined_others_space: false,
             app_execution_generation: 0,
+            starter_catalog_generation,
             db,
             registry,
             community_authors: std::collections::HashMap::new(),
@@ -3943,7 +3967,7 @@ fn resolve_app_payload_bytes(
     app_id: &[u8; 32],
 ) -> Result<riot_core::apps::index::AppPairBytes, MobileError> {
     use riot_core::apps::index::{app_pair_bytes as indexed_pair_bytes, starter_pair_bytes};
-    use riot_core::apps::starter::STARTER_CATALOG;
+    use riot_core::apps::starter::{CURRENT_STARTER_CATALOG, LEGACY_BUILTIN_CATALOG};
 
     // Verified at install — install_pair derived app_id from these exact
     // bytes; if installed apps ever persist/reload, the reload path must
@@ -3958,8 +3982,14 @@ fn resolve_app_payload_bytes(
             bundle_bytes: installed.bundle_bytes.clone(),
         });
     }
-    // Built into the binary: no store entries exist for these, ever.
-    if let Some(pair) = starter_pair_bytes(STARTER_CATALOG, app_id) {
+    // Built into the binary: no store entries exist for these, ever. Resolve a
+    // held ID against BOTH catalogs by exact ID — a generation-2 profile can
+    // still hold a carried legacy ID, and a generation-1 profile must resolve
+    // legacy. `starter_pair_bytes` only matches a pair whose bytes re-derive the
+    // requested ID, so trying both never returns the wrong bytes.
+    if let Some(pair) = starter_pair_bytes(CURRENT_STARTER_CATALOG, app_id)
+        .or_else(|| starter_pair_bytes(LEGACY_BUILTIN_CATALOG, app_id))
+    {
         return Ok(pair);
     }
     // Carried: the store holds the only copy. Both halves come from one
@@ -4045,6 +4075,19 @@ mod tests {
             source_claims: vec!["fixture".into()],
             ai_assisted: false,
         }
+    }
+
+    /// A freshly-opened profile records starter-catalog generation 2. The field
+    /// is `pub(crate)` and `#[cfg(test)]`-invisible to integration tests, so the
+    /// assertion lives here in the crate's inline test module.
+    #[test]
+    fn fresh_profile_is_generation_two() {
+        let profile = open_local_profile().unwrap();
+        let state = lock_unpoisoned(&profile.inner);
+        let ProfileState::Active(local) = &*state else {
+            panic!("profile should be active");
+        };
+        assert_eq!(local.starter_catalog_generation, Some(2));
     }
 
     /// Risk 13: a keyed join must leave NO unsealed author parked in RAM. The

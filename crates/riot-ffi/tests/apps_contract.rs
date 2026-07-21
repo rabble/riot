@@ -2053,3 +2053,32 @@ fn reinstalling_a_held_pair_is_idempotent_at_the_cap() {
         Err(MobileError::SessionLimit)
     ));
 }
+
+#[test]
+fn a_restored_generation_one_profile_still_serves_a_held_built_in() {
+    // open_profile_from_sealed_identity takes the restore path, which sets
+    // generation = None (gen-1). It must still resolve/serve a held built-in
+    // pair by exact ID via the dual-catalog resolver — a regression guard on the
+    // restore path + generation field (uses only pub FFI, no private access).
+    let original = open_local_profile().expect("profile");
+    let wrapping_key = vec![0x5a; 32];
+    let sealed = original
+        .seal_identity(wrapping_key.clone())
+        .expect("seal identity");
+    let restored = open_profile_from_sealed_identity(wrapping_key, sealed).expect("restore");
+
+    let built_in = built_in_apps().into_iter().next().expect("a built-in");
+    let app_id = built_in.app_id.to_vec();
+
+    let pair = restored
+        .app_runtime()
+        .app_pair_bytes(app_id.clone())
+        .expect("restored gen-1 profile resolves a built-in by exact id");
+    assert_eq!(
+        riot_core::apps::index::verify_app_pair(&pair.manifest_bytes, &pair.bundle_bytes)
+            .expect("the built-in pair re-verifies")
+            .to_vec(),
+        app_id,
+        "the served bytes are the ones the id was derived from",
+    );
+}
