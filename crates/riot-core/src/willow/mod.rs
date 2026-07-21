@@ -184,7 +184,7 @@ pub fn decode_capability_canonic(bytes: &[u8]) -> Result<WriteCapability, Willow
 
 /// Canonical decode that also rejects trailing bytes: the value must
 /// consume the producer exactly.
-fn decode_canonic_exact<T>(bytes: &[u8]) -> Result<T, WillowError>
+pub(crate) fn decode_canonic_exact<T>(bytes: &[u8]) -> Result<T, WillowError>
 where
     T: DecodableCanonic,
 {
