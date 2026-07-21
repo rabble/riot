@@ -1,7 +1,7 @@
 # Riot Human-Capacity Marketing Reframe
 
 **Date:** 2026-07-22  
-**Status:** Design review candidate, revision 12
+**Status:** Design review candidate, revision 13
 
 **Scope:** Reframe `/why-riot/`, compact `/privacy/`, clarify the homepage hero, and reconcile
 site-wide claims and navigation. No application, protocol, or deployment behavior changes.
@@ -450,6 +450,12 @@ Parse every `srcset` as a comma-separated candidate list according to its URL-pl
 validate every candidate URL independently against the same allowlist, reject an empty or malformed
 candidate, and never validate only the first token or the unsplit attribute string.
 
+Reject raw resource-attribute/CSS URL values containing backslashes, ASCII control characters, or
+invalid percent escapes. Parse HTML with Chromium on the loopback preview so character references
+and browser URL normalization are applied; inspect resolved DOM resource properties rather than
+trusting raw regex output. The browser-level network gate below is authoritative if a static parser
+and Chromium resolution differ.
+
 ## TDD and Acceptance Criteria
 
 Extend `scripts/marketing/protocol-page-contracts.mjs` first and run:
@@ -496,8 +502,8 @@ The new assertions must fail before HTML implementation. After implementation th
 16. `README.md` and `docs/product/product-brief.md` label private encrypted groups
     **Direction, not shipped**, and replace “no server to raid/seize” absolutes with the bounded
     participant-copy, replaceable-gateway, and no-guarantee language defined above.
-17. local HTTP/browser checks find no `Set-Cookie`, no stored browser cookie, and no request outside
-    the loopback preview origin on Home, Why Riot, or Privacy.
+17. local HTTP/browser checks find no `Set-Cookie`, no stored browser cookie, and no resource request
+    outside the loopback preview origin on all nine editorial routes.
 
 The legacy-test migration replaces four complete regions in
 `scripts/marketing/protocol-page-contracts.mjs`, rather than deleting individual assertions ad hoc:
@@ -546,7 +552,10 @@ pairs and ratios, and any issue found. Screenshots remain reproducible `/tmp` ar
 large committed binaries; the committed report and exact capture commands preserve the evidence
 needed to repeat them.
 
-For each locally served route, capture every response header and browser request. Require no
+For each of the nine locally served routes, attach request and response listeners before navigation,
+load the page, scroll through the complete document to trigger lazy resources, wait for network idle,
+and capture every response header, request URL, and `performance.getEntriesByType("resource")` entry.
+Require no
 `Set-Cookie` response header, an empty Playwright browser-context cookie jar before and after the
 visit, and no request origin other than the chosen loopback preview origin. Also retain the static
 `document.cookie`, storage, beacon, and network-call predicates. These checks prove the built static
@@ -708,6 +717,10 @@ cookie-jar, and request-origin verification.
 
 The eighth security pass requested candidate-by-candidate `srcset` validation and durable request/
 header evidence. Revision 12 adds both.
+
+The ninth security pass requested browser-equivalent URL normalization and all-route HTTP coverage.
+Revision 13 makes Chromium's resolved DOM and observed network behavior the authoritative backstop
+and exercises every editorial route.
 
 ## Primary Sources
 
