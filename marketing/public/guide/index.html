@@ -1,0 +1,450 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Using Riot: a task-by-task field manual for the current prototype — create or join a community, post updates, exchange nearby, share, use community tools, and recover when something fails.">
+  <meta name="theme-color" content="#ff4f8b">
+  <title>Using Riot — a field manual for the current prototype</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%23f6f0e5'/%3E%3Ctext x='16' y='25' font-family='Impact,sans-serif' font-size='26' fill='%23ff4f8b' text-anchor='middle'%3ER%3C/text%3E%3C/svg%3E">
+  <style>
+    :root {
+      --paper: #f6f0e5;
+      --paper-2: #fffaf1;
+      --ink: #171614;
+      --muted: #605d57;
+      --pink: #ff4f8b;
+      --blue: #5b7cff;
+      --yellow: #ffdf3f;
+      --green: #a7e86d;
+      --line: #171614;
+      --shadow: 7px 7px 0 var(--ink);
+      --max: 1180px;
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      background: var(--paper);
+      font-family: "Arial", "Helvetica Neue", sans-serif;
+      font-size: 17px;
+      line-height: 1.58;
+    }
+    a { color: inherit; text-decoration-thickness: 2px; text-underline-offset: .18em; }
+    a:hover { text-decoration-color: var(--pink); }
+    a:focus-visible { outline: 4px solid var(--blue); outline-offset: 4px; }
+    h1, h2, h3 {
+      font-family: Impact, Haettenschweiler, "Arial Narrow Bold", sans-serif;
+      font-weight: 900;
+      line-height: .98;
+      letter-spacing: .01em;
+      text-transform: uppercase;
+    }
+    h1 { max-width: 920px; margin: .25rem 0 1.25rem; font-size: clamp(2.8rem, 6.5vw, 5rem); }
+    h2 { margin: 0 0 1rem; font-size: clamp(1.9rem, 4vw, 3rem); }
+    h3 { margin: 1.8rem 0 .6rem; font-size: clamp(1.3rem, 2.2vw, 1.7rem); }
+    p, ul, ol { max-width: 74ch; }
+    .wrap { width: min(calc(100% - 40px), var(--max)); margin-inline: auto; }
+    .skip-link { position: absolute; top: -100px; left: 12px; z-index: 100; padding: 10px 14px; background: #fff; border: 2px solid; }
+    .skip-link:focus { top: 12px; }
+    .sitenav {
+      position: sticky; top: 0; z-index: 50;
+      background: var(--ink); color: var(--paper-2); border-bottom: 3px solid var(--ink);
+    }
+    .sitenav-bar { display: flex; align-items: center; justify-content: space-between; padding: 0 max(16px, calc((100% - var(--max)) / 2)); gap: 16px; }
+    .sitenav-brand { font-family: Impact, Haettenschweiler, "Arial Narrow Bold", sans-serif; font-size: 1.5rem; text-decoration: none; padding: 10px 0; white-space: nowrap; }
+    .sitenav-brand span { padding: 1px 7px; background: var(--pink); color: var(--paper-2); }
+    .sitenav-brand:hover { opacity: .8; }
+    .sitenav-links { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 0; font: 700 .72rem/1.2 "Courier New", monospace; letter-spacing: .06em; text-transform: uppercase; overflow-x: auto; }
+    .sitenav-links a { color: color-mix(in srgb, var(--paper-2) 80%, transparent); text-decoration: none; padding: 11px 14px; white-space: nowrap; display: inline-block; border-bottom: 3px solid transparent; }
+    .sitenav-links a:hover { color: var(--paper-2); border-bottom-color: var(--pink); }
+    .sitenav-links a[aria-current="page"] { color: var(--pink); border-bottom-color: var(--pink); }
+    @media (max-width: 760px) {
+      .sitenav-links { font-size: .66rem; }
+      .sitenav-links a { padding: 11px 9px; }
+    }
+    .hero { padding: clamp(50px, 8vw, 90px) 0 52px; border-bottom: 3px solid var(--ink); background: var(--blue); color: var(--paper-2); }
+    .kicker { display: inline-block; margin: 0 0 1rem; padding: 7px 10px; border: 2px solid var(--ink); background: var(--yellow); box-shadow: 4px 4px 0 var(--ink); color: var(--ink); font: 700 .75rem/1.3 "Courier New", monospace; letter-spacing: .09em; text-transform: uppercase; }
+    .lede { max-width: 790px; margin: 0; font-size: clamp(1.05rem, 1.8vw, 1.3rem); font-weight: 700; }
+    section { padding: clamp(44px, 6vw, 72px) 0; border-bottom: 3px solid var(--ink); }
+    .eyebrow { margin: 0 0 12px; color: var(--pink); font: 700 .75rem/1.3 "Courier New", monospace; letter-spacing: .09em; text-transform: uppercase; }
+    .section-intro { margin: 0 0 28px; color: var(--muted); font-size: 1.05rem; }
+    .chip {
+      display: inline-block; vertical-align: middle; margin: 0 4px 0 0;
+      font: 700 .62rem/1.2 "Courier New", monospace; letter-spacing: .08em; text-transform: uppercase;
+      border: 2px solid var(--ink); padding: 2px 8px; white-space: nowrap; background: var(--paper-2); color: var(--ink);
+    }
+    .chip.offline { background: var(--green); }
+    .chip.needs { background: var(--yellow); }
+    .chip.platform { background: var(--paper); color: var(--muted); }
+    .task { margin: 26px 0 0; border: 2px solid var(--ink); background: var(--paper-2); box-shadow: 5px 5px 0 var(--ink); padding: 22px 24px 18px; }
+    .task h3 { margin: 0 0 .5rem; }
+    .task .goal { color: var(--muted); margin-top: 0; }
+    .task ol { margin: 12px 0; padding-left: 22px; }
+    .task ol li { margin: 6px 0; }
+    .task .expect { border-top: 2px solid color-mix(in srgb, var(--ink) 25%, transparent); padding-top: 12px; margin-top: 14px; font-size: .97rem; }
+    .task .recover { font-size: .97rem; color: var(--muted); }
+    .backline { display: inline-block; margin: 18px 0 0; font: 700 .72rem/1.3 "Courier New", monospace; letter-spacing: .07em; text-transform: uppercase; }
+    .toc { border: 3px solid var(--ink); background: var(--paper-2); box-shadow: var(--shadow); padding: 22px 26px; margin-top: 30px; }
+    .toc ol { columns: 2; column-gap: 40px; margin: 8px 0 0; padding-left: 22px; font-weight: 700; }
+    .toc ol li { margin: 5px 0; }
+    @media (max-width: 640px) { .toc ol { columns: 1; } }
+    .note { border-left: 6px solid var(--pink); background: var(--paper-2); padding: 14px 18px; max-width: 74ch; }
+    footer { padding: 34px 20px; color: var(--paper-2); background: var(--ink); }
+    .footer-inner { width: min(100%, var(--max)); margin: auto; display: flex; flex-wrap: wrap; justify-content: space-between; gap: 16px; }
+    .footer-inner p { margin: 0; font: 700 .76rem/1.4 "Courier New", monospace; text-transform: uppercase; }
+    .footer-links a { text-decoration: none; }
+    .footer-links a:hover { text-decoration: underline; text-decoration-color: var(--pink); }
+    @media (max-width: 680px) {
+      body { font-size: 16px; }
+      .wrap { width: min(calc(100% - 28px), var(--max)); }
+      h1 { font-size: clamp(2.4rem, 12vw, 3.8rem); }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      html { scroll-behavior: auto; }
+    }
+  </style>
+</head>
+<body>
+  <a class="skip-link" href="#content">Skip to content</a>
+  <nav class="sitenav" aria-label="Site">
+    <div class="sitenav-bar">
+      <a href="/" class="sitenav-brand"><span>Riot</span></a>
+      <div class="sitenav-links">
+        <a href="/">Home</a>
+        <a href="/why-riot/">Why Riot</a>
+        <a href="/guide/" aria-current="page">Using Riot</a>
+        <a href="/about/">About</a>
+        <a href="/privacy/">Privacy</a>
+        <a href="/open-source/">Open source</a>
+        <a href="/community/">Community</a>
+        <a href="/releases/">Get the app</a>
+        <a href="/protocols/">Protocol field guide</a>
+      </div>
+    </div>
+  </nav>
+
+  <header class="hero">
+    <div class="wrap">
+      <span class="kicker">Prototype field manual</span>
+      <h1>Using Riot</h1>
+      <p class="lede">Task-by-task instructions for the current app. Each task says whether it works offline, what to expect, and one way to recover when it fails. The same manual ships inside the app under Help — if your installed build is older, prefer the copy that shipped with it, because its labels match that version. For the argument behind the product, read <a href="/why-riot/">Why Riot</a>.</p>
+    </div>
+  </header>
+
+  <main id="content">
+
+    <section id="contents">
+      <div class="wrap">
+        <nav class="toc" aria-label="Guide contents">
+          <p class="eyebrow" style="margin:0;">Contents</p>
+          <ol>
+            <li><a href="#start">Start here</a></li>
+            <li><a href="#create-join">Create or join a community</a></li>
+            <li><a href="#manage">Manage your communities</a></li>
+            <li><a href="#post">Post and read updates</a></li>
+            <li><a href="#nearby">Exchange nearby</a></li>
+            <li><a href="#share">Share a community</a></li>
+            <li><a href="#tools">Use community tools</a></li>
+            <li><a href="#safety">Privacy and safety</a></li>
+            <li><a href="#troubleshoot">Troubleshooting</a></li>
+            <li><a href="#platforms">Platform notes</a></li>
+            <li><a href="#not-yet">What is not available yet</a></li>
+          </ol>
+        </nav>
+        <p class="section-intro" style="margin-top:22px;">Instructions below quote the visible labels of the current iPhone and Mac builds; Android organizes the same ideas with different labels — see <a href="#platforms">Platform notes</a>.</p>
+      </div>
+    </section>
+
+    <section id="start">
+      <div class="wrap">
+        <p class="eyebrow">1 · Start here</p>
+        <h2>What Riot keeps on this device</h2>
+        <p class="section-intro">Riot keeps your communities, posts, and tools on this device. Reading, writing, switching communities, and using approved tools all work with no internet connection. Riot is a prototype: screens and labels can change between builds.</p>
+        <p><span class="chip offline">Works offline</span> Reading, posting, switching communities, using approved tools, and preparing updates for exchange.</p>
+        <p><span class="chip needs">Needs a connection or permission</span> Nearby exchange needs local-network or Bluetooth permission. Scanning a QR code needs camera permission. Nothing else does.</p>
+        <p>Updates travel two ways today: directly between nearby devices, and as an exported public web view. There is no central server your community depends on.</p>
+        <div class="note">
+          <p><strong>Public-content warning.</strong> Everything in a public community is public and plaintext. Anyone who receives a post can keep it and pass it on — post accordingly. There is no recall once another device has a copy. Encrypted private groups are not available yet.</p>
+        </div>
+        <a class="backline" href="#contents">Back to contents ↑</a>
+      </div>
+    </section>
+
+    <section id="create-join">
+      <div class="wrap">
+        <p class="eyebrow">2 · Create or join a community</p>
+        <h2>Get into a community</h2>
+        <div class="task">
+          <h3>Create your own community</h3>
+          <p class="goal">Goal: a new community this device organizes.</p>
+          <p><span class="chip offline">Works offline</span></p>
+          <ol>
+            <li>On the Welcome screen, tap <b>“Get started”</b>.</li>
+            <li>Enter your name if you want one — it is optional, saved on this device, and shared with future peers.</li>
+            <li>Tap <b>“Create a community”</b>. (Already in a community? Open <b>“Your communities”</b> from the community name at the top, then tap <b>“Create a community”</b> there.)</li>
+          </ol>
+          <p class="expect"><strong>Expect:</strong> the new community opens with its four screens — Home, Tools, People, and Nearby. You are its organizer.</p>
+          <p class="recover"><strong>If it fails:</strong> close and reopen Riot — your profile and communities are saved on this device.</p>
+        </div>
+        <div class="task">
+          <h3>Join with a link</h3>
+          <p class="goal">Goal: join a community someone shared with you.</p>
+          <p><span class="chip offline">Works offline</span> once the link text is on your device.</p>
+          <ol>
+            <li>Tap <b>“Join with a link or QR”</b> — on the Welcome screen, or in <b>“Your communities”</b>.</li>
+            <li>Choose <b>“Paste”</b> and paste the link.</li>
+            <li>Review the community name and identifier shown before joining.</li>
+            <li>Tap <b>“Join this community”</b>.</li>
+          </ol>
+          <p class="expect"><strong>Expect:</strong> the community is added. Its name and posts arrive on first sync — usually the first nearby exchange with someone who has them.</p>
+          <p class="recover"><strong>If it fails:</strong> “That isn't a Riot community link.” means part of the link is missing — go back to where it was shared and copy all of it.</p>
+        </div>
+        <div class="task">
+          <h3>Join by scanning a QR code</h3>
+          <p class="goal">Goal: join in person, no typing.</p>
+          <p><span class="chip needs">Needs a connection or permission</span> — camera permission.</p>
+          <ol>
+            <li>Tap <b>“Join with a link or QR”</b>, then choose <b>“Scan”</b>.</li>
+            <li>Point the camera at the community's QR code.</li>
+            <li>Review the community name and identifier, then tap <b>“Join this community”</b>.</li>
+          </ol>
+          <p class="expect"><strong>Expect:</strong> the community is added, the same as joining with a pasted link.</p>
+          <p class="recover"><strong>If it fails:</strong> if the camera is blocked, tap <b>“Open Settings”</b> to allow it — or tap <b>“Paste a link instead”</b>.</p>
+        </div>
+        <div class="task">
+          <h3>Join from a nearby device</h3>
+          <p class="goal">Goal: join a community directly from a member standing next to you.</p>
+          <p><span class="chip needs">Needs a connection or permission</span> — local-network or Bluetooth permission; no internet.</p>
+          <ol>
+            <li>In <b>“Your communities”</b>, tap <b>“Find one nearby”</b> — or open the Nearby screen in any community.</li>
+            <li>Tap <b>“Find nearby devices”</b> and pick the other person's device.</li>
+            <li>Accept the connection when asked. If they are in a different community, Riot asks before you join it — nothing changes without your confirmation.</li>
+            <li>Preview what they offer, then add it or tap <b>“Not now”</b>.</li>
+          </ol>
+          <p class="expect"><strong>Expect:</strong> you join their community and carry a copy of the updates you accepted. Nothing lands without your explicit confirmation.</p>
+          <p class="recover"><strong>If it fails:</strong> see <a href="#nearby">Exchange nearby</a> — both devices must be close, on the Nearby screen, and allowed to use the local network.</p>
+        </div>
+        <a class="backline" href="#contents">Back to contents ↑</a>
+      </div>
+    </section>
+
+    <section id="manage">
+      <div class="wrap">
+        <p class="eyebrow">3 · Manage your communities</p>
+        <h2>Switch, leave, recover</h2>
+        <p class="section-intro">Roles you may see on a community: Organizer, Member, Public reader, Following, and Personal space. The organizer can approve tools and take editorial actions; everyone can read and post on the open wire. Archiving and restoring communities is not surfaced on iPhone or Mac yet — leaving is the only removal, and it is destructive on this device.</p>
+        <div class="task">
+          <h3>Switch to another community</h3>
+          <p><span class="chip offline">Works offline</span></p>
+          <ol>
+            <li>Tap the community name at the top of the screen to open <b>“Your communities”</b>.</li>
+            <li>Tap the community you want.</li>
+          </ol>
+          <p class="expect"><strong>Expect:</strong> that community opens where you left it. Your posting identity is separate in each community by design — your name in one community does not link you to another.</p>
+          <p class="recover"><strong>If it fails:</strong> a community marked “Needs recovery before it can open.” offers <b>Retry</b> — Riot quarantines rather than deletes, so retrying is safe.</p>
+        </div>
+        <div class="task">
+          <h3>Leave a community</h3>
+          <p><span class="chip offline">Works offline</span></p>
+          <ol>
+            <li>Open the community, then tap the settings symbol at the top to open <b>“Community settings”</b>.</li>
+            <li>Tap <b>“Leave this community”</b> and confirm.</li>
+          </ol>
+          <p class="expect"><strong>Expect:</strong> the community is removed from this device. Copies other devices already carry are not affected.</p>
+          <p class="recover"><strong>If it fails or you leave by mistake:</strong> rejoin with the community's link or from a nearby member — your old posts still exist on devices that synced them.</p>
+        </div>
+        <a class="backline" href="#contents">Back to contents ↑</a>
+      </div>
+    </section>
+
+    <section id="post">
+      <div class="wrap">
+        <p class="eyebrow">4 · Post and read updates</p>
+        <h2>Publish to your community</h2>
+        <div class="task">
+          <h3>Post an update</h3>
+          <p><span class="chip offline">Works offline</span></p>
+          <ol>
+            <li>Open Home and tap <b>“Post an update”</b>.</li>
+            <li>Write your update. You can review exactly what will be signed before it is saved.</li>
+            <li>Tap <b>“Post an update”</b> at the bottom to sign and save it.</li>
+          </ol>
+          <p class="expect"><strong>Expect:</strong> saved and signed on this device. Posting never needs a connection — delivery happens later, when devices sync, nearby today.</p>
+          <p class="recover"><strong>If it fails:</strong> your draft is safe — review it and try again. Drafts survive closing the composer and the app.</p>
+        </div>
+        <div class="task">
+          <h3>Read with the right expectations</h3>
+          <p>Open Home: the front page and open wire show your community's updates, and editorial history is always public. Open People to see who you have synced with and what they carry.</p>
+          <p>Names on posts are self-claimed display names paired with a tag derived from the author's key. The tag proves the same key signed two posts; the name proves nothing by itself. Riot verifies who authored an update — not whether its claims are true.</p>
+        </div>
+        <a class="backline" href="#contents">Back to contents ↑</a>
+      </div>
+    </section>
+
+    <section id="nearby">
+      <div class="wrap">
+        <p class="eyebrow">5 · Exchange nearby</p>
+        <h2>Move updates device to device</h2>
+        <p class="section-intro">Discovery runs nearby over Bluetooth or your local network. Nothing is added to your community without your confirmation: you preview what a peer offers first. The tested prototype path is the local network; physical two-iPhone Bluetooth exchange remains unverified.</p>
+        <div class="task">
+          <h3>Exchange updates with a nearby device</h3>
+          <p><span class="chip needs">Needs a connection or permission</span> — local-network or Bluetooth permission; no internet.</p>
+          <ol>
+            <li>Both people open the Nearby screen in the same community.</li>
+            <li>Tap <b>“Find nearby devices”</b>.</li>
+            <li>When the other device appears, select it. The other person taps <b>“Accept”</b> (or <b>“Decline”</b>).</li>
+            <li>If new updates are offered, review the preview, then tap <b>“Add … updates”</b> to take them — or <b>“Not now”</b> to decline.</li>
+            <li>Tap <b>“Stop”</b> to end discovery when you are done.</li>
+          </ol>
+          <p class="expect"><strong>Expect:</strong> “Synced” — you both carry the same updates, including posts either of you collected from others earlier. Accepted updates merge; nothing you already have is overwritten.</p>
+          <p class="recover"><strong>If it fails:</strong> “They are in a different space, so nothing was shared” means you are in different communities — switch to the same one and reconnect.</p>
+        </div>
+        <div class="task">
+          <h3>Fix “Nearby needs permission”</h3>
+          <p><span class="chip needs">Needs a connection or permission</span> — a settings change.</p>
+          <ol>
+            <li>On the Nearby screen, read the permission card.</li>
+            <li>Tap <b>“Open Settings”</b> and allow local network access for Riot.</li>
+            <li>Return to Riot and tap <b>“Find nearby devices”</b> again.</li>
+          </ol>
+          <p class="expect"><strong>Expect:</strong> discovery starts. Everything else in Riot keeps working offline while permission is denied — only nearby exchange needs it.</p>
+          <p class="recover"><strong>If it fails:</strong> move the phones closer, keep both on the Nearby screen, and make sure both are on the same Wi-Fi network.</p>
+        </div>
+        <a class="backline" href="#contents">Back to contents ↑</a>
+      </div>
+    </section>
+
+    <section id="share">
+      <div class="wrap">
+        <p class="eyebrow">6 · Share a community</p>
+        <h2>Bring people in</h2>
+        <div class="task">
+          <h3>Invite someone with a link or QR code</h3>
+          <p><span class="chip offline">Works offline</span> to display; the recipient needs the link or a scan.</p>
+          <ol>
+            <li>Open <b>“Community settings”</b> from the top of the screen.</li>
+            <li>Tap <b>“Share this community”</b>.</li>
+            <li>Send the share link, or let them scan the QR code on your screen.</li>
+          </ol>
+          <p class="expect"><strong>Expect:</strong> they can join with the link or QR code. Anyone with this link or QR code can follow the community — and can pass it onward; a public community's reference is itself public.</p>
+          <p class="recover"><strong>If it fails:</strong> “Nothing to share yet” means this community's details have not reached this device — the link becomes available after its first sync. Check back after exchanging with a member.</p>
+        </div>
+        <a class="backline" href="#contents">Back to contents ↑</a>
+      </div>
+    </section>
+
+    <section id="tools">
+      <div class="wrap">
+        <p class="eyebrow">7 · Use community tools</p>
+        <h2>The apps your community carries</h2>
+        <p class="section-intro">Tools are small apps the community carries with it. A tool runs only after the community's organizer turns it on — “Only the organizer of this community can turn a tool on here.”</p>
+        <div class="task">
+          <h3>Open and use a tool</h3>
+          <p><span class="chip offline">Works offline</span></p>
+          <ol>
+            <li>Open Tools. Home also shows shortcuts to the first approved tools.</li>
+            <li>Tap a tool to open it. It opens inside the community, with the community header and tabs still visible.</li>
+            <li>If you are the organizer, review what a tool can access before approving it.</li>
+          </ol>
+          <p class="expect"><strong>Expect:</strong> approved tools work entirely on this device and save their data into the community, so it syncs like everything else. Tools get app-scoped access, not your whole community — but their data is not secret.</p>
+          <p class="recover"><strong>If it fails:</strong> a tool that is unapproved, incomplete, or unavailable says so in place of opening — ask the community's organizer to review and approve it.</p>
+        </div>
+        <a class="backline" href="#contents">Back to contents ↑</a>
+      </div>
+    </section>
+
+    <section id="safety">
+      <div class="wrap">
+        <p class="eyebrow">8 · Privacy and safety</p>
+        <h2>What Riot protects — and what it can't</h2>
+        <ul>
+          <li><strong>Public content is plaintext by design.</strong> Alerts, mutual-aid requests, and public reporting are meant to circulate — Riot does not pretend they are secret.</li>
+          <li><strong>Pseudonymity is not anonymity.</strong> Separate communities use separate keys, but reused names, writing style, timing, and nearby radio presence can still correlate you.</li>
+          <li><strong>Nearby exchange is visible nearby.</strong> It reveals your device's presence and label to devices around you.</li>
+          <li><strong>Gateways see readers.</strong> A public web gateway you read through can log ordinary connection metadata, and a browser reader trusts its presentation.</li>
+          <li><strong>No guaranteed recall.</strong> Riot cannot recall or erase copies other devices already accepted. Post as if every public update is permanent.</li>
+          <li><strong>Encrypted private groups are not available</strong> in this build — do not treat any current community as confidential.</li>
+        </ul>
+        <p>The full argument and boundary tables are in <a href="/why-riot/">Why Riot</a>.</p>
+        <a class="backline" href="#contents">Back to contents ↑</a>
+      </div>
+    </section>
+
+    <section id="troubleshoot">
+      <div class="wrap">
+        <p class="eyebrow">9 · Troubleshooting</p>
+        <h2>When something fails</h2>
+        <div class="task">
+          <h3>A joined community looks empty</h3>
+          <p>Normal right after joining with a link or QR code — its name and posts arrive on first sync. Exchange with a member on the Nearby screen to bring its content over. If it stays empty after syncing, the peer may be in a different community — check the community name at the top on both devices.</p>
+        </div>
+        <div class="task">
+          <h3>No nearby device appears</h3>
+          <p>Keep both devices on the Nearby screen with the screen on, and tap <b>“Find nearby devices”</b> on both. Move the devices closer, and put both on the same Wi-Fi network. If a permission card shows, tap <b>“Open Settings”</b> and allow local network access. “The connection failed — try again” is safe to retry.</p>
+        </div>
+        <div class="task">
+          <h3>A community “Needs recovery before it can open.”</h3>
+          <p>In <b>“Your communities”</b>, tap <b>Retry</b> on the affected community. If it cannot recover, the rest of your communities keep working — the affected data is quarantined, never deleted. You can rejoin the same community with its link; quarantine keeps the old data aside instead of destroying it.</p>
+        </div>
+        <div class="task">
+          <h3>Share link unavailable</h3>
+          <p>“Nothing to share yet” — before a first sync, a community joined from a bare reference is not shareable yet. Exchange once with a member device, then share.</p>
+        </div>
+        <div class="task">
+          <h3>Tool incomplete, unapproved, or unavailable</h3>
+          <p>Only complete, organizer-approved tools run. Incomplete means content is still arriving — exchange with a member device that carries it. Unapproved means the organizer has not turned it on.</p>
+        </div>
+        <a class="backline" href="#contents">Back to contents ↑</a>
+      </div>
+    </section>
+
+    <section id="platforms">
+      <div class="wrap">
+        <p class="eyebrow">10 · Platform notes</p>
+        <h2>What differs by platform</h2>
+        <p class="section-intro">The shared core supports the same operations everywhere, but the surfaced UI differs. Where a flow is not exposed on a platform, use the alternative named here — shared core support is not user-facing parity.</p>
+        <div class="task">
+          <h3>iPhone (iOS)</h3>
+          <p>Four screens per community: Home, Tools, People, and Nearby. The Welcome screen, <b>“Your communities”</b> chooser, link and QR join flows, and the in-app Using Riot manual (under Help) are all present. The tested two-device sync path is the local network; physical two-iPhone Bluetooth exchange remains unverified.</p>
+        </div>
+        <div class="task">
+          <h3>Mac (macOS)</h3>
+          <p>Shares the same four screens and flows as the iPhone build; they appear in the sidebar, and Command-1 through Command-4 select them.</p>
+        </div>
+        <div class="task">
+          <h3>Android</h3>
+          <p>The Android build is a demo shell, further behind than the Apple builds, and it uses different labels: its surfaces are Spaces, App directory, Incident board, Newswire, Follow a site, Compose &amp; sign, Import preview, and Connection. What works: creating a public space (<b>“Create public space”</b>), composing and signing (<b>“Sign and add to board”</b>), reviewing and approving tools in the App directory, and nearby connection with import preview (<b>“Find nearby”</b>, then <b>“Add them”</b> or <b>“Not now”</b>).</p>
+          <p>Not present on Android at all: joining by link or QR code, sharing a community, and the community chooser. There is no alternative route on Android for those flows yet — use an iPhone or Mac.</p>
+        </div>
+        <a class="backline" href="#contents">Back to contents ↑</a>
+      </div>
+    </section>
+
+    <section id="not-yet">
+      <div class="wrap">
+        <p class="eyebrow">11 · What is not available yet</p>
+        <h2>Missing on purpose, for now</h2>
+        <ul>
+          <li><strong>Sync between Riot devices over the internet.</strong> Today devices exchange nearby, and the public web view is rendered from exports — a browser reader trusts the gateway they chose. Internet sync between Riot devices is being built.</li>
+          <li><strong>Encrypted private groups.</strong> Planned separately; no current community is confidential.</li>
+          <li><strong>Recalling or deleting every copy of a public post.</strong> Impossible once others carry it.</li>
+          <li><strong>Archiving and restoring communities in the UI.</strong> Supported in the core, not surfaced on iPhone or Mac yet.</li>
+          <li><strong>Production guarantees.</strong> Riot is a prototype — no audited security, guaranteed availability, or verified two-iPhone Bluetooth exchange; the tested nearby path is the local network.</li>
+        </ul>
+        <p class="section-intro" style="margin-top:20px;">Checked 22 July 2026 against the current prototype build. If your installed build is older, prefer the in-app manual that shipped with it — its labels match that version.</p>
+        <a class="backline" href="#contents">Back to contents ↑</a>
+      </div>
+    </section>
+
+  </main>
+
+  <footer>
+    <div class="footer-inner">
+      <p>Riot · a protest.net project · prototype</p>
+      <p class="footer-links"><a href="/">Home</a> · <a href="/why-riot/">Why Riot</a> · <a href="/about/">About</a> · <a href="/privacy/">Privacy</a> · <a href="/open-source/">Open source</a> · <a href="/community/">Community</a> · <a href="/releases/">Get the app</a> · <a href="/protocols/">Protocol field guide</a></p>
+    </div>
+  </footer>
+</body>
+</html>
