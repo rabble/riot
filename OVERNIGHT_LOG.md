@@ -1,3 +1,55 @@
+# Compact Tool Breadcrumb — Morning Summary (2026-07-22)
+
+## Done and tested
+
+- Diagnosed the macOS navigation defect: route selection changes the route but
+  leaves `runningTool` mounted, so the tool continues masking Home, Tools,
+  People, Nearby, and the chooser's “Find one nearby” route.
+- Designed the compact `community › app › page` host with full-name and
+  `🏘 › 🧰 › 📄` fallback presentations, community chooser entry, Wiki root
+  navigation, exact WebKit lifecycle rules, safe community switching, and
+  preserved iPhone tab behavior.
+- Committed the reviewed design and three revision sets on isolated branch
+  `overnight/2026-07-22`; unrelated main-checkout Xcode/test/screenshot work was
+  untouched.
+- Baseline `cargo build --workspace --all-features` and
+  `cargo test --workspace --all-features` passed.
+- Final full design-gate results on commit `7ccb7ea`: Product, Architect,
+  Designer, and Security APPROVED. The CTO's only blocker was the order of
+  Unicode forbidden-scalar rejection versus whitespace trimming; commit
+  `f9d3d58` corrects that contract and adds beginning/middle/end tests.
+
+## Open or blocked
+
+- Source implementation has not begun. The mandatory design gate exhausted its
+  three complete iterations with the CTO ordering clarification requested in
+  the final iteration. Repository policy requires an explicit human override
+  (or cancellation) before planning and implementation may continue, even
+  though the named technical issue is now corrected in the design.
+- No implementation plan was created because plans are forbidden before design
+  gate approval/override.
+
+## Assumptions to review
+
+- The breadcrumb is macOS-only; iPhone retains its community header,
+  NavigationStack back behavior, and tab state preservation.
+- Selecting a different community while any tool is mounted shows a conservative
+  possible-edit-loss confirmation because native code cannot inspect an app's
+  in-memory draft state.
+- Selecting the current community dismisses the chooser while preserving the
+  same WebView and page.
+
+## Suggested next steps
+
+1. Explicitly override the exhausted design-gate iteration ceiling for the
+   corrected `f9d3d58` design, or cancel the feature.
+2. On override, write and run the mandatory adversarial implementation-plan
+   gate, then implement the four TDD slices and register shared macOS tests.
+3. Finish with Apple builds/tests, Wiki artifact drift, Rust quality gates,
+   authoritative coverage, normal/constrained screenshots, and VoiceOver QA.
+
+---
+
 # PR #68 Rebase + Compact UX Integration — Morning Summary (2026-07-20)
 
 ## Done and tested
@@ -1078,3 +1130,33 @@ _(Summary goes at the TOP when done. Task entries append below in order.)_
   `cargo test --workspace --all-features` passed before implementation.
 - No blocked work or document conflict at this stage. The design and plan gates
   remain required before source implementation.
+
+## 2026-07-22 — Compact breadcrumb design-gate review
+
+- Ran the metaswarm design-review gate with isolated Product, Architect,
+  Designer, Security, and CTO reviews. Agent-capacity constraints required
+  sequential batches; reviewers were fresh, read-only, and never saw one
+  another's findings.
+- Review-driven corrections included: a stable Wiki index above 640 points;
+  exact `window` event dispatch; honest root-event failure recovery; macOS-only
+  route teardown; a chooser-level possible-edit-loss confirmation; chooser
+  Nearby teardown; raw and parsed title bounds; NFC plus `Cc`/`Cf`/`Zl`/`Zp`
+  rejection; weak KVO teardown; editing-conflict preservation; pure presentation
+  test seams; macOS test-target registration; and the authoritative coverage
+  gate.
+- The first partial review batch was not counted as an iteration because only
+  Product and Architect ran. Three later complete five-role iterations were
+  run, satisfying the configured maximum.
+- Final complete iteration on `7ccb7ea`: Product APPROVED, Architect APPROVED,
+  Designer APPROVED, Security APPROVED, CTO NEEDS_REVISION. CTO's single blocker
+  was that the spec described trimming before forbidden-scalar rejection, which
+  could remove a boundary newline/U+2028/U+2029 before validation.
+- Corrected that exact issue in `f9d3d58`: the raw bounded title is now scanned
+  for `Cc`/`Cf`/`Zl`/`Zp` before NFC normalization or whitespace trimming, with
+  beginning/middle/end tests specified.
+- Assumption rejected: treating the small final clarification as an implicit
+  gate approval. `AGENTS.md` requires all five approvals, and the gate skill
+  requires human escalation after three complete failed iterations.
+- Skipped implementation and plan drafting because proceeding would violate the
+  mandatory gate. Open question: approve an explicit process override for the
+  corrected design, or cancel the feature.
