@@ -48,7 +48,7 @@ const exactStatusText = {
 };
 ```
 
-Assert exact primary-nav order/set on all source pages and mirrors, exact nine-route footer sets including self-links, exact nine-path sitemap and README inventories, no `/resilience/` directory/link/sitemap route, distinct homepage and Why Riot H1s, origin-relative canonical links, the Why Riot section/status contracts, Privacy's public-first hierarchy, the code-native illustration accessibility contract, and exact participation/Solnit links.
+Assert exact primary-nav order/set on all source pages and mirrors, exact nine-route footer sets including self-links, exact nine-path sitemap and README inventories, no `/resilience/` directory/link/sitemap route, distinct homepage and Why Riot H1s, origin-relative canonical links, the Why Riot section/status contracts, Privacy's public-first hierarchy, the code-native illustration accessibility contract, and exact participation/Solnit links. The homepage assertion must require an ordinary-life use case and copy establishing that Riot matters before shutdown or disruption, rather than merely removing unsafe absolute language.
 
 - [ ] **Step 3: Add the finite site-wide claim and resource-safety audit**
 
@@ -56,9 +56,9 @@ Read all nine source pages plus `README.md` and `docs/product/product-brief.md`.
 
 - [ ] **Step 4: Add authoritative loopback browser checks**
 
-Start a Node HTTP server rooted at `marketing/public/`, launch Chromium, and visit all nine routes in a fresh context. Before navigation attach request/response listeners; after navigation scroll the complete page and wait for idle. Assert an empty cookie jar before and after, no `Set-Cookie`, no resource request outside the loopback origin, safe resolved anchor protocols/fragments, and safe resolved DOM resource URLs. Always close page, context, browser, and server in `finally` blocks.
+Start a Node HTTP server rooted at `marketing/public/`, launch Chromium, and visit all nine routes in a fresh context. Before navigation attach request/response listeners; after navigation scroll the complete page and wait for idle. Require HTTP 200 with no redirect chain for each canonical route. Request `/resilience/` with redirects disabled and require a direct 404 response with no `Location` header, proving the absent route is not a redirect. Assert an empty cookie jar before and after, no `Set-Cookie`, no resource request outside the loopback origin, safe resolved anchor protocols/fragments, and safe resolved DOM resource URLs. Always close page, context, browser, and server in `finally` blocks.
 
-For every route, capture every request URL, every response's ordered header entries, and every normalized `performance.getEntriesByType("resource")` entry. Re-run the static predicates against the homepage script text for `fetch(`, `sendBeacon(`, `XMLHttpRequest`, `WebSocket(`, `localStorage`, `sessionStorage`, and `document.cookie`; in Chromium also require `document.cookie === ""` and the context cookie jar to remain empty. Persist the browser observations in a deterministic JSON object that Task 4 can hash and quote in the committed review report.
+For every route, capture every request URL, every response's ordered header entries, and every normalized `performance.getEntriesByType("resource")` entry. Re-run the static predicates against the homepage script text for `fetch(`, `sendBeacon(`, `XMLHttpRequest`, `WebSocket(`, `localStorage`, `sessionStorage`, and `document.cookie`; in Chromium also require `document.cookie === ""` and the context cookie jar to remain empty. Serialize the sorted observations to `/tmp/visual-review/riot-human-capacity/browser-evidence.json`; Task 4 records its SHA-256 and full JSON in the committed report. Create the parent directory when absent so the CI contract does not depend on a prior visual-review run.
 
 - [ ] **Step 5: Add the npm and CI entry points**
 
@@ -99,7 +99,7 @@ git commit -m "test(marketing): specify human-capacity reframe"
 
 - [ ] **Step 1: Make the homepage hero distinct without disturbing current screenshots**
 
-Set the hero H1 to `Community tools that travel with people.` and its immediate support to `Riot is a home for public conversation, community decisions, shared tools, and collective memory—carried by the people who make it matter.` Add a prominent `/why-riot/` action labeled `Why Riot exists`. Preserve the current `win-frame` desktop screenshots and honest Prototype label. Qualify any absolute preservation/availability prose while keeping the existing product evidence and paired-story sections.
+Set the hero H1 to `Community tools that travel with people.` and its immediate support to `Riot is a home for public conversation, community decisions, shared tools, and collective memory—carried by the people who make it matter.` Add a prominent `/why-riot/` action labeled `Why Riot exists`. Preserve the current `win-frame` desktop screenshots and honest Prototype label. Add positive copy showing use in ordinary community life before disruption—for example, a festival rota, neighborhood publication, shared meal, or cooperative decision—so shutdown is not the page's sole reason for Riot. Qualify any absolute preservation/availability prose while keeping the existing product evidence and paired-story sections.
 
 - [ ] **Step 2: Build the Why Riot social-purpose page**
 
@@ -110,7 +110,7 @@ Replace the current three-audience technical essay with ordered semantic section
 3. `<section id="tools">` with exactly four `article[data-capability="publish|meet|coordinate|carry"]` cards and exact status chips/phrases from the design. Carry has exactly six `li[data-carry-path]` rows and no blanket card chip.
 4. `The future is a practice`, establishing ordinary use before difficult conditions.
 5. A short `More than one path` mechanism section with participant-held data, signed-record limits, locally useful already-held state, multiple bounded paths, replaceable hosts, the labeled aspiration `A community should be able to leave a provider without leaving one another.`, and `/protocols/` detail link.
-6. One compact honest-boundaries panel with public plaintext/readable/copyable content, incomplete privacy/transports, device/network/host risks, signature limits, prototype limits, and the Signal threat-model recommendation.
+6. One compact honest-boundaries panel with public plaintext/readable/copyable content, incomplete privacy/transports, device/network/host risks, signature limits, prototype limits, explicit `/privacy/` and `/protocols/` detail links, and the Signal threat-model recommendation.
 7. `Build it with us`, linking `/guide/`, `/community/`, `/releases/`, and the source repository, followed by a small non-endorsement Solnit lineage note linking the publisher page.
 
 Add `<link rel="canonical" href="/why-riot/">`, keep meaning/navigation script-free, preserve skip link/landmarks/focus/reduced-motion behavior, and make status labels visually subordinate.
@@ -231,7 +231,7 @@ Use the configured external Codex CLI, whose health check was `ready` during pla
 /Users/rabble/.codex/plugins/cache/metaswarm-marketplace/metaswarm/0.12.0/skills/external-tools/adapters/codex.sh health
 ```
 
-For each reader role create a fresh mode-0700 temporary directory containing only a byte-for-byte copy of `marketing/public/why-riot/index.html` and that role's exact prompt; do not run from the repository. Invoke a new `codex exec --sandbox read-only --json -C "$role_dir" "$prompt"` process for each role, preserving its distinct `thread_id` and raw JSONL. The prompt explicitly forbids external sources and names the single local HTML input. Do not reuse or resume sessions, expose earlier responses, include the design, or mount the repository. If the adapter health check is not ready, use a fresh in-product reviewer thread with the same single-file input; the verification cannot pass without four genuinely isolated session IDs.
+For each reader role create a fresh mode-0700 temporary directory containing only a byte-for-byte copy of `marketing/public/why-riot/index.html` and that role's exact prompt; do not run from the repository. Invoke a new `codex exec --skip-git-repo-check --sandbox read-only --json -C "$role_dir" "$prompt"` process for each role, preserving its distinct `thread_id` and raw JSONL. Resolve the CLI with `command -v codex`; the absolute adapter path above is only its configured health check, not the execution binary. The prompt explicitly forbids external sources and names the single local HTML input. Do not reuse or resume sessions, expose earlier responses, include the design, or mount the repository. If the adapter health check is not ready, use a fresh in-product reviewer thread with the same single-file input; the verification cannot pass without four genuinely isolated session IDs.
 
 Collect verbatim JSON for Community participant/organizer, Potential partner/institution, and Builder/technical reader. Record session IDs, exact prompts and prompt hashes, verbatim answers, element-by-element orchestrator scoring, and require 4/4, 5/5, and 5/5 respectively with no privacy/disaster/protocol-first primary impression.
 
@@ -267,6 +267,8 @@ git commit -m "docs(marketing): record human-capacity review evidence"
 - [ ] **Step 1: Run the repository's request-code-review and verification-before-completion skills**
 
 Check the final diff against every design acceptance criterion, with special attention to status exactness, unsafe claim equivalents, static resource allowlists, source/public mirror identity, first-read scores, and the fact that no `/resilience/` route or deployment mutation exists.
+
+Record `git diff --name-only origin/main...HEAD` and verify it contains only the declared marketing, contract, CI, package, product-document, plan/design, and review-report files. Confirm the current desktop hero `win-frame` screenshot assertions still pass. Because this is a static-site and documentation change with no data/schema migration, rollback is the ordered `git revert` of this branch's implementation commits; no cache, database, route redirect, or external state cleanup is required.
 
 - [ ] **Step 2: Run the final blocking commands from a clean worktree state**
 
