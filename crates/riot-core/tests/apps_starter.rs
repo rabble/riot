@@ -231,3 +231,34 @@ fn committed_artifacts_match_all_committed_sources() {
         );
     }
 }
+
+use riot_core::apps::starter::{CURRENT_STARTER_CATALOG, LEGACY_BUILTIN_CATALOG};
+
+#[test]
+fn current_and_legacy_catalogs_each_have_exactly_eight_pairs() {
+    assert_eq!(CURRENT_STARTER_CATALOG.len(), 8);
+    assert_eq!(LEGACY_BUILTIN_CATALOG.len(), 8);
+}
+
+#[test]
+fn every_current_and_legacy_pair_verifies() {
+    // Invalid pairs are silently dropped by verify_starter_catalog, so a
+    // full-length result proves all eight in each catalog are valid.
+    assert_eq!(verify_starter_catalog(CURRENT_STARTER_CATALOG).len(), 8);
+    assert_eq!(verify_starter_catalog(LEGACY_BUILTIN_CATALOG).len(), 8);
+}
+
+#[test]
+fn current_catalog_is_seeded_from_legacy_bytes_until_v2_lands() {
+    // WU-001 seeds CURRENT from the same v1 bytes; each Slice-4 WU re-points
+    // one entry. Until then the two catalogs derive identical app IDs.
+    let current: Vec<_> = verify_starter_catalog(CURRENT_STARTER_CATALOG)
+        .into_iter()
+        .map(|a| a.app_id)
+        .collect();
+    let legacy: Vec<_> = verify_starter_catalog(LEGACY_BUILTIN_CATALOG)
+        .into_iter()
+        .map(|a| a.app_id)
+        .collect();
+    assert_eq!(current, legacy);
+}

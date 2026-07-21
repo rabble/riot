@@ -77,8 +77,11 @@ const PHOTO_WALL_BUNDLE: &[u8] = include_bytes!(concat!(
     "/../../fixtures/apps/photo-wall.bundle.cbor"
 ));
 
-/// (manifest_bytes, bundle_bytes) pairs embedded at compile time.
-pub const STARTER_CATALOG: &[(&[u8], &[u8])] = &[
+/// The advertised, auto-installed catalog for a fresh generation-2 profile.
+/// Seeded from the v1 bytes in WU-001; each Slice-4 work unit re-points one
+/// entry to its generated v2 pair. Never resolve a held app from name/version —
+/// only by exact app ID.
+pub const CURRENT_STARTER_CATALOG: &[(&[u8], &[u8])] = &[
     (CHECKLIST_MANIFEST, CHECKLIST_BUNDLE),
     (SUPPLY_BOARD_MANIFEST, SUPPLY_BOARD_BUNDLE),
     (ROLL_CALL_MANIFEST, ROLL_CALL_BUNDLE),
@@ -88,6 +91,28 @@ pub const STARTER_CATALOG: &[(&[u8], &[u8])] = &[
     (WIKI_MANIFEST, WIKI_BUNDLE),
     (PHOTO_WALL_MANIFEST, PHOTO_WALL_BUNDLE),
 ];
+
+/// The frozen v1 built-ins. Never advertised as starters and never assigned a
+/// synthetic directory timestamp; it exists only to resolve an already-held v1
+/// ID for a generation-1/existing profile.
+pub const LEGACY_BUILTIN_CATALOG: &[(&[u8], &[u8])] = &[
+    (CHECKLIST_MANIFEST, CHECKLIST_BUNDLE),
+    (SUPPLY_BOARD_MANIFEST, SUPPLY_BOARD_BUNDLE),
+    (ROLL_CALL_MANIFEST, ROLL_CALL_BUNDLE),
+    (QUICK_POLL_MANIFEST, QUICK_POLL_BUNDLE),
+    (CHAT_MANIFEST, CHAT_BUNDLE),
+    (DISPATCHES_MANIFEST, DISPATCHES_BUNDLE),
+    (WIKI_MANIFEST, WIKI_BUNDLE),
+    (PHOTO_WALL_MANIFEST, PHOTO_WALL_BUNDLE),
+];
+
+/// Plain back-compat alias: the advertised catalog. Every pre-split use
+/// (`demo_fixture.rs`, the directory merge in `mobile_state.rs`, test fixtures)
+/// references the advertised catalog, which is exactly `CURRENT_STARTER_CATALOG`,
+/// so the alias keeps them correct AND compiling with zero migration. NOT
+/// `#[deprecated]` — that attribute would fail `clippy -- -D warnings` on the
+/// same-crate `demo_fixture.rs` uses.
+pub const STARTER_CATALOG: &[(&[u8], &[u8])] = CURRENT_STARTER_CATALOG;
 
 /// Decodes and integrity-checks every pair; invalid pairs are silently
 /// excluded, mirroring the import path's treatment of invalid items.
