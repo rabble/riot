@@ -1,7 +1,7 @@
 # Riot Human-Capacity Marketing Reframe
 
 **Date:** 2026-07-22  
-**Status:** Design review candidate, revision 6
+**Status:** Design review candidate, revision 7
 
 **Scope:** Reframe `/why-riot/`, compact `/privacy/`, clarify the homepage hero, and reconcile
 site-wide claims and navigation. No application, protocol, or deployment behavior changes.
@@ -71,8 +71,9 @@ This change adds no route and no redirect.
   **Protocol field guide** in primary navigation.
 - Remove **Privacy** from primary navigation so it no longer reads as a peer of the core product
   story. Keep `/privacy/` linked in every footer and from relevant boundary sections.
-- Preserve the existing rule that every page footer reaches every other editorial route, with a
-  page permitted to omit its own self-link.
+- Every page footer contains the exact nine-route `allSitePaths` set, including its own route. The
+  contract extracts `<footer\b[^>]*>[\s\S]*?</footer>` and compares normalized local href set
+  equality; links in the body or primary navigation cannot satisfy this invariant.
 - Update the explicit page inventories and navigation assertions in the marketing contract and
   `marketing/README.md`; the current README is stale and omits `/why-riot/`, `/guide/`, and
   `/releases/` in several places.
@@ -205,6 +206,8 @@ leaving one another.** Label it as an aim, not a guarantee.
 Keep one compact boundary panel:
 
 - public Riot spaces should be treated as publishable;
+- current public Newswire content is plaintext, readable and copyable, and has no confidential
+  public-read boundary;
 - private encrypted groups are not shipped;
 - pseudonymity is not anonymity;
 - gateways, hosts, networks, nearby observers, and compromised devices remain risks;
@@ -268,7 +271,8 @@ Use these labels consistently across the changed pages:
 | Meeting artifacts, polls, discussion, decisions, and shared records | Available in the prototype |
 | Bundled checklists, supply board, roll call, and quick poll | Available in the prototype |
 | Local use of already-held state and installed tools | Available in the prototype |
-| Portable file, share-link, or QR-assisted handoff | Available in the prototype |
+| Export and import a Riot bundle file | Available in the prototype |
+| Share a community reference by link or QR for onboarding | Available in the prototype |
 | Nearby peer exchange | Tested locally |
 | Public gateway rendering from exports | Available in the prototype |
 | Replaceable public-anchor discovery and remote sync | In development |
@@ -280,11 +284,46 @@ labels needed beside the exact claims named above, not reproduce this table as a
 section. Site-wide prose outside those claims is audited for unsafe absolutes but does not need a
 status badge on every sentence.
 
-Status markup is deterministic: every rendered status uses
-`<span class="chip" data-status="prototype|local|development|direction">Exact label</span>`. The
-contract extracts the four Tools for the Commons cards and asserts their exact label/text pairings,
-then checks the compact Carry sub-list separately. No other prose is classified as “material” by an
-automated status rule.
+Status markup is deterministic. `#tools` contains four articles identified by
+`data-capability="publish|meet|coordinate|carry"`. Visible status text uses exactly:
+
+```html
+<span class="chip" data-status="prototype">Available in the prototype</span>
+<span class="chip" data-status="local">Tested locally</span>
+<span class="chip" data-status="development">In development</span>
+<span class="chip" data-status="direction">Direction, not shipped</span>
+```
+
+The exact card contract is:
+
+- `article[data-capability="publish"]`: one `prototype` chip and the words “signed public updates
+  and community media”.
+- `article[data-capability="meet"]`: one `prototype` chip and the words “meeting artifacts, polls,
+  discussion, decisions, and a shared record”; it also says “not live audio or video”.
+- `article[data-capability="coordinate"]`: one `prototype` chip and the exact named tools
+  “checklist, supply board, roll call, and quick poll”.
+- `article[data-capability="carry"]`: no blanket card-level chip. Its six
+  `li[data-carry-path]` rows are exactly `local-state`—`prototype`, `bundle-file`—`prototype`,
+  `community-reference`—`prototype`, `nearby`—`local`, `gateway`—`prototype`, and
+  `anchors`—`development`. `bundle-file` says “export and import a Riot bundle file”.
+  `community-reference` says “share a community reference by link or QR” and explicitly says it is
+  onboarding/reference, not proof that content moved by radio.
+
+The contract extracts these bounded elements and asserts the exact chip value/text mapping plus the
+required phrases. No other prose is classified as “material” by an automated status rule.
+
+## Authoritative Product Status
+
+Executable behavior and current conformance/status pages are authoritative over aspirational product
+brief language. Current code and the protocol field guide show public communities, local
+create/read/import flows, bundled tools, tested local-network exchange, and gateway rendering; they
+also state that private encrypted groups are not shipped.
+
+The root `README.md` and `docs/product/product-brief.md` currently describe private groups as one of
+two product modes without marking implementation status. This change updates both documents to label
+that mode **Direction, not shipped** while preserving the architecture. No application behavior
+changes. After the edit, repository documentation must not imply that private encrypted groups are a
+current capability.
 
 ## Site-Wide Claim Audit
 
@@ -353,10 +392,11 @@ All pages: \son[a-z]+\s*=
 All pages: \sping\s*=
 All pages: <meta\b[^>]*http-equiv\s*=\s*["']?refresh
 All pages: <form\b
-All pages: <use\b[^>]*(?:href|xlink:href)\s*=\s*["']https?://
-All pages: <(?:script|link|img|iframe|audio|video|source|object|embed)\b[^>]*(?:src|href|data)\s*=\s*["']https?://
-All pages: @import\s+url|url\(\s*["']?https?://
-All pages, loader URL/tag context only: plausible|google-analytics|googletagmanager|segment\.com|mixpanel|hotjar|clarity
+All pages: <(?:use|image|feImage)\b[^>]*(?:href|xlink:href)\s*=\s*["'](?:https?:)?//
+All pages: <(?:script|link|img|iframe|audio|video|source|object|embed)\b[^>]*(?:src|srcset|href|data|poster)\s*=\s*["'](?:https?:)?//
+All pages: @import\s+url|url\(\s*["']?(?:https?:)?//
+All pages: <(?:script|link|img|iframe)[^>]+(?:plausible|google-analytics|googletagmanager|segment\.com|mixpanel|hotjar|clarity)
+All pages: (?:plausible|google-analytics|googletagmanager|segment\.com|mixpanel|hotjar|clarity)\.[a-z0-9-]+/(?:[a-z0-9-]+\.js|analytics|track|beacon)
 Homepage script: fetch\s*\(|sendBeacon\s*\(|XMLHttpRequest|WebSocket\s*\(|localStorage|sessionStorage|document\.cookie
 ```
 
@@ -379,7 +419,8 @@ The new assertions must fail before HTML implementation. After implementation th
 4. local route hrefs extracted from every source and mirror primary-navigation block have exact set
    equality with `primaryNavPaths`; Privacy is absent there and retained in `allSitePaths` footer
    checks;
-5. every footer preserves reachability to all other routes, including Privacy;
+5. local hrefs extracted from every `<footer>` have exact set equality with all nine
+   `allSitePaths`, including Privacy and the current page's self-link;
 6. sitemap and `marketing/README.md` contain the exact nine-route inventory; sitemap `<loc>` path
    count is nine and its normalized path set equals `allSitePaths` with neither missing nor extra
    routes;
@@ -401,6 +442,8 @@ The new assertions must fail before HTML implementation. After implementation th
     audience labels `Depth one`, `Depth two`, and `Depth three`; and the old required phrases
     `Privacy through control, not secrecy`, `One update, different paths`, and
     `Direction being built or still unverified`. Their replacement assertions are criteria 7–12.
+16. `README.md` and `docs/product/product-brief.md` label private encrypted groups
+    **Direction, not shipped**, consistent with the protocol field guide and current implementation.
 
 Add `"test:marketing": "node scripts/marketing/protocol-page-contracts.mjs"` to `package.json` and
 run it as a distinct blocking step in the existing CI web job after `npm run test:web:unit`.
@@ -426,9 +469,19 @@ pairs and ratios, and any issue found. Screenshots remain reproducible `/tmp` ar
 large committed binaries; the committed report and exact capture commands preserve the evidence
 needed to repeat them.
 
-After visual verification, run a first-read editorial gate with three fresh, mutually independent
-review sessions. Each receives only the rendered Why Riot page—not this specification, prior review
-answers, or another reviewer's context. Assign one declared reader role per session:
+The six standard files are `home-desktop.png`, `home-mobile.png`, `why-riot-desktop.png`,
+`why-riot-mobile.png`, `privacy-desktop.png`, and `privacy-mobile.png`. Forced-colors captures are
+additional files named `why-riot-forced-colors.png` and `privacy-forced-colors.png` at 1456×900.
+Contrast evaluation walks every visible text element and interactive control on all three routes at
+both standard viewports, resolves its computed foreground against the nearest non-transparent flat
+background, and records every unique pair. Required ratio is 4.5:1 for normal text and 3:1 for text
+at least 24 CSS px or at least 18.66 CSS px and bold. Any unresolved background is recorded and
+manually inspected rather than assumed to pass.
+
+After visual verification, compute the SHA-256 of `marketing/public/why-riot/index.html`, record it in
+the report, and run a first-read editorial gate with three fresh, mutually independent review
+sessions. Each receives only that exact file plus one of the prompts below—not this specification,
+prior review answers, or another reviewer's context. Assign one declared reader role per session:
 
 - **Community participant/organizer**
 - **Potential partner/institution**
@@ -464,10 +517,36 @@ describes Riot primarily as a privacy messenger, disaster-survival product, or p
 Commit each role, verbatim answer, element-by-element score, verdict, session identifier, and prompt
 hash in `docs/marketing/2026-07-22-human-capacity-implementation-review.md`.
 
-A fourth fresh editorial-auditor session receives all nine rendered page texts plus the semantic
-claim-safety categories, but not implementation commentary. It records any semantic equivalent that
-evades the finite patterns. Passing requires zero unqualified unsafe claims. Commit its prompt hash,
-verdict, and findings to the same report. This is the human half of the site-wide claim audit.
+Use this exact shared prompt prefix, appending the role-specific line and assigned questions above:
+
+```text
+Read only the attached rendered Why Riot HTML. Do not inspect the repository, design documents,
+prior reviews, or external sources. You are an independent first-time reader in the role: <ROLE>.
+Answer each assigned question in plain language using only what the page communicates. Return JSON
+with role, answers (keyed Q1–Q5 as applicable), and primary_impression. Do not score yourself.
+```
+
+The orchestrator, not the reviewer, applies the element rubric. A session is fresh when it has a new
+tool thread/session identifier and receives no earlier reviewer output. The report includes the
+complete rendered-file hash, exact prompt, its SHA-256, returned JSON verbatim, orchestrator scores,
+and session identifier so another reviewer can repeat the procedure.
+
+A fourth fresh editorial-auditor session receives the nine rendered HTML files plus this exact
+prompt, but not implementation commentary:
+
+```text
+Review only the attached nine rendered marketing HTML files. Find present-tense or absolute claims
+that mean any of: impossible to censor or shut down; always available; guaranteed delivery,
+discovery, synchronization, persistence, or recovery; nothing can be lost; anonymous,
+confidential, or private-by-default public spaces; audited, field-proven, production-ready, or
+operating at scale. A bounded statement naming prerequisites or clearly labeled aspiration is not a
+finding. Return JSON with verdict PASS or FAIL and findings containing route, exact excerpt, and
+which category it violates.
+```
+
+Passing requires `PASS` with zero findings. The report stores the complete prompt and SHA-256,
+ordered SHA-256 list for the nine reviewed HTML files, returned JSON verbatim, and fresh session
+identifier. This is the reproducible human half of the site-wide claim audit.
 
 Deployment is outside scope. Do not mutate production or claim the live site changed.
 
@@ -477,6 +556,9 @@ This work changes marketing HTML, its exact public mirrors, sitemap, marketing d
 contract tests, package scripts, and the existing CI web job. It does not change Riot protocols,
 application behavior, cryptography, privacy guarantees, anchor behavior, sync transports,
 deployment configuration, DNS, TLS, telemetry, or production state.
+
+Documentation scope also includes the narrow private-group status clarification in `README.md` and
+`docs/product/product-brief.md`, plus the committed implementation-review report.
 
 ## Review History
 
@@ -499,6 +581,10 @@ The second review approved the narrative and route architecture, then requested 
 and sitemap set equality, deterministic no-tracking predicates, and reproducible audience-specific
 reader and semantic-audit evidence. Revision 6 defines each one and names the committed review
 artifact.
+
+The third review approved architecture and UX, then found incomplete footer extraction, literal
+status, remote-resource, reader-evidence, and private-group documentation contracts. Revision 7
+defines each exact boundary and reconciles the aspirational docs with current implementation status.
 
 ## Primary Sources
 
