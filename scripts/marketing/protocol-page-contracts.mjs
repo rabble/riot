@@ -77,6 +77,11 @@ const [swiftStory, swiftPresentation] = await Promise.all([
   read(paths.swiftStory),
   read(paths.swiftPresentation),
 ]);
+const [marketingReadme, anchorCargo, anchorProtocolCargo] = await Promise.all([
+  read(resolve(root, "marketing/README.md")),
+  read(resolve(root, "crates/riot-anchor/Cargo.toml")),
+  read(resolve(root, "crates/riot-anchor-protocol/Cargo.toml")),
+]);
 
 assert.equal(home, publicHome, "homepage source and public mirror must be byte-identical");
 assert.equal(protocols, publicProtocols, "protocol page source and public mirror must be byte-identical");
@@ -87,6 +92,16 @@ for (const name of secondaryPages) {
 }
 assert.equal(whyRiot, publicWhyRiot, "why-riot page source and public mirror must be byte-identical");
 assert.equal(guide, publicGuide, "guide page source and public mirror must be byte-identical");
+
+assert.match(anchorCargo, /^license\s*=\s*"AGPL-3\.0-or-later"/m, "riot-anchor license declaration drift");
+assert.match(anchorProtocolCargo, /^license\s*=\s*"AGPL-3\.0-or-later"/m, "riot-anchor-protocol license declaration drift");
+for (const [name, content] of Object.entries({ openSource, community, marketingReadme })) {
+  assert.doesNotMatch(content, /\bone AGPL crate\b/i, `${name} must not undercount AGPL exceptions`);
+}
+for (const [name, content] of Object.entries({ openSource, marketingReadme })) {
+  assert.match(content, /crates\/riot-anchor(?:\/|\b)/i, `${name} must identify riot-anchor as AGPL`);
+  assert.match(content, /crates\/riot-anchor-protocol(?:\/|\b)/i, `${name} must identify riot-anchor-protocol as AGPL`);
+}
 
 for (const name of [
   "spaces", "apps", "compose", "checklist",
@@ -427,7 +442,6 @@ const sitemapUrls = [...sitemap.matchAll(/<loc>([^<]+)<\/loc>/gi)].map(([, href]
 for (const url of sitemapUrls) assert.equal(url.origin, "https://riot-protest-net-marketing.protestnet.workers.dev", "sitemap origin drift");
 const sitemapPaths = sitemapUrls.map((url) => normalizeLocalRoute(url.href, { allowExternal: true })).filter(Boolean);
 assertExactRoutes(sitemapPaths, allSitePaths, "sitemap", { ordered: true });
-const marketingReadme = await read(resolve(root, "marketing/README.md"));
 const routesSection = block(marketingReadme, /## Routes\s*([\s\S]*?)(?=\n##\s|$)/, "marketing README Routes section");
 const readmeRoutes = [...routesSection.matchAll(/^- `([^`]+)`/gm)].map(([, href]) => normalizeLocalRoute(href));
 assertExactRoutes(readmeRoutes, allSitePaths, "marketing README route inventory", { ordered: true });
