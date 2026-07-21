@@ -178,7 +178,9 @@ bridge or protocol failures.
 - Migrating data automatically between content-addressed app versions.
 - Adding remote fonts, analytics, trackers, service workers, or network access.
 - Making every tool use identical content layout or identical toolbar items.
-- Changing app permissions, trust, signing, or Willow reconciliation behavior.
+- Changing who may authorize a tool, what trust permits, signing semantics, or
+  Willow reconciliation behavior. Persistence and invalidation ordering changes
+  deliberately so the existing trust decision is crash-safe.
 
 ## Navigation ownership
 
@@ -649,6 +651,11 @@ bundle SHA-256, encoded size, resource count, current/legacy membership, theme/
 font capability, and data namespace prefix. Runtime selection and authorization
 always use the complete app ID, never name or semantic version.
 
+A persisted immutable built-in reference contains its catalog generation and
+complete app ID. Future binaries must retain exact byte resolution for every
+generation still referenceable by a supported profile; removing catalog bytes
+requires a separately reviewed, durable migration of all such references.
+
 The checked-in v1 side of that report begins with these current derived IDs.
 V2 IDs are deliberately generated only after their source and deterministic
 bundle exist; a plan or developer may not invent or pre-pin them.
@@ -684,17 +691,25 @@ precedence after catalog equality verification.
 
 Fresh profiles atomically record generation 2 before receiving only the v2
 catalog. An explicit generation 1 value is accepted but never required for old
-profiles. An in-progress fresh-profile marker resumes deterministically after a
-crash; an absent marker can never be “partially migrated” because it always
+profiles. An absent marker can never be “partially migrated” because it always
 means generation 1. Catalog resolution changes no directory timestamps, trust,
 or profile bytes.
 
-Fault-injection tests terminate the process and fail storage after every fresh
-generation-2 marker/install boundary. Reopening converges to the same catalog,
+Fresh creation writes the base profile and generation-2 value in one first
+atomic save; it never writes a marker-less fresh profile. Failure leaves no
+selectable profile or legacy suite and shows an announced native error:
+**Riot couldn't finish setting up on this device. Try again.** Focus returns to
+the original Create/Join action and retry starts from a new temporary profile.
+
+Fault-injection tests terminate the process and fail storage before/after fresh
+generation-2 creation and every catalog-install boundary. Reopening converges
+to the same catalog,
 ordering, and trust state. A previous Android v3 profile at exactly 4,194,240
 bytes must restart, resolve and launch trusted legacy apps, revoke an existing
 trust decision without growth, reject a growth-requiring grant with no state
-change, and retain all data with the marker still absent.
+change, and retain all data with the marker still absent. Its encoder must keep
+the same zero-growth legacy representation for every permitted rewrite rather
+than silently upgrading the codec or materializing a generation field.
 
 The current v2 directory listing is still visible to an existing organizer as
 an optional redesign. Installing it starts a distinct app-data namespace. No
@@ -767,12 +782,18 @@ profile.
 
 ### Durable trust and app-data transactions
 
-Install, trust grant, trust revoke, profile switch, and every app-data write use
-one profile authority/persistence lock on each host. A bridge operation cannot
-interleave while trust or profile generation changes. Core adds side-effect-free
+Install (including nearby/sync admission), trust grant, trust revoke, profile
+switch/reset, and every app-data write use one profile authority/persistence
+lock on each host. A bridge operation cannot interleave while trust or profile
+generation changes. Core adds side-effect-free
 prepare calls that validate current authority and return a generation-bound
 token; finalize is idempotent and cannot produce a recoverable failure while the
 same lock and generation remain valid.
+
+At most one prepared mutation exists per profile because it lives only while
+the shared lock is held. Every success/failure path calls explicit discard or
+finalize, and profile close, generation change, storage failure, trust
+invalidation, and WebView teardown clear any outstanding token.
 
 Trust grant is persistence-first:
 
@@ -783,6 +804,14 @@ Trust grant is persistence-first:
 4. core finalizes trust and only then exposes **Open**. The durable write is the
    linearization point: a crash afterward restarts trusted and reapplies the
    same exact ID.
+
+If grant persistence is storage-full, the row returns to **Review**, the tool
+remains off, and an alert says: **This device's offline storage is full, so Riot
+couldn't turn on <name>. The tool is still off and your tools did not change.**
+For another persistence failure it says: **Riot couldn't save that change on
+this device. <name> is still off. Try again.** In both cases focus returns to
+the originating **Turn on** action, the alert is announced once, and a user-
+activated retry reruns the complete grant transaction.
 
 Trust revoke is also persistence-first but fail-closed:
 
@@ -796,12 +825,25 @@ Trust revoke is also persistence-first but fail-closed:
    the lock. A crash after durable removal terminates the process and restarts
    untrusted.
 
+If revoke persistence fails, the row returns to **Open**, its mounted runtime
+and trust remain active, and an alert says: **Riot couldn't save that change on
+this device. <name> is still on. Try again.** Focus returns to the originating
+**Turn off** action, the alert is announced once, and a user-activated retry
+reruns the complete revoke transaction. Riot never reuses install-capacity copy
+for an already-held tool.
+
 An unexpected finalize invariant failure closes the whole profile and rebuilds
 runtime state from the already-durable profile before any tool can reopen; Riot
 does not roll a durable decision backward or report a failed action that will
 reverse on restart. Fault injection covers before/after prepare, persistence,
 finalize, session invalidation, WebView destruction, process termination, and
 profile rebuild for both grant and revoke.
+
+After rebuild, Tools receives one announced native status and focus: **<name>
+was turned on. Riot reopened this profile to finish safely.**, **<name> was
+turned off. Riot reopened this profile to finish safely.**, or **Your change was
+saved. Riot reopened this profile to finish safely.** It never exposes token,
+transaction, codec, or raw storage language.
 
 App-data mutation uses an equivalent prepare/persist/finalize protocol rather
 than today's commit-live-then-save receipt order:
@@ -1207,6 +1249,10 @@ hard continuation gate: any failed navigation, keyboard, performance, or
 coexistence criterion revises and retests the shared system before another tool
 migrates. The report publishes results both in aggregate and per assigned tool;
 an easier tool cannot hide a failed journey in another.
+
+At least one participant on each platform encounters a storage-full write with
+a supplied draft. Passing requires them to identify that the draft remains,
+that existing shared information did not change, and that retry is not automatic.
 
 ## Acceptance criteria
 
