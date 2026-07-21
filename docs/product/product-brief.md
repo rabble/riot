@@ -10,8 +10,8 @@ Riot is a native offline packet runtime for that job.
 
 Riot has two sides, built as separate subsystems joined only by an explicit bridge (see `docs/superpowers/specs/2026-07-10-riot-dual-mode-design.md`):
 
-- **Open newswire:** per-incident open spaces anyone can publish to, and publication spaces where a pseudonymous collective is the publisher. Curation is a reading lens applied by editors, not a gate on publishing. Subscribers' devices are the distribution network, so a banned publication has no server to seize.
-- **Private groups:** encrypted, unlinkable spaces for affinity groups, coops, and crews. Joined in person via QR or by portable encrypted invite files.
+- **Open newswire:** per-incident open spaces anyone can publish to, and publication spaces where a pseudonymous collective is the publisher. Curation is a reading lens applied by editors, not a gate on publishing. Participant-held copies and replaceable gateways can reduce dependence on one server, but Riot does not guarantee that a complete reachable copy exists or that publishing, access, persistence, or censorship resistance survives.
+- **Private groups — Direction, not shipped:** intended encrypted, unlinkable spaces for affinity groups, coops, and crews, with in-person QR or portable encrypted invite-file joining. Do not rely on this mode today.
 
 A public web gateway mirrors newswire content at normal URLs for discovery and onboarding; private groups never touch it.
 
