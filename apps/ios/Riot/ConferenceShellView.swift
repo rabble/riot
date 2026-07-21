@@ -920,6 +920,8 @@ private struct CommunityShellView: View {
     /// The tool running in the detail pane (macOS) / full-screen (iPhone), and
     /// the card that opened it, so focus returns there on close.
     @State private var runningTool: RiotSpaceApp?
+    @State private var runtimeTeardownHandle = AppRuntimeTeardownHandle()
+    @State private var runtimeMountID = UUID()
     @State private var focus = ToolFocusRestoration()
 
     @State private var identitySheet: ShellIdentityDestination?
@@ -1048,7 +1050,29 @@ private struct CommunityShellView: View {
             // community-name control; selecting a row switches, an unavailable row
             // recovers in place.
             .sheet(isPresented: $model.isCommunityChooserPresented) {
-                CommunityChooserView(model: model)
+                CommunityChooserView(
+                    model: model,
+                    currentCommunityID: community.namespaceID,
+                    mountedAppName: runningTool?.name,
+                    onSelectCommunity: { namespaceID in
+                        MountedToolExit.perform(closeTool: closeTool) {
+                            model.switchCommunity(namespaceID: namespaceID)
+                        }
+                    },
+                    onFindNearby: {
+                        MountedToolExit.perform(closeTool: closeTool) { model.findNearby() }
+                    },
+                    onCreateCommunity: {
+                        MountedToolExit.perform(closeTool: closeTool) {
+                            model.requestCreateCommunity()
+                        }
+                    },
+                    onJoinByReference: {
+                        MountedToolExit.perform(closeTool: closeTool) {
+                            model.requestJoinByReference()
+                        }
+                    }
+                )
             }
             // Join with a link or QR — raised from the chooser's "Join another" row
             // (and, on the launch screen, its own button). Presented at the shell so
@@ -1142,7 +1166,7 @@ private struct CommunityShellView: View {
         composerPresentation.close()
         identitySheet = nil
         confirmingLeave = false
-        runningTool = nil
+        closeTool()
         nearby.onBeforeSpaceJoin = nil
         nearby.onSpaceJoined = nil
         if !preparation.transportMustContinue {
@@ -1263,8 +1287,12 @@ private struct CommunityShellView: View {
                         repository: repository,
                         appIDHex: tool.appIDHex,
                         appName: tool.name,
+                        communityName: community.name,
+                        teardownHandle: runtimeTeardownHandle,
+                        onOpenCommunity: model.openCommunityChooser,
                         onClose: closeTool
                     )
+                    .id(runtimeMountID)
                     .onExitCommand(perform: escape)
                 } else {
                     routeView(navigation.destination)
@@ -1357,8 +1385,11 @@ private struct CommunityShellView: View {
         Binding(
             get: { runningTool },
             set: { newValue in
-                if newValue == nil, runningTool != nil { _ = focus.close() }
-                runningTool = newValue
+                if let newValue {
+                    mountTool(newValue)
+                } else if runningTool != nil {
+                    closeTool()
+                }
             }
         )
     }
@@ -1370,8 +1401,12 @@ private struct CommunityShellView: View {
                 repository: repository,
                 appIDHex: tool.appIDHex,
                 appName: tool.name,
+                communityName: community.name,
+                teardownHandle: runtimeTeardownHandle,
+                onOpenCommunity: model.openCommunityChooser,
                 onClose: { toolNavigation.wrappedValue = nil }
             )
+            .id(runtimeMountID)
         } else {
             Color.clear.onAppear { closeTool() }
         }
@@ -1457,10 +1492,18 @@ private struct CommunityShellView: View {
         // list therefore open a tool the same way — never a contextless cover.
         model.select(.tools)
         focus.open(toolID: cardID)
+        mountTool(app)
+    }
+
+    private func mountTool(_ app: RiotSpaceApp) {
+        runtimeTeardownHandle.tearDownNow()
+        runtimeTeardownHandle = AppRuntimeTeardownHandle()
+        runtimeMountID = UUID()
         runningTool = app
     }
 
     private func closeTool() {
+        runtimeTeardownHandle.tearDownNow()
         _ = focus.close()
         runningTool = nil
     }
@@ -1475,6 +1518,9 @@ private struct CommunityShellView: View {
     // MARK: Community change guard
 
     private func changeRoute(to destination: RiotDestination) {
+        if ToolRoutePolicy.closesMountedToolBeforeRoute, runningTool != nil {
+            closeTool()
+        }
         model.select(destination)
     }
 
