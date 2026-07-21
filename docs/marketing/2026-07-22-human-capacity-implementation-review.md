@@ -93,7 +93,586 @@ schemes, valid `srcset` descriptors, decoded SVG-favicon safety, and no off-orig
 The complete browser evidence, verbatim:
 
 ```json
-{"origin":"http://127.0.0.1:51722","routes":[{"route":"/","cookiesBefore":[],"cookiesAfter":[],"documentCookie":"","requests":["http://127.0.0.1:51722/","http://127.0.0.1:51722/assets/screenshots/app-checklist.png","http://127.0.0.1:51722/assets/screenshots/app-decisions.png","http://127.0.0.1:51722/assets/screenshots/app-dispatches.png","http://127.0.0.1:51722/assets/screenshots/app-events.png","http://127.0.0.1:51722/assets/screenshots/app-home.png","http://127.0.0.1:51722/assets/screenshots/app-photos.png"],"responses":[{"url":"http://127.0.0.1:51722/","status":200,"headers":[["cache-control","no-store"],["connection","keep-alive"],["content-type","text/html; charset=utf-8"],["date","Tue, 21 Jul 2026 21:56:25 GMT"],["keep-alive","timeout=5"],["transfer-encoding","chunked"]]},{"url":"http://127.0.0.1:51722/assets/screenshots/app-checklist.png","status":200,"headers":[["cache-control","no-store"],["connection","keep-alive"],["content-type","image/png"],["date","Tue, 21 Jul 2026 21:56:26 GMT"],["keep-alive","timeout=5"],["transfer-encoding","chunked"]]},{"url":"http://127.0.0.1:51722/assets/screenshots/app-decisions.png","status":200,"headers":[["cache-control","no-store"],["connection","keep-alive"],["content-type","image/png"],["date","Tue, 21 Jul 2026 21:56:26 GMT"],["keep-alive","timeout=5"],["transfer-encoding","chunked"]]},{"url":"http://127.0.0.1:51722/assets/screenshots/app-dispatches.png","status":200,"headers":[["cache-control","no-store"],["connection","keep-alive"],["content-type","image/png"],["date","Tue, 21 Jul 2026 21:56:26 GMT"],["keep-alive","timeout=5"],["transfer-encoding","chunked"]]},{"url":"http://127.0.0.1:51722/assets/screenshots/app-events.png","status":200,"headers":[["cache-control","no-store"],["connection","keep-alive"],["content-type","image/png"],["date","Tue, 21 Jul 2026 21:56:26 GMT"],["keep-alive","timeout=5"],["transfer-encoding","chunked"]]},{"url":"http://127.0.0.1:51722/assets/screenshots/app-home.png","status":200,"headers":[["cache-control","no-store"],["connection","keep-alive"],["content-type","image/png"],["date","Tue, 21 Jul 2026 21:56:26 GMT"],["keep-alive","timeout=5"],["transfer-encoding","chunked"]]},{"url":"http://127.0.0.1:51722/assets/screenshots/app-photos.png","status":200,"headers":[["cache-control","no-store"],["connection","keep-alive"],["content-type","image/png"],["date","Tue, 21 Jul 2026 21:56:26 GMT"],["keep-alive","timeout=5"],["transfer-encoding","chunked"]]}],"resources":["http://127.0.0.1:51722/assets/screenshots/app-checklist.png","http://127.0.0.1:51722/assets/screenshots/app-decisions.png","http://127.0.0.1:51722/assets/screenshots/app-dispatches.png","http://127.0.0.1:51722/assets/screenshots/app-events.png","http://127.0.0.1:51722/assets/screenshots/app-home.png","http://127.0.0.1:51722/assets/screenshots/app-photos.png"]},{"route":"/why-riot/","cookiesBefore":[],"cookiesAfter":[],"documentCookie":"","requests":["http://127.0.0.1:51722/why-riot/"],"responses":[{"url":"http://127.0.0.1:51722/why-riot/","status":200,"headers":[["cache-control","no-store"],["connection","keep-alive"],["content-type","text/html; charset=utf-8"],["date","Tue, 21 Jul 2026 21:56:27 GMT"],["keep-alive","timeout=5"],["transfer-encoding","chunked"]]}],"resources":[]},{"route":"/guide/","cookiesBefore":[],"cookiesAfter":[],"documentCookie":"","requests":["http://127.0.0.1:51722/guide/"],"responses":[{"url":"http://127.0.0.1:51722/guide/","status":200,"headers":[["cache-control","no-store"],["connection","keep-alive"],["content-type","text/html; charset=utf-8"],["date","Tue, 21 Jul 2026 21:56:28 GMT"],["keep-alive","timeout=5"],["transfer-encoding","chunked"]]}],"resources":[]},{"route":"/about/","cookiesBefore":[],"cookiesAfter":[],"documentCookie":"","requests":["http://127.0.0.1:51722/about/"],"responses":[{"url":"http://127.0.0.1:51722/about/","status":200,"headers":[["cache-control","no-store"],["connection","keep-alive"],["content-type","text/html; charset=utf-8"],["date","Tue, 21 Jul 2026 21:56:29 GMT"],["keep-alive","timeout=5"],["transfer-encoding","chunked"]]}],"resources":[]},{"route":"/privacy/","cookiesBefore":[],"cookiesAfter":[],"documentCookie":"","requests":["http://127.0.0.1:51722/privacy/"],"responses":[{"url":"http://127.0.0.1:51722/privacy/","status":200,"headers":[["cache-control","no-store"],["connection","keep-alive"],["content-type","text/html; charset=utf-8"],["date","Tue, 21 Jul 2026 21:56:30 GMT"],["keep-alive","timeout=5"],["transfer-encoding","chunked"]]}],"resources":[]},{"route":"/open-source/","cookiesBefore":[],"cookiesAfter":[],"documentCookie":"","requests":["http://127.0.0.1:51722/open-source/"],"responses":[{"url":"http://127.0.0.1:51722/open-source/","status":200,"headers":[["cache-control","no-store"],["connection","keep-alive"],["content-type","text/html; charset=utf-8"],["date","Tue, 21 Jul 2026 21:56:31 GMT"],["keep-alive","timeout=5"],["transfer-encoding","chunked"]]}],"resources":[]},{"route":"/community/","cookiesBefore":[],"cookiesAfter":[],"documentCookie":"","requests":["http://127.0.0.1:51722/community/"],"responses":[{"url":"http://127.0.0.1:51722/community/","status":200,"headers":[["cache-control","no-store"],["connection","keep-alive"],["content-type","text/html; charset=utf-8"],["date","Tue, 21 Jul 2026 21:56:32 GMT"],["keep-alive","timeout=5"],["transfer-encoding","chunked"]]}],"resources":[]},{"route":"/releases/","cookiesBefore":[],"cookiesAfter":[],"documentCookie":"","requests":["http://127.0.0.1:51722/releases/"],"responses":[{"url":"http://127.0.0.1:51722/releases/","status":200,"headers":[["cache-control","no-store"],["connection","keep-alive"],["content-type","text/html; charset=utf-8"],["date","Tue, 21 Jul 2026 21:56:33 GMT"],["keep-alive","timeout=5"],["transfer-encoding","chunked"]]}],"resources":[]},{"route":"/protocols/","cookiesBefore":[],"cookiesAfter":[],"documentCookie":"","requests":["http://127.0.0.1:51722/protocols/"],"responses":[{"url":"http://127.0.0.1:51722/protocols/","status":200,"headers":[["cache-control","no-store"],["connection","keep-alive"],["content-type","text/html; charset=utf-8"],["date","Tue, 21 Jul 2026 21:56:34 GMT"],["keep-alive","timeout=5"],["transfer-encoding","chunked"]]}],"resources":[]}],"resilience":{"status":404,"location":null}}
+{
+  "origin": "http://127.0.0.1:51722",
+  "routes": [
+    {
+      "route": "/",
+      "cookiesBefore": [],
+      "cookiesAfter": [],
+      "documentCookie": "",
+      "requests": [
+        "http://127.0.0.1:51722/",
+        "http://127.0.0.1:51722/assets/screenshots/app-checklist.png",
+        "http://127.0.0.1:51722/assets/screenshots/app-decisions.png",
+        "http://127.0.0.1:51722/assets/screenshots/app-dispatches.png",
+        "http://127.0.0.1:51722/assets/screenshots/app-events.png",
+        "http://127.0.0.1:51722/assets/screenshots/app-home.png",
+        "http://127.0.0.1:51722/assets/screenshots/app-photos.png"
+      ],
+      "responses": [
+        {
+          "url": "http://127.0.0.1:51722/",
+          "status": 200,
+          "headers": [
+            [
+              "cache-control",
+              "no-store"
+            ],
+            [
+              "connection",
+              "keep-alive"
+            ],
+            [
+              "content-type",
+              "text/html; charset=utf-8"
+            ],
+            [
+              "date",
+              "Tue, 21 Jul 2026 21:56:25 GMT"
+            ],
+            [
+              "keep-alive",
+              "timeout=5"
+            ],
+            [
+              "transfer-encoding",
+              "chunked"
+            ]
+          ]
+        },
+        {
+          "url": "http://127.0.0.1:51722/assets/screenshots/app-checklist.png",
+          "status": 200,
+          "headers": [
+            [
+              "cache-control",
+              "no-store"
+            ],
+            [
+              "connection",
+              "keep-alive"
+            ],
+            [
+              "content-type",
+              "image/png"
+            ],
+            [
+              "date",
+              "Tue, 21 Jul 2026 21:56:26 GMT"
+            ],
+            [
+              "keep-alive",
+              "timeout=5"
+            ],
+            [
+              "transfer-encoding",
+              "chunked"
+            ]
+          ]
+        },
+        {
+          "url": "http://127.0.0.1:51722/assets/screenshots/app-decisions.png",
+          "status": 200,
+          "headers": [
+            [
+              "cache-control",
+              "no-store"
+            ],
+            [
+              "connection",
+              "keep-alive"
+            ],
+            [
+              "content-type",
+              "image/png"
+            ],
+            [
+              "date",
+              "Tue, 21 Jul 2026 21:56:26 GMT"
+            ],
+            [
+              "keep-alive",
+              "timeout=5"
+            ],
+            [
+              "transfer-encoding",
+              "chunked"
+            ]
+          ]
+        },
+        {
+          "url": "http://127.0.0.1:51722/assets/screenshots/app-dispatches.png",
+          "status": 200,
+          "headers": [
+            [
+              "cache-control",
+              "no-store"
+            ],
+            [
+              "connection",
+              "keep-alive"
+            ],
+            [
+              "content-type",
+              "image/png"
+            ],
+            [
+              "date",
+              "Tue, 21 Jul 2026 21:56:26 GMT"
+            ],
+            [
+              "keep-alive",
+              "timeout=5"
+            ],
+            [
+              "transfer-encoding",
+              "chunked"
+            ]
+          ]
+        },
+        {
+          "url": "http://127.0.0.1:51722/assets/screenshots/app-events.png",
+          "status": 200,
+          "headers": [
+            [
+              "cache-control",
+              "no-store"
+            ],
+            [
+              "connection",
+              "keep-alive"
+            ],
+            [
+              "content-type",
+              "image/png"
+            ],
+            [
+              "date",
+              "Tue, 21 Jul 2026 21:56:26 GMT"
+            ],
+            [
+              "keep-alive",
+              "timeout=5"
+            ],
+            [
+              "transfer-encoding",
+              "chunked"
+            ]
+          ]
+        },
+        {
+          "url": "http://127.0.0.1:51722/assets/screenshots/app-home.png",
+          "status": 200,
+          "headers": [
+            [
+              "cache-control",
+              "no-store"
+            ],
+            [
+              "connection",
+              "keep-alive"
+            ],
+            [
+              "content-type",
+              "image/png"
+            ],
+            [
+              "date",
+              "Tue, 21 Jul 2026 21:56:26 GMT"
+            ],
+            [
+              "keep-alive",
+              "timeout=5"
+            ],
+            [
+              "transfer-encoding",
+              "chunked"
+            ]
+          ]
+        },
+        {
+          "url": "http://127.0.0.1:51722/assets/screenshots/app-photos.png",
+          "status": 200,
+          "headers": [
+            [
+              "cache-control",
+              "no-store"
+            ],
+            [
+              "connection",
+              "keep-alive"
+            ],
+            [
+              "content-type",
+              "image/png"
+            ],
+            [
+              "date",
+              "Tue, 21 Jul 2026 21:56:26 GMT"
+            ],
+            [
+              "keep-alive",
+              "timeout=5"
+            ],
+            [
+              "transfer-encoding",
+              "chunked"
+            ]
+          ]
+        }
+      ],
+      "resources": [
+        "http://127.0.0.1:51722/assets/screenshots/app-checklist.png",
+        "http://127.0.0.1:51722/assets/screenshots/app-decisions.png",
+        "http://127.0.0.1:51722/assets/screenshots/app-dispatches.png",
+        "http://127.0.0.1:51722/assets/screenshots/app-events.png",
+        "http://127.0.0.1:51722/assets/screenshots/app-home.png",
+        "http://127.0.0.1:51722/assets/screenshots/app-photos.png"
+      ]
+    },
+    {
+      "route": "/why-riot/",
+      "cookiesBefore": [],
+      "cookiesAfter": [],
+      "documentCookie": "",
+      "requests": [
+        "http://127.0.0.1:51722/why-riot/"
+      ],
+      "responses": [
+        {
+          "url": "http://127.0.0.1:51722/why-riot/",
+          "status": 200,
+          "headers": [
+            [
+              "cache-control",
+              "no-store"
+            ],
+            [
+              "connection",
+              "keep-alive"
+            ],
+            [
+              "content-type",
+              "text/html; charset=utf-8"
+            ],
+            [
+              "date",
+              "Tue, 21 Jul 2026 21:56:27 GMT"
+            ],
+            [
+              "keep-alive",
+              "timeout=5"
+            ],
+            [
+              "transfer-encoding",
+              "chunked"
+            ]
+          ]
+        }
+      ],
+      "resources": []
+    },
+    {
+      "route": "/guide/",
+      "cookiesBefore": [],
+      "cookiesAfter": [],
+      "documentCookie": "",
+      "requests": [
+        "http://127.0.0.1:51722/guide/"
+      ],
+      "responses": [
+        {
+          "url": "http://127.0.0.1:51722/guide/",
+          "status": 200,
+          "headers": [
+            [
+              "cache-control",
+              "no-store"
+            ],
+            [
+              "connection",
+              "keep-alive"
+            ],
+            [
+              "content-type",
+              "text/html; charset=utf-8"
+            ],
+            [
+              "date",
+              "Tue, 21 Jul 2026 21:56:28 GMT"
+            ],
+            [
+              "keep-alive",
+              "timeout=5"
+            ],
+            [
+              "transfer-encoding",
+              "chunked"
+            ]
+          ]
+        }
+      ],
+      "resources": []
+    },
+    {
+      "route": "/about/",
+      "cookiesBefore": [],
+      "cookiesAfter": [],
+      "documentCookie": "",
+      "requests": [
+        "http://127.0.0.1:51722/about/"
+      ],
+      "responses": [
+        {
+          "url": "http://127.0.0.1:51722/about/",
+          "status": 200,
+          "headers": [
+            [
+              "cache-control",
+              "no-store"
+            ],
+            [
+              "connection",
+              "keep-alive"
+            ],
+            [
+              "content-type",
+              "text/html; charset=utf-8"
+            ],
+            [
+              "date",
+              "Tue, 21 Jul 2026 21:56:29 GMT"
+            ],
+            [
+              "keep-alive",
+              "timeout=5"
+            ],
+            [
+              "transfer-encoding",
+              "chunked"
+            ]
+          ]
+        }
+      ],
+      "resources": []
+    },
+    {
+      "route": "/privacy/",
+      "cookiesBefore": [],
+      "cookiesAfter": [],
+      "documentCookie": "",
+      "requests": [
+        "http://127.0.0.1:51722/privacy/"
+      ],
+      "responses": [
+        {
+          "url": "http://127.0.0.1:51722/privacy/",
+          "status": 200,
+          "headers": [
+            [
+              "cache-control",
+              "no-store"
+            ],
+            [
+              "connection",
+              "keep-alive"
+            ],
+            [
+              "content-type",
+              "text/html; charset=utf-8"
+            ],
+            [
+              "date",
+              "Tue, 21 Jul 2026 21:56:30 GMT"
+            ],
+            [
+              "keep-alive",
+              "timeout=5"
+            ],
+            [
+              "transfer-encoding",
+              "chunked"
+            ]
+          ]
+        }
+      ],
+      "resources": []
+    },
+    {
+      "route": "/open-source/",
+      "cookiesBefore": [],
+      "cookiesAfter": [],
+      "documentCookie": "",
+      "requests": [
+        "http://127.0.0.1:51722/open-source/"
+      ],
+      "responses": [
+        {
+          "url": "http://127.0.0.1:51722/open-source/",
+          "status": 200,
+          "headers": [
+            [
+              "cache-control",
+              "no-store"
+            ],
+            [
+              "connection",
+              "keep-alive"
+            ],
+            [
+              "content-type",
+              "text/html; charset=utf-8"
+            ],
+            [
+              "date",
+              "Tue, 21 Jul 2026 21:56:31 GMT"
+            ],
+            [
+              "keep-alive",
+              "timeout=5"
+            ],
+            [
+              "transfer-encoding",
+              "chunked"
+            ]
+          ]
+        }
+      ],
+      "resources": []
+    },
+    {
+      "route": "/community/",
+      "cookiesBefore": [],
+      "cookiesAfter": [],
+      "documentCookie": "",
+      "requests": [
+        "http://127.0.0.1:51722/community/"
+      ],
+      "responses": [
+        {
+          "url": "http://127.0.0.1:51722/community/",
+          "status": 200,
+          "headers": [
+            [
+              "cache-control",
+              "no-store"
+            ],
+            [
+              "connection",
+              "keep-alive"
+            ],
+            [
+              "content-type",
+              "text/html; charset=utf-8"
+            ],
+            [
+              "date",
+              "Tue, 21 Jul 2026 21:56:32 GMT"
+            ],
+            [
+              "keep-alive",
+              "timeout=5"
+            ],
+            [
+              "transfer-encoding",
+              "chunked"
+            ]
+          ]
+        }
+      ],
+      "resources": []
+    },
+    {
+      "route": "/releases/",
+      "cookiesBefore": [],
+      "cookiesAfter": [],
+      "documentCookie": "",
+      "requests": [
+        "http://127.0.0.1:51722/releases/"
+      ],
+      "responses": [
+        {
+          "url": "http://127.0.0.1:51722/releases/",
+          "status": 200,
+          "headers": [
+            [
+              "cache-control",
+              "no-store"
+            ],
+            [
+              "connection",
+              "keep-alive"
+            ],
+            [
+              "content-type",
+              "text/html; charset=utf-8"
+            ],
+            [
+              "date",
+              "Tue, 21 Jul 2026 21:56:33 GMT"
+            ],
+            [
+              "keep-alive",
+              "timeout=5"
+            ],
+            [
+              "transfer-encoding",
+              "chunked"
+            ]
+          ]
+        }
+      ],
+      "resources": []
+    },
+    {
+      "route": "/protocols/",
+      "cookiesBefore": [],
+      "cookiesAfter": [],
+      "documentCookie": "",
+      "requests": [
+        "http://127.0.0.1:51722/protocols/"
+      ],
+      "responses": [
+        {
+          "url": "http://127.0.0.1:51722/protocols/",
+          "status": 200,
+          "headers": [
+            [
+              "cache-control",
+              "no-store"
+            ],
+            [
+              "connection",
+              "keep-alive"
+            ],
+            [
+              "content-type",
+              "text/html; charset=utf-8"
+            ],
+            [
+              "date",
+              "Tue, 21 Jul 2026 21:56:34 GMT"
+            ],
+            [
+              "keep-alive",
+              "timeout=5"
+            ],
+            [
+              "transfer-encoding",
+              "chunked"
+            ]
+          ]
+        }
+      ],
+      "resources": []
+    }
+  ],
+  "resilience": {
+    "status": 404,
+    "location": null
+  }
+}
 ```
 
 ## Isolated first-read reviews
