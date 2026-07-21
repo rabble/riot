@@ -1,7 +1,8 @@
 # Riot Resilience Page Reframing Design
 
 **Date:** 2026-07-22  
-**Status:** Approved direction; pending design review gate  
+**Status:** Design review candidate, revision 2
+
 **Scope:** Riot marketing site narrative and route structure only
 
 ## Purpose
@@ -51,9 +52,10 @@ The hero statement is:
 
 The supporting thesis is:
 
-> When ordinary systems fail, people build systems of care. Riot helps communities publish what
-> they know, meet and decide, coordinate shared work, and carry their collective memory—with tools
-> they can keep using when a platform, server, domain, or network path disappears.
+> Every day, people make a community through meals, meetings, stories, decisions, celebrations,
+> care, and shared work. Riot helps them publish what they know, decide together, coordinate what
+> needs doing, and carry their collective memory. When conditions change, the knowledge and tools
+> already held by the community can remain useful instead of belonging only to a service.
 
 The page speaks about people before protocols. Technology appears as enabling material, not the
 protagonist. The page should feel celebratory, abundant, practical, and invitational: closer to a
@@ -89,7 +91,7 @@ what the community learned.
 The hero must not lead with privacy, censorship, cryptography, protocols, offline mode, or product
 limitations. A short status label may still say that Riot is a prototype built in the open.
 
-### 2. What people build together
+### 2. A community is something people do
 
 Show the positive civic world Riot supports:
 
@@ -99,33 +101,37 @@ Show the positive civic world Riot supports:
 - local guides, histories, corrections, and collective memory;
 - small community-made tools that fit local practice.
 
-Examples should span ordinary life and disruption. Avoid reducing community life to emergency
-alerts or protest logistics.
+Lead with ordinary, joyful life: a block party, community kitchen, neighborhood publication,
+cooperative meeting, festival, repair day, shared garden, or volunteer rota. Disruption examples
+come later. Avoid reducing community life to emergency alerts or protest logistics.
 
-### 3. Build the capacity before the crisis
+### 3. Tools for the commons
+
+Present the four human verbs here, while the page is still grounded in ordinary life:
+
+- **Publish:** share signed public updates and community media.
+- **Meet:** propose, discuss, decide, and keep the resulting record. Riot supports the artifacts and
+  outcomes of meetings; it is not a live audio/video meeting service.
+- **Coordinate:** use community-made checklists, boards, schedules, and shared local knowledge.
+- **Carry:** keep useful community state and tools on participants' devices and move them through
+  paths available to them.
+
+Every verb must carry one of the exact status labels defined in the capability matrix below. The
+copy must not collapse a working prototype, locally tested transport, active development, and
+longer-term direction into one implied promise.
+
+### 4. Build capacity before conditions change
 
 Explain that resilient coordination comes from relationships and habits already in use. A tool used
 for a neighborhood event, cooperative decision, local publication, or volunteer rota is also a tool
 people understand when conditions become difficult.
 
-This section rejects both “panic” mythology and disaster cosplay. Riot's contribution is continuity:
-the community does not have to invent its information practices from scratch at the worst moment.
+This section rejects both “panic” mythology and disaster cosplay. Riot's intended contribution is
+continuity: the community does not have to invent its information practices from scratch at the
+worst moment. Ordinary use remains the subject; crisis resilience is a consequence of practiced
+relationships and tools, not the page's emotional center.
 
-### 4. What Riot makes easier
-
-Describe the product through four human verbs rather than components:
-
-- **Publish:** share signed public updates and community media.
-- **Meet:** propose, discuss, decide, and keep a durable record.
-- **Coordinate:** manage needs, offers, schedules, checklists, and local knowledge.
-- **Carry:** keep useful community state and tools on participants' devices and move them through
-  available paths.
-
-Current status must remain explicit. Working behavior, tested prototypes, and future direction
-cannot be presented as equivalent. The exact status language should follow the existing marketing
-site's “working now / tested prototype / direction” convention.
-
-### 5. More than one path; no single off switch
+### 5. A community should not depend on one service
 
 Only after the social purpose is clear should the page explain the technical model:
 
@@ -136,8 +142,14 @@ Only after the social purpose is clear should the page explain the technical mod
 - public hosts and ordinary web mirrors can improve reach and discovery without becoming the sole
   owner of community identity or history.
 
-Phrase this as graceful continuity and replaceability, not a guarantee that every path always works.
-The central line is: a community can walk away from infrastructure without walking away from itself.
+Phrase this as graceful degradation and replaceability, not a guarantee that every path always
+works. “A community can walk away from infrastructure without walking away from itself” is a design
+aim, not a current or absolute availability claim.
+
+Qualify continuity precisely: locally held data and installed tools may remain useful on a
+functioning device; exchange requires a compatible peer or transport that is actually available.
+Riot does not guarantee delivery, reachability, availability, persistence, recovery, or resistance
+to blocking. Data a device never received cannot be recovered from local storage.
 
 ### 6. Honest boundaries — resilience is not secrecy
 
@@ -149,6 +161,10 @@ Keep this section compact but prominent enough to prevent a false safety inferen
 - hosts, gateways, network operators, and nearby observers may see connection metadata;
 - devices retain what they hold and compromised devices remain a risk;
 - Riot is a prototype, not an audited hardened safety tool.
+
+The section must also say that resilience depends on functioning devices, data already received,
+and at least one suitable route when exchange is needed. It must not imply that Riot works without
+any device, peer, transport, or previously held data.
 
 Recommend established encrypted messengers for anything that must remain secret today. Link the
 protocol field guide for detailed comparisons.
@@ -170,12 +186,32 @@ participation, experimentation, and local adaptation rather than consumption of 
 ## Route and Navigation Design
 
 - Add `/resilience/` as the canonical route and label it **Resilience** in site navigation.
-- Preserve `/privacy/` as a compatibility route containing the same current content and a canonical
-  link to `/resilience/`; do not break existing bookmarks or external links.
-- Keep source and `marketing/public/` deployment mirrors byte-identical for each route.
+- The new page declares exactly
+  `<link rel="canonical" href="https://riot.protest.net/resilience/">`.
+- Preserve `/privacy/` as a static compatibility alias. Its HTML is byte-identical to
+  `/resilience/`, including the canonical link to `/resilience/`; therefore an old bookmark loads
+  the complete new page rather than a stale privacy essay or an unverified client-side redirect.
+- All four files are byte-identical:
+  `marketing/resilience/index.html`, `marketing/privacy/index.html`,
+  `marketing/public/resilience/index.html`, and `marketing/public/privacy/index.html`.
 - Add `/resilience/` to the sitemap and retain `/privacy/` while it remains a compatibility route.
 - Update `marketing/README.md` so route ownership and the compatibility behavior are explicit.
 - Site-wide navigation-label changes are mechanical scope. Do not rewrite unrelated page content.
+
+The current editorial-page inventory for the navigation contract is exactly:
+
+1. `marketing/index.html` (`/`)
+2. `marketing/about/index.html` (`/about/`)
+3. `marketing/privacy/index.html` (`/privacy/`, compatibility alias)
+4. `marketing/resilience/index.html` (`/resilience/`)
+5. `marketing/open-source/index.html` (`/open-source/`)
+6. `marketing/community/index.html` (`/community/`)
+7. `marketing/releases/index.html` (`/releases/`)
+8. `marketing/protocols/index.html` (`/protocols/`)
+
+The contract applies to each source file and its exact `marketing/public/` mirror. If another
+editorial route is merged before implementation begins, the implementer must add that route to the
+same explicit inventory rather than silently omitting it.
 
 The duplicate compatibility page is intentional because the current static Workers-assets setup has
 no checked-in request router or proven HTTP redirect mechanism. A future infrastructure change may
@@ -212,19 +248,81 @@ Cory Doctorow attribution unless the final copy makes a specific, sourced claim.
 - If `/resilience/` is missing from the deployment mirror, the contract test fails before deploy.
 - If the source/deployment copies drift, the contract test fails before deploy.
 
+## Product-status Contract
+
+The page uses these four labels and no invented near-synonyms:
+
+- **Available in the prototype:** exercised through a current Riot app or bundled tool, but not a
+  claim of production readiness, audit, or broad field deployment.
+- **Tested locally:** verified in automated tests, simulators, loopback, or same-machine rehearsal;
+  not yet proven in the relevant physical multi-device/radio setting.
+- **In development:** code or design work exists, but the end-to-end user promise is incomplete.
+- **Direction, not shipped:** an intended capability that must not be relied on today.
+
+The page's human verbs and infrastructure claims map to those labels as follows:
+
+| Claim on the page | Required status | Permitted meaning and evidence boundary |
+|---|---|---|
+| Publish signed public updates and community media | Available in the prototype | Current open-newswire create/sign/read flows; still a prototype. |
+| Meet through proposals, polls, discussion, decisions, and a shared record | Available in the prototype | Bundled tools and records support meeting work; no live audio/video claim. |
+| Coordinate with checklists, boards, and shared local knowledge | Available in the prototype | Current bundled checklist, supply-board, roll-call, and quick-poll tools; do not promise every example named in the product brief. |
+| Carry locally held state and installed tools for local use | Available in the prototype | Reading/writing data already on a functioning device; no delivery or recovery guarantee. |
+| Move data by portable file, share link, or QR-assisted handoff | Available in the prototype | Current export/import and sharing surfaces; QR can encode a handoff/link and is not itself proof of radio transfer. |
+| Exchange over nearby peer transport | Tested locally | Loopback/simulator/same-machine Bonjour evidence only; no claim of proven physical two-phone radio exchange. |
+| Render public community material through an ordinary web gateway | Available in the prototype | Current gateway and smoke tests; browsers rely on the gateway's presentation and availability. |
+| Discover and sync through replaceable public community anchors | In development | Anchor protocol/client/daemon work exists; do not describe a production anchor network or guaranteed discovery. |
+| Use private encrypted groups | Direction, not shipped | Architectural direction only. Current public spaces are public. |
+| Extend these practices “at scale” | Direction, not shipped | Product aspiration, never evidence of current deployment, capacity, or reach. |
+
+The README and product brief describe private groups architecturally, while current marketing and
+implementation status say they are not shipped. This page follows the current implementation status
+and labels private encrypted groups **Direction, not shipped**; it does not silently convert the
+architectural description into a product claim.
+
+## Claim Safety
+
+The following claims are forbidden both verbatim and in semantic equivalents:
+
+- uncensorable, unstoppable, impossible to shut down, or “no one can block it”;
+- always available, always online, or guaranteed to survive an outage;
+- guaranteed delivery, discovery, reachability, synchronization, persistence, or recovery;
+- preserves everything or recovers data that no participant already received;
+- works without functioning devices, available peers/transports, or locally held data;
+- anonymous, confidential, or private-by-default public spaces;
+- production-ready, audited, field-proven, or operating at scale.
+
+Positive claims must name the bounded mechanism: local usefulness of already-held data, independent
+signature checks, more than one possible exchange path, and replaceable hosts. The page may describe
+the future Riot is trying to build, but aspirations use “being built,” “aim,” or the exact status
+labels above rather than present-tense guarantees.
+
 ## Verification and Acceptance Criteria
+
+TDD uses the existing contract file. First extend
+`scripts/marketing/protocol-page-contracts.mjs` with the new assertions and run
+`node scripts/marketing/protocol-page-contracts.mjs`; it must fail before the HTML work exists.
+After implementation, the same command must pass.
+
+Add `"test:marketing": "node scripts/marketing/protocol-page-contracts.mjs"` to `package.json` and
+add a distinct `npm run test:marketing` step to the `web` job in `.github/workflows/ci.yml`, after
+`npm run test:web:unit`. This makes the marketing contract a blocking pull-request check without
+changing dependencies.
 
 Automated contracts must verify:
 
-1. source/public byte identity for `/resilience/` and `/privacy/`;
-2. the canonical relationship from the compatibility page to `/resilience/`;
+1. byte identity across all four canonical/compatibility source/public files;
+2. exactly one absolute canonical link to `https://riot.protest.net/resilience/` in that content;
 3. `/resilience/` appears in the sitemap;
-4. every marketing page's primary navigation includes the **Resilience** label and canonical route;
+4. all eight explicitly inventoried source pages and all eight public mirrors include the
+   **Resilience** label linked to `/resilience/` in primary navigation;
 5. the resilience page contains the required hero, human-activity sections, honest-boundaries
    section, website disclosure, source attribution, and participation links;
-6. forbidden absolute claims such as “uncensorable” and “unstoppable” do not appear;
-7. the page contains no remote script, analytics, cookie, or tracking dependency;
-8. the full existing marketing contract suite remains green.
+6. every capability in the matrix appears with its required exact status label, and the explicit
+   device/data/peer/transport limitations appear;
+7. forbidden absolute and guarantee claims in **Claim Safety** do not appear;
+8. the page contains no remote script, analytics, cookie, or tracking dependency;
+9. the full existing marketing contract suite remains green through both
+   `node scripts/marketing/protocol-page-contracts.mjs` and `npm run test:web:unit`.
 
 Editorial review succeeds when a first-time reader can answer, from the page alone:
 
@@ -241,7 +339,16 @@ This change does not alter Riot protocols, application behavior, privacy guarant
 architecture, analytics policy, or product status. It does not implement encrypted groups, anchors,
 new sync transports, redirects, or telemetry. It changes marketing structure and copy, adds the
 canonical resilience route plus a static compatibility route, updates mirrors/navigation/sitemap,
-and strengthens automated editorial contracts.
+and strengthens automated editorial contracts and their existing CI job. Deployment and post-deploy
+checks are outside this change; no production mutation is authorized by this design.
+
+## Design Review History
+
+Revision 1 established the human-first thesis and page structure. The first five-role review found
+the narrative sound but requested: exact compatibility-route behavior, an explicit capability/status
+matrix, stronger availability and censorship-resistance boundaries, ordinary joyful life ahead of
+crisis language, an exact page inventory, and a named test/CI gate. Revision 2 incorporates each of
+those requests.
 
 ## Primary Sources
 
