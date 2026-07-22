@@ -1130,3 +1130,55 @@ Returned JSON, verbatim:
 ```
 
 Verdict: **PASS with zero findings**.
+
+### Public-clarity production deployment
+
+The reviewed HTML artifact at commit `d6c1b8ed49d9fab5e7bb75b0dee23462f4e8e1ad` was deployed with
+the static CSP policy committed at `cceb453` and verified by the production checker at `a4d6b60`.
+The final Cloudflare Workers version is `e2e4e09e-401a-4240-8495-e749473325f6`.
+
+Deployment command, run from the detached reviewed-artifact worktree's `marketing/` directory:
+
+```sh
+CI=1 WRANGLER_SEND_METRICS=false npx wrangler deploy
+```
+
+Post-deploy command:
+
+```sh
+npm run verify:marketing:live
+```
+
+The complete JSON is
+`/tmp/riot-clarity-live-verification-final.json`, SHA-256
+`936f4b23296d4e743fd8cb0986b6c702c0d6e947fae75625e994185de3eecd3a`. The command returned
+`PASS` for both `https://riot-protest-net-marketing.protestnet.workers.dev` and
+`https://riot.protest.net`.
+
+At both origins every route returned direct HTTP 200 with no `Location` or `Set-Cookie`, and raw
+response bytes exactly matched the reviewed local file:
+
+| Route | Expected/live SHA-256 at both origins |
+|---|---|
+| `/` | `d1c99bcdc37e4adc29e5acfa5c9571345aa8927351848c63f4e1a5145d510d8b` |
+| `/why-riot/` | `0d5bde7fbaacec54cd0ba2f7a60f7172a4326971a246ddca75741aee9bda7a24` |
+| `/guide/` | `2585319772c6247d21c82bf15ac7bb119bfef7ef157585e14196069033cc0932` |
+| `/about/` | `0d0fce89d7ca62d1a450de21f212afd34ac49c1c5e40321852470774c3107d54` |
+| `/privacy/` | `672ad2c1b5848f11a88ace7a9cba54b20999d858b8d174d838d7a96ec074eae1` |
+| `/open-source/` | `2469a37de9060c132086c76b17feaf4bdfbe6e6ab61f2498b4bfddeea0564964` |
+| `/community/` | `34e5f8eae3e10c0f19b2427e86e8f881e5e71f37f57679f2139a133a37fc272d` |
+| `/releases/` | `33113bd9ffb19b4f4ee2215fcfc759e04a08d4e21fb3ffceb4d2658b87a747bb` |
+| `/protocols/` | `d2e7843cf12ba9da3534a6bf782de4d50c5ac2391c86954644fd3587441b00b1` |
+
+At both origins the unknown route returned direct HTTP 404 with no `Location` or `Set-Cookie`.
+Browser contexts began and ended with empty cookie jars; `document.cookie`, `localStorage`, and
+`sessionStorage` remained empty on all eighteen visits. Every successful browser response was
+same-origin.
+
+The first production pass exposed Cloudflare Web Analytics injection on the custom domain. The
+static `_headers` policy now sends `script-src 'none'` (plus same-origin style, image, font, and
+connection boundaries) at both origins. Chromium still exposes Cloudflare's attempted
+`static.cloudflareinsights.com/beacon.min.js` insertion as a request object, but all nine attempts
+fail locally with `errorText: csp`; no third-party response occurs and no third-party resource loads.
+The Workers origin makes no such attempt. The verifier has a regression test that rejects every
+off-origin attempt unless CSP blocks it before any response.
