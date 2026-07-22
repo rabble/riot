@@ -138,6 +138,11 @@ pub(crate) struct LocalProfile {
     // the inline generation test today — mirrors `followed_site_session` above.
     #[allow(dead_code)]
     starter_catalog_generation: Option<u8>,
+    /// At-most-one prepared-but-uncommitted trust mutation (WU-002a). `None`
+    /// except between `prepare_app_trust` and `finalize_app_trust`/`discard`.
+    /// The native shell's authority lock (WU-002c) spans the host persist that
+    /// sits between those two calls; here it is exercised by the crate tests.
+    prepared_trust: Option<PreparedTrust>,
     /// The durable database handle — a cheap `Arc` clone; the session owns a twin
     /// sharing the same connection, lease, and reader pool. `None` for in-memory
     /// profiles, whose registry then lives only in this struct for the session.
@@ -207,6 +212,25 @@ struct StoredInstalledApp {
     app_id: [u8; 32],
     manifest_bytes: Vec<u8>,
     bundle_bytes: Vec<u8>,
+}
+
+/// A trust mutation validated + signed but NOT yet committed to the live store
+/// (WU-002a). Lives only between `prepare_app_trust` and
+/// `finalize_app_trust`/`discard` (at most one per profile); the host durably
+/// records the returned `{app_id, trusted}` in its trusted-ID set in between,
+/// making that durable write the linearization point. `finalize` refuses if the
+/// execution generation moved (a real switch between prepare and finalize), so a
+/// stale prepared mutation can never commit into the wrong context. Cleared on
+/// finalize, discard, a superseding prepare, and the `Active→Failed`/close
+/// transition.
+struct PreparedTrust {
+    /// `app_execution_generation` captured at prepare; finalize refuses if moved.
+    generation: u64,
+    /// The signed trust marker, committed unchanged in finalize.
+    signed: SignedWillowEntry,
+    /// The app id + decision the host records in its durable trusted-ID set.
+    app_id: [u8; 32],
+    trusted: bool,
 }
 
 pub(crate) struct StoredPreview {
@@ -448,6 +472,7 @@ fn profile_with_author_and_db(
             joined_others_space: false,
             app_execution_generation: 0,
             starter_catalog_generation,
+            prepared_trust: None,
             db,
             registry,
             community_authors: std::collections::HashMap::new(),
@@ -3146,70 +3171,132 @@ pub(crate) fn community_registry_quarantined(
     with_active(inner, |profile| Ok(profile.registry_quarantined))
 }
 
+/// Validate authority + sign the trust marker WITHOUT mutating the live store,
+/// returning a `PreparedTrust` the caller stores in `profile.prepared_trust`.
+/// This is the first half of `set_app_trust`, verbatim up to and including
+/// `sign_local_app_entry`; the store mutation + generation bump move to
+/// `finalize_trust_locked`. Behavior when the two run back-to-back under one
+/// lock is byte-identical to the old single-shot path.
+fn prepare_trust_locked(
+    profile: &mut LocalProfile,
+    app_id: String,
+    trusted: bool,
+) -> Result<PreparedTrust, MobileError> {
+    use riot_core::apps::index::app_index_trust_path;
+    use riot_core::apps::trust::{encode_trust_marker, TrustMarker, TrustMarkerKind};
+
+    // A nearby peer must NOT block an approval (see the long note that used to
+    // live in set_app_trust): drop the sync rather than the approval.
+    if sync_session_is_active(profile) {
+        profile.sync_session = None;
+    }
+    // Only a space's organizer may approve an app for it.
+    if let Some(refusal) = organizer_refusal(profile) {
+        return Err(refusal);
+    }
+    let app_id = parse_entry_id(&app_id)?;
+    if !profile
+        .app_trust_markers
+        .iter()
+        .any(|marker| marker.app_id == app_id)
+        && profile.app_trust_markers.len() >= MAX_APP_TRUST_MARKERS
+    {
+        return Err(MobileError::SessionLimit);
+    }
+    let timestamp = next_app_write_timestamp(profile)?;
+    let kind = if trusted {
+        TrustMarkerKind::Trust
+    } else {
+        TrustMarkerKind::Revoke
+    };
+    let marker = TrustMarker {
+        app_id,
+        author_subspace_id: *profile.author.subspace_id().as_bytes(),
+        kind,
+        timestamp_micros: timestamp,
+    };
+    let payload = encode_trust_marker(&marker).map_err(map_apps_error)?;
+    let path = app_index_trust_path(&app_id, profile.author.subspace_id().as_bytes())
+        .map_err(map_apps_error)?;
+    let signed = sign_local_app_entry(profile, path, &payload, timestamp)?;
+    Ok(PreparedTrust {
+        generation: profile.app_execution_generation,
+        signed,
+        app_id,
+        trusted,
+    })
+}
+
+/// Commit a `PreparedTrust` to the live store + advance the execution
+/// generation. Fails closed if the generation moved since prepare (a real
+/// namespace/community switch happened in between), leaving trust uncommitted.
+/// Idempotent: committing the same signed marker again is an LWW no-op at its
+/// coordinate, so a crash-retry that re-issues cannot double-apply.
+fn finalize_trust_locked(
+    profile: &mut LocalProfile,
+    prepared: PreparedTrust,
+) -> Result<(), MobileError> {
+    if prepared.generation != profile.app_execution_generation {
+        // Authority moved under us; the prepared mutation is stale. The slot was
+        // already taken by the caller, so nothing lingers.
+        return Err(MobileError::Internal);
+    }
+    commit_local_app_entries(profile, vec![prepared.signed])?;
+    // Any trust change — grant OR revoke — advances the execution generation,
+    // invalidating every `AppExecutionSession` opened before it.
+    bump_app_execution_generation(profile);
+    Ok(())
+}
+
+/// Grant or revoke trust in one locked step (validate → sign → commit → bump),
+/// byte-identical to the pre-WU-002a behavior. Native callers unchanged.
 pub(crate) fn set_app_trust(
     inner: &Arc<Mutex<ProfileState>>,
     app_id: String,
     trusted: bool,
 ) -> Result<(), MobileError> {
-    use riot_core::apps::index::app_index_trust_path;
-    use riot_core::apps::trust::{encode_trust_marker, TrustMarker, TrustMarkerKind};
-
     with_active(inner, |profile| {
-        // A nearby peer must NOT block an approval. Phones auto-connect now, so
-        // a sync session is open most of the time an organizer is standing next
-        // to someone — and refusing here made "Let everyone in this space use
-        // this" fail with an unexplained error exactly when it was tapped.
-        //
-        // The guard existed because writing the trust marker goes through the
-        // store's shared inspect/plan slot, which an in-flight sync review is
-        // also using. So drop the sync rather than the approval: the approval is
-        // a deliberate human act, the sync is background chatter that reconnects
-        // on its own. Anything mid-review is discarded, not half-applied.
-        if sync_session_is_active(profile) {
-            profile.sync_session = None;
-        }
-        // Only a space's organizer may approve an app for it. Without this a
-        // member could self-approve any app, which would make the trust gate
-        // (the one human review moment in the whole design) meaningless.
-        //
-        // The gate is unchanged; what changed is that it now SAYS WHY. It used to
-        // return `InvalidInput` — the same code as a malformed app id — so the
-        // sheet closed with nothing to show and the app never appeared. A person
-        // who had done nothing wrong was locked out in silence.
-        if let Some(refusal) = organizer_refusal(profile) {
-            return Err(refusal);
-        }
-        let app_id = parse_entry_id(&app_id)?;
-        if !profile
-            .app_trust_markers
-            .iter()
-            .any(|marker| marker.app_id == app_id)
-            && profile.app_trust_markers.len() >= MAX_APP_TRUST_MARKERS
-        {
-            return Err(MobileError::SessionLimit);
-        }
-        let timestamp = next_app_write_timestamp(profile)?;
-        let kind = if trusted {
-            TrustMarkerKind::Trust
-        } else {
-            TrustMarkerKind::Revoke
+        let prepared = prepare_trust_locked(profile, app_id, trusted)?;
+        finalize_trust_locked(profile, prepared)
+    })
+}
+
+/// Two-phase trust, phase 1 (WU-002a): validate + sign + hold the prepared
+/// mutation WITHOUT mutating the live store. Returns `{app_id, trusted}` for the
+/// host to record in its durable trusted-ID set; the durable write is the
+/// linearization point. A second prepare supersedes an abandoned one.
+pub(crate) fn prepare_app_trust(
+    inner: &Arc<Mutex<ProfileState>>,
+    app_id: String,
+    trusted: bool,
+) -> Result<crate::apps_ffi::PreparedTrustRecord, MobileError> {
+    with_active(inner, |profile| {
+        profile.prepared_trust = None; // supersede any abandoned prepare
+        let prepared = prepare_trust_locked(profile, app_id, trusted)?;
+        let record = crate::apps_ffi::PreparedTrustRecord {
+            app_id: hex(&prepared.app_id),
+            trusted: prepared.trusted,
         };
-        let marker = TrustMarker {
-            app_id,
-            author_subspace_id: *profile.author.subspace_id().as_bytes(),
-            kind,
-            timestamp_micros: timestamp,
-        };
-        let payload = encode_trust_marker(&marker).map_err(map_apps_error)?;
-        let path = app_index_trust_path(&app_id, profile.author.subspace_id().as_bytes())
-            .map_err(map_apps_error)?;
-        let signed = sign_local_app_entry(profile, path, &payload, timestamp)?;
-        commit_local_app_entries(profile, vec![signed])?;
-        // Any trust change — grant OR revoke — advances the execution
-        // generation, invalidating every `AppExecutionSession` opened before it.
-        // Re-approval therefore does not silently re-authorize a session that was
-        // live across the revoke: a re-approved app runs in a *new* session.
-        bump_app_execution_generation(profile);
+        profile.prepared_trust = Some(prepared);
+        Ok(record)
+    })
+}
+
+/// Two-phase trust, phase 2 (WU-002a): commit the held prepared mutation after
+/// the host has durably persisted its trusted-ID set. Errors (leaving trust
+/// unchanged) if nothing is prepared or the generation moved.
+pub(crate) fn finalize_app_trust(inner: &Arc<Mutex<ProfileState>>) -> Result<(), MobileError> {
+    with_active(inner, |profile| {
+        let prepared = profile.prepared_trust.take().ok_or(MobileError::Internal)?;
+        finalize_trust_locked(profile, prepared)
+    })
+}
+
+/// Drop a prepared trust mutation without committing (host persist failed, or
+/// the flow was cancelled). Idempotent.
+pub(crate) fn discard_prepared_trust(inner: &Arc<Mutex<ProfileState>>) -> Result<(), MobileError> {
+    with_active(inner, |profile| {
+        profile.prepared_trust = None;
         Ok(())
     })
 }
@@ -4095,6 +4182,30 @@ mod tests {
             panic!("profile should be active");
         };
         assert_eq!(local.starter_catalog_generation, Some(2));
+    }
+
+    /// WU-002a: the finalize generation guard is LIVE, not a phantom. A real
+    /// generation bump between prepare and finalize (what a community/namespace
+    /// switch does) makes `finalize_app_trust` reject with the marker
+    /// uncommitted. White-box (inline) so the guard branch is genuinely covered.
+    #[test]
+    fn finalize_trust_fails_closed_after_a_generation_bump() {
+        let profile = open_local_profile().unwrap();
+        let (manifest, bundle) = riot_core::apps::starter::STARTER_CATALOG[0];
+        let rec = install_app(&profile.inner, manifest.to_vec(), bundle.to_vec()).unwrap();
+        prepare_app_trust(&profile.inner, rec.app_id.clone(), true).unwrap();
+        // Simulate a switch happening between the host persist and finalize.
+        {
+            let mut state = lock_unpoisoned(&profile.inner);
+            let ProfileState::Active(local) = &mut *state else {
+                panic!("profile should be active");
+            };
+            bump_app_execution_generation(local);
+        }
+        assert!(
+            finalize_app_trust(&profile.inner).is_err(),
+            "a stale prepared trust must fail closed after a generation bump"
+        );
     }
 
     /// Risk 13: a keyed join must leave NO unsealed author parked in RAM. The

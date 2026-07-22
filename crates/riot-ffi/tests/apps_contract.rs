@@ -5,8 +5,8 @@
 
 use riot_ffi::{
     open_local_profile, open_profile_from_sealed_identity, AlertCertainty, AlertDraftInput,
-    AlertSeverity, AlertUrgency, MobileError, MobileProfile, MobileSyncSession, PublicSpace,
-    SyncOutcomeKind,
+    AlertSeverity, AlertUrgency, AppRuntimeSession, MobileError, MobileProfile, MobileSyncSession,
+    PublicSpace, SyncOutcomeKind,
 };
 use std::sync::Arc;
 
@@ -814,6 +814,72 @@ fn trust_lifecycle_is_lww_per_app() {
     assert!(!runtime.is_app_trusted(app.app_id.clone()).expect("check"));
     runtime.trust_app(app.app_id.clone()).expect("re-trust");
     assert!(runtime.is_app_trusted(app.app_id.clone()).expect("check"));
+}
+
+// --- WU-002a: two-phase trust prepare/persist/finalize ---
+
+fn organizer_with_installed_untrusted_app() -> (Arc<MobileProfile>, Arc<AppRuntimeSession>, String) {
+    let profile = open_local_profile().expect("profile");
+    let runtime = profile.app_runtime();
+    let (manifest_bytes, bundle_bytes) = manifest_and_bundle();
+    let app = runtime
+        .install_app(manifest_bytes, bundle_bytes)
+        .expect("install");
+    assert!(!runtime.is_app_trusted(app.app_id.clone()).expect("untrusted"));
+    (profile, runtime, app.app_id)
+}
+
+#[test]
+fn prepare_trust_does_not_mutate_and_finalize_commits() {
+    let (_profile, runtime, app_id) = organizer_with_installed_untrusted_app();
+    let prepared = runtime.prepare_app_trust(app_id.clone(), true).expect("prepare");
+    assert!(prepared.trusted);
+    assert!(!prepared.app_id.is_empty());
+    // prepare must NOT touch the live store.
+    assert!(!runtime.is_app_trusted(app_id.clone()).unwrap(), "prepare must not grant trust");
+    runtime.finalize_app_trust().expect("finalize");
+    assert!(runtime.is_app_trusted(app_id).unwrap(), "finalize commits the grant");
+}
+
+#[test]
+fn prepare_without_finalize_leaves_trust_untouched() {
+    // Simulates a crash between the durable persist and finalize: the live store
+    // was never mutated by prepare, so trust stays off.
+    let (_profile, runtime, app_id) = organizer_with_installed_untrusted_app();
+    runtime.prepare_app_trust(app_id.clone(), true).unwrap();
+    assert!(!runtime.is_app_trusted(app_id.clone()).unwrap());
+    // A superseding prepare replaces the abandoned one, then finalize grants.
+    runtime.prepare_app_trust(app_id.clone(), true).unwrap();
+    runtime.finalize_app_trust().unwrap();
+    assert!(runtime.is_app_trusted(app_id).unwrap());
+}
+
+#[test]
+fn discard_clears_a_prepared_grant() {
+    let (_profile, runtime, app_id) = organizer_with_installed_untrusted_app();
+    runtime.prepare_app_trust(app_id.clone(), true).unwrap();
+    runtime.discard_prepared_trust().unwrap();
+    assert!(runtime.finalize_app_trust().is_err(), "nothing to finalize after discard");
+    assert!(!runtime.is_app_trusted(app_id).unwrap());
+}
+
+#[test]
+fn re_issuing_trust_for_an_already_trusted_app_is_idempotent() {
+    // Trust restart re-issues per persisted id (not a byte replay). Re-issue must
+    // stay trusted with no marker-cap growth (LWW at the same coordinate).
+    let (_profile, runtime, app_id) = organizer_with_installed_untrusted_app();
+    runtime.prepare_app_trust(app_id.clone(), true).unwrap();
+    runtime.finalize_app_trust().unwrap();
+    assert!(runtime.is_app_trusted(app_id.clone()).unwrap());
+    runtime.prepare_app_trust(app_id.clone(), true).unwrap();
+    runtime.finalize_app_trust().unwrap();
+    assert!(runtime.is_app_trusted(app_id).unwrap(), "still trusted, exactly once");
+}
+
+#[test]
+fn finalize_with_nothing_prepared_errors() {
+    let (_profile, runtime, _app_id) = organizer_with_installed_untrusted_app();
+    assert!(runtime.finalize_app_trust().is_err());
 }
 
 #[test]
