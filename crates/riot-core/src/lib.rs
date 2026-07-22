@@ -10,6 +10,7 @@ pub mod apps;
 #[cfg(feature = "conformance")]
 pub mod demo_fixture;
 pub mod import;
+pub mod governance;
 pub mod meadowcap;
 pub mod model;
 pub mod newswire;
