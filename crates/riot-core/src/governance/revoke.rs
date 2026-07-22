@@ -17,8 +17,7 @@ pub fn apply_revocations(
     for record in records {
         if record.kind == RecordKind::CapabilityRevoked {
             if let Body::CapabilityRevoked {
-                target_fingerprint,
-                ..
+                target_fingerprint, ..
             } = &record.body
             {
                 revoked.extend(forest.descendants_of(*target_fingerprint));
@@ -87,8 +86,7 @@ mod tests {
         let (records, fps) = three_hop_lineage_records();
         let mut records = records;
         records.push(revoke_record(fps.c));
-        let (active, revoked) =
-            apply_revocations(&records, [fps.a, fps.c].into_iter().collect());
+        let (active, revoked) = apply_revocations(&records, [fps.a, fps.c].into_iter().collect());
         assert!(revoked.contains(&fps.c));
         assert!(!revoked.contains(&fps.a));
         assert!(active.contains(&fps.a));
@@ -140,7 +138,11 @@ mod cutoff_tests {
     #[test]
     fn no_cutoff_entry_means_no_active_action() {
         let (receipts, _) = action_receipt_chain(2);
-        assert!(!is_action_active(&receipts[0], &BTreeMap::new(), &chain_map(&receipts)));
+        assert!(!is_action_active(
+            &receipts[0],
+            &BTreeMap::new(),
+            &chain_map(&receipts)
+        ));
     }
 
     #[test]

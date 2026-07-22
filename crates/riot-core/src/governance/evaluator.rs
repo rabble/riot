@@ -23,9 +23,7 @@ pub fn evaluate(records: &[GovernanceRecordV1], now: Option<u64>) -> PolicySnaps
     let horizon = now.map(|time| time.saturating_add(TEN_MINUTES));
     let in_time: Vec<GovernanceRecordV1> = accepted
         .iter()
-        .filter(|record| {
-            horizon.map_or(true, |limit| record.created_display_micros <= limit)
-        })
+        .filter(|record| horizon.map_or(true, |limit| record.created_display_micros <= limit))
         .cloned()
         .collect();
 
@@ -39,12 +37,10 @@ pub fn evaluate(records: &[GovernanceRecordV1], now: Option<u64>) -> PolicySnaps
             {
                 match &record.body {
                     Body::CapabilityIssued {
-                        child_fingerprint,
-                        ..
+                        child_fingerprint, ..
                     }
                     | Body::CapabilityRenewed {
-                        child_fingerprint,
-                        ..
+                        child_fingerprint, ..
                     } => {
                         active.insert(*child_fingerprint);
                     }
@@ -121,9 +117,9 @@ fn apply_role_restrictions(
         let frontier: Vec<&([u8; 32], Vec<Fingerprint>)> = decisions
             .iter()
             .filter(|(id, _)| {
-                !decisions.iter().any(|(other, _)| {
-                    other != id && ancestors_of(other, &by_id).contains(id)
-                })
+                !decisions
+                    .iter()
+                    .any(|(other, _)| other != id && ancestors_of(other, &by_id).contains(id))
             })
             .collect();
         if frontier.is_empty() {
@@ -178,16 +174,14 @@ mod tests {
     fn a_forged_issuance_never_becomes_active() {
         let mut forged = issued_record([9u8; 32], 8);
         if let Body::CapabilityIssued {
-            child_fingerprint,
-            ..
+            child_fingerprint, ..
         } = &mut forged.body
         {
             *child_fingerprint = [0xFF; 32];
         }
         let fingerprint = match &forged.body {
             Body::CapabilityIssued {
-                child_fingerprint,
-                ..
+                child_fingerprint, ..
             } => *child_fingerprint,
             _ => unreachable!(),
         };
@@ -233,8 +227,7 @@ mod tests {
             .unwrap();
         let fingerprint = match &journal[index].body {
             Body::CapabilityIssued {
-                child_fingerprint,
-                ..
+                child_fingerprint, ..
             } => *child_fingerprint,
             _ => unreachable!(),
         };
@@ -266,9 +259,7 @@ mod tests {
             snapshot
                 .active_fingerprints
                 .iter()
-                .filter(|fingerprint| {
-                    crate::governance::test_support::is_role_fp(fingerprint)
-                })
+                .filter(|fingerprint| { crate::governance::test_support::is_role_fp(fingerprint) })
                 .count(),
             1
         );
