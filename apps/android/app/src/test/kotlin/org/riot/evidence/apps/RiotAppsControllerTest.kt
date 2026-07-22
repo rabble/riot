@@ -9,6 +9,7 @@ import uniffi.riot_ffi.AppPairBytes
 import uniffi.riot_ffi.AppRuntimeSessionInterface
 import uniffi.riot_ffi.DirectoryListing
 import uniffi.riot_ffi.InstalledAppRecord
+import uniffi.riot_ffi.PreparedTrustRecord
 import uniffi.riot_ffi.PublicSpace
 
 /**
@@ -22,6 +23,7 @@ private class FakeAppRuntimeSession(
     private val organizer: Boolean = true,
 ) : AppRuntimeSessionInterface {
     val trusted = mutableSetOf<String>()
+    private var preparedTrust: Pair<String, Boolean>? = null
 
     /** Every trust/untrust in order, so the Rust-first ordering can be asserted. */
     val calls = mutableListOf<String>()
@@ -38,6 +40,21 @@ private class FakeAppRuntimeSession(
     override fun `untrustApp`(appId: String) {
         calls += "untrust:$appId"
         trusted -= appId
+    }
+
+    override fun `prepareAppTrust`(appId: String, trusted: Boolean): PreparedTrustRecord {
+        preparedTrust = appId to trusted
+        return PreparedTrustRecord(appId, trusted)
+    }
+
+    override fun `finalizeAppTrust`() {
+        val (appId, shouldTrust) = preparedTrust ?: error("nothing prepared")
+        if (shouldTrust) trusted += appId else trusted -= appId
+        preparedTrust = null
+    }
+
+    override fun `discardPreparedTrust`() {
+        preparedTrust = null
     }
 
     override fun `installApp`(manifestBytes: ByteArray, bundleBytes: ByteArray): InstalledAppRecord =
