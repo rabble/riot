@@ -60,7 +60,7 @@ Each WU produces working, tested software on its own. `→` = hard dependency.
 
 ## Per-WU deliverables (uniform Definition of Done)
 
-Every WU: RED tests first (watch fail) → GREEN minimal impl → REFACTOR; `.coverage-thresholds.json` floors hold; adversarial review; commit with pathspec (shared checkout — never `git add -A`). WU-007+ also: deterministic repack + generated inventory/allowlist audit + `repack-starter.sh --check` green + first-useful-content within 96 CSS px at 390×844.
+Every WU: RED tests first (watch fail) → GREEN minimal impl → REFACTOR; **coverage gate = `cargo llvm-cov --workspace --all-features --fail-under-lines <thresholds.llvm.lines=95>`** (the CI-enforced gate; do NOT gate on `cargo tarpaulin --fail-under 97` — tarpaulin's 97 floor is fiction, measures ~94.5%, and its ptrace engine hangs on this workspace); adversarial review; commit with pathspec (shared checkout — never `git add -A`). WU-007+ also: deterministic repack + generated inventory/allowlist audit + `repack-starter.sh --check` green + first-useful-content within 96 CSS px at 390×844.
 
 ## Cross-cutting invariants (apply to all WUs)
 

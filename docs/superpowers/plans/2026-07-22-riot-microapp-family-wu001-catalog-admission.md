@@ -680,7 +680,12 @@ git commit -m "feat(core): generated current/legacy catalog inventory report"
 - [ ] **Step 1:** `cargo fmt --all -- --check` → PASS (fix with `cargo fmt --all` if needed, re-run).
 - [ ] **Step 2:** `cargo clippy --workspace --all-features -- -D warnings` → PASS. There should be NO `deprecated` warnings — `STARTER_CATALOG` is a plain alias, not `#[deprecated]`. If any appear, you added the attribute by mistake; remove it (do not add `#[allow(deprecated)]`, do not touch `demo_fixture.rs`).
 - [ ] **Step 3:** `cargo test --workspace --all-features` → PASS. (Build `--workspace`: Task 1 touches a widely-used const; a scoped `-p` run can hide a downstream break — see the shared-checkout scoped-test hazard.)
-- [ ] **Step 4:** `cargo tarpaulin --workspace --all-features --fail-under <thresholds.tarpaulin.lines>` (floor from `.coverage-thresholds.json`) → PASS; do not lower the floor.
+- [ ] **Step 4: Coverage — use the CI-ENFORCED gate, NOT tarpaulin.** CI (`.github/workflows/ci.yml` "Rust coverage (llvm-cov line floor)") runs `cargo llvm-cov --workspace --all-features --fail-under-lines <thresholds.llvm.lines>` (floor 95). tarpaulin is FICTION here: `thresholds.tarpaulin.lines` is 97 but tarpaulin only measures ~94.5% (its ptrace engine also hangs/undercounts on this workspace — see the CI comment), so main itself fails tarpaulin-97. Run:
+  ```bash
+  floor=$(jq -r '.thresholds.llvm.lines' .coverage-thresholds.json)   # 95
+  cargo llvm-cov --workspace --all-features --fail-under-lines "$floor"
+  ```
+  → PASS (main measures ~97.75% llvm lines). Do not lower the floor. Do NOT gate on `cargo tarpaulin --fail-under 97`.
 - [ ] **Step 5: Commit** any fmt-only changes:
 
 ```bash
