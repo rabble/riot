@@ -10,7 +10,7 @@
 use rusqlite::{Connection, TransactionBehavior};
 
 /// Current schema version this binary declares.
-pub const CURRENT_SCHEMA_VERSION: u32 = 3;
+pub const CURRENT_SCHEMA_VERSION: u32 = 4;
 
 /// Default configured listing ceiling `L`. The preprovisioned removal table
 /// holds exactly `2 * L` slots.
@@ -444,6 +444,23 @@ const MIGRATION_THREE: &str = r#"
     PRAGMA user_version = 3;
 "#;
 
+/// Forward-only migration 4: the database-durable anchor secrets. Two
+/// first-write-wins rows — the anchor's genesis random and its namespace-token
+/// secret — bind anchor identity and outstanding namespace tokens to the
+/// DATABASE rather than to a derivation from the operator key, so an operator
+/// key rotation cannot silently change the anchor id or orphan minted tokens.
+/// Rows are written by `AnchorRepository::load_or_initialize_secret`; once a
+/// name is initialized, its persisted value beats any later proposal.
+const MIGRATION_FOUR: &str = r#"
+    CREATE TABLE anchor_secrets (
+        name TEXT PRIMARY KEY NOT NULL CHECK (name IN ('genesis_random', 'token_secret_v1')),
+        secret BLOB NOT NULL CHECK (length(secret) = 32)
+    ) STRICT;
+
+    UPDATE operator_state SET schema_version = 4 WHERE singleton = 1;
+    PRAGMA user_version = 4;
+"#;
+
 /// SQL that preprovisions `2 * L` free removal slots via a bounded recursive
 /// sequence. Every slot starts unclaimed.
 fn preprovision_removal_slots_sql() -> String {
@@ -500,6 +517,10 @@ pub fn migrate(connection: &mut Connection) -> Result<u32, SchemaError> {
         transaction.execute_batch(MIGRATION_THREE)?;
         transaction.execute("INSERT INTO schema_migrations(version) VALUES (3)", [])?;
     }
+    if found < 4 {
+        transaction.execute_batch(MIGRATION_FOUR)?;
+        transaction.execute("INSERT INTO schema_migrations(version) VALUES (4)", [])?;
+    }
 
     transaction.commit()?;
     Ok(CURRENT_SCHEMA_VERSION)
@@ -550,6 +571,7 @@ mod tests {
         "listing_floors",
         "directory_projection",
         "ticket_transport_floors",
+        "anchor_secrets",
     ];
 
     /// Every index the schema defines.
@@ -776,6 +798,80 @@ mod tests {
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .unwrap();
         assert_eq!(user_version, CURRENT_SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn version_three_database_upgrades_to_anchor_secrets() {
+        let mut connection = Connection::open_in_memory().expect("open");
+        // Build a version-3 database exactly as the previous binary left it.
+        connection
+            .execute_batch(
+                "CREATE TABLE schema_migrations (
+                     version INTEGER PRIMARY KEY NOT NULL CHECK (version > 0)
+                 ) STRICT;",
+            )
+            .unwrap();
+        connection.execute_batch(MIGRATION_ONE).unwrap();
+        connection
+            .execute_batch(&preprovision_removal_slots_sql())
+            .unwrap();
+        connection
+            .execute("INSERT INTO schema_migrations(version) VALUES (1)", [])
+            .unwrap();
+        connection.execute_batch(MIGRATION_TWO).unwrap();
+        connection
+            .execute("INSERT INTO schema_migrations(version) VALUES (2)", [])
+            .unwrap();
+        connection.execute_batch(MIGRATION_THREE).unwrap();
+        connection
+            .execute("INSERT INTO schema_migrations(version) VALUES (3)", [])
+            .unwrap();
+
+        assert_eq!(migrate(&mut connection).unwrap(), CURRENT_SCHEMA_VERSION);
+        let secrets_table: u32 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_schema
+                 WHERE type = 'table' AND name = 'anchor_secrets'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(secrets_table, 1, "migration 4 creates anchor_secrets");
+        let operator_schema: u32 = connection
+            .query_row(
+                "SELECT schema_version FROM operator_state WHERE singleton = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(operator_schema, CURRENT_SCHEMA_VERSION);
+        let user_version: u32 = connection
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(user_version, CURRENT_SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn anchor_secrets_enforces_name_and_length_checks() {
+        let connection = fresh();
+        // Only the two known secret names are admissible.
+        let bad_name = connection.execute(
+            "INSERT INTO anchor_secrets(name, secret) VALUES ('mystery', ?1)",
+            rusqlite::params![vec![1u8; 32]],
+        );
+        assert!(
+            bad_name.is_err(),
+            "name CHECK on anchor_secrets.name must be enforced"
+        );
+        // Secrets are exactly 32 bytes.
+        let bad_length = connection.execute(
+            "INSERT INTO anchor_secrets(name, secret) VALUES ('genesis_random', ?1)",
+            rusqlite::params![vec![1u8; 16]],
+        );
+        assert!(
+            bad_length.is_err(),
+            "length CHECK on anchor_secrets.secret must be enforced"
+        );
     }
 
     #[test]

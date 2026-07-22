@@ -664,6 +664,43 @@ impl AnchorRepository {
         Ok(proposed_descriptor.to_vec())
     }
 
+    /// Return the database-durable secret bound to `name`, or atomically
+    /// persist `proposed` on first startup (same shape as
+    /// [`Self::load_or_initialize_descriptor`]).
+    ///
+    /// First write wins: once a name is initialized, the persisted value is
+    /// returned and the proposal ignored. This binds the anchor's genesis
+    /// random and namespace-token secret to the DATABASE, so an operator-key
+    /// rotation cannot silently change the anchor id or orphan minted tokens.
+    pub fn load_or_initialize_secret(
+        &mut self,
+        name: &str,
+        proposed: &[u8; 32],
+    ) -> Result<[u8; 32], AnchorRepositoryError> {
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let stored: Option<Vec<u8>> = transaction
+            .query_row(
+                "SELECT secret FROM anchor_secrets WHERE name = ?1",
+                params![name],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if let Some(stored) = stored {
+            transaction.commit()?;
+            let mut secret = [0u8; 32];
+            secret.copy_from_slice(&stored);
+            return Ok(secret);
+        }
+        transaction.execute(
+            "INSERT INTO anchor_secrets(name, secret) VALUES (?1, ?2)",
+            params![name, proposed.as_slice()],
+        )?;
+        transaction.commit()?;
+        Ok(*proposed)
+    }
+
     /// Acquire the single-writer deployment lease for `holder_id`.
     ///
     /// On first acquisition the database is bound to `token`. A subsequent
@@ -3045,5 +3082,43 @@ impl Drop for ReadSnapshot {
     fn drop(&mut self) {
         // End the read transaction; ignore errors during teardown.
         let _ = self.connection.execute_batch("ROLLBACK");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn first_write_wins_and_returns_the_proposal() {
+        let mut repo = AnchorRepository::open_in_memory().expect("open");
+        let first = repo
+            .load_or_initialize_secret("genesis_random", &[7u8; 32])
+            .expect("init");
+        assert_eq!(first, [7u8; 32]);
+    }
+
+    #[test]
+    fn persisted_secret_beats_a_different_later_proposal() {
+        let mut repo = AnchorRepository::open_in_memory().expect("open");
+        repo.load_or_initialize_secret("genesis_random", &[7u8; 32])
+            .expect("init");
+        // A different proposal (what an operator-key rotation would derive) must
+        // NOT displace the persisted value — anchor identity is bound to the DB.
+        let second = repo
+            .load_or_initialize_secret("genesis_random", &[9u8; 32])
+            .expect("load");
+        assert_eq!(second, [7u8; 32]);
+    }
+
+    #[test]
+    fn secrets_are_partitioned_by_name() {
+        let mut repo = AnchorRepository::open_in_memory().expect("open");
+        repo.load_or_initialize_secret("genesis_random", &[7u8; 32])
+            .expect("init genesis");
+        let token = repo
+            .load_or_initialize_secret("token_secret_v1", &[8u8; 32])
+            .expect("init token");
+        assert_eq!(token, [8u8; 32], "each name initializes independently");
     }
 }

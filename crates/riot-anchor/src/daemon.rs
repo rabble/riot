@@ -33,10 +33,19 @@
 //! against the shared repository cell, and the handler writes back whatever
 //! frames the actor returns.
 //!
+//! # Lease renewal and the actor watchdog
+//!
+//! [`serve`] renews the single-writer deployment lease every `lease_ttl / 3`
+//! seconds by round-tripping [`ActorJob::RenewLease`] through the actor thread.
+//! Every failure shape is FATAL, fail-closed: a refused renewal means a second
+//! writer may exist (continuing would fork the anchor); a failed send or a
+//! dropped reply means the single-writer thread is dead (serving against it
+//! would serve stale state). The renew interval is therefore also the actor
+//! WATCHDOG — a dead actor stops the daemon within one interval even when no
+//! connection is active.
+//!
 //! # Deferred scope (increment 2+)
 //!
-//! * Lease renewal — [`run`] acquires the single-writer deployment lease once at
-//!   startup; a periodic renew/verify loop is later scope.
 //! * A production [`AdmissionPolicy`] with real capacity accounting, per-source
 //!   rate limits, and pressure-band difficulty. [`TicketRootAuthorityPolicy`] is
 //!   the smallest REAL increment-1 policy: it performs a genuine cryptographic
@@ -66,6 +75,7 @@ use riot_transport::router::{AlpnRouter, BoundedStream, Deadlines, Exporter, Han
 use riot_transport::{TransportError, ALPN_ANCHOR_V1, ALPN_SYNC_V2};
 
 use crate::admission::IngressLimits;
+use crate::config::PersistedSecrets;
 use crate::control::{AdmissionPolicy, AnchorControlService, ControlHandling, PreparePlan};
 use crate::repository::{AnchorRepository, AnchorRepositoryError};
 use crate::sync_driver::{SyncEvent, SyncJob, SyncSessionTable};
@@ -110,8 +120,8 @@ pub enum ActorJob {
     /// A `riot/sync/2` session event (the DATA-path driver; sessions run
     /// inside the actor thread because their repository handle is `!Send`).
     Sync(SyncJob),
-    /// Renew the single-writer deployment lease in place. The periodic renew
-    /// loop that sends this is later scope; the arm re-acquires via
+    /// Renew the single-writer deployment lease in place. Sent by [`serve`]'s
+    /// renew interval (`lease_ttl / 3`); the arm re-acquires via
     /// [`AnchorRepository::acquire_deployment_lease`], whose same-holder +
     /// same-token path renews without advancing the epoch.
     RenewLease {
@@ -561,7 +571,16 @@ pub struct DaemonConfig {
     /// NodeId (so peers can discover and dial the anchor). This is the endpoint
     /// identity, distinct from the operator signing key.
     pub endpoint_secret_key: [u8; 32],
-    /// This deployment instance's single-writer lease holder id.
+    /// This deployment PROCESS's single-writer lease holder id.
+    ///
+    /// Assembly ([`crate::config::finalize_service`]) fills a zero placeholder;
+    /// [`serve`] OVERWRITES it with a fresh per-process random value — its
+    /// first draw from the daemon's [`EntropyFn`], before any other startup
+    /// work. The holder id is deliberately NOT derived from the operator
+    /// secret: an operator-derived holder made a second daemon started from
+    /// the same config present identical holder+token and renew the first
+    /// daemon's lease in place — two live writers forking one database. Tests
+    /// pin the holder by injecting a deterministic entropy fn.
     pub holder_id: [u8; 32],
     /// The deployment-instance token bound to the database (clone detection).
     pub deployment_token: [u8; 32],
@@ -670,58 +689,99 @@ pub async fn bind_local_anchor_endpoint(secret: [u8; 32]) -> Result<iroh::Endpoi
         .map_err(bind_io_error)
 }
 
+/// Load the database-durable anchor secrets, or atomically persist the derived
+/// `proposals` on first boot (first write wins — see
+/// [`AnchorRepository::load_or_initialize_secret`]). Opens the repository
+/// briefly and standalone: the daemon calls this BEFORE assembling the service
+/// so the control context and token ring are built from the persisted values.
+pub fn load_or_initialize_secrets(
+    db_path: &std::path::Path,
+    proposals: &PersistedSecrets,
+) -> Result<PersistedSecrets, DaemonError> {
+    let mut repo = AnchorRepository::open(db_path)?;
+    let genesis_random =
+        repo.load_or_initialize_secret("genesis_random", &proposals.genesis_random)?;
+    let token_secret =
+        repo.load_or_initialize_secret("token_secret_v1", &proposals.token_secret)?;
+    Ok(PersistedSecrets {
+        genesis_random,
+        token_secret,
+    })
+}
+
 /// Run the anchor daemon on a freshly bound PUBLIC endpoint until `shutdown`
-/// resolves. Thin wrapper over [`serve`] that owns the public bind.
-pub async fn run<P, S>(
-    config: DaemonConfig,
-    service: AnchorControlService<P, S>,
+/// resolves.
+///
+/// Loads-or-initializes the database-durable secrets (genesis random +
+/// namespace-token secret), assembles the service from the PERSISTED values
+/// (so a changed operator derivation can never silently change the anchor id
+/// or token secret), then binds the public endpoint and delegates to [`serve`]
+/// — whose first act is drawing the PER-PROCESS lease holder id from
+/// `entropy` (see [`DaemonConfig::holder_id`]).
+pub async fn run(
+    config: crate::config::Config,
     entropy: EntropyFn,
     shutdown: impl Future<Output = ()> + Send,
-) -> Result<(), DaemonError>
-where
-    P: AdmissionPolicy + Send + 'static,
-    S: OperatorSigner + Send + 'static,
-{
-    let endpoint = bind_anchor_endpoint(config.endpoint_secret_key).await?;
-    serve(endpoint, config, service, entropy, shutdown).await
+) -> Result<(), DaemonError> {
+    let proposals = crate::config::secret_proposals(&config);
+    let persisted = load_or_initialize_secrets(config.db_path(), &proposals)?;
+    let (daemon_config, service) = crate::config::finalize_service(config, persisted);
+    let endpoint = bind_anchor_endpoint(daemon_config.endpoint_secret_key).await?;
+    serve(endpoint, daemon_config, service, entropy, shutdown).await
 }
 
 /// Serve the control plane on an already-bound `endpoint` until `shutdown`
 /// resolves.
 ///
-/// Startup: open the repository, acquire the single-writer deployment lease
-/// (fail-closed if another live holder holds it), run readiness recovery, spawn
-/// the control actor, and register the `riot/anchor/1` handler. Then accept
-/// connections in a loop; a single failing connection (unknown ALPN, timeout,
-/// busy) is logged and does not stop the loop. The `endpoint` must advertise the
-/// control ALPN (use [`bind_anchor_endpoint`] / [`bind_local_anchor_endpoint`]).
+/// Startup: draw the PER-PROCESS lease holder id (the first entropy use), open
+/// the repository, acquire the single-writer deployment lease (fail-closed if
+/// another live holder holds it), run readiness recovery, spawn the control
+/// actor, and register the `riot/anchor/1` handler. Then accept connections in
+/// a loop; a single failing connection (unknown ALPN, timeout, busy) is logged
+/// and does not stop the loop. The `endpoint` must advertise the control ALPN
+/// (use [`bind_anchor_endpoint`] / [`bind_local_anchor_endpoint`]).
 ///
 /// Taking the endpoint as a parameter is the test seam: an end-to-end test binds
 /// a LOCAL endpoint, drives real connections through the accept loop + handler +
 /// actor, and signals `shutdown` to stop.
 pub async fn serve<P, S>(
     endpoint: iroh::Endpoint,
-    config: DaemonConfig,
+    mut config: DaemonConfig,
     mut service: AnchorControlService<P, S>,
-    entropy: EntropyFn,
+    mut entropy: EntropyFn,
     shutdown: impl Future<Output = ()> + Send,
 ) -> Result<(), DaemonError>
 where
     P: AdmissionPolicy + Send + 'static,
     S: OperatorSigner + Send + 'static,
 {
+    // PER-PROCESS lease identity — the daemon's FIRST entropy draw, before any
+    // other startup work. The holder id must NOT be derived from the operator
+    // secret: with an operator-derived holder, a second daemon started from
+    // the SAME config (the realistic accidental double-start this lease
+    // exists to prevent) presented identical holder+token, took the
+    // renew-in-place path, and started fine — two live writers forking one
+    // database, each extending the other's lease. With a fresh per-process
+    // draw the double-start presents the same deployment token but a
+    // DIFFERENT holder: `holder_active && !same_holder` → `LeaseHeld`, and
+    // the second process exits fatally instead of forking. The first daemon
+    // is unaffected — its own holder+token keep renewing in place below. The
+    // deployment token stays operator-derived (it binds the database to this
+    // deployment/operator; a different operator's token keeps failing
+    // `LeaseTokenMismatch`).
+    config.holder_id = entropy();
+
     let mut repo = AnchorRepository::open(&config.db_path)?;
 
     let now = unix_now();
     // Single-writer guard: fail closed if a different live deployment holds it.
+    // The accept loop below renews this lease every `lease_ttl / 3` seconds.
     let _lease = repo.acquire_deployment_lease(
         &config.holder_id,
         &config.deployment_token,
         now,
         config.lease_ttl_secs,
     )?;
-    // DEFERRED(WU-019 increment 2): a periodic lease renew/verify loop. Increment
-    // 1 acquires once at startup.
     repo.recover_readiness(now)?;
 
     // Bind one canonical descriptor to this database. Restarts reuse those
@@ -763,8 +823,16 @@ where
         ALPN_SYNC_V2,
         Deadlines::sync(),
         MAX_SYNC2_FRAME_BYTES,
-        sync_handler(tx, now_fn),
+        sync_handler(tx.clone(), Arc::clone(&now_fn)),
     );
+
+    // The lease renew cadence — also the single-writer WATCHDOG cadence: every
+    // tick round-trips the actor thread, so a dead actor is detected within
+    // one interval even when no connection is active. The first tick fires
+    // immediately (a harmless renew-in-place right after startup acquisition).
+    let lease_renew_period = std::time::Duration::from_secs((config.lease_ttl_secs / 3).max(1));
+    let mut lease_renew = tokio::time::interval(lease_renew_period);
+    lease_renew.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
     let router = Arc::new(router);
     // Bound incomplete handshakes as well as routed sessions. An accepted
@@ -772,10 +840,49 @@ where
     // dispatch ends; excess attempts are refused before allocating a task.
     let ingress_permits = Arc::new(Semaphore::new(max_sessions));
     let mut sessions = JoinSet::new();
+    // A fatal renew/watchdog failure: the loop breaks with this set and the
+    // daemon returns it after teardown.
+    let mut fatal: Option<DaemonError> = None;
     tokio::pin!(shutdown);
     loop {
         tokio::select! {
         _ = &mut shutdown => break,
+        _ = lease_renew.tick() => {
+            // Renew the single-writer deployment lease in place. THREE failure
+            // shapes are all fatal, fail-closed: a refused renewal means a
+            // second writer may exist (continuing would fork the anchor); a
+            // failed send or a dropped reply means the single-writer thread
+            // is dead (serving against it would serve stale state).
+            let (reply_tx, reply_rx) = oneshot::channel();
+            let job = ActorJob::RenewLease {
+                holder_id: config.holder_id,
+                deployment_token: config.deployment_token,
+                lease_ttl_secs: config.lease_ttl_secs,
+                now: (now_fn)(),
+                reply: reply_tx,
+            };
+            if tx.send(job).is_err() {
+                fatal = Some(DaemonError::Configuration(
+                    "anchor single-writer actor died".to_string(),
+                ));
+                break;
+            }
+            match reply_rx.await {
+                Ok(Ok(())) => {}
+                Ok(Err(refusal)) => {
+                    fatal = Some(DaemonError::Configuration(format!(
+                        "deployment lease lost: {refusal}"
+                    )));
+                    break;
+                }
+                Err(_) => {
+                    fatal = Some(DaemonError::Configuration(
+                        "anchor single-writer actor died".to_string(),
+                    ));
+                    break;
+                }
+            }
+        }
         Some(joined) = sessions.join_next(), if !sessions.is_empty() => {
             if let Err(error) = joined {
                 eprintln!("anchor: control session task ended: {error}");
@@ -810,16 +917,43 @@ where
     endpoint.close().await;
     sessions.abort_all();
     while sessions.join_next().await.is_some() {}
-    // Every remaining `ActorJob` sender lives in the router's handlers; drop
-    // them so the single-writer thread sees channel closure and exits. Joining
-    // then surfaces a panic payload from the actor thread in the daemon's error
-    // path instead of silently discarding it.
+    // Every remaining `ActorJob` sender lives in the router's handlers and the
+    // renew loop's `tx`; drop both so the single-writer thread sees channel
+    // closure and exits. Joining then surfaces a panic payload from the actor
+    // thread in the daemon's error path instead of silently discarding it.
     drop(router);
-    let joined = tokio::task::spawn_blocking(move || actor.join())
-        .await
-        .map_err(|error| {
-            DaemonError::Configuration(format!("anchor single-writer join task failed: {error}"))
-        })?;
+    // On a CLEAN shutdown, relinquish the single-writer lease by expiring it
+    // in place (a same-holder renew with ttl 0), so an immediate restart —
+    // which presents a fresh per-process holder id — can take the lease
+    // without waiting out the TTL. Best-effort: a dead actor or a refusal is
+    // ignored (the TTL then bounds the lockout). On a FATAL exit the lease is
+    // deliberately left standing: in the lease-lost case another holder owns
+    // it, and in the actor-death case there is no writer thread left to run
+    // the relinquish anyway.
+    if fatal.is_none() {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        let relinquish = ActorJob::RenewLease {
+            holder_id: config.holder_id,
+            deployment_token: config.deployment_token,
+            lease_ttl_secs: 0,
+            now: unix_now(),
+            reply: reply_tx,
+        };
+        if tx.send(relinquish).is_ok() {
+            let _ = reply_rx.await;
+        }
+    }
+    drop(tx);
+    let joined = tokio::task::spawn_blocking(move || actor.join()).await;
+    // A fatal renew/watchdog failure is the daemon's own diagnosis and wins
+    // over the join outcome (in the watchdog case the dead thread's panic
+    // payload merely restates why the actor died).
+    if let Some(error) = fatal {
+        return Err(error);
+    }
+    let joined = joined.map_err(|error| {
+        DaemonError::Configuration(format!("anchor single-writer join task failed: {error}"))
+    })?;
     joined.map_err(|payload| {
         let message = payload
             .downcast_ref::<&str>()
@@ -930,5 +1064,42 @@ mod tests {
     fn unix_now_is_after_2023() {
         // Sanity: the clock returns a plausible present-day unix timestamp.
         assert!(unix_now() > 1_700_000_000);
+    }
+
+    #[test]
+    fn startup_secrets_survive_a_changed_proposal_across_reopen() {
+        let mut db_path = std::env::temp_dir();
+        db_path.push(format!(
+            "riot-anchor-secrets-{}-{:?}.db",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_file(&db_path);
+
+        let first = load_or_initialize_secrets(
+            &db_path,
+            &PersistedSecrets {
+                genesis_random: [41u8; 32],
+                token_secret: [42u8; 32],
+            },
+        )
+        .expect("first boot initializes");
+        assert_eq!(first.genesis_random, [41u8; 32]);
+        assert_eq!(first.token_secret, [42u8; 32]);
+
+        // A later boot proposing DIFFERENT derivations (an operator-key
+        // rotation) gets the database-bound originals back.
+        let second = load_or_initialize_secrets(
+            &db_path,
+            &PersistedSecrets {
+                genesis_random: [51u8; 32],
+                token_secret: [52u8; 32],
+            },
+        )
+        .expect("second boot loads");
+        assert_eq!(second.genesis_random, [41u8; 32]);
+        assert_eq!(second.token_secret, [42u8; 32]);
+
+        let _ = std::fs::remove_file(&db_path);
     }
 }

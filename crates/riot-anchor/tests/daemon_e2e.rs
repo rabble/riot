@@ -27,8 +27,8 @@ use tokio::time::timeout;
 
 use riot_anchor::admission::IngressLimits;
 use riot_anchor::config::{assemble_service, derive, resolve_config, Config};
-use riot_anchor::daemon::{bind_local_anchor_endpoint, serve};
-use riot_anchor::repository::AnchorRepository;
+use riot_anchor::daemon::{bind_local_anchor_endpoint, serve, DaemonError, EntropyFn};
+use riot_anchor::repository::{AnchorRepository, AnchorRepositoryError};
 use riot_anchor::work::TokenSecretRing;
 
 use riot_anchor_protocol::codec::{decode_canonical, CanonicalRecord};
@@ -1579,6 +1579,282 @@ async fn daemon_restart_with_staged_uncommitted_operation_is_unwedged_and_leaks_
     full_host_cycle(&client, addr2.clone(), &site, 0xC0).await;
     assert_pull_serves_site(&client, addr2.clone(), &site).await;
     stop_daemon(shutdown2, task2).await;
+
+    client.close().await;
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+}
+
+/// Task D2 (lease renewal): the running daemon RENEWS its deployment lease, so
+/// a second deployment instance on the same database fails to start long after
+/// the raw TTL has elapsed — and can take the lease only once the first stops
+/// AND the lease term lapses.
+///
+/// PRODUCTION lease-identity derivation for BOTH daemons — no hand-overridden
+/// holder id. The two daemons run from BYTE-IDENTICAL configs (same operator
+/// secret, same database; only their per-process entropy differs): the
+/// realistic accidental double-start the single-writer lease exists to
+/// prevent. The lease holder id is a per-process random draw ([`serve`]'s
+/// first entropy use), NOT an operator-secret derivation, so the second
+/// daemon presents the SAME deployment token with a DIFFERENT holder and is
+/// refused `LeaseHeld` — were the holder operator-derived, it would present
+/// identical holder+token, renew the first daemon's lease in place, and start
+/// fine: two live writers forking one database.
+#[tokio::test(flavor = "multi_thread")]
+async fn daemon_renews_the_lease_so_a_second_deployment_cannot_start_until_it_stops() {
+    const SHORT_TTL_SECS: u64 = 2;
+    let db_path = unique_db();
+
+    let first_endpoint = bind_local_anchor_endpoint([103u8; 32])
+        .await
+        .expect("first daemon endpoint binds");
+    let (mut first_config, first_service) =
+        assemble_service(daemon_config_for(&db_path, "Lease deployment"));
+    first_config.lease_ttl_secs = SHORT_TTL_SECS;
+    let first_token = first_config.deployment_token;
+    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+    let first_task = tokio::spawn(async move {
+        serve(
+            first_endpoint,
+            first_config,
+            first_service,
+            Box::new(|| [0x53u8; 32]),
+            async move {
+                let _ = shutdown_rx.await;
+            },
+        )
+        .await
+    });
+
+    // Long past the raw TTL: without renewal the startup lease would now be
+    // expired and free for the taking.
+    tokio::time::sleep(Duration::from_secs(SHORT_TTL_SECS + 2)).await;
+
+    // The accidental double-start: a second daemon assembled from the
+    // BYTE-IDENTICAL config — same operator secret, hence the SAME
+    // database-bound deployment token — must fail closed while the first is
+    // alive and renewing. Only its per-process entropy (its startup holder
+    // draw) differs.
+    let contender_endpoint = bind_local_anchor_endpoint([104u8; 32])
+        .await
+        .expect("contender endpoint binds");
+    let (mut contender_config, contender_service) =
+        assemble_service(daemon_config_for(&db_path, "Lease deployment"));
+    contender_config.lease_ttl_secs = SHORT_TTL_SECS;
+    assert_eq!(
+        contender_config.deployment_token, first_token,
+        "byte-identical configs derive the same deployment token",
+    );
+    let contended = timeout(
+        STEP,
+        serve(
+            contender_endpoint,
+            contender_config,
+            contender_service,
+            Box::new(|| [0x54u8; 32]),
+            std::future::ready(()),
+        ),
+    )
+    .await
+    .expect("contended startup fails promptly");
+    match contended {
+        Err(DaemonError::Repository(AnchorRepositoryError::LeaseHeld { .. })) => {}
+        other => panic!(
+            "a same-config second deployment must fail with LeaseHeld while the first \
+             renews (same token, different per-process holder), got {other:?}"
+        ),
+    }
+
+    // Stop the first daemon and let its (short) final lease term lapse.
+    let _ = shutdown_tx.send(());
+    let first_result = timeout(STEP, first_task)
+        .await
+        .expect("first daemon stops promptly")
+        .expect("first daemon task joined");
+    assert!(
+        first_result.is_ok(),
+        "first daemon exits cleanly: {first_result:?}"
+    );
+    tokio::time::sleep(Duration::from_secs(SHORT_TTL_SECS + 1)).await;
+
+    // A fresh start of the same-config deployment now takes the lease and
+    // starts serving.
+    let retry_endpoint = bind_local_anchor_endpoint([105u8; 32])
+        .await
+        .expect("retry endpoint binds");
+    let (mut retry_config, retry_service) =
+        assemble_service(daemon_config_for(&db_path, "Lease deployment"));
+    retry_config.lease_ttl_secs = SHORT_TTL_SECS;
+    let (retry_shutdown_tx, retry_shutdown_rx) = oneshot::channel::<()>();
+    let retry_task = tokio::spawn(async move {
+        serve(
+            retry_endpoint,
+            retry_config,
+            retry_service,
+            Box::new(|| [0x55u8; 32]),
+            async move {
+                let _ = retry_shutdown_rx.await;
+            },
+        )
+        .await
+    });
+    // A moment past startup (lease acquire + descriptor init), then a clean
+    // shutdown proves the contender was serving, not failing.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let _ = retry_shutdown_tx.send(());
+    let retried = timeout(STEP, retry_task)
+        .await
+        .expect("retry stops promptly")
+        .expect("retry task joined");
+    assert!(
+        retried.is_ok(),
+        "after the first stops and the TTL elapses, the contender starts: {retried:?}"
+    );
+
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+}
+
+/// The deployment token stays OPERATOR-derived (the per-process holder id does
+/// not weaken clone detection): a deployment assembled from a DIFFERENT
+/// operator secret derives a different database-bound token and is refused
+/// `LeaseTokenMismatch` at the repository gate — regardless of holder identity
+/// and even against an already-expired lease.
+#[test]
+fn a_different_operator_deployment_token_is_refused_as_lease_token_mismatch() {
+    let db_path = unique_db();
+    let (first_config, _first_service) =
+        assemble_service(daemon_config_for(&db_path, "Operator A"));
+
+    // Same database, DIFFERENT operator secret → a different deployment token.
+    let args = vec!["--db".to_string(), db_path.to_string_lossy().into_owned()];
+    let env = vec![
+        ("RIOT_ANCHOR_OPERATOR_KEY_HEX".to_string(), "09".repeat(32)),
+        ("RIOT_ANCHOR_ENDPOINT_KEY_HEX".to_string(), "08".repeat(32)),
+    ];
+    let other = resolve_config(&args, &env).expect("other-operator config resolves");
+    let (other_config, _other_service) = assemble_service(other);
+    assert_ne!(
+        other_config.deployment_token, first_config.deployment_token,
+        "a different operator secret derives a different deployment token",
+    );
+
+    let mut repo = AnchorRepository::open(&db_path).expect("repository opens");
+    let now = now_secs();
+    repo.acquire_deployment_lease(&[0xA1u8; 32], &first_config.deployment_token, now, 300)
+        .expect("the first operator's deployment binds the database token");
+    // Long past expiry — the lease itself is free for the taking — the foreign
+    // token is still refused: token mismatch, not holder contention.
+    match repo.acquire_deployment_lease(
+        &[0xB2u8; 32],
+        &other_config.deployment_token,
+        now + 1_000,
+        300,
+    ) {
+        Err(AnchorRepositoryError::LeaseTokenMismatch) => {}
+        other => {
+            panic!("expected LeaseTokenMismatch for a different operator's token, got {other:?}")
+        }
+    }
+
+    drop(repo);
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+}
+
+/// Task D2 (actor watchdog): the lease-renew interval doubles as the WATCHDOG
+/// for the single-writer thread. When the actor dies (poisoned entropy panics
+/// on its first post-startup use, killed by one `GetWorkChallenge`), the
+/// daemon must stop with the fatal actor-death configuration error within ~2
+/// lease intervals — never keep accepting connections against a dead writer.
+#[tokio::test(flavor = "multi_thread")]
+async fn daemon_stops_fatally_when_the_single_writer_actor_dies() {
+    const SHORT_TTL_SECS: u64 = 3; // renew (watchdog) interval: 1 second
+    let daemon_endpoint = bind_local_anchor_endpoint([106u8; 32])
+        .await
+        .expect("daemon endpoint binds");
+    let daemon_addr = dialable_addr(&daemon_endpoint).await;
+
+    let db_path = unique_db();
+    let (mut daemon_config, service) =
+        assemble_service(daemon_config_for(&db_path, "Watchdog anchor"));
+    daemon_config.lease_ttl_secs = SHORT_TTL_SECS;
+    // Entropy that PANICS on its first POST-STARTUP use: `serve`'s startup
+    // draw (the per-process lease holder id, call 1) passes through; the
+    // first entropy-minting control request (call 2, inside the actor thread)
+    // then kills the single-writer thread.
+    let mut entropy_calls = 0u32;
+    let entropy: EntropyFn = Box::new(move || -> [u8; 32] {
+        entropy_calls += 1;
+        if entropy_calls == 1 {
+            return [0x66u8; 32]; // the startup holder draw
+        }
+        panic!("test entropy poisoned")
+    });
+    let serve_task = tokio::spawn(async move {
+        serve(
+            daemon_endpoint,
+            daemon_config,
+            service,
+            entropy,
+            std::future::pending(),
+        )
+        .await
+    });
+
+    // One GetWorkChallenge forces an entropy call (the challenge nonce) inside
+    // the actor thread.
+    let root = SigningKey::from_bytes(&[12u8; 32]);
+    let intended_bytes = prepare_frame(signed_ticket(&root, |_| {}));
+    let intended = decode_canonical::<ControlRequestV1>(&intended_bytes, MAX_CONTROL_FRAME_BYTES)
+        .expect("intended prepare decodes");
+    let challenge_frame = ControlRequestV1 {
+        idempotency_key: [0x91; 16],
+        operation: ControlOperation::GetWorkChallenge(GetWorkChallengeV1 {
+            intended_operation_kind: ControlOperationKind::PrepareHost,
+            intended_idempotency_key: [1u8; 16],
+            community_root: root.verifying_key().to_bytes(),
+            work_target_digest: intended
+                .operation
+                .work_target_digest()
+                .expect("work target digest"),
+        }),
+    }
+    .encode_canonical()
+    .expect("encode work challenge request");
+
+    let client = bind_local_anchor_endpoint([204u8; 32])
+        .await
+        .expect("client endpoint binds");
+    let conn = timeout(STEP, client.connect(daemon_addr, ALPN_ANCHOR_V1))
+        .await
+        .expect("dial did not time out")
+        .expect("dial connects");
+    let (send, recv) = conn.open_bi().await.expect("open bi-stream");
+    let mut send = Box::pin(send);
+    let mut recv = Box::pin(recv);
+    write_frame(&mut send, &challenge_frame).await;
+    // The actor dies before replying; the stream ends with an error, not a
+    // frame. Only delivery matters here — tolerate any read outcome.
+    let mut length_prefix = [0u8; 4];
+    let _ = timeout(Duration::from_secs(5), recv.read_exact(&mut length_prefix)).await;
+
+    // Within ~2 lease intervals the watchdog's RenewLease send/reply hits the
+    // closed channel and run() exits with the fatal actor-death error.
+    let died = timeout(Duration::from_secs(2 * SHORT_TTL_SECS), serve_task)
+        .await
+        .expect("the watchdog stops the daemon within ~2 lease intervals")
+        .expect("serve task joined");
+    match died {
+        Err(DaemonError::Configuration(message)) => assert!(
+            message.contains("single-writer actor died"),
+            "the fatal error names the dead actor: {message}"
+        ),
+        other => panic!("expected the fatal actor-death configuration error, got {other:?}"),
+    }
 
     client.close().await;
     let _ = std::fs::remove_file(&db_path);
