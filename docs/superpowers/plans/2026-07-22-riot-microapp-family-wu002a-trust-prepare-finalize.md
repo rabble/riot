@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: metaswarm orchestrated-execution. Steps `- [ ]`. Parent: `2026-07-22-riot-microapp-family-master-plan.md`. Spec: `docs/superpowers/specs/2026-07-22-riot-microapp-family-design.md` §"Durable trust and app-data transactions". First of three WU-002 units (002a trust seam · 002b app-data seam · 002c native wiring + alert copy + fault injection).
 
-**Goal:** Split FFI trust grant/revoke from a single commit-first mutation into a **prepare → (host persists) → finalize** protocol: `prepare_app_trust` validates authority + signs the marker + returns persistable bytes and a generation-bound token **without mutating the live store**; `finalize_app_trust` idempotently commits it. The existing single-shot `set_app_trust` is re-expressed as prepare+finalize under one lock, so current behavior and native callers are unchanged this WU.
+**Goal:** Split FFI trust grant/revoke from a single commit-first mutation into a **prepare → (host persists) → finalize** protocol: `prepare_app_trust` validates authority + signs the marker + returns the app id + decision (which the host records in its durable trusted-ID set) while holding the signed marker under a generation-bound token **without mutating the live store**; `finalize_app_trust` idempotently commits it. The existing single-shot `set_app_trust` is re-expressed as prepare+finalize under one lock, so current behavior and native callers are unchanged this WU.
 
 **Architecture:** All in `crates/riot-ffi/src/mobile_state.rs` (the trust commit is FFI-side; core `trust.rs`/`session.rs` untouched). A new `LocalProfile.prepared_trust: Option<PreparedTrust>` slot holds at most one prepared mutation across the prepare/finalize call pair. No store mutation happens in prepare; the durable write (host's job, WU-002c) becomes the linearization point; finalize commits the exact signed marker and is crash-safe idempotent (re-admitting the same signed entry is an LWW no-op). No native/disk changes here.
 
@@ -57,7 +57,11 @@ set_app_trust(app_id, trusted)  [unchanged public behavior]:
 
 Factor the bodies into lock-free helpers `prepare_trust_locked(&mut LocalProfile, ...)` and `finalize_trust_locked(&mut LocalProfile)` so `set_app_trust` runs both under a single `with_active`, while the public `prepare_app_trust`/`finalize_app_trust` each take the lock once (the two-phase native path; the shared authority lock that spans the host persist is WU-002c's native lock).
 
-Slot lifecycle: `prepared_trust` is cleared by `discard_prepared_trust`, by a superseding `prepare`, by `finalize` (via `take`), and MUST be cleared on profile close / community switch / generation change / teardown. Add `profile.prepared_trust = None;` wherever `app_execution_generation` is bumped for a namespace/community swap and in the profile-close/failed transition.
+Slot lifecycle: `prepared_trust` is cleared by `discard_prepared_trust`, by a superseding `prepare`, by `finalize` (via `take`), and on the `Active→Failed`/profile-close transition (memory hygiene). It is NOT eagerly cleared at generation-bump sites — instead `finalize_trust_locked`'s generation guard rejects a stale prepared mutation lazily. This keeps the guard a LIVE, coverable check rather than an unreachable phantom (see Task 3).
+
+Signatures: keep `set_app_trust(inner, app_id: String, trusted: bool)` and the internal `parse_entry_id(&str) -> [u8;32]` exactly as today (behavior byte-identical). `prepare_trust_locked` therefore also takes `app_id: String` and derives `[u8;32]` via `parse_entry_id`; `PreparedTrust.app_id` stores that `[u8;32]`, and `PreparedTrustRecord.app_id` is `hex(&prepared.app_id)`.
+
+Test harness: the two-phase entrypoints are exposed as `AppRuntimeSession` methods in `apps_ffi.rs` (thin wrappers over the `pub(crate)` fns, mirroring `trust_app`) so the `tests/apps_contract.rs` integration crate can reach them — `pub(crate)` free fns are invisible to integration tests. In the test snippets below, `prepare_app_trust(&profile, …)`/`finalize_app_trust(&profile)`/`discard_prepared_trust(&profile)` are shorthand for those `runtime.prepare_app_trust(…)` etc. methods on the runtime handle, and `is_app_trusted(&profile, &app_id)` / the `organizer_with_installed_untrusted_app` setup mirror the trust-observation and setup already in `trust_lifecycle_is_lww_per_app` (open → `install_app` → not-yet-trusted; trust visible via the directory listing's `trusted` flag). Adapt, don't paste.
 
 ---
 
@@ -74,9 +78,11 @@ fn prepare_trust_does_not_mutate_and_finalize_commits() {
     // trust_lifecycle_is_lww_per_app in this file: open profile, install a starter,
     // become organizer of the listed space).
     let (profile, app_id) = organizer_with_installed_starter(); // existing-style helper
-    // prepare: returns persistable bytes; trust is still OFF.
+    // prepare: returns the {app_id, trusted} record for the host's trusted-ID set;
+    // trust is still OFF (live store untouched).
     let prepared = prepare_app_trust(&profile, app_id.clone(), true).expect("prepare");
-    assert!(!prepared.persistable_bytes.is_empty());
+    assert!(prepared.trusted);
+    assert!(!prepared.app_id.is_empty());
     assert!(!is_app_trusted(&profile, &app_id), "prepare must not grant trust");
     // finalize: trust flips ON.
     finalize_app_trust(&profile).expect("finalize");
@@ -274,26 +280,29 @@ git commit -m "test(ffi): crash-before-finalize, discard, and idempotent trust r
 
 **Files:** Modify `crates/riot-ffi/src/mobile_state.rs`, tests in `apps_contract.rs`.
 
-- [ ] **Step 1: Write the failing test** — a community switch (which bumps `app_execution_generation`) between prepare and finalize must invalidate the prepared trust, never commit it into the wrong context:
+The generation guard in `finalize_trust_locked` is the LIVE fail-closed mechanism (a lazy, tested check), NOT eager slot-clearing at every bump site. Do NOT sprinkle `profile.prepared_trust = None;` across the bump sites (`:676/:799/:837/:3038`) — that would make the guard an unreachable phantom the ≥95 coverage gate flags, and it is the exact "named guard that bounds nothing" defect class this repo watches for. Instead: a real generation bump between prepare and finalize leaves the (now stale) slot in place, and `finalize_trust_locked` rejects it via the generation mismatch, uncommitted. Clear the slot only on the `Active→Failed`/profile-close transition (memory hygiene, not the security path).
+
+- [ ] **Step 1: Write the failing test** — a real community switch (which bumps `app_execution_generation`) between prepare and finalize must make finalize reject via the generation guard, with trust NOT granted:
 
 ```rust
 #[test]
-fn a_generation_bump_between_prepare_and_finalize_fails_closed() {
-    let (profile, app_id) = organizer_with_installed_starter();
+fn a_generation_bump_between_prepare_and_finalize_fails_closed_via_the_guard() {
+    // Two communities so a real switch bumps the generation (mirror an existing
+    // switch_community test's setup in this file).
+    let (profile, app_id) = organizer_with_installed_untrusted_app();
     prepare_app_trust(&profile, app_id.clone(), true).unwrap();
-    force_execution_generation_bump(&profile); // e.g. a community switch / namespace swap path
-    // Either the slot was cleared by the swap (finalize errors) or finalize's
-    // generation guard rejects; in both cases trust is NOT granted.
-    assert!(finalize_app_trust(&profile).is_err());
-    assert!(!is_app_trusted(&profile, &app_id));
+    switch_to_other_community(&profile);           // real bump path, does NOT clear the slot
+    let err = finalize_app_trust(&profile).unwrap_err(); // guard fires on generation mismatch
+    assert!(matches!(err, MobileError::Internal));  // or the chosen stale-authority variant
+    assert!(!is_app_trusted(&profile, &app_id), "stale prepared trust must not commit");
 }
 ```
 
-- [ ] **Step 2: Run to verify fail** (if the swap doesn't yet clear the slot / guard doesn't fire).
+- [ ] **Step 2: Run to verify fail** — before the guard exists / if the slot were eagerly cleared this asserts the wrong path. Confirm it fails for the right reason.
 
-- [ ] **Step 3: Implement** — at every site that bumps `app_execution_generation` for a namespace/community swap (map: `mobile_state.rs` ~`:649/:772/:810` and community switch paths) add `profile.prepared_trust = None;`. The `finalize_trust_locked` generation guard is the belt-and-suspenders second line. Also clear it in the `ProfileState::Active → Failed` transition and any profile-close path.
+- [ ] **Step 3: Implement** — ensure `finalize_trust_locked` compares `prepared.generation` against the CURRENT `profile.app_execution_generation` and returns the stale-authority error (leaving trust uncommitted) when they differ (already in the Task 1 helper). Add slot-clear ONLY to the `ProfileState::Active → Failed` transition / profile-close for hygiene. Verify by grep that no bump site clears the slot, so the guard is genuinely reachable and covered by the test above.
 
-- [ ] **Step 4: Run to verify pass** — the new test + the full execution-generation suite (`revoke_fails_the_next_app_execution_read_and_commit`, `namespace_replacement_fails_stale_app_execution_access`, `stale_approval_generation_...`) green.
+- [ ] **Step 4: Run to verify pass** — the new test + the full execution-generation suite (`revoke_fails_the_next_app_execution_read_and_commit`, `namespace_replacement_fails_stale_app_execution_access`, `stale_approval_generation_...`) green. `llvm-cov` shows the guard branch covered (not dead).
 
 - [ ] **Step 5: Commit**
 
@@ -313,13 +322,14 @@ git commit -m "fix(ffi): clear prepared trust on generation/namespace change, fa
 
 ## Definition of Done
 
-- `prepare_app_trust` validates + signs + returns persistable bytes and stores a `PreparedTrust` WITHOUT mutating the live store (trust unchanged after prepare).
-- `finalize_app_trust` commits the exact signed marker + bumps generation; idempotent on crash-retry.
-- `discard_prepared_trust` clears the slot; a superseding prepare replaces it; a generation/namespace change or profile-failed transition clears it and finalize fails closed.
+- `prepare_app_trust` validates + signs + stores a `PreparedTrust` and returns `{app_id, trusted}` (for the host's durable trusted-ID set) WITHOUT mutating the live store (trust unchanged after prepare). No marker bytes cross the FFI for trust.
+- `finalize_app_trust` commits the exact signed marker + bumps generation; idempotent on crash-retry (re-issue is an LWW no-op).
+- `finalize`'s generation guard is the LIVE fail-closed mechanism: a real generation bump (community switch) between prepare and finalize makes finalize reject with the marker uncommitted, and a dedicated test exercises that branch (not a phantom guard). `discard_prepared_trust` clears the slot; a superseding prepare replaces it; the `Active→Failed`/close transition clears it for hygiene.
 - `set_app_trust` re-expressed as prepare+finalize under one lock, behavior byte-identical — all existing trust/app-data/execution-generation tests stay green.
+- The two-phase entrypoints are exposed as `AppRuntimeSession` methods (`apps_ffi.rs`) so integration tests and WU-002c can call them; `PreparedTrustRecord` is `{app_id: String, trusted: bool}`.
 - `fmt`/`clippy`/`test --workspace`/`llvm-cov ≥95` all green. No core/native/fixture changes.
 
 ## Explicitly deferred
 
-- **WU-002b:** app-data `prepare_app_data_put` (receipt without live mutation) + finalize, same pattern on `app_data_put_with_receipt`.
+- **WU-002b:** app-data `prepare_app_data_put` (receipt without live mutation) + finalize, same pattern on `app_data_put_with_receipt`. **NOTE (Scope reviewer N1):** WU-002b MUST NOT add a second independent prepared slot — the spec's "at most one prepared mutation per profile" requires trust and app-data to SHARE one `prepared_mutation` slot (or enforce mutual exclusion). Generalize `prepared_trust` into a single `prepared_mutation: Option<PreparedMutation>` enum in WU-002b rather than adding a parallel field.
 - **WU-002c:** native iOS/macOS/Android wiring — the shared authority/persistence lock spanning host persist, persist-first ordering, the exact storage-full / save-failed alert copy, session invalidation before WebView destroy on revoke, and fault-injection tests at every boundary (prepare, persist, finalize, session-invalidation, teardown, process-termination, rebuild).
