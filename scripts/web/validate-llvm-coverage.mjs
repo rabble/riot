@@ -79,14 +79,18 @@ export function validateCoverageReport(report, thresholds) {
   if (deficits.length > 0) throw new Error(deficits.join("\n"));
 }
 
-function run(argumentsAfterScript) {
+export function run(
+  argumentsAfterScript,
+  thresholdsPath = path.resolve(
+    path.dirname(fileURLToPath(import.meta.url)),
+    "../..",
+    ".coverage-thresholds.json",
+  ),
+) {
   if (argumentsAfterScript.length !== 1) {
     console.error("usage: validate-llvm-coverage.mjs <llvm-coverage.json>");
     return 1;
   }
-
-  const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
-  const thresholdsPath = path.resolve(scriptDirectory, "../..", ".coverage-thresholds.json");
 
   let thresholds;
   try {
