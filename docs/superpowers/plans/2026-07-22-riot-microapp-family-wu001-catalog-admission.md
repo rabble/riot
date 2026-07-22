@@ -9,8 +9,9 @@
 **Tech Stack:** Rust 2021, existing `riot-core::apps` module, `riot-ffi` UniFFI state.
 
 **Scope boundary (do NOT exceed):**
-- Create/modify only: `crates/riot-core/src/apps/starter.rs`, `crates/riot-core/src/apps/admission.rs` (new), `crates/riot-core/src/apps/mod.rs`, `crates/riot-ffi/src/mobile_state.rs`, and the test files named below.
+- Create/modify only: `crates/riot-core/src/apps/starter.rs`, `crates/riot-core/src/apps/admission.rs` (new), `crates/riot-core/src/apps/inventory.rs` (new), `crates/riot-core/src/apps/mod.rs`, `crates/riot-ffi/src/mobile_state.rs`, and these test files: `crates/riot-core/tests/apps_starter.rs`, `crates/riot-core/tests/apps_admission.rs` (new), `crates/riot-core/tests/apps_inventory.rs` (new), `crates/riot-ffi/tests/apps_contract.rs`, `crates/riot-ffi/tests/mobile_fail_closed.rs`, `crates/riot-ffi/tests/mobile_refusal_surface.rs`.
 - **Never** touch: `fixtures/apps/checklist.*` (byte-frozen), any native shell source, `fixtures/apps/*.cbor` bytes.
+- **`STARTER_CATALOG` stays as a plain alias of `CURRENT_STARTER_CATALOG`** (NO `#[deprecated]` — that attribute fails `clippy -D warnings` via `demo_fixture.rs`). Every existing `STARTER_CATALOG` use (`demo_fixture.rs:45/309/399`, `mobile_state.rs:3766/3770/3933/4343/4381/4433/4481/4593`, and all test-file uses) then compiles unchanged and stays correct — they all want the advertised catalog, which the alias points at. Do NOT migrate them; that keeps this WU inside `demo_fixture.rs`-free scope.
 - `CURRENT_STARTER_CATALOG` is **structurally seeded from the existing v1 bytes** this WU. Real v2 bytes do not exist yet and MUST NOT be invented (spec forbids pre-pinning v2 IDs). Each Slice-4 WU re-points one `CURRENT_STARTER_CATALOG` entry to its generated v2 pair.
 
 **Verified anchors (origin/main 49dbe38):** `STARTER_CATALOG` `starter.rs:81`; `verify_starter_catalog` `starter.rs:94`; `starter_pair_bytes(catalog, id)` `index.rs:200`; `MAX_INSTALLED_APPS=16` `mobile_state.rs:46`; `install_pair` `mobile_state.rs:2408`, cap check `:2426`; `StoredInstalledApp{app_id,manifest_bytes,bundle_bytes}` `:196`; `MobileError::{SessionLimit,StoreFull}` `mobile_api.rs:190`; `LocalProfile` `mobile_state.rs:68`.
@@ -107,16 +108,19 @@ pub const LEGACY_BUILTIN_CATALOG: &[(&[u8], &[u8])] = &[
     (PHOTO_WALL_MANIFEST, PHOTO_WALL_BUNDLE),
 ];
 
-/// Deprecated single-catalog alias retained so pre-split call sites compile
-/// unchanged; new code selects a catalog by profile generation.
-#[deprecated(note = "use CURRENT_STARTER_CATALOG or generation-aware selection")]
+/// Plain back-compat alias: the advertised catalog. Every pre-split use
+/// (`demo_fixture.rs`, the directory merge at `mobile_state.rs:3770`, test
+/// fixtures) references the advertised catalog, which is exactly
+/// `CURRENT_STARTER_CATALOG`, so the alias keeps them correct AND compiling with
+/// zero migration. NOT `#[deprecated]` — that attribute would fail
+/// `clippy -- -D warnings` on the same-crate `demo_fixture.rs` uses.
 pub const STARTER_CATALOG: &[(&[u8], &[u8])] = CURRENT_STARTER_CATALOG;
 ```
 
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `cargo test -p riot-core --test apps_starter current_and_legacy`
-Expected: PASS. Then `cargo build -p riot-core -p riot-ffi` — Expected: builds (alias keeps call sites green; `#[deprecated]` may warn — allow via `#[allow(deprecated)]` at the two FFI call sites `mobile_state.rs:3770` directory merge and `:3949` resolver in Task 5).
+Expected: PASS. Then `cargo build -p riot-core -p riot-ffi` — Expected: builds cleanly; the plain alias leaves every existing `STARTER_CATALOG` reference valid with no warning. (Verify `grep -rn "STARTER_CATALOG" crates | grep -v "CURRENT_STARTER\|LEGACY_BUILTIN"` still resolves — all point at the alias.)
 
 - [ ] **Step 5: Commit**
 
@@ -404,12 +408,22 @@ Note for implementer: `distinct_valid_pairs`/`valid_pair_near_one_mib` are test 
 
 Keep the trailing `Ok(InstalledAppRecord { .. })` block unchanged (note: it currently consumes `manifest.name` etc. by value; the `decode_manifest` at `:2419` runs before the push and is unaffected).
 
-- [ ] **Step 4: Run to verify pass** — `cargo test -p riot-ffi --test apps_contract install_count_cap install_refuses_when_aggregate reinstalling_a_held` → PASS. Then `cargo test -p riot-ffi --test apps_contract trust_toggles_never_exhaust` and the full file to confirm no regression in the existing 58 tests.
+- [ ] **Step 4: Run to verify pass** — `cargo test -p riot-ffi --test apps_contract install_count_cap install_refuses_when_aggregate reinstalling_a_held` → PASS.
+
+- [ ] **Step 4b: Update the two existing 16-cap tests to 32 (they now FAIL because the 17th install succeeds).** They assert the OLD cap and are in scope:
+
+  1. `crates/riot-ffi/tests/mobile_fail_closed.rs:430-440` — change `for _ in 0..16` to `0..32`; keep the trailing assertion that the **33rd** install → `Err(MobileError::SessionLimit)`. Update the `// MAX_INSTALLED_APPS == 16` comment to `== 32`.
+  2. `crates/riot-ffi/tests/mobile_refusal_surface.rs:577-598` — change `for index in 0..16` to `0..32`; the installed-count assertion `16` to `32`; `let (manifest, bundle) = pair(16)` to `pair(32)`; and the doc comment at `:541` "the seventeenth distinct app is refused" to "the thirty-third". Keep the `Err(MobileError::SessionLimit)` expectation.
+
+  **Byte-quota caution:** these tests install 32 *small* synthetic pairs; confirm each `pair(index)` is well under `3 MiB / 32 ≈ 96 KiB` so the aggregate quota does not reject one mid-loop before the count boundary (existing helpers build tiny pairs — verify, do not assume). `preflight` checks count before bytes, so the 33rd still returns `SessionLimit`.
+
+- [ ] **Step 4c: Run to verify pass** — `cargo test -p riot-ffi --test mobile_fail_closed --test mobile_refusal_surface` → PASS. Then the full `apps_contract` file + `cargo test -p riot-ffi` for no other regression (the `SessionLimit` assertions at `apps_contract.rs:437/509/548/584` are `MAX_SYNC_IDS`/inventory-byte tests, unaffected by the install cap).
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add crates/riot-ffi/src/mobile_state.rs crates/riot-ffi/tests/apps_contract.rs
+git add crates/riot-ffi/src/mobile_state.rs crates/riot-ffi/tests/apps_contract.rs \
+        crates/riot-ffi/tests/mobile_fail_closed.rs crates/riot-ffi/tests/mobile_refusal_surface.rs
 git commit -m "feat(ffi): enforce 32-app count cap and 3 MiB aggregate quota via core preflight"
 ```
 
@@ -418,31 +432,42 @@ git commit -m "feat(ffi): enforce 32-app count cap and 3 MiB aggregate quota via
 ## Task 5: Generation field on LocalProfile + generation-aware bootstrap resolver
 
 **Files:**
-- Modify: `crates/riot-ffi/src/mobile_state.rs` — `LocalProfile` (`:68-178`), its constructors, directory-merge call site (`:3770`), `starter_pair_bytes` resolver call site (`:3949`)
-- Test: `crates/riot-ffi/tests/apps_contract.rs`
+- Modify: `crates/riot-ffi/src/mobile_state.rs` — `LocalProfile` (`:68-178`), the shared constructor helpers `profile_with_author` (`:395`) + `profile_with_author_and_db` (`:399`, the single `LocalProfile{}` literal at `:406`), the four public constructor call sites, the `starter_pair_bytes` resolver call site (`:3949`), and the crate's **inline** `#[cfg(test)] mod tests`
+- Test: inline `#[cfg(test)]` test in `crates/riot-ffi/src/mobile_state.rs` (fresh-profile generation) + `crates/riot-ffi/tests/apps_contract.rs` (legacy-resolve via pub FFI)
 
-- [ ] **Step 1: Write the failing test**
+**Constructor reality (verified):** exactly ONE `LocalProfile{}` literal, at `mobile_state.rs:406`, reached by every constructor through `profile_with_author_and_db`. There is NO `restore_local_profile_with_database`. Thread the generation as a parameter through both helpers and set it at each real call site.
+
+**Test-visibility constraint (verified, load-bearing):** `ProfileState`/`MobileProfile.inner` are `pub(crate)` and `#[cfg(test)]` lib items are **invisible to integration tests** (documented precedent: the `follow_site_for_test` seam note at `mobile_state.rs:4710-4714`). So the assertion that reads the private `starter_catalog_generation` field MUST live in the crate's inline `#[cfg(test)] mod tests`, NOT in `tests/apps_contract.rs`. Do NOT add a `pub(crate)` accessor and call it from an integration test — it won't compile.
+
+- [ ] **Step 1: Write the failing tests**
+
+Inline test, added to `mobile_state.rs`'s existing `#[cfg(test)] mod tests` (same module → the private field is reachable directly; mirror how nearby inline tests lock `inner` / match `ProfileState::Active`):
 
 ```rust
 #[test]
-fn fresh_profile_is_generation_two_and_lists_current_catalog() {
-    // A freshly opened in-memory profile advertises the CURRENT catalog's app
-    // IDs (== v1 IDs today) and reports generation 2.
-    let profile = /* open_local_profile() in-memory */;
-    assert_eq!(profile_starter_generation(&profile), Some(2));
-}
-
-#[test]
-fn legacy_generation_resolves_a_held_v1_id_via_legacy_catalog() {
-    // A profile marked generation 1 (marker absent) can still resolve/serve an
-    // exact held legacy built-in ID even though it is not advertised as a starter.
-    // Assert app_pair_bytes(legacy_id) succeeds for a generation-1 profile.
+fn fresh_profile_is_generation_two() {
+    let profile = open_local_profile().unwrap();
+    let guard = profile.inner.lock().unwrap();
+    let ProfileState::Active(p) = &*guard else { panic!("profile should be active") };
+    assert_eq!(p.starter_catalog_generation, Some(2));
 }
 ```
 
-`profile_starter_generation` is a `#[cfg(test)]` accessor added beside `LocalProfile` for assertions (the production read is used by bootstrap + WU-001N persistence).
+Integration test in `apps_contract.rs`, using ONLY pub FFI (no private access) — a restored profile is generation-1 (`None`) yet still resolves a held built-in ID by exact bytes:
 
-- [ ] **Step 2: Run to verify fail** — FAIL (no generation field/accessor).
+```rust
+#[test]
+fn a_restored_generation_one_profile_still_serves_a_held_built_in() {
+    // open_profile_from_sealed_identity takes the restore path, which sets
+    // generation = None (gen-1). It must still resolve/serve a held built-in
+    // pair by exact ID via the dual-catalog resolver.
+    // Build a sealed identity + install a starter, restart via the sealed path,
+    // then assert app_pair_bytes(starter_id) is Ok. Mirror the existing
+    // sealed-identity round-trip helper already used in this test file.
+}
+```
+
+- [ ] **Step 2: Run to verify fail** — inline test FAILS (no `starter_catalog_generation` field); integration test FAILS/does-not-compile until the field + resolver land. Run `cargo test -p riot-ffi --lib fresh_profile_is_generation_two`.
 
 - [ ] **Step 3: Implement**
 
@@ -458,27 +483,44 @@ fn legacy_generation_resolves_a_held_v1_id_via_legacy_catalog() {
     starter_catalog_generation: Option<u8>,
 ```
 
-2. In every `LocalProfile` constructor, set the field:
-   - Fresh in-memory/new-profile constructors (`open_local_profile`, `open_local_profile_with_database` fresh branch): `starter_catalog_generation: Some(2)`.
-   - Restore constructors (`restore_local_profile_with_database`): `starter_catalog_generation: None` **for this WU** (WU-001N threads the persisted value through the FFI restore signature; until then restore == generation 1, which is the correct default for every pre-upgrade profile).
-
-3. Add the test accessor:
+2. Thread a `generation: Option<u8>` parameter through both shared helpers and set it in the single literal. Change the signatures:
 
 ```rust
-#[cfg(test)]
-pub(crate) fn profile_starter_generation(inner: &Arc<Mutex<ProfileState>>) -> Option<u8> {
-    with_active(inner, |p| Ok(p.starter_catalog_generation)).unwrap()
+fn profile_with_author(
+    store: EvidenceStore,
+    author: EvidenceAuthor,
+    starter_catalog_generation: Option<u8>,
+) -> Arc<MobileProfile> {
+    profile_with_author_and_db(store, author, None, starter_catalog_generation)
+}
+
+fn profile_with_author_and_db(
+    store: EvidenceStore,
+    author: EvidenceAuthor,
+    db: Option<riot_core::store::RiotDatabase>,
+    starter_catalog_generation: Option<u8>,
+) -> Arc<MobileProfile> {
+    // ... existing body; in the LocalProfile { .. } literal at :406 add:
+    //     starter_catalog_generation,
 }
 ```
 
-4. At the directory-merge call site (`:3770`, currently `verify_starter_catalog(STARTER_CATALOG)`) select by generation so only the advertised catalog is listed:
+Then set the value at each of the FOUR real call sites (grep `profile_with_author` first to confirm the set — verified 4 callers, all in `mobile_state.rs`, no test-only callers):
 
-```rust
-    let advertised = riot_core::apps::starter::bootstrap_catalog(profile.starter_catalog_generation);
-    // ... verify_starter_catalog(advertised)
-```
+| Call site | Kind | Value |
+| --- | --- | --- |
+| `open_local_profile` body (`:298`) → `profile_with_author(store, author, Some(2))` | fresh | `Some(2)` |
+| `open_local_profile_with_database` (`:346`) → `profile_with_author_and_db(store, author, Some(db_handle), Some(2))` | fresh | `Some(2)` |
+| `open_profile_from_sealed_identity` (`:315`) → `profile_with_author(store, author, None)` | restore | `None` |
+| `open_profile_from_sealed_identity_with_database` (`:373`) → `profile_with_author_and_db(store, author, Some(db_handle), None)` | restore | `None` |
 
-5. At the resolver call site (`:3949`, inside `resolve_app_payload_bytes`, currently `starter_pair_bytes(STARTER_CATALOG, ..)`) resolve a held ID against **both** catalogs — a generation-2 profile can still hold a carried legacy ID, and a generation-1 profile must resolve legacy — so try current then legacy:
+`None` on the two restore paths is correct **for this WU**: WU-001N threads the persisted value through the restore FFI signatures; until then a restored (pre-upgrade) profile is generation 1, the intended default. If the grep surfaces any additional `profile_with_author*` caller, pass `Some(2)` unless it explicitly exercises restore.
+
+3. No production accessor is needed. The fresh-profile assertion (Step 1) reads the private field directly from the inline `#[cfg(test)] mod tests`. The production reads of `starter_catalog_generation` are: the resolver (below) and, later, WU-001N persistence.
+
+4. **Leave the directory-merge call site (`:3770`) unchanged.** The spec advertises the current catalog to *everyone* ("advertised in the directory" — spec L641; only *auto-install* is generation-gated, and auto-install is not implemented in this in-memory path). `STARTER_CATALOG` there already aliases `CURRENT_STARTER_CATALOG`, which is the correct advertised set. Do NOT gate advertisement by generation — that would hide the redesign from existing users, contradicting the "Install redesigned version" flow.
+
+5. At the resolver call site (`:3949`, inside `resolve_app_payload_bytes`, currently `starter_pair_bytes(STARTER_CATALOG, ..)`) resolve a held ID against **both** catalogs — a generation-2 profile can still hold a carried legacy ID, and a generation-1 profile must resolve legacy — so replace the single lookup with current-then-legacy:
 
 ```rust
     use riot_core::apps::starter::{CURRENT_STARTER_CATALOG, LEGACY_BUILTIN_CATALOG};
@@ -492,7 +534,7 @@ pub(crate) fn profile_starter_generation(inner: &Arc<Mutex<ProfileState>>) -> Op
 
 (Resolution is by exact ID, so trying both catalogs never returns the wrong bytes — `starter_pair_bytes` only matches a pair whose bytes re-derive the requested ID.)
 
-- [ ] **Step 4: Run to verify pass** — the two new tests PASS; run the whole `apps_contract` file + `cargo test -p riot-core` to confirm the directory-listing and starter tests still pass. Because CURRENT==LEGACY bytes this WU, listings are unchanged for existing tests.
+- [ ] **Step 4: Run to verify pass** — `cargo test -p riot-ffi --lib fresh_profile_is_generation_two` PASS and `cargo test -p riot-ffi --test apps_contract a_restored_generation_one` PASS; then the whole `apps_contract` file + `cargo test -p riot-core` to confirm directory-listing and starter tests still pass. Because CURRENT==LEGACY bytes this WU, listings are unchanged for existing tests. (Note: the `.or_else(LEGACY_BUILTIN_CATALOG)` branch is inert while CURRENT==LEGACY — it becomes live/coverable only once a Slice-4 WU diverges a v2 entry; do not chase its line coverage this WU.)
 
 - [ ] **Step 5: Commit**
 
@@ -636,7 +678,7 @@ git commit -m "feat(core): generated current/legacy catalog inventory report"
 ## Task 7: Full-suite green + clippy/fmt gate
 
 - [ ] **Step 1:** `cargo fmt --all -- --check` → PASS (fix with `cargo fmt --all` if needed, re-run).
-- [ ] **Step 2:** `cargo clippy --workspace --all-features -- -D warnings` → PASS. Resolve `deprecated` warnings by `#[allow(deprecated)]` only at the two intentional back-compat call sites, or by finishing their migration to generation-aware selection (preferred).
+- [ ] **Step 2:** `cargo clippy --workspace --all-features -- -D warnings` → PASS. There should be NO `deprecated` warnings — `STARTER_CATALOG` is a plain alias, not `#[deprecated]`. If any appear, you added the attribute by mistake; remove it (do not add `#[allow(deprecated)]`, do not touch `demo_fixture.rs`).
 - [ ] **Step 3:** `cargo test --workspace --all-features` → PASS. (Build `--workspace`: Task 1 touches a widely-used const; a scoped `-p` run can hide a downstream break — see the shared-checkout scoped-test hazard.)
 - [ ] **Step 4:** `cargo tarpaulin --workspace --all-features --fail-under <thresholds.tarpaulin.lines>` (floor from `.coverage-thresholds.json`) → PASS; do not lower the floor.
 - [ ] **Step 5: Commit** any fmt-only changes:
@@ -652,8 +694,9 @@ git commit -m "chore: fmt + clippy clean for catalog-admission WU"
 
 - `CURRENT_STARTER_CATALOG` + `LEGACY_BUILTIN_CATALOG` both exactly 8 valid pairs; `bootstrap_catalog(None/Some(1))==legacy`, `Some(2)==current`.
 - Pure `admission::preflight` enforces 32 count + 3 MiB aggregate; count checked before bytes; held-ID reinstall idempotent. Boundary tests: 31→32 admit, 32→33 refuse-count, exact 3 MiB admit, +1 refuse-bytes.
-- FFI `install_pair` uses the pure preflight; `SessionLimit`≠`StoreFull` kept distinct.
-- `LocalProfile.starter_catalog_generation` present; fresh==`Some(2)`, restore==`None` (WU-001N threads persisted value); directory advertises only the generation-selected catalog; held IDs resolve against both catalogs by exact ID.
+- FFI `install_pair` uses the pure preflight; `SessionLimit`≠`StoreFull` kept distinct. The two existing 16-cap tests (`mobile_fail_closed.rs`, `mobile_refusal_surface.rs`) are updated to the 32 boundary and green.
+- `STARTER_CATALOG` is a plain (non-deprecated) alias of `CURRENT_STARTER_CATALOG`; `clippy -D warnings` stays green with zero migration of existing uses.
+- `LocalProfile.starter_catalog_generation` present, threaded through `profile_with_author`/`profile_with_author_and_db`; fresh==`Some(2)`, restore==`None` (WU-001N threads the persisted value). Directory advertises the current catalog to everyone (unchanged); held IDs resolve against both catalogs by exact ID.
 - Inventory report emits per-app id/sha256/sizes/resource-count/membership.
 - `cargo fmt/clippy/test --workspace` + tarpaulin floor all green. No native/disk/fixture-byte changes.
 

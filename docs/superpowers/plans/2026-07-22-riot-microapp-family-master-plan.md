@@ -31,11 +31,13 @@ Each WU produces working, tested software on its own. `→` = hard dependency.
 | WU-001 | 1 | Catalog split + legacy resolver + capacity preflight (Rust core+FFI) | riot-core, riot-ffi | — |
 | WU-001N | 1 | Persist generation marker + Android 4 MiB codec-ceiling preflight | Android `PersistedProfile.kt`, iOS/macOS `ProfileRepository.swift`, FFI restore sig | WU-001 |
 | WU-002 | 1 | Locked prepare/persist/finalize: trust grant/revoke + app-data | riot-core, riot-ffi, native shells | WU-001N |
+| WU-002P | 1 | Existing-user presentation: `Legacy 1`/`Redesigned · Version 2` cards, install-warning copy, distinct count-full vs storage-full copy (spec §"Existing-user presentation") | iOS/macOS/Android Tools UI | WU-001N, WU-002 |
 | WU-003 | 2 | Semantic tokens + 6 theme presets + Night Garden fallback + drift contract | `fixtures/apps/_shared`, contract test | — |
 | WU-004 | 2 | `appearanceProfileID` lifecycle + theme picker + native preference store | riot-core/ffi, iOS/macOS/Android | WU-003 |
 | WU-005 | 2 | `RiotToolFonts.v1` pack + reserved-path resolver + per-ID CSP + nosniff + normalization vectors | riot-ffi, native, preview | WU-003 |
 | WU-006 | 2 | Host→WebView theme contract (document-start injection, 8-ID allowlist, fail-closed) | native, preview | WU-004, WU-005 |
-| WU-007 | 3 | **Events vertical pilot** (hard continuation gate) | `fixtures/apps/v2/roll-call`, all hosts, `_shared` toolbar/helper | WU-000..006 |
+| WU-006L | 3 | Relocate the 7 non-Checklist v1 pairs byte-for-byte into `fixtures/apps/legacy/` as sole editable authority; wire `LEGACY_BUILTIN_CATALOG` + packer to it; audit any root mirror is byte-identical (spec L674-680) | `fixtures/apps/legacy/`, `pack_starter.rs`, `starter.rs` | WU-001 |
+| WU-007 | 3 | **Events vertical pilot** (hard continuation gate) | `fixtures/apps/v2/roll-call`, all hosts, `_shared` toolbar/helper | WU-000..006, WU-006L |
 | WU-008 | 4 | Supply Board v2 | `fixtures/apps/v2/supply-board` + hosts | WU-007 |
 | WU-009 | 4 | Quick Poll (Decisions) v2 | `fixtures/apps/v2/quick-poll` | WU-007 |
 | WU-010 | 4 | Chat v2 | `fixtures/apps/v2/chat` | WU-007 |
