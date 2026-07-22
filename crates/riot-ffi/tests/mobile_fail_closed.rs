@@ -427,8 +427,8 @@ fn distinct_manifest_and_bundle() -> (Vec<u8>, Vec<u8>) {
 fn installing_more_than_the_app_cap_is_refused_with_session_limit() {
     let profile = open_local_profile().unwrap();
     let runtime = profile.app_runtime();
-    // MAX_INSTALLED_APPS == 16 distinct apps install cleanly.
-    for _ in 0..16 {
+    // MAX_INSTALLED_APPS == 32 distinct apps install cleanly.
+    for _ in 0..32 {
         let (manifest, bundle) = distinct_manifest_and_bundle();
         runtime
             .install_app(manifest, bundle)
