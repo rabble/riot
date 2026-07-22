@@ -126,6 +126,7 @@ mod tests {
     use super::*;
     use crate::governance::body::{Body, OpaqueBytes};
     use crate::governance::test_support::{issued_record, parent_and_child};
+    use crate::willow::encode_capability;
 
     #[test]
     fn a_genuine_issuance_verifies() {
