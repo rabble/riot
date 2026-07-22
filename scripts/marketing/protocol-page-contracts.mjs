@@ -77,6 +77,11 @@ const [swiftStory, swiftPresentation] = await Promise.all([
   read(paths.swiftStory),
   read(paths.swiftPresentation),
 ]);
+const [marketingReadme, anchorCargo, anchorProtocolCargo] = await Promise.all([
+  read(resolve(root, "marketing/README.md")),
+  read(resolve(root, "crates/riot-anchor/Cargo.toml")),
+  read(resolve(root, "crates/riot-anchor-protocol/Cargo.toml")),
+]);
 
 assert.equal(home, publicHome, "homepage source and public mirror must be byte-identical");
 assert.equal(protocols, publicProtocols, "protocol page source and public mirror must be byte-identical");
@@ -87,6 +92,19 @@ for (const name of secondaryPages) {
 }
 assert.equal(whyRiot, publicWhyRiot, "why-riot page source and public mirror must be byte-identical");
 assert.equal(guide, publicGuide, "guide page source and public mirror must be byte-identical");
+
+assert.match(anchorCargo, /^license\s*=\s*"AGPL-3\.0-or-later"/m, "riot-anchor license declaration drift");
+assert.match(anchorProtocolCargo, /^license\s*=\s*"AGPL-3\.0-or-later"/m, "riot-anchor-protocol license declaration drift");
+for (const [name, content] of Object.entries({ openSource, community, marketingReadme })) {
+  assert.doesNotMatch(content, /\bone AGPL crate\b/i, `${name} must not undercount AGPL exceptions`);
+}
+for (const [name, content] of Object.entries({ openSource, community, marketingReadme })) {
+  assert.match(
+    content,
+    /(?:crates\/)?riot-anchor(?!-protocol)(?:\/Cargo\.toml)?[\s\S]{0,500}(?:crates\/)?riot-anchor-protocol(?:\/Cargo\.toml)?[\s\S]{0,500}AGPL-3\.0-or-later/i,
+    `${name} must identify both distinct AGPL crate exceptions`,
+  );
+}
 
 for (const name of [
   "spaces", "apps", "compose", "checklist",
@@ -101,7 +119,7 @@ for (const name of [
 
 assert.doesNotMatch(home, /hero-mesh|mesh-edges|mesh-nodes/, "approved Hero C must replace the abstract mesh");
 assert.match(home, /\.hero-grid\s*\{[^}]*align-items:\s*start/i, "desktop hero copy and devices must be top-aligned");
-assert.match(home, /class="device-scene"[\s\S]*class="win-frame main"[\s\S]*\/assets\/screenshots\/app-events\.png/i);
+assert.match(home, /class="device-scene"[\s\S]*class="phone-frame main"[\s\S]*\/assets\/screenshots\/spaces\.png/i);
 
 // ---------- human-capacity homepage (2026-07-22) ----------------------------
 assert.match(home, /<h1[^>]*>Community tools that travel with people\.<\/h1>/i, "homepage needs its distinct human-capacity headline");
@@ -114,11 +132,14 @@ assert.match(home, /Compatible nearby devices can connect when a local transport
 assert.match(home, /class="hero-stamp">Prototype/i, "hero must carry a visible Prototype label");
 assert.doesNotMatch(home, /<script/i, "homepage must remain script-free");
 assert.doesNotMatch(home, /ecosystem/i, "homepage must not use 'ecosystem' jargon");
-for (const guidePath of ["/why-riot/", "/guide/"]) assert.ok(home.includes(`href="${guidePath}"`), `homepage must link to ${guidePath}`);
-for (const name of ["app-decisions", "app-dispatches", "app-photos"]) {
-  assert.match(home, new RegExp(`class="win-frame thumb"[\\s\\S]*?/assets/screenshots/${name}\\.png`, "i"), `missing ${name} supporting screen`);
+// Both guides are reachable from the homepage.
+for (const guidePath of ["/why-riot/", "/guide/"]) {
+  assert.ok(home.includes(`href="${guidePath}"`), `homepage must link to ${guidePath}`);
 }
-assert.match(home, /Real screens[\s\S]*Riot desktop build/i);
+for (const name of ["apps", "compose", "checklist"]) {
+  assert.match(home, new RegExp(`class="phone-frame thumb"[\\s\\S]*?/assets/screenshots/${name}\\.png`, "i"), `missing ${name} supporting phone`);
+}
+assert.match(home, /Real app screens[\s\S]*iPhone simulator build/i);
 assert.match(home, /More than a social feed[\s\S]*Communities carry their own tools[\s\S]*checklists, alerts, decisions, events/i);
 assert.match(home, /@media\s*\(max-width:\s*860px\)[\s\S]*\.device-scene/i, "Hero C needs a mobile device composition");
 
@@ -456,7 +477,6 @@ const sitemapUrls = [...sitemap.matchAll(/<loc>([^<]+)<\/loc>/gi)].map(([, href]
 for (const url of sitemapUrls) assert.equal(url.origin, "https://riot-protest-net-marketing.protestnet.workers.dev", "sitemap origin drift");
 const sitemapPaths = sitemapUrls.map((url) => normalizeLocalRoute(url.href, { allowExternal: true })).filter(Boolean);
 assertExactRoutes(sitemapPaths, allSitePaths, "sitemap", { ordered: true });
-const marketingReadme = await read(resolve(root, "marketing/README.md"));
 const routesSection = block(marketingReadme, /## Routes\s*([\s\S]*?)(?=\n##\s|$)/, "marketing README Routes section");
 const readmeRoutes = [...routesSection.matchAll(/^- `([^`]+)`/gm)].map(([, href]) => normalizeLocalRoute(href));
 assertExactRoutes(readmeRoutes, allSitePaths, "marketing README route inventory", { ordered: true });

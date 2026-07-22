@@ -34,12 +34,14 @@ pass condition. Do not judge Keychain health from archive-style installs
 
 ## Test-suite scope
 
-`RiotKitTests-macOS` compiles the portable iOS suites by reference:
-`BindingSemanticsTests`, `RiotTabBarTests`, `TransportContractTests`
-(37 tests). Left out: `RiotThemeTests` (uses `UIColor` — iOS-only),
+`RiotKitTests-macOS` compiles the portable iOS suites by reference, including
+`AppBreadcrumbTests` for bounded page-title parsing, WebKit title/root
+synchronization, and safe mounted-tool transitions on both Apple platforms.
+Left out: `RiotThemeTests` (uses `UIColor` — iOS-only),
 `ShellNavigationTests` (exercises the app shell, not the library),
-`AppRuntimeHostTests` (iOS JS-apps runtime, not yet ported — the macOS JS
-runtime is a gated later phase, plan Task 5).
+and the broader `AppRuntimeHostTests` suite (its iOS-specific fixtures remain
+separate; the cross-platform breadcrumb/runtime subset lives in the shared
+suite above).
 
 ## Verified / deferred
 

@@ -106,9 +106,10 @@ success alone does not prove nested routes are being served.
 
 ## License
 
-This site and the rest of the repository are MIT-licensed (see `/LICENSE` at
-the repo root). The `crates/riot-anchor-protocol` crate is an exception,
-licensed under AGPL-3.0-or-later as declared in its `Cargo.toml`.
+This site and most of the repository are MIT-licensed (see `/LICENSE` at the
+repo root). The `crates/riot-anchor` and `crates/riot-anchor-protocol` crates
+are exceptions, licensed under AGPL-3.0-or-later as declared in their
+`Cargo.toml` files.
 
 ## Scope
 

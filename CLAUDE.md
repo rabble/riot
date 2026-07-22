@@ -49,7 +49,7 @@ Use the `visual-review` skill to take screenshots of web pages, presentations, o
 ## Testing
 
 - **TDD is mandatory** — Write tests first, watch them fail, then implement
-- **Coverage is a RATCHET FLOOR, not 100%** — `.coverage-thresholds.json` holds the real per-tool floors (measured 2026-07-15: tarpaulin lines ~94.6%, llvm branches ~83%), set just below the measured values so the gate is green today and blocks regression. The old 100% was fiction (nothing read the file). Raise floors as coverage improves; never lower one without a committed justification. The Rust line floor is enforced in CI (`.github/workflows/ci.yml`).
+- **Coverage is a RATCHET FLOOR, not 100%** — `.coverage-thresholds.json` holds the real per-tool floors (measured 2026-07-22 on the expanded workspace: tarpaulin lines 94.52%, llvm branches 82.19%), set just below the measured values so the gate is green today and blocks regression. The old 100% was fiction (nothing read the file). Raise floors as coverage improves; never lower one without a committed justification. The Rust line floor is enforced in CI (`.github/workflows/ci.yml`).
 - **Rust** (primary engine): `cargo test --workspace --all-features`
 - **Rust coverage**: `cargo tarpaulin --workspace --all-features --fail-under <thresholds.tarpaulin.lines>` (the floor is read from `.coverage-thresholds.json`; the full local composite is `scripts/web/coverage.sh`)
 - **Gateway** (Python): `cd apps/gateway && python3 -m unittest discover -s tests`

@@ -538,8 +538,8 @@ fn a_replay_bundle_with_no_valid_entries_is_refused() {
     ));
 }
 
-/// The installed-app cap is real: the seventeenth distinct app is refused with
-/// `SESSION_LIMIT`, and the sixteen already installed are untouched.
+/// The installed-app cap is real: the thirty-third distinct app is refused with
+/// `SESSION_LIMIT`, and the thirty-two already installed are untouched.
 #[test]
 fn installing_past_the_cap_is_a_session_limit() {
     use riot_core::apps::bundle::{encode_app_bundle, AppBundle, AppResource};
@@ -574,9 +574,9 @@ fn installing_past_the_cap_is_a_session_limit() {
     let profile = profile_with_space();
     let runtime = profile.app_runtime();
 
-    // MAX_INSTALLED_APPS is 16.
+    // MAX_INSTALLED_APPS is 32.
     let mut installed = Vec::new();
-    for index in 0..16 {
+    for index in 0..32 {
         let (manifest, bundle) = pair(index);
         let record = runtime
             .install_app(manifest, bundle)
@@ -587,11 +587,11 @@ fn installing_past_the_cap_is_a_session_limit() {
     installed.dedup();
     assert_eq!(
         installed.len(),
-        16,
+        32,
         "the apps must be distinct to fill the cap"
     );
 
-    let (manifest, bundle) = pair(16);
+    let (manifest, bundle) = pair(32);
     assert!(
         matches!(
             runtime.install_app(manifest, bundle),

@@ -654,6 +654,24 @@ fn check_fixture_manifest(root: &Path, failures: &mut Vec<String>) {
         ),
     }
 
+    // The Meadowcap capability vector fixture must be frozen by hash.
+    match (
+        env["meadowcap_vectors_sha256"].as_str(),
+        std::fs::read(root.join("fixtures/willow/meadowcap-vectors.json")),
+    ) {
+        (Some(recorded), Ok(actual_bytes)) if !recorded.is_empty() => {
+            let actual = sha256_hex(&actual_bytes);
+            if recorded != actual {
+                failures.push(format!(
+                    "fixtures/manifest.json: meadowcap_vectors_sha256 mismatch (recorded {recorded}, actual {actual})"
+                ));
+            }
+        }
+        _ => failures.push(
+            "fixtures/manifest.json: meadowcap_vectors_sha256 missing/empty or vectors file unreadable".into(),
+        ),
+    }
+
     // Ceilings are exact frozen values from the Revision 5 limits table.
     // Presence alone is not enough: a mutated value is a contract violation.
     let ceilings = &doc["ceilings"];
@@ -1749,6 +1767,11 @@ version = "1.0.0"
         )
         .unwrap();
         std::fs::write(
+            dir.join("fixtures/willow/meadowcap-vectors.json"),
+            b"{\"meadowcap\":[]}",
+        )
+        .unwrap();
+        std::fs::write(
             dir.join("schemas/alert.cddl"),
             "alert = \"org.riot.alert/1\"",
         )
@@ -1780,6 +1803,7 @@ version = "0.8.1"
     }
 
     fn manifest_with(lock_hash: &str, vectors_hash: &str) -> String {
+        let meadowcap_hash = sha256_hex(b"{\"meadowcap\":[]}");
         let mut ceilings: String = EXPECTED_CEILINGS
             .iter()
             .map(|(k, v)| format!("\"{k}\": {v}"))
@@ -1788,7 +1812,7 @@ version = "0.8.1"
         ceilings.push_str(",\"expansion_ratio\": \"1:1 - compression forbidden\"");
         format!(
             r#"{{
-  "environment": {{ "cargo_lock_sha256": "{lock_hash}", "william3_vectors_sha256": "{vectors_hash}" }},
+  "environment": {{ "cargo_lock_sha256": "{lock_hash}", "william3_vectors_sha256": "{vectors_hash}", "meadowcap_vectors_sha256": "{meadowcap_hash}" }},
   "ceilings": {{ {ceilings} }},
   "fixture_ownership": {{ "objects": "WU1", "willow": "WU1", "imports": "WU2" }},
   "report_fields": ["status","owning_work_unit","commands","environment","evidence_paths","hashes","elapsed_agent_hours","next_action"]

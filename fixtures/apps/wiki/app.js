@@ -27,6 +27,7 @@ let saving = false;
 let editing = false;
 let editConflict = false;
 let selectedKey = "";
+let explicitIndex = false;
 const names = new Map();
 const inflightProfiles = new Set();
 const profileRevisions = new Map();
@@ -55,17 +56,17 @@ async function ensureSeeded() {
   await riot.put(SEED_MARKER, { version: 1, status: "ready" });
 }
 
-function openPage(key, focus) { selectedKey = key; editing = false; clearError(); paint(); if (focus) detail.focus(); }
-function openIndex() { selectedKey = ""; editing = false; clearError(); paint(); indexView.focus(); }
+function openPage(key, focus) { explicitIndex = false; selectedKey = key; editing = false; clearError(); paint(); if (focus) detail.focus(); }
+function openIndex() { if (editing && editConflict) { paint(); pageText.focus(); return; } explicitIndex = true; selectedKey = ""; editing = false; clearError(); paint(); indexView.focus(); }
 function beginEdit() { if (!ready || !selectedKey) { showError("Wait for your identity before editing."); return; } const selected = rows.filter(validPage).find((row) => row.key === selectedKey); if (!selected) return; editing = true; pageText.value = selected.value.body; clearError(); paint(); pageText.focus(); }
 function cancelEdit() { if (saving) return; editing = false; editConflict = false; clearError(); paint(); if (!detail.hidden) editButton.focus(); }
 
 function paint() {
   const valid = rows.filter(validPage).sort((left, right) => left.value.title.localeCompare(right.value.title));
   const onPhone = window.matchMedia("(max-width: 640px)").matches;
-  if (!selectedKey && valid.length && !onPhone) selectedKey = valid[0].key;
+  if (!explicitIndex && !selectedKey && valid.length && !onPhone) selectedKey = valid[0].key;
   let selected = valid.find((row) => row.key === selectedKey);
-  if (selectedKey && !selected && !editing) { selectedKey = ""; editConflict = false; requestAnimationFrame(() => indexView.focus()); }
+  if (selectedKey && !selected && !editing) { explicitIndex = true; selectedKey = ""; editConflict = false; requestAnimationFrame(() => indexView.focus()); }
   selected = valid.find((row) => row.key === selectedKey);
   const conflict = Boolean(editing && selectedKey && !selected);
   if (editConflict && !conflict && error.textContent.includes("changed or disappeared")) clearError();
@@ -81,11 +82,13 @@ function paint() {
   reader.hidden = editing;
   editor.hidden = !editing;
   if (selected) {
+    document.title = `${selected.value.title} — Wiki`;
     document.getElementById("detail-title").textContent = selected.value.title;
     document.getElementById("detail-body").textContent = selected.value.body;
     document.getElementById("detail-meta").textContent = `Updated by ${person(selected.value.updated_by_id)} · ${displayWhen(selected.value.updated_at)}`;
     document.getElementById("editor-title").textContent = `Edit ${selected.value.title}`;
   }
+  else if (!conflict) document.title = "Wiki";
   if (conflict) showError("This page changed or disappeared from shared storage. Your exact draft is still here; cancel or wait for the page to return.");
   else if (ready && error.hidden) status.textContent = valid.length ? `${valid.length} pages` : "No pages yet";
   resolveProfiles(valid.map((row) => row.value.updated_by_id));
@@ -96,6 +99,7 @@ editButton.addEventListener("click", beginEdit);
 cancelButton.addEventListener("click", cancelEdit);
 editor.addEventListener("input", paint);
 window.addEventListener("resize", paint);
+window.addEventListener("riot:navigate-root", openIndex);
 editor.addEventListener("submit", async (event) => {
   event.preventDefault();
   const key = selectedKey; const desiredBody = pageText.value.trim(); const draft = pageText.value;
