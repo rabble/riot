@@ -231,3 +231,60 @@ fn committed_artifacts_match_all_committed_sources() {
         );
     }
 }
+
+use riot_core::apps::starter::{CURRENT_STARTER_CATALOG, LEGACY_BUILTIN_CATALOG};
+
+#[test]
+fn current_and_legacy_catalogs_each_have_exactly_eight_pairs() {
+    assert_eq!(CURRENT_STARTER_CATALOG.len(), 8);
+    assert_eq!(LEGACY_BUILTIN_CATALOG.len(), 8);
+}
+
+#[test]
+fn every_current_and_legacy_pair_verifies() {
+    // Invalid pairs are silently dropped by verify_starter_catalog, so a
+    // full-length result proves all eight in each catalog are valid.
+    assert_eq!(verify_starter_catalog(CURRENT_STARTER_CATALOG).len(), 8);
+    assert_eq!(verify_starter_catalog(LEGACY_BUILTIN_CATALOG).len(), 8);
+}
+
+#[test]
+fn current_catalog_is_seeded_from_legacy_bytes_until_v2_lands() {
+    // WU-001 seeds CURRENT from the same v1 bytes; each Slice-4 WU re-points
+    // one entry. Until then the two catalogs derive identical app IDs.
+    let current: Vec<_> = verify_starter_catalog(CURRENT_STARTER_CATALOG)
+        .into_iter()
+        .map(|a| a.app_id)
+        .collect();
+    let legacy: Vec<_> = verify_starter_catalog(LEGACY_BUILTIN_CATALOG)
+        .into_iter()
+        .map(|a| a.app_id)
+        .collect();
+    assert_eq!(current, legacy);
+}
+
+use riot_core::apps::starter::bootstrap_catalog;
+
+#[test]
+fn generation_one_bootstraps_legacy_and_two_bootstraps_current() {
+    // None == generation 1 (durable zero-byte encoding); Some(1) also legacy;
+    // Some(2) == fresh/current. `const`-derived references have no stable
+    // address (rustc may duplicate a const's allocation, and does so across
+    // crate boundaries), so `std::ptr::eq` is unreliable here — identity is
+    // asserted instead by the derived app-ID set of the selected catalog.
+    // CURRENT and LEGACY share bytes this WU, so all three pass today; once a
+    // Slice-4 WU re-points a CURRENT entry the sets diverge and a mis-wired arm
+    // fails here.
+    let ids = |cat| {
+        verify_starter_catalog(cat)
+            .into_iter()
+            .map(|a| a.app_id)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(ids(bootstrap_catalog(None)), ids(LEGACY_BUILTIN_CATALOG));
+    assert_eq!(ids(bootstrap_catalog(Some(1))), ids(LEGACY_BUILTIN_CATALOG));
+    assert_eq!(
+        ids(bootstrap_catalog(Some(2))),
+        ids(CURRENT_STARTER_CATALOG)
+    );
+}
