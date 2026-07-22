@@ -138,6 +138,14 @@ required-features = ["conformance"]
 name = "demo_fixture_drift"
 required-features = ["conformance"]
 
+[[test]]
+name = "governance_conformance"
+required-features = ["conformance"]
+
+[[test]]
+name = "governance_durable"
+required-features = ["conformance"]
+
 # The demo packer signs with seeded keys so its output is byte-reproducible,
 # which is the raw-secret constructor behind `conformance`.
 [[example]]

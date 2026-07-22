@@ -640,6 +640,30 @@ pub fn two_competing_migrations() -> Vec<GovernanceRecordV1> {
     vec![genesis, mk([21u8; 32], 1), mk([22u8; 32], 2)]
 }
 
+pub fn action_receipt_record(namespace: [u8; 32]) -> (GovernanceRecordV1, [u8; 32], [u8; 32]) {
+    let receipt = super::action::seeded_action_receipt();
+    let actor = receipt.actor_id;
+    let receiver = receipt.receiver;
+    (
+        GovernanceRecordV1 {
+            kind: RecordKind::ActionReceipt,
+            namespace,
+            parents: vec![],
+            actor_id: [1u8; 32],
+            receiver: [2u8; 32],
+            sequence: 0,
+            prev_actor_record: None,
+            authorizing_fingerprint: [7u8; 32],
+            body: Body::ActionReceipt {
+                receipt: OpaqueBytes(super::action::encode_receipt(&receipt)),
+            },
+            created_display_micros: 3000,
+        },
+        actor,
+        receiver,
+    )
+}
+
 pub struct Fps {
     pub a: Fingerprint,
     pub b: Fingerprint,
