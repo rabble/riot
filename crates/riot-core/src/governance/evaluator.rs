@@ -23,7 +23,7 @@ pub fn evaluate(records: &[GovernanceRecordV1], now: Option<u64>) -> PolicySnaps
     let horizon = now.map(|time| time.saturating_add(TEN_MINUTES));
     let in_time: Vec<GovernanceRecordV1> = accepted
         .iter()
-        .filter(|record| horizon.map_or(true, |limit| record.created_display_micros <= limit))
+        .filter(|record| horizon.is_none_or(|limit| record.created_display_micros <= limit))
         .cloned()
         .collect();
 
@@ -91,11 +91,13 @@ fn apply_role_restrictions(
     accepted: &[GovernanceRecordV1],
     mut active: BTreeSet<Fingerprint>,
 ) -> BTreeSet<Fingerprint> {
+    type RoleDecision = ([u8; 32], Vec<Fingerprint>);
+
     let by_id: BTreeMap<[u8; 32], &GovernanceRecordV1> = accepted
         .iter()
         .map(|record| (record_id(record), record))
         .collect();
-    let mut by_role: BTreeMap<[u8; 32], Vec<([u8; 32], Vec<Fingerprint>)>> = BTreeMap::new();
+    let mut by_role: BTreeMap<[u8; 32], Vec<RoleDecision>> = BTreeMap::new();
     for record in accepted {
         if let (
             RecordKind::RoleDecision,
