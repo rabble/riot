@@ -521,8 +521,8 @@ The new assertions must fail before HTML implementation. After implementation th
     `section#evidence`, its `Grounded in the field` H2, and its named community examples remain;
 20. Why Riot and Privacy retain the exact current boundary—Newswires are public publishing and
     collaboration spaces, private encrypted groups are not part of today's prototype—while omitting
-    the finite speculative inventory: IP addresses, radio presence, device labels, proximity,
-    behavioral correlation, compromised devices, and fabricated gateway views.
+    the finite speculative inventory: IP addresses, timing, radio presence, device labels,
+    proximity, behavioral correlation, compromised devices, and fabricated gateway views.
 21. `marketing/README.md` describes `/privacy/` as the concise public-publishing,
     participant-held-data, private-conversation, and website-data boundary; it does not promise an
     IP/radio/device/metadata threat inventory.
@@ -806,6 +806,10 @@ requirements.
 The implementation-readiness re-review requested selector-exact removal predicates, a committed
 route-to-file live verifier with expected/served hashes, and an artifact reference that does not
 confuse the design revision with the implementation revision. Revision 18 adds them.
+
+The editorial re-review caught `timing` missing from the finite removal predicate and joined the
+architecture/PM request to make the README route-description correction normative. Revision 19 adds
+`timing`; acceptance criterion 21 already pins the README correction and its stale terms.
 
 ## Primary Sources
 
