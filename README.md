@@ -6,8 +6,8 @@ The core idea is to preload the app before a crisis, then let people create, sig
 
 Riot has two sides, built as parallel subsystems joined only by an explicit bridge:
 
-- An **open newswire** for emergency publishing and durable movement media: per-incident open spaces anyone can post to, and publication spaces where a pseudonymous collective is the publisher and subscribers' devices are the distribution network (indymedia with no server to raid).
-- **Private groups**: encrypted, unlinkable Willow namespaces for affinity groups, coops, and crews, joined in person via QR or by portable encrypted invite files.
+- An **open newswire** for public publishing and movement media: per-incident open spaces anyone can post to, and publication spaces where a pseudonymous collective is the publisher. Participant-held copies and replaceable gateways can reduce dependence on one server, but Riot does not guarantee that a complete reachable copy exists or that publishing, access, persistence, or censorship resistance survives.
+- **Private groups — Direction, not shipped**: intended encrypted, unlinkable Willow namespaces for affinity groups, coops, and crews, with in-person QR or portable encrypted invite-file joining. Do not rely on this mode today.
 
 The design spec is [2026-07-10-riot-dual-mode-design.md](file:///Users/rabble/code/explorations/riot/docs/superpowers/specs/2026-07-10-riot-dual-mode-design.md).
 

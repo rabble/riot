@@ -5,74 +5,65 @@ backend, analytics, remote fonts, or third-party runtime requests.
 
 ## Routes
 
-- `/` — Riot's human-facing product story.
-- `/about/` — why Riot exists: keep publishing through the blackout, in the
-  lineage of Indymedia, protest.net, and TXTMob.
-- `/privacy/` — what is and is not private today, separated into "this site"
-  (no analytics/cookies/accounts) and "the Riot app" (local-first; honest
-  boundaries on what is not shipped).
-- `/open-source/` — MIT license for the repo (one AGPL-3.0-or-later crate),
-  how the repository is organized, and how to build and verify it.
-- `/community/` — how to get involved: issues, following the build, contributing.
-  Honest about the fact that there is no chat room or mailing list yet.
-- `/protocols/` — a source-backed field guide comparing Riot and Willow with
-  adjacent social, relay, federation, nearby-messaging, and local-first systems.
+- `/` — concise product overview and current app evidence.
+- `/why-riot/` — Riot's human-capacity and social-purpose story.
+- `/guide/` — task-by-task instructions for the current prototype.
+- `/about/` — project lineage, history, and builder.
+- `/privacy/` — factual public-content, local-first, device, metadata, and website boundaries.
+- `/open-source/` — licenses, repository layout, and build instructions.
+- `/community/` — ways to follow, test, and contribute to the work.
+- `/releases/` — current build availability and platform notes.
+- `/protocols/` — source-backed protocol comparisons and detailed trust boundaries.
 
-Every page's footer links to every other page, so a visitor on any route can
-reach all of them. The homepage and protocol page keep their existing top-nav
-unchanged; the cross-linking lives in the footer.
-
-The protocol page is secondary by design, but intentionally discoverable. The
-homepage links to it from the navigation, a prominent comparison panel beneath
-“How it works,” “For the technically curious,” and the footer.
-
-The homepage's Lineage section credits @rabble with building Riot using the
-Willow libraries, and links the builder history and reported government actions
-against Indymedia to their sources. The copy intentionally does not claim that
-@rabble implemented Willow or authored the Willow protocol specification.
+Primary navigation contains every route except Privacy. Privacy remains linked
+from relevant boundary copy and every footer. Every footer links all nine
+routes, including the page currently being viewed.
 
 ## Crawl metadata
 
-`public/sitemap.xml` and `public/robots.txt` live in the deployment mirror
-(they are deployment artifacts, not editorial pages, so they have no source
-copy). The sitemap lists every route above at the
-`https://riot-protest-net-marketing.protestnet.workers.dev` origin; robots
-allows all user-agents and points to the sitemap. No route is disallowed — the
-entire site is public.
+`public/sitemap.xml` and `public/robots.txt` live only in the deployment mirror.
+The sitemap lists the exact nine editorial routes at the configured Workers
+origin. Robots allows all user-agents and points to the sitemap.
 
 ## Source and deployment mirrors
 
-Edit the source files first:
+Edit these nine editorial source files first:
 
 - `index.html`
+- `why-riot/index.html`
+- `guide/index.html`
 - `about/index.html`
 - `privacy/index.html`
 - `open-source/index.html`
 - `community/index.html`
+- `releases/index.html`
 - `protocols/index.html`
-- `assets/screenshots/` for the real iPhone simulator screens used in the hero
 
 Then update their byte-identical deployment mirrors:
 
 - `public/index.html`
+- `public/why-riot/index.html`
+- `public/guide/index.html`
 - `public/about/index.html`
 - `public/privacy/index.html`
 - `public/open-source/index.html`
 - `public/community/index.html`
+- `public/releases/index.html`
 - `public/protocols/index.html`
-- `public/assets/screenshots/`
 
-`public/sitemap.xml` and `public/robots.txt` have no source copy — edit them
-in place in `public/`.
+Real desktop app screens used by the homepage live in `assets/screenshots/` and
+their byte-identical deployment copies live in `public/assets/screenshots/`.
+The images show current UI; they do not prove physical-radio or field behavior.
 
-The hero screenshots demonstrate app UI captured from the iPhone simulator.
-They are not evidence of sync over physical-device radios.
+`public/sitemap.xml` and `public/robots.txt` have no source copy. Edit those
+deployment artifacts in place.
 
-The contract check rejects mirror drift and missing editorial or accessibility
-requirements:
+The contract check rejects mirror drift, route/navigation drift, unsafe claims,
+remote runtime dependencies, cookie-setting local artifacts, and missing
+editorial or accessibility requirements:
 
 ```sh
-node scripts/marketing/protocol-page-contracts.mjs
+npm run test:marketing
 ```
 
 Run it from the repository root.
@@ -85,28 +76,40 @@ From the repository root:
 python3 -m http.server 4173 --directory marketing/public
 ```
 
-Then open `http://localhost:4173/` and
-`http://localhost:4173/protocols/`. The other routes (`/about/`, `/privacy/`,
-`/open-source/`, `/community/`, `/sitemap.xml`, `/robots.txt`) are served the
-same way from `public/`.
+Then open the nine routes:
+
+- `http://localhost:4173/`
+- `http://localhost:4173/why-riot/`
+- `http://localhost:4173/guide/`
+- `http://localhost:4173/about/`
+- `http://localhost:4173/privacy/`
+- `http://localhost:4173/open-source/`
+- `http://localhost:4173/community/`
+- `http://localhost:4173/releases/`
+- `http://localhost:4173/protocols/`
+
+The crawl artifacts are at `/sitemap.xml` and `/robots.txt` on the same local
+origin.
 
 ## Deploy
 
 The Workers assets directory is configured in `wrangler.toml`. From this
-directory, deploy with:
+directory, deployment uses:
 
 ```sh
 npx wrangler deploy
 ```
 
-After deployment, fetch both live routes and check their expected headings;
-Wrangler success alone does not prove the nested route is being served.
+Deployment is a separate operation. After an approved deployment, fetch every
+live route and verify its expected heading and response behavior; Wrangler
+success alone does not prove nested routes are being served.
 
 ## License
 
-This site and the rest of the repository are MIT-licensed (see `/LICENSE` at
-the repo root). The `crates/riot-anchor-protocol` crate is an exception,
-licensed under AGPL-3.0-or-later as declared in its `Cargo.toml`.
+This site and most of the repository are MIT-licensed (see `/LICENSE` at the
+repo root). The `crates/riot-anchor` and `crates/riot-anchor-protocol` crates
+are exceptions, licensed under AGPL-3.0-or-later as declared in their
+`Cargo.toml` files.
 
 ## Scope
 
