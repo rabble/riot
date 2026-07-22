@@ -41,7 +41,7 @@ pub fn preflight(
     if pair_already_held {
         return AdmissionOutcome::Admit;
     }
-    if held_count + 1 > MAX_INSTALLED_APPS {
+    if held_count >= MAX_INSTALLED_APPS {
         return AdmissionOutcome::RefuseCount;
     }
     if held_aggregate_bytes.saturating_add(pair_bytes) > MAX_AGGREGATE_PAIR_BYTES {

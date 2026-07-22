@@ -50,6 +50,14 @@ fn count_is_checked_before_bytes() {
 }
 
 #[test]
+fn impossible_hostile_count_fails_closed_without_overflowing() {
+    assert_eq!(
+        preflight(usize::MAX, 0, false, 1),
+        AdmissionOutcome::RefuseCount
+    );
+}
+
+#[test]
 fn limits_match_spec() {
     assert_eq!(MAX_INSTALLED_APPS, 32);
     assert_eq!(MAX_AGGREGATE_PAIR_BYTES, 3 * 1024 * 1024);
