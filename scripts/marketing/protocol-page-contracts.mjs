@@ -127,6 +127,8 @@ assert.doesNotMatch(home, /<h1[^>]*>People are the infrastructure\.<\/h1>/i, "ho
 assert.match(home, /Riot is a home for public conversation, community decisions, shared tools, and collective\s+memory(?:—|&mdash;)carried by the people who make it matter\./i, "homepage needs the approved support line");
 assert.match(home, /class="hero-actions"[\s\S]*href="\/why-riot\/"[^>]*>Why Riot exists/i, "homepage hero needs a prominent Why Riot action");
 assert.match(home, /festival|community meal|neighborhood publication|cooperative decision/i, "homepage must show value in ordinary community life");
+assert.doesNotMatch(home, /<\/b>\s*Nearby devices can connect/i, "homepage nearby exchange must name compatibility and path availability prerequisites");
+assert.match(home, /Compatible nearby devices can connect when a local transport is actually available/i, "homepage nearby exchange must state its prerequisites");
 assert.match(home, /class="hero-stamp">Prototype/i, "hero must carry a visible Prototype label");
 assert.doesNotMatch(home, /<script/i, "homepage must remain script-free");
 assert.doesNotMatch(home, /ecosystem/i, "homepage must not use 'ecosystem' jargon");
@@ -242,6 +244,7 @@ const pageContents = { home, protocols, about, privacy, "open-source": openSourc
 const mirrorContents = { home: publicHome, protocols: publicProtocols, about: publicAbout, privacy: publicPrivacy, "open-source": publicOpenSource, community: publicCommunity, releases: publicReleases, "why-riot": publicWhyRiot, guide: publicGuide };
 for (const [pageName, content] of Object.entries({ ...Object.fromEntries(Object.entries(pageContents).map(([name, html]) => [`source:${name}`, html])), ...Object.fromEntries(Object.entries(mirrorContents).map(([name, html]) => [`mirror:${name}`, html])) })) {
   assert.match(content, /\.sitenav\s*\{[^}]*position:\s*sticky/i, `${pageName} page must make the sitenav sticky`);
+  assert.match(content, /\.sitenav-links\s*\{[^}]*min-width:\s*0/i, `${pageName} sitenav must be allowed to shrink inside its flex row`);
   const footer = block(content, /<footer\b[^>]*>[\s\S]*?<\/footer>/i, `${pageName} footer`);
   assertExactRoutes(localRoutesFrom(footer), allSitePaths, `${pageName} footer`);
   const nav = block(content, /<div\s+class="sitenav-links">[\s\S]*?<\/div>/i, `${pageName} sitenav-links`);
@@ -366,7 +369,7 @@ for (const [name, content] of Object.entries(productDocs)) {
 assert.match(whyRiot, /<link rel="canonical" href="\/why-riot\/">/i);
 assert.match(whyRiot, /<h1>People are the infrastructure\.<\/h1>/i);
 assert.match(whyRiot, /Every day, people make a community through meals, meetings, stories, decisions, celebrations, care, and shared work\./i);
-for (const heading of ["A community is something people do", "Tools for the commons", "The future is a practice", "More than one path", "Honest boundaries", "Build it with us"]) {
+for (const heading of ["A community is something people do", "Tools for the commons", "The future is a practice", "More than one path", "Share openly. Choose privacy deliberately.", "Build it with us"]) {
   assert.ok(whyRiot.includes(heading), `why-riot missing section: ${heading}`);
 }
 assert.match(whyRiot, /<svg\b[^>]*(?:aria-hidden="true"|role="img")[\s\S]*?<\/svg>/i, "Why Riot needs a code-native accessible illustration");
@@ -378,6 +381,28 @@ const allowedStatusText = new Set(Object.values(exactStatusText));
 for (const [, text] of home.matchAll(/<span\s+class="chip[^"]*"[^>]*>([^<]+)<\/span>/gi)) {
   assert.ok(allowedStatusText.has(text.trim()), `homepage status label must use the approved taxonomy: ${text.trim()}`);
 }
+const comparisonTable = block(home, /<table\b[^>]*class="contrast"[^>]*>[\s\S]*?<\/table>/i, "homepage comparison table");
+assert.doesNotMatch(comparisonTable, /<span\b[^>]*class="[^"]*\bchip\b/i, "homepage comparison must not contain status chips");
+assert.match(home, /<section\b[^>]*id="status"/i, "homepage detailed status section must remain");
+assert.match(home, /href="\/protocols\/"/i, "homepage protocol detail link must remain");
+
+for (const pattern of [
+  /<h3>What Riot does not hide<\/h3>/i,
+  /<ul\b[^>]*class="notlist"/i,
+  /<p\b[^>]*class="boundary-note"[^>]*>\s*Separate per-community keys/i,
+  /<div\b[^>]*class="evidence-box"/i,
+  /<div\b[^>]*class="evidence-stats"/i,
+  /<div\b[^>]*class="estat"/i,
+  /Each research pass/i,
+  /adversarial reviewers/i,
+  /Research(?:&nbsp;|\s)+passes/i,
+  /Sources(?:&nbsp;|\s)+fetched/i,
+  /Claims(?:&nbsp;|\s)+verified/i,
+]) assert.doesNotMatch(home, pattern, `homepage retains removed internal/fear copy: ${pattern}`);
+
+const evidence = block(home, /<section\b[^>]*id="evidence"[^>]*>[\s\S]*?<\/section>/i, "homepage field history");
+assert.match(evidence, /Grounded in the field/i);
+assert.match(evidence, /Occupy Sandy[\s\S]*TXTMob[\s\S]*Verificado 19S/i);
 const toolsBlock = block(whyRiot, /<section\b[^>]*id="tools"[^>]*>[\s\S]*?<\/section>/i, "Why Riot tools section");
 const capabilityArticle = (capability) => block(toolsBlock, new RegExp(`<article\\b[^>]*data-capability="${capability}"[^>]*>[\\s\\S]*?<\\/article>`, "i"), `${capability} capability`);
 const chipMatches = (html) => [...html.matchAll(/<span\s+class="chip"\s+data-status="(prototype|local|development|direction)">([^<]+)<\/span>/gi)].map(([, status, text]) => ({ status, text: text.trim() }));
@@ -404,20 +429,28 @@ assert.match(carry, /export and import a Riot bundle file/i);
 assert.match(carry, /share a community reference by link or QR/i);
 assert.match(carry, /onboarding\/reference, not proof that content moved by radio/i);
 assert.match(whyRiot, /A community should be able to leave a provider without leaving one another\.[\s\S]*Direction, not shipped/i);
-for (const phrase of ["plaintext", "readable", "copyable", "private encrypted groups are not shipped", "pseudonymity is not anonymity", "signature proves control of a key", "functioning device", "compatible peer or transport"]) {
-  assert.ok(whyRiot.toLowerCase().includes(phrase.toLowerCase()), `why-riot missing boundary: ${phrase}`);
-}
 const boundaries = block(whyRiot, /<section\b[^>]*id="boundaries"[^>]*>[\s\S]*?<\/section>/i, "Why Riot boundaries");
+for (const phrase of ["Current public Newswires", "publishing and collaboration", "read, copied, and carried", "Private encrypted groups", "not part of today's prototype"]) {
+  assert.ok(boundaries.toLowerCase().includes(phrase.toLowerCase()), `Why Riot missing calm boundary: ${phrase}`);
+}
+for (const phrase of ["IP addresses", "timing", "radio presence", "device labels", "proximity", "behavioral correlation", "compromised devices", "fabricated gateway"]) {
+  assert.doesNotMatch(boundaries, new RegExp(phrase, "i"), `Why Riot retains speculative inventory: ${phrase}`);
+}
 for (const href of ["/privacy/", "/protocols/", "https://signal.org/"]) assert.ok(boundaries.includes(`href="${href}"`), `Why Riot boundaries must link ${href}`);
 assert.match(whyRiot, /Rebecca Solnit[\s\S]*A Paradise Built in Hell[\s\S]*penguinrandomhouse\.com/i);
 for (const href of ["/guide/", "/community/", "/releases/", "https://github.com/rabble/riot"]) assert.ok(whyRiot.includes(`href="${href}"`), `Why Riot invitation must link ${href}`);
 
 // --- Privacy: public-first factual reference --------------------------------
 assert.match(privacy, /<link rel="canonical" href="\/privacy\/">/i);
-const privacyMarkers = ["Public means public", "What local-first changes—and what it does not", "This website", "Where to go next"];
+const privacyMarkers = ["Public communities", "Data communities can hold", "Private conversation", "This website", "Where to go next"];
 let privacyCursor = -1;
 for (const marker of privacyMarkers) { const at = privacy.indexOf(marker); assert.ok(at > privacyCursor, `Privacy section missing or out of order: ${marker}`); privacyCursor = at; }
-for (const phrase of ["plaintext", "readable", "copyable", "no confidential public-read boundary", "private encrypted groups", "Cloudflare", "request metadata"]) assert.ok(privacy.toLowerCase().includes(phrase.toLowerCase()), `Privacy missing: ${phrase}`);
+for (const phrase of ["public publishing spaces", "read, copied, and carried", "participant devices", "one company's account or database", "does not yet ship private encrypted groups", "no analytics", "sets no cookies"]) {
+  assert.ok(privacy.toLowerCase().includes(phrase.toLowerCase()), `Privacy missing affirmative boundary: ${phrase}`);
+}
+for (const phrase of ["IP addresses", "timing", "radio presence", "device labels", "proximity", "behavioral correlation", "compromised devices", "fabricated gateway"]) {
+  assert.doesNotMatch(privacy, new RegExp(phrase, "i"), `Privacy retains speculative inventory: ${phrase}`);
+}
 for (const href of ["/why-riot/", "/protocols/", "https://signal.org/"]) assert.ok(privacy.includes(`href="${href}"`), `Privacy must link ${href}`);
 assert.doesNotMatch(privacy, /<script\b/i, "Privacy must be script-free");
 
@@ -448,6 +481,9 @@ assertExactRoutes(sitemapPaths, allSitePaths, "sitemap", { ordered: true });
 const routesSection = block(marketingReadme, /## Routes\s*([\s\S]*?)(?=\n##\s|$)/, "marketing README Routes section");
 const readmeRoutes = [...routesSection.matchAll(/^- `([^`]+)`/gm)].map(([, href]) => normalizeLocalRoute(href));
 assertExactRoutes(readmeRoutes, allSitePaths, "marketing README route inventory", { ordered: true });
+const privacyRoute = block(routesSection, /^- `\/privacy\/`[^\n]*$/m, "marketing README privacy route");
+for (const phrase of ["public-publishing", "participant-held-data", "private-conversation", "website-data"]) assert.ok(privacyRoute.includes(phrase), `marketing README privacy route missing ${phrase}`);
+for (const phrase of ["device", "metadata"]) assert.doesNotMatch(privacyRoute, new RegExp(phrase, "i"), `marketing README privacy route retains ${phrase}`);
 await expectEnoent(resolve(root, "marketing/resilience"));
 await expectEnoent(resolve(root, "marketing/public/resilience"));
 for (const content of [...Object.values(pageContents), sitemap, marketingReadme]) assert.ok(!localRoutesFrom(content).includes("/resilience/"), "site must not link /resilience/");
@@ -565,7 +601,7 @@ let browser;
 try {
   browser = await chromium.launch({ headless: true });
   for (const route of allSitePaths) {
-    const context = await browser.newContext();
+    const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
     const page = await context.newPage();
     const requests = [];
     const responses = [];
@@ -587,11 +623,23 @@ try {
       await Promise.all(responseTasks);
       const dom = await page.evaluate(() => ({
         cookie: document.cookie,
+        scrollWidth: document.documentElement.scrollWidth,
+        clientWidth: document.documentElement.clientWidth,
         resources: performance.getEntriesByType("resource").map((entry) => entry.name).sort(),
         anchors: [...document.querySelectorAll("a[href]")].map((anchor) => ({ raw: anchor.getAttribute("href"), resolved: anchor.href })),
         resourceUrls: [...document.querySelectorAll("script[src],link[href],img[src],iframe[src],audio[src],video[src],video[poster],source[src],object[data],embed[src],svg use[href],svg image[href],svg feImage[href],svg use[xlink\\:href],svg image[xlink\\:href],svg feImage[xlink\\:href]")].flatMap((element) => [element.src, element.href?.baseVal ?? element.href, element.getAttribute("xlink:href"), element.data, element.poster].filter((value) => typeof value === "string" && value)),
       }));
       assert.equal(dom.cookie, "", `${route} document.cookie must be empty`);
+      assert.ok(dom.scrollWidth <= dom.clientWidth, `${route} must not overflow horizontally at 390px (${dom.scrollWidth} > ${dom.clientWidth})`);
+      await page.addStyleTag({ content: "h1,h2,h3,.brand,.sitenav-brand{font-family:Arial,sans-serif!important}" });
+      const fallbackFontLayout = await page.evaluate(() => ({
+        scrollWidth: document.documentElement.scrollWidth,
+        clientWidth: document.documentElement.clientWidth,
+      }));
+      assert.ok(
+        fallbackFontLayout.scrollWidth <= fallbackFontLayout.clientWidth,
+        `${route} must not overflow when display fonts are unavailable (${fallbackFontLayout.scrollWidth} > ${fallbackFontLayout.clientWidth})`,
+      );
       const cookiesAfter = await context.cookies();
       assert.deepEqual(cookiesAfter, [], `${route} cookie jar must remain empty`);
       for (const url of requests) assert.equal(new URL(url).origin, previewOrigin, `${route} made off-origin request: ${url}`);
@@ -604,7 +652,7 @@ try {
         if (url.startsWith("data:image/svg+xml")) continue;
         assert.equal(new URL(url, previewOrigin).origin, previewOrigin, `${route} resolved off-origin resource: ${url}`);
       }
-      browserEvidence.routes.push({ route, cookiesBefore, cookiesAfter, documentCookie: dom.cookie, requests: [...new Set(requests)].sort(), responses: responses.sort((a, b) => a.url.localeCompare(b.url)), resources: dom.resources });
+      browserEvidence.routes.push({ route, viewport: { width: 390, height: 844 }, scrollWidth: dom.scrollWidth, clientWidth: dom.clientWidth, cookiesBefore, cookiesAfter, documentCookie: dom.cookie, requests: [...new Set(requests)].sort(), responses: responses.sort((a, b) => a.url.localeCompare(b.url)), resources: dom.resources });
     } finally { await context.close(); }
   }
   const response = await fetch(`${previewOrigin}/resilience/`, { redirect: "manual" });

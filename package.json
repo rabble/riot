@@ -12,7 +12,8 @@
     "test:web:unit": "node --test scripts/web/test/*.test.mjs",
     "test:web:coverage": "c8 --100 --all --include='scripts/web/**/*.mjs' node --test scripts/web/test/*.test.mjs",
     "test:apps:unit": "node --test scripts/apps/test/*.test.mjs",
-    "test:marketing": "node scripts/marketing/protocol-page-contracts.mjs"
+    "test:marketing": "node --test scripts/marketing/test/*.test.mjs && node scripts/marketing/protocol-page-contracts.mjs",
+    "verify:marketing:live": "node scripts/marketing/verify-live.mjs"
   },
   "devDependencies": {
     "@playwright/test": "1.61.1",

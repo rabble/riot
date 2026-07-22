@@ -130,6 +130,16 @@ Keep the current app screenshots and product demonstrations. Make only targeted 
 the hero: remove absolute availability or preservation claims and avoid presenting shutdown as the
 only reason communities need Riot.
 
+The homepage must also stay focused on user value rather than internal validation machinery or
+defensive threat inventories:
+
+- remove status chips from the conventional-platform comparison table; the detailed status section
+  later on the page remains the status reference;
+- remove the “What Riot does not hide” list and its speculative gateway/identity-correlation note;
+- remove the research-process box and its research-pass, source-fetch, claim-verification, and
+  adversarial-reviewer metrics. The surrounding field-history section may remain because it tells
+  users which real community traditions informed Riot.
+
 ## Why Riot Narrative
 
 ### 1. Hero — People are the infrastructure
@@ -219,25 +229,13 @@ leaving one another.** Label it as an aim, not a guarantee.
 
 ### 6. Honest boundaries
 
-Keep one compact boundary panel:
-
-- public Riot spaces should be treated as publishable;
-- current public Newswire content is plaintext, readable and copyable, and has no confidential
-  public-read boundary;
-- private encrypted groups are not shipped;
-- pseudonymity is not anonymity;
-- gateways, hosts, networks, nearby observers, and compromised devices remain risks;
-- a signature proves control of a key, not identity, truth, or legitimacy;
-- Riot is a prototype, not an audited hardened safety tool;
-- local usefulness depends on a functioning device and data already received;
-- exchange requires a compatible peer or transport that is actually available.
-
-Recommend established encrypted messengers for material that must remain secret today. Link to
-`/privacy/` and `/protocols/` for detail. The actionable recommendation is: **For an ordinary
-internet-connected conversation that must remain secret, use a purpose-built end-to-end encrypted
-messenger such as Signal; choose any safety tool for your actual threat model.** Link “Signal” to
-`https://signal.org/` with `rel="noopener"`; do not imply a blanket safety guarantee or Riot/Solnit
-endorsement.
+Keep one calm, compact product boundary. Current public Newswires are places for publishing and
+collaboration: posts are intended to be read, copied, and carried. Private encrypted groups are a
+separate future direction, not part of today's prototype. Do not turn generic internet, radio,
+device, behavioral-correlation, compromised-host, or hostile-gateway possibilities into a Riot
+exposure inventory. Link to `/privacy/` for the short product boundary and `/protocols/` for readers
+who want technical detail. A brief link to Signal may remain for private conversation today, without
+claiming that Riot, Signal, or any other tool provides universal safety.
 
 ### 7. Invitation — Build it with us
 
@@ -251,21 +249,24 @@ Solnit endorses Riot.
 
 ## Privacy Page
 
-The page remains at `/privacy/` and becomes a concise reference with this hierarchy:
+The page remains at `/privacy/` and becomes a concise, affirmative reference with this hierarchy:
 
-1. **Public means public.** Current public Newswire content is plaintext, readable and copyable by
-   recipients and infrastructure that handles it, and has no confidential public-read boundary.
-   Riot does not currently ship private encrypted groups.
-2. **What local-first changes—and what it does not.** Reduce mandatory centralized collection and
-   explain local custody, while naming metadata, radio presence, device compromise, copied data,
-   pseudonymity, and gateway-presentation risks.
-3. **This website.** Preserve the verifiable disclosure: Riot's static page code sets no cookies and
-   includes no analytics, accounts, remote fonts, third-party scripts, tracking pixels, or
-   fingerprinting. Cloudflare can observe ordinary request metadata and controls edge response
-   headers; do not claim that static source inspection can guarantee every hosting-layer behavior.
-4. **Where to go next.** Link to Why Riot for purpose, Protocols for details, and Signal's official
-   site with the same threat-model caveat for an ordinary internet-connected conversation that must
-   remain secret.
+1. **Public communities.** Current Newswires are public publishing spaces; posts are intended to be
+   read, copied, and carried.
+2. **Participant-held data.** Explain that community state can live on participant devices rather
+   than only inside one company's account or database, reducing mandatory centralized collection
+   and dependence on one provider.
+3. **Private conversation.** State simply that Riot does not yet ship private encrypted groups and
+   link to Signal as one purpose-built option available today, without universal safety claims.
+4. **This website.** Preserve the verifiable disclosure that Riot's authored static page includes no
+   analytics, accounts, remote fonts, third-party scripts, tracking pixels, or fingerprinting and
+   sets no cookies in observed local and production checks. Do not generalize that claim to every
+   possible host or network.
+5. **Where to go next.** Link to Why Riot for purpose and Protocols for technical detail.
+
+Remove speculative inventories of IP addresses, timing, radio presence, device labels, proximity,
+behavioral correlation, compromised devices, and fabricated gateway views. Those are not universal
+properties of every Riot transport and make generic threat modeling the product's emotional center.
 
 Remove the current defensive hero, the large website-first section, duplicated product manifesto,
 and repeated capability tables. The page should remain easy to cite when someone asks a precise
@@ -491,8 +492,9 @@ The new assertions must fail before HTML implementation. After implementation th
 8. Why Riot contains the exact H1, ordinary-life section, four human verbs, practice section,
    compact mechanism and boundary sections, Solnit attribution, and participation links;
 9. the code-native illustration is present, accessible, local, and dependency-free;
-10. Privacy begins with public-space truth, keeps app/device/metadata boundaries, puts website
-    disclosure later, and links back to purpose and technical detail;
+10. Privacy begins with the public-publishing purpose, explains participant-held data positively,
+    states the current private-group boundary once, puts the verifiable website disclosure later,
+    omits speculative threat inventories, and links back to purpose and technical detail;
 11. the four human-verb cards and Carry sub-list use the exact deterministic status markup and
     label/text pairings defined above;
 12. every exact forbidden-claim pattern in the Site-Wide Claim Audit is absent across all nine
@@ -510,6 +512,20 @@ The new assertions must fail before HTML implementation. After implementation th
     participant-copy, replaceable-gateway, and no-guarantee language defined above.
 17. local HTTP/browser checks find no `Set-Cookie`, no stored browser cookie, and no resource request
     outside the loopback preview origin on all nine editorial routes.
+18. the homepage conventional-platform comparison contains no `span.chip`, while the later
+    `#status` section and the `/protocols/` detail link remain present;
+19. within the homepage, the exact selectors/text `<h3>What Riot does not hide</h3>`,
+    `ul.notlist`, `p.boundary-note` beginning `Separate per-community keys`, `div.evidence-box`,
+    `div.evidence-stats`, `div.estat`, `Each research pass`, `adversarial reviewers`,
+    `Research passes`, `Sources fetched`, and `Claims verified` are absent; the surrounding
+    `section#evidence`, its `Grounded in the field` H2, and its named community examples remain;
+20. Why Riot and Privacy retain the exact current boundary—Newswires are public publishing and
+    collaboration spaces, private encrypted groups are not part of today's prototype—while omitting
+    the finite speculative inventory: IP addresses, timing, radio presence, device labels,
+    proximity, behavioral correlation, compromised devices, and fabricated gateway views.
+21. `marketing/README.md` describes `/privacy/` as the concise public-publishing,
+    participant-held-data, private-conversation, and website-data boundary; it does not promise an
+    IP/radio/device/metadata threat inventory.
 
 The legacy-test migration replaces four complete regions in
 `scripts/marketing/protocol-page-contracts.mjs`, rather than deleting individual assertions ad hoc:
@@ -593,7 +609,7 @@ Every reviewer answers these four shared questions:
 1. What kind of ordinary community life is Riot trying to support?
 2. What four kinds of work does Riot make easier?
 3. Why might the same tools matter when conditions become difficult?
-4. What is not currently guaranteed or private?
+4. Which Riot spaces are public today, and what private mode remains future work?
 
 The partner also answers: **What can a community possess rather than merely access, and why does
 that matter?** The builder also answers: **What bounded mechanism and current-status distinctions
@@ -605,9 +621,8 @@ Scoring is deterministic, one point per required element:
 - Q2: names Publish, Meet, Coordinate, and Carry or unmistakable equivalents.
 - Q3: says familiar, already-used relationships/tools/data remain useful; does not claim guaranteed
   operation.
-- Q4: names public plaintext/non-confidential content plus at least two of no anonymity guarantee,
-  device/metadata exposure, incomplete transports, unaudited prototype, or no delivery/persistence
-  guarantee.
+- Q4: identifies current Newswires as public publishing/collaboration spaces and says private
+  encrypted groups are not part of today's prototype.
 - Partner Q5: identifies participant-held data/tools/community memory and reduced dependence on one
   provider, without claiming total independence.
 - Builder Q5: identifies local replicas/signed records/multiple possible paths plus at least two
@@ -665,14 +680,54 @@ Passing requires `PASS` with zero findings. The report stores the complete promp
 ordered SHA-256 list for the eleven reviewed files, returned JSON verbatim, and fresh session
 identifier. This is the reproducible human half of the site-wide claim audit.
 
-Deployment is outside scope. Do not mutate production or claim the live site changed.
+The initial reframe was deployed after explicit owner approval. After the complete refreshed
+acceptance evidence passes, require a clean worktree, record `git rev-parse HEAD` as the immutable
+implementation commit, and deploy the marketing artifact from that exact commit through the existing
+Cloudflare Workers configuration:
+static/browser contracts, exact mirrors, desktop/mobile visual checks, three fresh Why Riot
+first-read reviews using the revised Q4 rubric, and a fresh semantic claim audit. This changes
+production marketing content. It changes no deployment configuration, DNS, TLS, Workers runtime
+behavior, application behavior, protocol behavior, or application data.
+
+Implement the production check as the committed script `scripts/marketing/verify-live.mjs`, exposed
+as `npm run verify:marketing:live`. Add no dependency: use Node built-ins plus the already-pinned
+Playwright package. For every route, compute SHA-256 over the expected local bytes and live response
+bytes with Node's `crypto` module, fail unless the hashes and raw bytes agree, and record both hashes.
+It uses this exact route-to-file map:
+
+```text
+/             -> marketing/public/index.html
+/why-riot/    -> marketing/public/why-riot/index.html
+/guide/       -> marketing/public/guide/index.html
+/about/       -> marketing/public/about/index.html
+/privacy/     -> marketing/public/privacy/index.html
+/open-source/ -> marketing/public/open-source/index.html
+/community/   -> marketing/public/community/index.html
+/releases/    -> marketing/public/releases/index.html
+/protocols/   -> marketing/public/protocols/index.html
+```
+
+Post-deploy verification is blocking and covers both
+`https://riot-protest-net-marketing.protestnet.workers.dev` and `https://riot.protest.net`. At each
+origin, fetch all nine canonical routes with redirects disabled; require direct HTTP 200 responses,
+no `Location`, and byte equality with the corresponding committed `marketing/public/` file. Require
+an unknown route to return direct HTTP 404 with no `Location`. Capture response headers for all
+routes and require no `Set-Cookie`. In a fresh
+Playwright context for each origin, visit and fully scroll all nine routes; require an empty cookie
+jar and `document.cookie`, empty `localStorage` and `sessionStorage`, and no observed request origin
+outside the origin under test. Record the Cloudflare version, exact command or script, origins,
+implementation commit, route results, expected local SHA-256, live response SHA-256,
+headers/cookie/storage/request-origin result, and the exact `npm run verify:marketing:live` command in
+`docs/marketing/2026-07-22-human-capacity-implementation-review.md` before the deployment-evidence
+commit is pushed.
 
 ## Scope Boundaries
 
-This work changes marketing HTML, its exact public mirrors, sitemap, marketing documentation,
-contract tests, package scripts, and the existing CI web job. It does not change Riot protocols,
-application behavior, cryptography, privacy guarantees, anchor behavior, sync transports,
-deployment configuration, DNS, TLS, telemetry, or production state.
+This work changes marketing HTML, its exact public mirrors, marketing documentation, contract tests,
+`scripts/marketing/verify-live.mjs`, the `package.json` command exposing it, the implementation-review
+evidence, and—after all gates pass—the production marketing content. It does not change Riot
+protocols, application behavior, cryptography, privacy guarantees, anchor behavior, sync transports,
+deployment configuration, DNS, TLS, telemetry, Workers runtime behavior, or application data.
 
 Documentation scope also includes the narrow private-group status clarification in `README.md` and
 `docs/product/product-brief.md`, plus the committed implementation-review report.
@@ -732,6 +787,36 @@ The tenth security pass requested resolved-anchor scheme validation after charac
 decoding. Revision 14 allowlists HTTP(S) and fragments and rejects every active or unknown scheme.
 The final gate is approved across Product Manager, Architect, Editorial/UX, Security, and
 CTO/implementation readiness.
+
+Direct review of the deployed page found three user-facing regressions in that approved design:
+status chips crowded the homepage comparison; a generic threat-model inventory was both inaccurate
+across Riot's different transports and fear-inducing; and an internal LLM research/reviewer metrics
+panel spoke to agents rather than communities. Revision 15 removes those elements, keeps detailed
+technical material available through `/protocols/`, and reframes `/privacy/` and the Why Riot
+boundary around public publishing, participant-held data, and the simple current private-group
+limit.
+
+The revision-15 design gate approved the product and editorial direction, then required deterministic
+negative assertions for each removed element and a production verification procedure strong enough
+to support the website-data disclosure. Revision 16 adds scoped absence/preservation contracts and
+all-route edge/browser checks at both production origins.
+
+The architecture pass then required explicit production-content scope, complete pre-deploy evidence,
+direct no-redirect live checks, preservation of human field history, the narrower “public Newswires”
+boundary, and a matching Privacy route description in `marketing/README.md`. Revision 17 adds those
+requirements.
+
+The implementation-readiness re-review requested selector-exact removal predicates, a committed
+route-to-file live verifier with expected/served hashes, and an artifact reference that does not
+confuse the design revision with the implementation revision. Revision 18 adds them.
+
+The editorial re-review caught `timing` missing from the finite removal predicate and joined the
+architecture/PM request to make the README route-description correction normative. Revision 19 adds
+`timing`; acceptance criterion 21 already pins the README correction and its stale terms.
+
+The final readiness pass found the live verifier and package entry missing from the declared scope
+and requested immutable deployment provenance plus explicit hash computation. Revision 20 adds those
+mechanical contracts without changing the approved user-facing direction.
 
 ## Primary Sources
 

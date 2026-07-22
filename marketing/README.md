@@ -9,7 +9,7 @@ backend, analytics, remote fonts, or third-party runtime requests.
 - `/why-riot/` — Riot's human-capacity and social-purpose story.
 - `/guide/` — task-by-task instructions for the current prototype.
 - `/about/` — project lineage, history, and builder.
-- `/privacy/` — factual public-content, local-first, device, metadata, and website boundaries.
+- `/privacy/` — concise public-publishing, participant-held-data, private-conversation, and website-data boundaries.
 - `/open-source/` — licenses, repository layout, and build instructions.
 - `/community/` — ways to follow, test, and contribute to the work.
 - `/releases/` — current build availability and platform notes.

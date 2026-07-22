@@ -137,6 +137,7 @@ a:focus-visible, button:focus-visible { outline: 3px solid var(--pink); outline-
 .sitenav-brand:hover { color: var(--pink); }
 .sitenav-links {
   display: flex; gap: 0; flex-wrap: wrap;
+  min-width: 0;
   font-family: 'Space Mono', monospace; font-size: 11.5px; letter-spacing: 0.06em; text-transform: uppercase;
   overflow-x: auto;
 }
@@ -490,15 +491,6 @@ section { padding: clamp(56px, 9vw, 100px) 0; }
   .builder-grid article + article { padding: 28px 0 0; border-top: 2px solid color-mix(in srgb, var(--paper) 28%, transparent); border-left: 0; }
 }
 
-/* ---------- evidence callout ---------- */
-.evidence-box { margin-top: 40px; border: 2px solid var(--ink); padding: clamp(24px, 4vw, 40px); display: grid; grid-template-columns: 1fr auto; gap: 28px; align-items: center; }
-.evidence-box p { margin: 0; font-size: 16.5px; color: var(--ink-soft); max-width: 60ch; }
-.evidence-stats { display: flex; gap: 26px; flex-shrink: 0; }
-.evidence-stats .estat { text-align: center; }
-.evidence-stats .estat b { display: block; font-family: 'Anton', sans-serif; font-size: 34px; color: var(--pink); }
-.evidence-stats .estat span { font-family: 'Space Mono', monospace; font-size: 10.5px; letter-spacing: 0.05em; text-transform: uppercase; color: var(--ink-soft); }
-@media (max-width: 720px) { .evidence-box { grid-template-columns: 1fr; } .evidence-stats { justify-content: flex-start; flex-wrap: wrap; } }
-
 /* ---------- status ---------- */
 .status-band { background: var(--pink); color: #fff; }
 .status-band .eyebrow { color: rgba(255,255,255,0.85); }
@@ -525,12 +517,14 @@ section { padding: clamp(56px, 9vw, 100px) 0; }
 .closing .btn.outline:hover { border-color: var(--pink); color: var(--pink); }
 
 footer.colophon {
+  background: var(--ink);
   border-top: 2px solid rgba(234,230,218,0.25);
   padding: 26px clamp(20px, 5vw, 64px) 40px;
   display: flex; justify-content: space-between; gap: 16px; flex-wrap: wrap;
   font-family: 'Space Mono', monospace; font-size: 11.5px; color: color-mix(in srgb, var(--paper) 60%, transparent);
 }
 footer.colophon .footer-links a { text-decoration: none; }
+footer.colophon a { color: inherit; }
 footer.colophon .footer-links a:hover { text-decoration: underline; text-decoration-color: var(--pink); }
 
 /* ---------- what it is (scannable) ---------- */
@@ -610,7 +604,6 @@ footer.colophon .footer-links a:hover { text-decoration: underline; text-decorat
   letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-soft);
 }
 .contrast td:last-child, .contrast th:last-child { padding-right: 0; }
-.contrast .chip { margin-left: 10px; }
 .anchorline {
   margin: 40px 0 0; padding: 22px 26px; max-width: 900px;
   border-left: 6px solid var(--pink); background: var(--paper2);
@@ -640,8 +633,6 @@ footer.colophon .footer-links a:hover { text-decoration: underline; text-decorat
 .pathnote { margin: 18px 0 0; padding-top: 16px; border-top: 1px solid var(--line); font-size: 15.5px; color: var(--ink-soft); }
 .privtable-scroll { overflow-x: auto; margin: 34px 0 0; }
 .privtable { width: 100%; min-width: 560px; border-collapse: collapse; font-size: 15.5px; }
-.notlist { margin: 16px 0 0; padding-left: 22px; font-size: 15.5px; color: var(--ink-soft); }
-.notlist li { margin: 6px 0; }
 .status-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 32px; margin-top: 10px; }
 @media (max-width: 820px) { .status-cols { grid-template-columns: 1fr; } }
 .status-col h3 {
@@ -750,11 +741,11 @@ footer.colophon .footer-links a:hover { text-decoration: underline; text-decorat
         <tr><th scope="col">Conventional platform</th><th scope="col">Riot's direction</th></tr>
       </thead>
       <tbody>
-        <tr><td>The service holds the canonical community database</td><td>Participants carry community state <span class="chip prototype">Available in the prototype</span></td></tr>
-        <tr><td>Offline means waiting for the service to return</td><td>Already-held data and installed tools remain locally useful on a functioning device <span class="chip prototype">Available in the prototype</span></td></tr>
-        <tr><td>A server outage cuts off the product</td><td>A compatible nearby peer can exchange updates when the local path is available <span class="chip local">Tested locally</span></td></tr>
-        <tr><td>Extensions belong to the platform</td><td>Communities approve and carry their own tools <span class="chip prototype">Available in the prototype</span></td></tr>
-        <tr><td>A domain and hosted account anchor identity</td><td>Willow data carries community continuity <span class="chip direction">Direction, not shipped</span></td></tr>
+        <tr><td>The service holds the canonical community database</td><td>Participants carry community state</td></tr>
+        <tr><td>Offline means waiting for the service to return</td><td>Already-held data and installed tools remain locally useful on a functioning device</td></tr>
+        <tr><td>A server outage cuts off the product</td><td>A compatible nearby peer can exchange updates when the local path is available</td></tr>
+        <tr><td>Extensions belong to the platform</td><td>Communities approve and carry their own tools</td></tr>
+        <tr><td>A domain and hosted account anchor identity</td><td>Willow data carries community continuity</td></tr>
       </tbody>
     </table>
   </div>
@@ -772,7 +763,7 @@ footer.colophon .footer-links a:hover { text-decoration: underline; text-decorat
     </div>
     <ul class="caplist">
       <li><b>Keep working locally.</b> Reading, writing, organizing, and preparing updates happen on the device — no server round-trip required.</li>
-      <li><b>Exchange without internet.</b> Nearby devices can connect, review offered updates, and choose whether to add them. Current evidence is prototype local-network (Bonjour) testing; physical two-iPhone Bluetooth remains unverified.</li>
+      <li><b>Exchange without internet.</b> Compatible nearby devices can connect when a local transport is actually available, review offered updates, and choose whether to add them. Current evidence is prototype local-network (Bonjour) testing; physical two-iPhone Bluetooth remains unverified.</li>
       <li><b>Publish a public web view.</b> The reference gateway renders exported public community content for ordinary browsers. It is not yet a live sync server for Riot devices.</li>
       <li><b>Carry more than messages.</b> A community can carry structured information and community-approved tools — checklists, wikis, events, decisions — not just a chat log.</li>
       <li><b>Manage several communities.</b> Creating, following, switching, archiving, restoring, and reopening communities are supported in the core; the <a href="/guide/">Using Riot guide</a> names which screens exist on each platform.</li>
@@ -1032,15 +1023,6 @@ footer.colophon .footer-links a:hover { text-decoration: underline; text-decorat
         </tbody>
       </table>
     </div>
-    <h3>What Riot does not hide</h3>
-    <ul class="notlist">
-      <li>public Newswire content;</li>
-      <li>IP addresses or ordinary metadata visible to any internet service used;</li>
-      <li>nearby radio presence, device labels, proximity, and timing;</li>
-      <li>copies already carried away by another device, export, backup, or log; and</li>
-      <li>identity correlations from reused names, writing style, behavior, timing, proximity, or network metadata.</li>
-    </ul>
-    <p class="boundary-note">Separate per-community keys give pseudonym separation at the data layer — pseudonymity is not anonymity. And a web gateway is a presentation a browser reader chooses to trust: it can show a view that is censored, stale, incomplete, fabricated, or incorrectly rendered, and it can log connection metadata like any website. Riot clients validate community data independently; browsers don't.</p>
     <div class="path-split">
       <div class="path-branch">
         <h4>Open Newswire</h4>
@@ -1062,14 +1044,6 @@ footer.colophon .footer-links a:hover { text-decoration: underline; text-decorat
       <p class="eyebrow">Not guesswork</p>
       <h2>Grounded in the field, not assumed at a whiteboard</h2>
       <p class="section-intro">Every major design call is checked against how mutual aid networks, protest comms, and movement media have <b>actually</b> worked — Occupy Sandy, TXTMob, Verificado 19S, Indymedia's RNC desk, the 2019 Hong Kong protests, and disaster response after the 2023 Türkiye earthquakes and Hurricane Maria — not assumption.</p>
-    </div>
-    <div class="evidence-box">
-      <p>Each research pass runs multiple independent search angles, then puts every extracted claim in front of three adversarial reviewers whose default is to try to refute it. Only what survives makes it into the design.</p>
-      <div class="evidence-stats">
-        <div class="estat"><b>6</b><span>Research&nbsp;passes</span></div>
-        <div class="estat"><b>140+</b><span>Sources&nbsp;fetched</span></div>
-        <div class="estat"><b>120+</b><span>Claims&nbsp;verified</span></div>
-      </div>
     </div>
   </div>
 </section>

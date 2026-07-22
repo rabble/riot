@@ -28,7 +28,7 @@
     .sitenav-bar { display:flex; align-items:center; justify-content:space-between; gap:16px; padding:0 max(16px,calc((100% - var(--max))/2)); }
     .sitenav-brand { padding:10px 0; font:900 1.5rem Impact,Haettenschweiler,sans-serif; text-decoration:none; white-space:nowrap; }
     .sitenav-brand span { padding:1px 7px; color:var(--ink); background:var(--pink); }
-    .sitenav-links { display:flex; flex-wrap:wrap; justify-content:flex-end; overflow-x:auto; font:700 .72rem/1.2 "Courier New",monospace; letter-spacing:.06em; text-transform:uppercase; }
+    .sitenav-links { display:flex; min-width:0; flex-wrap:wrap; justify-content:flex-end; overflow-x:auto; font:700 .72rem/1.2 "Courier New",monospace; letter-spacing:.06em; text-transform:uppercase; }
     .sitenav-links a { display:inline-block; padding:11px 14px; color:var(--paper2); border-bottom:3px solid transparent; text-decoration:none; white-space:nowrap; }
     .sitenav-links a:hover,.sitenav-links a[aria-current="page"] { color:var(--pink); border-bottom-color:var(--pink); }
     .hero { padding:clamp(64px,10vw,120px) 0 72px; color:var(--ink); background:var(--pink); border-bottom:3px solid var(--ink); }
@@ -75,7 +75,7 @@
     .footer-links a { text-decoration:none; }
     @media (max-width:820px) { .life-grid,.paths-grid,.tool-grid { grid-template-columns:1fr; } .boundary-panel ul { columns:1; } }
     @media (max-width:760px) { .sitenav-links { font-size:.66rem; } .sitenav-links a { padding:10px 8px; } .carry-paths li { grid-template-columns:1fr; } }
-    @media (max-width:520px) { body { font-size:16px; } .wrap { width:min(calc(100% - 28px),var(--max)); } h1 { font-size:clamp(2.8rem,12.5vw,4.5rem); } .life-grid { grid-template-columns:minmax(0,1fr); } }
+    @media (max-width:520px) { body { font-size:16px; } .wrap { width:min(calc(100% - 28px),var(--max)); } h1 { font-size:clamp(1.8rem,9vw,4.5rem); overflow-wrap:anywhere; } .life-grid { grid-template-columns:minmax(0,1fr); } }
     @media (prefers-reduced-motion:reduce) { html { scroll-behavior:auto; } }
     @media (forced-colors:active) { .commons-art,.tool-card,.boundary-panel,.aim,.button { box-shadow:none; border-color:CanvasText; } }
   </style>
@@ -199,21 +199,11 @@
 
     <section id="boundaries" class="boundaries">
       <div class="wrap boundary-panel">
-        <p class="eyebrow">Know the limits</p>
-        <h2>Honest boundaries</h2>
-        <p><strong>No hidden guarantee:</strong> Riot does not guarantee anonymity, safe devices, hidden metadata, delivery, persistence, or that a compatible path will be available.</p>
-        <ul>
-          <li>Public Riot spaces should be treated as publishable.</li>
-          <li>Current public Newswire content is plaintext, readable, and copyable, with no confidential public-read boundary.</li>
-          <li>Private encrypted groups are not shipped.</li>
-          <li>Pseudonymity is not anonymity.</li>
-          <li>Gateways, hosts, networks, nearby observers, and compromised devices remain risks.</li>
-          <li>A signature proves control of a key—not identity, truth, or legitimacy.</li>
-          <li>Riot is a prototype, not an audited hardened safety tool.</li>
-          <li>Local usefulness depends on a functioning device and data already received.</li>
-          <li>Exchange requires a compatible peer or transport that is actually available.</li>
-        </ul>
-        <p class="secret-note">For an ordinary internet-connected conversation that must remain secret, use a purpose-built end-to-end encrypted messenger such as <a href="https://signal.org/" rel="noopener">Signal</a>; choose any safety tool for your actual threat model. Read Riot's <a href="/privacy/">privacy boundaries</a> and <a href="/protocols/">technical details</a>.</p>
+        <p class="eyebrow">Public by purpose</p>
+        <h2>Share openly. Choose privacy deliberately.</h2>
+        <p>Current public Newswires are places for publishing and collaboration. Posts are intended to be read, copied, and carried.</p>
+        <p>Private encrypted groups are a separate future direction, not part of today's prototype. For a private conversation today, use a purpose-built private messenger such as <a href="https://signal.org/" rel="noopener">Signal</a>.</p>
+        <p class="secret-note">Read Riot's short <a href="/privacy/">privacy boundary</a> or the <a href="/protocols/">technical details</a>.</p>
       </div>
     </section>
 

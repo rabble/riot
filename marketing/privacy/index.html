@@ -3,9 +3,9 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="description" content="Riot privacy boundaries: public content is public, local-first reduces some centralized collection, and private encrypted groups are not shipped.">
+  <meta name="description" content="Riot supports public publishing and collaboration with community data held by participants, while private encrypted groups remain future work.">
   <meta name="theme-color" content="#ffdf3f">
-  <title>Riot privacy — public means public</title>
+  <title>Riot privacy — public spaces, participant-held data</title>
   <link rel="canonical" href="/privacy/">
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%23f6f0e5'/%3E%3Ctext x='16' y='25' font-family='Impact,sans-serif' font-size='26' fill='%23ff4f8b' text-anchor='middle'%3ER%3C/text%3E%3C/svg%3E">
   <style>
@@ -27,7 +27,7 @@
     .sitenav-bar { display:flex; align-items:center; justify-content:space-between; gap:16px; padding:0 max(16px,calc((100% - 1180px)/2)); }
     .sitenav-brand { padding:10px 0; font:900 1.5rem Impact,Haettenschweiler,sans-serif; text-decoration:none; white-space:nowrap; }
     .sitenav-brand span { padding:1px 7px; color:var(--ink); background:var(--pink); }
-    .sitenav-links { display:flex; flex-wrap:wrap; justify-content:flex-end; overflow-x:auto; font:700 .72rem/1.2 "Courier New",monospace; letter-spacing:.06em; text-transform:uppercase; }
+    .sitenav-links { display:flex; min-width:0; flex-wrap:wrap; justify-content:flex-end; overflow-x:auto; font:700 .72rem/1.2 "Courier New",monospace; letter-spacing:.06em; text-transform:uppercase; }
     .sitenav-links a { display:inline-block; padding:11px 14px; color:var(--paper2); border-bottom:3px solid transparent; text-decoration:none; white-space:nowrap; }
     .sitenav-links a:hover { color:var(--pink); border-bottom-color:var(--pink); }
     .hero { padding:clamp(60px,9vw,105px) 0 64px; background:var(--yellow); border-bottom:3px solid var(--ink); }
@@ -54,7 +54,7 @@
     .footer-inner p { max-width:none; margin:.35rem 0; font:700 .76rem/1.55 "Courier New",monospace; text-transform:uppercase; }
     .footer-links a { text-decoration:none; }
     @media (max-width:800px) { .links { grid-template-columns:1fr; } .sitenav-links { font-size:.66rem; } .sitenav-links a { padding:10px 8px; } }
-    @media (max-width:520px) { body { font-size:16px; } .wrap { width:min(calc(100% - 28px),var(--max)); } h1 { font-size:clamp(2.8rem,15vw,4.4rem); } }
+    @media (max-width:520px) { body { font-size:16px; } .wrap { width:min(calc(100% - 28px),var(--max)); } h1 { font-size:clamp(1.8rem,9vw,4.4rem); overflow-wrap:anywhere; } }
     @media (prefers-reduced-motion:reduce) { html { scroll-behavior:auto; } }
     @media (forced-colors:active) { .fact,.links a { box-shadow:none; border-color:CanvasText; } }
   </style>
@@ -79,28 +79,34 @@
 
   <header class="hero">
     <div class="wrap">
-      <p class="kicker">A factual reference</p>
-      <h1>Public means public.</h1>
-      <p class="lede">Riot's current public communities are for information people intend to circulate. They are not private messengers, and Riot does not yet ship private encrypted groups.</p>
+      <p class="kicker">A clear boundary</p>
+      <h1>Public spaces, participant-held data.</h1>
+      <p class="lede">Riot is building public spaces where communities can publish, collaborate, and carry their shared work together.</p>
     </div>
   </header>
 
   <main id="content">
     <section class="plain" id="public">
       <div class="wrap">
-        <p class="eyebrow">Current public communities</p>
-        <h2>Public means public</h2>
-        <p>Current public Newswire content is plaintext, readable, and copyable by recipients and infrastructure that handles it. There is no confidential public-read boundary. Treat anything posted there as publishable.</p>
-        <div class="fact"><p><strong>Not shipped:</strong> private encrypted groups.</p><p>Pseudonymity is not anonymity. A signature proves control of a key, not a person's identity, truthfulness, or legitimacy.</p></div>
+        <p class="eyebrow">Public communities</p>
+        <h2>Public communities</h2>
+        <p>Current Newswires are public publishing spaces. Posts are intended to be read, copied, and carried by the people and communities they reach.</p>
       </div>
     </section>
 
     <section class="local" id="local-first">
       <div class="wrap">
-        <p class="eyebrow">Custody is not secrecy</p>
-        <h2>What local-first changes—and what it does not</h2>
-        <p>Participants can hold community state on their own devices, reducing the need to put every action through one centralized service. Already-held data may remain useful on a functioning device, and replaceable gateways can reduce dependence on one provider.</p>
-        <p>That does not hide copied public content, network metadata, IP addresses, timing, radio presence, or nearby activity. Gateways may present altered text; devices can be lost or compromised; observers can correlate behavior; and no design can recall every copy after publication.</p>
+        <p class="eyebrow">Participant-held data</p>
+        <h2>Data communities can hold</h2>
+        <p>Community state can live on participant devices instead of existing only inside one company's account or database. That reduces mandatory centralized collection and makes it easier for a community to move between hosts and transports.</p>
+      </div>
+    </section>
+
+    <section class="plain" id="private">
+      <div class="wrap">
+        <p class="eyebrow">A separate mode</p>
+        <h2>Private conversation</h2>
+        <p>Riot does not yet ship private encrypted groups. For a private conversation today, use a purpose-built private messenger such as <a href="https://signal.org/" rel="noopener">Signal</a>.</p>
       </div>
     </section>
 
@@ -109,19 +115,18 @@
         <p class="eyebrow">The page you are reading</p>
         <h2>This website</h2>
         <p>Riot's static page code sets no cookies and includes no analytics, accounts, remote fonts, third-party scripts, tracking pixels, or fingerprinting. The pages work without JavaScript.</p>
-        <div class="fact"><p><strong>Hosting boundary:</strong> Cloudflare can observe ordinary request metadata and controls edge response headers. Inspecting these static files cannot guarantee what every independently configured hosting layer does.</p></div>
+        <div class="fact"><p><strong>Observed locally and at both production origins:</strong> these pages set no cookies and load no third-party resources. Independently hosted copies have their own operator and configuration.</p></div>
       </div>
     </section>
 
     <section class="next" id="next">
       <div class="wrap">
-        <p class="eyebrow">Purpose, detail, secrecy</p>
+        <p class="eyebrow">Purpose and detail</p>
         <h2>Where to go next</h2>
-        <p>Read the social purpose before the mechanism. Then use the technical field guide for detailed trust boundaries. For an ordinary internet-connected conversation that must remain secret, use a purpose-built end-to-end encrypted messenger such as Signal; choose any safety tool for your actual threat model.</p>
+        <p>Read the social purpose before the mechanism. Then use the technical field guide for implementation details and current status.</p>
         <div class="links">
           <a href="/why-riot/">Why Riot exists →</a>
           <a href="/protocols/">Protocol field guide →</a>
-          <a href="https://signal.org/" rel="noopener">Signal →</a>
         </div>
       </div>
     </section>
