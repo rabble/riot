@@ -4,6 +4,8 @@
 <dict>
 	<key>ATSApplicationFontsPath</key>
 	<string>Fonts</string>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
 	<key>NSBluetoothAlwaysUsageDescription</key>
 	<string>Find nearby Riot phones you choose to connect with.</string>
 	<key>NSBonjourServices</key>
