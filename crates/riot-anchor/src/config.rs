@@ -49,6 +49,8 @@ pub const OPERATION_LIFETIME_SECS: u64 = 3600;
 pub const DESCRIPTOR_VALID_SECS: u64 = 30 * 24 * 3600;
 /// The deployment-lease term.
 pub const LEASE_TTL_SECS: u64 = 300;
+/// The retention horizon (seconds past commit) stamped into hosting receipts.
+pub const REPORTED_RETENTION_SECS: u64 = 30 * 24 * 3600;
 /// Operator warning emitted when this run minted a non-durable endpoint identity.
 pub const EPHEMERAL_ENDPOINT_WARNING: &str =
     "no RIOT_ANCHOR_ENDPOINT_KEY set; using an EPHEMERAL endpoint identity";
@@ -167,12 +169,14 @@ pub fn assemble_service(config: Config) -> (DaemonConfig, AnchorService) {
     // operator SECRET; DEFERRED(WU-019 increment 2): a dedicated persisted random
     // secret with rotation.
     let token_secret = derive(b"riot/anchor/token-secret/v1", &config.operator_secret);
-    let service = AnchorControlService::new(
+    let mut service = AnchorControlService::new(
         context,
         policy,
         signer,
         TokenSecretRing::new(1, token_secret),
     );
+    // Thread the deployment's receipt-retention horizon into the Commit service.
+    service.set_reported_retention(REPORTED_RETENTION_SECS);
 
     let daemon_config = DaemonConfig {
         db_path: config.db_path,

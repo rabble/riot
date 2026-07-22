@@ -456,6 +456,10 @@ pub struct StoredOperation {
     pub prepare_response_bytes: Vec<u8>,
     /// The exact canonical terminal outcome bytes, if terminalized.
     pub terminal_result_bytes: Option<Vec<u8>>,
+    /// The exact canonical root-signed ticket envelope PrepareHost admitted —
+    /// the ONLY ticket source the composite Commit's manifest resolution accepts.
+    /// `None` on a pre-migration row (fails closed at commit).
+    pub ticket_envelope_bytes: Option<Vec<u8>>,
 }
 
 /// The fields required to atomically create a prepared operation.
@@ -482,6 +486,10 @@ pub struct NewPreparedOperation {
 /// One committed entry as `(entry_id, item_bytes)` — the sortable sync inventory
 /// id and the full anchor-profile item a `sync/2` sender streams.
 pub type CommittedEntry = (Vec<u8>, Vec<u8>);
+
+/// A community's committed manifest row as `(manifest_generation,
+/// manifest_digest, manifest_bytes)`.
+pub type CommittedManifest = (u64, [u8; 32], Vec<u8>);
 
 /// A direction-private staged entry (or, once promoted, a committed entry). The
 /// `item_bytes` are the exact anchor-profile encoded item (entry + capability +
@@ -868,7 +876,8 @@ impl AnchorRepository {
             .query_row(
                 "SELECT operation_id, originating_kind, token_secret_epoch, base_generation, \
                  operation_status, operation_expiry, retention_deadline, prepare_response_bytes, \
-                 terminal_result_bytes FROM operations WHERE operation_id = ?1",
+                 terminal_result_bytes, ticket_envelope_bytes \
+                 FROM operations WHERE operation_id = ?1",
                 params![operation_id.as_slice()],
                 map_stored_operation,
             )
@@ -1568,12 +1577,29 @@ impl RepoTransaction<'_> {
             .query_row(
                 "SELECT operation_id, originating_kind, token_secret_epoch, base_generation, \
                  operation_status, operation_expiry, retention_deadline, prepare_response_bytes, \
-                 terminal_result_bytes FROM operations WHERE operation_id = ?1",
+                 terminal_result_bytes, ticket_envelope_bytes \
+                 FROM operations WHERE operation_id = ?1",
                 params![operation_id.as_slice()],
                 map_stored_operation,
             )
             .optional()
             .map_err(AnchorRepositoryError::from)
+    }
+
+    /// Persist the exact canonical root-signed ticket envelope on a prepared
+    /// operation row. `PrepareHost` calls this in ITS transaction; the composite
+    /// Commit's manifest resolution reads the bytes back as the ONLY legal ticket
+    /// source (a client-supplied ticket at commit would enable substitution).
+    pub fn store_operation_ticket(
+        &mut self,
+        operation_id: &[u8; 32],
+        ticket_envelope_bytes: &[u8],
+    ) -> Result<(), AnchorRepositoryError> {
+        self.transaction.execute(
+            "UPDATE operations SET ticket_envelope_bytes = ?2 WHERE operation_id = ?1",
+            params![operation_id.as_slice(), ticket_envelope_bytes],
+        )?;
+        Ok(())
     }
 
     /// Terminalize an operation: record its exact terminal outcome bytes and flip
@@ -1702,6 +1728,135 @@ impl RepoTransaction<'_> {
             entries.push(row?);
         }
         Ok(entries)
+    }
+
+    /// Every committed entry of a namespace at an exact canonical path, as
+    /// `(entry_id, item_bytes)` ordered by ascending entry id. The composite
+    /// Commit's manifest resolution unions this with the operation's staged
+    /// `/manifest` candidates (a refresh commit resolves from committed `O`).
+    pub fn committed_entries_by_path(
+        &self,
+        namespace_id: &[u8; 32],
+        path_bytes: &[u8],
+    ) -> Result<Vec<CommittedEntry>, AnchorRepositoryError> {
+        let mut statement = self.transaction.prepare(
+            "SELECT entry_id, item_bytes FROM entries \
+             WHERE namespace_id = ?1 AND path_bytes = ?2 ORDER BY entry_id ASC",
+        )?;
+        let rows = statement.query_map(params![namespace_id.as_slice(), path_bytes], |row| {
+            Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, Vec<u8>>(1)?))
+        })?;
+        let mut entries = Vec::new();
+        for row in rows {
+            entries.push(row?);
+        }
+        Ok(entries)
+    }
+
+    /// Upsert a community's committed manifest row for one manifest generation
+    /// (the manifest's own version). Written inside the composite commit
+    /// transaction, after the generation CAS has ensured the community row.
+    pub fn upsert_manifest(
+        &mut self,
+        community_id: &[u8; 32],
+        manifest_generation: u64,
+        manifest_digest: &[u8; 32],
+        manifest_bytes: &[u8],
+    ) -> Result<(), AnchorRepositoryError> {
+        self.transaction.execute(
+            "INSERT INTO manifests(community_id, manifest_generation, manifest_digest, manifest_bytes) \
+             VALUES (?1, ?2, ?3, ?4) \
+             ON CONFLICT(community_id, manifest_generation) DO UPDATE SET \
+                 manifest_digest = excluded.manifest_digest, \
+                 manifest_bytes = excluded.manifest_bytes",
+            params![
+                community_id.as_slice(),
+                manifest_generation as i64,
+                manifest_digest.as_slice(),
+                manifest_bytes
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// The community's committed manifest with the HIGHEST generation, as
+    /// `(manifest_generation, manifest_digest, manifest_bytes)`. `ReadCommitted`
+    /// equality and `SubmitListing` read from this.
+    pub fn committed_manifest(
+        &self,
+        community_id: &[u8; 32],
+    ) -> Result<Option<CommittedManifest>, AnchorRepositoryError> {
+        let row = self
+            .transaction
+            .query_row(
+                "SELECT manifest_generation, manifest_digest, manifest_bytes FROM manifests \
+                 WHERE community_id = ?1 ORDER BY manifest_generation DESC LIMIT 1",
+                params![community_id.as_slice()],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, Vec<u8>>(1)?,
+                        row.get::<_, Vec<u8>>(2)?,
+                    ))
+                },
+            )
+            .optional()?;
+        match row {
+            None => Ok(None),
+            Some((generation, digest, bytes)) => {
+                Ok(Some((generation.max(0) as u64, blob32(digest)?, bytes)))
+            }
+        }
+    }
+
+    /// Advance the durable manifest rollback floor for a community. Monotonic —
+    /// mirrors [`Self::advance_ticket_transport_epoch`]: a lower (or equal)
+    /// generation never moves the floor or its digest backward.
+    pub fn advance_manifest_floor(
+        &mut self,
+        community_id: &[u8; 32],
+        min_manifest_generation: u64,
+        min_manifest_digest: &[u8; 32],
+    ) -> Result<(), AnchorRepositoryError> {
+        self.transaction.execute(
+            "INSERT INTO manifest_floors(community_id, min_manifest_generation, min_manifest_digest) \
+             VALUES (?1, ?2, ?3) \
+             ON CONFLICT(community_id) DO UPDATE SET \
+                 min_manifest_digest = CASE \
+                     WHEN excluded.min_manifest_generation > manifest_floors.min_manifest_generation \
+                     THEN excluded.min_manifest_digest \
+                     ELSE manifest_floors.min_manifest_digest END, \
+                 min_manifest_generation = MAX( \
+                     manifest_floors.min_manifest_generation, \
+                     excluded.min_manifest_generation)",
+            params![
+                community_id.as_slice(),
+                min_manifest_generation as i64,
+                min_manifest_digest.as_slice()
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// The community's durable manifest floor as `(min_manifest_generation,
+    /// min_manifest_digest)`, if one has been established.
+    pub fn manifest_floor(
+        &self,
+        community_id: &[u8; 32],
+    ) -> Result<Option<(u64, [u8; 32])>, AnchorRepositoryError> {
+        let row = self
+            .transaction
+            .query_row(
+                "SELECT min_manifest_generation, min_manifest_digest FROM manifest_floors \
+                 WHERE community_id = ?1",
+                params![community_id.as_slice()],
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, Vec<u8>>(1)?)),
+            )
+            .optional()?;
+        match row {
+            None => Ok(None),
+            Some((generation, digest)) => Ok(Some((generation.max(0) as u64, blob32(digest)?))),
+        }
     }
 
     /// Delete every staged row for an operation (its staged-operation row and all
@@ -2823,6 +2978,7 @@ fn map_stored_operation(row: &rusqlite::Row<'_>) -> Result<StoredOperation, rusq
     let retention_deadline: i64 = row.get(6)?;
     let prepare_response_bytes: Vec<u8> = row.get(7)?;
     let terminal_result_bytes: Option<Vec<u8>> = row.get(8)?;
+    let ticket_envelope_bytes: Option<Vec<u8>> = row.get(9)?;
     Ok(StoredOperation {
         operation_id,
         originating_kind,
@@ -2833,6 +2989,7 @@ fn map_stored_operation(row: &rusqlite::Row<'_>) -> Result<StoredOperation, rusq
         retention_deadline: retention_deadline.max(0) as u64,
         prepare_response_bytes,
         terminal_result_bytes,
+        ticket_envelope_bytes,
     })
 }
 

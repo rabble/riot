@@ -257,6 +257,8 @@ pub fn control_handler(tx: mpsc::Sender<ActorJob>, now_fn: NowFn) -> Handler {
 /// A REAL Ed25519 operator signer that loads its secret from operator config
 /// (rather than the fixed test key the unit tests use). It signs the
 /// control-plane preimages (work challenges, descriptors) the protocol expects.
+/// `Clone` because the control service clones it into the Commit host service.
+#[derive(Clone)]
 pub struct Ed25519OperatorSigner {
     key: ed25519_dalek::SigningKey,
 }

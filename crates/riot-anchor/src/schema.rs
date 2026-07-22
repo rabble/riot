@@ -10,7 +10,7 @@
 use rusqlite::{Connection, TransactionBehavior};
 
 /// Current schema version this binary declares.
-pub const CURRENT_SCHEMA_VERSION: u32 = 2;
+pub const CURRENT_SCHEMA_VERSION: u32 = 3;
 
 /// Default configured listing ceiling `L`. The preprovisioned removal table
 /// holds exactly `2 * L` slots.
@@ -428,6 +428,22 @@ const MIGRATION_TWO: &str = r#"
     PRAGMA user_version = 2;
 "#;
 
+/// Forward-only migration 3: the exact root-signed ticket envelope bytes a
+/// `PrepareHost` admitted, persisted on its operation row. `CommitHost` manifest
+/// resolution reads them back as the ONLY ticket source — `CommitHostV1` carries
+/// no ticket, and re-accepting a client-supplied one at commit would allow ticket
+/// substitution. The 896-byte ceiling is `MAX_TICKET_CORE_BYTES + 128`, mirroring
+/// the listing-side envelope decode bound. Nullable: pre-migration rows fail
+/// closed at commit as `invalid_operation_authority`.
+const MIGRATION_THREE: &str = r#"
+    ALTER TABLE operations ADD COLUMN ticket_envelope_bytes BLOB
+        CHECK (ticket_envelope_bytes IS NULL OR
+               (length(ticket_envelope_bytes) > 0 AND length(ticket_envelope_bytes) <= 896));
+
+    UPDATE operator_state SET schema_version = 3 WHERE singleton = 1;
+    PRAGMA user_version = 3;
+"#;
+
 /// SQL that preprovisions `2 * L` free removal slots via a bounded recursive
 /// sequence. Every slot starts unclaimed.
 fn preprovision_removal_slots_sql() -> String {
@@ -479,6 +495,10 @@ pub fn migrate(connection: &mut Connection) -> Result<u32, SchemaError> {
     if found < 2 {
         transaction.execute_batch(MIGRATION_TWO)?;
         transaction.execute("INSERT INTO schema_migrations(version) VALUES (2)", [])?;
+    }
+    if found < 3 {
+        transaction.execute_batch(MIGRATION_THREE)?;
+        transaction.execute("INSERT INTO schema_migrations(version) VALUES (3)", [])?;
     }
 
     transaction.commit()?;
@@ -706,6 +726,74 @@ mod tests {
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .unwrap();
         assert_eq!(user_version, CURRENT_SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn version_two_database_upgrades_to_operation_ticket_column() {
+        let mut connection = Connection::open_in_memory().expect("open");
+        // Build a version-2 database exactly as the previous binary left it.
+        connection
+            .execute_batch(
+                "CREATE TABLE schema_migrations (
+                     version INTEGER PRIMARY KEY NOT NULL CHECK (version > 0)
+                 ) STRICT;",
+            )
+            .unwrap();
+        connection.execute_batch(MIGRATION_ONE).unwrap();
+        connection
+            .execute_batch(&preprovision_removal_slots_sql())
+            .unwrap();
+        connection
+            .execute("INSERT INTO schema_migrations(version) VALUES (1)", [])
+            .unwrap();
+        connection.execute_batch(MIGRATION_TWO).unwrap();
+        connection
+            .execute("INSERT INTO schema_migrations(version) VALUES (2)", [])
+            .unwrap();
+
+        assert_eq!(migrate(&mut connection).unwrap(), CURRENT_SCHEMA_VERSION);
+        let column: u32 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('operations')
+                 WHERE name = 'ticket_envelope_bytes'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            column, 1,
+            "migration 3 adds operations.ticket_envelope_bytes"
+        );
+        let operator_schema: u32 = connection
+            .query_row(
+                "SELECT schema_version FROM operator_state WHERE singleton = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(operator_schema, CURRENT_SCHEMA_VERSION);
+        let user_version: u32 = connection
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(user_version, CURRENT_SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn operation_ticket_column_enforces_its_byte_ceiling() {
+        let connection = fresh();
+        // A ticket envelope larger than 896 bytes (MAX_TICKET_CORE_BYTES + 128,
+        // mirroring the listing decode bound) must be rejected by the CHECK.
+        let result = connection.execute(
+            "INSERT INTO operations(operation_id, originating_kind, token_secret_epoch, \
+             base_generation, operation_status, created_at, operation_expiry, \
+             retention_deadline, prepare_response_bytes, terminal_result_bytes, \
+             ticket_envelope_bytes) VALUES (?1, 0, 0, 0, 0, 0, 1, 1, ?2, NULL, ?3)",
+            rusqlite::params![vec![3u8; 32], vec![1u8; 4], vec![0u8; 897]],
+        );
+        assert!(
+            result.is_err(),
+            "byte ceiling CHECK on operations.ticket_envelope_bytes must be enforced"
+        );
     }
 
     #[test]

@@ -16,24 +16,39 @@ use riot_anchor::control::{
 use riot_anchor::hosting::{
     CommitHostContext, HostPlanView, HostingAuthority, ManifestAuthorization,
 };
-use riot_anchor::repository::{AnchorRepository, NewPreparedOperation, OperationKind, StagedEntry};
+use riot_anchor::repository::{
+    AnchorRepository, NewPreparedOperation, OperationKind, RepoTransaction, StagedEntry,
+};
 use riot_anchor::sync_service::{encode_item, verify_anchor_item};
 use riot_anchor::work::{OperatorSigner, PressurePolicy, TokenSecretRing};
 
+use riot_anchor_protocol::authority::SITE_MANIFEST_DIGEST_LABEL;
 use riot_anchor_protocol::codec::CanonicalRecord;
 use riot_anchor_protocol::control::{
     ControlOperation, ControlOutcome, ControlRefusal, ControlRequestV1, ControlResponseV1,
     ControlSuccess, EffectiveOperationLimits, GetOperationState, GetOperationV1, PrepareHostV1,
     PrepareSuccessV1, TerminalOperationOutcome,
 };
-use riot_anchor_protocol::digest::anchor_id as compute_anchor_id;
+use riot_anchor_protocol::digest::{anchor_id as compute_anchor_id, digest_v1};
 use riot_anchor_protocol::records::{
     AnchorDescriptorBodyV1, AnchorLimitProfileV1, ControlOperationKind, DescriptorEnvelopeV1,
-    EnabledRole, HostingReceiptV1, OperatorVerificationKeyV1,
+    EnabledRole, HostingReceiptV1, OperatorVerificationKeyV1, PublicSiteTicketV2Core,
+    RootSignedTicketCoreEnvelopeV2, TransportFloor,
 };
 use riot_anchor_protocol::sync2::compute_snapshot_digest;
 
-use riot_core::willow::{create_signed_alert, generate_communal_author, AlertDraft};
+use riot_core::site::{
+    encode_site_manifest, RequireTransport, SiteDisplay, SiteLayout, SiteManifestV1, SiteMemberV1,
+    SiteRole, SiteRule, TransportPolicyV1,
+};
+use riot_core::willow::{
+    create_signed_alert, encode_capability, encode_entry, generate_communal_author, AlertDraft,
+    Entry, Path, MANIFEST_COMPONENT,
+};
+
+use willow25::authorisation::WriteCapability;
+use willow25::entry::{NamespaceSecret, SubspaceSecret};
+use willow25::groupings::Area;
 
 /// A file-backed temp database (used for restart/reconstruction tests).
 pub struct TempDb {
@@ -67,6 +82,7 @@ impl Drop for TempDb {
 
 /// A test operator signer producing real Ed25519 signatures over the receipt
 /// preimage.
+#[derive(Clone)]
 pub struct TestSigner(pub SigningKey);
 impl OperatorSigner for TestSigner {
     fn sign(&self, preimage: &[u8]) -> [u8; 64] {
@@ -165,6 +181,34 @@ pub fn insert_prepared_operation(
     operation_expiry: u64,
     token_secret_epoch: u32,
 ) {
+    insert_prepared_operation_with_ticket(
+        repo,
+        operation_id,
+        ordered_namespaces,
+        ordered_tokens,
+        base_generation,
+        now,
+        operation_expiry,
+        token_secret_epoch,
+        None,
+    );
+}
+
+/// [`insert_prepared_operation`] plus the root-signed ticket envelope bytes a
+/// real PrepareHost persists on the operation row (the composite Commit's ONLY
+/// ticket source). `None` models a pre-migration row.
+#[allow(clippy::too_many_arguments)]
+pub fn insert_prepared_operation_with_ticket(
+    repo: &mut AnchorRepository,
+    operation_id: [u8; 32],
+    ordered_namespaces: [[u8; 32]; 3],
+    ordered_tokens: [[u8; 32]; 3],
+    base_generation: u64,
+    now: u64,
+    operation_expiry: u64,
+    token_secret_epoch: u32,
+    ticket_envelope_bytes: Option<Vec<u8>>,
+) {
     let profile = AnchorLimitProfileV1::mvp_defaults(0);
     let success = PrepareSuccessV1 {
         operation_id,
@@ -195,6 +239,10 @@ pub fn insert_prepared_operation(
         prepare_response_bytes,
     })
     .expect("insert operation");
+    if let Some(ticket) = ticket_envelope_bytes {
+        tx.store_operation_ticket(&operation_id, &ticket)
+            .expect("store operation ticket");
+    }
     tx.commit().expect("commit operation");
 }
 
@@ -284,6 +332,302 @@ impl TestAuthority {
     pub fn override_routing(self, routing: [[u8; 32]; 3]) -> Self {
         *self.routing_override.borrow_mut() = Some(routing);
         self
+    }
+}
+
+// ---------------------------------------------------------------------------
+// A REAL owned-root composite site: owner-signed `/manifest`, communal C/W
+// members, and a matching root-signed ticket. The owned namespace id IS the
+// raw Ed25519 verifying key, so the SAME retained secret that authorises the
+// manifest entry also signs the ticket.
+// ---------------------------------------------------------------------------
+
+/// An owned-namespace root whose Ed25519 secret we retain.
+pub struct OwnedSiteRoot {
+    pub namespace_secret: NamespaceSecret,
+    pub root_signing_key: SigningKey,
+    pub root_id: [u8; 32],
+}
+
+/// Rejection-sample an owned namespace deterministically from `seed`.
+pub fn owned_site_root(seed: u8) -> OwnedSiteRoot {
+    for n in 0u16..=1024 {
+        let mut secret_bytes = [seed; 32];
+        secret_bytes[0] = (n & 0xff) as u8;
+        secret_bytes[1] = (n >> 8) as u8;
+        let namespace_secret = NamespaceSecret::from_bytes(&secret_bytes);
+        let namespace_id = namespace_secret.corresponding_namespace_id();
+        if namespace_id.is_owned() {
+            let root_signing_key = SigningKey::from_bytes(&secret_bytes);
+            assert_eq!(
+                root_signing_key.verifying_key().to_bytes(),
+                *namespace_id.as_bytes(),
+                "owned namespace id must equal the ed25519 verifying key"
+            );
+            return OwnedSiteRoot {
+                namespace_secret,
+                root_signing_key,
+                root_id: *namespace_id.as_bytes(),
+            };
+        }
+    }
+    panic!("no owned namespace found for seed {seed}");
+}
+
+/// A complete site fixture: the owned root, the canonical manifest payload, the
+/// owner-signed `/manifest` staged entry, one communal entry each for C and W,
+/// and the matching root-signed ticket envelope.
+pub struct SiteFixture {
+    pub root: OwnedSiteRoot,
+    pub root_id: [u8; 32],
+    /// Ordered `[O, C, W]` namespace ids (O == root_id).
+    pub namespaces: [[u8; 32]; 3],
+    pub manifest_version: u64,
+    pub manifest_digest: [u8; 32],
+    /// The canonical manifest CBOR (the `/manifest` entry payload).
+    pub manifest_payload_bytes: Vec<u8>,
+    /// The owner-signed `/manifest` item, verified into staged form.
+    pub manifest_staged: StagedEntry,
+    /// One genuine communal entry in the C namespace.
+    pub c_staged: StagedEntry,
+    /// One genuine communal entry in the W namespace.
+    pub w_staged: StagedEntry,
+    /// The matching root-signed ticket envelope, canonically encoded.
+    pub ticket_envelope_bytes: Vec<u8>,
+}
+
+/// The manifest CBOR for a site rooted at `root` with communal C/W members.
+fn site_manifest_bytes(
+    root: [u8; 32],
+    c_namespace: [u8; 32],
+    w_namespace: [u8; 32],
+    version: u64,
+) -> Vec<u8> {
+    let manifest = SiteManifestV1 {
+        root,
+        members: vec![
+            SiteMemberV1 {
+                ns: root,
+                role: SiteRole::Masthead,
+                rule: SiteRule::OwnedWrite,
+                display: SiteDisplay::FrontArticles,
+            },
+            SiteMemberV1 {
+                ns: c_namespace,
+                role: SiteRole::Comments,
+                rule: SiteRule::CommunalOpen,
+                display: SiteDisplay::UnderArticles,
+            },
+            SiteMemberV1 {
+                ns: w_namespace,
+                role: SiteRole::OpenWire,
+                rule: SiteRule::CommunalOpen,
+                display: SiteDisplay::WireColumn,
+            },
+        ],
+        moderation_path: vec![b"mod".to_vec()],
+        transport_policy: TransportPolicyV1 {
+            allow: vec![],
+            require: RequireTransport::None,
+        },
+        version,
+        layout: SiteLayout::SiteDefault,
+        sections: vec![],
+    };
+    encode_site_manifest(&manifest).expect("encode site manifest")
+}
+
+/// Sign a matching `RootSignedTicketCoreEnvelopeV2` with the owned root's key.
+fn sign_site_ticket(
+    root: &OwnedSiteRoot,
+    namespaces: [[u8; 32]; 3],
+    manifest_digest: [u8; 32],
+    manifest_version: u64,
+    issued: u64,
+    expiry: u64,
+) -> Vec<u8> {
+    let core = PublicSiteTicketV2Core {
+        root_id: root.root_id,
+        o_namespace_id: namespaces[0],
+        c_namespace_id: namespaces[1],
+        w_namespace_id: namespaces[2],
+        manifest_digest,
+        manifest_version,
+        min_sync_version: 2,
+        manifest_required_transport: TransportFloor::RequireNone,
+        transport_floor: TransportFloor::RequireNone,
+        transport_epoch: 1,
+        issued_unix_seconds: issued,
+        expiry_unix_seconds: expiry,
+    };
+    let mut envelope = RootSignedTicketCoreEnvelopeV2 {
+        core,
+        root_signature: [0u8; 64],
+    };
+    let preimage = envelope.signing_preimage().expect("ticket preimage");
+    envelope.root_signature = root.root_signing_key.sign(&preimage).to_bytes();
+    envelope.encode_canonical().expect("encode ticket envelope")
+}
+
+/// Build the full owned-root site fixture: manifest v`manifest_version`, ticket
+/// valid over `[issued, expiry)`.
+pub fn make_site_fixture(
+    seed: u8,
+    manifest_version: u64,
+    ticket_issued: u64,
+    ticket_expiry: u64,
+) -> SiteFixture {
+    let root = owned_site_root(seed);
+    let c_item = make_item("site-c-entry");
+    let w_item = make_item("site-w-entry");
+    let namespaces = [root.root_id, c_item.namespace_id, w_item.namespace_id];
+
+    let payload = site_manifest_bytes(
+        root.root_id,
+        c_item.namespace_id,
+        w_item.namespace_id,
+        manifest_version,
+    );
+    let manifest_digest = digest_v1(SITE_MANIFEST_DIGEST_LABEL, &payload);
+
+    // Owner-signed `/manifest`: a zero-delegation owned cap minted straight from
+    // the namespace root secret, entry authorised by the owner subspace.
+    let owner = SubspaceSecret::from_bytes(&[seed ^ 0x5A; 32]);
+    let owner_id = owner.corresponding_subspace_id();
+    let cap = WriteCapability::new_owned(&root.namespace_secret, owner_id.clone());
+    let entry = Entry::builder()
+        .namespace_id(root.namespace_secret.corresponding_namespace_id())
+        .subspace_id(owner_id)
+        .path(Path::from_slices(&[MANIFEST_COMPONENT]).expect("manifest path"))
+        .timestamp(1_000u64)
+        .payload(&payload)
+        .build();
+    let authorised = entry
+        .into_authorised_entry(&cap, &owner)
+        .expect("owner authorises /manifest");
+    let token = authorised.authorisation_token();
+    let signature: ed25519_dalek::Signature = token.signature().clone().into();
+    let item_bytes = encode_item(
+        &encode_entry(authorised.entry()),
+        &encode_capability(token.capability()),
+        &signature.to_bytes(),
+        &payload,
+    );
+    let manifest_staged = verify_anchor_item(&item_bytes).expect("manifest item verifies");
+
+    let ticket_envelope_bytes = sign_site_ticket(
+        &root,
+        namespaces,
+        manifest_digest,
+        manifest_version,
+        ticket_issued,
+        ticket_expiry,
+    );
+
+    SiteFixture {
+        root_id: root.root_id,
+        root,
+        namespaces,
+        manifest_version,
+        manifest_digest,
+        manifest_payload_bytes: payload,
+        manifest_staged,
+        c_staged: c_item.staged,
+        w_staged: w_item.staged,
+        ticket_envelope_bytes,
+    }
+}
+
+/// TRAP 1 fodder: a `/manifest` entry authorised by a DELEGATED owned cap whose
+/// full area covers `/manifest`. It passes ordinary admission and genuinely
+/// verifies, but must never be accepted as the manifest signer.
+pub fn make_delegated_manifest_item(site: &SiteFixture) -> StagedEntry {
+    let owner = SubspaceSecret::from_bytes(&[0x21; 32]);
+    let owner_id = owner.corresponding_subspace_id();
+    let editor = SubspaceSecret::from_bytes(&[0x22; 32]);
+    let editor_id = editor.corresponding_subspace_id();
+
+    let mut delegated = WriteCapability::new_owned(&site.root.namespace_secret, owner_id);
+    delegated
+        .try_delegate(&owner, Area::full(), editor_id.clone())
+        .expect("delegate full area");
+
+    let entry = Entry::builder()
+        .namespace_id(site.root.namespace_secret.corresponding_namespace_id())
+        .subspace_id(editor_id)
+        .path(Path::from_slices(&[MANIFEST_COMPONENT]).expect("manifest path"))
+        .timestamp(1_100u64)
+        .payload(&site.manifest_payload_bytes)
+        .build();
+    let authorised = entry
+        .into_authorised_entry(&delegated, &editor)
+        .expect("editor authorises with full-area delegated cap");
+    let token = authorised.authorisation_token();
+    let signature: ed25519_dalek::Signature = token.signature().clone().into();
+    let item_bytes = encode_item(
+        &encode_entry(authorised.entry()),
+        &encode_capability(token.capability()),
+        &signature.to_bytes(),
+        &site.manifest_payload_bytes,
+    );
+    verify_anchor_item(&item_bytes).expect("delegated manifest item passes ordinary admission")
+}
+
+/// TRAP 2 fodder: the genuine owner-signed `/manifest` ENTRY, but the carried
+/// item payload swapped for a DIFFERENT (higher-version) manifest encoding the
+/// ticket points at. `validate_site_manifest` alone would accept the swapped
+/// payload; only the payload↔entry digest binding refuses it.
+pub struct PayloadSwappedManifest {
+    /// The staged entry whose item carries the swapped payload.
+    pub staged: StagedEntry,
+    /// A root-signed ticket naming the SWAPPED payload's digest/version.
+    pub ticket_envelope_bytes: Vec<u8>,
+}
+
+pub fn make_payload_swapped_manifest_item(site: &SiteFixture) -> PayloadSwappedManifest {
+    // A different-but-valid manifest for the same site (version bumped), never
+    // signed by the owner as an entry.
+    let swapped_payload = site_manifest_bytes(
+        site.root_id,
+        site.namespaces[1],
+        site.namespaces[2],
+        site.manifest_version + 1,
+    );
+    let swapped_digest = digest_v1(SITE_MANIFEST_DIGEST_LABEL, &swapped_payload);
+
+    // Reuse the genuine item's entry + capability + signature, swap the payload.
+    let genuine = &site.manifest_staged;
+    let mut staged = genuine.clone();
+    // Rebuild the item bytes with the swapped payload; entry bytes untouched.
+    // Item layout: version(1) | u32 entry_len | entry | u32 cap_len | cap |
+    // 64-byte signature | u32 payload_len | payload.
+    let item = &genuine.item_bytes;
+    let entry_len = u32::from_be_bytes([item[1], item[2], item[3], item[4]]) as usize;
+    let cap_len_at = 1 + 4 + entry_len;
+    let cap_len = u32::from_be_bytes([
+        item[cap_len_at],
+        item[cap_len_at + 1],
+        item[cap_len_at + 2],
+        item[cap_len_at + 3],
+    ]) as usize;
+    let sig_at = cap_len_at + 4 + cap_len;
+    let entry_bytes = &item[5..5 + entry_len];
+    let capability_bytes = &item[cap_len_at + 4..cap_len_at + 4 + cap_len];
+    let mut signature = [0u8; 64];
+    signature.copy_from_slice(&item[sig_at..sig_at + 64]);
+    staged.item_bytes = encode_item(entry_bytes, capability_bytes, &signature, &swapped_payload);
+
+    let ticket_envelope_bytes = sign_site_ticket(
+        &site.root,
+        site.namespaces,
+        swapped_digest,
+        site.manifest_version + 1,
+        1_000,
+        1_000 + 24 * 60 * 60,
+    );
+    PayloadSwappedManifest {
+        staged,
+        ticket_envelope_bytes,
     }
 }
 
@@ -428,6 +772,7 @@ impl HostingAuthority for TestAuthority {
     }
     fn resolve_manifest(
         &self,
+        _tx: &RepoTransaction<'_>,
         plan: &HostPlanView,
         _observed_at: u64,
     ) -> Result<ManifestAuthorization, riot_anchor_protocol::control::ControlRefusal> {
@@ -444,6 +789,7 @@ impl HostingAuthority for TestAuthority {
             manifest_digest: self.manifest_digest,
             manifest_version: self.manifest_version,
             ordered_namespaces: ordered,
+            manifest_bytes: self.manifest_digest.to_vec(),
         })
     }
 }
