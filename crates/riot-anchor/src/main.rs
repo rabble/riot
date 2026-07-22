@@ -3,8 +3,16 @@
 //! A thin shell: read argv + environment, resolve the configuration
 //! ([`riot_anchor::config`]), then run the daemon ([`riot_anchor::daemon::run`])
 //! — which loads the database-durable secrets, assembles the control service
-//! from the persisted values, and serves until SIGINT. All testable logic lives
-//! in the library; see `riot_anchor::config` and `riot_anchor::daemon`.
+//! from the persisted values, and serves until a termination signal. All
+//! testable logic lives in the library; see `riot_anchor::config` and
+//! `riot_anchor::daemon`.
+//!
+//! Shutdown is driven by SIGINT **and** SIGTERM (unix). SIGTERM is what
+//! `docker compose stop`/`restart` and most init systems send; catching it is
+//! what lets the graceful path run (relinquish the deployment lease in place so
+//! an immediate restart is not refused `LeaseHeld`, then close the SQLite
+//! writer). Without the SIGTERM arm, exec-form PID 1 discards SIGTERM and Docker
+//! escalates to SIGKILL (exit 137) — the graceful path never runs.
 
 use std::process::ExitCode;
 
@@ -41,10 +49,11 @@ fn main() -> ExitCode {
         }
     };
 
-    let shutdown = async {
-        // Serve until SIGINT (Ctrl-C); on any signal error, run indefinitely.
-        let _ = tokio::signal::ctrl_c().await;
-    };
+    // Serve until SIGINT (Ctrl-C) or SIGTERM (`docker compose stop`, init
+    // systems); whichever arrives first resolves the shutdown future. On any
+    // signal-install error, fall back to SIGINT only (run indefinitely if even
+    // that fails).
+    let shutdown = shutdown_signal();
 
     // `run` loads the database-durable secrets and assembles the service from
     // the persisted values before binding the public endpoint.
@@ -54,5 +63,36 @@ fn main() -> ExitCode {
             eprintln!("riot-anchor: {error}");
             ExitCode::FAILURE
         }
+    }
+}
+
+/// A shutdown future that resolves on the first termination signal.
+///
+/// On unix this is SIGINT **or** SIGTERM — SIGTERM is what `docker compose
+/// stop`, `docker compose restart`, and init systems send, and catching it is
+/// what lets the daemon reach its graceful lease-relinquish + clean-close path
+/// instead of being SIGKILLed (exit 137). If the SIGTERM handler cannot be
+/// installed we fall back to SIGINT alone; if even that fails the future never
+/// resolves and the daemon serves until the process is killed. Must be awaited
+/// inside a tokio runtime (the caller drives it via `block_on`).
+async fn shutdown_signal() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        match signal(SignalKind::terminate()) {
+            Ok(mut sigterm) => {
+                tokio::select! {
+                    _ = tokio::signal::ctrl_c() => {}
+                    _ = sigterm.recv() => {}
+                }
+            }
+            Err(_) => {
+                let _ = tokio::signal::ctrl_c().await;
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
     }
 }

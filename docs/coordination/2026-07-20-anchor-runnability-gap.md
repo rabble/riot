@@ -1,9 +1,32 @@
-# Anchor daemon — runnability gap & runbook (2026-07-20)
+# Anchor daemon — runnability gap & runbook (2026-07-20; updated 2026-07-22)
+
+> **STATUS UPDATE (2026-07-22, `feat/anchor-sync2-serving`):** the gap this doc
+> was written about is CLOSED. The daemon exists and runs: `riot-anchor --db
+> <path>` (WU-019, `--features daemon`) serves the `riot/anchor/1` control
+> plane (Describe / GetWorkChallenge / PrepareHost / **CommitHost** /
+> GetOperation) and the `riot/sync/2` data path (**HostReconcileStaged** push
+> into staging, **ReadCommitted** committed pull) over real iroh, on a durable
+> `AnchorRepository` with database-bound secrets, persisted descriptor, and a
+> single-writer deployment lease + watchdog. The original text below is kept
+> for the record with its stale claims struck; the "what exists / what's
+> missing" analysis it made is exactly what got built.
+>
+> - **Run one:** `deploy/riot-anchor/` (Dockerfile, compose.yaml, operator env
+>   template, backup/restart runbook).
+> - **Prove it:** `scripts/anchor/demo-cross-city.sh` — PrepareHost → sync/2
+>   push → CommitHost → ReadCommitted pull, printing each stage; `--local`
+>   runs a one-machine smoke pass, `--host`/`--follow <ticket>` split the two
+>   cities. The demo roles are `crates/riot-anchor/examples/{demo_anchor,
+>   demo_host,demo_follow}.rs`, reusing the e2e test's own fixtures/FSMs.
+> - **Still true:** the mobile wiring gap (last table row) — `riot-client-net`
+>   is not wired into `riot-ffi`; that is issue #107 Phase 3, blocked on the
+>   Checkpoint A human demo.
 
 **Question this answers:** what do we need to actually *run* an anchor so two users in
-different cities, phones not both online, can sync? **Short answer: the anchor's protocol
+different cities, phones not both online, can sync? ~~**Short answer: the anchor's protocol
 and state logic are done, but the entire server-process layer is unwritten.** You cannot
-run an anchor today — there is no binary. This doc records the exact gap, the one real
+run an anchor today — there is no binary.~~ *(2026-07-22: superseded — the binary exists;
+see the status update above.)* This doc records the exact gap, the one real
 architectural decision it forces, and the smallest path to a first live cross-city demo.
 
 Verified against `origin/main` (`c10db72`) and the active branch
@@ -11,21 +34,23 @@ Verified against `origin/main` (`c10db72`) and the active branch
 `docs/coordination/2026-07-19-anchor-build-state.md` (M1/M2 build state) and the plan
 `docs/superpowers/plans/2026-07-18-public-community-anchor-network-implementation.md`.
 
-## TL;DR
+## TL;DR *(updated 2026-07-22)*
 
 | Layer | State | Where |
 | --- | --- | --- |
 | M1 protocol (canonical wire, `sync/2`, `anchor/1` control, listing authority, ALPN router) | ✅ done | `riot-anchor-protocol`, `riot-transport` |
 | M2 hosting core (SQLite `AnchorRepository`, control/hosting/listing/removal/checkpoint, `sync/2` adapter) | ✅ core done | `riot-anchor` |
-| **Daemon: assemble handlers + open an iroh endpoint + serve `sync/2`+`anchor/1` in a loop** | ❌ **unwritten** | **WU-019 (not started)** |
-| Deploy manifests + operator runbook | ❌ unwritten | WU-026 (not started) |
-| Mobile client can reach an anchor over the internet | ❌ not wired | `riot-client-net` exists, not wired into `riot-ffi` |
+| Daemon: assemble handlers + open an iroh endpoint + serve `sync/2`+`anchor/1` in a loop | ✅ **done (2026-07-22)** | `crates/riot-anchor/src/{main,config,daemon,admission}.rs`, feature `daemon` |
+| Deploy manifests + operator runbook | ✅ **done (2026-07-22)** | `deploy/riot-anchor/`, `scripts/anchor/demo-cross-city.sh` |
+| Mobile client can reach an anchor over the internet | ❌ not wired | `riot-client-net` exists, not wired into `riot-ffi` — issue #107 Phase 3 |
 
-**The daemon is a planned work unit (WU-019), sequenced in Slice 7 / the M3+ deployment
+~~**The daemon is a planned work unit (WU-019), sequenced in Slice 7 / the M3+ deployment
 tail — not an accidental gap.** The active M2 session has NOT reached it. It builds
 additive new files (`daemon.rs`, `main.rs`, `admission.rs`), so it does not overlap the
 M2 hosting source — but it IS on the anchor roadmap, so **it must be claimed/coordinated,
-not built by a second session in parallel** (the recurring duplication trap).
+not built by a second session in parallel** (the recurring duplication trap).~~
+*(2026-07-22: WU-019 was claimed and built on `feat/anchor-sync2-serving`, with the
+single-writer actor design recommended below — option A.)*
 
 ## What exists (the pieces a daemon would assemble)
 
@@ -50,7 +75,7 @@ not built by a second session in parallel** (the recurring duplication trap).
   `riot/sync/1` willow byte-sync with **no `AnchorRepository`, no control plane, no sync/2** — a
   pattern to copy, not an anchor to extend.
 
-## What's missing (WU-019, in build order)
+## What's missing (WU-019, in build order) *(2026-07-22: ALL of 1–5 below now exist as described)*
 
 1. **Assembler + CLI** — new `crates/riot-anchor/src/daemon.rs` + `main.rs`: parse config
    (`--db <path>`, identity, listen/relay), open `AnchorRepository`, `acquire_deployment_lease`,
@@ -92,7 +117,7 @@ changes → `xtask validate-contracts` fails until refreshed ([[riot-cargo-lock-
 iroh/tokio confined to `daemon.rs`/`main.rs`; the protocol crate `riot-anchor-protocol` forbids them
 by test (`tests/dependency_boundary.rs`) and `riot-anchor`'s library core should stay transport-free.
 
-## Smallest path to a first live cross-city demo
+## Smallest path to a first live cross-city demo *(2026-07-22: steps 1–3 are built and scripted — `scripts/anchor/demo-cross-city.sh`; step 4 = issue #107 Phase 3, still open)*
 
 Goal: one anchor process + two clients, where client B pulls what client A published while A is
 offline. Ordered, each independently checkpointable:
@@ -114,7 +139,7 @@ offline. Ordered, each independently checkpointable:
 Steps 1–3 give a demonstrable internet cross-city sync with **no mobile changes** — the fastest
 honest proof the anchor works. Step 4 is what puts it in users' hands.
 
-## Recommendation / coordination
+## Recommendation / coordination *(2026-07-22: resolved — WU-019 built with option A, the single-writer actor; iroh/tokio stayed confined behind the `daemon` feature; the headless demo harness exists)*
 
 - The daemon (WU-019) is the blocker and it is **unclaimed but on the anchor roadmap**. Before anyone
   builds it: **claim it in `COLLABORATION.md` and confirm the active `overnight/2026-07-20-anchor-m2`
