@@ -130,6 +130,16 @@ Keep the current app screenshots and product demonstrations. Make only targeted 
 the hero: remove absolute availability or preservation claims and avoid presenting shutdown as the
 only reason communities need Riot.
 
+The homepage must also stay focused on user value rather than internal validation machinery or
+defensive threat inventories:
+
+- remove status chips from the conventional-platform comparison table; the detailed status section
+  later on the page remains the status reference;
+- remove the “What Riot does not hide” list and its speculative gateway/identity-correlation note;
+- remove the research-process box and its research-pass, source-fetch, claim-verification, and
+  adversarial-reviewer metrics. The surrounding field-history section may remain because it tells
+  users which real community traditions informed Riot.
+
 ## Why Riot Narrative
 
 ### 1. Hero — People are the infrastructure
@@ -219,25 +229,13 @@ leaving one another.** Label it as an aim, not a guarantee.
 
 ### 6. Honest boundaries
 
-Keep one compact boundary panel:
-
-- public Riot spaces should be treated as publishable;
-- current public Newswire content is plaintext, readable and copyable, and has no confidential
-  public-read boundary;
-- private encrypted groups are not shipped;
-- pseudonymity is not anonymity;
-- gateways, hosts, networks, nearby observers, and compromised devices remain risks;
-- a signature proves control of a key, not identity, truth, or legitimacy;
-- Riot is a prototype, not an audited hardened safety tool;
-- local usefulness depends on a functioning device and data already received;
-- exchange requires a compatible peer or transport that is actually available.
-
-Recommend established encrypted messengers for material that must remain secret today. Link to
-`/privacy/` and `/protocols/` for detail. The actionable recommendation is: **For an ordinary
-internet-connected conversation that must remain secret, use a purpose-built end-to-end encrypted
-messenger such as Signal; choose any safety tool for your actual threat model.** Link “Signal” to
-`https://signal.org/` with `rel="noopener"`; do not imply a blanket safety guarantee or Riot/Solnit
-endorsement.
+Keep one calm, compact product boundary. Current Riot communities are public places for publishing
+and collaboration: posts are intended to be read, copied, and carried. Private encrypted groups are
+a separate future direction, not part of today's prototype. Do not turn generic internet, radio,
+device, behavioral-correlation, compromised-host, or hostile-gateway possibilities into a Riot
+exposure inventory. Link to `/privacy/` for the short product boundary and `/protocols/` for readers
+who want technical detail. A brief link to Signal may remain for private conversation today, without
+claiming that Riot, Signal, or any other tool provides universal safety.
 
 ### 7. Invitation — Build it with us
 
@@ -251,21 +249,24 @@ Solnit endorses Riot.
 
 ## Privacy Page
 
-The page remains at `/privacy/` and becomes a concise reference with this hierarchy:
+The page remains at `/privacy/` and becomes a concise, affirmative reference with this hierarchy:
 
-1. **Public means public.** Current public Newswire content is plaintext, readable and copyable by
-   recipients and infrastructure that handles it, and has no confidential public-read boundary.
-   Riot does not currently ship private encrypted groups.
-2. **What local-first changes—and what it does not.** Reduce mandatory centralized collection and
-   explain local custody, while naming metadata, radio presence, device compromise, copied data,
-   pseudonymity, and gateway-presentation risks.
-3. **This website.** Preserve the verifiable disclosure: Riot's static page code sets no cookies and
-   includes no analytics, accounts, remote fonts, third-party scripts, tracking pixels, or
-   fingerprinting. Cloudflare can observe ordinary request metadata and controls edge response
-   headers; do not claim that static source inspection can guarantee every hosting-layer behavior.
-4. **Where to go next.** Link to Why Riot for purpose, Protocols for details, and Signal's official
-   site with the same threat-model caveat for an ordinary internet-connected conversation that must
-   remain secret.
+1. **Public communities.** Current Newswires are public publishing spaces; posts are intended to be
+   read, copied, and carried.
+2. **Participant-held data.** Explain that community state can live on participant devices rather
+   than only inside one company's account or database, reducing mandatory centralized collection
+   and dependence on one provider.
+3. **Private conversation.** State simply that Riot does not yet ship private encrypted groups and
+   link to Signal as one purpose-built option available today, without universal safety claims.
+4. **This website.** Preserve the verifiable disclosure that Riot's authored static page includes no
+   analytics, accounts, remote fonts, third-party scripts, tracking pixels, or fingerprinting and
+   sets no cookies in observed local and production checks. Do not generalize that claim to every
+   possible host or network.
+5. **Where to go next.** Link to Why Riot for purpose and Protocols for technical detail.
+
+Remove speculative inventories of IP addresses, timing, radio presence, device labels, proximity,
+behavioral correlation, compromised devices, and fabricated gateway views. Those are not universal
+properties of every Riot transport and make generic threat modeling the product's emotional center.
 
 Remove the current defensive hero, the large website-first section, duplicated product manifesto,
 and repeated capability tables. The page should remain easy to cite when someone asks a precise
@@ -491,8 +492,9 @@ The new assertions must fail before HTML implementation. After implementation th
 8. Why Riot contains the exact H1, ordinary-life section, four human verbs, practice section,
    compact mechanism and boundary sections, Solnit attribution, and participation links;
 9. the code-native illustration is present, accessible, local, and dependency-free;
-10. Privacy begins with public-space truth, keeps app/device/metadata boundaries, puts website
-    disclosure later, and links back to purpose and technical detail;
+10. Privacy begins with the public-publishing purpose, explains participant-held data positively,
+    states the current private-group boundary once, puts the verifiable website disclosure later,
+    omits speculative threat inventories, and links back to purpose and technical detail;
 11. the four human-verb cards and Carry sub-list use the exact deterministic status markup and
     label/text pairings defined above;
 12. every exact forbidden-claim pattern in the Site-Wide Claim Audit is absent across all nine
@@ -593,7 +595,7 @@ Every reviewer answers these four shared questions:
 1. What kind of ordinary community life is Riot trying to support?
 2. What four kinds of work does Riot make easier?
 3. Why might the same tools matter when conditions become difficult?
-4. What is not currently guaranteed or private?
+4. Which Riot spaces are public today, and what private mode remains future work?
 
 The partner also answers: **What can a community possess rather than merely access, and why does
 that matter?** The builder also answers: **What bounded mechanism and current-status distinctions
@@ -605,9 +607,8 @@ Scoring is deterministic, one point per required element:
 - Q2: names Publish, Meet, Coordinate, and Carry or unmistakable equivalents.
 - Q3: says familiar, already-used relationships/tools/data remain useful; does not claim guaranteed
   operation.
-- Q4: names public plaintext/non-confidential content plus at least two of no anonymity guarantee,
-  device/metadata exposure, incomplete transports, unaudited prototype, or no delivery/persistence
-  guarantee.
+- Q4: identifies current Newswires as public publishing/collaboration spaces and says private
+  encrypted groups are not part of today's prototype.
 - Partner Q5: identifies participant-held data/tools/community memory and reduced dependence on one
   provider, without claiming total independence.
 - Builder Q5: identifies local replicas/signed records/multiple possible paths plus at least two
@@ -665,7 +666,10 @@ Passing requires `PASS` with zero findings. The report stores the complete promp
 ordered SHA-256 list for the eleven reviewed files, returned JSON verbatim, and fresh session
 identifier. This is the reproducible human half of the site-wide claim audit.
 
-Deployment is outside scope. Do not mutate production or claim the live site changed.
+The initial reframe was deployed after explicit owner approval. Revision 15 may update the existing
+Cloudflare Workers marketing deployment after its focused contract and desktop/mobile visual checks
+pass. It changes no deployment configuration, DNS, TLS, runtime, or application behavior. Live
+verification must compare all nine canonical routes with their committed public mirrors.
 
 ## Scope Boundaries
 
@@ -732,6 +736,14 @@ The tenth security pass requested resolved-anchor scheme validation after charac
 decoding. Revision 14 allowlists HTTP(S) and fragments and rejects every active or unknown scheme.
 The final gate is approved across Product Manager, Architect, Editorial/UX, Security, and
 CTO/implementation readiness.
+
+Direct review of the deployed page found three user-facing regressions in that approved design:
+status chips crowded the homepage comparison; a generic threat-model inventory was both inaccurate
+across Riot's different transports and fear-inducing; and an internal LLM research/reviewer metrics
+panel spoke to agents rather than communities. Revision 15 removes those elements, keeps detailed
+technical material available through `/protocols/`, and reframes `/privacy/` and the Why Riot
+boundary around public publishing, participant-held data, and the simple current private-group
+limit.
 
 ## Primary Sources
 
