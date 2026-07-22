@@ -538,6 +538,30 @@ pub fn make_site_fixture(
     }
 }
 
+/// Persist a [`SiteFixture`] as this anchor's COMMITTED state: the community
+/// row, the committed manifest (what `ReadCommitted` equality reads), and one
+/// committed entry per ordered `O`/`C`/`W` namespace — mirroring exactly the
+/// rows the composite `CommitHost` promotes.
+pub fn commit_site_fixture(repo: &mut AnchorRepository, site: &SiteFixture, now: u64) {
+    let mut tx = repo.begin().expect("begin");
+    tx.insert_community(&site.root_id, now)
+        .expect("insert community");
+    tx.upsert_manifest(
+        &site.root_id,
+        site.manifest_version,
+        &site.manifest_digest,
+        &site.manifest_payload_bytes,
+    )
+    .expect("upsert manifest");
+    tx.insert_committed_entry(&site.root_id, 0, &site.manifest_staged)
+        .expect("commit O entry");
+    tx.insert_committed_entry(&site.root_id, 1, &site.c_staged)
+        .expect("commit C entry");
+    tx.insert_committed_entry(&site.root_id, 2, &site.w_staged)
+        .expect("commit W entry");
+    tx.commit().expect("commit site fixture");
+}
+
 /// TRAP 1 fodder: a `/manifest` entry authorised by a DELEGATED owned cap whose
 /// full area covers `/manifest`. It passes ordinary admission and genuinely
 /// verifies, but must never be accepted as the manifest signer.

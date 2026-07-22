@@ -19,11 +19,13 @@ use riot_anchor::sync_service::{
 };
 use riot_anchor::work::TokenSecretRing;
 
+use riot_anchor_protocol::authority::TicketReason;
+use riot_anchor_protocol::codec::decode_canonical;
 use riot_anchor_protocol::control::{ControlOutcome, ControlRefusal, ControlResponseV1};
-use riot_anchor_protocol::records::ControlOperationKind;
+use riot_anchor_protocol::records::{ControlOperationKind, RootSignedTicketCoreEnvelopeV2};
 use riot_anchor_protocol::sync2::{
-    AdmissionSubject, OpenNamespace, PhaseParty, Sync2DirectionStage, Sync2Mode, Sync2Refusal,
-    Sync2Repository, Sync2Snapshot,
+    AdmissionSubject, OpenNamespace, PhaseParty, Sync2DirectionStage, Sync2Mode, Sync2ModeTag,
+    Sync2Phase, Sync2Refusal, Sync2Repository, Sync2Snapshot,
 };
 
 use riot_anchor_protocol::codec::CanonicalRecord;
@@ -379,32 +381,258 @@ fn adapter_over(
 }
 
 #[test]
-fn read_committed_and_replica_modes_are_invalid_for_this_responder() {
+fn replica_mode_is_still_invalid_for_this_responder() {
     let ring = TokenSecretRing::new(0, [3u8; 32]);
     let (_shared, adapter) = adapter_over(repo(), ring, NOW);
 
-    for mode in [
-        Sync2Mode::ReadCommitted,
-        Sync2Mode::ReplicaIntoStaged {
-            operation_id: d32(0x01),
-            namespace_token: d32(0x02),
-        },
-    ] {
-        let observed_tag = mode.tag();
-        let open = OpenNamespace {
-            protocol_version: 2,
-            session_id: vec![1],
-            ticket_core_bytes: vec![9u8; 40],
-            namespace_id: d32(0x40),
-            mode,
-        };
-        match adapter.open_namespace(&open) {
-            Err(Sync2Refusal::InvalidMode { observed_mode }) => {
-                assert_eq!(observed_mode, observed_tag)
-            }
-            Err(other) => panic!("expected InvalidMode, got {other:?}"),
-            Ok(_) => panic!("expected InvalidMode refusal, got a routed namespace"),
+    let mode = Sync2Mode::ReplicaIntoStaged {
+        operation_id: d32(0x01),
+        namespace_token: d32(0x02),
+    };
+    let observed_tag = mode.tag();
+    let open = OpenNamespace {
+        protocol_version: 2,
+        session_id: vec![1],
+        ticket_core_bytes: vec![9u8; 40],
+        namespace_id: d32(0x40),
+        mode,
+    };
+    match adapter.open_namespace(&open) {
+        Err(Sync2Refusal::InvalidMode { observed_mode }) => {
+            assert_eq!(observed_mode, observed_tag)
         }
+        Err(other) => panic!("expected InvalidMode, got {other:?}"),
+        Ok(_) => panic!("expected InvalidMode refusal, got a routed namespace"),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ReadCommitted — the public follower pull path (SECURITY SURFACE)
+// ---------------------------------------------------------------------------
+
+/// The observation time for ReadCommitted tests: after ticket issuance (1_000),
+/// before ticket expiry.
+const READ_NOW: u64 = 2_000;
+/// The site fixture's ticket expiry.
+const TICKET_EXPIRY: u64 = 90_000;
+
+fn read_committed_open(ticket_core_bytes: Vec<u8>, namespace_id: [u8; 32]) -> OpenNamespace {
+    OpenNamespace {
+        protocol_version: 2,
+        session_id: vec![1],
+        ticket_core_bytes,
+        namespace_id,
+        mode: Sync2Mode::ReadCommitted,
+    }
+}
+
+/// A committed site plus an adapter observing at `now`.
+fn committed_site_adapter(
+    seed: u8,
+    now: u64,
+) -> (
+    hosting_common::SiteFixture,
+    Rc<RefCell<AnchorRepository>>,
+    AnchorSyncRepository,
+) {
+    let site = make_site_fixture(seed, 3, 1_000, TICKET_EXPIRY);
+    let mut base = repo();
+    commit_site_fixture(&mut base, &site, NOW);
+    let ring = TokenSecretRing::new(0, [3u8; 32]);
+    let (shared, adapter) = adapter_over(base, ring, now);
+    (site, shared, adapter)
+}
+
+#[test]
+fn read_committed_with_a_valid_ticket_serves_the_committed_snapshot() {
+    let (site, shared, adapter) = committed_site_adapter(0x31, READ_NOW);
+
+    for namespace_id in site.namespaces {
+        let opened = adapter
+            .open_namespace(&read_committed_open(
+                site.ticket_envelope_bytes.clone(),
+                namespace_id,
+            ))
+            .expect("a valid ticket over a committed community routes");
+
+        assert_eq!(opened.namespace_id, namespace_id);
+        assert_eq!(opened.mode, Sync2ModeTag::ReadCommitted);
+        assert!(opened.stale_source.is_none());
+
+        // Serve-only: exactly ONE phase, and the anchor is the SENDER
+        // (the FSM's one-way committed mode).
+        assert_eq!(opened.parties.len(), 1, "single sender direction");
+        let (phase, party) = &opened.parties[0];
+        assert_eq!(*phase, Sync2Phase::AnchorToClient);
+        let snapshot = match party {
+            PhaseParty::Sender(snapshot) => snapshot,
+            PhaseParty::Receiver(_) => panic!("ReadCommitted must never open a receiver stage"),
+        };
+
+        // The served snapshot IS the committed base.
+        let expected = AnchorSnapshot::from_committed(&shared.borrow(), &namespace_id);
+        assert_eq!(
+            snapshot.entry_count(),
+            1,
+            "fixture commits one entry per namespace"
+        );
+        assert_eq!(snapshot.entry_count(), expected.entry_count());
+        assert_eq!(snapshot.logical_bytes(), expected.logical_bytes());
+        assert_eq!(snapshot.snapshot_digest(), expected.snapshot_digest());
+    }
+}
+
+#[test]
+fn read_committed_refuses_a_forged_root_signature() {
+    let (site, _shared, adapter) = committed_site_adapter(0x32, READ_NOW);
+
+    let mut envelope = decode_canonical::<RootSignedTicketCoreEnvelopeV2>(
+        &site.ticket_envelope_bytes,
+        site.ticket_envelope_bytes.len(),
+    )
+    .expect("fixture ticket decodes");
+    envelope.root_signature[0] ^= 0x01;
+    let forged = envelope
+        .encode_canonical()
+        .expect("re-encode forged ticket");
+
+    match adapter.open_namespace(&read_committed_open(forged, site.namespaces[1])) {
+        Err(Sync2Refusal::InvalidTicket { reason }) => {
+            assert_eq!(reason, TicketReason::Signature)
+        }
+        Err(other) => panic!("expected InvalidTicket(signature), got {other:?}"),
+        Ok(_) => panic!("a forged root signature must never route"),
+    }
+}
+
+#[test]
+fn read_committed_refuses_undecodable_ticket_bytes() {
+    let (site, _shared, adapter) = committed_site_adapter(0x33, READ_NOW);
+
+    match adapter.open_namespace(&read_committed_open(vec![0xFF; 40], site.namespaces[1])) {
+        Err(Sync2Refusal::InvalidTicket { reason }) => {
+            assert_eq!(reason, TicketReason::Structure)
+        }
+        Err(other) => panic!("expected InvalidTicket(structure), got {other:?}"),
+        Ok(_) => panic!("garbage ticket bytes must never route"),
+    }
+}
+
+#[test]
+fn read_committed_refuses_an_expired_ticket() {
+    // Observe at exactly the ticket expiry: expiry is inclusive.
+    let (site, _shared, adapter) = committed_site_adapter(0x34, TICKET_EXPIRY);
+
+    match adapter.open_namespace(&read_committed_open(
+        site.ticket_envelope_bytes.clone(),
+        site.namespaces[1],
+    )) {
+        Err(Sync2Refusal::ExpiredTicket {
+            expires_at,
+            observed_at,
+        }) => {
+            assert_eq!(expires_at, TICKET_EXPIRY);
+            assert_eq!(observed_at, TICKET_EXPIRY);
+        }
+        Err(other) => panic!("expected ExpiredTicket, got {other:?}"),
+        Ok(_) => panic!("an expired ticket must never route"),
+    }
+}
+
+#[test]
+fn read_committed_refuses_a_namespace_outside_the_tickets_ocw_set() {
+    let (site, _shared, adapter) = committed_site_adapter(0x35, READ_NOW);
+
+    let foreign = d32(0xEE);
+    assert!(!site.namespaces.contains(&foreign));
+    match adapter.open_namespace(&read_committed_open(
+        site.ticket_envelope_bytes.clone(),
+        foreign,
+    )) {
+        Err(Sync2Refusal::NamespaceNotMember { namespace_id }) => {
+            assert_eq!(namespace_id, foreign)
+        }
+        Err(other) => panic!("expected NamespaceNotMember, got {other:?}"),
+        Ok(_) => panic!("a namespace outside the ticket's O/C/W set must never route"),
+    }
+}
+
+#[test]
+fn read_committed_refuses_a_community_this_anchor_never_committed() {
+    // A perfectly valid ticket — but the repository holds NO committed manifest
+    // for its community. Nothing to serve, nothing to compare: refuse.
+    let site = make_site_fixture(0x36, 3, 1_000, TICKET_EXPIRY);
+    let ring = TokenSecretRing::new(0, [3u8; 32]);
+    let (_shared, adapter) = adapter_over(repo(), ring, READ_NOW);
+
+    match adapter.open_namespace(&read_committed_open(
+        site.ticket_envelope_bytes.clone(),
+        site.namespaces[1],
+    )) {
+        Err(Sync2Refusal::ManifestMismatch {
+            expected_digest,
+            observed_digest,
+        }) => {
+            assert_eq!(expected_digest, site.manifest_digest);
+            assert_eq!(observed_digest, [0u8; 32], "no committed manifest observed");
+        }
+        Err(other) => panic!("expected ManifestMismatch, got {other:?}"),
+        Ok(_) => panic!("an uncommitted community must never route"),
+    }
+}
+
+#[test]
+fn read_committed_refuses_a_ticket_naming_a_different_manifest_digest() {
+    let (site, _shared, adapter) = committed_site_adapter(0x37, READ_NOW);
+
+    // A validly ROOT-SIGNED ticket for the same site naming a DIFFERENT
+    // (higher-version) manifest digest than the one this anchor committed.
+    let swapped = make_payload_swapped_manifest_item(&site);
+
+    match adapter.open_namespace(&read_committed_open(
+        swapped.ticket_envelope_bytes.clone(),
+        site.namespaces[1],
+    )) {
+        Err(Sync2Refusal::ManifestMismatch {
+            expected_digest,
+            observed_digest,
+        }) => {
+            assert_ne!(expected_digest, site.manifest_digest);
+            assert_eq!(observed_digest, site.manifest_digest);
+        }
+        Err(other) => panic!("expected ManifestMismatch, got {other:?}"),
+        Ok(_) => panic!("a ticket naming a different committed manifest must never route"),
+    }
+}
+
+#[test]
+fn read_committed_refuses_a_transport_epoch_below_the_durable_floor() {
+    let site = make_site_fixture(0x38, 3, 1_000, TICKET_EXPIRY);
+    let mut base = repo();
+    commit_site_fixture(&mut base, &site, NOW);
+    // Advance the durable per-root transport-epoch floor PAST the fixture
+    // ticket's epoch (the fixture signs epoch 1).
+    {
+        let mut tx = base.begin().expect("begin");
+        tx.advance_ticket_transport_epoch(&site.root_id, 2)
+            .expect("advance epoch floor");
+        tx.commit().expect("commit floor");
+    }
+    let ring = TokenSecretRing::new(0, [3u8; 32]);
+    let (_shared, adapter) = adapter_over(base, ring, READ_NOW);
+
+    // Epoch rollback collapses into the generic fail-closed ticket refusal
+    // (the closed sync/2 vocabulary carries no epoch detail — mirror of the
+    // control plane collapsing it into invalid_ticket_authority).
+    match adapter.open_namespace(&read_committed_open(
+        site.ticket_envelope_bytes.clone(),
+        site.namespaces[1],
+    )) {
+        Err(Sync2Refusal::InvalidTicket { reason }) => {
+            assert_eq!(reason, TicketReason::Structure)
+        }
+        Err(other) => panic!("expected InvalidTicket(structure), got {other:?}"),
+        Ok(_) => panic!("a rolled-back transport epoch must never route"),
     }
 }
 
