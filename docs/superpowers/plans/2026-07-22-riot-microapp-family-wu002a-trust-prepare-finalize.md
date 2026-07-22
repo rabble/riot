@@ -101,9 +101,10 @@ fn prepare_trust_does_not_mutate_and_finalize_commits() {
 ```rust
 /// A trust mutation validated + signed but NOT yet committed to the live store.
 /// Lives only between `prepare_app_trust` and `finalize_app_trust`/`discard`
-/// (at most one per profile); the host persists `persistable` durably in between,
-/// making that durable write the linearization point. Cleared on finalize,
-/// discard, a superseding prepare, and any generation/namespace change.
+/// (at most one per profile); the host durably records the returned
+/// `{app_id, trusted}` in its trusted-ID set in between, making that durable
+/// write the linearization point. Cleared on finalize, discard, a superseding
+/// prepare, and the Active→Failed/close transition.
 struct PreparedTrust {
     /// `app_execution_generation` captured at prepare; finalize refuses if it moved.
     generation: u64,
