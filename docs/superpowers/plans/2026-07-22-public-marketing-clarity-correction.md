@@ -46,7 +46,7 @@ assert.match(evidence, /Occupy Sandy[\s\S]*TXTMob[\s\S]*Verificado 19S/i);
 
 - [ ] **Step 2: Replace the defensive Why Riot and Privacy expectations**
 
-Replace the old phrase loop and Privacy marker block with:
+Replace the existing `const boundaries` declaration, its old phrase loop/link assertions, and the Privacy marker block with:
 
 ```js
 const boundaries = block(whyRiot, /<section\b[^>]*id="boundaries"[^>]*>[\s\S]*?<\/section>/i, "Why Riot boundaries");
@@ -77,12 +77,9 @@ Run `npm run test:marketing`.
 
 Expected: FAIL first at `homepage comparison must not contain status chips`, proving the new assertions exercise the deployed markup rather than a syntax or fixture error.
 
-- [ ] **Step 4: Commit the failing contract**
+- [ ] **Step 4: Preserve RED without committing it**
 
-```sh
-git add scripts/marketing/protocol-page-contracts.mjs
-git commit -m "test(marketing): specify calmer public pages"
-```
+Keep the observed failing contract change in the worktree while implementing Task 2. Do not commit a deliberately red state; the contract and matching HTML/copy changes are committed together only after the blocking marketing and web tests pass.
 
 ### Task 2: Remove clutter and reframe the public boundary
 
@@ -149,7 +146,7 @@ cmp marketing/privacy/index.html marketing/public/privacy/index.html
 Run `npm run test:marketing` and `npm run test:web:unit`; both must pass. Then:
 
 ```sh
-git add marketing/index.html marketing/public/index.html marketing/why-riot/index.html marketing/public/why-riot/index.html marketing/privacy/index.html marketing/public/privacy/index.html marketing/README.md
+git add marketing/index.html marketing/public/index.html marketing/why-riot/index.html marketing/public/why-riot/index.html marketing/privacy/index.html marketing/public/privacy/index.html marketing/README.md scripts/marketing/protocol-page-contracts.mjs
 git commit -m "fix(marketing): remove fear and process theater"
 ```
 
@@ -162,11 +159,11 @@ git commit -m "fix(marketing): remove fear and process theater"
 
 - [ ] **Step 1: Write failing verifier tests**
 
-Create Node tests around an exported `verifyOrigin({ origin, routes, browserFactory })` using loopback HTTP fixtures. The passing fixture serves exact bytes, direct 200s, no cookies, no storage, and a direct 404. Its browser fixture proves that listeners are attached before navigation, every route is visited in one fresh context for the origin, each complete document is scrolled, and the verifier waits for network idle after scrolling. Separate tests must reject a redirect, byte mismatch, `Set-Cookie`, nonempty browser cookie/storage, and an off-origin request. Run `node --test scripts/marketing/test/verify-live.test.mjs`; expected FAIL because the module does not exist.
+Create Node tests around an exported `verifyOrigin({ origin, routes, browserFactory })` using loopback HTTP fixtures. The passing fixture serves exact bytes, direct 200s with no `Location`, no cookies, no storage, and a direct 404 with no `Location`. Its browser fixture proves that listeners are attached before navigation, every route is visited in one fresh context for the origin, each complete document is scrolled, and the verifier waits for network idle after scrolling. Separate tests must reject a redirect, a canonical 200 carrying `Location`, a missing-route 404 carrying `Location`, byte mismatch, `Set-Cookie`, nonempty browser cookie/storage, and an off-origin request. Run `node --test scripts/marketing/test/verify-live.test.mjs`; expected FAIL because the module does not exist.
 
 - [ ] **Step 2: Implement the minimal verifier**
 
-Create `verify-live.mjs` with the exact nine-route map from the design. Use `fetch(..., { redirect: "manual" })`, `readFile`, `createHash("sha256")`, `timingSafeEqual` after equal-length checks, and Playwright Chromium. Export `verifyOrigin`; for each origin create a fresh browser context, attach request and response listeners before navigation, visit and fully scroll every route to trigger lazy resources, wait for network idle after scrolling, and inspect context cookies plus `document.cookie`, `localStorage`, and `sessionStorage`. On direct execution verify both production origins and print one JSON object containing origin, route, status, expected/local hash, live hash, headers, cookie/storage/request-origin results, and missing-route result. Exit nonzero on any mismatch.
+Create `verify-live.mjs` with the exact nine-route map from the design. Use `fetch(..., { redirect: "manual" })`, `readFile`, `createHash("sha256")`, `timingSafeEqual` after equal-length checks, and Playwright Chromium. Require every canonical route to return direct 200 with no `Location`, and the unknown route to return direct 404 with no `Location`. Export `verifyOrigin`; for each origin create a fresh browser context, attach request and response listeners before navigation, visit and fully scroll every route to trigger lazy resources, wait for network idle after scrolling, and inspect context cookies plus `document.cookie`, `localStorage`, and `sessionStorage`. On direct execution verify both production origins and print one JSON object containing origin, route, status, expected/local hash, live hash, headers, cookie/storage/request-origin results, and missing-route result. Exit nonzero on any mismatch.
 
 - [ ] **Step 3: Expose and verify the command**
 
@@ -186,7 +183,7 @@ git commit -m "test(marketing): verify deployed route identity"
 
 - [ ] **Step 1: Capture and inspect desktop/mobile pages**
 
-Serve `marketing/public/` on loopback. Capture `/`, `/why-riot/`, and `/privacy/` at 1456×900 and 390×844 using the six filenames and `/tmp/visual-review/riot-human-capacity/` location fixed by the design. Assert no horizontal overflow at 390 px. Capture the additional 1456×900 `why-riot-forced-colors.png` and `privacy-forced-colors.png` where Chromium supports forced-colors emulation, or record the unsupported result. Disable CSS and confirm the inline illustration neither obscures meaning nor creates overflow. Inspect that comparison rows have no empty badge gaps, the field-history section flows without the removed box, Why Riot's boundary is compact, and Privacy leads with participant value rather than threat language.
+First run `npx playwright --version`; if Chromium is unavailable, run `npx playwright install chromium` and install no other browser. Serve `marketing/public/` on loopback. Capture `/`, `/why-riot/`, and `/privacy/` at 1456×900 and 390×844 using the six filenames and `/tmp/visual-review/riot-human-capacity/` location fixed by the design. Assert no horizontal overflow at 390 px. Capture the additional 1456×900 `why-riot-forced-colors.png` and `privacy-forced-colors.png` where Chromium supports forced-colors emulation, or record the unsupported result. Disable CSS and confirm the inline illustration neither obscures meaning nor creates overflow. Inspect that comparison rows have no empty badge gaps, the field-history section flows without the removed box, Why Riot's boundary is compact, and Privacy leads with participant value rather than threat language.
 
 For all three pages at both standard viewports, walk every visible text element and interactive control, resolve its computed foreground against the nearest non-transparent flat background, and record every unique pair. Require 4.5:1 for normal text and 3:1 for text at least 24 CSS px or at least 18.66 CSS px and bold; manually inspect and record any unresolved background. Record every screenshot path and SHA-256, viewport, overflow result, forced-colors support/outcome, no-CSS result, color pair and ratio, and issue found in `docs/marketing/2026-07-22-human-capacity-implementation-review.md`.
 
@@ -200,7 +197,7 @@ Run a fourth fresh semantic-auditor session with only the exact ordered eleven f
 
 - [ ] **Step 3: Run the full predeploy gate and commit the implementation evidence**
 
-Run `npm run test:web:unit`, `npm run test:marketing`, `git diff --check`, exact mirror `cmp` checks, and confirm a clean worktree after updating the report. Commit the report, record the resulting implementation commit with `git rev-parse HEAD`, and do not alter files before deployment.
+After updating the report, run `npm run test:web:unit`, `npm run test:marketing`, `git diff --check`, and the exact mirror `cmp` checks. Commit the report, confirm the worktree is clean, record the resulting implementation commit with `git rev-parse HEAD`, and do not alter files before deployment.
 
 - [ ] **Step 4: Push, deploy, and run the live verifier**
 
