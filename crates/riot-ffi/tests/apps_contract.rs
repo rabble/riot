@@ -818,27 +818,38 @@ fn trust_lifecycle_is_lww_per_app() {
 
 // --- WU-002a: two-phase trust prepare/persist/finalize ---
 
-fn organizer_with_installed_untrusted_app() -> (Arc<MobileProfile>, Arc<AppRuntimeSession>, String) {
+fn organizer_with_installed_untrusted_app() -> (Arc<MobileProfile>, Arc<AppRuntimeSession>, String)
+{
     let profile = open_local_profile().expect("profile");
     let runtime = profile.app_runtime();
     let (manifest_bytes, bundle_bytes) = manifest_and_bundle();
     let app = runtime
         .install_app(manifest_bytes, bundle_bytes)
         .expect("install");
-    assert!(!runtime.is_app_trusted(app.app_id.clone()).expect("untrusted"));
+    assert!(!runtime
+        .is_app_trusted(app.app_id.clone())
+        .expect("untrusted"));
     (profile, runtime, app.app_id)
 }
 
 #[test]
 fn prepare_trust_does_not_mutate_and_finalize_commits() {
     let (_profile, runtime, app_id) = organizer_with_installed_untrusted_app();
-    let prepared = runtime.prepare_app_trust(app_id.clone(), true).expect("prepare");
+    let prepared = runtime
+        .prepare_app_trust(app_id.clone(), true)
+        .expect("prepare");
     assert!(prepared.trusted);
     assert!(!prepared.app_id.is_empty());
     // prepare must NOT touch the live store.
-    assert!(!runtime.is_app_trusted(app_id.clone()).unwrap(), "prepare must not grant trust");
+    assert!(
+        !runtime.is_app_trusted(app_id.clone()).unwrap(),
+        "prepare must not grant trust"
+    );
     runtime.finalize_app_trust().expect("finalize");
-    assert!(runtime.is_app_trusted(app_id).unwrap(), "finalize commits the grant");
+    assert!(
+        runtime.is_app_trusted(app_id).unwrap(),
+        "finalize commits the grant"
+    );
 }
 
 #[test]
@@ -859,7 +870,10 @@ fn discard_clears_a_prepared_grant() {
     let (_profile, runtime, app_id) = organizer_with_installed_untrusted_app();
     runtime.prepare_app_trust(app_id.clone(), true).unwrap();
     runtime.discard_prepared_trust().unwrap();
-    assert!(runtime.finalize_app_trust().is_err(), "nothing to finalize after discard");
+    assert!(
+        runtime.finalize_app_trust().is_err(),
+        "nothing to finalize after discard"
+    );
     assert!(!runtime.is_app_trusted(app_id).unwrap());
 }
 
@@ -873,7 +887,10 @@ fn re_issuing_trust_for_an_already_trusted_app_is_idempotent() {
     assert!(runtime.is_app_trusted(app_id.clone()).unwrap());
     runtime.prepare_app_trust(app_id.clone(), true).unwrap();
     runtime.finalize_app_trust().unwrap();
-    assert!(runtime.is_app_trusted(app_id).unwrap(), "still trusted, exactly once");
+    assert!(
+        runtime.is_app_trusted(app_id).unwrap(),
+        "still trusted, exactly once"
+    );
 }
 
 #[test]
