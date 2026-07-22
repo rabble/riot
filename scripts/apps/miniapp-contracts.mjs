@@ -36,8 +36,9 @@ assert.deepEqual(missing, [], `missing miniapp foundation: ${missing.join(", ")}
 
 const tokens = await readFile(tokensPath, "utf8");
 for (const token of [
-  "--paper", "--surface", "--ink", "--muted", "--line", "--accent",
-  "--radius", "--shadow", "--space-1", "--font-rounded",
+  "--riot-paper", "--riot-surface", "--riot-ink", "--riot-ink-soft", "--riot-line",
+  "--riot-structure", "--riot-action", "--riot-quiet", "--riot-signal", "--riot-focus",
+  "--riot-radius", "--riot-shadow", "--riot-space-1", "--riot-body",
 ]) {
   assert.match(tokens, new RegExp(`${token}\\s*:`), `shared tokens must define ${token}`);
 }
@@ -46,8 +47,8 @@ assert.match(tokens, /box-sizing\s*:\s*border-box/, "tokens must use predictable
 assert.match(tokens, /body\s*\{[^}]*margin\s*:\s*0/s, "tokens must reset the body margin");
 assert.match(tokens, /(?:button|input)[\s\S]*font\s*:\s*inherit/, "form controls must inherit typography");
 assert.match(tokens, /min-height\s*:\s*44px\b/, "controls must be at least 44px tall");
-assert.match(tokens, /--focus-ring\s*:/, "tokens must define a dedicated focus-ring color");
-assert.match(tokens, /:focus-visible\s*\{[^}]*outline\s*:\s*3px\s+solid\s+var\(--focus-ring\)/s, "keyboard focus must use a visible 3px focus ring");
+assert.match(tokens, /--riot-focus\s*:/, "tokens must define a dedicated focus color");
+assert.match(tokens, /:focus-visible\s*\{[^}]*outline\s*:\s*3px\s+solid\s+var\(--riot-focus\)/s, "keyboard focus must use a visible 3px focus ring");
 assert.match(tokens, /@media\s*\(prefers-reduced-motion\s*:\s*reduce\)/, "motion must honor reduced-motion preferences");
 
 const frozenChecklist = path.join(repoRoot, "fixtures/apps/checklist");
@@ -92,14 +93,14 @@ function contrast(left, right) {
   return (lighter + 0.05) / (darker + 0.05);
 }
 
-const darkTokens = tokens.match(/@media\s*\(prefers-color-scheme:\s*dark\)\s*\{([\s\S]*?)\n\}/)?.[1] || "";
-const darkPaper = darkTokens.match(/--paper:\s*(#[0-9a-f]{6})/i)?.[1];
-const darkSurface = darkTokens.match(/--surface:\s*(#[0-9a-f]{6})/i)?.[1];
-const darkAccent = darkTokens.match(/--accent:\s*(#[0-9a-f]{6})/i)?.[1];
-const darkFocus = darkTokens.match(/--focus-ring:\s*(#[0-9a-f]{6})/i)?.[1];
-assert(darkPaper && darkSurface && darkAccent && darkFocus, "dark mode must define paper, surface, accent, and focus-ring colors");
-assert(contrast(darkAccent, darkPaper) >= 3, "dark accent must have at least 3:1 contrast against paper");
-assert(contrast(darkAccent, darkSurface) >= 3, "dark accent must have at least 3:1 contrast against surface");
+// _shared now carries the role-token system; the full six-theme WCAG matrix is
+// in scripts/apps/test/theme-tokens.test.mjs. Smoke-check dark Night Garden here.
+const darkStart = tokens.indexOf("@media (prefers-color-scheme: dark)");
+const darkTokens = darkStart >= 0 ? tokens.slice(darkStart) : "";
+const darkPaper = darkTokens.match(/--riot-paper:\s*(#[0-9a-f]{6})/i)?.[1];
+const darkAction = darkTokens.match(/--riot-action:\s*(#[0-9a-f]{6})/i)?.[1];
+const darkFocus = darkTokens.match(/--riot-focus:\s*(#[0-9a-f]{6})/i)?.[1];
+assert(darkPaper && darkAction && darkFocus, "dark mode must define riot paper, action, and focus roles");
 assert(contrast(darkFocus, darkPaper) >= 3, "dark focus ring must have at least 3:1 contrast against paper");
 
 const { createPreviewServer } = await import("./miniapp-preview-host.mjs");
