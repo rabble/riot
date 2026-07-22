@@ -107,6 +107,7 @@ export async function verifyOrigin({ origin, routes = ROUTES, browserFactory = (
 
   const browser = await browserFactory();
   const requestUrls = [];
+  const cspBlockedRequestUrls = [];
   const responseEvidence = [];
   const storage = [];
   let cookiesBefore = [];
@@ -120,6 +121,9 @@ export async function verifyOrigin({ origin, routes = ROUTES, browserFactory = (
         const page = await context.newPage();
         const responseTasks = [];
         page.on("request", (request) => requestUrls.push(request.url()));
+        page.on("requestfailed", (request) => {
+          if (request.failure()?.errorText?.toLowerCase() === "csp") cspBlockedRequestUrls.push(request.url());
+        });
         page.on("response", (response) => {
           responseTasks.push((async () => {
             const headers = await response.headers();
@@ -146,8 +150,11 @@ export async function verifyOrigin({ origin, routes = ROUTES, browserFactory = (
       }
       cookiesAfter = await context.cookies();
       assert.equal(cookiesAfter.length, 0, "browser cookie jar must be empty after navigation");
+      const cspBlocked = new Set(cspBlockedRequestUrls);
+      const responded = new Set(responseEvidence.map(({ url }) => url));
       for (const url of requestUrls) {
-        assert.equal(new URL(url).origin, expectedOrigin, `off-origin request observed: ${url}`);
+        if (new URL(url).origin === expectedOrigin) continue;
+        assert.ok(cspBlocked.has(url) && !responded.has(url), `off-origin request observed without a CSP block: ${url}`);
       }
     } finally {
       await context.close();
@@ -165,6 +172,7 @@ export async function verifyOrigin({ origin, routes = ROUTES, browserFactory = (
       cookiesAfter,
       storage,
       requestUrls,
+      cspBlockedRequestUrls,
       requestOrigins: [...new Set(requestUrls.map((url) => new URL(url).origin))],
       responses: responseEvidence,
     },

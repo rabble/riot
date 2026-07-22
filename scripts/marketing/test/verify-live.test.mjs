@@ -44,7 +44,7 @@ async function fixture({ body = "expected\n", routeStatus = 200, routeHeaders = 
   };
 }
 
-function fakeBrowserFactory({ cookies = [], storage = { cookie: "", localStorage: [], sessionStorage: [] }, extraRequest } = {}) {
+function fakeBrowserFactory({ cookies = [], storage = { cookie: "", localStorage: [], sessionStorage: [] }, extraRequest, extraRequestFailure } = {}) {
   const observations = { contexts: 0, listenerBeforeGoto: true, gotos: [], scrolls: 0, evaluateSources: [], networkIdleWaits: 0, closed: false };
   const factory = async () => ({
     async newContext() {
@@ -59,7 +59,11 @@ function fakeBrowserFactory({ cookies = [], storage = { cookie: "", localStorage
               observations.listenerBeforeGoto &&= listeners.has("request") && listeners.has("response");
               observations.gotos.push(url);
               listeners.get("request")?.({ url: () => url });
-              if (extraRequest) listeners.get("request")?.({ url: () => extraRequest });
+              if (extraRequest) {
+                const request = { url: () => extraRequest, failure: () => extraRequestFailure ? { errorText: extraRequestFailure } : null };
+                listeners.get("request")?.(request);
+                if (extraRequestFailure) listeners.get("requestfailed")?.(request);
+              }
               listeners.get("response")?.({ url: () => url, headers: async () => ({ "content-type": "text/html" }) });
             },
             async evaluate(fn) {
@@ -149,5 +153,15 @@ test("rejects off-origin browser requests", async () => {
   await withFixture({}, async (site) => {
     const browser = fakeBrowserFactory({ extraRequest: "https://tracker.example/pixel" });
     await assert.rejects(verifyOrigin({ ...site, browserFactory: browser.factory }), /off-origin request/i);
+  });
+});
+
+test("accepts an edge-injected script only when CSP blocks it before any response", async () => {
+  await withFixture({}, async (site) => {
+    const url = "https://static.cloudflareinsights.com/beacon.min.js/example";
+    const browser = fakeBrowserFactory({ extraRequest: url, extraRequestFailure: "csp" });
+    const result = await verifyOrigin({ ...site, browserFactory: browser.factory });
+    assert.deepEqual(result.browser.cspBlockedRequestUrls, [url]);
+    assert.ok(!result.browser.responses.some((response) => response.url === url));
   });
 });
