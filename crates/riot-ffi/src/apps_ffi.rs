@@ -51,6 +51,15 @@ pub struct PreparedTrustRecord {
     pub trusted: bool,
 }
 
+/// The result of `prepare_app_data_put` (WU-002b): the canonical receipt bundle
+/// bytes the host persists durably before calling `finalize_app_data_put`. These
+/// are the same bytes `app_data_put_with_receipt` returns and can be replayed
+/// via `replay_app_data_bundle` after a crash.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct PreparedAppDataRecord {
+    pub receipt: Vec<u8>,
+}
+
 /// One row of the computed app directory (`riot_core::apps::directory::
 /// AppListing` flattened to FFI types). Unlike `InstalledAppRecord`, whose
 /// `app_id` predates the directory surface and is hex text, all 32-byte ids
@@ -171,6 +180,29 @@ impl AppExecutionSession {
             return Err(MobileError::AppRejected);
         }
         crate::mobile_state::app_execution_put_with_receipt(&self.inner, &self.snapshot, key, value)
+    }
+
+    /// Two-phase app-data, phase 1 (WU-002b): sign + encode the receipt without
+    /// mutating the store. The host persists the receipt, then calls
+    /// `finalize_app_execution_put`.
+    pub fn prepare_app_execution_put(
+        &self,
+        key: String,
+        value: Vec<u8>,
+    ) -> Result<PreparedAppDataRecord, MobileError> {
+        if self.is_destroyed() {
+            return Err(MobileError::AppRejected);
+        }
+        crate::mobile_state::prepare_app_execution_put(&self.inner, &self.snapshot, key, value)
+    }
+
+    /// Two-phase app-data, phase 2 (WU-002b): commit the held prepared write
+    /// after the host persisted its receipt.
+    pub fn finalize_app_execution_put(&self) -> Result<(), MobileError> {
+        if self.is_destroyed() {
+            return Err(MobileError::AppRejected);
+        }
+        crate::mobile_state::finalize_app_execution_put(&self.inner, &self.snapshot)
     }
 
     /// Whether this session is still valid right now: not destroyed, and passing
@@ -327,6 +359,24 @@ impl AppRuntimeSession {
         value: Vec<u8>,
     ) -> Result<Vec<u8>, MobileError> {
         crate::mobile_state::app_data_put_with_receipt(&self.inner, app_id, key, value)
+    }
+
+    /// Two-phase app-data, phase 1 (WU-002b): sign + encode the receipt WITHOUT
+    /// mutating the store. The host persists the receipt, then calls
+    /// `finalize_app_data_put`. Supersedes any other prepared mutation.
+    pub fn prepare_app_data_put(
+        &self,
+        app_id: String,
+        key: String,
+        value: Vec<u8>,
+    ) -> Result<PreparedAppDataRecord, MobileError> {
+        crate::mobile_state::prepare_app_data_put(&self.inner, app_id, key, value)
+    }
+
+    /// Two-phase app-data, phase 2 (WU-002b): commit the held prepared write
+    /// after the host persisted its receipt.
+    pub fn finalize_app_data_put(&self) -> Result<(), MobileError> {
+        crate::mobile_state::finalize_app_data_put(&self.inner)
     }
 
     /// Re-admits app-data bundle bytes previously returned by
