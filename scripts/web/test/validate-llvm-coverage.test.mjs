@@ -6,7 +6,7 @@ import { spawnSync } from "node:child_process";
 import { after, test } from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { loadLlvmThresholds, validateCoverageReport } from "../validate-llvm-coverage.mjs";
+import { loadLlvmThresholds, run, validateCoverageReport } from "../validate-llvm-coverage.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const validatorPath = path.resolve(here, "../validate-llvm-coverage.mjs");
@@ -17,9 +17,10 @@ const metricNames = ["lines", "functions", "regions", "branches"];
 
 // The floors the committed `.coverage-thresholds.json` (thresholds.llvm) sets,
 // which the validator reads when the script runs from the real repo root.
-const FLOORS = loadLlvmThresholds(
-  JSON.parse(readFileSync(path.join(repositoryRoot, ".coverage-thresholds.json"), "utf8")),
+const COVERAGE_CONFIG = JSON.parse(
+  readFileSync(path.join(repositoryRoot, ".coverage-thresholds.json"), "utf8"),
 );
+const FLOORS = loadLlvmThresholds(COVERAGE_CONFIG);
 
 after(() => rmSync(temporaryDirectory, { force: true, recursive: true }));
 
@@ -141,6 +142,29 @@ test("loadLlvmThresholds returns the four per-metric floors", () => {
   assert.deepEqual(floors, { lines: 95, functions: 95, regions: 92, branches: 83 });
 });
 
+test("committed coverage floors match an auditable measured baseline", () => {
+  const { measured } = COVERAGE_CONFIG.enforcement;
+  assert.match(measured.date, /^\d{4}-\d{2}-\d{2}$/);
+  assert.match(measured.justification, /workspace.*(?:expanded|growth)/i);
+
+  const measurements = {
+    tarpaulin: { lines: measured.tarpaulin.lines },
+    llvm: measured.llvm,
+  };
+  for (const [tool, metrics] of Object.entries(measurements)) {
+    for (const [name, measurement] of Object.entries(metrics)) {
+      assert.equal(Number.isSafeInteger(measurement.covered), true);
+      assert.equal(Number.isSafeInteger(measurement.count), true);
+      assert.equal(measurement.covered <= measurement.count, true);
+      assert.equal(
+        measurement.percent,
+        Number(((measurement.covered / measurement.count) * 100).toFixed(2)),
+      );
+      assert.equal(COVERAGE_CONFIG.thresholds[tool][name], Math.floor(measurement.percent));
+    }
+  }
+});
+
 test("loadLlvmThresholds fails closed on missing or malformed floors", () => {
   assert.throws(() => loadLlvmThresholds(null), /coverage thresholds must be an object/);
   assert.throws(() => loadLlvmThresholds({}), /must define thresholds\.llvm/);
@@ -168,7 +192,7 @@ test("accepts coverage at or above the committed floors", () => {
 
 for (const metricName of metricNames) {
   test(`rejects ${metricName} coverage below its floor and names the metric`, () => {
-    // 80% is below every floor (95/95/92/83), so any metric at 80% is a deficit.
+    // 80% is below every committed LLVM floor, so any metric at 80% is a deficit.
     const result = runValidator(JSON.stringify(report({
       [metricName]: metric(8_000, 10_000, 80),
     })), `${metricName}.json`);
@@ -213,6 +237,20 @@ test("rejects wrong CLI arity, unreadable input, and invalid JSON without stacks
   const invalid = runValidator("{", "invalid.json");
   assert.equal(invalid.status, 1);
   assert.equal(invalid.stderr, "LLVM coverage report is not valid JSON\n");
+});
+
+test("CLI fails closed when the configured coverage floors cannot be loaded", () => {
+  const invalidThresholds = path.join(temporaryDirectory, "invalid-thresholds.json");
+  writeFileSync(invalidThresholds, "{}");
+  const errors = [];
+  const originalConsoleError = console.error;
+  console.error = (message) => errors.push(message);
+  try {
+    assert.equal(run(["unused-report.json"], invalidThresholds), 1);
+  } finally {
+    console.error = originalConsoleError;
+  }
+  assert.deepEqual(errors, ["unable to load coverage floors: coverage thresholds must define thresholds.llvm"]);
 });
 
 test("rejects malformed LLVM report containers", () => {
