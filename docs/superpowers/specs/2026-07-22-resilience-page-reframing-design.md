@@ -229,9 +229,9 @@ leaving one another.** Label it as an aim, not a guarantee.
 
 ### 6. Honest boundaries
 
-Keep one calm, compact product boundary. Current Riot communities are public places for publishing
-and collaboration: posts are intended to be read, copied, and carried. Private encrypted groups are
-a separate future direction, not part of today's prototype. Do not turn generic internet, radio,
+Keep one calm, compact product boundary. Current public Newswires are places for publishing and
+collaboration: posts are intended to be read, copied, and carried. Private encrypted groups are a
+separate future direction, not part of today's prototype. Do not turn generic internet, radio,
 device, behavioral-correlation, compromised-host, or hostile-gateway possibilities into a Riot
 exposure inventory. Link to `/privacy/` for the short product boundary and `/protocols/` for readers
 who want technical detail. A brief link to Signal may remain for private conversation today, without
@@ -516,7 +516,8 @@ The new assertions must fail before HTML implementation. After implementation th
     `#status` section and the `/protocols/` detail link remain present;
 19. the homepage contains no `What Riot does not hide` heading or list, no speculative gateway or
     identity-correlation note, and no `.evidence-box`, research-pass/source-fetch/claim-verification
-    metrics, or adversarial-reviewer process copy;
+    metrics, or adversarial-reviewer process copy; the surrounding `#evidence` field-history section
+    and its named community examples remain;
 20. Why Riot and Privacy retain the exact current boundary—Newswires are public publishing and
     collaboration spaces, private encrypted groups are not part of today's prototype—while omitting
     the finite speculative inventory: IP addresses, radio presence, device labels, proximity,
@@ -675,15 +676,19 @@ Passing requires `PASS` with zero findings. The report stores the complete promp
 ordered SHA-256 list for the eleven reviewed files, returned JSON verbatim, and fresh session
 identifier. This is the reproducible human half of the site-wide claim audit.
 
-The initial reframe was deployed after explicit owner approval. After revision 15's focused contract
-and desktop/mobile visual checks pass, deploy it through the existing Cloudflare Workers marketing
-configuration. It changes no deployment configuration, DNS, TLS, runtime, or application behavior.
+The initial reframe was deployed after explicit owner approval. Deploy revision 15 through the
+existing Cloudflare Workers marketing configuration only after the complete refreshed acceptance
+evidence passes: static/browser contracts, exact mirrors, desktop/mobile visual checks, three fresh
+Why Riot first-read reviews using the revised Q4 rubric, and a fresh semantic claim audit. This
+changes production marketing content. It changes no deployment configuration, DNS, TLS, Workers
+runtime behavior, application behavior, protocol behavior, or application data.
 
 Post-deploy verification is blocking and covers both
 `https://riot-protest-net-marketing.protestnet.workers.dev` and `https://riot.protest.net`. At each
-origin, fetch all nine canonical routes without accepting an error response; require HTTP 200 and
-byte equality with the corresponding committed `marketing/public/` file. Require an unknown route
-to return HTTP 404. Capture response headers for all routes and require no `Set-Cookie`. In a fresh
+origin, fetch all nine canonical routes with redirects disabled; require direct HTTP 200 responses,
+no `Location`, and byte equality with the corresponding committed `marketing/public/` file. Require
+an unknown route to return direct HTTP 404 with no `Location`. Capture response headers for all
+routes and require no `Set-Cookie`. In a fresh
 Playwright context for each origin, visit and fully scroll all nine routes; require an empty cookie
 jar and `document.cookie`, empty `localStorage` and `sessionStorage`, and no observed request origin
 outside the origin under test. Record the Cloudflare version, exact command or script, origins,
@@ -693,10 +698,11 @@ commit is pushed.
 
 ## Scope Boundaries
 
-This work changes marketing HTML, its exact public mirrors, sitemap, marketing documentation,
-contract tests, package scripts, and the existing CI web job. It does not change Riot protocols,
-application behavior, cryptography, privacy guarantees, anchor behavior, sync transports,
-deployment configuration, DNS, TLS, telemetry, or production state.
+This work changes marketing HTML, its exact public mirrors, marketing documentation, contract tests,
+the implementation-review evidence, and—after all gates pass—the production marketing content. It
+does not change Riot protocols, application behavior, cryptography, privacy guarantees, anchor
+behavior, sync transports, deployment configuration, DNS, TLS, telemetry, Workers runtime behavior,
+or application data.
 
 Documentation scope also includes the narrow private-group status clarification in `README.md` and
 `docs/product/product-brief.md`, plus the committed implementation-review report.
@@ -769,6 +775,11 @@ The revision-15 design gate approved the product and editorial direction, then r
 negative assertions for each removed element and a production verification procedure strong enough
 to support the website-data disclosure. Revision 16 adds scoped absence/preservation contracts and
 all-route edge/browser checks at both production origins.
+
+The architecture pass then required explicit production-content scope, complete pre-deploy evidence,
+direct no-redirect live checks, preservation of human field history, the narrower “public Newswires”
+boundary, and a matching Privacy route description in `marketing/README.md`. Revision 17 adds those
+requirements.
 
 ## Primary Sources
 
