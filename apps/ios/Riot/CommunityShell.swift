@@ -288,6 +288,40 @@ public enum ShellEscapeAction: Equatable, Sendable {
     }
 }
 
+/// Mounted tools are pushed inside the iPhone Tools stack, but replace the
+/// selected split-detail route on macOS. Only the latter must be torn down when
+/// a sidebar/keyboard route changes.
+public enum ToolRoutePolicy {
+    public static var closesMountedToolBeforeRoute: Bool {
+        #if os(macOS)
+        true
+        #else
+        false
+        #endif
+    }
+}
+
+/// Identity and synchronous teardown for one SwiftUI-hosted app runtime. Every
+/// replacement gets a new UUID so a torn-down representable cannot be reused,
+/// even when the same app is reopened immediately.
+@MainActor
+public struct AppRuntimeMountState {
+    public private(set) var teardownHandle = AppRuntimeTeardownHandle()
+    public private(set) var id = UUID()
+
+    public init() {}
+
+    public mutating func replace() {
+        teardownHandle.tearDownNow()
+        teardownHandle = AppRuntimeTeardownHandle()
+        id = UUID()
+    }
+
+    public func tearDownNow() {
+        teardownHandle.tearDownNow()
+    }
+}
+
 // MARK: - Focus restoration
 
 /// Remembers which tool card launched the running tool so focus returns to it

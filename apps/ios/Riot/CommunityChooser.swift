@@ -209,6 +209,53 @@ public enum CommunitySelectionShortcut {
 
 // MARK: - The "Your communities" chooser view
 
+enum CommunityChooserSelectionDecision: Equatable {
+    case dismissCurrent
+    case confirmSwitch
+    case switchImmediately
+
+    static func decide(
+        selectedID: String,
+        currentID: String?,
+        mountedAppName: String?
+    ) -> Self {
+        if selectedID == currentID { return .dismissCurrent }
+        return mountedAppName == nil ? .switchImmediately : .confirmSwitch
+    }
+}
+
+enum CommunityChooserConfirmation: Equatable {
+    case stay
+    case switchCommunity
+
+    func perform(closeTool: () -> Void, switchCommunity: () -> Void) {
+        guard self == .switchCommunity else { return }
+        MountedToolExit.perform(closeTool: closeTool, then: switchCommunity)
+    }
+}
+
+enum CommunityChooserCopy {
+    static func switchWarning(appName: String) -> String {
+        "Any unsaved changes in \(appName) will be lost."
+    }
+}
+
+public enum MountedToolExit {
+    public static func perform(closeTool: () -> Void, then action: () -> Void) {
+        closeTool()
+        action()
+    }
+
+    public static func perform(
+        when shouldClose: Bool,
+        closeTool: () -> Void,
+        then action: () -> Void
+    ) {
+        if shouldClose { closeTool() }
+        action()
+    }
+}
+
 /// Level-1 "Your communities" (nav design Slice 3). Lists held communities in
 /// plain language — name and relationship lead, never a namespace id — with an
 /// available row switching on tap and an unavailable row offering recovery in
@@ -218,9 +265,31 @@ public enum CommunitySelectionShortcut {
 public struct CommunityChooserView: View {
     @ObservedObject private var model: RiotAppModel
     @State private var isGuidePresented = false
+    @State private var pendingSwitch: CommunityChooserRow?
 
-    public init(model: RiotAppModel) {
+    private let currentCommunityID: String?
+    private let mountedAppName: String?
+    private let onSelectCommunity: ((String) -> Void)?
+    private let onFindNearby: (() -> Void)?
+    private let onCreateCommunity: (() -> Void)?
+    private let onJoinByReference: (() -> Void)?
+
+    public init(
+        model: RiotAppModel,
+        currentCommunityID: String? = nil,
+        mountedAppName: String? = nil,
+        onSelectCommunity: ((String) -> Void)? = nil,
+        onFindNearby: (() -> Void)? = nil,
+        onCreateCommunity: (() -> Void)? = nil,
+        onJoinByReference: (() -> Void)? = nil
+    ) {
         self.model = model
+        self.currentCommunityID = currentCommunityID
+        self.mountedAppName = mountedAppName
+        self.onSelectCommunity = onSelectCommunity
+        self.onFindNearby = onFindNearby
+        self.onCreateCommunity = onCreateCommunity
+        self.onJoinByReference = onJoinByReference
     }
 
     public var body: some View {
@@ -229,8 +298,11 @@ public struct CommunityChooserView: View {
                 Section {
                     ForEach(model.communities) { row in
                         CommunityChooserRowView(row: row) {
-                            model.switchCommunity(namespaceID: row.namespaceID)
+                            select(row)
                         }
+                        .accessibilityAddTraits(
+                            row.namespaceID == currentCommunityID ? .isSelected : []
+                        )
                     }
                     if model.communities.isEmpty {
                         Text("You're not in a community yet.")
@@ -243,11 +315,11 @@ public struct CommunityChooserView: View {
                 // surface. Join now goes through the paste/QR JoinByReferenceSheet,
                 // presented at the shell so the same sheet serves the Launch entry.
                 Section {
-                    Button("Create a community") { model.requestCreateCommunity() }
+                    Button("Create a community") { createCommunity() }
                         .accessibilityIdentifier("chooser-create")
-                    Button("Find one nearby") { model.findNearby() }
+                    Button("Find one nearby") { findNearby() }
                         .accessibilityIdentifier("chooser-find-nearby")
-                    Button("Join with a link or QR") { model.requestJoinByReference() }
+                    Button("Join with a link or QR") { joinByReference() }
                         .accessibilityIdentifier("chooser-join-another")
                 }
                 // Help & Guides (offline-guides design): the manual is reachable
@@ -265,7 +337,63 @@ public struct CommunityChooserView: View {
             .sheet(isPresented: $isGuidePresented) {
                 UsingRiotGuideView(onClose: { isGuidePresented = false })
             }
+            .confirmationDialog(
+                "Switch communities?",
+                isPresented: Binding(
+                    get: { pendingSwitch != nil },
+                    set: { if !$0 { pendingSwitch = nil } }
+                ),
+                titleVisibility: .visible
+            ) {
+                if let pendingSwitch {
+                    Button("Switch to \(pendingSwitch.name)", role: .destructive) {
+                        let namespaceID = pendingSwitch.namespaceID
+                        self.pendingSwitch = nil
+                        switchCommunity(namespaceID: namespaceID)
+                    }
+                }
+                Button("Stay", role: .cancel) { pendingSwitch = nil }
+            } message: {
+                if let mountedAppName {
+                    Text(CommunityChooserCopy.switchWarning(appName: mountedAppName))
+                }
+            }
         }
+    }
+
+    private func select(_ row: CommunityChooserRow) {
+        switch CommunityChooserSelectionDecision.decide(
+            selectedID: row.namespaceID,
+            currentID: currentCommunityID,
+            mountedAppName: mountedAppName
+        ) {
+        case .dismissCurrent:
+            model.dismissCommunityChooser()
+        case .confirmSwitch:
+            pendingSwitch = row
+        case .switchImmediately:
+            switchCommunity(namespaceID: row.namespaceID)
+        }
+    }
+
+    private func switchCommunity(namespaceID: String) {
+        if let onSelectCommunity {
+            onSelectCommunity(namespaceID)
+        } else {
+            model.switchCommunity(namespaceID: namespaceID)
+        }
+    }
+
+    private func findNearby() {
+        if let onFindNearby { onFindNearby() } else { model.findNearby() }
+    }
+
+    private func createCommunity() {
+        if let onCreateCommunity { onCreateCommunity() } else { model.requestCreateCommunity() }
+    }
+
+    private func joinByReference() {
+        if let onJoinByReference { onJoinByReference() } else { model.requestJoinByReference() }
     }
 }
 
