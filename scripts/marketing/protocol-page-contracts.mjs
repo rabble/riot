@@ -244,6 +244,7 @@ const pageContents = { home, protocols, about, privacy, "open-source": openSourc
 const mirrorContents = { home: publicHome, protocols: publicProtocols, about: publicAbout, privacy: publicPrivacy, "open-source": publicOpenSource, community: publicCommunity, releases: publicReleases, "why-riot": publicWhyRiot, guide: publicGuide };
 for (const [pageName, content] of Object.entries({ ...Object.fromEntries(Object.entries(pageContents).map(([name, html]) => [`source:${name}`, html])), ...Object.fromEntries(Object.entries(mirrorContents).map(([name, html]) => [`mirror:${name}`, html])) })) {
   assert.match(content, /\.sitenav\s*\{[^}]*position:\s*sticky/i, `${pageName} page must make the sitenav sticky`);
+  assert.match(content, /\.sitenav-links\s*\{[^}]*min-width:\s*0/i, `${pageName} sitenav must be allowed to shrink inside its flex row`);
   const footer = block(content, /<footer\b[^>]*>[\s\S]*?<\/footer>/i, `${pageName} footer`);
   assertExactRoutes(localRoutesFrom(footer), allSitePaths, `${pageName} footer`);
   const nav = block(content, /<div\s+class="sitenav-links">[\s\S]*?<\/div>/i, `${pageName} sitenav-links`);
