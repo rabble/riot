@@ -28,11 +28,13 @@ jobs:
           rustup show active-toolchain || rustup toolchain install
           rustup component add clippy rustfmt
 
-      # Purpose-built Rust cache: toolchain-aware keys, caches registry/git/target,
-      # and auto-trims stale build artifacts. Turns the ~9min cold compile into
-      # ~1-2min warm on later runs. Must come after the toolchain is installed.
+      # Cache downloaded Cargo inputs, but never restore target/: the workspace's
+      # linked test artifacts can exhaust the bounded runner disk when combined
+      # with a warm target cache. Must come after the toolchain is installed.
       - name: Cache Rust build
         uses: Swatinem/rust-cache@v2
+        with:
+          cache-targets: false
 
       - name: rustfmt
         run: cargo fmt --all -- --check
@@ -61,6 +63,8 @@ jobs:
 
       - name: Cache Rust build
         uses: Swatinem/rust-cache@v2
+        with:
+          cache-targets: false
 
       - name: Install cargo-llvm-cov
         run: cargo install cargo-llvm-cov --version 0.8.7 --locked
@@ -147,6 +151,8 @@ jobs:
 
       - name: Cache Rust build
         uses: Swatinem/rust-cache@v2
+        with:
+          cache-targets: false
 
       # Regenerates build/generated/riot-ffi/uniffi/**/riot_ffi.kt, which the
       # Android main source set compiles against. Without this the app module
