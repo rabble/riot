@@ -36,6 +36,7 @@ use riot_anchor_protocol::records::{
     PublicSiteTicketV2Core, RootSignedTicketCoreEnvelopeV2, TransportFloor,
 };
 
+use riot_core::sync::MAX_SYNC_FRAME_BYTES;
 use riot_transport::iroh::dialable_addr;
 use riot_transport::ALPN_ANCHOR_V1;
 
@@ -163,6 +164,18 @@ fn daemon_config() -> (Config, PathBuf) {
 }
 
 fn daemon_config_for(db_path: &std::path::Path, display_label: &str) -> Config {
+    daemon_config_with_sessions(
+        db_path,
+        display_label,
+        IngressLimits::DEFAULT_MAX_CONTROL_SESSIONS,
+    )
+}
+
+fn daemon_config_with_sessions(
+    db_path: &std::path::Path,
+    display_label: &str,
+    max_control_sessions: usize,
+) -> Config {
     let args = vec!["--db".to_string(), db_path.to_string_lossy().into_owned()];
     let env = vec![
         ("RIOT_ANCHOR_OPERATOR_KEY_HEX".to_string(), "07".repeat(32)),
@@ -178,7 +191,7 @@ fn daemon_config_for(db_path: &std::path::Path, display_label: &str) -> Config {
         ("RIOT_ANCHOR_FAILURE_DOMAIN".to_string(), "test".to_string()),
         (
             "RIOT_ANCHOR_MAX_CONTROL_SESSIONS".to_string(),
-            IngressLimits::DEFAULT_MAX_CONTROL_SESSIONS.to_string(),
+            max_control_sessions.to_string(),
         ),
     ];
     resolve_config(&args, &env).expect("test daemon config resolves")
@@ -432,6 +445,197 @@ async fn daemon_restart_reuses_the_persisted_descriptor_at_the_same_epoch() {
         "restart must not equivocate by publishing a different digest at epoch 0",
     );
 
+    client.close().await;
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+}
+
+/// The accept-loop ingress ceiling (`max_concurrent_control_sessions`) REFUSES
+/// excess connections at accept — a connection-level error before any stream or
+/// frame exchange, not queueing — and a released permit restores service.
+#[tokio::test(flavor = "multi_thread")]
+async fn daemon_refuses_connections_beyond_the_ingress_ceiling() {
+    let daemon_endpoint = bind_local_anchor_endpoint([102u8; 32])
+        .await
+        .expect("daemon endpoint binds");
+    let daemon_addr = dialable_addr(&daemon_endpoint).await;
+
+    // A ceiling of exactly ONE control session.
+    let db_path = unique_db();
+    let config = daemon_config_with_sessions(&db_path, "Ceiling anchor", 1);
+    let (daemon_config, service) = assemble_service(config);
+    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+    let serve_task = tokio::spawn(async move {
+        serve(
+            daemon_endpoint,
+            daemon_config,
+            service,
+            Box::new(|| [0x52u8; 32]),
+            async move {
+                let _ = shutdown_rx.await;
+            },
+        )
+        .await
+    });
+
+    let client = bind_local_anchor_endpoint([203u8; 32])
+        .await
+        .expect("client endpoint binds");
+
+    // Connection 1 occupies the single ingress permit: its handshake completes
+    // and the session stalls mid-frame on a partial length prefix, holding the
+    // permit (the progress deadline is five seconds, far beyond this test's
+    // assertion windows).
+    let first = timeout(STEP, client.connect(daemon_addr.clone(), ALPN_ANCHOR_V1))
+        .await
+        .expect("first dial did not time out")
+        .expect("first dial connects");
+    let (mut first_send, first_recv) = first.open_bi().await.expect("first bi-stream");
+    first_send.write_all(&[0]).await.unwrap();
+    first_send.flush().await.unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // Connection 2 must be REFUSED at accept: the dial itself fails before any
+    // frame exchange. (Were the refusal only the router's dispatch-time `busy`,
+    // the handshake — and thus this connect — would still succeed.)
+    let refused = timeout(STEP, client.connect(daemon_addr.clone(), ALPN_ANCHOR_V1))
+        .await
+        .expect("second dial did not time out");
+    assert!(
+        refused.is_err(),
+        "a connection beyond the ingress ceiling must be refused at accept, not served",
+    );
+
+    // Release the permit by closing connection 1 entirely.
+    drop(first_send);
+    drop(first_recv);
+    drop(first);
+
+    // A fresh connection must now be admitted and served end-to-end — the
+    // refusal above was capacity, not breakage. Retry briefly while the daemon
+    // reaps the first session and its permit.
+    let root = SigningKey::from_bytes(&[12u8; 32]);
+    let frame = prepare_frame(signed_ticket(&root, |_| {}));
+    let give_up = tokio::time::Instant::now() + STEP;
+    let response = loop {
+        match client.connect(daemon_addr.clone(), ALPN_ANCHOR_V1).await {
+            Ok(conn) => {
+                let (send, recv) = conn.open_bi().await.expect("third bi-stream");
+                let mut send = Box::pin(send);
+                let mut recv = Box::pin(recv);
+                write_frame(&mut send, &frame).await;
+                let bytes = timeout(STEP, read_frame(&mut recv))
+                    .await
+                    .expect("third response arrived before timeout");
+                let _ = send.shutdown().await;
+                break decode_canonical::<ControlResponseV1>(&bytes, MAX_CONTROL_FRAME_BYTES)
+                    .unwrap();
+            }
+            Err(error) => {
+                assert!(
+                    tokio::time::Instant::now() < give_up,
+                    "a fresh connection was never admitted after the permit was released: {error}",
+                );
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        }
+    };
+    assert!(
+        matches!(
+            response.outcome,
+            ControlOutcome::Success(ControlSuccess::PrepareHost(_))
+        ),
+        "the post-release connection should be served normally: {:?}",
+        response.outcome,
+    );
+
+    let _ = shutdown_tx.send(());
+    let served = timeout(STEP, serve_task)
+        .await
+        .expect("serve stops promptly")
+        .expect("serve task joined");
+    assert!(served.is_ok(), "serve returned Ok: {served:?}");
+    client.close().await;
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+}
+
+/// The `riot/anchor/1` registration carries the CONTROL frame ceiling
+/// ([`MAX_CONTROL_FRAME_BYTES`]), not the router's default sync ceiling: a
+/// length prefix declaring one byte over the control cap (far under the sync
+/// cap) must terminate the session AT the prefix, with no response frame.
+#[tokio::test(flavor = "multi_thread")]
+async fn control_plane_rejects_frames_over_the_control_cap_but_under_the_sync_cap() {
+    // The declared length sits strictly between the two ceilings, so it can
+    // only be rejected by the per-protocol control cap.
+    let declared = MAX_CONTROL_FRAME_BYTES + 1;
+    assert!(
+        declared < MAX_SYNC_FRAME_BYTES,
+        "the probe length must sit between the control and sync caps",
+    );
+
+    let daemon_endpoint = bind_local_anchor_endpoint([103u8; 32])
+        .await
+        .expect("daemon endpoint binds");
+    let daemon_addr = dialable_addr(&daemon_endpoint).await;
+
+    let (config, db_path) = daemon_config();
+    let (daemon_config, service) = assemble_service(config);
+    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+    let serve_task = tokio::spawn(async move {
+        serve(
+            daemon_endpoint,
+            daemon_config,
+            service,
+            Box::new(|| [0x53u8; 32]),
+            async move {
+                let _ = shutdown_rx.await;
+            },
+        )
+        .await
+    });
+
+    let client = bind_local_anchor_endpoint([204u8; 32])
+        .await
+        .expect("client endpoint binds");
+    let conn = timeout(STEP, client.connect(daemon_addr, ALPN_ANCHOR_V1))
+        .await
+        .expect("dial did not time out")
+        .expect("dial connects");
+    let (send, recv) = conn.open_bi().await.expect("bi-stream opens");
+    let mut send = Box::pin(send);
+    let mut recv = Box::pin(recv);
+
+    // A well-formed `u32be` length prefix declaring the oversized frame. The
+    // body is deliberately withheld: the control cap is enforced AT the prefix
+    // (before allocating or reading a body), so the daemon must cut the session
+    // off immediately. If this ALPN inherited the sync ceiling instead, the
+    // daemon would accept the prefix and sit in its five-second progress
+    // deadline awaiting body bytes — caught by the prompt window below.
+    send.write_all(&(declared as u32).to_be_bytes())
+        .await
+        .unwrap();
+    send.flush().await.unwrap();
+
+    // The session terminates promptly and with NO response frame: the next read
+    // observes stream/connection termination, never response bytes.
+    let mut probe = [0u8; 1];
+    let observed = timeout(Duration::from_secs(2), recv.read(&mut probe))
+        .await
+        .expect("the session must end at the oversized prefix, not wait out the progress deadline");
+    match observed {
+        Ok(0) | Err(_) => {}
+        Ok(n) => panic!("expected no response frame, but read {n} byte(s)"),
+    }
+
+    let _ = shutdown_tx.send(());
+    let served = timeout(STEP, serve_task)
+        .await
+        .expect("serve stops promptly")
+        .expect("serve task joined");
+    assert!(served.is_ok(), "serve returned Ok: {served:?}");
     client.close().await;
     let _ = std::fs::remove_file(&db_path);
     let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
