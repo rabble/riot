@@ -2,12 +2,14 @@
 //! namespace-scoped data bridge apps use to read/write their own Willow
 //! entries. Kept separate from `import/` (evidence-only).
 
+pub mod admission;
 pub mod bridge;
 pub mod bundle;
 pub mod directory;
 pub mod endorse;
 pub mod entry;
 pub mod index;
+pub mod inventory;
 pub mod manifest;
 pub mod starter;
 pub mod trust;
