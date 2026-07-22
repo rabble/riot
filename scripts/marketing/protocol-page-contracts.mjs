@@ -347,7 +347,7 @@ for (const [name, content] of Object.entries(productDocs)) {
 assert.match(whyRiot, /<link rel="canonical" href="\/why-riot\/">/i);
 assert.match(whyRiot, /<h1>People are the infrastructure\.<\/h1>/i);
 assert.match(whyRiot, /Every day, people make a community through meals, meetings, stories, decisions, celebrations, care, and shared work\./i);
-for (const heading of ["A community is something people do", "Tools for the commons", "The future is a practice", "More than one path", "Honest boundaries", "Build it with us"]) {
+for (const heading of ["A community is something people do", "Tools for the commons", "The future is a practice", "More than one path", "Share openly. Choose privacy deliberately.", "Build it with us"]) {
   assert.ok(whyRiot.includes(heading), `why-riot missing section: ${heading}`);
 }
 assert.match(whyRiot, /<svg\b[^>]*(?:aria-hidden="true"|role="img")[\s\S]*?<\/svg>/i, "Why Riot needs a code-native accessible illustration");
@@ -359,6 +359,28 @@ const allowedStatusText = new Set(Object.values(exactStatusText));
 for (const [, text] of home.matchAll(/<span\s+class="chip[^"]*"[^>]*>([^<]+)<\/span>/gi)) {
   assert.ok(allowedStatusText.has(text.trim()), `homepage status label must use the approved taxonomy: ${text.trim()}`);
 }
+const comparisonTable = block(home, /<table\b[^>]*class="contrast"[^>]*>[\s\S]*?<\/table>/i, "homepage comparison table");
+assert.doesNotMatch(comparisonTable, /<span\b[^>]*class="[^"]*\bchip\b/i, "homepage comparison must not contain status chips");
+assert.match(home, /<section\b[^>]*id="status"/i, "homepage detailed status section must remain");
+assert.match(home, /href="\/protocols\/"/i, "homepage protocol detail link must remain");
+
+for (const pattern of [
+  /<h3>What Riot does not hide<\/h3>/i,
+  /<ul\b[^>]*class="notlist"/i,
+  /<p\b[^>]*class="boundary-note"[^>]*>\s*Separate per-community keys/i,
+  /<div\b[^>]*class="evidence-box"/i,
+  /<div\b[^>]*class="evidence-stats"/i,
+  /<div\b[^>]*class="estat"/i,
+  /Each research pass/i,
+  /adversarial reviewers/i,
+  /Research(?:&nbsp;|\s)+passes/i,
+  /Sources(?:&nbsp;|\s)+fetched/i,
+  /Claims(?:&nbsp;|\s)+verified/i,
+]) assert.doesNotMatch(home, pattern, `homepage retains removed internal/fear copy: ${pattern}`);
+
+const evidence = block(home, /<section\b[^>]*id="evidence"[^>]*>[\s\S]*?<\/section>/i, "homepage field history");
+assert.match(evidence, /Grounded in the field/i);
+assert.match(evidence, /Occupy Sandy[\s\S]*TXTMob[\s\S]*Verificado 19S/i);
 const toolsBlock = block(whyRiot, /<section\b[^>]*id="tools"[^>]*>[\s\S]*?<\/section>/i, "Why Riot tools section");
 const capabilityArticle = (capability) => block(toolsBlock, new RegExp(`<article\\b[^>]*data-capability="${capability}"[^>]*>[\\s\\S]*?<\\/article>`, "i"), `${capability} capability`);
 const chipMatches = (html) => [...html.matchAll(/<span\s+class="chip"\s+data-status="(prototype|local|development|direction)">([^<]+)<\/span>/gi)].map(([, status, text]) => ({ status, text: text.trim() }));
@@ -385,20 +407,28 @@ assert.match(carry, /export and import a Riot bundle file/i);
 assert.match(carry, /share a community reference by link or QR/i);
 assert.match(carry, /onboarding\/reference, not proof that content moved by radio/i);
 assert.match(whyRiot, /A community should be able to leave a provider without leaving one another\.[\s\S]*Direction, not shipped/i);
-for (const phrase of ["plaintext", "readable", "copyable", "private encrypted groups are not shipped", "pseudonymity is not anonymity", "signature proves control of a key", "functioning device", "compatible peer or transport"]) {
-  assert.ok(whyRiot.toLowerCase().includes(phrase.toLowerCase()), `why-riot missing boundary: ${phrase}`);
-}
 const boundaries = block(whyRiot, /<section\b[^>]*id="boundaries"[^>]*>[\s\S]*?<\/section>/i, "Why Riot boundaries");
+for (const phrase of ["Current public Newswires", "publishing and collaboration", "read, copied, and carried", "Private encrypted groups", "not part of today's prototype"]) {
+  assert.ok(boundaries.toLowerCase().includes(phrase.toLowerCase()), `Why Riot missing calm boundary: ${phrase}`);
+}
+for (const phrase of ["IP addresses", "timing", "radio presence", "device labels", "proximity", "behavioral correlation", "compromised devices", "fabricated gateway"]) {
+  assert.doesNotMatch(boundaries, new RegExp(phrase, "i"), `Why Riot retains speculative inventory: ${phrase}`);
+}
 for (const href of ["/privacy/", "/protocols/", "https://signal.org/"]) assert.ok(boundaries.includes(`href="${href}"`), `Why Riot boundaries must link ${href}`);
 assert.match(whyRiot, /Rebecca Solnit[\s\S]*A Paradise Built in Hell[\s\S]*penguinrandomhouse\.com/i);
 for (const href of ["/guide/", "/community/", "/releases/", "https://github.com/rabble/riot"]) assert.ok(whyRiot.includes(`href="${href}"`), `Why Riot invitation must link ${href}`);
 
 // --- Privacy: public-first factual reference --------------------------------
 assert.match(privacy, /<link rel="canonical" href="\/privacy\/">/i);
-const privacyMarkers = ["Public means public", "What local-first changes—and what it does not", "This website", "Where to go next"];
+const privacyMarkers = ["Public communities", "Data communities can hold", "Private conversation", "This website", "Where to go next"];
 let privacyCursor = -1;
 for (const marker of privacyMarkers) { const at = privacy.indexOf(marker); assert.ok(at > privacyCursor, `Privacy section missing or out of order: ${marker}`); privacyCursor = at; }
-for (const phrase of ["plaintext", "readable", "copyable", "no confidential public-read boundary", "private encrypted groups", "Cloudflare", "request metadata"]) assert.ok(privacy.toLowerCase().includes(phrase.toLowerCase()), `Privacy missing: ${phrase}`);
+for (const phrase of ["public publishing spaces", "read, copied, and carried", "participant devices", "one company's account or database", "does not yet ship private encrypted groups", "no analytics", "sets no cookies"]) {
+  assert.ok(privacy.toLowerCase().includes(phrase.toLowerCase()), `Privacy missing affirmative boundary: ${phrase}`);
+}
+for (const phrase of ["IP addresses", "timing", "radio presence", "device labels", "proximity", "behavioral correlation", "compromised devices", "fabricated gateway"]) {
+  assert.doesNotMatch(privacy, new RegExp(phrase, "i"), `Privacy retains speculative inventory: ${phrase}`);
+}
 for (const href of ["/why-riot/", "/protocols/", "https://signal.org/"]) assert.ok(privacy.includes(`href="${href}"`), `Privacy must link ${href}`);
 assert.doesNotMatch(privacy, /<script\b/i, "Privacy must be script-free");
 
@@ -430,6 +460,9 @@ const marketingReadme = await read(resolve(root, "marketing/README.md"));
 const routesSection = block(marketingReadme, /## Routes\s*([\s\S]*?)(?=\n##\s|$)/, "marketing README Routes section");
 const readmeRoutes = [...routesSection.matchAll(/^- `([^`]+)`/gm)].map(([, href]) => normalizeLocalRoute(href));
 assertExactRoutes(readmeRoutes, allSitePaths, "marketing README route inventory", { ordered: true });
+const privacyRoute = block(routesSection, /^- `\/privacy\/`[^\n]*$/m, "marketing README privacy route");
+for (const phrase of ["public-publishing", "participant-held-data", "private-conversation", "website-data"]) assert.ok(privacyRoute.includes(phrase), `marketing README privacy route missing ${phrase}`);
+for (const phrase of ["device", "metadata"]) assert.doesNotMatch(privacyRoute, new RegExp(phrase, "i"), `marketing README privacy route retains ${phrase}`);
 await expectEnoent(resolve(root, "marketing/resilience"));
 await expectEnoent(resolve(root, "marketing/public/resilience"));
 for (const content of [...Object.values(pageContents), sitemap, marketingReadme]) assert.ok(!localRoutesFrom(content).includes("/resilience/"), "site must not link /resilience/");
