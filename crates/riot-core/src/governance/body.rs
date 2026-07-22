@@ -308,7 +308,10 @@ pub fn encode_body(body: &Body, e: &mut Encoder<&mut Vec<u8>>) -> Result<(), Gov
                 put_bytes32(e, 0, member_actor)?;
                 put_opaque(e, 1, decision)?;
             }
-            Body::InviteManagerDecision { invite_id, decision } => {
+            Body::InviteManagerDecision {
+                invite_id,
+                decision,
+            } => {
                 map(e, 2)?;
                 put_bytes32(e, 0, invite_id)?;
                 put_opaque(e, 1, decision)?;
