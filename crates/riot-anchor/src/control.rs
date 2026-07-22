@@ -200,6 +200,12 @@ impl<P: AdmissionPolicy, S: OperatorSigner> AnchorControlService<P, S> {
         &mut self.token_ring
     }
 
+    /// The token secret ring, read-only (`sync/2` sessions clone it).
+    #[must_use]
+    pub fn token_ring(&self) -> &TokenSecretRing {
+        &self.token_ring
+    }
+
     /// The operator-signed descriptor currently served by `Describe`.
     #[must_use]
     pub fn descriptor(&self) -> &DescriptorEnvelopeV1 {

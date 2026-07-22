@@ -19,7 +19,8 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt, DuplexStream};
 
 use riot_anchor::control::{AnchorControlContext, AnchorControlService};
 use riot_anchor::daemon::{
-    control_handler, spawn_control_actor, Ed25519OperatorSigner, TicketRootAuthorityPolicy,
+    control_handler, spawn_control_actor, ActorJob, ControlJob, ControlReply,
+    Ed25519OperatorSigner, TicketRootAuthorityPolicy,
 };
 use riot_anchor::repository::AnchorRepository;
 use riot_anchor::work::TokenSecretRing;
@@ -264,15 +265,20 @@ fn entropy_from(seed: u8) -> impl FnMut() -> [u8; 32] {
     }
 }
 
-/// Build a running actor + registered anchor/1 handler, returning the router.
-fn built_router() -> AlpnRouter {
+/// The control service the actor tests drive (operator seed 1, ring epoch 1).
+fn control_service() -> AnchorControlService<TicketRootAuthorityPolicy, Ed25519OperatorSigner> {
     let op = sk(1);
     let ctx = context(&op);
     let policy = TicketRootAuthorityPolicy::new(ctx.sync_version);
     let signer = Ed25519OperatorSigner::from_secret_bytes(op.to_bytes());
-    let service = AnchorControlService::new(ctx, policy, signer, TokenSecretRing::new(1, d32(200)));
+    AnchorControlService::new(ctx, policy, signer, TokenSecretRing::new(1, d32(200)))
+}
+
+/// Build a running actor + registered anchor/1 handler, returning the router.
+fn built_router() -> AlpnRouter {
+    let service = control_service();
     let repo = AnchorRepository::open_in_memory().unwrap();
-    let tx = spawn_control_actor(repo, service, Box::new(entropy_from(0x50)));
+    let (tx, _actor) = spawn_control_actor(repo, service, Box::new(entropy_from(0x50)), 8);
     let now_fn: Arc<dyn Fn() -> u64 + Send + Sync> = Arc::new(|| 1_500u64);
     let handler = control_handler(tx, now_fn);
 
@@ -512,4 +518,34 @@ async fn lower_ticket_epoch_is_refused_after_a_higher_epoch_was_admitted() {
 
     drop(peer_w);
     assert!(dispatch.await.unwrap().is_ok());
+}
+
+// ---------------------------------------------------------------------------
+// The single-writer actor THREAD (WU-B): a control job still round-trips after
+// the tokio::spawn -> std::thread move, and the thread stops when every sender
+// is dropped (no leaked OS thread, no hang on shutdown).
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn actor_thread_processes_jobs_and_stops_when_senders_drop() {
+    let repo = AnchorRepository::open_in_memory().expect("open");
+    let service = control_service();
+    let (tx, join_handle) = spawn_control_actor(repo, service, Box::new(entropy_from(0x50)), 4);
+
+    // A garbage frame must yield Close (decode failure), not a hang or panic.
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+    tx.send(ActorJob::Control(ControlJob {
+        request: vec![0xFF; 8],
+        now: 1_700_000_000,
+        reply: reply_tx,
+    }))
+    .await
+    .expect("actor alive");
+    assert_eq!(reply_rx.await.expect("reply"), ControlReply::Close);
+
+    // Dropping the last sender must let the thread exit: join must complete.
+    drop(tx);
+    tokio::task::spawn_blocking(move || join_handle.join().expect("actor thread exits cleanly"))
+        .await
+        .expect("join");
 }

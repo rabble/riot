@@ -11,14 +11,18 @@
 //! The router's [`Handler`] must be `Send + Sync` and its future `Send`, but the
 //! [`AnchorRepository`] is one non-pooled `rusqlite::Connection` and
 //! [`AnchorControlService`] holds mutable state (the token-secret ring) — neither
-//! may be shared across concurrent handler invocations. So exactly ONE tokio task
-//! owns the repository and the service: it receives [`ControlJob`]s over an
-//! [`mpsc`](tokio::sync::mpsc) channel, calls
+//! may be shared across concurrent handler invocations. So exactly ONE dedicated
+//! OS thread (`anchor-single-writer`) owns the repository and the service: it
+//! wraps the repository in `Rc<RefCell<...>>` (deliberately `!Send`, so `sync/2`
+//! sessions can share the one cell), receives [`ActorJob`]s over an
+//! [`mpsc`](tokio::sync::mpsc) channel via `blocking_recv`, calls
 //! [`AnchorControlService::handle`], encodes the [`ControlResponseV1`], and sends
 //! the response bytes back over a [`oneshot`](tokio::sync::oneshot) reply. The
 //! anchor/1 handler closure holds only the `mpsc::Sender` (which is
 //! `Clone + Send + Sync`), so many concurrent connections funnel through the one
-//! writer without ever aliasing the connection or the ring.
+//! writer without ever aliasing the connection or the ring. The thread stops
+//! when every sender is dropped; [`serve`] joins it on shutdown so a panic
+//! payload surfaces in the daemon's error path.
 //!
 //! # Deferred scope (increment 2+)
 //!
@@ -32,9 +36,11 @@
 //!   the smallest REAL increment-1 policy: it performs a genuine cryptographic
 //!   ticket-root-signature authority check and defers capacity/pressure.
 
+use std::cell::RefCell;
 use std::future::Future;
 use std::path::PathBuf;
 use std::pin::Pin;
+use std::rc::Rc;
 use std::sync::Arc;
 
 use tokio::sync::{mpsc, oneshot, Semaphore};
@@ -55,6 +61,8 @@ use riot_transport::{TransportError, ALPN_ANCHOR_V1};
 use crate::admission::IngressLimits;
 use crate::control::{AdmissionPolicy, AnchorControlService, ControlHandling, PreparePlan};
 use crate::repository::{AnchorRepository, AnchorRepositoryError};
+use crate::sync_driver::{SyncJob, SyncSessionTable};
+use crate::sync_service::SharedRepo;
 use crate::work::{OperatorSigner, PressurePolicy};
 
 /// A fresh-entropy source the control actor uses for anchor-minted ids (operation
@@ -88,43 +96,120 @@ pub enum ControlReply {
     Close,
 }
 
-/// Spawn the single-writer control actor. It OWNS `repo` and `service` for its
-/// lifetime and processes every [`ControlJob`] serially, so the non-`Sync`
-/// connection and the mutable token ring are never aliased. Returns the
-/// `mpsc::Sender` the anchor/1 [`Handler`] clones. The actor stops when every
-/// sender is dropped.
-///
-/// Must be called from within a tokio runtime.
+/// One unit of work for the single-writer actor thread.
+pub enum ActorJob {
+    /// A `riot/anchor/1` control frame (existing behavior).
+    Control(ControlJob),
+    /// A `riot/sync/2` session event (the DATA-path driver; sessions run
+    /// inside the actor thread because their repository handle is `!Send`).
+    Sync(SyncJob),
+    /// Renew the single-writer deployment lease in place. The periodic renew
+    /// loop that sends this is later scope; the arm re-acquires via
+    /// [`AnchorRepository::acquire_deployment_lease`], whose same-holder +
+    /// same-token path renews without advancing the epoch.
+    RenewLease {
+        /// This deployment instance's lease holder id (must match startup).
+        holder_id: [u8; 32],
+        /// The deployment-instance token bound to the database.
+        deployment_token: [u8; 32],
+        /// The lease term in seconds to extend by.
+        lease_ttl_secs: u64,
+        /// The observation time (unix seconds) of the renewal.
+        now: u64,
+        /// Where the actor reports success or the renewal refusal.
+        reply: oneshot::Sender<Result<(), String>>,
+    },
+}
+
+/// Spawn the single-writer actor on its own OS thread (`anchor-single-writer`).
+/// The thread OWNS `repo` and `service` for its lifetime — the repository
+/// behind `Rc<RefCell<...>>`, deliberately `!Send`, so `riot/sync/2` sessions
+/// can share the one cell — and processes every [`ActorJob`] serially, so the
+/// non-`Sync` connection and the mutable token ring are never aliased. Returns
+/// the `mpsc::Sender` the handlers clone plus the thread's `JoinHandle`. The
+/// thread stops when every sender is dropped; joining the handle surfaces its
+/// panic payload if it died.
 pub fn spawn_control_actor<P, S>(
-    mut repo: AnchorRepository,
+    repo: AnchorRepository,
     service: AnchorControlService<P, S>,
-    mut entropy: EntropyFn,
-) -> mpsc::Sender<ControlJob>
+    entropy: EntropyFn,
+    max_sync_sessions: usize,
+) -> (mpsc::Sender<ActorJob>, std::thread::JoinHandle<()>)
 where
     P: AdmissionPolicy + Send + 'static,
     S: OperatorSigner + Send + 'static,
 {
-    let (tx, mut rx) = mpsc::channel::<ControlJob>(64);
-    tokio::spawn(async move {
-        while let Some(job) = rx.recv().await {
-            let reply = match service.handle(&mut repo, &job.request, job.now, &mut *entropy) {
-                Ok(ControlHandling::Responded(response)) => match response.encode_canonical() {
-                    Ok(bytes) => ControlReply::Respond(bytes),
-                    // Encoding a response the service itself built should never
-                    // fail; if it does, close this stream rather than serve a
-                    // corrupt frame. Other connections keep being served.
-                    Err(_) => ControlReply::Close,
-                },
-                Ok(ControlHandling::ProtocolFailure(_failure)) => ControlReply::Close,
-                // A durable-store/codec error ends this stream but keeps the
-                // actor (and the daemon) alive for other connections.
-                Err(_error) => ControlReply::Close,
-            };
-            // The handler may have gone away (peer dropped); that is fine.
-            let _ = job.reply.send(reply);
+    let (tx, rx) = mpsc::channel::<ActorJob>(64);
+    let handle = std::thread::Builder::new()
+        .name("anchor-single-writer".into())
+        .spawn(move || actor_loop(repo, service, entropy, rx, max_sync_sessions))
+        .expect("spawn anchor single-writer thread");
+    (tx, handle)
+}
+
+/// The single-writer loop: owns the repository behind the shared cell and
+/// serializes every control, sync, and lease job. Runs until the channel
+/// closes (every sender dropped).
+fn actor_loop<P, S>(
+    repo: AnchorRepository,
+    service: AnchorControlService<P, S>,
+    mut entropy: EntropyFn,
+    mut rx: mpsc::Receiver<ActorJob>,
+    max_sync_sessions: usize,
+) where
+    P: AdmissionPolicy,
+    S: OperatorSigner,
+{
+    let shared: SharedRepo = Rc::new(RefCell::new(repo));
+    let mut sync_sessions = SyncSessionTable::new(max_sync_sessions);
+    while let Some(job) = rx.blocking_recv() {
+        match job {
+            ActorJob::Control(job) => {
+                // Keep the borrow scope tight: sync-session handling borrows
+                // the same cell.
+                let reply = {
+                    let mut repo = shared.borrow_mut();
+                    match service.handle(&mut repo, &job.request, job.now, &mut *entropy) {
+                        Ok(ControlHandling::Responded(response)) => {
+                            match response.encode_canonical() {
+                                Ok(bytes) => ControlReply::Respond(bytes),
+                                // Encoding a response the service itself built
+                                // should never fail; if it does, close this
+                                // stream rather than serve a corrupt frame.
+                                // Other connections keep being served.
+                                Err(_) => ControlReply::Close,
+                            }
+                        }
+                        Ok(ControlHandling::ProtocolFailure(_failure)) => ControlReply::Close,
+                        // A durable-store/codec error ends this stream but
+                        // keeps the actor (and the daemon) alive for other
+                        // connections.
+                        Err(_error) => ControlReply::Close,
+                    }
+                };
+                // The handler may have gone away (peer dropped); that is fine.
+                let _ = job.reply.send(reply);
+            }
+            ActorJob::Sync(job) => sync_sessions.handle(&shared, service.token_ring(), job),
+            ActorJob::RenewLease {
+                holder_id,
+                deployment_token,
+                lease_ttl_secs,
+                now,
+                reply,
+            } => {
+                // The same-holder + same-token re-acquire IS the renew-in-place
+                // path (it keeps the lease epoch for an active holder); any
+                // refusal means the lease was lost, stolen, or token-mismatched.
+                let result = shared
+                    .borrow_mut()
+                    .acquire_deployment_lease(&holder_id, &deployment_token, now, lease_ttl_secs)
+                    .map(|_lease| ())
+                    .map_err(|error| error.to_string());
+                let _ = reply.send(result);
+            }
         }
-    });
-    tx
+    }
 }
 
 /// Build the `riot/anchor/1` [`Handler`]. It reads control frames off the bounded
@@ -132,7 +217,7 @@ where
 /// actor's reply back — one request/response per frame, looping until the peer
 /// closes the stream. A [`ControlReply::Close`] (bounded protocol failure) ends
 /// the session with no response frame.
-pub fn control_handler(tx: mpsc::Sender<ControlJob>, now_fn: NowFn) -> Handler {
+pub fn control_handler(tx: mpsc::Sender<ActorJob>, now_fn: NowFn) -> Handler {
     Arc::new(move |mut stream: BoundedStream, _exporter: Exporter| {
         let tx = tx.clone();
         let now_fn = Arc::clone(&now_fn);
@@ -150,7 +235,7 @@ pub fn control_handler(tx: mpsc::Sender<ControlJob>, now_fn: NowFn) -> Handler {
                     now: (now_fn)(),
                     reply: reply_tx,
                 };
-                if tx.send(job).await.is_err() {
+                if tx.send(ActorJob::Control(job)).await.is_err() {
                     return Err(TransportError::Io(std::io::Error::other(
                         "anchor control actor unavailable",
                     )));
@@ -526,11 +611,13 @@ where
         .install_persisted_descriptor(persisted_descriptor, now)
         .map_err(|error| DaemonError::Configuration(error.to_string()))?;
 
-    let tx = spawn_control_actor(repo, service, entropy);
+    // One shared ceiling for control sessions and (future) sync sessions until
+    // a dedicated sync limit exists in the ingress config.
+    let max_sessions = config.ingress.max_concurrent_control_sessions;
+    let (tx, actor) = spawn_control_actor(repo, service, entropy, max_sessions);
     let now_fn: NowFn = Arc::new(unix_now);
     let handler = control_handler(tx, now_fn);
 
-    let max_sessions = config.ingress.max_concurrent_control_sessions;
     let mut router = AlpnRouter::new(max_sessions);
     router.register_with_max_frame(
         ALPN_ANCHOR_V1,
@@ -586,6 +673,24 @@ where
     endpoint.close().await;
     sessions.abort_all();
     while sessions.join_next().await.is_some() {}
+    // Every remaining `ActorJob` sender lives in the router's handlers; drop
+    // them so the single-writer thread sees channel closure and exits. Joining
+    // then surfaces a panic payload from the actor thread in the daemon's error
+    // path instead of silently discarding it.
+    drop(router);
+    let joined = tokio::task::spawn_blocking(move || actor.join())
+        .await
+        .map_err(|error| {
+            DaemonError::Configuration(format!("anchor single-writer join task failed: {error}"))
+        })?;
+    joined.map_err(|payload| {
+        let message = payload
+            .downcast_ref::<&str>()
+            .map(|message| (*message).to_string())
+            .or_else(|| payload.downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "non-string panic payload".to_string());
+        DaemonError::Configuration(format!("anchor single-writer actor panicked: {message}"))
+    })?;
     Ok(())
 }
 
