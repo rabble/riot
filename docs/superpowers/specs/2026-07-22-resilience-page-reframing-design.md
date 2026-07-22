@@ -514,14 +514,18 @@ The new assertions must fail before HTML implementation. After implementation th
     outside the loopback preview origin on all nine editorial routes.
 18. the homepage conventional-platform comparison contains no `span.chip`, while the later
     `#status` section and the `/protocols/` detail link remain present;
-19. the homepage contains no `What Riot does not hide` heading or list, no speculative gateway or
-    identity-correlation note, and no `.evidence-box`, research-pass/source-fetch/claim-verification
-    metrics, or adversarial-reviewer process copy; the surrounding `#evidence` field-history section
-    and its named community examples remain;
+19. within the homepage, the exact selectors/text `<h3>What Riot does not hide</h3>`,
+    `ul.notlist`, `p.boundary-note` beginning `Separate per-community keys`, `div.evidence-box`,
+    `div.evidence-stats`, `div.estat`, `Each research pass`, `adversarial reviewers`,
+    `Research passes`, `Sources fetched`, and `Claims verified` are absent; the surrounding
+    `section#evidence`, its `Grounded in the field` H2, and its named community examples remain;
 20. Why Riot and Privacy retain the exact current boundary—Newswires are public publishing and
     collaboration spaces, private encrypted groups are not part of today's prototype—while omitting
     the finite speculative inventory: IP addresses, radio presence, device labels, proximity,
     behavioral correlation, compromised devices, and fabricated gateway views.
+21. `marketing/README.md` describes `/privacy/` as the concise public-publishing,
+    participant-held-data, private-conversation, and website-data boundary; it does not promise an
+    IP/radio/device/metadata threat inventory.
 
 The legacy-test migration replaces four complete regions in
 `scripts/marketing/protocol-page-contracts.mjs`, rather than deleting individual assertions ad hoc:
@@ -676,12 +680,29 @@ Passing requires `PASS` with zero findings. The report stores the complete promp
 ordered SHA-256 list for the eleven reviewed files, returned JSON verbatim, and fresh session
 identifier. This is the reproducible human half of the site-wide claim audit.
 
-The initial reframe was deployed after explicit owner approval. Deploy revision 15 through the
-existing Cloudflare Workers marketing configuration only after the complete refreshed acceptance
-evidence passes: static/browser contracts, exact mirrors, desktop/mobile visual checks, three fresh
-Why Riot first-read reviews using the revised Q4 rubric, and a fresh semantic claim audit. This
-changes production marketing content. It changes no deployment configuration, DNS, TLS, Workers
-runtime behavior, application behavior, protocol behavior, or application data.
+The initial reframe was deployed after explicit owner approval. Deploy the approved clarity-
+correction artifact from the current implementation `HEAD` through the existing Cloudflare Workers
+marketing configuration only after the complete refreshed acceptance evidence passes:
+static/browser contracts, exact mirrors, desktop/mobile visual checks, three fresh Why Riot
+first-read reviews using the revised Q4 rubric, and a fresh semantic claim audit. This changes
+production marketing content. It changes no deployment configuration, DNS, TLS, Workers runtime
+behavior, application behavior, protocol behavior, or application data.
+
+Implement the production check as the committed dependency-free script
+`scripts/marketing/verify-live.mjs`, exposed as `npm run verify:marketing:live`. It uses this exact
+route-to-file map:
+
+```text
+/             -> marketing/public/index.html
+/why-riot/    -> marketing/public/why-riot/index.html
+/guide/       -> marketing/public/guide/index.html
+/about/       -> marketing/public/about/index.html
+/privacy/     -> marketing/public/privacy/index.html
+/open-source/ -> marketing/public/open-source/index.html
+/community/   -> marketing/public/community/index.html
+/releases/    -> marketing/public/releases/index.html
+/protocols/   -> marketing/public/protocols/index.html
+```
 
 Post-deploy verification is blocking and covers both
 `https://riot-protest-net-marketing.protestnet.workers.dev` and `https://riot.protest.net`. At each
@@ -692,7 +713,8 @@ routes and require no `Set-Cookie`. In a fresh
 Playwright context for each origin, visit and fully scroll all nine routes; require an empty cookie
 jar and `document.cookie`, empty `localStorage` and `sessionStorage`, and no observed request origin
 outside the origin under test. Record the Cloudflare version, exact command or script, origins,
-route results, headers/cookie/storage/request-origin result, and public-file hashes in
+route results, expected local SHA-256, live response SHA-256, headers/cookie/storage/request-origin
+result, and the exact `npm run verify:marketing:live` command in
 `docs/marketing/2026-07-22-human-capacity-implementation-review.md` before the deployment-evidence
 commit is pushed.
 
@@ -780,6 +802,10 @@ The architecture pass then required explicit production-content scope, complete 
 direct no-redirect live checks, preservation of human field history, the narrower “public Newswires”
 boundary, and a matching Privacy route description in `marketing/README.md`. Revision 17 adds those
 requirements.
+
+The implementation-readiness re-review requested selector-exact removal predicates, a committed
+route-to-file live verifier with expected/served hashes, and an artifact reference that does not
+confuse the design revision with the implementation revision. Revision 18 adds them.
 
 ## Primary Sources
 
