@@ -190,7 +190,11 @@ mod memory_tests {
     fn a_poisoned_memory_mutex_yields_a_storage_error() {
         let repository = AuthorityRepository::memory();
         let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let AuthorityRepository::Memory(records) = &repository;
+            let records = match &repository {
+                AuthorityRepository::Memory(records) => records,
+                #[cfg(feature = "sqlite")]
+                AuthorityRepository::Sqlite(_) => unreachable!(),
+            };
             let _guard = records.lock().unwrap();
             panic!("poison the lock");
         }));
