@@ -4,8 +4,9 @@
 //! binary uses. Everything here takes plain inputs — an args slice and an
 //! environment slice `&[(String, String)]` — rather than reading `std::env`
 //! directly, so the binary shrinks to a thin shell (read env/argv → call
-//! [`resolve_config`] → [`assemble_service`] → [`crate::daemon::run`]) and the
-//! parsing/assembly can be unit-tested without process globals.
+//! [`resolve_config`] → [`crate::daemon::run`], which loads the persisted
+//! secrets and calls [`finalize_service`]) and the parsing/assembly can be
+//! unit-tested without process globals.
 //!
 //! # Configuration surface
 //!
@@ -20,10 +21,13 @@
 //!   `RIOT_ANCHOR_FAILURE_DOMAIN` (optional) — descriptor metadata.
 //! * `RIOT_ANCHOR_MAX_CONTROL_SESSIONS` (optional) — concurrency ceiling.
 //!
-//! DEFERRED(WU-019 increment 2): durable persistence of the genesis random, the
-//! namespace-token secret, and the deployment/endpoint identities (increment 1
-//! derives the stable ones deterministically from the operator secret so a
-//! restart is coherent); plus descriptor epoch rotation.
+//! The genesis random and the namespace-token secret are DATABASE-durable:
+//! [`secret_proposals`] derives first-boot proposals from the operator secret,
+//! the daemon persists them first-write-wins (`anchor_secrets`), and
+//! [`finalize_service`] assembles the service from the persisted values — so an
+//! operator-key rotation cannot silently change the anchor id or orphan
+//! outstanding namespace tokens. DEFERRED: descriptor epoch rotation and
+//! token-secret epoch rotation.
 
 use std::path::PathBuf;
 
@@ -49,6 +53,8 @@ pub const OPERATION_LIFETIME_SECS: u64 = 3600;
 pub const DESCRIPTOR_VALID_SECS: u64 = 30 * 24 * 3600;
 /// The deployment-lease term.
 pub const LEASE_TTL_SECS: u64 = 300;
+/// The retention horizon (seconds past commit) stamped into hosting receipts.
+pub const REPORTED_RETENTION_SECS: u64 = 30 * 24 * 3600;
 /// Operator warning emitted when this run minted a non-durable endpoint identity.
 pub const EPHEMERAL_ENDPOINT_WARNING: &str =
     "no RIOT_ANCHOR_ENDPOINT_KEY set; using an EPHEMERAL endpoint identity";
@@ -103,6 +109,13 @@ impl Config {
         self.endpoint_identity_is_ephemeral
             .then_some(EPHEMERAL_ENDPOINT_WARNING)
     }
+
+    /// The SQLite database path this deployment is bound to (the daemon opens
+    /// it to load the persisted secrets before assembling the service).
+    #[must_use]
+    pub fn db_path(&self) -> &std::path::Path {
+        &self.db_path
+    }
 }
 
 /// Resolve the daemon configuration from an args slice and an environment slice.
@@ -150,36 +163,84 @@ pub fn resolve_config(args: &[String], env: &[(String, String)]) -> Result<Confi
     })
 }
 
-/// Assemble the runnable [`DaemonConfig`] + control service from a [`Config`].
-///
-/// Builds the operator-signed descriptor/context, the real Ed25519 signer, the
-/// canonical-gate admission policy, and the (secret, stable) namespace-token ring
-/// and deployment token.
+/// The database-durable anchor secrets: what [`finalize_service`] assembles the
+/// service from. On a fresh database these are the [`secret_proposals`]
+/// derivations; on every later boot they are whatever `anchor_secrets` already
+/// holds (first write wins).
+pub struct PersistedSecrets {
+    /// The genesis random fixed at anchor genesis (feeds the anchor id).
+    pub genesis_random: [u8; 32],
+    /// The namespace-token secret (epoch 1) outstanding operations re-derive
+    /// their tokens from.
+    pub token_secret: [u8; 32],
+}
+
+/// Derive the first-boot secret PROPOSALS from the operator secret. These are
+/// only proposals: the daemon persists them first-write-wins and the persisted
+/// values (which a proposal can never displace) are what [`finalize_service`]
+/// builds from.
+#[must_use]
+pub fn secret_proposals(config: &Config) -> PersistedSecrets {
+    PersistedSecrets {
+        genesis_random: derive(b"riot/anchor/genesis-random/v1", &config.operator_secret),
+        token_secret: derive(b"riot/anchor/token-secret/v1", &config.operator_secret),
+    }
+}
+
+/// Assemble the runnable [`DaemonConfig`] + control service from a [`Config`]
+/// alone, using the derived [`secret_proposals`] directly. Bit-identical to the
+/// fresh-database daemon path ([`secret_proposals`] → persist →
+/// [`finalize_service`]); the daemon itself loads the persisted secrets first.
 #[must_use]
 pub fn assemble_service(config: Config) -> (DaemonConfig, AnchorService) {
+    let proposals = secret_proposals(&config);
+    finalize_service(config, proposals)
+}
+
+/// Assemble the runnable [`DaemonConfig`] + control service from a [`Config`]
+/// and the database-durable [`PersistedSecrets`].
+///
+/// Builds the operator-signed descriptor/context (on the persisted genesis
+/// random), the real Ed25519 signer, the canonical-gate admission policy, and
+/// the namespace-token ring (on the persisted token secret) and deployment
+/// token.
+#[must_use]
+pub fn finalize_service(
+    config: Config,
+    secrets: PersistedSecrets,
+) -> (DaemonConfig, AnchorService) {
     let operator = SigningKey::from_bytes(&config.operator_secret);
-    let context = build_control_context(&operator, &config);
+    let context = build_control_context(&operator, &config, &secrets.genesis_random);
     let policy = TicketRootAuthorityPolicy::new(context.sync_version);
     let signer = Ed25519OperatorSigner::from_secret_bytes(config.operator_secret);
 
     // The namespace-token secret must be SECRET and stable across restarts (so a
-    // prepared operation's tokens re-derive). Increment 1 derives it from the
-    // operator SECRET; DEFERRED(WU-019 increment 2): a dedicated persisted random
-    // secret with rotation.
-    let token_secret = derive(b"riot/anchor/token-secret/v1", &config.operator_secret);
-    let service = AnchorControlService::new(
+    // prepared operation's tokens re-derive): the persisted, database-bound value.
+    let mut service = AnchorControlService::new(
         context,
         policy,
         signer,
-        TokenSecretRing::new(1, token_secret),
+        TokenSecretRing::new(1, secrets.token_secret),
     );
+    // Thread the deployment's receipt-retention horizon into the Commit service.
+    service.set_reported_retention(REPORTED_RETENTION_SECS);
 
     let daemon_config = DaemonConfig {
         db_path: config.db_path,
         endpoint_secret_key: config.endpoint_secret,
-        // The lease holder id is the operator identity; the deployment token is a
-        // secret, stable value bound to this operator's database.
-        holder_id: operator.verifying_key().to_bytes(),
+        // PER-PROCESS lease identity: `holder_id` is a zero PLACEHOLDER here —
+        // `daemon::serve` overwrites it with a fresh random draw from the
+        // daemon's entropy at startup (its first entropy use). It must NOT be
+        // derived from the operator secret: an operator-derived holder made a
+        // second daemon started from the SAME config present identical
+        // holder+token and renew the first daemon's lease in place — two live
+        // writers forking one database. With a per-process holder the
+        // double-start presents the same deployment token but a DIFFERENT
+        // holder and is refused `LeaseHeld`, exiting fatally instead of
+        // forking. The deployment token stays operator-derived — a secret,
+        // stable value binding the database to this deployment/operator (a
+        // different operator's token keeps failing `LeaseTokenMismatch`).
+        holder_id: [0u8; 32],
         deployment_token: derive(b"riot/anchor/deployment-token/v1", &config.operator_secret),
         lease_ttl_secs: LEASE_TTL_SECS,
         ingress: config.ingress,
@@ -188,13 +249,16 @@ pub fn assemble_service(config: Config) -> (DaemonConfig, AnchorService) {
     (daemon_config, service)
 }
 
-/// Build a real, operator-signed anchor descriptor + control context.
+/// Build a real, operator-signed anchor descriptor + control context on the
+/// given genesis random (fixed at anchor genesis; database-durable).
 #[must_use]
-pub fn build_control_context(operator: &SigningKey, config: &Config) -> AnchorControlContext {
+pub fn build_control_context(
+    operator: &SigningKey,
+    config: &Config,
+    genesis_random: &[u8; 32],
+) -> AnchorControlContext {
     let operator_public = operator.verifying_key().to_bytes();
-    // DEFERRED(WU-019 increment 2): the genesis random is fixed at anchor genesis
-    // and persisted. Increment 1 derives a stable value from the operator secret.
-    let genesis_random = derive(b"riot/anchor/genesis-random/v1", &config.operator_secret);
+    let genesis_random = *genesis_random;
     let anchor_id = compute_anchor_id(&operator_public, &genesis_random);
     let current_key = OperatorVerificationKeyV1 {
         public_key: operator_public,
@@ -532,15 +596,91 @@ mod tests {
         let (daemon_config, _service) = assemble_service(config);
         assert_eq!(daemon_config.db_path, PathBuf::from("/tmp/y.db"));
         assert_eq!(daemon_config.ingress.max_concurrent_control_sessions, 7);
-        // The holder id is the operator's public key; the deployment token is a
-        // deterministic secret derivation, distinct from the holder id.
-        let operator = SigningKey::from_bytes(&[3u8; 32]);
-        assert_eq!(daemon_config.holder_id, operator.verifying_key().to_bytes());
+        // The holder id is a zero PLACEHOLDER — `daemon::serve` overwrites it
+        // with a per-process random draw at startup. It must NOT be an
+        // operator derivation (an operator-derived holder let a same-config
+        // double-start renew the lease in place and fork the database). The
+        // deployment token stays a deterministic operator-secret derivation
+        // binding the database to the deployment.
+        assert_eq!(daemon_config.holder_id, [0u8; 32]);
         assert_eq!(
             daemon_config.deployment_token,
             derive(b"riot/anchor/deployment-token/v1", &[3u8; 32])
         );
         assert_ne!(daemon_config.holder_id, daemon_config.deployment_token);
+    }
+
+    #[test]
+    fn finalize_service_binds_the_persisted_secrets() {
+        // Persisted values that DIFFER from what this operator secret derives:
+        // the assembled service must be built from the persisted values, not
+        // re-derive its own (anchor identity is bound to the database).
+        let config = Config {
+            db_path: PathBuf::from("/tmp/persisted.db"),
+            operator_secret: [3u8; 32],
+            endpoint_secret: [4u8; 32],
+            endpoint_identity_is_ephemeral: false,
+            https_origin: "https://a".to_string(),
+            display_label: "A".to_string(),
+            failure_domain: "d".to_string(),
+            ingress: IngressLimits::default(),
+        };
+        let persisted = PersistedSecrets {
+            genesis_random: [21u8; 32],
+            token_secret: [22u8; 32],
+        };
+        let derived = secret_proposals(&config);
+        assert_ne!(derived.genesis_random, persisted.genesis_random);
+        assert_ne!(derived.token_secret, persisted.token_secret);
+
+        let (_daemon_config, service) = finalize_service(config, persisted);
+        assert_eq!(
+            service.descriptor().body.genesis_random_256_bits,
+            [21u8; 32],
+            "the descriptor carries the persisted genesis random"
+        );
+        assert_eq!(
+            service.descriptor().body.anchor_id,
+            service.descriptor().body.recomputed_anchor_id(),
+            "the anchor id is recomputed from the persisted genesis random"
+        );
+        assert_eq!(
+            service.token_ring().secret(1),
+            Some(&[22u8; 32]),
+            "the token ring holds the persisted token secret"
+        );
+    }
+
+    #[test]
+    fn assemble_service_equals_finalize_with_derived_proposals() {
+        // Fresh-database behavior is bit-identical: assembling directly and
+        // finalizing with the derived proposals produce the same identity.
+        let make_config = || Config {
+            db_path: PathBuf::from("/tmp/fresh.db"),
+            operator_secret: [3u8; 32],
+            endpoint_secret: [4u8; 32],
+            endpoint_identity_is_ephemeral: false,
+            https_origin: "https://a".to_string(),
+            display_label: "A".to_string(),
+            failure_domain: "d".to_string(),
+            ingress: IngressLimits::default(),
+        };
+        let (_, assembled) = assemble_service(make_config());
+        let config = make_config();
+        let proposals = secret_proposals(&config);
+        let (_, finalized) = finalize_service(config, proposals);
+        assert_eq!(
+            assembled.descriptor().body.genesis_random_256_bits,
+            finalized.descriptor().body.genesis_random_256_bits
+        );
+        assert_eq!(
+            assembled.descriptor().body.anchor_id,
+            finalized.descriptor().body.anchor_id
+        );
+        assert_eq!(
+            assembled.token_ring().secret(1),
+            finalized.token_ring().secret(1)
+        );
     }
 
     #[test]
@@ -556,7 +696,8 @@ mod tests {
             ingress: IngressLimits::default(),
         };
         let operator = SigningKey::from_bytes(&config.operator_secret);
-        let context = build_control_context(&operator, &config);
+        let genesis_random = secret_proposals(&config).genesis_random;
+        let context = build_control_context(&operator, &config, &genesis_random);
         assert_eq!(context.sync_version, SYNC_VERSION);
         assert_eq!(context.operation_lifetime_secs, OPERATION_LIFETIME_SECS);
         assert_eq!(

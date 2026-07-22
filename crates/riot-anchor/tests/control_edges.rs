@@ -7,6 +7,8 @@
 //!   sees when a durable store or codec fault escapes;
 //! * `token_ring_mut` — secret-epoch rotation between operations, observed through
 //!   the epoch a subsequent prepare stamps into its stored operation;
+//! * `CommitHost` routing into the composite hosting service (and the receipt
+//!   reflecting the PERSISTED descriptor coordinates, not construction-time ones);
 //! * the `Unsupported` protocol failure for an operation this build does not serve;
 //! * `replay_prepare`'s terminal arm — a terminalised prepare replays its terminal
 //!   refusal rather than a fresh prepare;
@@ -14,6 +16,8 @@
 //!   operation;
 //! * `stored_prepare_success`'s closed refusal when the stored prepared bytes are
 //!   not a prepare success.
+
+mod hosting_common;
 
 use ed25519_dalek::{Signer, SigningKey};
 
@@ -24,7 +28,7 @@ use riot_anchor::control::{
 use riot_anchor::repository::{AnchorRepository, NewPreparedOperation, OperationKind};
 use riot_anchor::work::{OperatorSigner, PressurePolicy, TokenSecretRing};
 
-use riot_anchor_protocol::codec::{CanonicalRecord, CodecError};
+use riot_anchor_protocol::codec::{decode_canonical, CanonicalRecord, CodecError};
 use riot_anchor_protocol::control::{
     CommitHostV1, ControlOperation, ControlOutcome, ControlRefusal, ControlRequestV1,
     ControlResponseV1, ControlSuccess, EffectiveOperationLimits, GetOperationState, GetOperationV1,
@@ -35,7 +39,7 @@ use riot_anchor_protocol::records::{
     AnchorDescriptorBodyV1, AnchorLimitProfileV1, ControlOperationKind, DescriptorEnvelopeV1,
     EnabledRole, HostingReceiptBodyV1, HostingReceiptV1, HostingStatus, NamespaceResult,
     OperatorSignedEnvelopeV1, OperatorVerificationKeyV1, PublicSiteTicketV2Core,
-    RootSignedTicketCoreEnvelopeV2, TransportFloor,
+    RootSignedTicketCoreEnvelopeV2, TransportFloor, MAX_TICKET_CORE_BYTES,
 };
 
 use riot_anchor::repository::AnchorRepositoryError;
@@ -60,6 +64,7 @@ fn d16(seed: u8) -> [u8; 16] {
     [seed; 16]
 }
 
+#[derive(Clone)]
 struct TestSigner(SigningKey);
 impl OperatorSigner for TestSigner {
     fn sign(&self, preimage: &[u8]) -> [u8; 64] {
@@ -74,14 +79,15 @@ struct PassPolicy {
 }
 impl PassPolicy {
     fn new() -> Self {
-        PassPolicy {
-            plan: PreparePlan {
-                community_root: d32(70),
-                ordered_namespace_host_plan: [d32(10), d32(11), d32(12)],
-                ordered_retained_snapshot_digests: [d32(20), d32(21), d32(22)],
-                base_generation: 7,
-            },
-        }
+        Self::with_plan(PreparePlan {
+            community_root: d32(70),
+            ordered_namespace_host_plan: [d32(10), d32(11), d32(12)],
+            ordered_retained_snapshot_digests: [d32(20), d32(21), d32(22)],
+            base_generation: 7,
+        })
+    }
+    fn with_plan(plan: PreparePlan) -> Self {
+        PassPolicy { plan }
     }
 }
 impl AdmissionPolicy for PassPolicy {
@@ -89,6 +95,7 @@ impl AdmissionPolicy for PassPolicy {
         &self,
         _request: &PrepareHostV1,
         _observed_at: u64,
+        _highest_transport_epoch: Option<u32>,
     ) -> Result<PreparePlan, ControlRefusal> {
         Ok(self.plan)
     }
@@ -108,6 +115,10 @@ impl AdmissionPolicy for PassPolicy {
 }
 
 fn descriptor(operator: &SigningKey) -> DescriptorEnvelopeV1 {
+    descriptor_at_epoch(operator, 0)
+}
+
+fn descriptor_at_epoch(operator: &SigningKey, descriptor_epoch: u64) -> DescriptorEnvelopeV1 {
     let genesis_random = d32(99);
     let anchor = compute_anchor_id(&pk(operator), &genesis_random);
     let current_key = vkey(operator);
@@ -117,7 +128,7 @@ fn descriptor(operator: &SigningKey) -> DescriptorEnvelopeV1 {
         genesis_random_256_bits: genesis_random,
         current_operator_verification_key: current_key,
         current_operator_key_id: current_key.operator_key_id().unwrap(),
-        descriptor_epoch: 0,
+        descriptor_epoch,
         previous_descriptor_digest: None,
         current_iroh_endpoint_id: d32(40),
         https_origin: "https://anchor.example".to_string(),
@@ -158,9 +169,16 @@ fn context(operator: &SigningKey) -> AnchorControlContext {
 }
 
 fn service(operator: &SigningKey) -> AnchorControlService<PassPolicy, TestSigner> {
+    service_with_plan(operator, PassPolicy::new())
+}
+
+fn service_with_plan(
+    operator: &SigningKey,
+    policy: PassPolicy,
+) -> AnchorControlService<PassPolicy, TestSigner> {
     AnchorControlService::new(
         context(operator),
-        PassPolicy::new(),
+        policy,
         TestSigner(operator.clone()),
         TokenSecretRing::new(1, d32(200)),
     )
@@ -420,16 +438,17 @@ fn token_ring_mut_rotates_epoch_used_by_next_prepare() {
 }
 
 // ---------------------------------------------------------------------------
-// Unsupported operation: a bounded protocol failure, no admission, no claim.
+// CommitHost routes into the composite hosting service; a still-unserved
+// operation remains a bounded Unsupported protocol failure.
 // ---------------------------------------------------------------------------
 
 #[test]
-fn unsupported_operation_is_protocol_failure() {
+fn commit_host_routes_to_the_composite_service() {
     let op = sk(1);
     let svc = service(&op);
     let mut repo = AnchorRepository::open_in_memory().unwrap();
-    // CommitHost is a valid, canonical control operation this control service does
-    // not itself serve (it is handled by the Commit host service).
+    // CommitHost is now SERVED: a commit against an unknown operation gets the
+    // composite service's closed refusal — not a protocol failure.
     let frame = ControlRequestV1 {
         idempotency_key: d16(3),
         operation: ControlOperation::CommitHost(CommitHostV1 {
@@ -440,10 +459,133 @@ fn unsupported_operation_is_protocol_failure() {
     .encode_canonical()
     .unwrap();
     let mut entropy = entropy_from(0);
+    let handling = svc.handle(&mut repo, &frame, 1000, &mut entropy).unwrap();
+    assert_eq!(
+        expect_refusal(&handling),
+        ControlRefusal::OperationNotFound {
+            operation_id: d32(0x55),
+        },
+        "CommitHost must be dispatched to the composite service"
+    );
+}
+
+#[test]
+fn unsupported_operation_is_protocol_failure() {
+    let op = sk(1);
+    let svc = service(&op);
+    let mut repo = AnchorRepository::open_in_memory().unwrap();
+    // SubmitListing is a valid, canonical control operation this control service
+    // does not itself serve (it is handled by the listing service).
+    let frame = ControlRequestV1 {
+        idempotency_key: d16(3),
+        operation: ControlOperation::SubmitListing(
+            riot_anchor_protocol::control::SubmitListingV1 {
+                admitted_listing_envelope_bytes: vec![1, 2, 3],
+                work_stamp: None,
+            },
+        ),
+    }
+    .encode_canonical()
+    .unwrap();
+    let mut entropy = entropy_from(0);
     assert_eq!(
         svc.handle(&mut repo, &frame, 1000, &mut entropy).unwrap(),
         ControlHandling::ProtocolFailure(ProtocolFailure::Unsupported)
     );
+}
+
+// ---------------------------------------------------------------------------
+// A control-plane CommitHost over the REAL owned-root site: the receipt must
+// stamp the PERSISTED descriptor coordinates installed after construction.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn commit_receipt_reflects_the_persisted_descriptor_epoch() {
+    let op = sk(1);
+    let site = hosting_common::make_site_fixture(0x31, 3, 1_000, 1_000 + 24 * 60 * 60);
+    let plan = PreparePlan {
+        community_root: site.root_id,
+        ordered_namespace_host_plan: site.namespaces,
+        ordered_retained_snapshot_digests: [d32(20), d32(21), d32(22)],
+        base_generation: 0,
+    };
+    let mut svc = service_with_plan(&op, PassPolicy::with_plan(plan));
+    let mut repo = AnchorRepository::open_in_memory().unwrap();
+
+    // Install a LATER persisted descriptor (epoch 3) after construction, the way
+    // the daemon adopts the repository's canonical descriptor bytes at startup.
+    let persisted = descriptor_at_epoch(&op, 3);
+    let persisted_digest = persisted.descriptor_digest().unwrap();
+    svc.install_persisted_descriptor(persisted, 1_200).unwrap();
+
+    // PrepareHost with the site's REAL root-signed ticket (persisted on the row).
+    let ticket = decode_canonical::<RootSignedTicketCoreEnvelopeV2>(
+        &site.ticket_envelope_bytes,
+        MAX_TICKET_CORE_BYTES + 128,
+    )
+    .unwrap();
+    let body = PrepareHostV1 {
+        root_signed_ticket_core: ticket,
+        ordered_namespace_snapshot_digests: [d32(30), d32(31), d32(32)],
+        work_stamp: None,
+    };
+    let mut entropy = entropy_from(0x40);
+    let prepared = expect_prepare_success(
+        &svc.handle(&mut repo, &prepare_frame(d16(7), body), 1_300, &mut entropy)
+            .unwrap(),
+    );
+
+    // Stage the full site under the prepared operation.
+    hosting_common::stage_entries(
+        &mut repo,
+        prepared.operation_id,
+        vec![site.manifest_staged.clone()],
+        prepared.operation_expiry,
+    );
+    hosting_common::stage_entries(
+        &mut repo,
+        prepared.operation_id,
+        vec![site.c_staged.clone()],
+        prepared.operation_expiry,
+    );
+    hosting_common::stage_entries(
+        &mut repo,
+        prepared.operation_id,
+        vec![site.w_staged.clone()],
+        prepared.operation_expiry,
+    );
+
+    // CommitHost through the control plane.
+    let commit_frame = ControlRequestV1 {
+        idempotency_key: d16(8),
+        operation: ControlOperation::CommitHost(CommitHostV1 {
+            operation_id: prepared.operation_id,
+            ordered_namespace_snapshot_digests: hosting_common::declared_digests(
+                &repo,
+                prepared.operation_id,
+                site.namespaces,
+            ),
+        }),
+    }
+    .encode_canonical()
+    .unwrap();
+    let handling = svc
+        .handle(&mut repo, &commit_frame, 1_400, &mut entropy)
+        .unwrap();
+    let receipt = match handling {
+        ControlHandling::Responded(ControlResponseV1 {
+            outcome: ControlOutcome::Success(ControlSuccess::CommitHost(receipt)),
+            ..
+        }) => receipt,
+        other => panic!("expected CommitHost receipt, got {other:?}"),
+    };
+    assert_eq!(
+        receipt.body.descriptor_epoch, 3,
+        "the receipt must stamp the PERSISTED descriptor epoch"
+    );
+    assert_eq!(receipt.body.descriptor_digest, persisted_digest);
+    assert_eq!(receipt.body.full_site_root, site.root_id);
+    assert_eq!(receipt.body.committed_site_generation, 1);
 }
 
 // ---------------------------------------------------------------------------

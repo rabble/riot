@@ -6,6 +6,7 @@
 
 use std::cell::RefCell;
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use ed25519_dalek::{Signer, SigningKey};
@@ -16,24 +17,43 @@ use riot_anchor::control::{
 use riot_anchor::hosting::{
     CommitHostContext, HostPlanView, HostingAuthority, ManifestAuthorization,
 };
-use riot_anchor::repository::{AnchorRepository, NewPreparedOperation, OperationKind, StagedEntry};
-use riot_anchor::sync_service::{encode_item, verify_anchor_item};
+use riot_anchor::repository::{
+    AnchorRepository, NewPreparedOperation, OperationKind, RepoTransaction, StagedEntry,
+};
+use riot_anchor::sync_service::{encode_item, verify_anchor_item, SharedRepo};
 use riot_anchor::work::{OperatorSigner, PressurePolicy, TokenSecretRing};
 
+use riot_anchor_protocol::authority::SITE_MANIFEST_DIGEST_LABEL;
 use riot_anchor_protocol::codec::CanonicalRecord;
 use riot_anchor_protocol::control::{
     ControlOperation, ControlOutcome, ControlRefusal, ControlRequestV1, ControlResponseV1,
     ControlSuccess, EffectiveOperationLimits, GetOperationState, GetOperationV1, PrepareHostV1,
     PrepareSuccessV1, TerminalOperationOutcome,
 };
-use riot_anchor_protocol::digest::anchor_id as compute_anchor_id;
+use riot_anchor_protocol::digest::{anchor_id as compute_anchor_id, digest_v1};
 use riot_anchor_protocol::records::{
     AnchorDescriptorBodyV1, AnchorLimitProfileV1, ControlOperationKind, DescriptorEnvelopeV1,
-    EnabledRole, HostingReceiptV1, OperatorVerificationKeyV1,
+    EnabledRole, HostingReceiptV1, OperatorVerificationKeyV1, PublicSiteTicketV2Core,
+    RootSignedTicketCoreEnvelopeV2, TransportFloor,
 };
-use riot_anchor_protocol::sync2::compute_snapshot_digest;
+use riot_anchor_protocol::sync2::{
+    compute_snapshot_digest, AdmissionSubject, OpenNamespace, OpenedNamespace, PhaseParty,
+    Sync2Action, Sync2DirectionStage, Sync2Frame, Sync2Mode, Sync2Phase, Sync2Repository,
+    Sync2Session, Sync2Snapshot,
+};
 
-use riot_core::willow::{create_signed_alert, generate_communal_author, AlertDraft};
+use riot_core::site::{
+    encode_site_manifest, RequireTransport, SiteDisplay, SiteLayout, SiteManifestV1, SiteMemberV1,
+    SiteRole, SiteRule, TransportPolicyV1,
+};
+use riot_core::willow::{
+    create_signed_alert, encode_capability, encode_entry, generate_communal_author, AlertDraft,
+    Entry, Path, MANIFEST_COMPONENT,
+};
+
+use willow25::authorisation::WriteCapability;
+use willow25::entry::{NamespaceSecret, SubspaceSecret};
+use willow25::groupings::Area;
 
 /// A file-backed temp database (used for restart/reconstruction tests).
 pub struct TempDb {
@@ -67,6 +87,7 @@ impl Drop for TempDb {
 
 /// A test operator signer producing real Ed25519 signatures over the receipt
 /// preimage.
+#[derive(Clone)]
 pub struct TestSigner(pub SigningKey);
 impl OperatorSigner for TestSigner {
     fn sign(&self, preimage: &[u8]) -> [u8; 64] {
@@ -165,6 +186,34 @@ pub fn insert_prepared_operation(
     operation_expiry: u64,
     token_secret_epoch: u32,
 ) {
+    insert_prepared_operation_with_ticket(
+        repo,
+        operation_id,
+        ordered_namespaces,
+        ordered_tokens,
+        base_generation,
+        now,
+        operation_expiry,
+        token_secret_epoch,
+        None,
+    );
+}
+
+/// [`insert_prepared_operation`] plus the root-signed ticket envelope bytes a
+/// real PrepareHost persists on the operation row (the composite Commit's ONLY
+/// ticket source). `None` models a pre-migration row.
+#[allow(clippy::too_many_arguments)]
+pub fn insert_prepared_operation_with_ticket(
+    repo: &mut AnchorRepository,
+    operation_id: [u8; 32],
+    ordered_namespaces: [[u8; 32]; 3],
+    ordered_tokens: [[u8; 32]; 3],
+    base_generation: u64,
+    now: u64,
+    operation_expiry: u64,
+    token_secret_epoch: u32,
+    ticket_envelope_bytes: Option<Vec<u8>>,
+) {
     let profile = AnchorLimitProfileV1::mvp_defaults(0);
     let success = PrepareSuccessV1 {
         operation_id,
@@ -195,6 +244,10 @@ pub fn insert_prepared_operation(
         prepare_response_bytes,
     })
     .expect("insert operation");
+    if let Some(ticket) = ticket_envelope_bytes {
+        tx.store_operation_ticket(&operation_id, &ticket)
+            .expect("store operation ticket");
+    }
     tx.commit().expect("commit operation");
 }
 
@@ -288,6 +341,326 @@ impl TestAuthority {
 }
 
 // ---------------------------------------------------------------------------
+// A REAL owned-root composite site: owner-signed `/manifest`, communal C/W
+// members, and a matching root-signed ticket. The owned namespace id IS the
+// raw Ed25519 verifying key, so the SAME retained secret that authorises the
+// manifest entry also signs the ticket.
+// ---------------------------------------------------------------------------
+
+/// An owned-namespace root whose Ed25519 secret we retain.
+pub struct OwnedSiteRoot {
+    pub namespace_secret: NamespaceSecret,
+    pub root_signing_key: SigningKey,
+    pub root_id: [u8; 32],
+}
+
+/// Rejection-sample an owned namespace deterministically from `seed`.
+pub fn owned_site_root(seed: u8) -> OwnedSiteRoot {
+    for n in 0u16..=1024 {
+        let mut secret_bytes = [seed; 32];
+        secret_bytes[0] = (n & 0xff) as u8;
+        secret_bytes[1] = (n >> 8) as u8;
+        let namespace_secret = NamespaceSecret::from_bytes(&secret_bytes);
+        let namespace_id = namespace_secret.corresponding_namespace_id();
+        if namespace_id.is_owned() {
+            let root_signing_key = SigningKey::from_bytes(&secret_bytes);
+            assert_eq!(
+                root_signing_key.verifying_key().to_bytes(),
+                *namespace_id.as_bytes(),
+                "owned namespace id must equal the ed25519 verifying key"
+            );
+            return OwnedSiteRoot {
+                namespace_secret,
+                root_signing_key,
+                root_id: *namespace_id.as_bytes(),
+            };
+        }
+    }
+    panic!("no owned namespace found for seed {seed}");
+}
+
+/// A complete site fixture: the owned root, the canonical manifest payload, the
+/// owner-signed `/manifest` staged entry, one communal entry each for C and W,
+/// and the matching root-signed ticket envelope.
+pub struct SiteFixture {
+    pub root: OwnedSiteRoot,
+    pub root_id: [u8; 32],
+    /// Ordered `[O, C, W]` namespace ids (O == root_id).
+    pub namespaces: [[u8; 32]; 3],
+    pub manifest_version: u64,
+    pub manifest_digest: [u8; 32],
+    /// The canonical manifest CBOR (the `/manifest` entry payload).
+    pub manifest_payload_bytes: Vec<u8>,
+    /// The owner-signed `/manifest` item, verified into staged form.
+    pub manifest_staged: StagedEntry,
+    /// One genuine communal entry in the C namespace.
+    pub c_staged: StagedEntry,
+    /// One genuine communal entry in the W namespace.
+    pub w_staged: StagedEntry,
+    /// The matching root-signed ticket envelope, canonically encoded.
+    pub ticket_envelope_bytes: Vec<u8>,
+}
+
+/// The manifest CBOR for a site rooted at `root` with communal C/W members.
+fn site_manifest_bytes(
+    root: [u8; 32],
+    c_namespace: [u8; 32],
+    w_namespace: [u8; 32],
+    version: u64,
+) -> Vec<u8> {
+    let manifest = SiteManifestV1 {
+        root,
+        members: vec![
+            SiteMemberV1 {
+                ns: root,
+                role: SiteRole::Masthead,
+                rule: SiteRule::OwnedWrite,
+                display: SiteDisplay::FrontArticles,
+            },
+            SiteMemberV1 {
+                ns: c_namespace,
+                role: SiteRole::Comments,
+                rule: SiteRule::CommunalOpen,
+                display: SiteDisplay::UnderArticles,
+            },
+            SiteMemberV1 {
+                ns: w_namespace,
+                role: SiteRole::OpenWire,
+                rule: SiteRule::CommunalOpen,
+                display: SiteDisplay::WireColumn,
+            },
+        ],
+        moderation_path: vec![b"mod".to_vec()],
+        transport_policy: TransportPolicyV1 {
+            allow: vec![],
+            require: RequireTransport::None,
+        },
+        version,
+        layout: SiteLayout::SiteDefault,
+        sections: vec![],
+    };
+    encode_site_manifest(&manifest).expect("encode site manifest")
+}
+
+/// Sign a matching `RootSignedTicketCoreEnvelopeV2` with the owned root's key.
+fn sign_site_ticket(
+    root: &OwnedSiteRoot,
+    namespaces: [[u8; 32]; 3],
+    manifest_digest: [u8; 32],
+    manifest_version: u64,
+    issued: u64,
+    expiry: u64,
+) -> Vec<u8> {
+    let core = PublicSiteTicketV2Core {
+        root_id: root.root_id,
+        o_namespace_id: namespaces[0],
+        c_namespace_id: namespaces[1],
+        w_namespace_id: namespaces[2],
+        manifest_digest,
+        manifest_version,
+        min_sync_version: 2,
+        manifest_required_transport: TransportFloor::RequireNone,
+        transport_floor: TransportFloor::RequireNone,
+        transport_epoch: 1,
+        issued_unix_seconds: issued,
+        expiry_unix_seconds: expiry,
+    };
+    let mut envelope = RootSignedTicketCoreEnvelopeV2 {
+        core,
+        root_signature: [0u8; 64],
+    };
+    let preimage = envelope.signing_preimage().expect("ticket preimage");
+    envelope.root_signature = root.root_signing_key.sign(&preimage).to_bytes();
+    envelope.encode_canonical().expect("encode ticket envelope")
+}
+
+/// Build the full owned-root site fixture: manifest v`manifest_version`, ticket
+/// valid over `[issued, expiry)`.
+pub fn make_site_fixture(
+    seed: u8,
+    manifest_version: u64,
+    ticket_issued: u64,
+    ticket_expiry: u64,
+) -> SiteFixture {
+    let root = owned_site_root(seed);
+    let c_item = make_item("site-c-entry");
+    let w_item = make_item("site-w-entry");
+    let namespaces = [root.root_id, c_item.namespace_id, w_item.namespace_id];
+
+    let payload = site_manifest_bytes(
+        root.root_id,
+        c_item.namespace_id,
+        w_item.namespace_id,
+        manifest_version,
+    );
+    let manifest_digest = digest_v1(SITE_MANIFEST_DIGEST_LABEL, &payload);
+
+    // Owner-signed `/manifest`: a zero-delegation owned cap minted straight from
+    // the namespace root secret, entry authorised by the owner subspace.
+    let owner = SubspaceSecret::from_bytes(&[seed ^ 0x5A; 32]);
+    let owner_id = owner.corresponding_subspace_id();
+    let cap = WriteCapability::new_owned(&root.namespace_secret, owner_id.clone());
+    let entry = Entry::builder()
+        .namespace_id(root.namespace_secret.corresponding_namespace_id())
+        .subspace_id(owner_id)
+        .path(Path::from_slices(&[MANIFEST_COMPONENT]).expect("manifest path"))
+        .timestamp(1_000u64)
+        .payload(&payload)
+        .build();
+    let authorised = entry
+        .into_authorised_entry(&cap, &owner)
+        .expect("owner authorises /manifest");
+    let token = authorised.authorisation_token();
+    let signature: ed25519_dalek::Signature = token.signature().clone().into();
+    let item_bytes = encode_item(
+        &encode_entry(authorised.entry()),
+        &encode_capability(token.capability()),
+        &signature.to_bytes(),
+        &payload,
+    );
+    let manifest_staged = verify_anchor_item(&item_bytes).expect("manifest item verifies");
+
+    let ticket_envelope_bytes = sign_site_ticket(
+        &root,
+        namespaces,
+        manifest_digest,
+        manifest_version,
+        ticket_issued,
+        ticket_expiry,
+    );
+
+    SiteFixture {
+        root_id: root.root_id,
+        root,
+        namespaces,
+        manifest_version,
+        manifest_digest,
+        manifest_payload_bytes: payload,
+        manifest_staged,
+        c_staged: c_item.staged,
+        w_staged: w_item.staged,
+        ticket_envelope_bytes,
+    }
+}
+
+/// Persist a [`SiteFixture`] as this anchor's COMMITTED state: the community
+/// row, the committed manifest (what `ReadCommitted` equality reads), and one
+/// committed entry per ordered `O`/`C`/`W` namespace — mirroring exactly the
+/// rows the composite `CommitHost` promotes.
+pub fn commit_site_fixture(repo: &mut AnchorRepository, site: &SiteFixture, now: u64) {
+    let mut tx = repo.begin().expect("begin");
+    tx.insert_community(&site.root_id, now)
+        .expect("insert community");
+    tx.upsert_manifest(
+        &site.root_id,
+        site.manifest_version,
+        &site.manifest_digest,
+        &site.manifest_payload_bytes,
+    )
+    .expect("upsert manifest");
+    tx.insert_committed_entry(&site.root_id, 0, &site.manifest_staged)
+        .expect("commit O entry");
+    tx.insert_committed_entry(&site.root_id, 1, &site.c_staged)
+        .expect("commit C entry");
+    tx.insert_committed_entry(&site.root_id, 2, &site.w_staged)
+        .expect("commit W entry");
+    tx.commit().expect("commit site fixture");
+}
+
+/// TRAP 1 fodder: a `/manifest` entry authorised by a DELEGATED owned cap whose
+/// full area covers `/manifest`. It passes ordinary admission and genuinely
+/// verifies, but must never be accepted as the manifest signer.
+pub fn make_delegated_manifest_item(site: &SiteFixture) -> StagedEntry {
+    let owner = SubspaceSecret::from_bytes(&[0x21; 32]);
+    let owner_id = owner.corresponding_subspace_id();
+    let editor = SubspaceSecret::from_bytes(&[0x22; 32]);
+    let editor_id = editor.corresponding_subspace_id();
+
+    let mut delegated = WriteCapability::new_owned(&site.root.namespace_secret, owner_id);
+    delegated
+        .try_delegate(&owner, Area::full(), editor_id.clone())
+        .expect("delegate full area");
+
+    let entry = Entry::builder()
+        .namespace_id(site.root.namespace_secret.corresponding_namespace_id())
+        .subspace_id(editor_id)
+        .path(Path::from_slices(&[MANIFEST_COMPONENT]).expect("manifest path"))
+        .timestamp(1_100u64)
+        .payload(&site.manifest_payload_bytes)
+        .build();
+    let authorised = entry
+        .into_authorised_entry(&delegated, &editor)
+        .expect("editor authorises with full-area delegated cap");
+    let token = authorised.authorisation_token();
+    let signature: ed25519_dalek::Signature = token.signature().clone().into();
+    let item_bytes = encode_item(
+        &encode_entry(authorised.entry()),
+        &encode_capability(token.capability()),
+        &signature.to_bytes(),
+        &site.manifest_payload_bytes,
+    );
+    verify_anchor_item(&item_bytes).expect("delegated manifest item passes ordinary admission")
+}
+
+/// TRAP 2 fodder: the genuine owner-signed `/manifest` ENTRY, but the carried
+/// item payload swapped for a DIFFERENT (higher-version) manifest encoding the
+/// ticket points at. `validate_site_manifest` alone would accept the swapped
+/// payload; only the payload↔entry digest binding refuses it.
+pub struct PayloadSwappedManifest {
+    /// The staged entry whose item carries the swapped payload.
+    pub staged: StagedEntry,
+    /// A root-signed ticket naming the SWAPPED payload's digest/version.
+    pub ticket_envelope_bytes: Vec<u8>,
+}
+
+pub fn make_payload_swapped_manifest_item(site: &SiteFixture) -> PayloadSwappedManifest {
+    // A different-but-valid manifest for the same site (version bumped), never
+    // signed by the owner as an entry.
+    let swapped_payload = site_manifest_bytes(
+        site.root_id,
+        site.namespaces[1],
+        site.namespaces[2],
+        site.manifest_version + 1,
+    );
+    let swapped_digest = digest_v1(SITE_MANIFEST_DIGEST_LABEL, &swapped_payload);
+
+    // Reuse the genuine item's entry + capability + signature, swap the payload.
+    let genuine = &site.manifest_staged;
+    let mut staged = genuine.clone();
+    // Rebuild the item bytes with the swapped payload; entry bytes untouched.
+    // Item layout: version(1) | u32 entry_len | entry | u32 cap_len | cap |
+    // 64-byte signature | u32 payload_len | payload.
+    let item = &genuine.item_bytes;
+    let entry_len = u32::from_be_bytes([item[1], item[2], item[3], item[4]]) as usize;
+    let cap_len_at = 1 + 4 + entry_len;
+    let cap_len = u32::from_be_bytes([
+        item[cap_len_at],
+        item[cap_len_at + 1],
+        item[cap_len_at + 2],
+        item[cap_len_at + 3],
+    ]) as usize;
+    let sig_at = cap_len_at + 4 + cap_len;
+    let entry_bytes = &item[5..5 + entry_len];
+    let capability_bytes = &item[cap_len_at + 4..cap_len_at + 4 + cap_len];
+    let mut signature = [0u8; 64];
+    signature.copy_from_slice(&item[sig_at..sig_at + 64]);
+    staged.item_bytes = encode_item(entry_bytes, capability_bytes, &signature, &swapped_payload);
+
+    let ticket_envelope_bytes = sign_site_ticket(
+        &site.root,
+        site.namespaces,
+        swapped_digest,
+        site.manifest_version + 1,
+        1_000,
+        1_000 + 24 * 60 * 60,
+    );
+    PayloadSwappedManifest {
+        staged,
+        ticket_envelope_bytes,
+    }
+}
+
+// ---------------------------------------------------------------------------
 // A minimal control service, used only to reconstruct a committed operation's
 // receipt through the real `GetOperation` lifecycle after a restart.
 // ---------------------------------------------------------------------------
@@ -298,6 +671,7 @@ impl AdmissionPolicy for DummyPolicy {
         &self,
         _request: &PrepareHostV1,
         _observed_at: u64,
+        _highest_transport_epoch: Option<u32>,
     ) -> Result<PreparePlan, ControlRefusal> {
         Ok(PreparePlan {
             community_root: d32(0),
@@ -414,6 +788,372 @@ pub fn get_operation_receipt(
     }
 }
 
+// ---------------------------------------------------------------------------
+// A `sync/2` CLIENT-side harness: the initiator repository the e2e and driver
+// tests run a real `Sync2Session` over (mirroring the in-crate
+// `riot-anchor-protocol/tests/sync2_harness`, specialised to anchor-profile
+// items). No hand-encoded frames anywhere: fixtures are produced by the real
+// initiator FSM.
+// ---------------------------------------------------------------------------
+
+/// One `(entry_id, canonical anchor-profile item bytes)` pair.
+pub type SyncItem = (Vec<u8>, Vec<u8>);
+
+fn sync_items_logical_bytes(items: &[SyncItem]) -> u64 {
+    items.iter().map(|(_, bytes)| bytes.len() as u64).sum()
+}
+
+/// The client-side snapshot digest for a set of items in one namespace — the
+/// same formula the anchor's committed/staged views use, computed independently
+/// so tests never ask the code under test for its own expected value.
+pub fn client_snapshot_digest(namespace_id: &[u8; 32], items: &[SyncItem]) -> [u8; 32] {
+    let ids: Vec<Vec<u8>> = items.iter().map(|(id, _)| id.clone()).collect();
+    compute_snapshot_digest(namespace_id, sync_items_logical_bytes(items), &ids)
+}
+
+/// An immutable client-side snapshot (the initiator's sender role).
+pub struct ClientSnapshot {
+    namespace_id: [u8; 32],
+    items: Vec<SyncItem>,
+}
+
+impl Sync2Snapshot for ClientSnapshot {
+    fn snapshot_digest(&self) -> [u8; 32] {
+        client_snapshot_digest(&self.namespace_id, &self.items)
+    }
+    fn entry_count(&self) -> u64 {
+        self.items.len() as u64
+    }
+    fn logical_bytes(&self) -> u64 {
+        sync_items_logical_bytes(&self.items)
+    }
+    fn sorted_entry_ids(&self) -> Vec<Vec<u8>> {
+        let mut ids: Vec<Vec<u8>> = self.items.iter().map(|(id, _)| id.clone()).collect();
+        ids.sort_unstable();
+        ids
+    }
+    fn item_bytes(&self, entry_id: &[u8]) -> Option<Vec<u8>> {
+        self.items
+            .iter()
+            .find(|(id, _)| id.as_slice() == entry_id)
+            .map(|(_, bytes)| bytes.clone())
+    }
+}
+
+/// A client-side direction stage (the initiator's receiver role). Admitted
+/// items land in a shared sink so a test can inspect exactly what a pull
+/// delivered after the session ends.
+pub struct ClientStage {
+    namespace_id: [u8; 32],
+    base: Vec<SyncItem>,
+    admitted: Rc<RefCell<Vec<SyncItem>>>,
+}
+
+impl Sync2DirectionStage for ClientStage {
+    fn missing(&self, page_ids: &[Vec<u8>]) -> Vec<Vec<u8>> {
+        let admitted = self.admitted.borrow();
+        page_ids
+            .iter()
+            .filter(|id| {
+                !self.base.iter().any(|(have, _)| have == *id)
+                    && !admitted.iter().any(|(have, _)| have == *id)
+            })
+            .cloned()
+            .collect()
+    }
+    fn admit(&mut self, entry_ids: &[Vec<u8>], items: &[Vec<u8>]) -> Result<(), AdmissionSubject> {
+        let mut admitted = self.admitted.borrow_mut();
+        for (id, bytes) in entry_ids.iter().zip(items.iter()) {
+            admitted.push((id.clone(), bytes.clone()));
+        }
+        Ok(())
+    }
+    fn resulting_digest(&self, namespace_id: &[u8; 32]) -> [u8; 32] {
+        let mut union = self.base.clone();
+        union.extend(self.admitted.borrow().iter().cloned());
+        client_snapshot_digest(namespace_id, &union)
+    }
+    fn promote(&mut self) {}
+}
+
+/// A phase's client-side role.
+#[derive(Clone)]
+pub enum ClientRole {
+    /// This endpoint sends `items`.
+    Sender(Vec<SyncItem>),
+    /// This endpoint receives over `base` into the shared admitted sink.
+    Receiver {
+        /// The stage's already-held base items.
+        base: Vec<SyncItem>,
+    },
+}
+
+/// The initiator-side `Sync2Repository`: a fixed per-phase plan plus a shared
+/// sink capturing every admitted item.
+pub struct ClientSyncRepo {
+    pub namespace_id: [u8; 32],
+    pub plan: Vec<(Sync2Phase, ClientRole)>,
+    pub admitted: Rc<RefCell<Vec<SyncItem>>>,
+}
+
+impl Sync2Repository for ClientSyncRepo {
+    type Snapshot = ClientSnapshot;
+    type DirectionStage = ClientStage;
+    fn open_namespace(
+        &self,
+        request: &OpenNamespace,
+    ) -> Result<OpenedNamespace<Self>, riot_anchor_protocol::sync2::Sync2Refusal> {
+        let parties = self
+            .plan
+            .iter()
+            .map(|(phase, role)| {
+                let party = match role {
+                    ClientRole::Sender(items) => PhaseParty::Sender(ClientSnapshot {
+                        namespace_id: self.namespace_id,
+                        items: items.clone(),
+                    }),
+                    ClientRole::Receiver { base } => PhaseParty::Receiver(ClientStage {
+                        namespace_id: self.namespace_id,
+                        base: base.clone(),
+                        admitted: Rc::clone(&self.admitted),
+                    }),
+                };
+                (*phase, party)
+            })
+            .collect();
+        Ok(OpenedNamespace {
+            namespace_id: self.namespace_id,
+            mode: request.mode.tag(),
+            parties,
+            stale_source: None,
+        })
+    }
+}
+
+/// The canonical `OpenNamespace` the client initiators send.
+pub fn client_open(
+    namespace_id: [u8; 32],
+    ticket_core_bytes: Vec<u8>,
+    mode: Sync2Mode,
+) -> OpenNamespace {
+    OpenNamespace {
+        protocol_version: 2,
+        session_id: vec![1, 2, 3, 4],
+        ticket_core_bytes,
+        namespace_id,
+        mode,
+    }
+}
+
+/// A real initiator session for a `HostReconcileStaged` PUSH of `items` into
+/// `namespace_id`: phase one receives the anchor's committed base (the client
+/// already holds its own items, so it requests nothing), phase two sends them.
+pub fn push_initiator(
+    namespace_id: [u8; 32],
+    operation_id: [u8; 32],
+    namespace_token: [u8; 32],
+    items: Vec<SyncItem>,
+) -> Sync2Session<ClientSyncRepo> {
+    let repo = ClientSyncRepo {
+        namespace_id,
+        plan: vec![
+            (
+                Sync2Phase::AnchorToClient,
+                ClientRole::Receiver {
+                    base: items.clone(),
+                },
+            ),
+            (Sync2Phase::ClientToAnchor, ClientRole::Sender(items)),
+        ],
+        admitted: Rc::new(RefCell::new(Vec::new())),
+    };
+    let open = client_open(
+        namespace_id,
+        Vec::new(),
+        Sync2Mode::HostReconcileStaged {
+            operation_id,
+            namespace_token,
+        },
+    );
+    Sync2Session::initiator(repo, open)
+}
+
+/// A real initiator session for a `ReadCommitted` PULL of `namespace_id` under
+/// `ticket_core_bytes`, plus the shared sink the pulled items land in.
+pub fn pull_initiator(
+    namespace_id: [u8; 32],
+    ticket_core_bytes: Vec<u8>,
+) -> (Sync2Session<ClientSyncRepo>, Rc<RefCell<Vec<SyncItem>>>) {
+    let admitted = Rc::new(RefCell::new(Vec::new()));
+    let repo = ClientSyncRepo {
+        namespace_id,
+        plan: vec![(
+            Sync2Phase::AnchorToClient,
+            ClientRole::Receiver { base: Vec::new() },
+        )],
+        admitted: Rc::clone(&admitted),
+    };
+    let open = client_open(namespace_id, ticket_core_bytes, Sync2Mode::ReadCommitted);
+    (Sync2Session::initiator(repo, open), admitted)
+}
+
+/// Drive `client` (initiator) against `responder` entirely in memory, recording
+/// the ENCODED frames the client transmits, in order. Used to pre-build a
+/// deterministic frame transcript for the in-process session-table tests: the
+/// responder here is a memory twin of the anchor (empty committed base), so the
+/// client's frames are byte-valid against the real responder too.
+pub fn record_initiator_frames<RA: Sync2Repository, RC: Sync2Repository>(
+    mut responder: Sync2Session<RA>,
+    mut client: Sync2Session<RC>,
+) -> Vec<Vec<u8>> {
+    let mut recorded: Vec<Vec<u8>> = Vec::new();
+    // (deliver_to_responder, frame)
+    let mut queue: Vec<(bool, Sync2Frame)> = Vec::new();
+    let absorb = |actions: Vec<Sync2Action>,
+                  to_responder: bool,
+                  queue: &mut Vec<(bool, Sync2Frame)>,
+                  recorded: &mut Vec<Vec<u8>>| {
+        for action in actions {
+            if let Sync2Action::Send(frame) = action {
+                if to_responder {
+                    recorded.push(frame.encode_canonical().expect("encode sync2 frame"));
+                }
+                queue.push((to_responder, frame));
+            }
+        }
+    };
+    absorb(client.start(), true, &mut queue, &mut recorded);
+    let mut guard = 0;
+    while !queue.is_empty() {
+        guard += 1;
+        assert!(guard < 100_000, "recording duplex did not converge");
+        let (to_responder, frame) = queue.remove(0);
+        let actions = if to_responder {
+            responder.on_frame(frame)
+        } else {
+            client.on_frame(frame)
+        };
+        absorb(actions, !to_responder, &mut queue, &mut recorded);
+    }
+    assert!(
+        client.is_complete() && responder.is_complete(),
+        "recording duplex must converge complete (client={}, responder={})",
+        client.is_complete(),
+        responder.is_complete(),
+    );
+    recorded
+}
+
+/// Everything the in-process session-table tests need to drive a full
+/// `HostReconcileStaged` push as raw frame bytes against the REAL
+/// `SyncSessionTable`: a shared in-memory repository holding the prepared
+/// operation, the token ring the operation's tokens re-derive under, and the
+/// client's recorded frame transcript (`open_frame` then `entry_frames`).
+pub struct Sync2PushFixture {
+    pub shared: SharedRepo,
+    pub token_ring: TokenSecretRing,
+    pub operation_id: [u8; 32],
+    pub namespace_id: [u8; 32],
+    pub namespace_token: [u8; 32],
+    pub item: SyncItem,
+    pub open_frame: Vec<u8>,
+    pub entry_frames: Vec<Vec<u8>>,
+}
+
+/// Build a prepared-operation push fixture. `now` is the fixture's creation
+/// time and `operation_expiry` its operation deadline — pass an expiry at or
+/// before the driving test's `now` to model an expired operation.
+pub fn prepared_sync2_push_fixture(now: u64, operation_expiry: u64) -> Sync2PushFixture {
+    let item = make_item("sync driver push entry");
+    let operation_id = d32(0xA1);
+    let token_secret_epoch = 3;
+    let token_ring = TokenSecretRing::new(token_secret_epoch, d32(200));
+    let namespaces = [item.namespace_id, d32(0xB2), d32(0xB3)];
+    let mut tokens = [[0u8; 32]; 3];
+    for (slot, namespace_id) in tokens.iter_mut().zip(namespaces.iter()) {
+        *slot = token_ring
+            .derive(
+                token_secret_epoch,
+                &operation_id,
+                namespace_id,
+                operation_expiry,
+            )
+            .expect("current epoch derives");
+    }
+
+    let mut store = repo();
+    insert_prepared_operation(
+        &mut store,
+        operation_id,
+        namespaces,
+        tokens,
+        0,
+        now,
+        operation_expiry,
+        token_secret_epoch,
+    );
+    let shared: SharedRepo = Rc::new(RefCell::new(store));
+
+    // Record the client transcript against a memory twin of the anchor: an
+    // empty committed base to send, an empty stage to receive into.
+    let items = vec![(item.entry_id.to_vec(), item.item_bytes.clone())];
+    let client = push_initiator(namespaces[0], operation_id, tokens[0], items);
+    let responder_repo = ClientSyncRepo {
+        namespace_id: namespaces[0],
+        plan: vec![
+            (Sync2Phase::AnchorToClient, ClientRole::Sender(Vec::new())),
+            (
+                Sync2Phase::ClientToAnchor,
+                ClientRole::Receiver { base: Vec::new() },
+            ),
+        ],
+        admitted: Rc::new(RefCell::new(Vec::new())),
+    };
+    let responder = Sync2Session::responder(responder_repo);
+    let mut frames = record_initiator_frames(responder, client);
+    assert!(!frames.is_empty(), "transcript starts with OpenNamespace");
+    let open_frame = frames.remove(0);
+
+    Sync2PushFixture {
+        shared,
+        token_ring,
+        operation_id,
+        namespace_id: namespaces[0],
+        namespace_token: tokens[0],
+        item: (item.entry_id.to_vec(), item.item_bytes.clone()),
+        open_frame,
+        entry_frames: frames,
+    }
+}
+
+/// Re-encode the fixture's `OpenNamespace` with a different namespace token
+/// (same operation, same namespace) — the unknown-token refusal probe.
+pub fn open_frame_with_token(fixture: &Sync2PushFixture, namespace_token: [u8; 32]) -> Vec<u8> {
+    Sync2Frame::OpenNamespace(client_open(
+        fixture.namespace_id,
+        Vec::new(),
+        Sync2Mode::HostReconcileStaged {
+            operation_id: fixture.operation_id,
+            namespace_token,
+        },
+    ))
+    .encode_canonical()
+    .expect("encode open frame")
+}
+
+/// Whether any entries are staged for `operation_id` in `namespace_id`.
+pub fn operation_has_staged_entries(
+    shared: &SharedRepo,
+    operation_id: &[u8; 32],
+    namespace_id: &[u8; 32],
+) -> bool {
+    !shared
+        .borrow()
+        .staged_entries(operation_id, namespace_id)
+        .unwrap_or_default()
+        .is_empty()
+}
+
 impl HostingAuthority for TestAuthority {
     fn commit_capacity(
         &self,
@@ -427,6 +1167,7 @@ impl HostingAuthority for TestAuthority {
     }
     fn resolve_manifest(
         &self,
+        _tx: &RepoTransaction<'_>,
         plan: &HostPlanView,
         _observed_at: u64,
     ) -> Result<ManifestAuthorization, riot_anchor_protocol::control::ControlRefusal> {
@@ -443,6 +1184,7 @@ impl HostingAuthority for TestAuthority {
             manifest_digest: self.manifest_digest,
             manifest_version: self.manifest_version,
             ordered_namespaces: ordered,
+            manifest_bytes: self.manifest_digest.to_vec(),
         })
     }
 }

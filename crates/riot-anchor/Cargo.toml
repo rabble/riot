@@ -63,6 +63,24 @@ name = "riot-anchor"
 path = "src/main.rs"
 required-features = ["daemon"]
 
+# --- Cross-city demo examples (Task E2) -------------------------------------
+# Metadata only: examples compile against the library + dev-dependencies and
+# need the daemon runtime (tokio/iroh), so they are gated exactly like the
+# binary. `cargo build -p riot-anchor --features daemon --examples` builds them;
+# without the feature they are skipped, not broken.
+
+[[example]]
+name = "demo_anchor"
+required-features = ["daemon"]
+
+[[example]]
+name = "demo_host"
+required-features = ["daemon"]
+
+[[example]]
+name = "demo_follow"
+required-features = ["daemon"]
+
 [dev-dependencies]
 # Test-only operator signer: produces real Ed25519 work-challenge signatures the
 # protocol's `WorkStampV1::verify` accepts. Available to ALL tests (unconditional

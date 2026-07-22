@@ -33,6 +33,9 @@
 //! the byte-identical receipt through `GetOperation` (the operation's terminal
 //! bytes) or the Commit key's stored result.
 
+use riot_anchor_protocol::authority::{
+    admit_public_site_ticket, manifest_coordinates, AuthorityError, TicketFloor,
+};
 use riot_anchor_protocol::codec::{decode_canonical, CanonicalRecord, CodecError};
 use riot_anchor_protocol::control::{
     CommitHostV1, ControlOutcome, ControlRefusal, ControlResponseV1, ControlSuccess,
@@ -40,9 +43,13 @@ use riot_anchor_protocol::control::{
 };
 use riot_anchor_protocol::records::{
     ControlOperationKind, HostingReceiptBodyV1, HostingReceiptV1, HostingStatus, NamespaceResult,
-    OperatorSignedEnvelopeV1, IDEMPOTENCY_KEY_BYTES,
+    OperatorSignedEnvelopeV1, PublicSiteTicketV2Core, RootSignedTicketCoreEnvelopeV2,
+    TransportFloor, IDEMPOTENCY_KEY_BYTES, MAX_TICKET_CORE_BYTES,
 };
 use riot_anchor_protocol::sync2::compute_snapshot_digest;
+
+use riot_core::site::validate_site_manifest;
+use riot_core::willow::{SignedWillowEntry, MANIFEST_COMPONENT};
 
 use crate::idempotency::{
     classify, AdmissionLookup, RESULT_CLASS_ORDINARY, TERMINAL_RETENTION_SECS,
@@ -51,7 +58,7 @@ use crate::repository::{
     AnchorRepository, AnchorRepositoryError, GenerationCas, IdempotencyClaimState, OperationStatus,
     RepoTransaction, StoredOperation,
 };
-use crate::sync_service::{ordered_host_plan, verify_anchor_item};
+use crate::sync_service::{ordered_host_plan, verify_anchor_item, verify_anchor_item_parts};
 use crate::work::OperatorSigner;
 
 /// An error that prevents the Commit service from producing any control result.
@@ -138,11 +145,15 @@ pub struct ManifestAuthorization {
     /// The ordered `O`, `C`, `W` namespaces the manifest authorises. Must equal the
     /// operation's captured host plan.
     pub ordered_namespaces: [[u8; 32]; 3],
+    /// The validated canonical manifest payload bytes, persisted into `manifests`
+    /// inside the commit transaction (the `ReadCommitted` / `SubmitListing`
+    /// equality source).
+    pub manifest_bytes: Vec<u8>,
 }
 
 /// The pluggable Commit-time authority. It resolves the digest-matched manifest
 /// (or returns a terminal-cleanup manifest/ticket refusal), and gates capacity
-/// (the reusable `commit_busy` / `commit_over_quota`). It never touches the store.
+/// (the reusable `commit_busy` / `commit_over_quota`).
 pub trait HostingAuthority {
     /// The reusable capacity gate. A refusal here (`commit_busy` /
     /// `commit_over_quota`) terminalises only the Commit key.
@@ -155,12 +166,218 @@ pub trait HostingAuthority {
     /// Resolve the digest-matched manifest authorising the plan's `C`/`W` routing,
     /// or a terminal-cleanup refusal (`commit_manifest_mismatch`,
     /// `manifest_equivocation`, `manifest_transport_mismatch`, `ticket_expired`,
-    /// or `invalid_operation_authority`).
+    /// or `invalid_operation_authority`). Receives the open Commit transaction
+    /// READ-ONLY: both the persisted ticket and the staged/committed `/manifest`
+    /// candidates live in the store, and reading them outside the transaction
+    /// would be a TOCTOU hole.
     fn resolve_manifest(
         &self,
+        tx: &RepoTransaction<'_>,
         plan: &HostPlanView,
         observed_at: u64,
     ) -> Result<ManifestAuthorization, ControlRefusal>;
+}
+
+/// The production Commit-time authority. It reconstructs the manifest authority
+/// entirely from durable, root-signed artifacts — never operator say-so:
+///
+/// 1. the root-signed ticket persisted on the operation row at PrepareHost (the
+///    ONLY ticket source; `CommitHostV1` carries none);
+/// 2. the owner-signed `/manifest` entry located in the operation's staged `O`
+///    union the committed `O` namespace, each candidate re-verified with
+///    [`verify_anchor_item_parts`] (payload↔entry binding) THEN
+///    [`validate_site_manifest`] (the zero-delegation keystone) — both, in that
+///    order;
+/// 3. the canonical [`admit_public_site_ticket`] gate WITH the validated manifest
+///    attached (gate step 7 is the only legal ticket↔manifest coordinate and
+///    transport equality check), re-enforcing expiry and the epoch floor at
+///    commit time; and
+/// 4. the durable `manifest_floors` rollback floor.
+pub struct TicketManifestAuthority;
+
+impl TicketManifestAuthority {
+    /// Map a canonical [`AuthorityError`] onto the closed CommitHost refusal
+    /// matrix. The three distinguished cases carry actionable detail; every other
+    /// authority fault fails closed as `invalid_operation_authority`.
+    fn map_authority_error(
+        core: &PublicSiteTicketV2Core,
+        observed_at: u64,
+        observed_manifest_digest: [u8; 32],
+        error: AuthorityError,
+    ) -> ControlRefusal {
+        match error {
+            AuthorityError::ExpiredTicket => ControlRefusal::TicketExpired {
+                expires_at: core.expiry_unix_seconds,
+                observed_at,
+            },
+            AuthorityError::ManifestTransportMismatch => {
+                ControlRefusal::ManifestTransportMismatch {
+                    expected_digest: core.manifest_digest,
+                    observed_digest: observed_manifest_digest,
+                }
+            }
+            AuthorityError::ManifestMismatch => ControlRefusal::CommitManifestMismatch {
+                expected_digest: core.manifest_digest,
+                observed_digest: observed_manifest_digest,
+            },
+            _ => ControlRefusal::InvalidOperationAuthority,
+        }
+    }
+}
+
+/// The deterministic canonical path-bytes encoding of the reserved `/manifest`
+/// path (one component), matching `sync_service`'s staged-entry path encoding:
+/// `u32be(component_count)` then `u32be(len) || component` per component.
+fn manifest_path_bytes() -> Vec<u8> {
+    let mut out = Vec::with_capacity(8 + MANIFEST_COMPONENT.len());
+    out.extend_from_slice(&1u32.to_be_bytes());
+    out.extend_from_slice(&(MANIFEST_COMPONENT.len() as u32).to_be_bytes());
+    out.extend_from_slice(MANIFEST_COMPONENT);
+    out
+}
+
+impl HostingAuthority for TicketManifestAuthority {
+    fn commit_capacity(
+        &self,
+        _community_root: &[u8; 32],
+        _observed_at: u64,
+    ) -> Result<(), ControlRefusal> {
+        // Parity with PrepareHost: capacity accounting is deferred; no
+        // `commit_busy` / `commit_over_quota` back-pressure yet.
+        Ok(())
+    }
+
+    fn resolve_manifest(
+        &self,
+        tx: &RepoTransaction<'_>,
+        plan: &HostPlanView,
+        observed_at: u64,
+    ) -> Result<ManifestAuthorization, ControlRefusal> {
+        // Any store fault inside resolution fails CLOSED as
+        // invalid_operation_authority — the trait's refusal vocabulary carries no
+        // infrastructure error, and nothing may be promoted on an unread ticket.
+        let store_fault = |_| ControlRefusal::InvalidOperationAuthority;
+
+        // 1. The persisted ticket is the EXCLUSIVE ticket source.
+        let operation = tx
+            .load_operation(&plan.operation_id)
+            .map_err(store_fault)?
+            .ok_or(ControlRefusal::InvalidOperationAuthority)?;
+        let ticket_bytes = operation
+            .ticket_envelope_bytes
+            .ok_or(ControlRefusal::InvalidOperationAuthority)?;
+        let envelope = decode_canonical::<RootSignedTicketCoreEnvelopeV2>(
+            &ticket_bytes,
+            MAX_TICKET_CORE_BYTES + 128,
+        )
+        .map_err(|_| ControlRefusal::InvalidOperationAuthority)?;
+        let core = envelope.core.clone();
+
+        // 2. Locate `/manifest` candidates in the staged ∪ committed O namespace.
+        let o_namespace = plan.ordered_namespaces[0];
+        let path = manifest_path_bytes();
+        let mut candidates: Vec<Vec<u8>> = tx
+            .staged_entries(&plan.operation_id, &o_namespace)
+            .map_err(store_fault)?
+            .into_iter()
+            .filter(|entry| entry.path_bytes == path)
+            .map(|entry| entry.item_bytes)
+            .collect();
+        candidates.extend(
+            tx.committed_entries_by_path(&o_namespace, &path)
+                .map_err(store_fault)?
+                .into_iter()
+                .map(|(_, item_bytes)| item_bytes),
+        );
+
+        // 3. Verify each candidate — payload↔entry binding FIRST
+        //    (verify_anchor_item_parts), the zero-delegation keystone SECOND
+        //    (validate_site_manifest) — and select the digest match. A candidate
+        //    at the reserved path that fails either check fails the operation
+        //    closed: the O stage is corrupt or hostile.
+        let mut selected = None;
+        let mut observed_digest = [0u8; 32];
+        for item_bytes in &candidates {
+            let parts = verify_anchor_item_parts(item_bytes)
+                .map_err(|_| ControlRefusal::InvalidOperationAuthority)?;
+            let signed = SignedWillowEntry {
+                entry_bytes: parts.entry_bytes,
+                capability_bytes: parts.capability_bytes,
+                signature: parts.signature,
+                payload_bytes: parts.payload_bytes,
+            };
+            let validated = validate_site_manifest(&signed, &plan.community_root)
+                .map_err(|_| ControlRefusal::InvalidOperationAuthority)?;
+            let coordinates = manifest_coordinates(&validated)
+                .map_err(|_| ControlRefusal::InvalidOperationAuthority)?;
+            observed_digest = coordinates.manifest_digest;
+            if coordinates.manifest_digest == core.manifest_digest {
+                selected = Some((validated, signed.payload_bytes));
+                break;
+            }
+        }
+        let (validated, manifest_bytes) = match selected {
+            Some(found) => found,
+            None => {
+                return Err(ControlRefusal::CommitManifestMismatch {
+                    expected_digest: core.manifest_digest,
+                    observed_digest,
+                })
+            }
+        };
+
+        // 4. The canonical gate WITH the manifest attached (mirror of the
+        //    PrepareHost sibling call, plus `Some(manifest)`): gate step 7 is the
+        //    ONLY legal ticket↔manifest coordinate/transport equality check, and
+        //    the call re-enforces expiry and the epoch floor at commit time.
+        let highest_transport_epoch = tx
+            .highest_ticket_transport_epoch(&core.root_id)
+            .map_err(store_fault)?;
+        admit_public_site_ticket(
+            &envelope,
+            Some(&validated),
+            &TransportFloor::RequireNone,
+            &TicketFloor {
+                root_id: core.root_id,
+                highest_transport_epoch,
+            },
+            observed_at,
+        )
+        .map_err(|error| {
+            Self::map_authority_error(&core, observed_at, core.manifest_digest, error)
+        })?;
+
+        // 5. The durable manifest rollback floor: an older (or same-version,
+        //    different-digest) root-signed manifest+ticket pair never rolls the
+        //    site backward.
+        if let Some((floor_generation, floor_digest)) = tx
+            .manifest_floor(&core.o_namespace_id)
+            .map_err(store_fault)?
+        {
+            if floor_generation > core.manifest_version
+                || (floor_generation == core.manifest_version
+                    && floor_digest != core.manifest_digest)
+            {
+                return Err(ControlRefusal::ManifestEquivocation {
+                    first_digest: floor_digest,
+                    second_digest: core.manifest_digest,
+                });
+            }
+        }
+
+        Ok(ManifestAuthorization {
+            community_id: core.o_namespace_id,
+            full_site_root: core.root_id,
+            manifest_digest: core.manifest_digest,
+            manifest_version: core.manifest_version,
+            ordered_namespaces: [
+                core.o_namespace_id,
+                core.c_namespace_id,
+                core.w_namespace_id,
+            ],
+            manifest_bytes,
+        })
+    }
 }
 
 /// The operation's captured host plan, projected from its stored prepared response.
@@ -193,6 +410,21 @@ impl<A: HostingAuthority, S: OperatorSigner> CommitHostService<A, S> {
             authority,
             signer,
         }
+    }
+
+    /// Adopt the currently-served descriptor coordinates. The control service
+    /// calls this from `install_persisted_descriptor` — the persisted descriptor
+    /// wins over construction-time metadata, and a receipt stamped with stale
+    /// coordinates would misbind the operator's accountability chain.
+    pub fn set_descriptor(&mut self, descriptor_epoch: u64, descriptor_digest: [u8; 32]) {
+        self.context.descriptor_epoch = descriptor_epoch;
+        self.context.descriptor_digest = descriptor_digest;
+    }
+
+    /// Adopt the deployment's reported retention horizon (seconds past `now`
+    /// stamped into every receipt). `assemble_service` threads this.
+    pub fn set_reported_retention(&mut self, reported_retention_secs: u64) {
+        self.context.reported_retention_secs = reported_retention_secs;
     }
 
     /// Handle one `CommitHost` request against its own idempotency key. The entire
@@ -297,7 +529,7 @@ impl<A: HostingAuthority, S: OperatorSigner> CommitHostService<A, S> {
         }
 
         // 5. O FIRST: resolve the digest-matched manifest that authorises C/W.
-        let manifest = match self.authority.resolve_manifest(&plan, now) {
+        let manifest = match self.authority.resolve_manifest(&tx, &plan, now) {
             Ok(manifest) => manifest,
             Err(refusal) => {
                 return self.terminal_cleanup(
@@ -390,6 +622,25 @@ impl<A: HostingAuthority, S: OperatorSigner> CommitHostService<A, S> {
                 );
             }
         }
+
+        // 7b. The committed-manifest state, in the SAME transaction: the CAS
+        //     above ensured the community row, so the `manifests` /
+        //     `manifest_floors` foreign keys resolve, and a crash leaves the
+        //     manifest rows exactly as promoted or exactly absent.
+        if fp("manifest") {
+            return Err(CommitError::Failpoint("manifest"));
+        }
+        tx.upsert_manifest(
+            &manifest.community_id,
+            manifest.manifest_version,
+            &manifest.manifest_digest,
+            &manifest.manifest_bytes,
+        )?;
+        tx.advance_manifest_floor(
+            &manifest.community_id,
+            manifest.manifest_version,
+            &manifest.manifest_digest,
+        )?;
 
         // 8. Promote O, then C, then W (payload refs + committed entries).
         for (index, union) in resulting.iter().enumerate() {
