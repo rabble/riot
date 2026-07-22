@@ -34,7 +34,7 @@ async function fixture({ body = "expected\n", routeStatus = 200, routeHeaders = 
 }
 
 function fakeBrowserFactory({ cookies = [], storage = { cookie: "", localStorage: [], sessionStorage: [] }, extraRequest } = {}) {
-  const observations = { contexts: 0, listenerBeforeGoto: true, gotos: [], scrolls: 0, networkIdleWaits: 0, closed: false };
+  const observations = { contexts: 0, listenerBeforeGoto: true, gotos: [], scrolls: 0, evaluateSources: [], networkIdleWaits: 0, closed: false };
   const factory = async () => ({
     async newContext() {
       observations.contexts += 1;
@@ -52,6 +52,7 @@ function fakeBrowserFactory({ cookies = [], storage = { cookie: "", localStorage
               listeners.get("response")?.({ url: () => url, headers: async () => ({ "content-type": "text/html" }) });
             },
             async evaluate(fn) {
+              observations.evaluateSources.push(String(fn));
               if (String(fn).includes("localStorage")) return storage;
               observations.scrolls += 1;
               return undefined;
@@ -87,6 +88,8 @@ test("accepts exact direct bytes and fully inspects one fresh browser context", 
     assert.equal(browser.observations.listenerBeforeGoto, true);
     assert.deepEqual(browser.observations.gotos, [`${site.origin}/`]);
     assert.equal(browser.observations.scrolls, 1);
+    assert.doesNotMatch(browser.observations.evaluateSources[0], /setTimeout/, "full scroll must not impose a fixed delay at every viewport step");
+    assert.match(browser.observations.evaluateSources[0], /requestAnimationFrame/, "full scroll must yield for rendering and lazy-load observers");
     assert.equal(browser.observations.networkIdleWaits, 1);
     assert.equal(browser.observations.closed, true);
   });
