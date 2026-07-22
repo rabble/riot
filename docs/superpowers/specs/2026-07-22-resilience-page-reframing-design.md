@@ -680,17 +680,20 @@ Passing requires `PASS` with zero findings. The report stores the complete promp
 ordered SHA-256 list for the eleven reviewed files, returned JSON verbatim, and fresh session
 identifier. This is the reproducible human half of the site-wide claim audit.
 
-The initial reframe was deployed after explicit owner approval. Deploy the approved clarity-
-correction artifact from the current implementation `HEAD` through the existing Cloudflare Workers
-marketing configuration only after the complete refreshed acceptance evidence passes:
+The initial reframe was deployed after explicit owner approval. After the complete refreshed
+acceptance evidence passes, require a clean worktree, record `git rev-parse HEAD` as the immutable
+implementation commit, and deploy the marketing artifact from that exact commit through the existing
+Cloudflare Workers configuration:
 static/browser contracts, exact mirrors, desktop/mobile visual checks, three fresh Why Riot
 first-read reviews using the revised Q4 rubric, and a fresh semantic claim audit. This changes
 production marketing content. It changes no deployment configuration, DNS, TLS, Workers runtime
 behavior, application behavior, protocol behavior, or application data.
 
-Implement the production check as the committed dependency-free script
-`scripts/marketing/verify-live.mjs`, exposed as `npm run verify:marketing:live`. It uses this exact
-route-to-file map:
+Implement the production check as the committed script `scripts/marketing/verify-live.mjs`, exposed
+as `npm run verify:marketing:live`. Add no dependency: use Node built-ins plus the already-pinned
+Playwright package. For every route, compute SHA-256 over the expected local bytes and live response
+bytes with Node's `crypto` module, fail unless the hashes and raw bytes agree, and record both hashes.
+It uses this exact route-to-file map:
 
 ```text
 /             -> marketing/public/index.html
@@ -713,18 +716,18 @@ routes and require no `Set-Cookie`. In a fresh
 Playwright context for each origin, visit and fully scroll all nine routes; require an empty cookie
 jar and `document.cookie`, empty `localStorage` and `sessionStorage`, and no observed request origin
 outside the origin under test. Record the Cloudflare version, exact command or script, origins,
-route results, expected local SHA-256, live response SHA-256, headers/cookie/storage/request-origin
-result, and the exact `npm run verify:marketing:live` command in
+implementation commit, route results, expected local SHA-256, live response SHA-256,
+headers/cookie/storage/request-origin result, and the exact `npm run verify:marketing:live` command in
 `docs/marketing/2026-07-22-human-capacity-implementation-review.md` before the deployment-evidence
 commit is pushed.
 
 ## Scope Boundaries
 
 This work changes marketing HTML, its exact public mirrors, marketing documentation, contract tests,
-the implementation-review evidence, and—after all gates pass—the production marketing content. It
-does not change Riot protocols, application behavior, cryptography, privacy guarantees, anchor
-behavior, sync transports, deployment configuration, DNS, TLS, telemetry, Workers runtime behavior,
-or application data.
+`scripts/marketing/verify-live.mjs`, the `package.json` command exposing it, the implementation-review
+evidence, and—after all gates pass—the production marketing content. It does not change Riot
+protocols, application behavior, cryptography, privacy guarantees, anchor behavior, sync transports,
+deployment configuration, DNS, TLS, telemetry, Workers runtime behavior, or application data.
 
 Documentation scope also includes the narrow private-group status clarification in `README.md` and
 `docs/product/product-brief.md`, plus the committed implementation-review report.
@@ -810,6 +813,10 @@ confuse the design revision with the implementation revision. Revision 18 adds t
 The editorial re-review caught `timing` missing from the finite removal predicate and joined the
 architecture/PM request to make the README route-description correction normative. Revision 19 adds
 `timing`; acceptance criterion 21 already pins the README correction and its stale terms.
+
+The final readiness pass found the live verifier and package entry missing from the declared scope
+and requested immutable deployment provenance plus explicit hash computation. Revision 20 adds those
+mechanical contracts without changing the approved user-facing direction.
 
 ## Primary Sources
 
