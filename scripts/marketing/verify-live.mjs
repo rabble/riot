@@ -44,12 +44,20 @@ function requireNoCookie(headers, label) {
 
 async function fullyScroll(page) {
   await page.evaluate(async () => {
-    const nextFrame = () => new Promise((resolveFrame) => requestAnimationFrame(resolveFrame));
+    const nextTurn = () => new Promise((resolveTurn) => {
+      const channel = new MessageChannel();
+      channel.port1.onmessage = () => {
+        channel.port1.close();
+        channel.port2.close();
+        resolveTurn();
+      };
+      channel.port2.postMessage(undefined);
+    });
     let previousHeight = -1;
     for (let pass = 0; pass < 200; pass += 1) {
       const height = document.documentElement.scrollHeight;
       window.scrollTo(0, Math.min(height, window.scrollY + Math.max(window.innerHeight, 600)));
-      await nextFrame();
+      await nextTurn();
       if (window.scrollY + window.innerHeight >= height && height === previousHeight) break;
       previousHeight = height;
     }

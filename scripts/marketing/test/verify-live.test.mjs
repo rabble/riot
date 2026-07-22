@@ -89,7 +89,8 @@ test("accepts exact direct bytes and fully inspects one fresh browser context", 
     assert.deepEqual(browser.observations.gotos, [`${site.origin}/`]);
     assert.equal(browser.observations.scrolls, 1);
     assert.doesNotMatch(browser.observations.evaluateSources[0], /setTimeout/, "full scroll must not impose a fixed delay at every viewport step");
-    assert.match(browser.observations.evaluateSources[0], /requestAnimationFrame/, "full scroll must yield for rendering and lazy-load observers");
+    assert.doesNotMatch(browser.observations.evaluateSources[0], /requestAnimationFrame/, "full scroll must not depend on throttled animation frames in headless mode");
+    assert.match(browser.observations.evaluateSources[0], /MessageChannel/, "full scroll must yield event-loop turns for lazy-load observers");
     assert.equal(browser.observations.networkIdleWaits, 1);
     assert.equal(browser.observations.closed, true);
   });
