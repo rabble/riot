@@ -6,6 +6,7 @@
 
 use std::cell::RefCell;
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use ed25519_dalek::{Signer, SigningKey};
@@ -19,7 +20,7 @@ use riot_anchor::hosting::{
 use riot_anchor::repository::{
     AnchorRepository, NewPreparedOperation, OperationKind, RepoTransaction, StagedEntry,
 };
-use riot_anchor::sync_service::{encode_item, verify_anchor_item};
+use riot_anchor::sync_service::{encode_item, verify_anchor_item, SharedRepo};
 use riot_anchor::work::{OperatorSigner, PressurePolicy, TokenSecretRing};
 
 use riot_anchor_protocol::authority::SITE_MANIFEST_DIGEST_LABEL;
@@ -35,7 +36,11 @@ use riot_anchor_protocol::records::{
     EnabledRole, HostingReceiptV1, OperatorVerificationKeyV1, PublicSiteTicketV2Core,
     RootSignedTicketCoreEnvelopeV2, TransportFloor,
 };
-use riot_anchor_protocol::sync2::compute_snapshot_digest;
+use riot_anchor_protocol::sync2::{
+    compute_snapshot_digest, AdmissionSubject, OpenNamespace, OpenedNamespace, PhaseParty,
+    Sync2Action, Sync2DirectionStage, Sync2Frame, Sync2Mode, Sync2Phase, Sync2Repository,
+    Sync2Session, Sync2Snapshot,
+};
 
 use riot_core::site::{
     encode_site_manifest, RequireTransport, SiteDisplay, SiteLayout, SiteManifestV1, SiteMemberV1,
@@ -781,6 +786,372 @@ pub fn get_operation_receipt(
         },
         other => panic!("expected get_operation success, got {other:?}"),
     }
+}
+
+// ---------------------------------------------------------------------------
+// A `sync/2` CLIENT-side harness: the initiator repository the e2e and driver
+// tests run a real `Sync2Session` over (mirroring the in-crate
+// `riot-anchor-protocol/tests/sync2_harness`, specialised to anchor-profile
+// items). No hand-encoded frames anywhere: fixtures are produced by the real
+// initiator FSM.
+// ---------------------------------------------------------------------------
+
+/// One `(entry_id, canonical anchor-profile item bytes)` pair.
+pub type SyncItem = (Vec<u8>, Vec<u8>);
+
+fn sync_items_logical_bytes(items: &[SyncItem]) -> u64 {
+    items.iter().map(|(_, bytes)| bytes.len() as u64).sum()
+}
+
+/// The client-side snapshot digest for a set of items in one namespace — the
+/// same formula the anchor's committed/staged views use, computed independently
+/// so tests never ask the code under test for its own expected value.
+pub fn client_snapshot_digest(namespace_id: &[u8; 32], items: &[SyncItem]) -> [u8; 32] {
+    let ids: Vec<Vec<u8>> = items.iter().map(|(id, _)| id.clone()).collect();
+    compute_snapshot_digest(namespace_id, sync_items_logical_bytes(items), &ids)
+}
+
+/// An immutable client-side snapshot (the initiator's sender role).
+pub struct ClientSnapshot {
+    namespace_id: [u8; 32],
+    items: Vec<SyncItem>,
+}
+
+impl Sync2Snapshot for ClientSnapshot {
+    fn snapshot_digest(&self) -> [u8; 32] {
+        client_snapshot_digest(&self.namespace_id, &self.items)
+    }
+    fn entry_count(&self) -> u64 {
+        self.items.len() as u64
+    }
+    fn logical_bytes(&self) -> u64 {
+        sync_items_logical_bytes(&self.items)
+    }
+    fn sorted_entry_ids(&self) -> Vec<Vec<u8>> {
+        let mut ids: Vec<Vec<u8>> = self.items.iter().map(|(id, _)| id.clone()).collect();
+        ids.sort_unstable();
+        ids
+    }
+    fn item_bytes(&self, entry_id: &[u8]) -> Option<Vec<u8>> {
+        self.items
+            .iter()
+            .find(|(id, _)| id.as_slice() == entry_id)
+            .map(|(_, bytes)| bytes.clone())
+    }
+}
+
+/// A client-side direction stage (the initiator's receiver role). Admitted
+/// items land in a shared sink so a test can inspect exactly what a pull
+/// delivered after the session ends.
+pub struct ClientStage {
+    namespace_id: [u8; 32],
+    base: Vec<SyncItem>,
+    admitted: Rc<RefCell<Vec<SyncItem>>>,
+}
+
+impl Sync2DirectionStage for ClientStage {
+    fn missing(&self, page_ids: &[Vec<u8>]) -> Vec<Vec<u8>> {
+        let admitted = self.admitted.borrow();
+        page_ids
+            .iter()
+            .filter(|id| {
+                !self.base.iter().any(|(have, _)| have == *id)
+                    && !admitted.iter().any(|(have, _)| have == *id)
+            })
+            .cloned()
+            .collect()
+    }
+    fn admit(&mut self, entry_ids: &[Vec<u8>], items: &[Vec<u8>]) -> Result<(), AdmissionSubject> {
+        let mut admitted = self.admitted.borrow_mut();
+        for (id, bytes) in entry_ids.iter().zip(items.iter()) {
+            admitted.push((id.clone(), bytes.clone()));
+        }
+        Ok(())
+    }
+    fn resulting_digest(&self, namespace_id: &[u8; 32]) -> [u8; 32] {
+        let mut union = self.base.clone();
+        union.extend(self.admitted.borrow().iter().cloned());
+        client_snapshot_digest(namespace_id, &union)
+    }
+    fn promote(&mut self) {}
+}
+
+/// A phase's client-side role.
+#[derive(Clone)]
+pub enum ClientRole {
+    /// This endpoint sends `items`.
+    Sender(Vec<SyncItem>),
+    /// This endpoint receives over `base` into the shared admitted sink.
+    Receiver {
+        /// The stage's already-held base items.
+        base: Vec<SyncItem>,
+    },
+}
+
+/// The initiator-side `Sync2Repository`: a fixed per-phase plan plus a shared
+/// sink capturing every admitted item.
+pub struct ClientSyncRepo {
+    pub namespace_id: [u8; 32],
+    pub plan: Vec<(Sync2Phase, ClientRole)>,
+    pub admitted: Rc<RefCell<Vec<SyncItem>>>,
+}
+
+impl Sync2Repository for ClientSyncRepo {
+    type Snapshot = ClientSnapshot;
+    type DirectionStage = ClientStage;
+    fn open_namespace(
+        &self,
+        request: &OpenNamespace,
+    ) -> Result<OpenedNamespace<Self>, riot_anchor_protocol::sync2::Sync2Refusal> {
+        let parties = self
+            .plan
+            .iter()
+            .map(|(phase, role)| {
+                let party = match role {
+                    ClientRole::Sender(items) => PhaseParty::Sender(ClientSnapshot {
+                        namespace_id: self.namespace_id,
+                        items: items.clone(),
+                    }),
+                    ClientRole::Receiver { base } => PhaseParty::Receiver(ClientStage {
+                        namespace_id: self.namespace_id,
+                        base: base.clone(),
+                        admitted: Rc::clone(&self.admitted),
+                    }),
+                };
+                (*phase, party)
+            })
+            .collect();
+        Ok(OpenedNamespace {
+            namespace_id: self.namespace_id,
+            mode: request.mode.tag(),
+            parties,
+            stale_source: None,
+        })
+    }
+}
+
+/// The canonical `OpenNamespace` the client initiators send.
+pub fn client_open(
+    namespace_id: [u8; 32],
+    ticket_core_bytes: Vec<u8>,
+    mode: Sync2Mode,
+) -> OpenNamespace {
+    OpenNamespace {
+        protocol_version: 2,
+        session_id: vec![1, 2, 3, 4],
+        ticket_core_bytes,
+        namespace_id,
+        mode,
+    }
+}
+
+/// A real initiator session for a `HostReconcileStaged` PUSH of `items` into
+/// `namespace_id`: phase one receives the anchor's committed base (the client
+/// already holds its own items, so it requests nothing), phase two sends them.
+pub fn push_initiator(
+    namespace_id: [u8; 32],
+    operation_id: [u8; 32],
+    namespace_token: [u8; 32],
+    items: Vec<SyncItem>,
+) -> Sync2Session<ClientSyncRepo> {
+    let repo = ClientSyncRepo {
+        namespace_id,
+        plan: vec![
+            (
+                Sync2Phase::AnchorToClient,
+                ClientRole::Receiver {
+                    base: items.clone(),
+                },
+            ),
+            (Sync2Phase::ClientToAnchor, ClientRole::Sender(items)),
+        ],
+        admitted: Rc::new(RefCell::new(Vec::new())),
+    };
+    let open = client_open(
+        namespace_id,
+        Vec::new(),
+        Sync2Mode::HostReconcileStaged {
+            operation_id,
+            namespace_token,
+        },
+    );
+    Sync2Session::initiator(repo, open)
+}
+
+/// A real initiator session for a `ReadCommitted` PULL of `namespace_id` under
+/// `ticket_core_bytes`, plus the shared sink the pulled items land in.
+pub fn pull_initiator(
+    namespace_id: [u8; 32],
+    ticket_core_bytes: Vec<u8>,
+) -> (Sync2Session<ClientSyncRepo>, Rc<RefCell<Vec<SyncItem>>>) {
+    let admitted = Rc::new(RefCell::new(Vec::new()));
+    let repo = ClientSyncRepo {
+        namespace_id,
+        plan: vec![(
+            Sync2Phase::AnchorToClient,
+            ClientRole::Receiver { base: Vec::new() },
+        )],
+        admitted: Rc::clone(&admitted),
+    };
+    let open = client_open(namespace_id, ticket_core_bytes, Sync2Mode::ReadCommitted);
+    (Sync2Session::initiator(repo, open), admitted)
+}
+
+/// Drive `client` (initiator) against `responder` entirely in memory, recording
+/// the ENCODED frames the client transmits, in order. Used to pre-build a
+/// deterministic frame transcript for the in-process session-table tests: the
+/// responder here is a memory twin of the anchor (empty committed base), so the
+/// client's frames are byte-valid against the real responder too.
+pub fn record_initiator_frames<RA: Sync2Repository, RC: Sync2Repository>(
+    mut responder: Sync2Session<RA>,
+    mut client: Sync2Session<RC>,
+) -> Vec<Vec<u8>> {
+    let mut recorded: Vec<Vec<u8>> = Vec::new();
+    // (deliver_to_responder, frame)
+    let mut queue: Vec<(bool, Sync2Frame)> = Vec::new();
+    let absorb = |actions: Vec<Sync2Action>,
+                  to_responder: bool,
+                  queue: &mut Vec<(bool, Sync2Frame)>,
+                  recorded: &mut Vec<Vec<u8>>| {
+        for action in actions {
+            if let Sync2Action::Send(frame) = action {
+                if to_responder {
+                    recorded.push(frame.encode_canonical().expect("encode sync2 frame"));
+                }
+                queue.push((to_responder, frame));
+            }
+        }
+    };
+    absorb(client.start(), true, &mut queue, &mut recorded);
+    let mut guard = 0;
+    while !queue.is_empty() {
+        guard += 1;
+        assert!(guard < 100_000, "recording duplex did not converge");
+        let (to_responder, frame) = queue.remove(0);
+        let actions = if to_responder {
+            responder.on_frame(frame)
+        } else {
+            client.on_frame(frame)
+        };
+        absorb(actions, !to_responder, &mut queue, &mut recorded);
+    }
+    assert!(
+        client.is_complete() && responder.is_complete(),
+        "recording duplex must converge complete (client={}, responder={})",
+        client.is_complete(),
+        responder.is_complete(),
+    );
+    recorded
+}
+
+/// Everything the in-process session-table tests need to drive a full
+/// `HostReconcileStaged` push as raw frame bytes against the REAL
+/// `SyncSessionTable`: a shared in-memory repository holding the prepared
+/// operation, the token ring the operation's tokens re-derive under, and the
+/// client's recorded frame transcript (`open_frame` then `entry_frames`).
+pub struct Sync2PushFixture {
+    pub shared: SharedRepo,
+    pub token_ring: TokenSecretRing,
+    pub operation_id: [u8; 32],
+    pub namespace_id: [u8; 32],
+    pub namespace_token: [u8; 32],
+    pub item: SyncItem,
+    pub open_frame: Vec<u8>,
+    pub entry_frames: Vec<Vec<u8>>,
+}
+
+/// Build a prepared-operation push fixture. `now` is the fixture's creation
+/// time and `operation_expiry` its operation deadline — pass an expiry at or
+/// before the driving test's `now` to model an expired operation.
+pub fn prepared_sync2_push_fixture(now: u64, operation_expiry: u64) -> Sync2PushFixture {
+    let item = make_item("sync driver push entry");
+    let operation_id = d32(0xA1);
+    let token_secret_epoch = 3;
+    let token_ring = TokenSecretRing::new(token_secret_epoch, d32(200));
+    let namespaces = [item.namespace_id, d32(0xB2), d32(0xB3)];
+    let mut tokens = [[0u8; 32]; 3];
+    for (slot, namespace_id) in tokens.iter_mut().zip(namespaces.iter()) {
+        *slot = token_ring
+            .derive(
+                token_secret_epoch,
+                &operation_id,
+                namespace_id,
+                operation_expiry,
+            )
+            .expect("current epoch derives");
+    }
+
+    let mut store = repo();
+    insert_prepared_operation(
+        &mut store,
+        operation_id,
+        namespaces,
+        tokens,
+        0,
+        now,
+        operation_expiry,
+        token_secret_epoch,
+    );
+    let shared: SharedRepo = Rc::new(RefCell::new(store));
+
+    // Record the client transcript against a memory twin of the anchor: an
+    // empty committed base to send, an empty stage to receive into.
+    let items = vec![(item.entry_id.to_vec(), item.item_bytes.clone())];
+    let client = push_initiator(namespaces[0], operation_id, tokens[0], items);
+    let responder_repo = ClientSyncRepo {
+        namespace_id: namespaces[0],
+        plan: vec![
+            (Sync2Phase::AnchorToClient, ClientRole::Sender(Vec::new())),
+            (
+                Sync2Phase::ClientToAnchor,
+                ClientRole::Receiver { base: Vec::new() },
+            ),
+        ],
+        admitted: Rc::new(RefCell::new(Vec::new())),
+    };
+    let responder = Sync2Session::responder(responder_repo);
+    let mut frames = record_initiator_frames(responder, client);
+    assert!(!frames.is_empty(), "transcript starts with OpenNamespace");
+    let open_frame = frames.remove(0);
+
+    Sync2PushFixture {
+        shared,
+        token_ring,
+        operation_id,
+        namespace_id: namespaces[0],
+        namespace_token: tokens[0],
+        item: (item.entry_id.to_vec(), item.item_bytes.clone()),
+        open_frame,
+        entry_frames: frames,
+    }
+}
+
+/// Re-encode the fixture's `OpenNamespace` with a different namespace token
+/// (same operation, same namespace) — the unknown-token refusal probe.
+pub fn open_frame_with_token(fixture: &Sync2PushFixture, namespace_token: [u8; 32]) -> Vec<u8> {
+    Sync2Frame::OpenNamespace(client_open(
+        fixture.namespace_id,
+        Vec::new(),
+        Sync2Mode::HostReconcileStaged {
+            operation_id: fixture.operation_id,
+            namespace_token,
+        },
+    ))
+    .encode_canonical()
+    .expect("encode open frame")
+}
+
+/// Whether any entries are staged for `operation_id` in `namespace_id`.
+pub fn operation_has_staged_entries(
+    shared: &SharedRepo,
+    operation_id: &[u8; 32],
+    namespace_id: &[u8; 32],
+) -> bool {
+    !shared
+        .borrow()
+        .staged_entries(operation_id, namespace_id)
+        .unwrap_or_default()
+        .is_empty()
 }
 
 impl HostingAuthority for TestAuthority {

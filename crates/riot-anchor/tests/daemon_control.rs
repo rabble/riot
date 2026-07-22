@@ -539,11 +539,57 @@ async fn actor_thread_processes_jobs_and_stops_when_senders_drop() {
         now: 1_700_000_000,
         reply: reply_tx,
     }))
-    .await
     .expect("actor alive");
     assert_eq!(reply_rx.await.expect("reply"), ControlReply::Close);
 
     // Dropping the last sender must let the thread exit: join must complete.
+    drop(tx);
+    tokio::task::spawn_blocking(move || join_handle.join().expect("actor thread exits cleanly"))
+        .await
+        .expect("join");
+}
+
+// ---------------------------------------------------------------------------
+// Cleanup-delivery losslessness (WU-C fix): the actor channel is UNBOUNDED, so
+// enqueueing never fails or blocks under a busy queue. The old bounded(64)
+// channel made the SyncCloseGuard's `try_send` silently drop session Closes
+// whenever 64+ jobs were queued — routine backpressure with 256 concurrent
+// handlers — permanently stranding SyncSessionTable slots. This test floods
+// the queue far past the old capacity from the sending side WITHOUT draining a
+// single reply, then verifies every job (the stand-in for a guard Close at the
+// back of a busy queue) is delivered and processed.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn busy_actor_queue_never_drops_jobs() {
+    let repo = AnchorRepository::open_in_memory().expect("open");
+    let service = control_service();
+    let (tx, join_handle) = spawn_control_actor(repo, service, Box::new(entropy_from(0x50)), 4);
+
+    // Enqueue 200 jobs synchronously — over 3x the old bounded capacity —
+    // before the actor can possibly have drained them. Every send must
+    // succeed immediately (send is sync and infallible while the actor
+    // lives); with the old bounded channel this loop would have blocked or,
+    // via try_send, dropped jobs.
+    let mut replies = Vec::new();
+    for _ in 0..200 {
+        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+        tx.send(ActorJob::Control(ControlJob {
+            request: vec![0xFF; 8],
+            now: 1_700_000_000,
+            reply: reply_tx,
+        }))
+        .expect("unbounded send never fails while the actor lives");
+        replies.push(reply_rx);
+    }
+
+    // Every queued job — including the last one, sent into the busiest
+    // possible queue — is processed: no reply channel is ever dropped
+    // unanswered.
+    for reply_rx in replies {
+        assert_eq!(reply_rx.await.expect("reply"), ControlReply::Close);
+    }
+
     drop(tx);
     tokio::task::spawn_blocking(move || join_handle.join().expect("actor thread exits cleanly"))
         .await

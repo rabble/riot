@@ -14,21 +14,27 @@
 //! may be shared across concurrent handler invocations. So exactly ONE dedicated
 //! OS thread (`anchor-single-writer`) owns the repository and the service: it
 //! wraps the repository in `Rc<RefCell<...>>` (deliberately `!Send`, so `sync/2`
-//! sessions can share the one cell), receives [`ActorJob`]s over an
+//! sessions can share the one cell), receives [`ActorJob`]s over an unbounded
 //! [`mpsc`](tokio::sync::mpsc) channel via `blocking_recv`, calls
 //! [`AnchorControlService::handle`], encodes the [`ControlResponseV1`], and sends
 //! the response bytes back over a [`oneshot`](tokio::sync::oneshot) reply. The
-//! anchor/1 handler closure holds only the `mpsc::Sender` (which is
+//! anchor/1 handler closure holds only the `mpsc::UnboundedSender` (which is
 //! `Clone + Send + Sync`), so many concurrent connections funnel through the one
 //! writer without ever aliasing the connection or the ring. The thread stops
 //! when every sender is dropped; [`serve`] joins it on shutdown so a panic
 //! payload surfaces in the daemon's error path.
 //!
+//! # The `riot/sync/2` DATA path
+//!
+//! [`serve`] registers [`sync_handler`] on `ALPN_SYNC_V2` next to the control
+//! handler. The sync handler is a thin frame shuttle: it owns NO protocol or
+//! admission logic — every frame is forwarded to the single-writer actor as an
+//! [`ActorJob::Sync`], where the [`SyncSessionTable`] drives the responder FSM
+//! against the shared repository cell, and the handler writes back whatever
+//! frames the actor returns.
+//!
 //! # Deferred scope (increment 2+)
 //!
-//! * The `riot/sync/2` DATA path is a separate increment. [`run`] registers ONLY
-//!   the control ALPN and logs the sync path as deferred; the router stays
-//!   extensible (register another ALPN + handler there).
 //! * Lease renewal — [`run`] acquires the single-writer deployment lease once at
 //!   startup; a periodic renew/verify loop is later scope.
 //! * A production [`AdmissionPolicy`] with real capacity accounting, per-source
@@ -54,14 +60,15 @@ use riot_anchor_protocol::control::{
 use riot_anchor_protocol::records::{
     DescriptorEnvelopeV1, PublicSiteTicketV2Core, TransportFloor, MAX_DESCRIPTOR_ENVELOPE_BYTES,
 };
+use riot_anchor_protocol::sync2::MAX_SYNC2_FRAME_BYTES;
 use riot_transport::iroh::IrohConnection;
 use riot_transport::router::{AlpnRouter, BoundedStream, Deadlines, Exporter, Handler};
-use riot_transport::{TransportError, ALPN_ANCHOR_V1};
+use riot_transport::{TransportError, ALPN_ANCHOR_V1, ALPN_SYNC_V2};
 
 use crate::admission::IngressLimits;
 use crate::control::{AdmissionPolicy, AnchorControlService, ControlHandling, PreparePlan};
 use crate::repository::{AnchorRepository, AnchorRepositoryError};
-use crate::sync_driver::{SyncJob, SyncSessionTable};
+use crate::sync_driver::{SyncEvent, SyncJob, SyncSessionTable};
 use crate::sync_service::SharedRepo;
 use crate::work::{OperatorSigner, PressurePolicy};
 
@@ -126,20 +133,32 @@ pub enum ActorJob {
 /// behind `Rc<RefCell<...>>`, deliberately `!Send`, so `riot/sync/2` sessions
 /// can share the one cell — and processes every [`ActorJob`] serially, so the
 /// non-`Sync` connection and the mutable token ring are never aliased. Returns
-/// the `mpsc::Sender` the handlers clone plus the thread's `JoinHandle`. The
-/// thread stops when every sender is dropped; joining the handle surfaces its
-/// panic payload if it died.
+/// the `mpsc::UnboundedSender` the handlers clone plus the thread's
+/// `JoinHandle`. The thread stops when every sender is dropped; joining the
+/// handle surfaces its panic payload if it died.
 pub fn spawn_control_actor<P, S>(
     repo: AnchorRepository,
     service: AnchorControlService<P, S>,
     entropy: EntropyFn,
     max_sync_sessions: usize,
-) -> (mpsc::Sender<ActorJob>, std::thread::JoinHandle<()>)
+) -> (mpsc::UnboundedSender<ActorJob>, std::thread::JoinHandle<()>)
 where
     P: AdmissionPolicy + Send + 'static,
     S: OperatorSigner + Send + 'static,
 {
-    let (tx, rx) = mpsc::channel::<ActorJob>(64);
+    // UNBOUNDED so that cleanup delivery is structurally lossless: the
+    // `SyncCloseGuard` destructor MUST be able to enqueue a session's Close
+    // even while the queue is busy (a bounded channel's `try_send` silently
+    // dropped Closes under routine backpressure, permanently stranding
+    // `SyncSessionTable` slots). The queue depth is still bounded in practice
+    // despite the unbounded type: every connection handler holds at most ONE
+    // in-flight job at a time (it awaits the oneshot reply before reading the
+    // next frame), the ingress semaphore caps concurrent handlers at
+    // `max_concurrent_control_sessions`, and each sync session contributes at
+    // most one guard Close — so depth is bounded by roughly
+    // `max_sessions * 2 + 1`. Backpressure lives where it belongs: at the
+    // ingress semaphore and the per-handler reply await, not in this channel.
+    let (tx, rx) = mpsc::unbounded_channel::<ActorJob>();
     let handle = std::thread::Builder::new()
         .name("anchor-single-writer".into())
         .spawn(move || actor_loop(repo, service, entropy, rx, max_sync_sessions))
@@ -154,7 +173,7 @@ fn actor_loop<P, S>(
     repo: AnchorRepository,
     service: AnchorControlService<P, S>,
     mut entropy: EntropyFn,
-    mut rx: mpsc::Receiver<ActorJob>,
+    mut rx: mpsc::UnboundedReceiver<ActorJob>,
     max_sync_sessions: usize,
 ) where
     P: AdmissionPolicy,
@@ -217,7 +236,7 @@ fn actor_loop<P, S>(
 /// actor's reply back — one request/response per frame, looping until the peer
 /// closes the stream. A [`ControlReply::Close`] (bounded protocol failure) ends
 /// the session with no response frame.
-pub fn control_handler(tx: mpsc::Sender<ActorJob>, now_fn: NowFn) -> Handler {
+pub fn control_handler(tx: mpsc::UnboundedSender<ActorJob>, now_fn: NowFn) -> Handler {
     Arc::new(move |mut stream: BoundedStream, _exporter: Exporter| {
         let tx = tx.clone();
         let now_fn = Arc::clone(&now_fn);
@@ -235,7 +254,7 @@ pub fn control_handler(tx: mpsc::Sender<ActorJob>, now_fn: NowFn) -> Handler {
                     now: (now_fn)(),
                     reply: reply_tx,
                 };
-                if tx.send(ActorJob::Control(job)).await.is_err() {
+                if tx.send(ActorJob::Control(job)).is_err() {
                     return Err(TransportError::Io(std::io::Error::other(
                         "anchor control actor unavailable",
                     )));
@@ -248,6 +267,118 @@ pub fn control_handler(tx: mpsc::Sender<ActorJob>, now_fn: NowFn) -> Handler {
                             "anchor control actor dropped reply",
                         )))
                     }
+                }
+            }
+        }) as Pin<Box<dyn Future<Output = Result<(), TransportError>> + Send>>
+    })
+}
+
+/// The next daemon-unique `riot/sync/2` session id.
+fn next_session_id() -> u64 {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
+/// RAII guard guaranteeing the actor learns a `riot/sync/2` connection is gone
+/// on EVERY handler exit path: normal completion, early `?` returns from a
+/// failed write, and — crucially — router-level cancellation (the absolute
+/// session lifetime and the extra-stream violation both DROP the handler
+/// future, so no code after the read loop ever runs). Without it a live
+/// session strands in the [`SyncSessionTable`] forever, permanently consuming
+/// one of the bounded `max_sessions` slots. This guard is the ONLY Close
+/// mechanism — the handler body sends no explicit Close of its own.
+struct SyncCloseGuard {
+    tx: mpsc::UnboundedSender<ActorJob>,
+    session_id: u64,
+}
+
+impl Drop for SyncCloseGuard {
+    fn drop(&mut self) {
+        // Structurally lossless: on the unbounded channel `send` fails ONLY
+        // when the receiver is gone — i.e. the actor thread has exited and the
+        // whole session table died with it, so there is nothing left to clean
+        // up. That is the single acceptable loss; a busy queue can never drop
+        // this Close. The reply receiver is a throwaway: nobody is left to
+        // read it (the table tolerates a dropped receiver).
+        let (reply, _throwaway) = oneshot::channel();
+        let _ = self.tx.send(ActorJob::Sync(SyncJob {
+            session_id: self.session_id,
+            event: SyncEvent::Close,
+            reply,
+        }));
+    }
+}
+
+/// Build the `riot/sync/2` [`Handler`]: a thin frame shuttle to the actor. The
+/// first frame of a connection is the session's `Open` (stamped with the
+/// current time); every later frame is a plain `Frame` event. The handler owns
+/// no protocol state beyond that split — decode, routing, admission, and
+/// refusals all happen inside the actor's [`SyncSessionTable`] — and its
+/// [`SyncCloseGuard`] tells the actor when the connection is gone (on every
+/// exit path, including future-drop cancellation) so session state is dropped.
+pub fn sync_handler(tx: mpsc::UnboundedSender<ActorJob>, now_fn: NowFn) -> Handler {
+    Arc::new(move |mut stream: BoundedStream, _exporter: Exporter| {
+        let tx = tx.clone();
+        let now_fn = Arc::clone(&now_fn);
+        Box::pin(async move {
+            let session_id = next_session_id();
+            // Created BEFORE the read loop: from here on, every way this
+            // future can end (return, `?`, drop) delivers the session's Close.
+            let _close_guard = SyncCloseGuard {
+                tx: tx.clone(),
+                session_id,
+            };
+            let mut opened = false;
+            loop {
+                let frame = match stream.read_frame().await {
+                    Ok(frame) => frame,
+                    // Peer finished and closed cleanly: the session is over.
+                    Err(TransportError::StreamClosed) => return Ok(()),
+                    Err(error) => return Err(error),
+                };
+                let event = if opened {
+                    SyncEvent::Frame { frame }
+                } else {
+                    opened = true;
+                    SyncEvent::Open {
+                        frame,
+                        now: (now_fn)(),
+                    }
+                };
+                let (reply_tx, reply_rx) = oneshot::channel();
+                if tx
+                    .send(ActorJob::Sync(SyncJob {
+                        session_id,
+                        event,
+                        reply: reply_tx,
+                    }))
+                    .is_err()
+                {
+                    return Err(TransportError::Io(std::io::Error::other(
+                        "anchor sync actor unavailable",
+                    )));
+                }
+                let reply = match reply_rx.await {
+                    Ok(reply) => reply,
+                    Err(_) => {
+                        return Err(TransportError::Io(std::io::Error::other(
+                            "anchor sync actor dropped reply",
+                        )))
+                    }
+                };
+                for outbound in &reply.outbound {
+                    stream.write_frame(outbound).await?;
+                }
+                if reply.terminated {
+                    // Deliverability: dropping the connection right after the
+                    // final write races QUIC teardown and can discard the
+                    // still-unacknowledged closing frames (refusal or
+                    // NamespaceComplete). The peer closes its side once it has
+                    // read everything, so hold the session open until its
+                    // FIN/close arrives; whatever ends the drain is teardown
+                    // noise on an already-terminated session.
+                    while stream.read_frame().await.is_ok() {}
+                    return Ok(());
                 }
             }
         }) as Pin<Box<dyn Future<Output = Result<(), TransportError>> + Send>>
@@ -496,11 +627,10 @@ pub fn os_entropy() -> EntropyFn {
     })
 }
 
-/// The ALPNs this daemon's endpoints advertise. Just the control ALPN for
-/// increment 1. DEFERRED(WU-019 increment 2): add `ALPN_SYNC_V2` when the DATA
-/// path lands (and register its handler in [`serve`]).
+/// The ALPNs this daemon's endpoints advertise: the `riot/anchor/1` control
+/// plane and the `riot/sync/2` data path.
 fn anchor_alpns() -> Vec<Vec<u8>> {
-    vec![ALPN_ANCHOR_V1.to_vec()]
+    vec![ALPN_ANCHOR_V1.to_vec(), ALPN_SYNC_V2.to_vec()]
 }
 
 fn bind_io_error(error: impl core::fmt::Display) -> DaemonError {
@@ -618,18 +748,23 @@ where
     let max_sessions = config.ingress.max_concurrent_control_sessions;
     let (tx, actor) = spawn_control_actor(repo, service, entropy, max_sessions);
     let now_fn: NowFn = Arc::new(unix_now);
-    let handler = control_handler(tx, now_fn);
 
     let mut router = AlpnRouter::new(max_sessions);
     router.register_with_max_frame(
         ALPN_ANCHOR_V1,
         Deadlines::control(),
         MAX_CONTROL_FRAME_BYTES,
-        handler,
+        control_handler(tx.clone(), Arc::clone(&now_fn)),
     );
-    // DEFERRED(WU-019 increment 2): register the `riot/sync/2` DATA-path handler
-    // (ALPN_SYNC_V2) on this same router. The router is intentionally left
-    // extensible for it.
+    // The sync/2 ceiling is the PROTOCOL's (a maximal EntriesChunk bundle plus
+    // envelope headroom, `MAX_SYNC2_FRAME_BYTES`) — the router's default sync
+    // ceiling is tighter and would length-reject a maximal chunk before decode.
+    router.register_with_max_frame(
+        ALPN_SYNC_V2,
+        Deadlines::sync(),
+        MAX_SYNC2_FRAME_BYTES,
+        sync_handler(tx, now_fn),
+    );
 
     let router = Arc::new(router);
     // Bound incomplete handshakes as well as routed sessions. An accepted
