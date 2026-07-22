@@ -524,12 +524,14 @@ section { padding: clamp(56px, 9vw, 100px) 0; }
 .closing .btn.outline:hover { border-color: var(--pink); color: var(--pink); }
 
 footer.colophon {
+  background: var(--ink);
   border-top: 2px solid rgba(234,230,218,0.25);
   padding: 26px clamp(20px, 5vw, 64px) 40px;
   display: flex; justify-content: space-between; gap: 16px; flex-wrap: wrap;
   font-family: 'Space Mono', monospace; font-size: 11.5px; color: color-mix(in srgb, var(--paper) 60%, transparent);
 }
 footer.colophon .footer-links a { text-decoration: none; }
+footer.colophon a { color: inherit; }
 footer.colophon .footer-links a:hover { text-decoration: underline; text-decoration-color: var(--pink); }
 
 /* ---------- what it is (scannable) ---------- */
