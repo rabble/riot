@@ -13,6 +13,16 @@ const ROLES = [
   "--riot-quiet","--riot-on-quiet","--riot-signal","--riot-on-signal","--riot-focus",
 ];
 const THEMES = ["night-garden","repair-picnic","living-network","deep-amaranth","signal-chartreuse","burnt-tomato"];
+const NEUTRALS = {
+  light: {
+    "--riot-paper": "#ECE7DB", "--riot-surface": "#F8F4E9",
+    "--riot-ink": "#17160F", "--riot-ink-soft": "#5F594F", "--riot-line": "#17160F",
+  },
+  dark: {
+    "--riot-paper": "#17160F", "--riot-surface": "#242219",
+    "--riot-ink": "#F5F0E4", "--riot-ink-soft": "#C8C1B4", "--riot-line": "#8D8679",
+  },
+};
 
 test("opts into light+dark controls", () => {
   assert.match(css, /color-scheme\s*:\s*light\s+dark/);
@@ -141,10 +151,25 @@ for (const [scheme, scopeCss, table] of [["light", lightCss, LIGHT], ["dark", da
   test(`${scheme}: attribute-less :root default equals Night Garden`, () => {
     const def = blockBody(scopeCss, ":root");
     const ng = table["night-garden"];
-    assert.equal(role(def, "--riot-paper"), ng.paper.toUpperCase(), `${scheme} default paper (neutral)`);
+    for (const [name, expected] of Object.entries(NEUTRALS[scheme])) {
+      assert.equal(role(def, name), expected, `${scheme} default ${name}`);
+    }
     assert.equal(role(def, "--riot-focus"), ng.focus.toUpperCase(), `${scheme} default focus == night-garden`);
     ORDER.forEach((r, i) => {
       assert.equal(role(def, ROLE_OF[r]), ng.pairs[i][0].toUpperCase(), `${scheme} default ${r} == night-garden`);
     });
   });
 }
+
+test("every CSS hex literal belongs to the approved theme palette", () => {
+  const approved = new Set([
+    ...Object.values(NEUTRALS).flatMap((roles) => Object.values(roles)),
+    ...[LIGHT, DARK].flatMap((table) => Object.values(table).flatMap((theme) => [
+      theme.focus,
+      ...theme.pairs.flat(),
+    ])),
+  ].map((hex) => hex.toUpperCase()));
+  const actual = [...css.matchAll(/#[0-9a-fA-F]{6}\b/g)].map(([hex]) => hex.toUpperCase());
+  assert.ok(actual.length > 0, "tokens.css must contain literal palette values");
+  for (const hex of actual) assert.ok(approved.has(hex), `unapproved color ${hex}`);
+});
