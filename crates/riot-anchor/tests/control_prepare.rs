@@ -144,6 +144,7 @@ impl AdmissionPolicy for SpyPolicy {
         &self,
         _request: &PrepareHostV1,
         _observed_at: u64,
+        _highest_transport_epoch: Option<u32>,
     ) -> Result<PreparePlan, ControlRefusal> {
         self.calls.borrow_mut().push(Stage::Authorize);
         match self.authorize_refusal.borrow().clone() {

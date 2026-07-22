@@ -212,6 +212,8 @@ pub enum AnchorRepositoryError {
     LeaseLost,
     /// The verified lease has expired.
     LeaseExpired,
+    /// The database is already bound to a different operator identity.
+    OperatorIdentityMismatch,
     /// An immutable read snapshot is unavailable (the repository is not backed
     /// by a shareable database file).
     SnapshotUnavailable,
@@ -244,6 +246,9 @@ impl core::fmt::Display for AnchorRepositoryError {
             }
             Self::LeaseLost => write!(formatter, "deployment lease was taken by another holder"),
             Self::LeaseExpired => write!(formatter, "deployment lease has expired"),
+            Self::OperatorIdentityMismatch => {
+                write!(formatter, "anchor database operator identity mismatch")
+            }
             Self::SnapshotUnavailable => {
                 write!(formatter, "immutable read snapshot requires a file-backed repository")
             }
@@ -607,6 +612,48 @@ impl AnchorRepository {
             ledger: &mut self.ledger,
             pending: [0; ACCOUNTING_CLASS_COUNT],
         })
+    }
+
+    /// Return the canonical descriptor already bound to this database, or
+    /// atomically persist `proposed_descriptor` on first startup.
+    ///
+    /// Once initialized, the operator key id is immutable. This prevents a
+    /// restored database from silently becoming a different anchor identity.
+    pub fn load_or_initialize_descriptor(
+        &mut self,
+        operator_key_id: &[u8; 32],
+        proposed_descriptor: &[u8],
+    ) -> Result<Vec<u8>, AnchorRepositoryError> {
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let (stored_key, stored_descriptor): (Option<Vec<u8>>, Option<Vec<u8>>) = transaction
+            .query_row(
+                "SELECT operator_key_id, descriptor_bytes
+                 FROM operator_state WHERE singleton = 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?;
+
+        if let Some(stored_key) = &stored_key {
+            if stored_key.as_slice() != operator_key_id {
+                return Err(AnchorRepositoryError::OperatorIdentityMismatch);
+            }
+        }
+
+        if let Some(stored_descriptor) = stored_descriptor {
+            transaction.commit()?;
+            return Ok(stored_descriptor);
+        }
+
+        transaction.execute(
+            "UPDATE operator_state
+             SET operator_key_id = ?1, descriptor_bytes = ?2
+             WHERE singleton = 1",
+            params![operator_key_id.as_slice(), proposed_descriptor],
+        )?;
+        transaction.commit()?;
+        Ok(proposed_descriptor.to_vec())
     }
 
     /// Acquire the single-writer deployment lease for `holder_id`.
@@ -979,6 +1026,46 @@ impl RepoTransaction<'_> {
     pub fn uncharge(&mut self, class: AccountingClass, amount: u64) {
         let index = class.index();
         self.pending[index] -= amount as i64;
+    }
+
+    /// The highest root-signed public-site ticket transport epoch this anchor
+    /// has successfully admitted for `root_id`.
+    pub fn highest_ticket_transport_epoch(
+        &self,
+        root_id: &[u8; 32],
+    ) -> Result<Option<u32>, AnchorRepositoryError> {
+        let stored: Option<i64> = self
+            .transaction
+            .query_row(
+                "SELECT highest_transport_epoch FROM ticket_transport_floors WHERE root_id = ?1",
+                params![root_id.as_slice()],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(stored.map(|epoch| epoch as u32))
+    }
+
+    /// Advance the durable transport epoch floor for `root_id`.
+    ///
+    /// This is called in the same transaction that persists PrepareHost, so a
+    /// crash can expose neither an operation without its rollback floor nor a
+    /// floor for an operation that never committed.
+    pub fn advance_ticket_transport_epoch(
+        &mut self,
+        root_id: &[u8; 32],
+        transport_epoch: u32,
+    ) -> Result<(), AnchorRepositoryError> {
+        self.transaction.execute(
+            "INSERT INTO ticket_transport_floors(root_id, highest_transport_epoch)
+             VALUES (?1, ?2)
+             ON CONFLICT(root_id) DO UPDATE SET
+                 highest_transport_epoch = MAX(
+                     ticket_transport_floors.highest_transport_epoch,
+                     excluded.highest_transport_epoch
+                 )",
+            params![root_id.as_slice(), i64::from(transport_epoch)],
+        )?;
+        Ok(())
     }
 
     /// Insert a community with zero logical bytes (payloads add to it).

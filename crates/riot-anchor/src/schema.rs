@@ -10,7 +10,7 @@
 use rusqlite::{Connection, TransactionBehavior};
 
 /// Current schema version this binary declares.
-pub const CURRENT_SCHEMA_VERSION: u32 = 1;
+pub const CURRENT_SCHEMA_VERSION: u32 = 2;
 
 /// Default configured listing ceiling `L`. The preprovisioned removal table
 /// holds exactly `2 * L` slots.
@@ -412,6 +412,22 @@ const MIGRATION_ONE: &str = r#"
     PRAGMA user_version = 1;
 "#;
 
+/// Forward-only migration 2: a durable rollback floor for each root-signed
+/// public-site ticket stream. The floor advances atomically with a successful
+/// PrepareHost operation and is consulted before canonical ticket admission.
+const MIGRATION_TWO: &str = r#"
+    CREATE TABLE ticket_transport_floors (
+        root_id BLOB PRIMARY KEY NOT NULL CHECK (length(root_id) = 32),
+        highest_transport_epoch INTEGER NOT NULL CHECK (
+            highest_transport_epoch >= 0
+            AND highest_transport_epoch <= 4294967295
+        )
+    ) STRICT;
+
+    UPDATE operator_state SET schema_version = 2 WHERE singleton = 1;
+    PRAGMA user_version = 2;
+"#;
+
 /// SQL that preprovisions `2 * L` free removal slots via a bounded recursive
 /// sequence. Every slot starts unclaimed.
 fn preprovision_removal_slots_sql() -> String {
@@ -459,6 +475,10 @@ pub fn migrate(connection: &mut Connection) -> Result<u32, SchemaError> {
         transaction.execute_batch(MIGRATION_ONE)?;
         transaction.execute_batch(&preprovision_removal_slots_sql())?;
         transaction.execute("INSERT INTO schema_migrations(version) VALUES (1)", [])?;
+    }
+    if found < 2 {
+        transaction.execute_batch(MIGRATION_TWO)?;
+        transaction.execute("INSERT INTO schema_migrations(version) VALUES (2)", [])?;
     }
 
     transaction.commit()?;
@@ -509,6 +529,7 @@ mod tests {
         "emergency_reserves",
         "listing_floors",
         "directory_projection",
+        "ticket_transport_floors",
     ];
 
     /// Every index the schema defines.
@@ -643,6 +664,48 @@ mod tests {
             )
             .expect("ledger");
         assert_eq!(ledger, CURRENT_SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn version_one_database_upgrades_to_ticket_transport_floors() {
+        let mut connection = Connection::open_in_memory().expect("open");
+        connection
+            .execute_batch(
+                "CREATE TABLE schema_migrations (
+                     version INTEGER PRIMARY KEY NOT NULL CHECK (version > 0)
+                 ) STRICT;",
+            )
+            .unwrap();
+        connection.execute_batch(MIGRATION_ONE).unwrap();
+        connection
+            .execute_batch(&preprovision_removal_slots_sql())
+            .unwrap();
+        connection
+            .execute("INSERT INTO schema_migrations(version) VALUES (1)", [])
+            .unwrap();
+
+        assert_eq!(migrate(&mut connection).unwrap(), CURRENT_SCHEMA_VERSION);
+        let floor_table: u32 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_schema
+                 WHERE type = 'table' AND name = 'ticket_transport_floors'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(floor_table, 1);
+        let operator_schema: u32 = connection
+            .query_row(
+                "SELECT schema_version FROM operator_state WHERE singleton = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(operator_schema, CURRENT_SCHEMA_VERSION);
+        let user_version: u32 = connection
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(user_version, CURRENT_SCHEMA_VERSION);
     }
 
     #[test]

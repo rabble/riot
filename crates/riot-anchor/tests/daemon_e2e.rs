@@ -29,8 +29,8 @@ use riot_anchor::daemon::{bind_local_anchor_endpoint, serve};
 
 use riot_anchor_protocol::codec::{decode_canonical, CanonicalRecord};
 use riot_anchor_protocol::control::{
-    ControlOperation, ControlOutcome, ControlRequestV1, ControlResponseV1, ControlSuccess,
-    PrepareHostV1, MAX_CONTROL_FRAME_BYTES,
+    ControlOperation, ControlOutcome, ControlRefusal, ControlRequestV1, ControlResponseV1,
+    ControlSuccess, DescribeV1, PrepareHostV1, MAX_CONTROL_FRAME_BYTES,
 };
 use riot_anchor_protocol::records::{
     PublicSiteTicketV2Core, RootSignedTicketCoreEnvelopeV2, TransportFloor,
@@ -88,13 +88,20 @@ fn signed_ticket(
 }
 
 fn prepare_frame(ticket: RootSignedTicketCoreEnvelopeV2) -> Vec<u8> {
+    prepare_frame_with_key(ticket, [1u8; 16])
+}
+
+fn prepare_frame_with_key(
+    ticket: RootSignedTicketCoreEnvelopeV2,
+    idempotency_key: [u8; 16],
+) -> Vec<u8> {
     let body = PrepareHostV1 {
         root_signed_ticket_core: ticket,
         ordered_namespace_snapshot_digests: [[30u8; 32], [31u8; 32], [32u8; 32]],
         work_stamp: None,
     };
     ControlRequestV1 {
-        idempotency_key: [1u8; 16],
+        idempotency_key,
         operation: ControlOperation::PrepareHost(Box::new(body)),
     }
     .encode_canonical()
@@ -124,6 +131,14 @@ async fn round_trip(
     daemon_addr: iroh::EndpointAddr,
     ticket: RootSignedTicketCoreEnvelopeV2,
 ) -> ControlResponseV1 {
+    control_round_trip(client, daemon_addr, prepare_frame(ticket)).await
+}
+
+async fn control_round_trip(
+    client: &iroh::Endpoint,
+    daemon_addr: iroh::EndpointAddr,
+    frame: Vec<u8>,
+) -> ControlResponseV1 {
     let conn = timeout(STEP, client.connect(daemon_addr, ALPN_ANCHOR_V1))
         .await
         .expect("dial did not time out")
@@ -132,7 +147,7 @@ async fn round_trip(
     let mut send = Box::pin(send);
     let mut recv = Box::pin(recv);
 
-    write_frame(&mut send, &prepare_frame(ticket)).await;
+    write_frame(&mut send, &frame).await;
     let bytes = timeout(STEP, read_frame(&mut recv))
         .await
         .expect("response arrived before timeout");
@@ -143,6 +158,11 @@ async fn round_trip(
 
 fn daemon_config() -> (Config, PathBuf) {
     let db_path = unique_db();
+    let config = daemon_config_for(&db_path, "E2E Anchor");
+    (config, db_path)
+}
+
+fn daemon_config_for(db_path: &std::path::Path, display_label: &str) -> Config {
     let args = vec!["--db".to_string(), db_path.to_string_lossy().into_owned()];
     let env = vec![
         ("RIOT_ANCHOR_OPERATOR_KEY_HEX".to_string(), "07".repeat(32)),
@@ -153,7 +173,7 @@ fn daemon_config() -> (Config, PathBuf) {
         ),
         (
             "RIOT_ANCHOR_DISPLAY_LABEL".to_string(),
-            "E2E Anchor".to_string(),
+            display_label.to_string(),
         ),
         ("RIOT_ANCHOR_FAILURE_DOMAIN".to_string(), "test".to_string()),
         (
@@ -161,8 +181,7 @@ fn daemon_config() -> (Config, PathBuf) {
             IngressLimits::DEFAULT_MAX_CONTROL_SESSIONS.to_string(),
         ),
     ];
-    let config = resolve_config(&args, &env).expect("test daemon config resolves");
-    (config, db_path)
+    resolve_config(&args, &env).expect("test daemon config resolves")
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -237,6 +256,183 @@ async fn daemon_serves_prepare_host_over_real_iroh_and_refuses_require_arti() {
         .expect("serve task joined");
     assert!(served.is_ok(), "serve returned Ok: {served:?}");
 
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn daemon_accepts_a_second_control_session_while_the_first_is_stalled() {
+    let daemon_endpoint = bind_local_anchor_endpoint([101u8; 32])
+        .await
+        .expect("daemon endpoint binds");
+    let daemon_addr = dialable_addr(&daemon_endpoint).await;
+
+    let (config, db_path) = daemon_config();
+    let (daemon_config, service) = assemble_service(config);
+    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+    let serve_task = tokio::spawn(async move {
+        serve(
+            daemon_endpoint,
+            daemon_config,
+            service,
+            Box::new(|| [0x51u8; 32]),
+            async move {
+                let _ = shutdown_rx.await;
+            },
+        )
+        .await
+    });
+
+    let client = bind_local_anchor_endpoint([201u8; 32])
+        .await
+        .expect("client endpoint binds");
+
+    // Occupy one routed session with a partial length prefix. The progress
+    // deadline is five seconds, so a serialized accept loop cannot service the
+    // second connection within the two-second assertion window.
+    let stalled = timeout(STEP, client.connect(daemon_addr.clone(), ALPN_ANCHOR_V1))
+        .await
+        .expect("first dial did not time out")
+        .expect("first dial connects");
+    let (mut stalled_send, _stalled_recv) = stalled.open_bi().await.expect("first bi-stream");
+    stalled_send.write_all(&[0]).await.unwrap();
+    stalled_send.flush().await.unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    let root = SigningKey::from_bytes(&[10u8; 32]);
+    let second = timeout(
+        Duration::from_secs(2),
+        round_trip(&client, daemon_addr, signed_ticket(&root, |_| {})),
+    )
+    .await;
+
+    drop(stalled_send);
+    let _ = shutdown_tx.send(());
+    let served = timeout(STEP, serve_task)
+        .await
+        .expect("serve stops promptly")
+        .expect("serve task joined");
+    client.close().await;
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
+    let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
+
+    assert!(served.is_ok(), "serve returned Ok: {served:?}");
+    let response = second.expect("second control session was starved by the first");
+    assert!(
+        matches!(
+            response.outcome,
+            ControlOutcome::Success(ControlSuccess::PrepareHost(_))
+        ),
+        "second session should complete normally: {:?}",
+        response.outcome,
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn daemon_restart_reuses_the_persisted_descriptor_at_the_same_epoch() {
+    let db_path = unique_db();
+    let client = bind_local_anchor_endpoint([202u8; 32])
+        .await
+        .expect("client endpoint binds");
+    let describe = ControlRequestV1 {
+        idempotency_key: [0x77; 16],
+        operation: ControlOperation::Describe(DescribeV1),
+    }
+    .encode_canonical()
+    .unwrap();
+
+    let first_endpoint = bind_local_anchor_endpoint([8u8; 32])
+        .await
+        .expect("first daemon endpoint binds");
+    let first_addr = dialable_addr(&first_endpoint).await;
+    let (first_config, first_service) =
+        assemble_service(daemon_config_for(&db_path, "First label"));
+    let (first_shutdown_tx, first_shutdown_rx) = oneshot::channel::<()>();
+    let first_task = tokio::spawn(async move {
+        serve(
+            first_endpoint,
+            first_config,
+            first_service,
+            Box::new(|| [0x61; 32]),
+            async move {
+                let _ = first_shutdown_rx.await;
+            },
+        )
+        .await
+    });
+    let first = control_round_trip(&client, first_addr.clone(), describe.clone()).await;
+    let root = SigningKey::from_bytes(&[11u8; 32]);
+    let higher = signed_ticket(&root, |core| {
+        core.transport_epoch = 5;
+    });
+    let first_prepare = control_round_trip(
+        &client,
+        first_addr,
+        prepare_frame_with_key(higher, [0x81; 16]),
+    )
+    .await;
+    assert!(matches!(
+        first_prepare.outcome,
+        ControlOutcome::Success(ControlSuccess::PrepareHost(_))
+    ));
+    let _ = first_shutdown_tx.send(());
+    assert!(timeout(STEP, first_task).await.unwrap().unwrap().is_ok());
+
+    // A changed label makes the freshly assembled epoch-0 descriptor differ.
+    // Restart reconciliation must return the already-persisted descriptor,
+    // never publish a second digest for the same epoch.
+    let second_endpoint = bind_local_anchor_endpoint([8u8; 32])
+        .await
+        .expect("second daemon endpoint binds");
+    let second_addr = dialable_addr(&second_endpoint).await;
+    let (second_config, second_service) =
+        assemble_service(daemon_config_for(&db_path, "Changed label"));
+    let (second_shutdown_tx, second_shutdown_rx) = oneshot::channel::<()>();
+    let second_task = tokio::spawn(async move {
+        serve(
+            second_endpoint,
+            second_config,
+            second_service,
+            Box::new(|| [0x62; 32]),
+            async move {
+                let _ = second_shutdown_rx.await;
+            },
+        )
+        .await
+    });
+    let second = control_round_trip(&client, second_addr.clone(), describe).await;
+    let lower = signed_ticket(&root, |core| {
+        core.transport_epoch = 4;
+    });
+    let second_prepare = control_round_trip(
+        &client,
+        second_addr,
+        prepare_frame_with_key(lower, [0x82; 16]),
+    )
+    .await;
+    assert!(
+        matches!(
+            second_prepare.outcome,
+            ControlOutcome::Refused(ControlRefusal::InvalidTicketAuthority)
+        ),
+        "the durable ticket epoch floor must survive daemon restart",
+    );
+    let _ = second_shutdown_tx.send(());
+    assert!(timeout(STEP, second_task).await.unwrap().unwrap().is_ok());
+
+    let descriptor = |response: ControlResponseV1| match response.outcome {
+        ControlOutcome::Success(ControlSuccess::Describe(success)) => success.descriptor,
+        other => panic!("expected Describe success, got {other:?}"),
+    };
+    assert_eq!(
+        descriptor(first).encode_canonical().unwrap(),
+        descriptor(second).encode_canonical().unwrap(),
+        "restart must not equivocate by publishing a different digest at epoch 0",
+    );
+
+    client.close().await;
     let _ = std::fs::remove_file(&db_path);
     let _ = std::fs::remove_file(db_path.with_extension("db-wal"));
     let _ = std::fs::remove_file(db_path.with_extension("db-shm"));
