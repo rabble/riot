@@ -136,7 +136,13 @@ Retain the existing `This website` no-analytics/static-page paragraph but replac
 
 - [ ] **Step 4: Update README and exact mirrors**
 
-Set the `/privacy/` route description to `concise public-publishing, participant-held-data, private-conversation, and website-data boundaries.` Copy each changed source page byte-for-byte to its `marketing/public/` peer using the same patch content, then run all three `cmp` commands from the existing plan.
+Set the `/privacy/` route description to `concise public-publishing, participant-held-data, private-conversation, and website-data boundaries.` Copy each changed source page byte-for-byte to its `marketing/public/` peer using the same patch content, then run:
+
+```sh
+cmp marketing/index.html marketing/public/index.html
+cmp marketing/why-riot/index.html marketing/public/why-riot/index.html
+cmp marketing/privacy/index.html marketing/public/privacy/index.html
+```
 
 - [ ] **Step 5: Run GREEN and commit**
 
@@ -156,11 +162,11 @@ git commit -m "fix(marketing): remove fear and process theater"
 
 - [ ] **Step 1: Write failing verifier tests**
 
-Create Node tests around an exported `verifyOrigin({ origin, routes, browserFactory })` using loopback HTTP fixtures. The passing fixture serves exact bytes, direct 200s, no cookies, no storage, and a direct 404. Separate tests must reject a redirect, byte mismatch, `Set-Cookie`, nonempty browser cookie/storage, and an off-origin request. Run `node --test scripts/marketing/test/verify-live.test.mjs`; expected FAIL because the module does not exist.
+Create Node tests around an exported `verifyOrigin({ origin, routes, browserFactory })` using loopback HTTP fixtures. The passing fixture serves exact bytes, direct 200s, no cookies, no storage, and a direct 404. Its browser fixture proves that listeners are attached before navigation, every route is visited in one fresh context for the origin, each complete document is scrolled, and the verifier waits for network idle after scrolling. Separate tests must reject a redirect, byte mismatch, `Set-Cookie`, nonempty browser cookie/storage, and an off-origin request. Run `node --test scripts/marketing/test/verify-live.test.mjs`; expected FAIL because the module does not exist.
 
 - [ ] **Step 2: Implement the minimal verifier**
 
-Create `verify-live.mjs` with the exact nine-route map from the design. Use `fetch(..., { redirect: "manual" })`, `readFile`, `createHash("sha256")`, `timingSafeEqual` after equal-length checks, and Playwright Chromium. Export `verifyOrigin`; on direct execution verify both production origins and print one JSON object containing origin, route, status, expected/local hash, live hash, headers, cookie/storage/request-origin results, and missing-route result. Exit nonzero on any mismatch.
+Create `verify-live.mjs` with the exact nine-route map from the design. Use `fetch(..., { redirect: "manual" })`, `readFile`, `createHash("sha256")`, `timingSafeEqual` after equal-length checks, and Playwright Chromium. Export `verifyOrigin`; for each origin create a fresh browser context, attach request and response listeners before navigation, visit and fully scroll every route to trigger lazy resources, wait for network idle after scrolling, and inspect context cookies plus `document.cookie`, `localStorage`, and `sessionStorage`. On direct execution verify both production origins and print one JSON object containing origin, route, status, expected/local hash, live hash, headers, cookie/storage/request-origin results, and missing-route result. Exit nonzero on any mismatch.
 
 - [ ] **Step 3: Expose and verify the command**
 
@@ -180,11 +186,17 @@ git commit -m "test(marketing): verify deployed route identity"
 
 - [ ] **Step 1: Capture and inspect desktop/mobile pages**
 
-Serve `marketing/public/` on loopback. Capture `/`, `/why-riot/`, and `/privacy/` at 1456×900 and 390×844. Assert no horizontal overflow. Inspect that comparison rows have no empty badge gaps, the field-history section flows without the removed box, Why Riot's boundary is compact, and Privacy leads with participant value rather than threat language.
+Serve `marketing/public/` on loopback. Capture `/`, `/why-riot/`, and `/privacy/` at 1456×900 and 390×844 using the six filenames and `/tmp/visual-review/riot-human-capacity/` location fixed by the design. Assert no horizontal overflow at 390 px. Capture the additional 1456×900 `why-riot-forced-colors.png` and `privacy-forced-colors.png` where Chromium supports forced-colors emulation, or record the unsupported result. Disable CSS and confirm the inline illustration neither obscures meaning nor creates overflow. Inspect that comparison rows have no empty badge gaps, the field-history section flows without the removed box, Why Riot's boundary is compact, and Privacy leads with participant value rather than threat language.
+
+For all three pages at both standard viewports, walk every visible text element and interactive control, resolve its computed foreground against the nearest non-transparent flat background, and record every unique pair. Require 4.5:1 for normal text and 3:1 for text at least 24 CSS px or at least 18.66 CSS px and bold; manually inspect and record any unresolved background. Record every screenshot path and SHA-256, viewport, overflow result, forced-colors support/outcome, no-CSS result, color pair and ratio, and issue found in `docs/marketing/2026-07-22-human-capacity-implementation-review.md`.
+
+For every locally served route, attach request and response listeners before navigation, visit and fully scroll the page, wait for network idle, and capture every response header, request URL, and resource performance entry. Require no `Set-Cookie`, an empty context cookie jar before and after, and no request origin outside the loopback preview. Store the ordered response-header/request-origin evidence and its SHA-256 in the implementation report.
 
 - [ ] **Step 2: Refresh editorial evidence**
 
-Run three fresh isolated Why Riot first-read reviews with revision 20's Q4 rubric and one fresh semantic claim audit. Require all four PASS and store new file hashes/session IDs in the implementation review.
+Compute and record the SHA-256 of `marketing/public/why-riot/index.html`. Run three fresh, mutually isolated Why Riot first-read sessions using the exact shared prompt prefix, declared community/partner/builder role lines, assigned questions, and deterministic element rubric in the design. Give each session only that HTML and its prompt. Require scores of 4/4, 5/5, and 5/5 respectively, with no privacy-messenger, disaster-survival, or protocol-project primary impression.
+
+Run a fourth fresh semantic-auditor session with only the exact ordered eleven files and exact audit prompt from the design. Require `PASS` with zero findings. In the implementation report store each first-read role, exact prompt and SHA-256, verbatim returned JSON, element-by-element orchestrator score, verdict, fresh session identifier, rendered-file hash, plus the semantic audit's exact prompt and SHA-256, ordered eleven-file SHA-256 list, verbatim returned JSON, verdict, and session identifier.
 
 - [ ] **Step 3: Run the full predeploy gate and commit the implementation evidence**
 
