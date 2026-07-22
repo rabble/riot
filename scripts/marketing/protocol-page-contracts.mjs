@@ -105,6 +105,8 @@ for (const [name, content] of Object.entries({ openSource, community, marketingR
     `${name} must identify both distinct AGPL crate exceptions`,
   );
 }
+assert.doesNotMatch(home, /<span class="etag">MIT licensed<\/span>/i, "homepage must not imply the mixed-license repository is entirely MIT");
+assert.match(home, /<span class="etag">MIT \+ AGPL<\/span>/i, "homepage must disclose the repository's mixed licenses");
 
 for (const name of [
   "spaces", "apps", "compose", "checklist",
