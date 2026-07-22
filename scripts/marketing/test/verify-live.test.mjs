@@ -1,11 +1,22 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
 import { verifyOrigin } from "../verify-live.mjs";
+
+test("deployment CSP blocks edge-injected scripts without breaking static page assets", async () => {
+  const headers = await readFile(new URL("../../../marketing/public/_headers", import.meta.url), "utf8");
+  assert.match(headers, /^\/\*$/m);
+  assert.match(headers, /Content-Security-Policy:[^\n]*default-src 'self'/i);
+  assert.match(headers, /script-src 'none'/i);
+  assert.match(headers, /style-src 'self' 'unsafe-inline'/i);
+  assert.match(headers, /img-src 'self' data:/i);
+  assert.match(headers, /connect-src 'self'/i);
+  assert.match(headers, /frame-ancestors 'none'/i);
+});
 
 async function fixture({ body = "expected\n", routeStatus = 200, routeHeaders = {}, missingHeaders = {} } = {}) {
   const directory = await mkdtemp(join(tmpdir(), "riot-live-verifier-"));
