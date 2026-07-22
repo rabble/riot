@@ -17,6 +17,7 @@ import uniffi.riot_ffi.AlertCertainty
 import uniffi.riot_ffi.AlertDraftInput
 import uniffi.riot_ffi.AlertSeverity
 import uniffi.riot_ffi.AlertUrgency
+import uniffi.riot_ffi.PublicSpace
 import uniffi.riot_ffi.openLocalProfile
 
 @RunWith(AndroidJUnit4::class)
@@ -225,6 +226,126 @@ class BindingSemanticsTest {
         assertEquals(original, store.load())
         store.clear()
     }
+
+    // MARK: - Starter-catalog generation (WU-001N)
+
+    /**
+     * A fresh `createSpace` and a first-time `joinSpace` both persist generation
+     * 2. Read back through a store bound to the controller's own alias + file.
+     */
+    @Test
+    fun freshCreateAndFirstJoinPersistGenerationTwo() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+
+        val createDir = File(context.cacheDir, "gen-create-${System.nanoTime()}").apply { mkdirs() }
+        RiotController(createDir).use { it.createSpace("Fresh create") }
+        val createStore = controllerStore(createDir)
+        assertEquals(2, createStore.load()!!.starterCatalogGeneration)
+        createStore.clear()
+        createDir.deleteRecursively()
+
+        val sender = openLocalProfile()
+        val senderSpace = sender.createPublicSpace("Joinable")
+        val joinDir = File(context.cacheDir, "gen-join-${System.nanoTime()}").apply { mkdirs() }
+        RiotController(joinDir).use { it.joinSpace(senderSpace) }
+        val joinStore = controllerStore(joinDir)
+        assertEquals(2, joinStore.load()!!.starterCatalogGeneration)
+        sender.close()
+        joinStore.clear()
+        joinDir.deleteRecursively()
+    }
+
+    /**
+     * Sealed snapshots carrying `null`, explicit `1`, and `2` all reopen through
+     * the sealed restore FFI and keep the SAME marker in their next durable
+     * snapshot — no upgrade, no downgrade. (The exact retained internal
+     * `Option<u8>` is proven by the Rust white-box tests.)
+     */
+    @Test
+    fun sealedSnapshotsReopenAndKeepTheirMarker() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        for (marker in listOf<Int?>(null, 1, 2)) {
+            val dir = File(context.cacheDir, "gen-sealed-${System.nanoTime()}").apply { mkdirs() }
+            RiotController(dir).use { it.createSpace("Sealed marker") }
+            val store = controllerStore(dir)
+            store.save(store.load()!!.copy(starterCatalogGeneration = marker))
+
+            RiotController(dir).use { it.createAndSignAlert("Marker $marker", "body", false) }
+
+            assertEquals(marker, store.load()!!.starterCatalogGeneration)
+            store.load()!!.identityState?.wrappingKey?.fill(0)
+            store.clear()
+            dir.deleteRecursively()
+        }
+    }
+
+    /**
+     * An identityless legacy snapshot (no sealed identity, no marker) reopens
+     * successfully — minting and sealing a fresh signer — and stays `null`/v3
+     * after its next permitted persist, proving it did NOT take the fresh
+     * marker-materializing path.
+     */
+    @Test
+    fun identitylessLegacySnapshotReopensAndStaysNull() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        val dir = File(context.cacheDir, "gen-identityless-${System.nanoTime()}").apply { mkdirs() }
+        RiotController(dir).use { it.createSpace("Identityless legacy") }
+        val store = controllerStore(dir)
+        val base = store.load()!!
+        store.save(base.copy(identityState = null, starterCatalogGeneration = null))
+
+        RiotController(dir).use { it.createAndSignAlert("Legacy", "body", false) }
+
+        val reopened = store.load()!!
+        assertEquals(null, reopened.starterCatalogGeneration)
+        assertEquals(PersistedProfileCodec.SEALED_IDENTITY_BYTES, reopened.identityState!!.sealedIdentity.size)
+        reopened.identityState!!.wrappingKey.fill(0)
+        store.clear()
+        dir.deleteRecursively()
+    }
+
+    /**
+     * `joinAdditionalCommunity` is an existing-profile mutation: it preserves the
+     * loaded snapshot's marker (`null`, `1`, or `2`) AND its sentinel alert,
+     * installed app, and app data — only the space slot changes — rather than
+     * reconstructing a partial profile.
+     */
+    @Test
+    fun joinAdditionalCommunityPreservesMarkerAlertsAppsAndData() {
+        val context = InstrumentationRegistry.getInstrumentation().targetContext
+        for (marker in listOf<Int?>(null, 1, 2)) {
+            val dir = File(context.cacheDir, "gen-additional-${System.nanoTime()}").apply { mkdirs() }
+            val appId = "aa".repeat(32)
+            val alertId = RiotController(dir).use { controller ->
+                controller.createSpace("First community")
+                val entry = controller.createAndSignAlert("Sentinel", "kept across join", false)
+                controller.onAppInstalled(appId, byteArrayOf(1, 2, 3), byteArrayOf(4, 5, 6))
+                controller.onAppDataCommitted(appId, "items/0", byteArrayOf(7, 8, 9))
+                entry.entryId
+            }
+            val store = controllerStore(dir)
+            store.save(store.load()!!.copy(starterCatalogGeneration = marker))
+
+            val secondSpace = PublicSpace("bc".repeat(32), "Second community", true)
+            RiotController(dir).use { it.joinAdditionalCommunity(secondSpace, "cd".repeat(32)) }
+
+            val after = store.load()!!
+            assertEquals(marker, after.starterCatalogGeneration)
+            assertEquals(listOf(alertId), after.alerts.map { it.entryId })
+            assertEquals(listOf(appId), after.installedApps.map { it.appId })
+            assertEquals(listOf("items/0"), after.appData.map { it.key })
+            assertEquals("Second community", after.space.title)
+            after.identityState?.wrappingKey?.fill(0)
+            store.clear()
+            dir.deleteRecursively()
+        }
+    }
+
+    /** A store bound to the same Keystore alias + file a [RiotController] uses. */
+    private fun controllerStore(directory: File) = AndroidKeystoreProfileStore(
+        "riot-conference-profile",
+        File(directory, "conference-profile.bin"),
+    )
 
     private fun writeEncryptedLegacyV1(file: File, keyAlias: String, profile: PersistedProfile) {
         val plaintext = ByteArrayOutputStream().use { bytes ->

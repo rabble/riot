@@ -318,7 +318,7 @@ fn nearby_sync_reconciles_trust_and_revoke_for_the_same_organizer_identity() {
     let sealed = sender
         .seal_identity(wrapping_key.clone())
         .expect("seal identity");
-    let receiver = open_profile_from_sealed_identity(wrapping_key, sealed).expect("restore");
+    let receiver = open_profile_from_sealed_identity(wrapping_key, sealed, None).expect("restore");
     receiver.join_public_space(space, Vec::new()).expect("join");
 
     let starter =
@@ -2398,7 +2398,7 @@ fn a_restored_generation_one_profile_still_serves_a_held_built_in() {
     let sealed = original
         .seal_identity(wrapping_key.clone())
         .expect("seal identity");
-    let restored = open_profile_from_sealed_identity(wrapping_key, sealed).expect("restore");
+    let restored = open_profile_from_sealed_identity(wrapping_key, sealed, None).expect("restore");
 
     let built_in = built_in_apps().into_iter().next().expect("a built-in");
     let app_id = built_in.app_id.to_vec();

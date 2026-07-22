@@ -28,7 +28,9 @@ import uniffi.riot_ffi.PublicSpace
 import uniffi.riot_ffi.PublicIdentity
 import uniffi.riot_ffi.ResolvedCompositeSite
 import uniffi.riot_ffi.openLocalProfile
+import uniffi.riot_ffi.openLocalProfileForStarterCatalogGeneration
 import uniffi.riot_ffi.openLocalProfileWithDatabase
+import uniffi.riot_ffi.openLocalProfileWithDatabaseForStarterCatalogGeneration
 import uniffi.riot_ffi.openProfileFromSealedIdentity
 import uniffi.riot_ffi.openProfileFromSealedIdentityWithDatabase
 import org.riot.evidence.transport.GeneratedMobileSyncBridge
@@ -73,7 +75,13 @@ class RiotController(filesDir: File) : AutoCloseable {
     fun createSpace(title: String): PublicSpace {
         val space = profile.createPublicSpace(title.trim())
         currentSpace = space
-        persisted = PersistedProfile(PersistedSpace(space.namespaceId, space.title), emptyList())
+        // A truly fresh base profile records the current starter-catalog
+        // generation (2 / wire v4) before its first persist.
+        persisted = PersistedProfile(
+            PersistedSpace(space.namespaceId, space.title),
+            emptyList(),
+            starterCatalogGeneration = 2,
+        )
         persist(persisted!!)
         // Seal the new community's author now, minimizing the unsealed-in-RAM
         // window (Risk 13) rather than leaving it until app background.
@@ -88,7 +96,12 @@ class RiotController(filesDir: File) : AutoCloseable {
         // The empty-key path exists only for ephemeral in-memory test profiles.
         val joined = withWrappingKey { key -> profile.joinPublicSpace(space, key) }
         currentSpace = joined
-        persisted = PersistedProfile(PersistedSpace(joined.namespaceId, joined.title), emptyList())
+        // First-time join is a fresh base profile: record generation 2 (wire v4).
+        persisted = PersistedProfile(
+            PersistedSpace(joined.namespaceId, joined.title),
+            emptyList(),
+            starterCatalogGeneration = 2,
+        )
         persist(persisted!!)
         persistCommunities()
         return joined
@@ -113,8 +126,13 @@ class RiotController(filesDir: File) : AutoCloseable {
         val joined =
             withWrappingKey { key -> profile.joinNewswireCommunity(space, descriptorEntryId, key) }
         currentSpace = joined
-        persisted = PersistedProfile(PersistedSpace(joined.namespaceId, joined.title), emptyList())
-        persist(persisted!!)
+        // An existing-profile mutation, NOT a fresh base: read-modify-write the
+        // loaded snapshot so alerts, identity, installed apps, app data, AND the
+        // starter-catalog generation are preserved. Never materialize a marker on
+        // a grandfathered null profile — only the space slot changes.
+        mutatePersisted { snapshot ->
+            snapshot.copy(space = PersistedSpace(joined.namespaceId, joined.title))
+        }
         persistCommunities()
         return activeCommunity() ?: throw IllegalStateException("no active community after join")
     }
@@ -411,10 +429,23 @@ class RiotController(filesDir: File) : AutoCloseable {
     }
 
     private fun openProfile(snapshot: PersistedProfile?): MobileProfile {
-        val state = snapshot?.identityState ?: return openLocalProfileWithDatabase(databasePath)
+        // No persisted state at all: a truly fresh profile, generation 2.
+        if (snapshot == null) return openLocalProfileWithDatabase(databasePath)
+        val generation = snapshot.starterCatalogGeneration?.toUByte()
+        // Persisted but identityless (a legacy snapshot, or one that never sealed):
+        // NOT fresh — retain the exact marker via the generation-aware restore
+        // rather than the fresh no-argument API, so a grandfathered null/v3 profile
+        // is never silently upgraded to generation 2.
+        val state = snapshot.identityState
+            ?: return openLocalProfileWithDatabaseForStarterCatalogGeneration(databasePath, generation)
         return try {
             TemporaryKey.useCopy(state.wrappingKey) { temporary ->
-                openProfileFromSealedIdentityWithDatabase(databasePath, temporary, state.sealedIdentity)
+                openProfileFromSealedIdentityWithDatabase(
+                    databasePath,
+                    temporary,
+                    state.sealedIdentity,
+                    generation,
+                )
             }
         } finally {
             state.wrappingKey.fill(0)

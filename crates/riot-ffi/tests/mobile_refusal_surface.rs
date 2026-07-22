@@ -126,7 +126,8 @@ fn an_unopenable_database_path_is_reported_as_a_database_error() {
         open_profile_from_sealed_identity_with_database(
             unusable,
             TEST_WRAPPING_KEY.to_vec(),
-            sealed
+            sealed,
+            None
         ),
         Err(MobileError::Database)
     ));
@@ -619,17 +620,17 @@ fn a_sealed_identity_that_does_not_open_is_invalid_input() {
 
     // Wrong key.
     assert!(matches!(
-        open_profile_from_sealed_identity(vec![0x01; 32], sealed.clone()),
+        open_profile_from_sealed_identity(vec![0x01; 32], sealed.clone(), None),
         Err(MobileError::InvalidInput)
     ));
     // Garbage ciphertext.
     assert!(matches!(
-        open_profile_from_sealed_identity(TEST_WRAPPING_KEY.to_vec(), vec![0xff; 64]),
+        open_profile_from_sealed_identity(TEST_WRAPPING_KEY.to_vec(), vec![0xff; 64], None),
         Err(MobileError::InvalidInput)
     ));
     // A key that is not 32 bytes is refused before it is used.
     assert!(matches!(
-        open_profile_from_sealed_identity(vec![0x42; 16], sealed),
+        open_profile_from_sealed_identity(vec![0x42; 16], sealed, None),
         Err(MobileError::InvalidInput)
     ));
     assert!(matches!(

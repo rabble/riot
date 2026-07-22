@@ -357,22 +357,60 @@ pub(crate) fn open_local_profile() -> Result<Arc<MobileProfile>, MobileError> {
     }
 }
 
+/// Validate a persisted starter-catalog generation before it is trusted to
+/// select a built-in catalog bootstrap. `None` is the durable encoding of
+/// generation 1; `Some(1)`/`Some(2)` are the known generations. Anything else is
+/// a corrupt or forward-dated marker and fails closed with `InvalidInput` rather
+/// than silently bootstrapping an unknown catalog. Shared by every restore seam
+/// so no path can admit an out-of-range generation.
+fn validate_starter_catalog_generation(generation: Option<u8>) -> Result<Option<u8>, MobileError> {
+    match generation {
+        None | Some(1) | Some(2) => Ok(generation),
+        Some(_) => Err(MobileError::InvalidInput),
+    }
+}
+
 pub(crate) fn open_profile_from_sealed_identity(
     mut wrapping_key: Vec<u8>,
     sealed_identity: Vec<u8>,
+    starter_catalog_generation: Option<u8>,
 ) -> Result<Arc<MobileProfile>, MobileError> {
     let result = catch_unwind(AssertUnwindSafe(|| {
+        // Validate the persisted marker before any author or store is built so a
+        // corrupt generation fails closed without side effects.
+        let generation = validate_starter_catalog_generation(starter_catalog_generation)?;
         let key = exact_wrapping_key(&wrapping_key)?;
         let author = EvidenceAuthor::open_sealed_identity(&key, &sealed_identity)
             .map_err(map_author_error)?;
         let session = RiotSession::open().map_err(|_| MobileError::Internal)?;
         let store = session.create_store().map_err(|_| MobileError::Internal)?;
-        // Restore path: generation 1 (`None`) for this WU. WU-001N threads the
-        // persisted marker through the restore FFI signature.
-        Ok(profile_with_author(store, author, None))
+        // Restore path: retain the persisted generation exactly (`None` == the
+        // durable encoding of generation 1); never re-derive it as a fresh open.
+        Ok(profile_with_author(store, author, generation))
     }));
     wrapping_key.zeroize();
     match result {
+        Ok(result) => result,
+        Err(_) => Err(MobileError::Internal),
+    }
+}
+
+/// Restores an identityless local profile (no sealed identity to reopen) while
+/// retaining the persisted starter-catalog generation. An identityless
+/// persisted profile is NOT fresh: it mints a bootstrap author like a fresh open
+/// but keeps its grandfathered generation (`None` stays generation 1) instead of
+/// taking the fresh `Some(2)` marker. Distinct from `open_local_profile`, whose
+/// no-argument meaning remains "truly fresh profile, generation 2".
+pub(crate) fn open_local_profile_for_starter_catalog_generation(
+    starter_catalog_generation: Option<u8>,
+) -> Result<Arc<MobileProfile>, MobileError> {
+    match catch_unwind(AssertUnwindSafe(|| {
+        let generation = validate_starter_catalog_generation(starter_catalog_generation)?;
+        let session = RiotSession::open().map_err(|_| MobileError::Internal)?;
+        let store = session.create_store().map_err(|_| MobileError::Internal)?;
+        let author = generate_space_organizer_author().map_err(map_author_error)?;
+        Ok(profile_with_author(store, author, generation))
+    })) {
         Ok(result) => result,
         Err(_) => Err(MobileError::Internal),
     }
@@ -413,6 +451,39 @@ pub(crate) fn open_local_profile_with_database(
     }
 }
 
+/// Restores an identityless local profile backed by a durable SQLite database at
+/// `db_path`, retaining the persisted starter-catalog generation. Combines
+/// `open_local_profile_with_database` durability with the
+/// generation-preservation of `open_local_profile_for_starter_catalog_generation`
+/// — an identityless persisted profile is not fresh, so its grandfathered marker
+/// is kept rather than materialized as `Some(2)`.
+pub(crate) fn open_local_profile_with_database_for_starter_catalog_generation(
+    db_path: String,
+    starter_catalog_generation: Option<u8>,
+) -> Result<Arc<MobileProfile>, MobileError> {
+    match catch_unwind(AssertUnwindSafe(|| {
+        let generation = validate_starter_catalog_generation(starter_catalog_generation)?;
+        let database = riot_core::store::RiotDatabase::open(
+            &db_path,
+            riot_core::store::DatabaseConfig::default(),
+        )
+        .map_err(map_database_error)?;
+        let db_handle = database.clone();
+        let session = RiotSession::open_sqlite(database).map_err(|_| MobileError::Internal)?;
+        let store = session.create_store().map_err(|_| MobileError::Internal)?;
+        let author = generate_space_organizer_author().map_err(map_author_error)?;
+        Ok(profile_with_author_and_db(
+            store,
+            author,
+            Some(db_handle),
+            generation,
+        ))
+    })) {
+        Ok(result) => result,
+        Err(_) => Err(MobileError::Internal),
+    }
+}
+
 /// Restores a profile from a sealed identity, backed by a durable SQLite
 /// database at `db_path`. Combines `open_profile_from_sealed_identity`
 /// semantics with the durable store from `open_local_profile_with_database`.
@@ -420,8 +491,12 @@ pub(crate) fn open_profile_from_sealed_identity_with_database(
     db_path: String,
     mut wrapping_key: Vec<u8>,
     sealed_identity: Vec<u8>,
+    starter_catalog_generation: Option<u8>,
 ) -> Result<Arc<MobileProfile>, MobileError> {
     let result = catch_unwind(AssertUnwindSafe(|| {
+        // Validate the persisted marker before opening the database so a corrupt
+        // generation fails closed without touching durable state.
+        let generation = validate_starter_catalog_generation(starter_catalog_generation)?;
         let database = riot_core::store::RiotDatabase::open(
             &db_path,
             riot_core::store::DatabaseConfig::default(),
@@ -433,8 +508,9 @@ pub(crate) fn open_profile_from_sealed_identity_with_database(
             .map_err(map_author_error)?;
         let session = RiotSession::open_sqlite(database).map_err(|_| MobileError::Internal)?;
         let store = session.create_store().map_err(|_| MobileError::Internal)?;
-        // Restore path: generation 1 (`None`) for this WU (see WU-001N).
-        let profile = profile_with_author_and_db(store, author, Some(db_handle), None);
+        // Restore path: retain the persisted generation exactly (`None` == the
+        // durable encoding of generation 1).
+        let profile = profile_with_author_and_db(store, author, Some(db_handle), generation);
         // Durable multi-community restore: swap the active community's own sealed
         // author in over the just-restored primary identity, and reproject its
         // content, so a reopen lands on the same community with the same Home.
@@ -4481,6 +4557,117 @@ mod tests {
             panic!("profile should be active");
         };
         assert_eq!(local.starter_catalog_generation, Some(2));
+    }
+
+    /// WU-001N: both restore families receive the persisted starter-catalog
+    /// generation and retain the exact `Option<u8>` — `None` (legacy generation
+    /// 1), explicit `Some(1)`, and `Some(2)` — while a fresh no-generation open
+    /// stays `Some(2)`. Unknown generations fail closed with `InvalidInput`
+    /// before a profile is constructed. White-box because the field has no
+    /// public getter, so integration tests cannot observe the retained value.
+    #[test]
+    fn restore_uses_persisted_starter_catalog_generation() {
+        fn generation_of(profile: &Arc<MobileProfile>) -> Option<u8> {
+            let state = lock_unpoisoned(&profile.inner);
+            let ProfileState::Active(local) = &*state else {
+                panic!("profile should be active");
+            };
+            local.starter_catalog_generation
+        }
+
+        // Fresh no-generation opens remain generation 2 (fresh-profile semantics
+        // must not change under the new restore seam).
+        assert_eq!(generation_of(&open_local_profile().unwrap()), Some(2));
+
+        // Sealed-identity restore (in-memory) retains the exact marker.
+        for generation in [None, Some(1u8), Some(2u8)] {
+            let source = open_local_profile().unwrap();
+            let key = vec![0x42; 32];
+            let sealed = seal_identity(&source.inner, key.clone()).unwrap();
+            let restored = open_profile_from_sealed_identity(key, sealed, generation).unwrap();
+            assert_eq!(generation_of(&restored), generation);
+        }
+        for bad in [Some(0u8), Some(3u8)] {
+            let source = open_local_profile().unwrap();
+            let key = vec![0x42; 32];
+            let sealed = seal_identity(&source.inner, key.clone()).unwrap();
+            assert!(matches!(
+                open_profile_from_sealed_identity(key, sealed, bad),
+                Err(MobileError::InvalidInput)
+            ));
+        }
+
+        // Sealed-identity restore (durable) retains the exact marker.
+        for generation in [None, Some(1u8), Some(2u8)] {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let db_path = dir.path().join("riot.sqlite");
+            let source = open_local_profile().unwrap();
+            let key = vec![0x37; 32];
+            let sealed = seal_identity(&source.inner, key.clone()).unwrap();
+            let restored = open_profile_from_sealed_identity_with_database(
+                db_path.to_string_lossy().into_owned(),
+                key,
+                sealed,
+                generation,
+            )
+            .unwrap();
+            assert_eq!(generation_of(&restored), generation);
+        }
+        {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let source = open_local_profile().unwrap();
+            let key = vec![0x37; 32];
+            let sealed = seal_identity(&source.inner, key.clone()).unwrap();
+            assert!(matches!(
+                open_profile_from_sealed_identity_with_database(
+                    dir.path()
+                        .join("riot.sqlite")
+                        .to_string_lossy()
+                        .into_owned(),
+                    key,
+                    sealed,
+                    Some(3u8),
+                ),
+                Err(MobileError::InvalidInput)
+            ));
+        }
+
+        // Identityless local restore (in-memory) retains the exact marker.
+        for generation in [None, Some(1u8), Some(2u8)] {
+            let restored = open_local_profile_for_starter_catalog_generation(generation).unwrap();
+            assert_eq!(generation_of(&restored), generation);
+        }
+        for bad in [Some(0u8), Some(3u8)] {
+            assert!(matches!(
+                open_local_profile_for_starter_catalog_generation(bad),
+                Err(MobileError::InvalidInput)
+            ));
+        }
+
+        // Identityless local restore (durable) retains the exact marker.
+        for generation in [None, Some(1u8), Some(2u8)] {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let db_path = dir.path().join("riot.sqlite");
+            let restored = open_local_profile_with_database_for_starter_catalog_generation(
+                db_path.to_string_lossy().into_owned(),
+                generation,
+            )
+            .unwrap();
+            assert_eq!(generation_of(&restored), generation);
+        }
+        {
+            let dir = tempfile::tempdir().expect("tempdir");
+            assert!(matches!(
+                open_local_profile_with_database_for_starter_catalog_generation(
+                    dir.path()
+                        .join("riot.sqlite")
+                        .to_string_lossy()
+                        .into_owned(),
+                    Some(0u8),
+                ),
+                Err(MobileError::InvalidInput)
+            ));
+        }
     }
 
     /// WU-002a: the finalize generation guard is LIVE, not a phantom. A real

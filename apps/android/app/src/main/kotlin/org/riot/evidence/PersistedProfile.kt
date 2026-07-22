@@ -55,6 +55,11 @@ data class PersistedProfile(
     val identityState: PersistedIdentityState? = null,
     val installedApps: List<PersistedApp> = emptyList(),
     val appData: List<PersistedAppData> = emptyList(),
+    // The starter-catalog generation this profile was created under. `null` is
+    // the zero-byte durable encoding of generation 1 (a legacy profile predating
+    // this marker, kept as wire v3); a fresh profile records `2` (wire v4).
+    // Trailing + defaulted so positional legacy constructors stay source-compatible.
+    val starterCatalogGeneration: Int? = null,
 )
 
 data class PersistedIdentityState(
@@ -65,9 +70,17 @@ data class PersistedIdentityState(
 object PersistedProfileCodec {
     const val MAX_ENCODED_BYTES = 4 * 1024 * 1024 - 64
     private const val MAGIC = 0x52494f54
-    private const val VERSION = 3
+    // The highest wire version this codec understands. A profile is written at the
+    // LOWEST version that can represent it: a null-marker profile stays v3
+    // (byte-identical to before this field existed), a generation-bearing profile
+    // is v4. Decode accepts 1..VERSION.
+    private const val VERSION = 4
     private const val VERSION_WITH_IDENTITY = 2
     private const val VERSION_WITH_APPS = 3
+    private const val VERSION_WITH_STARTER_CATALOG_GENERATION = 4
+    // The version a null-marker (generation-1) profile is written at, so a
+    // grandfathered profile never grows a marker or a version bump.
+    private const val LEGACY_WRITABLE_VERSION = 3
     private const val MIN_VERSION = 1
     const val WRAPPING_KEY_BYTES = 32
     const val SEALED_IDENTITY_BYTES = 112
@@ -88,21 +101,27 @@ object PersistedProfileCodec {
         afterCopy: (ByteArray) -> Unit = {},
     ): ByteArray = encodeInternal(profile, onStreamAllocated, afterCopy)
 
-    internal fun encodedSizeForTest(profile: PersistedProfile): Int = encodedSize(profile)
-
     private fun encodeInternal(
         profile: PersistedProfile,
         onStreamAllocated: () -> Unit,
         afterCopy: (ByteArray) -> Unit,
     ): ByteArray {
         val expectedSize = encodedSize(profile)
+        // A null-marker profile is written at the legacy v3 representation so it
+        // stays byte-identical to a pre-marker snapshot; only a generation-bearing
+        // profile advances to v4 and carries the trailing marker.
+        val wireVersion = if (profile.starterCatalogGeneration == null) {
+            LEGACY_WRITABLE_VERSION
+        } else {
+            VERSION_WITH_STARTER_CATALOG_GENERATION
+        }
         var encoded: ByteArray? = null
         try {
             onStreamAllocated()
             encoded = WipingByteArrayOutputStream(expectedSize).use { bytes ->
                 val output = DataOutputStream(bytes)
                 output.writeInt(MAGIC)
-                output.writeInt(VERSION)
+                output.writeInt(wireVersion)
                 output.writeString(profile.space.namespaceId)
                 output.writeString(profile.space.title)
                 output.writeInt(profile.alerts.size)
@@ -137,6 +156,8 @@ object PersistedProfileCodec {
                     output.writeString(data.key)
                     output.writeBytes(data.bundleBytes)
                 }
+                // v4 only: the trailing 32-bit starter-catalog generation.
+                profile.starterCatalogGeneration?.let(output::writeInt)
                 output.flush()
                 bytes.toByteArray()
             }
@@ -229,8 +250,25 @@ object PersistedProfileCodec {
                 } else {
                     emptyList()
                 }
+                val starterCatalogGeneration =
+                    if (version >= VERSION_WITH_STARTER_CATALOG_GENERATION) {
+                        val generation = input.readInt()
+                        require(generation == 1 || generation == 2) {
+                            "invalid starter-catalog generation"
+                        }
+                        generation
+                    } else {
+                        null
+                    }
                 require(input.available() == 0) { "trailing persisted profile bytes" }
-                val result = PersistedProfile(space, alerts, identityState, installedApps, appData)
+                val result = PersistedProfile(
+                    space,
+                    alerts,
+                    identityState,
+                    installedApps,
+                    appData,
+                    starterCatalogGeneration,
+                )
                 pendingIdentityKey = null
                 result
             }
@@ -244,10 +282,23 @@ object PersistedProfileCodec {
         }
     }
 
-    private fun encodedSize(profile: PersistedProfile): Int {
+    /**
+     * The exact number of bytes [encode] will produce for [profile], computed
+     * without allocating the stream. This is the production preflight WU-002c
+     * runs (while holding the authority/persistence lock) before a durable
+     * mutation: it validates every field against its ceiling — including the
+     * starter-catalog marker's membership — and enforces [MAX_ENCODED_BYTES], so
+     * a prospective over-limit profile is rejected before any allocation. It must
+     * stay the SAME function [encodeInternal] calls, so a prospective size can
+     * never disagree with the actual encoding.
+     */
+    internal fun encodedSize(profile: PersistedProfile): Int {
         require(profile.alerts.size <= MAX_ALERTS) { "too many persisted alerts" }
         require(profile.installedApps.size <= MAX_INSTALLED_APPS) { "too many persisted apps" }
         require(profile.appData.size <= MAX_APP_DATA_ENTRIES) { "too many persisted app-data entries" }
+        profile.starterCatalogGeneration?.let { generation ->
+            require(generation == 1 || generation == 2) { "invalid starter-catalog generation" }
+        }
         profile.identityState?.let { identity ->
             require(identity.wrappingKey.size == WRAPPING_KEY_BYTES) {
                 "invalid identity wrapping key length"
@@ -306,6 +357,8 @@ object PersistedProfileCodec {
             addString(data.key)
             addBytes(data.bundleBytes, MAX_APP_DATA_BUNDLE_BYTES)
         }
+        // v4 only: the trailing 32-bit generation marker.
+        if (profile.starterCatalogGeneration != null) add(Int.SIZE_BYTES)
         return total.toInt()
     }
 
