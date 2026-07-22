@@ -40,3 +40,13 @@ net = ["dep:riot-transport", "dep:riot-anchor-protocol", "dep:tokio", "dep:iroh"
 minicbor = { workspace = true }
 serde_json = { workspace = true }
 tempfile = { workspace = true }
+# TEST-ONLY: seed an in-process anchor (bind_local_anchor_endpoint + serve +
+# ReadCommitted committed store) for the Slice-2 `sync_with_anchor` e2e. A
+# dev-dependency is test-only: it does NOT enter the shipped staticlib/cdylib or
+# the DEFAULT (non-dev) feature closure the xtask boundary rule guards. The
+# `daemon` feature pulls iroh/tokio into the TEST binary only.
+riot-anchor = { path = "../riot-anchor", features = ["daemon"] }
+ed25519-dalek = { workspace = true }
+riot-anchor-protocol = { path = "../riot-anchor-protocol" }
+riot-transport = { path = "../riot-transport" }
+tokio = { version = "1.53.0", features = ["rt-multi-thread", "macros", "sync", "time"] }

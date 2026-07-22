@@ -413,9 +413,24 @@ fn check_resolved_feature_graph_with(
     command_runner: &mut dyn CommandRunner,
 ) -> Vec<String> {
     let mut failures = Vec::new();
+    // `no-dev`: this rule guards the SHIPPED riot-ffi closure (the staticlib/
+    // cdylib) and its DEFAULT feature resolution — NOT the test binary. Slice 2
+    // adds a TEST-ONLY `riot-anchor` dev-dependency (its `daemon` feature pulls
+    // iroh/tokio) to seed an in-process anchor for the `sync_with_anchor` e2e; a
+    // dev-dependency never enters the shipped library, so excluding dev edges
+    // keeps the gate measuring exactly what ships. Without `no-dev`, the dev-dep
+    // would false-positive here even though the default staticlib still ships
+    // zero iroh/tokio. See docs/decisions/2026-07-23-mobile-iroh-transport-design.md.
     let output = command_runner.output(
         "cargo",
-        &["tree", "-p", "riot-ffi", "-e", "features", "--locked"],
+        &[
+            "tree",
+            "-p",
+            "riot-ffi",
+            "-e",
+            "features,no-dev",
+            "--locked",
+        ],
         root,
     );
     let Ok(output) = output else {
@@ -943,7 +958,7 @@ mod tests {
                     "-p".into(),
                     "riot-ffi".into(),
                     "-e".into(),
-                    "features".into(),
+                    "features,no-dev".into(),
                     "--locked".into(),
                 ],
                 root: dir.clone(),

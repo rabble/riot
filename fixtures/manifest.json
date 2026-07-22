@@ -29,7 +29,7 @@
     "commandlinetools_zip_sha256": "ed304c5ede3718541e4f978e4ae870a4d853db74af6c16d920588d48523b9dee",
     "platform_tools": "37.0.0-14910828",
     "emulator": "36.6.11.0 (build 15507667)",
-    "cargo_lock_sha256": "4ae14aced69c9cfd6e0537d397b0aca917e3880f4801cc71bd9f1f6e437bfd9e",
+    "cargo_lock_sha256": "d451cc9b7962d1465f746a7750574fd7d08fd5ec4564085778c1bdfeb765da14",
     "gradle_locks_sha256": "pending \u2014 created with the Android host app in WU3, recorded before G3 runs",
     "william3_vectors_sha256": "980192eb0ace7bea5e0fbebfe7351cd661aec4498a449e13d18780afb2ec88d2",
     "meadowcap_vectors_sha256": "331ec6a6339d065047a9aea20baa24fcd0c4a73ceb8e26fcb4afc85361d8c30d",

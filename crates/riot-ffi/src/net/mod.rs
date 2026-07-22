@@ -20,6 +20,16 @@ use tokio::runtime::{Builder, Runtime};
 use riot_transport::iroh::{bind, node_id};
 use riot_transport::TransportError;
 
+/// Slice 2 — the phone-side anchor pull client (`sync_with_anchor`).
+mod anchor;
+
+pub use anchor::{AnchorSyncError, AnchorSyncOutcome, NamespacePullOutcome, PulledItemReject};
+
+/// The Slice-2 Checkpoint-B-in-Rust e2e: an in-process anchor over loopback iroh,
+/// the real `sync_with_anchor` pull, verify, and import. Test-only.
+#[cfg(test)]
+mod anchor_e2e;
+
 /// Owns the FFI-internal tokio runtime and the iroh endpoint for one non-local
 /// transport session. Constructed on the FFI side (never on the native host),
 /// it drives async iroh operations to completion via `block_on` on its own
