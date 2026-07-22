@@ -4,7 +4,15 @@ Date: 2026-07-22 (Pacific/Auckland)
 
 Result: **PASS**. The rendered pages passed the route/content contract, browser-boundary checks,
 desktop/mobile visual review, contrast review, forced-colors and no-CSS checks, three isolated
-first-read reviews, and one isolated site-wide semantic claim audit. Deployment was not performed.
+first-read reviews, and one isolated site-wide semantic claim audit.
+
+## Production deployment
+
+Deployed on 2026-07-22 with Wrangler as Cloudflare Workers version
+`6b6453bc-57e3-4d98-be29-403d725a8b17`. Post-deploy verification covered both
+`https://riot-protest-net-marketing.protestnet.workers.dev` and `https://riot.protest.net`.
+At both origins, all nine editorial routes returned HTTP 200 with bytes identical to their committed
+`marketing/public/` files and no `Set-Cookie` response header. An unknown route returned HTTP 404.
 
 ## Rendered-file identity
 
