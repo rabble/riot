@@ -512,6 +512,15 @@ The new assertions must fail before HTML implementation. After implementation th
     participant-copy, replaceable-gateway, and no-guarantee language defined above.
 17. local HTTP/browser checks find no `Set-Cookie`, no stored browser cookie, and no resource request
     outside the loopback preview origin on all nine editorial routes.
+18. the homepage conventional-platform comparison contains no `span.chip`, while the later
+    `#status` section and the `/protocols/` detail link remain present;
+19. the homepage contains no `What Riot does not hide` heading or list, no speculative gateway or
+    identity-correlation note, and no `.evidence-box`, research-pass/source-fetch/claim-verification
+    metrics, or adversarial-reviewer process copy;
+20. Why Riot and Privacy retain the exact current boundary—Newswires are public publishing and
+    collaboration spaces, private encrypted groups are not part of today's prototype—while omitting
+    the finite speculative inventory: IP addresses, radio presence, device labels, proximity,
+    behavioral correlation, compromised devices, and fabricated gateway views.
 
 The legacy-test migration replaces four complete regions in
 `scripts/marketing/protocol-page-contracts.mjs`, rather than deleting individual assertions ad hoc:
@@ -666,10 +675,21 @@ Passing requires `PASS` with zero findings. The report stores the complete promp
 ordered SHA-256 list for the eleven reviewed files, returned JSON verbatim, and fresh session
 identifier. This is the reproducible human half of the site-wide claim audit.
 
-The initial reframe was deployed after explicit owner approval. Revision 15 may update the existing
-Cloudflare Workers marketing deployment after its focused contract and desktop/mobile visual checks
-pass. It changes no deployment configuration, DNS, TLS, runtime, or application behavior. Live
-verification must compare all nine canonical routes with their committed public mirrors.
+The initial reframe was deployed after explicit owner approval. After revision 15's focused contract
+and desktop/mobile visual checks pass, deploy it through the existing Cloudflare Workers marketing
+configuration. It changes no deployment configuration, DNS, TLS, runtime, or application behavior.
+
+Post-deploy verification is blocking and covers both
+`https://riot-protest-net-marketing.protestnet.workers.dev` and `https://riot.protest.net`. At each
+origin, fetch all nine canonical routes without accepting an error response; require HTTP 200 and
+byte equality with the corresponding committed `marketing/public/` file. Require an unknown route
+to return HTTP 404. Capture response headers for all routes and require no `Set-Cookie`. In a fresh
+Playwright context for each origin, visit and fully scroll all nine routes; require an empty cookie
+jar and `document.cookie`, empty `localStorage` and `sessionStorage`, and no observed request origin
+outside the origin under test. Record the Cloudflare version, exact command or script, origins,
+route results, headers/cookie/storage/request-origin result, and public-file hashes in
+`docs/marketing/2026-07-22-human-capacity-implementation-review.md` before the deployment-evidence
+commit is pushed.
 
 ## Scope Boundaries
 
@@ -744,6 +764,11 @@ panel spoke to agents rather than communities. Revision 15 removes those element
 technical material available through `/protocols/`, and reframes `/privacy/` and the Why Riot
 boundary around public publishing, participant-held data, and the simple current private-group
 limit.
+
+The revision-15 design gate approved the product and editorial direction, then required deterministic
+negative assertions for each removed element and a production verification procedure strong enough
+to support the website-data disclosure. Revision 16 adds scoped absence/preservation contracts and
+all-route edge/browser checks at both production origins.
 
 ## Primary Sources
 
