@@ -899,6 +899,204 @@ fn finalize_with_nothing_prepared_errors() {
     assert!(runtime.finalize_app_trust().is_err());
 }
 
+// --- WU-002b: two-phase app-data prepare/persist/finalize ---
+
+#[test]
+fn prepare_app_data_does_not_mutate_and_finalize_commits() {
+    let (_profile, runtime, app_id) = organizer_with_installed_untrusted_app();
+    let prepared = runtime
+        .prepare_app_data_put(
+            app_id.clone(),
+            "items/a".to_string(),
+            b"{\"done\":false}".to_vec(),
+        )
+        .expect("prepare app data");
+
+    assert!(
+        !prepared.receipt.is_empty(),
+        "prepare returns persistence bytes"
+    );
+    assert_eq!(
+        runtime
+            .app_data_get(app_id.clone(), "items/a".to_string())
+            .expect("read before finalize"),
+        None,
+        "prepare must not mutate the live store"
+    );
+
+    runtime.finalize_app_data_put().expect("finalize app data");
+    assert_eq!(
+        runtime
+            .app_data_get(app_id, "items/a".to_string())
+            .expect("read after finalize"),
+        Some(b"{\"done\":false}".to_vec())
+    );
+}
+
+#[test]
+fn prepare_app_data_without_finalize_leaves_store_untouched() {
+    let (_profile, runtime, app_id) = organizer_with_installed_untrusted_app();
+    runtime
+        .prepare_app_data_put(app_id.clone(), "items/a".to_string(), b"x".to_vec())
+        .expect("prepare app data");
+
+    assert_eq!(
+        runtime
+            .app_data_get(app_id, "items/a".to_string())
+            .expect("read without finalize"),
+        None
+    );
+}
+
+#[test]
+fn prepared_and_single_shot_receipts_share_the_replay_contract() {
+    let author = open_local_profile().expect("profile");
+    let space = author
+        .create_public_space("Prepared receipt fixture".into())
+        .expect("space");
+    let runtime = author.app_runtime();
+    let (manifest_bytes, bundle_bytes) = manifest_and_bundle();
+    let app = runtime
+        .install_app(manifest_bytes, bundle_bytes)
+        .expect("install");
+
+    let prepared = runtime
+        .prepare_app_data_put(
+            app.app_id.clone(),
+            "items/prepared".to_string(),
+            b"prepared".to_vec(),
+        )
+        .expect("prepare");
+    assert_eq!(
+        runtime
+            .app_data_get(app.app_id.clone(), "items/prepared".to_string())
+            .expect("source before finalize"),
+        None
+    );
+
+    let single_shot = runtime
+        .app_data_put_with_receipt(
+            app.app_id.clone(),
+            "items/single".to_string(),
+            b"single".to_vec(),
+        )
+        .expect("single-shot put");
+
+    let reopened = open_local_profile().expect("fresh profile");
+    reopened
+        .join_public_space(space, Vec::new())
+        .expect("join same space");
+    let reopened_runtime = reopened.app_runtime();
+    reopened_runtime
+        .replay_app_data_bundle(prepared.receipt)
+        .expect("replay prepared receipt");
+    reopened_runtime
+        .replay_app_data_bundle(single_shot)
+        .expect("replay single-shot receipt");
+
+    assert_eq!(
+        reopened_runtime
+            .app_data_get(app.app_id.clone(), "items/prepared".to_string())
+            .expect("prepared replay value"),
+        Some(b"prepared".to_vec())
+    );
+    assert_eq!(
+        reopened_runtime
+            .app_data_get(app.app_id, "items/single".to_string())
+            .expect("single-shot replay value"),
+        Some(b"single".to_vec())
+    );
+}
+
+#[test]
+fn preparing_app_data_after_trust_supersedes_the_trust_prepare() {
+    let (_profile, runtime, app_id) = organizer_with_installed_untrusted_app();
+    runtime.prepare_app_trust(app_id.clone(), true).unwrap();
+    runtime
+        .prepare_app_data_put(app_id.clone(), "items/a".to_string(), b"v".to_vec())
+        .unwrap();
+
+    runtime.finalize_app_data_put().unwrap();
+    assert!(!runtime.is_app_trusted(app_id.clone()).unwrap());
+    assert_eq!(
+        runtime.app_data_get(app_id, "items/a".to_string()).unwrap(),
+        Some(b"v".to_vec())
+    );
+}
+
+#[test]
+fn preparing_trust_after_app_data_supersedes_the_app_data_prepare() {
+    let (_profile, runtime, app_id) = organizer_with_installed_untrusted_app();
+    runtime
+        .prepare_app_data_put(app_id.clone(), "items/a".to_string(), b"v".to_vec())
+        .unwrap();
+    runtime.prepare_app_trust(app_id.clone(), true).unwrap();
+
+    runtime.finalize_app_trust().unwrap();
+    assert!(runtime.is_app_trusted(app_id.clone()).unwrap());
+    assert_eq!(
+        runtime.app_data_get(app_id, "items/a".to_string()).unwrap(),
+        None
+    );
+}
+
+#[test]
+fn finalize_trust_rejects_a_prepared_app_data_mutation() {
+    let (_profile, runtime, app_id) = organizer_with_installed_untrusted_app();
+    runtime
+        .prepare_app_data_put(app_id.clone(), "items/a".to_string(), b"v".to_vec())
+        .unwrap();
+
+    assert!(runtime.finalize_app_trust().is_err());
+    assert!(!runtime.is_app_trusted(app_id.clone()).unwrap());
+    assert_eq!(
+        runtime.app_data_get(app_id, "items/a".to_string()).unwrap(),
+        None
+    );
+}
+
+#[test]
+fn finalize_app_data_rejects_a_prepared_trust_mutation() {
+    let (_profile, runtime, app_id) = organizer_with_installed_untrusted_app();
+    runtime.prepare_app_trust(app_id.clone(), true).unwrap();
+
+    assert!(runtime.finalize_app_data_put().is_err());
+    assert!(!runtime.is_app_trusted(app_id).unwrap());
+}
+
+#[test]
+fn app_data_finalize_fails_closed_when_the_generation_moves() {
+    let (_profile, runtime, app_id) = organizer_with_installed_untrusted_app();
+    runtime
+        .prepare_app_data_put(app_id.clone(), "items/a".to_string(), b"v".to_vec())
+        .unwrap();
+    runtime
+        .trust_app(app_id.clone())
+        .expect("move the execution generation");
+
+    assert!(runtime.finalize_app_data_put().is_err());
+    assert_eq!(
+        runtime.app_data_get(app_id, "items/a".to_string()).unwrap(),
+        None,
+        "a generation-mismatched finalize must not commit"
+    );
+}
+
+#[test]
+fn discard_prepared_app_data_clears_the_shared_slot() {
+    let (_profile, runtime, app_id) = organizer_with_installed_untrusted_app();
+    runtime
+        .prepare_app_data_put(app_id.clone(), "items/a".to_string(), b"v".to_vec())
+        .unwrap();
+    runtime.discard_prepared_app_data().unwrap();
+
+    assert!(runtime.finalize_app_data_put().is_err());
+    assert_eq!(
+        runtime.app_data_get(app_id, "items/a".to_string()).unwrap(),
+        None
+    );
+}
+
 #[test]
 fn app_data_round_trips_through_the_ffi_layer() {
     let profile = open_local_profile().expect("profile");
@@ -1794,6 +1992,58 @@ fn app_execution_reads_and_commits_only_while_valid() {
     let listed = session.app_data_list("items".to_string()).expect("list");
     assert_eq!(listed.len(), 1);
     assert_eq!(listed[0].key, "items/a");
+}
+
+#[test]
+fn prepare_app_execution_data_does_not_mutate_and_finalize_commits() {
+    let (profile, _runtime, app_id) = organizer_with_trusted_app();
+    let session = profile.open_app_execution(app_id).expect("open");
+    let prepared = session
+        .prepare_app_execution_put("items/a".to_string(), b"gated".to_vec())
+        .expect("prepare gated write");
+
+    assert!(!prepared.receipt.is_empty());
+    assert_eq!(
+        session
+            .app_data_get("items/a".to_string())
+            .expect("read before finalize"),
+        None
+    );
+
+    session
+        .finalize_app_execution_put()
+        .expect("finalize gated write");
+    assert_eq!(
+        session
+            .app_data_get("items/a".to_string())
+            .expect("read after finalize"),
+        Some(b"gated".to_vec())
+    );
+}
+
+#[test]
+fn revoking_between_prepare_and_finalize_app_execution_fails_closed() {
+    let (profile, runtime, app_id) = organizer_with_trusted_app();
+    let session = profile.open_app_execution(app_id.clone()).expect("open");
+    session
+        .prepare_app_execution_put("items/a".to_string(), b"blocked".to_vec())
+        .expect("prepare while trusted");
+
+    runtime.untrust_app(app_id.clone()).expect("revoke");
+    assert!(matches!(
+        session.finalize_app_execution_put(),
+        Err(MobileError::AppRejected)
+    ));
+
+    runtime.trust_app(app_id.clone()).expect("re-approve");
+    let fresh = profile.open_app_execution(app_id).expect("fresh session");
+    assert_eq!(
+        fresh
+            .app_data_get("items/a".to_string())
+            .expect("read after blocked finalize"),
+        None,
+        "revocation before finalize must leave the store untouched"
+    );
 }
 
 #[test]

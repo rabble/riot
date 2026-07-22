@@ -138,11 +138,12 @@ pub(crate) struct LocalProfile {
     // the inline generation test today — mirrors `followed_site_session` above.
     #[allow(dead_code)]
     starter_catalog_generation: Option<u8>,
-    /// At-most-one prepared-but-uncommitted trust mutation (WU-002a). `None`
-    /// except between `prepare_app_trust` and `finalize_app_trust`/`discard`.
+    /// At-most-one prepared-but-uncommitted mutation — trust OR app-data. `None`
+    /// except between a `prepare_*` and its `finalize_*`/`discard`. A new
+    /// prepare of either kind supersedes the previous one.
     /// The native shell's authority lock (WU-002c) spans the host persist that
-    /// sits between those two calls; here it is exercised by the crate tests.
-    prepared_trust: Option<PreparedTrust>,
+    /// sits between those calls; here it is exercised by the crate tests.
+    prepared: Option<PreparedMutation>,
     /// The durable database handle — a cheap `Arc` clone; the session owns a twin
     /// sharing the same connection, lease, and reader pool. `None` for in-memory
     /// profiles, whose registry then lives only in this struct for the session.
@@ -231,6 +232,23 @@ struct PreparedTrust {
     /// The app id + decision the host records in its durable trusted-ID set.
     app_id: [u8; 32],
     trusted: bool,
+}
+
+/// An app-data write signed and encoded for host persistence, but not yet
+/// committed to the live store.
+struct PreparedAppData {
+    /// `app_execution_generation` captured at prepare.
+    generation: u64,
+    /// The signed entry committed unchanged by finalize.
+    signed: SignedWillowEntry,
+    /// Canonical bundle bytes persisted and replayed by the host.
+    receipt: Vec<u8>,
+}
+
+/// The single prepared mutation a profile may hold.
+enum PreparedMutation {
+    Trust(PreparedTrust),
+    AppData(PreparedAppData),
 }
 
 pub(crate) struct StoredPreview {
@@ -472,7 +490,7 @@ fn profile_with_author_and_db(
             joined_others_space: false,
             app_execution_generation: 0,
             starter_catalog_generation,
-            prepared_trust: None,
+            prepared: None,
             db,
             registry,
             community_authors: std::collections::HashMap::new(),
@@ -3172,7 +3190,7 @@ pub(crate) fn community_registry_quarantined(
 }
 
 /// Validate authority + sign the trust marker WITHOUT mutating the live store,
-/// returning a `PreparedTrust` the caller stores in `profile.prepared_trust`.
+/// returning a `PreparedTrust` the caller stores in `profile.prepared`.
 /// This is the first half of `set_app_trust`, verbatim up to and including
 /// `sign_local_app_entry`; the store mutation + generation bump move to
 /// `finalize_trust_locked`. Behavior when the two run back-to-back under one
@@ -3271,13 +3289,13 @@ pub(crate) fn prepare_app_trust(
     trusted: bool,
 ) -> Result<crate::apps_ffi::PreparedTrustRecord, MobileError> {
     with_active(inner, |profile| {
-        profile.prepared_trust = None; // supersede any abandoned prepare
+        profile.prepared = None; // supersede any abandoned prepare
         let prepared = prepare_trust_locked(profile, app_id, trusted)?;
         let record = crate::apps_ffi::PreparedTrustRecord {
             app_id: hex(&prepared.app_id),
             trusted: prepared.trusted,
         };
-        profile.prepared_trust = Some(prepared);
+        profile.prepared = Some(PreparedMutation::Trust(prepared));
         Ok(record)
     })
 }
@@ -3286,19 +3304,26 @@ pub(crate) fn prepare_app_trust(
 /// the host has durably persisted its trusted-ID set. Errors (leaving trust
 /// unchanged) if nothing is prepared or the generation moved.
 pub(crate) fn finalize_app_trust(inner: &Arc<Mutex<ProfileState>>) -> Result<(), MobileError> {
-    with_active(inner, |profile| {
-        let prepared = profile.prepared_trust.take().ok_or(MobileError::Internal)?;
-        finalize_trust_locked(profile, prepared)
+    with_active(inner, |profile| match profile.prepared.take() {
+        Some(PreparedMutation::Trust(prepared)) => finalize_trust_locked(profile, prepared),
+        _ => Err(MobileError::Internal),
     })
 }
 
-/// Drop a prepared trust mutation without committing (host persist failed, or
-/// the flow was cancelled). Idempotent.
+/// Drop the prepared mutation without committing. Idempotent; the trust name is
+/// retained for WU-002a native compatibility now that the slot is shared.
 pub(crate) fn discard_prepared_trust(inner: &Arc<Mutex<ProfileState>>) -> Result<(), MobileError> {
     with_active(inner, |profile| {
-        profile.prepared_trust = None;
+        profile.prepared = None;
         Ok(())
     })
+}
+
+/// App-data-named alias for clearing the same shared prepared-mutation slot.
+pub(crate) fn discard_prepared_app_data(
+    inner: &Arc<Mutex<ProfileState>>,
+) -> Result<(), MobileError> {
+    discard_prepared_trust(inner)
 }
 
 /// Advance the app-execution generation. Called on every app-trust change and
@@ -3481,6 +3506,38 @@ pub(crate) fn app_execution_list(
 /// the canonical signed bundle bytes so a host can persist app data for replay.
 /// A committed write does NOT advance the generation — an app writing its own
 /// data must not invalidate its own session; only trust and namespace changes do.
+fn prepare_app_data_locked(
+    profile: &mut LocalProfile,
+    app_id: [u8; 32],
+    key: &str,
+    value: &[u8],
+) -> Result<PreparedAppData, MobileError> {
+    if sync_session_is_active(profile) {
+        return Err(MobileError::InvalidInput);
+    }
+    let timestamp = next_app_write_timestamp(profile)?;
+    let path = riot_core::apps::entry::app_data_path(&app_id, key).map_err(map_apps_error)?;
+    let signed = sign_local_app_entry(profile, path, value, timestamp)?;
+    let receipt =
+        encode_bundle(std::slice::from_ref(&signed)).map_err(|_| MobileError::SessionLimit)?;
+    Ok(PreparedAppData {
+        generation: profile.app_execution_generation,
+        signed,
+        receipt,
+    })
+}
+
+fn finalize_app_data_locked(
+    profile: &mut LocalProfile,
+    prepared: PreparedAppData,
+) -> Result<(), MobileError> {
+    if prepared.generation != profile.app_execution_generation {
+        return Err(MobileError::Internal);
+    }
+    commit_local_app_entries(profile, vec![prepared.signed])?;
+    Ok(())
+}
+
 pub(crate) fn app_execution_put_with_receipt(
     inner: &Arc<Mutex<ProfileState>>,
     snap: &AppExecutionSnapshot,
@@ -3489,17 +3546,10 @@ pub(crate) fn app_execution_put_with_receipt(
 ) -> Result<Vec<u8>, MobileError> {
     with_active(inner, |profile| {
         revalidate_execution(profile, snap)?;
-        // Same preview-slot discipline as `app_data_put_with_receipt`: a
-        // store.inspect during an in-flight sync review would clobber it.
-        if sync_session_is_active(profile) {
-            return Err(MobileError::InvalidInput);
-        }
-        let timestamp = next_app_write_timestamp(profile)?;
-        let path =
-            riot_core::apps::entry::app_data_path(&snap.app_id, &key).map_err(map_apps_error)?;
-        let signed = sign_local_app_entry(profile, path, &value, timestamp)?;
-        let bundle_bytes = commit_local_app_entries(profile, vec![signed])?;
-        Ok(bundle_bytes)
+        let prepared = prepare_app_data_locked(profile, snap.app_id, &key, &value)?;
+        let receipt = prepared.receipt.clone();
+        finalize_app_data_locked(profile, prepared)?;
+        Ok(receipt)
     })
 }
 
@@ -3532,11 +3582,76 @@ pub(crate) fn app_data_put_with_receipt(
             return Err(MobileError::InvalidInput);
         }
         let app_id = parse_entry_id(&app_id)?;
-        let timestamp = next_app_write_timestamp(profile)?;
-        let path = riot_core::apps::entry::app_data_path(&app_id, &key).map_err(map_apps_error)?;
-        let signed = sign_local_app_entry(profile, path, &value, timestamp)?;
-        let bundle_bytes = commit_local_app_entries(profile, vec![signed])?;
-        Ok(bundle_bytes)
+        let prepared = prepare_app_data_locked(profile, app_id, &key, &value)?;
+        let receipt = prepared.receipt.clone();
+        finalize_app_data_locked(profile, prepared)?;
+        Ok(receipt)
+    })
+}
+
+/// Phase 1 of an ungated app-data write: return persistence bytes without
+/// mutating the live store, and hold the signed entry for finalize.
+pub(crate) fn prepare_app_data_put(
+    inner: &Arc<Mutex<ProfileState>>,
+    app_id: String,
+    key: String,
+    value: Vec<u8>,
+) -> Result<crate::apps_ffi::PreparedAppDataRecord, MobileError> {
+    with_active(inner, |profile| {
+        profile.prepared = None;
+        if sync_session_is_active(profile) {
+            return Err(MobileError::InvalidInput);
+        }
+        let app_id = parse_entry_id(&app_id)?;
+        let prepared = prepare_app_data_locked(profile, app_id, &key, &value)?;
+        let record = crate::apps_ffi::PreparedAppDataRecord {
+            receipt: prepared.receipt.clone(),
+        };
+        profile.prepared = Some(PreparedMutation::AppData(prepared));
+        Ok(record)
+    })
+}
+
+/// Phase 2 of an ungated app-data write: commit the mutation held by prepare.
+pub(crate) fn finalize_app_data_put(inner: &Arc<Mutex<ProfileState>>) -> Result<(), MobileError> {
+    with_active(inner, |profile| match profile.prepared.take() {
+        Some(PreparedMutation::AppData(prepared)) => finalize_app_data_locked(profile, prepared),
+        _ => Err(MobileError::Internal),
+    })
+}
+
+/// Gated app-execution phase 1: revalidate the session before preparing.
+pub(crate) fn prepare_app_execution_put(
+    inner: &Arc<Mutex<ProfileState>>,
+    snap: &AppExecutionSnapshot,
+    key: String,
+    value: Vec<u8>,
+) -> Result<crate::apps_ffi::PreparedAppDataRecord, MobileError> {
+    with_active(inner, |profile| {
+        revalidate_execution(profile, snap)?;
+        profile.prepared = None;
+        let prepared = prepare_app_data_locked(profile, snap.app_id, &key, &value)?;
+        let record = crate::apps_ffi::PreparedAppDataRecord {
+            receipt: prepared.receipt.clone(),
+        };
+        profile.prepared = Some(PreparedMutation::AppData(prepared));
+        Ok(record)
+    })
+}
+
+/// Gated app-execution phase 2: revalidate again, then commit the held write.
+pub(crate) fn finalize_app_execution_put(
+    inner: &Arc<Mutex<ProfileState>>,
+    snap: &AppExecutionSnapshot,
+) -> Result<(), MobileError> {
+    with_active(inner, |profile| {
+        revalidate_execution(profile, snap)?;
+        match profile.prepared.take() {
+            Some(PreparedMutation::AppData(prepared)) => {
+                finalize_app_data_locked(profile, prepared)
+            }
+            _ => Err(MobileError::Internal),
+        }
     })
 }
 

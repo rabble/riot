@@ -9,6 +9,7 @@ import uniffi.riot_ffi.AppPairBytes
 import uniffi.riot_ffi.AppRuntimeSessionInterface
 import uniffi.riot_ffi.DirectoryListing
 import uniffi.riot_ffi.InstalledAppRecord
+import uniffi.riot_ffi.PreparedAppDataRecord
 import uniffi.riot_ffi.PreparedTrustRecord
 import uniffi.riot_ffi.PublicSpace
 
@@ -71,6 +72,13 @@ private class FakeAppRuntimeSession(
     override fun `appDataPut`(appId: String, key: String, value: ByteArray) = Unit
     override fun `appDataPutWithReceipt`(appId: String, key: String, value: ByteArray): ByteArray =
         ByteArray(0)
+    override fun `prepareAppDataPut`(
+        appId: String,
+        key: String,
+        value: ByteArray,
+    ): PreparedAppDataRecord = PreparedAppDataRecord(ByteArray(0))
+    override fun `finalizeAppDataPut`() = Unit
+    override fun `discardPreparedAppData`() = Unit
 
     override fun `appDisplayName`(): String = "member-00000000"
     override fun `canOrganize`(): Boolean = true
