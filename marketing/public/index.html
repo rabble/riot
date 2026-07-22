@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Riot — Community infrastructure that travels with people</title>
-<meta name="description" content="Riot keeps a community's publishing, coordination, shared tools, and memory on people's own devices — built on Willow, carried nearby when the internet isn't available. A prototype, built in the open.">
+<title>Riot — Community tools that travel with people</title>
+<meta name="description" content="Riot is a home for public conversation, community decisions, shared tools, and collective memory—carried by the people who make it matter.">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%23f6f0e5'/%3E%3Ctext x='16' y='25' font-family='Impact,sans-serif' font-size='26' fill='%23ff4f8b' text-anchor='middle'%3ER%3C/text%3E%3C/svg%3E">
 <style>
 
@@ -58,7 +58,7 @@
   --ink: #17160f;
   --ink-soft: #4a473b;
   --blue: #22399f;
-  --pink: #d1216e;
+  --pink: #b01852;
   --line: rgba(23, 22, 15, 0.18);
   --line-strong: rgba(23, 22, 15, 0.4);
 }
@@ -119,6 +119,7 @@ a:focus-visible, button:focus-visible { outline: 3px solid var(--pink); outline-
 /* ---------- Nav ---------- */
 /* ---------- site-wide sticky nav (the important one) ---------- */
 .sitenav {
+  --pink: #ff6fa8;
   position: sticky; top: 0; z-index: 50;
   background: var(--ink);
   border-bottom: 2px solid var(--ink);
@@ -256,12 +257,6 @@ a:focus-visible, button:focus-visible { outline: 3px solid var(--pink); outline-
 .phone-frame.thumb { width: 72px; border-width: 3px; border-radius: 15px; box-shadow: 4px 5px 0 var(--pink); }
 .phone-frame.thumb::after { top: 3px; height: 5px; border-radius: 0 0 4px 4px; }
 .phone-frame.thumb:nth-child(2) { transform: translateX(8px); }
-/* desktop window frames for the hero (macOS app shots) */
-.win-frame { position: relative; z-index: 2; overflow: hidden; margin: 0; background: var(--paper); border: 3px solid var(--ink); box-shadow: 10px 11px 0 var(--blue); }
-.win-frame img { display: block; width: 100%; height: auto; }
-.win-frame.main { width: 320px; transform: translateX(-22px) rotate(-2deg); }
-.win-frame.thumb { width: 104px; border-width: 2px; box-shadow: 5px 6px 0 var(--pink); }
-.win-frame.thumb:nth-child(2) { transform: translateX(8px); }
 .proof-tag {
   position: absolute;
   z-index: 5;
@@ -289,8 +284,6 @@ a:focus-visible, button:focus-visible { outline: 3px solid var(--pink); outline-
   .hero-thumbs { top: 25px; right: 4px; gap: 8px; }
   .phone-frame.thumb { width: 54px; border-width: 2px; border-radius: 11px; box-shadow: 3px 4px 0 var(--pink); }
   .phone-frame.thumb::after { top: 2px; height: 4px; }
-  .win-frame.main { width: 232px; transform: translateX(-16px) rotate(-2deg); }
-  .win-frame.thumb { width: 80px; box-shadow: 3px 4px 0 var(--pink); }
   .proof-tag { right: 4px; bottom: 6px; max-width: 148px; font-size: 9px; }
 }
 @media (max-width: 540px) {
@@ -305,7 +298,7 @@ a:focus-visible, button:focus-visible { outline: 3px solid var(--pink); outline-
 
 /* ---------- section scaffolding ---------- */
 section { padding: clamp(56px, 9vw, 100px) 0; }
-.panel-dark { background: var(--ink); color: var(--paper); }
+.panel-dark { --pink: #ff6fa8; background: var(--ink); color: var(--paper); }
 .panel-dark .ink-soft2 { color: color-mix(in srgb, var(--paper) 70%, transparent); }
 .panel-dark a { color: var(--pink); }
 .eyebrow {
@@ -400,6 +393,7 @@ section { padding: clamp(56px, 9vw, 100px) 0; }
 @media (max-width: 820px) { .steps { grid-template-columns: 1fr; gap: 34px; } }
 
 .protocol-callout {
+  --pink: #ff6fa8;
   scroll-margin-top: 96px;
   margin-top: 52px;
   padding: clamp(22px, 4vw, 34px);
@@ -510,10 +504,12 @@ section { padding: clamp(56px, 9vw, 100px) 0; }
 .status-band .eyebrow { color: rgba(255,255,255,0.85); }
 .status-band .section-intro { color: rgba(255,255,255,0.92); }
 .status-band .section-head h2 { color: #fff; }
+.status-band a { color: #fff; }
 .status-list { margin-top: 36px; display: flex; flex-direction: column; gap: 0; border-top: 2px solid rgba(255,255,255,0.4); }
 .status-row { display: grid; grid-template-columns: 160px 1fr; gap: 20px; padding: 18px 0; border-bottom: 2px solid rgba(255,255,255,0.4); align-items: baseline; }
 .status-row .schip { font-family: 'Space Mono', monospace; font-size: 11.5px; letter-spacing: 0.06em; text-transform: uppercase; border: 2px solid #fff; padding: 5px 10px; display: inline-block; width: fit-content; }
 .status-row .schip.done { background: #fff; color: var(--pink); }
+.status-band .chip.development,.status-band .chip.direction { color:#fff; border-color:#fff; }
 .status-row h4 { font-family: 'Anton', sans-serif; text-transform: uppercase; font-size: 19px; margin: 0 0 6px; color: #fff; letter-spacing: -0.005em; }
 .status-row p { margin: 0; font-size: 14.5px; color: rgba(255,255,255,0.85); max-width: 62ch; }
 @media (max-width: 620px) { .status-row { grid-template-columns: 1fr; } }
@@ -590,9 +586,9 @@ footer.colophon .footer-links a:hover { text-decoration: underline; text-decorat
   letter-spacing: 0.08em; text-transform: uppercase;
   border: 2px solid var(--ink); padding: 2px 8px; white-space: nowrap;
 }
-.chip.working { background: var(--blue); border-color: var(--blue); color: #fff; }
-.chip.prototype { background: var(--pink); border-color: var(--pink); color: #fff; }
-.chip.direction { background: transparent; border-color: var(--line-strong); color: var(--ink-soft); }
+.chip.prototype { background: var(--blue); border-color: var(--blue); color: #fff; }
+.chip.local { background: var(--pink); border-color: var(--pink); color: #fff; }
+.chip.development,.chip.direction { background: transparent; border-color: var(--line-strong); color: var(--ink-soft); }
 .hero-jumps {
   margin: 18px 0 0; font-family: 'Space Mono', ui-monospace, monospace;
   font-size: 13px; letter-spacing: 0.04em; text-transform: uppercase; color: var(--ink-soft);
@@ -686,10 +682,10 @@ footer.colophon .footer-links a:hover { text-decoration: underline; text-decorat
   <div class="sitenav-bar">
     <a href="/" class="sitenav-brand">Riot</a>
     <div class="sitenav-links">
+      <a href="/" aria-current="page">Home</a>
       <a href="/why-riot/">Why Riot</a>
       <a href="/guide/">Using Riot</a>
       <a href="/about/">About</a>
-      <a href="/privacy/">Privacy</a>
       <a href="/open-source/">Open source</a>
       <a href="/community/">Community</a>
       <a href="/releases/">Get the app</a>
@@ -713,11 +709,11 @@ footer.colophon .footer-links a:hover { text-decoration: underline; text-decorat
   <div class="hero-grid">
     <div class="hero-copy">
       <div class="hero-headline-wrap">
-        <h1 class="poster">Community infrastructure that travels with people.</h1>
+        <h1 class="poster">Community tools that travel with people.</h1>
       </div>
-      <p class="lede">Most community software works only while its company, server, and internet connection remain available. Riot keeps the useful parts — <b>publishing, coordination, shared tools, and community memory</b> — on people's own devices.</p>
+      <p class="lede">Riot is a home for public conversation, community decisions, shared tools, and collective memory—carried by the people who make it matter.</p>
       <div class="hero-actions">
-        <a class="btn solid" href="/why-riot/">Why Riot</a>
+        <a class="btn solid" href="/why-riot/">Why Riot exists</a>
         <a class="btn outline" href="/guide/">Using Riot</a>
         <a class="btn outline" href="/releases/">Get the app</a>
       </div>
@@ -725,26 +721,26 @@ footer.colophon .footer-links a:hover { text-decoration: underline; text-decorat
       <div class="hero-details">
         <p class="hero-details-kicker">More than a social feed</p>
         <h2>Communities carry their own tools.</h2>
-        <p>A Riot community holds shared state and the small apps its organizers approve: checklists, alerts, decisions, events, and whatever the group needs next. Members can keep using those tools locally when no server is reachable.</p>
+        <p>A Riot community holds shared state and the small apps its organizers approve: checklists, alerts, decisions, events, and whatever the group needs next. Use them for a festival rota, neighborhood publication, community meal, or cooperative decision; familiarity matters before conditions become difficult.</p>
         <p class="hero-lineage">In the lineage of Indymedia, protest.net, and TXTMob. <a href="/about/">Read the lineage →</a></p>
       </div>
     </div>
-    <div class="device-scene" aria-label="Real Riot app screens from the desktop build">
-      <figure class="win-frame main">
-        <img src="/assets/screenshots/app-events.png" width="1362" height="1870" alt="Riot Events tool showing a community garden workday and courtyard supper with RSVPs">
+    <div class="device-scene" aria-label="Real Riot app screens from the iPhone simulator build">
+      <figure class="phone-frame main">
+        <img src="/assets/screenshots/spaces.png" width="1206" height="2622" alt="Riot Spaces screen showing a mutual-aid community and its tools">
       </figure>
-      <div class="hero-thumbs" aria-label="More Riot app screens">
-        <figure class="win-frame thumb">
-          <img src="/assets/screenshots/app-decisions.png" width="1362" height="1870" alt="Riot Decisions tool voting on how to make a school crossing safer">
+      <div class="hero-thumbs" aria-label="More Riot miniapp screens">
+        <figure class="phone-frame thumb">
+          <img src="/assets/screenshots/apps.png" width="1206" height="2622" alt="Riot's organizer-approved apps screen">
         </figure>
-        <figure class="win-frame thumb">
-          <img src="/assets/screenshots/app-dispatches.png" width="1362" height="1870" alt="Riot Dispatches community newswire with neighborhood notes">
+        <figure class="phone-frame thumb">
+          <img src="/assets/screenshots/compose.png" width="1206" height="2622" alt="Composing a message in Riot">
         </figure>
-        <figure class="win-frame thumb">
-          <img src="/assets/screenshots/app-photos.png" width="1362" height="1870" alt="Riot Photo wall sharing a street-feast image">
+        <figure class="phone-frame thumb">
+          <img src="/assets/screenshots/checklist.png" width="1206" height="2622" alt="A shared checklist running inside Riot">
         </figure>
       </div>
-      <span class="proof-tag">Real screens<br>from the Riot desktop build</span>
+      <span class="proof-tag">Real app screens<br>from the iPhone simulator build</span>
     </div>
   </div>
   <div class="contrast-scroll">
@@ -754,11 +750,11 @@ footer.colophon .footer-links a:hover { text-decoration: underline; text-decorat
         <tr><th scope="col">Conventional platform</th><th scope="col">Riot's direction</th></tr>
       </thead>
       <tbody>
-        <tr><td>The service holds the canonical community database</td><td>Participants carry community state <span class="chip working">Working now</span></td></tr>
-        <tr><td>Offline means waiting for the service to return</td><td>Local reading and writing continue <span class="chip working">Working now</span></td></tr>
-        <tr><td>A server outage cuts off the product</td><td>Nearby exchange can continue locally <span class="chip prototype">Tested prototype</span></td></tr>
-        <tr><td>Extensions belong to the platform</td><td>Communities approve and carry their own tools <span class="chip working">Working now</span></td></tr>
-        <tr><td>A domain and hosted account anchor identity</td><td>Willow data carries community continuity <span class="chip direction">Direction</span></td></tr>
+        <tr><td>The service holds the canonical community database</td><td>Participants carry community state <span class="chip prototype">Available in the prototype</span></td></tr>
+        <tr><td>Offline means waiting for the service to return</td><td>Already-held data and installed tools remain locally useful on a functioning device <span class="chip prototype">Available in the prototype</span></td></tr>
+        <tr><td>A server outage cuts off the product</td><td>A compatible nearby peer can exchange updates when the local path is available <span class="chip local">Tested locally</span></td></tr>
+        <tr><td>Extensions belong to the platform</td><td>Communities approve and carry their own tools <span class="chip prototype">Available in the prototype</span></td></tr>
+        <tr><td>A domain and hosted account anchor identity</td><td>Willow data carries community continuity <span class="chip direction">Direction, not shipped</span></td></tr>
       </tbody>
     </table>
   </div>
@@ -834,12 +830,12 @@ footer.colophon .footer-links a:hover { text-decoration: underline; text-decorat
       <div class="forcard">
         <div class="fnum">01</div>
         <h3>Community media</h3>
-        <p>Publishing without one canonical publishing server — the readers' devices carry the material, and a blocked website is a lost window, not a lost archive.</p>
+        <p>Publishing without one canonical publishing server — readers' devices can carry material they have received, so blocking one website need not erase every participant-held copy.</p>
       </div>
       <div class="forcard">
         <div class="fnum">02</div>
         <h3>Coordination that survives outages</h3>
-        <p>Ordinary community infrastructure — boards, schedules, checklists — that remains locally useful during outages, shutdowns, or censorship.</p>
+        <p>Ordinary community infrastructure — boards, schedules, checklists — that can remain locally useful from already-held data on a functioning device during outages, shutdowns, or censorship.</p>
       </div>
       <div class="forcard">
         <div class="fnum">03</div>
@@ -852,7 +848,7 @@ footer.colophon .footer-links a:hover { text-decoration: underline; text-decorat
         <p>The same substrate serves mutual aid, tenant organizing, clinics, cooperatives, disaster response, protests, and independent media.</p>
       </div>
     </div>
-    <p class="boundary-note">This section makes no claim of production readiness, completed security audits, guaranteed availability, completed remote-device sync, or confidentiality for the public Newswire. See <a href="#status">what works today</a>.</p>
+    <p class="boundary-note">This section makes no claim of production readiness, completed security audits, an availability guarantee, completed remote-device sync, or confidentiality for the public Newswire. See <a href="#status">what works today</a>.</p>
   </div>
 </section>
 
@@ -927,12 +923,12 @@ footer.colophon .footer-links a:hover { text-decoration: underline; text-decorat
       <div class="path-split">
         <div class="path-branch">
           <h4>Nearby / local exchange</h4>
-          <span class="chip prototype">Working prototype</span>
+          <span class="chip local">Tested locally</span>
           <p>Devices on the same local network find each other and exchange updates directly — with preview before anything is accepted.</p>
         </div>
         <div class="path-branch">
           <h4>Internet seed</h4>
-          <span class="chip direction">Architecture in progress</span>
+          <span class="chip development">In development</span>
           <p>A server-mediated path carrying Willow updates between remote Riot devices. Being built — not an integrated product capability today.</p>
         </div>
       </div>
@@ -982,7 +978,7 @@ footer.colophon .footer-links a:hover { text-decoration: underline; text-decorat
       <div class="step">
         <div class="snum">01</div>
         <h3>Preload</h3>
-        <p>Install it before you need it. It works from zero signal, day one — no account, no server to reach first.</p>
+        <p>Install it before you need it. With data already held on a functioning device, local tools can remain useful when no internet path is available.</p>
       </div>
       <div class="step">
         <div class="snum">02</div>
@@ -1007,7 +1003,7 @@ footer.colophon .footer-links a:hover { text-decoration: underline; text-decorat
       <div class="step">
         <div class="snum">06</div>
         <h3>Merge, don't overwrite</h3>
-        <p>Every device that's seen more of the story catches the rest up. Nothing gets silently lost, nothing gets silently deleted.</p>
+        <p>When a compatible exchange path is available, devices can merge records they have received. Riot cannot recover records that no reachable participant holds.</p>
       </div>
     </div>
   </div>
@@ -1048,12 +1044,12 @@ footer.colophon .footer-links a:hover { text-decoration: underline; text-decorat
     <div class="path-split">
       <div class="path-branch">
         <h4>Open Newswire</h4>
-        <span class="chip working">Public by design</span>
+        <span class="chip prototype">Available in the prototype</span>
         <p>Open publishing for alerts, mutual aid, reporting, and community publications — meant to circulate, plaintext, with transparent editorial actions as a lens rather than a gate.</p>
       </div>
       <div class="path-branch">
         <h4>Encrypted private groups</h4>
-        <span class="chip direction">Planned</span>
+        <span class="chip direction">Direction, not shipped</span>
         <p>Private, encrypted spaces for affinity groups, coops, and crews are a separate planned system with its own threat model. They are not part of today's prototype.</p>
       </div>
     </div>
@@ -1100,7 +1096,7 @@ footer.colophon .footer-links a:hover { text-decoration: underline; text-decorat
       <div class="lline">
         <div class="ly">Divine.video</div>
         <div class="ln">Syndicated media</div>
-        <div class="ld">Subscriber devices as the distribution network — no server to seize.</div>
+        <div class="ld">Subscriber devices can distribute received material alongside servers, reducing dependence on one seizable endpoint.</div>
       </div>
     </div>
     <section id="builder" class="builder-card">
@@ -1139,27 +1135,29 @@ footer.colophon .footer-links a:hover { text-decoration: underline; text-decorat
     </div>
     <div class="status-cols">
       <div class="status-col">
-        <h3><span class="chip working">Working in the prototype</span></h3>
+        <h3><span class="chip prototype">Available in the prototype</span></h3>
         <ul>
           <li>Durable core support for creating, following, switching, archiving, restoring, and reopening multiple communities</li>
           <li>Native iOS community chooser and link/QR join flows</li>
           <li>Local Newswire creation and durable display</li>
           <li>Human confirmation and preview-before-accept import in nearby flows</li>
-          <li>Tested local-network (Bonjour) peer exchange</li>
           <li>Public gateway rendering from exported community data</li>
           <li>Community-approved mini-app packages</li>
           <li>App-scoped bridge access and hardened app execution</li>
           <li>Fresh per-community author identities when joining another community</li>
         </ul>
+        <h3><span class="chip local">Tested locally</span></h3>
+        <ul><li>Local-network (Bonjour) peer exchange; physical two-iPhone Bluetooth remains unverified</li></ul>
       </div>
       <div class="status-col">
-        <h3><span class="chip direction">Direction being built or still unverified</span></h3>
+        <h3><span class="chip development">In development</span></h3>
+        <ul><li>Integrated remote Riot-device synchronization through an internet seed</li></ul>
+        <h3><span class="chip direction">Direction, not shipped</span></h3>
         <ul>
           <li>Encrypted private groups</li>
           <li>Confidentiality for public communities</li>
           <li>Full deletion from devices that already copied public content</li>
-          <li>Integrated remote Riot-device synchronization through an internet seed</li>
-          <li>Production scale, audited security, or guaranteed availability</li>
+          <li>Production scale, audited security, or an availability guarantee</li>
           <li>Full interoperability with every Willow draft and transport</li>
           <li>Physical two-iPhone Bluetooth exchange</li>
         </ul>
@@ -1245,7 +1243,7 @@ footer.colophon .footer-links a:hover { text-decoration: underline; text-decorat
 
 <footer class="colophon">
   <span>Riot — in development. Early builds on the <a href="/releases/">releases page</a>. Built by <a href="https://github.com/rabble" target="_blank" rel="noopener">@rabble</a>. · A protest.net project.</span>
-  <span class="footer-links"><a href="/why-riot/">Why Riot</a> · <a href="/guide/">Using Riot</a> · <a href="/about/">About</a> · <a href="/privacy/">Privacy</a> · <a href="/open-source/">Open source</a> · <a href="/community/">Community</a> · <a href="/releases/">Get the app</a> · <a href="/protocols/">Protocol field guide</a></span>
+  <span class="footer-links"><a href="/">Home</a> · <a href="/why-riot/">Why Riot</a> · <a href="/guide/">Using Riot</a> · <a href="/about/">About</a> · <a href="/privacy/">Privacy</a> · <a href="/open-source/">Open source</a> · <a href="/community/">Community</a> · <a href="/releases/">Get the app</a> · <a href="/protocols/">Protocol field guide</a></span>
 </footer>
 
 </body>

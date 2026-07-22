@@ -31,7 +31,8 @@
     "emulator": "36.6.11.0 (build 15507667)",
     "cargo_lock_sha256": "99260222a09bbef953262eee79b729a8ab1efccb2fc00914d73991d4c5fd4756",
     "gradle_locks_sha256": "pending \u2014 created with the Android host app in WU3, recorded before G3 runs",
-    "william3_vectors_sha256": "980192eb0ace7bea5e0fbebfe7351cd661aec4498a449e13d18780afb2ec88d2"
+    "william3_vectors_sha256": "980192eb0ace7bea5e0fbebfe7351cd661aec4498a449e13d18780afb2ec88d2",
+    "meadowcap_vectors_sha256": "331ec6a6339d065047a9aea20baa24fcd0c4a73ceb8e26fcb4afc85361d8c30d"
   },
   "dependencies": {
     "willow25": "=0.6.0-alpha.3 (default-features off, std only; drop_format excluded \u2014 stable 0.5.0 resolves bab_rs with incorrect WILLIAM3 digests, see the implementation audit)",

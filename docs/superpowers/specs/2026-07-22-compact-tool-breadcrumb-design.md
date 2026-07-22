@@ -30,18 +30,18 @@ The hierarchy must stay understandable without exposing app IDs, namespace IDs, 
 
 ### UC1: Switch communities from inside a tool
 
-**WHO:** A member using a page inside a community tool  
-**WANTS:** to select the community crumb  
-**SO THAT:** they can see or switch their joined communities without first finding a Close control  
+**WHO:** A member using a page inside a community tool
+**WANTS:** to select the community crumb
+**SO THAT:** they can see or switch their joined communities without first finding a Close control
 **WHEN:** the tool detail is open on macOS
 
 Selecting the community crumb opens the existing community chooser. Dismissing the chooser keeps the same mounted WebView and current page. Selecting another community while a tool is mounted first presents a conservative Stay-or-Switch confirmation: “Switch communities? Any unsaved changes in <app> will be lost.” “Stay” leaves the chooser and runtime untouched; “Switch” uses the existing community-transition path, which tears down the old runtime and switches community scope. Because the host cannot inspect an app's in-memory edit state, this guard appears whenever a different community is chosen from a mounted tool, not only when the host guesses that a draft exists.
 
 ### UC2: Return to an app's root
 
-**WHO:** A member reading a nested app page  
-**WANTS:** to select the app crumb  
-**SO THAT:** they can return to that app's index  
+**WHO:** A member reading a nested app page
+**WANTS:** to select the app crumb
+**SO THAT:** they can return to that app's index
 **WHEN:** a page crumb is present
 
 Selecting the app crumb evaluates the fixed expression `(() => { window.dispatchEvent(new Event("riot:navigate-root")); return document.title; })()` in the existing sandboxed WebView. A nested app registers its root listener on `window`; the event never carries a payload. This does not give native code app-specific data access. At the app root the app crumb is the current level and is not presented as an enabled action. Apps without nested-page adoption continue working unchanged, so the event is an additive, backwards-compatible contract.
@@ -50,9 +50,9 @@ Wiki handles the event by explicitly selecting its page index and setting an `ex
 
 ### UC3: Leave a tool through ordinary shell navigation
 
-**WHO:** A member with a tool open  
-**WANTS:** Home, Tools, People, and Nearby to work normally  
-**SO THAT:** the open tool never traps or masks them  
+**WHO:** A member with a tool open
+**WANTS:** Home, Tools, People, and Nearby to work normally
+**SO THAT:** the open tool never traps or masks them
 **WHEN:** they select a sidebar destination
 
 Every macOS sidebar or Command-1 through Command-4 route selection closes the running tool before showing the selected route. Escape retains the documented behavior of returning from the tool to Tools. The existing `ToolFocusRestoration` bookkeeping is cleared through the same close path; applying the returned identifier to actual UI focus is not implemented today and is not claimed by this change. iPhone tab selection remains unchanged and continues preserving the Tools NavigationStack while another tab is temporarily selected.
@@ -61,9 +61,9 @@ The chooser's existing “Find one nearby” action is also a macOS route change
 
 ### UC4: Stay oriented in narrow windows
 
-**WHO:** A member using a narrow macOS window or long community/page names  
-**WANTS:** the hierarchy to remain visible without clipping or wrapping  
-**SO THAT:** navigation uses one compact row  
+**WHO:** A member using a narrow macOS window or long community/page names
+**WANTS:** the hierarchy to remain visible without clipping or wrapping
+**SO THAT:** navigation uses one compact row
 **WHEN:** all full labels do not fit
 
 The breadcrumb progressively falls back as a single horizontal unit:

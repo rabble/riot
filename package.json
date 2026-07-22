@@ -11,7 +11,8 @@
   "scripts": {
     "test:web:unit": "node --test scripts/web/test/*.test.mjs",
     "test:web:coverage": "c8 --100 --all --include='scripts/web/**/*.mjs' node --test scripts/web/test/*.test.mjs",
-    "test:apps:unit": "node --test scripts/apps/test/*.test.mjs"
+    "test:apps:unit": "node --test scripts/apps/test/*.test.mjs",
+    "test:marketing": "node scripts/marketing/protocol-page-contracts.mjs"
   },
   "devDependencies": {
     "@playwright/test": "1.61.1",
