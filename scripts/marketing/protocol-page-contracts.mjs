@@ -631,23 +631,15 @@ try {
       }));
       assert.equal(dom.cookie, "", `${route} document.cookie must be empty`);
       assert.ok(dom.scrollWidth <= dom.clientWidth, `${route} must not overflow horizontally at 390px (${dom.scrollWidth} > ${dom.clientWidth})`);
-      if (route === "/why-riot/") {
-        await page.addStyleTag({ content: "h1,h2,h3,.brand,.sitenav-brand{font-family:Arial,sans-serif!important}" });
-        const fallbackFontLayout = await page.evaluate(() => ({
-          scrollWidth: document.documentElement.scrollWidth,
-          clientWidth: document.documentElement.clientWidth,
-          headingScrollWidth: document.querySelector("h1").scrollWidth,
-          headingClientWidth: document.querySelector("h1").clientWidth,
-        }));
-        assert.ok(
-          fallbackFontLayout.headingScrollWidth <= fallbackFontLayout.headingClientWidth,
-          `${route} heading must fit when display fonts are unavailable (${fallbackFontLayout.headingScrollWidth} > ${fallbackFontLayout.headingClientWidth})`,
-        );
-        assert.ok(
-          fallbackFontLayout.scrollWidth <= fallbackFontLayout.clientWidth,
-          `${route} must not overflow when display fonts are unavailable (${fallbackFontLayout.scrollWidth} > ${fallbackFontLayout.clientWidth})`,
-        );
-      }
+      await page.addStyleTag({ content: "h1,h2,h3,.brand,.sitenav-brand{font-family:Arial,sans-serif!important}" });
+      const fallbackFontLayout = await page.evaluate(() => ({
+        scrollWidth: document.documentElement.scrollWidth,
+        clientWidth: document.documentElement.clientWidth,
+      }));
+      assert.ok(
+        fallbackFontLayout.scrollWidth <= fallbackFontLayout.clientWidth,
+        `${route} must not overflow when display fonts are unavailable (${fallbackFontLayout.scrollWidth} > ${fallbackFontLayout.clientWidth})`,
+      );
       const cookiesAfter = await context.cookies();
       assert.deepEqual(cookiesAfter, [], `${route} cookie jar must remain empty`);
       for (const url of requests) assert.equal(new URL(url).origin, previewOrigin, `${route} made off-origin request: ${url}`);
