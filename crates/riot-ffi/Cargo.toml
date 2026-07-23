@@ -15,7 +15,38 @@ uniffi = { workspace = true }
 willow25 = { workspace = true }
 zeroize = { workspace = true }
 
+# --- Non-local transport (Slice 1, gated behind the OFF-by-default `net`
+# feature) — mirrors riot-anchor's `daemon` gate (riot-anchor/Cargo.toml:59).
+# These are the ONLY iroh/tokio edges in this crate. `riot-ffi` is a
+# staticlib/cdylib that never targets wasm, so feature-gated iroh here cannot
+# contaminate riot-core's wasm-cleanliness (see
+# docs/decisions/2026-07-23-mobile-iroh-transport-design.md, "Core architectural
+# decision"). Default builds pull ZERO iroh/tokio — enforced by xtask's
+# check_resolved_feature_graph. Versions match riot-anchor's daemon pins exactly,
+# so no NEW lock package is introduced — only dependency EDGES (which do re-hash
+# Cargo.lock; see fixtures/manifest.json:cargo_lock_sha256).
+riot-transport = { path = "../riot-transport", optional = true }
+riot-anchor-protocol = { path = "../riot-anchor-protocol", optional = true }
+tokio = { version = "1.53.0", features = ["rt-multi-thread", "macros", "sync", "time", "signal"], optional = true }
+iroh = { version = "1.0.2", optional = true }
+
+[features]
+default = []
+# Enables the FFI-owned iroh runtime + endpoint skeleton (`net` module). The
+# native apps opt in; the default library/staticlib build stays iroh/tokio-free.
+net = ["dep:riot-transport", "dep:riot-anchor-protocol", "dep:tokio", "dep:iroh"]
+
 [dev-dependencies]
 minicbor = { workspace = true }
 serde_json = { workspace = true }
 tempfile = { workspace = true }
+# TEST-ONLY: seed an in-process anchor (bind_local_anchor_endpoint + serve +
+# ReadCommitted committed store) for the Slice-2 `sync_with_anchor` e2e. A
+# dev-dependency is test-only: it does NOT enter the shipped staticlib/cdylib or
+# the DEFAULT (non-dev) feature closure the xtask boundary rule guards. The
+# `daemon` feature pulls iroh/tokio into the TEST binary only.
+riot-anchor = { path = "../riot-anchor", features = ["daemon"] }
+ed25519-dalek = { workspace = true }
+riot-anchor-protocol = { path = "../riot-anchor-protocol" }
+riot-transport = { path = "../riot-transport" }
+tokio = { version = "1.53.0", features = ["rt-multi-thread", "macros", "sync", "time"] }

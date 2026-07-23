@@ -1891,6 +1891,67 @@ pub(crate) fn inspect_core(
     inspect_core_with_root(store, bytes, route, None)
 }
 
+/// The import route recorded for entries pulled from an anchor over
+/// `riot/sync/2 ReadCommitted` (the Slice-2 non-local transport). Like every
+/// route it names provenance and grants nothing.
+#[cfg(feature = "net")]
+const ANCHOR_PULL_ROUTE: &str = "anchor-pull";
+
+/// Import a set of ALREADY-VERIFIED signed entries pulled from an anchor into the
+/// phone's willow store through the canonical preview→plan→commit boundary
+/// (`session.rs`) — the SAME path a peer bundle or the demo space takes. Returns
+/// the count actually committed.
+///
+/// `root` is the followed community/site root (the ticket's O namespace): it lets
+/// `inspect` admit owned editorial entries rooted at that key; communal entries
+/// ignore it. The store re-verifies every frame on the way in (capability +
+/// Meadowcap + payload digest + schema), so this is NOT an accept-all path even
+/// though the caller already verified — a non-admissible frame (e.g. the reserved
+/// `/manifest`, validated on its own path and never stored as content) is simply
+/// not eligible and is never committed. Nothing touches `sync_inventory`:
+/// anchor-pulled content is not re-offered to nearby peers from here.
+#[cfg(feature = "net")]
+pub(crate) fn import_anchor_pulled_namespace(
+    inner: &Arc<Mutex<ProfileState>>,
+    root: [u8; 32],
+    entries: &[SignedWillowEntry],
+) -> Result<usize, MobileError> {
+    with_active(inner, |profile| {
+        let mut imported = 0usize;
+        // Import ONE entry at a time. A pulled entry the store deliberately does
+        // not admit as willow content — the reserved `/manifest`, which is
+        // validated on its own path and never stored — fails the producer schema
+        // gate inside `encode_bundle` (`UnsupportedSchema`). That is CORRECT, not
+        // a fault: skip it and keep going, rather than let one non-content entry
+        // poison the whole namespace's import. Content entries (owned `/articles`,
+        // communal newswire/alerts) each go through the canonical
+        // preview→plan→commit boundary, which re-verifies every frame.
+        for entry in entries {
+            let bytes = match encode_bundle(std::slice::from_ref(entry)) {
+                Ok(bytes) => bytes,
+                Err(_) => continue,
+            };
+            // (the reserved /manifest lands here and is skipped: see above)
+            // A fresh preview replaces any stale session-wide slot, exactly as the
+            // demo/import paths do; a live sync session's in-flight review is a
+            // caller concern (Slice 2 imports on a quiescent profile).
+            profile.preview = None;
+            profile.plan = None;
+            let preview =
+                inspect_core_with_root(&profile.store, &bytes, ANCHOR_PULL_ROUTE, Some(root))?;
+            let eligible = preview.eligible_count().map_err(map_core_error)?;
+            if eligible > 0 {
+                let plan = preview.plan_all().map_err(map_core_error)?;
+                match plan.commit().map_err(map_core_error)? {
+                    CommitOutcome::Committed(_) | CommitOutcome::NoChanges(_) => {}
+                }
+                imported += eligible;
+            }
+        }
+        Ok(imported)
+    })
+}
+
 /// `inspect_core` for an admission path that knows the owned site it follows.
 /// The sync commit path passes the synced namespace so owned editorial entries
 /// are admitted in lockstep with `inspectable_entries` (both keyed on that same

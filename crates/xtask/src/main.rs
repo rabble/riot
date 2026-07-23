@@ -257,15 +257,27 @@ fn generate_mobile_bindings_with(
     command_runner: &mut dyn CommandRunner,
     binding_generator: &mut dyn BindingGenerator,
 ) -> Result<PathBuf, String> {
+    // The `net` FFI surface (`MobileNetRuntime::sync_with_anchor`, issue #107
+    // Phase 3) lives behind riot-ffi's off-by-default `net` feature. Binding
+    // generation for a MOBILE build that ships non-local sync must build the
+    // host library WITH `--features net` so the generated Swift/Kotlin include
+    // that surface. Opt-in and guarded via `RIOT_FFI_NET_BINDINGS` so the
+    // DEFAULT generate-bindings (and the default staticlib build in
+    // scripts/conference/build-native-core.sh) stay net-free — keeping the
+    // shipped bindings and staticlib coupled at the same feature set (a mismatch
+    // would abort at the UniFFI checksum). When the mobile staticlib is built
+    // with `net` (the device slice), set this so the bindings match.
+    let net_bindings = std::env::var_os("RIOT_FFI_NET_BINDINGS").is_some_and(|v| !v.is_empty());
+    let mut build_args: Vec<&str> = vec!["build", "-p", "riot-ffi", "--lib", "--locked"];
+    if net_bindings {
+        build_args.push("--features");
+        build_args.push("net");
+    }
     let status = command_runner
-        .status(
-            "cargo",
-            &["build", "-p", "riot-ffi", "--lib", "--locked"],
-            root,
-        )
+        .status("cargo", &build_args, root)
         .map_err(|error| format!("could not build riot-ffi: {error}"))?;
     if !status.success() {
-        return Err("cargo build -p riot-ffi --lib --locked failed".into());
+        return Err(format!("cargo {} failed", build_args.join(" ")));
     }
 
     let root_utf8 = utf8_path(root.to_path_buf(), "workspace")?;
@@ -413,9 +425,24 @@ fn check_resolved_feature_graph_with(
     command_runner: &mut dyn CommandRunner,
 ) -> Vec<String> {
     let mut failures = Vec::new();
+    // `no-dev`: this rule guards the SHIPPED riot-ffi closure (the staticlib/
+    // cdylib) and its DEFAULT feature resolution — NOT the test binary. Slice 2
+    // adds a TEST-ONLY `riot-anchor` dev-dependency (its `daemon` feature pulls
+    // iroh/tokio) to seed an in-process anchor for the `sync_with_anchor` e2e; a
+    // dev-dependency never enters the shipped library, so excluding dev edges
+    // keeps the gate measuring exactly what ships. Without `no-dev`, the dev-dep
+    // would false-positive here even though the default staticlib still ships
+    // zero iroh/tokio. See docs/decisions/2026-07-23-mobile-iroh-transport-design.md.
     let output = command_runner.output(
         "cargo",
-        &["tree", "-p", "riot-ffi", "-e", "features", "--locked"],
+        &[
+            "tree",
+            "-p",
+            "riot-ffi",
+            "-e",
+            "features,no-dev",
+            "--locked",
+        ],
         root,
     );
     let Ok(output) = output else {
@@ -436,6 +463,22 @@ fn check_resolved_feature_graph_with(
         (
             "riot-core feature \"conformance\"",
             "test/conformance injection APIs must not reach the release closure",
+        ),
+        // The mobile non-local transport (iroh + its internal tokio runtime)
+        // lives behind riot-ffi's OFF-by-default `net` feature. This closure is
+        // resolved with NO --features, so iroh/tokio must be ABSENT here — the
+        // proof that `net` stays off by default and the default staticlib/cdylib
+        // ships zero iroh/tokio. They ARE permitted (and expected) under
+        // `cargo tree -p riot-ffi -e features --features net`; this rule guards
+        // only the default closure. See
+        // docs/decisions/2026-07-23-mobile-iroh-transport-design.md.
+        (
+            "iroh",
+            "iroh is gated behind riot-ffi's off-by-default `net` feature and must not be in the default closure",
+        ),
+        (
+            "tokio",
+            "tokio is gated behind riot-ffi's off-by-default `net` feature and must not be in the default closure",
         ),
     ] {
         if tree.contains(needle) {
@@ -927,7 +970,7 @@ mod tests {
                     "-p".into(),
                     "riot-ffi".into(),
                     "-e".into(),
-                    "features".into(),
+                    "features,no-dev".into(),
                     "--locked".into(),
                 ],
                 root: dir.clone(),
@@ -1185,6 +1228,33 @@ bab_rs v0.7.0
         for expected in ["drop_format", "openmls", "conformance", "wrong bab_rs"] {
             assert!(failures.iter().any(|failure| failure.contains(expected)));
         }
+    }
+
+    #[test]
+    fn resolved_graph_rejects_iroh_and_tokio_in_default_closure() {
+        // A DEFAULT riot-ffi closure (no --features) must never contain the
+        // mobile transport stack — iroh/tokio live behind the off-by-default
+        // `net` feature. If they leak into the default closure, the boundary
+        // rule must fire.
+        let dir = temp_dir("resolved-graph-net");
+        let graph = r#"
+riot-ffi v0.1.0
+├── iroh v1.0.2
+│   └── tokio v1.53.0
+"#;
+        let mut runner = ScriptedRunner {
+            output: Some(Ok(command_output(0, graph))),
+            status: None,
+        };
+        let failures = check_resolved_feature_graph_with(&dir, &mut runner);
+        assert!(
+            failures.iter().any(|f| f.contains("iroh")),
+            "iroh in default closure must be rejected: {failures:?}"
+        );
+        assert!(
+            failures.iter().any(|f| f.contains("tokio")),
+            "tokio in default closure must be rejected: {failures:?}"
+        );
     }
 
     #[test]

@@ -3545,10 +3545,15 @@ name = "riot-ffi"
 version = "0.1.0"
 dependencies = [
  "ed25519-dalek 2.2.0",
+ "iroh",
  "minicbor",
+ "riot-anchor",
+ "riot-anchor-protocol",
  "riot-core",
+ "riot-transport",
  "serde_json",
  "tempfile",
+ "tokio",
  "uniffi",
  "willow25",
  "zeroize",
