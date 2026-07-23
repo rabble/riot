@@ -35,14 +35,19 @@ use riot_anchor_protocol::records::{
 };
 
 use riot_core::model::{Certainty, Severity, Urgency};
+use riot_core::newswire::{
+    create_signed_news_post, create_signed_space_descriptor, inspect_news_record, NewsPostV1,
+    ProjectionClockV1, SignedNewswireRecord, SpaceDescriptorV1,
+};
 use riot_core::site::{
     encode_site_manifest, validate_site_manifest, RequireTransport, SiteDisplay, SiteLayout,
     SiteManifestV1, SiteMemberV1, SiteRole, SiteRule, TransportPolicyV1,
 };
 use riot_core::willow::site_paths::ARTICLES_COMPONENT;
 use riot_core::willow::{
-    create_signed_alert, encode_capability, encode_entry, generate_communal_author, AlertDraft,
-    Entry, Path, SignedWillowEntry, MANIFEST_COMPONENT,
+    create_signed_alert, encode_capability, encode_entry, generate_communal_author,
+    generate_communal_author_for_namespace, generate_space_organizer_author, AlertDraft, Entry,
+    Path, SignedWillowEntry, MANIFEST_COMPONENT,
 };
 
 use willow25::authorisation::WriteCapability;
@@ -146,6 +151,100 @@ fn make_alert_item(headline: &str) -> StagedEntry {
         &signed.payload_bytes,
     );
     verify_anchor_item(&item_bytes).expect("genuine alert item verifies")
+}
+
+/// A plain newswire community minted for the WIRE namespace: a signed
+/// `SpaceDescriptorV1` plus a handful of real posts from DIFFERENT communal
+/// authors — the "people talking" a follower walks into. Unlike a digest-only
+/// alert, newswire records RETAIN their payload on import (`valid_newswire` in
+/// `session.rs`), so after the pull the descriptor is discoverable and
+/// `project_space` renders the posts and the people who wrote them.
+struct NewswireWire {
+    namespace_id: [u8; 32],
+    descriptor_entry_id: [u8; 32],
+    name: String,
+    descriptor_staged: StagedEntry,
+    posts_staged: Vec<StagedEntry>,
+    /// Headlines in the order authored, so the test can assert real content
+    /// crossed the wire (not just counts).
+    headlines: Vec<String>,
+}
+
+/// Encode a signed newswire record as an anchor item and verify it, mirroring
+/// `make_alert_item` but for the newswire families (descriptor + posts).
+fn make_newswire_staged(record: &SignedNewswireRecord) -> StagedEntry {
+    let s = &record.signed;
+    let item = encode_item(
+        &s.entry_bytes,
+        &s.capability_bytes,
+        &s.signature,
+        &s.payload_bytes,
+    );
+    verify_anchor_item(&item).expect("newswire item verifies as an anchor item")
+}
+
+/// Seed a plain newswire community: one organizer-signed descriptor plus three
+/// posts, each from a DISTINCT communal author, so the wire shows real people
+/// talking. All live in one communal namespace (the descriptor's), which becomes
+/// the site's W (open-wire) namespace.
+fn make_newswire_wire() -> NewswireWire {
+    let organizer = generate_space_organizer_author().expect("space organizer author");
+    let namespace_id = *organizer.namespace_id().as_bytes();
+    let name = "River City Wire".to_string();
+    let descriptor = create_signed_space_descriptor(
+        &organizer,
+        SpaceDescriptorV1 {
+            namespace_id,
+            name: name.clone(),
+            summary: "Neighbours reporting what's happening on the block.".into(),
+            languages: vec!["en".into()],
+            geographic_tags: vec![],
+            topic_tags: vec![],
+            editorial_roster: vec![],
+            predecessor: None,
+            successor: None,
+        },
+    )
+    .expect("sign space descriptor");
+    let verified = inspect_news_record(&descriptor.signed).expect("verify descriptor");
+
+    let headlines = [
+        "Rent strike meeting Thursday, 7pm",
+        "Free breakfast at the corner church",
+        "Bike lane reopens on 5th",
+    ];
+    let mut posts_staged = Vec::new();
+    for headline in headlines {
+        // A fresh communal author per post → distinct people on the wire.
+        let writer = generate_communal_author_for_namespace(namespace_id).expect("communal writer");
+        let post = create_signed_news_post(
+            &writer,
+            &verified,
+            NewsPostV1 {
+                space_descriptor_entry_id: descriptor.entry_id,
+                headline: headline.into(),
+                body: "Full report inside.".into(),
+                language: "en".into(),
+                event_time_unix_seconds: None,
+                expires_at_unix_seconds: None,
+                coarse_location: None,
+                source_claims: vec!["neighbour".into()],
+                operational_profile: None,
+                ai_assisted: false,
+            },
+        )
+        .expect("sign news post");
+        posts_staged.push(make_newswire_staged(&post));
+    }
+
+    NewswireWire {
+        namespace_id,
+        descriptor_entry_id: descriptor.entry_id,
+        name,
+        descriptor_staged: make_newswire_staged(&descriptor),
+        posts_staged,
+        headlines: headlines.iter().map(|h| h.to_string()).collect(),
+    }
 }
 
 /// Build one owner-signed entry in the owned namespace at `path` carrying
@@ -253,20 +352,24 @@ struct SiteFixture {
     manifest_staged: StagedEntry,
     articles_staged: StagedEntry,
     c_staged: StagedEntry,
-    w_staged: StagedEntry,
+    /// The W (open-wire) namespace is a real, walk-into-able newswire community:
+    /// a descriptor + posts from distinct people, not a single digest-only alert.
+    wire: NewswireWire,
     ticket_envelope_bytes: Vec<u8>,
 }
 
 /// Mint a full owned-root site fixture: O carries the owner-signed `/manifest`
-/// AND a store-admissible owner-signed `/articles` entry; C and W carry one
-/// communal alert each. The ticket is root-signed at `floor`.
+/// AND a store-admissible owner-signed `/articles` entry; C carries one communal
+/// alert (comments); W is a plain newswire community (descriptor + posts from
+/// distinct authors) — the walk-into-able wire. The ticket is root-signed at
+/// `floor`.
 fn make_site_fixture(seed: u8, version: u64, floor: TransportFloor, now: u64) -> SiteFixture {
     let root = owned_site_root(seed);
     let c = make_alert_item("wire-comment");
-    let w = make_alert_item("wire-report");
-    let namespaces = [root.root_id, c.namespace_id, w.namespace_id];
+    let wire = make_newswire_wire();
+    let namespaces = [root.root_id, c.namespace_id, wire.namespace_id];
 
-    let payload = site_manifest_bytes(root.root_id, c.namespace_id, w.namespace_id, version);
+    let payload = site_manifest_bytes(root.root_id, c.namespace_id, wire.namespace_id, version);
     let manifest_digest = digest_v1(SITE_MANIFEST_DIGEST_LABEL, &payload);
     let manifest_staged = make_owned_entry(
         &root,
@@ -299,7 +402,7 @@ fn make_site_fixture(seed: u8, version: u64, floor: TransportFloor, now: u64) ->
         manifest_staged,
         articles_staged,
         c_staged: c,
-        w_staged: w,
+        wire,
         ticket_envelope_bytes,
     }
 }
@@ -325,8 +428,13 @@ fn commit_site(repo: &mut AnchorRepository, site: &SiteFixture, now: u64) {
         .expect("commit O article");
     tx.insert_committed_entry(&site.root_id, 1, &site.c_staged)
         .expect("commit C entry");
-    tx.insert_committed_entry(&site.root_id, 2, &site.w_staged)
-        .expect("commit W entry");
+    // W: the newswire community — its descriptor, then each post.
+    tx.insert_committed_entry(&site.root_id, 2, &site.wire.descriptor_staged)
+        .expect("commit W descriptor");
+    for post in &site.wire.posts_staged {
+        tx.insert_committed_entry(&site.root_id, 2, post)
+            .expect("commit W post");
+    }
     tx.commit().expect("commit site");
 }
 
@@ -464,7 +572,10 @@ fn phone_pulls_and_imports_committed_community_from_anchor() {
 
     // Per-namespace expectations. O: 2 pulled+verified (manifest + article), 1
     // imported (the reserved /manifest is verified but deliberately NOT a willow
-    // store entry — validated on its own path). C/W: 1 verified, 1 imported each.
+    // store entry — validated on its own path). C: 1 alert. W: the newswire
+    // community — descriptor + one post per author.
+    let post_count = site.wire.headlines.len() as u32;
+    let w_entries = 1 + post_count; // descriptor + posts
     let by_ns = |ns: [u8; 32]| {
         let id = hex(&ns);
         outcome
@@ -488,13 +599,13 @@ fn phone_pulls_and_imports_committed_community_from_anchor() {
     let w = by_ns(site.namespaces[2]);
     assert_eq!(
         (w.verified, w.imported, w.rejected),
-        (1, 1, 0),
-        "W imported"
+        (w_entries, w_entries, 0),
+        "W: the whole newswire community imported (descriptor + every post)"
     );
     assert!(w.refusal.is_none());
 
-    assert_eq!(outcome.total_verified(), 4);
-    assert_eq!(outcome.total_imported(), 3);
+    assert_eq!(outcome.total_verified(), 3 + w_entries);
+    assert_eq!(outcome.total_imported(), 2 + w_entries);
 
     // Queryable through the normal profile read path, BYTE-IDENTICAL to what the
     // anchor committed. Entry ids are content-addressed over the canonical entry
@@ -512,16 +623,26 @@ fn phone_pulls_and_imports_committed_community_from_anchor() {
             "C: the communal comment entry landed byte-identical"
         );
         assert!(
-            live.contains(&site.w_staged.entry_id),
-            "W: the communal wire entry landed byte-identical"
+            live.contains(&site.wire.descriptor_staged.entry_id),
+            "W: the newswire descriptor landed byte-identical"
         );
+        for post in &site.wire.posts_staged {
+            assert!(
+                live.contains(&post.entry_id),
+                "W: every newswire post landed byte-identical"
+            );
+        }
         // The reserved /manifest is verified but is NOT a willow content entry
         // (validated on its own path) — it must NOT be in the store.
         assert!(
             !live.contains(&site.manifest_staged.entry_id),
             "the /manifest is never admitted as store content"
         );
-        assert_eq!(live.len(), 3, "exactly the three content entries landed");
+        assert_eq!(
+            live.len() as u32,
+            2 + w_entries,
+            "exactly the article + comment + newswire community entries landed"
+        );
 
         // STRONGEST form for the owned article: every signed component read back
         // VERBATIM from durable storage (owned entries retain their payload on the
@@ -536,6 +657,74 @@ fn phone_pulls_and_imports_committed_community_from_anchor() {
             to_signed(&site.articles_staged),
             "the owned article is byte-identical (entry+cap+sig+payload)"
         );
+    });
+
+    // THE WALK-IN (backbone UX slice): after the durable pull, discovery surfaces
+    // the WIRE as a real newswire community the follower can open — its descriptor
+    // is present (newswire payloads are retained on import), so the community
+    // carries its own name, its post count, and the count of people who wrote
+    // them. This is the "leave the room, still connected" win: a pull yields a
+    // place with people talking, not an empty shell.
+    let pulled_ns: Vec<String> = site.namespaces.iter().map(|n| hex(n)).collect();
+    let candidates = crate::mobile_state::discover_synced_communities(&profile.inner, pulled_ns)
+        .expect("discover synced communities after the pull");
+    let wire_hex = hex(&site.wire.namespace_id);
+    let wire_candidate = candidates
+        .iter()
+        .find(|c| c.namespace_id == wire_hex)
+        .expect("the pulled wire is an adoptable newswire community");
+    assert_eq!(
+        wire_candidate.name.as_deref(),
+        Some(site.wire.name.as_str()),
+        "the community carries its own signed name"
+    );
+    assert_eq!(
+        wire_candidate.descriptor_entry_id.as_deref(),
+        Some(hex(&site.wire.descriptor_entry_id).as_str()),
+        "discovery hands back the descriptor its wire projects from"
+    );
+    assert_eq!(
+        wire_candidate.post_count, post_count,
+        "every post is on the wire"
+    );
+    assert_eq!(
+        wire_candidate.contributor_count, post_count,
+        "one distinct person per post — real people you can see"
+    );
+
+    // And the wire actually PROJECTS those posts with their authors — the follower
+    // opens it and reads what these people wrote.
+    with_store(&profile, |store| {
+        let clock = ProjectionClockV1::system().expect("projection clock");
+        let projection =
+            riot_core::newswire::project_space(store, site.wire.descriptor_entry_id, clock)
+                .expect("the pulled wire projects");
+        let posts: Vec<_> = projection
+            .open_wire
+            .iter()
+            .chain(projection.front_page.iter())
+            .chain(projection.earlier.iter())
+            .collect();
+        assert_eq!(
+            posts.len(),
+            site.wire.headlines.len(),
+            "the wire shows every post that crossed the internet"
+        );
+        let authors: std::collections::BTreeSet<[u8; 32]> =
+            posts.iter().map(|p| p.author_id).collect();
+        assert_eq!(
+            authors.len(),
+            site.wire.headlines.len(),
+            "distinct people wrote them"
+        );
+        for headline in &site.wire.headlines {
+            assert!(
+                posts
+                    .iter()
+                    .any(|p| p.headline.as_deref() == Some(headline.as_str())),
+                "the real headline '{headline}' survived the crossing"
+            );
+        }
     });
 
     drop(anchor);

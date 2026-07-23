@@ -40,7 +40,7 @@ use demo_common::{
     anchor_addr_from_env, bind_client_endpoint, control_round_trip, drive_sync2, now_secs,
     random_idempotency_key, random_secret, stage, to_hex,
 };
-use hosting_common::{client_snapshot_digest, push_initiator, SiteFixture, SyncItem};
+use hosting_common::{client_snapshot_digest, push_initiator, NewswireSiteFixture, SyncItem};
 
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> ExitCode {
@@ -53,26 +53,22 @@ async fn main() -> ExitCode {
     }
 }
 
-/// The `(entry_id, item_bytes)` sync items of the site fixture, ordered O/C/W.
-fn site_items(site: &SiteFixture) -> [SyncItem; 3] {
+/// The sync items to push, grouped by ordered namespace `[O, C, W]`. O and C
+/// carry one entry each; W carries the whole newswire community (descriptor +
+/// every post).
+fn site_namespace_items(site: &NewswireSiteFixture) -> [Vec<SyncItem>; 3] {
     [
-        (
+        vec![(
             site.manifest_staged.entry_id.to_vec(),
             site.manifest_staged.item_bytes.clone(),
-        ),
-        (
-            site.c_staged.entry_id.to_vec(),
-            site.c_staged.item_bytes.clone(),
-        ),
-        (
-            site.w_staged.entry_id.to_vec(),
-            site.w_staged.item_bytes.clone(),
-        ),
+        )],
+        vec![site.c_item.clone()],
+        site.wire.items.clone(),
     ]
 }
 
 /// A canonical `PrepareHost` frame carrying the site's root-signed ticket.
-fn prepare_frame(site: &SiteFixture, idempotency_key: [u8; 16]) -> Result<Vec<u8>, String> {
+fn prepare_frame(site: &NewswireSiteFixture, idempotency_key: [u8; 16]) -> Result<Vec<u8>, String> {
     let ticket = decode_canonical::<RootSignedTicketCoreEnvelopeV2>(
         &site.ticket_envelope_bytes,
         MAX_TICKET_CORE_BYTES + 128,
@@ -119,11 +115,24 @@ async fn run() -> Result<(), String> {
     // rollback floors.
     let now = now_secs();
     let seed = random_secret()?[0];
-    stage("minting a demo composite site (owned O root, communal C/W, root-signed ticket)");
-    let site = hosting_common::make_site_fixture(seed, now, now.saturating_sub(100), now + 3600);
+    stage("minting a demo site with a real NEWSWIRE community on the wire (owned O root, C comments, W newswire, root-signed ticket)");
+    let site =
+        hosting_common::make_newswire_site_fixture(seed, now, now.saturating_sub(100), now + 3600);
     println!("    site root (O):    {}", to_hex(&site.root_id));
     println!("    C namespace:      {}", to_hex(&site.namespaces[1]));
-    println!("    W namespace:      {}", to_hex(&site.namespaces[2]));
+    println!(
+        "    W namespace:      {}  ({})",
+        to_hex(&site.namespaces[2]),
+        site.wire.name
+    );
+    println!(
+        "    wire community:   \"{}\" — {} posts from distinct people:",
+        site.wire.name,
+        site.wire.headlines.len()
+    );
+    for headline in &site.wire.headlines {
+        println!("      · {headline}");
+    }
     println!("    manifest digest:  {}", to_hex(&site.manifest_digest));
 
     stage("PrepareHost (riot/anchor/1 control plane)");
@@ -141,14 +150,14 @@ async fn run() -> Result<(), String> {
     println!("    operation expiry: {} (unix)", prepared.operation_expiry);
 
     stage("riot/sync/2 push: staging O, C, W (HostReconcileStaged)");
-    let items = site_items(&site);
-    let labels = ["O (/manifest)", "C", "W"];
-    for (index, item) in items.iter().enumerate() {
+    let ns_items = site_namespace_items(&site);
+    let labels = ["O (/manifest)", "C (comments)", "W (newswire wire)"];
+    for (index, items) in ns_items.iter().enumerate() {
         let session = push_initiator(
             site.namespaces[index],
             prepared.operation_id,
             prepared.ordered_namespace_tokens[index],
-            vec![item.clone()],
+            items.clone(),
         );
         let session = drive_sync2(&client, anchor_addr.clone(), session).await?;
         if !session.is_complete() {
@@ -158,18 +167,21 @@ async fn run() -> Result<(), String> {
                 session.refusal()
             ));
         }
+        let bytes: usize = items.iter().map(|item| item.1.len()).sum();
         println!(
-            "    pushed {} — 1 entry, {} bytes",
+            "    pushed {} — {} {}, {} bytes",
             labels[index],
-            item.1.len()
+            items.len(),
+            if items.len() == 1 { "entry" } else { "entries" },
+            bytes
         );
     }
 
     stage("CommitHost: promoting the staged site to committed");
     let declared = [
-        client_snapshot_digest(&site.namespaces[0], &items[..1]),
-        client_snapshot_digest(&site.namespaces[1], &items[1..2]),
-        client_snapshot_digest(&site.namespaces[2], &items[2..3]),
+        client_snapshot_digest(&site.namespaces[0], &ns_items[0]),
+        client_snapshot_digest(&site.namespaces[1], &ns_items[1]),
+        client_snapshot_digest(&site.namespaces[2], &ns_items[2]),
     ];
     let committed = control_round_trip(
         &client,

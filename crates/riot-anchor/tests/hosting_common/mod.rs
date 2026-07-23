@@ -42,13 +42,18 @@ use riot_anchor_protocol::sync2::{
     Sync2Session, Sync2Snapshot,
 };
 
+use riot_core::newswire::{
+    create_signed_news_post, create_signed_space_descriptor, inspect_news_record, NewsPostV1,
+    SignedNewswireRecord, SpaceDescriptorV1,
+};
 use riot_core::site::{
     encode_site_manifest, RequireTransport, SiteDisplay, SiteLayout, SiteManifestV1, SiteMemberV1,
     SiteRole, SiteRule, TransportPolicyV1,
 };
 use riot_core::willow::{
-    create_signed_alert, encode_capability, encode_entry, generate_communal_author, AlertDraft,
-    Entry, Path, MANIFEST_COMPONENT,
+    create_signed_alert, encode_capability, encode_entry, generate_communal_author,
+    generate_communal_author_for_namespace, generate_space_organizer_author, AlertDraft, Entry,
+    Path, MANIFEST_COMPONENT,
 };
 
 use willow25::authorisation::WriteCapability;
@@ -539,6 +544,193 @@ pub fn make_site_fixture(
         manifest_staged,
         c_staged: c_item.staged,
         w_staged: w_item.staged,
+        ticket_envelope_bytes,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// A PLAIN NEWSWIRE community for the W (open-wire) namespace: a signed
+// SpaceDescriptorV1 plus real posts from DISTINCT people. Newswire records retain
+// their payload on import (unlike digest-only alerts), so a follower who pulls
+// this site discovers a walk-into-able community whose wire projects the posts
+// and the people who wrote them — the "leave the room, still connected" win. This
+// is what the demo host (which seeds the live relay) serves.
+// ---------------------------------------------------------------------------
+
+/// The newswire community minted for a site's W namespace: its descriptor, its
+/// posts (one per distinct author), and the sync items (`entry_id`, `item_bytes`)
+/// the host pushes for that namespace.
+pub struct NewswireWireFixture {
+    pub namespace_id: [u8; 32],
+    pub descriptor_entry_id: [u8; 32],
+    pub name: String,
+    pub headlines: Vec<String>,
+    /// Descriptor first, then each post — the items pushed for the W namespace.
+    pub items: Vec<SyncItem>,
+}
+
+/// Encode a signed newswire record as an anchor item and verify it, returning the
+/// `(entry_id, item_bytes)` the host pushes.
+fn newswire_sync_item(record: &SignedNewswireRecord) -> SyncItem {
+    let s = &record.signed;
+    let item_bytes = encode_item(
+        &s.entry_bytes,
+        &s.capability_bytes,
+        &s.signature,
+        &s.payload_bytes,
+    );
+    let staged = verify_anchor_item(&item_bytes).expect("newswire item verifies");
+    (staged.entry_id.to_vec(), item_bytes)
+}
+
+/// Seed a plain newswire community: one organizer-signed descriptor plus three
+/// posts, each from a DISTINCT communal author, all in the descriptor's communal
+/// namespace (which becomes the site's W open-wire namespace).
+pub fn make_newswire_wire() -> NewswireWireFixture {
+    let organizer = generate_space_organizer_author().expect("space organizer author");
+    let namespace_id = *organizer.namespace_id().as_bytes();
+    let name = "River City Wire".to_string();
+    let descriptor = create_signed_space_descriptor(
+        &organizer,
+        SpaceDescriptorV1 {
+            namespace_id,
+            name: name.clone(),
+            summary: "Neighbours reporting what's happening on the block.".into(),
+            languages: vec!["en".into()],
+            geographic_tags: vec![],
+            topic_tags: vec![],
+            editorial_roster: vec![],
+            predecessor: None,
+            successor: None,
+        },
+    )
+    .expect("sign space descriptor");
+    let verified = inspect_news_record(&descriptor.signed).expect("verify descriptor");
+
+    let headlines = [
+        "Rent strike meeting Thursday, 7pm",
+        "Free breakfast at the corner church",
+        "Bike lane reopens on 5th",
+    ];
+    let mut items = vec![newswire_sync_item(&descriptor)];
+    for headline in headlines {
+        // A fresh communal author per post → distinct people on the wire.
+        let writer = generate_communal_author_for_namespace(namespace_id).expect("communal writer");
+        let post = create_signed_news_post(
+            &writer,
+            &verified,
+            NewsPostV1 {
+                space_descriptor_entry_id: descriptor.entry_id,
+                headline: headline.into(),
+                body: "Full report inside.".into(),
+                language: "en".into(),
+                event_time_unix_seconds: None,
+                expires_at_unix_seconds: None,
+                coarse_location: None,
+                source_claims: vec!["neighbour".into()],
+                operational_profile: None,
+                ai_assisted: false,
+            },
+        )
+        .expect("sign news post");
+        items.push(newswire_sync_item(&post));
+    }
+
+    NewswireWireFixture {
+        namespace_id,
+        descriptor_entry_id: descriptor.entry_id,
+        name,
+        headlines: headlines.iter().map(|h| h.to_string()).collect(),
+        items,
+    }
+}
+
+/// A composite site whose W (open-wire) namespace is a REAL newswire community
+/// (descriptor + posts from distinct people) instead of a single alert — the
+/// walk-into-able site the demo host seeds onto the relay. O carries the
+/// owner-signed `/manifest`; C carries one communal alert (comments); W carries
+/// the newswire community.
+pub struct NewswireSiteFixture {
+    pub root: OwnedSiteRoot,
+    pub root_id: [u8; 32],
+    /// Ordered `[O, C, W]` namespace ids (O == root_id).
+    pub namespaces: [[u8; 32]; 3],
+    pub manifest_version: u64,
+    pub manifest_digest: [u8; 32],
+    pub manifest_payload_bytes: Vec<u8>,
+    pub manifest_staged: StagedEntry,
+    /// One communal alert in the C (comments) namespace.
+    pub c_item: SyncItem,
+    /// The newswire community in the W (open-wire) namespace.
+    pub wire: NewswireWireFixture,
+    pub ticket_envelope_bytes: Vec<u8>,
+}
+
+/// Build the walk-into-able site: owned O root + `/manifest`, one C alert, and a
+/// newswire W community. Mirrors [`make_site_fixture`] but swaps the single W
+/// alert for a real newswire community (descriptor + posts).
+pub fn make_newswire_site_fixture(
+    seed: u8,
+    manifest_version: u64,
+    ticket_issued: u64,
+    ticket_expiry: u64,
+) -> NewswireSiteFixture {
+    let root = owned_site_root(seed);
+    let c = make_item("site-c-comment");
+    let wire = make_newswire_wire();
+    let namespaces = [root.root_id, c.namespace_id, wire.namespace_id];
+
+    let payload = site_manifest_bytes(
+        root.root_id,
+        c.namespace_id,
+        wire.namespace_id,
+        manifest_version,
+    );
+    let manifest_digest = digest_v1(SITE_MANIFEST_DIGEST_LABEL, &payload);
+
+    // Owner-signed `/manifest`, exactly as `make_site_fixture` mints it.
+    let owner = SubspaceSecret::from_bytes(&[seed ^ 0x5A; 32]);
+    let owner_id = owner.corresponding_subspace_id();
+    let cap = WriteCapability::new_owned(&root.namespace_secret, owner_id.clone());
+    let entry = Entry::builder()
+        .namespace_id(root.namespace_secret.corresponding_namespace_id())
+        .subspace_id(owner_id)
+        .path(Path::from_slices(&[MANIFEST_COMPONENT]).expect("manifest path"))
+        .timestamp(1_000u64)
+        .payload(&payload)
+        .build();
+    let authorised = entry
+        .into_authorised_entry(&cap, &owner)
+        .expect("owner authorises /manifest");
+    let token = authorised.authorisation_token();
+    let signature: ed25519_dalek::Signature = token.signature().clone().into();
+    let item_bytes = encode_item(
+        &encode_entry(authorised.entry()),
+        &encode_capability(token.capability()),
+        &signature.to_bytes(),
+        &payload,
+    );
+    let manifest_staged = verify_anchor_item(&item_bytes).expect("manifest item verifies");
+
+    let ticket_envelope_bytes = sign_site_ticket(
+        &root,
+        namespaces,
+        manifest_digest,
+        manifest_version,
+        ticket_issued,
+        ticket_expiry,
+    );
+
+    NewswireSiteFixture {
+        root_id: root.root_id,
+        root,
+        namespaces,
+        manifest_version,
+        manifest_digest,
+        manifest_payload_bytes: payload,
+        manifest_staged,
+        c_item: (c.entry_id.to_vec(), c.item_bytes),
+        wire,
         ticket_envelope_bytes,
     }
 }
