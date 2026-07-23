@@ -43,7 +43,7 @@ zeroize = "=1.9.0"
 chacha20poly1305 = { version = "=0.10.1", default-features = false, features = ["alloc"] }
 # Physical database for the multi-space store. Bundling fixes SQLite and JSON
 # behavior across iOS, Android, and macOS instead of inheriting each OS build.
-rusqlite = { version = "=0.40.1", default-features = false, features = ["backup", "blob", "bundled", "hooks", "limits", "serde_json"] }
+rusqlite = { version = "=0.39.0", default-features = false, features = ["backup", "blob", "bundled", "hooks", "limits", "serde_json"] }
 
 # Evidence profile must unwind: the FFI boundary catches panics and
 # quarantines the session; abort would make that contract impossible.
