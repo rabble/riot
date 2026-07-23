@@ -22,7 +22,7 @@ fn a_ticket_minted_without_url_verifies_and_carries_none() {
     // BACKWARD-COMPAT: a ticket from before `url` existed (None) has a canonical
     // byte-identical to today, so it still verifies; it encodes no url= and
     // round-trips as None.
-    let ticket = mint(&root_key(), NS, "none", 1, 10_000, DIGEST, None, None);
+    let ticket = mint(&root_key(), NS, "none", 1, 10_000, DIGEST, None, None, None);
     assert!(ticket.verify(), "a no-url ticket verifies unchanged");
     assert!(ticket.url.is_none());
     assert!(
@@ -48,6 +48,7 @@ fn a_ticket_with_url_verifies_and_round_trips() {
         DIGEST,
         None,
         Some(url.into()),
+        None,
     );
     assert!(ticket.verify(), "a signed url verifies");
     assert_eq!(ticket.url.as_deref(), Some(url));
@@ -70,6 +71,7 @@ fn stripping_the_signed_url_breaks_the_signature() {
         DIGEST,
         None,
         Some("https://mirror.example/x.bundle".into()),
+        None,
     );
     assert!(signed.verify());
 
@@ -92,7 +94,7 @@ fn stripping_the_signed_url_breaks_the_signature() {
 fn forging_a_url_onto_a_ticket_breaks_the_signature() {
     // FORGE: an attacker who does not hold the root key cannot ADD a url — doing
     // so changes the canonical away from what the root signed.
-    let old = mint(&root_key(), NS, "none", 1, 10_000, DIGEST, None, None);
+    let old = mint(&root_key(), NS, "none", 1, 10_000, DIGEST, None, None, None);
     assert!(old.verify());
 
     let mut forged = old.clone();
@@ -117,6 +119,7 @@ fn the_url_never_influences_the_fail_closed_gate() {
         DIGEST,
         None,
         Some("https://whatever.example/x".into()),
+        None,
     );
     assert!(
         admit_dial(&none_floor, &IROH_ONLY, 1_000, 0).is_ok(),
@@ -132,6 +135,7 @@ fn the_url_never_influences_the_fail_closed_gate() {
         DIGEST,
         None,
         Some("https://whatever.example/x".into()),
+        None,
     );
     assert!(
         matches!(

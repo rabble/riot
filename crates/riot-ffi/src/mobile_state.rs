@@ -5345,7 +5345,7 @@ mod tests {
         url: Option<String>,
     ) -> riot_core::site::ticket::Ticket {
         let key = ed25519_dalek::SigningKey::from_bytes(&[7u8; 32]);
-        riot_core::site::ticket::mint(&key, root, require, 1, exp, [0u8; 32], None, url)
+        riot_core::site::ticket::mint(&key, root, require, 1, exp, [0u8; 32], None, url, None)
     }
 
     /// follow_site verifies a root-signed ticket and persists the Following record
