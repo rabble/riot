@@ -78,6 +78,14 @@
     @media (max-width:520px) { body { font-size:16px; } .wrap { width:min(calc(100% - 28px),var(--max)); } h1 { font-size:clamp(1.8rem,9vw,4.5rem); overflow-wrap:anywhere; } .life-grid { grid-template-columns:minmax(0,1fr); } }
     @media (prefers-reduced-motion:reduce) { html { scroll-behavior:auto; } }
     @media (forced-colors:active) { .commons-art,.tool-card,.boundary-panel,.aim,.button { box-shadow:none; border-color:CanvasText; } }
+    .research-band { background:var(--green); }
+    .research-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:20px; }
+    .research-card { padding:24px; background:var(--paper2); border:3px solid var(--ink); box-shadow:7px 7px 0 var(--ink); }
+    .research-card h3 { margin:0 0 .5rem; font-size:clamp(1.3rem,2vw,1.7rem); }
+    .research-card p { margin:.4rem 0; font-size:.95rem; }
+    .research-card .sources-line { margin-top:.8rem; font:700 .72rem/1.4 "Courier New",monospace; letter-spacing:.04em; text-transform:uppercase; }
+    .research-pull { margin-top:30px; padding:24px 28px; border:3px solid var(--ink); background:var(--yellow); box-shadow:9px 9px 0 var(--ink); font-size:1.1rem; font-weight:700; max-width:900px; }
+    @media (max-width:820px) { .research-grid { grid-template-columns:1fr; } }
   </style>
 </head>
 <body>
@@ -133,6 +141,32 @@
           <path d="M65 438h150M85 466h110" stroke="#171614" stroke-width="10"/>
           <circle cx="300" cy="315" r="22" fill="#ff4f8b" stroke="#171614" stroke-width="7"/>
         </svg>
+      </div>
+    </section>
+
+    <section id="research" class="research-band">
+      <div class="wrap">
+        <p class="eyebrow">Grounded in the field</p>
+        <h2>Healthy spaces are bounded, named, and non-extractive.</h2>
+        <p class="section-intro">Riot's design is not built on guesses about what communities need. The prosocial-local-spaces literature — three independent studies of real communities — converges on a structural answer Riot's architecture reflects. Riot is in a different lineage (activism, shutdowns, mutual aid) but the lessons transfer.</p>
+        <div class="research-grid">
+          <article class="research-card">
+            <h3>Bounded content, not an infinite feed</h3>
+            <p>Front Porch Forum ships finite "issues," not a stream; 63% of members read every one. Its survey of 13,473 members found forums that were <em>more</em> active were rated <em>less</em> favorably — the platform people value is the one they don't live inside. Riot's sync model carries community tools, not a feed to scroll.</p>
+            <p class="sources-line"><a href="https://newpublic.org/study/3635/front-porch-forum" rel="noopener">FPF study ↗</a></p>
+          </article>
+          <article class="research-card">
+            <h3>Named human stewards</h3>
+            <p>The 2025 "Local Connection Crisis" survey (2,028 people across urban, suburban, and rural communities) measured a real effect: belonging scores rise when users can name their steward by memory. Trust comes from people, not algorithms. Riot's moderation is a lens applied by humans the community knows, not invisible ranking.</p>
+            <p class="sources-line"><a href="https://newpublic.org/" rel="noopener">New_ Public ↗</a></p>
+          </article>
+          <article class="research-card">
+            <h3>Non-extractive incentives</h3>
+            <p>The top reasons people abandon local spaces — toxicity, spam, notification overload — are symptoms of the engagement-extraction model. Riot has no server pushing a feed and no algorithm optimizing for time-on-device. The "Nourish" and "Take a Breath" signals from the 14 Civic Signals framework are satisfied by transport design, not moderation labor.</p>
+            <p class="sources-line"><a href="https://newpublic.org/signals" rel="noopener">Civic Signals ↗</a></p>
+          </article>
+        </div>
+        <p class="research-pull">Riot is not Roundabout and is not trying to be. It shares the structural lessons — bounded, human-moderated, non-extractive — from a different center of gravity: activism, internet shutdowns, and degraded connectivity. <a href="https://github.com/rabble/riot/blob/main/docs/research/2026-07-24-prosocial-local-spaces-research.md" rel="noopener">Read the full synthesis ↗</a></p>
       </div>
     </section>
 
