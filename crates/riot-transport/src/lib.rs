@@ -15,6 +15,7 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 pub mod iroh;
 pub mod router;
 pub mod seed;
+pub mod select;
 pub mod ticket;
 
 /// The Tor (Arti) dialer + the `TorConnect` trait. The real `arti_client` impl
