@@ -491,6 +491,18 @@ section { padding: clamp(56px, 9vw, 100px) 0; }
   .builder-grid article + article { padding: 28px 0 0; border-top: 2px solid color-mix(in srgb, var(--paper) 28%, transparent); border-left: 0; }
 }
 
+/* ---------- field evidence ---------- */
+.field-strands { margin-top: 36px; display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
+.field-strand { border: 2px solid var(--ink); padding: clamp(20px, 3vw, 28px); background: var(--paper); }
+.field-strand h3 { margin: 0 0 12px; font-family: 'Anton', sans-serif; font-size: clamp(20px, 2vw, 24px); letter-spacing: 0.01em; color: var(--ink); text-transform: none; }
+.field-strand p { margin: 0 0 12px; color: var(--ink-soft); font-size: 15px; line-height: 1.5; }
+.field-strand p:last-child { margin-bottom: 0; }
+.field-insight { margin-top: 28px; border-left: 6px solid var(--pink); padding: clamp(20px, 3vw, 28px) clamp(20px, 3vw, 32px); background: var(--paper); }
+.field-insight h3 { margin: 0 0 12px; font-family: 'Anton', sans-serif; font-size: clamp(20px, 2vw, 24px); color: var(--ink); text-transform: none; }
+.field-insight p { margin: 0 0 12px; color: var(--ink-soft); font-size: 15px; line-height: 1.55; max-width: 70ch; }
+.field-insight p:last-child { margin-bottom: 0; }
+@media (max-width: 860px) { .field-strands { grid-template-columns: 1fr; } }
+
 /* ---------- status ---------- */
 .status-band { background: var(--pink); color: #fff; }
 .status-band .eyebrow { color: rgba(255,255,255,0.85); }
@@ -1043,7 +1055,26 @@ footer.colophon .footer-links a:hover { text-decoration: underline; text-decorat
     <div class="section-head">
       <p class="eyebrow">Not guesswork</p>
       <h2>Grounded in the field, not assumed at a whiteboard</h2>
-      <p class="section-intro">Every major design call is checked against how mutual aid networks, protest comms, and movement media have <b>actually</b> worked — Occupy Sandy, TXTMob, Verificado 19S, Indymedia's RNC desk, the 2019 Hong Kong protests, and disaster response after the 2023 Türkiye earthquakes and Hurricane Maria — not assumption.</p>
+      <p class="section-intro">Every major design call is checked against two bodies of evidence: how <b>mutual aid, protest comms, and movement media have actually worked under pressure</b> — Occupy Sandy, TXTMob, Verificado 19S, Indymedia's RNC desk, the 2019 Hong Kong protests, and disaster response after the 2023 Türkiye earthquakes and Hurricane Maria — and <b>what makes prosocial local spaces healthy when the pressure is off</b> — the Front Porch Forum study, the 2025 "Local Connection Crisis" survey, and the 14 Civic Signals framework.</p>
+    </div>
+
+    <div class="field-strands">
+      <div class="field-strand">
+        <h3>Crisis response &amp; movement media</h3>
+        <p>What people actually reach for when the network is down or the state is watching. Consumer chat apps are the incumbent even for trained responders; trust is established in person, not by software; and many parallel, functionally distinct channels beat one general-purpose feed. Riot's intake → verify → dispatch pipeline, its channel matrix, and its moderation-as-lens model all come from this evidence.</p>
+        <p class="boundary-note">Sources: Occupy Sandy archive; Verificado 19S; Insecurity Insight / CDAC Network Türkiye study; ARRL Hurricane Maria archive; Urman et al., PLOS ONE 2021 (Hong Kong). Full citations in the <a href="https://github.com/rabble/riot/tree/main/docs/research" target="_blank" rel="noopener">research docs ↗</a>.</p>
+      </div>
+      <div class="field-strand">
+        <h3>Prosocial local spaces</h3>
+        <p>What makes a local digital space healthy when the network <em>is</em> up. Three independent studies — Front Porch Forum (235,000 members, 13,473 surveyed), the 2025 "Local Connection Crisis" survey (2,028 people), and New_ Public's Roundabout — converge on the same structural answer: <b>bounded content, named human stewards, and non-extractive incentives</b>. The finding that matters most here: forums that were <em>more</em> active were rated <em>less</em> favorably. The platform people value is the one they don't live inside.</p>
+        <p class="boundary-note">Sources: New_ Public / Center for Media Engagement, "Front Porch Forum" (2024); "The Local Connection Crisis" (Nov 2025); "Introducing Roundabout"; the 14 Civic Signals framework. Synthesis in <a href="https://github.com/rabble/riot/blob/main/docs/research/2026-07-24-prosocial-local-spaces-research.md" target="_blank" rel="noopener">docs/research ↗</a>.</p>
+      </div>
+    </div>
+
+    <div class="field-insight">
+      <h3>Why this matters for Riot specifically</h3>
+      <p>The prosocial-spaces literature warns against engagement addiction — its <em>Nourish</em> and <em>Take a Breath</em> signals are about not driving compulsive use. Riot satisfies both by transport design, not by policy: a peer-to-peer, sync-bounded model has no server pushing a feed and no algorithm optimizing for time-on-device. Riot carries community tools, not a feed to scroll. That is its distinctive contribution relative to platforms that fight engagement extraction with moderation labor alone.</p>
+      <p class="boundary-note">This is a design argument grounded in the cited research, not a security or anonymity claim. Riot does not promise protection from surveillance, and pseudonymity is not anonymity.</p>
     </div>
   </div>
 </section>
