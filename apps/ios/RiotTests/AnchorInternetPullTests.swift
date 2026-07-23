@@ -17,25 +17,29 @@ import XCTest
 /// If the relay is down the test is skipped (not failed) via `XCTSkip`.
 final class AnchorInternetPullTests: XCTestCase {
 
-    /// The deployed relay's direct node address: `<node_id_hex>@<ip:port>`.
-    /// Standing on GCP; this is the address the phone dials over the internet.
+    /// The deployed relay's stable NodeId (64 hex) — the WHOLE dial hint. No IP,
+    /// no port: the net runtime resolves it via iroh relay + pkarr/DNS discovery
+    /// under the `N0` preset. The relay stands on a static IP behind GCP; dialing
+    /// by bare NodeId survives its restarts (an ip:port would rot on redeploy).
     private static let anchorHint =
-        "60ab7b416b0ef0b8088cd64a3ef01edd598dcc5bb7a4df03145f957fec2432d8@136.65.192.159:38472"
+        "60ab7b416b0ef0b8088cd64a3ef01edd598dcc5bb7a4df03145f957fec2432d8"
 
     /// A root-signed ReadCommitted ticket (hex) for a community already
     /// committed on the relay: an O masthead + C comments + W wire namespace,
     /// ~3 entries total. Minted server-side; embedded here so the test is
-    /// self-contained (no resource-bundle registration needed).
+    /// self-contained (no resource-bundle registration needed). Re-baked
+    /// 2026-07-23: durable 89-day ticket (expires ~2026-10-20) for community
+    /// root 2052fabaefdea8eb3da14b0064a39dc1f7e062b354fa9f7fde5b0c337439f5bf.
     private static let ticketHex =
-        "83028c582031724287c743287652d99b9cb6178aff8f19153fde1a89399c9131" +
-        "6974acfc87582031724287c743287652d99b9cb6178aff8f19153fde1a89399c" +
-        "91316974acfc875820d62b536e8b2ca4a44733723a868d65239c97283077ed30" +
-        "77470511d1a37a9d9658204269b5846a1f58095c9a0c6fd83f8977af25b0c182" +
-        "fc723aa4d745bd7e09c9385820aa6fdeaa645a644cf42c316e49fadd823cb473" +
-        "e1cd831f94a67d9f803031ef6b1a6a616a57026c726571756972655f6e6f6e65" +
-        "6c726571756972655f6e6f6e65011a6a6169f31a6a6178675840de7b68ef985b" +
-        "c3109669dd8dc8c64b3a090629db25e2261e753514e97a6b2fda9b97cee2a956" +
-        "2baa3483480ae139632ff8b7ef0b62a102879740cde450394600"
+        "83028c58202052fabaefdea8eb3da14b0064a39dc1f7e062b354fa9f7fde5b0c" +
+        "337439f5bf58202052fabaefdea8eb3da14b0064a39dc1f7e062b354fa9f7fde" +
+        "5b0c337439f5bf5820583b4fa0348fbb3dad51cbfd3e760cb4e695c97c0397cd" +
+        "6f86c7be720a57f2025820a94dde010d9c3f70bbe6c39d7ab766fe272408cc9c" +
+        "42a7454b57125915165c68582077ebb646a8e0ae43309d1e0383f35b8bfaf559" +
+        "502c862c5fe27ebc2f7e9a70c81a6a618677026c726571756972655f6e6f6e65" +
+        "6c726571756972655f6e6f6e65011a6a6186131a6ad6dbf758405a9b0175e949" +
+        "4e9582a2493bfb37009c4aeeed1748b940f07430163ea95d8d18498a0cd72a29" +
+        "c8fe3172e29f9ff8ce887ae0afee8433aab4be0c69b0c1d95c0b"
 
     private static func hexToData(_ hex: String) -> Data {
         var data = Data(capacity: hex.count / 2)
