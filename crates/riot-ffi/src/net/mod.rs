@@ -17,7 +17,8 @@
 
 use tokio::runtime::{Builder, Runtime};
 
-use riot_transport::iroh::{bind, node_id};
+use riot_transport::iroh::{bind_public, node_id};
+use riot_transport::seed::rand32;
 use riot_transport::TransportError;
 
 /// Slice 2 — the phone-side anchor pull client (`sync_with_anchor`).
@@ -39,11 +40,12 @@ mod anchor_e2e;
 /// it drives async iroh operations to completion via `block_on` on its own
 /// single-threaded runtime.
 ///
-/// Slice 1 is deliberately minimal: it binds an EPHEMERAL follower endpoint
-/// (`riot_transport::iroh::bind`, fresh random NodeId per the anonymity design)
-/// and exposes only its `node_id`. Dial wrappers (every dial through
-/// `admit_dial`), the `Sync2Repository` drive loop, and the uniffi entry points
-/// land in later slices.
+/// It binds an EPHEMERAL follower endpoint with a FRESH random secret each bind
+/// (`bind_public(rand32())`, unlinkable NodeId per the anonymity design) under
+/// the `N0` preset — relay + pkarr/DNS discovery ON. That is what lets the phone
+/// reach the deployed anchor by its bare NodeId (discovery resolves the address)
+/// and NAT-traverse via the relay: a pure dialer, so the advertised `sync/1`
+/// ALPN is irrelevant (dials happen with `ALPN_SYNC_V2`).
 pub struct NetRuntime {
     /// The internal single-threaded runtime. All iroh futures are driven here.
     /// Ordered before `endpoint` so it outlives the endpoint's teardown.
@@ -56,13 +58,16 @@ impl NetRuntime {
     /// Build the internal runtime and bind an ephemeral follower endpoint.
     ///
     /// Synchronous from the caller's view (the design's block_on seam): the
-    /// async `bind()` is driven to completion on the freshly built runtime.
+    /// async bind is driven to completion on the freshly built runtime. Binds
+    /// under the `N0` preset (relay + pkarr/DNS discovery) with a fresh random
+    /// ephemeral secret so the phone can dial the deployed anchor by bare NodeId
+    /// and NAT-traverse — the root-cause fix for "the client can't reach a relay".
     pub fn bind_follower() -> Result<Self, TransportError> {
         let runtime = Builder::new_current_thread()
             .enable_all()
             .build()
             .map_err(|e| TransportError::Io(std::io::Error::other(e.to_string())))?;
-        let endpoint = runtime.block_on(bind())?;
+        let endpoint = runtime.block_on(bind_public(rand32()))?;
         Ok(Self { runtime, endpoint })
     }
 

@@ -281,6 +281,11 @@ private struct OnboardingWelcomeView: View {
                             .accessibilityIdentifier("onboarding-join-by-reference")
                     }
                 }
+
+                // The real "leave the room, still sync" path: dial the built-in
+                // anchor relay by NodeId over the internet and pull a live
+                // community. No IP, no account.
+                AnchorRelaySyncCard()
             }
             .padding(20)
         }
@@ -1621,6 +1626,11 @@ private struct HomeRouteView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
+                // The real "leave the room, still sync" path: dial the built-in
+                // anchor relay by NodeId over the internet and pull a live
+                // community. Auto-runs once when Home first appears, and offers a
+                // manual re-sync button.
+                AnchorRelaySyncCard(autoStart: true)
                 if sections.contains(.activeAlerts) {
                     AlertsListView(
                         presentation: activeAlerts,
