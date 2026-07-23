@@ -114,11 +114,7 @@ pub mod arti_impl {
             // `(String, u16)` implements arti's IntoTorAddr; the connection is
             // anonymized through the Tor circuit. DataStream implements tokio
             // AsyncRead + AsyncWrite (arti-client `tokio` feature is enabled).
-            let stream = self
-                .inner
-                .connect((host, port))
-                .await
-                .map_err(tor_error)?;
+            let stream = self.inner.connect((host, port)).await.map_err(tor_error)?;
             // tokio::io::split returns (ReadHalf, WriteHalf) — note the order.
             let (read, write) = tokio::io::split(stream);
             Ok((Box::pin(write) as BoxWrite, Box::pin(read) as BoxRead))
@@ -137,9 +133,7 @@ pub mod arti_impl {
     /// the default config is sufficient to prove the real-Tor dial path.
     pub async fn bootstrap_tor() -> Result<ArtiTorClient, TransportError> {
         let runtime = tor_rtcompat::tokio::TokioNativeTlsRuntime::current()
-            .map_err(|e| TransportError::Io(std::io::Error::other(format!(
-                "tor runtime: {e}"
-            ))))?;
+            .map_err(|e| TransportError::Io(std::io::Error::other(format!("tor runtime: {e}"))))?;
         let client = TorClient::with_runtime(runtime)
             .config(TorClientConfig::default())
             .create_bootstrapped()
