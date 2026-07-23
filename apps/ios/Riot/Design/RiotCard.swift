@@ -10,11 +10,15 @@ public struct RiotCard<Content: View>: View {
 
     public var body: some View {
         content
-            .padding(20)
+            .padding(18)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(RiotTheme.paper2(for: colorScheme))
+            .background(
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .fill(RiotTheme.card(for: colorScheme))
+            )
             .overlay(
-                Rectangle().strokeBorder(RiotTheme.ink(for: colorScheme), lineWidth: 2)
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .strokeBorder(RiotTheme.line(for: colorScheme), lineWidth: 1)
             )
     }
 }
