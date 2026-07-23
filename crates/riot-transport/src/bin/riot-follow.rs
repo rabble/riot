@@ -1,16 +1,38 @@
 //! riot-follow — sync a Riot namespace from a seed, given a follow ticket.
 //!
-//! Verifies the root-signed ticket (fail-closed) BEFORE dialing, then dials the
-//! seed by NodeId (discovery resolves the address), reconciles, and admits the
-//! received entries through the real preview→commit boundary. Prints how many
-//! landed.
+//! Verifies the root-signed ticket (fail-closed) BEFORE dialing, then selects a
+//! transport (Tor when the ticket attests an onion and this build supports it;
+//! otherwise iroh), reconciles, and admits the received entries through the real
+//! preview→commit boundary. Prints how many landed.
 //!
 //! Usage: riot-follow 'riot://site/v1/<ns>?root=...&require=none&...&node=<id>&sig=...'
+//!
+//! Build with `--features arti` to enable Tor dialing for tickets that carry an
+//! attested `onion=` address or that `require=arti`.
 
 use riot_core::session::{ImportContext, RiotSession};
-use riot_core::sync::ByteSyncSession;
+use riot_core::sync::ByteSyncSession as SyncSession;
 use riot_transport::iroh::{addr_from_hint, bind, dial_with_ticket};
+use riot_transport::select::{select_transport, TransportChoice};
 use riot_transport::ticket::{parse, Capabilities};
+
+// The Tor path is only available when this crate is built with `arti`.
+#[cfg(feature = "arti")]
+use riot_transport::arti::arti_impl::bootstrap_tor;
+#[cfg(feature = "arti")]
+use riot_transport::arti::TorDialer;
+
+/// The client's transport capabilities. With the `arti` feature, the client can
+/// provide Tor; without it, iroh only.
+fn capabilities() -> Capabilities {
+    Capabilities {
+        iroh: true,
+        #[cfg(feature = "arti")]
+        arti: true,
+        #[cfg(not(feature = "arti"))]
+        arti: false,
+    }
+}
 
 #[tokio::main]
 async fn main() {
@@ -23,26 +45,44 @@ async fn main() {
         std::process::exit(2);
     });
 
+    let caps = capabilities();
+    match select_transport(&ticket, &caps) {
+        #[cfg(feature = "arti")]
+        TransportChoice::Tor => sync_over_tor(&ticket, &caps).await,
+        #[cfg(not(feature = "arti"))]
+        TransportChoice::Tor => {
+            // select_transport only returns Tor when caps.arti is true, which is
+            // never the case without the `arti` feature. Defensive: if a future
+            // change makes this reachable, fail closed rather than dial iroh.
+            eprintln!("ticket selects Tor, but this build has no Tor support");
+            std::process::exit(2);
+        }
+        TransportChoice::Iroh => sync_over_iroh(&ticket, &caps).await,
+        TransportChoice::Neither => {
+            eprintln!("ticket's transport floor is not satisfiable");
+            std::process::exit(2);
+        }
+    }
+}
+
+/// Dial the seed over iroh (the default fast path). Used when the ticket has no
+/// attested onion, or when this build lacks the `arti` feature.
+async fn sync_over_iroh(ticket: &riot_transport::ticket::Ticket, caps: &Capabilities) {
     let node_hint = ticket.node.clone().unwrap_or_else(|| {
         eprintln!("ticket has no node hint to dial");
         std::process::exit(2);
     });
     let peer = addr_from_hint(&node_hint).expect("peer addr from hint");
-
     let endpoint = bind().await.expect("bind follower");
-    let session = ByteSyncSession::new(ticket.namespace, vec![]).expect("session");
+    let session = SyncSession::new(ticket.namespace, vec![]).expect("session");
 
     let store_session = RiotSession::open().expect("session");
     let store = store_session.create_store().expect("store");
 
-    // `now` well within the ticket's dev expiry; durable floor 0 (first follow).
     let result = dial_with_ticket(
         &endpoint,
-        &ticket,
-        &Capabilities {
-            iroh: true,
-            arti: false,
-        },
+        ticket,
+        caps,
         1_000_000,
         0,
         peer,
@@ -61,6 +101,69 @@ async fn main() {
     )
     .await;
 
+    finish(result, &store);
+}
+
+/// Dial the seed over Tor, using the ticket's attested onion address. Only
+/// available when this crate is built with the `arti` feature.
+#[cfg(feature = "arti")]
+async fn sync_over_tor(ticket: &riot_transport::ticket::Ticket, caps: &Capabilities) {
+    let onion = ticket.onion.clone().unwrap_or_else(|| {
+        // select_transport picked Tor but there's no onion: this only happens
+        // for require:arti tickets with no attested address — a malformed ticket.
+        eprintln!("ticket requires Tor but carries no attested onion address");
+        std::process::exit(2);
+    });
+
+    let store_session = RiotSession::open().expect("session");
+    let store = store_session.create_store().expect("store");
+
+    eprintln!("bootstrapping Tor (this can take tens of seconds)…");
+    let tor = bootstrap_tor().await.unwrap_or_else(|e| {
+        eprintln!("tor bootstrap failed: {e}");
+        std::process::exit(1);
+    });
+    eprintln!("Tor ready; dialing {onion}");
+
+    // Verify-before-dial through the same fail-closed gate, then dial over Tor.
+    use riot_transport::ticket::admit_dial;
+    if let Err(blocked) = admit_dial(ticket, caps, 1_000_000, 0) {
+        eprintln!("dial refused (fail-closed): {blocked}");
+        std::process::exit(1);
+    }
+
+    let dialer = TorDialer::new(tor, onion);
+    let session = SyncSession::new(ticket.namespace, vec![]).expect("session");
+    let result = riot_transport::run_dial(dialer, session, true, |bytes| {
+        store
+            .inspect(bytes, ImportContext::new("tor-follow"))
+            .expect("inspect")
+            .expect_preview()
+            .plan_all()
+            .expect("plan")
+            .commit()
+            .expect("commit");
+        true
+    })
+    .await;
+
+    match result {
+        Ok(_) => {
+            let n = store.live_count().unwrap_or(0);
+            println!("synced over Tor — {n} entries now live in the local store");
+        }
+        Err(e) => {
+            eprintln!("sync refused/failed: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
+/// Common result printing + exit for both transports.
+fn finish(
+    result: Result<SyncSession, riot_transport::TransportError>,
+    store: &riot_core::session::EvidenceStore,
+) {
     match result {
         Ok(_) => {
             let n = store.live_count().unwrap_or(0);
