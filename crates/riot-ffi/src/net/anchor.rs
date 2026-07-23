@@ -25,11 +25,12 @@
 //! runtime) so it is host-unit-testable over the deterministic `Sync2Session`
 //! FSM — no async test harness, no device.
 //!
-//! The socket-owning FFI entry point (`sync_with_anchor`) and its helpers are
-//! exercised by the in-crate e2e (`net::anchor_e2e`) but are not yet wrapped in a
-//! `uniffi` export — the native wiring is a later slice — so the non-test lib
-//! build sees them as unused. Matches the `open_followed_site_sync_session`
-//! precedent (`#[allow(dead_code)] // FFI caller is a later slice`).
+//! The socket-owning drive loop (`NetRuntime::sync_with_anchor` and its helpers)
+//! is `pub(crate)` and driven from two places: the in-crate e2e
+//! (`net::anchor_e2e`) and the `net`-gated `uniffi` wrapper (`super::ffi`), which
+//! exposes it to Swift/Kotlin as `MobileNetRuntime::sync_with_anchor` (Slice 3a).
+//! Some internal helpers remain exercised only by tests, so keep the lenient
+//! dead-code posture for the non-test lib build.
 #![allow(dead_code)]
 
 use std::cell::RefCell;
@@ -326,49 +327,59 @@ fn read_committed_initiator(
 // ---------------------------------------------------------------------------
 
 /// The per-namespace result of a pull.
-#[derive(Debug, Clone)]
+///
+/// This is a `uniffi::Record` (the `net` FFI surface): the raw `[u8; 32]`
+/// namespace id is projected to lowercase hex and the counts to `u32`, matching
+/// the crate's existing id-as-hex FFI convention (`CurrentEntry::namespace_id`,
+/// `CommunityRow::namespace_id`). UniFFI cannot carry `[u8; 32]` or `usize`.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
 pub struct NamespacePullOutcome {
-    /// The pulled namespace (one of the ticket's O/C/W ids).
-    pub namespace_id: [u8; 32],
+    /// The pulled namespace (one of the ticket's O/C/W ids), lowercase hex.
+    pub namespace_id: String,
     /// Items received over the wire AND verified through the canonical gate.
-    pub verified: usize,
+    pub verified: u32,
     /// Items committed into the phone's willow store through the canonical
     /// preview→plan→commit boundary. May be < `verified`: an entry the store
     /// deliberately does not admit as content (e.g. the reserved `/manifest`,
     /// which is validated on its own path, never stored) is verified but not
     /// imported — that is correct, not a fault.
-    pub imported: usize,
+    pub imported: u32,
     /// A structured refusal if the ReadCommitted session did not complete (e.g.
     /// the anchor has nothing committed for this community). `None` on success.
     pub refusal: Option<String>,
     /// Items received but REFUSED at the phone's canonical gate (never imported).
     /// Non-empty means the anchor served something that did not verify.
-    pub rejected: usize,
+    pub rejected: u32,
 }
 
-/// The structured outcome of a `sync_with_anchor` pull.
-#[derive(Debug, Clone)]
+/// The structured outcome of a `sync_with_anchor` pull. `uniffi::Record` — the
+/// value the native app receives from `MobileNetRuntime::sync_with_anchor`.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
 pub struct AnchorSyncOutcome {
-    /// The community root (== the ticket's O namespace).
-    pub root: [u8; 32],
+    /// The community root (== the ticket's O namespace), lowercase hex.
+    pub root: String,
     /// One entry per ordered O/C/W namespace attempted.
     pub namespaces: Vec<NamespacePullOutcome>,
 }
 
 impl AnchorSyncOutcome {
     /// Total items imported into the phone store across all namespaces.
-    pub fn total_imported(&self) -> usize {
+    pub fn total_imported(&self) -> u32 {
         self.namespaces.iter().map(|ns| ns.imported).sum()
     }
     /// Total items verified across all namespaces.
-    pub fn total_verified(&self) -> usize {
+    pub fn total_verified(&self) -> u32 {
         self.namespaces.iter().map(|ns| ns.verified).sum()
     }
 }
 
 /// Why a `sync_with_anchor` pull failed before producing an outcome.
+///
+/// Rust-internal typed error (carries `AuthorityError` / `MobileError`). The
+/// `net` FFI surface projects it to the flat `uniffi::Error` [`super::ffi::AnchorSyncError`]
+/// via `From`, because UniFFI cannot carry those foreign payload types.
 #[derive(Debug)]
-pub enum AnchorSyncError {
+pub enum AnchorPullError {
     /// The ticket bytes did not decode as a `RootSignedTicketCoreEnvelopeV2`.
     TicketMalformed,
     /// The transport-floor gate REFUSED the dial (bad root signature, expired,
@@ -396,12 +407,12 @@ pub enum AnchorSyncError {
 fn admit_anchor_ticket(
     ticket_bytes: &[u8],
     now_unix: u64,
-) -> Result<RootSignedTicketCoreEnvelopeV2, AnchorSyncError> {
+) -> Result<RootSignedTicketCoreEnvelopeV2, AnchorPullError> {
     let envelope = decode_canonical::<RootSignedTicketCoreEnvelopeV2>(
         ticket_bytes,
         MAX_TICKET_CORE_BYTES + 128,
     )
-    .map_err(|_| AnchorSyncError::TicketMalformed)?;
+    .map_err(|_| AnchorPullError::TicketMalformed)?;
     admit_public_site_ticket(
         &envelope,
         None,
@@ -412,7 +423,7 @@ fn admit_anchor_ticket(
         },
         now_unix,
     )
-    .map_err(AnchorSyncError::DialRefused)?;
+    .map_err(AnchorPullError::DialRefused)?;
     Ok(envelope)
 }
 
@@ -530,7 +541,7 @@ impl NetRuntime {
         anchor_addr: EndpointAddr,
         ticket_bytes: &[u8],
         now_unix: u64,
-    ) -> Result<AnchorSyncOutcome, AnchorSyncError> {
+    ) -> Result<AnchorSyncOutcome, AnchorPullError> {
         // (1) SECURITY: the transport-floor gate, BEFORE any dial. A refusal here
         //     returns without opening a connection.
         let envelope = admit_anchor_ticket(ticket_bytes, now_unix)?;
@@ -575,7 +586,7 @@ impl NetRuntime {
         for (namespace_id, pulled, refusal) in pulls {
             let items = match pulled {
                 Ok(items) => items,
-                Err(error) => return Err(AnchorSyncError::Transport(error)),
+                Err(error) => return Err(AnchorPullError::Transport(error)),
             };
             let mut verified: Vec<SignedWillowEntry> = Vec::with_capacity(items.len());
             let mut rejected = 0usize;
@@ -589,19 +600,19 @@ impl NetRuntime {
                 0
             } else {
                 import_anchor_pulled_namespace(profile_inner, root, &verified)
-                    .map_err(AnchorSyncError::Import)?
+                    .map_err(AnchorPullError::Import)?
             };
             outcomes.push(NamespacePullOutcome {
-                namespace_id,
-                verified: verified.len(),
-                imported,
+                namespace_id: crate::mobile_state::hex(&namespace_id),
+                verified: verified.len() as u32,
+                imported: imported as u32,
                 refusal,
-                rejected,
+                rejected: rejected as u32,
             });
         }
 
         Ok(AnchorSyncOutcome {
-            root,
+            root: crate::mobile_state::hex(&root),
             namespaces: outcomes,
         })
     }

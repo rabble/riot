@@ -257,15 +257,27 @@ fn generate_mobile_bindings_with(
     command_runner: &mut dyn CommandRunner,
     binding_generator: &mut dyn BindingGenerator,
 ) -> Result<PathBuf, String> {
+    // The `net` FFI surface (`MobileNetRuntime::sync_with_anchor`, issue #107
+    // Phase 3) lives behind riot-ffi's off-by-default `net` feature. Binding
+    // generation for a MOBILE build that ships non-local sync must build the
+    // host library WITH `--features net` so the generated Swift/Kotlin include
+    // that surface. Opt-in and guarded via `RIOT_FFI_NET_BINDINGS` so the
+    // DEFAULT generate-bindings (and the default staticlib build in
+    // scripts/conference/build-native-core.sh) stay net-free — keeping the
+    // shipped bindings and staticlib coupled at the same feature set (a mismatch
+    // would abort at the UniFFI checksum). When the mobile staticlib is built
+    // with `net` (the device slice), set this so the bindings match.
+    let net_bindings = std::env::var_os("RIOT_FFI_NET_BINDINGS").is_some_and(|v| !v.is_empty());
+    let mut build_args: Vec<&str> = vec!["build", "-p", "riot-ffi", "--lib", "--locked"];
+    if net_bindings {
+        build_args.push("--features");
+        build_args.push("net");
+    }
     let status = command_runner
-        .status(
-            "cargo",
-            &["build", "-p", "riot-ffi", "--lib", "--locked"],
-            root,
-        )
+        .status("cargo", &build_args, root)
         .map_err(|error| format!("could not build riot-ffi: {error}"))?;
     if !status.success() {
-        return Err("cargo build -p riot-ffi --lib --locked failed".into());
+        return Err(format!("cargo {} failed", build_args.join(" ")));
     }
 
     let root_utf8 = utf8_path(root.to_path_buf(), "workspace")?;

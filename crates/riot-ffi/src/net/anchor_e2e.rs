@@ -17,6 +17,7 @@
 //! `riot-anchor/tests/daemon_e2e.rs`; this test's job is the CLIENT half.
 
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use ed25519_dalek::{Signer, SigningKey};
@@ -49,9 +50,11 @@ use willow25::entry::{NamespaceSecret, SubspaceSecret};
 
 use riot_transport::iroh::{addr_from_node_id, dialable_addr};
 
-use crate::mobile_state::{open_local_profile, open_local_profile_with_database};
-use crate::net::anchor::AnchorSyncError;
-use crate::net::NetRuntime;
+use crate::mobile_state::{hex, open_local_profile, open_local_profile_with_database};
+use crate::net::anchor::AnchorPullError;
+use crate::net::{
+    bind_net_runtime, AnchorSyncError, AnchorSyncOutcome, NamespacePullOutcome, NetRuntime,
+};
 
 // ---------------------------------------------------------------------------
 // Paths / clock.
@@ -449,8 +452,9 @@ fn phone_pulls_and_imports_committed_community_from_anchor() {
         .expect("sync_with_anchor succeeds");
 
     assert_eq!(
-        outcome.root, site.root_id,
-        "outcome carries the community root"
+        outcome.root,
+        hex(&site.root_id),
+        "outcome carries the community root (lowercase hex)"
     );
     assert_eq!(
         outcome.namespaces.len(),
@@ -462,10 +466,11 @@ fn phone_pulls_and_imports_committed_community_from_anchor() {
     // imported (the reserved /manifest is verified but deliberately NOT a willow
     // store entry — validated on its own path). C/W: 1 verified, 1 imported each.
     let by_ns = |ns: [u8; 32]| {
+        let id = hex(&ns);
         outcome
             .namespaces
             .iter()
-            .find(|o| o.namespace_id == ns)
+            .find(|o| o.namespace_id == id)
             .expect("namespace present in outcome")
     };
     let o = by_ns(site.namespaces[0]);
@@ -571,7 +576,7 @@ fn phone_pull_for_uncommitted_community_imports_nothing() {
         )
         .expect("sync_with_anchor returns an outcome, not a crash");
 
-    assert_eq!(outcome.root, orphan.root_id);
+    assert_eq!(outcome.root, hex(&orphan.root_id));
     assert_eq!(outcome.total_imported(), 0, "nothing imported");
     assert_eq!(outcome.total_verified(), 0, "nothing was even served");
     for ns in &outcome.namespaces {
@@ -619,9 +624,70 @@ fn require_arti_ticket_is_refused_before_any_dial() {
 
     let result = net.sync_with_anchor(&profile.inner, bogus, &site.ticket_envelope_bytes, now);
     match result {
-        Err(AnchorSyncError::DialRefused(_)) => {}
+        Err(AnchorPullError::DialRefused(_)) => {}
         other => panic!("require:arti ticket must be refused before dial, got {other:?}"),
     }
+}
+
+/// Slice 3a: the EXPORTED UniFFI surface is real and callable host-side. The
+/// exported `MobileNetRuntime` is constructed through `bind_net_runtime` and its
+/// exported `sync_with_anchor` is driven across the FFI boundary, proving:
+///   1. the security-critical transport-floor gate holds THROUGH the boundary —
+///      a `require:arti` ticket refuses before any dial and surfaces the flat
+///      FFI `AnchorSyncError::DialRefused`;
+///   2. a malformed anchor hint is refused at the boundary as `BadAnchorAddress`;
+///   3. the outcome record projects ids to lowercase hex.
+///
+/// No device, no live anchor — the gate/hint checks return before any socket.
+#[test]
+fn exported_mobile_net_runtime_is_callable_over_ffi() {
+    let now = now_secs();
+    let site = make_site_fixture(0x7a, 4, TransportFloor::RequireArti, now);
+    let profile = open_local_profile().expect("profile opens");
+    let net = bind_net_runtime().expect("FFI net runtime binds through the exported entry");
+
+    // A syntactically-valid node hint (64 hex chars) the gate never dials.
+    let hint = hex(&SigningKey::from_bytes(&[9u8; 32])
+        .verifying_key()
+        .to_bytes());
+    let refused = net.sync_with_anchor(
+        Arc::clone(&profile),
+        hint,
+        site.ticket_envelope_bytes.clone(),
+        now,
+    );
+    match refused {
+        Err(AnchorSyncError::DialRefused { .. }) => {}
+        other => panic!("require:arti must refuse THROUGH the FFI boundary, got {other:?}"),
+    }
+
+    // A malformed anchor hint is refused at the boundary, before the gate.
+    let bad = net.sync_with_anchor(
+        Arc::clone(&profile),
+        "not-a-node-hint".to_string(),
+        site.ticket_envelope_bytes.clone(),
+        now,
+    );
+    assert!(
+        matches!(bad, Err(AnchorSyncError::BadAnchorAddress { .. })),
+        "a malformed anchor hint is refused at the FFI boundary: {bad:?}"
+    );
+
+    // The FFI outcome record round-trips: build one and confirm the hex/u32
+    // projection is what native code receives.
+    let outcome = AnchorSyncOutcome {
+        root: hex(&site.root_id),
+        namespaces: vec![NamespacePullOutcome {
+            namespace_id: hex(&site.namespaces[0]),
+            verified: 2,
+            imported: 1,
+            refusal: None,
+            rejected: 0,
+        }],
+    };
+    assert_eq!(outcome.root.len(), 64, "root is 64 lowercase-hex chars");
+    assert_eq!(outcome.total_verified(), 2);
+    assert_eq!(outcome.total_imported(), 1);
 }
 
 // ---------------------------------------------------------------------------

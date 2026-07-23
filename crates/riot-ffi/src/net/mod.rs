@@ -23,7 +23,11 @@ use riot_transport::TransportError;
 /// Slice 2 — the phone-side anchor pull client (`sync_with_anchor`).
 mod anchor;
 
-pub use anchor::{AnchorSyncError, AnchorSyncOutcome, NamespacePullOutcome, PulledItemReject};
+/// Slice 3a — the `net`-gated UniFFI bridge (`MobileNetRuntime`).
+mod ffi;
+
+pub use anchor::{AnchorPullError, AnchorSyncOutcome, NamespacePullOutcome, PulledItemReject};
+pub use ffi::{bind_net_runtime, AnchorSyncError, MobileNetRuntime};
 
 /// The Slice-2 Checkpoint-B-in-Rust e2e: an in-process anchor over loopback iroh,
 /// the real `sync_with_anchor` pull, verify, and import. Test-only.
