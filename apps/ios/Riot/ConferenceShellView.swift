@@ -1304,6 +1304,58 @@ private struct CommunityShellView: View {
                         .accessibilityIdentifier("route-\(destination.rawValue)")
                         .accessibilityAddTraits(selected ? .isSelected : [])
                     }
+
+                    // "Your places" — the community list lives in the macOS sidebar
+                    // so moving between rooms is spatial and always visible (no
+                    // hidden Command-K popover). Plain rows (no ScrollView) so the
+                    // sidebar lays out exactly like the route list above; each row
+                    // shows its own sync heartbeat and the current room is selected.
+                    if !model.communities.isEmpty {
+                        Text("Your places")
+                            .font(.caption2).textCase(.uppercase)
+                            .tracking(1.2).fontWeight(.semibold)
+                            .foregroundStyle(RiotTheme.ink(for: colorScheme).opacity(0.55))
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, 10).padding(.top, 12).padding(.bottom, 2)
+
+                        ForEach(model.communities) { row in
+                            let selected = row.namespaceID == community.namespaceID
+                            Button {
+                                guard row.available, !selected else { return }
+                                model.switchCommunity(namespaceID: row.namespaceID)
+                            } label: {
+                                HStack(spacing: 8) {
+                                    Text(row.pendingFirstSync ? "Joined — syncing…" : row.name)
+                                        .font(.system(size: 13, weight: .medium))
+                                        .lineLimit(1)
+                                    Spacer(minLength: 0)
+                                    Text(row.syncFreshness)
+                                        .font(.system(size: 10, design: .monospaced))
+                                        .foregroundStyle((selected ? RiotTheme.paper(for: colorScheme) : RiotTheme.ink(for: colorScheme)).opacity(0.6))
+                                }
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(.horizontal, 10).padding(.vertical, 7)
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .foregroundStyle(selected ? RiotTheme.paper(for: colorScheme) : RiotTheme.ink(for: colorScheme))
+                            .background(selected ? RiotTheme.pink(for: colorScheme) : Color.clear)
+                            .clipShape(RoundedRectangle(cornerRadius: 6))
+                            .opacity(row.available ? 1 : 0.55)
+                            .accessibilityIdentifier(row.accessibilityID)
+                            .accessibilityAddTraits(selected ? .isSelected : [])
+                        }
+
+                        Button { model.openCommunityChooser() } label: {
+                            Label("Find another", systemImage: "plus")
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(.horizontal, 10).padding(.vertical, 7)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(RiotTheme.ink(for: colorScheme).opacity(0.65))
+                        .accessibilityIdentifier("sidebar-find-community")
+                    }
                 }
                 .padding(8)
                 Spacer()
