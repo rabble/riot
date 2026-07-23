@@ -16,19 +16,13 @@ public enum AnchorRelayDefaults {
         "60ab7b416b0ef0b8088cd64a3ef01edd598dcc5bb7a4df03145f957fec2432d8"
 
     /// A root-signed ReadCommitted ticket (hex) for a community already committed
-    /// on the relay (O masthead + C comments + W wire). Re-baked 2026-07-23:
-    /// durable 89-day ticket (expires ~2026-10-20); community root
-    /// 2052fabaefdea8eb3da14b0064a39dc1f7e062b354fa9f7fde5b0c337439f5bf.
+    /// on the relay (O masthead + C comments + W newswire wire). Re-baked
+    /// 2026-07-24 by reseeding the live relay with a real newswire community
+    /// (demo_host over discovery); community root (W)
+    /// 452760690dc2b6d0d73c3ce5a1b9985751def04945d3d7d00121cff42e9ef544
+    /// ("River City Wire" — 3 posts from distinct people). Durable 89-day ticket.
     public static let communityTicketHex =
-        "83028c58202052fabaefdea8eb3da14b0064a39dc1f7e062b354fa9f7fde5b0c" +
-        "337439f5bf58202052fabaefdea8eb3da14b0064a39dc1f7e062b354fa9f7fde" +
-        "5b0c337439f5bf5820583b4fa0348fbb3dad51cbfd3e760cb4e695c97c0397cd" +
-        "6f86c7be720a57f2025820a94dde010d9c3f70bbe6c39d7ab766fe272408cc9c" +
-        "42a7454b57125915165c68582077ebb646a8e0ae43309d1e0383f35b8bfaf559" +
-        "502c862c5fe27ebc2f7e9a70c81a6a618677026c726571756972655f6e6f6e65" +
-        "6c726571756972655f6e6f6e65011a6a6186131a6ad6dbf758405a9b0175e949" +
-        "4e9582a2493bfb37009c4aeeed1748b940f07430163ea95d8d18498a0cd72a29" +
-        "c8fe3172e29f9ff8ce887ae0afee8433aab4be0c69b0c1d95c0b"
+        "83028c58207f6c42e7988f6ee2654cf3e1177c614086d54e0dcd9f1905c8460083036472c358207f6c42e7988f6ee2654cf3e1177c614086d54e0dcd9f1905c8460083036472c3582026f1ad8ff8789248f171487257cc5a0a0e6d17f24469ad107377d961f6b78a8a5820452760690dc2b6d0d73c3ce5a1b9985751def04945d3d7d00121cff42e9ef54458204ee5784092f6176e5599d68dd31d7de1d2c2b970f504e0975ac78994f77ebb951a6a62989f026c726571756972655f6e6f6e656c726571756972655f6e6f6e65011a6a62983b1a6a62a6af5840112e56fe6383b87b8c5900e0b9f739bd41cba9d8bb182b5b09dea05e3c068005ea1a57640b9ea9156b410f0f0a96f0569ca52946a240ee92c42b583435fddd06"
 
     /// A human name for the built-in community, shown when its own signed
     /// descriptor doesn't carry one. A real newswire descriptor name overrides it.
