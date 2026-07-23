@@ -931,6 +931,8 @@ private struct CommunityShellView: View {
     @State private var focus = ToolFocusRestoration()
 
     @State private var identitySheet: ShellIdentityDestination?
+    /// The contributor whose page is open, if any — People roster → person.
+    @State private var selectedPerson: PersonRow?
     @State private var composerPresentation: ComposerPresentationState = .closed
     @State private var transitionToken: CommunityTransitionGate.Token?
     @FocusState private var focusedComposerTrigger: ComposerOrigin?
@@ -1029,6 +1031,23 @@ private struct CommunityShellView: View {
             // next community (nav design §"Nearby security and lifecycle").
             .onAppear { registerCommunityScope() }
             .onDisappear { unregisterCommunityScope() }
+            // A contributor's page: who they are + what they posted. The posts
+            // come from the SAME newswire projection Home draws, filtered to this
+            // author — no new FFI. Tapping a post opens the community's canonical
+            // report detail via the shared newswire surface model.
+            .sheet(item: $selectedPerson) { person in
+                NavigationStack {
+                    PersonDetailView(
+                        model: PersonDetailModel(
+                            person: person,
+                            projector: model.profileRepository ?? UnavailableWireProjector(),
+                            spaceDescriptorEntryID: community.newswireDescriptorEntryID ?? ""
+                        ),
+                        surfaceModel: newswire,
+                        onClose: { selectedPerson = nil }
+                    )
+                }
+            }
             .sheet(item: $identitySheet) { destination in
                 NavigationStack {
                     switch destination {
@@ -1492,6 +1511,7 @@ private struct CommunityShellView: View {
             PeopleView(
                 model: people,
                 onPostUpdate: { openComposer(.people) },
+                onSelectPerson: { selectedPerson = $0 },
                 composerFocus: $focusedComposerTrigger
             )
         case .nearby:

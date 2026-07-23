@@ -1614,7 +1614,11 @@ public struct NewswireSurfaceView: View {
 /// A report opens into one of two deliberately separate readers. Ordinary
 /// reports own payload, replies, and report-scoped actions. Treated reports own
 /// only accountable identity and signed action lineage.
-private struct NewswireReportDetailSheet: View {
+/// The report/post detail sheet — the community's canonical "read a post" view.
+/// Internal (not private) so a contributor's page can open the SAME sheet when a
+/// person's post is tapped, driven by the community's shared surface model,
+/// rather than rebuilding a second detail view that could drift from this one.
+struct NewswireReportDetailSheet: View {
     @ObservedObject var model: NewswireSurfaceModel
     let row: NewswirePostRow
     let onClose: () -> Void
