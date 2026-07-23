@@ -52,7 +52,7 @@ pub trait Dialer: Send {
     fn connect(
         &mut self,
     ) -> impl std::future::Future<Output = Result<(router::BoxWrite, router::BoxRead), TransportError>>
-    + Send;
+           + Send;
 }
 
 /// Drive a reconcile over a [`Dialer`]: connect once, then run [`pump`] over the

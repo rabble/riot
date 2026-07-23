@@ -18,8 +18,8 @@ use riot_core::willow::generate_communal_author;
 use riot_transport::arti::{TorConnect, TorDialer};
 use riot_transport::router::{BoxRead, BoxWrite};
 use riot_transport::{run_dial, Dialer, TransportError};
-use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::io::{split, ReadHalf, WriteHalf};
+use tokio::io::{AsyncRead, AsyncWrite};
 
 use common::signed;
 
@@ -48,7 +48,13 @@ impl FakeTorConnect {
             stream: Some((Box::pin(a_write), Box::pin(a_read))),
             observed: observed.clone(),
         };
-        (fake, DuplexOther { read: b_read, write: b_write })
+        (
+            fake,
+            DuplexOther {
+                read: b_read,
+                write: b_write,
+            },
+        )
     }
 
     /// A fake whose connect always fails (onion unreachable).
@@ -93,7 +99,11 @@ async fn tor_dialer_connects_once_with_its_onion_address() {
         .expect("fake connect yields a stream");
 
     let observed = seen.lock().unwrap().clone();
-    assert_eq!(observed, vec![ONION.to_string()], "connect called once with the onion");
+    assert_eq!(
+        observed,
+        vec![ONION.to_string()],
+        "connect called once with the onion"
+    );
 }
 
 #[tokio::test]
@@ -118,7 +128,10 @@ async fn run_dial_over_a_tor_dialer_delivers_the_bundle() {
         sink.lock().unwrap().push(bundle.to_vec());
         true
     });
-    let DuplexOther { read: mut seed_read, write: mut seed_write } = other;
+    let DuplexOther {
+        read: mut seed_read,
+        write: mut seed_write,
+    } = other;
     let recv_side = riot_transport::pump(seed, &mut seed_write, &mut seed_read, false, |_| true);
 
     let (dialed, got) = tokio::join!(dial_side, recv_side);
@@ -126,7 +139,11 @@ async fn run_dial_over_a_tor_dialer_delivers_the_bundle() {
     assert!(got.expect("seed").is_terminal());
 
     let bundles = received.lock().unwrap();
-    assert_eq!(bundles.len(), 1, "follower received the bundle over the Tor dialer");
+    assert_eq!(
+        bundles.len(),
+        1,
+        "follower received the bundle over the Tor dialer"
+    );
 }
 
 #[tokio::test]
