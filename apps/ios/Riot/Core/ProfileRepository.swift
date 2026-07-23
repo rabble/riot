@@ -756,6 +756,75 @@ public final class RiotProfileRepository {
         try profile.importFollowedSiteBundle(bytes: bytes, followedSiteRoot: root)
     }
 
+    // MARK: - Anchor relay pull (non-local sync)
+
+    /// The DURABLE profile handle, exposed so the app model can drive the
+    /// FFI-owned net runtime against it off the main actor. `MobileProfile` is
+    /// `@unchecked Sendable` (only an id + the shared arbiter), so it may cross to
+    /// a detached task; the repository stays the owner and every write still goes
+    /// through the arbiter. This is what makes a relay pull land in the PERSISTED
+    /// store rather than a throwaway one.
+    public var durableProfile: MobileProfile { profile }
+
+    /// Runs the anchor-relay pull against THIS repository's DURABLE profile, so
+    /// the verified O/C/W entries land in the persisted SQLite store and survive
+    /// a relaunch — unlike a throwaway `openLocalProfile()`, whose imports vanish
+    /// with the process. Binds the FFI-owned iroh runtime (ephemeral follower),
+    /// dials the relay BY NodeId (discovery resolves the address), and imports
+    /// every entry through the canonical preview→plan→commit boundary. The
+    /// security posture is unchanged: `syncWithAnchor` runs the transport-floor
+    /// gate BEFORE any packet and verifies every served entry through the
+    /// canonical gate — this only changes WHERE the verified entries land (the
+    /// durable profile, not a scratch one).
+    public func syncFromAnchor(
+        nodeId: String,
+        ticketBytes: Data,
+        nowUnix: UInt64
+    ) throws -> AnchorSyncOutcome {
+        let net = try bindNetRuntime()
+        return try net.syncWithAnchor(
+            profile: profile,
+            anchorHint: nodeId,
+            ticketBytes: ticketBytes,
+            nowUnix: nowUnix
+        )
+    }
+
+    /// The communities a just-completed pull imported into the durable store but
+    /// has not yet adopted into the registry — the bridge from "N entries
+    /// imported" to "walk into this place and read it". Read-only; the adoption
+    /// itself goes through the join/switch paths below.
+    public func discoverSyncedCommunities(
+        pulledNamespaceIDs: [String]
+    ) throws -> [SyncedCommunityCandidate] {
+        try profile.discoverSyncedCommunities(pulledNamespaceIds: pulledNamespaceIDs)
+    }
+
+    /// Adopts a pulled namespace that carries standalone alerts (no newswire
+    /// descriptor) as an ADDITIONAL community, so it appears in the chooser and is
+    /// navigable. Mirrors ``joinAdditionalCommunity`` but for the descriptor-less
+    /// case: core mints a fresh unlinkable communal author for the namespace,
+    /// registers the row, and reprojects the alert board. Re-seals the identity
+    /// and persists the registry so the community survives a relaunch (see
+    /// ``joinAdditionalCommunity`` for why the re-seal is load-bearing).
+    @discardableResult
+    public func adoptSyncedNamespace(_ space: RiotSpace) throws -> CommunityRow {
+        let joined = try Self.withWrappingKey(from: keyStore) { wrappingKey in
+            try profile.joinPublicSpace(
+                space: PublicSpace(
+                    namespaceId: space.namespaceID, title: space.title, isPublic: true),
+                wrappingKey: wrappingKey
+            )
+        }
+        persisted.space = RiotSpace(namespaceID: joined.namespaceId, title: joined.title)
+        persisted.sealedIdentity = try sealCurrentIdentity()
+        try storage.save(persisted)
+        try persistCommunities()
+        reclaimDisplayName()
+        guard let active = try activeCommunity() else { throw RepositoryError.noCurrentSpace }
+        return active
+    }
+
     public func signAlert(in space: RiotSpace, draft: AlertDraft) throws -> RiotEntry {
         guard persisted.space == space else { throw RepositoryError.spaceMismatch }
         let record = try profile.createDraftAlert(

@@ -1,5 +1,105 @@
 import Foundation
+import OSLog
 import SwiftUI
+
+/// The app's built-in "known relay + known community": the deployed GCP anchor
+/// relay's stable NodeId and a root-signed ReadCommitted ticket for a community
+/// already committed on that relay. Baked in so the app can pull a real community
+/// out of the box — no IP, no port, no manual paste. The relay is dialed by its
+/// NodeId ALONE: iroh relay + pkarr/DNS discovery resolves the address.
+///
+/// Lives in RiotKit (not the app target) because ``RiotAppModel/syncFromRelay()``
+/// drives the pull; the visible `AnchorRelaySyncCard` reads this too.
+public enum AnchorRelayDefaults {
+    /// The deployed relay's stable NodeId (64 hex) — the whole dial hint.
+    public static let relayNodeId =
+        "60ab7b416b0ef0b8088cd64a3ef01edd598dcc5bb7a4df03145f957fec2432d8"
+
+    /// A root-signed ReadCommitted ticket (hex) for a community already committed
+    /// on the relay (O masthead + C comments + W newswire wire). Re-baked
+    /// 2026-07-24 by reseeding the live relay with a real newswire community
+    /// (demo_host over discovery); community root (W)
+    /// 452760690dc2b6d0d73c3ce5a1b9985751def04945d3d7d00121cff42e9ef544
+    /// ("River City Wire" — 3 posts from distinct people). Durable 89-day ticket.
+    public static let communityTicketHex =
+        "83028c58207f6c42e7988f6ee2654cf3e1177c614086d54e0dcd9f1905c8460083036472c358207f6c42e7988f6ee2654cf3e1177c614086d54e0dcd9f1905c8460083036472c3582026f1ad8ff8789248f171487257cc5a0a0e6d17f24469ad107377d961f6b78a8a5820452760690dc2b6d0d73c3ce5a1b9985751def04945d3d7d00121cff42e9ef54458204ee5784092f6176e5599d68dd31d7de1d2c2b970f504e0975ac78994f77ebb951a6a62989f026c726571756972655f6e6f6e656c726571756972655f6e6f6e65011a6a62983b1a6a62a6af5840112e56fe6383b87b8c5900e0b9f739bd41cba9d8bb182b5b09dea05e3c068005ea1a57640b9ea9156b410f0f0a96f0569ca52946a240ee92c42b583435fddd06"
+
+    /// A human name for the built-in community, shown when its own signed
+    /// descriptor doesn't carry one. A real newswire descriptor name overrides it.
+    public static let communityDisplayName = "River City Wire"
+
+    /// Decode the baked ticket hex to bytes.
+    public static var communityTicket: Data { data(fromHex: communityTicketHex) }
+
+    static func data(fromHex hex: String) -> Data {
+        var data = Data(capacity: hex.count / 2)
+        var index = hex.startIndex
+        while index < hex.endIndex {
+            let next = hex.index(index, offsetBy: 2)
+            guard let byte = UInt8(hex[index..<next], radix: 16) else { return Data() }
+            data.append(byte)
+            index = next
+        }
+        return data
+    }
+}
+
+/// The human outcome of a relay pull, as the card reads it. Leads with the
+/// COMMUNITY — its name, how many people and posts are there — not with protocol
+/// counts. `namespaceID` is set (and ``isWalkInReady`` true) only when the
+/// community was adopted into the chooser and can actually be opened.
+public struct RelaySyncResult: Equatable, Sendable {
+    public let communityName: String
+    public let namespaceID: String?
+    public let peopleCount: Int
+    public let postCount: Int
+    public let syncedAt: Date
+    public let isWalkInReady: Bool
+
+    public init(
+        communityName: String,
+        namespaceID: String?,
+        peopleCount: Int,
+        postCount: Int,
+        syncedAt: Date,
+        isWalkInReady: Bool
+    ) {
+        self.communityName = communityName
+        self.namespaceID = namespaceID
+        self.peopleCount = peopleCount
+        self.postCount = postCount
+        self.syncedAt = syncedAt
+        self.isWalkInReady = isWalkInReady
+    }
+}
+
+/// Developer-facing trail for a relay pull — the namespace ids, verified/rejected
+/// counts, and refusal strings stay HERE (os_log), never on the person's screen.
+enum RelaySyncLog {
+    private static let logger = Logger(subsystem: "net.protest.riot", category: "anchor-relay")
+
+    static func pullLanded(root: String, imported: Int, namespaces: [NamespacePullOutcome]) {
+        logger.log("anchor-relay: durable pull landed root=\(root, privacy: .public) imported=\(imported, privacy: .public)")
+        for ns in namespaces {
+            logger.log("anchor-relay: ns=\(ns.namespaceId, privacy: .public) verified=\(ns.verified, privacy: .public) imported=\(ns.imported, privacy: .public) rejected=\(ns.rejected, privacy: .public) refusal=\(ns.refusal ?? "none", privacy: .public)")
+        }
+    }
+
+    static func adoptFailed(namespace: String, error: Error) {
+        logger.error("anchor-relay: adopt failed ns=\(namespace, privacy: .public): \(error.localizedDescription, privacy: .public)")
+    }
+
+    static func discovered(_ candidates: [SyncedCommunityCandidate]) {
+        logger.log("anchor-relay: discovered \(candidates.count, privacy: .public) candidate(s)")
+        for c in candidates {
+            logger.log("anchor-relay: candidate ns=\(c.namespaceId, privacy: .public) descriptor=\(c.descriptorEntryId ?? "nil", privacy: .public) name=\(c.name ?? "nil", privacy: .public) posts=\(c.postCount, privacy: .public) alerts=\(c.alertCount, privacy: .public) people=\(c.contributorCount, privacy: .public)")
+        }
+    }
+
+    static func discoverFailed(error: Error) {
+        logger.error("anchor-relay: discover failed: \(error.localizedDescription, privacy: .public)")
+    }
+}
 
 /// The three supported ways to leave first-run setup. Nearby exchange requires
 /// an active community, so it is deliberately not an onboarding exit.
@@ -955,6 +1055,196 @@ public final class RiotAppModel: ObservableObject {
             return nil
         }
     }
+
+    // MARK: - Relay pull (the "leave the room, still connected" path)
+
+    /// The human outcome of the last relay pull, or `nil` before one runs. It
+    /// leads with the COMMUNITY — its name, that you're now in it, how many people
+    /// and posts are there — not with protocol counts. The card reads this to say
+    /// "you're in River City News · 4 posts · 3 people" and to offer Open. When
+    /// ``RelaySyncResult/isWalkInReady`` is true the community was adopted into the
+    /// chooser and can be opened; when false the data landed durably but there was
+    /// no community to walk into yet (surfaced honestly, never as a fake door).
+    @Published public private(set) var relaySyncResult: RelaySyncResult?
+
+    /// True while a relay pull is in flight, so the three card placements (Home,
+    /// Transport, Onboarding) all reflect ONE shared pull rather than firing their
+    /// own. Published so every placement disables its button together.
+    @Published public private(set) var isRelaySyncing = false
+
+    /// A plain-language reason the last pull could not connect, or `nil`. Separate
+    /// from ``errorMessage`` so a relay hiccup speaks on the relay card, not as an
+    /// app-wide alert.
+    @Published public private(set) var relaySyncError: String?
+
+    /// Per-community "last synced" wall-clock, keyed by lowercase namespace hex.
+    /// Held in memory (published) — reassurance that the place is alive and
+    /// current, read through ``lastSyncedText(for:)``.
+    @Published public private(set) var lastSyncedByNamespace: [String: Date] = [:]
+
+    /// Records that this community synced at `date`, so the card and the community
+    /// can show "Synced just now".
+    public func recordSynced(namespaceID: String, at date: Date = Date()) {
+        lastSyncedByNamespace[namespaceID.lowercased()] = date
+    }
+
+    /// "Synced just now" / "Synced 5m ago" / "Synced 2h ago", or `nil` if this
+    /// community has no recorded sync yet. Reassurance you're up to date with
+    /// these people — not a transport receipt.
+    public func lastSyncedText(for namespaceID: String) -> String? {
+        guard let date = lastSyncedByNamespace[namespaceID.lowercased()] else { return nil }
+        let seconds = max(0, Date().timeIntervalSince(date))
+        if seconds < 45 { return "Synced just now" }
+        if seconds < 3600 { return "Synced \(Int(seconds / 60))m ago" }
+        if seconds < 86_400 { return "Synced \(Int(seconds / 3600))h ago" }
+        return "Synced \(Int(seconds / 86_400))d ago"
+    }
+
+    /// Dismisses the relay pull result banner (the data stays; this only clears
+    /// the card's success state).
+    public func dismissRelaySyncResult() {
+        relaySyncResult = nil
+        relaySyncError = nil
+    }
+
+    /// Pulls the built-in community from the anchor relay INTO THE DURABLE profile
+    /// and turns the result into a place the person can walk into.
+    ///
+    /// The whole point of routing this through the app model (rather than the old
+    /// throwaway `AnchorRelaySyncModel`) is that the pull now lands in the
+    /// persisted store: the community becomes real, appears in "Your communities",
+    /// and survives a relaunch. After the network leg it discovers what actually
+    /// arrived, adopts the richest community it found (a full newswire wire when
+    /// there is one, otherwise an alert board), records "synced just now", and
+    /// publishes a human result the card leads with. Nothing here weakens the
+    /// pull's security — the repository call verifies every entry through the
+    /// canonical gate exactly as before.
+    @MainActor
+    public func syncFromRelay() async {
+        guard let repository, !isRelaySyncing else { return }
+        isRelaySyncing = true
+        relaySyncError = nil
+        defer { isRelaySyncing = false }
+
+        let nodeId = AnchorRelayDefaults.relayNodeId
+        let ticket = AnchorRelayDefaults.communityTicket
+        let now = UInt64(Date().timeIntervalSince1970)
+        // The DURABLE profile handle (Sendable), so the blocking network leg runs
+        // off the main actor while importing into the PERSISTED store.
+        let durableProfile = repository.durableProfile
+
+        // The network + verify + durable import leg, off the main actor.
+        let outcome: AnchorSyncOutcome
+        do {
+            outcome = try await Task.detached {
+                let net = try bindNetRuntime()
+                return try net.syncWithAnchor(
+                    profile: durableProfile,
+                    anchorHint: nodeId,
+                    ticketBytes: ticket,
+                    nowUnix: now
+                )
+            }.value
+        } catch {
+            relaySyncError = Self.relaySyncFailure
+            return
+        }
+
+        let imported = outcome.namespaces.reduce(0) { $0 + Int($1.imported) }
+        RelaySyncLog.pullLanded(root: outcome.root, imported: imported, namespaces: outcome.namespaces)
+
+        // What actually arrived, richest-first: a full newswire community (a wire
+        // + people project) beats an alert-only namespace; among equals, more
+        // content wins.
+        let pulledNamespaces = outcome.namespaces.map(\.namespaceId)
+        let candidates: [SyncedCommunityCandidate]
+        do {
+            candidates = try repository.discoverSyncedCommunities(
+                pulledNamespaceIDs: pulledNamespaces)
+        } catch {
+            RelaySyncLog.discoverFailed(error: error)
+            candidates = []
+        }
+        RelaySyncLog.discovered(candidates)
+        let best = candidates.max { lhs, rhs in
+            let l = (lhs.descriptorEntryId != nil ? 1 : 0, Int(lhs.postCount + lhs.alertCount))
+            let r = (rhs.descriptorEntryId != nil ? 1 : 0, Int(rhs.postCount + rhs.alertCount))
+            return l < r
+        }
+
+        let syncedAt = Date()
+        guard let best else {
+            // The data crossed the wire and persists, but nothing here is a
+            // walk-into-able community yet. Say so honestly — no fake door.
+            relaySyncResult = RelaySyncResult(
+                communityName: AnchorRelayDefaults.communityDisplayName,
+                namespaceID: nil,
+                peopleCount: 0,
+                postCount: imported,
+                syncedAt: syncedAt,
+                isWalkInReady: false
+            )
+            return
+        }
+
+        let name = best.name ?? AnchorRelayDefaults.communityDisplayName
+        let people = Int(best.contributorCount)
+        let posts = Int(max(best.postCount, best.alertCount))
+
+        // Adopt it so it appears in "Your communities" and is navigable. If it is
+        // already held (a re-sync), don't duplicate the row.
+        let held = (try? repository.listCommunities())?.map(\.namespaceId) ?? []
+        let alreadyHeld = held.contains {
+            $0.caseInsensitiveCompare(best.namespaceId) == .orderedSame
+        }
+        do {
+            if alreadyHeld {
+                _ = try repository.switchToCommunity(namespaceID: best.namespaceId)
+            } else if let descriptor = best.descriptorEntryId {
+                _ = try repository.joinAdditionalCommunity(
+                    RiotSpace(namespaceID: best.namespaceId, title: name),
+                    descriptorEntryID: descriptor)
+            } else {
+                _ = try repository.adoptSyncedNamespace(
+                    RiotSpace(namespaceID: best.namespaceId, title: name))
+            }
+            recordSynced(namespaceID: best.namespaceId, at: syncedAt)
+            reload()
+            errorMessage = nil
+            relaySyncResult = RelaySyncResult(
+                communityName: name,
+                namespaceID: best.namespaceId,
+                peopleCount: people,
+                postCount: posts,
+                syncedAt: syncedAt,
+                isWalkInReady: true
+            )
+        } catch {
+            // Adoption failed but the verified entries are already durable. Report
+            // the connection + what arrived, without a door that won't open.
+            RelaySyncLog.adoptFailed(namespace: best.namespaceId, error: error)
+            relaySyncResult = RelaySyncResult(
+                communityName: name,
+                namespaceID: nil,
+                peopleCount: people,
+                postCount: posts,
+                syncedAt: syncedAt,
+                isWalkInReady: false
+            )
+        }
+    }
+
+    /// Walks the person into a relay-pulled community: selects it and lands on its
+    /// Home, closing the loop from the relay card with no dead end. Also records a
+    /// fresh sync stamp so the community reads "Synced just now" as you arrive.
+    public func openSyncedCommunity(namespaceID: String) {
+        recordSynced(namespaceID: namespaceID)
+        switchCommunity(namespaceID: namespaceID)
+        select(.home)
+    }
+
+    private static let relaySyncFailure =
+        "Riot couldn’t reach the relay just now. It may be offline, or this device may have no internet; nothing on your device changed."
 
     /// The outcome of the last `riot://open?...` verify link the app was handed,
     /// or `nil` when none is pending. The shell presents it as an HONEST verify

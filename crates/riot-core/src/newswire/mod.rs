@@ -81,8 +81,8 @@ pub use share::{
     SHARE_REFERENCE_PREFIX,
 };
 pub use store::{
-    contributors_for_space, load_space_descriptor, load_space_records, project_space,
-    NewswireStoreError,
+    contributors_for_space, discover_space_descriptors, load_space_descriptor, load_space_records,
+    project_space, NewswireStoreError,
 };
 
 #[cfg(feature = "conformance")]

@@ -218,6 +218,7 @@ private struct OnboardingView: View {
         switch step {
         case .welcome:
             OnboardingWelcomeView(
+                model: model,
                 onContinue: {
                     setupIntent = .general
                     step = .setup
@@ -242,6 +243,7 @@ private struct OnboardingView: View {
 /// Riot works" explainer that renders the shared five-beat story.
 private struct OnboardingWelcomeView: View {
     @Environment(\.colorScheme) private var colorScheme
+    @ObservedObject var model: RiotAppModel
     let onContinue: () -> Void
     let onJoin: () -> Void
     @State private var isExplainerPresented = false
@@ -285,7 +287,7 @@ private struct OnboardingWelcomeView: View {
                 // The real "leave the room, still sync" path: dial the built-in
                 // anchor relay by NodeId over the internet and pull a live
                 // community. No IP, no account.
-                AnchorRelaySyncCard()
+                AnchorRelaySyncCard(model: model)
             }
             .padding(20)
         }
@@ -929,6 +931,8 @@ private struct CommunityShellView: View {
     @State private var focus = ToolFocusRestoration()
 
     @State private var identitySheet: ShellIdentityDestination?
+    /// The contributor whose page is open, if any — People roster → person.
+    @State private var selectedPerson: PersonRow?
     @State private var composerPresentation: ComposerPresentationState = .closed
     @State private var transitionToken: CommunityTransitionGate.Token?
     @FocusState private var focusedComposerTrigger: ComposerOrigin?
@@ -1027,6 +1031,23 @@ private struct CommunityShellView: View {
             // next community (nav design §"Nearby security and lifecycle").
             .onAppear { registerCommunityScope() }
             .onDisappear { unregisterCommunityScope() }
+            // A contributor's page: who they are + what they posted. The posts
+            // come from the SAME newswire projection Home draws, filtered to this
+            // author — no new FFI. Tapping a post opens the community's canonical
+            // report detail via the shared newswire surface model.
+            .sheet(item: $selectedPerson) { person in
+                NavigationStack {
+                    PersonDetailView(
+                        model: PersonDetailModel(
+                            person: person,
+                            projector: model.profileRepository ?? UnavailableWireProjector(),
+                            spaceDescriptorEntryID: community.newswireDescriptorEntryID ?? ""
+                        ),
+                        surfaceModel: newswire,
+                        onClose: { selectedPerson = nil }
+                    )
+                }
+            }
             .sheet(item: $identitySheet) { destination in
                 NavigationStack {
                     switch destination {
@@ -1490,6 +1511,7 @@ private struct CommunityShellView: View {
             PeopleView(
                 model: people,
                 onPostUpdate: { openComposer(.people) },
+                onSelectPerson: { selectedPerson = $0 },
                 composerFocus: $focusedComposerTrigger
             )
         case .nearby:
@@ -1630,7 +1652,7 @@ private struct HomeRouteView: View {
                 // anchor relay by NodeId over the internet and pull a live
                 // community. Auto-runs once when Home first appears, and offers a
                 // manual re-sync button.
-                AnchorRelaySyncCard(autoStart: true)
+                AnchorRelaySyncCard(model: model, autoStart: true)
                 if sections.contains(.activeAlerts) {
                     AlertsListView(
                         presentation: activeAlerts,
@@ -2080,6 +2102,10 @@ private struct ConnectionStatusView: View {
                 RiotBadge(nearby.state.message, stamped: true)
                 if nearby.permissionDenied { permissionRecoveryCard }
                 connectedCard
+                // The non-local transport: the anchor relay. Nearby (below) is
+                // BLE/LAN; the relay reaches communities over the internet by the
+                // relay's NodeId (no IP). Both live on the Transport screen.
+                AnchorRelaySyncCard(model: model)
                 RiotCard {
                     VStack(alignment: .leading, spacing: 14) {
                         Text(NearbyStrings.deviceSummary)

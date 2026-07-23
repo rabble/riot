@@ -54,6 +54,38 @@ pub struct CommunityRow {
     pub available: bool,
 }
 
+/// A community DISCOVERED in the store after an anchor-relay pull — a place the
+/// device now holds the entries for but has not yet adopted into its registry.
+///
+/// The pull imports a community's verified O/C/W entries into the durable store,
+/// but importing bytes is not the same as *being in* a community: the chooser
+/// reads the registry, and the wire projects from a descriptor whose id the pull
+/// never announced. This is the bridge — it names what actually landed so the app
+/// can turn "3 entries imported" into "you can walk into River City News and read
+/// the wire". A candidate with a `descriptor_entry_id` is a full newswire
+/// community (its wire + people project); one without is a namespace that carried
+/// standalone alerts (its board shows them, but there is no descriptor to project
+/// a wire from yet).
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct SyncedCommunityCandidate {
+    /// The namespace to adopt (the descriptor's namespace, or the alert-bearing
+    /// namespace), lowercase hex.
+    pub namespace_id: String,
+    /// The `SpaceDescriptorV1` EntryId (hex) when this is a full newswire
+    /// community; `None` for an alert-only namespace with no descriptor yet.
+    pub descriptor_entry_id: Option<String>,
+    /// The community's own name from its signed descriptor, when known.
+    pub name: Option<String>,
+    /// Projected newswire posts (open wire + front page + earlier) — the "how
+    /// much is happening here" a person sees before walking in. 0 without a
+    /// descriptor.
+    pub post_count: u32,
+    /// Standalone alert entries in the namespace (the legacy board's content).
+    pub alert_count: u32,
+    /// Distinct people who have contributed here — the "who is here" count.
+    pub contributor_count: u32,
+}
+
 /// One row in the followed-sites list: a composite indymedia site the user
 /// follows. Distinct from `CommunityRow` because a followed site is **author-less**
 /// (the user holds no posting author there); it carries only public identifiers —
@@ -391,6 +423,19 @@ impl MobileProfile {
     /// metadata only — it never unseals any community's author.
     pub fn list_communities(&self) -> Result<Vec<CommunityRow>, MobileError> {
         crate::mobile_state::list_communities(&self.inner)
+    }
+
+    /// The communities this device has PULLED but not yet adopted — discovered by
+    /// scanning the store for descriptors and for alert-bearing namespaces among
+    /// the ones a pull just imported. Read-only: it names what landed so the app
+    /// can offer "Open <community>"; the adoption itself (registry join +
+    /// reprojection) goes through the ordinary join/switch paths. `pulled_namespace_ids`
+    /// bounds the alert search to what the pull actually touched.
+    pub fn discover_synced_communities(
+        &self,
+        pulled_namespace_ids: Vec<String>,
+    ) -> Result<Vec<SyncedCommunityCandidate>, MobileError> {
+        crate::mobile_state::discover_synced_communities(&self.inner, pulled_namespace_ids)
     }
 
     /// Every composite indymedia site the user follows, as author-less rows —
