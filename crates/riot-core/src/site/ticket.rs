@@ -98,6 +98,14 @@ pub struct Ticket {
     /// re-verified by `import_followed_site_bundle`. Absent on a pre-url or
     /// iroh-only ticket (`None` → the phone has nothing to auto-pull).
     pub url: Option<String>,
+    /// A v3 onion service address the root key attests for the site (the 56-char
+    /// service id, optionally `<id>.onion` or `<id>.onion:<port>`). SIGNED —
+    /// unlike the unsigned `node=` iroh hint — so an attacker cannot redirect a
+    /// Tor-capable follower to their own onion service. Absent on an iroh-only
+    /// ticket. The onion address is an attested dial target, never a gate: a
+    /// Tor-capable client prefers it when present, but the fail-closed transport
+    /// decision still keys off `require`, not off the presence of `onion`.
+    pub onion: Option<String>,
     pub sig: [u8; 64],
 }
 
@@ -119,6 +127,7 @@ fn canonical(
     exp: u64,
     digest: &[u8; 32],
     url: Option<&str>,
+    onion: Option<&str>,
 ) -> Vec<u8> {
     let mut m =
         Vec::with_capacity(TICKET_DOMAIN.len() + 32 + 32 + 4 + require_raw.len() + 8 + 8 + 32);
@@ -131,10 +140,15 @@ fn canonical(
     m.extend_from_slice(&exp.to_be_bytes());
     m.extend_from_slice(digest);
     // Fixed-order optional-field tail (append future signed optionals HERE, in a
-    // stable order, each length-framed). `None` appends nothing.
+    // stable order, each length-framed). `None` appends nothing. Order is url,
+    // then onion — a later field cannot land before an earlier one.
     if let Some(url) = url {
         m.extend_from_slice(&(url.len() as u32).to_be_bytes());
         m.extend_from_slice(url.as_bytes());
+    }
+    if let Some(onion) = onion {
+        m.extend_from_slice(&(onion.len() as u32).to_be_bytes());
+        m.extend_from_slice(onion.as_bytes());
     }
     m
 }
@@ -159,6 +173,7 @@ impl Ticket {
             self.exp,
             &self.digest,
             self.url.as_deref(),
+            self.onion.as_deref(),
         );
         key.verify(&msg, &sig).is_ok()
     }
@@ -182,6 +197,10 @@ impl Ticket {
             s.push_str("&url=");
             s.push_str(url);
         }
+        if let Some(onion) = &self.onion {
+            s.push_str("&onion=");
+            s.push_str(onion);
+        }
         s.push_str("&sig=");
         s.push_str(&hex(&self.sig));
         s
@@ -200,6 +219,7 @@ pub fn mint(
     digest: [u8; 32],
     node: Option<String>,
     url: Option<String>,
+    onion: Option<String>,
 ) -> Ticket {
     use ed25519_dalek::Signer;
     let root = root_signing_key.verifying_key().to_bytes();
@@ -211,6 +231,7 @@ pub fn mint(
         exp,
         &digest,
         url.as_deref(),
+        onion.as_deref(),
     );
     let sig = root_signing_key.sign(&msg).to_bytes();
     Ticket {
@@ -222,6 +243,7 @@ pub fn mint(
         digest,
         node,
         url,
+        onion,
         sig,
     }
 }
@@ -242,6 +264,7 @@ pub fn parse(uri: &str) -> Result<Ticket, TicketParseError> {
     let mut digest = None;
     let mut node = None;
     let mut url = None;
+    let mut onion = None;
     let mut sig = None;
     for pair in query.split('&') {
         let (k, v) = pair
@@ -255,6 +278,7 @@ pub fn parse(uri: &str) -> Result<Ticket, TicketParseError> {
             "digest" => digest = Some(hex32(v).ok_or(TicketParseError::BadField("digest"))?),
             "node" => node = Some(v.to_string()),
             "url" => url = Some(v.to_string()),
+            "onion" => onion = Some(v.to_string()),
             "sig" => sig = Some(hex64(v).ok_or(TicketParseError::BadField("sig"))?),
             _ => {} // ignore unknown params (forward-compat), never affects the floor
         }
@@ -268,6 +292,7 @@ pub fn parse(uri: &str) -> Result<Ticket, TicketParseError> {
         digest: digest.ok_or(TicketParseError::BadField("digest"))?,
         node,
         url,
+        onion,
         sig: sig.ok_or(TicketParseError::BadField("sig"))?,
     })
 }

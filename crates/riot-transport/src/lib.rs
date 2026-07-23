@@ -17,6 +17,11 @@ pub mod router;
 pub mod seed;
 pub mod ticket;
 
+/// The Tor (Arti) dialer + the `TorConnect` trait. The real `arti_client` impl
+/// lives behind the `arti` Cargo feature; the trait + `TorDialer` are always
+/// available so the dialer is unit-testable without a Tor runtime.
+pub mod arti;
+
 /// The v1 sync ALPN — the reconcile protocol negotiated on an iroh connection.
 pub const ALPN: &[u8] = b"riot/sync/1";
 
@@ -27,6 +32,56 @@ pub const ALPN_SYNC_V2: &[u8] = b"riot/sync/2";
 /// The anchor control-plane ALPN (design "`riot/anchor/1`: Control Plane"). The
 /// exact 13-byte ASCII value bound into the peer-proof transcript.
 pub const ALPN_ANCHOR_V1: &[u8] = b"riot/anchor/1";
+
+/// The dial-side transport seam: a type that opens ONE byte channel to a peer
+/// and yields it as type-erased `(AsyncWrite, AsyncRead)` halves — exactly the
+/// shape [`pump`] already consumes.
+///
+/// This is the abstraction iroh's dial path (`sync_connect` → `endpoint.connect`
+/// → `open_bi`) lacked: every dial was monomorphic over `&iroh::Endpoint`. A
+/// `Dialer` makes the transport pluggable without touching the protocol layer.
+/// `connect` is called exactly once per dial; a second connect on a one-shot
+/// dialer fails closed (see the `run_dial` tests).
+///
+/// The Tor/Arti dialer (`arti::TorDialer`) and the in-memory test loopback both
+/// implement this. The shipped iroh dial path stays as-is; a future `IrohDialer`
+/// adapter can delegate to it for one `run_dial` entrypoint.
+pub trait Dialer: Send {
+    /// Open the channel to the peer and return its halves. Called once.
+    fn connect(
+        &mut self,
+    ) -> impl std::future::Future<Output = Result<(router::BoxWrite, router::BoxRead), TransportError>>
+    + Send;
+}
+
+/// Drive a reconcile over a [`Dialer`]: connect once, then run [`pump`] over the
+/// resulting halves as the initiator (or responder). This is the
+/// transport-agnostic dial entrypoint — identical to `pump` except the stream
+/// comes from a `Dialer` rather than being passed in directly.
+///
+/// `initiator` selects which side opens with `Hello` (true = dialer initiates,
+/// matching a follower dialing a seed; false = dialer responds).
+///
+/// After `pump` reaches its terminal state we shut down our write half so the
+/// peer can observe EOF. We deliberately do NOT `read_to_end` the peer here: a
+/// generic dialer's peer may keep its write half open (e.g. a long-lived Tor
+/// circuit), and blocking on draining it would deadlock the two-sided graceful
+/// close. The reconcile's terminal state is the contract.
+pub async fn run_dial<D, F>(
+    mut dialer: D,
+    session: ByteSyncSession,
+    initiator: bool,
+    on_bundle: F,
+) -> Result<ByteSyncSession, TransportError>
+where
+    D: Dialer + Unpin,
+    F: FnMut(&[u8]) -> bool,
+{
+    let (mut send, mut recv) = dialer.connect().await?;
+    let session = pump(session, &mut send, &mut recv, initiator, on_bundle).await?;
+    let _ = send.shutdown().await;
+    Ok(session)
+}
 
 #[derive(Debug)]
 pub enum TransportError {
