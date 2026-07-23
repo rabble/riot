@@ -218,6 +218,7 @@ private struct OnboardingView: View {
         switch step {
         case .welcome:
             OnboardingWelcomeView(
+                model: model,
                 onContinue: {
                     setupIntent = .general
                     step = .setup
@@ -242,6 +243,7 @@ private struct OnboardingView: View {
 /// Riot works" explainer that renders the shared five-beat story.
 private struct OnboardingWelcomeView: View {
     @Environment(\.colorScheme) private var colorScheme
+    @ObservedObject var model: RiotAppModel
     let onContinue: () -> Void
     let onJoin: () -> Void
     @State private var isExplainerPresented = false
@@ -285,7 +287,7 @@ private struct OnboardingWelcomeView: View {
                 // The real "leave the room, still sync" path: dial the built-in
                 // anchor relay by NodeId over the internet and pull a live
                 // community. No IP, no account.
-                AnchorRelaySyncCard()
+                AnchorRelaySyncCard(model: model)
             }
             .padding(20)
         }
@@ -1630,7 +1632,7 @@ private struct HomeRouteView: View {
                 // anchor relay by NodeId over the internet and pull a live
                 // community. Auto-runs once when Home first appears, and offers a
                 // manual re-sync button.
-                AnchorRelaySyncCard(autoStart: true)
+                AnchorRelaySyncCard(model: model, autoStart: true)
                 if sections.contains(.activeAlerts) {
                     AlertsListView(
                         presentation: activeAlerts,
@@ -2080,6 +2082,10 @@ private struct ConnectionStatusView: View {
                 RiotBadge(nearby.state.message, stamped: true)
                 if nearby.permissionDenied { permissionRecoveryCard }
                 connectedCard
+                // The non-local transport: the anchor relay. Nearby (below) is
+                // BLE/LAN; the relay reaches communities over the internet by the
+                // relay's NodeId (no IP). Both live on the Transport screen.
+                AnchorRelaySyncCard(model: model)
                 RiotCard {
                     VStack(alignment: .leading, spacing: 14) {
                         Text(NearbyStrings.deviceSummary)

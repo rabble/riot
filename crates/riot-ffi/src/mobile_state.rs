@@ -34,6 +34,7 @@ use crate::mobile_api::{
     CommunityRelationship, CommunityRow, CurrentEntry, FollowedSiteRow, ImportAcceptance,
     MobileError, MobileImportPlan, MobileImportPreview, MobileProfile, MobileSyncSession,
     PublicIdentity, PublicSpace, SignedAlert, SyncOutcome, SyncOutcomeKind,
+    SyncedCommunityCandidate,
 };
 
 pub(crate) enum ProfileState {
@@ -2838,6 +2839,128 @@ fn restore_active_community(
             }
         }
         Ok(())
+    })
+}
+
+/// Discover the communities whose entries an anchor-relay pull just imported, so
+/// the app can turn "imported N entries" into "walk into this place and read it".
+///
+/// Two shapes surface here, best-first:
+///  1. A full newswire community — a `SpaceDescriptorV1` is now in the store. We
+///     return its name, its projected post count, and its contributor count, plus
+///     the descriptor id the wire projects from. Walking in shows the wire + the
+///     people.
+///  2. An alert-bearing namespace with no descriptor — one of the pulled
+///     namespaces holds standalone alert entries (the legacy board's content).
+///     We return the alert count and the distinct-signer count so the board still
+///     has content and attribution, even without a wire to project.
+///
+/// Read-only: nothing is minted, joined, or reprojected here. The caller adopts a
+/// candidate through the ordinary join/switch paths.
+pub(crate) fn discover_synced_communities(
+    inner: &Arc<Mutex<ProfileState>>,
+    pulled_namespace_ids: Vec<String>,
+) -> Result<Vec<SyncedCommunityCandidate>, MobileError> {
+    with_active(inner, |profile| {
+        let clock = riot_core::newswire::ProjectionClockV1::system()
+            .map_err(|_| MobileError::ClockUnavailable)?;
+        let mut candidates: Vec<SyncedCommunityCandidate> = Vec::new();
+        let mut covered: std::collections::BTreeSet<[u8; 32]> = std::collections::BTreeSet::new();
+
+        // (1) Full newswire communities: every descriptor now in the store.
+        let descriptors = riot_core::newswire::discover_space_descriptors(&profile.store)
+            .map_err(|_| MobileError::Internal)?;
+        for record in &descriptors {
+            let riot_core::newswire::NewswirePayload::SpaceDescriptor(descriptor) =
+                record.payload()
+            else {
+                continue;
+            };
+            let descriptor_id = record.entry_id();
+            let namespace_id = descriptor.namespace_id;
+            covered.insert(namespace_id);
+            // Project the wire so the person sees how much is happening before
+            // walking in. A projection failure must not hide the community —
+            // fall back to zero counts rather than dropping the candidate.
+            let (post_count, contributor_count) =
+                match riot_core::newswire::project_space(&profile.store, descriptor_id, clock) {
+                    Ok(projection) => {
+                        let posts = (projection.open_wire.len()
+                            + projection.front_page.len()
+                            + projection.earlier.len()) as u32;
+                        let contributors = riot_core::newswire::contributors_for_space(
+                            &profile.store,
+                            descriptor_id,
+                            clock,
+                        )
+                        .map(|rows| rows.len() as u32)
+                        .unwrap_or(0);
+                        (posts, contributors)
+                    }
+                    Err(_) => (0, 0),
+                };
+            candidates.push(SyncedCommunityCandidate {
+                namespace_id: hex(&namespace_id),
+                descriptor_entry_id: Some(hex(&descriptor_id)),
+                name: Some(descriptor.name.clone()),
+                post_count,
+                alert_count: 0,
+                contributor_count,
+            });
+        }
+
+        // (2) Alert-bearing namespaces among the ones the pull touched, with no
+        //     descriptor of their own. Bounded to the pulled set so this never
+        //     scans an unrelated community.
+        let all_prefix =
+            riot_core::willow::Path::from_slices(&[]).map_err(|_| MobileError::Internal)?;
+        for raw in &pulled_namespace_ids {
+            let Ok(namespace_id) = parse_entry_id(raw) else {
+                continue;
+            };
+            if covered.contains(&namespace_id) {
+                continue;
+            }
+            let prefixed = profile
+                .store
+                .entries_with_prefix_in_namespace(&namespace_id, &all_prefix)
+                .map_err(map_core_error)?;
+            let mut alert_count = 0u32;
+            let mut signers: std::collections::BTreeSet<[u8; 32]> =
+                std::collections::BTreeSet::new();
+            for (_id, entry, payload) in prefixed {
+                // Alerts only — mirror `reproject_active`'s exclusion so the count
+                // matches what the board would actually show.
+                if riot_core::apps::entry::is_app_data_entry(&entry)
+                    || riot_core::apps::index::classify_app_index_path(entry.path()).is_some()
+                    || is_profile_prefixed(entry.path())
+                    || riot_core::newswire::is_newswire_prefix(entry.path())
+                    || riot_core::willow::site_paths::is_owned_editorial_entry(&entry)
+                    || riot_core::willow::site_paths::is_owned_moderation_entry(&entry)
+                {
+                    continue;
+                }
+                let Some(payload) = payload else { continue };
+                if decode_alert(&payload).is_err() {
+                    continue;
+                }
+                alert_count += 1;
+                signers.insert(*entry.subspace_id().as_bytes());
+            }
+            if alert_count > 0 {
+                covered.insert(namespace_id);
+                candidates.push(SyncedCommunityCandidate {
+                    namespace_id: hex(&namespace_id),
+                    descriptor_entry_id: None,
+                    name: None,
+                    post_count: 0,
+                    alert_count,
+                    contributor_count: signers.len() as u32,
+                });
+            }
+        }
+
+        Ok(candidates)
     })
 }
 
