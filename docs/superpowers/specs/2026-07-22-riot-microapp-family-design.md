@@ -871,16 +871,26 @@ durable value.
 
 Tools never presents two unlabeled cards with the same name.
 
-- Current v2 cards are labeled **Redesigned · Version 2** and sort in the normal
-  Tools group.
-- A v1 app appears under a collapsed but clearly counted **Legacy tools
-  (Version 1)** section when that profile holds its ID, trust, or app rows. The
-  label does not claim that every installed legacy namespace contains rows.
-  Its card and runtime title use `<name> · Legacy 1`.
+- **Selected-community status is the first-order hierarchy.** Tools enabled in
+  the selected community appear first under **In `<community>`** with an
+  immediate Open action. Complete disabled tools follow under **Available to
+  add** with named Add/Ask-an-organizer actions. Profile-wide discovery is
+  visually separate under **More tools**. See
+  `2026-07-24-community-scoped-tools-design.md`.
+- Current v2 cards are labeled **Redesigned · Version 2** inside their
+  community-status section.
+- A held v1 app is labeled `<name> · Legacy 1` inside its community-status
+  section. An enabled v1 tool is never hidden in a collapsed Legacy section
+  below disabled v2 tools. A collapsed, counted **Legacy tools (Version 1)**
+  group is permitted only inside secondary More tools discovery when it does
+  not hide an enabled or immediately addable tool. The label does not claim
+  that every installed legacy namespace contains rows.
 - The v1 card remains launchable and offers no theme claim.
-- A v2 action is **Install redesigned version**, not Update.
+- In secondary discovery/details, the profile-level v2 action is **Install
+  redesigned version**, not Update. It never replaces the primary
+  selected-community Open/Add action.
 - Before install/trust, the confirmation says: “This is a separate version.
-  Legacy 1 remains available in Legacy tools. Information does not move between
+  Legacy 1 remains available in Tools. Information does not move between
   versions.”
 - Cancel leaves v1 mounted/trusted state untouched. Confirm installs v2 through
   the ordinary verification path and then uses the existing organizer trust
