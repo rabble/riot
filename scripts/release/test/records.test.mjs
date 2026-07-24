@@ -47,9 +47,34 @@ test("verifyRecord rejects malformed wrappers fail closed", async () => {
 
 test("records require full lowercase SHA-256 evidence references", async () => {
   await assert.doesNotReject(() => validRecord({ evidenceDigest: fullDigest }));
+  await assert.doesNotReject(() => validRecord({
+    evidence: [{ artifactSha256: fullDigest }, null, "plain"],
+  }));
   for (const evidenceDigest of ["a".repeat(63), "A".repeat(64), "g".repeat(64)]) {
     await assert.rejects(() => validRecord({ evidenceDigest }), /evidenceDigest/);
   }
+});
+
+test("records reject invalid hash adapters and non-object wrappers", async () => {
+  await assert.rejects(
+    () => createRecord({
+      schema: "riot.release.product.v1",
+      payload: {},
+      clock: fixedClock,
+      sha256: () => "short",
+    }),
+    /invalid digest/,
+  );
+  for (const record of [null, "record", []]) {
+    await assert.rejects(() => verifyRecord(record, { sha256 }), /record must be an object/);
+  }
+  await assert.rejects(() => verifyRecord({}, {}), /sha256/);
+});
+
+test("records reject calendar-invalid RFC3339-shaped timestamps", async () => {
+  const record = await validRecord();
+  const invalid = { ...record, createdAt: "2026-99-99T00:00:00.000Z" };
+  await assert.rejects(() => verifyRecord(invalid, { sha256 }), /timestamp/);
 });
 
 test("createRecord requires injected clock and hash dependencies", async () => {

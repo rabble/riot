@@ -31,7 +31,7 @@ export function renderStatus(gates) {
   return `${lines.join("\n")}\n`;
 }
 
-function statusExit(summary) {
+export function statusExit(summary) {
   if (summary === "PASS") return 0;
   if (summary === "HUMAN ACTION") return 2;
   return 1;
@@ -58,7 +58,7 @@ async function toolchainGates(root) {
 }
 
 function failureGate(error, root) {
-  const message = String(error?.message ?? "unknown release source error").replaceAll(/\s+/g, " ");
+  const message = String(error.message).replaceAll(/\s+/g, " ");
   const pathMatch = message.match(/(?:^|\s)(\/[^:]+(?:\.json)?)/);
   return {
     id: "foundation.sources",

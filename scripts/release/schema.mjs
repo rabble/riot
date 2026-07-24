@@ -35,7 +35,6 @@ export async function loadSchemaRegistry(directory, fs = { readdir, readFile }) 
   const names = (await fs.readdir(directory)).filter((name) => name.endsWith(".schema.json")).sort();
   const ajv = new Ajv2020({ allErrors: true, strict: true, validateFormats: false });
   const schemas = new Map();
-  const ids = new Set();
   for (const name of names) {
     let schema;
     try {
@@ -47,8 +46,6 @@ export async function loadSchemaRegistry(directory, fs = { readdir, readFile }) 
     if (!expected || schema.$id !== expected) {
       throw new Error(`${name} does not use its fixed $id ${expected ?? "(no registered ID)"}`);
     }
-    if (ids.has(schema.$id)) throw new Error(`duplicate schema $id: ${schema.$id}`);
-    ids.add(schema.$id);
     schemas.set(basename(name, ".schema.json"), schema);
   }
   for (const name of Object.keys(EXPECTED_IDS)) {
@@ -70,7 +67,8 @@ export function validateSource(registry, name, value) {
         keyword: error.keyword,
         message: error.message,
       }))
-      .sort((left, right) => left.pointer.localeCompare(right.pointer) || left.keyword.localeCompare(right.keyword));
+      .sort((left, right) =>
+        `${left.pointer}\u0000${left.keyword}`.localeCompare(`${right.pointer}\u0000${right.keyword}`));
     const error = new Error(`${name} validation failed: ${diagnostics.map(({ pointer, message }) => `${pointer} ${message}`).join("; ")}`);
     error.diagnostics = diagnostics;
     throw error;

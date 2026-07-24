@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
 import test from "node:test";
 
-import { renderStatus, summarizeGates } from "../cli.mjs";
+import { renderStatus, runCli, statusExit, summarizeGates } from "../cli.mjs";
 
 const repositoryRoot = dirname(dirname(dirname(dirname(fileURLToPath(import.meta.url)))));
 const cli = join(repositoryRoot, "scripts", "release", "cli.mjs");
@@ -44,6 +44,25 @@ test("status aggregation preserves precedence and exact diagnostics", () => {
   assert.equal(summarizeGates(gates.slice(0, 2)), "HUMAN ACTION");
   assert.equal(summarizeGates(gates.slice(0, 1)), "PASS");
   assert.throws(() => summarizeGates([{ ...gates[0], state: "UNKNOWN" }]), /unknown gate state/);
+});
+
+test("statusExit maps each tri-state summary to its stable process code", () => {
+  assert.equal(statusExit("PASS"), 0);
+  assert.equal(statusExit("HUMAN ACTION"), 2);
+  assert.equal(statusExit("BLOCKED"), 1);
+});
+
+test("runCli fails closed on a missing argument array without echoing input", async () => {
+  let stdout = "";
+  let stderr = "";
+  const code = await runCli({
+    args: null,
+    stdout: { write: (value) => { stdout += value; } },
+    stderr: { write: (value) => { stderr += value; } },
+  });
+  assert.equal(code, 64);
+  assert.equal(stdout, "");
+  assert.match(stderr, /usage:/);
 });
 
 test("status and status --json expose the same ordered truthful gates", async () => {
@@ -86,6 +105,25 @@ test("missing or malformed source fails closed without a stack trace", async () 
   assert.match(result.stdout, /BLOCKED/);
   assert.match(result.stdout, /product\.json/);
   assert.doesNotMatch(`${result.stdout}${result.stderr}`, /\n\s+at /);
+});
+
+test("generate reports a fixed redacted failure for malformed source", async () => {
+  const root = await releaseRoot();
+  await writeFile(join(root, "release", "source", "product.json"), "{", "utf8");
+  const result = await run(root, ["generate"]);
+  assert.equal(result.code, 1);
+  assert.equal(result.stdout, "");
+  assert.equal(result.stderr, "release generation failed: correct the canonical source diagnostics with status\n");
+});
+
+test("status uses a safe release-root diagnostic when an error names no source path", async () => {
+  const root = await releaseRoot();
+  await writeFile(join(root, "release", "toolchains.json"), "{", "utf8");
+  const result = await run(root, ["status", "--json"]);
+  assert.equal(result.code, 1);
+  const parsed = JSON.parse(result.stdout);
+  assert(parsed.gates[0].sourceFile.endsWith("/release"));
+  assert.equal(parsed.gates[0].pointer, "/");
 });
 
 test("usage rejects unknown options, mutation commands, and credential flags", async () => {

@@ -44,6 +44,10 @@ test("validateSource rejects missing and unknown fields with JSON pointers", asy
     (error) => error.diagnostics.some(({ pointer, keyword }) => pointer === "/name" && keyword === "required"),
   );
   assert.throws(() => validateSource(registry, "missing", validProduct), /unknown schema/);
+  assert.throws(
+    () => validateSource(registry, "product", null),
+    (error) => error.diagnostics.some(({ pointer }) => pointer === "/"),
+  );
 });
 
 test("common durable fields reject malformed versions, IDs, digests, and timestamps", async () => {
@@ -82,6 +86,18 @@ test("registry rejects malformed, missing, duplicate, and unexpected fixed schem
   product.$id = "https://riot.protest.net/release/schemas/privacy.v1.json";
   await writeFile(productPath, `${JSON.stringify(product)}\n`);
   await assert.rejects(() => loadSchemaRegistry(temporary), /fixed \$id|duplicate/);
+
+  await cp(schemaDirectory, temporary, { recursive: true, force: true });
+  await rm(join(temporary, "claims.schema.json"));
+  await assert.rejects(() => loadSchemaRegistry(temporary), /missing schema file/);
+
+  await cp(schemaDirectory, temporary, { recursive: true, force: true });
+  await writeFile(join(temporary, "unexpected.schema.json"), `${JSON.stringify({
+    $schema: "https://json-schema.org/draft/2020-12/schema",
+    $id: "https://riot.protest.net/release/schemas/unexpected.v1.json",
+    type: "object",
+  })}\n`);
+  await assert.rejects(() => loadSchemaRegistry(temporary), /no registered ID/);
 });
 
 test("toolchain schema requires a non-null authoritative checksum", async () => {
@@ -111,6 +127,16 @@ test("toolchain schema requires a non-null authoritative checksum", async () => 
       tools: [...valid.tools, { ...valid.tools[0] }],
     }),
     /duplicate tool/,
+  );
+  assert.throws(
+    () => validateSource(registry, "toolchains", {
+      ...valid,
+      tools: [
+        valid.tools[0],
+        { ...valid.tools[0], name: "npm" },
+      ],
+    }),
+    /duplicate tool versionCommand/,
   );
 });
 
