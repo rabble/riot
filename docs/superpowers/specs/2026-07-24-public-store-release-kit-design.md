@@ -1,6 +1,6 @@
 # Riot Public Store Release Kit
 
-Status: exceptional revision 3 for design-review gate.
+Status: exceptional revision 4 for design-review gate.
 
 ## Goal
 
@@ -326,7 +326,7 @@ user-directed disclosure.
 
 - Keep Apple team signing external to source control.
 - Produce a Release archive and App Store export suitable for TestFlight and
-  later public promotion.
+  later public review and release.
 - Harden the existing release script so version, build, source state, archive,
   export, and Console-handoff intent are explicit. It stops after export and
   prints Xcode Organizer/App Store Connect handoff steps; it never uploads.
@@ -398,14 +398,24 @@ hardware result, and promotion gate.
    builds.
 9. Append test and human approvals that reference the candidate-manifest
    digest.
-10. A named operator performs each phased/staged rollout change in the
-    appropriate Console; a second verifier records evidence after every step.
+10. A named operator submits each candidate for store review; a second verifier
+    records submission and every asynchronous review state.
+11. After the Console reports approved/ready for release, a named operator
+    performs the explicit worldwide/full initial release; a second verifier
+    records the public state.
+
+Apple phased release and Google staged-percentage rollout are not used for
+these first public versions: those controls apply to updates, and Google does
+not offer percentage staging for an app's first production release. Riot 1.0
+therefore uses a manual worldwide/full release on each platform after review
+approval, followed by seven days of heightened observation. Later updates may
+add a separately designed phased/staged contract.
 
 ### Manual Console operation contract
 
-No repository command uploads, submits, releases, changes rollout percentage,
-pauses, resumes, halts, or withdraws a store build in this slice. Those are
-explicit `HUMAN ACTION` gates:
+No repository command uploads, submits for review, releases, halts, withdraws,
+or otherwise changes a store build in this slice. Those are explicit
+`HUMAN ACTION` gates:
 
 | Platform | Artifact handoff | Authenticated readback/evidence |
 | --- | --- | --- |
@@ -436,22 +446,28 @@ The human handoff protocol is:
    requires that intent commit to land on `release/riot-1.0`.
 2. The tool stops with `HUMAN ACTION` and prints the exact Console steps and
    evidence fields. It has no store credentials and performs no mutation.
-3. The operator performs the action once in the authenticated Console.
-4. `record-console-outcome` validates operator-supplied evidence against the
+3. Before touching the Console, the operator may cancel. The same operator and
+   a distinct verifier must attest that no Console mutation was attempted;
+   `cancelled-before-action` then returns to the prior stable state. This
+   transition is forbidden once any Console interaction may have begun.
+4. Otherwise, the operator performs the action once in the authenticated
+   Console.
+5. `record-console-outcome` validates operator-supplied evidence against the
    candidate; a second named verifier attests to the Console readback before
    the outcome commit lands on the release branch.
-5. If the operator session is interrupted or the remote result is unclear, the
+6. If the operator session is interrupted or the remote result is unclear, the
    state becomes `<action>-indeterminate`. No second action is permitted. The
    operator and verifier inspect the Console until it supplies authoritative
    positive evidence or a terminal negative outcome such as an explicit
    rejected/invalid/withdrawn record. An eventually consistent “not found” or
    absent row is never proof that the action did not occur.
-6. Positive evidence appends `reconciled-success`. Terminal negative evidence
+7. Positive evidence appends `reconciled-success`. Terminal negative evidence
    appends `reconciled-failed`; an upload then requires a new build number,
-   while a rollout action may be retried only from the explicit state table.
+   while submission or release actions may be retried only from the explicit
+   state table.
    Ambiguous evidence remains `HUMAN ACTION` indefinitely.
 
-### Candidate and rollout state table
+### Candidate, review, and release state table
 
 All transitions append schema-validated events; no manifest is edited.
 
@@ -460,27 +476,47 @@ All transitions append schema-validated events; no manifest is edited.
 | `draft` | build succeeded | `built` | immutable manifest written |
 | `draft` or `built` | discard before Console upload | `discarded` | terminal; number never reused |
 | `built` | pushed upload intent | `upload-human-action` | one active remote-branch intent |
+| `upload-human-action` | two-person `cancelled-before-action` | `built` | only when no Console interaction was attempted |
 | `upload-human-action` | verified Console success | `uploaded` | store identity matches candidate |
 | `upload-human-action` | terminal negative Console outcome | `rejected` | terminal; new build required |
 | `upload-human-action` | interrupted/unclear | `upload-indeterminate` | no retry |
 | `upload-indeterminate` | verified positive readback | `uploaded` | `reconciled-success` |
 | `upload-indeterminate` | terminal negative readback | `rejected` | terminal; new build required |
-| `built` or `upload-human-action` | store maximum/collision invalidates number | `superseded` | terminal; new allocation/build |
+| `built` | store maximum/collision invalidates number | `superseded` | allowed only before upload intent; terminal |
 | `uploaded` | beta/device/policy gates pass | `beta-accepted` | exact store build tested |
 | `uploaded` | store rejects candidate | `rejected` | terminal |
-| `beta-accepted` | pushed rollout-start intent | `rollout-human-action` | one Console action |
-| `rollout-active` or `rollout-paused` | pushed advance/pause/resume/halt intent | `rollout-human-action` | intent records action and prior stable state |
-| `rollout-human-action` | verified start/advance/resume | `rollout-active` | record platform phase/percentage |
-| `rollout-human-action` | verified pause | `rollout-paused` | record platform phase/percentage |
-| `rollout-human-action` | verified halt/withdraw | `rollout-halted` | terminal for this candidate |
-| `rollout-human-action` | terminal negative Console outcome | prior stable state | append failure; fresh intent allowed |
-| `rollout-human-action` | interrupted/unclear | `rollout-indeterminate` | no retry |
-| `rollout-indeterminate` | verified positive readback | intended verified state | active, paused, or halted as evidenced |
-| `rollout-indeterminate` | terminal negative readback | previous stable state | append failure; fresh intent allowed |
-| `rollout-active` | verified 100 percent/completed | `rollout-complete` | successful terminal state |
+| `beta-accepted` or metadata-only `review-rejected` | pushed submit-for-review intent | `submission-human-action` | one Console action; binary unchanged |
+| `submission-human-action` | two-person `cancelled-before-action` | prior stable state | only when no Console interaction was attempted |
+| `submission-human-action` | verified submission accepted | `review-pending` | record platform remote status |
+| `submission-human-action` | terminal negative Console outcome | `review-rejected` | classify metadata-only versus binary-affecting |
+| `submission-human-action` | interrupted/unclear | `submission-indeterminate` | no retry |
+| `submission-indeterminate` | verified positive readback | evidenced review state | `review-pending`, `approved-ready`, or `review-rejected` |
+| `submission-indeterminate` | terminal negative readback | prior stable state | fresh intent allowed |
+| `review-pending` | Console status remains waiting/in-review | `review-pending` | append status observation |
+| `review-pending` | verified approval/ready status | `approved-ready` | eligible for initial release intent |
+| `review-pending` | verified review rejection | `review-rejected` | record whether metadata-only or binary-affecting |
+| `review-rejected` | binary/configuration change required | `rejected` | terminal; new build required |
+| `approved-ready` | pushed worldwide/full release intent | `release-human-action` | initial release only |
+| `release-human-action` | two-person `cancelled-before-action` | `approved-ready` | only when no Console interaction was attempted |
+| `release-human-action` | verified worldwide/full release | `released-worldwide` | successful public state |
+| `release-human-action` | terminal negative Console outcome | `approved-ready` | append failure; fresh intent allowed |
+| `release-human-action` | interrupted/unclear | `release-indeterminate` | no retry |
+| `release-indeterminate` | verified public readback | `released-worldwide` | `reconciled-success` |
+| `release-indeterminate` | terminal negative readback | `approved-ready` | fresh release intent allowed |
+| `released-worldwide` | pushed halt/withdraw intent | `withdraw-human-action` | emergency/manual action |
+| `withdraw-human-action` | two-person `cancelled-before-action` | `released-worldwide` | only when no Console interaction was attempted |
+| `withdraw-human-action` | verified unavailable/withdrawn | `withdrawn` | terminal for this candidate |
+| `withdraw-human-action` | terminal negative Console outcome | `released-worldwide` | append failure; fresh intent allowed |
+| `withdraw-human-action` | interrupted/unclear | `withdraw-indeterminate` | no retry until reconciled |
+| `withdraw-indeterminate` | verified readback | evidenced public or withdrawn state | append actual state |
 
-Apple's seven-day phased-release phases and every Google staged percentage are
-distinct intent/outcome operations. “Public promotion” is not a single state.
+Apple evidence schemas enumerate `Waiting for Review`, `In Review`,
+`Pending Developer Release`/approved-ready, rejected, ready/distributed, and
+removed-from-sale equivalents. Google evidence schemas enumerate internal-test
+availability, changes-in-review/review-pending, approved/ready, production
+available, rejected, and unpublished equivalents. Each
+platform/action-specific schema records the enumerated remote status and the
+SHA-256 of a redacted Console screenshot or export.
 
 A rejected or superseded build receives a new build number. Partial builds may
 be discarded before Console upload but allocated numbers are never reused. A
@@ -504,11 +540,11 @@ Each candidate manifest records:
 - privacy/policy worksheet revision.
 
 Append-only sign-off events record store upload receipts/identifiers, beta
-results, hardware results, human approvals, promotion receipts, remaining
-gates, approver/verifier identities, and the SHA-256 of the complete immutable
-candidate manifest. Console-handoff readiness verifies the store build
-identity, artifact signing certificate, and recorded candidate-manifest digest
-before printing human steps.
+results, hardware results, human approvals, Console submission/release/
+withdrawal receipts, remaining gates, approver/verifier identities, and the
+SHA-256 of the complete immutable candidate manifest. Console-handoff readiness
+verifies the store build identity, artifact signing certificate, and recorded
+candidate-manifest digest before printing human steps.
 
 The command surface stays deliberately separate:
 
@@ -546,13 +582,13 @@ Every work unit follows RED → GREEN → REFACTOR. The initial test design is:
 | Visual generator | one synthetic capture must render to a golden geometry record | compose one headline band from pinned tokens | phone/tablet/landscape; 1/3/4 lines; contrast; safe-area and band-height boundaries |
 | Build-number allocator | duplicate, stale, rebased, cross-checkout, and store-max collisions must fail | validate explicit number and append allocation | empty ledger; duplicate ID; pushed reservation; merge collision; stale maximum; final readback advanced; interrupted append; concurrent local lock; mandatory reallocation |
 | Candidate manifest | changed artifact or signing identity must fail verification | create/verify immutable manifest | iOS, Mac, Android; unsigned validation-only Android; missing artifact; stale tool hash; malformed schema |
-| State machine/ledger | invalid skip, duplicate transition, accepted-ID reuse, and mutation from indeterminate state must fail | append one legal transition atomically | every legal/illegal edge and terminal state; partial write recovery; rejected/discarded/superseded semantics; rejected retry with new number |
+| State machine/ledger | invalid skip, duplicate transition, accepted-ID reuse, mutation from indeterminate state, and cancellation after possible Console action must fail | append one legal transition atomically | every legal/illegal edge and terminal state; cancellation-before-action with two people; upload/submission/review/release/withdraw states; partial write recovery; metadata-only versus binary rejection; rejected/discarded/superseded semantics |
 | Process runner | dirty tree, nonzero command, timeout, and zero tests must fail | run one fake validation and normalize result | Cargo/XCTest/Gradle zero-test logs; signal; timeout; redacted stderr |
 | Signing-credential guard | persistent copy, broad mode, logged secret, and absent credential must fail candidate signing | authorize one fake signed build using external material | `0600`/wrong modes; Apple signing identity; Android key/password; cleanup; redaction; `--no-daemon`; store API credential rejected |
-| Export-compliance guard | unresolved or archived-value mismatch must block Apple archive/export/upload | inject and verify one recorded decision | unresolved; exempt/non-exempt; iOS/Mac archived plist mismatch |
+| Export-compliance guard | unresolved or archived-value mismatch must block Apple archive/export/Console handoff | inject and verify one recorded decision | unresolved; exempt/non-exempt; iOS/Mac archived plist mismatch |
 | Supply-chain guard | missing Gradle checksum/locks or changed lock/tool hash must fail | verify one pinned input set | Cargo/npm/Gradle/toolchain fixtures; advisory finding with/without disposition |
 | Status reporter | mixed gates must never summarize as ready | render tri-state result and recovery action | PASS/BLOCKED/HUMAN ACTION; missing evidence; exact file/value diagnostics |
-| Console handoff/evidence | any attempted store process invocation, missing pushed intent, wrong store ID, unaccepted candidate, or blind retry after ambiguity must fail | persist intent, print steps, validate fake operator/verifier evidence | no store credential/process adapter; remote-ref CAS failure; Apple/Google evidence shapes; interruption; positive/terminal-negative/absent/ambiguous readback; eventual-consistency absence remains indeterminate; every rollout phase/percentage/pause/resume/halt |
+| Console handoff/evidence | any attempted store process invocation, missing pushed intent, wrong store ID, unaccepted candidate, unsafe cancellation, or blind retry after ambiguity must fail | persist intent, print steps, validate discriminated operator/verifier evidence | no store credential/process adapter; remote-ref CAS failure; distinct operator/verifier; cancellation before action; Apple/Google upload statuses; submit/review/approve/reject lifecycle; full initial release; withdraw; interruption; positive/terminal-negative/absent/ambiguous readback; eventual-consistency absence remains indeterminate |
 | Privacy/policy consistency | store answer contradicting code/network/policy evidence must fail | compare one answer to evidence matrix | no collection; user-directed fetch; report transmission; missing UGC control; stale policy URL |
 | iOS/iPadOS release configuration | wrong ID/version/icon, missing privacy manifest, unsafe export value, signing or entitlement mismatch must fail | validate one archive/config fixture | Debug versus Release; iPhone/iPad families; app icon; archived plist; Keychain group; unresolved export decision |
 | macOS release configuration | ad-hoc candidate, wrong ID/version/icon, Intel claim, sandbox/entitlement or export mismatch must fail | validate one Mac archive/config fixture | local ad-hoc stays valid; App Store distribution; Apple-silicon/macOS 14 boundary; app icon; archived plist |
@@ -575,7 +611,8 @@ Implementation dependency order is fixed:
 6. credential-free then signed candidate builds;
 7. native capture and journey rehearsal;
 8. Console handoff/evidence reconciliation; and
-9. beta acceptance followed by per-step rollout handoffs.
+9. beta acceptance, review submission, approval, and worldwide/full initial
+   release handoffs.
 
 No later work unit begins while an earlier blocking contract is red.
 
@@ -627,21 +664,23 @@ The device rehearsal covers:
 No public-readiness claim is allowed when a blocking check is absent, skipped,
 or reports zero executed tests.
 
-Before rollout, every supported platform must pass 100 percent of the scripted
+Before review submission and public release, every supported platform must
+pass 100 percent of the scripted
 first-install-to-first-read, create, publish/sign, restart/persist, denied
 permission/recovery, and offline-local journeys on every named device class.
 There must be zero critical crashes, hangs, data-loss events, privacy/policy
 failures, or failed advertised hardware pairs.
 
-Public availability is worldwide but staged over seven days. Apple phased
-release and Google staged rollout are used where available. Store diagnostics
-and the published support/report channel are reviewed daily. Rollout pauses if
-crash-free sessions fall below 99.5 percent on any platform, any critical
-data-loss/security/privacy failure is confirmed, an advertised core journey is
-unavailable, or moderation reports cannot meet the published response target.
-After seven stable days at full rollout, v1 exits heightened observation;
-ordinary support and store-diagnostic review continue. A paused candidate is
-fixed under a new build number rather than overwritten or rebuilt in place.
+Each approved 1.0 candidate is released worldwide/full because first-version
+percentage phasing is unavailable. For seven days after each public release,
+store diagnostics and the published support/report channel are reviewed daily.
+The operator prepares a withdraw/halt `HUMAN ACTION` if crash-free sessions fall
+below 99.5 percent on any platform, any critical data-loss/security/privacy
+failure is confirmed, an advertised core journey is unavailable, or moderation
+reports cannot meet the published response target. After seven stable days,
+v1 exits heightened observation; ordinary support and store-diagnostic review
+continue. A withdrawn candidate is fixed under a new build number rather than
+overwritten or rebuilt in place.
 
 ## Failure behavior
 
@@ -669,7 +708,7 @@ Tooling must never:
 - expose credentials in arguments, logs, crash output, or long-lived daemons;
 - silently upload;
 - overwrite an accepted candidate;
-- rebuild between beta acceptance and public promotion;
+- rebuild between beta acceptance and public release;
 - mark a legal answer on the user's behalf; or
 - report readiness with a blocking gate unresolved.
 
@@ -690,17 +729,18 @@ The repository-owned kit is complete when:
 5. Privacy, policy, permissions, content-rating, review, and encryption
    worksheets are complete and evidence-backed.
 6. All repository quality and coverage gates pass.
-7. Candidate-manifest, ledger, status, Console-handoff, evidence, and rollout
-   state contracts pass their complete unit and integration fixture suites.
+7. Candidate-manifest, ledger, status, Console-handoff, evidence, and
+   submission/review/release/withdrawal state contracts pass their complete
+   unit and integration fixture suites.
 8. The TestFlight, Mac App Store beta/review, Play internal-test,
-   device-rehearsal, and public-promotion steps are documented without
-   requiring a rebuild.
+   device-rehearsal, review-submission, and worldwide/full public-release steps
+   are documented without requiring a rebuild.
 9. The policy audit has either confirmed the required UGC safeguards or linked
    a separately approved blocking remediation workstream.
 
 ### Public release ready
 
-Riot 1.0 is ready for staged public promotion only when:
+Riot 1.0 is ready for public review and release only when:
 
 1. Three separately identified signed candidates exist for iOS/iPadOS, macOS,
    and Android with immutable manifests and store upload identities.
@@ -708,10 +748,11 @@ Riot 1.0 is ready for staged public promotion only when:
    controls/operations, and public support contact are approved.
 3. All beta, device, accessibility, offline, persistence, and advertised
    hardware-pair journeys pass against those exact candidates.
-4. Every candidate is in `beta-accepted` state with no blocking or unknown
-   gate in the read-only status report.
-5. The staged rollout, daily observation owner, halt thresholds, and withdrawal
-   procedure are recorded.
+4. Every candidate is at least `beta-accepted` before review submission and is
+   in `approved-ready` before worldwide/full release, with no blocking or
+   unknown gate in the read-only status report.
+5. The worldwide/full initial-release action, seven-day observation owner,
+   halt thresholds, and withdrawal procedure are recorded.
 
 ## Explicit non-goals
 
