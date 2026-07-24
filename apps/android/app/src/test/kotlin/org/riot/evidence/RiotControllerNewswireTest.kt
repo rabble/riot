@@ -278,6 +278,7 @@ class RiotControllerNewswireTest {
         correctionIds = correctionIds,
         treatment = treatment,
         reactions = emptyList(),
+        createdAtUnixSeconds = null,
     )
 
     private fun action(id: String, kind: NewswireEditorialActionKind, active: Boolean) =
