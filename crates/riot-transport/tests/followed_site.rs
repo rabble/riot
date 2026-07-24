@@ -75,7 +75,13 @@ async fn a_follower_pulls_and_admits_owner_mod_records_over_the_transport() {
         admit_followed_site_frame(&store, root, bundle, "site-follow-transport").is_ok()
     });
 
-    let (served, admitted) = tokio::join!(serve, admit);
+    // Hard outer timeout so a deadlocked reconcile fails in seconds, not hangs.
+    let (served, admitted) = tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        async { tokio::join!(serve, admit) },
+    )
+    .await
+    .expect("followed-site reconcile timed out (>30s)");
     let owner = served.expect("owner pump");
     let follower = admitted.expect("follower pump");
     assert!(
