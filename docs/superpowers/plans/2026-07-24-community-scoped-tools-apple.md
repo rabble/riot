@@ -14,6 +14,56 @@
 
 ---
 
+## User-authorized manual corrections after plan-gate escalation
+
+The three-round plan gate did not reach consensus. On 2026-07-24 Rabble chose
+**Revise and proceed**. The following corrections are authoritative wherever an
+older task detail below conflicts:
+
+1. `RiotDirectoryActionContext` also carries a monotonic
+   `selectionGeneration`. `RiotDirectoryModel` advances it on every selected
+   community transition, including A → B → A, and rejects a context unless both
+   namespace and generation match.
+2. Recommend, retraction, and Make available carry
+   `expectedNamespaceID` through `DirectoryPorting` into
+   `RiotProfileRepository`. The repository validates it while holding the same
+   app-operation lock as the mutation; a separate presentation-only guard is
+   insufficient.
+3. The repository lock and closed-state guard cover every app-facing path:
+   `spaceApps`, `installedApps`, `directoryListings`, `appResource`,
+   `appResolver`, `appDataBridge`, `endorsedAppIDs`, admission/import,
+   recommendation/retraction/publishing, trust/revoke, app-data operations, and
+   community switching.
+4. A finalize failure after the durable trust write is **not** an Add failure.
+   The repository returns a typed `durableDecisionNeedsReopen` outcome.
+   `RiotAppModel` closes and reopens from `lastBootstrapArgs`, verifies the exact
+   namespace/app grant, and reports recovered success. The sheet dismisses and
+   says `Added <tool> to <community>`; it never says “Nothing changed” about a
+   durable grant. Restart/fault coverage pins this.
+5. `RiotDirectoryPrimaryAction` defines a tested `title` property.
+   `DirectoryScreenState.failed` carries only data (`communityTitle`);
+   `DirectoryView` calls `directory.retry()` rather than embedding a closure in
+   an equatable/sendable state.
+6. No test-only API or simulator scenario adapter is added to production.
+   Failures and A → B → A invalidation are tested through real protocol ports,
+   repository integration, and existing runtime generation tests. XCUITest
+   covers the real organizer Add → permission → Open and enabled-member Open
+   flows.
+7. Native macOS visual evidence uses the actual app window: set it to 480×860,
+   capture it with macOS `screencapture`, and inspect the PNG directly. The
+   Playwright-only visual-review workflow is not used for a native window.
+8. Accessibility verification includes heading traits/labels in model and
+   XCUITest assertions, `performAccessibilityAudit`, successful focus
+   restoration to Open, failed confirmation focus retention, and manual reading
+   order inspection. Long-name fixtures plus pseudolocalized/expanded copy are
+   captured. The moderated first-attempt outcome check is recorded as a named
+   human release checkpoint; it is not fabricated by an agent.
+
+These corrections remove the final feasibility/completeness blockers while
+preserving the approved product design and the scope boundary above.
+
+---
+
 ## File map
 
 - `crates/riot-ffi/src/mobile_state.rs` — refresh current-namespace trust projection after a successful community switch.
