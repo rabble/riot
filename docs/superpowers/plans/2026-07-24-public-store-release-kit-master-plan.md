@@ -341,7 +341,7 @@ invented first-release `approved-ready` or second publication action.
 - Create: `release/source/security-exceptions.json`
 - Modify: `release/toolchains.json`
 - Create: `apps/android/gradle/verification-metadata.xml`
-- Create: `apps/android/gradle.lockfile`
+- Create: `apps/android/app/gradle.lockfile`
 - Modify: `apps/android/gradle/wrapper/gradle-wrapper.properties`
 - Modify: `apps/android/build.gradle.kts`
 - Modify: `scripts/release/cli.mjs`
