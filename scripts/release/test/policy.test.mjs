@@ -810,6 +810,194 @@ test("worksheet locks fail closed on ambiguous ownership and filesystem errors",
   await assert.rejects(() => realFs.access(writeLockPath));
 });
 
+test("acquisition failure never deletes a same-inode successor token", async () => {
+  const loaded = await sources();
+  const outputDirectory = await mkdtemp(join(tmpdir(), "riot-worksheet-lock-acquire-race-"));
+  const lockPath = `${outputDirectory}.lock`;
+  const quarantineDirectory = `${lockPath}.quarantine`;
+  const token = "attempt-token";
+  const successor = `${JSON.stringify({ processId: process.pid, token: "successor-token" })}\n`;
+  const replacingFs = {
+    ...realFs,
+    async open(path, flags, mode) {
+      const handle = await realFs.open(path, flags, mode);
+      if (path !== lockPath || flags !== "wx") return handle;
+      return new Proxy(handle, {
+        get(target, property) {
+          if (property === "writeFile") {
+            return async () => {
+              await target.writeFile(successor, "utf8");
+              throw new Error("injected acquisition write failure");
+            };
+          }
+          const value = Reflect.get(target, property, target);
+          return typeof value === "function" ? value.bind(target) : value;
+        },
+      });
+    },
+  };
+
+  await assert.rejects(
+    () => generateWorksheets({
+      sources: loaded,
+      outputDirectory,
+      fs: replacingFs,
+      sha256,
+      createLockToken: () => token,
+    }),
+    /acquisition write failure/,
+  );
+  await assert.rejects(() => realFs.access(lockPath));
+  const claimedPath = join(quarantineDirectory, token, "lock");
+  assert.equal(await readFile(claimedPath, "utf8"), successor);
+
+  const outputBeforeRetry = await readdir(outputDirectory);
+  await assert.rejects(
+    () => generateWorksheets({
+      sources: loaded,
+      outputDirectory,
+      fs: realFs,
+      sha256,
+    }),
+    /unresolved worksheet lock quarantine/,
+  );
+  assert.deepEqual(await readdir(outputDirectory), outputBeforeRetry);
+  assert.equal(await readFile(claimedPath, "utf8"), successor);
+});
+
+test("empty and unparseable acquisition writes become durable ambiguous claims", async () => {
+  const loaded = await sources();
+  for (const [name, bytes] of [["empty", ""], ["unparseable", "{"]]) {
+    const outputDirectory = await mkdtemp(join(tmpdir(), `riot-worksheet-lock-${name}-write-`));
+    const lockPath = `${outputDirectory}.lock`;
+    const token = `${name}-token`;
+    const failingFs = {
+      ...realFs,
+      async open(path, flags, mode) {
+        const handle = await realFs.open(path, flags, mode);
+        if (path !== lockPath || flags !== "wx") return handle;
+        return new Proxy(handle, {
+          get(target, property) {
+            if (property === "writeFile") {
+              return async () => {
+                await target.writeFile(bytes, "utf8");
+                throw new Error(`injected ${name} lock write`);
+              };
+            }
+            const value = Reflect.get(target, property, target);
+            return typeof value === "function" ? value.bind(target) : value;
+          },
+        });
+      },
+    };
+    await assert.rejects(
+      () => generateWorksheets({
+        sources: loaded,
+        outputDirectory,
+        fs: failingFs,
+        sha256,
+        createLockToken: () => token,
+      }),
+      new RegExp(`${name} lock write`),
+    );
+    const claimedPath = join(`${lockPath}.quarantine`, token, "lock");
+    assert.equal(await readFile(claimedPath, "utf8"), bytes);
+    await assert.rejects(
+      () => generateWorksheets({ sources: loaded, outputDirectory, fs: realFs, sha256 }),
+      /unresolved worksheet lock quarantine/,
+    );
+    assert.deepEqual(await readdir(outputDirectory), []);
+    assert.equal(await readFile(claimedPath, "utf8"), bytes);
+  }
+
+  const outputDirectory = await mkdtemp(join(tmpdir(), "riot-worksheet-lock-ambiguous-rename-"));
+  const lockPath = `${outputDirectory}.lock`;
+  const renameRefusingFs = {
+    ...realFs,
+    async open(path, flags, mode) {
+      const handle = await realFs.open(path, flags, mode);
+      if (path !== lockPath || flags !== "wx") return handle;
+      return new Proxy(handle, {
+        get(target, property) {
+          if (property === "writeFile") {
+            return async () => {
+              await target.writeFile("{", "utf8");
+              throw new Error("injected ambiguous lock write");
+            };
+          }
+          const value = Reflect.get(target, property, target);
+          return typeof value === "function" ? value.bind(target) : value;
+        },
+      });
+    },
+    async rename(from, to) {
+      if (from === lockPath && String(to).includes(".lock.quarantine")) {
+        throw new Error("injected ambiguous quarantine rename refusal");
+      }
+      return realFs.rename(from, to);
+    },
+  };
+  await assert.rejects(
+    () => generateWorksheets({
+      sources: loaded,
+      outputDirectory,
+      fs: renameRefusingFs,
+      sha256,
+      createLockToken: () => "rename-refused-token",
+    }),
+    /ambiguous lock write/,
+  );
+  assert.equal(await readFile(lockPath, "utf8"), "{");
+  assert.deepEqual(await readdir(`${lockPath}.quarantine`), []);
+  await assert.rejects(
+    () => generateWorksheets({ sources: loaded, outputDirectory, fs: realFs, sha256 }),
+    /ambiguous worksheet generation lock/,
+  );
+  assert.deepEqual(await readdir(outputDirectory), []);
+});
+
+test("acquisition failure deletes a lock only when its exact owner is still proven", async () => {
+  const loaded = await sources();
+  const outputDirectory = await mkdtemp(join(tmpdir(), "riot-worksheet-lock-exact-cleanup-"));
+  const lockPath = `${outputDirectory}.lock`;
+  const quarantineDirectory = `${lockPath}.quarantine`;
+  let registryCreated = false;
+  let registryReads = 0;
+  const failingFs = {
+    ...realFs,
+    async readFile(path, options) {
+      const bytes = await realFs.readFile(path, options);
+      if (path === lockPath && !registryCreated) {
+        registryCreated = true;
+        await realFs.mkdir(quarantineDirectory);
+      }
+      return bytes;
+    },
+    async readdir(path, options) {
+      if (path === quarantineDirectory) {
+        registryReads += 1;
+        if (registryReads === 1) {
+          throw new Error("injected post-acquisition quarantine read refusal");
+        }
+      }
+      return realFs.readdir(path, options);
+    },
+  };
+  await assert.rejects(
+    () => generateWorksheets({
+      sources: loaded,
+      outputDirectory,
+      fs: failingFs,
+      sha256,
+      createLockToken: () => "exact-owner-token",
+    }),
+    /post-acquisition quarantine read refusal/,
+  );
+  await assert.rejects(() => realFs.access(lockPath));
+  assert.deepEqual(await readdir(quarantineDirectory), []);
+  assert.deepEqual(await readdir(outputDirectory), []);
+});
+
 test("worksheet locks reject unreadable metadata and stale-lock replacement races", async () => {
   const loaded = await sources();
   const malformedDirectory = await mkdtemp(join(tmpdir(), "riot-worksheet-lock-malformed-"));

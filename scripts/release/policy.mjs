@@ -462,7 +462,6 @@ async function pathStat(fs, path) {
 async function lockMatches(fs, lockPath, identity, owner) {
   const current = await pathStat(fs, lockPath);
   if (!current || current.isSymbolicLink() || !sameFileIdentity(current, identity)) return false;
-  if (!owner) return true;
   let observed;
   try {
     observed = JSON.parse(await fs.readFile(lockPath, "utf8"));
@@ -478,18 +477,17 @@ async function claimedLockMatches(fs, claimedPath, identity, owner) {
     const handleIdentity = await handle.stat();
     if (!sameFileIdentity(handleIdentity, identity)) return false;
     let observed;
-    if (owner) {
-      try {
-        observed = JSON.parse(await handle.readFile("utf8"));
-      } catch {
-        return false;
-      }
+    try {
+      observed = JSON.parse(await handle.readFile("utf8"));
+    } catch {
+      return false;
     }
     const current = await pathStat(fs, claimedPath);
     return Boolean(current)
       && !current.isSymbolicLink()
       && sameFileIdentity(current, handleIdentity)
-      && (!owner || observed.processId === owner.processId && observed.token === owner.token);
+      && observed.processId === owner.processId
+      && observed.token === owner.token;
   } finally {
     await handle.close();
   }
@@ -514,29 +512,36 @@ async function assertNoUnresolvedQuarantine(fs, quarantineDirectory) {
   }
 }
 
-async function removeOwnedLock(
-  fs,
-  lockPath,
-  quarantineDirectory,
-  identity,
-  owner,
-  token = owner?.token,
-) {
-  if (!await lockMatches(fs, lockPath, identity, owner)) return false;
-  const claimDirectory = join(quarantineDirectory, token);
-  const claimedPath = join(claimDirectory, "lock");
+async function createQuarantineClaim(fs, quarantineDirectory, token) {
   try {
     await fs.mkdir(quarantineDirectory, { mode: 0o700 });
   } catch (error) {
     if (error.code !== "EEXIST") throw error;
     await assertNoUnresolvedQuarantine(fs, quarantineDirectory);
   }
+  const claimDirectory = join(quarantineDirectory, token);
   try {
     await fs.mkdir(claimDirectory, { mode: 0o700 });
   } catch (error) {
     if (error.code === "EEXIST") throw quarantineCollisionError(claimDirectory);
     throw error;
   }
+  return {
+    claimDirectory,
+    claimedPath: join(claimDirectory, "lock"),
+  };
+}
+
+async function removeOwnedLock(
+  fs,
+  lockPath,
+  quarantineDirectory,
+  identity,
+  owner,
+) {
+  if (!await lockMatches(fs, lockPath, identity, owner)) return false;
+  const { claimDirectory, claimedPath } =
+    await createQuarantineClaim(fs, quarantineDirectory, owner.token);
   try {
     await fs.rename(lockPath, claimedPath);
   } catch (error) {
@@ -556,6 +561,43 @@ async function removeOwnedLock(
   await fs.rm(claimedPath, { force: true });
   await fs.rmdir(claimDirectory);
   return true;
+}
+
+async function quarantineAmbiguousLock(
+  fs,
+  lockPath,
+  quarantineDirectory,
+  identity,
+  token,
+) {
+  const current = await pathStat(fs, lockPath);
+  if (!current || current.isSymbolicLink() || !sameFileIdentity(current, identity)) return false;
+  const { claimDirectory, claimedPath } =
+    await createQuarantineClaim(fs, quarantineDirectory, token);
+  try {
+    await fs.rename(lockPath, claimedPath);
+  } catch (error) {
+    await ignoreFailure(fs.rmdir(claimDirectory));
+    throw error;
+  }
+  return true;
+}
+
+async function cleanupFailedLockAcquisition(
+  fs,
+  lockPath,
+  quarantineDirectory,
+  identity,
+  owner,
+) {
+  if (await removeOwnedLock(fs, lockPath, quarantineDirectory, identity, owner)) return true;
+  return quarantineAmbiguousLock(
+    fs,
+    lockPath,
+    quarantineDirectory,
+    identity,
+    owner.token,
+  );
 }
 
 async function readExistingLock(fs, lockPath) {
@@ -611,13 +653,12 @@ async function acquireWorksheetLock(
     return { handle, identity, owner };
   } catch (error) {
     await ignoreFailure(handle.close());
-    await ignoreFailure(removeOwnedLock(
+    await ignoreFailure(cleanupFailedLockAcquisition(
       fs,
       lockPath,
       quarantineDirectory,
       identity,
-      undefined,
-      owner.token,
+      owner,
     ));
     throw error;
   }
