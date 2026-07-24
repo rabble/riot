@@ -22,10 +22,15 @@ final class AppRepositoryTests: XCTestCase {
     }
 
     private func starterPacks() throws -> [(manifest: Data, bundle: Data)] {
+        [try appPack(named: "checklist")]
+    }
+
+    private func appPack(named name: String) throws -> (manifest: Data, bundle: Data) {
         let apps = Self.repoRoot().appendingPathComponent("fixtures/apps")
-        let manifest = try Data(contentsOf: apps.appendingPathComponent("checklist.manifest.cbor"))
-        let bundle = try Data(contentsOf: apps.appendingPathComponent("checklist.bundle.cbor"))
-        return [(manifest: manifest, bundle: bundle)]
+        return (
+            manifest: try Data(contentsOf: apps.appendingPathComponent("\(name).manifest.cbor")),
+            bundle: try Data(contentsOf: apps.appendingPathComponent("\(name).bundle.cbor"))
+        )
     }
 
     private func makeStorage(_ label: String) throws -> ProtectedProfileStorage {
@@ -89,6 +94,169 @@ final class AppRepositoryTests: XCTestCase {
         XCTAssertTrue(try second.spaceApps()[0].trusted)
     }
 
+    func testTrustPersistsOnlyForItsExactNamespaceAcrossReopen() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("scoped-trust-\(UUID().uuidString)", isDirectory: true)
+        let snapshotURL = directory.appendingPathComponent("profile.json")
+        let databasePath = directory.appendingPathComponent("riot.db").path
+        let keyStore = TestWrappingKeyStore()
+        let packs = try starterPacks()
+        let communityA: RiotSpace
+        let communityB: RiotSpace
+        let appID: String
+        do {
+            // Scope the live repository like a process lifetime. The durable
+            // SQLite profile must be released before the relaunch opens it.
+            let first = try RiotProfileRepository.open(
+                storage: try ProtectedProfileStorage(fileURL: snapshotURL),
+                keyStore: keyStore,
+                starterPacks: packs,
+                databasePath: databasePath
+            )
+            communityA = try first.createPublicSpace(title: "Community A")
+            appID = try XCTUnwrap(first.spaceApps().first).appIDHex
+
+            try first.trustApp(
+                appID: appID,
+                expectedNamespaceID: communityA.namespaceID
+            )
+            XCTAssertEqual(
+                try scopedTrust(in: snapshotURL),
+                [ScopedTrust(namespaceID: communityA.namespaceID, appIDHex: appID)]
+            )
+
+            let other = try RiotProfileRepository.open(
+                storage: try makeStorage("community-b"),
+                keyStore: TestWrappingKeyStore(),
+                starterPacks: packs
+            )
+            communityB = try other.createPublicSpace(title: "Community B")
+            _ = try first.adoptSyncedNamespace(communityB)
+            XCTAssertFalse(try XCTUnwrap(first.spaceApps().first).trusted)
+        }
+
+        // Reopen while B is active: A's durable grant must not be reissued into B.
+        let reopened = try RiotProfileRepository.open(
+            storage: try ProtectedProfileStorage(fileURL: snapshotURL),
+            keyStore: keyStore,
+            starterPacks: packs,
+            databasePath: databasePath
+        )
+        XCTAssertEqual(reopened.currentSpace?.namespaceID, communityB.namespaceID)
+        XCTAssertFalse(try XCTUnwrap(reopened.spaceApps().first).trusted)
+
+        _ = try reopened.switchToCommunity(namespaceID: communityA.namespaceID)
+        XCTAssertTrue(try XCTUnwrap(reopened.spaceApps().first).trusted)
+    }
+
+    func testLegacyGlobalTrustedAppIDsAreDiscardedInsteadOfAssignedToActiveSpace() throws {
+        let snapshotURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("legacy-global-trust-\(UUID().uuidString).json")
+        let keyStore = TestWrappingKeyStore()
+        let packs = try starterPacks()
+        let first = try RiotProfileRepository.open(
+            storage: try ProtectedProfileStorage(fileURL: snapshotURL),
+            keyStore: keyStore,
+            starterPacks: packs
+        )
+        let active = try first.createPublicSpace(title: "Community B")
+        let appID = try XCTUnwrap(first.spaceApps().first).appIDHex
+        var object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(contentsOf: snapshotURL)) as? [String: Any]
+        )
+        object.removeValue(forKey: "trustedAppsByNamespace")
+        object["trustedAppIDs"] = [appID]
+        try JSONSerialization.data(withJSONObject: object)
+            .write(to: snapshotURL, options: .atomic)
+
+        let reopened = try RiotProfileRepository.open(
+            storage: try ProtectedProfileStorage(fileURL: snapshotURL),
+            keyStore: keyStore,
+            starterPacks: packs
+        )
+        XCTAssertEqual(reopened.currentSpace?.namespaceID, active.namespaceID)
+        XCTAssertFalse(try reopened.spaceApps()[0].trusted)
+        XCTAssertEqual(try scopedTrust(in: snapshotURL), [])
+    }
+
+    func testTrustRejectsAStaleExpectedNamespaceWithoutChangingDiskOrLiveState() throws {
+        let snapshotURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("stale-scoped-trust-\(UUID().uuidString).json")
+        let repository = try RiotProfileRepository.open(
+            storage: try ProtectedProfileStorage(fileURL: snapshotURL),
+            keyStore: TestWrappingKeyStore(),
+            starterPacks: try starterPacks()
+        )
+        _ = try repository.createPublicSpace(title: "Community A")
+        let appID = try XCTUnwrap(repository.spaceApps().first).appIDHex
+        let snapshotBefore = try Data(contentsOf: snapshotURL)
+        let listingBefore = try XCTUnwrap(
+            repository.directoryListings().first {
+                RiotDirectoryRow.hex($0.appId).caseInsensitiveCompare(appID) == .orderedSame
+            }
+        )
+
+        XCTAssertThrowsError(
+            try repository.trustApp(
+                appID: appID,
+                expectedNamespaceID: String(repeating: "ab", count: 32)
+            )
+        ) { error in
+            guard case RepositoryError.spaceMismatch = error else {
+                return XCTFail("expected spaceMismatch, got \(error)")
+            }
+        }
+
+        XCTAssertEqual(try Data(contentsOf: snapshotURL), snapshotBefore)
+        XCTAssertFalse(try XCTUnwrap(repository.spaceApps().first).trusted)
+        XCTAssertEqual(
+            try XCTUnwrap(repository.directoryListings().first {
+                RiotDirectoryRow.hex($0.appId).caseInsensitiveCompare(appID) == .orderedSame
+            }),
+            listingBefore
+        )
+    }
+
+    func testTrustSaveFailureLeavesDiskAndLiveTrustUnchanged() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("trust-save-failure-\(UUID().uuidString)", isDirectory: true)
+        let snapshotURL = directory.appendingPathComponent("profile.json")
+        let repository = try RiotProfileRepository.open(
+            storage: try ProtectedProfileStorage(fileURL: snapshotURL),
+            keyStore: TestWrappingKeyStore(),
+            starterPacks: try starterPacks()
+        )
+        let space = try repository.createPublicSpace(title: "Community A")
+        let appID = try XCTUnwrap(repository.spaceApps().first).appIDHex
+        let snapshotBefore = try Data(contentsOf: snapshotURL)
+
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o500],
+            ofItemAtPath: directory.path
+        )
+        defer {
+            try? FileManager.default.setAttributes(
+                [.posixPermissions: 0o700],
+                ofItemAtPath: directory.path
+            )
+        }
+
+        XCTAssertThrowsError(
+            try repository.trustApp(
+                appID: appID,
+                expectedNamespaceID: space.namespaceID
+            )
+        )
+
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o700],
+            ofItemAtPath: directory.path
+        )
+        XCTAssertEqual(try Data(contentsOf: snapshotURL), snapshotBefore)
+        XCTAssertEqual(try scopedTrust(in: snapshotURL), [])
+        XCTAssertFalse(try XCTUnwrap(repository.spaceApps().first).trusted)
+    }
+
     // MARK: - Turning an app off
 
     /// The mirror of `testTrustSurvivesReopen`, and the reason a revoke has to
@@ -110,15 +278,15 @@ final class AppRepositoryTests: XCTestCase {
         let appID = try first.spaceApps()[0].appIDHex
         try first.trustApp(appID: appID)
         XCTAssertEqual(
-            try trustedAppIDs(in: snapshotURL).map { $0.lowercased() },
-            [appID.lowercased()],
+            try scopedTrust(in: snapshotURL),
+            [ScopedTrust(namespaceID: try XCTUnwrap(first.currentSpace).namespaceID, appIDHex: appID)],
             "the trust decision is on disk — the premise of this test"
         )
 
         try first.untrustApp(appID: appID)
 
         XCTAssertFalse(try first.spaceApps()[0].trusted, "the live session sees it off at once")
-        XCTAssertEqual(try trustedAppIDs(in: snapshotURL), [], "and the decision left the disk")
+        XCTAssertEqual(try scopedTrust(in: snapshotURL), [], "and the decision left the disk")
         XCTAssertNil(
             first.appDataBridge(appID: appID),
             "a revoked app loses its data bridge — the launch gate closes with it"
@@ -142,15 +310,50 @@ final class AppRepositoryTests: XCTestCase {
         let repository = try RiotProfileRepository.open(
             storage: try ProtectedProfileStorage(fileURL: snapshotURL),
             keyStore: TestWrappingKeyStore(),
-            starterPacks: try starterPacks()
+            starterPacks: [
+                try appPack(named: "checklist"),
+                try appPack(named: "chat")
+            ]
         )
         _ = try repository.createPublicSpace(title: "Berlin Mutual Aid")
-        let appID = try repository.spaceApps()[0].appIDHex
+        let apps = try repository.spaceApps()
+        let trustedApp = try XCTUnwrap(apps.first { $0.name == "Checklist" })
+        let neverTrustedApp = try XCTUnwrap(apps.first { $0.name == "Chat" })
+        try repository.trustApp(appID: trustedApp.appIDHex)
+        let stillRunning = try XCTUnwrap(repository.appDataBridge(appID: trustedApp.appIDHex))
+        let listingBefore = try XCTUnwrap(
+            repository.directoryListings().first {
+                RiotDirectoryRow.hex($0.appId)
+                    .caseInsensitiveCompare(neverTrustedApp.appIDHex) == .orderedSame
+            }
+        )
 
-        try repository.untrustApp(appID: appID)
+        try repository.untrustApp(appID: neverTrustedApp.appIDHex)
 
-        XCTAssertFalse(try repository.spaceApps()[0].trusted)
-        XCTAssertEqual(try trustedAppIDs(in: snapshotURL), [])
+        XCTAssertFalse(
+            try XCTUnwrap(
+                repository.spaceApps().first { $0.appIDHex == neverTrustedApp.appIDHex }
+            ).trusted
+        )
+        XCTAssertEqual(
+            try XCTUnwrap(repository.directoryListings().first {
+                RiotDirectoryRow.hex($0.appId)
+                    .caseInsensitiveCompare(neverTrustedApp.appIDHex) == .orderedSame
+            }),
+            listingBefore,
+            "a no-op revoke must not publish a revoke marker"
+        )
+        XCTAssertEqual(
+            try scopedTrust(in: snapshotURL),
+            [ScopedTrust(
+                namespaceID: try XCTUnwrap(repository.currentSpace).namespaceID,
+                appIDHex: trustedApp.appIDHex
+            )]
+        )
+        XCTAssertNoThrow(
+            try stillRunning.put(key: "after-noop-revoke", valueJSON: "\"still running\""),
+            "a no-op revoke must not bump the global app execution generation"
+        )
     }
 
     // MARK: - Resource serving
@@ -210,21 +413,21 @@ final class AppRepositoryTests: XCTestCase {
 
     // MARK: - Codable backward compatibility
 
-    func testOpensSnapshotWrittenBeforeTrustedAppIDsField() throws {
+    func testOpensSnapshotWrittenBeforeTrustedAppsByNamespaceField() throws {
         let snapshotURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("app-repo-legacy-\(UUID().uuidString).json")
         let keyStore = TestWrappingKeyStore()
         let packs = try starterPacks()
 
-        // First open writes a snapshot (with the new field); strip it to
-        // emulate a pre-`trustedAppIDs` snapshot, then reopen.
+        // First open writes a snapshot (with the new field); strip it to emulate
+        // a snapshot from before namespace-scoped trust, then reopen.
         let first = try RiotProfileRepository.open(
             storage: try ProtectedProfileStorage(fileURL: snapshotURL),
             keyStore: keyStore,
             starterPacks: packs
         )
         _ = try first.createPublicSpace(title: "Berlin Mutual Aid")
-        try removeTrustedAppIDs(from: snapshotURL)
+        try removeKey("trustedAppsByNamespace", from: snapshotURL)
 
         let reopened = try RiotProfileRepository.open(
             storage: try ProtectedProfileStorage(fileURL: snapshotURL),
@@ -469,18 +672,21 @@ final class AppRepositoryTests: XCTestCase {
 
     // MARK: - Snapshot helpers
 
-    private func removeTrustedAppIDs(from snapshotURL: URL) throws {
-        try removeKey("trustedAppIDs", from: snapshotURL)
-    }
-
     /// The trust decisions as they actually sit on disk — read from the snapshot
     /// rather than from the repository, so a revoke that only cleared memory
     /// cannot pass.
-    private func trustedAppIDs(in snapshotURL: URL) throws -> [String] {
+    private func scopedTrust(in snapshotURL: URL) throws -> [ScopedTrust] {
         let object = try XCTUnwrap(
             JSONSerialization.jsonObject(with: Data(contentsOf: snapshotURL)) as? [String: Any]
         )
-        return object["trustedAppIDs"] as? [String] ?? []
+        let records = object["trustedAppsByNamespace"] as? [[String: String]] ?? []
+        return records.compactMap { record in
+            guard let namespaceID = record["namespaceID"],
+                  let appIDHex = record["appIDHex"] else {
+                return nil
+            }
+            return ScopedTrust(namespaceID: namespaceID, appIDHex: appIDHex)
+        }
     }
 
     private func removeKey(_ key: String, from snapshotURL: URL) throws {
@@ -503,6 +709,16 @@ final class AppRepositoryTests: XCTestCase {
         bundles.insert(Data("garbage".utf8).base64EncodedString(), at: index)
         object["appDataBundles"] = bundles
         try JSONSerialization.data(withJSONObject: object).write(to: snapshotURL, options: .atomic)
+    }
+}
+
+private struct ScopedTrust: Equatable {
+    let namespaceID: String
+    let appIDHex: String
+
+    init(namespaceID: String, appIDHex: String) {
+        self.namespaceID = namespaceID.lowercased()
+        self.appIDHex = appIDHex.lowercased()
     }
 }
 
