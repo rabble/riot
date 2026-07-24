@@ -200,7 +200,7 @@ the empty community from the versioned profile rather than replacing its key.
 5. The UI becomes writable only after replay completes successfully.
 
 If public records remain but the signing profile is missing or invalid, Riot
-may display those verified records read-only but must not invent replacement
+displays those verified records read-only. It must not invent replacement
 authority or attribute a new identity to prior posts.
 
 ### Compose and post
@@ -371,4 +371,3 @@ One reproducible static build:
 
 No server is required for identity, signing, accepted state, rendering, or file
 exchange after the application assets have loaded once.
-
