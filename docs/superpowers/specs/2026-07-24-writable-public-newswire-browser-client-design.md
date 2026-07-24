@@ -30,7 +30,8 @@ concessions are Chromium-only support and plaintext browser-local key storage.
 - Create a new community as its organizer.
 - Open the locally stored community after reload.
 - Import a community into a clean browser with a fresh local member identity.
-- Preview and accept same-namespace updates into an active community.
+- Preview and accept updates bound to the active community's exact signed
+  descriptor.
 - Compose, immutably review, locally sign, and commit public newswire updates.
 - Persist accepted bundles in IndexedDB and the signing profile in
   `localStorage`.
@@ -174,6 +175,13 @@ IndexedDB contains:
 - pending create/join operations; and
 - schema and application-release versions.
 
+IndexedDB manifest, operation, and active-community metadata are bounded
+canonical-CBOR `Blob`s rather than unconstrained structured clones. Operation
+metadata and the manifest are each limited to 64 KiB; profile and bundle bytes
+are separate Blobs with their own limits. The host checks `Blob.size` before
+parsing. Transactions request Chromium's `durability: "strict"`; the product
+still calls the result committed browser storage, not power-loss-proof fsync.
+
 The log, rather than a serialized Rust heap or projection, is durable truth. On
 startup the host loads the profile and bounded ordered log, then
 `PublicNewswireClient` reconstructs state by replaying every bundle through the
@@ -197,6 +205,15 @@ resulting exact live proof set still encodes as one valid canonical export
 within the 64-entry and 8-MiB native limits. It also checks the projected log
 record, aggregate byte, and accepted-entry ceilings. Capacity failure changes
 nothing and returns `BROWSER_CAPACITY_EXCEEDED`.
+
+The signed descriptor consumes one of the 64 live export entries. Every live
+news post consumes another, whether or not its display expiry has passed;
+expiry does not prune signed history or free capacity. The UI always shows
+remaining entry capacity, shows projected entry and byte use on post/import
+review, and warns at five remaining entries or 10% remaining byte capacity.
+When full, compose and import confirmation are disabled with: **This prototype
+community is full. Export its current records before starting a new local
+community.** This slice has no deletion, rollover, or multi-file continuation.
 
 Startup opens only the fixed database, object stores, and keys for the current
 schema. It walks the bundle store with a cursor capped at 257 records, checks
@@ -320,14 +337,35 @@ A storage failure keeps the draft and never produces a success claim.
 ### Import
 
 1. The host rejects files above the byte ceiling before copying them into Wasm.
-2. Rust verifies the full artifact without mutation.
-3. The UI displays the community identity, authors, readable updates, and any
-   expiry or AI-assisted markers.
-4. The user explicitly accepts selected supported entries.
-5. Rust atomically prepares the accepted canonical bundle and prospectively
+2. Rust verifies the full artifact without mutation. Any invalid or unsupported
+   item rejects the whole file before a selectable preview; valid siblings are
+   not silently substituted for the file the user chose.
+3. A clean-browser import must contain exactly one valid
+   `SpaceDescriptorV1`. Rust pins its namespace and descriptor entry ID and
+   requires every selectable record to bind to that exact descriptor. A file
+   with zero descriptors, multiple descriptors, or a record bound to another
+   descriptor is rejected before confirmation.
+4. For an active community, Rust requires the pinned descriptor entry ID as
+   well as the namespace to match. The file may contain an identical duplicate
+   of the pinned descriptor; a different valid descriptor in the same namespace
+   is a different community and is rejected. Descriptor migration and
+   governance are out of scope.
+5. The UI displays the community identity, authors, readable updates, explicit
+   **Expires…** or **Expired…** labels, AI-assisted markers, selected count,
+   and projected capacity. All selectable entries are verified and supported.
+   On clean import, the single descriptor is shown as required and is not
+   deselectable; news posts are selectable, and the required descriptor counts
+   toward the selected total. Confirmation is disabled when the selected total
+   is zero or the result would exceed capacity.
+6. On a clean browser, the review says: **This file restores public community
+   records. It does not restore an author or organizer. Riot will create a new
+   author stored only in this browser.** The final action is **Add community and
+   create my author**.
+7. The user explicitly accepts selected supported entries.
+8. Rust atomically prepares the accepted canonical bundle and prospectively
    proves the resulting state remains replayable and exportable within all
    browser ceilings.
-6. For an active profile, the host durably appends it in one IndexedDB
+9. For an active profile, the host durably appends it in one IndexedDB
    transaction and acknowledges its exact digest.
 
 On a clean browser, accepting a community creates a fresh local member identity
@@ -337,8 +375,10 @@ bundle travel through the cross-store join transaction. Posting is disabled
 until that transaction is complete.
 
 With an active community, an import must authenticate the exact same namespace.
-The entire acceptance fails on a namespace mismatch, unsupported record class,
-invalid signature, invalid capability, malformed entry, or exceeded bound.
+It must also bind to the exact pinned descriptor. The entire file is rejected
+before selection on a namespace or descriptor mismatch, unsupported record
+class, invalid signature, invalid capability, malformed entry, or exceeded
+input bound.
 
 ### Export
 
@@ -347,13 +387,13 @@ Rust constructs one consolidated canonical `.riot-evidence` artifact from
 every exported post retain their original canonical entry, capability,
 signature, and payload component bytes; only the bounded canonical bundle
 envelope is newly encoded. The browser downloads it without server involvement.
-The UI distinguishes:
+The UI uses only these achieved states:
 
 - **Saved on this browser**
 - **Export prepared**
-- **Exchanged**
 
-Preparing a download never claims that another node received it.
+Preparing a download never claims that another node received it, and this slice
+never reports **Exchanged**.
 
 ## Interface shape
 
@@ -384,17 +424,71 @@ are single-use and invalidated by relevant state changes.
 The initial surface contains:
 
 - first-run create/import choices;
-- a home newswire with community name and offline state;
+- a home newswire with community name, remaining capacity, and offline/file-only
+  exchange state;
 - a structured update composer;
 - an immutable review screen;
 - an import preview with selectable supported entries; and
 - a community menu with export, full technical identifiers, and the
   prototype-key-storage warning.
 
-The newswire displays headline, body, author label, freshness or expiry, source,
-and AI-assisted status where supported by the current record model. Full
+The newswire displays headline, body, author label, explicit **Expires…** or
+**Expired…** state, source, and AI-assisted status where supported by the
+current record model. Full
 namespace, signer, entry, and bundle identifiers are available without
 truncation behind technical details.
+
+After clean-browser import, Home and community settings identify **Your author
+on this browser** with its full handle separately from imported authors and the
+organizer. They never describe the new member as a recovered identity.
+
+Online or offline, Home says **Nothing syncs automatically. Share updates by
+exporting a file for someone else to import.** Offline adds **You can keep
+writing; posts save on this browser.** Post success says **Saved on this
+browser. Export a file to share it.** Export success says **Export prepared**
+and explains that Riot cannot know whether another person received or imported
+the file. **Exchanged** is explanatory future vocabulary only and never appears
+as an achieved state in this slice.
+
+All actions use labeled native controls. Import choices are a `fieldset` with a
+`legend`; selection count and persistence messages use polite live regions.
+Opening compose, review, import preview, or a recovery panel moves focus to its
+heading. Back/cancel restores focus to the invoking control. Validation errors
+are associated with their inputs, preserve entered values, and receive focus as
+a summary before the invalid fields. Adding a saved post does not steal focus
+from the post-success message or the next deliberate action.
+
+## Recovery interactions
+
+Recovery never deletes or replaces identity automatically.
+
+- **Missing or invalid signing profile, verified log:** Home opens read-only
+  with **Posting key missing on this browser**. Verified posts and normal
+  `.riot-evidence` export remain available. **Retry storage check** rereads the
+  profile; **Start over on this browser** follows the destructive flow below.
+- **Corrupt, mismatched, or unverifiable log:** Normal Home and normal export
+  remain unavailable because Riot cannot claim the stored history is complete.
+  The recovery panel identifies the first failing sequence and sanitized error,
+  offers **Retry verification**, permits download of each bounded raw stored
+  bundle with **Unverified recovery data — not a Riot export**, and offers the
+  destructive start-over flow. A verified prefix may be summarized as
+  incomplete but is never presented as the current community or exported as a
+  complete artifact.
+- **Interrupted create or clean join with an exact matching operation:** The
+  page shows **Finishing community setup** and resumes the recorded idempotent
+  steps without minting a key. A storage failure exposes **Retry setup**. Any
+  mismatch moves to the corrupt-state recovery panel.
+- **Terminal Wasm failure:** Mutation stops immediately. The panel offers
+  **Reload and retry**, bounded raw bundle downloads labeled unverified, and
+  start over. Normal feed and export are unavailable because the failed core
+  cannot establish their validity.
+
+**Start over on this browser** first offers export when normal verified export
+is available, states that the posting key and all locally stored records will
+be removed, and requires a second explicit confirmation containing the full
+community name. It then deletes only the fixed Riot storage keys and database.
+Cancellation changes nothing. Starting over creates or imports a new local
+community; it does not continue a full community under a new descriptor.
 
 ## Failure and security model
 
@@ -430,9 +524,11 @@ Each build emits a content-hashed release manifest containing the release ID,
 every authored/generated asset URL, byte length, and SHA-256 digest. During
 installation the worker fetches every listed response with `cache: "reload"`,
 verifies its actual bytes, and populates a release-named cache. Any missing,
-extra, wrong-sized, or wrong-digest asset aborts installation and leaves the
-controlling release unchanged. Stable navigations are served from the
-controlling release's cached `index.html`; subresources use their
+wrong-sized, or wrong-digest listed asset aborts installation and leaves the
+controlling release unchanged. A build-time static-root contract fails on any
+authored/generated file absent from the manifest; the worker does not pretend
+it can enumerate arbitrary extra origin files. Stable navigations are served
+from the controlling release's cached `index.html`; subresources use their
 content-addressed URLs.
 
 The worker never calls `skipWaiting` or `clients.claim`. A waiting release does
@@ -471,7 +567,9 @@ corresponding production behavior.
   convenience path with reconstructed UI fields.
 - Reviews are immutable, state-bound, and single-use.
 - Imports cannot mutate before acceptance.
-- Cross-community and mixed-record imports fail atomically.
+- Invalid/unsupported sibling items reject the whole file before selection.
+- Cross-community, mixed-record, same-namespace/different-descriptor, and
+  multiple-descriptor clean imports fail atomically.
 - Replay returns the same projection and signer relationship.
 - The exact-proof ledger preserves accepted component bytes and live/pruned
   selection across replay.
@@ -501,6 +599,14 @@ corresponding production behavior.
 - Invalid, oversized, cross-namespace, and unsupported imports commit nothing.
 - Startup rejects wrong Blob sizes/digests, manifest disagreement, record 257,
   aggregate byte 32 MiB + 1, and accepted entry 1,025 before unbounded staging.
+- Profile 256 KiB + 1, one bundle 8 MiB + 1, and metadata 64 KiB + 1 fail
+  before parsing; a reused digest paired with different bytes fails rather than
+  being treated as a duplicate.
+- Capacity remaining, near-full, full, projected post/import use, and the
+  no-pruning-on-expiry rule are visible before confirmation.
+- Missing-key, corrupt-log, interrupted-operation, and terminal-Wasm recovery
+  expose exactly their specified read/export/retry/raw-download/start-over
+  actions without automatic deletion.
 - Failed or partial precache never installs; a waiting worker never activates
   with an old-release client; reopening uses one coherent release.
 - Keyboard operation, focus movement, form labels, and status announcements
