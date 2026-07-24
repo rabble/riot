@@ -1,6 +1,6 @@
 # Riot Public Store Release Kit
 
-Status: revision 2 for design-review gate.
+Status: exceptional revision 3 for design-review gate.
 
 ## Goal
 
@@ -12,10 +12,10 @@ Prepare Riot 1.0 as a free, worldwide public early-access release for:
 
 The same candidate binaries must pass TestFlight and Google Play internal
 testing before they are promoted to public distribution. The release kit must
-generate every repository-owned artifact needed for submission, expose
-credential-gated upload commands, and identify the small set of legal,
-contractual, hardware, and console actions that cannot be completed from the
-repository.
+generate every repository-owned artifact needed for submission, prepare and
+validate explicit Console handoffs, and identify the legal, contractual,
+hardware, signing, and authenticated Console actions that cannot be completed
+from the repository.
 
 ## Product position
 
@@ -78,13 +78,17 @@ Add a canonical `release/` tree with four responsibilities:
 3. **Visual source and output** — checked-in source captures/templates and
    reproducibly generated store assets.
 4. **Candidate production** — scripts, immutable manifests, and append-only
-   sign-off records for build, validation, upload, hardware approval, and
-   promotion.
+   sign-off records for build, validation, Console handoff, hardware approval,
+   and rollout.
 
 The directory should be automation-ready without requiring Fastlane in this
 slice. Canonical metadata uses JSON with a checked-in JSON Schema; human
 worksheets use Markdown. Candidate manifests, visual provenance, build-number
 allocations, and ledger events each have their own versioned JSON Schema.
+Every durable schema has a fixed `$id`, explicit `schemaVersion`,
+`additionalProperties: false`, canonical JSON serialization for digests,
+globally unique operation IDs, and sequence/predecessor linkage; records are
+validated before append and after readback.
 Visual templates and their source captures produce deterministic output when
 run with the pinned Node/npm and image-tool versions. One checked-in release
 toolchain manifest centralizes every tool version and checksum. Signed Apple
@@ -92,14 +96,15 @@ archives and Android bundles are not byte-reproducible promises: each is built
 once, treated as immutable, identified by its digest and signing identity, and
 promoted without rebuilding.
 
-Secrets, certificates, provisioning profiles, keystores, API keys, passwords,
-and authenticated session data must remain outside git. Scripts may accept
-paths and credentials from environment variables or explicitly ignored local
-configuration. Credentialed commands verify restrictive file permissions, use
-least-privilege store roles, never copy keys into persistent home-directory
-locations, never place passwords in command arguments or logs, disable
-long-lived signing daemons where applicable, clean unavoidable temporary files
-with traps, and document revocation and rotation.
+Secrets, certificates, provisioning profiles, keystores, passwords, and
+authenticated Console session data must remain outside git. Candidate-build
+scripts may accept signing material from environment variables or explicitly
+ignored local configuration. Signing commands verify restrictive file
+permissions, never copy keys into persistent home-directory locations, never
+place passwords in command arguments or logs, disable long-lived signing
+daemons where applicable, clean unavoidable temporary files with traps, and
+document revocation and rotation. Repository tooling never receives Apple or
+Google store API credentials in this slice.
 
 ## Identifiers and versions
 
@@ -129,11 +134,11 @@ allocation event before candidate production. Every build starts from a commit
 containing that landed reservation. Fetch/rebase detects duplicate allocations;
 both colliding candidates are blocked and the later reservation must allocate a
 new number and rebuild. The recorded store maximum includes actor and timestamp
-and is considered stale at upload time: immediately before every upload, the
-operator records a fresh authenticated store readback. If the store maximum is
-at or above the reservation, the candidate becomes `superseded` unless the
-existing store build can be reconciled to the exact candidate under the remote
-mutation rules below.
+and is considered stale at handoff time: immediately before every Console
+upload, the operator records a fresh readback from an authenticated Apple or
+Google Console session. If the store maximum is at or above the reservation,
+the candidate becomes `superseded` unless the existing store build can be
+reconciled to the exact candidate under the human-Console evidence rules below.
 
 Local debug workflows remain usable without distribution credentials.
 
@@ -243,11 +248,11 @@ Asset validation checks dimensions, format, alpha requirements where
 applicable, file size, ordering, expected count, metadata absence, fixture
 provenance, safe areas, text geometry, and contrast. A screenshot provenance
 manifest records candidate ID, full commit, candidate build, platform,
-OS/device class, locale, appearance, source hash, synthetic fixture revision,
-and template version. Every generated image is visually reviewed at its
-intended aspect ratio and at store-thumbnail scale. The approval record names
-the provenance-manifest digest, reviewer, timestamp, and both visual-review
-results.
+OS/device class, orientation, locale, appearance, capability/journey claim ID,
+source hash, synthetic fixture revision, and template version. Every generated
+image is visually reviewed at its intended aspect ratio and at store-thumbnail
+scale. The approval record names the provenance-manifest digest, reviewer,
+timestamp, and both visual-review results.
 
 ## Privacy and policy evidence
 
@@ -301,9 +306,9 @@ actual algorithms and distribution behavior and record the selected answer; it
 must not preserve or change `ITSAppUsesNonExemptEncryption` by assumption. The
 current hard-coded value is removed from candidate configuration. While the
 classification is unresolved, only unsigned/local validation builds are
-allowed. Apple archive, export, and upload all fail closed. After approval, the
-selected value is injected during archive production and verified in the
-archived plist for both Apple targets.
+allowed. Apple archive, export, and Console-handoff readiness all fail closed.
+After approval, the selected value is injected during archive production and
+verified in the archived plist for both Apple targets.
 
 Store agreements, tax, banking, trader-status, and similar account declarations
 remain human-only gates and must be resolved before public promotion when
@@ -323,10 +328,8 @@ user-directed disclosure.
 - Produce a Release archive and App Store export suitable for TestFlight and
   later public promotion.
 - Harden the existing release script so version, build, source state, archive,
-  export, and upload intent are explicit.
-- Read an App Store Connect API key from its original external path after
-  checking ownership/mode; do not copy it to
-  `~/.appstoreconnect/private_keys`.
+  export, and Console-handoff intent are explicit. It stops after export and
+  prints Xcode Organizer/App Store Connect handoff steps; it never uploads.
 - Preserve the current Keychain access-group behavior and device-only storage
   protections.
 
@@ -352,7 +355,7 @@ user-directed disclosure.
   and run credentialed Gradle commands with `--no-daemon`.
 - Produce a signed release Android App Bundle (`.aab`).
 - Keep release builds possible in a validation-only unsigned mode when the
-  signing key is unavailable, while refusing any upload/promotion command.
+  signing key is unavailable, while refusing Console-handoff readiness.
 - Preserve API-level policy compliance and the current local-network address
   restrictions.
 
@@ -385,64 +388,107 @@ hardware result, and promotion gate.
 3. Run portable repository, metadata, asset, supply-chain, and release
    validations.
 4. Build each candidate once and write its immutable candidate manifest.
-5. Upload iOS/iPadOS to TestFlight, macOS to its App Store Connect beta/review
-   path, and Android to Play internal testing. Record store receipts and
-   store-assigned build identities in append-only events.
-6. Run the platform and cross-device rehearsal against those exact store
+5. Prepare and push a human-action intent to the authoritative release branch.
+6. A named operator uploads iOS/iPadOS and macOS through Xcode Organizer/App
+   Store Connect and uploads the Android App Bundle through Play Console.
+   Repository tooling does not execute these mutations.
+7. The operator and a second verifier record Console evidence and store-assigned
+   identities in append-only events.
+8. Run the platform and cross-device rehearsal against those exact store
    builds.
-7. Append test and human approvals that reference the candidate-manifest
+9. Append test and human approvals that reference the candidate-manifest
    digest.
-8. Promote each independently accepted candidate to a staged worldwide public
-   early-access rollout without rebuilding.
+10. A named operator performs each phased/staged rollout change in the
+    appropriate Console; a second verifier records evidence after every step.
 
-Candidate states are:
+### Manual Console operation contract
 
-`draft → built → upload-pending → uploaded → beta-accepted →
-promotion-pending → promoted`.
+No repository command uploads, submits, releases, changes rollout percentage,
+pauses, resumes, halts, or withdraws a store build in this slice. Those are
+explicit `HUMAN ACTION` gates:
 
-`discarded`, `rejected`, and `superseded` are terminal. A remote call whose
-result cannot be proven enters `upload-indeterminate` or
-`promotion-indeterminate`; neither state permits another mutation.
+| Platform | Artifact handoff | Authenticated readback/evidence |
+| --- | --- | --- |
+| iOS/iPadOS | Xcode Organizer → App Store Connect/TestFlight | App Store Connect version/build, processed state, submission/build ID, timestamp, operator, and redacted screenshot/export |
+| macOS | Xcode Organizer → App Store Connect | App Store Connect version/build, processed state, submission/build ID, timestamp, operator, and redacted screenshot/export |
+| Android | signed `.aab` → Google Play Console internal testing | package/version name/version code, track/release ID, app-signing certificate fingerprint, state, timestamp, operator, and redacted screenshot/export |
 
-Every remote store mutation uses a durable intent/outcome protocol:
+The authoritative cross-checkout coordination domain is the fast-forward-only
+remote branch `release/riot-1.0`. Before any Console mutation, the release
+coordinator commits and pushes exactly one active intent event for the
+candidate/platform/action. A non-fast-forward push fails; the actor fetches and
+re-evaluates. No second intent is allowed until the first has a recorded
+outcome. The Console itself is authoritative for what remote state exists; the
+immutable local candidate manifest is authoritative for which artifact was
+approved.
 
-1. append and fsync an intent event containing candidate ID, operation UUID,
-   intended store action, current authenticated store readback, artifact and
-   manifest digests, and expected remote identity;
-2. invoke the store exactly once;
-3. capture the command receipt without secrets;
-4. perform an authenticated store readback for public identifier, version,
-   build number, processed/upload status, signing certificate identity where
-   exposed, and store-assigned submission/build ID; and
-5. append and fsync a success or failure event with that readback.
+The checked-in release-role file names the release coordinator, Console
+operators, evidence verifiers, policy approver, and hardware approver. The
+Console operator and evidence verifier for one action must be different named
+people. The protected release branch and Git-host authentication are the
+authority for intent/outcome events; promotion evidence records the actor,
+verifier, predecessor digest, and candidate-manifest digest.
 
-Crash and retry behavior is exact:
+The human handoff protocol is:
 
-- before the intent is durable, no remote call is allowed;
-- after durable intent but before a provable outcome, restart enters the
-  indeterminate state and performs read-only reconciliation first;
-- if authenticated readback proves the intended candidate exists or the
-  promotion is active, append a `reconciled-success` outcome and continue;
-- if readback proves the mutation never occurred, append
-  `reconciled-not-applied`, then a fresh intent may retry the same immutable
-  candidate;
-- if the store identity conflicts or readback cannot decide, report
-  `HUMAN ACTION`; never retry automatically; and
-- after a durable outcome, duplicate invocation is a read-only no-op that
-  reports the existing receipt.
+1. `prepare-handoff` validates the candidate and fresh Console maximum
+   attestation, writes an operation UUID and expected remote identity, and
+   requires that intent commit to land on `release/riot-1.0`.
+2. The tool stops with `HUMAN ACTION` and prints the exact Console steps and
+   evidence fields. It has no store credentials and performs no mutation.
+3. The operator performs the action once in the authenticated Console.
+4. `record-console-outcome` validates operator-supplied evidence against the
+   candidate; a second named verifier attests to the Console readback before
+   the outcome commit lands on the release branch.
+5. If the operator session is interrupted or the remote result is unclear, the
+   state becomes `<action>-indeterminate`. No second action is permitted. The
+   operator and verifier inspect the Console until it supplies authoritative
+   positive evidence or a terminal negative outcome such as an explicit
+   rejected/invalid/withdrawn record. An eventually consistent “not found” or
+   absent row is never proof that the action did not occur.
+6. Positive evidence appends `reconciled-success`. Terminal negative evidence
+   appends `reconciled-failed`; an upload then requires a new build number,
+   while a rollout action may be retried only from the explicit state table.
+   Ambiguous evidence remains `HUMAN ACTION` indefinitely.
 
-The store's authenticated readback is authoritative for whether a remote
-mutation happened; the immutable local manifest remains authoritative for
-which artifact was approved. Reconciliation succeeds only when both identities
-agree.
+### Candidate and rollout state table
 
-Transitions append events to a ledger; the immutable candidate manifest is
-never edited. A rejected build receives a new build number. Partial builds may
-be discarded before upload but allocated numbers are never reused. A stale
-manifest, changed artifact hash, different signing identity, missing prior
-state, or invalid transition fails. Ledger appends use an exclusive lock,
-fsync, and atomic rename; interrupted writes recover the last complete event
-and report the incomplete transition.
+All transitions append schema-validated events; no manifest is edited.
+
+| From | Event | To | Rule |
+| --- | --- | --- | --- |
+| `draft` | build succeeded | `built` | immutable manifest written |
+| `draft` or `built` | discard before Console upload | `discarded` | terminal; number never reused |
+| `built` | pushed upload intent | `upload-human-action` | one active remote-branch intent |
+| `upload-human-action` | verified Console success | `uploaded` | store identity matches candidate |
+| `upload-human-action` | terminal negative Console outcome | `rejected` | terminal; new build required |
+| `upload-human-action` | interrupted/unclear | `upload-indeterminate` | no retry |
+| `upload-indeterminate` | verified positive readback | `uploaded` | `reconciled-success` |
+| `upload-indeterminate` | terminal negative readback | `rejected` | terminal; new build required |
+| `built` or `upload-human-action` | store maximum/collision invalidates number | `superseded` | terminal; new allocation/build |
+| `uploaded` | beta/device/policy gates pass | `beta-accepted` | exact store build tested |
+| `uploaded` | store rejects candidate | `rejected` | terminal |
+| `beta-accepted` | pushed rollout-start intent | `rollout-human-action` | one Console action |
+| `rollout-active` or `rollout-paused` | pushed advance/pause/resume/halt intent | `rollout-human-action` | intent records action and prior stable state |
+| `rollout-human-action` | verified start/advance/resume | `rollout-active` | record platform phase/percentage |
+| `rollout-human-action` | verified pause | `rollout-paused` | record platform phase/percentage |
+| `rollout-human-action` | verified halt/withdraw | `rollout-halted` | terminal for this candidate |
+| `rollout-human-action` | terminal negative Console outcome | prior stable state | append failure; fresh intent allowed |
+| `rollout-human-action` | interrupted/unclear | `rollout-indeterminate` | no retry |
+| `rollout-indeterminate` | verified positive readback | intended verified state | active, paused, or halted as evidenced |
+| `rollout-indeterminate` | terminal negative readback | previous stable state | append failure; fresh intent allowed |
+| `rollout-active` | verified 100 percent/completed | `rollout-complete` | successful terminal state |
+
+Apple's seven-day phased-release phases and every Google staged percentage are
+distinct intent/outcome operations. “Public promotion” is not a single state.
+
+A rejected or superseded build receives a new build number. Partial builds may
+be discarded before Console upload but allocated numbers are never reused. A
+stale manifest, changed artifact hash, different signing identity, missing
+prior state, or invalid transition fails. Ledger appends use an exclusive
+local lock, fsync, and atomic rename in addition to the remote-branch
+fast-forward rule; interrupted writes recover the last complete event and
+report the incomplete transition.
 
 Each candidate manifest records:
 
@@ -459,18 +505,21 @@ Each candidate manifest records:
 
 Append-only sign-off events record store upload receipts/identifiers, beta
 results, hardware results, human approvals, promotion receipts, remaining
-gates, and the SHA-256 of the complete immutable candidate manifest. Promotion
-verifies the store build identity, artifact signing certificate, and recorded
-candidate-manifest digest before allowing the operator to continue.
+gates, approver/verifier identities, and the SHA-256 of the complete immutable
+candidate manifest. Console-handoff readiness verifies the store build
+identity, artifact signing certificate, and recorded candidate-manifest digest
+before printing human steps.
 
 The command surface stays deliberately separate:
 
 - `status` is read-only and reports `PASS`, `BLOCKED`, or `HUMAN ACTION` for
   every gate with the failing file/value, expected value, and recovery command;
+- `status --json` emits the same gate model for CI;
 - `generate` writes deterministic metadata/visual output;
 - `build` creates one named candidate;
-- `upload` requires explicit credentials and confirmation; and
-- `promote` accepts only a beta-accepted candidate.
+- `prepare-handoff` persists a Console intent and prints human steps;
+- `record-console-outcome` validates operator/verifier evidence; and
+- no command mutates Apple or Google store state.
 
 ## Tooling implementation and TDD contract
 
@@ -499,16 +548,36 @@ Every work unit follows RED → GREEN → REFACTOR. The initial test design is:
 | Candidate manifest | changed artifact or signing identity must fail verification | create/verify immutable manifest | iOS, Mac, Android; unsigned validation-only Android; missing artifact; stale tool hash; malformed schema |
 | State machine/ledger | invalid skip, duplicate transition, accepted-ID reuse, and mutation from indeterminate state must fail | append one legal transition atomically | every legal/illegal edge and terminal state; partial write recovery; rejected/discarded/superseded semantics; rejected retry with new number |
 | Process runner | dirty tree, nonzero command, timeout, and zero tests must fail | run one fake validation and normalize result | Cargo/XCTest/Gradle zero-test logs; signal; timeout; redacted stderr |
-| Credential guard | persistent copy, broad mode, logged secret, and absent credential must fail | authorize one fake upload using external read-only path | `0600`/wrong modes; ASC key; Android key/password; cleanup; redaction; `--no-daemon` |
+| Signing-credential guard | persistent copy, broad mode, logged secret, and absent credential must fail candidate signing | authorize one fake signed build using external material | `0600`/wrong modes; Apple signing identity; Android key/password; cleanup; redaction; `--no-daemon`; store API credential rejected |
 | Export-compliance guard | unresolved or archived-value mismatch must block Apple archive/export/upload | inject and verify one recorded decision | unresolved; exempt/non-exempt; iOS/Mac archived plist mismatch |
 | Supply-chain guard | missing Gradle checksum/locks or changed lock/tool hash must fail | verify one pinned input set | Cargo/npm/Gradle/toolchain fixtures; advisory finding with/without disposition |
 | Status reporter | mixed gates must never summarize as ready | render tri-state result and recovery action | PASS/BLOCKED/HUMAN ACTION; missing evidence; exact file/value diagnostics |
-| Upload/promote adapter | implicit upload, rebuilt hash, wrong store ID, unaccepted candidate, and blind retry after a crash must fail | persist intent, call a fake store runner, read back, then persist outcome | crash before intent; after intent/before call; after remote success/before outcome; after durable outcome; reconciliation present/absent/conflicting/unknown; cancellation; receipt capture; final store-max change; per-platform identity; promotion without rebuild |
+| Console handoff/evidence | any attempted store process invocation, missing pushed intent, wrong store ID, unaccepted candidate, or blind retry after ambiguity must fail | persist intent, print steps, validate fake operator/verifier evidence | no store credential/process adapter; remote-ref CAS failure; Apple/Google evidence shapes; interruption; positive/terminal-negative/absent/ambiguous readback; eventual-consistency absence remains indeterminate; every rollout phase/percentage/pause/resume/halt |
 | Privacy/policy consistency | store answer contradicting code/network/policy evidence must fail | compare one answer to evidence matrix | no collection; user-directed fetch; report transmission; missing UGC control; stale policy URL |
+| iOS/iPadOS release configuration | wrong ID/version/icon, missing privacy manifest, unsafe export value, signing or entitlement mismatch must fail | validate one archive/config fixture | Debug versus Release; iPhone/iPad families; app icon; archived plist; Keychain group; unresolved export decision |
+| macOS release configuration | ad-hoc candidate, wrong ID/version/icon, Intel claim, sandbox/entitlement or export mismatch must fail | validate one Mac archive/config fixture | local ad-hoc stays valid; App Store distribution; Apple-silicon/macOS 14 boundary; app icon; archived plist |
+| Android release configuration | wrong application ID/version, missing icons, debug key, daemon/password exposure, or unsigned handoff must fail | validate one bundle/config fixture | `net.protest.riot`; adaptive/legacy/store icons; validation-only unsigned versus signed candidate; upload/app-signing fingerprints |
+| Synthetic fixture contract | production identifier, non-deterministic value, or fixture unavailable on one platform must fail | load one shared synthetic release scenario | iOS/iPad/Mac/Android parity; fixed clock/IDs/content; no personal/location/notification data; production build exclusion outside capture mode |
+| Native capture entry points | capture without candidate/fixture provenance or wrong device/orientation must fail | launch one platform capture test and emit provenance | iPhone portrait; iPad; Mac landscape; Android phone/tablet; locale/appearance/orientation; metadata stripping |
+| Candidate journey rehearsal | missing, skipped, zero-test, dead-end recovery, or platform-only claim must fail | execute one scripted first-install-to-first-read journey | create/join/publish/sign/restart/offline; denied permission recovery; invalid join; no peers; all named device classes; advertised hardware pairs |
 
 Golden image tests assert geometry/tokens and are supplemented by Playwright
 captures plus human visual review; they do not substitute brittle byte-for-byte
 PNG snapshots for semantic checks.
+
+Implementation dependency order is fixed:
+
+1. policy/privacy/export audit and versioned durable-record schemas;
+2. shared synthetic fixtures and native configuration tests;
+3. metadata/visual/config validators and generators;
+4. build-number allocation, ledger, manifest, and status engine;
+5. signing, export, and supply-chain guards;
+6. credential-free then signed candidate builds;
+7. native capture and journey rehearsal;
+8. Console handoff/evidence reconciliation; and
+9. beta acceptance followed by per-step rollout handoffs.
+
+No later work unit begins while an earlier blocking contract is red.
 
 Owned implementation scope includes `release/**`, `scripts/release/**`,
 `scripts/testflight-release.sh`, `scripts/green.sh`, `package.json` and its
@@ -581,21 +650,22 @@ Release commands fail closed with actionable diagnostics for:
 - dirty or mismatched source state;
 - missing generated Rust/UniFFI artifacts;
 - wrong identifiers, versions, or build numbers;
-- absent signing credentials for a signed/upload action;
+- absent signing credentials for a signed candidate;
 - invalid or incomplete metadata;
 - missing or invalid visual assets;
 - inconsistent privacy declarations;
 - failed or empty test runs;
 - candidate, signing-identity, toolchain, or store-build mismatch;
 - invalid candidate-state transition or interrupted ledger append;
-- unresolved export classification for an Apple archive/export/upload;
+- unresolved export classification for an Apple archive/export/Console
+  handoff;
 - missing UGC safeguard or operational response owner; or
 - missing required human/hardware approvals.
 
 Tooling must never:
 
 - copy credentials or signing material into the repository;
-- copy store keys into persistent credential-discovery directories;
+- accept or copy store API keys in this slice;
 - expose credentials in arguments, logs, crash output, or long-lived daemons;
 - silently upload;
 - overwrite an accepted candidate;
@@ -620,8 +690,8 @@ The repository-owned kit is complete when:
 5. Privacy, policy, permissions, content-rating, review, and encryption
    worksheets are complete and evidence-backed.
 6. All repository quality and coverage gates pass.
-7. Candidate-manifest, ledger, status, upload, and promotion contracts pass
-   their complete unit and integration fixture suites.
+7. Candidate-manifest, ledger, status, Console-handoff, evidence, and rollout
+   state contracts pass their complete unit and integration fixture suites.
 8. The TestFlight, Mac App Store beta/review, Play internal-test,
    device-rehearsal, and public-promotion steps are documented without
    requiring a rebuild.
