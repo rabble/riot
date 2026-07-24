@@ -194,10 +194,12 @@ node --test scripts/release/test/records.test.mjs
 
 Expected RED: module-not-found for `records.mjs`. `createRecord` then
 canonicalizes `{schemaVersion,schema,createdAt,payload}` and stores its full
-SHA-256. `verifyRecord` rejects truncated, uppercase, malformed, or mismatched
-digests and returns the frozen verified payload. Add a test whose payload has
-an `evidenceDigest` reference and prove 63-character, uppercase, and non-hex
-references fail before GREEN.
+SHA-256. `verifyRecord` rejects missing or unknown wrapper fields,
+`schemaVersion !== 1`, an unknown or malformed fixed schema identifier, a
+non-RFC3339 UTC timestamp, and truncated, uppercase, malformed, or mismatched
+digests before returning the frozen verified payload. Add a test whose payload
+has an `evidenceDigest` reference and prove 63-character, uppercase, and
+non-hex references fail before GREEN.
 
 Run:
 
@@ -251,9 +253,9 @@ test("validateSource rejects unknown and missing fields with JSON pointers", asy
 });
 ```
 
-Also cover unknown schema names, malformed schema JSON, duplicate `$id`, missing
-or wrong `schemaVersion`, truncated digest/operation IDs, and non-RFC3339
-timestamps. Every durable object schema requires
+Also cover unknown schema names, malformed schema JSON, missing, duplicate, or
+unexpected fixed `$id`, missing or wrong `schemaVersion`, truncated
+digest/operation IDs, and non-RFC3339 timestamps. Every durable object schema requires
 `"schemaVersion": { "const": 1 }`. Keep minimal valid object factories inline
 in `schema.test.mjs`; Task 4 exercises the real source files through the same
 registry.
@@ -337,8 +339,10 @@ Tests must reject:
   Android application ID `net.protest.riot`;
 - a privacy answer marked `no-collection` without a matching outbound-network
   evidence row;
-- any outbound-network scenario missing trigger, destination category,
-  transmitted fields, user direction, retention, or source code evidence;
+- an outbound-network matrix missing any exact row for first launch, denied
+  permission, granted permission, nearby sync, or followed-site refresh;
+- any outbound-network scenario missing initiator, destination class,
+  transmitted fields, redirect handling, retention, or source code evidence;
 - missing camera/Bluetooth/local-network/notification/Android-INTERNET
   justification;
 - a required-reason API with no manifest reason;
@@ -349,8 +353,10 @@ Tests must reject:
   response above 72 hours;
 - an accessibility claim without every common-task/device record;
 - a store claim without code-path and candidate-journey IDs;
-- review instructions missing first-launch, create/join/publish/restart/offline,
+- review instructions missing first-launch, demo content, no-login behavior,
+  create/join/publish/restart/offline, local permissions, nearby testing,
   permission-denial recovery, invalid-join, and no-peer topics;
+- missing or stale privacy, support, or marketing URL evidence;
 - resolved Apple export classification without the algorithms used,
   distribution behavior, approver, and evidence;
 - account/legal answers represented as `PASS` without authenticated evidence.
@@ -406,14 +412,17 @@ operator for every operational control. If any control is absent, record
 `"state": "blocked"` with the exact missing code path. Do not edit product code
 in this work unit.
 
-`network-matrix.json` has one row per user-directed and background network
-scenario, each with trigger, destination category, transmitted fields, user
-direction, retention, and code-path evidence. `review-instructions.json` covers
-first launch, create/join/publish/sign/restart/offline, denied-permission
-recovery, invalid join, and no peers. `export-compliance.json` names the
-algorithms used and whether/how the binary is distributed, but keeps
-classification `human-action` until an authenticated approver and evidence are
-recorded.
+`network-matrix.json` has exact rows for first launch, denied permission,
+granted permission, nearby sync, and followed-site refresh, each with
+initiator, destination class, transmitted fields, redirect handling, retention,
+and code-path evidence. `review-instructions.json` covers first launch, demo
+content, no-login behavior, create/join/publish/sign/restart/offline, local
+permissions, nearby testing, denied-permission recovery, invalid join, and no
+peers. Canonical product/privacy records carry privacy, support, and marketing
+URLs plus current evidence; missing or stale URL evidence blocks.
+`export-compliance.json` names the algorithms used and whether/how the binary is
+distributed, but keeps classification `human-action` until an authenticated
+approver and evidence are recorded.
 
 - [ ] **Step 4: Implement validation and deterministic Markdown generation**
 
@@ -421,11 +430,13 @@ Export:
 
 ```js
 export function evaluatePolicy(sources) {}
-export async function generateWorksheets({ sources, outputDirectory, fs }) {}
+export async function loadPolicySources({ sourceDirectory, fs }) {}
+export async function generateWorksheets({ sources, outputDirectory, fs, sha256 }) {}
 ```
 
 `evaluatePolicy` returns ordered gates with `PASS`, `BLOCKED`, or
-`HUMAN ACTION`, JSON pointer, observed value, expected value, and recovery.
+`HUMAN ACTION`, source file, JSON pointer, observed value, expected value, and
+recovery.
 `generateWorksheets` receives injected `fs` and `sha256` adapters, writes each
 file to a sibling temporary path, renames it atomically, removes failed
 temporaries, and embeds the full source digest at the top of each Markdown file.
@@ -573,8 +584,9 @@ export function summarizeGates(gates) {}
 export function renderStatus(gates) {}
 ```
 
-Precedence is `BLOCKED` over `HUMAN ACTION` over `PASS`. Preserve diagnostic
-pointer, observed/expected values, and recovery command.
+Precedence is `BLOCKED` over `HUMAN ACTION` over `PASS`. Preserve the exact
+failing source file, JSON pointer, observed/expected values, and recovery
+command.
 
 - [ ] **Step 4: Implement the thin CLI**
 
