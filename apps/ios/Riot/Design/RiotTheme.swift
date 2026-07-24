@@ -54,6 +54,22 @@ public enum RiotTheme {
         hex(0xF6F2E9)
     }
 
+    public static func onReactionAccentHex(for scheme: ColorScheme) -> UInt32 {
+        scheme == .dark ? 0x131209 : 0xF6F2E9
+    }
+
+    public static func onReactionAccent(for scheme: ColorScheme) -> Color {
+        hex(onReactionAccentHex(for: scheme))
+    }
+
+    public static func dangerHex(for scheme: ColorScheme) -> UInt32 {
+        scheme == .dark ? 0xFFB4AB : 0xB3261E
+    }
+
+    public static func danger(for scheme: ColorScheme) -> Color {
+        hex(dangerHex(for: scheme))
+    }
+
     /// A stable, key-derived disc colour for a person's initials avatar. Not
     /// decoration: two people who both claim "Ana" get different discs because the
     /// colour is a pure function of their key, so the eye can tell them apart the
