@@ -1,0 +1,74 @@
+{
+  "schemaVersion": 1,
+  "fixtureRevision": "riot-1.0-synthetic-v1",
+  "fixtureKind": "synthetic",
+  "fixedClock": "2026-07-24T12:00:00.000Z",
+  "identifiers": {
+    "communityId": "594f46efab3be7a37c73bc24210ff74db1bde77cfd7d38ec45fba1e7fc6683c2",
+    "contributorId": "5f0aa3963f6529c1b6bdfec174cc6ca9ff0571dd852e646b3d85c0595e6bad17",
+    "stateIds": {
+      "community-newswire": "965a23af58731ecbb8725fbcacb4db4a4dd1366dfa51bd7dbdb54a4bbe673029",
+      "signed-publishing": "3393b18dda2eb674db90b223d7974d431a95c8edbf7a255aaab31aff2dfcb7af",
+      "labels-and-signatures": "f0dacbe550055e95e36da64af1a345ce854a396c36d0a34cc202d4d5acfce0c9",
+      "community-tools": "7b1ebb0e0e36d98dfc46a0cd22d8e7e9a045c035f6df3ce4a0667870919e401d",
+      "nearby-exchange": "7c77f58a435f92f469740e60cd7fa7ae8271bc483b32813c31d9b36ce9dd4c9c",
+      "offline-copy": "419d963210324a56be33c0fa1ee46b7234545f27a48aa7c837e38d324ea6ef40"
+    }
+  },
+  "narrativeStates": [
+    {
+      "id": "community-newswire",
+      "surface": "spaces-home",
+      "headline": "Your community. Your newswire.",
+      "supportingCopy": "Follow updates from a community you choose.",
+      "communityId": "594f46efab3be7a37c73bc24210ff74db1bde77cfd7d38ec45fba1e7fc6683c2",
+      "contributorId": "5f0aa3963f6529c1b6bdfec174cc6ca9ff0571dd852e646b3d85c0595e6bad17",
+      "entryId": "965a23af58731ecbb8725fbcacb4db4a4dd1366dfa51bd7dbdb54a4bbe673029"
+    },
+    {
+      "id": "signed-publishing",
+      "surface": "compose",
+      "headline": "Publish signed updates from the field.",
+      "supportingCopy": "Signatures show source and integrity, not whether a claim is true.",
+      "communityId": "594f46efab3be7a37c73bc24210ff74db1bde77cfd7d38ec45fba1e7fc6683c2",
+      "contributorId": "5f0aa3963f6529c1b6bdfec174cc6ca9ff0571dd852e646b3d85c0595e6bad17",
+      "entryId": "3393b18dda2eb674db90b223d7974d431a95c8edbf7a255aaab31aff2dfcb7af"
+    },
+    {
+      "id": "labels-and-signatures",
+      "surface": "newswire",
+      "headline": "Read signatures and community editorial labels.",
+      "supportingCopy": "See signed source details. Community editorial labels are community signals, not independent factual verification.",
+      "communityId": "594f46efab3be7a37c73bc24210ff74db1bde77cfd7d38ec45fba1e7fc6683c2",
+      "contributorId": "5f0aa3963f6529c1b6bdfec174cc6ca9ff0571dd852e646b3d85c0595e6bad17",
+      "entryId": "f0dacbe550055e95e36da64af1a345ce854a396c36d0a34cc202d4d5acfce0c9"
+    },
+    {
+      "id": "community-tools",
+      "surface": "apps-checklists",
+      "headline": "Carry useful tools with the community.",
+      "supportingCopy": "Open a shared checklist alongside community updates.",
+      "communityId": "594f46efab3be7a37c73bc24210ff74db1bde77cfd7d38ec45fba1e7fc6683c2",
+      "contributorId": "5f0aa3963f6529c1b6bdfec174cc6ca9ff0571dd852e646b3d85c0595e6bad17",
+      "entryId": "7b1ebb0e0e36d98dfc46a0cd22d8e7e9a045c035f6df3ce4a0667870919e401d"
+    },
+    {
+      "id": "nearby-exchange",
+      "surface": "nearby",
+      "headline": "Exchange updates nearby.",
+      "supportingCopy": "Experimental: exchange updates directly with a nearby device.",
+      "communityId": "594f46efab3be7a37c73bc24210ff74db1bde77cfd7d38ec45fba1e7fc6683c2",
+      "contributorId": "5f0aa3963f6529c1b6bdfec174cc6ca9ff0571dd852e646b3d85c0595e6bad17",
+      "entryId": "7c77f58a435f92f469740e60cd7fa7ae8271bc483b32813c31d9b36ce9dd4c9c"
+    },
+    {
+      "id": "offline-copy",
+      "surface": "offline-copy",
+      "headline": "Keep a local copy available offline.",
+      "supportingCopy": "Keep a local copy ready to read without a connection.",
+      "communityId": "594f46efab3be7a37c73bc24210ff74db1bde77cfd7d38ec45fba1e7fc6683c2",
+      "contributorId": "5f0aa3963f6529c1b6bdfec174cc6ca9ff0571dd852e646b3d85c0595e6bad17",
+      "entryId": "419d963210324a56be33c0fa1ee46b7234545f27a48aa7c837e38d324ea6ef40"
+    }
+  ]
+}
