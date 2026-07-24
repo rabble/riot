@@ -45,7 +45,8 @@ final class DirectoryRepositoryTests: XCTestCase {
         XCTAssertNil(model.errorMessage)
         let row = try XCTUnwrap(model.rows.first { $0.name == "Checklist" })
         XCTAssertFalse(row.description.isEmpty)
-        XCTAssertTrue(row.badges.contains("Built in"))
+        XCTAssertFalse(row.badges.contains("Built in"))
+        XCTAssertTrue(row.badges.contains("Works offline"))
         // Its bytes ship with the app, so it is never "still arriving".
         XCTAssertFalse(row.badges.contains("Still arriving from your group"))
         // Held on this device, but no organizer has turned it on: Review.
@@ -88,7 +89,7 @@ final class DirectoryRepositoryTests: XCTestCase {
         model.refresh()
 
         let after = try XCTUnwrap(model.rows.first { $0.name == "Checklist" })
-        XCTAssertTrue(after.badges.contains("On in this space"))
+        XCTAssertFalse(after.badges.contains("On in this space"))
         XCTAssertTrue(after.canRecommend)
         guard case let .open(app) = after.availability else {
             return XCTFail("expected a trusted, held app to be openable, got \(after.availability)")
@@ -108,13 +109,119 @@ final class DirectoryRepositoryTests: XCTestCase {
         model.refresh()
 
         let onNow = try XCTUnwrap(model.rows.first { $0.name == "Checklist" })
-        model.recommend(onNow, note: "We used it all weekend")
+        let context = try XCTUnwrap(onNow.actionContext)
+        model.recommend(onNow, note: "We used it all weekend", context: context)
         XCTAssertNil(model.errorMessage)
-        XCTAssertEqual(model.confirmation, "Recommended Checklist")
+        XCTAssertEqual(model.confirmation, "Recommended Checklist to Berlin Mutual Aid")
 
-        model.share(onNow)
+        model.makeAvailable(onNow, context: context)
         XCTAssertNil(model.errorMessage)
-        XCTAssertEqual(model.confirmation, "Shared Checklist to Berlin Mutual Aid")
+        XCTAssertEqual(model.confirmation, "Made Checklist available in Berlin Mutual Aid")
+    }
+
+    func testRepositoryRejectsStaleExpectedNamespaceForEveryDirectoryMutation() throws {
+        let repository = try openRepository()
+        let space = try repository.createPublicSpace(title: "Berlin Mutual Aid")
+        let listing = try XCTUnwrap(
+            repository.directoryListings().first { $0.name == "Checklist" }
+        )
+        let stale = space.namespaceID + "ff"
+
+        XCTAssertThrowsError(
+            try repository.getCarriedApp(appID: listing.appId, expectedNamespaceID: stale)
+        ) { XCTAssertEqual($0 as? RepositoryError, .spaceMismatch) }
+        XCTAssertThrowsError(
+            try repository.endorseApp(
+                appID: listing.appId,
+                note: "Useful",
+                retract: false,
+                expectedNamespaceID: stale
+            )
+        ) { XCTAssertEqual($0 as? RepositoryError, .spaceMismatch) }
+        XCTAssertThrowsError(
+            try repository.shareApp(appID: listing.appId, expectedNamespaceID: stale)
+        ) { XCTAssertEqual($0 as? RepositoryError, .spaceMismatch) }
+
+        XCTAssertFalse(repository.endorsedAppIDs.contains(RiotDirectoryRow.hex(listing.appId)))
+    }
+
+    func testEnabledUnadmittedOpenAdmitsAndRemainsTrusted() throws {
+        let (repository, listing) = try repositoryCarryingChecklist()
+        let namespace = try XCTUnwrap(repository.currentSpace?.namespaceID)
+        try repository.trustApp(
+            appID: RiotDirectoryRow.hex(listing.appId),
+            expectedNamespaceID: namespace
+        )
+        let model = RiotDirectoryModel(port: repository)
+        model.refresh(approval: .organizer)
+        let row = try XCTUnwrap(model.snapshot?.inCommunity.first)
+
+        let app = try model.prepareOpen(row, context: XCTUnwrap(row.actionContext))
+
+        XCTAssertTrue(app.trusted)
+        XCTAssertTrue(try XCTUnwrap(repository.installedApps().first).trusted)
+        XCTAssertNotNil(repository.appDataBridge(appID: app.appIDHex))
+    }
+
+    func testDisabledUnadmittedAddAdmitsWithoutTrustingOrOpeningABridge() throws {
+        let (repository, _) = try repositoryCarryingChecklist()
+        let model = RiotDirectoryModel(port: repository)
+        model.refresh(approval: .organizer)
+        let row = try XCTUnwrap(model.snapshot?.availableToAdd.first)
+
+        let app = try model.prepareAdd(row, context: XCTUnwrap(row.actionContext))
+
+        XCTAssertFalse(app.trusted)
+        XCTAssertFalse(try XCTUnwrap(repository.installedApps().first).trusted)
+        XCTAssertNil(repository.appDataBridge(appID: app.appIDHex))
+    }
+
+    func testMemberCannotUsePrepareAddToBridgeAnUnadmittedTool() throws {
+        let host = try openRepository()
+        let space = try host.createPublicSpace(title: "Berlin Mutual Aid")
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("member-add-\(UUID().uuidString)", isDirectory: true)
+        let member = try RiotProfileRepository.open(
+            storage: try ProtectedProfileStorage(
+                fileURL: directory.appendingPathComponent("profile.json")
+            ),
+            keyStore: TestWrappingKeyStore(),
+            starterPacks: []
+        )
+        try member.joinSpace(space)
+        let listing = try XCTUnwrap(
+            member.directoryListings().first { $0.name == "Checklist" }
+        )
+        try member.shareApp(
+            appID: listing.appId,
+            expectedNamespaceID: space.namespaceID
+        )
+        let model = RiotDirectoryModel(port: member)
+        model.refresh(approval: .member)
+        let row = try XCTUnwrap(model.snapshot?.availableToAdd.first)
+
+        XCTAssertThrowsError(
+            try model.prepareAdd(row, context: XCTUnwrap(row.actionContext))
+        )
+        XCTAssertTrue(try member.installedApps().isEmpty)
+        XCTAssertNil(member.appDataBridge(appID: row.appIDHex))
+    }
+
+    func testMakeAvailablePublishesButDoesNotEnableTheTool() throws {
+        let repository = try openRepository()
+        let space = try repository.createPublicSpace(title: "Berlin Mutual Aid")
+        let model = RiotDirectoryModel(port: repository)
+        model.refresh(approval: .organizer)
+        let row = try XCTUnwrap(
+            model.snapshot?.availableToAdd.first { $0.name == "Checklist" }
+        )
+        let context = try XCTUnwrap(row.actionContext)
+
+        model.makeAvailable(row, context: context)
+
+        XCTAssertEqual(model.confirmation, "Made Checklist available in \(space.title)")
+        XCTAssertFalse(try XCTUnwrap(repository.installedApps().first).trusted)
+        XCTAssertNil(repository.appDataBridge(appID: row.appIDHex))
     }
 
     // MARK: - Getting an app this profile carries but has not taken up
@@ -380,12 +487,12 @@ final class DirectoryRepositoryTests: XCTestCase {
     func testApprovalFailuresAreTranslatedOutOfErrorCodes() {
         XCTAssertEqual(
             RiotAppModel.approvalFailureMessage(MobileError.LegacyProfileCannotOrganize),
-            "This profile was made before communities had organizers, so it can’t "
-                + "approve tools for this community. Start a new profile to organize one."
+            "This profile was made before spaces had organizers, so it can’t "
+                + "approve apps for this space. Start a new profile to organize one."
         )
         XCTAssertEqual(
             RiotAppModel.approvalFailureMessage(MobileError.NotSpaceOrganizer),
-            "Only the organizer of this community can turn a tool on here."
+            "Only the organizer of this space can turn an app on here."
         )
     }
 

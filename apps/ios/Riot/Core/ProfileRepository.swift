@@ -1059,6 +1059,15 @@ public final class RiotProfileRepository {
         try withAppMutationLock {
             try requireAppOperationsOpen()
             let space = try requireCurrentSpace(expectedNamespaceID: expectedNamespaceID)
+            // Authorization is checked even when this profile already sees the
+            // tool as off. Otherwise a member's forbidden revoke becomes a
+            // silent success at the host boundary and bypasses Rust entirely.
+            guard try appRuntime.isOrganizer() else {
+                if try appRuntime.canOrganize() {
+                    throw MobileError.NotSpaceOrganizer
+                }
+                throw MobileError.LegacyProfileCannotOrganize
+            }
             // Revoking an app that is already off is a true no-op. Preparing and
             // finalizing a redundant revoke would publish a marker and advance
             // the global execution generation, killing unrelated running tools.
@@ -1583,9 +1592,15 @@ extension RiotProfileRepository: DirectoryPorting {
     /// Writes (or withdraws) this profile's recommendation of an app. Endorsing
     /// an app whose bytes have not arrived yet is allowed by design — the marker
     /// composes with the app's later arrival.
-    public func endorseApp(appID: Data, note: String, retract: Bool) throws {
+    public func endorseApp(
+        appID: Data,
+        note: String,
+        retract: Bool,
+        expectedNamespaceID: String
+    ) throws {
         try withAppMutationLock {
             try requireAppOperationsOpen()
+            _ = try requireCurrentSpace(expectedNamespaceID: expectedNamespaceID)
             // Rust first: a marker it refuses is never written to disk.
             try appRuntime.endorseApp(appId: appID, note: note, retract: retract)
             let appIDHex = RiotDirectoryRow.hex(appID).lowercased()
@@ -1596,6 +1611,21 @@ extension RiotProfileRepository: DirectoryPorting {
                 )
             }
             try storage.save(persisted)
+        }
+    }
+
+    public func endorseApp(appID: Data, note: String, retract: Bool) throws {
+        try withAppMutationLock {
+            try requireAppOperationsOpen()
+            guard let namespaceID = persisted.space?.namespaceID else {
+                throw RepositoryError.noCurrentSpace
+            }
+            try endorseApp(
+                appID: appID,
+                note: note,
+                retract: retract,
+                expectedNamespaceID: namespaceID
+            )
         }
     }
 
@@ -1615,9 +1645,13 @@ extension RiotProfileRepository: DirectoryPorting {
     ///
     /// Getting an app turns nothing on. It joins the held apps as UNTRUSTED, so
     /// the review sheet still stands between a neighbour's app and a WebView.
-    public func getCarriedApp(appID: Data) throws -> RiotSpaceApp {
+    public func getCarriedApp(
+        appID: Data,
+        expectedNamespaceID: String
+    ) throws -> RiotSpaceApp {
         try withAppMutationLock {
             try requireAppOperationsOpen()
+            _ = try requireCurrentSpace(expectedNamespaceID: expectedNamespaceID)
             // Admission first: an app Rust refuses is never written to disk.
             let record = try appRuntime.installFromDirectory(appId: appID)
             let pair = try appRuntime.appPairBytes(appId: appID)
@@ -1642,6 +1676,16 @@ extension RiotProfileRepository: DirectoryPorting {
 
             NotificationCenter.default.post(name: .riotHeldAppsDidChange, object: self)
             return try spaceApp(app)
+        }
+    }
+
+    public func getCarriedApp(appID: Data) throws -> RiotSpaceApp {
+        try withAppMutationLock {
+            try requireAppOperationsOpen()
+            guard let namespaceID = persisted.space?.namespaceID else {
+                throw RepositoryError.noCurrentSpace
+            }
+            return try getCarriedApp(appID: appID, expectedNamespaceID: namespaceID)
         }
     }
 
@@ -1688,10 +1732,10 @@ extension RiotProfileRepository: DirectoryPorting {
     /// Passes an app on to the current space with this profile as carrier.
     /// Sharing never turns the app on for anyone: the organizer on the other
     /// side still makes their own decision.
-    public func shareApp(appID: Data) throws {
+    public func shareApp(appID: Data, expectedNamespaceID: String) throws {
         try withAppMutationLock {
             try requireAppOperationsOpen()
-            guard let space = persisted.space else { throw RepositoryError.noCurrentSpace }
+            let space = try requireCurrentSpace(expectedNamespaceID: expectedNamespaceID)
             try appRuntime.shareApp(
                 appId: appID,
                 space: PublicSpace(
@@ -1700,6 +1744,16 @@ extension RiotProfileRepository: DirectoryPorting {
                     isPublic: true
                 )
             )
+        }
+    }
+
+    public func shareApp(appID: Data) throws {
+        try withAppMutationLock {
+            try requireAppOperationsOpen()
+            guard let namespaceID = persisted.space?.namespaceID else {
+                throw RepositoryError.noCurrentSpace
+            }
+            try shareApp(appID: appID, expectedNamespaceID: namespaceID)
         }
     }
 }

@@ -9,17 +9,56 @@ public protocol DirectoryPorting: AnyObject {
     var currentSpace: RiotSpace? { get }
     func directoryListings() throws -> [DirectoryListing]
     func installedApps() throws -> [RiotSpaceApp]
+    func endorseApp(
+        appID: Data,
+        note: String,
+        retract: Bool,
+        expectedNamespaceID: String
+    ) throws
     func endorseApp(appID: Data, note: String, retract: Bool) throws
+    func shareApp(appID: Data, expectedNamespaceID: String) throws
     func shareApp(appID: Data) throws
     /// Takes up an app this profile already carries — one that arrived from a
     /// neighbour — and admits it to this device's runtime, so it can be reviewed
     /// and then opened. Throws when its bytes have not all arrived, which is the
     /// only reason the person is ever told no.
+    func getCarriedApp(appID: Data, expectedNamespaceID: String) throws -> RiotSpaceApp
     func getCarriedApp(appID: Data) throws -> RiotSpaceApp
     /// The lowercase-hex app ids this profile has endorsed. Drives the
     /// "Take back recommendation" affordance: a row whose id is in this set was
     /// recommended by this person and can be retracted.
     var endorsedAppIDs: Set<String> { get }
+}
+
+public extension DirectoryPorting {
+    /// Compatibility entry points for older, already-scoped callers. New UI
+    /// actions carry the namespace they were rendered for all the way to the
+    /// repository boundary.
+    func endorseApp(appID: Data, note: String, retract: Bool) throws {
+        guard let namespaceID = currentSpace?.namespaceID else {
+            throw RepositoryError.noCurrentSpace
+        }
+        try endorseApp(
+            appID: appID,
+            note: note,
+            retract: retract,
+            expectedNamespaceID: namespaceID
+        )
+    }
+
+    func shareApp(appID: Data) throws {
+        guard let namespaceID = currentSpace?.namespaceID else {
+            throw RepositoryError.noCurrentSpace
+        }
+        try shareApp(appID: appID, expectedNamespaceID: namespaceID)
+    }
+
+    func getCarriedApp(appID: Data) throws -> RiotSpaceApp {
+        guard let namespaceID = currentSpace?.namespaceID else {
+            throw RepositoryError.noCurrentSpace
+        }
+        return try getCarriedApp(appID: appID, expectedNamespaceID: namespaceID)
+    }
 }
 
 public enum RiotDirectoryApprovalCapability: Equatable, Sendable {
@@ -143,7 +182,11 @@ public struct RiotDirectoryRow: Identifiable, Equatable, Sendable {
     public let actionContext: RiotDirectoryActionContext?
     public let accessibilityIdentifier: String
     public let canRecommend: Bool
-    public let canShare: Bool
+    /// Whether this profile holds the exact verified manifest+bundle pair that
+    /// can be published into the selected community.
+    public let canMakeAvailable: Bool
+    /// Source compatibility while the view moves to the outcome-oriented name.
+    public var canShare: Bool { canMakeAvailable }
     /// True when this profile has endorsed the app — the signal that offers
     /// "Take back recommendation" instead of "Recommend".
     public let endorsedByMe: Bool
@@ -269,7 +312,7 @@ public extension RiotDirectoryRow {
             actionContext: context,
             accessibilityIdentifier: "directory-tool-\(appIDHex)",
             canRecommend: canRecommend(listing: listing, space: space),
-            canShare: space != nil,
+            canMakeAvailable: space != nil && listing.bundlePresent,
             endorsedByMe: endorsedByMe
         )
     }
@@ -322,7 +365,7 @@ public extension RiotDirectoryRow {
             ),
             accessibilityIdentifier: "directory-tool-\(appIDHex)",
             canRecommend: app.trusted && space != nil,
-            canShare: space != nil,
+            canMakeAvailable: space != nil,
             endorsedByMe: endorsedByMe
         )
     }
@@ -529,6 +572,90 @@ public final class RiotDirectoryModel: ObservableObject {
         }
     }
 
+    /// Resolves an enabled tool to a locally admitted app. A directory listing
+    /// can be enabled before this device has admitted the verified bytes; Open
+    /// performs that admission lazily, then refreshes and proves the tool is
+    /// still enabled before handing the app to the shell.
+    public func prepareOpen(
+        _ row: RiotDirectoryRow,
+        context: RiotDirectoryActionContext
+    ) throws -> RiotSpaceApp {
+        let priorRows = rows
+        let priorSnapshot = snapshot
+        do {
+            try validate(row, context: context)
+            guard case .open = row.primaryAction else {
+                throw RiotDirectoryActionError.staleSelection
+            }
+            let app = try admittedApp(for: row, context: context)
+            try validate(row, context: context)
+            refresh(approval: lastApproval)
+            try validate(context)
+            guard
+                let refreshed = snapshot?.inCommunity.first(where: {
+                    $0.appIDHex.caseInsensitiveCompare(context.appIDHex) == .orderedSame
+                }),
+                refreshed.enabledInCurrentCommunity,
+                case let .open(refreshedApp) = refreshed.availability
+            else {
+                throw RiotDirectoryActionError.staleSelection
+            }
+            confirmation = nil
+            errorMessage = nil
+            return refreshedApp.appIDHex.caseInsensitiveCompare(app.appIDHex) == .orderedSame
+                ? refreshedApp
+                : app
+        } catch {
+            rows = priorRows
+            snapshot = priorSnapshot
+            confirmation = nil
+            errorMessage =
+                "Couldn’t open \(context.appName) in \(context.communityTitle). Nothing changed. Try again."
+            throw error
+        }
+    }
+
+    /// Resolves a disabled tool to a locally admitted, still-untrusted app for
+    /// the permission sheet. This method never grants trust.
+    public func prepareAdd(
+        _ row: RiotDirectoryRow,
+        context: RiotDirectoryActionContext
+    ) throws -> RiotSpaceApp {
+        let priorRows = rows
+        let priorSnapshot = snapshot
+        do {
+            try validate(row, context: context)
+            guard case .add = row.primaryAction else {
+                throw RiotDirectoryActionError.staleSelection
+            }
+            _ = try admittedApp(for: row, context: context)
+            try validate(row, context: context)
+            refresh(approval: lastApproval)
+            try validate(context)
+            guard
+                let refreshed = snapshot?.availableToAdd.first(where: {
+                    $0.appIDHex.caseInsensitiveCompare(context.appIDHex) == .orderedSame
+                }),
+                !refreshed.enabledInCurrentCommunity,
+                case .add = refreshed.primaryAction,
+                case let .review(refreshedApp) = refreshed.availability,
+                !refreshedApp.trusted
+            else {
+                throw RiotDirectoryActionError.staleSelection
+            }
+            confirmation = nil
+            errorMessage = nil
+            return refreshedApp
+        } catch {
+            rows = priorRows
+            snapshot = priorSnapshot
+            confirmation = nil
+            errorMessage =
+                "Couldn’t add \(context.appName) to \(context.communityTitle). Nothing changed. Try again."
+            throw error
+        }
+    }
+
     /// Takes up an app a neighbour carried to this device. It is not turned on by
     /// getting it: the row flips to Review, and the app still runs nothing until
     /// this person approves it.
@@ -555,25 +682,69 @@ public final class RiotDirectoryModel: ObservableObject {
         return "Couldn’t get \(name): \(String(describing: error))"
     }
 
-    public func recommend(_ row: RiotDirectoryRow, note: String) {
-        perform(confirming: "Recommended \(row.name)") { port in
-            try port.endorseApp(appID: row.appID, note: note, retract: false)
+    public func recommend(
+        _ row: RiotDirectoryRow,
+        note: String,
+        context: RiotDirectoryActionContext
+    ) {
+        perform(confirming: "Recommended \(context.appName) to \(context.communityTitle)") { port in
+            try self.validate(row, context: context)
+            try port.endorseApp(
+                appID: context.appID,
+                note: note,
+                retract: false,
+                expectedNamespaceID: context.namespaceID
+            )
         }
+    }
+
+    public func recommend(_ row: RiotDirectoryRow, note: String) {
+        guard let context = row.actionContext else { return }
+        recommend(row, note: note, context: context)
     }
 
     /// Withdraws this profile's recommendation of an app. Surfaces a receipt so
     /// the person sees the take-back landed, mirroring `recommend`.
+    public func retract(
+        _ row: RiotDirectoryRow,
+        context: RiotDirectoryActionContext
+    ) {
+        perform(
+            confirming:
+                "Took back recommendation of \(context.appName) from \(context.communityTitle)"
+        ) { port in
+            try self.validate(row, context: context)
+            try port.endorseApp(
+                appID: context.appID,
+                note: "",
+                retract: true,
+                expectedNamespaceID: context.namespaceID
+            )
+        }
+    }
+
     public func retract(_ row: RiotDirectoryRow) {
-        perform(confirming: "Took back recommendation of \(row.name)") { port in
-            try port.endorseApp(appID: row.appID, note: "", retract: true)
+        guard let context = row.actionContext else { return }
+        retract(row, context: context)
+    }
+
+    public func makeAvailable(
+        _ row: RiotDirectoryRow,
+        context: RiotDirectoryActionContext
+    ) {
+        guard row.canMakeAvailable else { return }
+        perform(confirming: "Made \(context.appName) available in \(context.communityTitle)") { port in
+            try self.validate(row, context: context)
+            try port.shareApp(
+                appID: context.appID,
+                expectedNamespaceID: context.namespaceID
+            )
         }
     }
 
     public func share(_ row: RiotDirectoryRow) {
-        guard let title = port?.currentSpace?.title else { return }
-        perform(confirming: "Shared \(row.name) to \(title)") { port in
-            try port.shareApp(appID: row.appID)
-        }
+        guard let context = row.actionContext else { return }
+        makeAvailable(row, context: context)
     }
 
     public func clearConfirmation() {
@@ -590,6 +761,37 @@ public final class RiotDirectoryModel: ObservableObject {
         } catch {
             confirmation = nil
             errorMessage = String(describing: error)
+        }
+    }
+
+    private func validate(
+        _ row: RiotDirectoryRow,
+        context: RiotDirectoryActionContext
+    ) throws {
+        guard
+            row.appID == context.appID,
+            row.appIDHex.caseInsensitiveCompare(context.appIDHex) == .orderedSame
+        else {
+            throw RiotDirectoryActionError.staleSelection
+        }
+        try validate(context)
+    }
+
+    private func admittedApp(
+        for row: RiotDirectoryRow,
+        context: RiotDirectoryActionContext
+    ) throws -> RiotSpaceApp {
+        switch row.availability {
+        case let .open(app), let .review(app):
+            return app
+        case .get:
+            guard let port else { throw RiotDirectoryActionError.staleSelection }
+            return try port.getCarriedApp(
+                appID: context.appID,
+                expectedNamespaceID: context.namespaceID
+            )
+        case .arriving:
+            throw MobileError.AppRejected
         }
     }
 
