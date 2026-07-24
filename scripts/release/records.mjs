@@ -1,43 +1,38 @@
 import { canonicalJson } from "./canonical-json.mjs";
+import { validateSource } from "./schema.mjs";
 
 const RECORD_FIELDS = ["createdAt", "digest", "payload", "schema", "schemaVersion"];
-const FIXED_SCHEMAS = new Set([
-  "riot.release.accessibility.v1",
-  "riot.release.account-gates.v1",
-  "riot.release.claims.v1",
-  "riot.release.export-compliance.v1",
-  "riot.release.network-matrix.v1",
-  "riot.release.policy.v1",
-  "riot.release.privacy.v1",
-  "riot.release.product.v1",
-  "riot.release.review-instructions.v1",
-  "riot.release.toolchains.v1",
+const FIXED_SCHEMAS = new Map([
+  ["riot.release.accessibility.v1", "accessibility"],
+  ["riot.release.account-gates.v1", "account-gates"],
+  ["riot.release.claims.v1", "claims"],
+  ["riot.release.export-compliance.v1", "export-compliance"],
+  ["riot.release.network-matrix.v1", "network-matrix"],
+  ["riot.release.policy.v1", "policy"],
+  ["riot.release.privacy.v1", "privacy"],
+  ["riot.release.product.v1", "product"],
+  ["riot.release.review-instructions.v1", "review-instructions"],
+  ["riot.release.toolchains.v1", "toolchains"],
 ]);
 const SHA256 = /^[0-9a-f]{64}$/;
 const RFC3339_UTC = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/;
 
-function assertDependencies(clock, sha256) {
+function assertRegistry(registry) {
+  if (typeof registry?.ajv?.getSchema !== "function") {
+    throw new TypeError("validated schema registry dependency is required");
+  }
+}
+
+function assertDependencies(clock, sha256, registry) {
   if (typeof clock !== "function") throw new TypeError("clock dependency is required");
   if (typeof sha256 !== "function") throw new TypeError("sha256 dependency is required");
+  assertRegistry(registry);
 }
 
 function assertSchema(schema) {
-  if (!FIXED_SCHEMAS.has(schema)) throw new TypeError(`unknown fixed schema identifier: ${schema}`);
-}
-
-function assertDigestReferences(value, path = "") {
-  if (Array.isArray(value)) {
-    value.forEach((item, index) => assertDigestReferences(item, `${path}/${index}`));
-    return;
-  }
-  if (value === null || typeof value !== "object") return;
-  for (const [key, child] of Object.entries(value)) {
-    const childPath = `${path}/${key}`;
-    if ((key.endsWith("Digest") || key.endsWith("Sha256")) && !SHA256.test(child)) {
-      throw new TypeError(`${childPath} must be a full lowercase SHA-256 digest`);
-    }
-    assertDigestReferences(child, childPath);
-  }
+  const name = FIXED_SCHEMAS.get(schema);
+  if (!name) throw new TypeError(`unknown fixed schema identifier: ${schema}`);
+  return name;
 }
 
 function deepFreeze(value) {
@@ -57,19 +52,20 @@ function body(record) {
   };
 }
 
-export async function createRecord({ schema, payload, clock, sha256 }) {
-  assertDependencies(clock, sha256);
-  assertSchema(schema);
-  assertDigestReferences(payload);
+export async function createRecord({ schema, payload, clock, sha256, registry }) {
+  assertDependencies(clock, sha256, registry);
+  const schemaName = assertSchema(schema);
+  const validatedPayload = validateSource(registry, schemaName, payload);
   const createdAt = clock().toISOString();
-  const recordBody = { schemaVersion: 1, schema, createdAt, payload: structuredClone(payload) };
+  const recordBody = { schemaVersion: 1, schema, createdAt, payload: structuredClone(validatedPayload) };
   const digest = await sha256(canonicalJson(recordBody));
   if (!SHA256.test(digest)) throw new TypeError("sha256 dependency returned an invalid digest");
   return deepFreeze({ ...recordBody, digest });
 }
 
-export async function verifyRecord(record, { sha256 }) {
-  assertDependencies(() => new Date(), sha256);
+export async function verifyRecord(record, { sha256, registry }) {
+  if (typeof sha256 !== "function") throw new TypeError("sha256 dependency is required");
+  assertRegistry(registry);
   if (record === null || typeof record !== "object" || Array.isArray(record)) {
     throw new TypeError("record must be an object");
   }
@@ -78,13 +74,13 @@ export async function verifyRecord(record, { sha256 }) {
     throw new TypeError("record has missing or unknown wrapper field");
   }
   if (record.schemaVersion !== 1) throw new TypeError("record schemaVersion must be 1");
-  assertSchema(record.schema);
+  const schemaName = assertSchema(record.schema);
   if (!RFC3339_UTC.test(record.createdAt) || Number.isNaN(Date.parse(record.createdAt))) {
     throw new TypeError("record timestamp must be RFC3339 UTC");
   }
   if (!SHA256.test(record.digest)) throw new TypeError("record digest must be full lowercase SHA-256");
-  assertDigestReferences(record.payload);
+  const validatedPayload = validateSource(registry, schemaName, record.payload);
   const expected = await sha256(canonicalJson(body(record)));
   if (expected !== record.digest) throw new TypeError("record digest mismatch");
-  return deepFreeze(structuredClone(record.payload));
+  return deepFreeze(structuredClone(validatedPayload));
 }

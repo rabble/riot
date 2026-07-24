@@ -236,6 +236,42 @@ test("status blocks a toolchain whose version is explicitly undeclared", async (
   assert.match(gate.recovery, /Declare and checksum/);
 });
 
+test("status blocks an incomplete canonical toolchain inventory", async () => {
+  const root = await releaseRoot();
+  const manifestPath = join(root, "release", "toolchains.json");
+  const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+  manifest.tools = manifest.tools.filter(({ name }) => name !== "c8");
+  await writeFile(manifestPath, `${JSON.stringify(manifest)}\n`, "utf8");
+  const result = await run(root, ["status", "--json"]);
+  const gate = JSON.parse(result.stdout).gates.find(({ id }) => id === "inventory.toolchains");
+  assert.equal(gate.state, "BLOCKED");
+  assert.match(gate.observed, /missing: c8/);
+});
+
+test("status blocks incomplete privacy and account inventories", async () => {
+  for (const fixture of [
+    {
+      file: "privacy.json",
+      mutate(value) { value.answers[1].store = "apple"; },
+      gateId: "inventory.privacy-answers",
+    },
+    {
+      file: "account-gates.json",
+      mutate(value) { value.gates.pop(); },
+      gateId: "inventory.account-gates",
+    },
+  ]) {
+    const root = await releaseRoot();
+    const sourcePath = join(root, "release", "source", fixture.file);
+    const value = JSON.parse(await readFile(sourcePath, "utf8"));
+    fixture.mutate(value);
+    await writeFile(sourcePath, `${JSON.stringify(value)}\n`, "utf8");
+    const result = await run(root, ["status", "--json"]);
+    const gate = JSON.parse(result.stdout).gates.find(({ id }) => id === fixture.gateId);
+    assert.equal(gate.state, "BLOCKED");
+  }
+});
+
 test("usage rejects unknown options, mutation commands, and credential flags", async () => {
   const root = await releaseRoot();
   for (const args of [

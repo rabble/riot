@@ -86,6 +86,13 @@
 
 # Gate summary
 
+## inventory.privacy-answers
+
+- State: **PASS**
+- Observed: {"apple":1,"google":1}
+- Expected: exactly one Apple and one Google privacy answer
+- Recovery: Restore the exact canonical Apple and Google answer inventory.
+
 ## network.first-launch
 
 - State: **PASS**

@@ -9,6 +9,7 @@ import { evaluatePolicy, generateWorksheets, loadPolicySources } from "./policy.
 import { loadSchemaRegistry, releaseDiagnosticError, validateSource } from "./schema.mjs";
 
 const STATES = new Set(["PASS", "BLOCKED", "HUMAN ACTION"]);
+const REQUIRED_TOOLCHAINS = ["node", "npm", "rustc", "cargo", "gradle", "android-sdk", "android-ndk", "xcode", "swift", "ajv", "c8"];
 const USAGE = "usage: node scripts/release/cli.mjs <generate|status [--json]>\n";
 
 export function summarizeGates(gates) {
@@ -58,7 +59,19 @@ async function toolchainGates(root) {
     if (error.diagnostics && !error.sourceFile) error.sourceFile = sourceFile;
     throw error;
   }
-  return toolchains.tools.map((tool, index) => {
+  const names = toolchains.tools.map(({ name }) => name);
+  const missing = REQUIRED_TOOLCHAINS.filter((name) => !names.includes(name));
+  const unexpected = names.filter((name) => !REQUIRED_TOOLCHAINS.includes(name));
+  const inventory = {
+    id: "inventory.toolchains",
+    state: missing.length === 0 && unexpected.length === 0 && names.length === REQUIRED_TOOLCHAINS.length ? "PASS" : "BLOCKED",
+    sourceFile,
+    pointer: "/tools",
+    observed: `missing: ${missing.join(", ") || "none"}; unexpected: ${unexpected.join(", ") || "none"}`,
+    expected: `exactly one of: ${REQUIRED_TOOLCHAINS.join(", ")}`,
+    recovery: "Restore the exact canonical WU-000 toolchain inventory.",
+  };
+  const gates = toolchains.tools.map((tool, index) => {
     const pinned = tool.version !== "not-declared" && tool.artifactEvidenceState !== "blocked";
     return {
       id: `toolchain.${tool.name}`,
@@ -74,6 +87,7 @@ async function toolchainGates(root) {
           : `Declare and checksum the ${tool.name} version before candidate production.`,
     };
   });
+  return [inventory, ...gates];
 }
 
 export function failureGate(error, root) {

@@ -109,6 +109,39 @@ test("URL evidence is verified from injected filesystem content, not trusted sou
   );
 });
 
+test("URL evidence paths reject absolute, traversal, page-type mismatch, and symlink escape", async () => {
+  for (const evidencePath of [
+    "/tmp/privacy/index.html",
+    "../marketing/privacy/index.html",
+    "marketing/privacy/../support/index.html",
+    "marketing/support/index.html",
+  ]) {
+    const root = await mkdtemp(join(tmpdir(), "riot-url-path-"));
+    await realFs.cp(join(repositoryRoot, "release"), join(root, "release"), { recursive: true });
+    const productPath = join(root, "release", "source", "product.json");
+    const product = JSON.parse(await realFs.readFile(productPath, "utf8"));
+    product.urls.privacy.evidencePath = evidencePath;
+    await realFs.writeFile(productPath, `${JSON.stringify(product)}\n`, "utf8");
+    await assert.rejects(
+      () => loadPolicySources({ sourceDirectory: join(root, "release", "source"), fs: realFs }),
+      (error) => error.sourceFile.endsWith("/product.json")
+        && error.diagnostics[0].pointer === "/urls/privacy/evidencePath",
+    );
+  }
+
+  const root = await mkdtemp(join(tmpdir(), "riot-url-symlink-"));
+  await realFs.cp(join(repositoryRoot, "release"), join(root, "release"), { recursive: true });
+  const outside = join(await mkdtemp(join(tmpdir(), "riot-url-outside-")), "index.html");
+  await realFs.writeFile(outside, "<!doctype html><html></html>", "utf8");
+  await realFs.mkdir(join(root, "marketing", "privacy"), { recursive: true });
+  await realFs.symlink(outside, join(root, "marketing", "privacy", "index.html"));
+  await assert.rejects(
+    () => loadPolicySources({ sourceDirectory: join(root, "release", "source"), fs: realFs }),
+    (error) => error.diagnostics[0].pointer === "/urls/privacy/evidencePath"
+      && /repository/.test(error.diagnostics[0].expected),
+  );
+});
+
 test("policy evaluation rejects missing network rows and contradictory privacy evidence", async () => {
   const loaded = await sources();
   loaded.networkMatrix.rows = loaded.networkMatrix.rows.filter(({ id }) => id !== "nearby-sync");
@@ -124,6 +157,29 @@ test("permission inventory rejects duplicates and substitution of exact required
   const gates = evaluatePolicy(loaded);
   assert(gates.some(({ id, state }) => id === "permission.camera" && state === "BLOCKED"));
   assert(gates.some(({ id, state }) => id === "permission.android-internet" && state === "BLOCKED"));
+});
+
+test("privacy and account inventories require every exact canonical entry once", async () => {
+  const privacy = await sources();
+  privacy.privacy.answers[1].store = "apple";
+  assert.equal(
+    evaluatePolicy(privacy).find(({ id }) => id === "inventory.privacy-answers").state,
+    "BLOCKED",
+  );
+
+  const missingAccount = await sources();
+  missingAccount.accountGates.gates.pop();
+  assert.equal(
+    evaluatePolicy(missingAccount).find(({ id }) => id === "inventory.account-gates").state,
+    "BLOCKED",
+  );
+
+  const duplicateAccount = await sources();
+  duplicateAccount.accountGates.gates[1] = structuredClone(duplicateAccount.accountGates.gates[0]);
+  assert.equal(
+    evaluatePolicy(duplicateAccount).find(({ id }) => id === "inventory.account-gates").state,
+    "BLOCKED",
+  );
 });
 
 test("no-collection answers require consistent position, fields, destinations, and retention", async () => {
@@ -229,12 +285,12 @@ test("policy evaluation covers passing, blocked, missing, and human evidence sta
   assert.equal(states.get("review.no-peers"), "BLOCKED");
   assert.equal(states.get("accessibility.iphone.read"), "BLOCKED");
   assert.equal(states.get("accessibility.iphone.create"), "BLOCKED");
-  assert.equal(states.get("accessibility.iphone.join"), "PASS");
-  assert.equal(states.get("claim.read-local-community"), "PASS");
+  assert.equal(states.get("accessibility.iphone.join"), "HUMAN ACTION");
+  assert.equal(states.get("claim.read-local-community"), "HUMAN ACTION");
   assert.equal(states.get("claim.create-community"), "BLOCKED");
-  assert.equal(states.get("content-rating"), "PASS");
-  assert.equal(states.get("export.classification"), "PASS");
-  assert.equal(states.get("account.agreements"), "PASS");
+  assert.equal(states.get("content-rating"), "HUMAN ACTION");
+  assert.equal(states.get("export.classification"), "HUMAN ACTION");
+  assert.equal(states.get("account.agreements"), "HUMAN ACTION");
   assert.equal(states.get("account.tax"), "BLOCKED");
   assert(gates.every(({ sourceFile }) => sourceFile.startsWith("release/source/")));
 });
@@ -253,7 +309,7 @@ test("normal gates identify exact array elements and per-platform claim evidence
   assert.equal(claim.state, "BLOCKED");
 });
 
-test("claims cannot pass on state or bare journey strings without candidate-bound PASS evidence", async () => {
+test("source-authored evidence cannot self-certify protected human gates", async () => {
   const loaded = await sources();
   const claim = loaded.claims.claims[0];
   claim.state = "pass";
@@ -270,10 +326,35 @@ test("claims cannot pass on state or bare journey strings without candidate-boun
       evidenceDigest: "a".repeat(64),
     };
   }
-  assert.equal(
-    evaluatePolicy(loaded).find(({ id }) => id === "claim.read-local-community").state,
-    "PASS",
-  );
+  loaded.accessibility.records[0] = {
+    device: "iphone",
+    task: "read",
+    state: "pass",
+    evidencePath: "release/evidence/accessibility.json",
+  };
+  loaded.policy.contentRating.state = "pass";
+  loaded.exportCompliance.classification = {
+    state: "pass",
+    reason: "Source says approved.",
+    evidence: ["release/evidence/export.json"],
+    approver: "Source string",
+  };
+  loaded.accountGates.gates[0] = {
+    name: "agreements",
+    state: "pass",
+    reason: "Source says approved.",
+    evidence: ["release/evidence/account.json"],
+  };
+  const states = new Map(evaluatePolicy(loaded).map(({ id, state }) => [id, state]));
+  for (const id of [
+    "claim.read-local-community",
+    "accessibility.iphone.read",
+    "content-rating",
+    "export.classification",
+    "account.agreements",
+  ]) {
+    assert.equal(states.get(id), "HUMAN ACTION", id);
+  }
 
   claim.evidenceByPlatform.android.candidateJourney.evidenceDigest = "short";
   assert.equal(
@@ -290,7 +371,7 @@ test("export and account evidence never pass on incomplete approvals", async () 
   loaded.accountGates.gates[0].evidence = [];
   const states = new Map(evaluatePolicy(loaded).map(({ id, state }) => [id, state]));
   assert.equal(states.get("export.classification"), "BLOCKED");
-  assert.equal(states.get("account.agreements"), "HUMAN ACTION");
+  assert.equal(states.get("account.agreements"), "BLOCKED");
   assert.equal(states.get("content-rating"), "BLOCKED");
 });
 
@@ -336,9 +417,29 @@ test("generateWorksheets emits exactly eleven deterministic digested files", asy
   assert.match(contentRating, /Apple: 12\+[\s\S]*Google Play: Teen[\s\S]*user-generated content/);
 });
 
-test("generateWorksheets cleans temporary files after an atomic rename failure", async () => {
+test("worksheet digests bind network evidence that affects privacy gate bytes", async () => {
+  const loaded = await sources();
+  const first = await mkdtemp(join(tmpdir(), "riot-worksheet-digest-a-"));
+  const second = await mkdtemp(join(tmpdir(), "riot-worksheet-digest-b-"));
+  await generateWorksheets({ sources: loaded, outputDirectory: first, fs: realFs, sha256 });
+  loaded.networkMatrix.rows[0].retention = "Changed canonical retention evidence.";
+  await generateWorksheets({ sources: loaded, outputDirectory: second, fs: realFs, sha256 });
+  for (const name of ["permissions.md", "required-reason-apis.md"]) {
+    const before = (await readFile(join(first, name), "utf8")).split("\n")[0];
+    const after = (await readFile(join(second, name), "utf8")).split("\n")[0];
+    assert.notEqual(after, before, name);
+  }
+});
+
+test("generateWorksheets swaps the complete set atomically and removes stale managed files", async () => {
   const loaded = await sources();
   const outputDirectory = await mkdtemp(join(tmpdir(), "riot-worksheets-fail-"));
+  await generateWorksheets({ sources: loaded, outputDirectory, fs: realFs, sha256 });
+  await realFs.writeFile(join(outputDirectory, "stale.md"), "old stale file\n", "utf8");
+  const beforeNames = (await readdir(outputDirectory)).sort();
+  const before = new Map(await Promise.all(beforeNames.map(async (name) =>
+    [name, await readFile(join(outputDirectory, name), "utf8")])));
+  loaded.accessibility.records[0].state = "blocked";
   let renameCalls = 0;
   const failingFs = {
     ...realFs,
@@ -352,7 +453,69 @@ test("generateWorksheets cleans temporary files after an atomic rename failure",
     () => generateWorksheets({ sources: loaded, outputDirectory, fs: failingFs, sha256 }),
     /injected rename failure/,
   );
-  assert((await readdir(outputDirectory)).every((name) => !name.includes(".tmp-")));
+  assert.deepEqual((await readdir(outputDirectory)).sort(), beforeNames);
+  for (const [name, bytes] of before) {
+    assert.equal(await readFile(join(outputDirectory, name), "utf8"), bytes);
+  }
+
+  await generateWorksheets({ sources: loaded, outputDirectory, fs: realFs, sha256 });
+  assert.deepEqual((await readdir(outputDirectory)).sort(), expectedWorksheets);
+  assert.doesNotMatch(await readFile(join(outputDirectory, "accessibility.md"), "utf8"), /old stale file/);
+});
+
+test("worksheet staging verification and swap errors leave the prior set untouched", async () => {
+  const loaded = await sources();
+  for (const mode of ["names", "bytes", "swap"]) {
+    const outputDirectory = await mkdtemp(join(tmpdir(), `riot-worksheet-${mode}-`));
+    await generateWorksheets({ sources: loaded, outputDirectory, fs: realFs, sha256 });
+    const before = await readFile(join(outputDirectory, "accessibility.md"), "utf8");
+    const failingFs = {
+      ...realFs,
+      async readdir(path, options) {
+        if (mode === "names" && String(path).includes(".staging-")) return [];
+        return realFs.readdir(path, options);
+      },
+      async readFile(path, options) {
+        const bytes = await realFs.readFile(path, options);
+        return mode === "bytes" && String(path).includes(".staging-") ? `${bytes}corrupt` : bytes;
+      },
+      async rename(from, to) {
+        if (mode === "swap" && from === outputDirectory) {
+          const error = new Error("injected swap refusal");
+          error.code = "EACCES";
+          throw error;
+        }
+        return realFs.rename(from, to);
+      },
+    };
+    await assert.rejects(
+      () => generateWorksheets({ sources: loaded, outputDirectory, fs: failingFs, sha256 }),
+      /incomplete|verification failed|swap refusal/,
+    );
+    assert.equal(await readFile(join(outputDirectory, "accessibility.md"), "utf8"), before);
+  }
+});
+
+test("a post-swap backup cleanup refusal does not invalidate the installed set", async () => {
+  const loaded = await sources();
+  const outputDirectory = await mkdtemp(join(tmpdir(), "riot-worksheet-cleanup-"));
+  await generateWorksheets({ sources: loaded, outputDirectory, fs: realFs, sha256 });
+  loaded.accessibility.records[0].state = "blocked";
+  let backupRemovals = 0;
+  const cleanupFs = {
+    ...realFs,
+    async rm(path, options) {
+      if (String(path).includes(".backup-")) {
+        backupRemovals += 1;
+        if (backupRemovals === 2) throw new Error("injected cleanup refusal");
+      }
+      return realFs.rm(path, options);
+    },
+  };
+  await assert.doesNotReject(
+    () => generateWorksheets({ sources: loaded, outputDirectory, fs: cleanupFs, sha256 }),
+  );
+  assert.match(await readFile(join(outputDirectory, "accessibility.md"), "utf8"), /iphone \/ read: blocked/);
 });
 
 test("worksheets render recorded inventories, approvals, operators, and evidence", async () => {
@@ -378,7 +541,7 @@ test("worksheets render recorded inventories, approvals, operators, and evidence
 test("generateWorksheets requires injected filesystem and hash adapters", async () => {
   const loaded = await sources();
   for (const fs of [null, {}, { mkdir() {} }, {
-    mkdir() {}, writeFile() {}, rename() {}, rm: "not-a-function",
+    mkdir() {}, writeFile() {}, readFile() {}, readdir() {}, rename() {}, rm: "not-a-function",
   }]) {
     await assert.rejects(
       () => generateWorksheets({ sources: loaded, outputDirectory: "/unused", fs, sha256 }),

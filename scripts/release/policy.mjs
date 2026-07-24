@@ -1,5 +1,5 @@
-import { readFile, readdir } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { readFile, readdir, realpath } from "node:fs/promises";
+import { dirname, isAbsolute, join, normalize, relative, sep } from "node:path";
 
 import { canonicalJson } from "./canonical-json.mjs";
 import { loadSchemaRegistry, releaseDiagnosticError, validateSource } from "./schema.mjs";
@@ -21,9 +21,15 @@ const STORE_PLATFORMS = Object.freeze({
   apple: ["ios", "ipados", "macos"],
   google: ["android"],
 });
+const URL_EVIDENCE_PATHS = Object.freeze({
+  privacy: "marketing/privacy/index.html",
+  support: "marketing/support/index.html",
+  marketing: "marketing/releases/index.html",
+});
 const REVIEW_TOPICS = ["first-launch", "demo-content", "no-login", "create", "join", "publish", "restart", "offline", "local-permissions", "nearby-testing", "permission-denial", "invalid-join", "no-peers"];
 const DEVICES = ["iphone", "ipad", "mac", "android-phone", "android-tablet"];
 const TASKS = ["read", "create", "join", "publish"];
+const ACCOUNT_GATES = ["agreements", "tax", "banking", "trader-status", "signing", "hardware", "console"];
 const WORKSHEETS = Object.freeze({
   "accessibility.md": ["accessibility"],
   "account-gates.md": ["accountGates"],
@@ -32,8 +38,8 @@ const WORKSHEETS = Object.freeze({
   "data-safety.md": ["privacy", "networkMatrix"],
   "export-compliance.md": ["exportCompliance"],
   "outbound-network.md": ["networkMatrix"],
-  "permissions.md": ["privacy"],
-  "required-reason-apis.md": ["privacy"],
+  "permissions.md": ["privacy", "networkMatrix"],
+  "required-reason-apis.md": ["privacy", "networkMatrix"],
   "review-instructions.md": ["reviewInstructions"],
   "ugc-operations.md": ["policy"],
 });
@@ -42,8 +48,8 @@ function gate(id, state, sourceFile, pointer, observed, expected, recovery) {
   return { id, state, sourceFile, pointer, observed, expected, recovery };
 }
 
-export async function loadPolicySources({ sourceDirectory, fs = { readFile, readdir } }) {
-  if (!sourceDirectory || typeof fs?.readFile !== "function") throw new TypeError("sourceDirectory and fs are required");
+export async function loadPolicySources({ sourceDirectory, fs = { readFile, readdir, realpath } }) {
+  if (!sourceDirectory || typeof fs?.readFile !== "function" || typeof fs?.realpath !== "function") throw new TypeError("sourceDirectory and fs are required");
   const schemaDirectory = join(dirname(sourceDirectory), "schemas");
   const registry = await loadSchemaRegistry(schemaDirectory, fs);
   const loaded = {};
@@ -70,17 +76,45 @@ export async function loadPolicySources({ sourceDirectory, fs = { readFile, read
     files[key] = sourceFile;
   }
   const repositoryRoot = dirname(dirname(sourceDirectory));
+  const repositoryRealPath = await fs.realpath(repositoryRoot);
   const urlEvidence = {};
   for (const [name, value] of Object.entries(loaded.product.urls)) {
+    const evidencePath = value.evidencePath;
+    const normalized = normalize(evidencePath);
+    if (isAbsolute(evidencePath)
+      || evidencePath.includes("\\")
+      || normalized !== evidencePath
+      || evidencePath !== URL_EVIDENCE_PATHS[name]) {
+      throw releaseDiagnosticError(`unsafe or mismatched URL evidence path: ${evidencePath}`, {
+        sourceFile: files.product,
+        pointer: `/urls/${name}/evidencePath`,
+        observed: evidencePath,
+        expected: `normalized repository-relative ${URL_EVIDENCE_PATHS[name]} page evidence`,
+        keyword: "path",
+      });
+    }
     let state;
     try {
-      const content = await fs.readFile(join(repositoryRoot, value.evidencePath), "utf8");
+      const targetPath = join(repositoryRoot, evidencePath);
+      const targetRealPath = await fs.realpath(targetPath);
+      const fromRepository = relative(repositoryRealPath, targetRealPath);
+      if (fromRepository === ".." || fromRepository.startsWith(`..${sep}`) || isAbsolute(fromRepository)) {
+        throw releaseDiagnosticError(`URL evidence escapes repository: ${evidencePath}`, {
+          sourceFile: files.product,
+          pointer: `/urls/${name}/evidencePath`,
+          observed: targetRealPath,
+          expected: "evidence whose real path remains inside the repository",
+          keyword: "path",
+        });
+      }
+      const content = await fs.readFile(targetRealPath, "utf8");
       const localState = /<!doctype\s+html|<html(?:\s|>)/i.test(content) ? "current" : "stale";
       state = value.evidenceState === "current" ? localState : value.evidenceState;
-    } catch {
+    } catch (error) {
+      if (error.diagnostics) throw error;
       state = "missing";
     }
-    urlEvidence[name] = { state, evidencePath: value.evidencePath };
+    urlEvidence[name] = { state, evidencePath };
   }
   Object.defineProperty(loaded, "_files", { value: files, enumerable: false });
   Object.defineProperty(loaded, "_urlEvidence", { value: urlEvidence, enumerable: false });
@@ -97,6 +131,19 @@ export function evaluatePolicy(sources) {
     && sources.product.appleBundleId === "net.protest.riot"
     && sources.product.androidApplicationId === "net.protest.riot";
   gates.push(gate("product.identity", productMatches ? "PASS" : "BLOCKED", file("product"), "/", JSON.stringify(sources.product), "1.0, free, worldwide, public early access, net.protest.riot", "Correct release/source/product.json."));
+
+  const answerCounts = new Map();
+  for (const { store } of sources.privacy.answers) answerCounts.set(store, (answerCounts.get(store) ?? 0) + 1);
+  const exactAnswers = sources.privacy.answers.length === 2
+    && answerCounts.get("apple") === 1
+    && answerCounts.get("google") === 1;
+  gates.push(gate("inventory.privacy-answers", exactAnswers ? "PASS" : "BLOCKED", file("privacy"), "/answers", JSON.stringify(Object.fromEntries(answerCounts)), "exactly one Apple and one Google privacy answer", "Restore the exact canonical Apple and Google answer inventory."));
+
+  const accountCounts = new Map();
+  for (const { name } of sources.accountGates.gates) accountCounts.set(name, (accountCounts.get(name) ?? 0) + 1);
+  const exactAccounts = sources.accountGates.gates.length === ACCOUNT_GATES.length
+    && ACCOUNT_GATES.every((name) => accountCounts.get(name) === 1);
+  gates.push(gate("inventory.account-gates", exactAccounts ? "PASS" : "BLOCKED", file("accountGates"), "/gates", JSON.stringify(Object.fromEntries(accountCounts)), `exactly one of: ${ACCOUNT_GATES.join(", ")}`, "Restore the exact canonical account/legal gate inventory."));
 
   for (const [name, value] of Object.entries(sources.product.urls)) {
     const verified = sources._urlEvidence?.[name]?.state ?? "missing";
@@ -154,7 +201,9 @@ export function evaluatePolicy(sources) {
     for (const task of TASKS) {
       const match = accessibility.get(`${device}:${task}`);
       const record = match?.record;
-      const state = !record ? "BLOCKED" : record.state === "pass" && record.evidencePath ? "PASS" : record.state === "blocked" ? "BLOCKED" : "HUMAN ACTION";
+      const state = !record || record.state === "blocked" || record.state === "pass" && !record.evidencePath
+        ? "BLOCKED"
+        : "HUMAN ACTION";
       gates.push(gate(`accessibility.${device}.${task}`, state, file("accessibility"), match ? `/records/${match.index}` : "/records", record?.state ?? "missing", "passing candidate-bound evidence", `Run and record the ${task} accessibility rehearsal on ${device}.`));
     }
   }
@@ -175,24 +224,27 @@ export function evaluatePolicy(sources) {
     const state = !codeEvidenceComplete
       ? "BLOCKED"
       : claim.state === "pass"
-        ? candidateEvidenceComplete ? "PASS" : "BLOCKED"
+        ? candidateEvidenceComplete ? "HUMAN ACTION" : "BLOCKED"
         : claim.state === "blocked" ? "BLOCKED" : "HUMAN ACTION";
     const journeys = claim.platforms.flatMap((platform) => claim.evidenceByPlatform?.[platform]?.journeyIds ?? []);
     gates.push(gate(`claim.${claim.id}`, state, file("claims"), `/claims/${index}`, claim.state, "platform-specific code and candidate journey evidence for every claimed platform", `Run candidate journeys ${journeys.join(", ")}.`));
   }
 
   const contentRating = sources.policy.contentRating;
-  const contentRatingState = contentRating.state === "pass" ? "PASS" : contentRating.state === "blocked" ? "BLOCKED" : "HUMAN ACTION";
+  const contentRatingState = contentRating.state === "blocked" ? "BLOCKED" : "HUMAN ACTION";
   gates.push(gate("content-rating", contentRatingState, file("policy"), "/contentRating", `${contentRating.apple}; ${contentRating.google}`, "authenticated store questionnaires confirm the canonical recommendation", "Confirm the content-rating questionnaires in App Store Connect and Google Play Console."));
 
   const classification = sources.exportCompliance.classification;
-  const exportState = classification.state === "pass" && classification.approver && classification.evidence.length > 0
-    ? "PASS"
-    : classification.state === "blocked" ? "BLOCKED" : "HUMAN ACTION";
+  const exportState = classification.state === "blocked"
+    || classification.state === "pass" && (!classification.approver || classification.evidence.length === 0)
+    ? "BLOCKED"
+    : "HUMAN ACTION";
   gates.push(gate("export.classification", exportState, file("exportCompliance"), "/classification", classification.state, "authenticated approved classification", "Obtain legal/export approval and record its evidence."));
 
   for (const [index, account] of sources.accountGates.gates.entries()) {
-    const state = account.state === "pass" && account.evidence.length > 0 ? "PASS" : account.state === "blocked" ? "BLOCKED" : "HUMAN ACTION";
+    const state = account.state === "blocked" || account.state === "pass" && account.evidence.length === 0
+      ? "BLOCKED"
+      : "HUMAN ACTION";
     gates.push(gate(`account.${account.name}`, state, file("accountGates"), `/gates/${index}`, account.state, "authenticated current evidence", `Confirm ${account.name} in the authenticated store account.`));
   }
   return gates;
@@ -337,28 +389,57 @@ function markdown(name, keys, sources, digest) {
 }
 
 export async function generateWorksheets({ sources, outputDirectory, fs, sha256 }) {
-  if (!fs || typeof fs.mkdir !== "function" || typeof fs.writeFile !== "function" || typeof fs.rename !== "function" || typeof fs.rm !== "function") {
-    throw new TypeError("filesystem adapter with mkdir/writeFile/rename/rm is required");
+  if (!fs
+    || typeof fs.mkdir !== "function"
+    || typeof fs.writeFile !== "function"
+    || typeof fs.readFile !== "function"
+    || typeof fs.readdir !== "function"
+    || typeof fs.rename !== "function"
+    || typeof fs.rm !== "function") {
+    throw new TypeError("filesystem adapter with mkdir/writeFile/readFile/readdir/rename/rm is required");
   }
   if (typeof sha256 !== "function") throw new TypeError("sha256 adapter is required");
-  await fs.mkdir(outputDirectory, { recursive: true });
-  const temporaryPaths = [];
+  const parentDirectory = dirname(outputDirectory);
+  const stagingDirectory = `${outputDirectory}.staging-${process.pid}`;
+  const backupDirectory = `${outputDirectory}.backup-${process.pid}`;
+  await fs.mkdir(parentDirectory, { recursive: true });
+  await fs.rm(stagingDirectory, { recursive: true, force: true });
+  await fs.rm(backupDirectory, { recursive: true, force: true });
+  await fs.mkdir(stagingDirectory, { recursive: true });
+  let existingMoved = false;
   try {
-    let index = 0;
+    const expectedBytes = new Map();
     for (const [name, keys] of Object.entries(WORKSHEETS)) {
       const sourceBytes = canonicalJson(Object.fromEntries(keys.map((key) => [key, sources[key]])));
       const digest = await sha256(sourceBytes);
       if (!/^[0-9a-f]{64}$/.test(digest)) throw new TypeError("sha256 adapter returned an invalid digest");
-      const finalPath = join(outputDirectory, name);
-      const temporaryPath = `${finalPath}.tmp-${process.pid}-${index}`;
-      index += 1;
-      temporaryPaths.push(temporaryPath);
-      await fs.writeFile(temporaryPath, markdown(name, keys, sources, digest), "utf8");
-      await fs.rename(temporaryPath, finalPath);
-      temporaryPaths.pop();
+      const bytes = markdown(name, keys, sources, digest);
+      expectedBytes.set(name, bytes);
+      await fs.writeFile(join(stagingDirectory, name), bytes, "utf8");
     }
+    const stagedNames = (await fs.readdir(stagingDirectory)).sort();
+    const expectedNames = [...expectedBytes.keys()].sort();
+    if (JSON.stringify(stagedNames) !== JSON.stringify(expectedNames)) {
+      throw new Error("staged worksheet set is incomplete");
+    }
+    for (const [name, bytes] of expectedBytes) {
+      if (await fs.readFile(join(stagingDirectory, name), "utf8") !== bytes) {
+        throw new Error(`staged worksheet verification failed: ${name}`);
+      }
+    }
+    try {
+      await fs.rename(outputDirectory, backupDirectory);
+      existingMoved = true;
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+    }
+    await fs.rename(stagingDirectory, outputDirectory);
+    if (existingMoved) await fs.rm(backupDirectory, { recursive: true, force: true }).catch(() => {});
   } catch (error) {
-    await Promise.all(temporaryPaths.map((path) => fs.rm(path, { force: true }).catch(() => {})));
+    if (existingMoved) {
+      await fs.rename(backupDirectory, outputDirectory);
+    }
+    await fs.rm(stagingDirectory, { recursive: true, force: true }).catch(() => {});
     throw error;
   }
 }

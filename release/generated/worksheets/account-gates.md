@@ -10,6 +10,13 @@
 - console: human-action; Authenticated Console actions are performed manually.; evidence: not recorded
 # Gate summary
 
+## inventory.account-gates
+
+- State: **PASS**
+- Observed: {"agreements":1,"tax":1,"banking":1,"trader-status":1,"signing":1,"hardware":1,"console":1}
+- Expected: exactly one of: agreements, tax, banking, trader-status, signing, hardware, console
+- Recovery: Restore the exact canonical account/legal gate inventory.
+
 ## account.agreements
 
 - State: **HUMAN ACTION**
