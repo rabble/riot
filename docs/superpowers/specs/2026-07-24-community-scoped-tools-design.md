@@ -35,7 +35,7 @@ Available to add
   Supply Board                 Add Supply Board to River City Wire
 
 More tools
-  profile-wide discovery, incomplete arrivals, and file import
+  profile-wide discovery and organizer file import
 ```
 
 Community status always outranks generation, provenance, recommendations,
@@ -71,12 +71,20 @@ This correction does not:
 a selected-community snapshot while retaining a flat all-rows accessor for
 `PeerProfileView`.
 
+The existing `rows` property remains that flat accessor with its current local
+`Availability` semantics, including the `.review`/`.arriving` behavior consumed
+by `PeerProfileView`. The namespace-keyed snapshot partitions or references
+those same rows and adds primary CTA intent; it does not silently redefine the
+peer collection filter or require a `PeerProfileView.swift` change.
+
 Each row carries facts rather than deriving section placement in SwiftUI:
 
 - whether the current community enables the tool;
 - whether a complete verified pair is locally resolvable;
 - whether the profile has already admitted the tool;
 - the installed app, when present;
+- approval capability as organizer, ordinary member with an organizer to ask,
+  or organizerless legacy profile;
 - whether this profile may publish the pair into the current community; and
 - secondary recommendation/provenance/version/permission metadata.
 
@@ -167,6 +175,8 @@ focus to the moved tool’s `Open Chat` action.
 If admission fails, the row and Add CTA remain. If approval or trust persistence
 fails, the sheet stays open, returns to an enabled confirmation control, and
 says: `Couldn’t add Chat to River City Wire. Nothing changed. Try again.`
+The failure is announced to VoiceOver and focus remains on, or returns to, that
+re-enabled `Add to River City Wire` confirmation control.
 
 If the selected namespace changes while admission, confirmation, or approval is
 pending, Riot cancels or dismisses the old operation. Immediately before every
@@ -207,6 +217,9 @@ snapshot’s full app ID and expected namespace ID at the mutation boundary. A
 community switch invalidates their pending UI instead of applying it to the
 newly selected community. Exact success receipts are:
 
+One immutable operation-context value carries those three fields for every
+named mutation so individual paths cannot drift.
+
 - `Added Chat to River City Wire`
 - `Made Chat available in River City Wire`
 - `Recommended Chat to River City Wire`
@@ -239,8 +252,9 @@ At the 480-point macOS default and accessibility text sizes, the action becomes
 a full-width row directly below identity/description; metadata follows rather
 than displacing it. Long tool/community names wrap without truncating the named
 action. Full app IDs, not names or generation labels, form row/action
-accessibility identifiers. Section titles have heading traits, and VoiceOver
-order is header → In-community tools → Available to add → More tools.
+accessibility identifiers; human-readable labels remain actions such as `Open
+Chat`. Section titles have heading traits, and VoiceOver order is header →
+In-community tools → Available to add → More tools.
 
 ## Empty, error, and transition behavior
 
@@ -314,13 +328,13 @@ Expected test files:
 
 - `apps/ios/RiotTests/DirectoryStorefrontTests.swift`
 - `apps/ios/RiotTests/DirectoryRepositoryTests.swift`
-- `apps/ios/RiotTests/AppModelTests.swift`
 - `apps/ios/RiotUITests/ChecklistFlowUITests.swift`
 - `apps/ios/RiotUITests/RiversideMemberToolUITests.swift`
 - `apps/ios/RiotUITests/RiotTabNavigationUITests.swift` only for reusable
   visual capture if needed
 
-No new Swift file is required, so neither Xcode project file should need
+Result-bearing `AppModel` coverage is added to an existing compiled test file,
+so no new Swift file is required and neither Xcode project file should need
 editing. `DirectoryStorefrontTests.swift` is already compiled by both the iOS
 and macOS test targets.
 
@@ -365,7 +379,9 @@ paper/ink poster aesthetic, and visually secondary management/discovery.
 The visual matrix also includes long tool/community names and localized text
 expansion. A moderated outcome check confirms that a participant can identify
 and open an enabled tool on the first attempt and can distinguish Open, Add,
-and Ask without prompting.
+and Ask without prompting. Prompting, opening management/details before the
+primary action, confusing profile availability with community enablement, or
+treating Ask as a sent request are recorded as failures.
 
 ## Definition of Done
 

@@ -812,13 +812,14 @@ Trust grant is persistence-first:
    same exact namespace-and-app grant only while that namespace is active and
    organizer authority still validates.
 
-If grant persistence is storage-full, the row returns to its named **Add** action, the tool
-remains off, and an alert says: **This device's offline storage is full, so Riot
-couldn't turn on <name>. The tool is still off and your tools did not change.**
-For another persistence failure it says: **Riot couldn't save that change on
-this device. <name> is still off. Try again.** In both cases focus returns to
-the originating **Turn on** action, the alert is announced once, and a user-
-activated retry reruns the complete grant transaction.
+If grant persistence is storage-full, the row returns to its named **Add**
+action, the tool remains off, and an alert says: **This device's offline storage
+is full, so Riot couldn't add <name> to <community>. The tool is still off and
+your tools did not change.** For another persistence failure it says: **Riot
+couldn't save that change on this device. <name> was not added to <community>.
+Nothing changed. Try again.** In both cases focus returns to the originating
+**Add <name> to <community>** action, the alert is announced once, and a
+user-activated retry reruns the complete grant transaction.
 
 Trust revoke is also persistence-first but fail-closed:
 
