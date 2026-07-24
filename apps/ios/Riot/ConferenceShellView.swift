@@ -1324,14 +1324,17 @@ private struct CommunityShellView: View {
                                 guard row.available, !selected else { return }
                                 model.switchCommunity(namespaceID: row.namespaceID)
                             } label: {
-                                HStack(spacing: 8) {
-                                    Text(row.pendingFirstSync ? "Joined — syncing…" : row.name)
+                                let placeName = row.name.isEmpty
+                                    ? (selected ? community.name : "Community")
+                                    : row.name
+                                VStack(alignment: .leading, spacing: 1) {
+                                    Text(placeName)
                                         .font(.system(size: 13, weight: .medium))
                                         .lineLimit(1)
-                                    Spacer(minLength: 0)
                                     Text(row.syncFreshness)
-                                        .font(.system(size: 10, design: .monospaced))
+                                        .font(.system(size: 9, design: .monospaced))
                                         .foregroundStyle((selected ? RiotTheme.paper(for: colorScheme) : RiotTheme.ink(for: colorScheme)).opacity(0.6))
+                                        .lineLimit(1)
                                 }
                                 .frame(maxWidth: .infinity, alignment: .leading)
                                 .padding(.horizontal, 10).padding(.vertical, 7)
@@ -1660,6 +1663,7 @@ private struct HomeRouteView: View {
     let alertClock: ActiveAlertsClock
     @Environment(\.colorScheme) private var colorScheme
     @State private var showRejoinSheet = false
+    @State private var didAutoSync = false
     @State private var now: Date
 
     init(
@@ -1700,11 +1704,6 @@ private struct HomeRouteView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
-                // The real "leave the room, still sync" path: dial the built-in
-                // anchor relay by NodeId over the internet and pull a live
-                // community. Auto-runs once when Home first appears, and offers a
-                // manual re-sync button.
-                AnchorRelaySyncCard(model: model, autoStart: true)
                 if sections.contains(.activeAlerts) {
                     AlertsListView(
                         presentation: activeAlerts,
@@ -1741,7 +1740,7 @@ private struct HomeRouteView: View {
         // The persistent top bar already names the community; Home names the
         // PLACE within it ("what is happening here?") so the community name is
         // not printed twice on the same screen.
-        .riotHeader(eyebrow: "Community", model.space?.title ?? "Home")
+        .riotHeader(eyebrow: "Community", model.space?.title ?? "Home") { homeSyncChip }
         .sheet(isPresented: $showRejoinSheet) {
             JoinByReferenceSheet(model: model, onClose: { showRejoinSheet = false })
         }
@@ -1754,6 +1753,49 @@ private struct HomeRouteView: View {
                 )
             } catch {}
         }
+        // Auto-populate this community once on first appearance — the behavior the
+        // old top card carried via autoStart, now decoupled from any heavy UI.
+        .task {
+            guard !didAutoSync, model.relaySyncResult == nil, !model.isRelaySyncing else { return }
+            didAutoSync = true
+            await model.syncFromRelay()
+        }
+    }
+
+    private var activeNamespace: String { model.space?.namespaceID ?? "" }
+
+    /// "Synced 2m ago" / "Syncing…" — the current community's own heartbeat,
+    /// glanceable at the top of Home instead of a full connect card.
+    private var syncStatusText: String {
+        if model.isRelaySyncing { return "Syncing…" }
+        if let text = model.lastSyncedText(for: activeNamespace) { return text }
+        if let row = model.communities.first(where: { $0.namespaceID == activeNamespace }) {
+            return row.syncFreshness
+        }
+        return "Synced"
+    }
+
+    /// A small sync chip in the window's top-right — tap to sync this community.
+    @ViewBuilder private var homeSyncChip: some View {
+        Button {
+            guard !model.isRelaySyncing else { return }
+            Task { await model.syncFromRelay() }
+        } label: {
+            HStack(spacing: 5) {
+                if model.isRelaySyncing {
+                    ProgressView().controlSize(.mini)
+                } else {
+                    Circle().fill(RiotTheme.accent(for: colorScheme)).frame(width: 6, height: 6)
+                }
+                Text(syncStatusText)
+                    .font(.riot(.mono, size: 10, relativeTo: .caption2))
+                    .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
+            }
+        }
+        .buttonStyle(.plain)
+        .disabled(model.isRelaySyncing)
+        .help("Sync this community")
+        .accessibilityIdentifier("home-sync-status")
     }
 
     @ViewBuilder
