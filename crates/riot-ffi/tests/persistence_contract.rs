@@ -211,6 +211,16 @@ fn a_tool_id() -> String {
     "aa".repeat(32)
 }
 
+fn id_bytes(id: &str) -> Vec<u8> {
+    id.as_bytes()
+        .chunks_exact(2)
+        .map(|pair| {
+            let pair = std::str::from_utf8(pair).expect("entry id is UTF-8");
+            u8::from_str_radix(pair, 16).expect("entry id is hex")
+        })
+        .collect()
+}
+
 /// Create → sign → import an alert into the ACTIVE community's store, returning
 /// its complete entry id. This is a committed local write, not a draft.
 fn commit_alert(profile: &Arc<MobileProfile>) -> String {
@@ -397,6 +407,95 @@ fn communities_are_isolated_entries_approvals_and_coordinator_do_not_leak() {
         "A's approval is intact after operating in B"
     );
     assert!(board_has(&profile, &entry_id), "A's entry is intact");
+}
+
+#[test]
+fn directory_trust_is_scoped_to_the_active_community_across_switches() {
+    let dir = tempfile::tempdir().expect("temp dir");
+    let db_path = dir
+        .path()
+        .join("directory-trust-scope.db")
+        .to_string_lossy()
+        .to_string();
+    let (profile, a_ns, b_ns) = organizer_of_a_member_of_b(db_path);
+
+    profile
+        .switch_community(a_ns.clone(), REGISTRY_KEY.to_vec())
+        .expect("switch A");
+    let runtime = profile.app_runtime();
+    let verified_listing = runtime
+        .directory_listings()
+        .expect("directory in A")
+        .into_iter()
+        .next()
+        .expect("verified starter listing");
+    let app_id = verified_listing
+        .app_id
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+
+    runtime
+        .trust_app(app_id.clone())
+        .expect("approve verified listing in A");
+    let listing_in_a = runtime
+        .directory_listings()
+        .expect("directory after approval in A")
+        .into_iter()
+        .find(|listing| listing.app_id == verified_listing.app_id)
+        .expect("verified listing remains in A");
+    assert!(
+        listing_in_a
+            .trusted_in_spaces
+            .iter()
+            .any(|namespace| namespace == &id_bytes(&a_ns)),
+        "the verified listing is trusted in active Community A"
+    );
+    assert!(
+        runtime.is_app_trusted(app_id.clone()).unwrap(),
+        "the execution gate agrees the app is trusted in A"
+    );
+
+    profile
+        .switch_community(b_ns.clone(), REGISTRY_KEY.to_vec())
+        .expect("switch B");
+    let listing_in_b = runtime
+        .directory_listings()
+        .expect("directory in B")
+        .into_iter()
+        .find(|listing| listing.app_id == verified_listing.app_id)
+        .expect("verified listing remains discoverable in B");
+    assert!(
+        !listing_in_b
+            .trusted_in_spaces
+            .iter()
+            .any(|namespace| namespace == &id_bytes(&b_ns)),
+        "A's approval is not listed as trust in Community B"
+    );
+    assert!(
+        !runtime.is_app_trusted(app_id.clone()).unwrap(),
+        "the execution gate agrees the app is not trusted in B"
+    );
+
+    profile
+        .switch_community(a_ns.clone(), REGISTRY_KEY.to_vec())
+        .expect("switch back to A");
+    let listing_back_in_a = runtime
+        .directory_listings()
+        .expect("directory after returning to A")
+        .into_iter()
+        .find(|listing| listing.app_id == verified_listing.app_id)
+        .expect("verified listing remains in A after round trip");
+    let trusted_in_a = listing_back_in_a
+        .trusted_in_spaces
+        .iter()
+        .any(|namespace| namespace == &id_bytes(&a_ns));
+    assert_eq!(
+        trusted_in_a,
+        runtime.is_app_trusted(app_id).unwrap(),
+        "directory listing truth agrees with the execution gate after returning to A"
+    );
+    assert!(trusted_in_a, "the approval remains trusted in A");
 }
 
 #[test]

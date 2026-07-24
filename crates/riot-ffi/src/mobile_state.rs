@@ -3354,6 +3354,7 @@ pub(crate) fn switch_community(
             .community_sync_inventory
             .remove(&target_ns)
             .unwrap_or_default();
+        refresh_app_trust_markers(profile)?;
         persist_registry(profile)?;
 
         let record = profile
