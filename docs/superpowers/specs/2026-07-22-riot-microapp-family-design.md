@@ -684,7 +684,12 @@ durable encoding of generation 1; migration writes no marker and consumes zero
 profile bytes. On every bootstrap, the host resolves the eight exact legacy
 pairs from the immutable, non-advertised catalog and installs them into the
 runtime without appending duplicate bytes to the carried-app profile field.
-Persisted trust IDs are then reapplied exactly as the previous release did.
+Persisted trust is then restored only from an exact namespace-and-app identity
+whose organizer authority still validates in core. Legacy profile-wide trust
+IDs have unknowable namespace provenance: unless signed namespace-scoped
+evidence recovers the original grant, migration leaves those tools disabled and
+requires explicit organizer re-approval. It never assigns a global ID to the
+currently selected namespace or copies it into every namespace.
 Existing Android profiles that already carry an exact v1 pair keep it; exact-ID
 deduplication counts and installs the pair once, with the carried bytes taking
 precedence after catalog equality verification.
@@ -799,13 +804,15 @@ Trust grant is persistence-first:
 
 1. the native row enters **Turning on…** and cannot launch;
 2. core prepares the exact held app/organizer grant without changing trust;
-3. the host preflights and atomically persists the prospective trusted-ID set;
-   storage failure leaves disk and core untrusted; and
+3. the host preflights and atomically persists the prospective set of exact
+   `(namespaceID, fullAppID)` grants; storage failure leaves disk and core
+   untrusted; and
 4. core finalizes trust and only then exposes **Open**. The durable write is the
    linearization point: a crash afterward restarts trusted and reapplies the
-   same exact ID.
+   same exact namespace-and-app grant only while that namespace is active and
+   organizer authority still validates.
 
-If grant persistence is storage-full, the row returns to **Review**, the tool
+If grant persistence is storage-full, the row returns to its named **Add** action, the tool
 remains off, and an alert says: **This device's offline storage is full, so Riot
 couldn't turn on <name>. The tool is still off and your tools did not change.**
 For another persistence failure it says: **Riot couldn't save that change on

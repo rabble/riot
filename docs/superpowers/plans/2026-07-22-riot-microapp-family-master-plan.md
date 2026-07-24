@@ -31,7 +31,7 @@ Each WU produces working, tested software on its own. `→` = hard dependency.
 | WU-001 | 1 | Catalog split + legacy resolver + capacity preflight (Rust core+FFI) | riot-core, riot-ffi | — |
 | WU-001N | 1 | Persist generation marker + Android 4 MiB codec-ceiling preflight | Android `PersistedProfile.kt`, iOS/macOS `ProfileRepository.swift`, FFI restore sig | WU-001 |
 | WU-002 | 1 | Locked prepare/persist/finalize: trust grant/revoke + app-data | riot-core, riot-ffi, native shells | WU-001N |
-| WU-002P | 1 | Community-scoped Tools presentation first: **A** shared iOS/macOS `In <community>` → `Available to add` → secondary `More tools`, named Open/Add/Ask/Make available/Recommend copy, retained trust gate, marketing-site/native poster aesthetic, macOS-width + large-Dynamic-Type review; **B** Android parity; **C** only then `Legacy 1`/`Redesigned · Version 2`, install-warning, and distinct count-full/storage-full copy (spec §"Existing-user presentation" and `2026-07-24-community-scoped-tools-design.md`) | iOS/macOS/Android Tools UI | WU-001N, WU-002 (including namespace-scoped Apple trust persistence in WU-002c) |
+| WU-002P | 1 | Community-scoped Tools presentation first: **A** shared iOS/macOS `In <community>` → `Available to add` → secondary `More tools`, named namespace-bound Open/Add/Ask/Make available/Recommend actions, retained trust gate, marketing-site/native poster aesthetic, macOS-width + large-Dynamic-Type review; **B** Android parity; **C** only then `Legacy 1`/`Redesigned · Version 2`, install-warning, and distinct count-full/storage-full copy (spec §"Existing-user presentation" and `2026-07-24-community-scoped-tools-design.md`) | iOS/macOS/Android Tools UI | WU-001N, WU-002 (WU-002c must key trust by `(namespaceID, fullAppID)`, fail closed when migrating global IDs, and preserve active-namespace listing truth across A→B→A switches) |
 | WU-003 | 2 | Semantic tokens + 6 theme presets + Night Garden fallback + drift contract | `fixtures/apps/_shared`, contract test | — |
 | WU-004 | 2 | `appearanceProfileID` lifecycle + theme picker + native preference store | riot-core/ffi, iOS/macOS/Android | WU-003 |
 | WU-005 | 2 | `RiotToolFonts.v1` pack + reserved-path resolver + per-ID CSP + nosniff + normalization vectors | riot-ffi, native, preview | WU-003 |
@@ -61,7 +61,8 @@ Each WU produces working, tested software on its own. `→` = hard dependency.
    goals land before generation/provenance/quota cosmetics. Generation metadata
    cannot move an enabled tool below a disabled tool. WU-002P remains
    merge/release-blocked until WU-001N and all of WU-002, including
-   namespace-scoped Apple trust persistence in WU-002c, are complete.
+   namespace-scoped Apple trust persistence, fail-closed legacy-global-ID
+   migration, and active-namespace directory truth in WU-002c, are complete.
 
 ## Per-WU deliverables (uniform Definition of Done)
 
