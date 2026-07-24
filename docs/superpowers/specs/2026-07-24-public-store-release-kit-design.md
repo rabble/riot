@@ -1,6 +1,6 @@
 # Riot Public Store Release Kit
 
-Status: approved for design review.
+Status: revision 1 for design-review gate.
 
 ## Goal
 
@@ -21,13 +21,16 @@ repository.
 
 The store listing will describe Riot as:
 
-> Community-owned news and practical tools that keep working locally when
-> networks are unreliable.
+> Community-owned news and practical tools designed to stay useful locally
+> when networks are unreliable.
 
 Version 1.0 is an early-access release, not a claim that every planned
 resilient-network feature is field-proven. In particular, nearby radio sync
-must be described as experimental until the physical-device release gate is
-recorded against the exact candidate builds.
+must be described as experimental until the applicable cross-device release
+gates are recorded against the exact candidate builds. A valid signature
+proves source and integrity, not truth. Editorial labels are community signals,
+not independent factual verification. Store text and screenshots must use
+those distinctions explicitly.
 
 Riot is free, has no in-app purchases, and is intended for worldwide
 availability. Store copy must avoid rankings, performance superlatives,
@@ -74,18 +77,26 @@ Add a canonical `release/` tree with four responsibilities:
    review notes, encryption questions, and evidence links into the code.
 3. **Visual source and output** — checked-in source captures/templates and
    reproducibly generated store assets.
-4. **Candidate production** — scripts and manifests for build, validation,
-   upload, hardware sign-off, and promotion.
+4. **Candidate production** — scripts, immutable manifests, and append-only
+   sign-off records for build, validation, upload, hardware approval, and
+   promotion.
 
 The directory should be automation-ready without requiring Fastlane in this
-slice. Metadata should use stable, parseable files where that helps validation
-and plain Markdown for reviewer-facing worksheets. Generated outputs must be
-deterministic for identical source inputs.
+slice. Canonical metadata uses JSON with a checked-in JSON Schema; human
+worksheets use Markdown. Visual templates and their source captures produce
+deterministic output when run with the pinned Node/npm and image-tool versions.
+Signed Apple archives and Android bundles are not byte-reproducible promises:
+each is built once, treated as immutable, identified by its digest and signing
+identity, and promoted without rebuilding.
 
 Secrets, certificates, provisioning profiles, keystores, API keys, passwords,
 and authenticated session data must remain outside git. Scripts may accept
 paths and credentials from environment variables or explicitly ignored local
-configuration.
+configuration. Credentialed commands verify restrictive file permissions, use
+least-privilege store roles, never copy keys into persistent home-directory
+locations, never place passwords in command arguments or logs, disable
+long-lived signing daemons where applicable, clean unavoidable temporary files
+with traps, and document revocation and rotation.
 
 ## Identifiers and versions
 
@@ -96,9 +107,19 @@ Android's `applicationId` changes before its first Play upload. Its Kotlin
 namespace and source package may remain `org.riot.evidence`; changing the
 public application ID does not justify a source-wide rename.
 
-All public targets use marketing version `1.0`. Store build numbers/version
-codes must increase monotonically and be supplied by the release tooling.
-Local debug workflows must remain usable without distribution credentials.
+All public targets use marketing version `1.0`. Build numbers are explicit
+operator inputs: `RIOT_IOS_BUILD`, `RIOT_MAC_BUILD`, and
+`RIOT_ANDROID_VERSION_CODE`. The tool never derives them from git commit count.
+Before a candidate can be built, the operator records the current store-side
+maximum for that platform. The validator requires the requested number to
+exceed both that maximum and every number in a checked-in append-only release
+ledger.
+
+Each immutable candidate ID is
+`1.0-<ios|macos|android>-<build>-<12-character-commit>`. Creating a candidate
+uses an exclusive lock and atomic temporary-file rename; reusing an ID, build
+number, or artifact path fails. Local debug workflows remain usable without
+distribution credentials.
 
 ## Metadata deliverables
 
@@ -119,6 +140,30 @@ Character limits must be validated locally. Apple and Google variants may
 differ where their policies or fields differ, but their factual claims must
 remain consistent.
 
+## Platform capability and claim contract
+
+Every store claim must be backed by both a code path and a passing candidate
+journey. The initial contract is:
+
+| Persona/journey | iPhone/iPad | macOS 14, Apple silicon | Android phone/tablet | Store-claim rule |
+| --- | --- | --- | --- | --- |
+| Reader: open a local community and read its newswire | required | required | required | universal claim after all three candidates pass |
+| Organizer: create/switch a community | required | required | required | universal claim after all three candidates pass |
+| Contributor: compose, review, sign, and persist an update | required | required | required | universal claim after all three candidates pass |
+| Follower: join by a valid reference and recover from invalid input | required | required | required | platform claim only where the submitted UI passes |
+| Community member: open bundled community tools | required | only tools actually compiled into the Mac candidate | required | screenshots and copy are platform-specific |
+| Nearby peer: exchange on physical devices | iOS-to-iOS and iOS-to-Android required before advertising | not advertised in 1.0 | Android-to-Android and Android-to-iOS required before advertising | experimental claim appears only after the named pair passes |
+
+The Android implementation currently exposes Spaces, Newswire, Compose,
+Import, apps/tools, persistence, followed sites, and Nearby in
+`apps/android/app/src/main/kotlin/org/riot/evidence/MainActivity.kt`; the
+candidate rehearsal, not that inventory alone, authorizes the store claim.
+
+Permission denial, invalid join data, no nearby peers, and unavailable remote
+content must leave the core local reading/creation path useful and show an
+actionable recovery step. A dead end or a claim that exists only on another
+platform blocks that platform's screenshot and public listing.
+
 ## Store visual system
 
 The selected direction is **cinematic overlay**:
@@ -133,11 +178,15 @@ The selected direction is **cinematic overlay**:
 The primary narrative is:
 
 1. **Your community. Your newswire.** — Spaces/Home.
-2. **Publish signed updates from the field.** — Compose.
-3. **See what's verified, corrected, or still unconfirmed.** — Newswire.
+2. **Publish signed updates from the field.** — Compose, with supporting copy
+   stating that signatures prove source and integrity rather than truth.
+3. **Read signatures and community editorial labels.** — Newswire, showing the
+   exact labels present in the captured candidate.
 4. **Carry useful tools with the community.** — apps/checklists.
-5. **Exchange updates nearby.** — Nearby, marked experimental.
-6. **Keep reading when the network doesn't cooperate.** — offline/local state.
+5. **Exchange updates nearby.** — Nearby, marked experimental and used only on
+   platforms whose named hardware pairs pass.
+6. **Keep a local copy available offline.** — an evidenced local/offline state,
+   without claiming universal network resilience.
 
 Outputs must cover the current required Apple screenshot classes for iPhone,
 iPad, and Mac, plus Google phone and tablet screenshots. Google also receives
@@ -148,9 +197,38 @@ icons and a macOS app-icon set.
 Preview videos are out of scope for 1.0. They add production and review risk
 without proving a user workflow that the screenshot sequence cannot show.
 
-Asset validation must check dimensions, format, alpha requirements where
-applicable, file size, ordering, and expected count. Every generated image must
-be visually reviewed at its intended aspect ratio before completion.
+The composition contract uses the implemented Riot identity:
+
+- Anton for overlay headlines, Space Mono for structural labels, and Work Sans
+  only when body copy is necessary;
+- `ink` `#17160f` and `paper` `#eae6da` as the default band pair, with existing
+  pink/blue tokens reserved for accents;
+- an opaque headline band occupying at most 24 percent of a portrait image and
+  28 percent of a landscape image;
+- at least 5 percent safe inset on every edge;
+- no more than three headline lines and no more than 42 headline characters;
+- at least 4.5:1 text contrast;
+- headline cap height of at least 56 source pixels on phone output and 72
+  source pixels on tablet/Mac output; and
+- a 320-pixel-wide thumbnail review in which both overlay and underlying UI
+  remain legible.
+
+All essential screenshot claims must also appear in accessible listing text;
+color or image text is never the only carrier of meaning.
+
+Source captures come only from deterministic synthetic fixtures built into the
+candidate. Production/private communities, real notifications, personal names,
+locations, and operational identifiers are prohibited. The asset pipeline
+strips image metadata and scans visible fixture text and identifiers before
+commit.
+
+Asset validation checks dimensions, format, alpha requirements where
+applicable, file size, ordering, expected count, metadata absence, fixture
+provenance, safe areas, text geometry, and contrast. A screenshot provenance
+manifest records candidate ID, full commit, candidate build, platform,
+OS/device class, locale, appearance, source hash, synthetic fixture revision,
+and template version. Every generated image is visually reviewed at its
+intended aspect ratio and at store-thumbnail scale.
 
 ## Privacy and policy evidence
 
@@ -175,22 +253,48 @@ The release package will contain:
 - an Apple privacy-manifest and required-reason-API audit;
 - a privacy-policy consistency check;
 - content-rating recommendations;
-- user-generated-content policy analysis covering reporting, blocking,
-  moderation, objectionable content, and public contact information; and
+- a user-generated-content compliance record covering Terms/user-policy
+  acceptance, prohibited-content rules, filtering, in-app content/author
+  reporting, local author blocking, moderator response/tombstone handling,
+  response ownership/service level, and public contact information; and
 - review notes explaining first launch, demo content, no-login behavior,
   offline behavior, local permissions, and nearby testing.
 
-If the audit finds a required safeguard missing, public promotion is blocked
-until the safeguard is implemented and tested. Internal beta distribution may
-continue when store policy allows it and the limitation is disclosed to
-testers.
+The policy audit is the first implementation work unit. Public promotion
+requires tested UGC safeguards, a published response process, and privacy
+answers for any transmitted report. If any safeguard is missing, this
+release-kit work records a blocking dependency and starts a separately
+brainstormed, design-reviewed, TDD implementation workstream before candidate
+production. Internal beta distribution may continue only when store policy
+allows it and the limitation is disclosed to testers. Release-kit completion
+does not waive this public-readiness dependency.
+
+The minimum operational contract is: reports receive an acknowledgment within
+24 hours; credible imminent-harm or illegal-content reports receive a
+moderator decision within 24 hours; other objectionable-content reports receive
+a decision within 72 hours. The public support/report URL identifies the
+responsible operator and escalation path. Local blocking works immediately
+without waiting for a moderator or disclosing the block list.
 
 Apple encryption/export-compliance classification remains a human/legal
 decision. Riot uses application cryptography, so the kit must present the
 actual algorithms and distribution behavior and record the selected answer; it
-must not preserve or change `ITSAppUsesNonExemptEncryption` by assumption.
+must not preserve or change `ITSAppUsesNonExemptEncryption` by assumption. The
+current hard-coded value is removed from candidate configuration. While the
+classification is unresolved, only unsigned/local validation builds are
+allowed. Apple archive, export, and upload all fail closed. After approval, the
+selected value is injected during archive production and verified in the
+archived plist for both Apple targets.
+
 Store agreements, tax, banking, trader-status, and similar account declarations
-are also human-only gates.
+remain human-only gates and must be resolved before public promotion when
+required by the store.
+
+The audit also produces an outbound-network matrix for first launch,
+denied/granted permissions, nearby sync, and followed-site refresh. It records
+the initiator, destination class, transmitted fields, redirect handling, and
+retention assumption so developer collection is not confused with
+user-directed disclosure.
 
 ## Platform candidate production
 
@@ -201,6 +305,9 @@ are also human-only gates.
   later public promotion.
 - Harden the existing release script so version, build, source state, archive,
   export, and upload intent are explicit.
+- Read an App Store Connect API key from its original external path after
+  checking ownership/mode; do not copy it to
+  `~/.appstoreconnect/private_keys`.
 - Preserve the current Keychain access-group behavior and device-only storage
   protections.
 
@@ -212,41 +319,145 @@ are also human-only gates.
 - Supply the sandbox entitlements, versioning, usage descriptions, app icon,
   and packaging metadata required by the store build.
 - Verify that shared SwiftUI screens remain usable at Mac window sizes.
+- Ship macOS 14 on Apple silicon only in 1.0 and disclose that support boundary
+  in metadata and the hardware matrix. Intel/universal packaging is a later
+  release.
 
 ### Android
 
 - Change `applicationId` to `net.protest.riot`.
 - Add adaptive and legacy launcher icons plus the Play store icon.
-- Add release signing driven only by external credentials.
+- Add release signing driven only by an external, permission-checked Play
+  upload key and passwords delivered without command-line exposure. Use Play
+  App Signing, record both upload and app-signing certificate fingerprints,
+  and run credentialed Gradle commands with `--no-daemon`.
 - Produce a signed release Android App Bundle (`.aab`).
 - Keep release builds possible in a validation-only unsigned mode when the
   signing key is unavailable, while refusing any upload/promotion command.
 - Preserve API-level policy compliance and the current local-network address
   restrictions.
 
+## Release supply-chain contract
+
+Candidate production pins and records the Rust, Swift/Xcode, Java, Android
+SDK/NDK, Gradle, Node, npm, and image-tool versions. It requires:
+
+- Cargo release commands with `--locked` (or `--frozen` where the environment
+  is already provisioned);
+- `npm ci` against the checked-in lockfile;
+- a Gradle wrapper distribution SHA-256, wrapper-JAR validation, strict
+  dependency verification metadata, and dependency locks;
+- advisory/vulnerability scans with an explicit disposition for every finding;
+- an SBOM for each native candidate; and
+- hashes of lockfiles, tool binaries or version output, and generated UniFFI
+  inputs in each candidate manifest.
+
+Dependency or tool changes after candidate creation invalidate that candidate.
+
 ## Promotion flow
 
-1. Select a clean, committed source revision.
-2. Run all blocking repository and release validations.
-3. Generate metadata, assets, candidates, hashes, and a release manifest.
-4. Upload the Apple candidate to TestFlight and Android candidate to Play
-   internal testing.
-5. Run the device and policy rehearsal against those exact candidates.
-6. Record results and human approvals in the release manifest/checklist.
-7. Promote the exact accepted candidates to public early access without
-   rebuilding.
+There are three distinct immutable candidates: iOS/iPadOS, macOS, and Android.
+Each owns its build number, signed artifact, store identity, beta result,
+hardware result, and promotion gate.
 
-The manifest records:
+1. Complete build-affecting policy work: UGC dependency, privacy manifest, and
+   Apple export classification.
+2. Select a clean, committed source revision and explicit unused build numbers.
+3. Run portable repository, metadata, asset, supply-chain, and release
+   validations.
+4. Build each candidate once and write its immutable candidate manifest.
+5. Upload iOS/iPadOS to TestFlight, macOS to its App Store Connect beta/review
+   path, and Android to Play internal testing. Record store receipts and
+   store-assigned build identities in append-only events.
+6. Run the platform and cross-device rehearsal against those exact store
+   builds.
+7. Append test and human approvals that reference the candidate-manifest
+   digest.
+8. Promote each independently accepted candidate to a staged worldwide public
+   early-access rollout without rebuilding.
+
+Candidate states are `draft → built → uploaded → beta-accepted → promoted`.
+Transitions append events to a ledger; the immutable candidate manifest is
+never edited. A rejected build is terminal and receives a new build number.
+Partial builds may be discarded before upload but their allocated numbers are
+never reused. A stale manifest, changed artifact hash, different signing
+identity, missing prior state, or duplicate transition fails. Ledger appends
+use an exclusive lock, fsync, and atomic rename; interrupted writes recover the
+last complete event and report the incomplete transition.
+
+Each candidate manifest records:
 
 - full git commit;
 - dirty-tree status;
-- marketing versions and platform build numbers;
+- marketing version, platform build number, and candidate ID;
 - public identifiers;
-- binary/archive and visual-asset SHA-256 hashes;
+- signed artifact and visual-asset SHA-256 hashes;
+- code-signing identity and certificate fingerprint;
+- effective entitlements and archived privacy/export values;
+- lockfile, generated-binding, SBOM, and toolchain hashes;
 - validation commands and results;
-- privacy/policy worksheet revision;
-- hardware matrix and results; and
-- remaining human gates.
+- privacy/policy worksheet revision.
+
+Append-only sign-off events record store upload receipts/identifiers, beta
+results, hardware results, human approvals, promotion receipts, remaining
+gates, and the SHA-256 of the complete immutable candidate manifest. Promotion
+verifies the store build identity, artifact signing certificate, and recorded
+candidate-manifest digest before allowing the operator to continue.
+
+The command surface stays deliberately separate:
+
+- `status` is read-only and reports `PASS`, `BLOCKED`, or `HUMAN ACTION` for
+  every gate with the failing file/value, expected value, and recovery command;
+- `generate` writes deterministic metadata/visual output;
+- `build` creates one named candidate;
+- `upload` requires explicit credentials and confirmation; and
+- `promote` accepts only a beta-accepted candidate.
+
+## Tooling implementation and TDD contract
+
+Release orchestration is implemented as small pure Node ES modules under
+`scripts/release/`, with thin executable adapters. Modules receive injected
+filesystem, process runner, environment, clock, hash, image inspector, and
+console adapters. Tests use `node:test`, checked-in fixtures, fake runners, and
+temporary directories; they never invoke a live store, signing identity, or
+real credential.
+
+`package.json`, the JS test command, `c8` include patterns, and CI are expanded
+so all `scripts/release/**/*.mjs` production modules are subject to the existing
+100 percent JS tooling line, branch, function, and statement floors in
+`.coverage-thresholds.json`. Platform shell scripts contain only argument
+normalization and `exec` into covered Node modules or native build tools.
+
+Every work unit follows RED → GREEN → REFACTOR. The initial test design is:
+
+| Component | RED test written first | Smallest GREEN boundary | Fixtures/helpers and required cases |
+| --- | --- | --- | --- |
+| Metadata parser/schema | valid source currently has no parser; overlong/missing fields must fail | parse one locale and report JSON-pointer diagnostics | valid Apple/Google files; exact limit, limit+1, missing required, unknown field, malformed JSON |
+| Claim/capability validator | platform claim with no passing journey must fail | compare listing claims to capability matrix | universal, platform-only, experimental-unpassed, exact trust vocabulary |
+| Visual validator | wrong dimensions/alpha/metadata/unsafe capture must fail | inspect one PNG and provenance entry | every boundary size; alpha rules; EXIF present; production token; missing fixture hash; 320-pixel thumbnail |
+| Visual generator | one synthetic capture must render to a golden geometry record | compose one headline band from pinned tokens | phone/tablet/landscape; 1/3/4 lines; contrast; safe-area and band-height boundaries |
+| Build-number allocator | duplicate, stale, rebased, and store-max collisions must fail | validate explicit number and append allocation | empty ledger; duplicate ID; lower store max; interrupted append; concurrent lock |
+| Candidate manifest | changed artifact or signing identity must fail verification | create/verify immutable manifest | iOS, Mac, Android; unsigned validation-only Android; missing artifact; stale tool hash; malformed schema |
+| State machine/ledger | invalid skip, duplicate transition, and accepted-ID reuse must fail | append one legal transition atomically | every legal/illegal edge; partial write recovery; rejected retry with new number |
+| Process runner | dirty tree, nonzero command, timeout, and zero tests must fail | run one fake validation and normalize result | Cargo/XCTest/Gradle zero-test logs; signal; timeout; redacted stderr |
+| Credential guard | persistent copy, broad mode, logged secret, and absent credential must fail | authorize one fake upload using external read-only path | `0600`/wrong modes; ASC key; Android key/password; cleanup; redaction; `--no-daemon` |
+| Export-compliance guard | unresolved or archived-value mismatch must block Apple archive/export/upload | inject and verify one recorded decision | unresolved; exempt/non-exempt; iOS/Mac archived plist mismatch |
+| Supply-chain guard | missing Gradle checksum/locks or changed lock/tool hash must fail | verify one pinned input set | Cargo/npm/Gradle/toolchain fixtures; advisory finding with/without disposition |
+| Status reporter | mixed gates must never summarize as ready | render tri-state result and recovery action | PASS/BLOCKED/HUMAN ACTION; missing evidence; exact file/value diagnostics |
+| Upload/promote adapter | implicit upload, rebuilt hash, wrong store ID, and unaccepted candidate must fail | call a fake store runner after explicit confirmation | cancellation; receipt capture; retry; per-platform identity; promotion without rebuild |
+| Privacy/policy consistency | store answer contradicting code/network/policy evidence must fail | compare one answer to evidence matrix | no collection; user-directed fetch; report transmission; missing UGC control; stale policy URL |
+
+Golden image tests assert geometry/tokens and are supplemented by Playwright
+captures plus human visual review; they do not substitute brittle byte-for-byte
+PNG snapshots for semantic checks.
+
+Owned implementation scope includes `release/**`, `scripts/release/**`,
+`scripts/testflight-release.sh`, `scripts/green.sh`, `package.json` and its
+lockfile, `.github/workflows/ci.yml`, `.coverage-thresholds.json` only if its
+include/enforcement description must change (floors never decrease), both
+Xcode projects and platform plists/entitlements/assets, Android Gradle/wrapper
+and resource files, and the marketing privacy/support/release pages. Any UGC
+product remediation gets its own approved file scope before edits.
 
 ## Blocking verification
 
@@ -263,7 +474,10 @@ Automated release checks include:
 - metadata limits and required fields;
 - screenshot/icon/feature-graphic validation;
 - privacy-answer and public-policy consistency; and
-- repository secret scanning.
+- repository secret scanning;
+- locked and verified dependency/tool inputs, SBOM generation, and advisory
+  disposition; and
+- candidate-manifest/signing/store-identity verification.
 
 The device rehearsal covers:
 
@@ -275,11 +489,28 @@ The device rehearsal covers:
 - accessibility and large text;
 - representative iPhone, iPad, Mac, Android phone, and Android tablet layouts;
   and
-- physical nearby exchange, including at least two real devices and the
-  advertised fallback behavior.
+- physical iOS-to-iOS, Android-to-Android, and iOS-to-Android nearby exchange
+  for any listing that advertises Nearby, using the exact beta candidates and
+  advertised fallback behavior. Mac Nearby is not advertised in 1.0.
 
 No public-readiness claim is allowed when a blocking check is absent, skipped,
 or reports zero executed tests.
+
+Before rollout, every supported platform must pass 100 percent of the scripted
+first-install-to-first-read, create, publish/sign, restart/persist, denied
+permission/recovery, and offline-local journeys on every named device class.
+There must be zero critical crashes, hangs, data-loss events, privacy/policy
+failures, or failed advertised hardware pairs.
+
+Public availability is worldwide but staged over seven days. Apple phased
+release and Google staged rollout are used where available. Store diagnostics
+and the published support/report channel are reviewed daily. Rollout pauses if
+crash-free sessions fall below 99.5 percent on any platform, any critical
+data-loss/security/privacy failure is confirmed, an advertised core journey is
+unavailable, or moderation reports cannot meet the published response target.
+After seven stable days at full rollout, v1 exits heightened observation;
+ordinary support and store-diagnostic review continue. A paused candidate is
+fixed under a new build number rather than overwritten or rebuilt in place.
 
 ## Failure behavior
 
@@ -293,12 +524,17 @@ Release commands fail closed with actionable diagnostics for:
 - missing or invalid visual assets;
 - inconsistent privacy declarations;
 - failed or empty test runs;
-- candidate-hash mismatch; or
+- candidate, signing-identity, toolchain, or store-build mismatch;
+- invalid candidate-state transition or interrupted ledger append;
+- unresolved export classification for an Apple archive/export/upload;
+- missing UGC safeguard or operational response owner; or
 - missing required human/hardware approvals.
 
 Tooling must never:
 
 - copy credentials or signing material into the repository;
+- copy store keys into persistent credential-discovery directories;
+- expose credentials in arguments, logs, crash output, or long-lived daemons;
 - silently upload;
 - overwrite an accepted candidate;
 - rebuild between beta acceptance and public promotion;
@@ -307,24 +543,43 @@ Tooling must never:
 
 ## Definition of done
 
-The release kit is complete when:
+### Release-kit implementation complete
+
+The repository-owned kit is complete when:
 
 1. Apple and Google metadata passes local validation and is ready for manual
    entry or later API automation.
 2. All required store visuals exist, pass mechanical validation, and pass
    visual review.
-3. iOS/iPadOS, macOS, and Android candidate artifacts can be produced by
-   documented commands.
+3. Credential-free validation builds can be produced by documented commands,
+   and credentialed candidate commands fail safely when credentials or human
+   decisions are absent.
 4. Public identifiers and versioning are consistent.
 5. Privacy, policy, permissions, content-rating, review, and encryption
    worksheets are complete and evidence-backed.
 6. All repository quality and coverage gates pass.
-7. A candidate manifest records artifact hashes and all automated results.
-8. The TestFlight, Play internal-test, device-rehearsal, and public-promotion
-   steps are documented without requiring a rebuild.
-9. The only unresolved tasks are explicitly authenticated console actions,
-   legal/account declarations, or physical-device observations that cannot be
-   performed in the repository.
+7. Candidate-manifest, ledger, status, upload, and promotion contracts pass
+   their complete unit and integration fixture suites.
+8. The TestFlight, Mac App Store beta/review, Play internal-test,
+   device-rehearsal, and public-promotion steps are documented without
+   requiring a rebuild.
+9. The policy audit has either confirmed the required UGC safeguards or linked
+   a separately approved blocking remediation workstream.
+
+### Public release ready
+
+Riot 1.0 is ready for staged public promotion only when:
+
+1. Three separately identified signed candidates exist for iOS/iPadOS, macOS,
+   and Android with immutable manifests and store upload identities.
+2. Export compliance, store agreements, privacy answers, content ratings, UGC
+   controls/operations, and public support contact are approved.
+3. All beta, device, accessibility, offline, persistence, and advertised
+   hardware-pair journeys pass against those exact candidates.
+4. Every candidate is in `beta-accepted` state with no blocking or unknown
+   gate in the read-only status report.
+5. The staged rollout, daily observation owner, halt thresholds, and withdrawal
+   procedure are recorded.
 
 ## Explicit non-goals
 
