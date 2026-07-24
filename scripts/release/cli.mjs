@@ -145,6 +145,7 @@ export async function runCli({
       const sources = await loadPolicySources({ sourceDirectory: join(root, "release", "source"), fs });
       await generateWorksheets({
         sources,
+        repositoryRoot: root,
         outputDirectory: join(root, "release", "generated", "worksheets"),
         fs,
         sha256: (bytes) => createHash("sha256").update(bytes).digest("hex"),

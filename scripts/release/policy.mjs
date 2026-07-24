@@ -1,5 +1,6 @@
+import { randomUUID } from "node:crypto";
 import { readFile, readdir, realpath } from "node:fs/promises";
-import { dirname, isAbsolute, join, normalize, relative, sep } from "node:path";
+import { dirname, isAbsolute, join, normalize, relative, resolve, sep } from "node:path";
 
 import { canonicalJson } from "./canonical-json.mjs";
 import { loadSchemaRegistry, releaseDiagnosticError, validateSource } from "./schema.mjs";
@@ -434,35 +435,154 @@ function ambiguousLockError(lockPath) {
   return new Error(`ambiguous worksheet generation lock: ${lockPath}`);
 }
 
-async function acquireWorksheetLock(fs, lockPath, processId, isProcessAlive) {
+function lockOwnershipError(lockPath) {
+  return new Error(`worksheet lock ownership changed; refusing to unlink: ${lockPath}`);
+}
+
+function sameFileIdentity(left, right) {
+  return left.dev === right.dev && left.ino === right.ino;
+}
+
+function validLockOwner(owner) {
+  return Number.isSafeInteger(owner?.processId)
+    && owner.processId > 0
+    && typeof owner.token === "string"
+    && owner.token.length > 0;
+}
+
+async function pathStat(fs, path) {
+  try {
+    return await fs.lstat(path);
+  } catch (error) {
+    if (error.code === "ENOENT") return null;
+    throw error;
+  }
+}
+
+async function lockMatches(fs, lockPath, identity, owner) {
+  const current = await pathStat(fs, lockPath);
+  if (!current || current.isSymbolicLink() || !sameFileIdentity(current, identity)) return false;
+  if (!owner) return true;
+  let observed;
+  try {
+    observed = JSON.parse(await fs.readFile(lockPath, "utf8"));
+  } catch {
+    return false;
+  }
+  return observed.processId === owner.processId && observed.token === owner.token;
+}
+
+async function removeOwnedLock(fs, lockPath, identity, owner) {
+  if (!await lockMatches(fs, lockPath, identity, owner)) return false;
+  await fs.rm(lockPath, { force: true });
+  return true;
+}
+
+async function readExistingLock(fs, lockPath) {
+  const handle = await fs.open(lockPath, "r");
+  try {
+    const identity = await handle.stat();
+    let owner;
+    try {
+      owner = JSON.parse(await handle.readFile("utf8"));
+    } catch {
+      throw ambiguousLockError(lockPath);
+    }
+    if (!validLockOwner(owner)) throw ambiguousLockError(lockPath);
+    if (!await lockMatches(fs, lockPath, identity, owner)) throw lockOwnershipError(lockPath);
+    return { identity, owner };
+  } finally {
+    await handle.close();
+  }
+}
+
+async function acquireWorksheetLock(fs, lockPath, processId, isProcessAlive, createLockToken) {
   let handle;
   try {
     handle = await fs.open(lockPath, "wx", 0o600);
   } catch (error) {
     if (error.code !== "EEXIST") throw error;
-    let owner;
-    try {
-      owner = JSON.parse(await fs.readFile(lockPath, "utf8"));
-    } catch {
-      throw ambiguousLockError(lockPath);
-    }
-    if (!Number.isSafeInteger(owner?.processId) || owner.processId <= 0) {
-      throw ambiguousLockError(lockPath);
-    }
+    const { identity, owner } = await readExistingLock(fs, lockPath);
     if (isProcessAlive(owner.processId)) {
       throw new Error(`active worksheet generation lock owned by process ${owner.processId}`);
     }
-    await fs.rm(lockPath, { force: true });
+    if (!await removeOwnedLock(fs, lockPath, identity, owner)) throw lockOwnershipError(lockPath);
     handle = await fs.open(lockPath, "wx", 0o600);
   }
+  const identity = await handle.stat();
+  const owner = { processId, token: createLockToken() };
+  if (!validLockOwner(owner)) {
+    await ignoreFailure(handle.close());
+    await ignoreFailure(removeOwnedLock(fs, lockPath, identity));
+    throw new TypeError("lock token adapter must return a non-empty string");
+  }
   try {
-    await fs.writeFile(lockPath, `${JSON.stringify({ processId })}\n`, "utf8");
-    return handle;
+    await handle.writeFile(`${JSON.stringify(owner)}\n`, "utf8");
+    if (!await lockMatches(fs, lockPath, identity, owner)) throw lockOwnershipError(lockPath);
+    return { handle, identity, owner };
   } catch (error) {
     await ignoreFailure(handle.close());
-    await ignoreFailure(fs.rm(lockPath, { force: true }));
+    await ignoreFailure(removeOwnedLock(fs, lockPath, identity));
     throw error;
   }
+}
+
+function isInside(root, target) {
+  const fromRoot = relative(root, target);
+  return fromRoot === "" || !(fromRoot === ".." || fromRoot.startsWith(`..${sep}`) || isAbsolute(fromRoot));
+}
+
+function unsafeWorksheetPath(path, reason) {
+  return new Error(`unsafe worksheet path (${reason}): ${path}`);
+}
+
+async function validateExistingAncestors(fs, repositoryPath, repositoryRealPath, targetPath) {
+  if (!isInside(repositoryPath, targetPath)) {
+    throw unsafeWorksheetPath(targetPath, "escapes repository");
+  }
+  const fromRepository = relative(repositoryPath, targetPath);
+  const components = fromRepository === "" ? [] : fromRepository.split(sep);
+  let current = repositoryPath;
+  for (const [index, component] of components.entries()) {
+    current = join(current, component);
+    const stat = await pathStat(fs, current);
+    if (!stat) break;
+    if (stat.isSymbolicLink()) throw unsafeWorksheetPath(current, "symlinked worksheet path");
+    if (index < components.length - 1 && !stat.isDirectory()) {
+      throw unsafeWorksheetPath(current, "non-directory ancestor");
+    }
+    const currentRealPath = await fs.realpath(current);
+    if (!isInside(repositoryRealPath, currentRealPath)) {
+      throw unsafeWorksheetPath(current, "escapes repository");
+    }
+  }
+}
+
+async function validateWorksheetPaths(fs, repositoryRoot, outputDirectory) {
+  if (typeof repositoryRoot !== "string" || repositoryRoot.length === 0) {
+    throw new TypeError("explicit repositoryRoot is required");
+  }
+  const repositoryPath = resolve(repositoryRoot);
+  if (dirname(repositoryPath) === repositoryPath) {
+    throw new TypeError("repositoryRoot must not be the filesystem root");
+  }
+  const repositoryStat = await fs.lstat(repositoryPath);
+  if (repositoryStat.isSymbolicLink() || !repositoryStat.isDirectory()) {
+    throw unsafeWorksheetPath(repositoryPath, "repository root must be a real directory");
+  }
+  const repositoryRealPath = await fs.realpath(repositoryPath);
+  const resolvedOutput = resolve(outputDirectory);
+  const paths = {
+    outputDirectory: resolvedOutput,
+    stagingDirectory: `${resolvedOutput}.staging`,
+    backupDirectory: `${resolvedOutput}.backup`,
+    markerPath: `${resolvedOutput}.recovery.json`,
+    lockPath: `${resolvedOutput}.lock`,
+  };
+  for (const path of Object.values(paths)) {
+    await validateExistingAncestors(fs, repositoryPath, repositoryRealPath, path);
+  }
+  return { repositoryPath, ...paths };
 }
 
 async function reconcileWorksheetSwap(fs, {
@@ -484,11 +604,13 @@ async function reconcileWorksheetSwap(fs, {
 
 export async function generateWorksheets({
   sources,
+  repositoryRoot,
   outputDirectory,
   fs,
   sha256,
   processId = process.pid,
   isProcessAlive = processIsAlive,
+  createLockToken = randomUUID,
 }) {
   if (!fs
     || typeof fs.mkdir !== "function"
@@ -497,20 +619,36 @@ export async function generateWorksheets({
     || typeof fs.readdir !== "function"
     || typeof fs.rename !== "function"
     || typeof fs.rm !== "function"
-    || typeof fs.open !== "function") {
-    throw new TypeError("filesystem adapter with mkdir/writeFile/readFile/readdir/rename/rm/open is required");
+    || typeof fs.open !== "function"
+    || typeof fs.lstat !== "function"
+    || typeof fs.realpath !== "function") {
+    throw new TypeError("filesystem adapter with mkdir/writeFile/readFile/readdir/rename/rm/open/lstat/realpath is required");
   }
   if (typeof sha256 !== "function") throw new TypeError("sha256 adapter is required");
-  if (!Number.isSafeInteger(processId) || processId <= 0 || typeof isProcessAlive !== "function") {
-    throw new TypeError("positive processId and process liveness adapter are required");
+  if (!Number.isSafeInteger(processId)
+    || processId <= 0
+    || typeof isProcessAlive !== "function"
+    || typeof createLockToken !== "function") {
+    throw new TypeError("positive processId, process liveness, and lock token adapters are required");
   }
+  let {
+    outputDirectory: resolvedOutput,
+    stagingDirectory,
+    backupDirectory,
+    markerPath,
+    lockPath,
+  } = await validateWorksheetPaths(fs, repositoryRoot, outputDirectory);
+  outputDirectory = resolvedOutput;
   const parentDirectory = dirname(outputDirectory);
-  const stagingDirectory = `${outputDirectory}.staging`;
-  const backupDirectory = `${outputDirectory}.backup`;
-  const markerPath = `${outputDirectory}.recovery.json`;
-  const lockPath = `${outputDirectory}.lock`;
   await fs.mkdir(parentDirectory, { recursive: true });
-  const lockHandle = await acquireWorksheetLock(fs, lockPath, processId, isProcessAlive);
+  await validateWorksheetPaths(fs, repositoryRoot, outputDirectory);
+  const lock = await acquireWorksheetLock(
+    fs,
+    lockPath,
+    processId,
+    isProcessAlive,
+    createLockToken,
+  );
   try {
     await reconcileWorksheetSwap(fs, {
       outputDirectory,
@@ -565,10 +703,14 @@ export async function generateWorksheets({
       throw error;
     }
   } finally {
+    let closeError;
     try {
-      await lockHandle.close();
-    } finally {
-      await fs.rm(lockPath, { force: true });
+      await lock.handle.close();
+    } catch (error) {
+      closeError = error;
     }
+    const removed = await removeOwnedLock(fs, lockPath, lock.identity, lock.owner);
+    if (!removed) throw lockOwnershipError(lockPath);
+    if (closeError) throw closeError;
   }
 }

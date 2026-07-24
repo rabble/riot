@@ -9,7 +9,7 @@ import test from "node:test";
 
 import {
   evaluatePolicy,
-  generateWorksheets,
+  generateWorksheets as generateWorksheetsImplementation,
   loadPolicySources,
   processIsAlive,
 } from "../policy.mjs";
@@ -33,6 +33,13 @@ const expectedWorksheets = [
 
 async function sources() {
   return loadPolicySources({ sourceDirectory, fs: realFs });
+}
+
+function generateWorksheets(options) {
+  return generateWorksheetsImplementation({
+    ...options,
+    repositoryRoot: options.repositoryRoot ?? dirname(options.outputDirectory),
+  });
 }
 
 test("real policy sources are schema-valid and truthfully not public-ready", async () => {
@@ -446,6 +453,126 @@ test("generateWorksheets emits exactly eleven deterministic digested files", asy
   assert.match(contentRating, /Apple: 12\+[\s\S]*Google Play: Teen[\s\S]*user-generated content/);
 });
 
+test("worksheet generation rejects symlinked ancestors without touching external files", async () => {
+  const loaded = await sources();
+  const allowedRoot = await mkdtemp(join(tmpdir(), "riot-worksheet-allowed-"));
+  const externalRoot = await mkdtemp(join(tmpdir(), "riot-worksheet-external-"));
+  const sentinelPath = join(externalRoot, "sentinel.txt");
+  await realFs.writeFile(sentinelPath, "external sentinel\n", "utf8");
+  await realFs.mkdir(join(allowedRoot, "release"));
+  await realFs.symlink(externalRoot, join(allowedRoot, "release", "generated"));
+  const beforeNames = (await readdir(externalRoot)).sort();
+  const outputDirectory = join(allowedRoot, "release", "generated", "worksheets");
+
+  await assert.rejects(
+    () => generateWorksheets({
+      sources: loaded,
+      repositoryRoot: allowedRoot,
+      outputDirectory,
+      fs: realFs,
+      sha256,
+    }),
+    /symlinked worksheet path|escapes repository/,
+  );
+  assert.deepEqual((await readdir(externalRoot)).sort(), beforeNames);
+  assert.equal(await readFile(sentinelPath, "utf8"), "external sentinel\n");
+});
+
+test("worksheet path trust rejects escapes, fake roots, files, and physical-path mismatches", async () => {
+  const loaded = await sources();
+  const allowedRoot = await mkdtemp(join(tmpdir(), "riot-worksheet-path-root-"));
+  const outside = await mkdtemp(join(tmpdir(), "riot-worksheet-path-outside-"));
+  await assert.rejects(
+    () => generateWorksheets({
+      sources: loaded,
+      repositoryRoot: allowedRoot,
+      outputDirectory: join(allowedRoot, "..", "outside-worksheets"),
+      fs: realFs,
+      sha256,
+    }),
+    /escapes repository/,
+  );
+  await assert.rejects(
+    () => generateWorksheets({
+      sources: loaded,
+      repositoryRoot: allowedRoot,
+      outputDirectory: allowedRoot,
+      fs: realFs,
+      sha256,
+    }),
+    /escapes repository/,
+  );
+  await assert.rejects(
+    () => generateWorksheets({
+      sources: loaded,
+      repositoryRoot: "/",
+      outputDirectory: join(allowedRoot, "worksheets"),
+      fs: realFs,
+      sha256,
+    }),
+    /filesystem root/,
+  );
+
+  const linkedRoot = `${allowedRoot}-link`;
+  await realFs.symlink(allowedRoot, linkedRoot);
+  await assert.rejects(
+    () => generateWorksheets({
+      sources: loaded,
+      repositoryRoot: linkedRoot,
+      outputDirectory: join(linkedRoot, "worksheets"),
+      fs: realFs,
+      sha256,
+    }),
+    /repository root must be a real directory/,
+  );
+
+  const fileRoot = join(allowedRoot, "root-file");
+  await realFs.writeFile(fileRoot, "not a directory\n");
+  await assert.rejects(
+    () => generateWorksheets({
+      sources: loaded,
+      repositoryRoot: fileRoot,
+      outputDirectory: join(fileRoot, "worksheets"),
+      fs: realFs,
+      sha256,
+    }),
+    /repository root must be a real directory/,
+  );
+
+  const fileAncestor = join(allowedRoot, "release-file");
+  await realFs.writeFile(fileAncestor, "not a directory\n");
+  await assert.rejects(
+    () => generateWorksheets({
+      sources: loaded,
+      repositoryRoot: allowedRoot,
+      outputDirectory: join(fileAncestor, "worksheets"),
+      fs: realFs,
+      sha256,
+    }),
+    /non-directory ancestor/,
+  );
+
+  const releaseDirectory = join(allowedRoot, "release");
+  await realFs.mkdir(releaseDirectory);
+  const mismatchedFs = {
+    ...realFs,
+    async realpath(path) {
+      if (path === releaseDirectory) return outside;
+      return realFs.realpath(path);
+    },
+  };
+  await assert.rejects(
+    () => generateWorksheets({
+      sources: loaded,
+      repositoryRoot: allowedRoot,
+      outputDirectory: join(releaseDirectory, "worksheets"),
+      fs: mismatchedFs,
+      sha256,
+    }),
+    /escapes repository/,
+  );
+});
+
 test("worksheet digests bind network evidence that affects privacy gate bytes", async () => {
   const loaded = await sources();
   const first = await mkdtemp(join(tmpdir(), "riot-worksheet-digest-a-"));
@@ -567,7 +694,7 @@ test("worksheet generation restores an orphan backup and clears stale swap artif
   await realFs.mkdir(stagingDirectory);
   await realFs.writeFile(join(stagingDirectory, "partial.md"), "partial\n", "utf8");
   await realFs.writeFile(markerPath, `${JSON.stringify({ processId: 4242, phase: "backup-created" })}\n`);
-  await realFs.writeFile(lockPath, `${JSON.stringify({ processId: 4242 })}\n`);
+  await realFs.writeFile(lockPath, `${JSON.stringify({ processId: 4242, token: "stale-token" })}\n`);
 
   await assert.rejects(
     () => generateWorksheets({
@@ -595,7 +722,7 @@ test("worksheet generation refuses a live lock without changing the installed se
   await generateWorksheets({ sources: loaded, outputDirectory, fs: realFs, sha256 });
   const before = await readFile(join(outputDirectory, "accessibility.md"), "utf8");
   const lockPath = `${outputDirectory}.lock`;
-  await realFs.writeFile(lockPath, `${JSON.stringify({ processId: 4242 })}\n`);
+  await realFs.writeFile(lockPath, `${JSON.stringify({ processId: 4242, token: "live-token" })}\n`);
   await assert.rejects(
     () => generateWorksheets({
       sources: loaded,
@@ -613,7 +740,12 @@ test("worksheet generation refuses a live lock without changing the installed se
 
 test("worksheet locks fail closed on ambiguous ownership and filesystem errors", async () => {
   const loaded = await sources();
-  for (const owner of ["{", "{}", `${JSON.stringify({ processId: 0 })}\n`]) {
+  for (const owner of [
+    "{",
+    "{}",
+    `${JSON.stringify({ processId: 0, token: "token" })}\n`,
+    `${JSON.stringify({ processId: 4242, token: "" })}\n`,
+  ]) {
     const outputDirectory = await mkdtemp(join(tmpdir(), "riot-worksheet-ambiguous-lock-"));
     const lockPath = `${outputDirectory}.lock`;
     await realFs.writeFile(lockPath, owner);
@@ -647,6 +779,20 @@ test("worksheet locks fail closed on ambiguous ownership and filesystem errors",
   const writeLockPath = `${writeDirectory}.lock`;
   const writeFs = {
     ...realFs,
+    async open(path, flags, mode) {
+      const handle = await realFs.open(path, flags, mode);
+      return new Proxy(handle, {
+        get(target, property) {
+          if (property === "writeFile") {
+            return async () => {
+              throw new Error("injected lock write refusal");
+            };
+          }
+          const value = Reflect.get(target, property, target);
+          return typeof value === "function" ? value.bind(target) : value;
+        },
+      });
+    },
     async writeFile(path, bytes, options) {
       if (path === writeLockPath) throw new Error("injected lock write refusal");
       return realFs.writeFile(path, bytes, options);
@@ -662,6 +808,159 @@ test("worksheet locks fail closed on ambiguous ownership and filesystem errors",
     /lock write refusal/,
   );
   await assert.rejects(() => realFs.access(writeLockPath));
+});
+
+test("worksheet locks reject unreadable metadata and stale-lock replacement races", async () => {
+  const loaded = await sources();
+  const malformedDirectory = await mkdtemp(join(tmpdir(), "riot-worksheet-lock-malformed-"));
+  const malformedLockPath = `${malformedDirectory}.lock`;
+  const malformedFs = {
+    ...realFs,
+    async readFile(path, options) {
+      if (path === malformedLockPath) return "{";
+      return realFs.readFile(path, options);
+    },
+  };
+  await assert.rejects(
+    () => generateWorksheets({
+      sources: loaded,
+      outputDirectory: malformedDirectory,
+      fs: malformedFs,
+      sha256,
+    }),
+    /worksheet lock ownership changed/,
+  );
+  await assert.rejects(() => realFs.access(malformedLockPath));
+
+  const staleDirectory = await mkdtemp(join(tmpdir(), "riot-worksheet-lock-stale-race-"));
+  const staleLockPath = `${staleDirectory}.lock`;
+  const displacedPath = `${staleLockPath}.displaced`;
+  const staleOwner = `${JSON.stringify({ processId: 4242, token: "stale-token" })}\n`;
+  const successor = `${JSON.stringify({ processId: process.pid, token: "successor-token" })}\n`;
+  await realFs.writeFile(staleLockPath, staleOwner, "utf8");
+  let reads = 0;
+  const replacingFs = {
+    ...realFs,
+    async readFile(path, options) {
+      if (path === staleLockPath) {
+        reads += 1;
+        if (reads === 2) {
+          await realFs.rename(staleLockPath, displacedPath);
+          await realFs.writeFile(staleLockPath, successor, "utf8");
+          return successor;
+        }
+      }
+      return realFs.readFile(path, options);
+    },
+  };
+  await assert.rejects(
+    () => generateWorksheets({
+      sources: loaded,
+      outputDirectory: staleDirectory,
+      fs: replacingFs,
+      sha256,
+      isProcessAlive: () => false,
+    }),
+    /worksheet lock ownership changed/,
+  );
+  assert.equal(await readFile(staleLockPath, "utf8"), successor);
+  assert.doesNotReject(() => realFs.access(displacedPath));
+
+  const readRaceDirectory = await mkdtemp(join(tmpdir(), "riot-worksheet-lock-read-race-"));
+  const readRaceLockPath = `${readRaceDirectory}.lock`;
+  const readRaceDisplaced = `${readRaceLockPath}.displaced`;
+  await realFs.writeFile(readRaceLockPath, staleOwner, "utf8");
+  const readRaceFs = {
+    ...realFs,
+    async open(path, flags, mode) {
+      const handle = await realFs.open(path, flags, mode);
+      if (path !== readRaceLockPath || flags !== "r") return handle;
+      return new Proxy(handle, {
+        get(target, property) {
+          if (property === "readFile") {
+            return async (...args) => {
+              const bytes = await target.readFile(...args);
+              await realFs.rename(readRaceLockPath, readRaceDisplaced);
+              await realFs.writeFile(readRaceLockPath, successor, "utf8");
+              return bytes;
+            };
+          }
+          const value = Reflect.get(target, property, target);
+          return typeof value === "function" ? value.bind(target) : value;
+        },
+      });
+    },
+  };
+  await assert.rejects(
+    () => generateWorksheets({
+      sources: loaded,
+      outputDirectory: readRaceDirectory,
+      fs: readRaceFs,
+      sha256,
+      isProcessAlive: () => false,
+    }),
+    /worksheet lock ownership changed/,
+  );
+  assert.equal(await readFile(readRaceLockPath, "utf8"), successor);
+  assert.doesNotReject(() => realFs.access(readRaceDisplaced));
+});
+
+test("worksheet lock ownership is bound to the exclusively opened file", async () => {
+  const loaded = await sources();
+  const outputDirectory = await mkdtemp(join(tmpdir(), "riot-worksheet-lock-identity-"));
+  const lockPath = `${outputDirectory}.lock`;
+  const displacedPath = `${lockPath}.displaced`;
+  const successor = `${JSON.stringify({ processId: process.pid, token: "successor-token" })}\n`;
+  let replaced = false;
+  const replacingFs = {
+    ...realFs,
+    async open(path, flags, mode) {
+      const handle = await realFs.open(path, flags, mode);
+      if (path === lockPath && flags === "wx" && !replaced) {
+        replaced = true;
+        await realFs.rename(lockPath, displacedPath);
+        await realFs.writeFile(lockPath, successor, "utf8");
+      }
+      return handle;
+    },
+  };
+  await assert.rejects(
+    () => generateWorksheets({
+      sources: loaded,
+      outputDirectory,
+      fs: replacingFs,
+      sha256: () => "short",
+    }),
+    /worksheet lock ownership changed/,
+  );
+  assert.equal(await readFile(lockPath, "utf8"), successor);
+  assert.doesNotReject(() => realFs.access(displacedPath));
+});
+
+test("worksheet cleanup refuses to unlink a successor lock", async () => {
+  const loaded = await sources();
+  const outputDirectory = await mkdtemp(join(tmpdir(), "riot-worksheet-lock-successor-"));
+  const lockPath = `${outputDirectory}.lock`;
+  const displacedPath = `${lockPath}.displaced`;
+  const successor = `${JSON.stringify({ processId: process.pid, token: "successor-token" })}\n`;
+  let replaced = false;
+  const replacingFs = {
+    ...realFs,
+    async rename(from, to) {
+      await realFs.rename(from, to);
+      if (from === `${outputDirectory}.staging` && to === outputDirectory && !replaced) {
+        replaced = true;
+        await realFs.rename(lockPath, displacedPath);
+        await realFs.writeFile(lockPath, successor, "utf8");
+      }
+    },
+  };
+  await assert.rejects(
+    () => generateWorksheets({ sources: loaded, outputDirectory, fs: replacingFs, sha256 }),
+    /worksheet lock ownership changed/,
+  );
+  assert.equal(await readFile(lockPath, "utf8"), successor);
+  assert.doesNotReject(() => realFs.access(displacedPath));
 });
 
 test("worksheet recovery fails closed on unreadable swap state", async () => {
@@ -683,6 +982,23 @@ test("worksheet recovery fails closed on unreadable swap state", async () => {
     /swap state refusal/,
   );
   await assert.rejects(() => realFs.access(`${outputDirectory}.lock`));
+
+  const lstatDirectory = await mkdtemp(join(tmpdir(), "riot-worksheet-lstat-"));
+  const lstatFs = {
+    ...realFs,
+    async lstat(path, options) {
+      if (path === lstatDirectory) {
+        const error = new Error("injected lstat refusal");
+        error.code = "EACCES";
+        throw error;
+      }
+      return realFs.lstat(path, options);
+    },
+  };
+  await assert.rejects(
+    () => generateWorksheets({ sources: loaded, outputDirectory: lstatDirectory, fs: lstatFs, sha256 }),
+    /lstat refusal/,
+  );
 });
 
 test("process liveness checks distinguish current, absent, and invalid process IDs", () => {
@@ -727,6 +1043,15 @@ test("generateWorksheets requires injected filesystem and hash adapters", async 
   );
   const outputDirectory = await mkdtemp(join(tmpdir(), "riot-worksheets-hash-"));
   await assert.rejects(
+    () => generateWorksheetsImplementation({
+      sources: loaded,
+      outputDirectory,
+      fs: realFs,
+      sha256: () => "short",
+    }),
+    /repositoryRoot/,
+  );
+  await assert.rejects(
     () => generateWorksheets({
       sources: loaded,
       outputDirectory,
@@ -755,4 +1080,55 @@ test("generateWorksheets requires injected filesystem and hash adapters", async 
     }),
     /liveness/,
   );
+  await assert.rejects(
+    () => generateWorksheets({
+      sources: loaded,
+      outputDirectory,
+      fs: realFs,
+      sha256,
+      createLockToken: null,
+    }),
+    /lock token adapters/,
+  );
+  await assert.rejects(
+    () => generateWorksheets({
+      sources: loaded,
+      outputDirectory,
+      fs: realFs,
+      sha256,
+      createLockToken: () => "",
+    }),
+    /non-empty string/,
+  );
+
+  const closeDirectory = await mkdtemp(join(tmpdir(), "riot-worksheet-lock-close-"));
+  const closeFs = {
+    ...realFs,
+    async open(path, flags, mode) {
+      const handle = await realFs.open(path, flags, mode);
+      if (flags !== "wx") return handle;
+      return new Proxy(handle, {
+        get(target, property) {
+          if (property === "close") {
+            return async () => {
+              await target.close();
+              throw new Error("injected lock close refusal");
+            };
+          }
+          const value = Reflect.get(target, property, target);
+          return typeof value === "function" ? value.bind(target) : value;
+        },
+      });
+    },
+  };
+  await assert.rejects(
+    () => generateWorksheets({
+      sources: loaded,
+      outputDirectory: closeDirectory,
+      fs: closeFs,
+      sha256,
+    }),
+    /lock close refusal/,
+  );
+  await assert.rejects(() => realFs.access(`${closeDirectory}.lock`));
 });
