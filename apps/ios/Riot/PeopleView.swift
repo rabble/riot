@@ -72,62 +72,31 @@ public enum PeopleStrings {
 
 /// Recency phrasing for a contributor's page.
 ///
-/// A projected post carries no wall-clock "posted at" — the only time it holds is
-/// the signed Willow ordering value (`taiJ2000Micros`, TAI/J2000 microseconds),
-/// and nothing in hand converts that to a calendar instant. Rather than hand-roll
-/// the leap-second-aware epoch conversion the core owns (or invent a timestamp),
-/// recency is expressed HONESTLY in the same ordering domain: how far a person's
-/// newest post sits BEHIND the freshest update visible in the community. Every
-/// function is pure over two ordering values — deterministic under test, and it
-/// never fabricates a moment the app does not actually have. When the person has
-/// no visible posts there is simply no line (absence, never a fake "active now").
+/// A projected post now carries a real creation instant (`createdAtUnixSeconds`,
+/// recovered by core from the Willow entry timestamp — see the FFI projection),
+/// so recency is a true wall-clock "ago" against the current clock, not the old
+/// ordering-domain gap. Every function is pure over a creation instant and an
+/// explicit `now`, so it stays deterministic under test. When the person has no
+/// visible posts — or core supplied no creation time — there is simply no line
+/// (absence, never a fabricated "active now").
 public enum PersonActivity {
-    private static let microsPerSecond: UInt64 = 1_000_000
-
-    /// A coarse human span for a duration measured in ordering microseconds — the
-    /// same bucket ladder (`minutes`/`hours`/`days`) the community and alert time
-    /// utils use, phrased as a plain span so it composes into "… before the
-    /// latest update".
-    static func span(micros: UInt64) -> String {
-        let seconds = micros / microsPerSecond
-        switch seconds {
-        case ..<60:
-            return "moments"
-        case ..<3_600:
-            let minutes = seconds / 60
-            return "\(minutes) minute\(minutes == 1 ? "" : "s")"
-        case ..<86_400:
-            let hours = seconds / 3_600
-            return "\(hours) hour\(hours == 1 ? "" : "s")"
-        default:
-            let days = seconds / 86_400
-            return "\(days) day\(days == 1 ? "" : "s")"
-        }
-    }
-
-    /// The header recency line, or `nil` when the person has no visible posts (no
-    /// activity is invented). When their newest post is the freshest visible
-    /// update — or newer/equal to what we can see — they are the most recent to
-    /// post; otherwise the honest gap to that freshest update.
+    /// The header recency line ("Last posted 2h ago"), or `nil` when the person
+    /// has no visible posts / no recoverable creation time. Derived from the real
+    /// creation instant of their newest post.
     public static func headerRecency(
-        personNewestMicros: UInt64?,
-        communityNewestMicros: UInt64?
+        personNewestCreatedUnixSeconds: UInt64?,
+        now: Date = Date()
     ) -> String? {
-        guard let person = personNewestMicros else { return nil }
-        guard let community = communityNewestMicros, community > person else {
-            return PeopleStrings.mostRecentToPost
-        }
-        return "Last posted \(span(micros: community - person)) before the latest update"
+        guard let ago = RelativeTime.ago(unixSeconds: personNewestCreatedUnixSeconds, now: now)
+        else { return nil }
+        return "Last posted \(ago)"
     }
 
-    /// The per-row recency caption, anchored to the SAME freshest update so a
-    /// person's list reads as an activity history: the newest row is the latest
-    /// update, older rows show how far back they sit.
-    public static func rowRecency(rowMicros: UInt64, communityNewestMicros: UInt64?) -> String {
-        guard let community = communityNewestMicros, community > rowMicros else {
-            return "Latest update"
-        }
-        return "\(span(micros: community - rowMicros)) before the latest update"
+    /// The per-row recency caption — a true "2h ago" from the row's own creation
+    /// instant. `nil` when core supplied no time, so the row omits the caption
+    /// rather than showing a bogus instant.
+    public static func rowRecency(rowCreatedUnixSeconds: UInt64?, now: Date = Date()) -> String? {
+        RelativeTime.ago(unixSeconds: rowCreatedUnixSeconds, now: now)
     }
 }
 
@@ -351,7 +320,7 @@ private struct PersonRowView: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            PersonAvatar(displayName: row.displayName, isOrganizer: row.isOrganizer)
+            PersonAvatar(displayName: row.displayName, isOrganizer: row.isOrganizer, keySeed: row.id)
             VStack(alignment: .leading, spacing: 4) {
                 HStack {
                     Text(row.rendered)
@@ -384,6 +353,11 @@ struct PersonAvatar: View {
     let displayName: String
     var isOrganizer: Bool = false
     var diameter: CGFloat = 40
+    /// The author's unique key (hex id or short tag), used to derive the initials
+    /// when there is no real display name — so two nameless members never both
+    /// read "ME". `nil` keeps the old name-only initials for callers that have no
+    /// key to hand.
+    var keySeed: String?
     /// An explicit, key-derived disc colour (see ``RiotTheme/avatarColor(forKey:)``).
     /// `nil` keeps the roster's default disc, so existing People rows are unchanged;
     /// the newswire byline passes one so each author reads as a distinct face.
@@ -414,8 +388,26 @@ struct PersonAvatar: View {
         return String(first.prefix(2)).uppercased()
     }
 
+    /// The initials to draw for an author. A real claimed name uses its own
+    /// initials. Core's fallback for a nameless peer is the bare word "member"
+    /// (surfaced friendly as "Member") — taking initials from THAT would stamp
+    /// "ME" on every nameless author, so instead derive two glyphs from the
+    /// author's unique key. The key tag is hex, so this echoes the tag shown
+    /// beside the name and is distinct per person; the disc colour is already
+    /// key-derived, so the two never collide together.
+    static func initials(displayName: String, keySeed: String?) -> String {
+        let trimmed = displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty, trimmed.lowercased() != "member" {
+            return initials(for: trimmed)
+        }
+        guard let keySeed else { return initials(for: displayName) }
+        let hex = keySeed.filter { $0.isHexDigit }
+        guard !hex.isEmpty else { return "•" }
+        return String(hex.prefix(2)).uppercased()
+    }
+
     var body: some View {
-        Text(Self.initials(for: displayName))
+        Text(Self.initials(displayName: displayName, keySeed: keySeed))
             .font(.riot(.body, size: diameter * 0.36, relativeTo: .headline))
             .fontWeight(.semibold)
             .foregroundStyle(glyphColor)
@@ -481,19 +473,24 @@ public final class PersonDetailModel: ObservableObject {
     /// The community this page is being viewed inside, for the contribution
     /// summary (#4). Empty when unknown — the summary then omits it cleanly.
     private let communityName: String
+    /// The clock the header recency reads "ago" against. Injectable so recency is
+    /// deterministic under test; production defaults to the live clock.
+    private let now: () -> Date
 
     public init(
         person: PersonRow,
         projector: NewswireProjecting,
         spaceDescriptorEntryID: String,
         communityName: String = "",
-        initialState: PersonDetailState = .empty
+        initialState: PersonDetailState = .empty,
+        now: @escaping () -> Date = { Date() }
     ) {
         self.person = person
         self.projector = projector
         self.spaceDescriptorEntryID = spaceDescriptorEntryID
         self.communityName = communityName
         self.state = initialState
+        self.now = now
     }
 
     /// The contribution summary shown in the header: the core-derived contribution
@@ -508,15 +505,16 @@ public final class PersonDetailModel: ObservableObject {
                 spaceDescriptorEntryID: spaceDescriptorEntryID
             )
             let rows = PersonPosts.authored(by: person.id, in: projection)
-            // The freshest ordering value the whole community shows — the honest
-            // anchor recency is measured against. Ordering metadata survives
-            // redaction, so hidden/expired posts still count as activity.
+            // The freshest ordering value the whole community shows, retained for
+            // callers that reason about ordering. Recency itself is now a true
+            // wall-clock "ago" from each post's real creation time.
             let allPosts = projection.frontPage + projection.openWire + projection.earlier
-            let newest = allPosts.map(\.taiJ2000Micros).max()
-            communityNewestMicros = newest
+            communityNewestMicros = allPosts.map(\.taiJ2000Micros).max()
+            // The person's newest post by ordering; show its real creation time as
+            // "Last posted N ago". `rows` is already newest-first by ordering.
             recentActivity = PersonActivity.headerRecency(
-                personNewestMicros: rows.map(\.taiJ2000Micros).max(),
-                communityNewestMicros: newest
+                personNewestCreatedUnixSeconds: rows.first?.createdAtUnixSeconds,
+                now: now()
             )
             state = rows.isEmpty ? .empty : .posts(rows)
         } catch {
@@ -590,7 +588,8 @@ public struct PersonDetailView: View {
                 PersonAvatar(
                     displayName: person.displayName,
                     isOrganizer: person.isOrganizer,
-                    diameter: 56
+                    diameter: 56,
+                    keySeed: person.id
                 )
                 VStack(alignment: .leading, spacing: 6) {
                     HStack {
@@ -646,7 +645,7 @@ public struct PersonDetailView: View {
             ForEach(rows) { row in
                 Button { reading = row } label: {
                     RiotCard {
-                        PersonPostRowView(row: row, communityNewestMicros: model.communityNewestMicros)
+                        PersonPostRowView(row: row)
                     }
                 }
                 .buttonStyle(.plain)
@@ -689,21 +688,19 @@ public struct PersonDetailView: View {
 /// for a single-author list.
 private struct PersonPostRowView: View {
     let row: NewswirePostRow
-    /// The community's freshest visible ordering value, so this row can show its
-    /// recency ("Latest update" / "3 hours before the latest update") against the
-    /// same anchor the header uses — turning the list into an activity history.
-    var communityNewestMicros: UInt64?
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             // Recency first, so the list scans as a timeline of this person's
-            // activity. Honest ordering-domain phrasing (see `PersonActivity`) —
-            // shown on every treatment, since ordering survives redaction.
-            Text(PersonActivity.rowRecency(rowMicros: row.taiJ2000Micros, communityNewestMicros: communityNewestMicros))
-                .font(.riot(.mono, size: 11, relativeTo: .caption2))
-                .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
-                .accessibilityIdentifier("person-post-recency-\(row.id)")
+            // activity. A true "2h ago" from the post's real creation time (see
+            // `PersonActivity`); omitted only when core supplied no time.
+            if let ago = PersonActivity.rowRecency(rowCreatedUnixSeconds: row.createdAtUnixSeconds) {
+                Text(ago)
+                    .font(.riot(.mono, size: 11, relativeTo: .caption2))
+                    .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
+                    .accessibilityIdentifier("person-post-recency-\(row.id)")
+            }
             switch row.display {
             case .ordinary:
                 Text(verbatim: row.headline ?? "Update")

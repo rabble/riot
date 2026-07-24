@@ -149,6 +149,13 @@ pub struct NewswireProjectedPost {
     /// The Willow ordering key the open wire is sorted by (newest first),
     /// surfaced so a client can merge projections without re-deriving it.
     pub tai_j2000_micros: u64,
+    /// The post's creation instant as UTC Unix seconds, recovered from
+    /// `tai_j2000_micros` (which is TAI/J2000 microseconds, an ordering value —
+    /// NOT a wall clock). This is the only wall-clock time a client needs to
+    /// render a real "2h ago" for the row. `None` when the entry timestamp is 0
+    /// or falls outside the representable Unix range, so the client can fall back
+    /// gracefully rather than show a bogus 1970 time.
+    pub created_at_unix_seconds: Option<u64>,
     pub headline: Option<String>,
     pub body: Option<String>,
     pub language: String,
@@ -689,6 +696,19 @@ fn render_author(
     }
 }
 
+/// Recover a post/comment's creation instant (UTC Unix seconds) from its Willow
+/// entry timestamp (TAI/J2000 microseconds). A 0 timestamp — or any value the
+/// converter rejects as out-of-range — yields `None` so the client renders a
+/// graceful fallback instead of a bogus wall-clock time. Uses the core inverse
+/// converter so no epoch/unit math is hand-rolled at the FFI boundary (this repo
+/// has a documented TAI/J2000-vs-Unix time-unit trap).
+fn created_at_unix_seconds(tai_j2000_micros: u64) -> Option<u64> {
+    if tai_j2000_micros == 0 {
+        return None;
+    }
+    riot_core::willow::unix_seconds_from_tai_j2000_micros(tai_j2000_micros).ok()
+}
+
 fn projected_post_view(
     post: &riot_core::newswire::ProjectedPost,
     render: &impl Fn(&[u8; SUBSPACE_ID_BYTES]) -> NewswireAuthor,
@@ -702,6 +722,7 @@ fn projected_post_view(
         entry_id: hex(&post.entry_id),
         author: render(&post.author_id),
         tai_j2000_micros: post.tai_j2000_micros,
+        created_at_unix_seconds: created_at_unix_seconds(post.tai_j2000_micros),
         headline: post.headline.clone(),
         body: post.body.clone(),
         language: post.language.clone(),

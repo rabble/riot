@@ -384,6 +384,12 @@ public struct NewswirePostRow: Equatable, Identifiable, Sendable {
     public let headline: String?
     public let body: String?
     public let taiJ2000Micros: UInt64
+    /// The post's real creation instant as UTC Unix seconds, recovered by core
+    /// from the entry timestamp. `nil` when core could not supply one (a 0/absent
+    /// timestamp), so the row simply omits the "ago" caption rather than showing a
+    /// bogus 1970 time. Distinct from `taiJ2000Micros`, which is an ordering value,
+    /// NOT a wall clock.
+    public let createdAtUnixSeconds: UInt64?
     public let sourceClaims: [String]
     public let coarseLocation: String?
     public let eventTimeUnixSeconds: UInt64?
@@ -407,6 +413,7 @@ public struct NewswirePostRow: Equatable, Identifiable, Sendable {
         self.headline = isOrdinary ? post.headline : nil
         self.body = isOrdinary ? post.body : nil
         self.taiJ2000Micros = post.taiJ2000Micros
+        self.createdAtUnixSeconds = post.createdAtUnixSeconds
         self.sourceClaims = isOrdinary ? post.sourceClaims : []
         self.coarseLocation = isOrdinary ? post.coarseLocation : nil
         self.eventTimeUnixSeconds = post.eventTimeUnixSeconds
@@ -430,6 +437,39 @@ public struct NewswirePostRow: Equatable, Identifiable, Sendable {
         let trimmed = authorDisplayName.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.isEmpty || trimmed.lowercased() == "member" { return "Member" }
         return trimmed
+    }
+
+    /// A short "2h ago" caption for this post, computed from its real creation
+    /// time against the current clock. `nil` when core supplied no creation time,
+    /// so the row shows nothing rather than a fabricated instant.
+    public func postedAgo(now: Date = Date()) -> String? {
+        RelativeTime.ago(unixSeconds: createdAtUnixSeconds, now: now)
+    }
+}
+
+/// A compact "just now / 5m ago / 3h ago / yesterday / 4d ago / 2w ago" phrasing
+/// from a UTC Unix-seconds instant, measured against `now`. This is the one place
+/// a wall-clock recency string is derived, shared by the newswire wire rows and a
+/// contributor's page. Kept pure (an explicit `now`) so it is deterministic under
+/// test. A missing or zero instant yields `nil` — the caller shows no time rather
+/// than a bogus 1970 date; a future instant (clock skew between peers) clamps to
+/// "just now" rather than printing a negative age.
+public enum RelativeTime {
+    public static func ago(unixSeconds: UInt64?, now: Date = Date()) -> String? {
+        guard let unixSeconds, unixSeconds > 0 else { return nil }
+        let then = TimeInterval(unixSeconds)
+        let delta = now.timeIntervalSince1970 - then
+        if delta < 60 { return "just now" }
+        let minutes = Int(delta / 60)
+        if minutes < 60 { return "\(minutes)m ago" }
+        let hours = Int(delta / 3_600)
+        if hours < 24 { return "\(hours)h ago" }
+        let days = Int(delta / 86_400)
+        if days == 1 { return "yesterday" }
+        if days < 7 { return "\(days)d ago" }
+        if days < 30 { return "\(days / 7)w ago" }
+        // Older than a month: an absolute short date is more useful than "38d ago".
+        return Date(timeIntervalSince1970: then).formatted(date: .abbreviated, time: .omitted)
     }
 }
 
@@ -1437,7 +1477,8 @@ public struct NewswireSurfaceView: View {
                     reading = post
                 }
                 NewswireAuthorByline(
-                    name: post.authorName, tag: post.authorTag, keyHex: post.authorKeyHex)
+                    name: post.authorName, tag: post.authorTag, keyHex: post.authorKeyHex,
+                    agoText: post.postedAgo())
                 if post.hasCorrection {
                     RiotBadge(EditorialCorrectionLabel.text)
                         .accessibilityIdentifier("correction-label-\(post.id)")
@@ -1687,6 +1728,9 @@ struct NewswireAuthorByline: View {
     /// The full key hex when the row has one (a post/reply/act); the tag is used as
     /// a stable fallback so the disc colour is still consistent per person.
     let keyHex: String
+    /// A short "2h ago" caption, shown quietly on the trailing edge when the row
+    /// carries a real creation time (posts do; replies/editorial acts pass `nil`).
+    var agoText: String? = nil
     @Environment(\.colorScheme) private var colorScheme
 
     private var colorSeed: String { keyHex.isEmpty ? tag : keyHex }
@@ -1696,6 +1740,7 @@ struct NewswireAuthorByline: View {
             PersonAvatar(
                 displayName: name,
                 diameter: 28,
+                keySeed: colorSeed,
                 tint: RiotTheme.avatarColor(forKey: colorSeed))
             VStack(alignment: .leading, spacing: 0) {
                 Text(name)
@@ -1708,10 +1753,24 @@ struct NewswireAuthorByline: View {
                         .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
                 }
             }
+            if let agoText {
+                Spacer(minLength: 8)
+                Text(agoText)
+                    .font(.riot(.mono, size: 10, relativeTo: .caption2))
+                    .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
+                    .accessibilityHidden(true)
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(tag.isEmpty ? name : "\(name), key \(tag)")
+        .accessibilityLabel(bylineAccessibilityLabel)
+    }
+
+    private var bylineAccessibilityLabel: String {
+        var parts = [name]
+        if !tag.isEmpty { parts.append("key \(tag)") }
+        if let agoText { parts.append("posted \(agoText)") }
+        return parts.joined(separator: ", ")
     }
 }
 
