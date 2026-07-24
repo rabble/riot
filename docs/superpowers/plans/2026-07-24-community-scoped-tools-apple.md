@@ -152,13 +152,16 @@ Add snapshot helpers that read a new `trustedAppsByNamespace` array of objects w
 
 ```swift
 func testTrustPersistsOnlyForItsExactNamespaceAcrossReopen() throws {
-    let snapshotURL = FileManager.default.temporaryDirectory
-        .appendingPathComponent("scoped-trust-\(UUID().uuidString).json")
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("scoped-trust-\(UUID().uuidString)", isDirectory: true)
+    let snapshotURL = directory.appendingPathComponent("profile.json")
+    let databasePath = directory.appendingPathComponent("riot.db").path
     let keyStore = TestWrappingKeyStore()
     let first = try RiotProfileRepository.open(
         storage: try ProtectedProfileStorage(fileURL: snapshotURL),
         keyStore: keyStore,
-        starterPacks: try starterPacks()
+        starterPacks: try starterPacks(),
+        databasePath: databasePath
     )
     let a = try first.createPublicSpace(title: "Community A")
     let appID = try XCTUnwrap(first.spaceApps().first).appIDHex
@@ -173,15 +176,18 @@ func testTrustPersistsOnlyForItsExactNamespaceAcrossReopen() throws {
     _ = try first.adoptSyncedNamespace(b)
     XCTAssertFalse(try XCTUnwrap(first.spaceApps().first).trusted)
 
-    _ = try first.switchToCommunity(namespaceID: a.namespaceID)
-    XCTAssertTrue(try XCTUnwrap(first.spaceApps().first).trusted)
-
+    // Reopen while B is active: a profile-wide implementation would wrongly
+    // reissue A's app ID into B here.
     let reopened = try RiotProfileRepository.open(
         storage: try ProtectedProfileStorage(fileURL: snapshotURL),
         keyStore: keyStore,
-        starterPacks: try starterPacks()
+        starterPacks: try starterPacks(),
+        databasePath: databasePath
     )
-    XCTAssertEqual(reopened.currentSpace?.namespaceID, a.namespaceID)
+    XCTAssertEqual(reopened.currentSpace?.namespaceID, b.namespaceID)
+    XCTAssertFalse(try XCTUnwrap(reopened.spaceApps().first).trusted)
+
+    _ = try reopened.switchToCommunity(namespaceID: a.namespaceID)
     XCTAssertTrue(try XCTUnwrap(reopened.spaceApps().first).trusted)
 }
 
@@ -216,6 +222,12 @@ func testLegacyGlobalTrustedAppIDsAreDiscardedInsteadOfAssignedToActiveSpace() t
 ```
 
 Also update the existing trust/untrust disk assertions to compare exact `(namespaceID, appIDHex)` records.
+Add an internal `AppTransactionTestHooks` value with `beforePersist` and
+`finalizeOverride` closures plus an internal `open(..., testHooks:)` overload.
+The existing public `open(...)` delegates with `testHooks: nil`, so no internal
+type appears in a public signature and production behavior is unchanged. Tests
+use semaphores to hold the persistence window and to inject the
+otherwise-invariant finalize failure without weakening the runtime contract.
 
 - [ ] **Step 2: Run the AppRepository suite and observe RED**
 
@@ -254,7 +266,24 @@ decodes to `[]`; ambiguous legacy IDs never become grants.
 
 - [ ] **Step 4: Make grant/revoke persistence-first and namespace-bound**
 
-Add a reusable guard:
+Add the state this prerequisite does not currently have:
+
+```swift
+private let appMutationLock = NSRecursiveLock()
+private var appOperationsClosed = false
+
+private func withAppMutationLock<T>(_ operation: () throws -> T) rethrows -> T {
+    appMutationLock.lock()
+    defer { appMutationLock.unlock() }
+    return try operation()
+}
+
+private func requireAppOperationsOpen() throws {
+    guard !appOperationsClosed else { throw RepositoryError.profileClosed }
+}
+```
+
+Add the reusable namespace guard:
 
 ```swift
 private func requireCurrentSpace(expectedNamespaceID: String) throws -> RiotSpace {
@@ -270,38 +299,47 @@ Change the repository mutation signature and implementation:
 
 ```swift
 public func trustApp(appID: String, expectedNamespaceID: String) throws {
-    let space = try requireCurrentSpace(expectedNamespaceID: expectedNamespaceID)
-    let prepared = try appRuntime.prepareAppTrust(appId: appID, trusted: true)
-    let prior = persisted
-    let grant = PersistedAppTrust(namespaceID: space.namespaceID, appIDHex: prepared.appId)
-    persisted.trustedAppsByNamespace.removeAll { $0 == grant }
-    persisted.trustedAppsByNamespace.append(grant)
-    do {
-        try storage.save(persisted)
-    } catch {
-        persisted = prior
-        try? appRuntime.discardPreparedTrust()
-        throw error
-    }
-    do {
-        try appRuntime.finalizeAppTrust()
-    } catch {
-        // The durable grant is the linearization point. Do not roll it back:
-        // the caller must close/rebuild this repository from durable state.
-        throw RepositoryError.profileClosed
+    try withAppMutationLock {
+        try requireAppOperationsOpen()
+        let space = try requireCurrentSpace(expectedNamespaceID: expectedNamespaceID)
+        let prepared = try appRuntime.prepareAppTrust(appId: appID, trusted: true)
+        let prior = persisted
+        let grant = PersistedAppTrust(namespaceID: space.namespaceID, appIDHex: prepared.appId)
+        persisted.trustedAppsByNamespace.removeAll { $0 == grant }
+        persisted.trustedAppsByNamespace.append(grant)
+        do {
+            try storage.save(persisted)
+        } catch {
+            persisted = prior
+            try? appRuntime.discardPreparedTrust()
+            throw error
+        }
+        do {
+            try appRuntime.finalizeAppTrust()
+        } catch {
+            // Durable state is authoritative; stop every later app operation
+            // until AppModel rebuilds the profile on the next bootstrap.
+            appOperationsClosed = true
+            throw RepositoryError.profileClosed
+        }
     }
 }
 ```
 
-Serialize prepare → save → finalize under the repository’s WU-002c app-mutation
-lock so a switch, revoke, or bridge operation cannot interleave. Implement
-revoke with the same expected-namespace guard and ordering. On open, restore
+Implement revoke with the same expected-namespace guard and ordering. Route
+`switchToCommunity`, `installedApps`, `directoryListings`, `getCarriedApp`,
+`installApp`, `shareApp`, `endorseApp`, grant/revoke, and every app-data
+read/write/bridge entry point through `withAppMutationLock`; read paths call
+`requireAppOperationsOpen`, and `appDataBridge` returns `nil` while closed.
+This makes the lock actually span prepare → disk → finalize, so a switch,
+revoke, admission, or bridge operation cannot interleave. Add fault-injection
+tests that block storage save while another queue attempts a switch/bridge and
+assert the second operation waits, plus a finalize-failure seam that asserts all
+later app reads/mutations fail with `profileClosed`/nil. On open, restore
 only records whose namespace equals `persisted.space?.namespaceID`, after
 starter/carried pairs have been verified, and let Rust revalidate organizer
-authority. An unexpected finalize invariant failure marks the repository
-closed/failed and routes subsequent app operations through the existing
-`RepositoryError.profileClosed` recovery path; it never reports a rollback of a
-durable decision.
+authority. An unexpected finalize invariant failure now creates a real
+repository closed state; it never reports a rollback of a durable decision.
 
 Add compatibility overloads in this same task so existing repository callers
 remain source-compatible while directory mutations use the explicit guard:
@@ -397,7 +435,7 @@ Run:
 xcodebuild test -project apps/macos/Riot.xcodeproj -scheme RiotKit-macOS \
   -destination 'platform=macOS' -derivedDataPath build/xcode-dd -quiet \
   CODE_SIGNING_ALLOWED=NO \
-  -only-testing:RiotKitTests/DirectoryStorefrontTests
+  -only-testing:RiotKitTests-macOS/DirectoryStorefrontTests
 ```
 
 Expected: FAIL because no scoped snapshot/CTA model exists.
@@ -457,9 +495,12 @@ boundary and the absence of duplicated rows.
 In `refresh(approval:)`, build an installed dictionary keyed by normalized full app ID, map listings once, append unlisted held rows, and assign one namespace-keyed snapshot:
 
 ```swift
-let installedByID = Dictionary(
-    uniqueKeysWithValues: installed.map { ($0.appIDHex.lowercased(), $0) }
-)
+let installedByID = installed.reduce(into: [String: RiotSpaceApp]()) { result, app in
+    // Starter restoration and a persisted carried copy can legitimately
+    // resolve to the same content-derived ID. They are the same verified tool;
+    // last restoration wins without trapping.
+    result[app.appIDHex.lowercased()] = app
+}
 let listed = try port.directoryListings().map { listing in
     let appIDHex = RiotDirectoryRow.hex(listing.appId)
     return RiotDirectoryRow.make(
@@ -548,6 +589,19 @@ XCTAssertEqual(port.shareCalls, [])
 ```
 
 Cover stale Add, Make available, Recommend, and retraction; exact receipts; `canMakeAvailable` only with a locally resolvable pair; and failed actions leaving row/CTA unchanged.
+For fake `getCarriedApp` failures, assert the exact named messages:
+
+```swift
+XCTAssertEqual(
+    model.errorMessage,
+    "Couldn’t open Chat in River City Wire. Nothing changed. Try again."
+)
+XCTAssertEqual(
+    model.errorMessage,
+    "Couldn’t add Chat to River City Wire. Nothing changed. Try again."
+)
+XCTAssertEqual(row.primaryAction.title, originalTitle)
+```
 
 At the real repository boundary prove:
 
@@ -590,6 +644,11 @@ private func requireCurrentContext(_ context: RiotDirectoryActionContext) throws
 ```
 
 `prepareOpen` and `prepareAdd` return a `RiotSpaceApp`: reuse the installed app or call `getCarriedApp`, then re-check context. `prepareOpen` also requires the refreshed row to remain enabled; the shell obtains its fresh execution session only after `onOpen`.
+
+Catch preparation failures inside the model operation, keep the snapshot and
+row unchanged, clear any stale receipt, and set the exact operation-specific
+named error above. A retry invokes the whole verified admission path again;
+there is no intermediate “got” state and no trust mutation.
 
 Do not cache or return an execution session from the directory model.
 `DirectoryView` hands the admitted app to the existing shell `onOpen`, and the
@@ -887,11 +946,13 @@ git commit -m "feat: scope Tools to the selected community"
 
 **Files:**
 
+- Modify: `apps/ios/Riot/AppModel.swift`
+- Modify: `apps/ios/Riot/Directory/DirectoryView.swift`
 - Modify: `apps/ios/RiotUITests/ChecklistFlowUITests.swift`
 - Modify: `apps/ios/RiotUITests/RiversideMemberToolUITests.swift`
 - Modify: `apps/ios/RiotUITests/RiotTabNavigationUITests.swift` only if its reusable Tools capture is used
 
-- [ ] **Step 1: Add a deterministic debug-only Tools UI scenario seam**
+- [ ] **Step 1: Add a deterministic runtime-gated Tools UI scenario seam**
 
 Follow the existing `RIOT_UI_TEST_RUN_ID` convention. Only when that run ID is
 present may `RIOT_UI_TEST_TOOLS_SCENARIO` select a deterministic scenario:
@@ -902,13 +963,29 @@ present may `RIOT_UI_TEST_TOOLS_SCENARIO` select a deterministic scenario:
   presentation capability and no mutation control;
 - `switch-during-review` — supplies two named fixture snapshots and changes the
   selected namespace after the A confirmation opens; and
+- `lazy-open-fails-once` / `add-preparation-fails-once` — the verified admission
+  port fails once before returning the real admitted app on retry; and
 - `load-failure` — fails the first scoped refresh, then succeeds on Try again.
 
-Keep the scenario adapter internal to `RiotAppModel`/`DirectoryView`, compiled
-only in Debug, and make it delegate to the ordinary model APIs after the single
-injected event. Production builds and Debug launches without both environment
-keys use no test scenario. Unit tests assert the environment gate cannot
-activate from `RIOT_UI_TEST_TOOLS_SCENARIO` alone.
+Keep the scenario adapter internal to `RiotAppModel`/`DirectoryView` and make it
+delegate to the ordinary model APIs after the single injected event. The Xcode
+project does not define a `DEBUG` compilation condition, so do not use
+`#if DEBUG`. Compile the adapter only under
+`#if targetEnvironment(simulator)`; inside that branch, the hard runtime gate
+is the conjunction of a unique `RIOT_UI_TEST_RUN_ID` and a recognized scenario
+value. Device and macOS production binaries contain no adapter, and ordinary
+simulator launches without both environment keys use no scenario. Unit tests
+assert the environment gate cannot activate from
+`RIOT_UI_TEST_TOOLS_SCENARIO` alone. No Xcode project edit is required.
+
+Implement this as an internal `DirectoryPorting` decorator selected by
+`DirectoryView.sync`: it delegates every ordinary call to
+`model.profileRepository`, changes only the one requested response/callback,
+and records mutations for the scenario assertion. The member scenario changes
+only the presentation capability passed to `refresh(approval:)`; it does not
+grant organizer authority. The switch scenario changes the decorator’s
+`currentSpace` and listings as one atomic fixture snapshot, exercising the same
+`onChange` cancellation path as a real switch.
 
 - [ ] **Step 2: Update XCUITest identifiers and assertions**
 
@@ -924,6 +1001,8 @@ Resolve Checklist’s full app ID from the rendered action query/prefix rather t
 - the permission sheet exposes the fixture’s permissions before its Add control;
 - approval-fails-once keeps the sheet open, shows/announces the exact named
   error, re-enables Add, and the second tap succeeds;
+- lazy-open-fails-once and add-preparation-fails-once keep their original
+  Open/Add CTA visible, show the exact named error, and succeed on retry;
 - switch-during-review dismisses A’s sheet and leaves B unchanged;
 - load-failure shows no false empty state, exposes `Try again`, and then renders
   the named sections; and
@@ -981,6 +1060,8 @@ Save review artifacts under `artifacts/visual-review/community-scoped-tools/` an
 git add apps/ios/RiotUITests/ChecklistFlowUITests.swift \
   apps/ios/RiotUITests/RiversideMemberToolUITests.swift \
   apps/ios/RiotUITests/RiotTabNavigationUITests.swift \
+  apps/ios/Riot/AppModel.swift \
+  apps/ios/Riot/Directory/DirectoryView.swift \
   artifacts/visual-review/community-scoped-tools
 git commit -m "test: verify community-scoped Tools UX"
 ```
