@@ -73,7 +73,13 @@ async fn run_dial_drives_a_reconcile_over_a_loopback_dialer() {
     // The seed (responder) is a plain pump over the b halves.
     let recv_side = riot_transport::pump(seed, &mut b_write, &mut b_read, false, |_bundle| true);
 
-    let (dialed, got) = tokio::join!(dial_side, recv_side);
+    // Hard outer timeout: a reconcile that deadlocks must fail in seconds, not
+    // hang the test binary forever (three of these ran for 6h+ once).
+    let (dialed, got) = tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        tokio::join!(dial_side, recv_side)
+    })
+    .await
+    .expect("run_dial reconcile timed out (>30s)");
     let dialed = dialed.expect("run_dial completed");
     let responder = got.expect("responder pump");
 
@@ -103,8 +109,15 @@ async fn run_dial_returns_the_terminal_session() {
         send: Some(Box::pin(b_write)),
         recv: Some(Box::pin(b_read)),
     };
-    // Even with an empty session and a closed peer, run_dial must not panic.
-    let _ = run_dial(dialer, empty, true, |_| true).await;
+    // Even with an empty session and a closed peer, run_dial must not panic —
+    // and must not hang: a closed peer that fails to terminate is a bug, so
+    // bound it rather than let the binary run forever.
+    let _ = tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        run_dial(dialer, empty, true, |_| true),
+    )
+    .await
+    .expect("run_dial timed out (>30s) on a closed peer");
 }
 
 #[tokio::test]

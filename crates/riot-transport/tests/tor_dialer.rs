@@ -134,7 +134,12 @@ async fn run_dial_over_a_tor_dialer_delivers_the_bundle() {
     } = other;
     let recv_side = riot_transport::pump(seed, &mut seed_write, &mut seed_read, false, |_| true);
 
-    let (dialed, got) = tokio::join!(dial_side, recv_side);
+    // Hard outer timeout so a deadlocked reconcile fails in seconds, not hangs.
+    let (dialed, got) = tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        tokio::join!(dial_side, recv_side)
+    })
+    .await
+    .expect("tor dialer reconcile timed out (>30s)");
     assert!(dialed.expect("dial").is_terminal());
     assert!(got.expect("seed").is_terminal());
 
