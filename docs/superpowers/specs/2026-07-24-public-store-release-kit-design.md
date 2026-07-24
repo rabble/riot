@@ -1,6 +1,6 @@
 # Riot Public Store Release Kit
 
-Status: exceptional revision 4 for design-review gate.
+Status: exceptional revision 5 for design-review gate.
 
 ## Goal
 
@@ -215,6 +215,23 @@ a 512 by 512 store icon and a 1024 by 500 feature graphic. Each app bundle
 receives correct platform-native launcher icons, including Android adaptive
 icons and a macOS app-icon set.
 
+The canonical six-frame sequence is explicit for every device class:
+
+| Frame | iPhone portrait | iPad landscape | Mac landscape | Android phone portrait | Android tablet landscape |
+| --- | --- | --- | --- | --- | --- |
+| 1. community/newswire | Spaces/Home | Spaces/Home | Spaces/Home | Spaces/Home | Spaces/Home |
+| 2. signed publishing | Compose | Compose | Compose | Compose | Compose |
+| 3. signature/editorial labels | Newswire detail | Newswire detail | Newswire detail | Newswire detail | Newswire detail |
+| 4. community tools | apps/checklist | apps/checklist | only compiled Mac tools | apps/checklist | apps/checklist |
+| 5. nearby exchange | Nearby only after the named iOS pair gate; otherwise Join | same gate and replacement | Join, because Nearby is not advertised on Mac | Nearby only after the named Android pair gate; otherwise Join | same gate and replacement |
+| 6. offline local copy | evidenced offline state | evidenced offline state | evidenced offline state | evidenced offline state | evidenced offline state |
+
+“Join” is the evidenced valid-reference/recovery journey, not a synthetic
+feature. The generator requires one provenance entry for every cell, including
+the selected frame-5 variant. A missing cell, wrong orientation, prohibited
+Nearby claim, or fallback that has not passed its candidate journey blocks the
+platform screenshot set and its listing.
+
 Preview videos are out of scope for 1.0. They add production and review risk
 without proving a user workflow that the screenshot sequence cannot show.
 
@@ -254,6 +271,42 @@ image is visually reviewed at its intended aspect ratio and at store-thumbnail
 scale. The approval record names the provenance-manifest digest, reviewer,
 timestamp, and both visual-review results.
 
+### Accessibility evidence contract
+
+The candidate journey matrix treats accessibility as executable behavior, not
+aspirational copy. On every named device class, the common tasks—first launch,
+create/switch, join/recover, read, compose/review/sign, restart/persist,
+offline use, and settings—must have evidence for:
+
+- VoiceOver on iPhone/iPad and TalkBack on Android phone/tablet, including
+  semantic names/roles/states, reading order, error announcements, and no
+  focus traps;
+- macOS keyboard-only navigation, visible and logical focus order, accessible
+  names/roles/states, and no pointer-only common task;
+- text scaling through the platform maximum the app claims to support, with
+  Apple Larger Text claims requiring at least 200 percent and with no clipped,
+  hidden, or unreachable common-task control;
+- 4.5:1 normal-text contrast, 3:1 large-text and essential non-text contrast,
+  and status/selection/error meaning that never depends on color alone; and
+- minimum 44 by 44 Apple-point or 48 by 48 Android-dp actionable targets,
+  allowing a smaller visible glyph only when its hit target meets the minimum.
+
+Automated semantic-tree, geometry, contrast, and text-scaling assertions are
+paired with named human assistive-technology rehearsals on the exact beta
+candidates. The evidence records candidate ID, device/OS, task, assistive
+technology or setting, result, reviewer, timestamp, and artifact digest.
+Skipped or zero-test checks fail.
+
+The Apple Accessibility Nutrition Label worksheet is maintained separately for
+iPhone, iPad, and Mac and only answers “supported” when every common task meets
+Apple's criteria for that device. Google listing accessibility statements use
+the same evidence matrix; absence of a Google declaration field is not treated
+as evidence. Any failed common task blocks the affected accessibility claim,
+its screenshots if the failure makes a depicted flow misleading or
+inoperable, and public readiness for that device class. Non-applicable features
+such as captions or audio descriptions are recorded explicitly rather than
+claimed.
+
 ## Privacy and policy evidence
 
 The provisional, evidence-dependent privacy position is:
@@ -284,7 +337,7 @@ The release package will contain:
 - review notes explaining first launch, demo content, no-login behavior,
   offline behavior, local permissions, and nearby testing.
 
-The policy audit is the first implementation work unit. Public promotion
+The policy audit is the first implementation work unit. Public release
 requires tested UGC safeguards, a published response process, and privacy
 answers for any transmitted report. If any safeguard is missing, this
 release-kit work records a blocking dependency and starts a separately
@@ -311,7 +364,7 @@ After approval, the selected value is injected during archive production and
 verified in the archived plist for both Apple targets.
 
 Store agreements, tax, banking, trader-status, and similar account declarations
-remain human-only gates and must be resolved before public promotion when
+remain human-only gates and must be resolved before public release when
 required by the store.
 
 The audit also produces an outbound-network matrix for first launch,
@@ -376,11 +429,21 @@ SDK/NDK, Gradle, Node, npm, and image-tool versions. It requires:
 
 Dependency or tool changes after candidate creation invalidate that candidate.
 
+Known-exploited vulnerabilities and critical findings that are reachable from
+the shipped candidate block release. Other high-severity reachable findings
+block unless an exception is independently approved by the named security
+approver. An exception is an immutable record bound to the candidate-manifest
+digest and finding/advisory digest; it includes rationale, reachability
+evidence, compensating controls, owner, approval identity, and an expiry no
+later than 30 days. Expired, unsigned, mismatched, or scope-broadened exceptions
+block. Findings below those thresholds still require an explicit disposition
+and owner, but cannot be silently omitted.
+
 ## Promotion flow
 
 There are three distinct immutable candidates: iOS/iPadOS, macOS, and Android.
 Each owns its build number, signed artifact, store identity, beta result,
-hardware result, and promotion gate.
+hardware result, and public-release gate.
 
 1. Complete build-affecting policy work: UGC dependency, privacy manifest, and
    Apple export classification.
@@ -398,18 +461,23 @@ hardware result, and promotion gate.
    builds.
 9. Append test and human approvals that reference the candidate-manifest
    digest.
-10. A named operator submits each candidate for store review; a second verifier
-    records submission and every asynchronous review state.
-11. After the Console reports approved/ready for release, a named operator
-    performs the explicit worldwide/full initial release; a second verifier
-    records the public state.
+10. A named Apple operator submits each Apple candidate for review. A named
+    Google operator performs the first `Start rollout to production` action for
+    all selected countries; that single action submits and, after successful
+    review, publishes the first Android release.
+11. A second verifier records every asynchronous review state. After Apple
+    reports `Pending Developer Release`, a named operator performs the explicit
+    worldwide manual release. Google has no separate first-release publication
+    action: successful review progresses to worldwide production availability.
+    A second verifier records each platform's public state.
 
 Apple phased release and Google staged-percentage rollout are not used for
 these first public versions: those controls apply to updates, and Google does
-not offer percentage staging for an app's first production release. Riot 1.0
-therefore uses a manual worldwide/full release on each platform after review
-approval, followed by seven days of heightened observation. Later updates may
-add a separately designed phased/staged contract.
+not offer percentage staging or Managed Publishing for an app's first
+production release. Riot 1.0 therefore uses an Apple manual worldwide release
+after approval and an Android worldwide production action whose successful
+review publishes the app, followed by seven days of heightened observation.
+Later updates may add a separately designed phased/staged contract.
 
 ### Manual Console operation contract
 
@@ -433,11 +501,18 @@ immutable local candidate manifest is authoritative for which artifact was
 approved.
 
 The checked-in release-role file names the release coordinator, Console
-operators, evidence verifiers, policy approver, and hardware approver. The
-Console operator and evidence verifier for one action must be different named
-people. The protected release branch and Git-host authentication are the
-authority for intent/outcome events; promotion evidence records the actor,
-verifier, predecessor digest, and candidate-manifest digest.
+operators, evidence verifiers, policy approver, security approver, and hardware
+approver. The Console operator and evidence verifier for one action must be
+different people using separately Git-host-authenticated identities. An
+operator submits a signed attestation commit; a verifier separately supplies a
+verified signature or protected-branch approval that references the operation
+UUID, predecessor digest, evidence digest, and candidate-manifest digest.
+Only then may the outcome event land. Typed names in one commit never satisfy
+two-person control. Role-file changes require a separate security-owner
+approval, are included in the append-only audit, and cannot authorize the event
+that introduced the role change. The protected release branch and these
+independent authenticated attestations are the authority for intent/outcome
+events.
 
 The human handoff protocol is:
 
@@ -453,8 +528,8 @@ The human handoff protocol is:
 4. Otherwise, the operator performs the action once in the authenticated
    Console.
 5. `record-console-outcome` validates operator-supplied evidence against the
-   candidate; a second named verifier attests to the Console readback before
-   the outcome commit lands on the release branch.
+   candidate; a distinct verifier supplies the separate authenticated
+   attestation before the outcome commit lands on the release branch.
 6. If the operator session is interrupted or the remote result is unclear, the
    state becomes `<action>-indeterminate`. No second action is permitted. The
    operator and verifier inspect the Console until it supplies authoritative
@@ -469,52 +544,70 @@ The human handoff protocol is:
 
 ### Candidate, review, and release state table
 
-All transitions append schema-validated events; no manifest is edited.
+All transitions append schema-validated events; no candidate manifest or prior
+submission package is edited. A submission package is an immutable,
+candidate-bound revision containing the canonical metadata, visual, policy,
+privacy, accessibility, and review-instruction digests. Metadata-only
+remediation creates a new revision that references its predecessor while
+preserving the exact candidate binary and manifest digest.
 
-| From | Event | To | Rule |
-| --- | --- | --- | --- |
-| `draft` | build succeeded | `built` | immutable manifest written |
-| `draft` or `built` | discard before Console upload | `discarded` | terminal; number never reused |
-| `built` | pushed upload intent | `upload-human-action` | one active remote-branch intent |
-| `upload-human-action` | two-person `cancelled-before-action` | `built` | only when no Console interaction was attempted |
-| `upload-human-action` | verified Console success | `uploaded` | store identity matches candidate |
-| `upload-human-action` | terminal negative Console outcome | `rejected` | terminal; new build required |
-| `upload-human-action` | interrupted/unclear | `upload-indeterminate` | no retry |
-| `upload-indeterminate` | verified positive readback | `uploaded` | `reconciled-success` |
-| `upload-indeterminate` | terminal negative readback | `rejected` | terminal; new build required |
-| `built` | store maximum/collision invalidates number | `superseded` | allowed only before upload intent; terminal |
-| `uploaded` | beta/device/policy gates pass | `beta-accepted` | exact store build tested |
-| `uploaded` | store rejects candidate | `rejected` | terminal |
-| `beta-accepted` or metadata-only `review-rejected` | pushed submit-for-review intent | `submission-human-action` | one Console action; binary unchanged |
-| `submission-human-action` | two-person `cancelled-before-action` | prior stable state | only when no Console interaction was attempted |
-| `submission-human-action` | verified submission accepted | `review-pending` | record platform remote status |
-| `submission-human-action` | terminal negative Console outcome | `review-rejected` | classify metadata-only versus binary-affecting |
-| `submission-human-action` | interrupted/unclear | `submission-indeterminate` | no retry |
-| `submission-indeterminate` | verified positive readback | evidenced review state | `review-pending`, `approved-ready`, or `review-rejected` |
-| `submission-indeterminate` | terminal negative readback | prior stable state | fresh intent allowed |
-| `review-pending` | Console status remains waiting/in-review | `review-pending` | append status observation |
-| `review-pending` | verified approval/ready status | `approved-ready` | eligible for initial release intent |
-| `review-pending` | verified review rejection | `review-rejected` | record whether metadata-only or binary-affecting |
-| `review-rejected` | binary/configuration change required | `rejected` | terminal; new build required |
-| `approved-ready` | pushed worldwide/full release intent | `release-human-action` | initial release only |
-| `release-human-action` | two-person `cancelled-before-action` | `approved-ready` | only when no Console interaction was attempted |
-| `release-human-action` | verified worldwide/full release | `released-worldwide` | successful public state |
-| `release-human-action` | terminal negative Console outcome | `approved-ready` | append failure; fresh intent allowed |
-| `release-human-action` | interrupted/unclear | `release-indeterminate` | no retry |
-| `release-indeterminate` | verified public readback | `released-worldwide` | `reconciled-success` |
-| `release-indeterminate` | terminal negative readback | `approved-ready` | fresh release intent allowed |
-| `released-worldwide` | pushed halt/withdraw intent | `withdraw-human-action` | emergency/manual action |
-| `withdraw-human-action` | two-person `cancelled-before-action` | `released-worldwide` | only when no Console interaction was attempted |
-| `withdraw-human-action` | verified unavailable/withdrawn | `withdrawn` | terminal for this candidate |
-| `withdraw-human-action` | terminal negative Console outcome | `released-worldwide` | append failure; fresh intent allowed |
-| `withdraw-human-action` | interrupted/unclear | `withdraw-indeterminate` | no retry until reconciled |
-| `withdraw-indeterminate` | verified readback | evidenced public or withdrawn state | append actual state |
+| Platform | From | Event | To | Rule |
+| --- | --- | --- | --- | --- |
+| all | `draft` | build succeeded | `built` | immutable manifest written |
+| all | `draft` or `built` | discard before Console upload | `discarded` | terminal; number never reused |
+| all | `built` | pushed upload intent | `upload-human-action` | one active remote-branch intent |
+| all | `upload-human-action` | two-person `cancelled-before-action` | `built` | only when no Console interaction was attempted |
+| all | `upload-human-action` | verified Console success | `uploaded` | store identity matches candidate |
+| all | `upload-human-action` | terminal negative Console outcome | `rejected` | terminal; new build required |
+| all | `upload-human-action` | interrupted/unclear | `upload-indeterminate` | no retry |
+| all | `upload-indeterminate` | verified positive readback | `uploaded` | `reconciled-success` |
+| all | `upload-indeterminate` | terminal negative readback | `rejected` | terminal; new build required |
+| all | `built` | store maximum/collision invalidates number | `superseded` | allowed only before upload intent; terminal |
+| all | `uploaded` | beta/device/policy gates pass | `beta-accepted` | exact store build tested |
+| all | `uploaded` | store rejects candidate | `rejected` | terminal |
+| all | `beta-accepted` | bind initial canonical submission package | `submission-ready` | revision 1 references immutable candidate |
+| all | metadata-only `review-rejected` | append `metadata-remediated` package | `submission-ready` | new digests/revision; binary unchanged |
+| all | `review-rejected` | binary/configuration change required | `rejected` | terminal; new build required |
+| Apple | `submission-ready` | pushed submit-for-review intent | `submission-human-action` | one Console action |
+| Apple | `submission-human-action` | two-person `cancelled-before-action` | `submission-ready` | only before Console interaction |
+| Apple | `submission-human-action` | verified submission accepted | `review-pending` | record remote status |
+| Apple | `submission-human-action` | terminal negative outcome | `review-rejected` | classify remediation |
+| Apple | `submission-human-action` | interrupted/unclear | `submission-indeterminate` | no retry |
+| Apple | `submission-indeterminate` | verified readback | evidenced review state | pending, approved, or rejected |
+| Apple | `submission-indeterminate` | terminal negative readback | `submission-ready` | fresh intent allowed |
+| Apple | `review-pending` | waiting/in-review observation | `review-pending` | append remote status |
+| Apple | `review-pending` | verified `Pending Developer Release` | `approved-ready` | eligible for manual release |
+| Apple | `review-pending` | verified rejection | `review-rejected` | classify remediation |
+| Apple | `approved-ready` | pushed worldwide release intent | `release-human-action` | one Console action |
+| Apple | `release-human-action` | two-person `cancelled-before-action` | `approved-ready` | only before Console interaction |
+| Apple | `release-human-action` | verified worldwide release | `released-worldwide` | successful public state |
+| Apple | `release-human-action` | terminal negative outcome | `approved-ready` | fresh intent allowed |
+| Apple | `release-human-action` | interrupted/unclear | `release-indeterminate` | no retry |
+| Apple | `release-indeterminate` | verified public readback | `released-worldwide` | `reconciled-success` |
+| Apple | `release-indeterminate` | terminal negative readback | `approved-ready` | fresh intent allowed |
+| Google | `submission-ready` | pushed first production intent | `production-human-action` | `Start rollout`; all selected countries |
+| Google | `production-human-action` | two-person `cancelled-before-action` | `submission-ready` | only before Console interaction |
+| Google | `production-human-action` | verified accepted for review | `review-pending` | action already authorizes publication |
+| Google | `production-human-action` | verified immediate production availability | `released-worldwide` | record review/publication evidence |
+| Google | `production-human-action` | terminal negative outcome | `review-rejected` | classify remediation |
+| Google | `production-human-action` | interrupted/unclear | `production-indeterminate` | no retry |
+| Google | `production-indeterminate` | verified readback | evidenced Google state | pending, released, or rejected; never replay |
+| Google | `review-pending` | in-review observation | `review-pending` | append remote status |
+| Google | `review-pending` | verified production availability | `released-worldwide` | no second release action |
+| Google | `review-pending` | verified rejection | `review-rejected` | classify remediation |
+| all | `released-worldwide` | pushed withdraw/unpublish intent | `withdraw-human-action` | emergency/manual action |
+| all | `withdraw-human-action` | two-person `cancelled-before-action` | `released-worldwide` | only before Console interaction |
+| all | `withdraw-human-action` | verified unavailable/withdrawn | `withdrawn` | terminal for this candidate |
+| all | `withdraw-human-action` | terminal negative outcome | `released-worldwide` | fresh intent allowed |
+| all | `withdraw-human-action` | interrupted/unclear | `withdraw-indeterminate` | no retry until reconciled |
+| all | `withdraw-indeterminate` | verified readback | evidenced public or withdrawn state | append actual state |
 
 Apple evidence schemas enumerate `Waiting for Review`, `In Review`,
 `Pending Developer Release`/approved-ready, rejected, ready/distributed, and
 removed-from-sale equivalents. Google evidence schemas enumerate internal-test
-availability, changes-in-review/review-pending, approved/ready, production
-available, rejected, and unpublished equivalents. Each
+availability, production action submitted, changes-in-review/review-pending,
+production available, rejected, and unpublished equivalents; they do not
+invent an `approved-ready` state or a separate first-release publish action. Each
 platform/action-specific schema records the enumerated remote status and the
 SHA-256 of a redacted Console screenshot or export.
 
@@ -578,17 +671,17 @@ Every work unit follows RED → GREEN → REFACTOR. The initial test design is:
 | --- | --- | --- | --- |
 | Metadata parser/schema | valid source currently has no parser; overlong/missing fields must fail | parse one locale and report JSON-pointer diagnostics | valid Apple/Google files; exact limit, limit+1, missing required, unknown field, malformed JSON |
 | Claim/capability validator | platform claim with no passing journey must fail | compare listing claims to capability matrix | universal, platform-only, experimental-unpassed, exact trust vocabulary |
-| Visual validator | wrong dimensions/alpha/metadata/unsafe capture must fail | inspect one PNG and provenance entry | every boundary size; alpha rules; EXIF present; production token; missing fixture hash; 320-pixel thumbnail |
-| Visual generator | one synthetic capture must render to a golden geometry record | compose one headline band from pinned tokens | phone/tablet/landscape; 1/3/4 lines; contrast; safe-area and band-height boundaries |
+| Visual validator | wrong dimensions/alpha/metadata/unsafe capture must fail | inspect one PNG and provenance entry | every boundary size; alpha rules; EXIF present; production token; missing fixture hash; all 30 frame/device cells; frame-5 Nearby/Join gate; orientation; 320-pixel thumbnail |
+| Visual generator | one synthetic capture must render to a golden geometry record | compose one headline band from pinned tokens | phone/tablet/landscape; all six frames and five device classes; 1/3/4 lines; contrast; safe-area and band-height boundaries |
 | Build-number allocator | duplicate, stale, rebased, cross-checkout, and store-max collisions must fail | validate explicit number and append allocation | empty ledger; duplicate ID; pushed reservation; merge collision; stale maximum; final readback advanced; interrupted append; concurrent local lock; mandatory reallocation |
 | Candidate manifest | changed artifact or signing identity must fail verification | create/verify immutable manifest | iOS, Mac, Android; unsigned validation-only Android; missing artifact; stale tool hash; malformed schema |
-| State machine/ledger | invalid skip, duplicate transition, accepted-ID reuse, mutation from indeterminate state, and cancellation after possible Console action must fail | append one legal transition atomically | every legal/illegal edge and terminal state; cancellation-before-action with two people; upload/submission/review/release/withdraw states; partial write recovery; metadata-only versus binary rejection; rejected/discarded/superseded semantics |
+| State machine/ledger | invalid skip, duplicate transition, accepted-ID reuse, mutation from indeterminate state, and cancellation after possible Console action must fail | append one legal transition atomically | every legal/illegal edge and terminal state; Apple versus Google first-release paths; immutable submission-package revision/remediation; cancellation-before-action with two independently authenticated people; partial write recovery; metadata-only versus binary rejection; rejected/discarded/superseded semantics |
 | Process runner | dirty tree, nonzero command, timeout, and zero tests must fail | run one fake validation and normalize result | Cargo/XCTest/Gradle zero-test logs; signal; timeout; redacted stderr |
 | Signing-credential guard | persistent copy, broad mode, logged secret, and absent credential must fail candidate signing | authorize one fake signed build using external material | `0600`/wrong modes; Apple signing identity; Android key/password; cleanup; redaction; `--no-daemon`; store API credential rejected |
 | Export-compliance guard | unresolved or archived-value mismatch must block Apple archive/export/Console handoff | inject and verify one recorded decision | unresolved; exempt/non-exempt; iOS/Mac archived plist mismatch |
-| Supply-chain guard | missing Gradle checksum/locks or changed lock/tool hash must fail | verify one pinned input set | Cargo/npm/Gradle/toolchain fixtures; advisory finding with/without disposition |
+| Supply-chain guard | missing Gradle checksum/locks, changed lock/tool hash, known-exploited finding, reachable critical, or invalid exception must fail | verify one pinned input set | Cargo/npm/Gradle/toolchain fixtures; severity/reachability; valid high-severity exception; missing security approval; wrong candidate/finding digest; expired exception; compensating controls |
 | Status reporter | mixed gates must never summarize as ready | render tri-state result and recovery action | PASS/BLOCKED/HUMAN ACTION; missing evidence; exact file/value diagnostics |
-| Console handoff/evidence | any attempted store process invocation, missing pushed intent, wrong store ID, unaccepted candidate, unsafe cancellation, or blind retry after ambiguity must fail | persist intent, print steps, validate discriminated operator/verifier evidence | no store credential/process adapter; remote-ref CAS failure; distinct operator/verifier; cancellation before action; Apple/Google upload statuses; submit/review/approve/reject lifecycle; full initial release; withdraw; interruption; positive/terminal-negative/absent/ambiguous readback; eventual-consistency absence remains indeterminate |
+| Console handoff/evidence | any attempted store process invocation, missing pushed intent, wrong store ID, unaccepted candidate, self-attestation, unsafe cancellation, or blind retry after ambiguity must fail | persist intent, print steps, validate discriminated independently authenticated evidence | no store credential/process adapter; remote-ref CAS failure; signed operator attestation plus distinct verified approval; one identity cannot satisfy both roles; audited role change cannot authorize itself; Apple submit/approve/manual release; Google production action/review/automatic publication; withdraw; interruption; positive/terminal-negative/absent/ambiguous readback; eventual-consistency absence remains indeterminate |
 | Privacy/policy consistency | store answer contradicting code/network/policy evidence must fail | compare one answer to evidence matrix | no collection; user-directed fetch; report transmission; missing UGC control; stale policy URL |
 | iOS/iPadOS release configuration | wrong ID/version/icon, missing privacy manifest, unsafe export value, signing or entitlement mismatch must fail | validate one archive/config fixture | Debug versus Release; iPhone/iPad families; app icon; archived plist; Keychain group; unresolved export decision |
 | macOS release configuration | ad-hoc candidate, wrong ID/version/icon, Intel claim, sandbox/entitlement or export mismatch must fail | validate one Mac archive/config fixture | local ad-hoc stays valid; App Store distribution; Apple-silicon/macOS 14 boundary; app icon; archived plist |
@@ -596,6 +689,7 @@ Every work unit follows RED → GREEN → REFACTOR. The initial test design is:
 | Synthetic fixture contract | production identifier, non-deterministic value, or fixture unavailable on one platform must fail | load one shared synthetic release scenario | iOS/iPad/Mac/Android parity; fixed clock/IDs/content; no personal/location/notification data; production build exclusion outside capture mode |
 | Native capture entry points | capture without candidate/fixture provenance or wrong device/orientation must fail | launch one platform capture test and emit provenance | iPhone portrait; iPad; Mac landscape; Android phone/tablet; locale/appearance/orientation; metadata stripping |
 | Candidate journey rehearsal | missing, skipped, zero-test, dead-end recovery, or platform-only claim must fail | execute one scripted first-install-to-first-read journey | create/join/publish/sign/restart/offline; denied permission recovery; invalid join; no peers; all named device classes; advertised hardware pairs |
+| Accessibility evidence | unlabeled control, wrong reading/focus order, focus trap, clipped scaled text, insufficient contrast/hit target, unsupported claim, or missing human rehearsal must fail | validate one semantic tree and one signed rehearsal record | VoiceOver iPhone/iPad; TalkBack phone/tablet; Mac keyboard/focus; names/roles/states/errors; 200% Apple Larger Text; platform maximum claimed scaling; 44-point/48-dp targets; color independence; Apple device-specific label worksheet |
 
 Golden image tests assert geometry/tokens and are supplemented by Playwright
 captures plus human visual review; they do not substitute brittle byte-for-byte
@@ -611,8 +705,9 @@ Implementation dependency order is fixed:
 6. credential-free then signed candidate builds;
 7. native capture and journey rehearsal;
 8. Console handoff/evidence reconciliation; and
-9. beta acceptance, review submission, approval, and worldwide/full initial
-   release handoffs.
+9. beta acceptance and platform-specific public handoffs: Apple review,
+   approval, and manual worldwide release; Google first production action,
+   review, and resulting worldwide availability.
 
 No later work unit begins while an earlier blocking contract is red.
 
@@ -654,7 +749,8 @@ The device rehearsal covers:
 - publishing, reading, and persistence after restart;
 - permissions denied and later recovered;
 - offline/local behavior;
-- accessibility and large text;
+- the complete accessibility evidence contract, including VoiceOver/TalkBack,
+  Mac keyboard/focus, semantics, contrast, target size, and text scaling;
 - representative iPhone, iPad, Mac, Android phone, and Android tablet layouts;
   and
 - physical iOS-to-iOS, Android-to-Android, and iOS-to-Android nearby exchange
@@ -671,16 +767,18 @@ permission/recovery, and offline-local journeys on every named device class.
 There must be zero critical crashes, hangs, data-loss events, privacy/policy
 failures, or failed advertised hardware pairs.
 
-Each approved 1.0 candidate is released worldwide/full because first-version
-percentage phasing is unavailable. For seven days after each public release,
-store diagnostics and the published support/report channel are reviewed daily.
-The operator prepares a withdraw/halt `HUMAN ACTION` if crash-free sessions fall
-below 99.5 percent on any platform, any critical data-loss/security/privacy
-failure is confirmed, an advertised core journey is unavailable, or moderation
-reports cannot meet the published response target. After seven stable days,
-v1 exits heightened observation; ordinary support and store-diagnostic review
-continue. A withdrawn candidate is fixed under a new build number rather than
-overwritten or rebuilt in place.
+Each approved Apple 1.0 candidate is released worldwide manually. The Android
+first production action already authorizes worldwide publication after
+successful review. Neither path offers first-version percentage phasing. For
+seven days after each public release, store diagnostics and the published
+support/report channel are reviewed daily. The operator prepares a
+withdraw/unpublish `HUMAN ACTION` if crash-free sessions fall below 99.5
+percent on any platform, any critical data-loss/security/privacy failure is
+confirmed, an advertised core journey is unavailable, or moderation reports
+cannot meet the published response target. After seven stable days, v1 exits
+heightened observation; ordinary support and store-diagnostic review continue.
+A withdrawn candidate is fixed under a new build number rather than overwritten
+or rebuilt in place.
 
 ## Failure behavior
 
@@ -696,6 +794,10 @@ Release commands fail closed with actionable diagnostics for:
 - failed or empty test runs;
 - candidate, signing-identity, toolchain, or store-build mismatch;
 - invalid candidate-state transition or interrupted ledger append;
+- unauthenticated, same-identity, stale-role, or candidate-mismatched
+  human-action evidence;
+- a known-exploited or reachable critical vulnerability, or an invalid/expired
+  security exception;
 - unresolved export classification for an Apple archive/export/Console
   handoff;
 - missing UGC safeguard or operational response owner; or
@@ -727,7 +829,8 @@ The repository-owned kit is complete when:
    decisions are absent.
 4. Public identifiers and versioning are consistent.
 5. Privacy, policy, permissions, content-rating, review, and encryption
-   worksheets are complete and evidence-backed.
+   worksheets, plus the device-specific accessibility evidence/answer matrix,
+   are complete and evidence-backed.
 6. All repository quality and coverage gates pass.
 7. Candidate-manifest, ledger, status, Console-handoff, evidence, and
    submission/review/release/withdrawal state contracts pass their complete
@@ -749,10 +852,13 @@ Riot 1.0 is ready for public review and release only when:
 3. All beta, device, accessibility, offline, persistence, and advertised
    hardware-pair journeys pass against those exact candidates.
 4. Every candidate is at least `beta-accepted` before review submission and is
-   in `approved-ready` before worldwide/full release, with no blocking or
-   unknown gate in the read-only status report.
-5. The worldwide/full initial-release action, seven-day observation owner,
-   halt thresholds, and withdrawal procedure are recorded.
+   `submission-ready` before its public Console action. Apple must reach
+   `approved-ready` before manual release; Google progresses from its single
+   production action through review to `released-worldwide`. No blocking or
+   unknown gate may remain in the read-only status report.
+5. The Apple worldwide release and Google first-production actions, seven-day
+   observation owner, halt thresholds, and withdrawal/unpublish procedure are
+   recorded.
 
 ## Explicit non-goals
 
