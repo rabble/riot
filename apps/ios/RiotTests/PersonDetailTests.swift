@@ -172,4 +172,132 @@ final class PersonDetailTests: XCTestCase {
         XCTAssertTrue(model.person.isOrganizer)
         XCTAssertEqual(PeopleStrings.contributions(model.person.contributionCount), "4 contributions")
     }
+
+    // MARK: - Recent activity: an HONEST recency, in the ordering domain
+
+    // A projected post carries no wall-clock "posted at" — only the signed Willow
+    // ordering value (TAI/J2000 µs). Recency is therefore expressed in that same
+    // domain: how far a person's newest post sits behind the freshest update
+    // visible in the community. A pure function of two ordering values — no epoch
+    // conversion, no invented timestamp, deterministic under test.
+
+    private static let hourMicros: UInt64 = 3_600 * 1_000_000
+    private static let dayMicros: UInt64 = 86_400 * 1_000_000
+
+    func testHeaderRecencyReflectsTheGapFromNewestPostToTheLatestUpdate() {
+        // Person's newest post is three hours behind the community's freshest one.
+        let person: UInt64 = 1_000_000_000
+        let community = person + 3 * Self.hourMicros
+        XCTAssertEqual(
+            PersonActivity.headerRecency(personNewestMicros: person, communityNewestMicros: community),
+            "Last posted 3 hours before the latest update"
+        )
+    }
+
+    func testHeaderRecencyReadsAsLatestWhenThePersonHoldsTheFreshestUpdate() {
+        let micros: UInt64 = 42_000_000
+        XCTAssertEqual(
+            PersonActivity.headerRecency(personNewestMicros: micros, communityNewestMicros: micros),
+            PeopleStrings.mostRecentToPost
+        )
+    }
+
+    func testHeaderRecencyIsNilWhenThePersonHasNoPosts() {
+        // No posts → NO activity line at all. Absence is never dressed up as a
+        // fabricated "active now".
+        XCTAssertNil(
+            PersonActivity.headerRecency(personNewestMicros: nil, communityNewestMicros: 10)
+        )
+    }
+
+    func testRowRecencyLabelsTheFreshestRowAsTheLatestUpdate() {
+        XCTAssertEqual(PersonActivity.rowRecency(rowMicros: 500, communityNewestMicros: 500), "Latest update")
+        XCTAssertEqual(
+            PersonActivity.rowRecency(rowMicros: 500, communityNewestMicros: 500 + Self.dayMicros),
+            "1 day before the latest update"
+        )
+    }
+
+    @MainActor
+    func testModelExposesRecentActivityDerivedFromTheNewestPostOnLoad() {
+        // Alice's newest post (tai 1_000_000_000) trails Bob's newer one by 2 hours.
+        let aliceNewest: UInt64 = 1_000_000_000
+        let bobNewest = aliceNewest + 2 * Self.hourMicros
+        let projection = Self.projection(open: [
+            Self.post(id: "a1", authorID: Self.alice, tai: aliceNewest),
+            Self.post(id: "b1", authorID: Self.bob, tai: bobNewest),
+        ])
+        let model = PersonDetailModel(
+            person: PersonRow(Self.contributor(id: Self.alice)),
+            projector: FixedProjector(projection: projection),
+            spaceDescriptorEntryID: "d"
+        )
+        model.load()
+        XCTAssertEqual(model.recentActivity, "Last posted 2 hours before the latest update")
+        XCTAssertEqual(model.communityNewestMicros, bobNewest)
+    }
+
+    @MainActor
+    func testModelRecentActivityIsLatestWhenThePersonHoldsTheFreshestPost() {
+        let projection = Self.projection(open: [
+            Self.post(id: "a1", authorID: Self.alice, tai: 900),
+            Self.post(id: "a2", authorID: Self.alice, tai: 1_000),
+        ])
+        let model = PersonDetailModel(
+            person: PersonRow(Self.contributor(id: Self.alice)),
+            projector: FixedProjector(projection: projection),
+            spaceDescriptorEntryID: "d"
+        )
+        model.load()
+        XCTAssertEqual(model.recentActivity, PeopleStrings.mostRecentToPost)
+    }
+
+    @MainActor
+    func testModelHasNoRecentActivityLineWhenThePersonHasNoPosts() {
+        // Honest empty state: a person known only through replies/editorial shows
+        // NO recency line — never a fabricated one.
+        let projection = Self.projection(open: [Self.post(id: "2", authorID: Self.bob)])
+        let model = PersonDetailModel(
+            person: PersonRow(Self.contributor(id: Self.alice, count: 3)),
+            projector: FixedProjector(projection: projection),
+            spaceDescriptorEntryID: "d"
+        )
+        model.load()
+        XCTAssertEqual(model.state, .empty)
+        XCTAssertNil(model.recentActivity)
+    }
+
+    @MainActor
+    func testModelHasNoRecentActivityLineOnProjectionFailure() {
+        let model = PersonDetailModel(
+            person: PersonRow(Self.contributor(id: Self.alice)),
+            projector: ThrowingProjector(),
+            spaceDescriptorEntryID: "d"
+        )
+        model.load()
+        XCTAssertNil(model.recentActivity)
+    }
+
+    // MARK: - Contribution summary names the community (#4)
+
+    func testContributionSummaryNamesTheCommunityWhenKnown() {
+        XCTAssertEqual(PeopleStrings.contributions(12, in: "Rojava Solidarity"), "12 contributions in Rojava Solidarity")
+        XCTAssertEqual(PeopleStrings.contributions(1, in: "Rojava Solidarity"), "1 contribution in Rojava Solidarity")
+    }
+
+    func testContributionSummaryFallsBackToBareCountWithoutACommunityName() {
+        XCTAssertEqual(PeopleStrings.contributions(4, in: ""), "4 contributions")
+        XCTAssertEqual(PeopleStrings.contributions(4, in: "   "), "4 contributions")
+    }
+
+    @MainActor
+    func testModelContributionSummaryUsesTheSuppliedCommunityName() {
+        let model = PersonDetailModel(
+            person: PersonRow(Self.contributor(id: Self.alice, count: 5)),
+            projector: FixedProjector(projection: Self.projection()),
+            spaceDescriptorEntryID: "d",
+            communityName: "Rojava Solidarity"
+        )
+        XCTAssertEqual(model.contributionSummary, "5 contributions in Rojava Solidarity")
+    }
 }
