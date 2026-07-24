@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import * as realFs from "node:fs/promises";
 import { mkdtemp, readdir, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { basename, dirname, join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 
@@ -998,16 +998,27 @@ test("stale lock quarantine collisions fail closed without overwriting either ar
   const lockPath = `${outputDirectory}.lock`;
   const owner = { processId: 4242, token: "stale-token" };
   const ownerBytes = `${JSON.stringify(owner)}\n`;
-  const quarantineDirectory = `${lockPath}.quarantine-${owner.token}`;
-  const quarantineSentinel = join(quarantineDirectory, "sentinel.txt");
+  const quarantineDirectory = `${lockPath}.quarantine`;
+  const claimDirectory = join(quarantineDirectory, owner.token);
+  const quarantineSentinel = join(claimDirectory, "sentinel.txt");
   await realFs.writeFile(lockPath, ownerBytes, "utf8");
-  await realFs.mkdir(quarantineDirectory);
-  await realFs.writeFile(quarantineSentinel, "orphan claim\n", "utf8");
+  let collided = false;
+  const collidingFs = {
+    ...realFs,
+    async mkdir(path, options) {
+      if (path === claimDirectory && !collided) {
+        collided = true;
+        await realFs.mkdir(claimDirectory, { recursive: true });
+        await realFs.writeFile(quarantineSentinel, "orphan claim\n", "utf8");
+      }
+      return realFs.mkdir(path, options);
+    },
+  };
   await assert.rejects(
     () => generateWorksheets({
       sources: loaded,
       outputDirectory,
-      fs: realFs,
+      fs: collidingFs,
       sha256,
       isProcessAlive: () => false,
     }),
@@ -1015,6 +1026,40 @@ test("stale lock quarantine collisions fail closed without overwriting either ar
   );
   assert.equal(await readFile(lockPath, "utf8"), ownerBytes);
   assert.equal(await readFile(quarantineSentinel, "utf8"), "orphan claim\n");
+});
+
+test("worksheet quarantine registry rejects symlinks, non-directories, and unresolved entries", async () => {
+  const loaded = await sources();
+  for (const mode of ["symlink", "file", "unresolved"]) {
+    const repositoryRoot = await mkdtemp(join(tmpdir(), `riot-worksheet-registry-${mode}-`));
+    const outputDirectory = join(repositoryRoot, "release", "generated");
+    const quarantineDirectory = `${outputDirectory}.lock.quarantine`;
+    const sentinel = join(await mkdtemp(join(tmpdir(), "riot-worksheet-registry-outside-")), "sentinel");
+    await realFs.mkdir(dirname(outputDirectory), { recursive: true });
+    await realFs.writeFile(sentinel, "external\n", "utf8");
+    if (mode === "symlink") {
+      await realFs.symlink(dirname(sentinel), quarantineDirectory);
+    } else if (mode === "file") {
+      await realFs.writeFile(quarantineDirectory, "not a registry\n", "utf8");
+    } else {
+      await realFs.mkdir(join(quarantineDirectory, "unknown-claim"), { recursive: true });
+    }
+    await assert.rejects(
+      () => generateWorksheets({
+        sources: loaded,
+        repositoryRoot,
+        outputDirectory,
+        fs: realFs,
+        sha256,
+      }),
+      mode === "unresolved"
+        ? /unresolved worksheet lock quarantine/
+        : /quarantine registry|symlinked worksheet path/,
+    );
+    assert.equal(await readFile(sentinel, "utf8"), "external\n");
+    await assert.rejects(() => realFs.access(`${outputDirectory}.lock`));
+    await assert.rejects(() => realFs.access(outputDirectory));
+  }
 });
 
 test("quarantine claims fail closed on malformed claims and filesystem refusals", async () => {
@@ -1044,13 +1089,15 @@ test("quarantine claims fail closed on malformed claims and filesystem refusals"
   );
   assert.equal(await readFile(malformedLockPath, "utf8"), "{");
 
-  for (const mode of ["mkdir", "rename"]) {
+  for (const mode of ["mkdir", "claim-mkdir", "rename"]) {
     const outputDirectory = await mkdtemp(join(tmpdir(), `riot-worksheet-claim-${mode}-`));
     const lockPath = `${outputDirectory}.lock`;
+    const quarantineDirectory = `${lockPath}.quarantine`;
     const refusingFs = {
       ...realFs,
       async mkdir(path, options) {
-        if (mode === "mkdir" && String(path).includes(".quarantine-")) {
+        if ((mode === "mkdir" && path === quarantineDirectory)
+          || (mode === "claim-mkdir" && dirname(path) === quarantineDirectory)) {
           const error = new Error("injected quarantine mkdir refusal");
           error.code = "EACCES";
           throw error;
@@ -1058,7 +1105,7 @@ test("quarantine claims fail closed on malformed claims and filesystem refusals"
         return realFs.mkdir(path, options);
       },
       async rename(from, to) {
-        if (mode === "rename" && from === lockPath && String(to).includes(".quarantine-")) {
+        if (mode === "rename" && from === lockPath && String(to).includes(".lock.quarantine")) {
           const error = new Error("injected quarantine rename refusal");
           error.code = "EACCES";
           throw error;
@@ -1068,14 +1115,14 @@ test("quarantine claims fail closed on malformed claims and filesystem refusals"
     };
     await assert.rejects(
       () => generateWorksheets({ sources: loaded, outputDirectory, fs: refusingFs, sha256 }),
-      new RegExp(`quarantine ${mode} refusal`),
+      new RegExp(`quarantine ${mode === "claim-mkdir" ? "mkdir" : mode} refusal`),
     );
     assert.doesNotReject(() => realFs.access(lockPath));
-    assert.equal(
-      (await readdir(dirname(outputDirectory))).some((name) =>
-        name.startsWith(`${basename(outputDirectory)}.lock.quarantine-`)),
-      false,
-    );
+    if (mode === "mkdir") {
+      await assert.rejects(() => realFs.access(quarantineDirectory));
+    } else {
+      assert.deepEqual(await readdir(quarantineDirectory), []);
+    }
   }
 });
 
@@ -1110,14 +1157,38 @@ test("an unowned atomic claim is preserved when safe restoration is refused", as
     /worksheet lock ownership changed/,
   );
   await assert.rejects(() => realFs.access(lockPath));
-  const quarantineName = (await readdir(dirname(outputDirectory))).find((name) =>
-    name.startsWith(`${basename(outputDirectory)}.lock.quarantine-`));
-  assert(quarantineName);
+  const quarantineDirectory = `${lockPath}.quarantine`;
+  const [claimName] = await readdir(quarantineDirectory);
+  assert(claimName);
+  const claimedPath = join(quarantineDirectory, claimName, "lock");
   assert.equal(
-    await readFile(join(dirname(outputDirectory), quarantineName, "lock"), "utf8"),
+    await readFile(claimedPath, "utf8"),
     successor,
   );
   assert.doesNotReject(() => realFs.access(displacedPath));
+
+  const installedBeforeRetry = await Promise.all(
+    expectedWorksheets.map(async (name) => [name, await readFile(join(outputDirectory, name), "utf8")]),
+  );
+  await assert.rejects(
+    () => generateWorksheets({
+      sources: loaded,
+      outputDirectory,
+      fs: realFs,
+      sha256: () => "b".repeat(64),
+    }),
+    /unresolved worksheet lock quarantine/,
+  );
+  assert.deepEqual(
+    await Promise.all(
+      expectedWorksheets.map(async (name) => [name, await readFile(join(outputDirectory, name), "utf8")]),
+    ),
+    installedBeforeRetry,
+  );
+  assert.equal(
+    await readFile(claimedPath, "utf8"),
+    successor,
+  );
 });
 
 test("worksheet recovery fails closed on unreadable swap state", async () => {

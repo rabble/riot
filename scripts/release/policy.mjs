@@ -499,20 +499,48 @@ function quarantineCollisionError(path) {
   return new Error(`worksheet lock quarantine collision: ${path}`);
 }
 
-async function removeOwnedLock(fs, lockPath, identity, owner, token = owner?.token) {
+function unresolvedQuarantineError(path) {
+  return new Error(`unresolved worksheet lock quarantine: ${path}`);
+}
+
+async function assertNoUnresolvedQuarantine(fs, quarantineDirectory) {
+  const registry = await pathStat(fs, quarantineDirectory);
+  if (!registry) return;
+  if (registry.isSymbolicLink() || !registry.isDirectory()) {
+    throw unsafeWorksheetPath(quarantineDirectory, "quarantine registry must be a real directory");
+  }
+  if ((await fs.readdir(quarantineDirectory)).length > 0) {
+    throw unresolvedQuarantineError(quarantineDirectory);
+  }
+}
+
+async function removeOwnedLock(
+  fs,
+  lockPath,
+  quarantineDirectory,
+  identity,
+  owner,
+  token = owner?.token,
+) {
   if (!await lockMatches(fs, lockPath, identity, owner)) return false;
-  const quarantineDirectory = `${lockPath}.quarantine-${token}`;
-  const claimedPath = join(quarantineDirectory, "lock");
+  const claimDirectory = join(quarantineDirectory, token);
+  const claimedPath = join(claimDirectory, "lock");
   try {
     await fs.mkdir(quarantineDirectory, { mode: 0o700 });
   } catch (error) {
-    if (error.code === "EEXIST") throw quarantineCollisionError(quarantineDirectory);
+    if (error.code !== "EEXIST") throw error;
+    await assertNoUnresolvedQuarantine(fs, quarantineDirectory);
+  }
+  try {
+    await fs.mkdir(claimDirectory, { mode: 0o700 });
+  } catch (error) {
+    if (error.code === "EEXIST") throw quarantineCollisionError(claimDirectory);
     throw error;
   }
   try {
     await fs.rename(lockPath, claimedPath);
   } catch (error) {
-    await ignoreFailure(fs.rmdir(quarantineDirectory));
+    await ignoreFailure(fs.rmdir(claimDirectory));
     throw error;
   }
   if (!await claimedLockMatches(fs, claimedPath, identity, owner)) {
@@ -522,11 +550,11 @@ async function removeOwnedLock(fs, lockPath, identity, owner, token = owner?.tok
       throw lockOwnershipError(lockPath);
     }
     await fs.rm(claimedPath, { force: true });
-    await fs.rmdir(quarantineDirectory);
+    await fs.rmdir(claimDirectory);
     return false;
   }
   await fs.rm(claimedPath, { force: true });
-  await fs.rmdir(quarantineDirectory);
+  await fs.rmdir(claimDirectory);
   return true;
 }
 
@@ -548,11 +576,19 @@ async function readExistingLock(fs, lockPath) {
   }
 }
 
-async function acquireWorksheetLock(fs, lockPath, processId, isProcessAlive, createLockToken) {
+async function acquireWorksheetLock(
+  fs,
+  lockPath,
+  quarantineDirectory,
+  processId,
+  isProcessAlive,
+  createLockToken,
+) {
   const owner = { processId, token: createLockToken() };
   if (!validLockOwner(owner)) {
     throw new TypeError("lock token adapter must return a safe non-empty string");
   }
+  await assertNoUnresolvedQuarantine(fs, quarantineDirectory);
   let handle;
   try {
     handle = await fs.open(lockPath, "wx", 0o600);
@@ -562,17 +598,27 @@ async function acquireWorksheetLock(fs, lockPath, processId, isProcessAlive, cre
     if (isProcessAlive(owner.processId)) {
       throw new Error(`active worksheet generation lock owned by process ${owner.processId}`);
     }
-    if (!await removeOwnedLock(fs, lockPath, identity, owner)) throw lockOwnershipError(lockPath);
+    if (!await removeOwnedLock(fs, lockPath, quarantineDirectory, identity, owner)) {
+      throw lockOwnershipError(lockPath);
+    }
     handle = await fs.open(lockPath, "wx", 0o600);
   }
   const identity = await handle.stat();
   try {
     await handle.writeFile(`${JSON.stringify(owner)}\n`, "utf8");
     if (!await lockMatches(fs, lockPath, identity, owner)) throw lockOwnershipError(lockPath);
+    await assertNoUnresolvedQuarantine(fs, quarantineDirectory);
     return { handle, identity, owner };
   } catch (error) {
     await ignoreFailure(handle.close());
-    await ignoreFailure(removeOwnedLock(fs, lockPath, identity, undefined, owner.token));
+    await ignoreFailure(removeOwnedLock(
+      fs,
+      lockPath,
+      quarantineDirectory,
+      identity,
+      undefined,
+      owner.token,
+    ));
     throw error;
   }
 }
@@ -628,6 +674,7 @@ async function validateWorksheetPaths(fs, repositoryRoot, outputDirectory) {
     backupDirectory: `${resolvedOutput}.backup`,
     markerPath: `${resolvedOutput}.recovery.json`,
     lockPath: `${resolvedOutput}.lock`,
+    quarantineDirectory: `${resolvedOutput}.lock.quarantine`,
   };
   for (const path of Object.values(paths)) {
     await validateExistingAncestors(fs, repositoryPath, repositoryRealPath, path);
@@ -689,6 +736,7 @@ export async function generateWorksheets({
     backupDirectory,
     markerPath,
     lockPath,
+    quarantineDirectory,
   } = await validateWorksheetPaths(fs, repositoryRoot, outputDirectory);
   outputDirectory = resolvedOutput;
   const parentDirectory = dirname(outputDirectory);
@@ -697,6 +745,7 @@ export async function generateWorksheets({
   const lock = await acquireWorksheetLock(
     fs,
     lockPath,
+    quarantineDirectory,
     processId,
     isProcessAlive,
     createLockToken,
@@ -761,7 +810,13 @@ export async function generateWorksheets({
     } catch (error) {
       closeError = error;
     }
-    const removed = await removeOwnedLock(fs, lockPath, lock.identity, lock.owner);
+    const removed = await removeOwnedLock(
+      fs,
+      lockPath,
+      quarantineDirectory,
+      lock.identity,
+      lock.owner,
+    );
     if (!removed) throw lockOwnershipError(lockPath);
     if (closeError) throw closeError;
   }
