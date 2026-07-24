@@ -1,5 +1,27 @@
 <!-- source-sha256: 62353e4d66d844d3d82f3ad5633635f473f990d25a240046991dcbfbbae2f12d -->
-# accessibility.md
+# accessibility
+
+- iphone / read: human-action; evidence: not recorded
+- iphone / create: human-action; evidence: not recorded
+- iphone / join: human-action; evidence: not recorded
+- iphone / publish: human-action; evidence: not recorded
+- ipad / read: human-action; evidence: not recorded
+- ipad / create: human-action; evidence: not recorded
+- ipad / join: human-action; evidence: not recorded
+- ipad / publish: human-action; evidence: not recorded
+- mac / read: human-action; evidence: not recorded
+- mac / create: human-action; evidence: not recorded
+- mac / join: human-action; evidence: not recorded
+- mac / publish: human-action; evidence: not recorded
+- android-phone / read: human-action; evidence: not recorded
+- android-phone / create: human-action; evidence: not recorded
+- android-phone / join: human-action; evidence: not recorded
+- android-phone / publish: human-action; evidence: not recorded
+- android-tablet / read: human-action; evidence: not recorded
+- android-tablet / create: human-action; evidence: not recorded
+- android-tablet / join: human-action; evidence: not recorded
+- android-tablet / publish: human-action; evidence: not recorded
+# Gate summary
 
 ## accessibility.iphone.read
 

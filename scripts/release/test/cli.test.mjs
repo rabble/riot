@@ -74,7 +74,7 @@ test("status and status --json expose the same ordered truthful gates", async ()
   const parsed = JSON.parse(json.stdout);
   assert.equal(parsed.summary, "BLOCKED");
   assert(parsed.gates.some(({ id, state }) => id === "policy.filtering" && state === "BLOCKED"));
-  assert(parsed.gates.some(({ id, state }) => id === "toolchain.android-ndk" && state === "BLOCKED"));
+  assert(parsed.gates.some(({ id, state }) => id === "toolchain.android-ndk" && state === "PASS"));
   for (const gate of parsed.gates) {
     assert(text.stdout.includes(gate.id));
     assert(text.stdout.includes(gate.sourceFile));
@@ -107,6 +107,35 @@ test("missing or malformed source fails closed without a stack trace", async () 
   assert.doesNotMatch(`${result.stdout}${result.stderr}`, /\n\s+at /);
 });
 
+test("schema failures preserve exact source, pointer, observed, and expected diagnostics", async () => {
+  const root = await releaseRoot();
+  const source = join(root, "release", "source", "product.json");
+  const product = JSON.parse(await readFile(source, "utf8"));
+  product.surprise = "unsafe";
+  await writeFile(source, `${JSON.stringify(product)}\n`, "utf8");
+  const result = await run(root, ["status", "--json"]);
+  assert.equal(result.code, 1);
+  const gate = JSON.parse(result.stdout).gates[0];
+  assert(gate.sourceFile.endsWith("/release/source/product.json"));
+  assert.equal(gate.pointer, "/surprise");
+  assert.equal(gate.observed, "unsafe");
+  assert.match(gate.expected, /unknown properties are forbidden/);
+});
+
+test("toolchain schema failures preserve their exact source and JSON pointer", async () => {
+  const root = await releaseRoot();
+  const source = join(root, "release", "toolchains.json");
+  const toolchains = JSON.parse(await readFile(source, "utf8"));
+  toolchains.tools[0].surprise = "unsafe";
+  await writeFile(source, `${JSON.stringify(toolchains)}\n`, "utf8");
+  const result = await run(root, ["status", "--json"]);
+  assert.equal(result.code, 1);
+  const gate = JSON.parse(result.stdout).gates[0];
+  assert(gate.sourceFile.endsWith("/release/toolchains.json"));
+  assert.equal(gate.pointer, "/tools/0/surprise");
+  assert.equal(gate.observed, "unsafe");
+});
+
 test("generate reports a fixed redacted failure for malformed source", async () => {
   const root = await releaseRoot();
   await writeFile(join(root, "release", "source", "product.json"), "{", "utf8");
@@ -124,6 +153,18 @@ test("status uses a safe release-root diagnostic when an error names no source p
   const parsed = JSON.parse(result.stdout);
   assert(parsed.gates[0].sourceFile.endsWith("/release"));
   assert.equal(parsed.gates[0].pointer, "/");
+});
+
+test("status blocks a toolchain whose version is explicitly undeclared", async () => {
+  const root = await releaseRoot();
+  const manifestPath = join(root, "release", "toolchains.json");
+  const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+  manifest.tools[0].version = "not-declared";
+  await writeFile(manifestPath, `${JSON.stringify(manifest)}\n`, "utf8");
+  const result = await run(root, ["status", "--json"]);
+  const gate = JSON.parse(result.stdout).gates.find(({ id }) => id === "toolchain.node");
+  assert.equal(gate.state, "BLOCKED");
+  assert.match(gate.recovery, /Declare and checksum/);
 });
 
 test("usage rejects unknown options, mutation commands, and credential flags", async () => {

@@ -1,5 +1,14 @@
 <!-- source-sha256: e15067e31868e052904fb8a746f2e4999cb8e493868bea49132ec27972af88b7 -->
-# account gates.md
+# account gates
+
+- agreements: human-action; Confirm current Apple and Google developer agreements.; evidence: not recorded
+- tax: human-action; Confirm required tax declarations in both stores.; evidence: not recorded
+- banking: human-action; Confirm whether either free-app account still requires banking setup.; evidence: not recorded
+- trader-status: human-action; Confirm store trader-status declarations.; evidence: not recorded
+- signing: human-action; Signing identities are external and are validated in later work units.; evidence: not recorded
+- hardware: human-action; Physical-device rehearsals occur after exact store builds exist.; evidence: not recorded
+- console: human-action; Authenticated Console actions are performed manually.; evidence: not recorded
+# Gate summary
 
 ## account.agreements
 

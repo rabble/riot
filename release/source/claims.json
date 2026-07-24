@@ -5,24 +5,33 @@
       "id": "read-local-community",
       "text": "Open a local community and read its newswire.",
       "platforms": ["ios", "macos", "android"],
-      "codePaths": ["crates/riot-core/src/newswire/store.rs"],
-      "journeyIds": ["first-install-to-first-read"],
+      "evidenceByPlatform": {
+        "ios": { "codePaths": ["crates/riot-core/src/newswire/store.rs"], "journeyIds": ["ios:first-install-to-first-read"] },
+        "macos": { "codePaths": ["crates/riot-core/src/newswire/store.rs"], "journeyIds": ["macos:first-install-to-first-read"] },
+        "android": { "codePaths": ["crates/riot-core/src/newswire/store.rs"], "journeyIds": ["android:first-install-to-first-read"] }
+      },
       "state": "human-action"
     },
     {
       "id": "create-community",
       "text": "Create and switch communities.",
       "platforms": ["ios", "macos", "android"],
-      "codePaths": ["apps/ios/Riot/AppModel.swift"],
-      "journeyIds": ["create-switch-community"],
+      "evidenceByPlatform": {
+        "ios": { "codePaths": ["apps/ios/Riot/AppModel.swift"], "journeyIds": ["ios:create-switch-community"] },
+        "macos": { "codePaths": ["apps/ios/Riot/AppModel.swift"], "journeyIds": ["macos:create-switch-community"] },
+        "android": { "codePaths": ["apps/android/app/src/main/kotlin/org/riot/evidence/RiotController.kt"], "journeyIds": ["android:create-switch-community"] }
+      },
       "state": "human-action"
     },
     {
       "id": "publish-signed-update",
       "text": "Compose, sign, and persist an update.",
       "platforms": ["ios", "macos", "android"],
-      "codePaths": ["crates/riot-core/src/newswire/entry.rs"],
-      "journeyIds": ["publish-signed-update"],
+      "evidenceByPlatform": {
+        "ios": { "codePaths": ["crates/riot-core/src/newswire/entry.rs"], "journeyIds": ["ios:publish-signed-update"] },
+        "macos": { "codePaths": ["crates/riot-core/src/newswire/entry.rs"], "journeyIds": ["macos:publish-signed-update"] },
+        "android": { "codePaths": ["crates/riot-core/src/newswire/entry.rs"], "journeyIds": ["android:publish-signed-update"] }
+      },
       "state": "human-action"
     }
   ]

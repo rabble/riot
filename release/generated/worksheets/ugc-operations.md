@@ -1,5 +1,95 @@
-<!-- source-sha256: 2d6b61c3873dacd3738d02d9b941568e9533ac7c47ebb9f27a63677cdab6a7e8 -->
-# ugc operations.md
+<!-- source-sha256: e33437077b31118a836b6b5ef8a6690e2db985f9b2717138eb28d8cec1b77cb0 -->
+# ugc operations
+
+## termsAcceptance
+
+- State: blocked
+- Reason: No in-app Terms or user-policy acceptance flow was found.
+- Operator: not assigned
+- Maximum response hours: not applicable
+- Code evidence: not implemented
+
+## prohibitedContent
+
+- State: blocked
+- Reason: No published prohibited-content rules tied to the app were found.
+- Operator: not assigned
+- Maximum response hours: not applicable
+- Code evidence: not implemented
+
+## filtering
+
+- State: blocked
+- Reason: No objectionable-content filtering control was found.
+- Operator: not assigned
+- Maximum response hours: not applicable
+- Code evidence: not implemented
+
+## contentReporting
+
+- State: blocked
+- Reason: No in-app content-reporting flow was found.
+- Operator: not assigned
+- Maximum response hours: not applicable
+- Code evidence: not implemented
+
+## authorReporting
+
+- State: blocked
+- Reason: No in-app author-reporting flow was found.
+- Operator: not assigned
+- Maximum response hours: not applicable
+- Code evidence: not implemented
+
+## localBlocking
+
+- State: blocked
+- Reason: No immediate local author-blocking control was found.
+- Operator: not assigned
+- Maximum response hours: not applicable
+- Code evidence: not implemented
+
+## moderatorTombstone
+
+- State: blocked
+- Reason: Protocol tombstones exist, but no report-to-moderator response workflow was found.
+- Operator: not assigned
+- Maximum response hours: not applicable
+- Code evidence: not implemented
+
+## publicContact
+
+- State: blocked
+- Reason: The required public support/report page and escalation path do not exist.
+- Operator: not assigned
+- Maximum response hours: not applicable
+- Code evidence: not implemented
+
+## reportAcknowledgement
+
+- State: blocked
+- Reason: No owned report intake process can provide the required acknowledgement.
+- Operator: not assigned
+- Maximum response hours: 24
+- Code evidence: not implemented
+
+## imminentHarm
+
+- State: blocked
+- Reason: No named operator or escalation process can meet the 24-hour decision SLA.
+- Operator: not assigned
+- Maximum response hours: 24
+- Code evidence: not implemented
+
+## objectionableContent
+
+- State: blocked
+- Reason: No named operator or response process can meet the 72-hour decision SLA.
+- Operator: not assigned
+- Maximum response hours: 72
+- Code evidence: not implemented
+
+# Gate summary
 
 ## policy.termsAcceptance
 
@@ -77,3 +167,10 @@
 - Observed: No named operator or response process can meet the 72-hour decision SLA.
 - Expected: implemented control with evidence, owner, and required SLA
 - Recovery: Implement and evidence objectionableContent in a separately approved product workstream.
+
+## content-rating
+
+- State: **HUMAN ACTION**
+- Observed: 12+; Teen
+- Expected: authenticated store questionnaires confirm the canonical recommendation
+- Recovery: Confirm the content-rating questionnaires in App Store Connect and Google Play Console.

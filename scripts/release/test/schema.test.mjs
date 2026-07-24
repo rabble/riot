@@ -26,6 +26,17 @@ const validProduct = {
   },
 };
 
+const validToolchain = {
+  name: "gradle",
+  version: "9.1.0",
+  versionCommand: ["./gradlew", "--version"],
+  checksumKind: "artifact",
+  sha256: "a".repeat(64),
+  source: "apps/android/gradle/wrapper/gradle-wrapper.properties#distributionUrl",
+  downloadUrl: "https://services.gradle.org/distributions/gradle-9.1.0-bin.zip",
+  downloadChecksum: { algorithm: "sha256", value: "a".repeat(64) },
+};
+
 test("registry validates a closed source and returns a frozen value", async () => {
   const registry = await loadSchemaRegistry(schemaDirectory);
   const result = validateSource(registry, "product", validProduct);
@@ -104,20 +115,20 @@ test("toolchain schema requires a non-null authoritative checksum", async () => 
   const registry = await loadSchemaRegistry(schemaDirectory);
   const valid = {
     schemaVersion: 1,
-    tools: [{
-      name: "node",
-      version: "26.4.0",
-      versionCommand: ["node", "--version"],
-      checksumKind: "normalized-version-output",
-      sha256: "a".repeat(64),
-      source: "package.json#engines.node",
-    }],
+    tools: [validToolchain],
   };
   assert.doesNotThrow(() => validateSource(registry, "toolchains", valid));
   assert.throws(
     () => validateSource(registry, "toolchains", {
       ...valid,
       tools: [{ ...valid.tools[0], sha256: null }],
+    }),
+    /validation failed/,
+  );
+  assert.throws(
+    () => validateSource(registry, "toolchains", {
+      ...valid,
+      tools: [{ ...validToolchain, downloadUrl: "android-ndk.zip" }],
     }),
     /validation failed/,
   );
@@ -153,4 +164,10 @@ test("checked-in toolchain authority covers every WU-000 required tool", async (
     assert(names.has(name), `missing toolchain authority for ${name}`);
   }
   assert(validated.tools.every(({ sha256 }) => /^[0-9a-f]{64}$/.test(sha256)));
+  const ndk = validated.tools.find(({ name }) => name === "android-ndk");
+  assert.equal(ndk.version, "28.2.13676358");
+  assert.equal(ndk.source, "scripts/conference/build-native-core.sh:6");
+  assert.equal(ndk.downloadUrl, "https://dl.google.com/android/repository/android-ndk-r28c-darwin.zip");
+  assert.equal(ndk.downloadChecksum.algorithm, "sha1");
+  assert.equal(ndk.downloadChecksum.value, "fc20a6bf15a30fb3428c9b60a7308793a362dc6d");
 });

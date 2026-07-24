@@ -1,5 +1,11 @@
 {
   "schemaVersion": 1,
+  "contentRating": {
+    "apple": "12+",
+    "google": "Teen",
+    "state": "human-action",
+    "rationale": "Recommend these ratings because Riot contains user-generated content and community reporting; authenticated store questionnaires still require human confirmation."
+  },
   "controls": {
     "termsAcceptance": { "state": "blocked", "codePaths": [], "operator": "", "maxHours": null, "reason": "No in-app Terms or user-policy acceptance flow was found." },
     "prohibitedContent": { "state": "blocked", "codePaths": [], "operator": "", "maxHours": null, "reason": "No published prohibited-content rules tied to the app were found." },

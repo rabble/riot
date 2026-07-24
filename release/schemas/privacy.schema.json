@@ -17,7 +17,7 @@
       }
     },
     "answers": { "type": "array", "minItems": 2, "items": { "$ref": "#/$defs/answer" } },
-    "permissions": { "type": "array", "minItems": 5, "items": { "$ref": "#/$defs/permission" } },
+    "permissions": { "type": "array", "minItems": 5, "maxItems": 5, "items": { "$ref": "#/$defs/permission" } },
     "requiredReasonApis": { "type": "array", "items": { "$ref": "#/$defs/requiredReason" } }
   },
   "$defs": {
@@ -36,7 +36,7 @@
       "additionalProperties": false,
       "required": ["name", "platform", "justification", "evidencePath"],
       "properties": {
-        "name": { "enum": ["camera", "bluetooth", "local-network", "notifications", "internet"] },
+        "name": { "enum": ["camera", "bluetooth", "local-network", "notifications", "android-internet"] },
         "platform": { "enum": ["apple", "android", "all"] },
         "justification": { "type": "string", "minLength": 1 },
         "evidencePath": { "type": "string", "minLength": 1 }

@@ -31,6 +31,43 @@ function pointerFor(error) {
   return error.instancePath || "/";
 }
 
+function pointerValue(value, pointer) {
+  if (pointer === "/") return value;
+  return pointer.slice(1).split("/").reduce((current, token) => {
+    const key = token.replaceAll("~1", "/").replaceAll("~0", "~");
+    return current?.[key];
+  }, value);
+}
+
+function diagnosticFor(error, value) {
+  const pointer = pointerFor(error);
+  if (error.keyword === "required") {
+    return {
+      pointer,
+      keyword: error.keyword,
+      observed: "missing",
+      expected: `required property ${error.params.missingProperty}`,
+      message: error.message,
+    };
+  }
+  if (error.keyword === "additionalProperties") {
+    return {
+      pointer,
+      keyword: error.keyword,
+      observed: pointerValue(value, pointer),
+      expected: "unknown properties are forbidden",
+      message: error.message,
+    };
+  }
+  return {
+    pointer,
+    keyword: error.keyword,
+    observed: pointerValue(value, pointer),
+    expected: error.message,
+    message: error.message,
+  };
+}
+
 export async function loadSchemaRegistry(directory, fs = { readdir, readFile }) {
   const names = (await fs.readdir(directory)).filter((name) => name.endsWith(".schema.json")).sort();
   const ajv = new Ajv2020({ allErrors: true, strict: true, validateFormats: false });
@@ -62,11 +99,7 @@ export function validateSource(registry, name, value) {
   if (!validator) throw new Error(`unknown schema: ${name}`);
   if (!validator(value)) {
     const diagnostics = validator.errors
-      .map((error) => ({
-        pointer: pointerFor(error),
-        keyword: error.keyword,
-        message: error.message,
-      }))
+      .map((validationError) => diagnosticFor(validationError, value))
       .sort((left, right) =>
         `${left.pointer}\u0000${left.keyword}`.localeCompare(`${right.pointer}\u0000${right.keyword}`));
     const error = new Error(`${name} validation failed: ${diagnostics.map(({ pointer, message }) => `${pointer} ${message}`).join("; ")}`);

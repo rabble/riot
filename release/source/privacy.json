@@ -43,7 +43,7 @@
       "evidencePath": "apps/android/app/src/main/kotlin/org/riot/evidence/LocalNotifier.kt"
     },
     {
-      "name": "internet",
+      "name": "android-internet",
       "platform": "android",
       "justification": "Android uses INTERNET for user-directed LAN and followed-site connections.",
       "evidencePath": "apps/android/app/src/main/AndroidManifest.xml"

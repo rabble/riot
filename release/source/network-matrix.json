@@ -8,6 +8,9 @@
       "transmittedFields": [],
       "redirectHandling": "No request or redirect is made on first launch.",
       "retention": "No remote retention.",
+      "developerOperated": false,
+      "developerRetention": "none",
+      "userDirected": false,
       "codePaths": ["apps/ios/Riot/RiotApp.swift", "apps/android/app/src/main/kotlin/org/riot/evidence/MainActivity.kt"]
     },
     {
@@ -17,6 +20,9 @@
       "transmittedFields": [],
       "redirectHandling": "Denied permission does not initiate a request.",
       "retention": "Permission state remains platform-local.",
+      "developerOperated": false,
+      "developerRetention": "none",
+      "userDirected": true,
       "codePaths": ["apps/ios/Riot/QRScannerView.swift"]
     },
     {
@@ -26,6 +32,9 @@
       "transmittedFields": ["permission-scoped sensor or discovery data"],
       "redirectHandling": "Platform permission APIs do not follow web redirects.",
       "retention": "Riot does not operate a remote retention service.",
+      "developerOperated": false,
+      "developerRetention": "none",
+      "userDirected": true,
       "codePaths": ["apps/ios/Riot/QRScannerView.swift", "apps/ios/Riot/Transport/LocalNetworkNearby.swift"]
     },
     {
@@ -35,6 +44,9 @@
       "transmittedFields": ["signed community records", "peer discovery metadata"],
       "redirectHandling": "Direct local-network transport does not follow HTTP redirects.",
       "retention": "The receiving peer retains records under its local community state.",
+      "developerOperated": false,
+      "developerRetention": "peer-local",
+      "userDirected": true,
       "codePaths": ["apps/ios/Riot/Transport/LocalNetworkNearby.swift", "crates/riot-transport/src/lib.rs"]
     },
     {
@@ -44,6 +56,9 @@
       "transmittedFields": ["HTTP request metadata"],
       "redirectHandling": "Transport policy validates the followed destination; redirect behavior remains subject to candidate audit.",
       "retention": "Destination-server retention is outside Riot developer control.",
+      "developerOperated": false,
+      "developerRetention": "destination-controlled",
+      "userDirected": true,
       "codePaths": ["crates/riot-core/src/site/follow.rs", "apps/ios/Riot/FollowSiteModel.swift"]
     }
   ]

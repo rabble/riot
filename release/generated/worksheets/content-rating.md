@@ -1,5 +1,20 @@
-<!-- source-sha256: 53c60c2ab7d2faddc70a4cf4ad633383b9a63e9fb6660503e807d6e9128885bb -->
-# content rating.md
+<!-- source-sha256: debf2d498e1893389100a2b2362282380d655e0b470fb78c2e1392fc786d919a -->
+# content rating
+
+## Recommended ratings
+
+- Apple: 12+
+- Google Play: Teen
+- State: human-action
+- Rationale: Recommend these ratings because Riot contains user-generated content and community reporting; authenticated store questionnaires still require human confirmation.
+
+## Claims considered
+
+- Open a local community and read its newswire. (ios, macos, android; human-action)
+- Create and switch communities. (ios, macos, android; human-action)
+- Compose, sign, and persist an update. (ios, macos, android; human-action)
+
+# Gate summary
 
 ## policy.termsAcceptance
 
@@ -82,19 +97,26 @@
 
 - State: **HUMAN ACTION**
 - Observed: human-action
-- Expected: passing code and candidate journey evidence
-- Recovery: Run candidate journeys first-install-to-first-read.
+- Expected: platform-specific code and candidate journey evidence for every claimed platform
+- Recovery: Run candidate journeys ios:first-install-to-first-read, macos:first-install-to-first-read, android:first-install-to-first-read.
 
 ## claim.create-community
 
 - State: **HUMAN ACTION**
 - Observed: human-action
-- Expected: passing code and candidate journey evidence
-- Recovery: Run candidate journeys create-switch-community.
+- Expected: platform-specific code and candidate journey evidence for every claimed platform
+- Recovery: Run candidate journeys ios:create-switch-community, macos:create-switch-community, android:create-switch-community.
 
 ## claim.publish-signed-update
 
 - State: **HUMAN ACTION**
 - Observed: human-action
-- Expected: passing code and candidate journey evidence
-- Recovery: Run candidate journeys publish-signed-update.
+- Expected: platform-specific code and candidate journey evidence for every claimed platform
+- Recovery: Run candidate journeys ios:publish-signed-update, macos:publish-signed-update, android:publish-signed-update.
+
+## content-rating
+
+- State: **HUMAN ACTION**
+- Observed: 12+; Teen
+- Expected: authenticated store questionnaires confirm the canonical recommendation
+- Recovery: Confirm the content-rating questionnaires in App Store Connect and Google Play Console.

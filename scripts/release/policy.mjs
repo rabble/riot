@@ -16,6 +16,7 @@ const SOURCES = Object.freeze({
   reviewInstructions: "review-instructions",
 });
 const NETWORK_ROWS = ["first-launch", "denied-permission", "granted-permission", "nearby-sync", "followed-site-refresh"];
+const REQUIRED_PERMISSIONS = ["camera", "bluetooth", "local-network", "notifications", "android-internet"];
 const REVIEW_TOPICS = ["first-launch", "demo-content", "no-login", "create", "join", "publish", "restart", "offline", "local-permissions", "nearby-testing", "permission-denial", "invalid-join", "no-peers"];
 const DEVICES = ["iphone", "ipad", "mac", "android-phone", "android-tablet"];
 const TASKS = ["read", "create", "join", "publish"];
@@ -51,10 +52,28 @@ export async function loadPolicySources({ sourceDirectory, fs = { readFile, read
     } catch (error) {
       throw new Error(`${sourceFile}: malformed or missing source: ${error.message}`);
     }
-    loaded[key] = structuredClone(validateSource(registry, name, value));
+    try {
+      loaded[key] = structuredClone(validateSource(registry, name, value));
+    } catch (error) {
+      error.sourceFile = sourceFile;
+      throw error;
+    }
     files[key] = sourceFile;
   }
+  const repositoryRoot = dirname(dirname(sourceDirectory));
+  const urlEvidence = {};
+  for (const [name, value] of Object.entries(loaded.product.urls)) {
+    let state;
+    try {
+      const content = await fs.readFile(join(repositoryRoot, value.evidencePath), "utf8");
+      state = /<!doctype\s+html|<html(?:\s|>)/i.test(content) ? "current" : "stale";
+    } catch {
+      state = "missing";
+    }
+    urlEvidence[name] = { state, evidencePath: value.evidencePath };
+  }
   Object.defineProperty(loaded, "_files", { value: files, enumerable: false });
+  Object.defineProperty(loaded, "_urlEvidence", { value: urlEvidence, enumerable: false });
   return loaded;
 }
 
@@ -70,16 +89,34 @@ export function evaluatePolicy(sources) {
   gates.push(gate("product.identity", productMatches ? "PASS" : "BLOCKED", file("product"), "/", JSON.stringify(sources.product), "1.0, free, worldwide, public early access, net.protest.riot", "Correct release/source/product.json."));
 
   for (const [name, value] of Object.entries(sources.product.urls)) {
-    gates.push(gate(`url.${name}`, value.evidenceState === "current" ? "PASS" : "BLOCKED", file("product"), `/urls/${name}/evidenceState`, value.evidenceState, "current", `Publish and verify ${value.evidencePath}.`));
+    const verified = sources._urlEvidence?.[name]?.state ?? "missing";
+    gates.push(gate(`url.${name}`, verified === "current" ? "PASS" : "BLOCKED", file("product"), `/urls/${name}/evidencePath`, `${verified}: ${value.evidencePath}`, "current non-empty HTML at the declared repository path", `Publish and verify ${value.evidencePath}.`));
   }
 
-  const rowIds = new Set(sources.networkMatrix.rows.map(({ id }) => id));
+  const rowIndexes = new Map(sources.networkMatrix.rows.map(({ id }, index) => [id, index]));
+  const rowById = new Map(sources.networkMatrix.rows.map((row) => [row.id, row]));
   for (const row of NETWORK_ROWS) {
-    gates.push(gate(`network.${row}`, rowIds.has(row) ? "PASS" : "BLOCKED", file("networkMatrix"), "/rows", rowIds.has(row) ? "present" : "missing", "present", `Add the ${row} evidence row.`));
+    const index = rowIndexes.get(row);
+    gates.push(gate(`network.${row}`, index === undefined ? "BLOCKED" : "PASS", file("networkMatrix"), index === undefined ? "/rows" : `/rows/${index}`, index === undefined ? "missing" : "present", "present", `Add the ${row} evidence row.`));
   }
-  for (const answer of sources.privacy.answers) {
-    const evidenceComplete = answer.evidenceRowIds.every((id) => rowIds.has(id));
-    gates.push(gate(`privacy.${answer.store}`, evidenceComplete ? "PASS" : "BLOCKED", file("privacy"), `/answers/${answer.store}`, answer.evidenceRowIds.join(","), "all referenced network evidence rows exist", "Correct the store answer or add the missing network evidence."));
+  for (const [index, answer] of sources.privacy.answers.entries()) {
+    const rows = answer.evidenceRowIds.map((id) => rowById.get(id));
+    const evidenceComplete = rows.every(Boolean);
+    const positionConsistent = Object.values(sources.privacy.position).every(Boolean);
+    const networkConsistent = evidenceComplete && rows.every((row) =>
+      !row.developerOperated
+      && ["none", "peer-local", "destination-controlled"].includes(row.developerRetention)
+      && (row.transmittedFields.length === 0 || row.userDirected));
+    const semanticallyConsistent = answer.answer !== "no-collection"
+      || positionConsistent && networkConsistent;
+    gates.push(gate(`privacy.${answer.store}`, evidenceComplete && semanticallyConsistent ? "PASS" : "BLOCKED", file("privacy"), `/answers/${index}`, answer.evidenceRowIds.join(","), "store answer agrees with position, transmitted fields, destination ownership, retention, and user direction", "Correct the store answer or its canonical network evidence."));
+  }
+  const permissionCounts = new Map();
+  for (const { name } of sources.privacy.permissions) permissionCounts.set(name, (permissionCounts.get(name) ?? 0) + 1);
+  for (const permission of REQUIRED_PERMISSIONS) {
+    const count = permissionCounts.get(permission) ?? 0;
+    const index = sources.privacy.permissions.findIndex(({ name }) => name === permission);
+    gates.push(gate(`permission.${permission}`, count === 1 ? "PASS" : "BLOCKED", file("privacy"), count === 1 ? `/permissions/${index}` : "/permissions", count, "exactly one canonical permission entry", `Add exactly one ${permission} permission justification and remove substitutions or duplicates.`));
   }
   gates.push(gate("privacy.required-reason-audit", sources.privacy.requiredReasonApis.length > 0 ? "PASS" : "HUMAN ACTION", file("privacy"), "/requiredReasonApis", sources.privacy.requiredReasonApis.length, "completed submitted-dependency API inventory", "Complete the Apple required-reason API audit before archive production."));
 
@@ -92,24 +129,35 @@ export function evaluatePolicy(sources) {
     gates.push(gate(`policy.${name}`, complete ? "PASS" : "BLOCKED", file("policy"), `/controls/${name}`, control.reason, "implemented control with evidence, owner, and required SLA", `Implement and evidence ${name} in a separately approved product workstream.`));
   }
 
-  const reviewIds = new Set(sources.reviewInstructions.topics.map(({ id }) => id));
+  const reviewIndexes = new Map(sources.reviewInstructions.topics.map(({ id }, index) => [id, index]));
   for (const topic of REVIEW_TOPICS) {
-    gates.push(gate(`review.${topic}`, reviewIds.has(topic) ? "PASS" : "BLOCKED", file("reviewInstructions"), "/topics", reviewIds.has(topic) ? "present" : "missing", "present", `Add truthful review instructions for ${topic}.`));
+    const index = reviewIndexes.get(topic);
+    gates.push(gate(`review.${topic}`, index === undefined ? "BLOCKED" : "PASS", file("reviewInstructions"), index === undefined ? "/topics" : `/topics/${index}`, index === undefined ? "missing" : "present", "present", `Add truthful review instructions for ${topic}.`));
   }
 
-  const accessibility = new Map(sources.accessibility.records.map((record) => [`${record.device}:${record.task}`, record]));
+  const accessibility = new Map(sources.accessibility.records.map((record, index) => [`${record.device}:${record.task}`, { record, index }]));
   for (const device of DEVICES) {
     for (const task of TASKS) {
-      const record = accessibility.get(`${device}:${task}`);
+      const match = accessibility.get(`${device}:${task}`);
+      const record = match?.record;
       const state = !record ? "BLOCKED" : record.state === "pass" && record.evidencePath ? "PASS" : record.state === "blocked" ? "BLOCKED" : "HUMAN ACTION";
-      gates.push(gate(`accessibility.${device}.${task}`, state, file("accessibility"), "/records", record?.state ?? "missing", "passing candidate-bound evidence", `Run and record the ${task} accessibility rehearsal on ${device}.`));
+      gates.push(gate(`accessibility.${device}.${task}`, state, file("accessibility"), match ? `/records/${match.index}` : "/records", record?.state ?? "missing", "passing candidate-bound evidence", `Run and record the ${task} accessibility rehearsal on ${device}.`));
     }
   }
 
-  for (const claim of sources.claims.claims) {
-    const state = claim.state === "pass" ? "PASS" : claim.state === "blocked" ? "BLOCKED" : "HUMAN ACTION";
-    gates.push(gate(`claim.${claim.id}`, state, file("claims"), `/claims/${claim.id}`, claim.state, "passing code and candidate journey evidence", `Run candidate journeys ${claim.journeyIds.join(", ")}.`));
+  for (const [index, claim] of sources.claims.claims.entries()) {
+    const evidenceComplete = claim.platforms.every((platform) => {
+      const evidence = claim.evidenceByPlatform?.[platform];
+      return evidence?.codePaths.length > 0 && evidence?.journeyIds.length > 0;
+    });
+    const state = !evidenceComplete ? "BLOCKED" : claim.state === "pass" ? "PASS" : claim.state === "blocked" ? "BLOCKED" : "HUMAN ACTION";
+    const journeys = claim.platforms.flatMap((platform) => claim.evidenceByPlatform?.[platform]?.journeyIds ?? []);
+    gates.push(gate(`claim.${claim.id}`, state, file("claims"), `/claims/${index}`, claim.state, "platform-specific code and candidate journey evidence for every claimed platform", `Run candidate journeys ${journeys.join(", ")}.`));
   }
+
+  const contentRating = sources.policy.contentRating;
+  const contentRatingState = contentRating.state === "pass" ? "PASS" : contentRating.state === "blocked" ? "BLOCKED" : "HUMAN ACTION";
+  gates.push(gate("content-rating", contentRatingState, file("policy"), "/contentRating", `${contentRating.apple}; ${contentRating.google}`, "authenticated store questionnaires confirm the canonical recommendation", "Confirm the content-rating questionnaires in App Store Connect and Google Play Console."));
 
   const classification = sources.exportCompliance.classification;
   const exportState = classification.state === "pass" && classification.approver && classification.evidence.length > 0
@@ -117,19 +165,146 @@ export function evaluatePolicy(sources) {
     : classification.state === "blocked" ? "BLOCKED" : "HUMAN ACTION";
   gates.push(gate("export.classification", exportState, file("exportCompliance"), "/classification", classification.state, "authenticated approved classification", "Obtain legal/export approval and record its evidence."));
 
-  for (const account of sources.accountGates.gates) {
+  for (const [index, account] of sources.accountGates.gates.entries()) {
     const state = account.state === "pass" && account.evidence.length > 0 ? "PASS" : account.state === "blocked" ? "BLOCKED" : "HUMAN ACTION";
-    gates.push(gate(`account.${account.name}`, state, file("accountGates"), `/gates/${account.name}`, account.state, "authenticated current evidence", `Confirm ${account.name} in the authenticated store account.`));
+    gates.push(gate(`account.${account.name}`, state, file("accountGates"), `/gates/${index}`, account.state, "authenticated current evidence", `Confirm ${account.name} in the authenticated store account.`));
   }
   return gates;
 }
 
-function markdown(name, keys, sources, digest) {
+function gateSummary(keys, sources) {
   const gates = evaluatePolicy(sources).filter(({ sourceFile }) =>
     keys.some((key) => sourceFile.endsWith(`${SOURCES[key]}.json`)));
-  const body = gates.map(({ id, state, observed, expected, recovery }) =>
+  return gates.map(({ id, state, observed, expected, recovery }) =>
     `## ${id}\n\n- State: **${state}**\n- Observed: ${observed}\n- Expected: ${expected}\n- Recovery: ${recovery}\n`).join("\n");
-  return `<!-- source-sha256: ${digest} -->\n# ${name.replace(/\\.md$/, "").replaceAll("-", " ")}\n\n${body}`;
+}
+
+function permissionWorksheet(sources) {
+  const rows = sources.privacy.permissions.map(({ name, platform, justification, evidencePath }) =>
+    `| ${name} | ${platform} | ${justification} | ${evidencePath} |`).join("\n");
+  return `## Permission justification inventory\n\n| Permission ID | Platform | Store justification | Code evidence |\n| --- | --- | --- | --- |\n${rows}\n`;
+}
+
+function requiredReasonWorksheet(sources) {
+  const entries = sources.privacy.requiredReasonApis;
+  if (entries.length === 0) {
+    return "## Required-reason API inventory\n\nNo approved API reasons are recorded. Audit the submitted Apple archive and all dependencies before production.\n";
+  }
+  const rows = entries.map(({ api, reason, evidencePath }) => `| ${api} | ${reason} | ${evidencePath} |`).join("\n");
+  return `## Required-reason API inventory\n\n| API | Approved reason | Evidence |\n| --- | --- | --- |\n${rows}\n`;
+}
+
+function networkWorksheet(sources) {
+  return sources.networkMatrix.rows.map((row) => `## ${row.id}
+
+- Initiator: ${row.initiator}
+- Destination: ${row.destinationClass}
+- Transmitted fields: ${row.transmittedFields.length ? row.transmittedFields.join(", ") : "none"}
+- Redirect handling: ${row.redirectHandling}
+- Retention: ${row.retention}
+- Developer operated: ${row.developerOperated}
+- Developer retention: ${row.developerRetention}
+- User directed: ${row.userDirected}
+- Code evidence: ${row.codePaths.join(", ")}
+`).join("\n");
+}
+
+function reviewWorksheet(sources) {
+  return sources.reviewInstructions.topics.map(({ id, instruction, evidencePath }) => `## ${id}
+
+- Instruction: ${instruction}
+- Evidence: ${evidencePath}
+`).join("\n");
+}
+
+function exportWorksheet(sources) {
+  const { algorithms, distribution, classification } = sources.exportCompliance;
+  return `## Algorithms\n\n${algorithms.map((algorithm) => `- ${algorithm}`).join("\n")}
+
+## Distribution
+
+${distribution}
+
+## Classification
+
+- State: ${classification.state}
+- Reason: ${classification.reason}
+- Approver: ${classification.approver ?? "not recorded"}
+- Evidence: ${classification.evidence.length ? classification.evidence.join(", ") : "not recorded"}
+`;
+}
+
+function contentRatingWorksheet(sources) {
+  const { contentRating } = sources.policy;
+  const claims = sources.claims.claims.map(({ text, platforms, state }) =>
+    `- ${text} (${platforms.join(", ")}; ${state})`).join("\n");
+  return `## Recommended ratings
+
+- Apple: ${contentRating.apple}
+- Google Play: ${contentRating.google}
+- State: ${contentRating.state}
+- Rationale: ${contentRating.rationale}
+
+## Claims considered
+
+${claims}
+`;
+}
+
+function privacyWorksheet(sources, store) {
+  const answer = sources.privacy.answers.find(({ store: candidate }) => candidate === store);
+  return `## ${store === "apple" ? "App Privacy" : "Google Play Data safety"} position
+
+- Store answer: ${answer.answer}
+- Evidence rows: ${answer.evidenceRowIds.join(", ")}
+- No developer account: ${sources.privacy.position.noDeveloperAccount}
+- No ads, tracking, or developer analytics: ${sources.privacy.position.noAdsTrackingAnalytics}
+- No hidden collection: ${sources.privacy.position.noHiddenCollection}
+
+${networkWorksheet(sources)}`;
+}
+
+function accessibilityWorksheet(sources) {
+  return sources.accessibility.records.map(({ device, task, state, evidencePath }) =>
+    `- ${device} / ${task}: ${state}; evidence: ${evidencePath ?? "not recorded"}`).join("\n");
+}
+
+function accountWorksheet(sources) {
+  return sources.accountGates.gates.map(({ name, state, reason, evidence }) =>
+    `- ${name}: ${state}; ${reason}; evidence: ${evidence.length ? evidence.join(", ") : "not recorded"}`).join("\n");
+}
+
+function ugcWorksheet(sources) {
+  return Object.entries(sources.policy.controls).map(([name, control]) => `## ${name}
+
+- State: ${control.state}
+- Reason: ${control.reason}
+- Operator: ${control.operator || "not assigned"}
+- Maximum response hours: ${control.maxHours ?? "not applicable"}
+- Code evidence: ${control.codePaths.length ? control.codePaths.join(", ") : "not implemented"}
+`).join("\n");
+}
+
+function canonicalWorksheet(name, sources) {
+  const renderers = {
+    "accessibility.md": accessibilityWorksheet,
+    "account-gates.md": accountWorksheet,
+    "app-privacy.md": (value) => privacyWorksheet(value, "apple"),
+    "content-rating.md": contentRatingWorksheet,
+    "data-safety.md": (value) => privacyWorksheet(value, "google"),
+    "export-compliance.md": exportWorksheet,
+    "outbound-network.md": networkWorksheet,
+    "permissions.md": permissionWorksheet,
+    "required-reason-apis.md": requiredReasonWorksheet,
+    "review-instructions.md": reviewWorksheet,
+    "ugc-operations.md": ugcWorksheet,
+  };
+  return renderers[name](sources);
+}
+
+function markdown(name, keys, sources, digest) {
+  const title = name.replace(/\.md$/, "").replaceAll("-", " ");
+  return `<!-- source-sha256: ${digest} -->\n# ${title}\n\n${canonicalWorksheet(name, sources)}\n# Gate summary\n\n${gateSummary(keys, sources)}`;
 }
 
 export async function generateWorksheets({ sources, outputDirectory, fs, sha256 }) {

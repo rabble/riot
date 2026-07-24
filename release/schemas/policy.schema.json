@@ -3,9 +3,20 @@
   "$id": "https://riot.protest.net/release/schemas/policy.v1.json",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schemaVersion", "controls"],
+  "required": ["schemaVersion", "controls", "contentRating"],
   "properties": {
     "schemaVersion": { "const": 1 },
+    "contentRating": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["apple", "google", "state", "rationale"],
+      "properties": {
+        "apple": { "const": "12+" },
+        "google": { "const": "Teen" },
+        "state": { "enum": ["pass", "blocked", "human-action"] },
+        "rationale": { "type": "string", "minLength": 1 }
+      }
+    },
     "controls": {
       "type": "object",
       "additionalProperties": false,

@@ -40,7 +40,13 @@ export function statusExit(summary) {
 async function toolchainGates(root) {
   const sourceFile = join(root, "release", "toolchains.json");
   const schemas = await loadSchemaRegistry(join(root, "release", "schemas"), fs);
-  const toolchains = validateSource(schemas, "toolchains", JSON.parse(await fs.readFile(sourceFile, "utf8")));
+  let toolchains;
+  try {
+    toolchains = validateSource(schemas, "toolchains", JSON.parse(await fs.readFile(sourceFile, "utf8")));
+  } catch (error) {
+    if (error.diagnostics) error.sourceFile = sourceFile;
+    throw error;
+  }
   return toolchains.tools.map((tool, index) => {
     const pinned = tool.version !== "not-declared";
     return {
@@ -58,6 +64,18 @@ async function toolchainGates(root) {
 }
 
 function failureGate(error, root) {
+  const diagnostic = error.diagnostics?.[0];
+  if (diagnostic) {
+    return {
+      id: "foundation.sources",
+      state: "BLOCKED",
+      sourceFile: error.sourceFile,
+      pointer: diagnostic.pointer,
+      observed: diagnostic.observed,
+      expected: diagnostic.expected,
+      recovery: "Correct the named release source or schema file and rerun status.",
+    };
+  }
   const message = String(error.message).replaceAll(/\s+/g, " ");
   const pathMatch = message.match(/(?:^|\s)(\/[^:]+(?:\.json)?)/);
   return {
