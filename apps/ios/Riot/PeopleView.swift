@@ -46,6 +46,89 @@ public enum PeopleStrings {
     public static func contributions(_ count: UInt32) -> String {
         count == 1 ? "1 contribution" : "\(count) contributions"
     }
+
+    /// The person page's contribution summary, naming the community when we know
+    /// it (#4: "12 contributions in Rojava Solidarity"). A blank name falls back
+    /// to the bare count — we never render "in " with nothing after it.
+    public static func contributions(_ count: UInt32, in community: String) -> String {
+        let base = contributions(count)
+        let trimmed = community.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? base : "\(base) in \(trimmed)"
+    }
+
+    /// The recency line shown when this person holds (or ties) the community's
+    /// freshest visible update. Honest, ordering-domain phrasing — not a wall
+    /// clock the app cannot derive.
+    public static let mostRecentToPost = "Most recent to post here"
+
+    /// Section subtitle for the posts list — how many of this person's posts this
+    /// device can actually see, distinct from the total contribution count.
+    public static func postsShown(_ count: Int) -> String {
+        count == 1 ? "1 post on this device" : "\(count) posts on this device"
+    }
+}
+
+// MARK: - Recent activity: an honest recency, kept in the ordering domain
+
+/// Recency phrasing for a contributor's page.
+///
+/// A projected post carries no wall-clock "posted at" — the only time it holds is
+/// the signed Willow ordering value (`taiJ2000Micros`, TAI/J2000 microseconds),
+/// and nothing in hand converts that to a calendar instant. Rather than hand-roll
+/// the leap-second-aware epoch conversion the core owns (or invent a timestamp),
+/// recency is expressed HONESTLY in the same ordering domain: how far a person's
+/// newest post sits BEHIND the freshest update visible in the community. Every
+/// function is pure over two ordering values — deterministic under test, and it
+/// never fabricates a moment the app does not actually have. When the person has
+/// no visible posts there is simply no line (absence, never a fake "active now").
+public enum PersonActivity {
+    private static let microsPerSecond: UInt64 = 1_000_000
+
+    /// A coarse human span for a duration measured in ordering microseconds — the
+    /// same bucket ladder (`minutes`/`hours`/`days`) the community and alert time
+    /// utils use, phrased as a plain span so it composes into "… before the
+    /// latest update".
+    static func span(micros: UInt64) -> String {
+        let seconds = micros / microsPerSecond
+        switch seconds {
+        case ..<60:
+            return "moments"
+        case ..<3_600:
+            let minutes = seconds / 60
+            return "\(minutes) minute\(minutes == 1 ? "" : "s")"
+        case ..<86_400:
+            let hours = seconds / 3_600
+            return "\(hours) hour\(hours == 1 ? "" : "s")"
+        default:
+            let days = seconds / 86_400
+            return "\(days) day\(days == 1 ? "" : "s")"
+        }
+    }
+
+    /// The header recency line, or `nil` when the person has no visible posts (no
+    /// activity is invented). When their newest post is the freshest visible
+    /// update — or newer/equal to what we can see — they are the most recent to
+    /// post; otherwise the honest gap to that freshest update.
+    public static func headerRecency(
+        personNewestMicros: UInt64?,
+        communityNewestMicros: UInt64?
+    ) -> String? {
+        guard let person = personNewestMicros else { return nil }
+        guard let community = communityNewestMicros, community > person else {
+            return PeopleStrings.mostRecentToPost
+        }
+        return "Last posted \(span(micros: community - person)) before the latest update"
+    }
+
+    /// The per-row recency caption, anchored to the SAME freshest update so a
+    /// person's list reads as an activity history: the newest row is the latest
+    /// update, older rows show how far back they sit.
+    public static func rowRecency(rowMicros: UInt64, communityNewestMicros: UInt64?) -> String {
+        guard let community = communityNewestMicros, community > rowMicros else {
+            return "Latest update"
+        }
+        return "\(span(micros: community - rowMicros)) before the latest update"
+    }
 }
 
 public struct PersonRowAccessibilityValue: Equatable, Sendable {
@@ -382,21 +465,41 @@ public enum PersonDetailState: Equatable, Sendable {
 @MainActor
 public final class PersonDetailModel: ObservableObject {
     @Published public private(set) var state: PersonDetailState
+    /// The header recency line, derived on `load()` from the newest of this
+    /// person's posts against the community's freshest visible update. `nil`
+    /// whenever there is nothing to show — no posts, or a projection failure — so
+    /// the header never renders a fabricated "active" line (see `PersonActivity`).
+    @Published public private(set) var recentActivity: String?
+    /// The freshest visible ordering value across the whole community projection,
+    /// captured on `load()` so each post row can show its recency against the same
+    /// anchor the header uses. `nil` before a successful load.
+    @Published public private(set) var communityNewestMicros: UInt64?
     public let person: PersonRow
 
     private let projector: NewswireProjecting
     private let spaceDescriptorEntryID: String
+    /// The community this page is being viewed inside, for the contribution
+    /// summary (#4). Empty when unknown — the summary then omits it cleanly.
+    private let communityName: String
 
     public init(
         person: PersonRow,
         projector: NewswireProjecting,
         spaceDescriptorEntryID: String,
+        communityName: String = "",
         initialState: PersonDetailState = .empty
     ) {
         self.person = person
         self.projector = projector
         self.spaceDescriptorEntryID = spaceDescriptorEntryID
+        self.communityName = communityName
         self.state = initialState
+    }
+
+    /// The contribution summary shown in the header: the core-derived contribution
+    /// count, named to the community when we know which one this is.
+    public var contributionSummary: String {
+        PeopleStrings.contributions(person.contributionCount, in: communityName)
     }
 
     public func load() {
@@ -405,10 +508,23 @@ public final class PersonDetailModel: ObservableObject {
                 spaceDescriptorEntryID: spaceDescriptorEntryID
             )
             let rows = PersonPosts.authored(by: person.id, in: projection)
+            // The freshest ordering value the whole community shows — the honest
+            // anchor recency is measured against. Ordering metadata survives
+            // redaction, so hidden/expired posts still count as activity.
+            let allPosts = projection.frontPage + projection.openWire + projection.earlier
+            let newest = allPosts.map(\.taiJ2000Micros).max()
+            communityNewestMicros = newest
+            recentActivity = PersonActivity.headerRecency(
+                personNewestMicros: rows.map(\.taiJ2000Micros).max(),
+                communityNewestMicros: newest
+            )
             state = rows.isEmpty ? .empty : .posts(rows)
         } catch {
             // Drop the underlying error: a fixed, actionable message, never
-            // internal detail (§4.7), exactly as the People surface does.
+            // internal detail (§4.7), exactly as the People surface does. No
+            // recency line survives a failure.
+            recentActivity = nil
+            communityNewestMicros = nil
             state = .unavailable(PeopleStrings.personUnavailableMessage)
         }
     }
@@ -485,7 +601,16 @@ public struct PersonDetailView: View {
                             RiotBadge(PeopleStrings.organizerBadge)
                         }
                     }
-                    Text(PeopleStrings.contributions(person.contributionCount))
+                    // What you most want to know first: is this person current or
+                    // historical? Shown only when we can derive it honestly from
+                    // their newest post; absent otherwise (never a fake "active").
+                    if let recentActivity = model.recentActivity {
+                        Text(recentActivity)
+                            .font(.riot(.body, size: 13, relativeTo: .footnote))
+                            .foregroundStyle(RiotTheme.ink(for: colorScheme))
+                            .accessibilityIdentifier("person-detail-recent-activity")
+                    }
+                    Text(model.contributionSummary)
                         .font(.riot(.mono, size: 12, relativeTo: .caption))
                         .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
                     DisclosureGroup("Technical details") {
@@ -504,14 +629,25 @@ public struct PersonDetailView: View {
 
     private func postsSection(_ rows: [NewswirePostRow]) -> some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text(PeopleStrings.personPostsTitle)
-                .font(.riot(.mono, size: 12, relativeTo: .caption))
-                .textCase(.uppercase)
-                .tracking(0.5)
-                .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
+            HStack(alignment: .firstTextBaseline) {
+                Text(PeopleStrings.personPostsTitle)
+                    .font(.riot(.mono, size: 12, relativeTo: .caption))
+                    .textCase(.uppercase)
+                    .tracking(0.5)
+                    .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
+                Spacer(minLength: 0)
+                // How many of this person's posts this device can actually see —
+                // distinct from the total contribution count in the header.
+                Text(PeopleStrings.postsShown(rows.count))
+                    .font(.riot(.mono, size: 11, relativeTo: .caption2))
+                    .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
+                    .accessibilityIdentifier("person-detail-posts-shown")
+            }
             ForEach(rows) { row in
                 Button { reading = row } label: {
-                    RiotCard { PersonPostRowView(row: row) }
+                    RiotCard {
+                        PersonPostRowView(row: row, communityNewestMicros: model.communityNewestMicros)
+                    }
                 }
                 .buttonStyle(.plain)
                 .accessibilityIdentifier("person-post-\(row.id)")
@@ -553,10 +689,21 @@ public struct PersonDetailView: View {
 /// for a single-author list.
 private struct PersonPostRowView: View {
     let row: NewswirePostRow
+    /// The community's freshest visible ordering value, so this row can show its
+    /// recency ("Latest update" / "3 hours before the latest update") against the
+    /// same anchor the header uses — turning the list into an activity history.
+    var communityNewestMicros: UInt64?
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
+            // Recency first, so the list scans as a timeline of this person's
+            // activity. Honest ordering-domain phrasing (see `PersonActivity`) —
+            // shown on every treatment, since ordering survives redaction.
+            Text(PersonActivity.rowRecency(rowMicros: row.taiJ2000Micros, communityNewestMicros: communityNewestMicros))
+                .font(.riot(.mono, size: 11, relativeTo: .caption2))
+                .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
+                .accessibilityIdentifier("person-post-recency-\(row.id)")
             switch row.display {
             case .ordinary:
                 Text(verbatim: row.headline ?? "Update")
@@ -569,7 +716,7 @@ private struct PersonPostRowView: View {
                         .lineLimit(2)
                 }
                 if let when = eventTimeText {
-                    Text(when)
+                    Text("Event · \(when)")
                         .font(.riot(.mono, size: 11, relativeTo: .caption2))
                         .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
                 }

@@ -1041,7 +1041,8 @@ private struct CommunityShellView: View {
                         model: PersonDetailModel(
                             person: person,
                             projector: model.profileRepository ?? UnavailableWireProjector(),
-                            spaceDescriptorEntryID: community.newswireDescriptorEntryID ?? ""
+                            spaceDescriptorEntryID: community.newswireDescriptorEntryID ?? "",
+                            communityName: community.name
                         ),
                         surfaceModel: newswire,
                         onClose: { selectedPerson = nil }
