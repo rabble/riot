@@ -1,7 +1,7 @@
 # Writable public-newswire browser client design
 
 Date: 2026-07-24
-Status: User-approved; design-review revisions in progress
+Status: User-approved; metaswarm design review passed
 
 ## Purpose
 
