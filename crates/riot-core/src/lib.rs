@@ -2,6 +2,7 @@
 //! and preview-first atomic import. Phase 0A evidence scope only.
 
 pub mod apps;
+pub mod coordinate;
 /// The seeded demo space, built from committed source content. Conformance-only:
 /// it derives signing keys from fixed seeds (the raw-secret constructor that
 /// feature exists to keep out of the release graph), and nothing in the release
