@@ -37,8 +37,23 @@ status() { printf '%s\n' "$2" >"/tmp/green-$1.status"; }
 # "Test Suite passed / Executed 0 tests". It read green for days while proving
 # nothing. Zero executed tests is a RED, not a pass.
 
+# We used to run `cargo test --workspace --all-features`. That activated the
+# heavy optional graphs (Arti/Tor via riot-transport `arti`, the anchor
+# `daemon` stack) on EVERY run, recompiling Tor crates each time and disturbing
+# the lock tree. Instead: run the default workspace, then the three feature
+# closures in their own crate-scoped passes. This covers exactly what
+# --all-features did — including riot-core's `conformance`-gated test targets,
+# which the default workspace build silently SKIPS (required-features) — while
+# only recompiling arti/daemon when their crates change.
 lane_rust() {
-    if cargo test --workspace --all-features >/tmp/green-rust.log 2>&1; then
+    ok=1
+    {
+        cargo test --workspace &&
+        cargo test -p riot-core --features conformance &&
+        cargo test -p riot-transport --features arti &&
+        cargo test -p riot-anchor --features daemon
+    } >/tmp/green-rust.log 2>&1 || ok=0
+    if [ "$ok" -eq 1 ]; then
         status rust "GREEN ($(grep -c 'test result: ok' /tmp/green-rust.log) suites)"
     else
         status rust "RED — see /tmp/green-rust.log"

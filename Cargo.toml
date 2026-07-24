@@ -49,3 +49,11 @@ rusqlite = { version = "=0.40.1", default-features = false, features = ["backup"
 # quarantines the session; abort would make that contract impossible.
 [profile.release]
 panic = "unwind"
+
+# Dev/test builds carry only line tables, not full DWARF. Backtraces still show
+# file:line; debuggers lose variable inspection. In exchange every dev + test +
+# bench compile links less debug info and writes far less to target/ (which had
+# grown to 24 GB, ~5.7 GB of it incremental/debug state). `test` and `bench`
+# inherit `dev`, so this one profile covers the whole non-release graph.
+[profile.dev]
+debug = "line-tables-only"
