@@ -335,8 +335,17 @@ pub fn create_signed_news_reaction(
     descriptor: &VerifiedNewswireRecord,
     reaction: NewsReactionV1,
 ) -> Result<SignedNewswireRecord, NewswireError> {
-    require_reaction_authority(author, descriptor, &reaction)?;
     let snapshot = system_snapshot().map_err(|_| NewswireError::ClockUnavailable)?;
+    create_signed_news_reaction_at(author, descriptor, snapshot, reaction)
+}
+
+pub fn create_signed_news_reaction_at(
+    author: &EvidenceAuthor,
+    descriptor: &VerifiedNewswireRecord,
+    snapshot: ClockSnapshot,
+    reaction: NewsReactionV1,
+) -> Result<SignedNewswireRecord, NewswireError> {
+    require_reaction_authority(author, descriptor, &reaction)?;
     build_signed(author, snapshot, NewswirePayload::NewsReaction(reaction))
 }
 
@@ -1156,6 +1165,34 @@ mod tests {
             NewswirePayload::NewsReaction(held) if *held == value
         ));
         assert_eq!(inspected.signer_id(), *member.subspace_id().as_bytes());
+    }
+
+    #[test]
+    fn reaction_explicit_snapshot_signer_uses_the_supplied_willow_timestamp() {
+        let organizer = generate_space_organizer_author().unwrap();
+        let namespace_id = *organizer.namespace_id().as_bytes();
+        let member = generate_communal_author_for_namespace(namespace_id).unwrap();
+        let descriptor_record = build_signed(
+            &organizer,
+            snapshot(90),
+            NewswirePayload::SpaceDescriptor(descriptor(namespace_id, vec![])),
+        )
+        .unwrap();
+        let verified = inspect_news_record(&descriptor_record.signed).unwrap();
+        let instant = snapshot(123_456);
+
+        let record = create_signed_news_reaction_at(
+            &member,
+            &verified,
+            instant,
+            reaction(verified.entry_id(), [0x66; 32]),
+        )
+        .unwrap();
+
+        assert_eq!(
+            crate::willow::entry_timestamp_micros(&record.signed.entry_bytes).unwrap(),
+            instant.tai_j2000_micros
+        );
     }
 
     #[test]
