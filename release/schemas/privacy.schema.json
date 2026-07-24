@@ -1,0 +1,56 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://riot.protest.net/release/schemas/privacy.v1.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "position", "answers", "permissions", "requiredReasonApis"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "position": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["noDeveloperAccount", "noAdsTrackingAnalytics", "noHiddenCollection"],
+      "properties": {
+        "noDeveloperAccount": { "type": "boolean" },
+        "noAdsTrackingAnalytics": { "type": "boolean" },
+        "noHiddenCollection": { "type": "boolean" }
+      }
+    },
+    "answers": { "type": "array", "minItems": 2, "items": { "$ref": "#/$defs/answer" } },
+    "permissions": { "type": "array", "minItems": 5, "items": { "$ref": "#/$defs/permission" } },
+    "requiredReasonApis": { "type": "array", "items": { "$ref": "#/$defs/requiredReason" } }
+  },
+  "$defs": {
+    "answer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["store", "answer", "evidenceRowIds"],
+      "properties": {
+        "store": { "enum": ["apple", "google"] },
+        "answer": { "enum": ["no-collection", "collection-declared", "human-action"] },
+        "evidenceRowIds": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } }
+      }
+    },
+    "permission": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "platform", "justification", "evidencePath"],
+      "properties": {
+        "name": { "enum": ["camera", "bluetooth", "local-network", "notifications", "internet"] },
+        "platform": { "enum": ["apple", "android", "all"] },
+        "justification": { "type": "string", "minLength": 1 },
+        "evidencePath": { "type": "string", "minLength": 1 }
+      }
+    },
+    "requiredReason": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["api", "reason", "evidencePath"],
+      "properties": {
+        "api": { "type": "string", "minLength": 1 },
+        "reason": { "type": "string", "minLength": 1 },
+        "evidencePath": { "type": "string", "minLength": 1 }
+      }
+    }
+  }
+}

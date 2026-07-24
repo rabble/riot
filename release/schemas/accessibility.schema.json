@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://riot.protest.net/release/schemas/accessibility.v1.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "records"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "records": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["device", "task", "state", "evidencePath"],
+        "properties": {
+          "device": { "enum": ["iphone", "ipad", "mac", "android-phone", "android-tablet"] },
+          "task": { "enum": ["read", "create", "join", "publish"] },
+          "state": { "enum": ["pass", "blocked", "human-action"] },
+          "evidencePath": { "type": ["string", "null"] }
+        }
+      }
+    }
+  }
+}

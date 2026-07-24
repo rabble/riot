@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://riot.protest.net/release/schemas/product.v1.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "name", "version", "price", "availability", "releaseChannel", "appleBundleId", "androidApplicationId", "urls"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "name": { "type": "string", "minLength": 1 },
+    "version": { "const": "1.0" },
+    "price": { "const": "free" },
+    "availability": { "const": "worldwide" },
+    "releaseChannel": { "const": "public-early-access" },
+    "appleBundleId": { "const": "net.protest.riot" },
+    "androidApplicationId": { "const": "net.protest.riot" },
+    "urls": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["privacy", "support", "marketing"],
+      "properties": {
+        "privacy": { "$ref": "#/$defs/urlEvidence" },
+        "support": { "$ref": "#/$defs/urlEvidence" },
+        "marketing": { "$ref": "#/$defs/urlEvidence" }
+      }
+    }
+  },
+  "$defs": {
+    "urlEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["url", "evidencePath"],
+      "properties": {
+        "url": { "type": "string", "pattern": "^https://" },
+        "evidencePath": { "type": "string", "minLength": 1 }
+      }
+    }
+  }
+}

@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://riot.protest.net/release/schemas/policy.v1.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "controls"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "controls": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["termsAcceptance", "prohibitedContent", "filtering", "contentReporting", "authorReporting", "localBlocking", "moderatorTombstone", "publicContact", "reportAcknowledgement", "imminentHarm", "objectionableContent"],
+      "properties": {
+        "termsAcceptance": { "$ref": "#/$defs/control" },
+        "prohibitedContent": { "$ref": "#/$defs/control" },
+        "filtering": { "$ref": "#/$defs/control" },
+        "contentReporting": { "$ref": "#/$defs/control" },
+        "authorReporting": { "$ref": "#/$defs/control" },
+        "localBlocking": { "$ref": "#/$defs/control" },
+        "moderatorTombstone": { "$ref": "#/$defs/control" },
+        "publicContact": { "$ref": "#/$defs/control" },
+        "reportAcknowledgement": { "$ref": "#/$defs/control" },
+        "imminentHarm": { "$ref": "#/$defs/control" },
+        "objectionableContent": { "$ref": "#/$defs/control" }
+      }
+    }
+  },
+  "$defs": {
+    "control": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state", "codePaths", "operator", "maxHours", "reason"],
+      "properties": {
+        "state": { "enum": ["pass", "blocked"] },
+        "codePaths": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+        "operator": { "type": "string" },
+        "maxHours": { "type": ["integer", "null"], "minimum": 0 },
+        "reason": { "type": "string", "minLength": 1 }
+      }
+    }
+  }
+}

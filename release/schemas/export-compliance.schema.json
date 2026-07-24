@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://riot.protest.net/release/schemas/export-compliance.v1.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "algorithms", "distribution", "classification"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "algorithms": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } },
+    "distribution": { "type": "string", "minLength": 1 },
+    "classification": { "$ref": "#/$defs/gate" }
+  },
+  "$defs": {
+    "gate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state", "reason", "evidence", "approver"],
+      "properties": {
+        "state": { "enum": ["human-action", "pass", "blocked"] },
+        "reason": { "type": "string", "minLength": 1 },
+        "evidence": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+        "approver": { "type": ["string", "null"] }
+      }
+    }
+  }
+}
