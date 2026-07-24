@@ -1,7 +1,7 @@
 # Writable public-newswire browser client design
 
 Date: 2026-07-24
-Status: User-approved; pending metaswarm design review
+Status: User-approved; design-review revisions in progress
 
 ## Purpose
 
@@ -82,10 +82,17 @@ checks, import verification, or projections in JavaScript.
 
 The existing optional `sqlite` feature remains enabled for native builds and
 disabled in the Wasm graph. The pinned `willow25` package currently compiles
-its filesystem-backed `fjall`/`lsm-tree` store unconditionally. A verified,
-minimal vendor patch will make those dependencies optional behind a
-`persistent-storage` feature and gate only `PersistentStore`. The Wasm graph
-uses `MemoryStore`; native behavior remains unchanged.
+its filesystem-backed `fjall`/`lsm-tree` store and `async-fs` dependency
+unconditionally. A verified, minimal vendor patch will make `fjall` and
+`async-fs` optional behind a `persistent-storage` feature and gate only the
+`persistent_store` module and `PersistentStore` re-export on
+`all(feature = "std", feature = "persistent-storage")`. Native Riot enables
+that feature by default; `riot-core`'s Wasm dependency disables it.
+
+Riot does not use Willow's `MemoryStore` as its evidence authority. The Wasm
+client uses Riot's existing `MemoryEvidenceStore` while the patched graph
+excludes Willow's unused filesystem implementation. Native behavior remains
+unchanged.
 
 ### `riot-client`
 
@@ -106,6 +113,16 @@ The controller returns opaque profile or bundle bytes plus bounded,
 versioned DTOs. It never reads or writes browser storage. Mutation that produces
 a new canonical bundle enters a pending-persistence state; further mutation is
 blocked until the host acknowledges that exact bundle after durable storage.
+
+The in-memory Riot evidence repository intentionally drops capability and
+signature bytes after admission, so it cannot be the source of a proof-safe
+export. `riot-client` therefore owns a separate exact-proof ledger. For every
+accepted entry it retains the verified canonical entry, capability, signature,
+and payload component bytes copied from the decoded bundle, plus the accepted
+selection and live/pruned result. Export selects the exact live component bytes
+and passes them through `riot-core`'s validating bundle encoder, which
+re-verifies them and creates only a new canonical outer envelope. It never
+reconstructs a signed entry from decoded fields.
 
 ### `riot-web`
 
@@ -149,9 +166,12 @@ non-extractable or externally controlled signer and a real recovery model.
 IndexedDB contains:
 
 - one active-community record;
-- an ordered, append-only accepted-bundle log;
+- an ordered, append-only accepted-bundle log whose records contain sequence,
+  exact bundle bytes, actual byte length, SHA-256 digest, and accepted entry
+  IDs;
+- a manifest containing the ordered record digests and aggregate counts;
 - durable drafts;
-- pending import/join metadata; and
+- pending create/join operations; and
 - schema and application-release versions.
 
 The log, rather than a serialized Rust heap or projection, is durable truth. On
@@ -159,6 +179,79 @@ startup the host loads the profile and bounded ordered log, then
 `PublicNewswireClient` reconstructs state by replaying every bundle through the
 ordinary verification and admission path. A corrupt or unverifiable record
 opens recovery mode and is never silently skipped.
+
+Browser-local ceilings are fixed for this slice:
+
+```text
+profile record                         256 KiB
+one canonical bundle                    8 MiB / 64 entries
+accepted-bundle log                    256 records / 32 MiB aggregate
+accepted entries across replay       1,024
+live entries eligible for export        64
+one consolidated export                 8 MiB
+```
+
+Before any post or import is offered for durable commit, `riot-client`
+prospectively applies it to a clone of the current state and proves that the
+resulting exact live proof set still encodes as one valid canonical export
+within the 64-entry and 8-MiB native limits. It also checks the projected log
+record, aggregate byte, and accepted-entry ceilings. Capacity failure changes
+nothing and returns `BROWSER_CAPACITY_EXCEEDED`.
+
+Startup opens only the fixed database, object stores, and keys for the current
+schema. It walks the bundle store with a cursor capped at 257 records, checks
+each actual `Blob.size` before reading it, stops before exceeding 32 MiB,
+recomputes every digest, and compares sequence and digest order with the
+manifest. It never sizes a read or allocation from attacker-controlled manifest
+counts. Only after those checks does it stage bytes for bounded Rust replay.
+
+### Cross-store create and join transaction
+
+Creation and clean-browser join span IndexedDB and `localStorage`, which cannot
+share a browser transaction. Both use the same idempotent two-phase protocol.
+Rust first returns one immutable pending result containing:
+
+```text
+operation kind and operation ID
+profile ID and exact profile bytes
+namespace and signer IDs
+descriptor entry ID
+exact canonical bundle bytes and digest
+selected entry IDs (join only)
+```
+
+The host then performs these ordered durable steps:
+
+1. Write an IndexedDB operation in `prepared` phase containing that exact
+   result, including the pending profile bytes needed after a crash.
+2. Write the matching versioned `localStorage` profile as `pending`.
+3. In one IndexedDB transaction, append the bundle if its digest is absent,
+   update the manifest and active-community record, and mark the operation
+   `committed`.
+4. Replace the matching `localStorage` record with `active`.
+5. Delete the matching IndexedDB operation.
+6. Acknowledge the exact profile ID and bundle digest to the live Rust
+   controller.
+
+Every step is compare-and-set on operation ID, profile ID, namespace,
+descriptor ID, and bundle digest. Repeating a completed step is harmless;
+different values fail closed.
+
+Startup resumes only the exact recorded operation:
+
+- `prepared` with no profile or the matching pending profile resumes at step 2
+  using the already-generated profile bytes; it never mints a new identity.
+- `committed` with the matching pending or active profile resumes at step 4.
+- An active profile with matching active-community metadata and no pending
+  operation performs ordinary replay.
+- Any mismatched profile, namespace, descriptor, digest, phase, bundle, or
+  active-community record opens read-only recovery.
+- An unrecognized profile without its matching operation and active record
+  opens read-only recovery; it is never interpreted as an empty new community.
+
+Pending profile bytes are removed from IndexedDB when the operation is
+finalized. Their temporary duplication is part of the acknowledged prototype
+key-storage risk.
 
 ### Single writer
 
@@ -182,13 +275,18 @@ There is no server login, seed account, or automatic identity replacement.
 
 1. The user supplies a bounded local title.
 2. Rust generates an organizer signing identity, namespace, and authority.
-3. The host saves the returned versioned profile in `localStorage`.
-4. The host creates the active-community IndexedDB record.
-5. Only after both steps succeed does the UI report **Saved on this browser**.
+3. Rust creates and signs the canonical `SpaceDescriptorV1` establishing the
+   community identity and founding editorial roster.
+4. Rust returns one pending profile plus the exact descriptor bundle,
+   descriptor entry ID, and bundle digest.
+5. The host completes the cross-store create transaction.
+6. Rust becomes writable only after the host acknowledges both the profile ID
+   and exact descriptor bundle digest.
+7. Only then does the UI report **Saved on this browser**.
 
-An organizer with an empty accepted-bundle log is valid. If profile storage
-succeeds but IndexedDB initialization is interrupted, startup can reconstruct
-the empty community from the versioned profile rather than replacing its key.
+The signed descriptor is always bundle zero in the accepted log. An empty log
+is not a created community. Replay, post authorization, and export all require
+that exact descriptor.
 
 ### Open after reload
 
@@ -196,7 +294,8 @@ the empty community from the versioned profile rather than replacing its key.
    Wasm assets.
 2. The host obtains the writer lock.
 3. It loads the profile and accepted-bundle log.
-4. Rust validates the profile and replays the log.
+4. Rust validates the profile, requires bundle zero to contain the matching
+   signed descriptor, and replays the complete log.
 5. The UI becomes writable only after replay completes successfully.
 
 If public records remain but the signing profile is missing or invalid, Riot
@@ -210,7 +309,8 @@ authority or attribute a new identity to prior posts.
    review tied to the exact canonical bytes.
 3. The user explicitly chooses **Post update**.
 4. Rust signs and commits exactly the reviewed bytes, producing one canonical
-   bundle and entering pending-persistence state.
+   bundle, prospectively proves the resulting state remains exportable within
+   all browser ceilings, and enters pending-persistence state.
 5. One IndexedDB transaction appends that bundle and clears the draft.
 6. The host acknowledges the exact bundle digest to Rust.
 7. Only then does the UI report the update as saved.
@@ -224,13 +324,17 @@ A storage failure keeps the draft and never produces a success claim.
 3. The UI displays the community identity, authors, readable updates, and any
    expiry or AI-assisted markers.
 4. The user explicitly accepts selected supported entries.
-5. Rust atomically prepares the accepted canonical bundle.
-6. The host durably appends it and acknowledges its exact digest.
+5. Rust atomically prepares the accepted canonical bundle and prospectively
+   proves the resulting state remains replayable and exportable within all
+   browser ceilings.
+6. For an active profile, the host durably appends it in one IndexedDB
+   transaction and acknowledges its exact digest.
 
 On a clean browser, accepting a community creates a fresh local member identity
 for the imported communal namespace. Imported authors are never impersonated.
-Pending join metadata in IndexedDB makes interruption recoverable across the
-separate IndexedDB and `localStorage` boundaries.
+The accepted descriptor and selected records, fresh member profile, and exact
+bundle travel through the cross-store join transaction. Posting is disabled
+until that transaction is complete.
 
 With an active community, an import must authenticate the exact same namespace.
 The entire acceptance fails on a namespace mismatch, unsupported record class,
@@ -238,8 +342,11 @@ invalid signature, invalid capability, malformed entry, or exceeded bound.
 
 ### Export
 
-Rust constructs one consolidated canonical `.riot-evidence` artifact from the
-verified active state. The browser downloads it without server involvement.
+Rust constructs one consolidated canonical `.riot-evidence` artifact from
+`riot-client`'s exact verified live proof ledger. The current descriptor and
+every exported post retain their original canonical entry, capability,
+signature, and payload component bytes; only the bounded canonical bundle
+envelope is newly encoded. The browser downloads it without server involvement.
 The UI distinguishes:
 
 - **Saved on this browser**
@@ -254,8 +361,9 @@ Exact Rust names may change during planning, but the boundary must support these
 operations without moving workflow state into JavaScript:
 
 ```text
-create_community(title) -> pending profile
-confirm_profile_saved(profile_id) -> community
+create_community(title) -> pending profile + signed descriptor bundle
+confirm_profile_and_bundle_saved(profile_id, bundle_digest) -> community
+resume_pending_profile(pending_operation) -> pending profile/bundle state
 restore(profile_bytes, community_record, ordered_bundles) -> community
 prepare_update(draft) -> immutable update review
 post_review(review_id) -> pending canonical bundle
@@ -300,17 +408,47 @@ truncation behind technical details.
 - Replay failure identifies the failing log position and opens recovery mode.
 - Wasm panics become a terminal client error; the page does not continue with
   uncertain state.
-- A restrictive CSP permits only same-origin authored scripts, styles, workers,
-  images, and Wasm.
 - The application loads no third-party runtime JavaScript.
 - User text is rendered as text, never interpolated through `innerHTML`.
-- Service-worker releases are content-versioned and activate only on a clean
-  reload so JS and Wasm versions cannot mix.
+
+The PWA requires a dedicated HTTPS origin containing no unrelated application
+or user-authored pages. Every response carries these exact baseline headers:
+
+```text
+Content-Security-Policy: default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; worker-src 'self'; manifest-src 'self'; connect-src 'self'; img-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'
+Permissions-Policy: accelerometer=(), ambient-light-sensor=(), autoplay=(), bluetooth=(), camera=(), display-capture=(), encrypted-media=(), geolocation=(), gyroscope=(), hid=(), magnetometer=(), microphone=(), midi=(), payment=(), publickey-credentials-create=(), publickey-credentials-get=(), serial=(), usb=(), xr-spatial-tracking=()
+Referrer-Policy: no-referrer
+X-Content-Type-Options: nosniff
+Cross-Origin-Opener-Policy: same-origin
+Cross-Origin-Resource-Policy: same-origin
+```
+
+There are no inline scripts or styles and no `eval` exception.
+`wasm-unsafe-eval` is the sole compilation exception.
+
+Each build emits a content-hashed release manifest containing the release ID,
+every authored/generated asset URL, byte length, and SHA-256 digest. During
+installation the worker fetches every listed response with `cache: "reload"`,
+verifies its actual bytes, and populates a release-named cache. Any missing,
+extra, wrong-sized, or wrong-digest asset aborts installation and leaves the
+controlling release unchanged. Stable navigations are served from the
+controlling release's cached `index.html`; subresources use their
+content-addressed URLs.
+
+The worker never calls `skipWaiting` or `clients.claim`. A waiting release does
+not activate while any page from the controlling release remains open, which
+also means it cannot replace code while a writer lock or pending Rust operation
+exists. The UI reports **Update ready — close all Riot tabs and reopen**.
+Activation and old-cache deletion occur only after all old-release clients are
+gone. The next navigation is controlled by one coherent release.
 
 The key stored in `localStorage` is accessible to any successful same-origin
-script execution. CSP and dependency minimization reduce exposure but do not
-turn this into hardened key custody. That limitation is visible in the product
-and acceptance documentation.
+script execution. Compromise of the static host, any same-origin page or
+service worker, a browser extension with site access, or the browser profile
+permits key theft and lasting impersonation. CSP, a dedicated origin, and
+dependency minimization reduce exposure but do not turn this into hardened key
+custody. That limitation is visible in onboarding, community settings, and
+acceptance documentation.
 
 ## Testing
 
@@ -319,34 +457,52 @@ corresponding production behavior.
 
 ### Rust and graph contracts
 
-- The Wasm dependency graph contains no `fjall`, `lsm-tree`, SQLite, UniFFI,
-  iroh, Tokio transport, BLE, Bonjour, or Arti dependencies.
+- The Wasm dependency graph contains no `fjall`, `lsm-tree`, `async-fs`,
+  SQLite, UniFFI, iroh, Tokio transport, BLE, Bonjour, or Arti dependencies.
 - The pinned Willow vendor patch has checked upstream provenance, retained
   licenses, and per-file integrity manifests.
 - Native `riot-core` and `riot-ffi` builds retain their existing features and
   panic behavior.
-- Community creation yields valid organizer authority.
+- Community creation yields valid organizer authority and a signed descriptor
+  bundle that must be acknowledged before posting.
 - Prepared review bytes are exactly the bytes later signed.
+- Preparation captures the canonical payload and timestamp; posting consumes
+  those retained bytes instead of calling the current sign-immediately
+  convenience path with reconstructed UI fields.
 - Reviews are immutable, state-bound, and single-use.
 - Imports cannot mutate before acceptance.
 - Cross-community and mixed-record imports fail atomically.
 - Replay returns the same projection and signer relationship.
-- Exported bundles re-enter through the native-compatible admission path.
+- The exact-proof ledger preserves accepted component bytes and live/pruned
+  selection across replay.
+- Prospective post/import admission refuses states that exceed any log, replay,
+  or consolidated-export ceiling.
+- Exported bundles include the descriptor and re-enter through the
+  native-compatible admission path.
 
 ### Browser contracts in real Chromium
 
 - Create -> post -> reload displays the same signed update.
 - After the first successful load, reload succeeds with the static server
   unavailable.
-- Export -> clean browser context -> import restores public records with a new
-  member identity.
+- Create and clean-browser join recover idempotently from interruption before
+  and after every `prepared`, profile-write, `committed`, activation, cleanup,
+  and Rust-acknowledgement step.
+- Any cross-store identifier, namespace, descriptor, digest, phase, or byte
+  mismatch opens read-only recovery and never mints a replacement identity.
+- Export -> clean browser context -> import creates a new member identity;
+  that member posts offline, reloads, exports, and a third clean browser imports
+  the artifact and verifies the post under the member's correct authorship.
 - Storage failure never creates a phantom successful post.
 - Drafts survive interrupted review or failed persistence.
 - A second tab is read-only.
 - Clearing the signing profile removes writing authority without erasing or
   reassigning public authorship.
 - Invalid, oversized, cross-namespace, and unsupported imports commit nothing.
-- Service-worker updates keep authored JS and generated Wasm coherent.
+- Startup rejects wrong Blob sizes/digests, manifest disagreement, record 257,
+  aggregate byte 32 MiB + 1, and accepted entry 1,025 before unbounded staging.
+- Failed or partial precache never installs; a waiting worker never activates
+  with an old-release client; reopening uses one coherent release.
 - Keyboard operation, focus movement, form labels, and status announcements
   work for every primary flow.
 - Static security headers and CSP match their exact contracts.
