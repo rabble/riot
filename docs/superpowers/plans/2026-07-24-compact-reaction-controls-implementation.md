@@ -385,6 +385,7 @@ Human checkpoint: confirm the deployed wire format did not change.
 - Modify: `crates/riot-core/src/newswire/store.rs`
 - Modify: `crates/riot-core/src/newswire/mod.rs`
 - Modify: `crates/riot-ffi/src/newswire_ffi.rs`
+- Modify: `apps/ios/Riot/NewswireEditorial.swift`
 - Modify: `apps/ios/RiotTests/NewswireSurfaceTests.swift`
 - Generated: `build/generated/riot-ffi/**`
 
