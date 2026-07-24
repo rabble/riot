@@ -8,7 +8,7 @@
 
 **Architecture:** Shared Rust core owns catalog split, admission/quota preflight, and the locked prepare/persist/finalize transactions; `riot-ffi` exposes them; native shells (iOS/macOS/Android) own host chrome + theme/font injection + preference storage; web (`fixtures/apps/`) owns the eight v2 tool sources + `_shared` token/toolbar/helper system; CI gains a blocking `miniapps` job.
 
-**Tech Stack:** Rust 2021 (riot-core, riot-ffi/UniFFI), Swift 6/SwiftUI, Kotlin 2.2/Compose, vanilla HTML/CSS/JS microapps, Node + Playwright contract/browser tests.
+**Tech Stack:** Rust 2021 (riot-core, riot-ffi/UniFFI), Swift 6/SwiftUI, Kotlin 2.2 with the existing imperative Android View shell, vanilla HTML/CSS/JS microapps, Node + Playwright contract/browser tests.
 
 ---
 

@@ -304,7 +304,9 @@ WU-002P now executes in this order:
 1. **WU-002P-A — Community-scoped hierarchy (Apple):** pure section/CTA model,
    shared iOS/macOS view, named review copy, tests, and native visual evidence.
 2. **WU-002P-B — Android parity:** the same selected-community hierarchy and
-   CTA vocabulary in Compose, with equivalent controller tests.
+   behavior in the existing imperative Android View surface, with equivalent
+   controller, instrumentation, and visual tests. A Compose migration is not
+   part of this correction.
 3. **WU-002P-C — Existing-user generation/quota presentation:** Legacy 1 /
    Redesigned Version 2 metadata, separate-version warnings, and distinct
    count-full/storage-full errors.
@@ -336,6 +338,31 @@ Result-bearing `AppModel` coverage is added to an existing compiled test file,
 so no new Swift file is required and neither Xcode project file should need
 editing. `DirectoryStorefrontTests.swift` is already compiled by both the iOS
 and macOS test targets.
+
+## Android implementation scope
+
+WU-002P-B uses the architecture that ships today:
+
+- `apps/android/app/src/main/kotlin/org/riot/evidence/apps/DirectoryController.kt`
+  owns the pure grouping/CTA projection and immutable operation context;
+- `apps/android/app/src/main/kotlin/org/riot/evidence/MainActivity.kt` renders
+  the hierarchy through `showTools()` / `showDirectory()` using Android Views
+  and the existing Riot heading/body/action helpers;
+- `apps/android/app/src/test/kotlin/org/riot/evidence/apps/DirectoryControllerTest.kt`
+  proves grouping, exact named actions, organizer/member/legacy states,
+  namespace invalidation, and management vocabulary; and
+- `apps/android/app/src/androidTest/kotlin/org/riot/evidence/FiveSurfaceSmokeTest.kt`
+  (or a focused test beside it) proves the rendered section order, immediate
+  Open/Add visibility, absent member mutation controls, and community switching.
+
+Android receives the same operation-context revalidation, admission/approval
+failure behavior, and organizer-only import semantics as Apple; parity means
+behavior, not label-only imitation. Its visual review captures the shipping
+View surface at normal font scale and Android’s largest supported font scale,
+including long tool and community names. It checks the same hard-border
+paper/ink poster character, action reflow, wrapping, touch targets, and
+secondary management hierarchy. WU-002P-B does not add Compose dependencies,
+rewrite navigation, or create a parallel Tools surface.
 
 ## Test and review contract
 
@@ -370,7 +397,9 @@ Native visual review records:
 - the shared macOS surface at the app’s 480-point default width; and
 - the iOS Tools flow at standard size and
   `accessibility-extra-extra-extra-large`, using kept XCUITest screenshot
-  attachments and simulator content-size control.
+  attachments and simulator content-size control; and
+- the Android View surface at normal and largest supported font scale, with
+  kept instrumentation/emulator screenshots.
 
 Review checks section dominance, immediate Open/Add visibility, no clipped
 named-community copy, no horizontal overflow, 44-point actions, correct

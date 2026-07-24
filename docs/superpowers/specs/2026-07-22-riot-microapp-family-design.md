@@ -802,7 +802,7 @@ invalidation, and WebView teardown clear any outstanding token.
 
 Trust grant is persistence-first:
 
-1. the native row enters **Turning on…** and cannot launch;
+1. the native row enters **Adding…** and cannot launch;
 2. core prepares the exact held app/organizer grant without changing trust;
 3. the host preflights and atomically persists the prospective set of exact
    `(namespaceID, fullAppID)` grants; storage failure leaves disk and core
@@ -847,10 +847,10 @@ reverse on restart. Fault injection covers before/after prepare, persistence,
 finalize, session invalidation, WebView destruction, process termination, and
 profile rebuild for both grant and revoke.
 
-After rebuild, Tools receives one announced native status and focus: **<name>
-was turned on. Riot reopened this profile to finish safely.**, **<name> was
-turned off. Riot reopened this profile to finish safely.**, or **Your change was
-saved. Riot reopened this profile to finish safely.** It never exposes token,
+After rebuild, Tools receives one announced native status and focus: **Added
+<name> to <community>. Riot reopened this profile to finish safely.**, **<name>
+was removed from <community>. Riot reopened this profile to finish safely.**, or
+**Your change was saved. Riot reopened this profile to finish safely.** It never exposes token,
 transaction, codec, or raw storage language.
 
 App-data mutation uses an equivalent prepare/persist/finalize protocol rather
