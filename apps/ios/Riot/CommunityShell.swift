@@ -225,6 +225,25 @@ public enum HomeShortcuts {
     }
 }
 
+// MARK: - Home's own title
+
+/// What Home calls itself. The persistent community header sits directly above
+/// every route and already carries the community's name with the chooser
+/// chevron, so Home names the PLACE within the community rather than the
+/// community again — printing the name twice spends the screen's best row saying
+/// what the row above it just said. The title is deliberately a function of the
+/// community that ignores it: reverting to the community's own name has to
+/// change this declaration, and the test that pins it fails.
+public enum HomeHeaderTitle {
+    public static let eyebrow = "Community"
+    public static let placeTitle = "What's happening"
+
+    public static func title(forCommunityNamed communityName: String) -> String {
+        _ = communityName
+        return placeTitle
+    }
+}
+
 // MARK: - Profile / community settings relocation
 
 /// The two distinct, labeled identity paths the header exposes (nav design: the

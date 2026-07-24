@@ -1708,36 +1708,16 @@ private struct HomeRouteView: View {
 
     var body: some View {
         ScrollView {
+            // Home draws its blocks ONLY by walking the section model, so every
+            // block has a pinned position that a test governs. Nothing is
+            // hard-coded above this loop — a block rendered outside `sections`
+            // has no pinned position and nothing can catch it drifting to the
+            // top, which is how the "find a community over the internet"
+            // acquisition card came to outrank this community's own alerts and
+            // newswire. Adding a block to Home means adding a `Section` case.
             VStack(alignment: .leading, spacing: 16) {
-                if sections.contains(.activeAlerts) {
-                    AlertsListView(
-                        presentation: activeAlerts,
-                        displayName: { model.rendered(for: $0) }
-                    )
-                }
-                // The collective newswire — Front page, Open wire, and the
-                // always-public Editorial history — is the answer to "what is
-                // happening here?" It reads the same core projection every platform
-                // does, so a reader sees the identical front page as its peers.
-                // The offlineStale forward paths lead somewhere real: rejoin with a
-                // link (Unit 1's sheet) or sync with a peer (the existing Nearby
-                // screen) — never a dead no-op button and never a silent retry loop.
-                if sections.contains(.post) {
-                    Button("Post an update", action: onPostUpdate)
-                        .buttonStyle(.riotPrimary)
-                        .frame(minHeight: 44)
-                        .focused(composerFocus, equals: .home)
-                        .accessibilityIdentifier("home-post-update")
-                }
-                NewswireSurfaceView(
-                    model: newswire,
-                    onPostUpdate: onPostFirstUpdate,
-                    onSyncWithPeer: { model.select(.nearby) },
-                    onRejoinWithLink: { showRejoinSheet = true },
-                    composerFocus: composerFocus
-                )
-                if sections.contains(.tools) {
-                    shortcutsCard
+                ForEach(sections, id: \.self) { section in
+                    sectionView(section)
                 }
             }
             .padding(20)
@@ -1745,7 +1725,10 @@ private struct HomeRouteView: View {
         // The persistent top bar already names the community; Home names the
         // PLACE within it ("what is happening here?") so the community name is
         // not printed twice on the same screen.
-        .riotHeader(eyebrow: "Community", model.space?.title ?? "Home") { homeSyncChip }
+        .riotHeader(
+            eyebrow: HomeHeaderTitle.eyebrow,
+            HomeHeaderTitle.title(forCommunityNamed: model.space?.title ?? "")
+        ) { homeSyncChip }
         .sheet(isPresented: $showRejoinSheet) {
             JoinByReferenceSheet(model: model, onClose: { showRejoinSheet = false })
         }
@@ -1869,6 +1852,40 @@ private struct HomeRouteView: View {
         .padding(18)
         .frame(width: 320)
         .background(RiotTheme.paper(for: colorScheme))
+    }
+
+    @ViewBuilder
+    private func sectionView(_ section: HomePresentation.Section) -> some View {
+        switch section {
+        case .activeAlerts:
+            AlertsListView(
+                presentation: activeAlerts,
+                displayName: { model.rendered(for: $0) }
+            )
+        case .post:
+            Button("Post an update", action: onPostUpdate)
+                .buttonStyle(.riotPrimary)
+                .frame(minHeight: 44)
+                .focused(composerFocus, equals: .home)
+                .accessibilityIdentifier("home-post-update")
+        case .newswire:
+            // The collective newswire — Front page, Open wire, and the
+            // always-public Editorial history — is the answer to "what is
+            // happening here?" It reads the same core projection every platform
+            // does, so a reader sees the identical front page as its peers.
+            // The offlineStale forward paths lead somewhere real: rejoin with a
+            // link (Unit 1's sheet) or sync with a peer (the existing Nearby
+            // screen) — never a dead no-op button and never a silent retry loop.
+            NewswireSurfaceView(
+                model: newswire,
+                onPostUpdate: onPostFirstUpdate,
+                onSyncWithPeer: { model.select(.nearby) },
+                onRejoinWithLink: { showRejoinSheet = true },
+                composerFocus: composerFocus
+            )
+        case .tools:
+            shortcutsCard
+        }
     }
 
     @ViewBuilder

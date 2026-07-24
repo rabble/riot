@@ -193,6 +193,52 @@ final class AlertsSurfaceTests: XCTestCase {
         )
     }
 
+    func testTheSectionModelGovernsEveryBlockHomeDraws() {
+        // The ordering contract is only worth something if it is TOTAL. A block
+        // rendered outside `sections` (as the relay card was) has no pinned
+        // position and no test can catch it drifting to the top of the screen.
+        // Section is the closed set of things Home draws, in canonical order.
+        XCTAssertEqual(
+            HomePresentation.Section.allCases,
+            HomePresentation.canonicalOrder,
+            "every Home block is a Section, and the enum's order IS the screen's order"
+        )
+        XCTAssertEqual(
+            HomePresentation.canonicalOrder,
+            [.activeAlerts, .post, .newswire, .tools]
+        )
+    }
+
+    func testEveryCombinationOfHomeSectionsKeepsCanonicalOrder() {
+        // Whatever is present or absent, what IS shown never reorders — a person
+        // who learns the shape of Home once keeps it as content comes and goes.
+        let active = Self.entry("active", signerID: Self.activeNS, expiresAt: 101)
+        let visible = ActiveAlertsPresentation.from(
+            [active],
+            activeNamespaceID: Self.activeNS,
+            now: Date(timeIntervalSince1970: 100)
+        )
+        for wireHasPosts in [true, false] {
+            for alerts in [visible, .hidden] {
+                for hasTools in [true, false] {
+                    let sections = HomePresentation.sections(
+                        wireHasPosts: wireHasPosts,
+                        alerts: alerts,
+                        hasTools: hasTools
+                    )
+                    XCTAssertEqual(
+                        sections,
+                        HomePresentation.canonicalOrder.filter(sections.contains),
+                        "sections(wire: \(wireHasPosts), alerts: \(alerts), tools: \(hasTools)) is a subsequence of the canonical order"
+                    )
+                    // The newswire — the answer to "what is happening here?" — is
+                    // the one block that is never absent.
+                    XCTAssertTrue(sections.contains(.newswire))
+                }
+            }
+        }
+    }
+
     func testLastActiveAlertDisappearsAtItsExactExpiry() {
         let entry = Self.entry(
             "brief", signerID: Self.activeNS, expiresAt: 101
