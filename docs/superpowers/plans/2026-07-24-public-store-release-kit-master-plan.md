@@ -343,6 +343,7 @@ invented first-release `approved-ready` or second publication action.
 - Create: `apps/android/gradle/verification-metadata.xml`
 - Create: `apps/android/gradle.lockfile`
 - Modify: `apps/android/gradle/wrapper/gradle-wrapper.properties`
+- Modify: `apps/android/build.gradle.kts`
 - Modify: `scripts/release/cli.mjs`
 - Modify: `scripts/release/test/cli.test.mjs`
 - Modify: `package.json`
@@ -363,6 +364,10 @@ invented first-release `approved-ready` or second publication action.
   credentials into the repository or persistent home directories.
 - [ ] Pin and verify Gradle distribution/dependencies and emit deterministic
   candidate-bound CycloneDX SBOM records for Rust, Apple, and Android inputs.
+  Enable `lockAllConfigurations()` in the root Android build, bootstrap
+  `gradle.lockfile` once with `--write-locks` under review, then prove normal
+  and final verification use the checked-in locks and strict verification
+  metadata without either write flag.
 - [ ] Run 100 percent release-tool coverage plus safe fake-credential
   integration fixtures.
 - [ ] Commit exact WU-004 paths with
@@ -375,6 +380,7 @@ invented first-release `approved-ready` or second publication action.
 - Modify: `apps/ios/Riot.xcodeproj/project.pbxproj`
 - Modify: `apps/ios/Riot/Info.plist`
 - Modify: `apps/ios/Riot/Riot.entitlements`
+- Modify: `apps/ios/Riot/RiotApp.swift`
 - Create: `apps/ios/Riot/PrivacyInfo.xcprivacy`
 - Create: `apps/ios/Riot/Release/ReleaseCaptureMode.swift`
 - Modify: `apps/ios/ExportOptions.plist`
@@ -382,8 +388,10 @@ invented first-release `approved-ready` or second publication action.
 - Create: `apps/ios/RiotUITests/ReleaseCaptureUITests.swift`
 - Create: `apps/ios/RiotUITests/ReleaseJourneyUITests.swift`
 - Modify: `apps/macos/Riot.xcodeproj/project.pbxproj`
+- Modify: `apps/macos/Riot.xcodeproj/xcshareddata/xcschemes/Riot-macOS.xcscheme`
 - Modify: `apps/macos/Riot/Info.plist`
 - Modify: `apps/macos/Riot/Riot.entitlements`
+- Modify: `apps/macos/Riot/RiotMacApp.swift`
 - Create: `apps/macos/Riot/PrivacyInfo.xcprivacy`
 - Create: `apps/macos/Riot/Assets.xcassets/AppIcon.appiconset/**`
 - Create: `apps/macos/RiotTests/ReleaseConfigurationTests.swift`
@@ -391,15 +399,15 @@ invented first-release `approved-ready` or second publication action.
 - Create: `apps/macos/RiotUITests/ReleaseJourneyUITests.swift`
 - Generate: `release/generated/visuals/{iphone,ipad,mac}/**`
 - Create: `release/generated/visual-provenance-apple.json`
-- Create: `apps/macos/RiotUITests/ReleaseCaptureUITests.swift`
 - Rewrite: `scripts/testflight-release.sh`
 - Create: `scripts/release-apple.sh`
 
 - [ ] Write RED native/configuration tests for marketing version `1.0`, explicit
   build injection, `net.protest.riot`, iPhone/iPad families, Mac Apple-silicon
   and macOS 14 boundary, app icons, privacy manifests, sandbox/Keychain
-  entitlements, export injection, candidate/capture arguments, and zero-test
-  rejection.
+  entitlements, export injection, candidate/capture arguments, iOS UI-test
+  membership, a macOS UI-test target included by the shared `Riot-macOS`
+  scheme, and zero-test rejection.
 - [ ] Run the focused XCTest/config validators and verify expected failures.
 - [ ] Implement separate validation and credentialed candidate paths.
   `scripts/testflight-release.sh` becomes a compatibility wrapper that stops
@@ -413,6 +421,9 @@ invented first-release `approved-ready` or second publication action.
   bind both capture-build and visual hashes beside the signed archive hash in
   each candidate manifest. Ordinary production launch ignores/rejects capture
   mode; WU-008 later confirms the processed store build identity.
+- [ ] Wire capture launch handling through `RiotApp.swift` and
+  `RiotMacApp.swift`; add every declared UI-test file to its target and make the
+  shared `Riot` and `Riot-macOS` schemes execute those targets.
 - [ ] Build iOS simulator/device-validation and macOS validation artifacts; when
   signing is unavailable, verify candidate handoff remains `BLOCKED` rather
   than silently using ad-hoc output.
@@ -427,6 +438,7 @@ invented first-release `approved-ready` or second publication action.
 - Modify: `apps/android/app/build.gradle.kts`
 - Modify: `apps/android/settings.gradle.kts`
 - Modify: `apps/android/app/src/main/AndroidManifest.xml`
+- Modify: `apps/android/app/src/main/kotlin/org/riot/evidence/MainActivity.kt`
 - Create: `apps/android/app/src/main/res/mipmap-*/**`
 - Create: `apps/android/app/src/main/res/mipmap-anydpi-v26/ic_launcher.xml`
 - Create: `apps/android/app/src/main/res/values/{colors,strings}.xml`
@@ -515,6 +527,8 @@ invented first-release `approved-ready` or second publication action.
 - Modify: `apps/android/app/src/androidTest/kotlin/org/riot/evidence/ReleaseCaptureTest.kt`
 - Modify: `apps/android/app/src/androidTest/kotlin/org/riot/evidence/ReleaseJourneyTest.kt`
 - Create: `apps/android/app/src/androidTest/kotlin/org/riot/evidence/ReleaseAccessibilityTest.kt`
+- Modify: `apps/ios/Riot.xcodeproj/project.pbxproj`
+- Modify: `apps/macos/Riot.xcodeproj/project.pbxproj`
 - Generate: `release/evidence/rehearsals/**`
 - Modify: `scripts/release/cli.mjs`
 - Modify: `scripts/release/test/cli.test.mjs`
@@ -590,6 +604,7 @@ invented first-release `approved-ready` or second publication action.
 - Modify: `package.json`
 - Modify: `package-lock.json`
 - Modify: `scripts/green.sh`
+- Modify: `scripts/ios-check.sh`
 - Modify: `.github/workflows/ci.yml`
 - Modify: `.gitignore`
 - Modify: `scripts/release/cli.mjs`
@@ -606,6 +621,11 @@ invented first-release `approved-ready` or second publication action.
   generated drift without requiring Apple/Google credentials or physical
   hardware. Native signed archives, hardware rehearsals, legal answers, and
   Console actions remain explicit `HUMAN ACTION`.
+- [ ] Extend `scripts/ios-check.sh` with deterministic
+  available-simulator-ID resolution for both iPhone and iPad. The composite
+  runner executes the `Riot` UI-test scheme on both IDs and the `Riot-macOS`
+  UI-test target in addition to portable unit schemes, rejecting zero-test
+  logs.
 - [ ] Run the complete verification matrix below and record exact command
   results in the generated checklist.
 - [ ] Commit exact WU-010 paths with
@@ -627,9 +647,16 @@ cargo test --locked --workspace --all-features
 sh scripts/web/coverage.sh
 sh scripts/conference/build-native-core.sh
 RIOT_IOS_SIMULATOR_ID="$(sh scripts/ios-check.sh simulator-id)"
+RIOT_IPAD_SIMULATOR_ID="$(sh scripts/ios-check.sh ipad-simulator-id)"
 xcodebuild test -project apps/ios/Riot.xcodeproj -scheme RiotKit \
   -destination "platform=iOS Simulator,id=${RIOT_IOS_SIMULATOR_ID}"
+xcodebuild test -project apps/ios/Riot.xcodeproj -scheme Riot \
+  -destination "platform=iOS Simulator,id=${RIOT_IOS_SIMULATOR_ID}"
+xcodebuild test -project apps/ios/Riot.xcodeproj -scheme Riot \
+  -destination "platform=iOS Simulator,id=${RIOT_IPAD_SIMULATOR_ID}"
 xcodebuild test -project apps/macos/Riot.xcodeproj -scheme RiotKit-macOS \
+  -destination 'platform=macOS'
+xcodebuild test -project apps/macos/Riot.xcodeproj -scheme Riot-macOS \
   -destination 'platform=macOS'
 (cd apps/android && JAVA_HOME=/opt/homebrew/opt/openjdk@17 \
   ./gradlew --no-daemon --dependency-verification strict \
