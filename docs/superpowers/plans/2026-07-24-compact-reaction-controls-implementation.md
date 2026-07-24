@@ -34,8 +34,8 @@ existing lifetime receipt/seen limits. That separate evidence-retention and
 mixed-version protocol problem remains documented in the design review and must
 not be disguised as solved here.
 
-This boundary is safer than shipping a new path that older clients reject and
-safer than physically deleting provenance without a reviewed compaction model.
+The excluded protocol work requires its own compatibility and provenance
+review before it can change the deployed wire contract.
 
 ## User flow
 
@@ -149,6 +149,13 @@ increments `revision`.
 
 There are no external services, credentials, relay dependencies, or new
 third-party libraries.
+
+The diagnostic-redaction test injects an error whose description contains four
+sentinels: a full post ID, a local database path, signed-record bytes, and post
+body text. It asserts that `ReactionFailure.publicCode`, visible copy, the
+sequence-numbered accessibility announcement, and captured reporter output
+contain none of those sentinels. Only the fixed public code and fixed copy may
+cross the model/UI boundary.
 
 ---
 
@@ -505,7 +512,8 @@ Hold completion with `CheckedContinuation`, assert duplicate same-key calls stay
 at one, release with revision 1, and assert pending clears. Add rejection,
 committed-needs-refresh, different-key, duplicate-surface, stale-revision,
 queued-cancellation, completion-after-teardown, no-writer, and empty-projection
-tests.
+tests. Add the sentinel diagnostic-redaction test from the security table and
+the committed-needs-refresh → accepted reconciliation/clearing sequence.
 
 - [ ] **Step 2: Run the RED Swift model tests**
 
@@ -576,7 +584,11 @@ must:
    surface.
 
 The next accepted projection clears every committed override it authoritatively
-replaces.
+replaces **and** clears the corresponding saved-but-refresh-needed informational
+message. Add a result-sequence test for
+`.committedNeedsRefresh(active: true, revision: 4)` followed by an accepted
+projection at revision 5: the temporary selected override and informational
+copy are both gone, and the projection remains selected.
 
 - [ ] **Step 5: Define teardown behavior**
 
@@ -686,6 +698,11 @@ sequence-numbered announcement for its own surface and posts
 place and retains focus during pending/failure. Tests assert a duplicate post
 produces one initiating-surface announcement, not two.
 
+Every control also applies `.help(kind.label)` so pointer hover reveals the
+full persistent name (`Support`, `Solidarity`, `Important`, or `Grief`) after
+the one-time legend has been dismissed. The macOS rendered test hovers each
+control and asserts its help element exposes the corresponding full name.
+
 - [ ] **Step 6: Add the one-time legend**
 
 Store one app-install-scoped boolean in `UserDefaults` under
@@ -697,11 +714,24 @@ recreation.
 
 - [ ] **Step 7: Validate layout and accessibility**
 
-Run component tests at 288- and 500-point proposed widths and
-`accessibility3`. Assert no horizontal scroll, four identifiers, correct 1×4 or
-2×2 layout, selected trait, busy/disabled semantics, and full label/value/hint.
-Also render with no writer and with an empty projection: no writer omits the
-bar; an eligible empty tally renders four zero-count controls.
+The unit suite tests the pure presentation/metrics decisions at 288- and
+500-point proposed widths and `accessibility3`: 2×2 versus 1×4, fixed slot
+widths, count strings, the four stable identifiers, and full
+label/value/hint/help strings. It also exercises the no-writer and empty
+projection branches: no writer omits the bar; an eligible empty tally supplies
+four zero-count controls.
+
+Runtime SwiftUI assertions belong to RX-005, where XCUITest can inspect the
+rendered accessibility tree without a third-party view-inspection library. That
+suite asserts no horizontal scroll, four buttons, selected trait/value,
+busy/disabled semantics, hover help, and keyboard focus retention. Run the
+unit tests with:
+
+```sh
+xcodebuild test -project apps/macos/Riot.xcodeproj \
+  -scheme RiotKit-macOS -destination 'platform=macOS' \
+  -only-testing:RiotKitTests-macOS/CompactReactionBarTests
+```
 
 - [ ] **Step 8: Adversarial review and commit**
 
@@ -725,9 +755,14 @@ git commit -m "feat(ui): render compact interactive newswire reactions"
 - Modify: `apps/macos/Riot.xcodeproj/project.pbxproj`
 - Modify: `apps/macos/Riot.xcodeproj/xcshareddata/xcschemes/Riot-macOS.xcscheme`
 - Create: `apps/macos/RiotUITests/ReactionControlsUITests.swift`
-- Create: `apps/ios/RiotUITests/ReactionControlsUITests.swift`
 - Create: `apps/ios/Riot/Demo/ReactionUITestFixture.swift`
+- Modify: `apps/ios/Riot/Core/ProfileRepository.swift`
+- Modify: `apps/ios/Riot/AppModel.swift`
+- Modify: `apps/ios/Riot/NewswireReactionWriter.swift`
+- Modify: `apps/ios/Riot/ConferenceShellView.swift`
 - Modify: `apps/ios/Riot/RiotApp.swift`
+- Modify: `apps/ios/Riot.xcodeproj/project.pbxproj`
+- Create: `apps/ios/RiotTests/CompactReactionBarNativeSnapshotTests.swift`
 - Modify: `apps/macos/Riot/RiotMacApp.swift`
 - Modify: `apps/macos/README.md`
 
@@ -738,7 +773,8 @@ git commit -m "feat(ui): render compact interactive newswire reactions"
 - Pending is deterministic; success changes count/selection.
 - Invalid fixture activation cannot touch production storage.
 - Screenshots exist for 900- and 1200-point windows.
-- iOS screenshots exist at 320-point width and accessibility Dynamic Type.
+- Native iOS screenshots exist at an exact 320-point host width at normal and
+  accessibility Dynamic Type.
 
 - [ ] **Step 1: Add the RED UI target and test**
 
@@ -747,30 +783,67 @@ with a UUID and `RIOT_UI_TEST_FIXTURE=reactions-joined`, finds
 `reaction.open-wire.support.fixture-post-1`, clicks it, and expects value
 `1 reaction, selected`.
 
-Run the exact macOS test command. Expected: FAIL because fixture bootstrap does
-not exist.
+Add the target dependency, source build-phase member, product, and
+`TargetAttributes` entries to the macOS project; add its testable reference to
+the `Riot-macOS` scheme. Run:
+
+```sh
+xcodebuild test -project apps/macos/Riot.xcodeproj \
+  -scheme Riot-macOS -destination 'platform=macOS' \
+  -only-testing:RiotUITests-macOS/ReactionControlsUITests \
+  -resultBundlePath build/ui-reactions-red.xcresult
+```
+
+Expected: FAIL because fixture bootstrap does not exist.
 
 - [ ] **Step 2: Implement the isolated joined fixture**
 
 Move the existing UUID-derived wrapping-key helper from private `RiotApp.swift`
 scope into `ReactionUITestFixture.swift` and reuse it on both platforms.
 `RiotMacApp` mirrors the iOS UUID temp-directory bootstrap instead of calling
-plain `model.bootstrap()`. Author profile creates River City Wire/post and
-exports the local bundle; reader profile imports/joins it and becomes active
-before the surface appears. No network or relay.
+plain `model.bootstrap()`.
+
+Implement an internal, DEBUG-only
+`RiotProfileRepository.makeReactionUITestPair(baseDirectory:keyStore:)` so it
+can use its private `MobileProfile` handles without widening production APIs.
+It opens `author/` and `reader/` repositories, the author creates River City
+Wire and `fixture-post-1`, and the reader joins the returned public-space
+namespace with the returned descriptor entry ID. A bounded
+`ReactionFixtureSyncPump` opens both repositories’ existing
+`MobileSyncSessionBoundary` values, begins only the author side, alternately
+drains `takeOutboundFrame()` into the opposite side’s `receive(_:)`, calls
+`acceptImport()` whenever either side reports preview-ready, and stops on both
+terminal outcomes or fails after 64 transfers. It then asserts the reader’s
+projection contains `fixture-post-1` and returns the reader repository plus the
+fixture IDs. `RiotAppModel.bootstrapReactionUITestFixture` installs that reader
+repository through an internal DEBUG-only method and calls its normal `reload`;
+the fixture never assigns or reflects the private profile directly. No network
+or relay is used.
+
+Add focused repository tests for the pump’s begin/answer asymmetry, the 64-frame
+cap, import acceptance, and the final reader projection before connecting it to
+the app entry points.
 
 - [ ] **Step 3: Add deterministic pending control**
 
-The runner supplies `RIOT_UI_TEST_REACTION_DELAY_MS=750`. The writer honors the
-delay only when both the reactions fixture flag and a valid UUID exist, then
-performs the real UniFFI call automatically. XCUITest has a deterministic
+The runner supplies `RIOT_UI_TEST_REACTION_DELAY_MS=750`.
+`ConferenceShellView` passes a validated DEBUG-only fixture configuration into
+`MobileProfileReactionWriter`; the writer honors the delay only when both the
+reactions fixture flag and a valid UUID exist, then performs the real UniFFI
+call automatically. A second closed fixture mode injects the same actor with a
+deterministic pre-commit rejection. XCUITest has a deterministic
 750-millisecond window to observe busy without cross-sandbox IPC.
 
 - [ ] **Step 4: Prove add and remove**
 
 The UI test asserts 0→1 selected, clicks again, and asserts 1→0 unselected.
 Add pointer and keyboard activation cases and a rejected-writer fixture showing
-the retry copy.
+the retry copy. Before activation, focus Support with Tab and assert
+`hasKeyboardFocus == true`; assert the same focused element remains focused
+while its value is busy, after the success announcement, and after a rejected
+write. Hover all four buttons and assert the exposed help/tooltip contains the
+full reaction name. These rendered assertions also prove there is no horizontal
+scroll and that all four controls remain in the accessibility tree.
 
 - [ ] **Step 5: Prove invalid fixture activation fails closed**
 
@@ -780,12 +853,45 @@ bootstrap. Assert neither fixture nor production community content appears.
 
 - [ ] **Step 6: Capture macOS and iOS visual evidence**
 
-Attach `XCUIScreen.main.screenshot()` at 900 and 1200 points and export the
-images from `.xcresult`. The iOS UI test launches the same fixture on
-`iPhone 16 Pro Max`, captures normal width, then relaunches with
-`UIPreferredContentSizeCategoryName=UICTContentSizeCategoryAccessibilityL` and
-captures the accessibility 2×2 layout. Update README with exact commands and
-artifact locations.
+For macOS, a valid reaction fixture accepts
+`RIOT_UI_TEST_WINDOW_WIDTH=900|1200`. `RiotMacApp` applies that value only in the
+UUID-gated fixture branch to both `.defaultSize` and a root test-only fixed
+frame, so persisted production window state cannot change the requested size.
+The UI test asserts `app.windows.firstMatch.frame.width` within one point,
+attaches `app.windows.firstMatch.screenshot()`, and exports both images from the
+`.xcresult`.
+
+For iOS, add `CompactReactionBarNativeSnapshotTests`. It hosts the real
+`CompactReactionBar` in a `UIHostingController`, lays the controller’s view out
+at exactly `320 × 568` points, and renders with `UIGraphicsImageRenderer`. One
+test uses the normal content-size category and one injects
+`.accessibilityExtraExtraExtraLarge`; each asserts the host bounds are exactly
+320 points and attaches the native PNG with `XCTAttachment`. This is a native
+UIKit/SwiftUI screenshot, not a metrics-only assertion and does not depend on a
+simulator model having a 320-point screen.
+
+Run and retain the exact results:
+
+```sh
+RIOT_UI_TEST_WINDOW_WIDTH=900 xcodebuild test \
+  -project apps/macos/Riot.xcodeproj -scheme Riot-macOS \
+  -destination 'platform=macOS' \
+  -only-testing:RiotUITests-macOS/ReactionControlsUITests/testReactionAt900 \
+  -resultBundlePath build/reaction-900.xcresult
+
+RIOT_UI_TEST_WINDOW_WIDTH=1200 xcodebuild test \
+  -project apps/macos/Riot.xcodeproj -scheme Riot-macOS \
+  -destination 'platform=macOS' \
+  -only-testing:RiotUITests-macOS/ReactionControlsUITests/testReactionAt1200 \
+  -resultBundlePath build/reaction-1200.xcresult
+
+xcodebuild test -project apps/ios/Riot.xcodeproj -scheme RiotKit \
+  -destination 'platform=iOS Simulator,name=iPhone 16 Pro Max,OS=26.2' \
+  -only-testing:RiotTests/CompactReactionBarNativeSnapshotTests \
+  -resultBundlePath build/reaction-ios-320.xcresult
+```
+
+Update README with those commands and exported artifact locations.
 
 - [ ] **Step 7: Adversarial review and commit**
 
@@ -795,9 +901,14 @@ consecutively without sleeps.
 ```sh
 git add apps/macos/Riot.xcodeproj \
   apps/macos/RiotUITests/ReactionControlsUITests.swift \
-  apps/ios/RiotUITests/ReactionControlsUITests.swift \
   apps/ios/Riot/Demo/ReactionUITestFixture.swift \
+  apps/ios/Riot/Core/ProfileRepository.swift \
+  apps/ios/Riot/AppModel.swift \
+  apps/ios/Riot/NewswireReactionWriter.swift \
+  apps/ios/Riot/ConferenceShellView.swift \
   apps/ios/Riot/RiotApp.swift \
+  apps/ios/Riot.xcodeproj/project.pbxproj \
+  apps/ios/RiotTests/CompactReactionBarNativeSnapshotTests.swift \
   apps/macos/Riot/RiotMacApp.swift \
   apps/macos/README.md
 git commit -m "test(ui): prove macOS reaction controls click through core"
