@@ -215,10 +215,9 @@ that publishing does not add or enable the tool.
 Add, Make available, Recommend, and retraction all capture and revalidate the
 snapshot’s full app ID and expected namespace ID at the mutation boundary. A
 community switch invalidates their pending UI instead of applying it to the
-newly selected community. Exact success receipts are:
-
-One immutable operation-context value carries those three fields for every
-named mutation so individual paths cannot drift.
+newly selected community. One immutable operation-context value carries those
+three fields for every named mutation so individual paths cannot drift. Exact
+success receipts are:
 
 - `Added Chat to River City Wire`
 - `Made Chat available in River City Wire`
