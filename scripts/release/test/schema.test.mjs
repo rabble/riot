@@ -113,3 +113,18 @@ test("toolchain schema requires a non-null authoritative checksum", async () => 
     /duplicate tool/,
   );
 });
+
+test("checked-in toolchain authority covers every WU-000 required tool", async () => {
+  const registry = await loadSchemaRegistry(schemaDirectory);
+  const manifestPath = join(repositoryRoot, "release", "toolchains.json");
+  const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+  const validated = validateSource(registry, "toolchains", manifest);
+  const names = new Set(validated.tools.map(({ name }) => name));
+  for (const name of [
+    "node", "npm", "rustc", "cargo", "gradle", "android-sdk", "android-ndk",
+    "xcode", "swift", "ajv", "c8",
+  ]) {
+    assert(names.has(name), `missing toolchain authority for ${name}`);
+  }
+  assert(validated.tools.every(({ sha256 }) => /^[0-9a-f]{64}$/.test(sha256)));
+});

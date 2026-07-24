@@ -1,0 +1,93 @@
+{
+  "schemaVersion": 1,
+  "tools": [
+    {
+      "name": "node",
+      "version": "26.4.0",
+      "versionCommand": ["node", "--version"],
+      "checksumKind": "normalized-version-output",
+      "sha256": "a75bc1e881900bc735e456cd684724256bcc2d09f91e04e5a42082d821a6b87b",
+      "source": "package.json#engines.node"
+    },
+    {
+      "name": "npm",
+      "version": "11.17.0",
+      "versionCommand": ["npm", "--version"],
+      "checksumKind": "normalized-version-output",
+      "sha256": "a38e383f1e9080b0dd9001481f6e56b341000de90a05061b66734350ad3adc41",
+      "source": "package.json#packageManager"
+    },
+    {
+      "name": "rustc",
+      "version": "1.95.0",
+      "versionCommand": ["rustc", "--version"],
+      "checksumKind": "normalized-version-output",
+      "sha256": "f4d034f5660bb49f22bfcba3f3445be67e25b704c193ff421b53863b4faee148",
+      "source": "rust-toolchain.toml#toolchain.channel"
+    },
+    {
+      "name": "cargo",
+      "version": "1.95.0",
+      "versionCommand": ["cargo", "--version"],
+      "checksumKind": "normalized-version-output",
+      "sha256": "c10ec31b8c6e6e2693cf65fc1971b41edbc3da1ae7db6f9f3f36c4823f8dcab5",
+      "source": "rust-toolchain.toml#toolchain.channel"
+    },
+    {
+      "name": "gradle",
+      "version": "9.1.0",
+      "versionCommand": ["./gradlew", "--version"],
+      "checksumKind": "artifact",
+      "sha256": "a17ddd85a26b6a7f5ddb71ff8b05fc5104c0202c6e64782429790c933686c806",
+      "source": "apps/android/gradle/wrapper/gradle-wrapper.properties#distributionUrl"
+    },
+    {
+      "name": "android-sdk",
+      "version": "36",
+      "versionCommand": ["configured", "android-sdk"],
+      "checksumKind": "normalized-version-output",
+      "sha256": "c0db436e148fe3e1f802ddcb35a0ee70e46161cfe652fe1d0c0caa29635ff1fe",
+      "source": "apps/android/app/build.gradle.kts#android.compileSdk"
+    },
+    {
+      "name": "android-ndk",
+      "version": "not-declared",
+      "versionCommand": ["configured", "android-ndk"],
+      "checksumKind": "normalized-version-output",
+      "sha256": "ce6d41b77a8d58d9b600a92d8255d98f5789a49f544b17cdbf5dbac97f87405e",
+      "source": "apps/android/app/build.gradle.kts#android.ndk"
+    },
+    {
+      "name": "xcode",
+      "version": "26.2 (17C52)",
+      "versionCommand": ["xcodebuild", "-version"],
+      "checksumKind": "normalized-version-output",
+      "sha256": "9fec9509a0037736274232072cadc58613fa6ddcafd55fa0915151df641590d3",
+      "source": "release/toolchains.json#tools.xcode"
+    },
+    {
+      "name": "swift",
+      "version": "6.2.3",
+      "versionCommand": ["swift", "--version"],
+      "checksumKind": "normalized-version-output",
+      "sha256": "118e657b02a6325a8fb313480cfc02a46eafd7fe86130aca55faef3a13ac3027",
+      "source": "release/toolchains.json#tools.swift"
+    },
+    {
+      "name": "ajv",
+      "version": "8.20.0",
+      "versionCommand": ["node", "-p", "require('ajv/package.json').version"],
+      "checksumKind": "normalized-version-output",
+      "sha256": "6c0d97c79883eaf084fb1209521d21ce9300fc7c987092cdde6e13ec3c19488e",
+      "source": "package.json#devDependencies.ajv"
+    },
+    {
+      "name": "c8",
+      "version": "11.0.0",
+      "versionCommand": ["node", "-p", "require('c8/package.json').version"],
+      "checksumKind": "normalized-version-output",
+      "sha256": "7bd6bcbe3813e0cd55e0998053d182b7bc8c97dcfd0b85028e9f7f55af4ad61b",
+      "source": "package.json#devDependencies.c8"
+    }
+  ]
+}
