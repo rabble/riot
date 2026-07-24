@@ -22,6 +22,88 @@ public protocol DirectoryPorting: AnyObject {
     var endorsedAppIDs: Set<String> { get }
 }
 
+public enum RiotDirectoryApprovalCapability: Equatable, Sendable {
+    case organizer
+    case member
+    case unavailable
+}
+
+public enum RiotDirectoryActionError: Error, Equatable, Sendable {
+    case staleSelection
+}
+
+/// Immutable identity for a tool action. Namespace alone is insufficient:
+/// selecting A, then B, then A again must invalidate actions captured during
+/// the first visit to A.
+public struct RiotDirectoryActionContext: Equatable, Sendable {
+    public let appID: Data
+    public let appIDHex: String
+    public let appName: String
+    public let namespaceID: String
+    public let communityTitle: String
+    public let selectionGeneration: UInt64
+
+    public init(
+        appID: Data,
+        appIDHex: String,
+        appName: String,
+        namespaceID: String,
+        communityTitle: String,
+        selectionGeneration: UInt64
+    ) {
+        self.appID = appID
+        self.appIDHex = appIDHex
+        self.appName = appName
+        self.namespaceID = namespaceID
+        self.communityTitle = communityTitle
+        self.selectionGeneration = selectionGeneration
+    }
+}
+
+public enum RiotDirectoryPrimaryAction: Equatable, Sendable {
+    case open(title: String)
+    case add(title: String)
+    case ask(title: String)
+    case unavailable(message: String)
+
+    /// The complete human-readable label used by both the visible CTA and
+    /// accessibility. It always names the tool or the selected community.
+    public var title: String {
+        switch self {
+        case let .open(title), let .add(title), let .ask(title):
+            title
+        case let .unavailable(message):
+            message
+        }
+    }
+}
+
+public enum RiotDirectoryDiscoveryAction: Equatable, Sendable {
+    case importVerifiedPair(title: String)
+}
+
+public struct RiotDirectorySnapshot: Equatable, Sendable {
+    public let namespaceID: String
+    public let communityTitle: String
+    public let inCommunity: [RiotDirectoryRow]
+    public let availableToAdd: [RiotDirectoryRow]
+    public let moreTools: [RiotDirectoryDiscoveryAction]
+
+    public init(
+        namespaceID: String,
+        communityTitle: String,
+        inCommunity: [RiotDirectoryRow],
+        availableToAdd: [RiotDirectoryRow],
+        moreTools: [RiotDirectoryDiscoveryAction]
+    ) {
+        self.namespaceID = namespaceID
+        self.communityTitle = communityTitle
+        self.inCommunity = inCommunity
+        self.availableToAdd = availableToAdd
+        self.moreTools = moreTools
+    }
+}
+
 /// One app as the directory shows it: what it is, what it can do, who vouches
 /// for it, and what this person may do with it right now. Every string here is
 /// already in the plain language the surface renders — the row is the whole
@@ -52,6 +134,14 @@ public struct RiotDirectoryRow: Identifiable, Equatable, Sendable {
     /// rather than printing a zero.
     public let endorsement: String?
     public let availability: Availability
+    /// Community-scoped presentation facts. `availability` above deliberately
+    /// remains the flat local-state compatibility contract used by peers.
+    public let enabledInCurrentCommunity: Bool
+    public let locallyResolvableVerifiedPair: Bool
+    public let locallyAdmitted: Bool
+    public let primaryAction: RiotDirectoryPrimaryAction
+    public let actionContext: RiotDirectoryActionContext?
+    public let accessibilityIdentifier: String
     public let canRecommend: Bool
     public let canShare: Bool
     /// True when this profile has endorsed the app — the signal that offers
@@ -123,13 +213,15 @@ public extension RiotDirectoryRow {
         listing: DirectoryListing,
         installed: RiotSpaceApp?,
         space: RiotSpace?,
+        approval: RiotDirectoryApprovalCapability = .member,
+        selectionGeneration: UInt64 = 0,
         endorsedByMe: Bool = false
     ) -> RiotDirectoryRow {
         let trusted = trustedInCurrentSpace(listing: listing, space: space)
+        let appIDHex = hex(listing.appId)
 
         var badges: [String] = []
-        if listing.builtIn { badges.append("Built in") }
-        if trusted { badges.append("On in this space") }
+        if listing.bundlePresent, installed != nil { badges.append("Works offline") }
         if !listing.bundlePresent { badges.append("Still arriving from your group") }
 
         // A listing whose bytes this profile carries but has not taken up is the
@@ -143,9 +235,17 @@ public extension RiotDirectoryRow {
         case (.none, _, false): availability = .arriving
         }
 
+        let context = actionContext(
+            appID: listing.appId,
+            appIDHex: appIDHex,
+            name: listing.name,
+            space: space,
+            selectionGeneration: selectionGeneration
+        )
+
         return RiotDirectoryRow(
             appID: listing.appId,
-            appIDHex: hex(listing.appId),
+            appIDHex: appIDHex,
             name: listing.name,
             version: listing.version,
             description: listing.description,
@@ -156,6 +256,18 @@ public extension RiotDirectoryRow {
                 unmet: Int(listing.endorsingUnmetCount)
             ),
             availability: availability,
+            enabledInCurrentCommunity: trusted,
+            locallyResolvableVerifiedPair: listing.bundlePresent,
+            locallyAdmitted: installed != nil,
+            primaryAction: primaryAction(
+                name: listing.name,
+                enabled: trusted,
+                complete: listing.bundlePresent,
+                approval: approval,
+                space: space
+            ),
+            actionContext: context,
+            accessibilityIdentifier: "directory-tool-\(appIDHex)",
             canRecommend: canRecommend(listing: listing, space: space),
             canShare: space != nil,
             endorsedByMe: endorsedByMe
@@ -170,23 +282,95 @@ public extension RiotDirectoryRow {
     /// the profile's own copy of its bytes — so it is genuinely held and openable
     /// while no listing speaks for it. Without this row it would silently
     /// disappear from the surface that offered it in the first place.
-    static func held(_ app: RiotSpaceApp, space: RiotSpace?, endorsedByMe: Bool = false) -> RiotDirectoryRow {
-        RiotDirectoryRow(
-            appID: bytes(hex: app.appIDHex) ?? Data(),
-            appIDHex: app.appIDHex.lowercased(),
+    static func held(
+        _ app: RiotSpaceApp,
+        space: RiotSpace?,
+        approval: RiotDirectoryApprovalCapability = .member,
+        selectionGeneration: UInt64 = 0,
+        endorsedByMe: Bool = false
+    ) -> RiotDirectoryRow {
+        let appIDHex = app.appIDHex.lowercased()
+        let appID = bytes(hex: appIDHex) ?? Data()
+        return RiotDirectoryRow(
+            appID: appID,
+            appIDHex: appIDHex,
             name: app.name,
             version: app.version,
             description: app.description,
             permissions: app.permissions,
-            badges: app.trusted ? ["On in this space"] : [],
+            badges: ["Works offline"],
             // Nobody's recommendation reaches this row: the endorsements that
             // would speak for it live in the same index that is gone.
             endorsement: nil,
             availability: app.trusted ? .open(app) : .review(app),
+            enabledInCurrentCommunity: app.trusted,
+            locallyResolvableVerifiedPair: true,
+            locallyAdmitted: true,
+            primaryAction: primaryAction(
+                name: app.name,
+                enabled: app.trusted,
+                complete: true,
+                approval: approval,
+                space: space
+            ),
+            actionContext: actionContext(
+                appID: appID,
+                appIDHex: appIDHex,
+                name: app.name,
+                space: space,
+                selectionGeneration: selectionGeneration
+            ),
+            accessibilityIdentifier: "directory-tool-\(appIDHex)",
             canRecommend: app.trusted && space != nil,
             canShare: space != nil,
             endorsedByMe: endorsedByMe
         )
+    }
+
+    private static func actionContext(
+        appID: Data,
+        appIDHex: String,
+        name: String,
+        space: RiotSpace?,
+        selectionGeneration: UInt64
+    ) -> RiotDirectoryActionContext? {
+        guard let space else { return nil }
+        return RiotDirectoryActionContext(
+            appID: appID,
+            appIDHex: appIDHex,
+            appName: name,
+            namespaceID: space.namespaceID,
+            communityTitle: space.title,
+            selectionGeneration: selectionGeneration
+        )
+    }
+
+    private static func primaryAction(
+        name: String,
+        enabled: Bool,
+        complete: Bool,
+        approval: RiotDirectoryApprovalCapability,
+        space: RiotSpace?
+    ) -> RiotDirectoryPrimaryAction {
+        guard let space else {
+            return .unavailable(message: "Choose a community to use \(name)")
+        }
+        if !complete {
+            return .unavailable(message: "\(name) is still arriving in \(space.title)")
+        }
+        if enabled {
+            return .open(title: "Open \(name)")
+        }
+        switch approval {
+        case .organizer:
+            return .add(title: "Add \(name) to \(space.title)")
+        case .member:
+            return .ask(title: "Ask an organizer to add \(name)")
+        case .unavailable:
+            return .unavailable(
+                message: "This profile can’t add tools to \(space.title). Start a new profile to organize a community."
+            )
+        }
     }
 }
 
@@ -197,12 +381,19 @@ public extension RiotDirectoryRow {
 @MainActor
 public final class RiotDirectoryModel: ObservableObject {
     @Published public private(set) var rows: [RiotDirectoryRow] = []
+    @Published public private(set) var snapshot: RiotDirectorySnapshot?
+    @Published public private(set) var isLoading = false
+    @Published public private(set) var failedNamespace: String?
     @Published public private(set) var errorMessage: String?
     /// Plain-language receipt for the last action ("Recommended Checklist"),
     /// shown until the person leaves the surface.
     @Published public private(set) var confirmation: String?
 
     private var port: DirectoryPorting?
+    private var selectedNamespaceID: String?
+    private var hasObservedSelection = false
+    private var selectionGeneration: UInt64 = 0
+    private var lastApproval: RiotDirectoryApprovalCapability = .member
 
     public init(port: DirectoryPorting? = nil) {
         self.port = port
@@ -219,34 +410,122 @@ public final class RiotDirectoryModel: ObservableObject {
     /// only way the surface learns that an app was carried in, turned on, or
     /// endorsed.
     public func refresh() {
+        refresh(approval: .member)
+    }
+
+    /// Builds one atomic presentation snapshot for the selected community while
+    /// retaining `rows` as the existing flat compatibility surface.
+    public func refresh(approval: RiotDirectoryApprovalCapability) {
+        lastApproval = approval
         guard let port else {
             rows = []
+            snapshot = nil
+            failedNamespace = nil
+            errorMessage = nil
+            isLoading = false
             return
         }
+
+        let space = port.currentSpace
+        observeSelection(space?.namespaceID)
+        isLoading = true
+        defer { isLoading = false }
+
         do {
             let installed = try port.installedApps()
-            let space = port.currentSpace
+            var installedByID: [String: RiotSpaceApp] = [:]
+            var installedOrder: [String] = []
+            for app in installed {
+                let appIDHex = app.appIDHex.lowercased()
+                if installedByID[appIDHex] == nil {
+                    installedOrder.append(appIDHex)
+                }
+                // The same verified tool can be restored more than once. Keep
+                // its first position stable while using the latest restoration.
+                installedByID[appIDHex] = app
+            }
             let endorsed = port.endorsedAppIDs
-            let listed = try port.directoryListings().map { listing in
-                let hex = RiotDirectoryRow.hex(listing.appId)
+            var seenListingIDs = Set<String>()
+            let listed = try port.directoryListings().compactMap { listing -> RiotDirectoryRow? in
+                let appIDHex = RiotDirectoryRow.hex(listing.appId)
+                guard seenListingIDs.insert(appIDHex).inserted else { return nil }
                 return RiotDirectoryRow.make(
                     listing: listing,
-                    installed: installed.first { $0.appIDHex.lowercased() == hex },
+                    installed: installedByID[appIDHex],
                     space: space,
-                    endorsedByMe: endorsed.contains(hex)
+                    approval: approval,
+                    selectionGeneration: selectionGeneration,
+                    endorsedByMe: endorsed.contains(appIDHex)
                 )
             }
             // Apps this device holds that no listing speaks for — see
             // `RiotDirectoryRow.held`. They keep their place on this surface
             // instead of vanishing at the next launch.
             let listedIDs = Set(listed.map(\.appIDHex))
-            let unlisted = installed
+            let unlisted = installedOrder
+                .compactMap { installedByID[$0] }
                 .filter { !listedIDs.contains($0.appIDHex.lowercased()) }
-                .map { RiotDirectoryRow.held($0, space: space, endorsedByMe: endorsed.contains($0.appIDHex.lowercased())) }
-            rows = listed + unlisted
+                .map {
+                    RiotDirectoryRow.held(
+                        $0,
+                        space: space,
+                        approval: approval,
+                        selectionGeneration: selectionGeneration,
+                        endorsedByMe: endorsed.contains($0.appIDHex.lowercased())
+                    )
+                }
+            let allRows = listed + unlisted
+            rows = allRows
+
+            if let space {
+                snapshot = RiotDirectorySnapshot(
+                    namespaceID: space.namespaceID,
+                    communityTitle: space.title,
+                    inCommunity: sorted(
+                        allRows.filter(\.enabledInCurrentCommunity)
+                    ),
+                    availableToAdd: sorted(
+                        allRows.filter { !$0.enabledInCurrentCommunity }
+                    ),
+                    moreTools: approval == .organizer
+                        ? [.importVerifiedPair(title: "Add a tool from a file")]
+                        : []
+                )
+            } else {
+                snapshot = nil
+            }
+            failedNamespace = nil
             errorMessage = nil
         } catch {
-            errorMessage = String(describing: error)
+            failedNamespace = space?.namespaceID
+            if let space {
+                errorMessage = "Couldn’t load tools for \(space.title)."
+            } else {
+                errorMessage = String(describing: error)
+            }
+        }
+    }
+
+    /// Repeats a failed load only if its namespace is still selected. A retry
+    /// captured for one community can never silently retarget another.
+    public func retry() {
+        guard
+            let failedNamespace,
+            port?.currentSpace?.namespaceID.lowercased() == failedNamespace.lowercased()
+        else { return }
+        refresh(approval: lastApproval)
+    }
+
+    /// Refuses any action that was not captured for this exact visit to the
+    /// currently selected community. Namespace and generation are both
+    /// required so A → B → A cannot revive a first-A action.
+    public func validate(_ context: RiotDirectoryActionContext) throws {
+        guard
+            let currentNamespace = port?.currentSpace?.namespaceID,
+            currentNamespace.caseInsensitiveCompare(context.namespaceID) == .orderedSame,
+            context.selectionGeneration == selectionGeneration
+        else {
+            throw RiotDirectoryActionError.staleSelection
         }
     }
 
@@ -259,7 +538,7 @@ public final class RiotDirectoryModel: ObservableObject {
             _ = try port.getCarriedApp(appID: row.appID)
             confirmation = "Got \(row.name) — review it before it runs"
             errorMessage = nil
-            refresh()
+            refresh(approval: lastApproval)
         } catch {
             confirmation = nil
             errorMessage = Self.getFailureMessage(name: row.name, error: error)
@@ -307,10 +586,33 @@ public final class RiotDirectoryModel: ObservableObject {
             try action(port)
             confirmation = receipt
             errorMessage = nil
-            refresh()
+            refresh(approval: lastApproval)
         } catch {
             confirmation = nil
             errorMessage = String(describing: error)
+        }
+    }
+
+    private func observeSelection(_ namespaceID: String?) {
+        let normalized = namespaceID?.lowercased()
+        if !hasObservedSelection || normalized != selectedNamespaceID {
+            hasObservedSelection = true
+            selectedNamespaceID = normalized
+            selectionGeneration += 1
+            snapshot = nil
+            rows = []
+            failedNamespace = nil
+            errorMessage = nil
+        }
+    }
+
+    private func sorted(_ values: [RiotDirectoryRow]) -> [RiotDirectoryRow] {
+        values.sorted { lhs, rhs in
+            let order = lhs.name.localizedCaseInsensitiveCompare(rhs.name)
+            if order == .orderedSame {
+                return lhs.appIDHex < rhs.appIDHex
+            }
+            return order == .orderedAscending
         }
     }
 }
