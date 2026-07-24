@@ -59,6 +59,15 @@ function diagnosticFor(error, value) {
       message: error.message,
     };
   }
+  if (error.keyword === "const") {
+    return {
+      pointer,
+      keyword: error.keyword,
+      observed: pointerValue(value, pointer),
+      expected: error.params.allowedValue,
+      message: error.message,
+    };
+  }
   return {
     pointer,
     keyword: error.keyword,
@@ -66,6 +75,14 @@ function diagnosticFor(error, value) {
     expected: error.message,
     message: error.message,
   };
+}
+
+const EXACT_UTC_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
+
+export function isExactUtcTimestamp(value) {
+  if (typeof value !== "string" || !EXACT_UTC_TIMESTAMP.test(value)) return false;
+  const parsed = new Date(value);
+  return !Number.isNaN(parsed.valueOf()) && parsed.toISOString() === value;
 }
 
 export function releaseDiagnosticError(message, {
@@ -164,6 +181,15 @@ export function validateSource(registry, name, value) {
     const error = new Error(`${name} validation failed: ${diagnostics.map(({ pointer, message }) => `${pointer} ${message}`).join("; ")}`);
     error.diagnostics = diagnostics;
     throw error;
+  }
+  if (name === "common" && !isExactUtcTimestamp(value.createdAt)) {
+    throw releaseDiagnosticError("common validation failed: /createdAt must be an exact calendar-valid UTC timestamp", {
+      sourceFile: name,
+      pointer: "/createdAt",
+      observed: value.createdAt,
+      expected: "calendar-valid YYYY-MM-DDTHH:mm:ss.sssZ timestamp",
+      keyword: "timestamp",
+    });
   }
   if (name === "toolchains") {
     const names = new Map();

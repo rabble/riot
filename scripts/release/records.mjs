@@ -1,5 +1,5 @@
 import { canonicalJson } from "./canonical-json.mjs";
-import { validateSource } from "./schema.mjs";
+import { isExactUtcTimestamp, validateSource } from "./schema.mjs";
 
 const RECORD_FIELDS = ["createdAt", "digest", "payload", "schema", "schemaVersion"];
 const FIXED_SCHEMAS = new Map([
@@ -15,7 +15,6 @@ const FIXED_SCHEMAS = new Map([
   ["riot.release.toolchains.v1", "toolchains"],
 ]);
 const SHA256 = /^[0-9a-f]{64}$/;
-const RFC3339_UTC = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/;
 
 function assertRegistry(registry) {
   if (typeof registry?.ajv?.getSchema !== "function") {
@@ -57,6 +56,7 @@ export async function createRecord({ schema, payload, clock, sha256, registry })
   const schemaName = assertSchema(schema);
   const validatedPayload = validateSource(registry, schemaName, payload);
   const createdAt = clock().toISOString();
+  if (!isExactUtcTimestamp(createdAt)) throw new TypeError("record timestamp must be exact RFC3339 UTC");
   const recordBody = { schemaVersion: 1, schema, createdAt, payload: structuredClone(validatedPayload) };
   const digest = await sha256(canonicalJson(recordBody));
   if (!SHA256.test(digest)) throw new TypeError("sha256 dependency returned an invalid digest");
@@ -75,7 +75,7 @@ export async function verifyRecord(record, { sha256, registry }) {
   }
   if (record.schemaVersion !== 1) throw new TypeError("record schemaVersion must be 1");
   const schemaName = assertSchema(record.schema);
-  if (!RFC3339_UTC.test(record.createdAt) || Number.isNaN(Date.parse(record.createdAt))) {
+  if (!isExactUtcTimestamp(record.createdAt)) {
     throw new TypeError("record timestamp must be RFC3339 UTC");
   }
   if (!SHA256.test(record.digest)) throw new TypeError("record digest must be full lowercase SHA-256");

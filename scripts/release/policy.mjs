@@ -150,15 +150,29 @@ export function evaluatePolicy(sources) {
     gates.push(gate(`url.${name}`, verified === "current" ? "PASS" : "BLOCKED", file("product"), `/urls/${name}/evidencePath`, `${verified}: ${value.evidencePath}`, "current non-empty HTML at the declared repository path", `Publish and verify ${value.evidencePath}.`));
   }
 
-  const rowIndexes = new Map(sources.networkMatrix.rows.map(({ id }, index) => [id, index]));
-  const rowById = new Map(sources.networkMatrix.rows.map((row) => [row.id, row]));
+  const rowsById = new Map();
+  for (const [index, row] of sources.networkMatrix.rows.entries()) {
+    const matches = rowsById.get(row.id) ?? [];
+    matches.push({ row, index });
+    rowsById.set(row.id, matches);
+  }
+  const exactNetworkRows = sources.networkMatrix.rows.length === NETWORK_ROWS.length
+    && NETWORK_ROWS.every((id) => rowsById.get(id)?.length === 1);
+  const observedNetworkRows = Object.fromEntries(
+    NETWORK_ROWS.map((id) => [id, rowsById.get(id)?.length ?? 0]),
+  );
+  gates.push(gate("inventory.network-rows", exactNetworkRows ? "PASS" : "BLOCKED", file("networkMatrix"), "/rows", JSON.stringify(observedNetworkRows), `exactly one of: ${NETWORK_ROWS.join(", ")}`, "Restore the exact canonical outbound-network scenario inventory."));
   for (const row of NETWORK_ROWS) {
-    const index = rowIndexes.get(row);
-    gates.push(gate(`network.${row}`, index === undefined ? "BLOCKED" : "PASS", file("networkMatrix"), index === undefined ? "/rows" : `/rows/${index}`, index === undefined ? "missing" : "present", "present", `Add the ${row} evidence row.`));
+    const matches = rowsById.get(row) ?? [];
+    const index = matches[0]?.index;
+    gates.push(gate(`network.${row}`, matches.length === 1 ? "PASS" : "BLOCKED", file("networkMatrix"), matches.length === 1 ? `/rows/${index}` : "/rows", matches.length, "exactly one canonical evidence row", `Add exactly one ${row} evidence row and remove duplicates or substitutions.`));
   }
   for (const [index, answer] of sources.privacy.answers.entries()) {
-    const rows = answer.evidenceRowIds.map((id) => rowById.get(id));
-    const evidenceComplete = rows.every(Boolean);
+    const rows = answer.evidenceRowIds.map((id) => {
+      const matches = rowsById.get(id) ?? [];
+      return matches.length === 1 ? matches[0].row : undefined;
+    });
+    const evidenceComplete = exactNetworkRows && rows.every(Boolean);
     const scenarioComplete = answer.evidenceRowIds.length === NETWORK_ROWS.length
       && NETWORK_ROWS.every((id) => answer.evidenceRowIds.includes(id));
     const platformComplete = evidenceComplete && rows.every((row) =>
@@ -388,58 +402,173 @@ function markdown(name, keys, sources, digest) {
   return `<!-- source-sha256: ${digest} -->\n# ${title}\n\n${canonicalWorksheet(name, sources)}\n# Gate summary\n\n${gateSummary(keys, sources)}`;
 }
 
-export async function generateWorksheets({ sources, outputDirectory, fs, sha256 }) {
+export function processIsAlive(processId) {
+  try {
+    process.kill(processId, 0);
+    return true;
+  } catch (error) {
+    if (error.code === "ESRCH") return false;
+    throw error;
+  }
+}
+
+async function directoryExists(fs, path) {
+  try {
+    await fs.readdir(path);
+    return true;
+  } catch (error) {
+    if (error.code === "ENOENT") return false;
+    throw error;
+  }
+}
+
+async function ignoreFailure(operation) {
+  try {
+    await operation;
+  } catch {
+    // Cleanup is best effort only after a complete set is installed or another error is already authoritative.
+  }
+}
+
+function ambiguousLockError(lockPath) {
+  return new Error(`ambiguous worksheet generation lock: ${lockPath}`);
+}
+
+async function acquireWorksheetLock(fs, lockPath, processId, isProcessAlive) {
+  let handle;
+  try {
+    handle = await fs.open(lockPath, "wx", 0o600);
+  } catch (error) {
+    if (error.code !== "EEXIST") throw error;
+    let owner;
+    try {
+      owner = JSON.parse(await fs.readFile(lockPath, "utf8"));
+    } catch {
+      throw ambiguousLockError(lockPath);
+    }
+    if (!Number.isSafeInteger(owner?.processId) || owner.processId <= 0) {
+      throw ambiguousLockError(lockPath);
+    }
+    if (isProcessAlive(owner.processId)) {
+      throw new Error(`active worksheet generation lock owned by process ${owner.processId}`);
+    }
+    await fs.rm(lockPath, { force: true });
+    handle = await fs.open(lockPath, "wx", 0o600);
+  }
+  try {
+    await fs.writeFile(lockPath, `${JSON.stringify({ processId })}\n`, "utf8");
+    return handle;
+  } catch (error) {
+    await ignoreFailure(handle.close());
+    await ignoreFailure(fs.rm(lockPath, { force: true }));
+    throw error;
+  }
+}
+
+async function reconcileWorksheetSwap(fs, {
+  outputDirectory,
+  stagingDirectory,
+  backupDirectory,
+  markerPath,
+}) {
+  const outputExists = await directoryExists(fs, outputDirectory);
+  const backupExists = await directoryExists(fs, backupDirectory);
+  if (!outputExists && backupExists) {
+    await fs.rename(backupDirectory, outputDirectory);
+  } else if (outputExists && backupExists) {
+    await fs.rm(backupDirectory, { recursive: true, force: true });
+  }
+  await fs.rm(stagingDirectory, { recursive: true, force: true });
+  await fs.rm(markerPath, { force: true });
+}
+
+export async function generateWorksheets({
+  sources,
+  outputDirectory,
+  fs,
+  sha256,
+  processId = process.pid,
+  isProcessAlive = processIsAlive,
+}) {
   if (!fs
     || typeof fs.mkdir !== "function"
     || typeof fs.writeFile !== "function"
     || typeof fs.readFile !== "function"
     || typeof fs.readdir !== "function"
     || typeof fs.rename !== "function"
-    || typeof fs.rm !== "function") {
-    throw new TypeError("filesystem adapter with mkdir/writeFile/readFile/readdir/rename/rm is required");
+    || typeof fs.rm !== "function"
+    || typeof fs.open !== "function") {
+    throw new TypeError("filesystem adapter with mkdir/writeFile/readFile/readdir/rename/rm/open is required");
   }
   if (typeof sha256 !== "function") throw new TypeError("sha256 adapter is required");
+  if (!Number.isSafeInteger(processId) || processId <= 0 || typeof isProcessAlive !== "function") {
+    throw new TypeError("positive processId and process liveness adapter are required");
+  }
   const parentDirectory = dirname(outputDirectory);
-  const stagingDirectory = `${outputDirectory}.staging-${process.pid}`;
-  const backupDirectory = `${outputDirectory}.backup-${process.pid}`;
+  const stagingDirectory = `${outputDirectory}.staging`;
+  const backupDirectory = `${outputDirectory}.backup`;
+  const markerPath = `${outputDirectory}.recovery.json`;
+  const lockPath = `${outputDirectory}.lock`;
   await fs.mkdir(parentDirectory, { recursive: true });
-  await fs.rm(stagingDirectory, { recursive: true, force: true });
-  await fs.rm(backupDirectory, { recursive: true, force: true });
-  await fs.mkdir(stagingDirectory, { recursive: true });
-  let existingMoved = false;
+  const lockHandle = await acquireWorksheetLock(fs, lockPath, processId, isProcessAlive);
   try {
-    const expectedBytes = new Map();
-    for (const [name, keys] of Object.entries(WORKSHEETS)) {
-      const sourceBytes = canonicalJson(Object.fromEntries(keys.map((key) => [key, sources[key]])));
-      const digest = await sha256(sourceBytes);
-      if (!/^[0-9a-f]{64}$/.test(digest)) throw new TypeError("sha256 adapter returned an invalid digest");
-      const bytes = markdown(name, keys, sources, digest);
-      expectedBytes.set(name, bytes);
-      await fs.writeFile(join(stagingDirectory, name), bytes, "utf8");
-    }
-    const stagedNames = (await fs.readdir(stagingDirectory)).sort();
-    const expectedNames = [...expectedBytes.keys()].sort();
-    if (JSON.stringify(stagedNames) !== JSON.stringify(expectedNames)) {
-      throw new Error("staged worksheet set is incomplete");
-    }
-    for (const [name, bytes] of expectedBytes) {
-      if (await fs.readFile(join(stagingDirectory, name), "utf8") !== bytes) {
-        throw new Error(`staged worksheet verification failed: ${name}`);
-      }
-    }
+    await reconcileWorksheetSwap(fs, {
+      outputDirectory,
+      stagingDirectory,
+      backupDirectory,
+      markerPath,
+    });
+    await fs.mkdir(stagingDirectory, { recursive: true });
+    let existingMoved = false;
     try {
-      await fs.rename(outputDirectory, backupDirectory);
-      existingMoved = true;
+      const expectedBytes = new Map();
+      for (const [name, keys] of Object.entries(WORKSHEETS)) {
+        const sourceBytes = canonicalJson(Object.fromEntries(keys.map((key) => [key, sources[key]])));
+        const digest = await sha256(sourceBytes);
+        if (!/^[0-9a-f]{64}$/.test(digest)) throw new TypeError("sha256 adapter returned an invalid digest");
+        const bytes = markdown(name, keys, sources, digest);
+        expectedBytes.set(name, bytes);
+        await fs.writeFile(join(stagingDirectory, name), bytes, "utf8");
+      }
+      const stagedNames = (await fs.readdir(stagingDirectory)).sort();
+      const expectedNames = [...expectedBytes.keys()].sort();
+      if (JSON.stringify(stagedNames) !== JSON.stringify(expectedNames)) {
+        throw new Error("staged worksheet set is incomplete");
+      }
+      for (const [name, bytes] of expectedBytes) {
+        if (await fs.readFile(join(stagingDirectory, name), "utf8") !== bytes) {
+          throw new Error(`staged worksheet verification failed: ${name}`);
+        }
+      }
+      await fs.writeFile(markerPath, `${JSON.stringify({ processId, phase: "prepared" })}\n`, "utf8");
+      try {
+        await fs.rename(outputDirectory, backupDirectory);
+        existingMoved = true;
+      } catch (error) {
+        if (error.code !== "ENOENT") throw error;
+      }
+      await fs.writeFile(markerPath, `${JSON.stringify({
+        processId,
+        phase: existingMoved ? "backup-created" : "no-backup",
+      })}\n`, "utf8");
+      await fs.rename(stagingDirectory, outputDirectory);
+      if (existingMoved) {
+        await ignoreFailure(fs.rm(backupDirectory, { recursive: true, force: true }));
+      }
+      await ignoreFailure(fs.rm(markerPath, { force: true }));
     } catch (error) {
-      if (error.code !== "ENOENT") throw error;
+      if (existingMoved) {
+        await fs.rename(backupDirectory, outputDirectory);
+      }
+      await ignoreFailure(fs.rm(stagingDirectory, { recursive: true, force: true }));
+      await ignoreFailure(fs.rm(markerPath, { force: true }));
+      throw error;
     }
-    await fs.rename(stagingDirectory, outputDirectory);
-    if (existingMoved) await fs.rm(backupDirectory, { recursive: true, force: true }).catch(() => {});
-  } catch (error) {
-    if (existingMoved) {
-      await fs.rename(backupDirectory, outputDirectory);
+  } finally {
+    try {
+      await lockHandle.close();
+    } finally {
+      await fs.rm(lockPath, { force: true });
     }
-    await fs.rm(stagingDirectory, { recursive: true, force: true }).catch(() => {});
-    throw error;
   }
 }

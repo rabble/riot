@@ -11,6 +11,7 @@ import {
   evaluatePolicy,
   generateWorksheets,
   loadPolicySources,
+  processIsAlive,
 } from "../policy.mjs";
 
 const repositoryRoot = dirname(dirname(dirname(dirname(fileURLToPath(import.meta.url)))));
@@ -142,13 +143,41 @@ test("URL evidence paths reject absolute, traversal, page-type mismatch, and sym
   );
 });
 
+test("URL evidence requires each exact canonical public URL", async () => {
+  const root = await mkdtemp(join(tmpdir(), "riot-url-identity-"));
+  await realFs.cp(join(repositoryRoot, "release"), join(root, "release"), { recursive: true });
+  const productPath = join(root, "release", "source", "product.json");
+  const product = JSON.parse(await realFs.readFile(productPath, "utf8"));
+  product.urls.privacy.url = "https://example.com/privacy/";
+  await realFs.writeFile(productPath, `${JSON.stringify(product)}\n`, "utf8");
+  await assert.rejects(
+    () => loadPolicySources({ sourceDirectory: join(root, "release", "source"), fs: realFs }),
+    (error) => error.sourceFile.endsWith("/product.json")
+      && error.diagnostics[0].pointer === "/urls/privacy/url"
+      && error.diagnostics[0].expected === "https://riot.protest.net/privacy/",
+  );
+});
+
 test("policy evaluation rejects missing network rows and contradictory privacy evidence", async () => {
   const loaded = await sources();
   loaded.networkMatrix.rows = loaded.networkMatrix.rows.filter(({ id }) => id !== "nearby-sync");
   loaded.privacy.answers[0].evidenceRowIds = ["not-present"];
   const gates = evaluatePolicy(loaded);
+  assert(gates.some(({ id, state }) => id === "inventory.network-rows" && state === "BLOCKED"));
   assert(gates.some(({ id, state }) => id === "network.nearby-sync" && state === "BLOCKED"));
   assert(gates.some(({ id, state }) => id === "privacy.apple" && state === "BLOCKED"));
+});
+
+test("duplicate network rows block inventory and cannot override both store privacy gates", async () => {
+  const loaded = await sources();
+  const safeDuplicate = structuredClone(loaded.networkMatrix.rows[0]);
+  loaded.networkMatrix.rows[0].developerOperated = true;
+  loaded.networkMatrix.rows.push(safeDuplicate);
+  const states = new Map(evaluatePolicy(loaded).map(({ id, state }) => [id, state]));
+  assert.equal(states.get("inventory.network-rows"), "BLOCKED");
+  assert.equal(states.get("network.first-launch"), "BLOCKED");
+  assert.equal(states.get("privacy.apple"), "BLOCKED");
+  assert.equal(states.get("privacy.google"), "BLOCKED");
 });
 
 test("permission inventory rejects duplicates and substitution of exact required IDs", async () => {
@@ -472,12 +501,12 @@ test("worksheet staging verification and swap errors leave the prior set untouch
     const failingFs = {
       ...realFs,
       async readdir(path, options) {
-        if (mode === "names" && String(path).includes(".staging-")) return [];
+        if (mode === "names" && String(path).includes(".staging")) return [];
         return realFs.readdir(path, options);
       },
       async readFile(path, options) {
         const bytes = await realFs.readFile(path, options);
-        return mode === "bytes" && String(path).includes(".staging-") ? `${bytes}corrupt` : bytes;
+        return mode === "bytes" && String(path).includes(".staging") ? `${bytes}corrupt` : bytes;
       },
       async rename(from, to) {
         if (mode === "swap" && from === outputDirectory) {
@@ -505,9 +534,9 @@ test("a post-swap backup cleanup refusal does not invalidate the installed set",
   const cleanupFs = {
     ...realFs,
     async rm(path, options) {
-      if (String(path).includes(".backup-")) {
+      if (String(path).includes(".backup")) {
         backupRemovals += 1;
-        if (backupRemovals === 2) throw new Error("injected cleanup refusal");
+        if (backupRemovals === 1) throw new Error("injected cleanup refusal");
       }
       return realFs.rm(path, options);
     },
@@ -516,6 +545,150 @@ test("a post-swap backup cleanup refusal does not invalidate the installed set",
     () => generateWorksheets({ sources: loaded, outputDirectory, fs: cleanupFs, sha256 }),
   );
   assert.match(await readFile(join(outputDirectory, "accessibility.md"), "utf8"), /iphone \/ read: blocked/);
+  assert.doesNotReject(() => realFs.access(`${outputDirectory}.backup`));
+  await assert.doesNotReject(
+    () => generateWorksheets({ sources: loaded, outputDirectory, fs: realFs, sha256 }),
+  );
+  await assert.rejects(() => realFs.access(`${outputDirectory}.backup`));
+});
+
+test("worksheet generation restores an orphan backup and clears stale swap artifacts", async () => {
+  const loaded = await sources();
+  const outputDirectory = await mkdtemp(join(tmpdir(), "riot-worksheet-recovery-"));
+  await generateWorksheets({ sources: loaded, outputDirectory, fs: realFs, sha256 });
+  const beforeNames = (await readdir(outputDirectory)).sort();
+  const before = new Map(await Promise.all(beforeNames.map(async (name) =>
+    [name, await readFile(join(outputDirectory, name), "utf8")])));
+  const backupDirectory = `${outputDirectory}.backup`;
+  const stagingDirectory = `${outputDirectory}.staging`;
+  const markerPath = `${outputDirectory}.recovery.json`;
+  const lockPath = `${outputDirectory}.lock`;
+  await realFs.rename(outputDirectory, backupDirectory);
+  await realFs.mkdir(stagingDirectory);
+  await realFs.writeFile(join(stagingDirectory, "partial.md"), "partial\n", "utf8");
+  await realFs.writeFile(markerPath, `${JSON.stringify({ processId: 4242, phase: "backup-created" })}\n`);
+  await realFs.writeFile(lockPath, `${JSON.stringify({ processId: 4242 })}\n`);
+
+  await assert.rejects(
+    () => generateWorksheets({
+      sources: loaded,
+      outputDirectory,
+      fs: realFs,
+      sha256: () => "short",
+      processId: 5252,
+      isProcessAlive: () => false,
+    }),
+    /invalid digest/,
+  );
+  assert.deepEqual((await readdir(outputDirectory)).sort(), beforeNames);
+  for (const [name, bytes] of before) {
+    assert.equal(await readFile(join(outputDirectory, name), "utf8"), bytes);
+  }
+  for (const path of [backupDirectory, stagingDirectory, markerPath, lockPath]) {
+    await assert.rejects(() => realFs.access(path), path);
+  }
+});
+
+test("worksheet generation refuses a live lock without changing the installed set", async () => {
+  const loaded = await sources();
+  const outputDirectory = await mkdtemp(join(tmpdir(), "riot-worksheet-lock-"));
+  await generateWorksheets({ sources: loaded, outputDirectory, fs: realFs, sha256 });
+  const before = await readFile(join(outputDirectory, "accessibility.md"), "utf8");
+  const lockPath = `${outputDirectory}.lock`;
+  await realFs.writeFile(lockPath, `${JSON.stringify({ processId: 4242 })}\n`);
+  await assert.rejects(
+    () => generateWorksheets({
+      sources: loaded,
+      outputDirectory,
+      fs: realFs,
+      sha256,
+      processId: 5252,
+      isProcessAlive: (processId) => processId === 4242,
+    }),
+    /active worksheet generation lock/,
+  );
+  assert.equal(await readFile(join(outputDirectory, "accessibility.md"), "utf8"), before);
+  assert.doesNotReject(() => realFs.access(lockPath));
+});
+
+test("worksheet locks fail closed on ambiguous ownership and filesystem errors", async () => {
+  const loaded = await sources();
+  for (const owner of ["{", "{}", `${JSON.stringify({ processId: 0 })}\n`]) {
+    const outputDirectory = await mkdtemp(join(tmpdir(), "riot-worksheet-ambiguous-lock-"));
+    const lockPath = `${outputDirectory}.lock`;
+    await realFs.writeFile(lockPath, owner);
+    await assert.rejects(
+      () => generateWorksheets({ sources: loaded, outputDirectory, fs: realFs, sha256 }),
+      /ambiguous worksheet generation lock/,
+    );
+    assert.doesNotReject(() => realFs.access(lockPath));
+  }
+
+  const deniedDirectory = await mkdtemp(join(tmpdir(), "riot-worksheet-lock-open-"));
+  const deniedFs = {
+    ...realFs,
+    async open() {
+      const error = new Error("injected lock open refusal");
+      error.code = "EACCES";
+      throw error;
+    },
+  };
+  await assert.rejects(
+    () => generateWorksheets({
+      sources: loaded,
+      outputDirectory: deniedDirectory,
+      fs: deniedFs,
+      sha256,
+    }),
+    /lock open refusal/,
+  );
+
+  const writeDirectory = await mkdtemp(join(tmpdir(), "riot-worksheet-lock-write-"));
+  const writeLockPath = `${writeDirectory}.lock`;
+  const writeFs = {
+    ...realFs,
+    async writeFile(path, bytes, options) {
+      if (path === writeLockPath) throw new Error("injected lock write refusal");
+      return realFs.writeFile(path, bytes, options);
+    },
+  };
+  await assert.rejects(
+    () => generateWorksheets({
+      sources: loaded,
+      outputDirectory: writeDirectory,
+      fs: writeFs,
+      sha256,
+    }),
+    /lock write refusal/,
+  );
+  await assert.rejects(() => realFs.access(writeLockPath));
+});
+
+test("worksheet recovery fails closed on unreadable swap state", async () => {
+  const loaded = await sources();
+  const outputDirectory = await mkdtemp(join(tmpdir(), "riot-worksheet-readdir-"));
+  const failingFs = {
+    ...realFs,
+    async readdir(path, options) {
+      if (path === outputDirectory) {
+        const error = new Error("injected swap state refusal");
+        error.code = "EACCES";
+        throw error;
+      }
+      return realFs.readdir(path, options);
+    },
+  };
+  await assert.rejects(
+    () => generateWorksheets({ sources: loaded, outputDirectory, fs: failingFs, sha256 }),
+    /swap state refusal/,
+  );
+  await assert.rejects(() => realFs.access(`${outputDirectory}.lock`));
+});
+
+test("process liveness checks distinguish current, absent, and invalid process IDs", () => {
+  assert.equal(processIsAlive(process.pid), true);
+  assert.equal(processIsAlive(2_147_483_647), false);
+  assert.throws(() => processIsAlive(Number.NaN));
 });
 
 test("worksheets render recorded inventories, approvals, operators, and evidence", async () => {
@@ -561,5 +734,25 @@ test("generateWorksheets requires injected filesystem and hash adapters", async 
       sha256: () => "short",
     }),
     /invalid digest/,
+  );
+  await assert.rejects(
+    () => generateWorksheets({
+      sources: loaded,
+      outputDirectory,
+      fs: realFs,
+      sha256,
+      processId: 0,
+    }),
+    /processId/,
+  );
+  await assert.rejects(
+    () => generateWorksheets({
+      sources: loaded,
+      outputDirectory,
+      fs: realFs,
+      sha256,
+      isProcessAlive: null,
+    }),
+    /liveness/,
   );
 });

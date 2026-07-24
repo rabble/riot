@@ -18,9 +18,24 @@
       "additionalProperties": false,
       "required": ["privacy", "support", "marketing"],
       "properties": {
-        "privacy": { "$ref": "#/$defs/urlEvidence" },
-        "support": { "$ref": "#/$defs/urlEvidence" },
-        "marketing": { "$ref": "#/$defs/urlEvidence" }
+        "privacy": {
+          "allOf": [
+            { "$ref": "#/$defs/urlEvidence" },
+            { "type": "object", "properties": { "url": { "const": "https://riot.protest.net/privacy/" } } }
+          ]
+        },
+        "support": {
+          "allOf": [
+            { "$ref": "#/$defs/urlEvidence" },
+            { "type": "object", "properties": { "url": { "const": "https://riot.protest.net/support/" } } }
+          ]
+        },
+        "marketing": {
+          "allOf": [
+            { "$ref": "#/$defs/urlEvidence" },
+            { "type": "object", "properties": { "url": { "const": "https://riot.protest.net/releases/" } } }
+          ]
+        }
       }
     }
   },

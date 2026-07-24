@@ -22,7 +22,7 @@ const validProduct = {
   urls: {
     privacy: { url: "https://riot.protest.net/privacy/", evidencePath: "marketing/privacy/index.html", evidenceState: "current" },
     support: { url: "https://riot.protest.net/support/", evidencePath: "marketing/support/index.html", evidenceState: "missing" },
-    marketing: { url: "https://riot.protest.net/", evidencePath: "marketing/releases/index.html", evidenceState: "current" },
+    marketing: { url: "https://riot.protest.net/releases/", evidencePath: "marketing/releases/index.html", evidenceState: "current" },
   },
 };
 
@@ -82,9 +82,17 @@ test("common durable fields reject malformed versions, IDs, digests, and timesta
     ["digest", "a".repeat(63)],
     ["digest", "A".repeat(64)],
     ["createdAt", "2026-07-24"],
+    ["createdAt", "2026-02-29T00:00:00.000Z"],
+    ["createdAt", "2026-04-31T00:00:00.000Z"],
+    ["createdAt", "2026-01-01T24:00:00.000Z"],
+    ["createdAt", "2026-01-01T00:00:00Z"],
   ]) {
     assert.throws(() => validateSource(registry, "common", { ...valid, [field]: value }), /validation failed/);
   }
+  assert.doesNotThrow(() => validateSource(registry, "common", {
+    ...valid,
+    createdAt: "2028-02-29T23:59:59.999Z",
+  }));
 });
 
 test("registry rejects malformed, missing, duplicate, and unexpected fixed schema IDs", async () => {

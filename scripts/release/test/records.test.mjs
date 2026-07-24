@@ -25,7 +25,7 @@ const validProduct = {
   urls: {
     privacy: { url: "https://riot.protest.net/privacy/", evidencePath: "marketing/privacy/index.html", evidenceState: "current" },
     support: { url: "https://riot.protest.net/support/", evidencePath: "marketing/support/index.html", evidenceState: "missing" },
-    marketing: { url: "https://riot.protest.net/", evidencePath: "marketing/releases/index.html", evidenceState: "current" },
+    marketing: { url: "https://riot.protest.net/releases/", evidencePath: "marketing/releases/index.html", evidenceState: "current" },
   },
 };
 
@@ -133,8 +133,34 @@ test("records reject invalid hash adapters and non-object wrappers", async () =>
 
 test("records reject calendar-invalid RFC3339-shaped timestamps", async () => {
   const record = await validRecord();
-  const invalid = { ...record, createdAt: "2026-99-99T00:00:00.000Z" };
-  await assert.rejects(() => verifyRecord(invalid, { sha256, registry }), /timestamp/);
+  for (const createdAt of [
+    "2026-99-99T00:00:00.000Z",
+    "2026-02-29T00:00:00.000Z",
+    "2026-04-31T00:00:00.000Z",
+    "2026-01-01T24:00:00.000Z",
+    "2026-01-01T00:00:00Z",
+  ]) {
+    const invalid = { ...record, createdAt };
+    invalid.digest = sha256(canonicalJson({
+      schemaVersion: invalid.schemaVersion,
+      schema: invalid.schema,
+      createdAt: invalid.createdAt,
+      payload: invalid.payload,
+    }));
+    await assert.rejects(
+      () => verifyRecord(invalid, { sha256, registry }),
+      /timestamp/,
+      createdAt,
+    );
+  }
+  const validLeapDay = { ...record, createdAt: "2028-02-29T23:59:59.999Z" };
+  validLeapDay.digest = sha256(canonicalJson({
+    schemaVersion: validLeapDay.schemaVersion,
+    schema: validLeapDay.schema,
+    createdAt: validLeapDay.createdAt,
+    payload: validLeapDay.payload,
+  }));
+  await assert.doesNotReject(() => verifyRecord(validLeapDay, { sha256, registry }));
 });
 
 test("createRecord requires injected clock and hash dependencies", async () => {
@@ -149,6 +175,16 @@ test("createRecord requires injected clock and hash dependencies", async () => {
   await assert.rejects(
     () => createRecord({ schema: "riot.release.product.v1", payload: validProduct, clock: fixedClock, sha256 }),
     /registry/,
+  );
+  await assert.rejects(
+    () => createRecord({
+      schema: "riot.release.product.v1",
+      payload: validProduct,
+      clock: () => ({ toISOString: () => "2026-02-29T00:00:00.000Z" }),
+      sha256,
+      registry,
+    }),
+    /timestamp/,
   );
   const record = await validRecord();
   await assert.rejects(() => verifyRecord(record, { sha256 }), /registry/);

@@ -20,40 +20,47 @@
 - Expected: exactly one Apple and one Google privacy answer
 - Recovery: Restore the exact canonical Apple and Google answer inventory.
 
+## inventory.network-rows
+
+- State: **PASS**
+- Observed: {"first-launch":1,"denied-permission":1,"granted-permission":1,"nearby-sync":1,"followed-site-refresh":1}
+- Expected: exactly one of: first-launch, denied-permission, granted-permission, nearby-sync, followed-site-refresh
+- Recovery: Restore the exact canonical outbound-network scenario inventory.
+
 ## network.first-launch
 
 - State: **PASS**
-- Observed: present
-- Expected: present
-- Recovery: Add the first-launch evidence row.
+- Observed: 1
+- Expected: exactly one canonical evidence row
+- Recovery: Add exactly one first-launch evidence row and remove duplicates or substitutions.
 
 ## network.denied-permission
 
 - State: **PASS**
-- Observed: present
-- Expected: present
-- Recovery: Add the denied-permission evidence row.
+- Observed: 1
+- Expected: exactly one canonical evidence row
+- Recovery: Add exactly one denied-permission evidence row and remove duplicates or substitutions.
 
 ## network.granted-permission
 
 - State: **PASS**
-- Observed: present
-- Expected: present
-- Recovery: Add the granted-permission evidence row.
+- Observed: 1
+- Expected: exactly one canonical evidence row
+- Recovery: Add exactly one granted-permission evidence row and remove duplicates or substitutions.
 
 ## network.nearby-sync
 
 - State: **PASS**
-- Observed: present
-- Expected: present
-- Recovery: Add the nearby-sync evidence row.
+- Observed: 1
+- Expected: exactly one canonical evidence row
+- Recovery: Add exactly one nearby-sync evidence row and remove duplicates or substitutions.
 
 ## network.followed-site-refresh
 
 - State: **PASS**
-- Observed: present
-- Expected: present
-- Recovery: Add the followed-site-refresh evidence row.
+- Observed: 1
+- Expected: exactly one canonical evidence row
+- Recovery: Add exactly one followed-site-refresh evidence row and remove duplicates or substitutions.
 
 ## privacy.apple
 
