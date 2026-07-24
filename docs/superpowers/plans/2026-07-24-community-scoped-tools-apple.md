@@ -52,30 +52,43 @@ fn listing_trusted_in(listing: &DirectoryListing, namespace: &str) -> bool {
         .any(|id| hex(id) == namespace.to_ascii_lowercase())
 }
 
-fn listing_for(profile: &Arc<MobileProfile>, app_id_hex: &str) -> DirectoryListing {
+fn listing_for(profile: &Arc<MobileProfile>, app_id: &[u8]) -> DirectoryListing {
     profile
         .app_runtime()
         .directory_listings()
         .expect("directory listings")
         .into_iter()
-        .find(|listing| hex(&listing.app_id) == app_id_hex)
+        .find(|listing| listing.app_id == app_id)
         .expect("full app id remains in directory")
 }
 
-let listing_in_a = listing_for(&profile, &a_tool_id());
+let runtime = profile.app_runtime();
+let tool = runtime
+    .directory_listings()
+    .expect("starter directory")
+    .into_iter()
+    .next()
+    .expect("verified starter listing");
+let tool_id = tool.app_id.clone();
+let tool_id_hex = hex(&tool_id);
+runtime
+    .trust_app(tool_id_hex.clone())
+    .expect("approve the real listed tool in A");
+
+let listing_in_a = listing_for(&profile, &tool_id);
 assert!(listing_trusted_in(&listing_in_a, &a_ns));
 
 profile
     .switch_community(b_ns.clone(), REGISTRY_KEY.to_vec())
     .expect("switch B");
-let listing_in_b = listing_for(&profile, &a_tool_id());
+let listing_in_b = listing_for(&profile, &tool_id);
 assert!(!listing_trusted_in(&listing_in_b, &b_ns));
 
 profile
     .switch_community(a_ns.clone(), REGISTRY_KEY.to_vec())
     .expect("switch back A");
-let listing_back_in_a = listing_for(&profile, &a_tool_id());
-assert!(profile.app_runtime().is_app_trusted(a_tool_id()).unwrap());
+let listing_back_in_a = listing_for(&profile, &tool_id);
+assert!(profile.app_runtime().is_app_trusted(tool_id_hex).unwrap());
 assert!(listing_trusted_in(&listing_back_in_a, &a_ns));
 ```
 
@@ -209,10 +222,11 @@ Also update the existing trust/untrust disk assertions to compare exact `(namesp
 Run:
 
 ```bash
-xcodebuild test -project apps/macos/Riot.xcodeproj -scheme RiotKit-macOS \
-  -destination 'platform=macOS' -derivedDataPath build/xcode-dd -quiet \
-  CODE_SIGNING_ALLOWED=NO \
-  -only-testing:RiotKitTests/AppRepositoryTests
+SIM_ID=$(sh scripts/ios-check.sh simulator-id)
+xcodebuild test -project apps/ios/Riot.xcodeproj -scheme RiotKit \
+  -destination "platform=iOS Simulator,id=$SIM_ID" \
+  -derivedDataPath build/xcode-dd -quiet CODE_SIGNING_ALLOWED=NO \
+  -only-testing:RiotTests/AppRepositoryTests
 ```
 
 Expected: FAIL because the snapshot has only profile-wide `trustedAppIDs`.
@@ -264,24 +278,64 @@ public func trustApp(appID: String, expectedNamespaceID: String) throws {
     persisted.trustedAppsByNamespace.append(grant)
     do {
         try storage.save(persisted)
-        try appRuntime.finalizeAppTrust()
     } catch {
         persisted = prior
-        try? storage.save(prior)
         try? appRuntime.discardPreparedTrust()
         throw error
+    }
+    do {
+        try appRuntime.finalizeAppTrust()
+    } catch {
+        // The durable grant is the linearization point. Do not roll it back:
+        // the caller must close/rebuild this repository from durable state.
+        throw RepositoryError.profileClosed
     }
 }
 ```
 
-Implement revoke with the same expected-namespace guard and prepare/persist/finalize ordering. On open, restore only records whose namespace equals `persisted.space?.namespaceID`, after starter/carried pairs have been verified, and let Rust revalidate organizer authority.
+Serialize prepare → save → finalize under the repository’s WU-002c app-mutation
+lock so a switch, revoke, or bridge operation cannot interleave. Implement
+revoke with the same expected-namespace guard and ordering. On open, restore
+only records whose namespace equals `persisted.space?.namespaceID`, after
+starter/carried pairs have been verified, and let Rust revalidate organizer
+authority. An unexpected finalize invariant failure marks the repository
+closed/failed and routes subsequent app operations through the existing
+`RepositoryError.profileClosed` recovery path; it never reports a rollback of a
+durable decision.
+
+Add compatibility overloads in this same task so existing repository callers
+remain source-compatible while directory mutations use the explicit guard:
+
+```swift
+public func trustApp(appID: String) throws {
+    guard let namespaceID = currentSpace?.namespaceID else {
+        throw RepositoryError.noCurrentSpace
+    }
+    try trustApp(appID: appID, expectedNamespaceID: namespaceID)
+}
+
+public func untrustApp(appID: String) throws {
+    guard let namespaceID = currentSpace?.namespaceID else {
+        throw RepositoryError.noCurrentSpace
+    }
+    try untrustApp(appID: appID, expectedNamespaceID: namespaceID)
+}
+```
+
+The explicit overload is mandatory for captured UI actions. The compatibility
+overload only captures at the repository call boundary and preserves existing
+non-directory tests/callers until their own work units adopt operation contexts.
 
 - [ ] **Step 5: Run repository and real community-switch tests**
 
 Run:
 
 ```bash
-sh scripts/ios-check.sh test
+SIM_ID=$(sh scripts/ios-check.sh simulator-id)
+xcodebuild test -project apps/ios/Riot.xcodeproj -scheme RiotKit \
+  -destination "platform=iOS Simulator,id=$SIM_ID" \
+  -derivedDataPath build/xcode-dd -quiet CODE_SIGNING_ALLOWED=NO \
+  -only-testing:RiotTests/AppRepositoryTests
 cargo test -p riot-ffi --test persistence_contract communities_are_isolated_entries_approvals_and_coordinator_do_not_leak -- --exact
 ```
 
@@ -324,6 +378,14 @@ Cover:
 - no badge is `Built in` or `On in this space`;
 - `Works offline` only for a locally resolvable verified pair;
 - `rows` retains its flat local `Availability` semantics for `PeerProfileView`;
+- complete profile-wide listings appear once in Available to add, never
+  duplicated under More tools;
+- organizer `moreTools` contains only the secondary verified-file import
+  action, while member/legacy snapshots expose no import mutation;
+- no selected community yields no snapshot and no mutation context;
+- loading a new namespace clears the prior namespace snapshot;
+- a same-namespace failure retains its last-good rows with scoped error/retry;
+- a cross-namespace failure clears old rows and emits exact named error/retry;
 - full app ID appears in accessibility identifiers; and
 - no `ToolStrings.userFacingVocabulary` value contains `this community`.
 
@@ -366,15 +428,29 @@ public enum RiotDirectoryPrimaryAction: Equatable, Sendable {
     case unavailable(message: String)
 }
 
+public enum RiotDirectoryDiscoveryAction: Equatable, Sendable {
+    case importVerifiedPair(title: String)
+}
+
 public struct RiotDirectorySnapshot: Equatable, Sendable {
     public let namespaceID: String
     public let communityTitle: String
     public let inCommunity: [RiotDirectoryRow]
     public let availableToAdd: [RiotDirectoryRow]
+    public let moreTools: [RiotDirectoryDiscoveryAction]
 }
 ```
 
 Add the row’s `primaryAction`, `actionContext`, local-pair/provenance facts, and full-ID accessibility identifier without removing the compatibility `availability`.
+
+The current directory API is already profile-wide, but every production
+`DirectoryListing` is a verified complete pair and `getCarriedApp` makes it
+actionable in the selected community. Per the approved IA, those rows truthfully
+belong in `Available to add`; they are not duplicated in `More tools`.
+`More tools` models the independent profile-wide discovery affordance that
+exists today—organizer import of a verified pair. Do not invent an “other
+communities” source or surface unverified `pending_manifests`. Tests pin this
+boundary and the absence of duplicated rows.
 
 - [ ] **Step 4: Build rows in linear time and publish atomically**
 
@@ -410,7 +486,10 @@ let next = RiotDirectorySnapshot(
     namespaceID: space.namespaceID,
     communityTitle: space.title,
     inCommunity: allRows.filter(\.enabledInCurrentCommunity),
-    availableToAdd: allRows.filter { !$0.enabledInCurrentCommunity }
+    availableToAdd: allRows.filter { !$0.enabledInCurrentCommunity },
+    moreTools: approval == .organizer
+        ? [.importVerifiedPair(title: "Add a tool from a file")]
+        : []
 )
 rows = allRows
 snapshot = next
@@ -418,9 +497,25 @@ snapshot = next
 
 Sort each section deterministically by localized case-insensitive name and then full app ID. Production listings are verified complete pairs; do not surface `pending_manifests` or unverified names.
 
+Keep a source-compatible overload for `PeerProfileView`:
+
+```swift
+public func refresh() {
+    refresh(approval: .member)
+}
+```
+
+That overload refreshes the unchanged flat `rows` semantics. `DirectoryView`
+always calls `refresh(approval:)` with the real organizer/member/legacy state.
+
 - [ ] **Step 5: Add namespace-keyed loading/error behavior**
 
-Track `isLoading`, `snapshot`, and `errorMessage`. Same-namespace refresh failures retain the prior snapshot; a different-namespace failure clears it and returns exact `Couldn’t load tools for River City Wire.`. Add `retry`.
+Track `isLoading`, `snapshot`, `failedNamespace`, and `errorMessage`.
+Same-namespace refresh failures retain the prior snapshot; a
+different-namespace failure clears it and returns exact `Couldn’t load tools for
+River City Wire.`. Add a retry operation that repeats the captured namespace
+load only while it is still selected. No selection clears the snapshot and
+offers no operation context.
 
 - [ ] **Step 6: Run the focused suite and commit**
 
@@ -460,7 +555,11 @@ At the real repository boundary prove:
 - disabled/unadmitted Add admits but does not trust before confirmation;
 - member import/admission still cannot obtain an execution bridge;
 - Make available publishes verified bytes but does not enable; and
-- a switched namespace rejects a stale expected namespace.
+- a switched namespace rejects a stale expected namespace;
+- revoking between `prepareOpen` and the shell’s actual open causes the fresh
+  `appDataBridge`/`AppExecutionSession` request to fail; and
+- switching namespaces or advancing the execution generation between preparation
+  and open likewise refuses the fresh session.
 
 - [ ] **Step 2: Run both suites and observe RED**
 
@@ -468,6 +567,12 @@ Run:
 
 ```bash
 sh scripts/ios-check.sh test
+SIM_ID=$(sh scripts/ios-check.sh simulator-id)
+xcodebuild test -project apps/ios/Riot.xcodeproj -scheme RiotKit \
+  -destination "platform=iOS Simulator,id=$SIM_ID" \
+  -derivedDataPath build/xcode-dd -quiet CODE_SIGNING_ALLOWED=NO \
+  -only-testing:RiotTests/DirectoryStorefrontTests \
+  -only-testing:RiotTests/DirectoryRepositoryTests
 ```
 
 Expected: FAIL on missing operation-context APIs and old generic receipts.
@@ -486,6 +591,12 @@ private func requireCurrentContext(_ context: RiotDirectoryActionContext) throws
 
 `prepareOpen` and `prepareAdd` return a `RiotSpaceApp`: reuse the installed app or call `getCarriedApp`, then re-check context. `prepareOpen` also requires the refreshed row to remain enabled; the shell obtains its fresh execution session only after `onOpen`.
 
+Do not cache or return an execution session from the directory model.
+`DirectoryView` hands the admitted app to the existing shell `onOpen`, and the
+shell asks `RiotProfileRepository.appDataBridge`/the Rust runtime for a fresh
+generation-and-namespace-bound execution session. The revoke/switch tests above
+pin that separation.
+
 Make `recommend`, `retract`, and `makeAvailable` accept the captured context, call the guard immediately before the port mutation, and publish exact receipts:
 
 ```swift
@@ -495,7 +606,8 @@ Make `recommend`, `retract`, and `makeAvailable` accept the captured context, ca
 
 - [ ] **Step 4: Run the suites and commit**
 
-Run `sh scripts/ios-check.sh test`; expected PASS.
+Run the macOS shared-model test plus the iOS `RiotKit` command from Step 2;
+expected PASS on both.
 
 ```bash
 git add apps/ios/Riot/Directory/DirectoryModel.swift \
@@ -532,10 +644,11 @@ Add an import test that returns the admitted app, verifies it is untrusted, and 
 Run:
 
 ```bash
-xcodebuild test -project apps/macos/Riot.xcodeproj -scheme RiotKit-macOS \
-  -destination 'platform=macOS' -derivedDataPath build/xcode-dd -quiet \
-  CODE_SIGNING_ALLOWED=NO \
-  -only-testing:RiotKitTests/ToolsSectionTests
+SIM_ID=$(sh scripts/ios-check.sh simulator-id)
+xcodebuild test -project apps/ios/Riot.xcodeproj -scheme RiotKit \
+  -destination "platform=iOS Simulator,id=$SIM_ID" \
+  -derivedDataPath build/xcode-dd -quiet CODE_SIGNING_ALLOWED=NO \
+  -only-testing:RiotTests/ToolsSectionTests
 ```
 
 Expected: compile/test FAIL because the methods return `Void` and accept no expected namespace.
@@ -569,7 +682,8 @@ Make `installTool(manifest:bundle:) -> RiotSpaceApp?` return the admitted verifi
 
 - [ ] **Step 4: Run tests and commit**
 
-Run `sh scripts/ios-check.sh test`; expected PASS.
+Run the iOS `RiotKit` `ToolsSectionTests` command from Step 2, then
+`sh scripts/ios-check.sh test`; expected PASS.
 
 ```bash
 git add apps/ios/Riot/AppModel.swift apps/ios/RiotTests/ToolsSectionTests.swift
@@ -597,6 +711,8 @@ XCTAssertEqual(copy.legacyReason,
 ```
 
 Test that `.adding` disables duplicate approval, `.failed` keeps the sheet open with `Couldn’t add Chat to River City Wire. Nothing changed. Try again.`, and `.succeeded` is the only dismissal result.
+Also assert verified permissions precede the confirmation model and that member
+and legacy states contain no approval action.
 
 - [ ] **Step 2: Run and observe RED**
 
@@ -621,7 +737,19 @@ Button(isAdding ? "Adding…" : "Add to \(context.communityTitle)") {
 .disabled(isAdding)
 ```
 
-Announce failure with SwiftUI accessibility live-region semantics, keep/restore focus on the re-enabled confirmation, list verified manifest permissions before the button, and keep provenance only in details when useful.
+Use the repository’s established shared SwiftUI focus mechanism:
+
+```swift
+@AccessibilityFocusState private var approvalFocused: Bool
+```
+
+On failure, attach the complete failure as the re-enabled button’s accessibility
+hint/label, set `approvalFocused = true`, and apply
+`.accessibilityFocused($approvalFocused)`. This causes VoiceOver to encounter
+the named failure while returning focus to the actionable control without
+depending on a nonexistent SwiftUI live-region API. List verified manifest
+permissions before the button, omit the approval control for member/legacy
+states, and keep provenance only in details when useful.
 
 - [ ] **Step 4: Run tests and commit**
 
@@ -650,9 +778,16 @@ XCTAssertEqual(ToolStrings.sectionAvailable, "Available to add")
 XCTAssertEqual(ToolStrings.sectionMore, "More tools")
 XCTAssertEqual(ToolStrings.emptyIn("River City Wire"),
                "No tools in River City Wire yet")
+XCTAssertEqual(ToolStrings.loadFailure("River City Wire"),
+               "Couldn’t load tools for River City Wire.")
+XCTAssertEqual(ToolStrings.chooseCommunity,
+               "Choose a community to see its tools")
 ```
 
 Assert the vocabulary contains no `From your communities`, `Built in`, `Review Chat`, `Share with this community`, or generic `this community`.
+Add pure `DirectoryScreenState` decisions for `.chooseCommunity`, `.loading`,
+`.failed(title:retry:)`, and `.content(snapshot:error:)`; tests assert the failed
+state never simultaneously selects the inline no-tools state.
 
 - [ ] **Step 2: Run focused tests and observe RED**
 
@@ -661,6 +796,25 @@ Run the focused `DirectoryStorefrontTests` command; expected FAIL on old strings
 - [ ] **Step 3: Replace the flat catalog with scoped sections**
 
 Render:
+
+```swift
+switch screenState {
+case .chooseCommunity:
+    Text("Choose a community to see its tools")
+case .loading(let title):
+    ProgressView("Loading tools for \(title)…")
+case .failed(let title):
+    VStack(alignment: .leading) {
+        Text("Couldn’t load tools for \(title).")
+        Button("Try again", action: retry)
+            .buttonStyle(.riotPrimary)
+    }
+case .content(let snapshot, let retainedError):
+    scopedContent(snapshot, retainedError: retainedError)
+}
+```
+
+The content branch uses:
 
 ```swift
 .riotHeader(eyebrow: snapshot.communityTitle.uppercased(), "Tools")
@@ -680,7 +834,12 @@ section("Available to add") {
 moreTools(snapshot)
 ```
 
-Keep `More tools` secondary and show organizer-only `Add a tool from a file` there. After verified import, open the named permission sheet; do not claim import enabled the tool.
+When a same-namespace refresh fails, `retainedError` renders above the
+last-good sections with `Try again`; do not render a misleading empty claim.
+Keep `More tools` secondary and render only `snapshot.moreTools`, which today is
+the organizer-only `Add a tool from a file` discovery action. Omit the whole
+section for member/legacy snapshots. After verified import, open the named
+permission sheet; do not claim import enabled the tool.
 
 - [ ] **Step 4: Make Open/Add/Ask dominant and management secondary**
 
@@ -732,7 +891,26 @@ git commit -m "feat: scope Tools to the selected community"
 - Modify: `apps/ios/RiotUITests/RiversideMemberToolUITests.swift`
 - Modify: `apps/ios/RiotUITests/RiotTabNavigationUITests.swift` only if its reusable Tools capture is used
 
-- [ ] **Step 1: Update XCUITest identifiers and assertions**
+- [ ] **Step 1: Add a deterministic debug-only Tools UI scenario seam**
+
+Follow the existing `RIOT_UI_TEST_RUN_ID` convention. Only when that run ID is
+present may `RIOT_UI_TEST_TOOLS_SCENARIO` select a deterministic scenario:
+
+- `approval-fails-once` — the first result-bearing approval returns failure
+  without calling trust; retry calls the real operation;
+- `disabled-member` — renders the verified disabled fixture with `.member`
+  presentation capability and no mutation control;
+- `switch-during-review` — supplies two named fixture snapshots and changes the
+  selected namespace after the A confirmation opens; and
+- `load-failure` — fails the first scoped refresh, then succeeds on Try again.
+
+Keep the scenario adapter internal to `RiotAppModel`/`DirectoryView`, compiled
+only in Debug, and make it delegate to the ordinary model APIs after the single
+injected event. Production builds and Debug launches without both environment
+keys use no test scenario. Unit tests assert the environment gate cannot
+activate from `RIOT_UI_TEST_TOOLS_SCENARIO` alone.
+
+- [ ] **Step 2: Update XCUITest identifiers and assertions**
 
 Resolve Checklist’s full app ID from the rendered action query/prefix rather than its display name. Assert:
 
@@ -741,9 +919,17 @@ Resolve Checklist’s full app ID from the rendered action query/prefix rather t
 - enabled Checklist has immediate `Open Checklist`;
 - disabled organizer Checklist has `Add Checklist to <community>`, then the named permission sheet, then Open;
 - member demo has Open and no Add/Review;
+- disabled-member scenario has static `Ask an organizer to add Checklist`,
+  exposes no Add/approve control, and does not claim a request was sent;
+- the permission sheet exposes the fixture’s permissions before its Add control;
+- approval-fails-once keeps the sheet open, shows/announces the exact named
+  error, re-enables Add, and the second tap succeeds;
+- switch-during-review dismisses A’s sheet and leaves B unchanged;
+- load-failure shows no false empty state, exposes `Try again`, and then renders
+  the named sections; and
 - no `Built in`, `From your communities`, or `Share with this community` is visible.
 
-- [ ] **Step 2: Run the iOS UI tests at normal size**
+- [ ] **Step 3: Run the iOS UI tests at normal size**
 
 Run:
 
@@ -756,9 +942,11 @@ xcodebuild test -project apps/ios/Riot.xcodeproj -scheme Riot \
   -only-testing:RiotUITests/RiversideMemberToolUITests
 ```
 
-Expected: PASS with kept Tools screenshots.
+Expected: PASS with kept Tools screenshots. Run the new scenario methods in
+`ChecklistFlowUITests`/`RiversideMemberToolUITests` explicitly if the class-wide
+selection is not used.
 
-- [ ] **Step 3: Run at accessibility-extra-extra-extra-large**
+- [ ] **Step 4: Run at accessibility-extra-extra-extra-large**
 
 Run:
 
@@ -773,7 +961,7 @@ xcrun simctl ui "$SIM_ID" content_size medium
 
 Expected: PASS; screenshot shows section order, wrapped named action, no clipping/overflow, and primary action before details.
 
-- [ ] **Step 4: Capture and review macOS at 480-point width**
+- [ ] **Step 5: Capture and review macOS at 480-point width**
 
 Run the Riot macOS app with its default 480×860 window, create/select River City Wire, open Tools, and capture with the visual-review workflow. Inspect:
 
@@ -787,7 +975,7 @@ Run the Riot macOS app with its default 480×860 window, create/select River Cit
 
 Save review artifacts under `artifacts/visual-review/community-scoped-tools/` and record the exact configuration in `review-notes.md`.
 
-- [ ] **Step 5: Commit UI coverage and evidence notes**
+- [ ] **Step 6: Commit UI coverage and evidence notes**
 
 ```bash
 git add apps/ios/RiotUITests/ChecklistFlowUITests.swift \
@@ -828,6 +1016,15 @@ Run:
 ```bash
 cargo test --workspace --all-features
 sh scripts/ios-check.sh test
+SIM_ID=$(sh scripts/ios-check.sh simulator-id)
+xcodebuild test -project apps/ios/Riot.xcodeproj -scheme RiotKit \
+  -destination "platform=iOS Simulator,id=$SIM_ID" \
+  -derivedDataPath build/xcode-dd -quiet CODE_SIGNING_ALLOWED=NO
+xcodebuild test -project apps/ios/Riot.xcodeproj -scheme Riot \
+  -destination "platform=iOS Simulator,id=$SIM_ID" \
+  -derivedDataPath build/xcode-dd -quiet CODE_SIGNING_ALLOWED=NO \
+  -only-testing:RiotUITests/ChecklistFlowUITests \
+  -only-testing:RiotUITests/RiversideMemberToolUITests
 ```
 
 Expected: PASS.
