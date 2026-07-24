@@ -42,6 +42,10 @@ use demo_common::{
 };
 use hosting_common::{client_snapshot_digest, push_initiator, NewswireSiteFixture, SyncItem};
 
+/// Stay below the authority's 90-day cap while remaining useful for demos and
+/// baked development builds.
+const DEMO_TICKET_LIFETIME_SECONDS: u64 = 89 * 24 * 60 * 60;
+
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> ExitCode {
     match run().await {
@@ -116,8 +120,13 @@ async fn run() -> Result<(), String> {
     let now = now_secs();
     let seed = random_secret()?[0];
     stage("minting a demo site with a real NEWSWIRE community on the wire (owned O root, C comments, W newswire, root-signed ticket)");
-    let site =
-        hosting_common::make_newswire_site_fixture(seed, now, now.saturating_sub(100), now + 3600);
+    let ticket_issued = now.saturating_sub(100);
+    let site = hosting_common::make_newswire_site_fixture(
+        seed,
+        now,
+        ticket_issued,
+        ticket_issued + DEMO_TICKET_LIFETIME_SECONDS,
+    );
     println!("    site root (O):    {}", to_hex(&site.root_id));
     println!("    C namespace:      {}", to_hex(&site.namespaces[1]));
     println!(

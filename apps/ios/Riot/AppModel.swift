@@ -17,12 +17,12 @@ public enum AnchorRelayDefaults {
 
     /// A root-signed ReadCommitted ticket (hex) for a community already committed
     /// on the relay (O masthead + C comments + W newswire wire). Re-baked
-    /// 2026-07-24 by reseeding the live relay with a real newswire community
-    /// (demo_host over discovery); community root (W)
+    /// 2026-07-24 for the real newswire community already hosted by the live
+    /// relay; community root (W)
     /// 452760690dc2b6d0d73c3ce5a1b9985751def04945d3d7d00121cff42e9ef544
     /// ("River City Wire" — 3 posts from distinct people). Durable 89-day ticket.
     public static let communityTicketHex =
-        "83028c58207f6c42e7988f6ee2654cf3e1177c614086d54e0dcd9f1905c8460083036472c358207f6c42e7988f6ee2654cf3e1177c614086d54e0dcd9f1905c8460083036472c3582026f1ad8ff8789248f171487257cc5a0a0e6d17f24469ad107377d961f6b78a8a5820452760690dc2b6d0d73c3ce5a1b9985751def04945d3d7d00121cff42e9ef54458204ee5784092f6176e5599d68dd31d7de1d2c2b970f504e0975ac78994f77ebb951a6a62989f026c726571756972655f6e6f6e656c726571756972655f6e6f6e65011a6a62983b1a6a62a6af5840112e56fe6383b87b8c5900e0b9f739bd41cba9d8bb182b5b09dea05e3c068005ea1a57640b9ea9156b410f0f0a96f0569ca52946a240ee92c42b583435fddd06"
+        "83028c58207f6c42e7988f6ee2654cf3e1177c614086d54e0dcd9f1905c8460083036472c358207f6c42e7988f6ee2654cf3e1177c614086d54e0dcd9f1905c8460083036472c3582026f1ad8ff8789248f171487257cc5a0a0e6d17f24469ad107377d961f6b78a8a5820452760690dc2b6d0d73c3ce5a1b9985751def04945d3d7d00121cff42e9ef54458204ee5784092f6176e5599d68dd31d7de1d2c2b970f504e0975ac78994f77ebb951a6a62989f026c726571756972655f6e6f6e656c726571756972655f6e6f6e65011a6a62b28f1a6ad8080f5840badb5fa31067a5c330ba16ca97fbedf1ba9201c981c5014175721ccb2af61c83723514116260ef952516d0fcc0b474455b0ac8a4dd3fa39c019c77848fed9e00"
 
     /// A human name for the built-in community, shown when its own signed
     /// descriptor doesn't carry one. A real newswire descriptor name overrides it.
@@ -73,6 +73,38 @@ public struct RelaySyncResult: Equatable, Sendable {
     }
 }
 
+/// Turns typed anchor failures into honest, user-facing recovery guidance.
+/// Protocol details remain in the developer log; importantly, a rejected ticket
+/// is never mislabeled as an offline relay.
+enum AnchorRelayFailure {
+    static let relayUnreachable =
+        "Riot couldn’t reach the relay just now. It may be offline, or this device may have no internet; nothing on your device changed."
+
+    static func message(for error: Error) -> String {
+        guard let anchorError = error as? AnchorSyncError else {
+            return relayUnreachable
+        }
+
+        switch anchorError {
+        case let .DialRefused(reason):
+            if reason.localizedCaseInsensitiveContains("expired") {
+                return "Riot’s built-in community link expired. Update Riot to get a fresh link; nothing on your device changed."
+            }
+            return "Riot’s built-in community link is no longer valid. Update Riot to get a fresh link; nothing on your device changed."
+        case .TicketMalformed:
+            return "Riot’s built-in community link is no longer valid. Update Riot to get a fresh link; nothing on your device changed."
+        case .BadAnchorAddress:
+            return "Riot’s built-in relay address is no longer valid. Update Riot to reconnect; nothing on your device changed."
+        case .Import:
+            return "Riot reached the relay but couldn’t save the community just now; nothing on your device changed."
+        case .Bind:
+            return "Riot couldn’t start internet syncing just now. Restart Riot and try again; nothing on your device changed."
+        case .Transport:
+            return relayUnreachable
+        }
+    }
+}
+
 /// Developer-facing trail for a relay pull — the namespace ids, verified/rejected
 /// counts, and refusal strings stay HERE (os_log), never on the person's screen.
 enum RelaySyncLog {
@@ -87,6 +119,10 @@ enum RelaySyncLog {
 
     static func adoptFailed(namespace: String, error: Error) {
         logger.error("anchor-relay: adopt failed ns=\(namespace, privacy: .public): \(error.localizedDescription, privacy: .public)")
+    }
+
+    static func pullFailed(error: Error) {
+        logger.error("anchor-relay: pull failed: \(error.localizedDescription, privacy: .public)")
     }
 
     static func discovered(_ candidates: [SyncedCommunityCandidate]) {
@@ -1146,7 +1182,8 @@ public final class RiotAppModel: ObservableObject {
                 )
             }.value
         } catch {
-            relaySyncError = Self.relaySyncFailure
+            RelaySyncLog.pullFailed(error: error)
+            relaySyncError = AnchorRelayFailure.message(for: error)
             return
         }
 
@@ -1242,9 +1279,6 @@ public final class RiotAppModel: ObservableObject {
         switchCommunity(namespaceID: namespaceID)
         select(.home)
     }
-
-    private static let relaySyncFailure =
-        "Riot couldn’t reach the relay just now. It may be offline, or this device may have no internet; nothing on your device changed."
 
     /// The outcome of the last `riot://open?...` verify link the app was handed,
     /// or `nil` when none is pending. The shell presents it as an HONEST verify
