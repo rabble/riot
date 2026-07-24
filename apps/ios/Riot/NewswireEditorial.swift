@@ -371,7 +371,15 @@ public enum NewswireTrustCopy {
 /// copy instead of the payload.
 public struct NewswirePostRow: Equatable, Identifiable, Sendable {
     public let id: String
+    /// Core's sanctioned "Name · tag" rendering. Kept as the honest full form for
+    /// accessibility and any surface that wants the whole attribution in one string.
     public let author: String
+    /// The claimed display name alone, exactly as core sanitized it — the byline
+    /// headline. Never the raw key; see `authorName` for the friendly fallback.
+    public let authorDisplayName: String
+    /// The few key-derived hex characters, shown small and secondary beside the
+    /// name — the honest admission that a self-claimed name proves nothing.
+    public let authorTag: String
     public let authorKeyHex: String
     public let headline: String?
     public let body: String?
@@ -393,6 +401,8 @@ public struct NewswirePostRow: Equatable, Identifiable, Sendable {
         let isOrdinary = display == .ordinary
         self.id = post.entryId
         self.author = post.author.rendered
+        self.authorDisplayName = post.author.displayName
+        self.authorTag = post.author.tag
         self.authorKeyHex = post.author.id
         self.headline = isOrdinary ? post.headline : nil
         self.body = isOrdinary ? post.body : nil
@@ -410,6 +420,16 @@ public struct NewswirePostRow: Equatable, Identifiable, Sendable {
 
     public var readAccessibilityLabel: String {
         "Read \(headline ?? "update")"
+    }
+
+    /// The name to lead the byline with. Core's fallback for a peer who never
+    /// claimed a name is the bare word "member"; we show a friendly "Member" so a
+    /// nameless author reads as a person, never as a raw key. A real claimed name
+    /// passes through untouched (its honest key tag rides alongside as `authorTag`).
+    public var authorName: String {
+        let trimmed = authorDisplayName.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty || trimmed.lowercased() == "member" { return "Member" }
+        return trimmed
     }
 }
 
@@ -456,6 +476,8 @@ public struct NewswireCommentRow: Equatable, Identifiable, Sendable {
     /// returns by this id; core already dropped any reply with no held parent.
     public let parentID: String
     public let author: String
+    public let authorDisplayName: String
+    public let authorTag: String
     public let authorKeyHex: String
     public let body: String?
     public let display: NewswirePostDisplay
@@ -464,9 +486,18 @@ public struct NewswireCommentRow: Equatable, Identifiable, Sendable {
         self.id = comment.entryId
         self.parentID = comment.parentEntryId
         self.author = comment.author.rendered
+        self.authorDisplayName = comment.author.displayName
+        self.authorTag = comment.author.tag
         self.authorKeyHex = comment.author.id
         self.body = comment.body
         self.display = .from(comment.treatment)
+    }
+
+    /// The friendly byline name for a reply, same rule as a post's `authorName`.
+    public var authorName: String {
+        let trimmed = authorDisplayName.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty || trimmed.lowercased() == "member" { return "Member" }
+        return trimmed
     }
 }
 
@@ -510,6 +541,9 @@ public struct EditorialHistoryRow: Equatable, Identifiable, Sendable {
 
     public let id: String
     public let signer: String
+    public let signerDisplayName: String
+    public let signerTag: String
+    public let signerKeyHex: String
     public let kind: EditorialActionKind
     public let targetEntryID: String
     public let reason: String?
@@ -520,6 +554,9 @@ public struct EditorialHistoryRow: Equatable, Identifiable, Sendable {
     public init(_ action: NewswireProjectedEditorialAction) {
         self.id = action.entryId
         self.signer = action.signer.rendered
+        self.signerDisplayName = action.signer.displayName
+        self.signerTag = action.signer.tag
+        self.signerKeyHex = action.signer.id
         self.kind = EditorialActionKind.from(action.kind)
         self.targetEntryID = action.targetEntryId
         self.reason = action.reason
@@ -532,6 +569,13 @@ public struct EditorialHistoryRow: Equatable, Identifiable, Sendable {
     /// never read as an author edit.
     public var correctionLabel: String? {
         kind.isEditorialCorrection ? EditorialCorrectionLabel.text : nil
+    }
+
+    /// The friendly byline name for the signing editor, same rule as a post.
+    public var signerName: String {
+        let trimmed = signerDisplayName.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty || trimmed.lowercased() == "member" { return "Member" }
+        return trimmed
     }
 }
 
@@ -1368,23 +1412,32 @@ public struct NewswireSurfaceView: View {
         VStack(alignment: .leading, spacing: 6) {
             switch post.display {
             case .ordinary:
-                HStack(alignment: .firstTextBaseline, spacing: 6) {
-                    if model.unread.isNew(post.id) {
-                        newDot(for: post.id)
+                // Headline + summary are the tap target: the whole card opens the
+                // report, so a person reads by tapping the thing they're reading.
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                        if model.unread.isNew(post.id) {
+                            newDot(for: post.id)
+                        }
+                        Text(post.headline ?? "")
+                            .font(.riotSerif(size: 18, relativeTo: .headline))
+                            .foregroundStyle(RiotTheme.ink(for: colorScheme))
                     }
-                    Text(post.headline ?? "")
-                        .font(.riot(.body, size: 17, relativeTo: .headline))
-                        .foregroundStyle(RiotTheme.ink(for: colorScheme))
+                    if let body = post.body {
+                        Text(body)
+                            .font(.riot(.body, size: 15, relativeTo: .body))
+                            .foregroundStyle(RiotTheme.ink(for: colorScheme))
+                            .lineLimit(2)
+                    }
                 }
-                if let body = post.body {
-                    Text(body)
-                        .font(.riot(.body, size: 15, relativeTo: .body))
-                        .foregroundStyle(RiotTheme.ink(for: colorScheme))
-                        .lineLimit(2)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    openedTrigger = trigger
+                    reading = post
                 }
-                Text("Signed by \(post.author)")
-                    .font(.riot(.mono, size: 11, relativeTo: .caption2))
-                    .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
+                NewswireAuthorByline(
+                    name: post.authorName, tag: post.authorTag, keyHex: post.authorKeyHex)
                 if post.hasCorrection {
                     RiotBadge(EditorialCorrectionLabel.text)
                         .accessibilityIdentifier("correction-label-\(post.id)")
@@ -1397,19 +1450,7 @@ public struct NewswireSurfaceView: View {
                 if post.aiAssisted {
                     RiotBadge(NewswireTrustCopy.aiAssisted)
                 }
-                Button("Read update") {
-                    openedTrigger = trigger
-                    reading = post
-                }
-                    .buttonStyle(.riotSecondary)
-                    .frame(minHeight: 44)
-                    .focused($focusedTrigger, equals: trigger)
-                    .accessibilityFocused(
-                        $accessibilityFocusedTrigger,
-                        equals: trigger
-                    )
-                    .accessibilityLabel(post.readAccessibilityLabel)
-                    .accessibilityIdentifier("read-update-\(post.id)")
+                readLink(trigger, post)
             case .hiddenInterstitial:
                 treatmentInterstitial(
                     id: "hidden-interstitial-\(post.id)",
@@ -1424,9 +1465,8 @@ public struct NewswireSurfaceView: View {
                 )
             }
             if post.display != .ordinary {
-                Text("Signed by \(post.author)")
-                    .font(.riot(.mono, size: 11, relativeTo: .caption2))
-                    .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
+                NewswireAuthorByline(
+                    name: post.authorName, tag: post.authorTag, keyHex: post.authorKeyHex)
                 Button("Review treatment") {
                     openedTrigger = trigger
                     reading = post
@@ -1446,6 +1486,32 @@ public struct NewswireSurfaceView: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityIdentifier("wire-post-\(post.id)")
+    }
+
+    /// The quiet "Read" affordance under an ordinary post. The whole card already
+    /// opens the report on tap; this is the small, explicit inline link (a chevron,
+    /// not a boxed button) that keeps the action nameable for VoiceOver and the
+    /// keyboard-focus / restored-trigger path the reader relies on.
+    private func readLink(_ trigger: NewswireReportTrigger, _ post: NewswirePostRow) -> some View {
+        Button {
+            openedTrigger = trigger
+            reading = post
+        } label: {
+            HStack(spacing: 3) {
+                Text("Read")
+                Image(systemName: "arrow.right")
+                    .font(.system(size: 12, weight: .semibold))
+            }
+            .font(.riot(.body, size: 14, relativeTo: .subheadline))
+            .fontWeight(.semibold)
+            .foregroundStyle(RiotTheme.accent(for: colorScheme))
+        }
+        .buttonStyle(.plain)
+        .frame(minHeight: 44, alignment: .leading)
+        .focused($focusedTrigger, equals: trigger)
+        .accessibilityFocused($accessibilityFocusedTrigger, equals: trigger)
+        .accessibilityLabel(post.readAccessibilityLabel)
+        .accessibilityIdentifier("read-update-\(post.id)")
     }
 
     /// The communal reaction bar beneath a post's actions: one compact toggle per
@@ -1531,9 +1597,8 @@ public struct NewswireSurfaceView: View {
                     .font(.riot(.body, size: 13, relativeTo: .caption))
                     .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
             }
-            Text(comment.author)
-                .font(.riot(.mono, size: 11, relativeTo: .caption2))
-                .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
+            NewswireAuthorByline(
+                name: comment.authorName, tag: comment.authorTag, keyHex: comment.authorKeyHex)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityIdentifier("wire-comment-\(comment.id)")
@@ -1590,9 +1655,8 @@ public struct NewswireSurfaceView: View {
                                 .font(.riot(.body, size: 13, relativeTo: .caption))
                                 .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
                         }
-                        Text(row.signer)
-                            .font(.riot(.mono, size: 11, relativeTo: .caption2))
-                            .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
+                        NewswireAuthorByline(
+                            name: row.signerName, tag: row.signerTag, keyHex: row.signerKeyHex)
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .accessibilityIdentifier("history-\(row.id)")
@@ -1608,6 +1672,46 @@ public struct NewswireSurfaceView: View {
             .textCase(.uppercase)
             .tracking(1)
             .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
+    }
+}
+
+/// The author byline shared by every newswire row — a post, a reply, an editorial
+/// act. It replaces the old "Signed by member · <hex>" mono string: a small,
+/// key-derived initials avatar leads, then the person's display name (or a friendly
+/// "Member" for a peer who never claimed one), with their honest key tag riding
+/// small and quiet beneath. The name is the headline; the cryptographic proof is a
+/// tap away in the report's "Signature checked" trust card, never the lead.
+struct NewswireAuthorByline: View {
+    let name: String
+    let tag: String
+    /// The full key hex when the row has one (a post/reply/act); the tag is used as
+    /// a stable fallback so the disc colour is still consistent per person.
+    let keyHex: String
+    @Environment(\.colorScheme) private var colorScheme
+
+    private var colorSeed: String { keyHex.isEmpty ? tag : keyHex }
+
+    var body: some View {
+        HStack(spacing: 8) {
+            PersonAvatar(
+                displayName: name,
+                diameter: 28,
+                tint: RiotTheme.avatarColor(forKey: colorSeed))
+            VStack(alignment: .leading, spacing: 0) {
+                Text(name)
+                    .font(.riot(.body, size: 14, relativeTo: .subheadline))
+                    .fontWeight(.semibold)
+                    .foregroundStyle(RiotTheme.ink(for: colorScheme))
+                if !tag.isEmpty {
+                    Text(tag)
+                        .font(.riot(.mono, size: 10, relativeTo: .caption2))
+                        .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(tag.isEmpty ? name : "\(name), key \(tag)")
     }
 }
 
@@ -1674,9 +1778,11 @@ struct NewswireReportDetailSheet: View {
     private var ordinaryDetail: some View {
         VStack(alignment: .leading, spacing: 18) {
             Text(verbatim: row.headline ?? "")
-                .font(.riot(.body, size: 22, relativeTo: .title2))
+                .font(.riotSerif(size: 24, relativeTo: .title2))
                 .foregroundStyle(RiotTheme.ink(for: colorScheme))
                 .accessibilityAddTraits(.isHeader)
+            NewswireAuthorByline(
+                name: row.authorName, tag: row.authorTag, keyHex: row.authorKeyHex)
             if let body = row.body {
                 Text(verbatim: body)
                     .font(.riot(.body, size: 17, relativeTo: .body))
@@ -1713,7 +1819,7 @@ struct NewswireReportDetailSheet: View {
         let treatment = NewswireTreatmentDetail(row: row, lineage: lineage)
         return VStack(alignment: .leading, spacing: 18) {
             Text(treatmentTitle)
-                .font(.riot(.body, size: 22, relativeTo: .title2))
+                .font(.riotSerif(size: 24, relativeTo: .title2))
                 .foregroundStyle(RiotTheme.ink(for: colorScheme))
                 .accessibilityAddTraits(.isHeader)
             Text(treatmentBody)
@@ -1813,9 +1919,10 @@ struct NewswireReportDetailSheet: View {
                             case .tombstoned:
                                 Text(NewswireTreatmentCopy.tombstoneTitle)
                             }
-                            Text("Signed by \(comment.author)")
-                                .font(.riot(.mono, size: 11, relativeTo: .caption2))
-                                .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
+                            NewswireAuthorByline(
+                                name: comment.authorName,
+                                tag: comment.authorTag,
+                                keyHex: comment.authorKeyHex)
                         }
                         .accessibilityIdentifier("detail-comment-\(comment.id)")
                     }
@@ -1832,8 +1939,10 @@ struct NewswireReportDetailSheet: View {
                     VStack(alignment: .leading, spacing: 4) {
                         Text(action.kind.label)
                             .font(.riot(.body, size: 15, relativeTo: .headline))
-                        Text("Signed by \(action.signer)")
-                            .font(.riot(.mono, size: 11, relativeTo: .caption2))
+                        NewswireAuthorByline(
+                            name: action.signerName,
+                            tag: action.signerTag,
+                            keyHex: action.signerKeyHex)
                         if let reason = action.reason {
                             Text(verbatim: reason)
                                 .font(.riot(.body, size: 13, relativeTo: .caption))

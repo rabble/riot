@@ -301,7 +301,22 @@ struct PersonAvatar: View {
     let displayName: String
     var isOrganizer: Bool = false
     var diameter: CGFloat = 40
+    /// An explicit, key-derived disc colour (see ``RiotTheme/avatarColor(forKey:)``).
+    /// `nil` keeps the roster's default disc, so existing People rows are unchanged;
+    /// the newswire byline passes one so each author reads as a distinct face.
+    var tint: Color?
     @Environment(\.colorScheme) private var colorScheme
+
+    private var discColor: Color {
+        if let tint { return tint }
+        return isOrganizer ? RiotTheme.pink(for: colorScheme) : RiotTheme.paper2(for: colorScheme)
+    }
+
+    private var glyphColor: Color {
+        (isOrganizer || tint != nil)
+            ? RiotTheme.onAccent(for: colorScheme)
+            : RiotTheme.ink(for: colorScheme)
+    }
 
     /// Up to two initials from the display name; a single glyph for a one-word
     /// name, and a bullet if the name is empty (a nameless author still gets a
@@ -319,17 +334,10 @@ struct PersonAvatar: View {
     var body: some View {
         Text(Self.initials(for: displayName))
             .font(.riot(.body, size: diameter * 0.36, relativeTo: .headline))
-            .foregroundStyle(
-                isOrganizer ? RiotTheme.paper(for: colorScheme) : RiotTheme.ink(for: colorScheme)
-            )
+            .fontWeight(.semibold)
+            .foregroundStyle(glyphColor)
             .frame(width: diameter, height: diameter)
-            .background(
-                Circle().fill(
-                    isOrganizer
-                        ? RiotTheme.pink(for: colorScheme)
-                        : RiotTheme.paper2(for: colorScheme)
-                )
-            )
+            .background(Circle().fill(discColor))
             .accessibilityHidden(true)
     }
 }

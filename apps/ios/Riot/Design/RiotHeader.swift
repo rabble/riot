@@ -1,30 +1,41 @@
 import SwiftUI
 
-public struct RiotHeader: View {
+public struct RiotHeader<Trailing: View>: View {
     @Environment(\.colorScheme) private var colorScheme
     private let eyebrow: String?
     private let title: String
+    private let trailing: Trailing
 
-    public init(eyebrow: String? = nil, title: String) {
+    public init(
+        eyebrow: String? = nil,
+        title: String,
+        @ViewBuilder trailing: () -> Trailing = { EmptyView() }
+    ) {
         self.eyebrow = eyebrow
         self.title = title
+        self.trailing = trailing()
     }
 
     public var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            if let eyebrow {
-                Text(eyebrow)
-                    .font(.riot(.mono, size: 12, relativeTo: .caption))
-                    .textCase(.uppercase)
-                    .tracking(1)
-                    .foregroundStyle(RiotTheme.pink(for: colorScheme))
+        HStack(alignment: .top, spacing: 12) {
+            VStack(alignment: .leading, spacing: 6) {
+                if let eyebrow {
+                    Text(eyebrow)
+                        .font(.riot(.mono, size: 12, relativeTo: .caption))
+                        .textCase(.uppercase)
+                        .tracking(1)
+                        .foregroundStyle(RiotTheme.pink(for: colorScheme))
+                }
+                // Clean editorial serif — no glitch drop-shadows, no forced
+                // uppercase; the community's own name reads as itself.
+                Text(title)
+                    .font(.riotSerif(size: 30, relativeTo: .largeTitle))
+                    .foregroundStyle(RiotTheme.ink(for: colorScheme))
+                    .fixedSize(horizontal: false, vertical: true)
             }
-            Text(title)
-                .font(.riot(.poster, size: 34, relativeTo: .largeTitle))
-                .textCase(.uppercase)
-                .foregroundStyle(RiotTheme.ink(for: colorScheme))
-                .shadow(color: RiotTheme.blue(for: colorScheme), radius: 0, x: 2, y: 2)
-                .shadow(color: RiotTheme.pink(for: colorScheme), radius: 0, x: -2, y: -2)
+            Spacer(minLength: 0)
+            trailing
+                .padding(.top, 2)
         }
         .padding(.horizontal, 20)
         .padding(.top, 20)
@@ -36,8 +47,16 @@ public struct RiotHeader: View {
 
 public extension View {
     func riotHeader(eyebrow: String? = nil, _ title: String) -> some View {
+        riotHeader(eyebrow: eyebrow, title) { EmptyView() }
+    }
+
+    func riotHeader<Trailing: View>(
+        eyebrow: String? = nil,
+        _ title: String,
+        @ViewBuilder trailing: () -> Trailing
+    ) -> some View {
         let content = safeAreaInset(edge: .top, spacing: 0) {
-            RiotHeader(eyebrow: eyebrow, title: title)
+            RiotHeader(eyebrow: eyebrow, title: title, trailing: trailing)
         }
         // ToolbarPlacement.navigationBar exists only on iOS; there is no
         // navigation bar to hide on macOS, where RiotKit also compiles.

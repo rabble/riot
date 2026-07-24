@@ -1304,6 +1304,61 @@ private struct CommunityShellView: View {
                         .accessibilityIdentifier("route-\(destination.rawValue)")
                         .accessibilityAddTraits(selected ? .isSelected : [])
                     }
+
+                    // "Your places" — the community list lives in the macOS sidebar
+                    // so moving between rooms is spatial and always visible (no
+                    // hidden Command-K popover). Plain rows (no ScrollView) so the
+                    // sidebar lays out exactly like the route list above; each row
+                    // shows its own sync heartbeat and the current room is selected.
+                    if !model.communities.isEmpty {
+                        Text("Your places")
+                            .font(.caption2).textCase(.uppercase)
+                            .tracking(1.2).fontWeight(.semibold)
+                            .foregroundStyle(RiotTheme.ink(for: colorScheme).opacity(0.55))
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, 10).padding(.top, 12).padding(.bottom, 2)
+
+                        ForEach(model.communities) { row in
+                            let selected = row.namespaceID == community.namespaceID
+                            Button {
+                                guard row.available, !selected else { return }
+                                model.switchCommunity(namespaceID: row.namespaceID)
+                            } label: {
+                                let placeName = row.name.isEmpty
+                                    ? (selected ? community.name : "Community")
+                                    : row.name
+                                VStack(alignment: .leading, spacing: 1) {
+                                    Text(placeName)
+                                        .font(.system(size: 13, weight: .medium))
+                                        .lineLimit(1)
+                                    Text(row.syncFreshness)
+                                        .font(.system(size: 9, design: .monospaced))
+                                        .foregroundStyle((selected ? RiotTheme.paper(for: colorScheme) : RiotTheme.ink(for: colorScheme)).opacity(0.6))
+                                        .lineLimit(1)
+                                }
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(.horizontal, 10).padding(.vertical, 7)
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .foregroundStyle(selected ? RiotTheme.paper(for: colorScheme) : RiotTheme.ink(for: colorScheme))
+                            .background(selected ? RiotTheme.pink(for: colorScheme) : Color.clear)
+                            .clipShape(RoundedRectangle(cornerRadius: 6))
+                            .opacity(row.available ? 1 : 0.55)
+                            .accessibilityIdentifier(row.accessibilityID)
+                            .accessibilityAddTraits(selected ? .isSelected : [])
+                        }
+
+                        Button { model.openCommunityChooser() } label: {
+                            Label("Find another", systemImage: "plus")
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(.horizontal, 10).padding(.vertical, 7)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(RiotTheme.ink(for: colorScheme).opacity(0.65))
+                        .accessibilityIdentifier("sidebar-find-community")
+                    }
                 }
                 .padding(8)
                 Spacer()
@@ -1500,6 +1555,7 @@ private struct CommunityShellView: View {
             HomeRouteView(
                 model: model,
                 newswire: newswire,
+                nearby: nearby,
                 onPostUpdate: { openComposer(.home) },
                 onPostFirstUpdate: { openComposer(.emptyWire) },
                 composerFocus: $focusedComposerTrigger,
@@ -1601,6 +1657,7 @@ private struct CommunityShellView: View {
 private struct HomeRouteView: View {
     @ObservedObject var model: RiotAppModel
     @ObservedObject var newswire: NewswireSurfaceModel
+    @ObservedObject var nearby: NearbyTransportController
     let onPostUpdate: () -> Void
     let onPostFirstUpdate: () -> Void
     let composerFocus: FocusState<ComposerOrigin?>.Binding
@@ -1608,11 +1665,14 @@ private struct HomeRouteView: View {
     let alertClock: ActiveAlertsClock
     @Environment(\.colorScheme) private var colorScheme
     @State private var showRejoinSheet = false
+    @State private var didAutoSync = false
+    @State private var showSyncInfo = false
     @State private var now: Date
 
     init(
         model: RiotAppModel,
         newswire: NewswireSurfaceModel,
+        nearby: NearbyTransportController,
         onPostUpdate: @escaping () -> Void,
         onPostFirstUpdate: @escaping () -> Void,
         composerFocus: FocusState<ComposerOrigin?>.Binding,
@@ -1621,6 +1681,7 @@ private struct HomeRouteView: View {
     ) {
         _model = ObservedObject(wrappedValue: model)
         _newswire = ObservedObject(wrappedValue: newswire)
+        _nearby = ObservedObject(wrappedValue: nearby)
         self.onPostUpdate = onPostUpdate
         self.onPostFirstUpdate = onPostFirstUpdate
         self.composerFocus = composerFocus
@@ -1648,11 +1709,6 @@ private struct HomeRouteView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
-                // The real "leave the room, still sync" path: dial the built-in
-                // anchor relay by NodeId over the internet and pull a live
-                // community. Auto-runs once when Home first appears, and offers a
-                // manual re-sync button.
-                AnchorRelaySyncCard(model: model, autoStart: true)
                 if sections.contains(.activeAlerts) {
                     AlertsListView(
                         presentation: activeAlerts,
@@ -1689,7 +1745,7 @@ private struct HomeRouteView: View {
         // The persistent top bar already names the community; Home names the
         // PLACE within it ("what is happening here?") so the community name is
         // not printed twice on the same screen.
-        .riotHeader(eyebrow: "Community", model.space?.title ?? "Home")
+        .riotHeader(eyebrow: "Community", model.space?.title ?? "Home") { homeSyncChip }
         .sheet(isPresented: $showRejoinSheet) {
             JoinByReferenceSheet(model: model, onClose: { showRejoinSheet = false })
         }
@@ -1702,6 +1758,117 @@ private struct HomeRouteView: View {
                 )
             } catch {}
         }
+        // Auto-populate this community once on first appearance — the behavior the
+        // old top card carried via autoStart, now decoupled from any heavy UI.
+        .task {
+            guard !didAutoSync, model.relaySyncResult == nil, !model.isRelaySyncing else { return }
+            didAutoSync = true
+            await model.syncFromRelay()
+        }
+    }
+
+    private var activeNamespace: String { model.space?.namespaceID ?? "" }
+
+    /// "Synced 2m ago" / "Syncing…" — the current community's own heartbeat,
+    /// glanceable at the top of Home instead of a full connect card.
+    private var syncStatusText: String {
+        if model.isRelaySyncing { return "Syncing…" }
+        if let text = model.lastSyncedText(for: activeNamespace) { return text }
+        if let row = model.communities.first(where: { $0.namespaceID == activeNamespace }) {
+            return row.syncFreshness
+        }
+        return "Synced"
+    }
+
+    /// A small sync chip in the header's top-right — tap for how syncing works
+    /// and where this community can reach others.
+    @ViewBuilder private var homeSyncChip: some View {
+        Button { showSyncInfo = true } label: {
+            HStack(spacing: 5) {
+                if model.isRelaySyncing {
+                    ProgressView().controlSize(.mini)
+                } else {
+                    Circle().fill(RiotTheme.accent(for: colorScheme)).frame(width: 6, height: 6)
+                }
+                Text(syncStatusText)
+                    .font(.riot(.mono, size: 10, relativeTo: .caption2))
+                    .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
+            }
+        }
+        .buttonStyle(.plain)
+        .help("How syncing works")
+        .accessibilityIdentifier("home-sync-status")
+        .popover(isPresented: $showSyncInfo, arrowEdge: .top) { syncInfoPopover }
+    }
+
+    /// Plain-language nearby state for the sync popover.
+    private var nearbyPhrase: String {
+        switch nearby.state {
+        case .idle: return "Not searching right now"
+        case .connecting, .gettingLatest: return "Connecting to someone nearby…"
+        case .preview: return "Someone nearby has updates to share"
+        case .caughtUp, .alreadyCurrent: return "In sync with a nearby phone"
+        case .outOfRange: return "A phone just went out of range"
+        case .failed: return "Couldn't connect — try again"
+        default: return "Looking for people nearby…"
+        }
+    }
+
+    /// "How does this stay in sync?" — the honest answer, with where it can
+    /// reach others right now (internet relay + people nearby) and the actions
+    /// to do either. Nothing's lost offline; it catches up on reconnect.
+    @ViewBuilder private var syncInfoPopover: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Staying in sync")
+                .font(.riotSerif(size: 20, relativeTo: .title3))
+                .foregroundStyle(RiotTheme.ink(for: colorScheme))
+            Text("This community stays current whenever it can reach others — over the internet, or people right next to you. Nothing's lost: offline changes catch up when you reconnect.")
+                .font(.riot(.body, size: 13, relativeTo: .footnote))
+                .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
+                .fixedSize(horizontal: false, vertical: true)
+
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: "globe")
+                    .foregroundStyle(RiotTheme.accent(for: colorScheme))
+                    .frame(width: 20)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Over the internet").font(.system(size: 13, weight: .semibold))
+                    Text(model.isRelaySyncing ? "Syncing now…" : (model.lastSyncedText(for: activeNamespace) ?? "Not synced yet"))
+                        .font(.riot(.mono, size: 11, relativeTo: .caption))
+                        .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
+                }
+                Spacer(minLength: 8)
+                if model.isRelaySyncing {
+                    ProgressView().controlSize(.small)
+                } else {
+                    Button("Sync now") { Task { await model.syncFromRelay() } }
+                        .buttonStyle(.riotSecondary)
+                }
+            }
+
+            Divider()
+
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: "antenna.radiowaves.left.and.right")
+                    .foregroundStyle(RiotTheme.accent(for: colorScheme))
+                    .frame(width: 20)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("People nearby").font(.system(size: 13, weight: .semibold))
+                    Text(nearbyPhrase)
+                        .font(.riot(.mono, size: 11, relativeTo: .caption))
+                        .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
+                }
+                Spacer(minLength: 8)
+                Button("Open") {
+                    showSyncInfo = false
+                    model.select(.nearby)
+                }
+                .buttonStyle(.riotSecondary)
+            }
+        }
+        .padding(18)
+        .frame(width: 320)
+        .background(RiotTheme.paper(for: colorScheme))
     }
 
     @ViewBuilder

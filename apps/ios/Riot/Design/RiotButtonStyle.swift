@@ -15,22 +15,32 @@ public struct RiotButtonStyle: ButtonStyle {
 
     public func makeBody(configuration: Configuration) -> some View {
         let ink = RiotTheme.ink(for: colorScheme)
-        let paper = RiotTheme.paper(for: colorScheme)
-        let pink = RiotTheme.pink(for: colorScheme)
+        let accent = RiotTheme.accent(for: colorScheme)
+        let onAccent = RiotTheme.onAccent(for: colorScheme)
         let isPrimary = emphasis == .primary
-        let fill: Color = configuration.isPressed ? pink : (isPrimary ? ink : Color.clear)
-        let foreground: Color = (isPrimary || configuration.isPressed) ? paper : ink
-        let border: Color = configuration.isPressed ? pink : ink
+
+        // Primary: one filled accent pill. Secondary: a quiet ghost — a hairline
+        // outline that warms to the accent on press, never a heavy black box.
+        let fill: Color = isPrimary ? accent : Color.clear
+        let foreground: Color =
+            isPrimary
+                ? onAccent
+                : (configuration.isPressed ? accent : ink)
+        let border: Color = isPrimary ? .clear : (configuration.isPressed ? accent : RiotTheme.line(for: colorScheme))
 
         return configuration.label
-            .font(.riot(.mono, size: 13, relativeTo: .footnote))
-            .textCase(.uppercase)
-            .tracking(1)
-            .padding(.horizontal, 22)
-            .padding(.vertical, 14)
+            .font(.riot(.body, size: 15, relativeTo: .callout))
+            .fontWeight(.semibold)
+            .padding(.horizontal, 18)
+            .padding(.vertical, 11)
             .foregroundStyle(foreground)
             .background(fill)
-            .overlay(Rectangle().strokeBorder(border, lineWidth: 2))
+            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .strokeBorder(border, lineWidth: 1)
+            )
+            .opacity(configuration.isPressed && isPrimary ? 0.86 : 1)
     }
 }
 
