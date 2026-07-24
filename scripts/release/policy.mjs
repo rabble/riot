@@ -447,7 +447,7 @@ function validLockOwner(owner) {
   return Number.isSafeInteger(owner?.processId)
     && owner.processId > 0
     && typeof owner.token === "string"
-    && owner.token.length > 0;
+    && /^[A-Za-z0-9-]{1,128}$/.test(owner.token);
 }
 
 async function pathStat(fs, path) {
@@ -472,9 +472,61 @@ async function lockMatches(fs, lockPath, identity, owner) {
   return observed.processId === owner.processId && observed.token === owner.token;
 }
 
-async function removeOwnedLock(fs, lockPath, identity, owner) {
+async function claimedLockMatches(fs, claimedPath, identity, owner) {
+  const handle = await fs.open(claimedPath, "r");
+  try {
+    const handleIdentity = await handle.stat();
+    if (!sameFileIdentity(handleIdentity, identity)) return false;
+    let observed;
+    if (owner) {
+      try {
+        observed = JSON.parse(await handle.readFile("utf8"));
+      } catch {
+        return false;
+      }
+    }
+    const current = await pathStat(fs, claimedPath);
+    return Boolean(current)
+      && !current.isSymbolicLink()
+      && sameFileIdentity(current, handleIdentity)
+      && (!owner || observed.processId === owner.processId && observed.token === owner.token);
+  } finally {
+    await handle.close();
+  }
+}
+
+function quarantineCollisionError(path) {
+  return new Error(`worksheet lock quarantine collision: ${path}`);
+}
+
+async function removeOwnedLock(fs, lockPath, identity, owner, token = owner?.token) {
   if (!await lockMatches(fs, lockPath, identity, owner)) return false;
-  await fs.rm(lockPath, { force: true });
+  const quarantineDirectory = `${lockPath}.quarantine-${token}`;
+  const claimedPath = join(quarantineDirectory, "lock");
+  try {
+    await fs.mkdir(quarantineDirectory, { mode: 0o700 });
+  } catch (error) {
+    if (error.code === "EEXIST") throw quarantineCollisionError(quarantineDirectory);
+    throw error;
+  }
+  try {
+    await fs.rename(lockPath, claimedPath);
+  } catch (error) {
+    await ignoreFailure(fs.rmdir(quarantineDirectory));
+    throw error;
+  }
+  if (!await claimedLockMatches(fs, claimedPath, identity, owner)) {
+    try {
+      await fs.link(claimedPath, lockPath);
+    } catch {
+      throw lockOwnershipError(lockPath);
+    }
+    await fs.rm(claimedPath, { force: true });
+    await fs.rmdir(quarantineDirectory);
+    return false;
+  }
+  await fs.rm(claimedPath, { force: true });
+  await fs.rmdir(quarantineDirectory);
   return true;
 }
 
@@ -497,6 +549,10 @@ async function readExistingLock(fs, lockPath) {
 }
 
 async function acquireWorksheetLock(fs, lockPath, processId, isProcessAlive, createLockToken) {
+  const owner = { processId, token: createLockToken() };
+  if (!validLockOwner(owner)) {
+    throw new TypeError("lock token adapter must return a safe non-empty string");
+  }
   let handle;
   try {
     handle = await fs.open(lockPath, "wx", 0o600);
@@ -510,19 +566,13 @@ async function acquireWorksheetLock(fs, lockPath, processId, isProcessAlive, cre
     handle = await fs.open(lockPath, "wx", 0o600);
   }
   const identity = await handle.stat();
-  const owner = { processId, token: createLockToken() };
-  if (!validLockOwner(owner)) {
-    await ignoreFailure(handle.close());
-    await ignoreFailure(removeOwnedLock(fs, lockPath, identity));
-    throw new TypeError("lock token adapter must return a non-empty string");
-  }
   try {
     await handle.writeFile(`${JSON.stringify(owner)}\n`, "utf8");
     if (!await lockMatches(fs, lockPath, identity, owner)) throw lockOwnershipError(lockPath);
     return { handle, identity, owner };
   } catch (error) {
     await ignoreFailure(handle.close());
-    await ignoreFailure(removeOwnedLock(fs, lockPath, identity));
+    await ignoreFailure(removeOwnedLock(fs, lockPath, identity, undefined, owner.token));
     throw error;
   }
 }
@@ -620,9 +670,11 @@ export async function generateWorksheets({
     || typeof fs.rename !== "function"
     || typeof fs.rm !== "function"
     || typeof fs.open !== "function"
+    || typeof fs.link !== "function"
+    || typeof fs.rmdir !== "function"
     || typeof fs.lstat !== "function"
     || typeof fs.realpath !== "function") {
-    throw new TypeError("filesystem adapter with mkdir/writeFile/readFile/readdir/rename/rm/open/lstat/realpath is required");
+    throw new TypeError("filesystem adapter with mkdir/writeFile/readFile/readdir/rename/rm/open/link/rmdir/lstat/realpath is required");
   }
   if (typeof sha256 !== "function") throw new TypeError("sha256 adapter is required");
   if (!Number.isSafeInteger(processId)
