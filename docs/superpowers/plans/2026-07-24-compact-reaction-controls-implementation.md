@@ -1,0 +1,752 @@
+# Compact Reaction Controls Implementation Plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use
+> `metaswarm:orchestrated-execution` to implement each work unit through
+> IMPLEMENT, VALIDATE, ADVERSARIAL REVIEW, COMMIT. Steps use checkbox (`- [ ]`)
+> syntax for tracking.
+
+**Goal:** Make the four newswire reactions visibly interactive, compact,
+always visible, asynchronous, accessible, and end-to-end clickable on macOS,
+while fixing the existing post-commit inventory error and same-second clock
+failure that can make a valid click appear inert.
+
+**Architecture:** This is the user-authorized implementation override after the
+three-round design gate. It deliberately keeps the deployed Newswire v1
+timestamp/digest reaction path, avoiding the unreviewed `reaction-state`
+wire-family rollout, immutable-evidence compaction, and old-peer incompatibility.
+Core/FFI first make the existing write truthful and project `reacted_by_me`;
+Swift then moves writes off the main actor into a serial writer, owns shared
+per-reaction pending/error state, and renders a compact adaptive button row.
+
+**Tech Stack:** Rust 2021, Willow/UniFFI, Swift 6, SwiftUI, XCTest/XCUITest,
+macOS 14+, iOS, Gradle Android host compile.
+
+---
+
+## Override boundary and known retained risk
+
+The human explicitly selected **override** by responding “implement it” after
+the design gate’s override/defer/cancel checkpoint. This plan implements the
+requested UX and the correctness fixes that are safe on the deployed wire
+format. It does **not** introduce the proposed new current-state path or claim
+that immutable historical reaction entries no longer consume the store’s
+existing lifetime receipt/seen limits. That separate evidence-retention and
+mixed-version protocol problem remains documented in the design review and must
+not be disguised as solved here.
+
+This boundary is safer than shipping a new path that older clients reject and
+safer than physically deleting provenance without a reviewed compaction model.
+
+## User flow
+
+```text
+Ordinary newswire post
+┌─────────────────────────────────────────────────────────┐
+│ Report headline                                         │
+│ Full report inside.                                     │
+│ Read →                                                  │
+│ [♥ 0] [✊︎ 0] [! 0] [◌ 0]                               │
+│          compact; each target is at least 44×44          │
+│                                                         │
+│ Couldn’t save your reaction. Try again.  (only on fail) │
+└─────────────────────────────────────────────────────────┘
+```
+
+1. The joined-community reader clicks one always-visible reaction.
+2. Only that `(post, kind)` becomes busy; duplicate copies share the state.
+3. The serial writer performs the blocking UniFFI write and reprojection off
+   the main actor.
+4. Success updates the authoritative count/selection. Failure restores the
+   prior state and shows generic retry copy without exposing identifiers.
+5. The same macOS control is pointer- and keyboard-activatable; VoiceOver gets
+   the full name, count, selected state, and busy/failure feedback.
+
+## Work-unit decomposition
+
+| ID | Title | Depends on | Checkpoint |
+| --- | --- | --- | --- |
+| RX-001 | Truthful existing-wire reaction writes | — | Yes |
+| RX-002 | Viewer-aware projection and bindings | RX-001 | Yes |
+| RX-003 | Async shared reaction state model | RX-002 | Yes |
+| RX-004 | Compact adaptive reaction controls | RX-003 | Yes |
+| RX-005 | Native macOS rendered-click fixture | RX-004 | Yes |
+| RX-006 | Cross-platform and coverage closure | RX-005 | Yes |
+
+## API contracts
+
+### Rust/FFI mutation invariant
+
+`MobileProfile.toggle_newswire_reaction(...) -> Result<NewswireSignedRecord,
+MobileError>` remains source-compatible.
+
+- Every returned `Err` occurs before durable commit.
+- Inventory count/byte admission and current-inventory completeness are checked
+  before commit.
+- A newly signed entry must plan as `JoinEffect::Winner`; a dominated write
+  returns `InvalidInput` before commit.
+- After commit, assignment of the exact pre-admitted inventory vector is
+  infallible under the already-held `LocalProfile` critical section.
+
+### Projection record
+
+```rust
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct NewswireReactionTally {
+    pub kind: String,
+    pub count: u32,
+    pub reacted_by_me: bool,
+}
+```
+
+Core receives an optional viewer subspace while it still owns the per-author
+winner map. Viewerless projection returns `false`; `MobileProfile` supplies its
+current author.
+
+### Swift writer
+
+```swift
+public struct ReactionKey: Hashable, Sendable {
+    public let postID: String
+    public let kind: ReactionKind
+}
+
+public struct ReactionWriteSnapshot: Sendable {
+    public let projection: NewswireProjectionView
+    public let revision: UInt64
+}
+
+public protocol NewswireReactionWriting: Sendable {
+    func setReaction(
+        descriptorID: String,
+        postID: String,
+        kind: ReactionKind,
+        active: Bool
+    ) async throws -> ReactionWriteSnapshot
+}
+```
+
+`MobileProfileReactionWriter` is an actor that owns only the generated
+thread-safe `MobileProfile`, calls the synchronous UniFFI write, reprojects, and
+increments `revision`.
+
+## Security considerations
+
+| Boundary | Rule | Verification |
+| --- | --- | --- |
+| Reaction inputs | Closed `ReactionKind`; complete internal IDs only | Rust/Swift invalid-kind tests |
+| Commit/inventory | Preflight equality and limits before mutation | fault/boundary tests |
+| Main actor | No blocking UniFFI call on main | delayed-writer test observes busy |
+| Diagnostics | Fixed public code/copy; no IDs, paths, signed bytes, or content | redaction test |
+| UI fixture | Valid UUID selects isolated temp directory only | invalid-UUID UI test |
+| Duplicate renderings | State keyed by full internal `(post, kind)` | shared-state unit test |
+
+There are no external services, credentials, relay dependencies, or new
+third-party libraries.
+
+---
+
+### RX-001: Truthful existing-wire reaction writes
+
+**Files:**
+- Modify: `crates/riot-core/src/willow/clock.rs`
+- Modify: `crates/riot-core/src/session.rs`
+- Modify: `crates/riot-ffi/src/mobile_state.rs`
+- Modify: `crates/riot-ffi/src/newswire_ffi.rs`
+- Test: `crates/riot-ffi/src/newswire_ffi.rs`
+
+**Definition of done:**
+
+- Inventory admission and exact live-ID equality occur before commit.
+- A post-commit inventory failure is impossible.
+- A dominated candidate is rejected before commit.
+- Production clock preserves microseconds.
+- Rapid existing-wire react/retract/react projects the last sequential write.
+
+- [ ] **Step 1: Add RED clock tests**
+
+Add unit tests in `clock.rs` that call `snapshot_from_unix_duration` with
+`Duration::new(1_700_000_000, 123_456_000)` and assert:
+
+```rust
+let with_fraction =
+    snapshot_from_unix_duration(Ok(Duration::new(1_700_000_000, 123_456_000))).unwrap();
+let whole =
+    snapshot_from_unix_duration(Ok(Duration::from_secs(1_700_000_000))).unwrap();
+assert_eq!(with_fraction.unix_seconds, whole.unix_seconds);
+assert_eq!(
+    with_fraction.tai_j2000_micros - whole.tai_j2000_micros,
+    123_456
+);
+```
+
+- [ ] **Step 2: Run the RED clock test**
+
+Run:
+
+```sh
+cargo test -p riot-core willow::clock::tests::system_time_adapter_preserves_microseconds -- --exact
+```
+
+Expected: FAIL because `duration.as_secs()` discards the fractional value.
+
+- [ ] **Step 3: Preserve the one-read fractional instant**
+
+Refactor the internal converter to accept a `Duration`, construct
+`hifitime::Epoch::from_unix_seconds(duration.as_secs_f64())`, and keep
+`unix_seconds = duration.as_secs()`. Reject seconds beyond `i64::MAX` before the
+floating conversion.
+
+- [ ] **Step 4: Run the focused clock suite**
+
+Run:
+
+```sh
+cargo test -p riot-core willow::clock::tests
+```
+
+Expected: PASS.
+
+- [ ] **Step 5: Add RED preflight tests around `import_signed_newswire`**
+
+In the existing `newswire_ffi.rs` test module add tests that:
+
+1. fill `sync_inventory` to `MAX_SYNC_IDS` with live entries, attempt a new
+   reaction, and assert receipt count, live IDs, generation, and inventory are
+   unchanged;
+2. deliberately desynchronize inventory from active live IDs, attempt a
+   reaction, and assert the same unchanged snapshot;
+3. submit a candidate dominated by an existing same-coordinate entry and assert
+   no receipt is created.
+
+Use the existing in-crate access to `with_active`, `receipt_count`,
+`live_entry_ids`, and `sync_inventory`; do not expose a test-only production
+API.
+
+- [ ] **Step 6: Run the RED FFI tests**
+
+Run:
+
+```sh
+cargo test -p riot-ffi newswire_ffi::tests::reaction_preflight -- --nocapture
+```
+
+Expected: FAIL because `import_signed_newswire` currently commits before
+`track_committed_entry`.
+
+- [ ] **Step 7: Expose preflight/install helpers crate-locally**
+
+Change only visibility in `mobile_state.rs`:
+
+```rust
+pub(crate) fn prospective_sync_inventory(...)
+    -> Result<Vec<SignedWillowEntry>, MobileError>
+
+pub(crate) fn active_namespace_live_ids(...)
+    -> Result<Vec<EntryId>, MobileError>
+
+pub(crate) fn install_sync_inventory(...)
+    -> Result<(), MobileError>
+```
+
+Add a pure helper that compares the current inventory IDs with the current live
+IDs before any write:
+
+```rust
+pub(crate) fn ensure_complete_sync_inventory(
+    profile: &LocalProfile,
+) -> Result<(), MobileError>
+```
+
+Reuse the existing equality semantics; never relax equality to subset/superset.
+
+- [ ] **Step 8: Preflight the exact prospective inventory and join effect**
+
+In `import_signed_newswire`:
+
+1. call `ensure_complete_sync_inventory(profile)`;
+2. compute `next_inventory` before inspection/commit;
+3. inspect/plan;
+4. call a new `ImportPlan::preflight_effects()` method in `session.rs`; this
+   method performs the same live-plan/generation checks as `commit_inner`,
+   computes `plan_join_with_payloads` against a cloned pre-state, and returns
+   the resulting `Vec<(EntryId, JoinEffect)>` without consuming or mutating the
+   plan;
+5. require `JoinEffect::Winner` or a live `AlreadyPresent`; reject `NotLive`;
+6. commit;
+7. assign the pre-admitted vector and assert its IDs equal post-commit live IDs.
+
+Add a focused session test proving `preflight_effects()` leaves generation,
+receipt count, live IDs, and plan liveness unchanged before the subsequent
+commit.
+
+- [ ] **Step 9: Run RX-001 validation**
+
+Run:
+
+```sh
+cargo fmt --all -- --check
+cargo clippy -p riot-core -p riot-ffi --all-features --all-targets -- -D warnings
+cargo test -p riot-core willow::clock
+cargo test -p riot-ffi newswire_ffi
+```
+
+Expected: all PASS.
+
+- [ ] **Step 10: Adversarial review and commit**
+
+Review the RX-001 diff against its DoD. On PASS:
+
+```sh
+git add crates/riot-core/src/willow/clock.rs \
+  crates/riot-core/src/session.rs \
+  crates/riot-ffi/src/mobile_state.rs \
+  crates/riot-ffi/src/newswire_ffi.rs
+git commit -m "fix(newswire): preflight reaction writes before commit"
+```
+
+Human checkpoint: confirm the deployed wire format did not change.
+
+---
+
+### RX-002: Viewer-aware projection and generated bindings
+
+**Files:**
+- Modify: `crates/riot-core/src/newswire/projection.rs`
+- Modify: `crates/riot-core/src/newswire/store.rs`
+- Modify: `crates/riot-core/src/newswire/mod.rs`
+- Modify: `crates/riot-ffi/src/newswire_ffi.rs`
+- Modify: `apps/ios/RiotTests/NewswireSurfaceTests.swift`
+- Generated: `build/generated/riot-ffi/**`
+
+**Definition of done:**
+
+- Core computes viewer state without exposing reactor IDs.
+- FFI exports `reacted_by_me`.
+- Swift selection and next direction survive a fresh model/reprojection.
+- Swift and Android generated consumers compile.
+
+- [ ] **Step 1: Add RED core projection tests**
+
+Extend the existing reaction fixtures with:
+
+```rust
+assert!(tally_for(&viewer_projection, post, ReactionKind::Support).reacted_by_viewer);
+assert!(!tally_for(&other_projection, post, ReactionKind::Support).reacted_by_viewer);
+assert!(!tally_for(&viewerless_projection, post, ReactionKind::Support).reacted_by_viewer);
+```
+
+Cover an active winner and a later retraction.
+
+- [ ] **Step 2: Run the RED core tests**
+
+Run:
+
+```sh
+cargo test -p riot-core newswire::projection::tests::viewer_reaction_state -- --nocapture
+```
+
+Expected: compile/test failure because the viewer-aware API and field do not
+exist.
+
+- [ ] **Step 3: Add viewer-aware pure projection**
+
+Add:
+
+```rust
+pub fn project_for_viewer(
+    descriptor: &VerifiedNewswireRecord,
+    records: &[VerifiedNewswireRecord],
+    clock: ProjectionClockV1,
+    viewer: Option<[u8; 32]>,
+) -> Result<NewswireProjection, NewswireError>
+```
+
+Keep `project(...)` as a wrapper passing `None`. While iterating
+`latest_reactions`, populate a `BTreeSet<(parent, kind)>` for active keys whose
+signer equals `viewer`. Add `reacted_by_viewer: bool` to every emitted tally.
+
+- [ ] **Step 4: Add the store and FFI viewer seam**
+
+Add `project_space_for_viewer(...)` in `store.rs`; retain `project_space` as the
+viewerless wrapper. In `MobileProfile::project_newswire_space`, pass
+`Some(profile.author.subspace_id())` and map:
+
+```rust
+NewswireReactionTally {
+    kind: reaction_kind_name(tally.kind).to_string(),
+    count: tally.count,
+    reacted_by_me: tally.reacted_by_viewer,
+}
+```
+
+- [ ] **Step 5: Add RED Swift relaunch tests**
+
+Update tally constructors with `reactedByMe:` and add a model test that loads a
+projection with Support selected, constructs a fresh model, and asserts:
+
+```swift
+XCTAssertTrue(model.isReacted(post: "p1", kind: .support))
+```
+
+The next write must request `active == false`.
+
+- [ ] **Step 6: Make the model read authoritative selection**
+
+Remove the session-local `reactedByMe` set. `isReacted` reads the matching
+tally’s `reactedByMe`; the successful writer projection becomes the only source
+of count and selected state.
+
+- [ ] **Step 7: Regenerate and compile bindings**
+
+Run:
+
+```sh
+cargo run --locked -p xtask -- generate-bindings
+sh scripts/conference/build-native-core.sh
+xcodebuild test -project apps/macos/Riot.xcodeproj \
+  -scheme RiotKit-macOS -destination 'platform=macOS'
+(cd apps/android && ./gradlew :app:testDebugUnitTest :app:compileDebugKotlin)
+```
+
+Expected: all PASS. Generated files remain build artifacts and are not
+committed; the tracked Android controller consumes the regenerated type without
+constructing `NewswireReactionTally` directly.
+
+- [ ] **Step 8: Adversarial review and commit**
+
+On PASS:
+
+```sh
+git add crates/riot-core/src/newswire \
+  crates/riot-ffi/src/newswire_ffi.rs \
+  apps/ios/RiotTests/NewswireSurfaceTests.swift
+git commit -m "feat(newswire): project the current profile reaction state"
+```
+
+Human checkpoint: fresh-model selection and Android compile are green.
+
+---
+
+### RX-003: Async shared reaction state model
+
+**Files:**
+- Create: `apps/ios/Riot/NewswireReactionWriter.swift`
+- Modify: `apps/ios/Riot/NewswireEditorial.swift`
+- Modify: `apps/ios/Riot/Core/ProfileRepository.swift`
+- Modify: `apps/ios/RiotTests/NewswireSurfaceTests.swift`
+- Modify: `apps/ios/Riot.xcodeproj/project.pbxproj`
+- Modify: `apps/macos/Riot.xcodeproj/project.pbxproj`
+
+**Definition of done:**
+
+- Blocking UniFFI work is off the main actor.
+- Pending/failure state is shared by `ReactionKey`.
+- Same-key duplicate taps are suppressed.
+- Different keys remain independently usable.
+- Older projection revisions cannot overwrite newer ones.
+- Failure copy appears and clears only for the failed key.
+
+- [ ] **Step 1: Add RED async model tests**
+
+Create a controllable actor fake implementing `NewswireReactionWriting`. Tests
+must cover:
+
+```swift
+await model.toggleReaction(post: row, kind: .support, surface: .openWire)
+XCTAssertTrue(model.isPending(key))
+XCTAssertFalse(model.isPending(otherKey))
+```
+
+Hold completion with `CheckedContinuation`, assert duplicate same-key calls stay
+at one, release with revision 1, and assert pending clears. Add rejection,
+different-key, duplicate-surface, and stale-revision tests.
+
+- [ ] **Step 2: Run the RED Swift model tests**
+
+Run:
+
+```sh
+xcodebuild test -project apps/macos/Riot.xcodeproj \
+  -scheme RiotKit-macOS -destination 'platform=macOS' \
+  -only-testing:RiotKitTests-macOS/NewswireSurfaceTests
+```
+
+Expected: compile failure because the async writer/state types do not exist.
+
+- [ ] **Step 3: Implement `NewswireReactionWriter.swift`**
+
+Define `ReactionKey`, `ReactionSurface`, `ReactionFailure`, the async protocol,
+and:
+
+```swift
+public actor MobileProfileReactionWriter: NewswireReactionWriting {
+    private let profile: MobileProfile
+    private var revision: UInt64 = 0
+
+    public func setReaction(...) async throws -> ReactionWriteSnapshot {
+        try Task.checkCancellation()
+        _ = try profile.toggleNewswireReaction(...)
+        let projection = try profile.projectNewswireSpace(...)
+        revision &+= 1
+        return ReactionWriteSnapshot(projection: projection, revision: revision)
+    }
+}
+```
+
+The actor serializes the generated thread-safe handle; it does not capture the
+mutable repository.
+
+- [ ] **Step 4: Move model state to typed keys**
+
+In `NewswireSurfaceModel` add published `pending`, `failures`, and
+`lastAppliedReactionRevision`, plus owned keyed `Task` values. `toggleReaction`
+must:
+
+1. ignore an already-pending key;
+2. clear only that key’s prior failure;
+3. insert pending before creating the task;
+4. request the inverse of authoritative `reacted_by_me`;
+5. apply only revisions newer than the current revision;
+6. clear pending in every outcome;
+7. retain generic copy
+   `Couldn’t save your reaction. Try again.` on rejection.
+
+- [ ] **Step 5: Wire the real writer**
+
+`RiotProfileRepository` constructs `MobileProfileReactionWriter(profile:
+profile)` when it builds the community’s `NewswireSurfaceModel`. Keep the
+synchronous repository reaction method for other callers; the view model uses
+the writer.
+
+- [ ] **Step 6: Add both new source references**
+
+Add `NewswireReactionWriter.swift` to the iOS Riot/RiotKit build phases and the
+macOS by-reference RiotKit source phase. Do not duplicate the file.
+
+- [ ] **Step 7: Run RX-003 validation**
+
+Run the focused macOS and iOS `NewswireSurfaceTests`. Expected: PASS with no
+sleep-based assertions.
+
+- [ ] **Step 8: Adversarial review and commit**
+
+On PASS:
+
+```sh
+git add apps/ios/Riot/NewswireReactionWriter.swift \
+  apps/ios/Riot/NewswireEditorial.swift \
+  apps/ios/Riot/Core/ProfileRepository.swift \
+  apps/ios/RiotTests/NewswireSurfaceTests.swift \
+  apps/ios/Riot.xcodeproj/project.pbxproj \
+  apps/macos/Riot.xcodeproj/project.pbxproj
+git commit -m "feat(ui): make newswire reactions asynchronous and observable"
+```
+
+---
+
+### RX-004: Compact adaptive reaction controls
+
+**Files:**
+- Create: `apps/ios/Riot/Design/CompactReactionBar.swift`
+- Modify: `apps/ios/Riot/Design/RiotTheme.swift`
+- Modify: `apps/ios/Riot/NewswireEditorial.swift`
+- Create: `apps/ios/RiotTests/CompactReactionBarTests.swift`
+- Modify: both Apple project files to include the shared sources/tests
+
+**Definition of done:**
+
+- Four controls are always visible when reacting is available.
+- Exact glyphs are `♥`, `✊︎`, `!`, `◌`.
+- Counts including zero are visible.
+- Layout and targets are state-invariant and accessible.
+- Selected, pending, failure, hover, press, focus, and disabled states exist.
+- Failure is visible; buttons no longer look like tags.
+
+- [ ] **Step 1: Add RED presentation tests**
+
+Test the closed presentation table, count formatting, 44-point minimum target,
+state-invariant width, and accessibility strings:
+
+```swift
+XCTAssertEqual(ReactionKind.allCases.map(\.glyph), ["♥", "✊︎", "!", "◌"])
+XCTAssertEqual(ReactionCountFormatter.string(1_000), "999+")
+XCTAssertEqual(CompactReactionMetrics.minimumTarget, 44)
+```
+
+- [ ] **Step 2: Run the RED component tests**
+
+Expected: compile failure because the component types do not exist.
+
+- [ ] **Step 3: Implement scalable fixed-slot metrics**
+
+Use `@ScaledMetric` for glyph/count sizes and reserve fixed glyph/spinner and
+check slots in every state. At normal sizes each visual capsule is 72 points
+wide × 32 high inside a 44-point target. At accessibility sizes visual height
+grows to the scaled content plus 12 points and the target grows with it.
+
+The single-row breakpoint is `4 × 72 + 3 × 8 = 312` points. Available width
+below 312 uses a two-column grid; therefore the specified 288-point iPhone card
+is deterministically 2×2. Count, selected check, and spinner never change the
+reserved width.
+
+- [ ] **Step 4: Add semantic colors**
+
+Add `onReactionAccent` and `danger` to `RiotTheme` using the design’s exact
+light/dark hex values. Add contrast tests for selected foreground and danger
+against adjacent surfaces.
+
+- [ ] **Step 5: Replace the existing tag-like bar**
+
+Render `CompactReactionBar` after Read, passing model-derived count, selected,
+pending, and failure values. Each button launches the async model action with
+its surface. Use ephemeral row tokens for accessibility IDs; never expose the
+post ID.
+
+- [ ] **Step 6: Add the one-time legend**
+
+Store one app-install-scoped boolean in `UserDefaults` under
+`riot.reactionLegendDismissed.v1`. Only the first eligible row in the active
+model renders the legend, even when a post is duplicated. Tests use an injected
+suite and assert dismissal survives model recreation.
+
+- [ ] **Step 7: Validate layout and accessibility**
+
+Run component tests at 288- and 500-point proposed widths and
+`accessibility3`. Assert no horizontal scroll, four identifiers, correct 1×4 or
+2×2 layout, selected trait, busy/disabled semantics, and full label/value/hint.
+
+- [ ] **Step 8: Adversarial review and commit**
+
+After PASS:
+
+```sh
+git add apps/ios/Riot/Design/CompactReactionBar.swift \
+  apps/ios/Riot/Design/RiotTheme.swift \
+  apps/ios/Riot/NewswireEditorial.swift \
+  apps/ios/RiotTests/CompactReactionBarTests.swift \
+  apps/ios/Riot.xcodeproj/project.pbxproj \
+  apps/macos/Riot.xcodeproj/project.pbxproj
+git commit -m "feat(ui): render compact interactive newswire reactions"
+```
+
+---
+
+### RX-005: Native macOS rendered-click fixture
+
+**Files:**
+- Modify: `apps/macos/Riot.xcodeproj/project.pbxproj`
+- Modify: `apps/macos/Riot.xcodeproj/xcshareddata/xcschemes/Riot-macOS.xcscheme`
+- Create: `apps/macos/RiotUITests/ReactionControlsUITests.swift`
+- Create: `apps/ios/Riot/Demo/ReactionUITestFixture.swift`
+- Modify: `apps/macos/Riot/RiotMacApp.swift`
+- Modify: `apps/macos/README.md`
+
+**Definition of done:**
+
+- A real macOS XCUITest clicks Support through SwiftUI → model → UniFFI → core.
+- The fixture is a two-profile joined-community flow.
+- Pending is deterministic; success changes count/selection.
+- Invalid fixture activation cannot touch production storage.
+- Screenshots exist for 900- and 1200-point windows.
+
+- [ ] **Step 1: Add the RED UI target and test**
+
+Create a macOS UI-test target and scheme TestAction. The first test launches
+with a UUID and `RIOT_UI_TEST_FIXTURE=reactions-joined`, finds
+`reaction.open-wire.support.fixture-post-1`, clicks it, and expects value
+`1 reaction, selected`.
+
+Run the exact macOS test command. Expected: FAIL because fixture bootstrap does
+not exist.
+
+- [ ] **Step 2: Implement the isolated joined fixture**
+
+Reuse the existing UUID temp-directory bootstrap. Author profile creates River
+City Wire/post and exports the local bundle; reader profile imports/joins it and
+becomes active before the surface appears. No network or relay.
+
+- [ ] **Step 3: Add deterministic pending control**
+
+Use a UUID-scoped file gate inside the isolated temp directory: the writer
+waits for `<run>/release-reaction` before starting UniFFI, with a five-second
+test-only timeout. XCUITest observes busy, creates the release file, then waits
+for the real result. This avoids app-sandbox uncertainty around distributed
+notifications.
+
+- [ ] **Step 4: Prove add and remove**
+
+The UI test asserts 0→1 selected, clicks again, and asserts 1→0 unselected.
+Add pointer and keyboard activation cases and a rejected-writer fixture showing
+the retry copy.
+
+- [ ] **Step 5: Capture visual evidence**
+
+Attach `XCUIScreen.main.screenshot()` at 900 and 1200 points. Export images from
+the `.xcresult`; update README with the exact command and artifact location.
+
+- [ ] **Step 6: Adversarial review and commit**
+
+Commit the UI target/fixture only after the native test passes twice
+consecutively without sleeps.
+
+---
+
+### RX-006: Cross-platform and coverage closure
+
+**Files:**
+- No production files. A failure returns to the owning work unit; RX-006 never
+  patches around a failed gate.
+- `.coverage-thresholds.json` remains unchanged unless measured coverage has
+  increased enough to raise a floor in a separately reviewed commit.
+
+- [ ] **Step 1: Run formatting, contracts, and strict Rust gates**
+
+```sh
+cargo fmt --all -- --check
+cargo clippy --workspace --all-features --all-targets -- -D warnings
+cargo test --workspace --all-features
+cargo xtask validate-contracts
+```
+
+- [ ] **Step 2: Run binding and Android gates**
+
+```sh
+cargo run --locked -p xtask -- generate-bindings
+(cd apps/android && ./gradlew :app:testDebugUnitTest :app:compileDebugKotlin)
+```
+
+- [ ] **Step 3: Run both Apple gates**
+
+```sh
+sh scripts/conference/build-native-core.sh
+xcodebuild test -project apps/macos/Riot.xcodeproj \
+  -scheme Riot-macOS -destination 'platform=macOS'
+xcodebuild test -project apps/ios/Riot.xcodeproj \
+  -scheme Riot -destination 'platform=iOS Simulator,name=iPhone 16 Pro'
+```
+
+- [ ] **Step 4: Run the coverage source of truth**
+
+```sh
+scripts/web/coverage.sh
+```
+
+Expected: every tool meets the floor in `.coverage-thresholds.json`.
+
+- [ ] **Step 5: Perform native visual review**
+
+Inspect exported 900/1200 macOS and 320/accessibility iOS screenshots. Block on
+missing controls, tag-like appearance, clipping, horizontal scrolling,
+sub-44-point targets, color-only selection, or missing busy/failure feedback.
+
+- [ ] **Step 6: Final adversarial review and integration commit**
+
+Review the complete diff against the user flow and every WU DoD. Record the
+known override boundary in the PR: the deployed legacy immutable reaction
+history ceiling remains and no mixed-version wire change was introduced.
+
+## Human checkpoints
+
+Pause after every work unit. RX-001 and RX-002 require protocol/data review;
+RX-004 requires visual approval; RX-005 requires reviewing the real screenshot;
+RX-006 requires explicit approval to open/merge a PR.
