@@ -54,6 +54,8 @@ const MAX_TAG_BYTES: usize = 32;
 const MAX_LANGUAGES: usize = 8;
 const MAX_LANGUAGE_BYTES: usize = 35;
 const MAX_REGION_BYTES: usize = 16;
+/// Optional steward display-name cap (design: "≤64 UTF-8 bytes").
+const MAX_STEWARD_NAME_BYTES: usize = 64;
 const TRANSPORT_TOKEN_MAX: usize = 16;
 
 /// Ticket-core signing domain (bare label prefix, NOT `digest_v1` framing):
@@ -412,6 +414,10 @@ pub struct CommunityListingV1 {
     pub issued_unix_seconds: u64,
     /// Expiry (Unix seconds); inclusive.
     pub expiry_unix_seconds: u64,
+    /// Optional owner-authored steward display name (<= 64 UTF-8 bytes). Carried
+    /// in the root-signed listing entry so `Discover` can show who stewards a
+    /// community BEFORE joining. `None` encodes as the CBOR null sentinel.
+    pub steward_name: Option<String>,
 }
 
 impl CommunityListingV1 {
@@ -431,13 +437,17 @@ impl CanonicalRecord for CommunityListingV1 {
                 .region
                 .as_ref()
                 .is_some_and(|r| r.len() > MAX_REGION_BYTES)
+            || self
+                .steward_name
+                .as_ref()
+                .is_some_and(|s| s.len() > MAX_STEWARD_NAME_BYTES)
         {
             return Err(CodecError::LengthOutOfRange);
         }
         let mut buf = Vec::new();
         {
             let mut e = Encoder::new(&mut buf);
-            e.array(18).map_err(|_| CodecError::Malformed)?;
+            e.array(19).map_err(|_| CodecError::Malformed)?;
             e.str(COMMUNITY_LISTING_SCHEMA)
                 .map_err(|_| CodecError::Malformed)?;
             e.bytes(&self.root_id).map_err(|_| CodecError::Malformed)?;
@@ -477,12 +487,20 @@ impl CanonicalRecord for CommunityListingV1 {
                 .map_err(|_| CodecError::Malformed)?;
             e.u64(self.expiry_unix_seconds)
                 .map_err(|_| CodecError::Malformed)?;
+            match &self.steward_name {
+                Some(steward_name) => {
+                    e.str(steward_name).map_err(|_| CodecError::Malformed)?;
+                }
+                None => {
+                    e.null().map_err(|_| CodecError::Malformed)?;
+                }
+            }
         }
         Ok(buf)
     }
 
     fn decode_fields(d: &mut Decoder<'_>) -> Result<Self, CodecError> {
-        expect_array(d, 18)?;
+        expect_array(d, 19)?;
         let schema = read_text_max(d, 1, 64)?;
         if schema != COMMUNITY_LISTING_SCHEMA {
             return Err(CodecError::UnknownVariant);
@@ -509,6 +527,12 @@ impl CanonicalRecord for CommunityListingV1 {
         };
         let issued_unix_seconds = d.u64().map_err(|_| CodecError::Malformed)?;
         let expiry_unix_seconds = d.u64().map_err(|_| CodecError::Malformed)?;
+        let steward_name = if peek_null(d)? {
+            read_null(d)?;
+            None
+        } else {
+            Some(read_text_max(d, 0, MAX_STEWARD_NAME_BYTES)?)
+        };
         Ok(CommunityListingV1 {
             root_id,
             o_namespace_id,
@@ -527,6 +551,7 @@ impl CanonicalRecord for CommunityListingV1 {
             region,
             issued_unix_seconds,
             expiry_unix_seconds,
+            steward_name,
         })
     }
 }

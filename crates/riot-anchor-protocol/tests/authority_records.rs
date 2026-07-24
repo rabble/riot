@@ -215,6 +215,7 @@ fn listing_for(root: [u8; 32], epoch: u32, revision: u32, listed: bool) -> Commu
         region: Some(b"us-ca".to_vec()),
         issued_unix_seconds: 500,
         expiry_unix_seconds: 2000,
+        steward_name: None,
     }
 }
 
@@ -265,13 +266,54 @@ fn listing_rejects_unsorted_topic_tags() {
 }
 
 #[test]
+fn listing_steward_name_round_trips_present_and_absent() {
+    // Present: an owner-authored steward display name survives the canonical round
+    // trip and re-encodes byte-for-byte (topic_tags come back canonically sorted,
+    // so compare the idempotent re-encoding, not the pre-sort input struct).
+    let named = CommunityListingV1 {
+        steward_name: Some("Rosa & the riverside crew".to_string()),
+        ..listing_for([0x22; 32], 1, 0, true)
+    };
+    let bytes = named.encode_canonical().unwrap();
+    let back: CommunityListingV1 = decode_canonical(&bytes, MAX_LISTING_ENVELOPE_BYTES).unwrap();
+    assert_eq!(
+        back.steward_name.as_deref(),
+        Some("Rosa & the riverside crew")
+    );
+    assert_eq!(back.encode_canonical().unwrap(), bytes);
+
+    // Absent: the optional field encodes as a null sentinel and decodes to `None`.
+    let anonymous = CommunityListingV1 {
+        steward_name: None,
+        ..listing_for([0x22; 32], 1, 0, true)
+    };
+    let bytes = anonymous.encode_canonical().unwrap();
+    let back: CommunityListingV1 = decode_canonical(&bytes, MAX_LISTING_ENVELOPE_BYTES).unwrap();
+    assert_eq!(back.steward_name, None);
+    assert_eq!(back.encode_canonical().unwrap(), bytes);
+}
+
+#[test]
+fn listing_rejects_oversize_steward_name() {
+    // Steward names are capped at 64 UTF-8 bytes; a longer one fails to encode.
+    let oversize = CommunityListingV1 {
+        steward_name: Some("x".repeat(65)),
+        ..listing_for([0x22; 32], 1, 0, true)
+    };
+    assert_eq!(
+        oversize.encode_canonical().unwrap_err(),
+        CodecError::LengthOutOfRange
+    );
+}
+
+#[test]
 fn listing_rejects_wrong_schema_string() {
     let mut buf = Vec::new();
     let mut e = Encoder::new(&mut buf);
-    e.array(18).unwrap();
+    e.array(19).unwrap();
     e.str("riot/community-listing/9").unwrap(); // wrong schema
                                                 // remaining fields are irrelevant; decode must fail on the schema before them.
-    for _ in 0..17 {
+    for _ in 0..18 {
         e.u64(0).unwrap();
     }
     assert_eq!(
