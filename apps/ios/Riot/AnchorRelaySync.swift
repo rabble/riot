@@ -6,18 +6,21 @@ import SwiftUI
 /// wires and NodeIds — it leads with a community you can walk into. Tapping
 /// Connect pulls the built-in community over the internet INTO the durable
 /// profile (via ``RiotAppModel/syncFromRelay()``), so on success it appears in
-/// "Your communities" and Open takes you into it. The three placements (Home,
-/// Transport, Onboarding) all read the SAME app-model state, so they reflect one
-/// shared pull rather than three isolated ones.
+/// "Your communities" and Open takes you into it. Both placements (Transport,
+/// Onboarding) read the SAME app-model state, so they reflect one shared pull
+/// rather than two isolated ones.
+///
+/// The card itself never dials on appear — tapping Connect is the only way it
+/// reaches out. It once carried an `autoStart` flag for the copy that sat on an
+/// active community's Home; that placement is gone and Home now owns its own
+/// first-appearance sync directly, so the flag had no caller left and is
+/// removed rather than left as a dead parameter for someone to re-adopt.
 public struct AnchorRelaySyncCard: View {
     @Environment(\.colorScheme) private var colorScheme
     @ObservedObject var model: RiotAppModel
-    @State private var didAutoStart = false
-    private let autoStart: Bool
 
-    public init(model: RiotAppModel, autoStart: Bool = false) {
+    public init(model: RiotAppModel) {
         self.model = model
-        self.autoStart = autoStart
     }
 
     public var body: some View {
@@ -29,12 +32,6 @@ public struct AnchorRelaySyncCard: View {
                     idleState
                 }
             }
-        }
-        .task {
-            guard autoStart, !didAutoStart,
-                  model.relaySyncResult == nil, !model.isRelaySyncing else { return }
-            didAutoStart = true
-            await model.syncFromRelay()
         }
     }
 
