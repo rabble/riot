@@ -348,7 +348,7 @@ class AnchorProtocolVectorTest {
 
     private fun encCommunityListing(f: Map<String, Any?>): ByteArray {
         require(S(f["schema"]) == communityListingSchema) { "unexpected schema" }
-        val w = Writer().arr(18)
+        val w = Writer().arr(19)
             .tstr(communityListingSchema)
             .bstr(BX(f["root_id"]))
             .bstr(BX(f["o_namespace_id"]))
@@ -366,6 +366,7 @@ class AnchorProtocolVectorTest {
         encodeSet(w, encTextSet(L(f["languages"])))
         if (isNull(f["region"])) w.nul() else w.bstr(BX(f["region"]))
         w.uint(U(f["issued_unix_seconds"])).uint(U(f["expiry_unix_seconds"]))
+        if (isNull(f["steward_name"])) w.nul() else w.tstr(S(f["steward_name"]))
         return w.out()
     }
 
@@ -799,7 +800,7 @@ class AnchorProtocolVectorTest {
 
     private fun decodeCommunityListingCanonical(bytes: ByteArray) {
         val r = Reader(bytes)
-        if (r.arrayHead() != 18) throw DecodeException("expected 18-element listing")
+        if (r.arrayHead() != 19) throw DecodeException("expected 19-element listing")
         if (r.readText() != communityListingSchema) throw DecodeException("bad schema")
         for (i in 0 until 5) r.readBytes()
         r.uintHead()
