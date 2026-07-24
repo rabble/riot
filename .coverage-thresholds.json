@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$comment": "RATCHET FLOORS, not aspirational 100%. Each floor is the whole-number percentage below the last measured value (see enforcement.measured) so the gate is GREEN today and BLOCKS regression. This is the single source of truth: scripts/web/coverage.sh (tarpaulin), scripts/web/validate-llvm-coverage.mjs (llvm-cov), and .github/workflows/ci.yml (CI llvm-cov line gate) all READ it. Raise floors as coverage improves; never lower a floor without a documented justification (that is the ratchet). The old 100% values were fiction — nothing read this file and no automated context ran the gate (see docs/ci/coverage-gate-findings.md).",
+  "$comment": "RATCHET FLOORS, not aspirational 100%. Each floor is the whole-number percentage below the last measured value (see enforcement.measured) so the gate is GREEN today and BLOCKS regression. This is the single source of truth: scripts/web/coverage.sh (tarpaulin), scripts/web/validate-llvm-coverage.mjs (llvm-cov), and .github/workflows/ci.yml (CI llvm-cov line gate) all READ it. Raise floors as coverage improves; never lower a floor without a documented justification (that is the ratchet). The old 100% values were fiction \u2014 nothing read this file and no automated context ran the gate (see docs/ci/coverage-gate-findings.md).",
   "thresholds": {
     "tarpaulin": {
       "lines": 94
@@ -19,22 +19,44 @@
     }
   },
   "enforcement": {
-    "ci": "cargo llvm-cov --workspace --all-features --fail-under-lines <thresholds.llvm.lines> — enforced in .github/workflows/ci.yml (the primary product-coverage gate). Uses llvm-cov (source-based), NOT tarpaulin: tarpaulin's ptrace engine hangs on this workspace under CI.",
-    "localComposite": "scripts/web/coverage.sh — tarpaulin (thresholds.tarpaulin.lines, --timeout 300) + llvm-cov floors (thresholds.llvm.*) + JS-tooling self-coverage (thresholds.jsTooling.* via c8). Requires the pinned toolchain; runs locally.",
+    "ci": "cargo llvm-cov --workspace --all-features --fail-under-lines <thresholds.llvm.lines> \u2014 enforced in .github/workflows/ci.yml (the primary product-coverage gate). Uses llvm-cov (source-based), NOT tarpaulin: tarpaulin's ptrace engine hangs on this workspace under CI.",
+    "localComposite": "scripts/web/coverage.sh \u2014 tarpaulin (thresholds.tarpaulin.lines, --timeout 300) + llvm-cov floors (thresholds.llvm.*) + JS-tooling self-coverage (thresholds.jsTooling.* via c8). Requires the pinned toolchain; runs locally.",
     "blockPRCreation": true,
     "blockTaskCompletion": true,
     "ratchet": "A floor MUST NOT be lowered without a written justification committed alongside the change. Prefer raising floors toward the measured values as coverage improves.",
     "measured": {
-      "date": "2026-07-22",
-      "justification": "Branches floor lowered 82 -> 81 with owner approval: PR #105 (governance slice 2) and #106 (WU-002b) merged AFTER the 13:09 recalibration (55e953a) and added ~212 branches at low branch coverage, putting main itself at 81.64% — below the floor they predated. The regression is theirs, not the measuring branch's (WU-001N adds exactly one uncovered branch, a test-helper let-else panic arm). The governance lane still owes branch tests to earn the floor back to 82+. Earlier recalibration context: the measured Rust workspace expanded from 9,571 tarpaulin lines on 2026-07-15 to 19,887 after the transport, anchor, client networking, and followed-site work landed; no product code is excluded.",
-      "tarpaulin": {
-        "lines": { "covered": 20280, "count": 21479, "percent": 94.42 }
-      },
+      "date": "2026-07-24",
+      "llvmMeasuredOn": "2026-07-24",
+      "tarpaulinMeasuredOn": "2026-07-22",
+      "justification": "Branches floor stays 82 -> 81 with owner approval, re-measured on 2026-07-24 against origin/main 9b33aa6 (which now includes #105, #106, #110, #111, #112, #114, #115). As the Rust workspace expanded across those merges its measured branch coverage fell to 81.08%, so main's 82 floor is unmeetable by any branch, not just this one. The regression predates WU-001N; the governance lane still owes branch tests to earn the floor back to 82+. The other three llvm floors are UNCHANGED and pass at this workspace growth: lines 95.38%, functions 93.02%, regions 90.45%. Functions briefly measured 92.96% (below its 93 floor) when #115 merged the WU-001N feature bare, because it added two exported restore APIs (open_local_profile_for_starter_catalog_generation and its _with_database variant) with no tests, and the pre-existing inline tests exercised mobile_state directly rather than the mobile_api UniFFI wrappers a native host calls. That was fixed by ADDING the missing tests, not by lowering the functions floor.",
       "llvm": {
-        "lines": { "covered": 37919, "count": 39719, "percent": 95.47 },
-        "functions": { "covered": 3214, "count": 3435, "percent": 93.57 },
-        "regions": { "covered": 57858, "count": 64005, "percent": 90.40 },
-        "branches": { "covered": 2965, "count": 3632, "percent": 81.64 }
+        "lines": {
+          "covered": 40247,
+          "count": 42195,
+          "percent": 95.38
+        },
+        "functions": {
+          "covered": 3385,
+          "count": 3639,
+          "percent": 93.02
+        },
+        "regions": {
+          "covered": 61132,
+          "count": 67590,
+          "percent": 90.45
+        },
+        "branches": {
+          "covered": 3076,
+          "count": 3794,
+          "percent": 81.08
+        }
+      },
+      "tarpaulin": {
+        "lines": {
+          "covered": 20280,
+          "count": 21479,
+          "percent": 94.42
+        }
       }
     },
     "description": "jsTooling covers the scripts/web/**/*.mjs tooling's OWN tests (c8 --all), orthogonal to product coverage; it stays at 100 because that tooling is small and fully tested. Product coverage is Rust: tarpaulin lines + llvm lines/functions/regions/branches."

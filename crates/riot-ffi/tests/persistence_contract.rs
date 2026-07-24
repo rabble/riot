@@ -1063,3 +1063,85 @@ fn a_newswire_post_stays_in_its_community_and_is_never_offered_after_a_switch() 
         "A's post was NEVER offered across B's sync session"
     );
 }
+
+/// The identityless generation-aware restore APIs, exercised through the PUBLIC
+/// `riot_ffi` surface rather than the internal state module.
+///
+/// These are the restore entry points a native host calls when it has a
+/// persisted profile with no sealed identity: the profile is NOT fresh, so it
+/// must keep whatever starter-catalog marker it was persisted with instead of
+/// taking the fresh generation the no-argument opens assign. Nothing consumes
+/// the marker behaviorally yet (that arrives with the native transaction
+/// wiring), so what is observable — and what this pins — is the validation
+/// contract and that a restored profile is actually usable.
+#[test]
+fn identityless_generation_restore_accepts_valid_markers_and_refuses_the_rest() {
+    // `None` is the durable encoding of a legacy generation-1 profile; 1 and 2
+    // are the explicitly recorded generations.
+    for generation in [None, Some(1u8), Some(2u8)] {
+        let profile = riot_ffi::open_local_profile_for_starter_catalog_generation(generation)
+            .expect("valid generation restores");
+        profile
+            .create_public_space("Restored".into())
+            .expect("a restored identityless profile is usable");
+    }
+
+    // Anything outside 1..=2 is refused rather than clamped or silently
+    // accepted — a bogus persisted marker must not open a profile at all.
+    for bad in [Some(0u8), Some(3u8), Some(u8::MAX)] {
+        assert!(
+            matches!(
+                riot_ffi::open_local_profile_for_starter_catalog_generation(bad),
+                Err(MobileError::InvalidInput)
+            ),
+            "generation {bad:?} must be refused"
+        );
+    }
+}
+
+/// The durable counterpart: same retention and validation contract, backed by a
+/// SQLite database, and the restored profile survives a reopen at the same path.
+#[test]
+fn durable_identityless_generation_restore_validates_and_persists() {
+    let dir = tempfile::tempdir().expect("temp dir");
+
+    for (index, generation) in [None, Some(1u8), Some(2u8)].into_iter().enumerate() {
+        let db_path = dir
+            .path()
+            .join(format!("generation-{index}.db"))
+            .to_string_lossy()
+            .to_string();
+
+        let profile = riot_ffi::open_local_profile_with_database_for_starter_catalog_generation(
+            db_path.clone(),
+            generation,
+        )
+        .expect("valid generation restores");
+        profile
+            .create_public_space("Durable".into())
+            .expect("a restored identityless profile is usable");
+        drop(profile);
+
+        // Reopening the same database through the same restore API keeps
+        // working — the marker does not corrupt the durable store.
+        let reopened = riot_ffi::open_local_profile_with_database_for_starter_catalog_generation(
+            db_path, generation,
+        )
+        .expect("reopen with the same marker");
+        reopened
+            .create_public_space("Durable again".into())
+            .expect("store usable after reopen");
+    }
+
+    let bad_path = dir.path().join("refused.db").to_string_lossy().to_string();
+    assert!(
+        matches!(
+            riot_ffi::open_local_profile_with_database_for_starter_catalog_generation(
+                bad_path,
+                Some(3u8),
+            ),
+            Err(MobileError::InvalidInput)
+        ),
+        "an out-of-range generation is refused before the database is opened"
+    );
+}
