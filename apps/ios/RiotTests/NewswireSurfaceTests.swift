@@ -976,8 +976,8 @@ final class NewswireSurfaceTests: XCTestCase {
         let post = projectedPost(
             id: "p1", headline: "Report", treatment: .ordinary,
             reactions: [
-                NewswireReactionTally(kind: "support", count: 3),
-                NewswireReactionTally(kind: "grief", count: 1),
+                NewswireReactionTally(kind: "support", count: 3, reactedByMe: true),
+                NewswireReactionTally(kind: "grief", count: 1, reactedByMe: false),
             ])
         let model = NewswireSurfaceModel(
             projector: FixedProjector(projection(openWire: [post], frontPage: [])),
@@ -994,6 +994,8 @@ final class NewswireSurfaceTests: XCTestCase {
         // The four kinds are the closed set the bar iterates, in fixed order.
         XCTAssertEqual(ReactionKind.allCases.map(\.rawValue),
                        ["support", "solidarity", "important", "grief"])
+        XCTAssertTrue(model.isReacted(post: "p1", kind: .support))
+        XCTAssertFalse(model.isReacted(post: "p1", kind: .grief))
     }
 
     /// The bar draws an emoji glyph per kind while the wire name and the spoken
@@ -1046,6 +1048,70 @@ final class NewswireSurfaceTests: XCTestCase {
         XCTAssertFalse(model.isReacted(post: "p1", kind: .support))
         // A different kind is independent — still inactive, never toggled.
         XCTAssertFalse(model.isReacted(post: "p1", kind: .grief))
+    }
+
+    /// Selection and toggle direction come from core's viewer-aware projection,
+    /// so rebuilding the model (an app relaunch) cannot turn an active reaction
+    /// into an accidental second "add".
+    func testProjectedViewerReactionSurvivesFreshModelAndNextTapRetracts() {
+        let reactor = RecordingReactor()
+        let post = projectedPost(
+            id: "p1", headline: "Report", treatment: .ordinary,
+            reactions: [
+                NewswireReactionTally(kind: "support", count: 1, reactedByMe: true),
+            ])
+        let model = NewswireSurfaceModel(
+            projector: FixedProjector(projection(openWire: [post], frontPage: [])),
+            editor: ThrowingEditor(), authority: StubAuthority(),
+            spaceDescriptorEntryID: "desc", communityName: "R", myKeyHex: "aa".repeated(32),
+            reactor: reactor)
+
+        model.load()
+        XCTAssertTrue(model.isReacted(post: "p1", kind: .support))
+        XCTAssertEqual(
+            model.toggleReaction(post: NewswirePostRow(post), kind: .support),
+            .retracted)
+        XCTAssertEqual(reactor.calls.map(\.active), [false])
+    }
+
+    /// `toggleReaction` derives its direction from the viewer-aware projection:
+    /// an absent reaction adds, while a freshly reconstructed model with the
+    /// selected tally retracts.
+    func testToggleReactionCallsTheReactorWithDirectionFromProjection() {
+        let reactor = RecordingReactor()
+        let post = projectedPost(id: "p1", headline: "Report", treatment: .ordinary)
+        let inactiveModel = NewswireSurfaceModel(
+            projector: FixedProjector(projection(openWire: [post], frontPage: [])),
+            editor: ThrowingEditor(), authority: StubAuthority(),
+            spaceDescriptorEntryID: "desc", communityName: "R", myKeyHex: "aa".repeated(32),
+            reactor: reactor)
+        inactiveModel.load()
+        XCTAssertTrue(inactiveModel.canReact, "a wired reactor + descriptor ⇒ the reaction bar is offered")
+        let row = NewswirePostRow(post)
+
+        XCTAssertEqual(inactiveModel.toggleReaction(post: row, kind: .support), .reacted)
+        XCTAssertEqual(reactor.calls.count, 1)
+        XCTAssertEqual(reactor.calls.first?.kind, "support")
+        XCTAssertEqual(reactor.calls.first?.active, true)
+        XCTAssertEqual(reactor.calls.first?.parent, "p1")
+
+        let selectedPost = projectedPost(
+            id: "p1", headline: "Report", treatment: .ordinary,
+            reactions: [
+                NewswireReactionTally(kind: "support", count: 1, reactedByMe: true),
+            ])
+        let selectedModel = NewswireSurfaceModel(
+            projector: FixedProjector(projection(openWire: [selectedPost], frontPage: [])),
+            editor: ThrowingEditor(), authority: StubAuthority(),
+            spaceDescriptorEntryID: "desc", communityName: "R", myKeyHex: "aa".repeated(32),
+            reactor: reactor)
+        selectedModel.load()
+        XCTAssertTrue(selectedModel.isReacted(post: "p1", kind: .support))
+        XCTAssertEqual(
+            selectedModel.toggleReaction(post: NewswirePostRow(selectedPost), kind: .support),
+            .retracted)
+        XCTAssertEqual(reactor.calls.last?.active, false)
+        XCTAssertFalse(selectedModel.isReacted(post: "p1", kind: .grief))
     }
 
     /// Without a wired reactor the bar is hidden and a direct toggle is a defensive

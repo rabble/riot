@@ -72,9 +72,9 @@ pub use model::{
 };
 pub use path::{classify_newswire_path, newswire_path, NewswirePathKind};
 pub use projection::{
-    project, NewswireProjection, NewswireProjectionError, PostTreatment, ProjectedComment,
-    ProjectedEditorialAction, ProjectedPost, ProjectedReactionTally, ProjectionClockV1,
-    MAX_FUTURE_SKEW_MICROS, MAX_PROJECTED_RECORDS,
+    project, project_for_viewer, NewswireProjection, NewswireProjectionError, PostTreatment,
+    ProjectedComment, ProjectedEditorialAction, ProjectedPost, ProjectedReactionTally,
+    ProjectionClockV1, MAX_FUTURE_SKEW_MICROS, MAX_PROJECTED_RECORDS,
 };
 pub use share::{
     build_share_reference, decode_share_reference, encode_share_reference,
@@ -83,7 +83,7 @@ pub use share::{
 };
 pub use store::{
     contributors_for_space, discover_space_descriptors, load_space_descriptor, load_space_records,
-    project_space, NewswireStoreError,
+    project_space, project_space_for_viewer, NewswireStoreError,
 };
 
 #[cfg(feature = "conformance")]

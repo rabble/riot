@@ -87,6 +87,10 @@ pub enum PostTreatment {
 pub struct ProjectedReactionTally {
     pub kind: ReactionKind,
     pub count: u32,
+    /// Whether the optional viewer's latest reaction for this post and kind is
+    /// active. This is derived while author identities are still available and
+    /// does not expose those identities to clients.
+    pub reacted_by_viewer: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -227,6 +231,21 @@ pub fn project(
     descriptor: &VerifiedNewswireRecord,
     records: &[VerifiedNewswireRecord],
     clock: ProjectionClockV1,
+) -> Result<NewswireProjection, NewswireProjectionError> {
+    project_for_viewer(descriptor, records, clock, None)
+}
+
+/// Projects a Newswire space and annotates each emitted reaction tally with the
+/// optional viewer's authoritative latest-wins state.
+///
+/// The public projection contains no reactor identifiers. Viewer selection is
+/// computed here, alongside the per-author deduplication that already owns
+/// reaction truth, and is surfaced only as a boolean.
+pub fn project_for_viewer(
+    descriptor: &VerifiedNewswireRecord,
+    records: &[VerifiedNewswireRecord],
+    clock: ProjectionClockV1,
+    viewer: Option<[u8; 32]>,
 ) -> Result<NewswireProjection, NewswireProjectionError> {
     let NewswirePayload::SpaceDescriptor(payload) = descriptor.payload() else {
         return Err(NewswireProjectionError::DescriptorInvalid);
@@ -431,9 +450,13 @@ pub fn project(
     // `active = false` drops the author out). BTreeMap key order yields parents
     // and kinds ascending, so each post's tally vec is already kind-sorted.
     let mut reaction_counts: BTreeMap<(EntryId, ReactionKind), u32> = BTreeMap::new();
-    for ((_signer, parent, kind), (_key, active)) in &latest_reactions {
+    let mut viewer_reactions = BTreeSet::new();
+    for ((signer, parent, kind), (_key, active)) in &latest_reactions {
         if *active {
             *reaction_counts.entry((*parent, *kind)).or_insert(0) += 1;
+            if viewer.is_some_and(|viewer_id| viewer_id == *signer) {
+                viewer_reactions.insert((*parent, *kind));
+            }
         }
     }
     let mut reaction_tallies: BTreeMap<EntryId, Vec<ProjectedReactionTally>> = BTreeMap::new();
@@ -441,7 +464,11 @@ pub fn project(
         reaction_tallies
             .entry(parent)
             .or_default()
-            .push(ProjectedReactionTally { kind, count });
+            .push(ProjectedReactionTally {
+                kind,
+                count,
+                reacted_by_viewer: viewer_reactions.contains(&(parent, kind)),
+            });
     }
 
     let editorial_history = actions
@@ -1643,6 +1670,59 @@ mod tests {
     const REACTOR_ONE: [u8; 32] = [0x50; 32];
     const REACTOR_TWO: [u8; 32] = [0x51; 32];
     const REACTOR_THREE: [u8; 32] = [0x52; 32];
+
+    #[test]
+    fn viewer_reaction_state_tracks_the_viewers_latest_active_winner() {
+        let active_records = [
+            post(id(2), 100, None),
+            reaction(id(20), 200, id(2), REACTOR_ONE, ReactionKind::Support, true),
+            reaction(id(21), 210, id(2), REACTOR_TWO, ReactionKind::Support, true),
+        ];
+        let for_viewer =
+            project_for_viewer(&descriptor(), &active_records, clock(), Some(REACTOR_ONE))
+                .expect("viewer projection");
+        let for_other =
+            project_for_viewer(&descriptor(), &active_records, clock(), Some(REACTOR_TWO))
+                .expect("other projection");
+        let viewerless = project_for_viewer(&descriptor(), &active_records, clock(), None)
+            .expect("viewerless projection");
+
+        assert!(
+            for_viewer.open_wire[0].reactions[0].reacted_by_viewer,
+            "the viewer's active latest winner must select the tally"
+        );
+        assert!(
+            for_other.open_wire[0].reactions[0].reacted_by_viewer,
+            "each viewer receives only their own authoritative state"
+        );
+        assert!(!viewerless.open_wire[0].reactions[0].reacted_by_viewer);
+
+        let retracted_records = [
+            post(id(2), 100, None),
+            reaction(id(20), 200, id(2), REACTOR_ONE, ReactionKind::Support, true),
+            reaction(
+                id(22),
+                300,
+                id(2),
+                REACTOR_ONE,
+                ReactionKind::Support,
+                false,
+            ),
+            reaction(id(21), 210, id(2), REACTOR_TWO, ReactionKind::Support, true),
+        ];
+        let retracted = project_for_viewer(
+            &descriptor(),
+            &retracted_records,
+            clock(),
+            Some(REACTOR_ONE),
+        )
+        .expect("retracted viewer projection");
+        assert_eq!(retracted.open_wire[0].reactions[0].count, 1);
+        assert!(
+            !retracted.open_wire[0].reactions[0].reacted_by_viewer,
+            "a later retraction must clear selection even while another author keeps the tally"
+        );
+    }
 
     #[test]
     fn reaction_tally_counts_distinct_authors_per_kind_sorted_by_kind() {

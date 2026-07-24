@@ -13,8 +13,8 @@ use riot_core::newswire::{
     build_share_reference, create_signed_editorial_action, create_signed_news_comment,
     create_signed_news_post, create_signed_news_reaction_at, create_signed_space_descriptor,
     decode_share_reference, encode_share_reference, encode_space_descriptor, load_space_descriptor,
-    project_space, AlertProfileV1, EditorialActionKind, EditorialActionV1, NewsCommentV1,
-    NewsPostV1, NewsReactionV1, NewswireShareReferenceV1, OperationalProfileV1, ProjectionClockV1,
+    AlertProfileV1, EditorialActionKind, EditorialActionV1, NewsCommentV1, NewsPostV1,
+    NewsReactionV1, NewswireShareReferenceV1, OperationalProfileV1, ProjectionClockV1,
     ReactionKind, RequestKind, RequestProfileV1, SignedNewswireRecord, SpaceDescriptorV1,
 };
 use riot_core::profile::path::SUBSPACE_ID_BYTES;
@@ -182,6 +182,8 @@ pub struct NewswireProjectedPost {
 pub struct NewswireReactionTally {
     pub kind: String,
     pub count: u32,
+    /// Authoritative latest-wins state for the currently open profile.
+    pub reacted_by_me: bool,
 }
 
 /// A projected communal reply in the collective view. Carries its
@@ -473,8 +475,13 @@ impl MobileProfile {
         with_active(&self.inner, |profile| {
             let descriptor_id = parse_entry_id(&space_descriptor_entry_id)?;
             let clock = ProjectionClockV1::system().map_err(|_| MobileError::ClockUnavailable)?;
-            let projection = project_space(&profile.store, descriptor_id, clock)
-                .map_err(map_newswire_store_error)?;
+            let projection = riot_core::newswire::project_space_for_viewer(
+                &profile.store,
+                descriptor_id,
+                clock,
+                Some(*profile.author.subspace_id().as_bytes()),
+            )
+            .map_err(map_newswire_store_error)?;
             // Resolve every known name ONCE, then render each author against it.
             // A rename repairs every row that person ever touched.
             let names = resolve_display_names(&profile.store).map_err(|_| MobileError::Internal)?;
@@ -842,6 +849,7 @@ fn projected_post_view(
             .map(|tally| NewswireReactionTally {
                 kind: reaction_kind_name(tally.kind).to_string(),
                 count: tally.count,
+                reacted_by_me: tally.reacted_by_viewer,
             })
             .collect(),
     }
@@ -1304,6 +1312,7 @@ mod tests {
             vec![NewswireReactionTally {
                 kind: "support".into(),
                 count: 1,
+                reacted_by_me: true,
             }]
         );
     }

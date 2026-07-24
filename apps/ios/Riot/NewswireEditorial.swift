@@ -888,16 +888,6 @@ public final class NewswireSurfaceModel: ObservableObject {
     /// `reactions` — the surface never re-tallies.
     @Published public private(set) var reactionsByPost: [String: [NewswireReactionTally]] = [:]
 
-    /// The `(post, kind)` pairs this device has toggled ON this session — the only
-    /// "active" signal available until core exposes a per-viewer `reacted_by_me`
-    /// in the projection (the reactions plan defers that until a viewer seam
-    /// exists). Optimistic and session-local: it drives the pink selection and
-    /// decides whether the next tap sends `active: false` (retract) or
-    /// `active: true` (react). It is deliberately NOT presented as core's truth —
-    /// reactions made on other devices are not reflected here, and it resets on
-    /// reopen.
-    private var reactedByMe: Set<String> = []
-
     private let projector: NewswireProjecting
     private let editor: NewswireEditorialActing
     private let authority: NewswireEditorAuthorityChecking
@@ -1034,30 +1024,26 @@ public final class NewswireSurfaceModel: ObservableObject {
         Int(reactionsByPost[postID]?.first { $0.kind == kind.rawValue }?.count ?? 0)
     }
 
-    /// Whether THIS device has this reaction active this session — drives the pink
-    /// selection. Session-local optimistic state (see `reactedByMe`), never a
-    /// claim about core's projection.
+    /// Whether the current profile's latest reaction is active. Core computes
+    /// this viewer-aware state alongside latest-wins deduplication, so selection
+    /// survives reloads and reflects writes from this profile on other devices.
     public func isReacted(post postID: String, kind: ReactionKind) -> Bool {
-        reactedByMe.contains(Self.reactionKey(post: postID, kind: kind))
-    }
-
-    /// The session-local key for one `(post, kind)` reaction toggle.
-    private static func reactionKey(post: String, kind: ReactionKind) -> String {
-        "\(post)|\(kind.rawValue)"
+        reactionsByPost[postID]?
+            .first { $0.kind == kind.rawValue }?
+            .reactedByMe ?? false
     }
 
     /// Toggles this device's communal reaction of `kind` on `post`, then reloads
-    /// so the tally updates. The direction is the inverse of the session-local
-    /// active state: an active reaction is retracted (`active: false`), an inactive
-    /// one is added (`active: true`). The local state flips ONLY after core
-    /// accepts, so a refusal leaves both the tally and the pink selection
-    /// unchanged and the person can retry. A no-op (`.unavailable`) when no reactor
-    /// is wired — the bar is hidden in that case, so this is defensive.
+    /// so the tally updates. The direction is the inverse of core's projected
+    /// viewer state: an active reaction is retracted (`active: false`), an
+    /// inactive one is added (`active: true`). A refusal leaves the authoritative
+    /// projection unchanged and the person can retry. A no-op (`.unavailable`)
+    /// when no reactor is wired — the bar is hidden in that case, so this is
+    /// defensive.
     @discardableResult
     public func toggleReaction(post: NewswirePostRow, kind: ReactionKind) -> NewswireReactionOutcome {
         guard let reactor else { return .unavailable }
-        let key = Self.reactionKey(post: post.id, kind: kind)
-        let nowActive = !reactedByMe.contains(key)
+        let nowActive = !isReacted(post: post.id, kind: kind)
         do {
             _ = try reactor.toggleNewswireReaction(
                 spaceDescriptorEntryID: spaceDescriptorEntryID,
@@ -1065,7 +1051,6 @@ public final class NewswireSurfaceModel: ObservableObject {
                 kind: kind.rawValue,
                 active: nowActive
             )
-            if nowActive { reactedByMe.insert(key) } else { reactedByMe.remove(key) }
             load()
             return nowActive ? .reacted : .retracted
         } catch {
