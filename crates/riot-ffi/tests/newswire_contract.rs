@@ -302,6 +302,23 @@ fn projection_carries_every_signed_field_of_a_post() {
     // merge two projections without re-deriving it.
     assert!(projected.tai_j2000_micros > 0);
 
+    // A real creation instant (UTC Unix seconds) is recovered from the entry
+    // timestamp so the client can render "2h ago". It is a plausible present-day
+    // second (post signed just now) and inverts the same converter the signer
+    // used — NOT the raw micros value, and never the 1970 fallback.
+    let created = projected
+        .created_at_unix_seconds
+        .expect("a freshly signed post must carry a recovered creation time");
+    assert!(
+        (1_700_000_000..4_000_000_000).contains(&created),
+        "created_at_unix_seconds must be a present-day Unix second, got {created}"
+    );
+    assert!(
+        created < projected.tai_j2000_micros,
+        "created seconds ({created}) must be far below the micros ordering value ({}) — unit guard",
+        projected.tai_j2000_micros
+    );
+
     // The author is RENDERED, never a raw key posing as a name.
     let expected_tag = me
         .id

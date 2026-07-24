@@ -24,7 +24,10 @@ pub use willow25::authorisation::AuthorisationToken;
 pub use willow25::entry::{Entry, NamespaceId, SubspaceId};
 pub use willow25::paths::Path;
 
-pub use clock::{system_snapshot, tai_j2000_micros_from_unix_seconds, ClockSnapshot};
+pub use clock::{
+    system_snapshot, tai_j2000_micros_from_unix_seconds, unix_seconds_from_tai_j2000_micros,
+    ClockSnapshot,
+};
 pub use digest::{
     bundle_digest, entry_id, evidence_digest, object_digest, william3_digest, BundleDigest,
     EntryId, EvidenceDigest, ObjectDigest,

@@ -65,6 +65,36 @@ pub fn tai_j2000_micros_from_unix_seconds(unix_seconds: u64) -> Result<u64, Will
     Ok(snapshot_from_unix_seconds_internal(seconds, 0)?.tai_j2000_micros)
 }
 
+/// The inverse of [`tai_j2000_micros_from_unix_seconds`]: recover the UTC
+/// Unix-seconds wall-clock reading from a Willow entry `Timestamp` (TAI/J2000
+/// microseconds). Used to give a renderer a real "created at" wall-clock instant
+/// from the only time an open-wire post carries — its entry timestamp — so no
+/// epoch math is hand-rolled at the display boundary (this repo has a documented
+/// time-unit trap: entry timestamps are TAI/J2000 µs, NOT Unix seconds). Takes
+/// the SAME pinned-hifitime path as the forward converter and the live snapshot,
+/// so the round trip is exact at second resolution. Pre-epoch instants (a
+/// timestamp earlier than 1970) and out-of-range readings map to
+/// `CLOCK_UNAVAILABLE` rather than silently wrapping.
+pub fn unix_seconds_from_tai_j2000_micros(tai_j2000_micros: u64) -> Result<u64, WillowError> {
+    // Invert the forward path EXACTLY. Forward is
+    //   micros = (Epoch::from_unix_seconds(s) - J2000_REF_EPOCH).total_nanos / 1000,
+    // whose subtraction is a UTC-clock duration. hifitime's own
+    // `From<Timestamp> for Epoch` reconstructs through a proper-time (TAI) add and
+    // so loses the leap seconds accrued since J2000 (a ~5s error at present) — do
+    // NOT use it. Rebuilding the epoch from the SAME UTC-duration base recovers
+    // the original Unix second exactly, across leap-second eras.
+    let micros = i128::from(tai_j2000_micros);
+    let duration_from_j2000 = hifitime::Duration::from_total_nanoseconds(micros * 1000);
+    let epoch = hifitime::Epoch::from_utc_duration(
+        hifitime::J2000_REF_EPOCH.to_utc_duration() + duration_from_j2000,
+    );
+    let unix_seconds = epoch.to_unix_seconds();
+    if !unix_seconds.is_finite() || unix_seconds < 0.0 {
+        return Err(WillowError::ClockUnavailable);
+    }
+    Ok(unix_seconds.round() as u64)
+}
+
 // ---------------------------------------------------------------------------
 // Conformance-only injection surface (feature-gated; absent from release).
 // ---------------------------------------------------------------------------

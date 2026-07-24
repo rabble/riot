@@ -1136,6 +1136,7 @@ final class NewswireSurfaceTests: XCTestCase {
         correctionIDs: [String] = [],
         body: String? = nil,
         taiJ2000Micros: UInt64 = 1,
+        createdAtUnixSeconds: UInt64? = nil,
         sourceClaims: [String] = [],
         coarseLocation: String? = nil,
         eventTimeUnixSeconds: UInt64? = nil,
@@ -1145,6 +1146,7 @@ final class NewswireSurfaceTests: XCTestCase {
     ) -> NewswireProjectedPost {
         NewswireProjectedPost(
             entryId: id, author: author(), taiJ2000Micros: taiJ2000Micros,
+            createdAtUnixSeconds: createdAtUnixSeconds,
             headline: headline, body: body ?? (headline == nil ? nil : "body"), language: "en",
             coarseLocation: coarseLocation,
             eventTimeUnixSeconds: eventTimeUnixSeconds,
