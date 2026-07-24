@@ -65,7 +65,7 @@ class AppRuntimeEndToEndTest {
         InstrumentationRegistry.getInstrumentation().runOnMainSync {
             val resolver = AppResourceResolver(app.record.appId, app.bundle)
             val bridge = RiotJsBridge(
-                UniffiAppDataPort(session, app.record.appId),
+                UniffiAppDataPort(profile.openAppExecution(app.record.appId)),
                 UniffiProfilePort(profile.profile()),
             )
             host = AppWebViewHost(target, resolver, bridge)

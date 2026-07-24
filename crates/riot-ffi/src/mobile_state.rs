@@ -4670,6 +4670,75 @@ mod tests {
         }
     }
 
+    /// The same restore contract, entered through the EXPORTED `mobile_api`
+    /// functions rather than this module's internals. The tests above call
+    /// `mobile_state` directly, so nothing exercised the thin UniFFI wrappers a
+    /// native host actually calls — and a wrapper that forwards the wrong
+    /// argument (or drops the generation entirely) would pass every one of them.
+    #[test]
+    fn exported_restore_wrappers_forward_the_generation_they_are_given() {
+        fn generation_of(profile: &Arc<MobileProfile>) -> Option<u8> {
+            let state = lock_unpoisoned(&profile.inner);
+            let ProfileState::Active(local) = &*state else {
+                panic!("profile should be active");
+            };
+            local.starter_catalog_generation
+        }
+
+        for generation in [None, Some(1u8), Some(2u8)] {
+            let restored =
+                crate::mobile_api::open_local_profile_for_starter_catalog_generation(generation)
+                    .unwrap();
+            assert_eq!(generation_of(&restored), generation);
+
+            let dir = tempfile::tempdir().expect("tempdir");
+            let restored_durable =
+                crate::mobile_api::open_local_profile_with_database_for_starter_catalog_generation(
+                    dir.path()
+                        .join("riot.sqlite")
+                        .to_string_lossy()
+                        .into_owned(),
+                    generation,
+                )
+                .unwrap();
+            assert_eq!(generation_of(&restored_durable), generation);
+
+            // The sealed-identity wrappers carry the marker too — the restore a
+            // host performs when it DOES have a persisted identity.
+            let source = open_local_profile().unwrap();
+            let key = vec![0x42; 32];
+            let sealed = seal_identity(&source.inner, key.clone()).unwrap();
+            let sealed_restored =
+                crate::mobile_api::open_profile_from_sealed_identity(key, sealed, generation)
+                    .unwrap();
+            assert_eq!(generation_of(&sealed_restored), generation);
+
+            let sealed_dir = tempfile::tempdir().expect("tempdir");
+            let source = open_local_profile().unwrap();
+            let key = vec![0x37; 32];
+            let sealed = seal_identity(&source.inner, key.clone()).unwrap();
+            let sealed_durable =
+                crate::mobile_api::open_profile_from_sealed_identity_with_database(
+                    sealed_dir
+                        .path()
+                        .join("riot.sqlite")
+                        .to_string_lossy()
+                        .into_owned(),
+                    key,
+                    sealed,
+                    generation,
+                )
+                .unwrap();
+            assert_eq!(generation_of(&sealed_durable), generation);
+        }
+
+        // Validation is the wrapper's job to forward, not to swallow.
+        assert!(matches!(
+            crate::mobile_api::open_local_profile_for_starter_catalog_generation(Some(3u8)),
+            Err(MobileError::InvalidInput)
+        ));
+    }
+
     /// WU-002a: the finalize generation guard is LIVE, not a phantom. A real
     /// generation bump between prepare and finalize (what a community/namespace
     /// switch does) makes `finalize_app_trust` reject with the marker

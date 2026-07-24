@@ -43,8 +43,7 @@ class AppPersistenceRestartTest {
                 appId = app.record.appId
                 apps.trust(app)
                 val port = UniffiAppDataPort(
-                    controller.openAppRuntime(),
-                    appId,
+                    controller.openAppExecution(appId),
                     onCommitted = { key, bundle -> controller.onAppDataCommitted(appId, key, bundle) },
                 )
                 port.put("items/water", """{"text":"water at courtyard","done":false}""".toByteArray())
@@ -62,7 +61,7 @@ class AppPersistenceRestartTest {
                 assertNotNull("app must be re-installed after reopen", restored)
                 assertTrue("trust must survive reopen", apps.isTrusted(restored!!))
 
-                val value = UniffiAppDataPort(controller.openAppRuntime(), appId).get("items/water")
+                val value = UniffiAppDataPort(controller.openAppExecution(appId)).get("items/water")
                 assertNotNull("app data must survive reopen", value)
                 assertTrue(value!!.decodeToString().contains("water at courtyard"))
             }
