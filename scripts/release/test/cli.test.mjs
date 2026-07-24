@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
 import test from "node:test";
 
-import { renderStatus, runCli, statusExit, summarizeGates } from "../cli.mjs";
+import { failureGate, renderStatus, runCli, statusExit, summarizeGates } from "../cli.mjs";
 
 const repositoryRoot = dirname(dirname(dirname(dirname(fileURLToPath(import.meta.url)))));
 const cli = join(repositoryRoot, "scripts", "release", "cli.mjs");
@@ -74,7 +74,7 @@ test("status and status --json expose the same ordered truthful gates", async ()
   const parsed = JSON.parse(json.stdout);
   assert.equal(parsed.summary, "BLOCKED");
   assert(parsed.gates.some(({ id, state }) => id === "policy.filtering" && state === "BLOCKED"));
-  assert(parsed.gates.some(({ id, state }) => id === "toolchain.android-ndk" && state === "PASS"));
+  assert(parsed.gates.some(({ id, state }) => id === "toolchain.android-ndk" && state === "BLOCKED"));
   for (const gate of parsed.gates) {
     assert(text.stdout.includes(gate.id));
     assert(text.stdout.includes(gate.sourceFile));
@@ -136,6 +136,73 @@ test("toolchain schema failures preserve their exact source and JSON pointer", a
   assert.equal(gate.observed, "unsafe");
 });
 
+test("duplicate tool names and commands preserve exact manifest diagnostics", async () => {
+  for (const mutation of ["name", "versionCommand"]) {
+    const root = await releaseRoot();
+    const source = join(root, "release", "toolchains.json");
+    const toolchains = JSON.parse(await readFile(source, "utf8"));
+    toolchains.tools[1][mutation] = toolchains.tools[0][mutation];
+    await writeFile(source, `${JSON.stringify(toolchains)}\n`, "utf8");
+    const result = await run(root, ["status", "--json"]);
+    const gate = JSON.parse(result.stdout).gates[0];
+    assert(gate.sourceFile.endsWith("/release/toolchains.json"));
+    assert.equal(gate.pointer, `/tools/1/${mutation}`);
+    assert.notEqual(gate.observed, undefined);
+    assert.match(gate.expected, /unique/);
+  }
+});
+
+test("malformed and missing schema files preserve exact registry diagnostics", async () => {
+  const malformedRoot = await releaseRoot();
+  const malformed = join(malformedRoot, "release", "schemas", "product.schema.json");
+  await writeFile(malformed, "{", "utf8");
+  const malformedResult = await run(malformedRoot, ["status", "--json"]);
+  const malformedGate = JSON.parse(malformedResult.stdout).gates[0];
+  assert(malformedGate.sourceFile.endsWith("/release/schemas/product.schema.json"));
+  assert.equal(malformedGate.pointer, "/");
+  assert.match(malformedGate.observed, /malformed/);
+  assert.match(malformedGate.expected, /valid JSON schema/);
+
+  const missingRoot = await releaseRoot();
+  const missing = join(missingRoot, "release", "schemas", "claims.schema.json");
+  await rm(missing);
+  const missingResult = await run(missingRoot, ["status", "--json"]);
+  const missingGate = JSON.parse(missingResult.stdout).gates[0];
+  assert(missingGate.sourceFile.endsWith("/release/schemas/claims.schema.json"));
+  assert.equal(missingGate.pointer, "/");
+  assert.equal(missingGate.observed, "missing");
+  assert.match(missingGate.expected, /required fixed schema/);
+});
+
+test("unreadable and strict-invalid schema registries preserve exact diagnostics", async () => {
+  const unreadableRoot = await releaseRoot();
+  await rm(join(unreadableRoot, "release", "schemas"), { recursive: true });
+  const unreadableResult = await run(unreadableRoot, ["status", "--json"]);
+  const unreadableGate = JSON.parse(unreadableResult.stdout).gates[0];
+  assert(unreadableGate.sourceFile.endsWith("/release/schemas"));
+  assert.equal(unreadableGate.pointer, "/");
+  assert.match(unreadableGate.expected, /readable release schema directory/);
+
+  const invalidRoot = await releaseRoot();
+  const invalidPath = join(invalidRoot, "release", "schemas", "product.schema.json");
+  const invalid = JSON.parse(await readFile(invalidPath, "utf8"));
+  invalid.unknownStrictKeyword = true;
+  await writeFile(invalidPath, `${JSON.stringify(invalid)}\n`, "utf8");
+  const invalidResult = await run(invalidRoot, ["status", "--json"]);
+  const invalidGate = JSON.parse(invalidResult.stdout).gates[0];
+  assert(invalidGate.sourceFile.endsWith("/release/schemas/product.schema.json"));
+  assert.equal(invalidGate.pointer, "/");
+  assert.match(invalidGate.observed, /unknownStrictKeyword/);
+  assert.match(invalidGate.expected, /strict registry/);
+});
+
+test("truly unknown failures retain a safe diagnostic fallback", () => {
+  const rooted = failureGate(new Error("/tmp/example.json: unknown failure"), "/repo");
+  assert.equal(rooted.sourceFile, "/tmp/example.json");
+  const unrooted = failureGate(new Error("unknown failure"), "/repo");
+  assert.equal(unrooted.sourceFile, "/repo/release");
+});
+
 test("generate reports a fixed redacted failure for malformed source", async () => {
   const root = await releaseRoot();
   await writeFile(join(root, "release", "source", "product.json"), "{", "utf8");
@@ -145,14 +212,16 @@ test("generate reports a fixed redacted failure for malformed source", async () 
   assert.equal(result.stderr, "release generation failed: correct the canonical source diagnostics with status\n");
 });
 
-test("status uses a safe release-root diagnostic when an error names no source path", async () => {
+test("malformed toolchain JSON identifies its exact manifest diagnostic", async () => {
   const root = await releaseRoot();
   await writeFile(join(root, "release", "toolchains.json"), "{", "utf8");
   const result = await run(root, ["status", "--json"]);
   assert.equal(result.code, 1);
   const parsed = JSON.parse(result.stdout);
-  assert(parsed.gates[0].sourceFile.endsWith("/release"));
+  assert(parsed.gates[0].sourceFile.endsWith("/release/toolchains.json"));
   assert.equal(parsed.gates[0].pointer, "/");
+  assert.match(parsed.gates[0].observed, /malformed/);
+  assert.match(parsed.gates[0].expected, /valid canonical toolchain JSON/);
 });
 
 test("status blocks a toolchain whose version is explicitly undeclared", async () => {

@@ -2,7 +2,7 @@ import { readFile, readdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
 import { canonicalJson } from "./canonical-json.mjs";
-import { loadSchemaRegistry, validateSource } from "./schema.mjs";
+import { loadSchemaRegistry, releaseDiagnosticError, validateSource } from "./schema.mjs";
 
 const SOURCES = Object.freeze({
   accessibility: "accessibility",
@@ -17,6 +17,10 @@ const SOURCES = Object.freeze({
 });
 const NETWORK_ROWS = ["first-launch", "denied-permission", "granted-permission", "nearby-sync", "followed-site-refresh"];
 const REQUIRED_PERMISSIONS = ["camera", "bluetooth", "local-network", "notifications", "android-internet"];
+const STORE_PLATFORMS = Object.freeze({
+  apple: ["ios", "ipados", "macos"],
+  google: ["android"],
+});
 const REVIEW_TOPICS = ["first-launch", "demo-content", "no-login", "create", "join", "publish", "restart", "offline", "local-permissions", "nearby-testing", "permission-denial", "invalid-join", "no-peers"];
 const DEVICES = ["iphone", "ipad", "mac", "android-phone", "android-tablet"];
 const TASKS = ["read", "create", "join", "publish"];
@@ -50,7 +54,12 @@ export async function loadPolicySources({ sourceDirectory, fs = { readFile, read
     try {
       value = JSON.parse(await fs.readFile(sourceFile, "utf8"));
     } catch (error) {
-      throw new Error(`${sourceFile}: malformed or missing source: ${error.message}`);
+      throw releaseDiagnosticError(`${sourceFile}: malformed or missing source: ${error.message}`, {
+        sourceFile,
+        observed: `malformed or missing: ${error.message}`,
+        expected: "valid canonical source JSON",
+        keyword: "source",
+      });
     }
     try {
       loaded[key] = structuredClone(validateSource(registry, name, value));
@@ -66,7 +75,8 @@ export async function loadPolicySources({ sourceDirectory, fs = { readFile, read
     let state;
     try {
       const content = await fs.readFile(join(repositoryRoot, value.evidencePath), "utf8");
-      state = /<!doctype\s+html|<html(?:\s|>)/i.test(content) ? "current" : "stale";
+      const localState = /<!doctype\s+html|<html(?:\s|>)/i.test(content) ? "current" : "stale";
+      state = value.evidenceState === "current" ? localState : value.evidenceState;
     } catch {
       state = "missing";
     }
@@ -102,6 +112,10 @@ export function evaluatePolicy(sources) {
   for (const [index, answer] of sources.privacy.answers.entries()) {
     const rows = answer.evidenceRowIds.map((id) => rowById.get(id));
     const evidenceComplete = rows.every(Boolean);
+    const scenarioComplete = answer.evidenceRowIds.length === NETWORK_ROWS.length
+      && NETWORK_ROWS.every((id) => answer.evidenceRowIds.includes(id));
+    const platformComplete = evidenceComplete && rows.every((row) =>
+      STORE_PLATFORMS[answer.store].every((platform) => row.platformCodePaths[platform].length > 0));
     const positionConsistent = Object.values(sources.privacy.position).every(Boolean);
     const networkConsistent = evidenceComplete && rows.every((row) =>
       !row.developerOperated
@@ -109,7 +123,7 @@ export function evaluatePolicy(sources) {
       && (row.transmittedFields.length === 0 || row.userDirected));
     const semanticallyConsistent = answer.answer !== "no-collection"
       || positionConsistent && networkConsistent;
-    gates.push(gate(`privacy.${answer.store}`, evidenceComplete && semanticallyConsistent ? "PASS" : "BLOCKED", file("privacy"), `/answers/${index}`, answer.evidenceRowIds.join(","), "store answer agrees with position, transmitted fields, destination ownership, retention, and user direction", "Correct the store answer or its canonical network evidence."));
+    gates.push(gate(`privacy.${answer.store}`, evidenceComplete && scenarioComplete && platformComplete && semanticallyConsistent ? "PASS" : "BLOCKED", file("privacy"), `/answers/${index}`, answer.evidenceRowIds.join(","), "all exact scenarios with store-platform code evidence agree with position, fields, destination ownership, retention, and user direction", "Correct the store answer or its canonical platform-specific network evidence."));
   }
   const permissionCounts = new Map();
   for (const { name } of sources.privacy.permissions) permissionCounts.set(name, (permissionCounts.get(name) ?? 0) + 1);
@@ -146,11 +160,23 @@ export function evaluatePolicy(sources) {
   }
 
   for (const [index, claim] of sources.claims.claims.entries()) {
-    const evidenceComplete = claim.platforms.every((platform) => {
+    const codeEvidenceComplete = claim.platforms.every((platform) => {
       const evidence = claim.evidenceByPlatform?.[platform];
-      return evidence?.codePaths.length > 0 && evidence?.journeyIds.length > 0;
+      return evidence?.codePaths.length > 0;
     });
-    const state = !evidenceComplete ? "BLOCKED" : claim.state === "pass" ? "PASS" : claim.state === "blocked" ? "BLOCKED" : "HUMAN ACTION";
+    const candidateEvidenceComplete = claim.platforms.every((platform) => {
+      const evidence = claim.evidenceByPlatform?.[platform];
+      const candidate = evidence?.candidateJourney;
+      return candidate?.candidateId.length > 0
+        && evidence.journeyIds.includes(candidate.journeyId)
+        && candidate.result === "PASS"
+        && /^[0-9a-f]{64}$/.test(candidate.evidenceDigest);
+    });
+    const state = !codeEvidenceComplete
+      ? "BLOCKED"
+      : claim.state === "pass"
+        ? candidateEvidenceComplete ? "PASS" : "BLOCKED"
+        : claim.state === "blocked" ? "BLOCKED" : "HUMAN ACTION";
     const journeys = claim.platforms.flatMap((platform) => claim.evidenceByPlatform?.[platform]?.journeyIds ?? []);
     gates.push(gate(`claim.${claim.id}`, state, file("claims"), `/claims/${index}`, claim.state, "platform-specific code and candidate journey evidence for every claimed platform", `Run candidate journeys ${journeys.join(", ")}.`));
   }
@@ -205,7 +231,10 @@ function networkWorksheet(sources) {
 - Developer operated: ${row.developerOperated}
 - Developer retention: ${row.developerRetention}
 - User directed: ${row.userDirected}
-- Code evidence: ${row.codePaths.join(", ")}
+- iOS code evidence: ${row.platformCodePaths.ios.join(", ")}
+- iPadOS code evidence: ${row.platformCodePaths.ipados.join(", ")}
+- macOS code evidence: ${row.platformCodePaths.macos.join(", ")}
+- Android code evidence: ${row.platformCodePaths.android.join(", ")}
 `).join("\n");
 }
 

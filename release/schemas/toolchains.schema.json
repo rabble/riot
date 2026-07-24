@@ -21,28 +21,28 @@
           "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
           "source": { "type": "string", "minLength": 1 },
           "downloadUrl": { "type": "string", "pattern": "^https://[^\\s]+$" },
+          "artifactEvidenceState": { "enum": ["current", "blocked"] },
+          "artifactEvidenceReason": { "type": "string", "minLength": 1 },
           "downloadChecksum": {
             "type": "object",
             "additionalProperties": false,
             "required": ["algorithm", "value"],
             "properties": {
-              "algorithm": { "enum": ["sha1", "sha256"] },
-              "value": { "type": "string", "pattern": "^[0-9a-f]{40}([0-9a-f]{24})?$" }
-            },
-            "allOf": [
-              {
-                "if": { "properties": { "algorithm": { "const": "sha1" } } },
-                "then": { "properties": { "value": { "type": "string", "pattern": "^[0-9a-f]{40}$" } } }
-              },
-              {
-                "if": { "properties": { "algorithm": { "const": "sha256" } } },
-                "then": { "properties": { "value": { "type": "string", "pattern": "^[0-9a-f]{64}$" } } }
-              }
-            ]
+              "algorithm": { "const": "sha256" },
+              "value": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+            }
+          },
+          "publishedChecksum": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["algorithm", "value"],
+            "properties": {
+              "algorithm": { "const": "sha1" },
+              "value": { "type": "string", "pattern": "^[0-9a-f]{40}$" }
+            }
           }
         },
         "dependentRequired": {
-          "downloadUrl": ["downloadChecksum"],
           "downloadChecksum": ["downloadUrl"]
         },
         "allOf": [
@@ -50,10 +50,22 @@
             "if": { "properties": { "checksumKind": { "const": "artifact" } } },
             "then": {
               "properties": {
+                "artifactEvidenceState": { "const": "current" },
                 "downloadUrl": true,
                 "downloadChecksum": true
               },
-              "required": ["downloadUrl", "downloadChecksum"]
+              "required": ["artifactEvidenceState", "downloadUrl", "downloadChecksum"]
+            }
+          },
+          {
+            "if": { "properties": { "artifactEvidenceState": { "const": "blocked" } }, "required": ["artifactEvidenceState"] },
+            "then": {
+              "properties": {
+                "downloadUrl": true,
+                "publishedChecksum": true,
+                "artifactEvidenceReason": true
+              },
+              "required": ["downloadUrl", "publishedChecksum", "artifactEvidenceReason"]
             }
           }
         ]

@@ -38,7 +38,18 @@
       "required": ["codePaths", "journeyIds"],
       "properties": {
         "codePaths": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } },
-        "journeyIds": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } }
+        "journeyIds": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } },
+        "candidateJourney": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["candidateId", "journeyId", "result", "evidenceDigest"],
+          "properties": {
+            "candidateId": { "type": "string", "minLength": 1 },
+            "journeyId": { "type": "string", "minLength": 1 },
+            "result": { "const": "PASS" },
+            "evidenceDigest": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+          }
+        }
       }
     }
   }

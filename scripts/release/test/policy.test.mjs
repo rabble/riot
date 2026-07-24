@@ -57,6 +57,7 @@ test("every asserted code and evidence path exists in the repository", async () 
     if (!value || typeof value !== "object") return;
     for (const [key, child] of Object.entries(value)) {
       if (key === "codePaths") assertedPaths.push(...child);
+      if (key === "platformCodePaths") assertedPaths.push(...Object.values(child).flat());
       if (key === "evidencePath" && typeof child === "string") assertedPaths.push(child);
       visit(child);
     }
@@ -91,6 +92,21 @@ test("URL evidence is verified from injected filesystem content, not trusted sou
   assert.equal(checked._urlEvidence.privacy.state, "stale");
   assert.equal(checked._urlEvidence.marketing.state, "current");
   assert.equal(checked._urlEvidence.support.state, "missing");
+
+  const productPath = join(root, "release", "source", "product.json");
+  await realFs.writeFile(join(root, "marketing", "privacy", "index.html"), "<!doctype html><html></html>", "utf8");
+  const product = JSON.parse(await realFs.readFile(productPath, "utf8"));
+  product.urls.privacy.evidenceState = "stale";
+  await realFs.writeFile(productPath, `${JSON.stringify(product)}\n`, "utf8");
+  const explicitlyStale = await loadPolicySources({
+    sourceDirectory: join(root, "release", "source"),
+    fs: realFs,
+  });
+  assert.equal(explicitlyStale._urlEvidence.privacy.state, "stale");
+  assert.equal(
+    evaluatePolicy(explicitlyStale).find(({ id }) => id === "url.privacy").state,
+    "BLOCKED",
+  );
 });
 
 test("policy evaluation rejects missing network rows and contradictory privacy evidence", async () => {
@@ -118,6 +134,28 @@ test("no-collection answers require consistent position, fields, destinations, a
   const gates = evaluatePolicy(loaded);
   assert(gates.some(({ id, state }) => id === "privacy.apple" && state === "BLOCKED"));
   assert(gates.some(({ id, state }) => id === "privacy.google" && state === "BLOCKED"));
+});
+
+test("no-collection requires every exact scenario and store-specific platform evidence", async () => {
+  const missingScenario = await sources();
+  missingScenario.privacy.answers[0].evidenceRowIds =
+    missingScenario.privacy.answers[0].evidenceRowIds.slice(0, -1);
+  assert.equal(
+    evaluatePolicy(missingScenario).find(({ id }) => id === "privacy.apple").state,
+    "BLOCKED",
+  );
+
+  const missingApple = await sources();
+  missingApple.networkMatrix.rows[0].platformCodePaths.macos = [];
+  const appleStates = new Map(evaluatePolicy(missingApple).map(({ id, state }) => [id, state]));
+  assert.equal(appleStates.get("privacy.apple"), "BLOCKED");
+  assert.equal(appleStates.get("privacy.google"), "PASS");
+
+  const missingAndroid = await sources();
+  missingAndroid.networkMatrix.rows[0].platformCodePaths.android = [];
+  const androidStates = new Map(evaluatePolicy(missingAndroid).map(({ id, state }) => [id, state]));
+  assert.equal(androidStates.get("privacy.apple"), "PASS");
+  assert.equal(androidStates.get("privacy.google"), "BLOCKED");
 });
 
 test("policy evaluation enforces UGC service levels and complete accessibility evidence", async () => {
@@ -158,6 +196,15 @@ test("policy evaluation covers passing, blocked, missing, and human evidence sta
   joined.state = "pass";
   joined.evidencePath = "evidence/iphone-join.json";
   loaded.claims.claims[0].state = "pass";
+  for (const platform of loaded.claims.claims[0].platforms) {
+    const evidence = loaded.claims.claims[0].evidenceByPlatform[platform];
+    evidence.candidateJourney = {
+      candidateId: `candidate-${platform}`,
+      journeyId: evidence.journeyIds[0],
+      result: "PASS",
+      evidenceDigest: "a".repeat(64),
+    };
+  }
   loaded.claims.claims[1].state = "blocked";
   loaded.policy.contentRating.state = "pass";
   loaded.exportCompliance.classification = {
@@ -204,6 +251,35 @@ test("normal gates identify exact array elements and per-platform claim evidence
   const claim = gates.find(({ id }) => id === "claim.read-local-community");
   assert.equal(claim.pointer, "/claims/0");
   assert.equal(claim.state, "BLOCKED");
+});
+
+test("claims cannot pass on state or bare journey strings without candidate-bound PASS evidence", async () => {
+  const loaded = await sources();
+  const claim = loaded.claims.claims[0];
+  claim.state = "pass";
+  assert.equal(
+    evaluatePolicy(loaded).find(({ id }) => id === "claim.read-local-community").state,
+    "BLOCKED",
+  );
+
+  for (const platform of claim.platforms) {
+    claim.evidenceByPlatform[platform].candidateJourney = {
+      candidateId: `riot-1.0-${platform}-candidate`,
+      journeyId: `${platform}:first-install-to-first-read`,
+      result: "PASS",
+      evidenceDigest: "a".repeat(64),
+    };
+  }
+  assert.equal(
+    evaluatePolicy(loaded).find(({ id }) => id === "claim.read-local-community").state,
+    "PASS",
+  );
+
+  claim.evidenceByPlatform.android.candidateJourney.evidenceDigest = "short";
+  assert.equal(
+    evaluatePolicy(loaded).find(({ id }) => id === "claim.read-local-community").state,
+    "BLOCKED",
+  );
 });
 
 test("export and account evidence never pass on incomplete approvals", async () => {

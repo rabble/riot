@@ -28,7 +28,7 @@
       "properties": {
         "store": { "enum": ["apple", "google"] },
         "answer": { "enum": ["no-collection", "collection-declared", "human-action"] },
-        "evidenceRowIds": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } }
+        "evidenceRowIds": { "type": "array", "minItems": 5, "maxItems": 5, "uniqueItems": true, "items": { "enum": ["first-launch", "denied-permission", "granted-permission", "nearby-sync", "followed-site-refresh"] } }
       }
     },
     "permission": {

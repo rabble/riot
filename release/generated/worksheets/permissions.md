@@ -17,15 +17,15 @@
 
 - State: **PASS**
 - Observed: first-launch,denied-permission,granted-permission,nearby-sync,followed-site-refresh
-- Expected: store answer agrees with position, transmitted fields, destination ownership, retention, and user direction
-- Recovery: Correct the store answer or its canonical network evidence.
+- Expected: all exact scenarios with store-platform code evidence agree with position, fields, destination ownership, retention, and user direction
+- Recovery: Correct the store answer or its canonical platform-specific network evidence.
 
 ## privacy.google
 
 - State: **PASS**
 - Observed: first-launch,denied-permission,granted-permission,nearby-sync,followed-site-refresh
-- Expected: store answer agrees with position, transmitted fields, destination ownership, retention, and user direction
-- Recovery: Correct the store answer or its canonical network evidence.
+- Expected: all exact scenarios with store-platform code evidence agree with position, fields, destination ownership, retention, and user direction
+- Recovery: Correct the store answer or its canonical platform-specific network evidence.
 
 ## permission.camera
 

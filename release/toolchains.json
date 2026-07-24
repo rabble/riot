@@ -38,6 +38,7 @@
       "version": "9.1.0",
       "versionCommand": ["./gradlew", "--version"],
       "checksumKind": "artifact",
+      "artifactEvidenceState": "current",
       "sha256": "a17ddd85a26b6a7f5ddb71ff8b05fc5104c0202c6e64782429790c933686c806",
       "source": "apps/android/gradle/wrapper/gradle-wrapper.properties#distributionUrl",
       "downloadUrl": "https://services.gradle.org/distributions/gradle-9.1.0-bin.zip",
@@ -58,8 +59,10 @@
       "checksumKind": "normalized-version-output",
       "sha256": "8d18e6ea410ad48abde162914f02bfb048d3cddb5690f6b893d97ca374496f41",
       "source": "scripts/conference/build-native-core.sh:6",
+      "artifactEvidenceState": "blocked",
+      "artifactEvidenceReason": "Google publishes only SHA-1 for this archived macOS NDK ZIP; no authoritative artifact SHA-256 is recorded locally.",
       "downloadUrl": "https://dl.google.com/android/repository/android-ndk-r28c-darwin.zip",
-      "downloadChecksum": { "algorithm": "sha1", "value": "fc20a6bf15a30fb3428c9b60a7308793a362dc6d" }
+      "publishedChecksum": { "algorithm": "sha1", "value": "fc20a6bf15a30fb3428c9b60a7308793a362dc6d" }
     },
     {
       "name": "xcode",

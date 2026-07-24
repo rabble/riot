@@ -31,6 +31,7 @@ const validToolchain = {
   version: "9.1.0",
   versionCommand: ["./gradlew", "--version"],
   checksumKind: "artifact",
+  artifactEvidenceState: "current",
   sha256: "a".repeat(64),
   source: "apps/android/gradle/wrapper/gradle-wrapper.properties#distributionUrl",
   downloadUrl: "https://services.gradle.org/distributions/gradle-9.1.0-bin.zip",
@@ -54,7 +55,12 @@ test("validateSource rejects missing and unknown fields with JSON pointers", asy
     () => validateSource(registry, "product", { schemaVersion: 1 }),
     (error) => error.diagnostics.some(({ pointer, keyword }) => pointer === "/name" && keyword === "required"),
   );
-  assert.throws(() => validateSource(registry, "missing", validProduct), /unknown schema/);
+  assert.throws(
+    () => validateSource(registry, "missing", validProduct),
+    (error) => /unknown schema/.test(error.message)
+      && error.diagnostics[0].pointer === "/"
+      && error.diagnostics[0].observed === "missing",
+  );
   assert.throws(
     () => validateSource(registry, "product", null),
     (error) => error.diagnostics.some(({ pointer }) => pointer === "/"),
@@ -135,6 +141,16 @@ test("toolchain schema requires a non-null authoritative checksum", async () => 
   assert.throws(
     () => validateSource(registry, "toolchains", {
       ...valid,
+      tools: [{
+        ...validToolchain,
+        downloadChecksum: { algorithm: "sha1", value: "a".repeat(40) },
+      }],
+    }),
+    /validation failed/,
+  );
+  assert.throws(
+    () => validateSource(registry, "toolchains", {
+      ...valid,
       tools: [...valid.tools, { ...valid.tools[0] }],
     }),
     /duplicate tool/,
@@ -168,6 +184,7 @@ test("checked-in toolchain authority covers every WU-000 required tool", async (
   assert.equal(ndk.version, "28.2.13676358");
   assert.equal(ndk.source, "scripts/conference/build-native-core.sh:6");
   assert.equal(ndk.downloadUrl, "https://dl.google.com/android/repository/android-ndk-r28c-darwin.zip");
-  assert.equal(ndk.downloadChecksum.algorithm, "sha1");
-  assert.equal(ndk.downloadChecksum.value, "fc20a6bf15a30fb3428c9b60a7308793a362dc6d");
+  assert.equal(ndk.artifactEvidenceState, "blocked");
+  assert.equal(ndk.publishedChecksum.algorithm, "sha1");
+  assert.equal(ndk.publishedChecksum.value, "fc20a6bf15a30fb3428c9b60a7308793a362dc6d");
 });

@@ -68,35 +68,94 @@ function diagnosticFor(error, value) {
   };
 }
 
+export function releaseDiagnosticError(message, {
+  sourceFile,
+  pointer = "/",
+  observed,
+  expected,
+  keyword = "release",
+}) {
+  const error = new Error(message);
+  error.sourceFile = sourceFile;
+  error.diagnostics = [{ pointer, keyword, observed, expected, message }];
+  return error;
+}
+
 export async function loadSchemaRegistry(directory, fs = { readdir, readFile }) {
-  const names = (await fs.readdir(directory)).filter((name) => name.endsWith(".schema.json")).sort();
+  let names;
+  try {
+    names = (await fs.readdir(directory)).filter((name) => name.endsWith(".schema.json")).sort();
+  } catch (error) {
+    throw releaseDiagnosticError(`schema directory is unreadable: ${error.message}`, {
+      sourceFile: directory,
+      observed: "missing or unreadable",
+      expected: "readable release schema directory",
+      keyword: "registry",
+    });
+  }
   const ajv = new Ajv2020({ allErrors: true, strict: true, validateFormats: false });
   const schemas = new Map();
   for (const name of names) {
+    const sourceFile = join(directory, name);
     let schema;
     try {
-      schema = JSON.parse(await fs.readFile(join(directory, name), "utf8"));
+      schema = JSON.parse(await fs.readFile(sourceFile, "utf8"));
     } catch (error) {
-      throw new Error(`malformed schema JSON in ${name}: ${error.message}`);
+      throw releaseDiagnosticError(`malformed schema JSON in ${name}: ${error.message}`, {
+        sourceFile,
+        observed: `malformed JSON: ${error.message}`,
+        expected: "valid JSON schema",
+        keyword: "registry",
+      });
     }
     const expected = EXPECTED_IDS[name];
     if (!expected || schema.$id !== expected) {
-      throw new Error(`${name} does not use its fixed $id ${expected ?? "(no registered ID)"}`);
+      throw releaseDiagnosticError(`${name} does not use its fixed $id ${expected ?? "(no registered ID)"}`, {
+        sourceFile,
+        pointer: "/$id",
+        observed: schema.$id ?? "missing",
+        expected: expected ?? "no unregistered schema files",
+        keyword: "registry",
+      });
     }
     schemas.set(basename(name, ".schema.json"), schema);
   }
   for (const name of Object.keys(EXPECTED_IDS)) {
-    if (!schemas.has(basename(name, ".schema.json"))) throw new Error(`missing schema file: ${name}`);
+    if (!schemas.has(basename(name, ".schema.json"))) {
+      throw releaseDiagnosticError(`missing schema file: ${name}`, {
+        sourceFile: join(directory, name),
+        observed: "missing",
+        expected: "required fixed schema file",
+        keyword: "registry",
+      });
+    }
   }
   for (const [name, schema] of schemas) {
-    ajv.addSchema(schema, name);
+    try {
+      ajv.addSchema(schema, name);
+      ajv.getSchema(name);
+    } catch (error) {
+      throw releaseDiagnosticError(`schema registration failed for ${name}: ${error.message}`, {
+        sourceFile: join(directory, `${name}.schema.json`),
+        observed: error.message,
+        expected: "schema accepted by the fixed strict registry",
+        keyword: "registry",
+      });
+    }
   }
   return Object.freeze({ ajv, schemas });
 }
 
 export function validateSource(registry, name, value) {
   const validator = registry.ajv.getSchema(name);
-  if (!validator) throw new Error(`unknown schema: ${name}`);
+  if (!validator) {
+    throw releaseDiagnosticError(`unknown schema: ${name}`, {
+      sourceFile: name,
+      observed: name,
+      expected: "registered fixed schema name",
+      keyword: "registry",
+    });
+  }
   if (!validator(value)) {
     const diagnostics = validator.errors
       .map((validationError) => diagnosticFor(validationError, value))
@@ -107,10 +166,29 @@ export function validateSource(registry, name, value) {
     throw error;
   }
   if (name === "toolchains") {
-    const toolNames = value.tools.map(({ name: toolName }) => toolName);
-    const commands = value.tools.map(({ versionCommand }) => JSON.stringify(versionCommand));
-    if (new Set(toolNames).size !== toolNames.length) throw new Error("duplicate tool name");
-    if (new Set(commands).size !== commands.length) throw new Error("duplicate tool versionCommand");
+    const names = new Map();
+    const commands = new Map();
+    for (const [index, tool] of value.tools.entries()) {
+      if (names.has(tool.name)) {
+        throw releaseDiagnosticError("duplicate tool name", {
+          pointer: `/tools/${index}/name`,
+          observed: tool.name,
+          expected: "unique tool name",
+          keyword: "unique",
+        });
+      }
+      names.set(tool.name, index);
+      const command = JSON.stringify(tool.versionCommand);
+      if (commands.has(command)) {
+        throw releaseDiagnosticError("duplicate tool versionCommand", {
+          pointer: `/tools/${index}/versionCommand`,
+          observed: tool.versionCommand,
+          expected: "unique tool versionCommand",
+          keyword: "unique",
+        });
+      }
+      commands.set(command, index);
+    }
   }
   return deepFreeze(structuredClone(value));
 }

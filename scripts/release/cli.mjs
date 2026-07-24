@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { evaluatePolicy, generateWorksheets, loadPolicySources } from "./policy.mjs";
-import { loadSchemaRegistry, validateSource } from "./schema.mjs";
+import { loadSchemaRegistry, releaseDiagnosticError, validateSource } from "./schema.mjs";
 
 const STATES = new Set(["PASS", "BLOCKED", "HUMAN ACTION"]);
 const USAGE = "usage: node scripts/release/cli.mjs <generate|status [--json]>\n";
@@ -42,28 +42,41 @@ async function toolchainGates(root) {
   const schemas = await loadSchemaRegistry(join(root, "release", "schemas"), fs);
   let toolchains;
   try {
-    toolchains = validateSource(schemas, "toolchains", JSON.parse(await fs.readFile(sourceFile, "utf8")));
+    let value;
+    try {
+      value = JSON.parse(await fs.readFile(sourceFile, "utf8"));
+    } catch (error) {
+      throw releaseDiagnosticError(`malformed or missing toolchain manifest: ${error.message}`, {
+        sourceFile,
+        observed: `malformed or missing: ${error.message}`,
+        expected: "valid canonical toolchain JSON",
+        keyword: "source",
+      });
+    }
+    toolchains = validateSource(schemas, "toolchains", value);
   } catch (error) {
-    if (error.diagnostics) error.sourceFile = sourceFile;
+    if (error.diagnostics && !error.sourceFile) error.sourceFile = sourceFile;
     throw error;
   }
   return toolchains.tools.map((tool, index) => {
-    const pinned = tool.version !== "not-declared";
+    const pinned = tool.version !== "not-declared" && tool.artifactEvidenceState !== "blocked";
     return {
       id: `toolchain.${tool.name}`,
       state: pinned ? "PASS" : "BLOCKED",
       sourceFile,
       pointer: `/tools/${index}`,
-      observed: tool.version,
-      expected: "an exact version and non-null authoritative checksum",
+      observed: tool.artifactEvidenceState === "blocked" ? `${tool.version}: ${tool.artifactEvidenceReason}` : tool.version,
+      expected: "an exact version and authoritative SHA-256 for every downloaded artifact",
       recovery: pinned
         ? `Verify ${tool.name} against checksum ${tool.sha256}.`
-        : `Declare and checksum the ${tool.name} version before candidate production.`,
+        : tool.artifactEvidenceState === "blocked"
+          ? `Record an authoritative SHA-256 for ${tool.downloadUrl} before candidate production.`
+          : `Declare and checksum the ${tool.name} version before candidate production.`,
     };
   });
 }
 
-function failureGate(error, root) {
+export function failureGate(error, root) {
   const diagnostic = error.diagnostics?.[0];
   if (diagnostic) {
     return {

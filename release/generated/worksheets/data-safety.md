@@ -1,4 +1,4 @@
-<!-- source-sha256: 813d8655cc25a86c56f41901a9ded2100dc8a60d9671384f29b5290715d3cee6 -->
+<!-- source-sha256: 68bbdfcd6ee983d4c355f82189a31798bb7cf1f30916a01e3f92f47b28d918e4 -->
 # data safety
 
 ## Google Play Data safety position
@@ -19,7 +19,10 @@
 - Developer operated: false
 - Developer retention: none
 - User directed: false
-- Code evidence: apps/ios/Riot/RiotApp.swift, apps/android/app/src/main/kotlin/org/riot/evidence/MainActivity.kt
+- iOS code evidence: apps/ios/Riot/RiotApp.swift
+- iPadOS code evidence: apps/ios/Riot/RiotApp.swift
+- macOS code evidence: apps/macos/Riot/RiotMacApp.swift
+- Android code evidence: apps/android/app/src/main/kotlin/org/riot/evidence/MainActivity.kt
 
 ## denied-permission
 
@@ -31,7 +34,10 @@
 - Developer operated: false
 - Developer retention: none
 - User directed: true
-- Code evidence: apps/ios/Riot/QRScannerView.swift
+- iOS code evidence: apps/ios/Riot/QRScannerView.swift
+- iPadOS code evidence: apps/ios/Riot/QRScannerView.swift
+- macOS code evidence: apps/ios/Riot/QRScannerView.swift, apps/macos/Riot.xcodeproj/project.pbxproj
+- Android code evidence: apps/android/app/src/main/kotlin/org/riot/evidence/MainActivity.kt, apps/android/app/src/main/kotlin/org/riot/evidence/transport/NearbyPermissions.kt
 
 ## granted-permission
 
@@ -43,7 +49,10 @@
 - Developer operated: false
 - Developer retention: none
 - User directed: true
-- Code evidence: apps/ios/Riot/QRScannerView.swift, apps/ios/Riot/Transport/LocalNetworkNearby.swift
+- iOS code evidence: apps/ios/Riot/QRScannerView.swift, apps/ios/Riot/Transport/LocalNetworkNearby.swift
+- iPadOS code evidence: apps/ios/Riot/QRScannerView.swift, apps/ios/Riot/Transport/LocalNetworkNearby.swift
+- macOS code evidence: apps/ios/Riot/QRScannerView.swift, apps/ios/Riot/Transport/LocalNetworkNearby.swift, apps/macos/Riot.xcodeproj/project.pbxproj
+- Android code evidence: apps/android/app/src/main/kotlin/org/riot/evidence/MainActivity.kt, apps/android/app/src/main/kotlin/org/riot/evidence/transport/NearbyPermissions.kt, apps/android/app/src/main/kotlin/org/riot/evidence/transport/AndroidNearbyController.kt
 
 ## nearby-sync
 
@@ -55,7 +64,10 @@
 - Developer operated: false
 - Developer retention: peer-local
 - User directed: true
-- Code evidence: apps/ios/Riot/Transport/LocalNetworkNearby.swift, crates/riot-transport/src/lib.rs
+- iOS code evidence: apps/ios/Riot/Transport/LocalNetworkNearby.swift, crates/riot-transport/src/lib.rs
+- iPadOS code evidence: apps/ios/Riot/Transport/LocalNetworkNearby.swift, crates/riot-transport/src/lib.rs
+- macOS code evidence: apps/ios/Riot/Transport/LocalNetworkNearby.swift, apps/macos/Riot.xcodeproj/project.pbxproj, crates/riot-transport/src/lib.rs
+- Android code evidence: apps/android/app/src/main/kotlin/org/riot/evidence/transport/AndroidNearbyController.kt, apps/android/app/src/main/kotlin/org/riot/evidence/transport/NearbyTransport.kt, crates/riot-transport/src/lib.rs
 
 ## followed-site-refresh
 
@@ -67,7 +79,10 @@
 - Developer operated: false
 - Developer retention: destination-controlled
 - User directed: true
-- Code evidence: crates/riot-core/src/site/follow.rs, apps/ios/Riot/FollowSiteModel.swift
+- iOS code evidence: crates/riot-core/src/site/follow.rs, apps/ios/Riot/FollowSiteModel.swift
+- iPadOS code evidence: crates/riot-core/src/site/follow.rs, apps/ios/Riot/FollowSiteModel.swift
+- macOS code evidence: crates/riot-core/src/site/follow.rs, apps/ios/Riot/FollowSiteModel.swift, apps/macos/Riot.xcodeproj/project.pbxproj
+- Android code evidence: crates/riot-core/src/site/follow.rs, apps/android/app/src/main/kotlin/org/riot/evidence/FollowSite.kt, apps/android/app/src/main/kotlin/org/riot/evidence/MainActivity.kt
 
 # Gate summary
 
@@ -110,15 +125,15 @@
 
 - State: **PASS**
 - Observed: first-launch,denied-permission,granted-permission,nearby-sync,followed-site-refresh
-- Expected: store answer agrees with position, transmitted fields, destination ownership, retention, and user direction
-- Recovery: Correct the store answer or its canonical network evidence.
+- Expected: all exact scenarios with store-platform code evidence agree with position, fields, destination ownership, retention, and user direction
+- Recovery: Correct the store answer or its canonical platform-specific network evidence.
 
 ## privacy.google
 
 - State: **PASS**
 - Observed: first-launch,denied-permission,granted-permission,nearby-sync,followed-site-refresh
-- Expected: store answer agrees with position, transmitted fields, destination ownership, retention, and user direction
-- Recovery: Correct the store answer or its canonical network evidence.
+- Expected: all exact scenarios with store-platform code evidence agree with position, fields, destination ownership, retention, and user direction
+- Recovery: Correct the store answer or its canonical platform-specific network evidence.
 
 ## permission.camera
 
