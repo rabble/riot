@@ -206,6 +206,7 @@ invented first-release `approved-ready` or second publication action.
 - Modify: `apps/ios/Riot.xcodeproj/project.pbxproj`
 - Modify: `apps/macos/Riot.xcodeproj/project.pbxproj`
 - Create: `apps/macos/RiotTests/ReleaseFixtureTests.swift`
+- Modify: `apps/android/app/build.gradle.kts`
 - Create: `apps/android/app/src/main/kotlin/org/riot/evidence/ReleaseFixture.kt`
 - Create: `apps/android/app/src/test/kotlin/org/riot/evidence/ReleaseFixtureTest.kt`
 
