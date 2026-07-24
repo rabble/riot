@@ -115,6 +115,19 @@ public struct ReactionWriteSnapshot: Sendable {
     public let revision: UInt64
 }
 
+public enum ReactionFailureKind: String, Sendable {
+    case retryablePersistence
+    case authorityOrInput
+    case capacity
+    case clock
+}
+
+public struct ReactionFailure: Sendable {
+    public let kind: ReactionFailureKind
+    public let publicCode: String
+    public let message: String
+}
+
 public enum ReactionWriteResult: Sendable {
     case accepted(ReactionWriteSnapshot)
     case committedNeedsRefresh(active: Bool, revision: UInt64)
@@ -134,7 +147,17 @@ public protocol NewswireReactionWriting: Sendable {
 
 `MobileProfileReactionWriter` is an actor that owns only the generated
 thread-safe `MobileProfile`, calls the synchronous UniFFI write, reprojects, and
-increments `revision`.
+increments `revision`. It maps `MobileError.invalidInput` to
+`authorityOrInput`, `storeFull`/`sessionLimit` to `capacity`,
+`clockUnavailable` to `clock`, and durable-database/session failures that occur
+before commit to `retryablePersistence`. Unknown errors fail closed as
+`authorityOrInput`.
+
+The model receives an injected `ReactionDiagnosticReporting` implementation.
+Its only input is the already-redacted `ReactionFailure` plus the operation
+phase; raw `Error`, record bytes, paths, post content, and IDs never enter the
+reporter API. Production uses the app's local diagnostic logger; tests capture
+the fixed code/copy.
 
 ## Security considerations
 
@@ -514,6 +537,10 @@ committed-needs-refresh, different-key, duplicate-surface, stale-revision,
 queued-cancellation, completion-after-teardown, no-writer, and empty-projection
 tests. Add the sentinel diagnostic-redaction test from the security table and
 the committed-needs-refresh → accepted reconciliation/clearing sequence.
+Add a deterministic clock/scheduler fake: at 1 second no stalled copy exists,
+at 2 seconds `Still saving on this device…` appears and emits exactly one
+announcement, and at 5 seconds the operation may still be pending without
+offering retry.
 
 - [ ] **Step 2: Run the RED Swift model tests**
 
@@ -529,8 +556,8 @@ Expected: compile failure because the async writer/state types do not exist.
 
 - [ ] **Step 3: Implement `NewswireReactionWriter.swift`**
 
-Define `ReactionKey`, `ReactionSurface`, `ReactionFailure`, the async protocol,
-and:
+Define `ReactionKey`, `ReactionSurface`, typed `ReactionFailureKind` /
+`ReactionFailure`, `ReactionDiagnosticReporting`, the async protocol, and:
 
 ```swift
 public actor MobileProfileReactionWriter: NewswireReactionWriting {
@@ -578,10 +605,22 @@ must:
 6. clear pending in every outcome;
 7. on `.committedNeedsRefresh`, set the known selected direction, retain the old
    count, and show `Reaction saved. Count will update when the wire refreshes.`;
-8. retain generic copy `Couldn’t save your reaction. Try again.` only on
-   pre-commit rejection;
-9. emit one sequence-numbered accessibility announcement for the initiating
-   surface.
+8. on retryable persistence failure, retain state and show
+   `Couldn’t save your reaction. Try again.`;
+9. on authority/input failure, disable the complete reaction row for this model
+   and show `Reactions aren’t available for this post.`;
+10. on capacity failure, disable only the key until the next full
+    projection/navigation and show
+    `This community can’t hold another reaction right now.`;
+11. on clock failure, disable only the key until the next full
+    projection/navigation and show
+    `Check this device’s Date & Time before reacting.`;
+12. start a keyed two-second stalled timer when pending begins; if the same
+    operation is still pending, publish `Still saving on this device…` and
+    announce it exactly once, then cancel/remove the timer on every terminal
+    result or teardown;
+13. emit one sequence-numbered accessibility announcement for the initiating
+    surface.
 
 The next accepted projection clears every committed override it authoritatively
 replaces **and** clears the corresponding saved-but-refresh-needed informational
@@ -700,8 +739,11 @@ produces one initiating-surface announcement, not two.
 
 Every control also applies `.help(kind.label)` so pointer hover reveals the
 full persistent name (`Support`, `Solidarity`, `Important`, or `Grief`) after
-the one-time legend has been dismissed. The macOS rendered test hovers each
-control and asserts its help element exposes the corresponding full name.
+the one-time legend has been dismissed. On iOS each control adds a long-press
+context menu whose single disabled label is the full reaction name; the menu
+does not duplicate or trigger the reaction action. The macOS rendered test
+hovers each control and asserts its help element exposes the corresponding full
+name; the iOS interaction test long-presses every control and checks the name.
 
 - [ ] **Step 6: Add the one-time legend**
 
@@ -755,6 +797,7 @@ git commit -m "feat(ui): render compact interactive newswire reactions"
 - Modify: `apps/macos/Riot.xcodeproj/project.pbxproj`
 - Modify: `apps/macos/Riot.xcodeproj/xcshareddata/xcschemes/Riot-macOS.xcscheme`
 - Create: `apps/macos/RiotUITests/ReactionControlsUITests.swift`
+- Create: `apps/ios/RiotUITests/ReactionControlsUITests.swift`
 - Create: `apps/ios/Riot/Demo/ReactionUITestFixture.swift`
 - Modify: `apps/ios/Riot/Core/ProfileRepository.swift`
 - Modify: `apps/ios/Riot/AppModel.swift`
@@ -836,14 +879,35 @@ deterministic pre-commit rejection. XCUITest has a deterministic
 
 - [ ] **Step 4: Prove add and remove**
 
-The UI test asserts 0→1 selected, clicks again, and asserts 1→0 unselected.
-Add pointer and keyboard activation cases and a rejected-writer fixture showing
-the retry copy. Before activation, focus Support with Tab and assert
-`hasKeyboardFocus == true`; assert the same focused element remains focused
-while its value is busy, after the success announcement, and after a rejected
-write. Hover all four buttons and assert the exposed help/tooltip contains the
-full reaction name. These rendered assertions also prove there is no horizontal
-scroll and that all four controls remain in the accessibility tree.
+The UI test loops through Support, Solidarity, Important, and Grief and proves
+0→1 selected and 1→0 unselected for each against the real offline joined-reader
+profile. Add pointer and keyboard activation cases and typed rejected-writer
+fixtures showing each exact retry/authority/capacity/clock message and disable
+scope.
+
+Before activation, focus Support with Tab. XCTest has no typed
+`XCUIElement.hasKeyboardFocus` property, so use the supported accessibility
+query channel:
+
+```swift
+let focused = app.buttons.matching(
+    NSPredicate(format: "hasKeyboardFocus == true")
+).firstMatch
+XCTAssertEqual(focused.identifier, support.identifier)
+```
+
+Assert the same query identifies Support while its value is busy, after the
+success announcement, and after a rejected write. Hover all four buttons and
+assert the exposed help/tooltip contains the full reaction name. These rendered
+assertions also prove there is no horizontal scroll and that all four controls
+remain in the accessibility tree. A separate gated fixture holds the real
+writer beyond two seconds and observes `Still saving on this device…` between
+seconds 2 and 3, then releases and requires the terminal result by 5 seconds.
+
+Add an iOS XCUITest source to the existing `RiotUITests` target (and its explicit
+project build phase). It launches the same UUID-gated fixture, long-presses each
+of the four controls, and asserts the context menu exposes the full reaction
+name without changing count or selection.
 
 - [ ] **Step 5: Prove invalid fixture activation fails closed**
 
@@ -901,6 +965,7 @@ consecutively without sleeps.
 ```sh
 git add apps/macos/Riot.xcodeproj \
   apps/macos/RiotUITests/ReactionControlsUITests.swift \
+  apps/ios/RiotUITests/ReactionControlsUITests.swift \
   apps/ios/Riot/Demo/ReactionUITestFixture.swift \
   apps/ios/Riot/Core/ProfileRepository.swift \
   apps/ios/Riot/AppModel.swift \
