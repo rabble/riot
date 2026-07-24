@@ -273,6 +273,7 @@ public struct CommunityChooserView: View {
     private let onFindNearby: (() -> Void)?
     private let onCreateCommunity: (() -> Void)?
     private let onJoinByReference: (() -> Void)?
+    private let onDiscover: (() -> Void)?
 
     public init(
         model: RiotAppModel,
@@ -281,7 +282,8 @@ public struct CommunityChooserView: View {
         onSelectCommunity: ((String) -> Void)? = nil,
         onFindNearby: (() -> Void)? = nil,
         onCreateCommunity: (() -> Void)? = nil,
-        onJoinByReference: (() -> Void)? = nil
+        onJoinByReference: (() -> Void)? = nil,
+        onDiscover: (() -> Void)? = nil
     ) {
         self.model = model
         self.currentCommunityID = currentCommunityID
@@ -290,6 +292,7 @@ public struct CommunityChooserView: View {
         self.onFindNearby = onFindNearby
         self.onCreateCommunity = onCreateCommunity
         self.onJoinByReference = onJoinByReference
+        self.onDiscover = onDiscover
     }
 
     public var body: some View {
@@ -315,6 +318,8 @@ public struct CommunityChooserView: View {
                 // surface. Join now goes through the paste/QR JoinByReferenceSheet,
                 // presented at the shell so the same sheet serves the Launch entry.
                 Section {
+                    Button("Discover communities") { discover() }
+                        .accessibilityIdentifier("chooser-discover")
                     Button("Create a community") { createCommunity() }
                         .accessibilityIdentifier("chooser-create")
                     Button("Find one nearby") { findNearby() }
@@ -394,6 +399,10 @@ public struct CommunityChooserView: View {
 
     private func joinByReference() {
         if let onJoinByReference { onJoinByReference() } else { model.requestJoinByReference() }
+    }
+
+    private func discover() {
+        if let onDiscover { onDiscover() } else { model.requestDiscover() }
     }
 }
 
