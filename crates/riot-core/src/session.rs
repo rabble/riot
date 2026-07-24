@@ -764,6 +764,17 @@ impl EvidenceStore {
                         item.frame.payload_bytes(),
                     )
                     .is_ok();
+                // Coordinate ledger records bind exactly like newswire records:
+                // the reserved `coordinate/v1` prefix carries a communal record
+                // whose payload must be RETAINED so the ledger store scan can
+                // rediscover it. Without this branch the item falls through to
+                // the alert decode below, is judged ineligible, and never lands.
+                let valid_coordinate = crate::coordinate::is_coordinate_prefix(path)
+                    && crate::coordinate::inspect_verified_components(
+                        authorised.entry(),
+                        item.frame.payload_bytes(),
+                    )
+                    .is_ok();
                 let path_matches = if is_owned_editorial || is_owned_moderation || is_app_data {
                     // Both bind by path alone: the payload is opaque and embeds
                     // no identity a path could contradict.
@@ -797,6 +808,8 @@ impl EvidenceStore {
                         == subspace_id
                 } else if crate::newswire::is_newswire_prefix(path) {
                     valid_newswire
+                } else if crate::coordinate::is_coordinate_prefix(path) {
+                    valid_coordinate
                 } else {
                     decode_alert(item.frame.payload_bytes())
                         .ok()
@@ -818,6 +831,7 @@ impl EvidenceStore {
                         || app_index_slot.is_some()
                         || profile_subspace.is_some()
                         || valid_newswire
+                        || valid_coordinate
                         || is_owned_editorial
                         || is_owned_moderation;
                     verified.push(VerifiedEntry {

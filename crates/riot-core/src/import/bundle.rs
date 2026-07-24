@@ -595,8 +595,8 @@ fn verify_frame(
     // `profile::path::classify_profile_path`) must carry a canonical
     // `ProfileCard`; card-slot ownership is likewise bound at `inspect`.
     //
-    // `app-index/`, `profile/`, and `newswire/v1` are RESERVED prefixes: a
-    // path under one that is not exactly a recognized slot shape is
+    // `app-index/`, `profile/`, `newswire/v1`, and `coordinate/v1` are RESERVED
+    // prefixes: a path under one that is not exactly a recognized slot shape is
     // UnsupportedSchema outright and must never fall through to the alert
     // schema check below — otherwise a valid alert payload could rescue a
     // malformed reserved path.
@@ -641,6 +641,13 @@ fn verify_frame(
             None => {
                 if crate::newswire::is_newswire_prefix(entry.path()) {
                     crate::newswire::inspect_verified_components(&entry, &frame.payload_bytes)
+                        .is_ok()
+                } else if crate::coordinate::is_coordinate_prefix(entry.path()) {
+                    // `coordinate/v1` is a RESERVED prefix admitted through the
+                    // same communal structural gate as newswire: a malformed
+                    // Coordinate path returns false → UnsupportedSchema, and can
+                    // never fall through to the alert schema check below.
+                    crate::coordinate::inspect_verified_components(&entry, &frame.payload_bytes)
                         .is_ok()
                 } else {
                     // Reaching here under `apps/` or `app-index/` means the
