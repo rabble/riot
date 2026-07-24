@@ -92,6 +92,7 @@ fn sealed_identity_survives_reopen_with_database() {
         db_path_string,
         TEST_WRAPPING_KEY.to_vec(),
         sealed,
+        None,
     )
     .expect("open profile (2)");
 
@@ -321,6 +322,7 @@ fn a_join_seals_the_outgoing_author_inline_and_it_survives_reopen_without_persis
         db_path,
         TEST_WRAPPING_KEY.to_vec(),
         sealed,
+        None,
     )
     .expect("reopen");
 
@@ -483,9 +485,13 @@ fn a_durable_reopen_restores_the_last_active_community_and_switches_between_seal
     };
 
     // Reopen: returning opens the last available community directly.
-    let reopened =
-        open_profile_from_sealed_identity_with_database(db_path, REGISTRY_KEY.to_vec(), sealed)
-            .expect("reopen");
+    let reopened = open_profile_from_sealed_identity_with_database(
+        db_path,
+        REGISTRY_KEY.to_vec(),
+        sealed,
+        None,
+    )
+    .expect("reopen");
     let active = reopened.active_community().unwrap().unwrap();
     assert_eq!(active.namespace_id, a_ns, "reopen lands on the last active");
     assert!(active.available);
@@ -525,9 +531,13 @@ fn a_sealed_community_is_un_loadable_without_the_key_and_recovers_from_quarantin
         (a_ns, b_ns, sealed)
     };
 
-    let reopened =
-        open_profile_from_sealed_identity_with_database(db_path, REGISTRY_KEY.to_vec(), sealed)
-            .expect("reopen");
+    let reopened = open_profile_from_sealed_identity_with_database(
+        db_path,
+        REGISTRY_KEY.to_vec(),
+        sealed,
+        None,
+    )
+    .expect("reopen");
     // A is active; B is sealed at rest and NOT loaded. Switching to B with the
     // WRONG key fails closed and quarantines B (preserved, not dropped).
     assert!(
@@ -638,6 +648,7 @@ fn a_corrupt_registry_blob_is_quarantined_for_recovery_not_discarded() {
         db_path.clone(),
         REGISTRY_KEY.to_vec(),
         sealed,
+        None,
     )
     .expect("reopen despite corrupt registry");
     assert!(
@@ -743,9 +754,13 @@ fn a_newswire_communitys_descriptor_handle_survives_a_reopen() {
         (signed.entry_id, sealed)
     };
 
-    let reopened =
-        open_profile_from_sealed_identity_with_database(db_path, REGISTRY_KEY.to_vec(), sealed)
-            .expect("reopen");
+    let reopened = open_profile_from_sealed_identity_with_database(
+        db_path,
+        REGISTRY_KEY.to_vec(),
+        sealed,
+        None,
+    )
+    .expect("reopen");
     let row = reopened.active_community().unwrap().unwrap();
     assert_eq!(
         row.descriptor_entry_id.as_deref(),

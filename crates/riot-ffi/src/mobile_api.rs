@@ -307,12 +307,36 @@ pub fn open_local_profile() -> Result<Arc<MobileProfile>, MobileError> {
 
 /// Restores only the local signing identity. Content/store persistence is a
 /// separate native concern. Both inputs remain opaque byte arrays in UniFFI.
+///
+/// `starter_catalog_generation` is the persisted marker the native host read
+/// back from its snapshot: `None` for a legacy (pre-marker) profile, which is
+/// generation 1, or `Some(1)`/`Some(2)` for an explicitly recorded generation.
+/// The value is retained exactly; it is never re-derived as a fresh open.
 #[uniffi::export]
 pub fn open_profile_from_sealed_identity(
     wrapping_key: Vec<u8>,
     sealed_identity: Vec<u8>,
+    starter_catalog_generation: Option<u8>,
 ) -> Result<Arc<MobileProfile>, MobileError> {
-    crate::mobile_state::open_profile_from_sealed_identity(wrapping_key, sealed_identity)
+    crate::mobile_state::open_profile_from_sealed_identity(
+        wrapping_key,
+        sealed_identity,
+        starter_catalog_generation,
+    )
+}
+
+/// Restores an identityless local (in-memory) profile — one that was persisted
+/// without a sealed identity — retaining its starter-catalog generation. An
+/// identityless persisted profile is NOT fresh: it mints a bootstrap author but
+/// keeps its grandfathered marker (`None` stays generation 1) instead of taking
+/// the fresh `Some(2)` marker `open_local_profile` assigns.
+#[uniffi::export]
+pub fn open_local_profile_for_starter_catalog_generation(
+    starter_catalog_generation: Option<u8>,
+) -> Result<Arc<MobileProfile>, MobileError> {
+    crate::mobile_state::open_local_profile_for_starter_catalog_generation(
+        starter_catalog_generation,
+    )
 }
 
 /// Opens a local profile backed by a durable SQLite database at `db_path`.
@@ -326,18 +350,39 @@ pub fn open_local_profile_with_database(
     crate::mobile_state::open_local_profile_with_database(db_path)
 }
 
+/// Restores an identityless local profile backed by a durable SQLite database at
+/// `db_path`, retaining its starter-catalog generation. The durable-storage
+/// counterpart of `open_local_profile_for_starter_catalog_generation`; an
+/// identityless persisted profile keeps its grandfathered marker rather than
+/// materializing generation 2.
+#[uniffi::export]
+pub fn open_local_profile_with_database_for_starter_catalog_generation(
+    db_path: String,
+    starter_catalog_generation: Option<u8>,
+) -> Result<Arc<MobileProfile>, MobileError> {
+    crate::mobile_state::open_local_profile_with_database_for_starter_catalog_generation(
+        db_path,
+        starter_catalog_generation,
+    )
+}
+
 /// Restores a profile from a sealed identity into a durable SQLite database
 /// at `db_path`. Combines identity restore with persistent storage.
+///
+/// `starter_catalog_generation` is retained exactly, as in
+/// `open_profile_from_sealed_identity`.
 #[uniffi::export]
 pub fn open_profile_from_sealed_identity_with_database(
     db_path: String,
     wrapping_key: Vec<u8>,
     sealed_identity: Vec<u8>,
+    starter_catalog_generation: Option<u8>,
 ) -> Result<Arc<MobileProfile>, MobileError> {
     crate::mobile_state::open_profile_from_sealed_identity_with_database(
         db_path,
         wrapping_key,
         sealed_identity,
+        starter_catalog_generation,
     )
 }
 

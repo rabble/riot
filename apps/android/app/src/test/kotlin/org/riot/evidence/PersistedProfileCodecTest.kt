@@ -1,6 +1,8 @@
 package org.riot.evidence
 
+import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
+import java.io.DataInputStream
 import java.io.DataOutputStream
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
@@ -87,7 +89,7 @@ class PersistedProfileCodecTest {
         assertFalse(restored.installedApps[1].trusted)
         assertEquals(listOf("items", "done"), restored.appData.map { it.key })
         assertArrayEquals(byteArrayOf(0x50, 0x51, 0x00, 0x7f), restored.appData.first().bundleBytes)
-        assertEquals(PersistedProfileCodec.encodedSizeForTest(profile), PersistedProfileCodec.encode(profile).size)
+        assertEquals(PersistedProfileCodec.encodedSize(profile), PersistedProfileCodec.encode(profile).size)
     }
 
     @Test
@@ -196,7 +198,7 @@ class PersistedProfileCodecTest {
 
         val encoded = PersistedProfileCodec.encode(profile)
 
-        assertEquals(PersistedProfileCodec.encodedSizeForTest(profile), encoded.size)
+        assertEquals(PersistedProfileCodec.encodedSize(profile), encoded.size)
         encoded.fill(0)
         profile.identityState!!.wrappingKey.fill(0)
     }
@@ -278,9 +280,219 @@ class PersistedProfileCodecTest {
         profile.identityState!!.wrappingKey.fill(0)
     }
 
+    // MARK: - Starter-catalog generation (WU-001N)
+
+    @Test
+    fun generationTwoRoundTripsAsVersionFour() {
+        val profile = generationProfile(2)
+
+        val encoded = PersistedProfileCodec.encode(profile)
+        val restored = PersistedProfileCodec.decode(encoded)
+
+        assertEquals(4, headerVersion(encoded))
+        assertEquals(2, restored.starterCatalogGeneration)
+    }
+
+    @Test
+    fun explicitGenerationOneRoundTripsAsVersionFour() {
+        val profile = generationProfile(1)
+
+        val encoded = PersistedProfileCodec.encode(profile)
+        val restored = PersistedProfileCodec.decode(encoded)
+
+        assertEquals(4, headerVersion(encoded))
+        assertEquals(1, restored.starterCatalogGeneration)
+    }
+
+    @Test
+    fun nullGenerationEncodesAsVersionThree() {
+        val profile = generationProfile(null)
+
+        val encoded = PersistedProfileCodec.encode(profile)
+        val restored = PersistedProfileCodec.decode(encoded)
+
+        assertEquals(3, headerVersion(encoded))
+        assertEquals(null, restored.starterCatalogGeneration)
+    }
+
+    @Test
+    fun nullGenerationV3ProfileReEncodesByteForByteIdentically() {
+        val profile = generationProfile(null)
+
+        val first = PersistedProfileCodec.encode(profile)
+        val second = PersistedProfileCodec.encode(PersistedProfileCodec.decode(first))
+
+        assertEquals(3, headerVersion(first))
+        assertArrayEquals(first, second)
+    }
+
+    @Test
+    fun invalidGenerationIsRejectedBeforeStreamAllocation() {
+        for (invalid in listOf(0, 3)) {
+            val profile = generationProfile(invalid)
+            var streamAllocated = false
+            assertThrows(IllegalArgumentException::class.java) {
+                PersistedProfileCodec.encodeWithHooksForTest(
+                    profile,
+                    onStreamAllocated = { streamAllocated = true },
+                )
+            }
+            assertFalse(
+                "invalid generation $invalid must reject before stream allocation",
+                streamAllocated,
+            )
+            // The shared preflight is the production seam WU-002c consumes; it must
+            // reject the same input directly, not only through encode().
+            assertThrows(IllegalArgumentException::class.java) {
+                PersistedProfileCodec.encodedSize(profile)
+            }
+        }
+    }
+
+    @Test
+    fun malformedVersionFourStreamWithInvalidGenerationIsRejectedOnDecode() {
+        for (invalid in listOf(0, 3)) {
+            assertThrows(IllegalArgumentException::class.java) {
+                PersistedProfileCodec.decode(versionFourStreamWithGeneration(invalid))
+            }
+        }
+        // Sanity: a well-formed v4 stream with a legal generation decodes.
+        assertEquals(2, PersistedProfileCodec.decode(versionFourStreamWithGeneration(2)).starterCatalogGeneration)
+    }
+
+    @Test
+    fun preflightEqualsEncodedSizeForBothWireVersions() {
+        val v3 = generationProfile(null)
+        val v4 = generationProfile(2)
+
+        assertEquals(PersistedProfileCodec.encodedSize(v3), PersistedProfileCodec.encode(v3).size)
+        assertEquals(PersistedProfileCodec.encodedSize(v4), PersistedProfileCodec.encode(v4).size)
+    }
+
+    @Test
+    fun v3ProfileAtExactLimitEncodesAndOnePastIsRejectedBeforeAllocation() {
+        val exact = exactLimitProfile(null)
+        assertEquals(PersistedProfileCodec.MAX_ENCODED_BYTES, PersistedProfileCodec.encodedSize(exact))
+
+        val encoded = PersistedProfileCodec.encode(exact)
+        assertEquals(PersistedProfileCodec.MAX_ENCODED_BYTES, encoded.size)
+        assertEquals(3, headerVersion(encoded))
+        encoded.fill(0)
+
+        val oversize = oneBytePastLimitProfile(null)
+        var streamAllocated = false
+        assertThrows(IllegalArgumentException::class.java) {
+            PersistedProfileCodec.encodeWithHooksForTest(
+                oversize,
+                onStreamAllocated = { streamAllocated = true },
+            )
+        }
+        assertFalse("v3 one-past-limit must reject before stream allocation", streamAllocated)
+        assertThrows(IllegalArgumentException::class.java) {
+            PersistedProfileCodec.encodedSize(oversize)
+        }
+    }
+
+    @Test
+    fun v4ProfileAtExactLimitEncodesAndOnePastIsRejectedBeforeAllocation() {
+        val exact = exactLimitProfile(2)
+        assertEquals(PersistedProfileCodec.MAX_ENCODED_BYTES, PersistedProfileCodec.encodedSize(exact))
+
+        val encoded = PersistedProfileCodec.encode(exact)
+        assertEquals(PersistedProfileCodec.MAX_ENCODED_BYTES, encoded.size)
+        assertEquals(4, headerVersion(encoded))
+        encoded.fill(0)
+
+        val oversize = oneBytePastLimitProfile(2)
+        var streamAllocated = false
+        assertThrows(IllegalArgumentException::class.java) {
+            PersistedProfileCodec.encodeWithHooksForTest(
+                oversize,
+                onStreamAllocated = { streamAllocated = true },
+            )
+        }
+        assertFalse("v4 one-past-limit must reject before stream allocation", streamAllocated)
+        assertThrows(IllegalArgumentException::class.java) {
+            PersistedProfileCodec.encodedSize(oversize)
+        }
+    }
+
     private fun profileWithIdentity() = PersistedProfile(
         PersistedSpace("02".repeat(32), "Bounded identity"),
         emptyList(),
         PersistedIdentityState(ByteArray(32) { 0x22 }, ByteArray(112) { 0x44 }),
     )
+
+    /** The header version an encoded profile declares (second int after MAGIC). */
+    private fun headerVersion(encoded: ByteArray): Int =
+        DataInputStream(ByteArrayInputStream(encoded)).use { input ->
+            input.readInt() // magic
+            input.readInt() // version
+        }
+
+    private fun generationProfile(generation: Int?) = PersistedProfile(
+        space = PersistedSpace("02".repeat(32), "Generation space"),
+        alerts = emptyList(),
+        identityState = null,
+        installedApps = emptyList(),
+        appData = emptyList(),
+        starterCatalogGeneration = generation,
+    )
+
+    /**
+     * A boundary profile carrying two legal app-data bundles (so no single
+     * length-prefixed field exceeds its 2 MiB limit) plus the optional
+     * generation marker. Payload byte counts are the only tuned variable, so a
+     * caller can hit an exact total via [PersistedProfileCodec.encodedSize].
+     */
+    private fun boundaryProfile(payload1: Int, payload2: Int, generation: Int?) = PersistedProfile(
+        space = PersistedSpace("02".repeat(32), "Boundary"),
+        alerts = emptyList(),
+        identityState = null,
+        installedApps = emptyList(),
+        appData = listOf(
+            PersistedAppData("aa".repeat(32), "one", ByteArray(payload1)),
+            PersistedAppData("bb".repeat(32), "two", ByteArray(payload2)),
+        ),
+        starterCatalogGeneration = generation,
+    )
+
+    /** A profile whose exact encoded size equals the codec's hard byte ceiling. */
+    private fun exactLimitProfile(generation: Int?): PersistedProfile {
+        val overhead = PersistedProfileCodec.encodedSize(boundaryProfile(0, 0, generation))
+        val budget = PersistedProfileCodec.MAX_ENCODED_BYTES - overhead
+        val first = budget / 2
+        return boundaryProfile(first, budget - first, generation)
+    }
+
+    /** The same shape as [exactLimitProfile] but exactly one byte over the ceiling. */
+    private fun oneBytePastLimitProfile(generation: Int?): PersistedProfile {
+        val overhead = PersistedProfileCodec.encodedSize(boundaryProfile(0, 0, generation))
+        val budget = PersistedProfileCodec.MAX_ENCODED_BYTES - overhead + 1
+        val first = budget / 2
+        return boundaryProfile(first, budget - first, generation)
+    }
+
+    /**
+     * A hand-crafted v4 stream (magic, version 4, minimal body, trailing 32-bit
+     * generation) so the decoder's generation-membership check can be exercised
+     * independently of the encoder.
+     */
+    private fun versionFourStreamWithGeneration(generation: Int): ByteArray =
+        ByteArrayOutputStream().use { bytes ->
+            DataOutputStream(bytes).use { output ->
+                output.writeInt(0x52494f54) // magic
+                output.writeInt(4) // version 4
+                output.writeInt(64)
+                output.write("02".repeat(32).toByteArray())
+                output.writeInt(8)
+                output.write("Boundary".toByteArray())
+                output.writeInt(0) // alerts
+                output.writeBoolean(false) // identity
+                output.writeInt(0) // installed apps
+                output.writeInt(0) // app data
+                output.writeInt(generation) // trailing generation marker
+            }
+            bytes.toByteArray()
+        }
 }

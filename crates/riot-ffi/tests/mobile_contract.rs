@@ -391,7 +391,7 @@ fn sealed_identity_restores_the_same_signer_and_keeps_it_when_reattaching_its_sp
 
     let wrapping_key = vec![0x42; 32];
     let sealed = profile.seal_identity(wrapping_key.clone()).unwrap();
-    let restored = open_profile_from_sealed_identity(wrapping_key, sealed).unwrap();
+    let restored = open_profile_from_sealed_identity(wrapping_key, sealed, None).unwrap();
     assert_eq!(restored.identity().unwrap(), before);
     restored.join_public_space(space, Vec::new()).unwrap();
     assert_eq!(restored.identity().unwrap(), before);
@@ -407,23 +407,27 @@ fn sealed_identity_rejects_wrong_keys_tampering_truncation_and_invalid_key_lengt
     let sealed = profile.seal_identity(vec![0x11; 32]).unwrap();
 
     assert!(matches!(
-        open_profile_from_sealed_identity(vec![0x12; 32], sealed.clone()),
+        open_profile_from_sealed_identity(vec![0x12; 32], sealed.clone(), None),
         Err(MobileError::InvalidInput)
     ));
     let mut tampered = sealed.clone();
     *tampered.last_mut().unwrap() ^= 1;
     assert!(matches!(
-        open_profile_from_sealed_identity(vec![0x11; 32], tampered),
+        open_profile_from_sealed_identity(vec![0x11; 32], tampered, None),
         Err(MobileError::InvalidInput)
     ));
     assert!(matches!(
-        open_profile_from_sealed_identity(vec![0x11; 32], sealed[..sealed.len() - 1].to_vec()),
+        open_profile_from_sealed_identity(
+            vec![0x11; 32],
+            sealed[..sealed.len() - 1].to_vec(),
+            None
+        ),
         Err(MobileError::InvalidInput)
     ));
     let mut oversized = sealed.clone();
     oversized.push(0);
     assert!(matches!(
-        open_profile_from_sealed_identity(vec![0x11; 32], oversized),
+        open_profile_from_sealed_identity(vec![0x11; 32], oversized, None),
         Err(MobileError::InvalidInput)
     ));
     for invalid_key in [vec![], vec![0; 31], vec![0; 33]] {
@@ -432,7 +436,7 @@ fn sealed_identity_rejects_wrong_keys_tampering_truncation_and_invalid_key_lengt
             Err(MobileError::InvalidInput)
         ));
         assert!(matches!(
-            open_profile_from_sealed_identity(invalid_key, sealed.clone()),
+            open_profile_from_sealed_identity(invalid_key, sealed.clone(), None),
             Err(MobileError::InvalidInput)
         ));
     }
@@ -443,7 +447,7 @@ fn restored_identity_gets_a_fresh_author_when_joining_another_communal_namespace
     let profile = open_local_profile().unwrap();
     let before = profile.identity().unwrap();
     let sealed = profile.seal_identity(vec![0x23; 32]).unwrap();
-    let restored = open_profile_from_sealed_identity(vec![0x23; 32], sealed).unwrap();
+    let restored = open_profile_from_sealed_identity(vec![0x23; 32], sealed, None).unwrap();
 
     let other = open_local_profile().unwrap();
     let other_space = other.create_public_space("Another space".into()).unwrap();

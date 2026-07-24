@@ -144,6 +144,13 @@ private struct PersistedProfile: Codable {
     // is. Rust remains the only sanitizer — this string is never rendered, only
     // handed back to `set_display_name`.
     var displayName: String?
+    // The starter-catalog generation this profile was created under. ABSENT is
+    // the durable encoding of generation 1 (a legacy profile predating this
+    // marker); a fresh profile records `2`. Synthesized encoding omits the key
+    // when `nil`, so a grandfathered legacy snapshot stays zero-byte generation 1
+    // and is never silently upgraded to 2. Rust is the authority (`Option<u8>`);
+    // this is only the persisted mirror the restore FFI is handed back.
+    var starterCatalogGeneration: UInt8?
 
     static let empty = PersistedProfile(
         space: nil,
@@ -154,7 +161,11 @@ private struct PersistedProfile: Codable {
         appDataBundles: [],
         carriedApps: [],
         demoBundle: nil,
-        displayName: nil
+        displayName: nil,
+        // Fresh profiles record the current starter-catalog generation (2). A
+        // legacy snapshot has the key ABSENT (decoded as nil == generation 1);
+        // this default only applies to a brand-new `.empty` profile.
+        starterCatalogGeneration: 2
     )
 
     init(
@@ -166,7 +177,8 @@ private struct PersistedProfile: Codable {
         appDataBundles: [Data],
         carriedApps: [PersistedAppPack],
         demoBundle: Data?,
-        displayName: String?
+        displayName: String?,
+        starterCatalogGeneration: UInt8?
     ) {
         self.space = space
         self.alerts = alerts
@@ -177,12 +189,13 @@ private struct PersistedProfile: Codable {
         self.carriedApps = carriedApps
         self.demoBundle = demoBundle
         self.displayName = displayName
+        self.starterCatalogGeneration = starterCatalogGeneration
     }
 
     // Custom decode so snapshots written before `trustedAppIDs`/`appDataBundles`/
-    // `carriedApps`/`demoBundle`/`displayName` existed decode to empty rather than
-    // failing (synthesized Codable would throw on the missing key). Encoding stays
-    // synthesized.
+    // `carriedApps`/`demoBundle`/`displayName`/`starterCatalogGeneration` existed
+    // decode to empty/absent rather than failing (synthesized Codable would throw
+    // on the missing key). Encoding stays synthesized so `nil` omits the key.
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         space = try container.decodeIfPresent(RiotSpace.self, forKey: .space)
@@ -195,6 +208,9 @@ private struct PersistedProfile: Codable {
         carriedApps = try container.decodeIfPresent([PersistedAppPack].self, forKey: .carriedApps) ?? []
         demoBundle = try container.decodeIfPresent(Data.self, forKey: .demoBundle)
         displayName = try container.decodeIfPresent(String.self, forKey: .displayName)
+        starterCatalogGeneration = try container.decodeIfPresent(
+            UInt8.self, forKey: .starterCatalogGeneration
+        )
     }
 }
 
@@ -581,17 +597,53 @@ public final class RiotProfileRepository {
                     try openProfileFromSealedIdentityWithDatabase(
                         dbPath: databasePath,
                         wrappingKey: wrappingKey,
-                        sealedIdentity: sealedIdentity
+                        sealedIdentity: sealedIdentity,
+                        starterCatalogGeneration: persisted.starterCatalogGeneration
                     )
                 } else {
                     try openProfileFromSealedIdentity(
                         wrappingKey: wrappingKey,
-                        sealedIdentity: sealedIdentity
+                        sealedIdentity: sealedIdentity,
+                        starterCatalogGeneration: persisted.starterCatalogGeneration
                     )
                 }
             }
         }
-        return try openFresh(databasePath: databasePath)
+        // No sealed identity: an identityless persisted profile. A fresh `.empty`
+        // carries generation 2, a legacy snapshot carries `nil` (generation 1);
+        // either way the RESTORE FFI retains the exact marker rather than the
+        // fresh no-argument API, so a grandfathered legacy profile is never
+        // silently upgraded to generation 2. Only the deepest-recovery discard
+        // (`open`'s STEP 1 catch) calls the fresh `openFresh` and takes generation 2.
+        return try openIdentitylessRestore(
+            databasePath: databasePath,
+            starterCatalogGeneration: persisted.starterCatalogGeneration
+        )
+    }
+
+    /// Restores an identityless persisted profile while retaining its
+    /// starter-catalog generation. Prefers the durable database and falls back to
+    /// the in-memory profile if that path cannot be opened, mirroring `openFresh`,
+    /// but through the generation-aware restore FFI so the marker is preserved.
+    private static func openIdentitylessRestore(
+        databasePath: String?,
+        starterCatalogGeneration: UInt8?
+    ) throws -> MobileProfile {
+        guard let databasePath else {
+            return try openLocalProfileForStarterCatalogGeneration(
+                starterCatalogGeneration: starterCatalogGeneration
+            )
+        }
+        do {
+            return try openLocalProfileWithDatabaseForStarterCatalogGeneration(
+                dbPath: databasePath,
+                starterCatalogGeneration: starterCatalogGeneration
+            )
+        } catch {
+            return try openLocalProfileForStarterCatalogGeneration(
+                starterCatalogGeneration: starterCatalogGeneration
+            )
+        }
     }
 
     /// Opens a brand-new local profile on the primary paths — the fresh start
