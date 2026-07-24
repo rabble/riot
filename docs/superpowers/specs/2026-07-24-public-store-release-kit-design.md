@@ -1,6 +1,6 @@
 # Riot Public Store Release Kit
 
-Status: revision 1 for design-review gate.
+Status: revision 2 for design-review gate.
 
 ## Goal
 
@@ -83,11 +83,14 @@ Add a canonical `release/` tree with four responsibilities:
 
 The directory should be automation-ready without requiring Fastlane in this
 slice. Canonical metadata uses JSON with a checked-in JSON Schema; human
-worksheets use Markdown. Visual templates and their source captures produce
-deterministic output when run with the pinned Node/npm and image-tool versions.
-Signed Apple archives and Android bundles are not byte-reproducible promises:
-each is built once, treated as immutable, identified by its digest and signing
-identity, and promoted without rebuilding.
+worksheets use Markdown. Candidate manifests, visual provenance, build-number
+allocations, and ledger events each have their own versioned JSON Schema.
+Visual templates and their source captures produce deterministic output when
+run with the pinned Node/npm and image-tool versions. One checked-in release
+toolchain manifest centralizes every tool version and checksum. Signed Apple
+archives and Android bundles are not byte-reproducible promises: each is built
+once, treated as immutable, identified by its digest and signing identity, and
+promoted without rebuilding.
 
 Secrets, certificates, provisioning profiles, keystores, API keys, passwords,
 and authenticated session data must remain outside git. Scripts may accept
@@ -117,9 +120,22 @@ ledger.
 
 Each immutable candidate ID is
 `1.0-<ios|macos|android>-<build>-<12-character-commit>`. Creating a candidate
-uses an exclusive lock and atomic temporary-file rename; reusing an ID, build
-number, or artifact path fails. Local debug workflows remain usable without
-distribution credentials.
+uses an exclusive local lock and atomic temporary-file rename; reusing an ID,
+build number, or artifact path fails.
+
+The cross-checkout lock domain is the designated release branch's allocation
+ledger. One release coordinator reserves numbers by committing and pushing an
+allocation event before candidate production. Every build starts from a commit
+containing that landed reservation. Fetch/rebase detects duplicate allocations;
+both colliding candidates are blocked and the later reservation must allocate a
+new number and rebuild. The recorded store maximum includes actor and timestamp
+and is considered stale at upload time: immediately before every upload, the
+operator records a fresh authenticated store readback. If the store maximum is
+at or above the reservation, the candidate becomes `superseded` unless the
+existing store build can be reconciled to the exact candidate under the remote
+mutation rules below.
+
+Local debug workflows remain usable without distribution credentials.
 
 ## Metadata deliverables
 
@@ -205,13 +221,14 @@ The composition contract uses the implemented Riot identity:
   pink/blue tokens reserved for accents;
 - an opaque headline band occupying at most 24 percent of a portrait image and
   28 percent of a landscape image;
-- at least 5 percent safe inset on every edge;
+- at least 5 percent safe inset for overlay text and protected UI focal content
+  on every edge; the opaque band itself may bleed to the image edge;
 - no more than three headline lines and no more than 42 headline characters;
 - at least 4.5:1 text contrast;
 - headline cap height of at least 56 source pixels on phone output and 72
   source pixels on tablet/Mac output; and
-- a 320-pixel-wide thumbnail review in which both overlay and underlying UI
-  remain legible.
+- a 320-pixel-wide thumbnail review in which the headline and the screenshot's
+  key state or action remain recognizable.
 
 All essential screenshot claims must also appear in accessible listing text;
 color or image text is never the only carrier of meaning.
@@ -228,7 +245,9 @@ provenance, safe areas, text geometry, and contrast. A screenshot provenance
 manifest records candidate ID, full commit, candidate build, platform,
 OS/device class, locale, appearance, source hash, synthetic fixture revision,
 and template version. Every generated image is visually reviewed at its
-intended aspect ratio and at store-thumbnail scale.
+intended aspect ratio and at store-thumbnail scale. The approval record names
+the provenance-manifest digest, reviewer, timestamp, and both visual-review
+results.
 
 ## Privacy and policy evidence
 
@@ -376,14 +395,54 @@ hardware result, and promotion gate.
 8. Promote each independently accepted candidate to a staged worldwide public
    early-access rollout without rebuilding.
 
-Candidate states are `draft → built → uploaded → beta-accepted → promoted`.
+Candidate states are:
+
+`draft → built → upload-pending → uploaded → beta-accepted →
+promotion-pending → promoted`.
+
+`discarded`, `rejected`, and `superseded` are terminal. A remote call whose
+result cannot be proven enters `upload-indeterminate` or
+`promotion-indeterminate`; neither state permits another mutation.
+
+Every remote store mutation uses a durable intent/outcome protocol:
+
+1. append and fsync an intent event containing candidate ID, operation UUID,
+   intended store action, current authenticated store readback, artifact and
+   manifest digests, and expected remote identity;
+2. invoke the store exactly once;
+3. capture the command receipt without secrets;
+4. perform an authenticated store readback for public identifier, version,
+   build number, processed/upload status, signing certificate identity where
+   exposed, and store-assigned submission/build ID; and
+5. append and fsync a success or failure event with that readback.
+
+Crash and retry behavior is exact:
+
+- before the intent is durable, no remote call is allowed;
+- after durable intent but before a provable outcome, restart enters the
+  indeterminate state and performs read-only reconciliation first;
+- if authenticated readback proves the intended candidate exists or the
+  promotion is active, append a `reconciled-success` outcome and continue;
+- if readback proves the mutation never occurred, append
+  `reconciled-not-applied`, then a fresh intent may retry the same immutable
+  candidate;
+- if the store identity conflicts or readback cannot decide, report
+  `HUMAN ACTION`; never retry automatically; and
+- after a durable outcome, duplicate invocation is a read-only no-op that
+  reports the existing receipt.
+
+The store's authenticated readback is authoritative for whether a remote
+mutation happened; the immutable local manifest remains authoritative for
+which artifact was approved. Reconciliation succeeds only when both identities
+agree.
+
 Transitions append events to a ledger; the immutable candidate manifest is
-never edited. A rejected build is terminal and receives a new build number.
-Partial builds may be discarded before upload but their allocated numbers are
-never reused. A stale manifest, changed artifact hash, different signing
-identity, missing prior state, or duplicate transition fails. Ledger appends
-use an exclusive lock, fsync, and atomic rename; interrupted writes recover the
-last complete event and report the incomplete transition.
+never edited. A rejected build receives a new build number. Partial builds may
+be discarded before upload but allocated numbers are never reused. A stale
+manifest, changed artifact hash, different signing identity, missing prior
+state, or invalid transition fails. Ledger appends use an exclusive lock,
+fsync, and atomic rename; interrupted writes recover the last complete event
+and report the incomplete transition.
 
 Each candidate manifest records:
 
@@ -436,15 +495,15 @@ Every work unit follows RED → GREEN → REFACTOR. The initial test design is:
 | Claim/capability validator | platform claim with no passing journey must fail | compare listing claims to capability matrix | universal, platform-only, experimental-unpassed, exact trust vocabulary |
 | Visual validator | wrong dimensions/alpha/metadata/unsafe capture must fail | inspect one PNG and provenance entry | every boundary size; alpha rules; EXIF present; production token; missing fixture hash; 320-pixel thumbnail |
 | Visual generator | one synthetic capture must render to a golden geometry record | compose one headline band from pinned tokens | phone/tablet/landscape; 1/3/4 lines; contrast; safe-area and band-height boundaries |
-| Build-number allocator | duplicate, stale, rebased, and store-max collisions must fail | validate explicit number and append allocation | empty ledger; duplicate ID; lower store max; interrupted append; concurrent lock |
+| Build-number allocator | duplicate, stale, rebased, cross-checkout, and store-max collisions must fail | validate explicit number and append allocation | empty ledger; duplicate ID; pushed reservation; merge collision; stale maximum; final readback advanced; interrupted append; concurrent local lock; mandatory reallocation |
 | Candidate manifest | changed artifact or signing identity must fail verification | create/verify immutable manifest | iOS, Mac, Android; unsigned validation-only Android; missing artifact; stale tool hash; malformed schema |
-| State machine/ledger | invalid skip, duplicate transition, and accepted-ID reuse must fail | append one legal transition atomically | every legal/illegal edge; partial write recovery; rejected retry with new number |
+| State machine/ledger | invalid skip, duplicate transition, accepted-ID reuse, and mutation from indeterminate state must fail | append one legal transition atomically | every legal/illegal edge and terminal state; partial write recovery; rejected/discarded/superseded semantics; rejected retry with new number |
 | Process runner | dirty tree, nonzero command, timeout, and zero tests must fail | run one fake validation and normalize result | Cargo/XCTest/Gradle zero-test logs; signal; timeout; redacted stderr |
 | Credential guard | persistent copy, broad mode, logged secret, and absent credential must fail | authorize one fake upload using external read-only path | `0600`/wrong modes; ASC key; Android key/password; cleanup; redaction; `--no-daemon` |
 | Export-compliance guard | unresolved or archived-value mismatch must block Apple archive/export/upload | inject and verify one recorded decision | unresolved; exempt/non-exempt; iOS/Mac archived plist mismatch |
 | Supply-chain guard | missing Gradle checksum/locks or changed lock/tool hash must fail | verify one pinned input set | Cargo/npm/Gradle/toolchain fixtures; advisory finding with/without disposition |
 | Status reporter | mixed gates must never summarize as ready | render tri-state result and recovery action | PASS/BLOCKED/HUMAN ACTION; missing evidence; exact file/value diagnostics |
-| Upload/promote adapter | implicit upload, rebuilt hash, wrong store ID, and unaccepted candidate must fail | call a fake store runner after explicit confirmation | cancellation; receipt capture; retry; per-platform identity; promotion without rebuild |
+| Upload/promote adapter | implicit upload, rebuilt hash, wrong store ID, unaccepted candidate, and blind retry after a crash must fail | persist intent, call a fake store runner, read back, then persist outcome | crash before intent; after intent/before call; after remote success/before outcome; after durable outcome; reconciliation present/absent/conflicting/unknown; cancellation; receipt capture; final store-max change; per-platform identity; promotion without rebuild |
 | Privacy/policy consistency | store answer contradicting code/network/policy evidence must fail | compare one answer to evidence matrix | no collection; user-directed fetch; report transmission; missing UGC control; stale policy URL |
 
 Golden image tests assert geometry/tokens and are supplemented by Playwright
@@ -455,9 +514,12 @@ Owned implementation scope includes `release/**`, `scripts/release/**`,
 `scripts/testflight-release.sh`, `scripts/green.sh`, `package.json` and its
 lockfile, `.github/workflows/ci.yml`, `.coverage-thresholds.json` only if its
 include/enforcement description must change (floors never decrease), both
-Xcode projects and platform plists/entitlements/assets, Android Gradle/wrapper
-and resource files, and the marketing privacy/support/release pages. Any UGC
-product remediation gets its own approved file scope before edits.
+Xcode projects and platform plists/entitlements/assets, shared iOS/macOS
+SwiftUI and UI-test sources needed for deterministic seed/capture/rehearsal,
+Android Gradle/wrapper/resource files plus the relevant `src/main`, `src/test`,
+and `src/androidTest` fixture/capture/rehearsal sources, shared `fixtures/**`
+synthetic release data, and the marketing privacy/support/release pages. Any
+UGC product remediation gets its own approved file scope before edits.
 
 ## Blocking verification
 
