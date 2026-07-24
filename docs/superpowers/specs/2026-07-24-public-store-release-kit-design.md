@@ -507,7 +507,8 @@ different people using separately Git-host-authenticated identities. An
 operator submits a signed attestation commit; a verifier separately supplies a
 verified signature or protected-branch approval that references the operation
 UUID, predecessor digest, evidence digest, candidate-manifest digest, and
-active submission-package revision and digest.
+for submission/release/withdrawal actions the active submission-package
+revision and digest.
 Only then may the outcome event land. Typed names in one commit never satisfy
 two-person control. Role-file changes require a separate security-owner
 approval, are included in the append-only audit, and cannot authorize the event
@@ -517,10 +518,16 @@ events.
 
 The human handoff protocol is:
 
-1. `prepare-handoff` validates the candidate, the active immutable
-   submission-package revision/digest, and fresh Console maximum attestation;
-   it writes those bindings with an operation UUID and expected remote identity
-   and requires that intent commit to land on `release/riot-1.0`.
+1. `prepare-handoff` applies action-specific preconditions. Upload validates
+   and binds the candidate manifest, expected identifier/version/build,
+   artifact digest, signing identity, and fresh Console maximum attestation;
+   no submission package or store-assigned build identity exists yet.
+   Submission, release, and withdrawal validate and bind the candidate
+   manifest, active immutable submission-package revision/digest, and the
+   already assigned store identity; they do not require a new store-maximum
+   readback. The tool writes the applicable bindings with an operation UUID
+   and expected remote transition and requires that intent commit to land on
+   `release/riot-1.0`.
 2. The tool stops with `HUMAN ACTION` and prints the exact Console steps and
    evidence fields. It has no store credentials and performs no mutation.
 3. Before touching the Console, the operator may cancel. The same operator and
@@ -530,10 +537,12 @@ The human handoff protocol is:
 4. Otherwise, the operator performs the action once in the authenticated
    Console.
 5. `record-console-outcome` validates operator-supplied evidence against the
-   candidate and active submission package; a distinct verifier supplies the
-   separately authenticated attestation over both digests before the outcome
+   action-specific bindings. For upload, the outcome adds and verifies the
+   store-assigned identity. For submission/release/withdrawal, it also verifies
+   the active submission package. A distinct verifier supplies the separately
+   authenticated attestation over every applicable digest before the outcome
    commit lands on the release branch. The resulting append-only event repeats
-   both bindings.
+   those bindings.
 6. If the operator session is interrupted or the remote result is unclear, the
    state becomes `<action>-indeterminate`. No second action is permitted. The
    operator and verifier inspect the Console until it supplies authoritative
@@ -639,10 +648,13 @@ Each candidate manifest records:
 Append-only sign-off events record store upload receipts/identifiers, beta
 results, hardware results, human approvals, Console submission/release/
 withdrawal receipts, remaining gates, approver/verifier identities, the
-SHA-256 of the complete immutable candidate manifest, and the active
-submission-package revision/digest. Console-handoff readiness verifies the
-store build identity, artifact signing certificate, candidate-manifest digest,
-and active submission-package binding before printing human steps.
+SHA-256 of the complete immutable candidate manifest, and for every post-upload
+action the active submission-package revision/digest. Upload readiness verifies
+the expected identifier/version/build, artifact signing certificate, artifact
+and candidate-manifest digests, and fresh store maximum. Post-upload
+Console-handoff readiness verifies the assigned store identity,
+candidate-manifest digest, and active submission-package binding before
+printing human steps.
 
 The command surface stays deliberately separate:
 
@@ -686,7 +698,7 @@ Every work unit follows RED → GREEN → REFACTOR. The initial test design is:
 | Export-compliance guard | unresolved or archived-value mismatch must block Apple archive/export/Console handoff | inject and verify one recorded decision | unresolved; exempt/non-exempt; iOS/Mac archived plist mismatch |
 | Supply-chain guard | missing Gradle checksum/locks, changed lock/tool hash, known-exploited finding, reachable critical, or invalid exception must fail | verify one pinned input set | Cargo/npm/Gradle/toolchain fixtures; severity/reachability; valid high-severity exception; missing security approval; wrong candidate/finding digest; expired exception; compensating controls |
 | Status reporter | mixed gates must never summarize as ready | render tri-state result and recovery action | PASS/BLOCKED/HUMAN ACTION; missing evidence; exact file/value diagnostics |
-| Console handoff/evidence | any attempted store process invocation, missing pushed intent, wrong store ID, unaccepted candidate, stale/substituted submission package, self-attestation, unsafe cancellation, or blind retry after ambiguity must fail | persist intent, print steps, validate discriminated independently authenticated evidence | no store credential/process adapter; remote-ref CAS failure; candidate plus active submission-package revision/digest bound through intent, both attestations, evidence, and outcome; one identity cannot satisfy both roles; audited role change cannot authorize itself; Apple submit/approve/manual release; Google production action/review/automatic publication; withdraw; interruption; positive/terminal-negative/absent/ambiguous readback; eventual-consistency absence remains indeterminate |
+| Console handoff/evidence | any attempted store process invocation, missing pushed intent, wrong store ID, unaccepted candidate, stale/substituted submission package, self-attestation, unsafe cancellation, or blind retry after ambiguity must fail | persist intent, print steps, validate discriminated independently authenticated evidence | no store credential/process adapter; remote-ref CAS failure; upload binds expected identity/artifact/signing/fresh maximum and learns store identity; post-upload actions bind store identity plus candidate and active submission-package digests through intent, both attestations, evidence, and outcome; one identity cannot satisfy both roles; audited role change cannot authorize itself; Apple submit/approve/manual release; Google production action/review/automatic publication; withdraw; interruption; positive/terminal-negative/absent/ambiguous readback; eventual-consistency absence remains indeterminate |
 | Privacy/policy consistency | store answer contradicting code/network/policy evidence must fail | compare one answer to evidence matrix | no collection; user-directed fetch; report transmission; missing UGC control; stale policy URL |
 | iOS/iPadOS release configuration | wrong ID/version/icon, missing privacy manifest, unsafe export value, signing or entitlement mismatch must fail | validate one archive/config fixture | Debug versus Release; iPhone/iPad families; app icon; archived plist; Keychain group; unresolved export decision |
 | macOS release configuration | ad-hoc candidate, wrong ID/version/icon, Intel claim, sandbox/entitlement or export mismatch must fail | validate one Mac archive/config fixture | local ad-hoc stays valid; App Store distribution; Apple-silicon/macOS 14 boundary; app icon; archived plist |
