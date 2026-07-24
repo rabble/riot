@@ -13,7 +13,10 @@
 //!     non-inverted micros range), and
 //!   * it fails closed (not panics) on pre-J2000 and out-of-range inputs.
 
-use riot_core::willow::{system_snapshot, tai_j2000_micros_from_unix_seconds, WillowError};
+use riot_core::willow::{
+    system_snapshot, tai_j2000_micros_from_unix_seconds, unix_seconds_from_tai_j2000_micros,
+    WillowError,
+};
 
 const MICROS_PER_SEC: u64 = 1_000_000;
 
@@ -97,5 +100,72 @@ fn out_of_range_input_fails_closed() {
             Err(WillowError::ClockUnavailable)
         ),
         "an out-of-range input must fail closed"
+    );
+}
+
+// --- inverse: unix_seconds_from_tai_j2000_micros --------------------------
+//
+// The display path needs a REAL wall-clock instant for each open-wire post, but
+// a projected post carries only its entry `Timestamp` (TAI/J2000 micros). This
+// inverse recovers Unix seconds so the app can render "2h ago" without any
+// hand-rolled epoch math against the wrong unit.
+
+#[test]
+fn inverse_round_trips_forward_at_second_resolution() {
+    // The load-bearing property: convert a Unix-seconds instant into the entry
+    // micros domain and back, and land on the SAME second. If the two converters
+    // disagreed, every rendered post time would be off by the offset error.
+    for base in [
+        1_000_000_000, // 2001-09, safely after the J2000 reference epoch
+        1_700_000_000,
+        1_752_000_000,
+        2_000_000_000,
+    ] {
+        let micros = tai_j2000_micros_from_unix_seconds(base).expect("forward");
+        let back = unix_seconds_from_tai_j2000_micros(micros).expect("inverse");
+        assert_eq!(
+            back, base,
+            "round trip must preserve the Unix second (base {base}, micros {micros})"
+        );
+    }
+}
+
+#[test]
+fn inverse_agrees_with_the_live_snapshot_path() {
+    // A real entry timestamp, taken from system_snapshot, must map back to the
+    // same Unix seconds the snapshot recorded — otherwise a rendered "created at"
+    // would drift from the wall clock that signed the post.
+    let snap = system_snapshot().expect("clock");
+    let recovered = unix_seconds_from_tai_j2000_micros(snap.tai_j2000_micros).expect("inverse");
+    assert_eq!(
+        recovered, snap.unix_seconds,
+        "inverse must match system_snapshot's unix_seconds for the same entry timestamp"
+    );
+}
+
+#[test]
+fn inverse_output_is_in_the_seconds_domain_not_micros() {
+    // Guard the unit at the OTHER end: a present-day recovered value is ~1.7e9
+    // seconds, nowhere near the ~8.3e14 micros it came from. If the inverse ever
+    // leaked micros, this would blow past any plausible seconds magnitude.
+    let snap = system_snapshot().expect("clock");
+    let recovered = unix_seconds_from_tai_j2000_micros(snap.tai_j2000_micros).expect("inverse");
+    assert!(
+        (1_000_000_000..10_000_000_000).contains(&recovered),
+        "a present-day instant in seconds must be ~1e9..1e10 (got {recovered}), not micros"
+    );
+}
+
+#[test]
+fn inverse_of_the_j2000_reference_epoch_is_a_valid_positive_second() {
+    // Entry-timestamp 0 is the J2000 reference epoch (2000-01-01T12:00 TT), which
+    // is AFTER the Unix epoch (1970), so it maps to a positive Unix second — never
+    // an error, a panic, or a wrap. Its exact value depends on the TT/TAI/leap
+    // offset, so assert it lands in the year-2000 neighbourhood rather than pin a
+    // brittle magic number.
+    let unix = unix_seconds_from_tai_j2000_micros(0).expect("J2000 is a valid instant");
+    assert!(
+        (946_000_000..947_500_000).contains(&unix),
+        "TAI/J2000 micros 0 is 2000-01-01 noon -> a positive Unix second near 9.467e8 (got {unix})"
     );
 }

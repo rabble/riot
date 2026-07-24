@@ -46,6 +46,58 @@ public enum PeopleStrings {
     public static func contributions(_ count: UInt32) -> String {
         count == 1 ? "1 contribution" : "\(count) contributions"
     }
+
+    /// The person page's contribution summary, naming the community when we know
+    /// it (#4: "12 contributions in Rojava Solidarity"). A blank name falls back
+    /// to the bare count — we never render "in " with nothing after it.
+    public static func contributions(_ count: UInt32, in community: String) -> String {
+        let base = contributions(count)
+        let trimmed = community.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? base : "\(base) in \(trimmed)"
+    }
+
+    /// The recency line shown when this person holds (or ties) the community's
+    /// freshest visible update. Honest, ordering-domain phrasing — not a wall
+    /// clock the app cannot derive.
+    public static let mostRecentToPost = "Most recent to post here"
+
+    /// Section subtitle for the posts list — how many of this person's posts this
+    /// device can actually see, distinct from the total contribution count.
+    public static func postsShown(_ count: Int) -> String {
+        count == 1 ? "1 post on this device" : "\(count) posts on this device"
+    }
+}
+
+// MARK: - Recent activity: an honest recency, kept in the ordering domain
+
+/// Recency phrasing for a contributor's page.
+///
+/// A projected post now carries a real creation instant (`createdAtUnixSeconds`,
+/// recovered by core from the Willow entry timestamp — see the FFI projection),
+/// so recency is a true wall-clock "ago" against the current clock, not the old
+/// ordering-domain gap. Every function is pure over a creation instant and an
+/// explicit `now`, so it stays deterministic under test. When the person has no
+/// visible posts — or core supplied no creation time — there is simply no line
+/// (absence, never a fabricated "active now").
+public enum PersonActivity {
+    /// The header recency line ("Last posted 2h ago"), or `nil` when the person
+    /// has no visible posts / no recoverable creation time. Derived from the real
+    /// creation instant of their newest post.
+    public static func headerRecency(
+        personNewestCreatedUnixSeconds: UInt64?,
+        now: Date = Date()
+    ) -> String? {
+        guard let ago = RelativeTime.ago(unixSeconds: personNewestCreatedUnixSeconds, now: now)
+        else { return nil }
+        return "Last posted \(ago)"
+    }
+
+    /// The per-row recency caption — a true "2h ago" from the row's own creation
+    /// instant. `nil` when core supplied no time, so the row omits the caption
+    /// rather than showing a bogus instant.
+    public static func rowRecency(rowCreatedUnixSeconds: UInt64?, now: Date = Date()) -> String? {
+        RelativeTime.ago(unixSeconds: rowCreatedUnixSeconds, now: now)
+    }
 }
 
 public struct PersonRowAccessibilityValue: Equatable, Sendable {
@@ -268,7 +320,7 @@ private struct PersonRowView: View {
 
     var body: some View {
         HStack(spacing: 12) {
-            PersonAvatar(displayName: row.displayName, isOrganizer: row.isOrganizer)
+            PersonAvatar(displayName: row.displayName, isOrganizer: row.isOrganizer, keySeed: row.id)
             VStack(alignment: .leading, spacing: 4) {
                 HStack {
                     Text(row.rendered)
@@ -301,6 +353,11 @@ struct PersonAvatar: View {
     let displayName: String
     var isOrganizer: Bool = false
     var diameter: CGFloat = 40
+    /// The author's unique key (hex id or short tag), used to derive the initials
+    /// when there is no real display name — so two nameless members never both
+    /// read "ME". `nil` keeps the old name-only initials for callers that have no
+    /// key to hand.
+    var keySeed: String?
     /// An explicit, key-derived disc colour (see ``RiotTheme/avatarColor(forKey:)``).
     /// `nil` keeps the roster's default disc, so existing People rows are unchanged;
     /// the newswire byline passes one so each author reads as a distinct face.
@@ -331,8 +388,26 @@ struct PersonAvatar: View {
         return String(first.prefix(2)).uppercased()
     }
 
+    /// The initials to draw for an author. A real claimed name uses its own
+    /// initials. Core's fallback for a nameless peer is the bare word "member"
+    /// (surfaced friendly as "Member") — taking initials from THAT would stamp
+    /// "ME" on every nameless author, so instead derive two glyphs from the
+    /// author's unique key. The key tag is hex, so this echoes the tag shown
+    /// beside the name and is distinct per person; the disc colour is already
+    /// key-derived, so the two never collide together.
+    static func initials(displayName: String, keySeed: String?) -> String {
+        let trimmed = displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty, trimmed.lowercased() != "member" {
+            return initials(for: trimmed)
+        }
+        guard let keySeed else { return initials(for: displayName) }
+        let hex = keySeed.filter { $0.isHexDigit }
+        guard !hex.isEmpty else { return "•" }
+        return String(hex.prefix(2)).uppercased()
+    }
+
     var body: some View {
-        Text(Self.initials(for: displayName))
+        Text(Self.initials(displayName: displayName, keySeed: keySeed))
             .font(.riot(.body, size: diameter * 0.36, relativeTo: .headline))
             .fontWeight(.semibold)
             .foregroundStyle(glyphColor)
@@ -382,21 +457,46 @@ public enum PersonDetailState: Equatable, Sendable {
 @MainActor
 public final class PersonDetailModel: ObservableObject {
     @Published public private(set) var state: PersonDetailState
+    /// The header recency line, derived on `load()` from the newest of this
+    /// person's posts against the community's freshest visible update. `nil`
+    /// whenever there is nothing to show — no posts, or a projection failure — so
+    /// the header never renders a fabricated "active" line (see `PersonActivity`).
+    @Published public private(set) var recentActivity: String?
+    /// The freshest visible ordering value across the whole community projection,
+    /// captured on `load()` so each post row can show its recency against the same
+    /// anchor the header uses. `nil` before a successful load.
+    @Published public private(set) var communityNewestMicros: UInt64?
     public let person: PersonRow
 
     private let projector: NewswireProjecting
     private let spaceDescriptorEntryID: String
+    /// The community this page is being viewed inside, for the contribution
+    /// summary (#4). Empty when unknown — the summary then omits it cleanly.
+    private let communityName: String
+    /// The clock the header recency reads "ago" against. Injectable so recency is
+    /// deterministic under test; production defaults to the live clock.
+    private let now: () -> Date
 
     public init(
         person: PersonRow,
         projector: NewswireProjecting,
         spaceDescriptorEntryID: String,
-        initialState: PersonDetailState = .empty
+        communityName: String = "",
+        initialState: PersonDetailState = .empty,
+        now: @escaping () -> Date = { Date() }
     ) {
         self.person = person
         self.projector = projector
         self.spaceDescriptorEntryID = spaceDescriptorEntryID
+        self.communityName = communityName
         self.state = initialState
+        self.now = now
+    }
+
+    /// The contribution summary shown in the header: the core-derived contribution
+    /// count, named to the community when we know which one this is.
+    public var contributionSummary: String {
+        PeopleStrings.contributions(person.contributionCount, in: communityName)
     }
 
     public func load() {
@@ -405,10 +505,24 @@ public final class PersonDetailModel: ObservableObject {
                 spaceDescriptorEntryID: spaceDescriptorEntryID
             )
             let rows = PersonPosts.authored(by: person.id, in: projection)
+            // The freshest ordering value the whole community shows, retained for
+            // callers that reason about ordering. Recency itself is now a true
+            // wall-clock "ago" from each post's real creation time.
+            let allPosts = projection.frontPage + projection.openWire + projection.earlier
+            communityNewestMicros = allPosts.map(\.taiJ2000Micros).max()
+            // The person's newest post by ordering; show its real creation time as
+            // "Last posted N ago". `rows` is already newest-first by ordering.
+            recentActivity = PersonActivity.headerRecency(
+                personNewestCreatedUnixSeconds: rows.first?.createdAtUnixSeconds,
+                now: now()
+            )
             state = rows.isEmpty ? .empty : .posts(rows)
         } catch {
             // Drop the underlying error: a fixed, actionable message, never
-            // internal detail (§4.7), exactly as the People surface does.
+            // internal detail (§4.7), exactly as the People surface does. No
+            // recency line survives a failure.
+            recentActivity = nil
+            communityNewestMicros = nil
             state = .unavailable(PeopleStrings.personUnavailableMessage)
         }
     }
@@ -474,7 +588,8 @@ public struct PersonDetailView: View {
                 PersonAvatar(
                     displayName: person.displayName,
                     isOrganizer: person.isOrganizer,
-                    diameter: 56
+                    diameter: 56,
+                    keySeed: person.id
                 )
                 VStack(alignment: .leading, spacing: 6) {
                     HStack {
@@ -485,7 +600,16 @@ public struct PersonDetailView: View {
                             RiotBadge(PeopleStrings.organizerBadge)
                         }
                     }
-                    Text(PeopleStrings.contributions(person.contributionCount))
+                    // What you most want to know first: is this person current or
+                    // historical? Shown only when we can derive it honestly from
+                    // their newest post; absent otherwise (never a fake "active").
+                    if let recentActivity = model.recentActivity {
+                        Text(recentActivity)
+                            .font(.riot(.body, size: 13, relativeTo: .footnote))
+                            .foregroundStyle(RiotTheme.ink(for: colorScheme))
+                            .accessibilityIdentifier("person-detail-recent-activity")
+                    }
+                    Text(model.contributionSummary)
                         .font(.riot(.mono, size: 12, relativeTo: .caption))
                         .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
                     DisclosureGroup("Technical details") {
@@ -504,14 +628,25 @@ public struct PersonDetailView: View {
 
     private func postsSection(_ rows: [NewswirePostRow]) -> some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text(PeopleStrings.personPostsTitle)
-                .font(.riot(.mono, size: 12, relativeTo: .caption))
-                .textCase(.uppercase)
-                .tracking(0.5)
-                .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
+            HStack(alignment: .firstTextBaseline) {
+                Text(PeopleStrings.personPostsTitle)
+                    .font(.riot(.mono, size: 12, relativeTo: .caption))
+                    .textCase(.uppercase)
+                    .tracking(0.5)
+                    .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
+                Spacer(minLength: 0)
+                // How many of this person's posts this device can actually see —
+                // distinct from the total contribution count in the header.
+                Text(PeopleStrings.postsShown(rows.count))
+                    .font(.riot(.mono, size: 11, relativeTo: .caption2))
+                    .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
+                    .accessibilityIdentifier("person-detail-posts-shown")
+            }
             ForEach(rows) { row in
                 Button { reading = row } label: {
-                    RiotCard { PersonPostRowView(row: row) }
+                    RiotCard {
+                        PersonPostRowView(row: row)
+                    }
                 }
                 .buttonStyle(.plain)
                 .accessibilityIdentifier("person-post-\(row.id)")
@@ -557,6 +692,15 @@ private struct PersonPostRowView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
+            // Recency first, so the list scans as a timeline of this person's
+            // activity. A true "2h ago" from the post's real creation time (see
+            // `PersonActivity`); omitted only when core supplied no time.
+            if let ago = PersonActivity.rowRecency(rowCreatedUnixSeconds: row.createdAtUnixSeconds) {
+                Text(ago)
+                    .font(.riot(.mono, size: 11, relativeTo: .caption2))
+                    .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
+                    .accessibilityIdentifier("person-post-recency-\(row.id)")
+            }
             switch row.display {
             case .ordinary:
                 Text(verbatim: row.headline ?? "Update")
@@ -569,7 +713,7 @@ private struct PersonPostRowView: View {
                         .lineLimit(2)
                 }
                 if let when = eventTimeText {
-                    Text(when)
+                    Text("Event · \(when)")
                         .font(.riot(.mono, size: 11, relativeTo: .caption2))
                         .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
                 }

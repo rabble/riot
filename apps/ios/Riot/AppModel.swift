@@ -1498,6 +1498,12 @@ public final class RiotAppModel: ObservableObject {
     /// selecting or dismissing closes it.
     @Published public var isCommunityChooserPresented = false
 
+    /// Whether the Discover front door (browse communities you have no link for)
+    /// is presented. Raised from the chooser's "Discover communities" row and the
+    /// launch screen; the surface routes joining back through `commitJoin` /
+    /// the paste-QR sheet. See `RiotAppModel.requestDiscover` in DiscoverView.swift.
+    @Published public var isDiscoverPresented = false
+
     /// The launch state the shell renders before any route: loading while the
     /// profile opens, no-community when there is none, the community's Home when
     /// there is one, or in-place recovery when a retained one cannot open. Never

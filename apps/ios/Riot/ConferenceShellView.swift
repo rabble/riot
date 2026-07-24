@@ -364,6 +364,7 @@ private struct OnboardingSetupView: View {
     @State private var isCreatePresented = false
     @State private var isJoinPresented = false
     @State private var isFollowSitePresented = false
+    @State private var isDiscoverPresented = false
     @State private var hasAppliedInitialIntent = false
     @AccessibilityFocusState private var nameErrorFocused: Bool
 
@@ -394,10 +395,16 @@ private struct OnboardingSetupView: View {
                                 .accessibilityFocused($nameErrorFocused)
                         }
 
+                        Button("Discover communities") {
+                            perform(.join) { isDiscoverPresented = true }
+                        }
+                        .buttonStyle(.riotPrimary)
+                        .accessibilityIdentifier("launch-discover")
+
                         Button("Join with a link or QR") {
                             perform(.join) { isJoinPresented = true }
                         }
-                        .buttonStyle(.riotPrimary)
+                        .buttonStyle(.riotSecondary)
                         .accessibilityIdentifier("launch-join-by-reference")
 
                         Button("Create a community") { isCreatePresented = true }
@@ -443,6 +450,24 @@ private struct OnboardingSetupView: View {
         .sheet(isPresented: $isJoinPresented) {
             JoinByReferenceSheet(model: model, onClose: { isJoinPresented = false })
         }
+        // The front door for a person with no community yet: browse and preview,
+        // then route into the same paste/QR join (or, for a real feed row, commit
+        // the reference). Self-contained here so onboarding doesn't depend on the
+        // in-community shell's sheets.
+        .sheet(isPresented: $isDiscoverPresented) {
+            DiscoverView(
+                onJoin: handleDiscoverJoin,
+                onImportCrew: {
+                    isDiscoverPresented = false
+                    isJoinPresented = true
+                },
+                onCreate: {
+                    isDiscoverPresented = false
+                    isCreatePresented = true
+                },
+                onClose: { isDiscoverPresented = false }
+            )
+        }
         .sheet(isPresented: $isFollowSitePresented) {
             FollowSiteSheet(model: model, onClose: { isFollowSitePresented = false })
         }
@@ -472,6 +497,24 @@ private struct OnboardingSetupView: View {
         )
         showNameError = result == .nameSaveFailed
         nameErrorFocused = showNameError
+    }
+
+    /// Routes a Preview's join action from the onboarding Discover sheet into the
+    /// existing join flow: a real reference is committed directly, a seed with no
+    /// reference falls back to the paste/QR sheet. Kept local to onboarding so the
+    /// join sheet it opens is this view's own.
+    private func handleDiscoverJoin(_ community: DiscoverableCommunity) {
+        isDiscoverPresented = false
+        switch CommunityJoinRoute.route(for: community) {
+        case let .commitReference(reference):
+            if let preview = try? JoinReferenceModel().preview(fromPastedString: reference) {
+                model.commitJoin(preview: preview)
+            } else {
+                isJoinPresented = true
+            }
+        case .pasteOrScan:
+            isJoinPresented = true
+        }
     }
 
     private func loadDemoSpace() {
@@ -1041,7 +1084,8 @@ private struct CommunityShellView: View {
                         model: PersonDetailModel(
                             person: person,
                             projector: model.profileRepository ?? UnavailableWireProjector(),
-                            spaceDescriptorEntryID: community.newswireDescriptorEntryID ?? ""
+                            spaceDescriptorEntryID: community.newswireDescriptorEntryID ?? "",
+                            communityName: community.name
                         ),
                         surfaceModel: newswire,
                         onClose: { selectedPerson = nil }
@@ -1105,6 +1149,14 @@ private struct CommunityShellView: View {
                         ) {
                             model.requestJoinByReference()
                         }
+                    },
+                    onDiscover: {
+                        MountedToolExit.perform(
+                            when: ToolRoutePolicy.closesMountedToolBeforeRoute,
+                            closeTool: closeTool
+                        ) {
+                            model.requestDiscover()
+                        }
                     }
                 )
             }
@@ -1113,6 +1165,23 @@ private struct CommunityShellView: View {
             // both entry points share one sheet and one core call.
             .sheet(isPresented: $model.isJoinByReferencePresented) {
                 JoinByReferenceSheet(model: model, onClose: model.dismissJoinByReference)
+            }
+            // Discover communities — the front door for finding a community you have
+            // no link for. Raised from the chooser's "Discover communities" row.
+            // Joining routes back through the existing commit-join / paste-QR paths.
+            .sheet(isPresented: $model.isDiscoverPresented) {
+                DiscoverView(
+                    onJoin: { model.joinDiscovered($0) },
+                    onImportCrew: {
+                        model.dismissDiscover()
+                        model.requestJoinByReference()
+                    },
+                    onCreate: {
+                        model.dismissDiscover()
+                        model.requestCreateCommunity()
+                    },
+                    onClose: model.dismissDiscover
+                )
             }
             // Create another community — the chooser's "Create a community" row.
             .sheet(isPresented: createCommunityBinding) {
