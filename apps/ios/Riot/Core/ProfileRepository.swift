@@ -1654,6 +1654,13 @@ public extension RiotProfileRepository {
         )
     }
 
+    /// Builds the view-facing async boundary around this repository's generated
+    /// thread-safe profile handle. The actor owns the handle only; it never
+    /// captures this mutable repository.
+    func makeNewswireReactionWriter() -> any NewswireReactionWriting {
+        MobileProfileReactionWriter(profile: profile)
+    }
+
     /// The collective view of a newswire space: the open wire (all non-expired
     /// posts, newest-first) and the front page (ordinary posts with an active
     /// Feature action). `Hidden`/`Tombstoned` posts arrive with `body == nil`.

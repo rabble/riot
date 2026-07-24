@@ -138,7 +138,8 @@ final class NewswireSurfaceTests: XCTestCase {
             communityName: "Riverside",
             myKeyHex: RiotDirectoryRow.hex(try profile.profile().whoami().id),
             commenter: withCommenter ? live : nil,
-            reactor: withReactor ? live : nil
+            reactor: withReactor ? live : nil,
+            reactionWriter: withReactor ? MobileProfileReactionWriter(profile: profile) : nil
         )
     }
 
@@ -969,6 +970,409 @@ final class NewswireSurfaceTests: XCTestCase {
 
     // MARK: - Communal reactions (Layer 3)
 
+    func testAsyncReactionPendingIsSharedAndSuppressesDuplicateSurfaceTap() async {
+        let writer = ControllableReactionWriter()
+        let clock = ControllableReactionStallClock()
+        let post = projectedPost(id: "p1", headline: "Report", treatment: .ordinary)
+        let model = NewswireSurfaceModel(
+            projector: FixedProjector(projection(openWire: [post], frontPage: [])),
+            editor: ThrowingEditor(), authority: StubAuthority(),
+            spaceDescriptorEntryID: "desc", communityName: "R", myKeyHex: "aa".repeated(32),
+            reactionWriter: writer, reactionStallClock: clock)
+        model.load()
+        let row = NewswirePostRow(post)
+        let key = ReactionKey(postID: row.id, kind: .support)
+        let other = ReactionKey(postID: row.id, kind: .grief)
+
+        model.toggleReaction(post: row, kind: .support, surface: .openWire)
+        model.toggleReaction(post: row, kind: .support, surface: .frontPage)
+
+        XCTAssertTrue(model.isPending(key))
+        XCTAssertFalse(model.isPending(other))
+        await waitForWriterCalls(writer, count: 1)
+        let callCount = await writer.callCount()
+        XCTAssertEqual(callCount, 1, "duplicate renderings share one logical pending key")
+
+        await writer.completeNext(.accepted(.init(
+            projection: projection(openWire: [projectedPost(
+                id: "p1", headline: "Report", treatment: .ordinary,
+                reactions: [NewswireReactionTally(kind: "support", count: 1, reactedByMe: true)]
+            )], frontPage: []),
+            revision: 1
+        )))
+        await waitForModel { !model.isPending(key) }
+        XCTAssertTrue(model.isReacted(post: row.id, kind: .support))
+        XCTAssertEqual(model.reactionCount(post: row.id, kind: .support), 1)
+        XCTAssertEqual(model.reactionAnnouncements.count, 1)
+        XCTAssertEqual(model.reactionAnnouncements.first?.surface, .openWire)
+        XCTAssertEqual(model.reactionAnnouncements.first?.message, "Support reaction added")
+    }
+
+    func testDifferentReactionKeysRemainIndependent() async {
+        let writer = ControllableReactionWriter()
+        let post = projectedPost(id: "p1", headline: "Report", treatment: .ordinary)
+        let model = asyncReactionModel(post: post, writer: writer)
+        let row = NewswirePostRow(post)
+        let support = ReactionKey(postID: row.id, kind: .support)
+        let grief = ReactionKey(postID: row.id, kind: .grief)
+
+        model.toggleReaction(post: row, kind: .support, surface: .openWire)
+        model.toggleReaction(post: row, kind: .grief, surface: .openWire)
+
+        XCTAssertTrue(model.isPending(support))
+        XCTAssertTrue(model.isPending(grief))
+        await waitForWriterCalls(writer, count: 1)
+        await writer.completeNext(.accepted(.init(
+            projection: projection(openWire: [post], frontPage: []), revision: 1)))
+        await waitForWriterCalls(writer, count: 2)
+        await writer.completeNext(.accepted(.init(
+            projection: projection(openWire: [post], frontPage: []), revision: 2)))
+        await waitForModel { !model.isPending(support) && !model.isPending(grief) }
+    }
+
+    func testRejectedReactionUsesTypedScopeAndRedactedDiagnostics() async {
+        let writer = ControllableReactionWriter()
+        let reporter = CapturingReactionReporter()
+        let post = projectedPost(id: "private-post-id", headline: "secret body", treatment: .ordinary)
+        let model = asyncReactionModel(post: post, writer: writer, reporter: reporter)
+        let row = NewswirePostRow(post)
+        let key = ReactionKey(postID: row.id, kind: .support)
+        let failure = ReactionFailure(
+            kind: .retryablePersistence,
+            publicCode: "reaction_persistence",
+            message: "Couldn’t save your reaction. Try again.")
+
+        model.toggleReaction(post: row, kind: .support, surface: .openWire)
+        await waitForWriterCalls(writer, count: 1)
+        await writer.completeNext(.rejected(failure))
+        await waitForModel { !model.isPending(key) }
+
+        XCTAssertEqual(model.failure(for: key, surface: .openWire)?.message, failure.message)
+        XCTAssertNil(model.failure(for: key, surface: .frontPage))
+        let captured = await reporter.capturedText()
+        for sentinel in ["private-post-id", "/Users/person/profile.sqlite", "deadbeef", "secret body"] {
+            XCTAssertFalse(captured.contains(sentinel))
+            XCTAssertFalse(model.reactionAnnouncements.map(\.message).joined().contains(sentinel))
+        }
+        XCTAssertTrue(captured.contains("reaction_persistence"))
+    }
+
+    func testRawErrorSentinelsCannotCrossTheReactionFailureBoundary() async {
+        let raw = SentinelReactionError(
+            description: [
+                "private-post-id",
+                "/Users/person/profile.sqlite",
+                "signed-bytes-deadbeef",
+                "secret post body",
+            ].joined(separator: "|"))
+        let failure = ReactionFailure(raw)
+        let reporter = CapturingReactionReporter()
+        await reporter.report(failure, phase: .persistence)
+
+        let exposed = [
+            failure.publicCode,
+            failure.message,
+            await reporter.capturedText(),
+        ].joined(separator: "|")
+        XCTAssertEqual(failure.kind, .authorityOrInput)
+        XCTAssertEqual(failure.publicCode, "reaction_authority_or_input")
+        for sentinel in [
+            "private-post-id",
+            "/Users/person/profile.sqlite",
+            "signed-bytes-deadbeef",
+            "secret post body",
+        ] {
+            XCTAssertFalse(exposed.contains(sentinel))
+        }
+    }
+
+    func testMobileErrorsMapToClosedReactionFailureCategories() {
+        XCTAssertEqual(ReactionFailure(MobileError.Database).kind, .retryablePersistence)
+        XCTAssertEqual(ReactionFailure(MobileError.SessionFailed).publicCode, "reaction_persistence")
+        XCTAssertEqual(ReactionFailure(MobileError.StoreFull).kind, .capacity)
+        XCTAssertEqual(ReactionFailure(MobileError.SessionLimit).publicCode, "reaction_capacity")
+        XCTAssertEqual(ReactionFailure(MobileError.ClockUnavailable).kind, .clock)
+        XCTAssertEqual(ReactionFailure(MobileError.InvalidInput).kind, .authorityOrInput)
+        XCTAssertEqual(ReactionFailure(MobileError.Internal).publicCode, "reaction_authority_or_input")
+    }
+
+    func testFailureCategoriesDisableTheIntendedScope() async {
+        let writer = ControllableReactionWriter()
+        let post = projectedPost(id: "p1", headline: "Report", treatment: .ordinary)
+        let model = asyncReactionModel(post: post, writer: writer)
+        let row = NewswirePostRow(post)
+        let support = ReactionKey(postID: row.id, kind: .support)
+
+        model.toggleReaction(post: row, kind: .support, surface: .openWire)
+        await waitForWriterCalls(writer, count: 1)
+        await writer.completeNext(.rejected(.init(
+            kind: .capacity,
+            publicCode: "reaction_capacity",
+            message: "This community can’t hold another reaction right now."
+        )))
+        await waitForModel { !model.isPending(support) }
+        XCTAssertTrue(model.isReactionDisabled(support))
+        XCTAssertFalse(model.isReactionDisabled(.init(postID: row.id, kind: .grief)))
+
+        let secondWriter = ControllableReactionWriter()
+        let second = asyncReactionModel(post: post, writer: secondWriter)
+        second.toggleReaction(post: row, kind: .grief, surface: .openWire)
+        await waitForWriterCalls(secondWriter, count: 1)
+        await secondWriter.completeNext(.rejected(.init(
+            kind: .authorityOrInput,
+            publicCode: "reaction_authority_or_input",
+            message: "Reactions aren’t available for this post."
+        )))
+        await waitForModel { !second.isPending(.init(postID: row.id, kind: .grief)) }
+        XCTAssertTrue(second.isReactionRowDisabled(postID: row.id))
+        XCTAssertTrue(second.isReactionDisabled(.init(postID: row.id, kind: .support)))
+    }
+
+    func testClockFailureDisablesOnlyItsKeyAndRetryClearsOnlyThatKeysCopy() async {
+        let writer = ControllableReactionWriter()
+        let post = projectedPost(id: "p1", headline: "Report", treatment: .ordinary)
+        let model = asyncReactionModel(post: post, writer: writer)
+        let row = NewswirePostRow(post)
+        let key = ReactionKey(postID: row.id, kind: .support)
+        let other = ReactionKey(postID: row.id, kind: .grief)
+
+        model.toggleReaction(post: row, kind: .support, surface: .openWire)
+        await waitForWriterCalls(writer, count: 1)
+        await writer.completeNext(.rejected(.init(
+            kind: .retryablePersistence,
+            publicCode: "reaction_persistence",
+            message: "Couldn’t save your reaction. Try again."
+        )))
+        await waitForModel { !model.isPending(key) }
+        XCTAssertNotNil(model.failure(for: key, surface: .openWire))
+
+        model.toggleReaction(post: row, kind: .support, surface: .openWire)
+        XCTAssertNil(model.failure(for: key, surface: .openWire), "retry clears its old copy immediately")
+        await waitForWriterCalls(writer, count: 2)
+        await writer.completeNext(.rejected(.init(
+            kind: .clock,
+            publicCode: "reaction_clock",
+            message: "Check this device’s Date & Time before reacting."
+        )))
+        await waitForModel { !model.isPending(key) }
+        XCTAssertTrue(model.isReactionDisabled(key))
+        XCTAssertFalse(model.isReactionDisabled(other))
+        XCTAssertFalse(model.isReactionRowDisabled(postID: row.id))
+    }
+
+    func testCommittedNeedsRefreshReconcilesWithNextAcceptedProjection() async {
+        let writer = ControllableReactionWriter()
+        let post = projectedPost(id: "p1", headline: "Report", treatment: .ordinary)
+        let model = asyncReactionModel(post: post, writer: writer)
+        let row = NewswirePostRow(post)
+        let key = ReactionKey(postID: row.id, kind: .support)
+
+        model.toggleReaction(post: row, kind: .support, surface: .openWire)
+        await waitForWriterCalls(writer, count: 1)
+        await writer.completeNext(.committedNeedsRefresh(active: true, revision: 4))
+        await waitForModel { !model.isPending(key) }
+        XCTAssertTrue(model.isReacted(post: row.id, kind: .support))
+        XCTAssertEqual(model.reactionCount(post: row.id, kind: .support), 0)
+        XCTAssertEqual(
+            model.failure(for: key, surface: .openWire)?.message,
+            "Reaction saved. Count will update when the wire refreshes.")
+
+        model.toggleReaction(post: row, kind: .grief, surface: .openWire)
+        await waitForWriterCalls(writer, count: 2)
+        let refreshed = projectedPost(
+            id: "p1", headline: "Report", treatment: .ordinary,
+            reactions: [NewswireReactionTally(kind: "support", count: 1, reactedByMe: true)])
+        await writer.completeNext(.accepted(.init(
+            projection: projection(openWire: [refreshed], frontPage: []), revision: 5)))
+        await waitForModel { !model.isPending(.init(postID: row.id, kind: .grief)) }
+        XCTAssertTrue(model.isReacted(post: row.id, kind: .support))
+        XCTAssertNil(model.failure(for: key, surface: .openWire))
+    }
+
+    func testOlderWriterRevisionCannotOverwriteNewerProjection() async {
+        let writer = ControllableReactionWriter()
+        let post = projectedPost(id: "p1", headline: "Report", treatment: .ordinary)
+        let model = asyncReactionModel(post: post, writer: writer)
+        let row = NewswirePostRow(post)
+
+        model.applyReactionSnapshot(.init(
+            projection: projection(openWire: [projectedPost(
+                id: "p1", headline: "Report", treatment: .ordinary,
+                reactions: [NewswireReactionTally(kind: "support", count: 2, reactedByMe: true)]
+            )], frontPage: []),
+            revision: 8
+        ))
+        model.applyReactionSnapshot(.init(
+            projection: projection(openWire: [post], frontPage: []),
+            revision: 7
+        ))
+
+        XCTAssertEqual(model.lastAppliedReactionRevision, 8)
+        XCTAssertTrue(model.isReacted(post: row.id, kind: .support))
+        XCTAssertEqual(model.reactionCount(post: row.id, kind: .support), 2)
+    }
+
+    func testTeardownCancelsQueuedWorkAndIgnoresLateCompletion() async {
+        let writer = ControllableReactionWriter()
+        let post = projectedPost(id: "p1", headline: "Report", treatment: .ordinary)
+        let model = asyncReactionModel(post: post, writer: writer)
+        let row = NewswirePostRow(post)
+        let key = ReactionKey(postID: row.id, kind: .support)
+
+        model.toggleReaction(post: row, kind: .support, surface: .openWire)
+        await waitForWriterCalls(writer, count: 1)
+        model.cancelReactionTasks()
+        XCTAssertFalse(model.isPending(key))
+        await writer.completeNext(.accepted(.init(
+            projection: projection(openWire: [projectedPost(
+                id: "p1", headline: "Report", treatment: .ordinary,
+                reactions: [NewswireReactionTally(kind: "support", count: 1, reactedByMe: true)]
+            )], frontPage: []),
+            revision: 1
+        )))
+        await Task.yield()
+        XCTAssertFalse(model.isReacted(post: row.id, kind: .support))
+    }
+
+    func testTeardownDuringDiagnosticSuspensionCannotPublishLatePresentation() async {
+        let writer = ControllableReactionWriter()
+        let reporter = SuspendingReactionReporter()
+        let post = projectedPost(id: "p1", headline: "Report", treatment: .ordinary)
+        let model = asyncReactionModel(post: post, writer: writer, reporter: reporter)
+        let row = NewswirePostRow(post)
+        let key = ReactionKey(postID: row.id, kind: .support)
+        let failure = ReactionFailure(
+            kind: .retryablePersistence,
+            publicCode: "reaction_persistence",
+            message: "Couldn’t save your reaction. Try again.")
+
+        model.toggleReaction(post: row, kind: .support, surface: .openWire)
+        await waitForWriterCalls(writer, count: 1)
+        await writer.completeNext(.rejected(failure))
+        await waitForReporterCalls(reporter, count: 1)
+
+        model.cancelReactionTasks()
+        XCTAssertFalse(model.isPending(key))
+        XCTAssertNil(model.failure(for: key, surface: .openWire))
+        XCTAssertTrue(model.reactionAnnouncements.isEmpty)
+
+        await reporter.release()
+        await Task.yield()
+        await Task.yield()
+        XCTAssertNil(model.failure(for: key, surface: .openWire))
+        XCTAssertTrue(
+            model.reactionAnnouncements.isEmpty,
+            "a stale operation must not announce after teardown while diagnostics suspended")
+        let captured = await reporter.capturedText()
+        XCTAssertTrue(captured.contains("reaction_persistence"))
+    }
+
+    func testStartedWriteStillReportsRedactedFailureAfterTeardown() async {
+        let writer = ControllableReactionWriter()
+        let reporter = CapturingReactionReporter()
+        let post = projectedPost(id: "p1", headline: "Report", treatment: .ordinary)
+        let model = asyncReactionModel(post: post, writer: writer, reporter: reporter)
+        let row = NewswirePostRow(post)
+        let key = ReactionKey(postID: row.id, kind: .support)
+
+        model.toggleReaction(post: row, kind: .support, surface: .openWire)
+        await waitForWriterCalls(writer, count: 1)
+        model.cancelReactionTasks()
+        await writer.completeNext(.rejected(.init(
+            kind: .capacity,
+            publicCode: "reaction_capacity",
+            message: "This community can’t hold another reaction right now."
+        )))
+        await waitForReporterText(reporter, containing: "reaction_capacity")
+
+        XCTAssertFalse(model.isPending(key))
+        XCTAssertNil(model.failure(for: key, surface: .openWire))
+        XCTAssertTrue(model.reactionAnnouncements.isEmpty)
+        XCTAssertFalse(model.isReactionDisabled(key))
+    }
+
+    func testTeardownCancelsAWriterRequestBeforeItBegins() async {
+        let writer = SerialControllableReactionWriter()
+        let post = projectedPost(id: "p1", headline: "Report", treatment: .ordinary)
+        let model = NewswireSurfaceModel(
+            projector: FixedProjector(projection(openWire: [post], frontPage: [])),
+            editor: ThrowingEditor(), authority: StubAuthority(),
+            spaceDescriptorEntryID: "desc", communityName: "R", myKeyHex: "aa".repeated(32),
+            reactionWriter: writer,
+            reactionStallClock: ControllableReactionStallClock())
+        model.load()
+        let row = NewswirePostRow(post)
+
+        model.toggleReaction(post: row, kind: .support, surface: .openWire)
+        await waitForSerialWriterCalls(writer, count: 1)
+        model.toggleReaction(post: row, kind: .grief, surface: .openWire)
+        await Task.yield()
+        let beforeCancel = await writer.observedCallCount()
+        XCTAssertEqual(beforeCancel, 1, "second request is queued")
+
+        model.cancelReactionTasks()
+        await writer.completeCurrent(.accepted(.init(
+            projection: projection(openWire: [post], frontPage: []),
+            revision: 1)))
+        await Task.yield()
+        await Task.yield()
+        let afterCancel = await writer.observedCallCount()
+        XCTAssertEqual(afterCancel, 1, "cancelled queued request never starts")
+    }
+
+    func testNoWriterAndAcceptedEmptyProjectionStayFailClosed() async {
+        let post = projectedPost(id: "p1", headline: "Report", treatment: .ordinary)
+        let noWriter = NewswireSurfaceModel(
+            projector: FixedProjector(projection(openWire: [post], frontPage: [])),
+            editor: ThrowingEditor(), authority: StubAuthority(),
+            spaceDescriptorEntryID: "desc", communityName: "R", myKeyHex: "aa".repeated(32))
+        noWriter.load()
+        let row = NewswirePostRow(post)
+        let key = ReactionKey(postID: row.id, kind: .support)
+        noWriter.toggleReaction(post: row, kind: .support, surface: .openWire)
+        XCTAssertFalse(noWriter.canReact)
+        XCTAssertFalse(noWriter.isPending(key))
+
+        let writer = ControllableReactionWriter()
+        let model = asyncReactionModel(post: post, writer: writer)
+        model.toggleReaction(post: row, kind: .support, surface: .openWire)
+        await waitForWriterCalls(writer, count: 1)
+        await writer.completeNext(.accepted(.init(
+            projection: projection(openWire: [], frontPage: []),
+            revision: 1)))
+        await waitForModel { !model.isPending(key) }
+        XCTAssertFalse(model.isReacted(post: row.id, kind: .support))
+        XCTAssertEqual(model.reactionCount(post: row.id, kind: .support), 0)
+    }
+
+    func testStalledCopyAppearsAtTwoSecondsOnceWithoutOfferingRetry() async {
+        let writer = ControllableReactionWriter()
+        let clock = ControllableReactionStallClock()
+        let post = projectedPost(id: "p1", headline: "Report", treatment: .ordinary)
+        let model = NewswireSurfaceModel(
+            projector: FixedProjector(projection(openWire: [post], frontPage: [])),
+            editor: ThrowingEditor(), authority: StubAuthority(),
+            spaceDescriptorEntryID: "desc", communityName: "R", myKeyHex: "aa".repeated(32),
+            reactionWriter: writer, reactionStallClock: clock)
+        model.load()
+        let row = NewswirePostRow(post)
+        let key = ReactionKey(postID: row.id, kind: .support)
+
+        model.toggleReaction(post: row, kind: .support, surface: .openWire)
+        await waitForWriterCalls(writer, count: 1)
+        XCTAssertNil(model.failure(for: key, surface: .openWire), "one second-equivalent: no stalled copy")
+        await clock.fire()
+        await waitForModel { model.failure(for: key, surface: .openWire) != nil }
+        XCTAssertEqual(
+            model.failure(for: key, surface: .openWire)?.message,
+            "Still saving on this device…")
+        let firstCount = model.reactionAnnouncements.count
+        await clock.fire()
+        await Task.yield()
+        XCTAssertEqual(model.reactionAnnouncements.count, firstCount)
+        XCTAssertTrue(model.isPending(key), "five seconds-equivalent: still pending, no retry")
+    }
+
     /// The tally→bar mapping: the surface reads each projected post's `reactions`
     /// verbatim (core's ascending-by-kind order), and a kind with no tally reads as
     /// zero so the bar can draw every kind, not only the ones already reacted to.
@@ -1086,7 +1490,9 @@ final class NewswireSurfaceTests: XCTestCase {
             spaceDescriptorEntryID: "desc", communityName: "R", myKeyHex: "aa".repeated(32),
             reactor: reactor)
         inactiveModel.load()
-        XCTAssertTrue(inactiveModel.canReact, "a wired reactor + descriptor ⇒ the reaction bar is offered")
+        XCTAssertFalse(
+            inactiveModel.canReact,
+            "a legacy synchronous reactor alone must not expose buttons that require the async writer")
         let row = NewswirePostRow(post)
 
         XCTAssertEqual(inactiveModel.toggleReaction(post: row, kind: .support), .reacted)
@@ -1322,6 +1728,204 @@ final class NewswireSurfaceTests: XCTestCase {
             calls.append((parentEntryID, kind, active))
             return NewswireSignedRecord(entryId: "11".repeated(32), signedBytes: Data([1, 2, 3]))
         }
+    }
+
+    private actor ControllableReactionWriter: NewswireReactionWriting {
+        private struct Pending {
+            let continuation: CheckedContinuation<ReactionWriteResult, Never>
+        }
+
+        private var calls: [(descriptor: String, post: String, kind: ReactionKind, active: Bool)] = []
+        private var pending: [Pending] = []
+
+        func setReaction(
+            descriptorID: String,
+            postID: String,
+            kind: ReactionKind,
+            active: Bool
+        ) async -> ReactionWriteResult {
+            guard !Task.isCancelled else { return .cancelled }
+            calls.append((descriptorID, postID, kind, active))
+            return await withCheckedContinuation { continuation in
+                pending.append(Pending(continuation: continuation))
+            }
+        }
+
+        func callCount() -> Int { calls.count }
+
+        func completeNext(_ result: ReactionWriteResult) {
+            guard !pending.isEmpty else { return }
+            pending.removeFirst().continuation.resume(returning: result)
+        }
+    }
+
+    /// Models the shipping writer actor's non-reentrant synchronous FFI section:
+    /// one call is active and later requests wait before they count as started.
+    private actor SerialControllableReactionWriter: NewswireReactionWriting {
+        private var active = false
+        private var turnWaiters: [CheckedContinuation<Void, Never>] = []
+        private var resultContinuation: CheckedContinuation<ReactionWriteResult, Never>?
+        private var calls = 0
+
+        func setReaction(
+            descriptorID: String,
+            postID: String,
+            kind: ReactionKind,
+            active: Bool
+        ) async -> ReactionWriteResult {
+            if self.active {
+                await withCheckedContinuation { turnWaiters.append($0) }
+            }
+            guard !Task.isCancelled else { return .cancelled }
+            self.active = true
+            calls += 1
+            let result = await withCheckedContinuation {
+                resultContinuation = $0
+            }
+            self.active = false
+            if !turnWaiters.isEmpty {
+                turnWaiters.removeFirst().resume()
+            }
+            return result
+        }
+
+        func observedCallCount() -> Int { calls }
+
+        func completeCurrent(_ result: ReactionWriteResult) {
+            let continuation = resultContinuation
+            resultContinuation = nil
+            continuation?.resume(returning: result)
+        }
+    }
+
+    private actor ControllableReactionStallClock: ReactionStallClock {
+        private var continuations: [CheckedContinuation<Void, Never>] = []
+
+        func waitUntilStalled() async {
+            await withCheckedContinuation { continuation in
+                continuations.append(continuation)
+            }
+        }
+
+        func fire() {
+            let waiting = continuations
+            continuations.removeAll()
+            waiting.forEach { $0.resume() }
+        }
+    }
+
+    private actor CapturingReactionReporter: ReactionDiagnosticReporting {
+        private var lines: [String] = []
+
+        func report(_ failure: ReactionFailure, phase: ReactionOperationPhase) {
+            lines.append("\(phase.rawValue):\(failure.publicCode):\(failure.message)")
+        }
+
+        func capturedText() -> String { lines.joined(separator: "\n") }
+    }
+
+    private actor SuspendingReactionReporter: ReactionDiagnosticReporting {
+        private var lines: [String] = []
+        private var waiters: [CheckedContinuation<Void, Never>] = []
+
+        func report(_ failure: ReactionFailure, phase: ReactionOperationPhase) async {
+            lines.append("\(phase.rawValue):\(failure.publicCode):\(failure.message)")
+            await withCheckedContinuation { waiters.append($0) }
+        }
+
+        func callCount() -> Int { lines.count }
+        func capturedText() -> String { lines.joined(separator: "\n") }
+
+        func release() {
+            let waiting = waiters
+            waiters.removeAll()
+            waiting.forEach { $0.resume() }
+        }
+    }
+
+    private struct SentinelReactionError: LocalizedError {
+        let description: String
+        var errorDescription: String? { description }
+    }
+
+    private func asyncReactionModel(
+        post: NewswireProjectedPost,
+        writer: ControllableReactionWriter,
+        reporter: (any ReactionDiagnosticReporting)? = nil
+    ) -> NewswireSurfaceModel {
+        let model = NewswireSurfaceModel(
+            projector: FixedProjector(projection(openWire: [post], frontPage: [])),
+            editor: ThrowingEditor(), authority: StubAuthority(),
+            spaceDescriptorEntryID: "desc", communityName: "R", myKeyHex: "aa".repeated(32),
+            reactionWriter: writer,
+            reactionStallClock: ControllableReactionStallClock(),
+            reactionDiagnosticReporter: reporter)
+        model.load()
+        return model
+    }
+
+    private func waitForWriterCalls(
+        _ writer: ControllableReactionWriter,
+        count: Int,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) async {
+        for _ in 0..<1_000 {
+            if await writer.callCount() >= count { return }
+            await Task.yield()
+        }
+        XCTFail("writer did not receive \(count) calls", file: file, line: line)
+    }
+
+    private func waitForSerialWriterCalls(
+        _ writer: SerialControllableReactionWriter,
+        count: Int,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) async {
+        for _ in 0..<1_000 {
+            if await writer.observedCallCount() >= count { return }
+            await Task.yield()
+        }
+        XCTFail("serial writer did not receive \(count) calls", file: file, line: line)
+    }
+
+    private func waitForReporterCalls(
+        _ reporter: SuspendingReactionReporter,
+        count: Int,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) async {
+        for _ in 0..<1_000 {
+            if await reporter.callCount() >= count { return }
+            await Task.yield()
+        }
+        XCTFail("reporter did not receive \(count) calls", file: file, line: line)
+    }
+
+    private func waitForReporterText(
+        _ reporter: CapturingReactionReporter,
+        containing needle: String,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) async {
+        for _ in 0..<1_000 {
+            if await reporter.capturedText().contains(needle) { return }
+            await Task.yield()
+        }
+        XCTFail("reporter did not receive \(needle)", file: file, line: line)
+    }
+
+    private func waitForModel(
+        _ condition: @MainActor () -> Bool,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) async {
+        for _ in 0..<1_000 {
+            if condition() { return }
+            await Task.yield()
+        }
+        XCTFail("model condition did not become true", file: file, line: line)
     }
 
     private final class TestWrappingKeyStore: WrappingKeyStore {

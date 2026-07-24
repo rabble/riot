@@ -1042,8 +1042,8 @@ private struct CommunityShellView: View {
             // Communal reply signer — the same repository, or nil (reply hidden)
             // when no profile is open.
             commenter: model.profileRepository,
-            // Communal reaction signer — same repository; nil hides the reaction bar.
-            reactor: model.profileRepository
+            // Profile-backed actor; nil hides the reaction bar.
+            reactionWriter: model.profileRepository?.makeNewswireReactionWriter()
         ))
     }
 
@@ -1073,7 +1073,10 @@ private struct CommunityShellView: View {
             // pairing, transfer, and callbacks before the shell is rebuilt for the
             // next community (nav design §"Nearby security and lifecycle").
             .onAppear { registerCommunityScope() }
-            .onDisappear { unregisterCommunityScope() }
+            .onDisappear {
+                newswire.cancelReactionTasks()
+                unregisterCommunityScope()
+            }
             // Three taps on the community chrome, no confirmation: the fast
             // route for the moment a phone is being taken. The undo window, not
             // a dialog, is what protects against a mis-tap.
