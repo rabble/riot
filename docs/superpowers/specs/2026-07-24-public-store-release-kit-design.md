@@ -1,6 +1,6 @@
 # Riot Public Store Release Kit
 
-Status: exceptional revision 5 for design-review gate.
+Status: approved by the design-review gate; ready for implementation planning.
 
 ## Goal
 
