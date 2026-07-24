@@ -28,9 +28,9 @@ pub use codec::{decode_canonical, CanonicalRecord, CodecError};
 pub use digest::digest_v1;
 
 pub use authority::{
-    admit_public_site_ticket, manifest_coordinates, resolve_listing, AdmittedTicket,
-    AuthorityClass, AuthorityError, ListingFloor, ListingOutcome, ListingTransition,
-    ManifestCoordinates, TicketFloor, TicketReason,
+    admit_public_site_ticket, manifest_coordinates, resolve_listing, verify_pulled_listing,
+    AdmittedTicket, AuthorityClass, AuthorityError, ListingFloor, ListingOutcome,
+    ListingTransition, ManifestCoordinates, TicketFloor, TicketReason, VerifiedListingRow,
 };
 pub use records::{
     terminal_capability_digest, AdmittedListingEnvelopeV1, CommunityListingV1,

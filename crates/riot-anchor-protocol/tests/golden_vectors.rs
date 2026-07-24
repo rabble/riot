@@ -439,6 +439,7 @@ fn build_vectors() -> (Value, Vec<u8>) {
         region: Some(b"us-ca".to_vec()),
         issued_unix_seconds: 1_760_000_000,
         expiry_unix_seconds: 1_760_500_000,
+        steward_name: Some("Rosa & the riverside crew".to_string()),
     };
     let listing_bytes = listing.encode_canonical().unwrap();
     let listing_fields = |lst: &CommunityListingV1| -> Value {
@@ -461,6 +462,7 @@ fn build_vectors() -> (Value, Vec<u8>) {
             "region": match &lst.region { Some(r) => Value::String(hx(r)), None => Value::Null },
             "issued_unix_seconds": s(lst.issued_unix_seconds),
             "expiry_unix_seconds": s(lst.expiry_unix_seconds),
+            "steward_name": match &lst.steward_name { Some(n) => Value::String(n.clone()), None => Value::Null },
         })
     };
     b.record(
@@ -479,6 +481,7 @@ fn build_vectors() -> (Value, Vec<u8>) {
         topic_tags: vec![],
         languages: vec!["en".to_string()],
         listed: false,
+        steward_name: None,
         ..listing.clone()
     };
     let listing_no_region_bytes = listing_no_region.encode_canonical().unwrap();
@@ -490,7 +493,7 @@ fn build_vectors() -> (Value, Vec<u8>) {
         16_384,
         vec![],
         vec![],
-        "region null sentinel; empty topic_tags set; `listed=false` unlisting tombstone.",
+        "region + steward_name null sentinels; empty topic_tags set; `listed=false` unlisting tombstone.",
     );
 
     // ---------------------------------------------------------------------
@@ -1593,7 +1596,7 @@ fn reorder_topic_tags(listing_bytes: &[u8]) -> Vec<u8> {
     let mut buf = Vec::new();
     {
         let mut e = Encoder::new(&mut buf);
-        e.array(18).unwrap();
+        e.array(19).unwrap();
         e.str(COMMUNITY_LISTING_SCHEMA()).unwrap();
         e.bytes(&listing.root_id).unwrap();
         e.bytes(&listing.o_namespace_id).unwrap();
@@ -1638,6 +1641,10 @@ fn reorder_topic_tags(listing_bytes: &[u8]) -> Vec<u8> {
         };
         e.u64(listing.issued_unix_seconds).unwrap();
         e.u64(listing.expiry_unix_seconds).unwrap();
+        match &listing.steward_name {
+            Some(n) => e.str(n).unwrap(),
+            None => e.null().unwrap(),
+        };
     }
     buf
 }
