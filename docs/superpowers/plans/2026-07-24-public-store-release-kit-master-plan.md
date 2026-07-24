@@ -2,7 +2,11 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Build a repeatable, fail-closed release kit that produces validated Riot 1.0 store metadata, cinematic-overlay visual assets, signed-candidate handoffs, and evidence-backed public-release readiness for iPhone, iPad, macOS, Android phones, and Android tablets.
+**Goal:** Build a repeatable, fail-closed release kit for Riot 1.0 public early
+access that produces validated free/worldwide store metadata,
+cinematic-overlay visual assets, signed-candidate handoffs, and evidence-backed
+public-release readiness for iPhone, iPad, macOS, Android phones, and Android
+tablets.
 
 **Architecture:** Repository-owned Node ES modules validate deterministic source records, generate store artifacts, and maintain immutable candidate and Console-handoff ledgers without calling store APIs. Native platform projects provide release configuration, deterministic fixture/capture entry points, and exact-candidate rehearsal evidence; manual Xcode Organizer, App Store Connect, and Play Console actions remain authenticated human gates.
 
@@ -18,7 +22,7 @@ The design spans independently testable subsystems, so this master plan fixes
 their interfaces and order. Each work unit gets a detailed TDD plan in
 `docs/superpowers/plans/2026-07-24-public-store-release-kit-wuNNN-<slug>.md`
 immediately before execution. Every detailed plan must pass the three-reviewer
-plan gate before code changes begin. WU-000 through WU-009 are all required for
+plan gate before code changes begin. WU-000 through WU-010 are all required for
 the repository-owned release kit; Console mutations and legal/account answers
 remain human-only completion gates.
 
@@ -42,6 +46,18 @@ remain human-only completion gates.
   pathspecs and never uses `git add -A`, `git reset`, `git checkout --`, or
   destructive cleanup.
 
+## Execution isolation
+
+Implementation runs in a dedicated worktree created from the approved-plan
+commit with `superpowers:using-git-worktrees`, on branch
+`codex/riot-public-store-release-kit`. Before every work-unit commit, compare
+`git diff --name-status <wu-start-commit>` and `git diff
+<wu-start-commit> -- <owned paths>` to the detailed plan's declared scope.
+Never stage a pre-existing modification or an undeclared path. Integration
+back to the user's dirty checkout happens only after a clean three-dot diff
+review; if an implementation path overlaps a user-modified path, preserve both
+versions and stop for a conflict decision rather than overwriting either.
+
 ## Stable repository interfaces
 
 ### Command surface
@@ -54,8 +70,12 @@ node scripts/release/cli.mjs generate
 node scripts/release/cli.mjs allocate --platform <ios|macos|android> --build <n> --store-max <n>
 node scripts/release/cli.mjs build --platform <ios|macos|android> --candidate <id>
 node scripts/release/cli.mjs bind-submission --candidate <id> --revision <n>
+node scripts/release/cli.mjs record-approval --candidate <id> --kind <beta|device|accessibility|policy|hardware> --evidence <path>
+node scripts/release/cli.mjs evaluate-beta --candidate <id>
 node scripts/release/cli.mjs prepare-handoff --candidate <id> --action <upload|submit|release|withdraw>
 node scripts/release/cli.mjs record-console-outcome --operation <uuid> --evidence <path>
+node scripts/release/cli.mjs record-observation --candidate <id> --day <1..7> --evidence <path>
+node scripts/release/cli.mjs inspect-artifact --platform <ios|macos|android> --path <path>
 ```
 
 No command receives an App Store Connect or Play API credential, and no
@@ -95,12 +115,12 @@ invented first-release `approved-ready` or second publication action.
 
 | Area | Files created or modified | Responsibility |
 | --- | --- | --- |
-| Release schemas/core | `scripts/release/{canonical-json,schema,records,fs-atomic,status}.mjs`, `scripts/release/test/*.test.mjs`, `release/schemas/*.schema.json`, `release/roles.json` | canonical validation, durable records, fail-closed status |
-| Policy/metadata | `release/source/{product,apple,google,privacy,policy,accessibility,claims}.json`, `release/generated/{apple,google}/**`, `marketing/{privacy,releases,support,accessibility}/index.html`, mirrored `marketing/public/**` | factual listing copy and evidence-backed worksheets |
+| Release schemas/core | `scripts/release/{cli,canonical-json,schema,records,fs-atomic,status}.mjs`, `scripts/release/test/*.test.mjs`, `release/schemas/*.schema.json`, `release/roles.json`, `release/toolchains.json` | canonical validation, durable records, fail-closed status, pinned toolchain authority |
+| Policy/metadata | `release/source/{product,apple,google,privacy,policy,accessibility,claims}.json`, `release/generated/{apple,google,worksheets}/**`, `marketing/{privacy,releases,support,accessibility}/index.html`, mirrored `marketing/public/**` | factual listing copy and explicit evidence-backed worksheets |
 | Visuals | `scripts/release/{visual-model,visual-render,visual-validate}.mjs`, tests, `release/source/visuals.json`, `release/generated/visuals/**`, `release/generated/visual-provenance.json` | cinematic-overlay templates/icons and final candidate-bound six-frame/five-device set |
 | Candidate engine | `scripts/release/{allocation,candidate,state-machine,ledger}.mjs`, tests, `release/ledger/**`, `release/candidates/**`, `release/submissions/**` | build allocation, immutable candidates/packages, legal transitions |
 | Process/security | `scripts/release/{process-runner,credential-guard,supply-chain,export-compliance}.mjs`, tests | redaction, signing preflight, SBOM/advisory/export gates |
-| Console handoff | `scripts/release/{handoff,evidence}.mjs`, tests, `release/source/console-statuses.json` | action-specific intents, independent attestations, reconciliation |
+| Console handoff | `scripts/release/{handoff,evidence,approvals,observation}.mjs`, tests, `release/source/{console-statuses,observation}.json` | upload/review/release/withdraw intents, independent attestations, beta approvals, reconciliation, seven-day observation |
 | Apple native | `apps/ios/**`, `apps/macos/**`, `scripts/testflight-release.sh`, `scripts/release-apple.sh` | 1.0 config, privacy/export injection, Mac signing/icon, deterministic capture |
 | Android native | `apps/android/**`, `scripts/release-android.sh` | `net.protest.riot`, 1.0 config, signing guard, icons, bundle/capture |
 | Verification/CI | `scripts/green.sh`, `scripts/release/verify-all.sh`, `package.json`, `package-lock.json`, `.github/workflows/ci.yml`, `.gitignore` | all-platform checks, zero-test detection, 100% release-tool coverage |
@@ -109,18 +129,19 @@ invented first-release `approved-ready` or second publication action.
 
 | WU | Title | Hard dependencies | Completion artifact |
 | --- | --- | --- | --- |
-| WU-000 | Policy, privacy, accessibility, and schema foundation | approved design | validated canonical source tree and truthful blocking worksheet |
-| WU-001 | Metadata generator and public support pages | WU-000 | complete Apple/Google English (U.S.) listing packages |
-| WU-002 | Visual model, synthetic fixture, templates, and icons | WU-000, WU-001 | validated renderer/templates, icons, feature graphic, and draft visual fixtures |
+| WU-000 | Policy, privacy, export, schemas, toolchains, and CLI skeleton | approved design | validated canonical source/worksheet tree and truthful stop gate |
+| WU-001 | Shared synthetic fixture and native fixture contracts | WU-000 | deterministic cross-platform release scenario and native loader tests |
+| WU-002 | Metadata, configuration, and visual validators/generators | WU-000, WU-001 | listings, public pages, renderer/templates, icons, and draft visuals |
 | WU-003 | Allocation, immutable candidates, submission packages, and status | WU-000 | crash-safe append-only candidate engine |
 | WU-004 | Signing, export, and supply-chain guards | WU-003 | fail-closed credentialed-build preflight |
-| WU-005 | iOS/iPadOS and macOS release configuration | WU-001, WU-002, WU-004 | validation builds and credentialed archive handoff |
-| WU-006 | Android release configuration | WU-001, WU-002, WU-004 | validation bundle and credentialed `.aab` handoff |
-| WU-007 | Exact-candidate screenshots, accessibility, and device rehearsal | WU-002, WU-005, WU-006 | final validated 30-cell screenshot/provenance set and signed rehearsal records |
-| WU-008 | Manual Console intent/evidence state machine | WU-003, WU-007 | upload/review/release/withdraw handoff and reconciliation |
-| WU-009 | Composite verification, CI, and operator runbook | WU-000..WU-008 | one status command and human handoff package |
+| WU-005 | iOS/iPadOS and macOS candidates plus final Apple visuals | WU-002, WU-004 | validation builds and, with credentials, immutable signed Apple candidates |
+| WU-006 | Android candidate plus final Google visuals | WU-002, WU-004 | validation bundle and, with credentials, immutable signed `.aab` candidate |
+| WU-007 | Manual Console upload handoff and evidence | WU-003, WU-005, WU-006 | uploaded store identities or explicit human-action blockers |
+| WU-008 | Exact-store-build beta, accessibility, device, and hardware approvals | WU-007 | accepted store-build rehearsal evidence and `beta-accepted` transitions |
+| WU-009 | Review/release/withdrawal handoffs and observation | WU-008 | platform-correct public lifecycle plus seven-day evidence contract |
+| WU-010 | Composite verification, CI, and operator runbook | WU-000..WU-009 | one status command and human handoff package |
 
-## WU-000: Policy, privacy, accessibility, and schema foundation
+## WU-000: Policy, privacy, export, schemas, toolchains, and CLI skeleton
 
 **Files:**
 
@@ -129,31 +150,80 @@ invented first-release `approved-ready` or second publication action.
 - Create: `release/source/policy.json`
 - Create: `release/source/accessibility.json`
 - Create: `release/source/claims.json`
+- Create: `release/source/export-compliance.json`
+- Create: `release/source/account-gates.json`
+- Create: `release/source/network-matrix.json`
+- Create: `release/source/review-instructions.json`
 - Create: `release/schemas/*.schema.json`
+- Create: `release/toolchains.json`
 - Create: `scripts/release/canonical-json.mjs`
 - Create: `scripts/release/schema.mjs`
 - Create: `scripts/release/records.mjs`
-- Create: `scripts/release/test/{canonical-json,schema,records,policy}.test.mjs`
+- Create: `scripts/release/policy.mjs`
+- Create: `scripts/release/cli.mjs`
+- Create: `scripts/release/test/{canonical-json,schema,records,policy,cli}.test.mjs`
+- Generate: `release/generated/worksheets/{app-privacy,data-safety,permissions,required-reason-apis,content-rating,review-instructions,outbound-network,ugc-operations,account-gates,export-compliance,accessibility}.md`
 - Modify: `package.json`
 - Modify: `package-lock.json`
 
 - [ ] Write RED tests for canonical key ordering, unknown/missing fields,
   malformed records, full-digest references, contradictory privacy claims,
   unresolved export classification, missing UGC controls, unsupported store
-  claims, and incomplete per-device accessibility evidence.
+  claims, incomplete per-device accessibility evidence, missing tool
+  version/checksum pins, and every required worksheet.
 - [ ] Run
-  `node --test scripts/release/test/canonical-json.test.mjs scripts/release/test/schema.test.mjs scripts/release/test/records.test.mjs scripts/release/test/policy.test.mjs`
+  `node --test scripts/release/test/canonical-json.test.mjs scripts/release/test/schema.test.mjs scripts/release/test/records.test.mjs scripts/release/test/policy.test.mjs scripts/release/test/cli.test.mjs`
   and verify failures are caused by missing release modules.
 - [ ] Implement pure modules with injected filesystem, clock, and hash
   dependencies; reject unknown schema properties and truncated identifiers.
-- [ ] Populate evidence-backed source records from code/network inspection.
-  Record legal/account fields as `HUMAN ACTION`; never invent an answer.
+- [ ] Populate evidence-backed source records and explicit Markdown worksheets
+  for Apple App Privacy, Google Data Safety, permission justifications,
+  required-reason APIs/privacy manifests, content ratings, review
+  instructions, the outbound-network matrix, UGC controls and 24/72-hour
+  operations, account/trader/tax/banking agreements, export compliance, and
+  device-specific accessibility answers. Record legal/account fields as
+  `HUMAN ACTION`; never invent an answer.
+- [ ] Create a tested CLI/package-script skeleton supporting `status`,
+  `status --json`, and `generate`; later work units register commands through
+  explicit imports without changing these diagnostics.
+- [ ] Enforce the policy stop gate: if filtering, in-app content/author
+  reporting, local blocking, moderator/tombstone handling, response ownership,
+  or public contact is missing, status is `BLOCKED` and WU-003 candidate
+  production cannot start. Product remediation requires a separate
+  brainstormed, design-reviewed, TDD plan before its files enter scope.
 - [ ] Run `npm run test:release:coverage` and require 100 percent lines,
   branches, functions, and statements for `scripts/release/**/*.mjs`.
 - [ ] Commit exact WU-000 paths with
   `git commit -m "feat(release): add policy and schema foundation"`.
 
-## WU-001: Metadata generator and public support pages
+## WU-001: Shared synthetic fixture and native fixture contracts
+
+**Files:**
+
+- Create: `fixtures/release/riot-1.0-synthetic.json`
+- Create: `apps/ios/Riot/Release/ReleaseFixture.swift`
+- Create: `apps/ios/RiotTests/ReleaseFixtureTests.swift`
+- Modify: `apps/ios/Riot.xcodeproj/project.pbxproj`
+- Modify: `apps/macos/Riot.xcodeproj/project.pbxproj`
+- Create: `apps/macos/RiotTests/ReleaseFixtureTests.swift`
+- Create: `apps/android/app/src/main/kotlin/org/riot/evidence/ReleaseFixture.kt`
+- Create: `apps/android/app/src/test/kotlin/org/riot/evidence/ReleaseFixtureTest.kt`
+
+- [ ] Write RED Swift and Kotlin tests that load the same fixed fixture and
+  assert its schema version, fixed clock, full identifiers, six narrative
+  states, no private/person/location/notification data, and byte-identical
+  canonical fixture digest.
+- [ ] Run the focused Apple and Android loader tests after
+  `sh scripts/conference/build-native-core.sh`; verify failure is caused by the
+  missing fixture/loaders.
+- [ ] Implement minimal native read-only fixture decoders. Production launch
+  cannot select the fixture; capture-only entry points arrive in WU-005/WU-006.
+- [ ] Run the focused tests again and require the same digest on iOS, macOS,
+  and Android.
+- [ ] Commit exact WU-001 paths with
+  `git commit -m "test(release): add shared synthetic fixture contract"`.
+
+## WU-002: Metadata, configuration, and visual validators/generators
 
 **Files:**
 
@@ -171,11 +241,13 @@ invented first-release `approved-ready` or second publication action.
 - Modify: `marketing/public/privacy/index.html`
 - Modify: `marketing/releases/index.html`
 - Modify: `marketing/public/releases/index.html`
+- Modify: `scripts/release/cli.mjs`
+- Modify: `scripts/release/test/cli.test.mjs`
 
 - [ ] Write RED boundary tests for every Apple and Google field, including exact
   limit and limit-plus-one Unicode cases, required URLs, free/worldwide
-  availability, 1.0 release notes, platform capability claims, and trust
-  vocabulary.
+  availability, explicit public early-access positioning, 1.0 release notes,
+  platform capability claims, and trust vocabulary.
 - [ ] Run `node --test scripts/release/test/metadata.test.mjs` and verify the
   missing parser/generator causes failure.
 - [ ] Implement deterministic generation from canonical JSON into
@@ -185,41 +257,45 @@ invented first-release `approved-ready` or second publication action.
   `marketing/public/`.
 - [ ] Run `npm run release:generate`, `npm run test:release:coverage`, and the
   existing marketing page contract tests.
-- [ ] Commit exact WU-001 paths with
-  `git commit -m "feat(release): generate store metadata and support pages"`.
 
-## WU-002: Visual model, synthetic fixture, templates, and icons
+### WU-002 visual/configuration subtask
 
 **Files:**
 
 - Create: `release/source/visuals.json`
-- Create: `fixtures/release/riot-1.0-synthetic.json`
+- Create: `scripts/release/configuration.mjs`
 - Create: `scripts/release/{visual-model,visual-render,visual-validate,image-inspector}.mjs`
-- Create: `scripts/release/test/{visual-model,visual-render,visual-validate}.test.mjs`
+- Create: `scripts/release/test/{configuration,visual-model,visual-render,visual-validate}.test.mjs`
 - Create: `release/generated/visuals/draft/**`
 - Create: `release/generated/visual-draft-provenance.json`
-- Modify: Apple asset catalogs and Android `res/mipmap-*`, `res/drawable-*`, and `res/values/colors.xml`
+- Create: `release/generated/icons/{macos,android}/**`
+- Create: `release/generated/visuals/google/{play-icon-512.png,feature-graphic-1024x500.png}`
 
 - [ ] Write RED tests for the complete six-frame/five-device matrix,
   platform-specific orientation, Nearby-to-Join fallback, source-candidate
   field validation, private-data tokens, EXIF stripping, alpha/dimension rules,
   overlay geometry, contrast, headline limits, and 320-pixel thumbnail
-  legibility. Exact candidate binding is added when WU-007 replaces draft
-  sources with native candidate captures.
+  legibility. Exact candidate binding is added when WU-005 and WU-006 replace
+  draft sources with native candidate captures.
+- [ ] Add configuration-validator fixtures proving the current `0.1`,
+  Android `org.riot.evidence` application ID, missing Mac/Android icons, and
+  absent privacy/release configuration report `BLOCKED` without making the
+  WU-002 test suite red.
 - [ ] Run the visual unit tests and verify they fail before the model,
   inspector, renderer, and source fixture exist.
 - [ ] Implement a deterministic fixture and cinematic overlay renderer using
   checked-in Riot fonts/colors. Draft composition fixtures prove all 30
-  geometries, but final store screenshots wait for WU-007 native candidate
-  captures and never contain redrawn controls.
+  geometries, but final store screenshots wait for WU-005/WU-006 native
+  candidate captures and never contain redrawn controls.
 - [ ] Generate Android adaptive/legacy launcher icons, a 512×512 Play icon, a
   1024×500 feature graphic, the macOS app-icon set, and draft compositions for
   each required store geometry.
 - [ ] Run mechanical validation, then use Playwright/image inspection to review
   every template/icon/draft at native aspect ratio and thumbnail scale. Record
   the draft-provenance digest and reviewer.
-- [ ] Commit exact WU-002 source, tests, public generated assets, and provenance
-  with `git commit -m "feat(release): add validated store visual system"`.
+- [ ] Commit exact WU-002 metadata, source, tests, public generated assets, and
+  provenance with
+  `git commit -m "feat(release): generate store metadata and visual system"`.
 
 ## WU-003: Allocation, immutable candidates, submissions, and status
 
@@ -231,15 +307,21 @@ invented first-release `approved-ready` or second publication action.
 - Create: `release/candidates/.gitkeep`
 - Create: `release/submissions/.gitkeep`
 - Create: `release/roles.json`
+- Modify: `scripts/release/cli.mjs`
+- Modify: `scripts/release/test/cli.test.mjs`
 
 - [ ] Write RED tests for local locking, fsync/rename recovery, explicit
   monotonic build numbers, store-maximum staleness, duplicate/cross-checkout
-  reservations, immutable manifest hashes, immutable submission revisions, and
-  every legal/illegal Apple/Google transition.
+  reservations, manifest finalization only after signed artifact and
+  candidate-bound visual hashes exist, immutable manifest hashes, immutable
+  submission revisions, and every legal/illegal Apple/Google transition.
 - [ ] Run the focused tests and verify the unimplemented modules fail.
 - [ ] Implement pure state transitions and injected durable storage. Never
   derive a build number from Git count, never reuse a number, and never edit an
-  existing candidate/package/event.
+  existing candidate/package/event. A platform build remains `draft` until its
+  artifact/signing identity, native icon hashes, final pre-upload screenshot
+  hashes, and toolchain digest are present; only then does one atomic
+  finalization write the immutable candidate manifest and enter `built`.
 - [ ] Implement tri-state `PASS`/`BLOCKED`/`HUMAN ACTION` status output with
   exact failing JSON pointer, observed value, expected value, and recovery
   command; `--json` emits the same gate model.
@@ -252,19 +334,29 @@ invented first-release `approved-ready` or second publication action.
 
 **Files:**
 
-- Create: `scripts/release/{process-runner,credential-guard,export-compliance,supply-chain,sbom}.mjs`
-- Create: `scripts/release/test/{process-runner,credential-guard,export-compliance,supply-chain,sbom}.test.mjs`
-- Create: `release/source/export-compliance.json`
+- Create: `scripts/release/{process-runner,credential-guard,export-compliance,supply-chain,sbom,artifact-inspection}.mjs`
+- Create: `scripts/release/test/{process-runner,credential-guard,export-compliance,supply-chain,sbom,artifact-inspection}.test.mjs`
+- Create: `scripts/release/test/fixtures/artifacts/{ios-archive,macos-archive,android-aab}/**`
+- Modify: `release/source/export-compliance.json`
 - Create: `release/source/security-exceptions.json`
-- Modify/Create: `apps/android/gradle/verification-metadata.xml`
+- Modify: `release/toolchains.json`
+- Create: `apps/android/gradle/verification-metadata.xml`
 - Create: `apps/android/gradle.lockfile`
 - Modify: `apps/android/gradle/wrapper/gradle-wrapper.properties`
+- Modify: `scripts/release/cli.mjs`
+- Modify: `scripts/release/test/cli.test.mjs`
+- Modify: `package.json`
 
 - [ ] Write RED tests for nonzero/timeout/signal/zero-test processes, log
   redaction, missing/wrong-mode credentials, daemon/argument password exposure,
   archived export-value mismatch, missing dependency verification, changed
   tool/lock hashes, known-exploited or reachable-critical findings, and
-  invalid/expired candidate-bound exceptions.
+  invalid/expired candidate-bound exceptions. Drift tests cover every pinned
+  Rust/Swift/Xcode/Java/Android SDK/NDK/Gradle/Node/npm/Sharp/Ajv/CycloneDX
+  version and checksum in the single checked-in toolchain manifest.
+- [ ] Add archive/bundle fixture inspection cases for identifier, marketing and
+  build version, signing certificate fingerprint, entitlements, privacy/export
+  values, packaged icons, ABI/architecture, and candidate artifact digest.
 - [ ] Run focused tests and verify failures precede implementation.
 - [ ] Implement guards with injected process/environment/filesystem adapters.
   Accept credential file paths only after permission checks; never copy
@@ -276,7 +368,7 @@ invented first-release `approved-ready` or second publication action.
 - [ ] Commit exact WU-004 paths with
   `git commit -m "feat(release): enforce signing and supply-chain gates"`.
 
-## WU-005: iOS/iPadOS and macOS release configuration
+## WU-005: iOS/iPadOS and macOS candidates plus final Apple visuals
 
 **Files:**
 
@@ -284,15 +376,21 @@ invented first-release `approved-ready` or second publication action.
 - Modify: `apps/ios/Riot/Info.plist`
 - Modify: `apps/ios/Riot/Riot.entitlements`
 - Create: `apps/ios/Riot/PrivacyInfo.xcprivacy`
+- Create: `apps/ios/Riot/Release/ReleaseCaptureMode.swift`
 - Modify: `apps/ios/ExportOptions.plist`
 - Create: `apps/ios/RiotTests/ReleaseConfigurationTests.swift`
 - Create: `apps/ios/RiotUITests/ReleaseCaptureUITests.swift`
+- Create: `apps/ios/RiotUITests/ReleaseJourneyUITests.swift`
 - Modify: `apps/macos/Riot.xcodeproj/project.pbxproj`
 - Modify: `apps/macos/Riot/Info.plist`
 - Modify: `apps/macos/Riot/Riot.entitlements`
 - Create: `apps/macos/Riot/PrivacyInfo.xcprivacy`
 - Create: `apps/macos/Riot/Assets.xcassets/AppIcon.appiconset/**`
 - Create: `apps/macos/RiotTests/ReleaseConfigurationTests.swift`
+- Create: `apps/macos/RiotUITests/ReleaseCaptureUITests.swift`
+- Create: `apps/macos/RiotUITests/ReleaseJourneyUITests.swift`
+- Generate: `release/generated/visuals/{iphone,ipad,mac}/**`
+- Create: `release/generated/visual-provenance-apple.json`
 - Create: `apps/macos/RiotUITests/ReleaseCaptureUITests.swift`
 - Rewrite: `scripts/testflight-release.sh`
 - Create: `scripts/release-apple.sh`
@@ -307,6 +405,14 @@ invented first-release `approved-ready` or second publication action.
   `scripts/testflight-release.sh` becomes a compatibility wrapper that stops
   after archive/export and prints Xcode Organizer steps; remove API-key upload,
   home-directory copying, commit-count build numbers, and `ALLOW_DIRTY`.
+- [ ] Add deterministic capture-only launch arguments backed by the WU-001
+  fixture. In one sealed candidate transaction, produce fixture-enabled capture
+  builds and the distribution archives from the same clean commit, native-core
+  inputs, version/build, configuration, and generated sources. Capture the
+  six-frame iPhone, iPad, and Mac sequences, compose/validate the overlays, and
+  bind both capture-build and visual hashes beside the signed archive hash in
+  each candidate manifest. Ordinary production launch ignores/rejects capture
+  mode; WU-008 later confirms the processed store build identity.
 - [ ] Build iOS simulator/device-validation and macOS validation artifacts; when
   signing is unavailable, verify candidate handoff remains `BLOCKED` rather
   than silently using ad-hoc output.
@@ -314,7 +420,7 @@ invented first-release `approved-ready` or second publication action.
 - [ ] Commit exact WU-005 paths with
   `git commit -m "feat(release): configure Apple store candidates"`.
 
-## WU-006: Android release configuration
+## WU-006: Android candidate plus final Google visuals
 
 **Files:**
 
@@ -324,8 +430,13 @@ invented first-release `approved-ready` or second publication action.
 - Create: `apps/android/app/src/main/res/mipmap-*/**`
 - Create: `apps/android/app/src/main/res/mipmap-anydpi-v26/ic_launcher.xml`
 - Create: `apps/android/app/src/main/res/values/{colors,strings}.xml`
+- Create: `apps/android/app/src/main/kotlin/org/riot/evidence/ReleaseCaptureMode.kt`
 - Create: `apps/android/app/src/test/kotlin/org/riot/evidence/ReleaseConfigurationTest.kt`
+- Create: `apps/android/app/src/androidTest/kotlin/org/riot/evidence/ReleaseCaptureTest.kt`
+- Create: `apps/android/app/src/androidTest/kotlin/org/riot/evidence/ReleaseJourneyTest.kt`
 - Create: `scripts/release-android.sh`
+- Generate: `release/generated/visuals/{android-phone,android-tablet}/**`
+- Create: `release/generated/visual-provenance-android.json`
 
 - [ ] Write RED tests for public application ID `net.protest.riot`, retained
   internal namespace `org.riot.evidence`, version name `1.0`, explicit positive
@@ -338,80 +449,140 @@ invented first-release `approved-ready` or second publication action.
   Configure external upload-key signing with non-argument secrets and
   `--no-daemon`, and generate a release `.aab`. Keep the debug/validation build
   available without signing material.
+- [ ] In one sealed candidate transaction, produce fixture-enabled capture
+  builds and the upload-signed App Bundle from the same clean commit,
+  native-core inputs, version code/name, configuration, and generated sources.
+  Capture six-frame phone and tablet sequences, compose/validate overlays, and
+  bind capture-build, visual, and `.aab` hashes in the candidate manifest.
+  Capture mode is accepted only by the instrumentation/candidate harness, never
+  an ordinary production launch; WU-008 later confirms the Play-processed
+  app-signing identity.
 - [ ] Run unit tests, lint, dependency verification, `bundleRelease` validation,
   and artifact inspection. A missing key must yield `HUMAN ACTION` or
   `BLOCKED`, never a debug-signed candidate.
 - [ ] Commit exact WU-006 paths with
   `git commit -m "feat(release): configure Android Play candidate"`.
 
-## WU-007: Exact-candidate screenshots, accessibility, and rehearsal
+## WU-007: Manual Console upload handoff and evidence
+
+**Files:**
+
+- Create: `release/source/console-statuses.json`
+- Create: `scripts/release/handoff.mjs`
+- Create: `scripts/release/evidence.mjs`
+- Create: `scripts/release/test/handoff.test.mjs`
+- Create: `scripts/release/test/evidence.test.mjs`
+- Create: `release/evidence/.gitkeep`
+- Modify: `scripts/release/cli.mjs`
+
+- [ ] Write RED tests for missing pushed upload intent, non-fast-forward
+  predecessor, stale store maximum, expected ID/version/build mismatch,
+  artifact/signing/candidate digest mismatch, same-identity attestations,
+  self-authorizing role changes, unsafe cancellation, direct negative outcome,
+  interruption, eventual-consistency absence, and indeterminate upload replay.
+- [ ] Run focused tests and verify failure before handoff/evidence modules
+  exist.
+- [ ] Implement credential-free upload instructions and immutable evidence
+  validation. Upload binds expected ID/version/build, artifact, signing
+  identity, candidate digest, and fresh authenticated store maximum, then
+  records the store-assigned identity after two independently authenticated
+  attestations.
+- [ ] Implement `cancelled-before-action` and fail-closed reconciliation. No
+  test or production adapter may execute `xcodebuild -upload`, `altool`,
+  Transporter, Play Publisher API, or browser automation against a store.
+- [ ] Run the upload state/evidence suite at 100 percent JS coverage. The real
+  candidate remains `HUMAN ACTION` until an operator uploads it and a distinct
+  verifier records the Console readback.
+- [ ] Commit exact WU-007 paths with
+  `git commit -m "feat(release): add manual Console upload handoff"`.
+
+## WU-008: Exact-store-build beta, accessibility, device, and hardware approvals
 
 **Files:**
 
 - Create: `release/source/journeys.json`
 - Create: `release/source/devices.json`
-- Create: `scripts/release/{journey,accessibility,rehearsal}.mjs`
-- Create: `scripts/release/test/{journey,accessibility,rehearsal}.test.mjs`
-- Modify/Create: WU-005 Apple fixture/capture/rehearsal sources
-- Modify/Create: WU-006 Android fixture/capture/rehearsal sources
-- Generate: `release/generated/visuals/{iphone,ipad,mac,android-phone,android-tablet}/**`
-- Generate: `release/generated/visual-provenance.json`
+- Create: `scripts/release/{journey,accessibility,rehearsal,approvals}.mjs`
+- Create: `scripts/release/test/{journey,accessibility,rehearsal,approvals}.test.mjs`
+- Modify: `apps/ios/Riot/Release/ReleaseCaptureMode.swift`
+- Modify: `apps/ios/RiotUITests/ReleaseCaptureUITests.swift`
+- Modify: `apps/ios/RiotUITests/ReleaseJourneyUITests.swift`
+- Create: `apps/ios/RiotUITests/ReleaseAccessibilityUITests.swift`
+- Modify: `apps/macos/RiotUITests/ReleaseCaptureUITests.swift`
+- Modify: `apps/macos/RiotUITests/ReleaseJourneyUITests.swift`
+- Create: `apps/macos/RiotUITests/ReleaseAccessibilityUITests.swift`
+- Modify: `apps/android/app/src/main/kotlin/org/riot/evidence/ReleaseCaptureMode.kt`
+- Modify: `apps/android/app/src/androidTest/kotlin/org/riot/evidence/ReleaseCaptureTest.kt`
+- Modify: `apps/android/app/src/androidTest/kotlin/org/riot/evidence/ReleaseJourneyTest.kt`
+- Create: `apps/android/app/src/androidTest/kotlin/org/riot/evidence/ReleaseAccessibilityTest.kt`
 - Generate: `release/evidence/rehearsals/**`
+- Modify: `scripts/release/cli.mjs`
+- Modify: `scripts/release/test/cli.test.mjs`
 
 - [ ] Write RED tests for missing/skipped/zero-test journeys, wrong candidate,
   fixture drift, invalid join/no-peer dead ends, restart/offline failures,
   unadvertised capability claims, semantic labels/roles/states, reading/focus
   order, focus traps, contrast, target size, text scaling, and missing
-  VoiceOver/TalkBack/Mac-keyboard human records.
+  VoiceOver/TalkBack/Mac-keyboard human records. Approval tests require
+  separately identified beta, device, accessibility, policy, and hardware
+  evidence before `uploaded → beta-accepted`.
 - [ ] Run focused Node and native tests and verify failures before entry points
   and schemas exist.
-- [ ] Implement deterministic capture/rehearsal launch arguments that are
-  compiled for release capture but cannot expose fixture mode in ordinary
-  production launch.
-- [ ] Run the common-task matrix on iPhone, iPad, Mac, Android phone, and
-  Android tablet candidates; run required physical Nearby pairings before
-  selecting frame 5. Record exact candidate/device/OS/evidence digests.
-- [ ] Regenerate WU-002 captures from the accepted candidates and verify the
-  complete 30-cell matrix, Nearby/Join selection, dimensions, orientations,
-  native and thumbnail reviews, and visual provenance manifest bind the same
-  candidate IDs.
-- [ ] Commit exact WU-007 source and redacted evidence with
+- [ ] Install/download the Console-assigned beta builds and run the common-task
+  matrix on iPhone, iPad, Mac, Android phone, and Android tablet. Run required
+  physical Nearby pairings before retaining a frame-5 Nearby claim. Record
+  exact store identity, candidate/device/OS, test counts, and evidence digests.
+- [ ] Verify the installed store build's ID/version/build/signing identity
+  matches the immutable candidate whose pre-upload screenshots and visual
+  provenance are already hashed. A mismatch rejects the candidate; screenshots
+  are never silently regenerated from a different build.
+- [ ] Implement `record-approval` and `evaluate-beta`; append
+  `beta-accepted` only when all required independently attributable records
+  pass. Missing physical devices or Console builds remain `HUMAN ACTION`.
+- [ ] Commit exact WU-008 source and redacted evidence with
   `git commit -m "test(release): record candidate rehearsal evidence"`.
 
-## WU-008: Manual Console handoff and reconciliation
+## WU-009: Review/release/withdrawal handoffs and observation
 
 **Files:**
 
-- Create: `release/source/console-statuses.json`
-- Create: `scripts/release/{handoff,evidence}.mjs`
-- Create: `scripts/release/test/{handoff,evidence}.test.mjs`
-- Create: `release/evidence/.gitkeep`
+- Create: `release/source/observation.json`
+- Create: `scripts/release/observation.mjs`
+- Create: `scripts/release/test/observation.test.mjs`
+- Modify: `scripts/release/handoff.mjs`
+- Modify: `scripts/release/evidence.mjs`
+- Modify: `scripts/release/test/handoff.test.mjs`
+- Modify: `scripts/release/test/evidence.test.mjs`
 - Modify: `scripts/release/cli.mjs`
+- Generate: `release/generated/observation-checklist.md`
 
-- [ ] Write RED tests for missing pushed intent, non-fast-forward predecessor,
-  upload preconditions, post-upload submission-package/store-identity binding,
-  same-identity attestations, self-authorizing role changes, unsafe
-  cancellation, Apple/Google status discrimination, direct negative outcomes,
-  interruption, eventual-consistency absence, indeterminate replay, and
-  candidate/package substitution.
-- [ ] Run focused tests and verify failure before handoff modules exist.
-- [ ] Implement credential-free action-specific instructions and immutable
-  evidence validation. Upload binds expected ID/version/build, artifact,
-  signing identity, and fresh store maximum; later actions bind store identity,
-  candidate digest, and active submission-package digest.
+- [ ] Write RED tests for immutable initial/remediated submission packages,
+  post-upload package/store-identity binding, Apple submit/review/approve/manual
+  release, Google first-production/review/automatic publication, withdrawal or
+  unpublish, cancellation, direct negative outcomes, interruption,
+  eventual-consistency absence, indeterminate replay, and candidate/package
+  substitution.
+- [ ] Write RED observation tests for a named owner, exactly seven dated daily
+  diagnostic/support reviews, crash-free sessions below 99.5 percent, any
+  critical data-loss/security/privacy event, unavailable advertised journey,
+  missed moderation SLA, and mandatory withdrawal/unpublish preparation.
+- [ ] Run focused tests and verify failure before observation and the extended
+  post-upload transition handlers exist.
+- [ ] Extend credential-free action-specific instructions and evidence
+  validation. Every post-upload intent, both attestations, evidence record, and
+  outcome bind the assigned store identity, candidate digest, and active
+  submission-package revision/digest.
 - [ ] Implement separately authenticated operator/verifier attestations,
-  `cancelled-before-action`, and fail-closed reconciliation. No test or
-  production adapter may execute `xcodebuild -upload`, `altool`, Transporter,
-  Play Publisher API, or browser automation against a store.
+  platform-discriminated reconciliation, and the durable seven-day observation
+  ledger/checklist. No command mutates a store.
 - [ ] Run the complete state/evidence suite at 100 percent JS coverage.
-- [ ] Commit exact WU-008 paths with
-  `git commit -m "feat(release): add manual Console evidence handoff"`.
+- [ ] Commit exact WU-009 paths with
+  `git commit -m "feat(release): add review and observation handoffs"`.
 
-## WU-009: Composite verification, CI, and operator runbook
+## WU-010: Composite verification, CI, and operator runbook
 
 **Files:**
 
-- Create: `scripts/release/cli.mjs`
 - Create: `scripts/release/verify-all.sh`
 - Create: `release/README.md`
 - Create: `release/OPERATOR-RUNBOOK.md`
@@ -421,6 +592,7 @@ invented first-release `approved-ready` or second publication action.
 - Modify: `scripts/green.sh`
 - Modify: `.github/workflows/ci.yml`
 - Modify: `.gitignore`
+- Modify: `scripts/release/cli.mjs`
 
 - [ ] Write RED CLI/integration tests for all commands, structured diagnostics,
   dirty-tree scope, generated-file drift, zero tests, missing platform tools,
@@ -436,7 +608,7 @@ invented first-release `approved-ready` or second publication action.
   Console actions remain explicit `HUMAN ACTION`.
 - [ ] Run the complete verification matrix below and record exact command
   results in the generated checklist.
-- [ ] Commit exact WU-009 paths with
+- [ ] Commit exact WU-010 paths with
   `git commit -m "ci(release): enforce public store readiness"`.
 
 ## Final verification matrix
@@ -449,17 +621,21 @@ npm run release:generate
 git diff --exit-code -- release/generated
 npm run test:release:coverage
 cargo fmt --all -- --check
-cargo check --workspace --all-features
-cargo clippy --workspace --all-targets --all-features -- -D warnings
-cargo test --workspace --all-features
+cargo check --locked --workspace --all-features
+cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+cargo test --locked --workspace --all-features
 sh scripts/web/coverage.sh
+sh scripts/conference/build-native-core.sh
+RIOT_IOS_SIMULATOR_ID="$(sh scripts/ios-check.sh simulator-id)"
 xcodebuild test -project apps/ios/Riot.xcodeproj -scheme RiotKit \
-  -destination 'platform=iOS Simulator,name=iPhone 16 Pro'
+  -destination "platform=iOS Simulator,id=${RIOT_IOS_SIMULATOR_ID}"
 xcodebuild test -project apps/macos/Riot.xcodeproj -scheme RiotKit-macOS \
   -destination 'platform=macOS'
 (cd apps/android && JAVA_HOME=/opt/homebrew/opt/openjdk@17 \
-  ./gradlew --no-daemon --write-verification-metadata sha256 \
-  testDebugUnitTest lint bundleRelease)
+  ./gradlew --no-daemon --dependency-verification strict \
+  :app:testDebugUnitTest :app:lint :app:bundleRelease \
+  :app:assembleDebugAndroidTest :app:connectedDebugAndroidTest)
+npm run release:inspect-artifact-fixtures
 sh scripts/release/verify-all.sh
 node scripts/release/cli.mjs status
 ```
@@ -468,6 +644,19 @@ Expected repository result: all credential-free checks pass; missing signing
 materials, Apple export decision, account agreements, physical-device records,
 and Console actions appear as `HUMAN ACTION` or `BLOCKED` with recovery
 instructions. They never appear as `PASS`.
+
+For each real signed candidate, the operator also runs the explicit inspector
+before upload:
+
+```bash
+node scripts/release/cli.mjs inspect-artifact --platform ios --path "$RIOT_IOS_ARCHIVE"
+node scripts/release/cli.mjs inspect-artifact --platform macos --path "$RIOT_MACOS_ARCHIVE"
+node scripts/release/cli.mjs inspect-artifact --platform android --path "$RIOT_ANDROID_AAB"
+```
+
+The Android connected test command requires a running API 36 emulator/device.
+Physical Nearby, VoiceOver/TalkBack, signed archive inspection, and Console
+steps are recorded as human evidence and cannot be replaced by CI.
 
 ## Final review and handoff
 
