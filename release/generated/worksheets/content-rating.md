@@ -1,4 +1,4 @@
-<!-- source-sha256: 976fa97d55e81f5854ae7c84508b2693c5c1c432c57ee5adead47fbc3a59bcb2 -->
+<!-- source-sha256: 53c60c2ab7d2faddc70a4cf4ad633383b9a63e9fb6660503e807d6e9128885bb -->
 # content rating.md
 
 ## policy.termsAcceptance

@@ -1,4 +1,4 @@
-<!-- source-sha256: 38377f998f910e69a6cec9eb67fc38ab5f1029d8e3df1ef706dfe83027ac79ee -->
+<!-- source-sha256: 0af23f3d1c74d0f300117e84a7a20acd6e15e67810f3bf29ff6a3121039c68f8 -->
 # outbound network.md
 
 ## network.first-launch

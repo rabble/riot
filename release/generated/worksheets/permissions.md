@@ -1,4 +1,4 @@
-<!-- source-sha256: bfc71a9188c6fc1a3d20ee44afc90ac1a944c08c2e1ffec5740ffe9acf76323f -->
+<!-- source-sha256: 27a4e0c2c4646635c891ea64af0ae2120b899175b2279c86d97f63bed6a58689 -->
 # permissions.md
 
 ## privacy.apple

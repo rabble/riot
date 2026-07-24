@@ -28,7 +28,7 @@
       "name": "bluetooth",
       "platform": "all",
       "justification": "Discover a nearby Riot peer selected by the user.",
-      "evidencePath": "apps/ios/Riot/LocalNetworkNearby.swift"
+      "evidencePath": "apps/ios/Riot/Transport/LocalNetworkNearby.swift"
     },
     {
       "name": "local-network",

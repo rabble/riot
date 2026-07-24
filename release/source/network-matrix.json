@@ -26,7 +26,7 @@
       "transmittedFields": ["permission-scoped sensor or discovery data"],
       "redirectHandling": "Platform permission APIs do not follow web redirects.",
       "retention": "Riot does not operate a remote retention service.",
-      "codePaths": ["apps/ios/Riot/QRScannerView.swift", "apps/ios/Riot/LocalNetworkNearby.swift"]
+      "codePaths": ["apps/ios/Riot/QRScannerView.swift", "apps/ios/Riot/Transport/LocalNetworkNearby.swift"]
     },
     {
       "id": "nearby-sync",
@@ -35,7 +35,7 @@
       "transmittedFields": ["signed community records", "peer discovery metadata"],
       "redirectHandling": "Direct local-network transport does not follow HTTP redirects.",
       "retention": "The receiving peer retains records under its local community state.",
-      "codePaths": ["apps/ios/Riot/LocalNetworkNearby.swift", "crates/riot-transport/src/lib.rs"]
+      "codePaths": ["apps/ios/Riot/Transport/LocalNetworkNearby.swift", "crates/riot-transport/src/lib.rs"]
     },
     {
       "id": "followed-site-refresh",

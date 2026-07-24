@@ -1,4 +1,4 @@
-<!-- source-sha256: 047263bf850e11dca5e50ba8288f43a8a32d9c99b02b68ff829ea7930d179675 -->
+<!-- source-sha256: 8b602cb86e4718ad17acd9f875e18d073c9ac052ac76603c21145a29b7fe69f3 -->
 # app privacy.md
 
 ## network.first-launch

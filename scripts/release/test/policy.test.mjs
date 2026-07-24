@@ -45,6 +45,30 @@ test("real policy sources are schema-valid and truthfully not public-ready", asy
     sourceFile && pointer && observed !== undefined && expected !== undefined && recovery));
 });
 
+test("every asserted code and evidence path exists in the repository", async () => {
+  const loaded = await sources();
+  const assertedPaths = [];
+  const visit = (value) => {
+    if (Array.isArray(value)) {
+      value.forEach(visit);
+      return;
+    }
+    if (!value || typeof value !== "object") return;
+    for (const [key, child] of Object.entries(value)) {
+      if (key === "codePaths") assertedPaths.push(...child);
+      if (key === "evidencePath" && typeof child === "string") assertedPaths.push(child);
+      visit(child);
+    }
+  };
+  for (const [key, value] of Object.entries(loaded)) {
+    if (key === "product") continue;
+    visit(value);
+  }
+  for (const path of assertedPaths) {
+    await assert.doesNotReject(() => realFs.access(join(repositoryRoot, path)), path);
+  }
+});
+
 test("policy evaluation rejects missing network rows and contradictory privacy evidence", async () => {
   const loaded = await sources();
   loaded.networkMatrix.rows = loaded.networkMatrix.rows.filter(({ id }) => id !== "nearby-sync");

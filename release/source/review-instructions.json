@@ -7,7 +7,7 @@
     { "id": "create", "instruction": "Create a local community from the community switcher.", "evidencePath": "apps/ios/Riot/AppModel.swift" },
     { "id": "join", "instruction": "Join with a valid Riot reference or scan a QR code.", "evidencePath": "apps/ios/Riot/Core/RiotDeepLink.swift" },
     { "id": "publish", "instruction": "Compose, review, sign, and persist an update.", "evidencePath": "apps/ios/Riot/PostUpdateView.swift" },
-    { "id": "restart", "instruction": "Restart and confirm the local community remains available.", "evidencePath": "crates/riot-core/src/profile.rs" },
+    { "id": "restart", "instruction": "Restart and confirm the local community remains available.", "evidencePath": "apps/ios/Riot/Core/ProfileRepository.swift" },
     { "id": "offline", "instruction": "Read locally retained community records without a network.", "evidencePath": "crates/riot-core/src/newswire/store.rs" },
     { "id": "local-permissions", "instruction": "Camera and nearby permissions are requested only for their named actions.", "evidencePath": "apps/ios/Riot/Info.plist" },
     { "id": "nearby-testing", "instruction": "Nearby claims require named physical-device pair evidence before publication.", "evidencePath": "apps/ios/RiotTests/LocalNetworkNearbyTests.swift" },

@@ -13,7 +13,7 @@
       "id": "create-community",
       "text": "Create and switch communities.",
       "platforms": ["ios", "macos", "android"],
-      "codePaths": ["crates/riot-core/src/profile.rs"],
+      "codePaths": ["apps/ios/Riot/AppModel.swift"],
       "journeyIds": ["create-switch-community"],
       "state": "human-action"
     },
