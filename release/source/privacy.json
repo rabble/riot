@@ -1,0 +1,53 @@
+{
+  "schemaVersion": 1,
+  "position": {
+    "noDeveloperAccount": true,
+    "noAdsTrackingAnalytics": true,
+    "noHiddenCollection": true
+  },
+  "answers": [
+    {
+      "store": "apple",
+      "answer": "no-collection",
+      "evidenceRowIds": ["first-launch", "denied-permission", "granted-permission", "nearby-sync", "followed-site-refresh"]
+    },
+    {
+      "store": "google",
+      "answer": "no-collection",
+      "evidenceRowIds": ["first-launch", "denied-permission", "granted-permission", "nearby-sync", "followed-site-refresh"]
+    }
+  ],
+  "permissions": [
+    {
+      "name": "camera",
+      "platform": "apple",
+      "justification": "Scan a community QR code selected by the user.",
+      "evidencePath": "apps/ios/Riot/QRScannerView.swift"
+    },
+    {
+      "name": "bluetooth",
+      "platform": "all",
+      "justification": "Discover a nearby Riot peer selected by the user.",
+      "evidencePath": "apps/ios/Riot/LocalNetworkNearby.swift"
+    },
+    {
+      "name": "local-network",
+      "platform": "apple",
+      "justification": "Exchange community records directly with a nearby peer.",
+      "evidencePath": "apps/ios/Riot/Info.plist"
+    },
+    {
+      "name": "notifications",
+      "platform": "all",
+      "justification": "Show local alerts for community updates when enabled.",
+      "evidencePath": "apps/android/app/src/main/kotlin/org/riot/evidence/LocalNotifier.kt"
+    },
+    {
+      "name": "internet",
+      "platform": "android",
+      "justification": "Android uses INTERNET for user-directed LAN and followed-site connections.",
+      "evidencePath": "apps/android/app/src/main/AndroidManifest.xml"
+    }
+  ],
+  "requiredReasonApis": []
+}

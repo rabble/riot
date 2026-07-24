@@ -1,0 +1,50 @@
+{
+  "schemaVersion": 1,
+  "rows": [
+    {
+      "id": "first-launch",
+      "initiator": "application",
+      "destinationClass": "none",
+      "transmittedFields": [],
+      "redirectHandling": "No request or redirect is made on first launch.",
+      "retention": "No remote retention.",
+      "codePaths": ["apps/ios/Riot/RiotApp.swift", "apps/android/app/src/main/kotlin/org/riot/evidence/MainActivity.kt"]
+    },
+    {
+      "id": "denied-permission",
+      "initiator": "user",
+      "destinationClass": "none",
+      "transmittedFields": [],
+      "redirectHandling": "Denied permission does not initiate a request.",
+      "retention": "Permission state remains platform-local.",
+      "codePaths": ["apps/ios/Riot/QRScannerView.swift"]
+    },
+    {
+      "id": "granted-permission",
+      "initiator": "user",
+      "destinationClass": "local-device-subsystem",
+      "transmittedFields": ["permission-scoped sensor or discovery data"],
+      "redirectHandling": "Platform permission APIs do not follow web redirects.",
+      "retention": "Riot does not operate a remote retention service.",
+      "codePaths": ["apps/ios/Riot/QRScannerView.swift", "apps/ios/Riot/LocalNetworkNearby.swift"]
+    },
+    {
+      "id": "nearby-sync",
+      "initiator": "user",
+      "destinationClass": "user-selected nearby peer",
+      "transmittedFields": ["signed community records", "peer discovery metadata"],
+      "redirectHandling": "Direct local-network transport does not follow HTTP redirects.",
+      "retention": "The receiving peer retains records under its local community state.",
+      "codePaths": ["apps/ios/Riot/LocalNetworkNearby.swift", "crates/riot-transport/src/lib.rs"]
+    },
+    {
+      "id": "followed-site-refresh",
+      "initiator": "user",
+      "destinationClass": "followed public site",
+      "transmittedFields": ["HTTP request metadata"],
+      "redirectHandling": "Transport policy validates the followed destination; redirect behavior remains subject to candidate audit.",
+      "retention": "Destination-server retention is outside Riot developer control.",
+      "codePaths": ["crates/riot-core/src/site/follow.rs", "apps/ios/Riot/FollowSiteModel.swift"]
+    }
+  ]
+}

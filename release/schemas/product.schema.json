@@ -28,10 +28,11 @@
     "urlEvidence": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["url", "evidencePath"],
+      "required": ["url", "evidencePath", "evidenceState"],
       "properties": {
         "url": { "type": "string", "pattern": "^https://" },
-        "evidencePath": { "type": "string", "minLength": 1 }
+        "evidencePath": { "type": "string", "minLength": 1 },
+        "evidenceState": { "enum": ["current", "missing", "stale"] }
       }
     }
   }

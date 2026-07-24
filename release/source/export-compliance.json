@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "algorithms": ["Ed25519", "XChaCha20-Poly1305", "SHA-256", "BLAKE3"],
+  "distribution": "The same application cryptography is included in free worldwide iOS, iPadOS, and macOS binaries.",
+  "classification": {
+    "state": "human-action",
+    "reason": "Apple encryption/export classification requires authenticated legal approval; the existing hard-coded plist value is not accepted as evidence.",
+    "evidence": [],
+    "approver": null
+  }
+}

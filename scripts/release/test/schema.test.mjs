@@ -20,9 +20,9 @@ const validProduct = {
   appleBundleId: "net.protest.riot",
   androidApplicationId: "net.protest.riot",
   urls: {
-    privacy: { url: "https://riot.protest.net/privacy/", evidencePath: "marketing/privacy/index.html" },
-    support: { url: "https://riot.protest.net/support/", evidencePath: "marketing/support/index.html" },
-    marketing: { url: "https://riot.protest.net/", evidencePath: "marketing/releases/index.html" },
+    privacy: { url: "https://riot.protest.net/privacy/", evidencePath: "marketing/privacy/index.html", evidenceState: "current" },
+    support: { url: "https://riot.protest.net/support/", evidencePath: "marketing/support/index.html", evidenceState: "missing" },
+    marketing: { url: "https://riot.protest.net/", evidencePath: "marketing/releases/index.html", evidenceState: "current" },
   },
 };
 

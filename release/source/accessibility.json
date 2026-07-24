@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "records": [
+    { "device": "iphone", "task": "read", "state": "human-action", "evidencePath": null },
+    { "device": "iphone", "task": "create", "state": "human-action", "evidencePath": null },
+    { "device": "iphone", "task": "join", "state": "human-action", "evidencePath": null },
+    { "device": "iphone", "task": "publish", "state": "human-action", "evidencePath": null },
+    { "device": "ipad", "task": "read", "state": "human-action", "evidencePath": null },
+    { "device": "ipad", "task": "create", "state": "human-action", "evidencePath": null },
+    { "device": "ipad", "task": "join", "state": "human-action", "evidencePath": null },
+    { "device": "ipad", "task": "publish", "state": "human-action", "evidencePath": null },
+    { "device": "mac", "task": "read", "state": "human-action", "evidencePath": null },
+    { "device": "mac", "task": "create", "state": "human-action", "evidencePath": null },
+    { "device": "mac", "task": "join", "state": "human-action", "evidencePath": null },
+    { "device": "mac", "task": "publish", "state": "human-action", "evidencePath": null },
+    { "device": "android-phone", "task": "read", "state": "human-action", "evidencePath": null },
+    { "device": "android-phone", "task": "create", "state": "human-action", "evidencePath": null },
+    { "device": "android-phone", "task": "join", "state": "human-action", "evidencePath": null },
+    { "device": "android-phone", "task": "publish", "state": "human-action", "evidencePath": null },
+    { "device": "android-tablet", "task": "read", "state": "human-action", "evidencePath": null },
+    { "device": "android-tablet", "task": "create", "state": "human-action", "evidencePath": null },
+    { "device": "android-tablet", "task": "join", "state": "human-action", "evidencePath": null },
+    { "device": "android-tablet", "task": "publish", "state": "human-action", "evidencePath": null }
+  ]
+}
