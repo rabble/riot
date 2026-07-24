@@ -148,7 +148,13 @@ exactly one newline.
 
 - [ ] **Step 4: Run GREEN**
 
-Run the focused test and expect all cases to pass.
+Run:
+
+```bash
+node --test scripts/release/test/canonical-json.test.mjs
+```
+
+Expected: all canonical JSON cases pass.
 
 - [ ] **Step 5: Write failing record tests**
 
@@ -171,7 +177,7 @@ test("createRecord binds schema, payload, timestamp, and full sha256", async () 
     clock: fixedClock,
     sha256,
   });
-  assert.equal(record.version, 1);
+  assert.equal(record.schemaVersion, 1);
   assert.match(record.digest, /^[0-9a-f]{64}$/);
   assert.equal(record.createdAt, "2026-07-24T00:00:00.000Z");
   await assert.doesNotReject(() => verifyRecord(record, { sha256 }));
@@ -180,9 +186,26 @@ test("createRecord binds schema, payload, timestamp, and full sha256", async () 
 
 - [ ] **Step 6: Run RED, implement, then run GREEN**
 
-`createRecord` canonicalizes `{version,schema,createdAt,payload}` and stores its
-full SHA-256. `verifyRecord` rejects truncated, uppercase, malformed, or
-mismatched digests and returns the frozen verified payload.
+Run:
+
+```bash
+node --test scripts/release/test/records.test.mjs
+```
+
+Expected RED: module-not-found for `records.mjs`. `createRecord` then
+canonicalizes `{schemaVersion,schema,createdAt,payload}` and stores its full
+SHA-256. `verifyRecord` rejects truncated, uppercase, malformed, or mismatched
+digests and returns the frozen verified payload. Add a test whose payload has
+an `evidenceDigest` reference and prove 63-character, uppercase, and non-hex
+references fail before GREEN.
+
+Run:
+
+```bash
+node --test scripts/release/test/records.test.mjs
+```
+
+Expected GREEN: all record and full-reference cases pass.
 
 - [ ] **Step 7: Commit**
 
@@ -218,22 +241,30 @@ The tests load a registry from a supplied directory and assert:
 test("validateSource rejects unknown and missing fields with JSON pointers", async () => {
   const registry = await loadSchemaRegistry(schemaDir);
   assert.throws(
-    () => validateSource(registry, "product", { version: 1, surprise: true }),
+    () => validateSource(registry, "product", { schemaVersion: 1, surprise: true }),
     /\/surprise.*unknown/,
   );
   assert.throws(
-    () => validateSource(registry, "product", { version: 1 }),
+    () => validateSource(registry, "product", { schemaVersion: 1 }),
     /\/name.*required/,
   );
 });
 ```
 
-Also cover unknown schema names, malformed schema JSON, duplicate `$id`, wrong
-schema version, truncated IDs, and non-RFC3339 timestamps. Keep minimal valid
-object factories inline in `schema.test.mjs`; Task 4 exercises the real source
-files through the same registry.
+Also cover unknown schema names, malformed schema JSON, duplicate `$id`, missing
+or wrong `schemaVersion`, truncated digest/operation IDs, and non-RFC3339
+timestamps. Every durable object schema requires
+`"schemaVersion": { "const": 1 }`. Keep minimal valid object factories inline
+in `schema.test.mjs`; Task 4 exercises the real source files through the same
+registry.
 
 - [ ] **Step 2: Run RED**
+
+Run:
+
+```bash
+node --test scripts/release/test/schema.test.mjs
+```
 
 Expected: module-not-found for `schema.mjs`.
 
@@ -265,8 +296,13 @@ export function validateSource(registry, name, value) {}
 
 - [ ] **Step 4: Run GREEN**
 
-Run `node --test scripts/release/test/schema.test.mjs`; expect all cases to
-pass.
+Run:
+
+```bash
+node --test scripts/release/test/schema.test.mjs
+```
+
+Expected: all schema registry and durable-contract cases pass.
 
 - [ ] **Step 5: Commit**
 
@@ -288,7 +324,6 @@ git commit -m "feat(release): add closed release schemas"
 - Create: `release/source/account-gates.json`
 - Create: `release/source/network-matrix.json`
 - Create: `release/source/review-instructions.json`
-- Create: `release/roles.json`
 - Create: `scripts/release/test/policy.test.mjs`
 - Create: `scripts/release/policy.mjs`
 - Generate: `release/generated/worksheets/*.md`
@@ -302,15 +337,22 @@ Tests must reject:
   Android application ID `net.protest.riot`;
 - a privacy answer marked `no-collection` without a matching outbound-network
   evidence row;
+- any outbound-network scenario missing trigger, destination category,
+  transmitted fields, user direction, retention, or source code evidence;
 - missing camera/Bluetooth/local-network/notification/Android-INTERNET
   justification;
 - a required-reason API with no manifest reason;
 - any UGC safeguard without code-path evidence, operator, or response SLA;
+- missing Terms/user-policy acceptance, missing prohibited-content rules, or
+  a report flow that does not acknowledge receipt within 24 hours;
 - imminent-harm/illegal response above 24 hours or other objectionable-content
   response above 72 hours;
 - an accessibility claim without every common-task/device record;
 - a store claim without code-path and candidate-journey IDs;
-- resolved Apple export classification without approver/evidence;
+- review instructions missing first-launch, create/join/publish/restart/offline,
+  permission-denial recovery, invalid-join, and no-peer topics;
+- resolved Apple export classification without the algorithms used,
+  distribution behavior, approver, and evidence;
 - account/legal answers represented as `PASS` without authenticated evidence.
 
 The valid fixture produces exactly these worksheet filenames:
@@ -343,8 +385,9 @@ Expected: FAIL because `policy.mjs` and sources do not exist.
 
 - [ ] **Step 3: Populate evidence-backed source records**
 
-Use only claims verified from current code. Unresolved export, agreements,
-trader/tax/banking, signed-candidate, hardware, and Console facts use:
+Every source record uses `"schemaVersion": 1`. Use only claims verified from
+current code. Unresolved export, agreements, trader/tax/banking,
+signed-candidate, hardware, and Console facts use:
 
 ```json
 {
@@ -354,10 +397,23 @@ trader/tax/banking, signed-candidate, hardware, and Console facts use:
 }
 ```
 
-If filtering, in-app content reporting, in-app author reporting, local author
-blocking, moderator/tombstone handling, public contact, or response ownership
-is absent, record `"state": "blocked"` with the exact missing code path. Do not
-edit product code in this work unit.
+`policy.json` explicitly records Terms/user-policy acceptance, prohibited
+content rules, filtering, in-app content reporting, in-app author reporting,
+local author blocking, moderator/tombstone handling, public contact, report
+acknowledgment (maximum 24 hours), imminent-harm/illegal response (maximum 24
+hours), other objectionable-content response (maximum 72 hours), and a named
+operator for every operational control. If any control is absent, record
+`"state": "blocked"` with the exact missing code path. Do not edit product code
+in this work unit.
+
+`network-matrix.json` has one row per user-directed and background network
+scenario, each with trigger, destination category, transmitted fields, user
+direction, retention, and code-path evidence. `review-instructions.json` covers
+first launch, create/join/publish/sign/restart/offline, denied-permission
+recovery, invalid join, and no peers. `export-compliance.json` names the
+algorithms used and whether/how the binary is distributed, but keeps
+classification `human-action` until an authenticated approver and evidence are
+recorded.
 
 - [ ] **Step 4: Implement validation and deterministic Markdown generation**
 
@@ -370,23 +426,38 @@ export async function generateWorksheets({ sources, outputDirectory, fs }) {}
 
 `evaluatePolicy` returns ordered gates with `PASS`, `BLOCKED`, or
 `HUMAN ACTION`, JSON pointer, observed value, expected value, and recovery.
-`generateWorksheets` writes through an injected atomic writer and embeds source
-digests at the top of each Markdown file.
+`generateWorksheets` receives injected `fs` and `sha256` adapters, writes each
+file to a sibling temporary path, renames it atomically, removes failed
+temporaries, and embeds the full source digest at the top of each Markdown file.
 
 - [ ] **Step 5: Run GREEN and deterministic-generation check**
 
 ```bash
 node --test scripts/release/test/policy.test.mjs
+node --input-type=module -e '
+  import { createHash } from "node:crypto";
+  import * as fs from "node:fs/promises";
+  import { loadPolicySources, generateWorksheets } from "./scripts/release/policy.mjs";
+  const sources = await loadPolicySources({ sourceDirectory: "release/source", fs });
+  await generateWorksheets({
+    sources,
+    outputDirectory: "release/generated/worksheets",
+    fs,
+    sha256: (bytes) => createHash("sha256").update(bytes).digest("hex"),
+  });
+'
 ```
 
-The policy test generates into two fresh temporary directories and asserts
-identical filename lists and bytes. The CLI does not exist until Task 6; repeat
-the tracked generated-drift command after Task 6 commits the generated output.
+The policy test generates into two fresh temporary directories, asserts
+identical filename lists and bytes, injects a failing rename to prove temporary
+cleanup, and verifies the tracked output was created by the exact one-shot
+generation command. The CLI does not exist until Task 6; repeat the tracked
+generated-drift command after Task 6.
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add release/source release/roles.json release/generated/worksheets \
+git add release/source release/generated/worksheets \
   scripts/release/policy.mjs scripts/release/test/policy.test.mjs
 git commit -m "feat(release): add evidence-backed policy worksheets"
 ```
@@ -404,11 +475,17 @@ git commit -m "feat(release): add evidence-backed policy worksheets"
 Cover the current pinned Rust channel, Node/npm package-manager values, Gradle
 distribution checksum, Android SDK/NDK expectations, Xcode/Swift requirements,
 Ajv/c8 versions, missing checksum, duplicate tool name, duplicate
-`versionCommand`, non-absolute download URLs, and malformed SHA-256.
+`versionCommand`, non-absolute download URLs, and malformed SHA-256. Every tool
+must have either an artifact SHA-256 from its checked-in download authority or
+the SHA-256 of normalized expected version-command output; `null` is invalid.
 
 - [ ] **Step 2: Run RED**
 
-Run `node --test scripts/release/test/schema.test.mjs`.
+Run:
+
+```bash
+node --test scripts/release/test/schema.test.mjs
+```
 
 Expected: FAIL because `release/toolchains.json` is absent.
 
@@ -418,27 +495,35 @@ Create one entry per required tool:
 
 ```json
 {
-  "version": 1,
+  "schemaVersion": 1,
   "tools": [
     {
       "name": "node",
       "version": "26.4.0",
       "versionCommand": ["node", "--version"],
-      "sha256": null,
+      "checksumKind": "normalized-version-output",
+      "sha256": "<64 lowercase hex characters>",
       "source": "package.json#engines.node"
     }
   ]
 }
 ```
 
-Downloaded distributions require lowercase 64-character SHA-256; system tools
-whose binaries are selected externally use `null` plus an exact checked-in
-source pointer. Actual command execution and drift inspection belong to WU-004
-and are not implemented here.
+Downloaded distributions use the authoritative lowercase 64-character
+artifact SHA-256. System tools hash the exact UTF-8 output expected after
+normalizing only terminal line endings. Every row includes the checked-in
+source pointer that owns the pin. Actual command execution and drift inspection
+belong to WU-004 and are not implemented here.
 
 - [ ] **Step 4: Run GREEN**
 
-Run the focused schema test and expect all manifest-shape cases to pass.
+Run:
+
+```bash
+node --test scripts/release/test/schema.test.mjs
+```
+
+Expected: all manifest-shape and checksum cases pass.
 
 - [ ] **Step 5: Commit**
 
@@ -454,7 +539,6 @@ git commit -m "feat(release): pin release toolchains"
 
 - Create: `scripts/release/test/cli.test.mjs`
 - Create: `scripts/release/cli.mjs`
-- Create: `scripts/release/status.mjs`
 
 - [ ] **Step 1: Write failing CLI and status tests**
 
@@ -471,11 +555,18 @@ Use a spawned Node process with a temporary release root. Cover:
 
 - [ ] **Step 2: Run RED**
 
+Run:
+
+```bash
+node --test scripts/release/test/cli.test.mjs
+```
+
 Expected: module-not-found for `cli.mjs`.
 
 - [ ] **Step 3: Implement status aggregation**
 
-Export:
+Keep the initial pure aggregation helpers in `cli.mjs` (WU-003 extracts and
+extends them into its separately owned `status.mjs`):
 
 ```js
 export function summarizeGates(gates) {}
@@ -518,8 +609,8 @@ remain. It must never incorrectly return `0`.
 - [ ] **Step 6: Commit**
 
 ```bash
-git add scripts/release/cli.mjs scripts/release/status.mjs \
-  scripts/release/test/cli.test.mjs release/generated/worksheets
+git add scripts/release/cli.mjs scripts/release/test/cli.test.mjs \
+  release/generated/worksheets
 git commit -m "feat(release): add read-only release status CLI"
 ```
 
