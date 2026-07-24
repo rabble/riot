@@ -50,8 +50,18 @@ fi
 
 echo "==> Riot version $(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' apps/ios/Riot/Info.plist 2>/dev/null || echo 0.1), build $BUILD_NUMBER, at $(git rev-parse --short HEAD)"
 
-echo "==> native core (device arm64 slice)"
-sh scripts/conference/build-native-core.sh
+echo "==> native core (device arm64 slice, net-enabled)"
+# The app links the FFI-owned iroh runtime (bindNetRuntime / MobileNetRuntime /
+# sync_with_anchor) plus the app-data seam. build-native-core.sh builds those
+# NET-FREE, so its staticlib is missing those symbols and the archive fails to
+# link. Build the device slice with the `net` feature and net bindings here so
+# the archived app is actually network-capable. -framework SystemConfiguration
+# is already in the target's OTHER_LDFLAGS.
+RIOT_FFI_NET_BINDINGS=1 cargo run --locked --package xtask -- generate-bindings
+cargo build --locked -p riot-ffi --lib --release --features net --target aarch64-apple-ios
+mkdir -p build/native/ios-device
+install -m 0644 target/aarch64-apple-ios/release/libriot_ffi.a \
+  build/native/ios-device/libriot_ffi.a
 
 echo "==> archive (Release, generic iOS device)"
 rm -rf "$ARCHIVE"
