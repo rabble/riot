@@ -79,6 +79,10 @@ public struct RelaySyncResult: Equatable, Sendable {
 enum AnchorRelayFailure {
     static let relayUnreachable =
         "Riot couldn’t reach the relay just now. It may be offline, or this device may have no internet; nothing on your device changed."
+    private static let expiredBuiltInLink =
+        "Riot’s built-in community link expired. Update Riot to get a fresh link; nothing on your device changed."
+    private static let invalidBuiltInLink =
+        "Riot’s built-in community link is no longer valid. Update Riot to get a fresh link; nothing on your device changed."
 
     static func message(for error: Error) -> String {
         guard let anchorError = error as? AnchorSyncError else {
@@ -88,11 +92,11 @@ enum AnchorRelayFailure {
         switch anchorError {
         case let .DialRefused(reason):
             if reason.localizedCaseInsensitiveContains("expired") {
-                return "Riot’s built-in community link expired. Update Riot to get a fresh link; nothing on your device changed."
+                return expiredBuiltInLink
             }
-            return "Riot’s built-in community link is no longer valid. Update Riot to get a fresh link; nothing on your device changed."
+            return invalidBuiltInLink
         case .TicketMalformed:
-            return "Riot’s built-in community link is no longer valid. Update Riot to get a fresh link; nothing on your device changed."
+            return invalidBuiltInLink
         case .BadAnchorAddress:
             return "Riot’s built-in relay address is no longer valid. Update Riot to reconnect; nothing on your device changed."
         case .Import:
@@ -102,6 +106,32 @@ enum AnchorRelayFailure {
         case .Transport:
             return relayUnreachable
         }
+    }
+
+    static func message(forRefusal refusal: String) -> String {
+        let normalized = refusal.lowercased()
+        if normalized.contains("expiredticket") || normalized.contains("expired_ticket") {
+            return "Riot’s built-in community link expired. Update Riot to get a fresh link; Riot did not open or switch communities."
+        }
+        let invalidAuthorityTokens = [
+            "invalidticket",
+            "invalid_ticket",
+            "manifestmismatch",
+            "manifest_mismatch",
+            "namespacenotmember",
+            "namespace_not_member",
+            "transportmismatch",
+            "transport_mismatch",
+            "unsupportedversion",
+            "unsupported_version",
+        ]
+        if invalidAuthorityTokens.contains(where: normalized.contains) {
+            return "Riot’s built-in community link is no longer valid. Update Riot to get a fresh link; Riot did not open or switch communities."
+        }
+        if normalized.contains("busy") {
+            return "Riot reached the relay, but it is busy just now. Try again shortly; Riot did not open or switch communities."
+        }
+        return "Riot reached the relay, but it couldn’t provide the community just now. Try again later; Riot did not open or switch communities."
     }
 }
 
@@ -123,6 +153,10 @@ enum RelaySyncLog {
 
     static func pullFailed(error: Error) {
         logger.error("anchor-relay: pull failed: \(error.localizedDescription, privacy: .public)")
+    }
+
+    static func pullRefused(namespace: String, refusal: String) {
+        logger.error("anchor-relay: pull refused ns=\(namespace, privacy: .public): \(refusal, privacy: .public)")
     }
 
     static func discovered(_ candidates: [SyncedCommunityCandidate]) {
@@ -1184,6 +1218,14 @@ public final class RiotAppModel: ObservableObject {
         } catch {
             RelaySyncLog.pullFailed(error: error)
             relaySyncError = AnchorRelayFailure.message(for: error)
+            return
+        }
+
+        if let refused = outcome.namespaces.first(where: { $0.refusal != nil }),
+           let refusal = refused.refusal
+        {
+            RelaySyncLog.pullRefused(namespace: refused.namespaceId, refusal: refusal)
+            relaySyncError = AnchorRelayFailure.message(forRefusal: refusal)
             return
         }
 

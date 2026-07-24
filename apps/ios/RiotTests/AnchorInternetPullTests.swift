@@ -23,6 +23,42 @@ final class AnchorRelayFailureTests: XCTestCase {
             AnchorRelayFailure.relayUnreachable
         )
     }
+
+    func testNonExpiredDialRefusalReportsAnInvalidBuiltInLink() {
+        XCTAssertEqual(
+            AnchorRelayFailure.message(
+                for: AnchorSyncError.DialRefused(reason: "InvalidTicket")
+            ),
+            "Riot’s built-in community link is no longer valid. Update Riot to get a fresh link; nothing on your device changed."
+        )
+    }
+
+    func testNamespaceExpiredTicketRefusalIsNotReportedAsSuccessfulSync() {
+        XCTAssertEqual(
+            AnchorRelayFailure.message(
+                forRefusal: "Some(ExpiredTicket { expires_at: 1, observed_at: 2 })"
+            ),
+            "Riot’s built-in community link expired. Update Riot to get a fresh link; Riot did not open or switch communities."
+        )
+    }
+
+    func testNamespaceAuthorityRefusalReportsAnInvalidBuiltInLink() {
+        XCTAssertEqual(
+            AnchorRelayFailure.message(
+                forRefusal: "Some(ManifestMismatch { expected_digest: [], observed_digest: [] })"
+            ),
+            "Riot’s built-in community link is no longer valid. Update Riot to get a fresh link; Riot did not open or switch communities."
+        )
+    }
+
+    func testNamespaceBusyRefusalReportsAReachableButBusyRelay() {
+        XCTAssertEqual(
+            AnchorRelayFailure.message(
+                forRefusal: "Some(Busy { limit_id: SyncSessions, retry_after_seconds: 1 })"
+            ),
+            "Riot reached the relay, but it is busy just now. Try again shortly; Riot did not open or switch communities."
+        )
+    }
 }
 
 /// The proof for issue #107 Phase 3: the iOS app pulls a real community from the
