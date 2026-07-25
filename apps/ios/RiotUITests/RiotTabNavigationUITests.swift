@@ -199,6 +199,90 @@ final class RiotTabNavigationUITests: XCTestCase {
         XCTAssertTrue(element.isHittable)
     }
 
+    /// Captures the current-nav marketing screenshots from the populated Riverside
+    /// demo space. Not an assertion-heavy flow test — its job is to drive the app
+    /// into each primary surface and snapshot it so the website's device mockups
+    /// show the real, current UI. Run with:
+    ///   xcodebuild test -only-testing:RiotUITests/RiotTabNavigationUITests/testCaptureMarketingScreens
+    /// then export the .keepAlways attachments from the result bundle.
+    func testCaptureMarketingScreens() {
+        continueAfterFailure = true
+        app = XCUIApplication()
+        app.launchEnvironment["RIOT_UI_TEST_RUN_ID"] = UUID().uuidString
+        app.launchEnvironment["RIOT_UI_TEST_SUPPRESS_NOTIFICATION_PERMISSION"] = "1"
+        app.launchEnvironment["RIOT_UI_TEST_DISABLE_NEARBY_AUTOSTART"] = "1"
+        app.launch()
+
+        // Welcome -> Get started.
+        let getStarted = app.buttons["onboarding-get-started"]
+        XCTAssertTrue(getStarted.waitForExistence(timeout: 12), "onboarding did not appear")
+        getStarted.tap()
+
+        // Name yourself, then load the populated Riverside demo space so every
+        // surface has real content instead of an empty first-run state.
+        let displayName = app.textFields["launch-display-name"]
+        XCTAssertTrue(displayName.waitForExistence(timeout: 8))
+        displayName.tap()
+        displayName.typeText("Ana")
+
+        let demo = app.buttons["demo-load"]
+        XCTAssertTrue(demo.waitForExistence(timeout: 8), "the Riverside demo action is missing")
+        demo.tap()
+
+        // Land on Home with the demo wire populated.
+        let home = app.buttons["Home"]
+        XCTAssertTrue(home.waitForExistence(timeout: 20), "did not reach the tab bar after loading the demo")
+        sleep(3) // let the wire + sync status settle before the first frame
+        capture("hero-home")
+
+        // A shared checklist running inside a tool — captured from the first
+        // community's Home before any tab switch, where the Checklist tool lives.
+        let checklistTool = app.buttons["Checklist"]
+        if checklistTool.waitForExistence(timeout: 4) {
+            checklistTool.tap()
+            sleep(2)
+            capture("hero-checklist")
+            app.buttons["Home"].tap()
+            sleep(1)
+        }
+
+        for tab in ["Tools", "People", "Nearby"] {
+            let button = app.buttons[tab]
+            if button.waitForExistence(timeout: 6) {
+                button.tap()
+                sleep(2)
+                capture("hero-\(tab.lowercased())")
+            }
+        }
+
+        // Back to Home for the two thumbnail surfaces the site pins: compose and
+        // a tool detail.
+        app.buttons["Home"].tap()
+        sleep(1)
+
+        // Compose: the "Post an update" action opens the typed compose sheet.
+        let post = app.buttons["home-post-update"]
+        if post.waitForExistence(timeout: 6) {
+            post.tap()
+            sleep(2)
+            capture("hero-compose")
+            // Dismiss the sheet so the tool capture starts from Home.
+            let cancel = app.buttons["Cancel"]
+            if cancel.exists { cancel.tap() } else { app.swipeDown() }
+            sleep(1)
+        }
+
+        // A tool detail: open the first Home tool shortcut (Checklist et al.).
+        let toolShortcut = app.buttons
+            .matching(NSPredicate(format: "identifier BEGINSWITH 'home-shortcut-'"))
+            .firstMatch
+        if toolShortcut.waitForExistence(timeout: 6) {
+            toolShortcut.tap()
+            sleep(2)
+            capture("hero-checklist")
+        }
+    }
+
     private func capture(_ name: String) {
         let attachment = XCTAttachment(screenshot: app.screenshot())
         attachment.name = name
