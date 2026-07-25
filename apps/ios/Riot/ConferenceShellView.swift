@@ -1074,6 +1074,10 @@ private struct CommunityShellView: View {
             // next community (nav design §"Nearby security and lifecycle").
             .onAppear { registerCommunityScope() }
             .onDisappear { unregisterCommunityScope() }
+            // Three taps on the community chrome, no confirmation: the fast
+            // route for the moment a phone is being taken. The undo window, not
+            // a dialog, is what protects against a mis-tap.
+            .modifier(EmergencyWipeTriggers(controller: model.emergencyWipe))
             // A contributor's page: who they are + what they posted. The posts
             // come from the SAME newswire projection Home draws, filtered to this
             // author — no new FFI. Tapping a post opens the community's canonical
@@ -2166,6 +2170,13 @@ private struct CommunitySettingsSheet: View {
                 Button("Leave this community", role: .destructive, action: onLeave)
                     .buttonStyle(.riotSecondary)
                     .accessibilityIdentifier("leave-community")
+
+                // The discoverable route to the wipe. The triple-tap on the
+                // header is for speed under pressure; this is so the affordance
+                // can be FOUND at all — one nobody knows about protects nobody.
+                if let wipe = model.emergencyWipe {
+                    EmergencyWipeButton(controller: wipe)
+                }
 
                 Button("Done", action: onClose)
                     .buttonStyle(.riotSecondary)
