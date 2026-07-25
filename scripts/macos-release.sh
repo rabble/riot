@@ -32,10 +32,10 @@
 #   CHANNEL=developerid sh scripts/macos-release.sh      # export .app + build .dmg
 #   CHANNEL=developerid UPLOAD=1 sh scripts/macos-release.sh   # also notarize + staple
 #
-# ARM64 ONLY. The macOS target is ARCHS = arm64, so this ships an Apple-silicon
-# build; Intel Macs cannot run it. Making it universal means a second Rust slice
-# (x86_64-apple-darwin), lipo, and ARCHS = "arm64 x86_64" — deliberately not done
-# here, so the limitation is loud rather than discovered by a user.
+# UNIVERSAL (arm64 + x86_64), so Intel Macs can run it too. That costs a second
+# Rust slice per release; `rustup target add x86_64-apple-darwin` is required and
+# is checked below. Only the Release configs are universal — Debug stays
+# single-arch (ONLY_ACTIVE_ARCH) so the dev loop does not pay for it.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -72,17 +72,33 @@ fi
 
 echo "==> Riot macOS, channel $CHANNEL, build $BUILD_NUMBER, at $(git rev-parse --short HEAD)"
 
-echo "==> native core (macOS arm64 slice, net-enabled)"
+echo "==> native core (macOS universal: arm64 + x86_64, net-enabled)"
 # The app links the FFI-owned iroh runtime (bindNetRuntime / MobileNetRuntime /
 # sync_with_anchor). scripts/conference/build-native-core.sh builds those
 # NET-FREE, so its staticlib is missing those symbols and the archive fails to
 # link. Build with the `net` feature and net bindings so the archived app is
 # actually network-capable.
+#
+# UNIVERSAL: the app target is ARCHS = "arm64 x86_64", so a single-arch
+# staticlib fails to link the x86_64 slice. Both Rust slices are built and
+# lipo'd together. `rustup target add x86_64-apple-darwin` is a prerequisite —
+# checked here rather than discovered as a confusing linker error.
+for t in aarch64-apple-darwin x86_64-apple-darwin; do
+  rustup target list --installed | grep -qx "$t" || {
+    echo "ERROR: rust target not installed: $t" >&2
+    echo "       rustup target add $t" >&2
+    exit 1
+  }
+done
 RIOT_FFI_NET_BINDINGS=1 cargo run --locked --package xtask -- generate-bindings
 cargo build --locked -p riot-ffi --lib --release --features net --target aarch64-apple-darwin
+cargo build --locked -p riot-ffi --lib --release --features net --target x86_64-apple-darwin
 mkdir -p build/native/macos
-install -m 0644 target/aarch64-apple-darwin/release/libriot_ffi.a \
-  build/native/macos/libriot_ffi.a
+lipo -create \
+  target/aarch64-apple-darwin/release/libriot_ffi.a \
+  target/x86_64-apple-darwin/release/libriot_ffi.a \
+  -output build/native/macos/libriot_ffi.a
+echo "==> staticlib: $(lipo -archs build/native/macos/libriot_ffi.a)"
 
 echo "==> archive (Release, macOS)"
 rm -rf "$ARCHIVE"
