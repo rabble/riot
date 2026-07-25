@@ -41,6 +41,9 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
+# shellcheck source=scripts/lib/asc-key.sh
+. "$ROOT/scripts/lib/asc-key.sh"
+
 CHANNEL="${CHANNEL:-appstore}"
 SCHEME="Riot-macOS"
 PROJECT="apps/macos/Riot.xcodeproj"
@@ -139,8 +142,7 @@ if [ "$CHANNEL" = appstore ]; then
 
   if [ "${UPLOAD:-0}" = "1" ]; then
     : "${ASC_KEY_ID:?set ASC_KEY_ID}"; : "${ASC_ISSUER_ID:?set ASC_ISSUER_ID}"; : "${ASC_KEY_PATH:?set ASC_KEY_PATH}"
-    mkdir -p "$HOME/.appstoreconnect/private_keys"
-    cp "$ASC_KEY_PATH" "$HOME/.appstoreconnect/private_keys/AuthKey_${ASC_KEY_ID}.p8"
+    riot_install_asc_key "$ASC_KEY_PATH" "$ASC_KEY_ID" "$HOME/.appstoreconnect/private_keys"
     echo "==> uploading to App Store Connect"
     xcrun altool --upload-app --type macos --file "$PKG" \
       --apiKey "$ASC_KEY_ID" --apiIssuer "$ASC_ISSUER_ID"
