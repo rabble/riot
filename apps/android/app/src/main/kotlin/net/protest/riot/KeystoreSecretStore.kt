@@ -98,19 +98,40 @@ class KeystoreSecretStore(
     private fun getOrCreateKey(): SecretKey {
         val keyStore = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
         (keyStore.getKey(keyAlias, null) as? SecretKey)?.let { return it }
-        return KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, ANDROID_KEYSTORE).run {
-            init(
+        // StrongBox puts the key in dedicated tamper-resistant hardware where
+        // available. It is requested first and retried without on the many
+        // devices that lack it — StrongBoxUnavailableException is thrown at
+        // generate() time, not at build() time, so the retry has to wrap the
+        // generation itself.
+        return runCatching { generateKey(strongBox = true) }
+            .getOrElse { generateKey(strongBox = false) }
+    }
+
+    private fun generateKey(strongBox: Boolean): SecretKey =
+        KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, ANDROID_KEYSTORE).run {
+            val spec =
                 KeyGenParameterSpec.Builder(
                         keyAlias,
                         KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT,
                     )
                     .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
                     .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
-                    .build(),
-            )
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) {
+                // The key is unusable while the device is locked. This matches
+                // iOS, whose Keychain item uses
+                // kSecAttrAccessibleWhenPasscodeSetThisDeviceOnly — also
+                // unlocked-only. It is safe HERE, and only here, because the
+                // wrapping key is needed to seal or unseal the IDENTITY, not to
+                // read or write entries: background sync keeps working on a
+                // locked phone. The same flag on the profile-blob key would
+                // break exactly that, which is why this class holds one small
+                // secret rather than the whole profile.
+                spec.setUnlockedDeviceRequired(true)
+                if (strongBox) spec.setIsStrongBoxBacked(true)
+            }
+            init(spec.build())
             generateKey()
         }
-    }
 
     companion object {
         private const val ANDROID_KEYSTORE = "AndroidKeyStore"
