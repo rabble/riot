@@ -17,13 +17,25 @@ import javax.crypto.spec.GCMParameterSpec
 class AndroidKeystoreProfileStore(
     private val keyAlias: String,
     file: File,
+    /**
+     * Where the identity wrapping key lives — a SEPARATE file under a SEPARATE
+     * Keystore alias. The key used to be encoded inside the profile blob right
+     * next to the sealed identity it opens, so one decryption yielded both
+     * halves and the XChaCha20Poly1305 seal added no defence in depth. iOS never
+     * had that shape (Keychain for the key, a file for the sealed identity).
+     */
+    private val wrappingKeys: SecretStore =
+        KeystoreSecretStore("$keyAlias.identity-wrapping", File(file.parentFile, "${file.name}.key")),
 ) {
     private val atomicFile = AtomicFile(file)
 
     fun save(profile: PersistedProfile) {
         val cipher = Cipher.getInstance(TRANSFORMATION)
         cipher.init(Cipher.ENCRYPT_MODE, getOrCreateKey())
-        val plaintext = PersistedProfileCodec.encode(profile)
+        // Writes the key to its own store and hands back the profile whose
+        // identity block carries the sentinel instead.
+        val plaintext = PersistedProfileCodec.encode(
+            IdentitySecretSplit.forStorage(profile, wrappingKeys))
         val ciphertext = TemporaryKey.useOwned(plaintext) { cipher.doFinal(it) }
         val envelope = ByteArrayOutputStream().use { bytes ->
             DataOutputStream(bytes).use { output ->
@@ -65,11 +77,26 @@ class AndroidKeystoreProfileStore(
         val cipher = Cipher.getInstance(TRANSFORMATION)
         cipher.init(Cipher.DECRYPT_MODE, getOrCreateKey(), GCMParameterSpec(128, iv))
         val plaintext = cipher.doFinal(ciphertext)
-        return TemporaryKey.useOwned(plaintext, PersistedProfileCodec::decode)
+        val stored = TemporaryKey.useOwned(plaintext, PersistedProfileCodec::decode)
+        // A pre-split install still has its key inline: `fromStorage` relocates
+        // it so this very load is already migrated, and the blob is re-saved
+        // once so it stops carrying the key. The re-save is best-effort — a
+        // failure here must not deny access to a profile that just opened fine.
+        val migrated = IdentitySecretSplit.fromStorage(stored, wrappingKeys)
+        if (IdentitySecretSplit.needsRewrite(stored)) {
+            runCatching { save(migrated) }
+        }
+        return migrated
     }
 
+    /**
+     * Removes the profile AND the separately-stored wrapping key. Both, always:
+     * leaving the key behind would keep a usable half of the identity, and
+     * leaving the blob behind would keep the ciphertext the key opens.
+     */
     fun clear() {
         atomicFile.delete()
+        wrappingKeys.clear()
     }
 
     private fun getOrCreateKey(): SecretKey {
