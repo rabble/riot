@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Mac App Store export. Mirrors apps/ios/ExportOptions.plist (same Apple
+	     team). Pairs with `CHANNEL=appstore sh scripts/macos-release.sh`.
+	     Produces a signed .pkg — the Mac App Store takes a .pkg, NOT a .app or
+	     .dmg. The upload step is a separate authenticated command in the script. -->
+	<key>method</key>
+	<string>app-store-connect</string>
+	<key>teamID</key>
+	<string>GZCZBKH7MY</string>
+	<!-- Automatic signing matches the project (CODE_SIGN_STYLE = Automatic).
+	     Requires an Xcode account authorized on team GZCZBKH7MY, or the archive/
+	     export must run with -allowProvisioningUpdates and an ASC API key.
+	     Automatic signing will provision an "Apple Distribution" certificate and
+	     a Mac App Store profile for net.protest.riot on first run. -->
+	<key>signingStyle</key>
+	<string>automatic</string>
+	<key>uploadSymbols</key>
+	<true/>
+	<key>destination</key>
+	<string>export</string>
+</dict>
+</plist>

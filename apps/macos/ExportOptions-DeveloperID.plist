@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Direct-download export: a Developer ID signed .app that is then notarized
+	     and stapled into a .dmg by `CHANNEL=developerid sh scripts/macos-release.sh`.
+	     No App Store, no Apple review — the people who will not install from the
+	     App Store can still run a Gatekeeper-clean build.
+
+	     This needs a "Developer ID Application" certificate, which is NOT the same
+	     as the "Apple Distribution" certificate the App Store channel uses, and
+	     which Xcode will NOT create for you automatically: an Account Holder or
+	     Admin on team GZCZBKH7MY must create it once at
+	     developer.apple.com -> Certificates -> Developer ID Application.
+	     Hardened runtime (ENABLE_HARDENED_RUNTIME) is REQUIRED for notarization
+	     and is set on the macOS target. -->
+	<key>method</key>
+	<string>developer-id</string>
+	<key>teamID</key>
+	<string>GZCZBKH7MY</string>
+	<key>signingStyle</key>
+	<string>automatic</string>
+	<!-- Notarization is a separate, explicit step in the script (notarytool +
+	     stapler) rather than Xcode's opaque built-in upload, so a failure names
+	     itself and the submission log can be fetched. -->
+	<key>destination</key>
+	<string>export</string>
+</dict>
+</plist>
