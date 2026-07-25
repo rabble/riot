@@ -1,5 +1,9 @@
 plugins {
     id("com.android.application")
+    // AGP 9 supplies Kotlin itself, but NOT the Compose compiler — that stays a
+    // separate plugin, and its version must track the Kotlin version AGP bundles
+    // (2.2.10). A mismatch fails the build with a compiler-version error.
+    id("org.jetbrains.kotlin.plugin.compose") version "2.2.10"
 }
 
 android {
@@ -18,6 +22,10 @@ android {
         ndk {
             abiFilters += listOf("arm64-v8a", "x86_64")
         }
+    }
+
+    buildFeatures {
+        compose = true
     }
 
     sourceSets {
@@ -45,6 +53,17 @@ android {
 dependencies {
     implementation("net.java.dev.jna:jna:5.17.0@aar")
     implementation("androidx.webkit:webkit:1.14.0")
+
+    // One BOM pins every Compose artifact to a tested-together set, so the
+    // individual libraries below are deliberately version-less.
+    val composeBom = platform("androidx.compose:compose-bom:2026.06.01")
+    implementation(composeBom)
+    androidTestImplementation(composeBom)
+    implementation("androidx.compose.foundation:foundation")
+    implementation("androidx.compose.ui:ui")
+    implementation("androidx.compose.ui:ui-tooling-preview")
+    implementation("androidx.activity:activity-compose:1.12.0")
+    debugImplementation("androidx.compose.ui:ui-tooling")
 
     testImplementation("junit:junit:4.13.2")
     androidTestImplementation("androidx.test:runner:1.7.0")
