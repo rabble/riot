@@ -6,7 +6,7 @@ public protocol WrappingKeyStore {
     func loadOrCreateWrappingKey() throws -> Data
 }
 
-public final class KeychainWrappingKeyStore: WrappingKeyStore {
+public final class KeychainWrappingKeyStore: DestructibleSecretStore {
     private static let logger = Logger(subsystem: "net.protest.riot", category: "identity-keychain")
     private let service: String
     private let account: String
@@ -82,6 +82,41 @@ public final class KeychainWrappingKeyStore: WrappingKeyStore {
             Self.logger.notice("Wrapping key stored with when-passcode-set-this-device-only accessibility")
         }
         return key
+    }
+
+    /// Removes the key from the Keychain and hands back what was removed.
+    ///
+    /// This is the emergency wipe's crypto-erase: the sealed identity is
+    /// encrypted under this key, so deleting it renders that identity
+    /// unrecoverable immediately — no need to overwrite the database first.
+    /// The returned copy exists ONLY so a brief undo can put it back; it is
+    /// never written anywhere.
+    @discardableResult
+    public func destroyWrappingKey() throws -> Data? {
+        let (status, existing) = read()
+        let deleteStatus = SecItemDelete(identityAttributes() as CFDictionary)
+        guard deleteStatus == errSecSuccess || deleteStatus == errSecItemNotFound else {
+            throw KeychainWrappingKeyError.status(deleteStatus)
+        }
+        Self.logger.notice("identity wrapping key destroyed")
+        return status == errSecSuccess ? existing : nil
+    }
+
+    /// Puts a previously destroyed key back, for undo. Restores the SAME
+    /// accessibility policy the key was created under, so an undone wipe cannot
+    /// quietly downgrade the key's protection.
+    public func restoreWrappingKey(_ key: Data) throws {
+        guard key.count == 32 else { throw KeychainWrappingKeyError.status(errSecParam) }
+        var item = identityAttributes()
+        item[kSecValueData as String] = key
+        item[kSecAttrAccessible as String] = kSecAttrAccessibleWhenPasscodeSetThisDeviceOnly
+        var status = SecItemAdd(item as CFDictionary, nil)
+        if status == errSecParam || status == errSecNotAvailable || status == errSecAuthFailed {
+            item[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
+            status = SecItemAdd(item as CFDictionary, nil)
+        }
+        guard status == errSecSuccess else { throw KeychainWrappingKeyError.status(status) }
+        Self.logger.notice("identity wrapping key restored after an undone wipe")
     }
 
     private func identityAttributes() -> [String: Any] {

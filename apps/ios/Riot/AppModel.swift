@@ -729,6 +729,44 @@ public final class RiotAppModel: ObservableObject {
         )
     }
 
+    /// The emergency wipe, built lazily against the SAME storage paths this
+    /// launch opened, so it can never be pointed at a stale directory.
+    ///
+    /// Nil only when there is no bootstrap yet (nothing to wipe) or the Keychain
+    /// store in use is not destructible — the UI-automation stub, for instance,
+    /// which must never be able to destroy a real key.
+    public var emergencyWipe: EmergencyWipeController? {
+        if let existing = cachedEmergencyWipe { return existing }
+        guard let args = lastBootstrapArgs,
+            let destructible = args.keyStore as? DestructibleSecretStore,
+            let base = try? (args.storageDirectory ?? Self.defaultStorageDirectory())
+        else { return nil }
+        let controller = EmergencyWipeController(
+            wipe: EmergencyWipe(
+                keyStore: destructible,
+                paths: WipePaths(
+                    databasePath: base.appendingPathComponent("riot.db").path,
+                    profilePath: base.appendingPathComponent("riot-profile.json").path,
+                    // The recovery system PRESERVES copies of profile state
+                    // rather than deleting it, so a wipe that spared this
+                    // directory would leave behind copies of what it destroyed.
+                    quarantineDirectory: base.appendingPathComponent("quarantine").path)))
+        cachedEmergencyWipe = controller
+        return controller
+    }
+
+    private var cachedEmergencyWipe: EmergencyWipeController?
+
+    /// Drops this launch's open profile after a wipe has committed. The store is
+    /// gone from disk and its key is destroyed, so continuing to hold the handle
+    /// would only keep unusable state alive.
+    public func releaseWipedProfile() {
+        repository = nil
+        space = nil
+        entries = []
+        cachedEmergencyWipe = nil
+    }
+
     /// "Start fresh": the last-resort recovery for a genuinely-unrecoverable
     /// error that survived every in-`open` degrade. It QUARANTINES the persisted
     /// snapshot and database aside — never deleting them, so the data stays on
