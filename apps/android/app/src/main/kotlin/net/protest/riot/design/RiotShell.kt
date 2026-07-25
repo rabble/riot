@@ -40,6 +40,8 @@ fun RiotAppShell(
     onSelectTab: (Int) -> Unit,
     status: String,
     modifier: Modifier = Modifier,
+    /** Non-null when a surface is pushed on top of a tab; draws the way back. */
+    onBack: (() -> Unit)? = null,
     content: @Composable () -> Unit,
 ) {
     val spacing = RiotTheme.spacing
@@ -57,6 +59,12 @@ fun RiotAppShell(
         ) {
             RiotEyebrow(title)
             RiotText(subtitle, RiotType.serif(28))
+            // A pushed surface must always show its way out. Android's system
+            // back is handled too, but a visible control is what makes the push
+            // legible as a push rather than a tab that lost its bar.
+            if (onBack != null) {
+                RiotSecondaryButton("Back", onClick = onBack)
+            }
         }
         Box(modifier = Modifier.weight(1f)) { content() }
         Row(

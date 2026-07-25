@@ -125,6 +125,8 @@ fun NewswireScreenUi(
     communityTitle: String?,
     surface: NewswireSurface?,
     onGoToSpaces: () -> Unit,
+    onCompose: () -> Unit,
+    onOpenAlerts: () -> Unit,
     onReply: (parentEntryId: String, body: String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -138,6 +140,13 @@ fun NewswireScreenUi(
             )
             RiotSecondaryButton("Go to spaces", onClick = onGoToSpaces)
             return@RiotSurfaceColumn
+        }
+        // Writing is the point of a wire, so it is the one filled action on
+        // Home; the alert board sits beside it as the quieter route.
+        RiotCard {
+            RiotEyebrow("This wire")
+            RiotPrimaryButton("Post an update", onClick = onCompose)
+            RiotSecondaryButton("Alerts", onClick = onOpenAlerts)
         }
         if (surface.unread.hasUnread) {
             RiotBadge("${surface.unread.count} new since you last looked", tint = RiotTheme.colors.pink)
