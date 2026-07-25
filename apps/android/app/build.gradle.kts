@@ -3,15 +3,17 @@ plugins {
 }
 
 android {
-    namespace = "org.riot.evidence"
+    namespace = "net.protest.riot"
     compileSdk = 36
 
     defaultConfig {
-        applicationId = "org.riot.evidence"
+        applicationId = "net.protest.riot"
         minSdk = 26
         targetSdk = 36
         versionCode = 1
-        versionName = "0.1"
+        // Matches CFBundleShortVersionString on iOS/macOS. All three platforms
+        // ship one version string; they are the same app.
+        versionName = "0.1.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         ndk {
             abiFilters += listOf("arm64-v8a", "x86_64")
