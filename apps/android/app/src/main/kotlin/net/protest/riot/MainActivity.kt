@@ -1,7 +1,24 @@
 package net.protest.riot
 
 import android.Manifest
-import android.app.Activity
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.mutableIntStateOf
+import net.protest.riot.design.AlertsScreen
+import net.protest.riot.design.LegacySurface
+import net.protest.riot.design.NewswireScreenUi
+import net.protest.riot.design.RiotAppShell
+import net.protest.riot.design.RiotTheme
+import net.protest.riot.design.SpacesScreen
+import net.protest.riot.design.NearbyScreen
+import net.protest.riot.design.PeopleScreen
+import net.protest.riot.design.RiotDestination
+import net.protest.riot.design.ToolsScreen
+import net.protest.riot.design.people
+import net.protest.riot.design.pushedFrom
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Typeface
@@ -37,7 +54,7 @@ import net.protest.riot.transport.NearbyUiState
 import net.protest.riot.transport.NearbyUiActions
 import net.protest.riot.transport.SyncCoordinator
 
-class MainActivity : Activity() {
+class MainActivity : ComponentActivity() {
     private lateinit var controller: RiotController
     private lateinit var nearby: AndroidNearbyController
     private lateinit var content: LinearLayout
@@ -45,6 +62,18 @@ class MainActivity : Activity() {
     private var reviewedDraft: ReviewSnapshot? = null
     private var pendingImportEntries: List<CurrentEntry> = emptyList()
     private var currentSurface = ConferenceSurface.SPACES
+    // Compose mirrors of the two pieces of chrome state. The legacy `status`
+    // TextView is kept so un-migrated surfaces can still write to it; assigning
+    // it also pushes the text into `statusText` for the composed status line, so
+    // both halves of the half-migrated app report the same thing.
+    private var tabState by mutableIntStateOf(0)
+    // The surface pushed on top of the current tab, or null when the tab shows
+    // its own content. This is what keeps the four-place shell from costing a
+    // capability: everything that is not a place is still reachable, one push
+    // deep, with a back affordance.
+    private var pushedSurface by mutableStateOf<ConferenceSurface?>(null)
+    private var statusText by mutableStateOf("Offline ready")
+    private var contentRevision by mutableIntStateOf(0)
     private var syncCoordinator: SyncCoordinator? = null
     private var syncState: NearbyUiState? = null
     private lateinit var apps: RiotAppsController
@@ -128,7 +157,61 @@ class MainActivity : Activity() {
                 if (incoming) active.answer() else active.start()
             },
         )
-        setContentView(buildShell())
+        // The chrome is Compose from here; `buildShell()` still constructs the
+        // legacy `content`/`status` views, which un-migrated surfaces keep
+        // writing into and which `LegacySurface` parents into the composition.
+        val legacyRoot = buildLegacyContent()
+        setContent {
+            RiotTheme {
+                val destination = RiotDestination.tabs[tabState]
+                val pushed = pushedSurface
+                RiotAppShell(
+                    title = controller.currentSpace?.title ?: "Riot",
+                    subtitle = pushed?.label ?: destination.label,
+                    tabs = RiotDestination.tabs.map { it.label },
+                    selectedTab = tabState,
+                    onSelectTab = { index ->
+                        // A tab shows its OWN content. It must never push, or
+                        // selecting Tools would drop straight into the directory
+                        // and the tab body would be unreachable.
+                        pushedSurface = null
+                        tabState = index
+                        currentSurface = defaultSurfaceFor(RiotDestination.tabs[index])
+                        contentRevision++
+                    },
+                    status = statusText,
+                    onBack = if (pushed != null) {
+                        {
+                            pushedSurface = null
+                            currentSurface = defaultSurfaceFor(destination)
+                            contentRevision++
+                        }
+                    } else {
+                        null
+                    },
+                ) {
+                    @Suppress("UNUSED_EXPRESSION") contentRevision
+                    if (pushed != null) {
+                        LegacySurface(legacyRoot)
+                    } else {
+                        when (destination) {
+                            RiotDestination.HOME -> HomeTab()
+                            RiotDestination.TOOLS -> ToolsScreen(
+                                onOpenDirectory = { push(ConferenceSurface.APP_DIRECTORY) },
+                                onOpenFollowSites = { push(ConferenceSurface.FOLLOW_SITES) },
+                            )
+                            RiotDestination.PEOPLE -> PeopleScreen(
+                                people = newswireSurface()?.people().orEmpty(),
+                            )
+                            RiotDestination.NEARBY -> NearbyScreen(
+                                onOpenConnection = { push(ConferenceSurface.CONNECTION) },
+                                onOpenImport = { push(ConferenceSurface.IMPORT_PREVIEW) },
+                            )
+                        }
+                    }
+                }
+            }
+        }
         // Bring the built-in tools in before the first render so the checklist
         // is openable under Tools and in the directory out of the box. If its
         // shipped bytes are unreadable the directory still lists it (the core
@@ -138,6 +221,67 @@ class MainActivity : Activity() {
         } catch (_: Exception) {
         }
         show(ConferenceSurface.SPACES)
+    }
+
+    /** The surface a tab shows when nothing is pushed on top of it. */
+    private fun defaultSurfaceFor(destination: RiotDestination) =
+        when (destination) {
+            RiotDestination.HOME -> ConferenceSurface.NEWSWIRE
+            RiotDestination.TOOLS -> ConferenceSurface.APP_DIRECTORY
+            RiotDestination.PEOPLE -> ConferenceSurface.NEWSWIRE
+            RiotDestination.NEARBY -> ConferenceSurface.CONNECTION
+        }
+
+    /** Push a surface that is an action rather than a place. */
+    private fun push(surface: ConferenceSurface) {
+        pushedSurface = surface
+        show(surface)
+    }
+
+    /** The active community's newswire surface, or null when there is no community. */
+    private fun newswireSurface(): NewswireSurface? {
+        val descriptor = controller.activeCommunity()?.descriptorEntryId ?: return null
+        return NewswireScreen.resolve(descriptor, seenCursor.cursor(descriptor)) {
+            controller.projectNewswire(it)
+        }
+    }
+
+    /**
+     * Home: the wire, the alerts, and — until this device holds a community —
+     * the way to start one. iOS puts the same three things behind Home.
+     */
+    @androidx.compose.runtime.Composable
+    private fun HomeTab() {
+        val community = controller.activeCommunity()
+        if (community == null) {
+            SpacesScreen(
+                spaceTitle = controller.currentSpace?.title,
+                namespaceId = controller.currentSpace?.namespaceId,
+                onCreateSpace = { title ->
+                    runAction("Public space created") {
+                        controller.createSpace(title)
+                        contentRevision++
+                    }
+                },
+            )
+            return
+        }
+        val descriptor = community.descriptorEntryId
+        NewswireScreenUi(
+            communityTitle = community.title,
+            surface = newswireSurface(),
+            onGoToSpaces = { tabState = 0 },
+            onCompose = { push(ConferenceSurface.COMPOSE_AND_SIGN) },
+            onOpenAlerts = { push(ConferenceSurface.INCIDENT_BOARD) },
+            onReply = { parent, body ->
+                descriptor?.let {
+                    runAction("Reply signed") {
+                        controller.createNewswireComment(it, parent, body)
+                        contentRevision++
+                    }
+                }
+            },
+        )
     }
 
     override fun onDestroy() {
@@ -200,45 +344,21 @@ class MainActivity : Activity() {
     }
 
     @Suppress("DEPRECATION")
-    private fun buildShell(): View = vertical().apply {
-        setPadding(24, 32, 24, 24)
-        setOnApplyWindowInsetsListener { view, insets ->
-            view.setPadding(
-                24,
-                32 + insets.systemWindowInsetTop,
-                24,
-                24 + insets.systemWindowInsetBottom,
-            )
-            insets
-        }
-        addView(TextView(context).apply {
-            text = "RIOT / PUBLIC INCIDENT SPACE"
-            textSize = 22f
-            setTypeface(typeface, Typeface.BOLD)
-        })
-        addView(TextView(context).apply {
-            text = "Local-first • human-reviewed • public"
-            textSize = 14f
-        })
-        addView(HorizontalScrollView(context).apply {
-            addView(LinearLayout(context).apply {
-                orientation = LinearLayout.HORIZONTAL
-                ConferenceSurface.entries.forEach { surface ->
-                    addView(Button(context).apply {
-                        text = surface.label
-                        isAllCaps = false
-                        setOnClickListener { show(surface) }
-                    })
-                }
-            })
-        })
+    /**
+     * The container an un-migrated surface still draws into.
+     *
+     * CONTENT ONLY. The old builder also produced a masthead, a row of stock
+     * buttons for all eight surfaces, and a status line — chrome that the Compose
+     * shell now owns. Leaving it in meant a pushed screen showed two headers, two
+     * tab rows and two status lines at once. The `status` TextView is still
+     * CREATED, because legacy code assigns to it from a dozen places, but it is
+     * never added to the view tree: those assignments mirror into the composed
+     * status line through `runAction`/`statusText` instead.
+     */
+    private fun buildLegacyContent(): View = vertical().apply {
         content = vertical()
         addView(ScrollView(context).apply { addView(content) }, weighted())
-        status = TextView(context).apply {
-            text = "Offline ready"
-            gravity = Gravity.CENTER_VERTICAL
-        }
-        addView(status)
+        status = TextView(context).apply { text = "Offline ready" }
     }
 
     private fun show(surface: ConferenceSurface) {
@@ -247,6 +367,14 @@ class MainActivity : Activity() {
             runningApp = null
         }
         currentSurface = surface
+        // Keep the Compose chrome in step with a switch made by legacy code: a
+        // surface that is an action shows as a push, one that is a place selects
+        // its tab.
+        surface.pushedFrom?.let { home ->
+            pushedSurface = surface
+            tabState = RiotDestination.tabs.indexOf(home)
+        }
+        contentRevision++
         content.removeAllViews()
         content.addView(heading(surface.label))
         when (surface) {
@@ -898,9 +1026,10 @@ class MainActivity : Activity() {
         ))
     }
 
+    @Deprecated("ComponentActivity's platform callback; kept because this Activity uses requestPermissions directly rather than registerForActivityResult")
     override fun onRequestPermissionsResult(
         requestCode: Int,
-        permissions: Array<out String>,
+        permissions: Array<String>,
         grantResults: IntArray,
     ) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
@@ -913,6 +1042,7 @@ class MainActivity : Activity() {
         try {
             action()
             status.text = success
+            statusText = success
         } catch (error: Exception) {
             status.text = error.message ?: error.javaClass.simpleName
         }

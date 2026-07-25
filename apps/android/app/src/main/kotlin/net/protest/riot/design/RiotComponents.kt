@@ -4,6 +4,8 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -43,12 +45,14 @@ fun RiotText(
     color: Color? = null,
     textAlign: TextAlign? = null,
     maxLines: Int = Int.MAX_VALUE,
+    softWrap: Boolean = true,
 ) {
     BasicText(
         text = text,
         modifier = modifier,
         style = style.copy(color = color ?: RiotTheme.colors.ink, textAlign = textAlign ?: TextAlign.Unspecified),
         maxLines = maxLines,
+        softWrap = softWrap,
     )
 }
 
@@ -220,13 +224,20 @@ fun RiotTabBar(
 ) {
     val theme = RiotTheme.colors
     val spacing = RiotTheme.spacing
+    // SCROLLING, not squeezed. Eight surfaces do not fit a phone's width: fixed
+    // shares truncate every label to nonsense ("APP DIF", "NEWSWIF"), which was
+    // visible on a real device. A label that cannot be read is worse than one
+    // that needs a swipe, so the row scrolls and each tab keeps its full name.
+    // When the information architecture catches up with the iOS shell (four
+    // tabs) this can go back to equal shares.
     Row(
         modifier =
             modifier
                 .fillMaxWidth()
                 .background(theme.paper2)
-                .padding(vertical = spacing.snug),
-        horizontalArrangement = Arrangement.SpaceEvenly,
+                .horizontalScroll(rememberScrollState())
+                .padding(vertical = spacing.snug, horizontal = spacing.snug),
+        horizontalArrangement = Arrangement.spacedBy(spacing.tight),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         tabs.forEachIndexed { index, label ->
@@ -242,8 +253,14 @@ fun RiotTabBar(
             ) {
                 RiotText(
                     text = label.uppercase(),
-                    style = RiotType.mono(12, bold = isSelected),
+                    // ONE LINE, ALWAYS. Without this a long label ("NEWSWIRE")
+                    // wraps mid-word and the bar grows a second row — seen on a
+                    // real device before this was pinned.
+                    style = RiotType.mono(10, bold = isSelected),
                     color = if (isSelected) theme.pink else theme.inkSoft,
+                    maxLines = 1,
+                    softWrap = false,
+                    textAlign = TextAlign.Center,
                 )
             }
         }
