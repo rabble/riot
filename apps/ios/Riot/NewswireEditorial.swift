@@ -58,13 +58,28 @@ public enum ReactionKind: String, CaseIterable, Equatable, Sendable, Identifiabl
 
     public var id: String { rawValue }
 
-    /// The person-facing label shown on the toggle.
+    /// The person-facing label. Presentation draws `glyph`; this word is what
+    /// VoiceOver speaks and what any text-only surface falls back to.
     public var label: String {
         switch self {
         case .support: "Support"
         case .solidarity: "Solidarity"
         case .important: "Important"
         case .grief: "Grief"
+        }
+    }
+
+    /// The emoji the toggle draws instead of the word. PRESENTATION ONLY — the
+    /// wire vocabulary stays the closed integer-tagged set core admits, so this
+    /// mapping can change without touching a payload, a tally, or sync. Free-form
+    /// emoji stay out of the record (see `NewsReactionV1`); these four are a
+    /// rendering of the four kinds, not a widening of them.
+    public var glyph: String {
+        switch self {
+        case .support: "🤝"
+        case .solidarity: "✊"
+        case .important: "❗️"
+        case .grief: "🕯️"
         }
     }
 }
@@ -1573,10 +1588,12 @@ public struct NewswireSurfaceView: View {
         }
     }
 
-    /// One reaction toggle: the kind's label plus its count when nonzero, pink when
-    /// this device has it active. A tap toggles it through the model, which asks
-    /// core and reloads the tally. Addressable per kind + post so a UI test can
-    /// assert exactly which reaction was tapped, and labeled for VoiceOver.
+    /// One reaction toggle: the kind's emoji plus its count when nonzero. An emoji
+    /// draws in its own colours, so "this device has it active" is carried by a
+    /// pink ring and a pink count rather than by tinting the glyph. A tap toggles
+    /// it through the model, which asks core and reloads the tally. Addressable per
+    /// kind + post so a UI test can assert exactly which reaction was tapped, and
+    /// labeled with the kind's WORD for VoiceOver — never the emoji.
     private func reactionToggle(for post: NewswirePostRow, kind: ReactionKind) -> some View {
         let active = model.isReacted(post: post.id, kind: kind)
         let count = model.reactionCount(post: post.id, kind: kind)
@@ -1584,20 +1601,26 @@ public struct NewswireSurfaceView: View {
             model.toggleReaction(post: post, kind: kind)
         } label: {
             HStack(spacing: 4) {
-                Text(kind.label)
+                Text(kind.glyph)
+                    .font(.system(size: 15))
                 if count > 0 {
                     Text("\(count)")
+                        .font(.riot(.mono, size: 11, relativeTo: .caption2))
+                        .tracking(0.5)
+                        .foregroundStyle(
+                            active
+                                ? RiotTheme.pink(for: colorScheme)
+                                : RiotTheme.inkSoft(for: colorScheme))
                 }
             }
-            .font(.riot(.mono, size: 11, relativeTo: .caption2))
-            .textCase(.uppercase)
-            .tracking(0.5)
             .padding(.horizontal, 9)
             .padding(.vertical, 5)
-            .foregroundStyle(
-                active ? RiotTheme.pink(for: colorScheme) : RiotTheme.inkSoft(for: colorScheme))
             .background(RiotTheme.paper2(for: colorScheme))
             .clipShape(Capsule())
+            .overlay(
+                Capsule().strokeBorder(
+                    active ? RiotTheme.pink(for: colorScheme) : .clear, lineWidth: 1.5)
+            )
         }
         .buttonStyle(.plain)
         .frame(minHeight: 44)

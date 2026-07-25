@@ -996,6 +996,24 @@ final class NewswireSurfaceTests: XCTestCase {
                        ["support", "solidarity", "important", "grief"])
     }
 
+    /// The bar draws an emoji glyph per kind while the wire name and the spoken
+    /// label stay words: the glyph is presentation only, so core's closed
+    /// `support`/`solidarity`/`important`/`grief` vocabulary is untouched and
+    /// VoiceOver still reads a word, never an emoji name.
+    func testEachReactionKindHasADistinctGlyphAndKeepsItsWordLabelAndWireName() {
+        let glyphs = ReactionKind.allCases.map(\.glyph)
+        XCTAssertEqual(glyphs.count, 4)
+        for glyph in glyphs {
+            XCTAssertFalse(glyph.isEmpty, "every kind draws a glyph")
+        }
+        XCTAssertEqual(Set(glyphs).count, 4, "each kind is visually distinct")
+        // The wire name and the spoken label are unchanged by the glyph.
+        XCTAssertEqual(ReactionKind.allCases.map(\.rawValue),
+                       ["support", "solidarity", "important", "grief"])
+        XCTAssertEqual(ReactionKind.allCases.map(\.label),
+                       ["Support", "Solidarity", "Important", "Grief"])
+    }
+
     /// `toggleReaction` calls the reactor with the tapped kind and `active: true`
     /// the first time, and `active: false` on the next tap of the same kind — the
     /// session-local active state flips only after core accepts, and drives the
