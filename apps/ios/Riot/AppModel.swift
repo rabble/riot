@@ -838,6 +838,18 @@ public final class RiotAppModel: ObservableObject {
                 starterPacks: resolvedPacks,
                 databasePath: databasePath
             )
+            // The database is created by Rust (rusqlite), so nothing in Swift
+            // ever declared its data-protection class — it inherited the platform
+            // default. Pin it, and its -wal/-shm sidecars where the newest
+            // entries live, AFTER the open so the files exist. Best-effort: a
+            // filesystem refusal must not turn a working profile into a dead
+            // launch, but it is recorded rather than swallowed silently.
+            do {
+                try DatabaseFileProtection.apply(databasePath: databasePath)
+            } catch {
+                Logger(subsystem: "net.protest.riot", category: "storage").error(
+                    "database protection class not applied: \(String(describing: error))")
+            }
             self.repository = repository
             // A self-healing open lands the person in a usable app; surface an
             // honest, non-fatal notice about what it had to drop rather than the
