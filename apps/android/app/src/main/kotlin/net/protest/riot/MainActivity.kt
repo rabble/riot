@@ -1,7 +1,18 @@
 package net.protest.riot
 
 import android.Manifest
-import android.app.Activity
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.mutableIntStateOf
+import net.protest.riot.design.AlertsScreen
+import net.protest.riot.design.LegacySurface
+import net.protest.riot.design.NewswireScreenUi
+import net.protest.riot.design.RiotAppShell
+import net.protest.riot.design.RiotTheme
+import net.protest.riot.design.SpacesScreen
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Typeface
@@ -37,7 +48,7 @@ import net.protest.riot.transport.NearbyUiState
 import net.protest.riot.transport.NearbyUiActions
 import net.protest.riot.transport.SyncCoordinator
 
-class MainActivity : Activity() {
+class MainActivity : ComponentActivity() {
     private lateinit var controller: RiotController
     private lateinit var nearby: AndroidNearbyController
     private lateinit var content: LinearLayout
@@ -45,6 +56,13 @@ class MainActivity : Activity() {
     private var reviewedDraft: ReviewSnapshot? = null
     private var pendingImportEntries: List<CurrentEntry> = emptyList()
     private var currentSurface = ConferenceSurface.SPACES
+    // Compose mirrors of the two pieces of chrome state. The legacy `status`
+    // TextView is kept so un-migrated surfaces can still write to it; assigning
+    // it also pushes the text into `statusText` for the composed status line, so
+    // both halves of the half-migrated app report the same thing.
+    private var surfaceState by mutableIntStateOf(0)
+    private var statusText by mutableStateOf("Offline ready")
+    private var contentRevision by mutableIntStateOf(0)
     private var syncCoordinator: SyncCoordinator? = null
     private var syncState: NearbyUiState? = null
     private lateinit var apps: RiotAppsController
@@ -128,7 +146,62 @@ class MainActivity : Activity() {
                 if (incoming) active.answer() else active.start()
             },
         )
-        setContentView(buildShell())
+        // The chrome is Compose from here; `buildShell()` still constructs the
+        // legacy `content`/`status` views, which un-migrated surfaces keep
+        // writing into and which `LegacySurface` parents into the composition.
+        val legacyRoot = buildLegacyContent()
+        setContent {
+            RiotTheme {
+                val tabs = ConferenceSurface.entries.map { it.label }
+                RiotAppShell(
+                    title = "Riot",
+                    subtitle = ConferenceSurface.entries[surfaceState].label,
+                    tabs = tabs,
+                    selectedTab = surfaceState,
+                    onSelectTab = { show(ConferenceSurface.entries[it]) },
+                    status = statusText,
+                ) {
+                    // `contentRevision` is read so a legacy re-render (which
+                    // mutates views imperatively) still recomposes the host.
+                    @Suppress("UNUSED_EXPRESSION") contentRevision
+                    when (ConferenceSurface.entries[surfaceState]) {
+                        ConferenceSurface.SPACES -> SpacesScreen(
+                            spaceTitle = controller.currentSpace?.title,
+                            namespaceId = controller.currentSpace?.namespaceId,
+                            onCreateSpace = { title ->
+                                runAction("Public space created") {
+                                    controller.createSpace(title)
+                                    show(ConferenceSurface.SPACES)
+                                }
+                            },
+                        )
+                        ConferenceSurface.INCIDENT_BOARD -> AlertsScreen(controller.entries())
+                        ConferenceSurface.NEWSWIRE -> {
+                            val community = controller.activeCommunity()
+                            val descriptor = community?.descriptorEntryId
+                            NewswireScreenUi(
+                                communityTitle = community?.title,
+                                surface = descriptor?.let { id ->
+                                    NewswireScreen.resolve(id, seenCursor.cursor(id)) {
+                                        controller.projectNewswire(it)
+                                    }
+                                },
+                                onGoToSpaces = { show(ConferenceSurface.SPACES) },
+                                onReply = { parent, body ->
+                                    descriptor?.let {
+                                        runAction("Reply signed") {
+                                            controller.createNewswireComment(it, parent, body)
+                                            contentRevision++
+                                        }
+                                    }
+                                },
+                            )
+                        }
+                        else -> LegacySurface(legacyRoot)
+                    }
+                }
+            }
+        }
         // Bring the built-in tools in before the first render so the checklist
         // is openable under Tools and in the directory out of the box. If its
         // shipped bytes are unreadable the directory still lists it (the core
@@ -200,7 +273,7 @@ class MainActivity : Activity() {
     }
 
     @Suppress("DEPRECATION")
-    private fun buildShell(): View = vertical().apply {
+    private fun buildLegacyContent(): View = vertical().apply {
         setPadding(24, 32, 24, 24)
         setOnApplyWindowInsetsListener { view, insets ->
             view.setPadding(
@@ -247,6 +320,10 @@ class MainActivity : Activity() {
             runningApp = null
         }
         currentSurface = surface
+        // Drive the Compose chrome from the same call the legacy code already
+        // makes, so a surface switch from either half moves both.
+        surfaceState = ConferenceSurface.entries.indexOf(surface)
+        contentRevision++
         content.removeAllViews()
         content.addView(heading(surface.label))
         when (surface) {
@@ -898,9 +975,10 @@ class MainActivity : Activity() {
         ))
     }
 
+    @Deprecated("ComponentActivity's platform callback; kept because this Activity uses requestPermissions directly rather than registerForActivityResult")
     override fun onRequestPermissionsResult(
         requestCode: Int,
-        permissions: Array<out String>,
+        permissions: Array<String>,
         grantResults: IntArray,
     ) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
@@ -913,6 +991,7 @@ class MainActivity : Activity() {
         try {
             action()
             status.text = success
+            statusText = success
         } catch (error: Exception) {
             status.text = error.message ?: error.javaClass.simpleName
         }
