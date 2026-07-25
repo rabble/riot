@@ -155,22 +155,19 @@ if [ "$CHANNEL" = appstore ]; then
   exit 0
 fi
 
-# --- developerid: .app -> .dmg -> notarize -> staple ---------------------------
+# --- developerid: .app -> notarize+staple -> .dmg -> notarize+staple ----------
+# shellcheck source=scripts/lib/macos-dmg.sh
+. "$ROOT/scripts/lib/macos-dmg.sh"
+
 APP_EXPORT="$OUT/export/Riot.app"
 [ -d "$APP_EXPORT" ] || { echo "ERROR: no Riot.app produced in $OUT/export" >&2; exit 1; }
 DMG="$OUT/Riot-$BUILD_NUMBER.dmg"
-echo "==> building $DMG"
-rm -f "$DMG"
 STAGE="$OUT/dmg-stage"
-rm -rf "$STAGE"; mkdir -p "$STAGE"
-cp -R "$APP_EXPORT" "$STAGE/Riot.app"
-# The conventional drag-to-install layout: the app plus a symlink to /Applications.
-ln -s /Applications "$STAGE/Applications"
-hdiutil create -volname Riot -srcfolder "$STAGE" -ov -format UDZO "$DMG" >/dev/null
-rm -rf "$STAGE"
-echo "==> built: $DMG"
 
 if [ "${UPLOAD:-0}" != "1" ]; then
+  echo "==> building $DMG"
+  riot_build_dmg "$APP_EXPORT" "$DMG" "$STAGE"
+  echo "==> built: $DMG"
   echo
   echo "NOT NOTARIZED (UPLOAD!=1). An un-notarized .dmg is Gatekeeper-blocked on"
   echo "every Mac but this one — do not publish it. To notarize:"
@@ -180,14 +177,10 @@ if [ "${UPLOAD:-0}" != "1" ]; then
 fi
 
 : "${ASC_KEY_ID:?set ASC_KEY_ID}"; : "${ASC_ISSUER_ID:?set ASC_ISSUER_ID}"; : "${ASC_KEY_PATH:?set ASC_KEY_PATH}"
-echo "==> notarizing (this waits for Apple; typically 1-15 min)"
-xcrun notarytool submit "$DMG" \
-  --key "$ASC_KEY_PATH" --key-id "$ASC_KEY_ID" --issuer "$ASC_ISSUER_ID" \
-  --wait
-
-# Stapling attaches the ticket to the .dmg so Gatekeeper clears it without a
-# network round trip — the difference between "opens" and "opens only online".
-echo "==> stapling"
-xcrun stapler staple "$DMG"
-xcrun stapler validate "$DMG"
+# Two notarization round trips: the .app, then the .dmg that contains the
+# stapled .app. Both are needed — see scripts/lib/macos-dmg.sh for why a
+# stapled .dmg alone still leaves the installed app needing the network.
+echo "==> notarizing app, then dmg (each waits for Apple; typically 1-15 min)"
+riot_package_developerid "$APP_EXPORT" "$DMG" "$STAGE" \
+  "$ASC_KEY_PATH" "$ASC_KEY_ID" "$ASC_ISSUER_ID"
 echo "==> done: $DMG is notarized, stapled, and safe to publish."
