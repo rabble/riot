@@ -1,5 +1,24 @@
 # Riot
 
+> ### ⚠️ Early proof of concept — do not use this for anything that matters yet
+>
+> Riot is an **alpha proof of concept**. It is not finished software, it has had no
+> security audit, and it has not been tested in the situations it is designed for.
+>
+> **Your data may be lost.** Storage formats are still changing. An upgrade can leave
+> the app unable to read what an earlier version wrote, and there is no export or
+> migration path yet. Assume anything you put in Riot can disappear.
+>
+> **Your privacy may be exposed.** What you post to a newswire space is *public to
+> everyone who has that space* — anyone who joins or follows it, plus any web gateway
+> mirroring it. Display names are published alongside posts, so a real name typed into
+> the app becomes a real name on the wire. Nearby sync announces the device to other
+> devices on the same Bluetooth or local network. The encrypted private-groups mode
+> that would change any of this is **not built** (see below).
+>
+> If you are in a situation where being identified carries real risk, **do not rely on
+> this app**. Use it to explore the idea, not to protect anyone.
+
 Riot is a native app for offline civic information during internet shutdowns, protests, disasters, and other moments where chat is not enough.
 
 The core idea is to preload the app before a crisis, then let people create, sign, render, exchange, and merge local-first information packets while offline. Packets can behave like small local apps or websites: alerts, resource maps, legal guides, medical checklists, mutual aid boards, and evolving incident pages.
