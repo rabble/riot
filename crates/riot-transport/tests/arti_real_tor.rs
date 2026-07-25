@@ -18,12 +18,14 @@
 use std::time::Duration;
 
 use riot_transport::arti::arti_impl::bootstrap_tor;
-use riot_transport::arti::{TorConnect, TorDialer};
+use riot_transport::arti::TorDialer;
 use riot_transport::Dialer;
 
-/// Tor Project's v3 onion for www.torproject.org. A stable, known-reachable
-/// onion service suitable for proving the Tor dial path. Port 443 (HTTPS).
-const TORPROJECT_ONION: &str = "2gzyxa5ihm7nsggfxnu52rck2vv4rvmdlkiu3zzui5du4xyclen53wid.onion:443";
+/// DuckDuckGo's v3 onion — a widely-used, reliably-connectable plain onion
+/// service (no client-auth, no PoW gate), common as a Tor connectivity smoke
+/// target. Port 443. Used here to prove Riot's Tor plumbing (bootstrap →
+/// circuit → onion stream) reaches a real onion service end to end.
+const DUCKDUCKGO_ONION: &str = "duckduckgogg42xjoc72x3sjasowoarfbgcmvfimaftt6twagswzczad.onion:443";
 
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "requires network + Tor reachability; run with --ignored"]
@@ -37,7 +39,7 @@ async fn real_tor_bootstraps_and_connects_to_a_known_onion() {
 
     // Connect to the known onion. A successful connect returns a DataStream we
     // can split into the boxed halves run_dial/pump expect.
-    let mut dialer = TorDialer::new(tor, TORPROJECT_ONION.to_string());
+    let mut dialer = TorDialer::new(tor, DUCKDUCKGO_ONION.to_string());
     let streams = tokio::time::timeout(Duration::from_secs(120), Dialer::connect(&mut dialer))
         .await
         .expect("connect timed out (120s)")
