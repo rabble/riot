@@ -459,6 +459,16 @@ public enum NearbyReannounceGate {
     }
 }
 
+public enum RiotToolApprovalResult: Equatable, Sendable {
+    case added
+    case notAdded(message: String)
+    case savedNeedsRestart(message: String)
+
+    public var wasAdded: Bool {
+        self == .added
+    }
+}
+
 @MainActor
 public final class RiotAppModel: ObservableObject {
     /// Tab selection. Observe this — not the app model — for destination changes;
@@ -474,6 +484,10 @@ public final class RiotAppModel: ObservableObject {
     }
 
     @Published public private(set) var space: RiotSpace?
+
+    /// Test-only injection at the repository-write boundary. Production leaves
+    /// this nil and always writes through `RiotProfileRepository`.
+    var trustDecisionWriterForTesting: ((String, String) throws -> Void)?
 
     /// The signed newswire `SpaceDescriptorV1` entry id of the selected
     /// community, when this device knows it. It is captured from
@@ -1742,20 +1756,226 @@ public final class RiotAppModel: ObservableObject {
         }
     }
 
-    /// Trusts an app in this space so everyone here can use it, then refreshes
-    /// the listing so the row flips from "Review" to "Open".
-    public func trustApp(appID: String) {
-        guard let repository else { return }
+    /// Trusts an app in the community the approval sheet captured. The explicit
+    /// namespace keeps a sheet opened in one community from approving the same
+    /// app after the selected community changes.
+    @discardableResult
+    public func trustApp(appID: String, expectedNamespaceID: String) -> Bool {
+        approveTool(appID: appID, expectedNamespaceID: expectedNamespaceID).wasAdded
+    }
+
+    /// The result-bearing approval path used by the permission sheet. A durable
+    /// decision that could not be verified after reopening is not an ordinary
+    /// failure: the bytes on disk already say "approved", so the sheet must ask
+    /// for a restart and must never claim that nothing changed.
+    public func approveTool(
+        appID: String,
+        expectedNamespaceID: String
+    ) -> RiotToolApprovalResult {
+        guard repository != nil else {
+            return .notAdded(message: "The profile is not open. Nothing changed. Try again.")
+        }
         do {
-            try repository.trustApp(appID: appID)
+            // Keep the repository retain inside a separate stack frame. If Rust
+            // finalized unsuccessfully, that frame unwinds before recovery
+            // releases and reopens the SQLite-backed profile.
+            try persistTrustDecision(
+                appID: appID,
+                expectedNamespaceID: expectedNamespaceID
+            )
             errorMessage = nil
             refreshApps()
+            refreshOrganizerState()
+            return .added
+        } catch let RepositoryError.durableDecisionNeedsReopen(
+            namespaceID,
+            durableAppID,
+            trusted
+        ) {
+            let result = resolveDurableTrustDecision(
+                namespaceID: namespaceID,
+                appID: durableAppID,
+                trusted: trusted,
+                requestedNamespaceID: expectedNamespaceID,
+                requestedAppID: appID
+            )
+            refreshOrganizerState()
+            return result
         } catch {
             // Not `perform`: its `String(describing:)` is exactly how "InvalidInput"
             // reached a person who had done nothing wrong.
             errorMessage = Self.approvalFailureMessage(error)
+            refreshApps()
+            refreshOrganizerState()
+            return .notAdded(
+                message: errorMessage ?? "The tool couldn’t be added. Nothing changed. Try again."
+            )
         }
-        refreshOrganizerState()
+    }
+
+    private func persistTrustDecision(
+        appID: String,
+        expectedNamespaceID: String
+    ) throws {
+        if let trustDecisionWriterForTesting {
+            try trustDecisionWriterForTesting(appID, expectedNamespaceID)
+            return
+        }
+        guard let repository else { throw RepositoryError.profileClosed }
+        try repository.trustApp(
+            appID: appID,
+            expectedNamespaceID: expectedNamespaceID
+        )
+    }
+
+    /// Compatibility path for callers that act immediately rather than keeping
+    /// a community-bound approval sheet. Capture the namespace before delegating
+    /// so the repository still receives the same stale-action guard.
+    @discardableResult
+    public func trustApp(appID: String) -> Bool {
+        guard let namespaceID = repository?.currentSpace?.namespaceID else {
+            return false
+        }
+        return trustApp(appID: appID, expectedNamespaceID: namespaceID)
+    }
+
+    /// Reopens after the repository reports that the approval is already on
+    /// disk but could not be projected into the live Rust session. A durable
+    /// approval is success only after the reopened repository proves the exact
+    /// community, app, and trust state.
+    func recoverDurableTrustDecision(
+        namespaceID: String,
+        appID: String,
+        trusted: Bool,
+        requestedNamespaceID: String,
+        requestedAppID: String
+    ) -> Bool {
+        let args = lastBootstrapArgs
+        let payloadMatchesRequest = Self.durableTrustPayloadMatchesRequest(
+            namespaceID: namespaceID,
+            appID: appID,
+            trusted: trusted,
+            requestedNamespaceID: requestedNamespaceID,
+            requestedAppID: requestedAppID
+        )
+
+        clearRepositoryProjectionForReopen()
+        guard let args else {
+            errorMessage = Self.durableTrustRecoveryFailureMessage
+            return false
+        }
+        bootstrap(
+            storageDirectory: args.storageDirectory,
+            keyStore: args.keyStore,
+            starterPacks: args.starterPacks,
+            starterPackResolver: args.starterPackResolver
+        )
+
+        guard let repository else {
+            errorMessage = Self.durableTrustRecoveryFailureMessage
+            return false
+        }
+        let reopenedApps = (try? repository.spaceApps()) ?? []
+        let decisionIsPresent = Self.durableTrustDecisionIsPresent(
+            namespaceID: namespaceID,
+            appID: appID,
+            trusted: trusted,
+            currentSpace: repository.currentSpace,
+            apps: reopenedApps
+        )
+        apps = reopenedApps
+        guard payloadMatchesRequest, decisionIsPresent else {
+            errorMessage = Self.durableTrustRecoveryFailureMessage
+            return false
+        }
+        errorMessage = nil
+        return true
+    }
+
+    /// Handles the typed repository signal emitted after a durable write but a
+    /// failed live finalize. This is a shipping path (not a test seam): the
+    /// repository is released, the profile is reopened, and the exact grant is
+    /// verified before success is reported.
+    func resolveDurableTrustDecision(
+        namespaceID: String,
+        appID: String,
+        trusted: Bool,
+        requestedNamespaceID: String,
+        requestedAppID: String
+    ) -> RiotToolApprovalResult {
+        if recoverDurableTrustDecision(
+            namespaceID: namespaceID,
+            appID: appID,
+            trusted: trusted,
+            requestedNamespaceID: requestedNamespaceID,
+            requestedAppID: requestedAppID
+        ) {
+            return .added
+        }
+        return .savedNeedsRestart(
+            message: errorMessage ?? Self.durableTrustRecoveryFailureMessage
+        )
+    }
+
+    /// Clears every value derived from the repository before reopening it. This
+    /// is one coherent projection transition: a failed reopen can never leave a
+    /// community, person, or tool from the closed profile on screen.
+    private func clearRepositoryProjectionForReopen() {
+        // RiotDemoSpaceLoader owns the repository strongly. Release it first so
+        // the old SQLite/core session is truly gone before bootstrap reopens the
+        // same durable profile.
+        demoLoader = nil
+        repository = nil
+        space = nil
+        newswireDescriptorEntryID = nil
+        communityUnavailable = nil
+        entries = []
+        apps = []
+        followedSites = []
+        displayNames = [:]
+        isDemoMode = false
+        me = nil
+        claimedName = nil
+        arrivals = []
+        knownEntryIDs = nil
+        communities = []
+        canApproveApps = false
+        isLegacyProfile = false
+        recoveryNotice = nil
+        openOutcome = nil
+        relaySyncResult = nil
+        relaySyncError = nil
+        isRelaySyncing = false
+        lastSyncedByNamespace = [:]
+        connectionStatus = .offline
+        isProfileOpen = false
+    }
+
+    static func durableTrustPayloadMatchesRequest(
+        namespaceID: String,
+        appID: String,
+        trusted: Bool,
+        requestedNamespaceID: String,
+        requestedAppID: String
+    ) -> Bool {
+        trusted
+            && namespaceID.caseInsensitiveCompare(requestedNamespaceID) == .orderedSame
+            && appID.caseInsensitiveCompare(requestedAppID) == .orderedSame
+    }
+
+    static func durableTrustDecisionIsPresent(
+        namespaceID: String,
+        appID: String,
+        trusted: Bool,
+        currentSpace: RiotSpace?,
+        apps: [RiotSpaceApp]
+    ) -> Bool {
+        guard currentSpace?.namespaceID.caseInsensitiveCompare(namespaceID) == .orderedSame,
+              let app = apps.first(where: {
+                  $0.appIDHex.caseInsensitiveCompare(appID) == .orderedSame
+              })
+        else { return false }
+        return app.trusted == trusted
     }
 
     /// Adds a tool the organizer chose from a file, then refreshes Tools so the
@@ -1763,14 +1983,17 @@ public final class RiotAppModel: ObservableObject {
     /// tool is UNTRUSTED until the organizer approves it in `AppReviewSheet`; this
     /// method never trusts. A rejected file surfaces a plain message rather than
     /// the silent no-op that let a failed install "just not appear".
-    public func installTool(manifest: Data, bundle: Data) {
-        guard let repository else { return }
+    @discardableResult
+    public func installTool(manifest: Data, bundle: Data) -> RiotSpaceApp? {
+        guard let repository else { return nil }
         do {
-            _ = try repository.installApp(manifest: manifest, bundle: bundle)
+            let app = try repository.installApp(manifest: manifest, bundle: bundle)
             errorMessage = nil
             refreshApps()
+            return app
         } catch {
             errorMessage = Self.toolImportFailureMessage(error)
+            return nil
         }
     }
 
@@ -1780,6 +2003,10 @@ public final class RiotAppModel: ObservableObject {
     static func toolImportFailureMessage(_ error: Error) -> String {
         "That file couldn’t be added as a tool. Choose the tool’s manifest, then its bundle."
     }
+
+    private static let durableTrustRecoveryFailureMessage =
+        "The tool approval was saved, but Riot couldn’t verify it after reopening "
+        + "your profile. Restart Riot and check the tool before trying again."
 
     /// Revokes trust for an app in the current space. Organizer-gated like
     /// `trustApp` (a member turning an app off has the same organizer gate as

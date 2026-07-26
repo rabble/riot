@@ -684,7 +684,12 @@ durable encoding of generation 1; migration writes no marker and consumes zero
 profile bytes. On every bootstrap, the host resolves the eight exact legacy
 pairs from the immutable, non-advertised catalog and installs them into the
 runtime without appending duplicate bytes to the carried-app profile field.
-Persisted trust IDs are then reapplied exactly as the previous release did.
+Persisted trust is then restored only from an exact namespace-and-app identity
+whose organizer authority still validates in core. Legacy profile-wide trust
+IDs have unknowable namespace provenance: unless signed namespace-scoped
+evidence recovers the original grant, migration leaves those tools disabled and
+requires explicit organizer re-approval. It never assigns a global ID to the
+currently selected namespace or copies it into every namespace.
 Existing Android profiles that already carry an exact v1 pair keep it; exact-ID
 deduplication counts and installs the pair once, with the carried bytes taking
 precedence after catalog equality verification.
@@ -797,21 +802,24 @@ invalidation, and WebView teardown clear any outstanding token.
 
 Trust grant is persistence-first:
 
-1. the native row enters **Turning on…** and cannot launch;
+1. the native row enters **Adding…** and cannot launch;
 2. core prepares the exact held app/organizer grant without changing trust;
-3. the host preflights and atomically persists the prospective trusted-ID set;
-   storage failure leaves disk and core untrusted; and
+3. the host preflights and atomically persists the prospective set of exact
+   `(namespaceID, fullAppID)` grants; storage failure leaves disk and core
+   untrusted; and
 4. core finalizes trust and only then exposes **Open**. The durable write is the
    linearization point: a crash afterward restarts trusted and reapplies the
-   same exact ID.
+   same exact namespace-and-app grant only while that namespace is active and
+   organizer authority still validates.
 
-If grant persistence is storage-full, the row returns to **Review**, the tool
-remains off, and an alert says: **This device's offline storage is full, so Riot
-couldn't turn on <name>. The tool is still off and your tools did not change.**
-For another persistence failure it says: **Riot couldn't save that change on
-this device. <name> is still off. Try again.** In both cases focus returns to
-the originating **Turn on** action, the alert is announced once, and a user-
-activated retry reruns the complete grant transaction.
+If grant persistence is storage-full, the row returns to its named **Add**
+action, the tool remains off, and an alert says: **This device's offline storage
+is full, so Riot couldn't add <name> to <community>. The tool is still off and
+your tools did not change.** For another persistence failure it says: **Riot
+couldn't save that change on this device. <name> was not added to <community>.
+Nothing changed. Try again.** In both cases focus returns to the originating
+**Add <name> to <community>** action, the alert is announced once, and a
+user-activated retry reruns the complete grant transaction.
 
 Trust revoke is also persistence-first but fail-closed:
 
@@ -839,10 +847,10 @@ reverse on restart. Fault injection covers before/after prepare, persistence,
 finalize, session invalidation, WebView destruction, process termination, and
 profile rebuild for both grant and revoke.
 
-After rebuild, Tools receives one announced native status and focus: **<name>
-was turned on. Riot reopened this profile to finish safely.**, **<name> was
-turned off. Riot reopened this profile to finish safely.**, or **Your change was
-saved. Riot reopened this profile to finish safely.** It never exposes token,
+After rebuild, Tools receives one announced native status and focus: **Added
+<name> to <community>. Riot reopened this profile to finish safely.**, **<name>
+was removed from <community>. Riot reopened this profile to finish safely.**, or
+**Your change was saved. Riot reopened this profile to finish safely.** It never exposes token,
 transaction, codec, or raw storage language.
 
 App-data mutation uses an equivalent prepare/persist/finalize protocol rather
@@ -871,16 +879,26 @@ durable value.
 
 Tools never presents two unlabeled cards with the same name.
 
-- Current v2 cards are labeled **Redesigned · Version 2** and sort in the normal
-  Tools group.
-- A v1 app appears under a collapsed but clearly counted **Legacy tools
-  (Version 1)** section when that profile holds its ID, trust, or app rows. The
-  label does not claim that every installed legacy namespace contains rows.
-  Its card and runtime title use `<name> · Legacy 1`.
+- **Selected-community status is the first-order hierarchy.** Tools enabled in
+  the selected community appear first under **In `<community>`** with an
+  immediate Open action. Complete disabled tools follow under **Available to
+  add** with named Add/Ask-an-organizer actions. Profile-wide discovery is
+  visually separate under **More tools**. See
+  `2026-07-24-community-scoped-tools-design.md`.
+- Current v2 cards are labeled **Redesigned · Version 2** inside their
+  community-status section.
+- A held v1 app is labeled `<name> · Legacy 1` inside its community-status
+  section. An enabled v1 tool is never hidden in a collapsed Legacy section
+  below disabled v2 tools. A collapsed, counted **Legacy tools (Version 1)**
+  group is permitted only inside secondary More tools discovery when it does
+  not hide an enabled or immediately addable tool. The label does not claim
+  that every installed legacy namespace contains rows.
 - The v1 card remains launchable and offers no theme claim.
-- A v2 action is **Install redesigned version**, not Update.
+- In secondary discovery/details, the profile-level v2 action is **Install
+  redesigned version**, not Update. It never replaces the primary
+  selected-community Open/Add action.
 - Before install/trust, the confirmation says: “This is a separate version.
-  Legacy 1 remains available in Legacy tools. Information does not move between
+  Legacy 1 remains available in Tools. Information does not move between
   versions.”
 - Cancel leaves v1 mounted/trusted state untouched. Confirm installs v2 through
   the ordinary verification path and then uses the existing organizer trust

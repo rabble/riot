@@ -107,11 +107,24 @@ private struct PersistedEndorsement: Codable {
     let note: String
 }
 
+/// One durable approval, keyed by the exact community and the full
+/// content-derived app id. A profile-wide app id is ambiguous and is therefore
+/// never decoded into this type.
+private struct PersistedAppTrust: Codable, Equatable {
+    let namespaceID: String
+    let appIDHex: String
+
+    init(namespaceID: String, appIDHex: String) {
+        self.namespaceID = namespaceID.lowercased()
+        self.appIDHex = appIDHex.lowercased()
+    }
+}
+
 private struct PersistedProfile: Codable {
     var space: RiotSpace?
     var alerts: [PersistedAlert]
     var sealedIdentity: Data?
-    var trustedAppIDs: [String]
+    var trustedAppsByNamespace: [PersistedAppTrust]
     // Apps this person recommended to the people they sync with. Rust's marker
     // store is in-memory like the rest, so without this the endorsement is gone
     // on the next launch — the app stays in the directory, but this person's own
@@ -156,7 +169,7 @@ private struct PersistedProfile: Codable {
         space: nil,
         alerts: [],
         sealedIdentity: nil,
-        trustedAppIDs: [],
+        trustedAppsByNamespace: [],
         endorsements: [],
         appDataBundles: [],
         carriedApps: [],
@@ -172,7 +185,7 @@ private struct PersistedProfile: Codable {
         space: RiotSpace?,
         alerts: [PersistedAlert],
         sealedIdentity: Data?,
-        trustedAppIDs: [String],
+        trustedAppsByNamespace: [PersistedAppTrust],
         endorsements: [PersistedEndorsement],
         appDataBundles: [Data],
         carriedApps: [PersistedAppPack],
@@ -183,7 +196,7 @@ private struct PersistedProfile: Codable {
         self.space = space
         self.alerts = alerts
         self.sealedIdentity = sealedIdentity
-        self.trustedAppIDs = trustedAppIDs
+        self.trustedAppsByNamespace = trustedAppsByNamespace
         self.endorsements = endorsements
         self.appDataBundles = appDataBundles
         self.carriedApps = carriedApps
@@ -192,16 +205,20 @@ private struct PersistedProfile: Codable {
         self.starterCatalogGeneration = starterCatalogGeneration
     }
 
-    // Custom decode so snapshots written before `trustedAppIDs`/`appDataBundles`/
-    // `carriedApps`/`demoBundle`/`displayName`/`starterCatalogGeneration` existed
-    // decode to empty/absent rather than failing (synthesized Codable would throw
-    // on the missing key). Encoding stays synthesized so `nil` omits the key.
+    // Custom decode so snapshots written before `appDataBundles`/`carriedApps`/
+    // `demoBundle`/`displayName`/`starterCatalogGeneration` existed decode to
+    // empty/absent rather than failing (synthesized Codable would throw on the
+    // missing key). Encoding stays synthesized so `nil` omits the key.
+    // Deliberately do not decode the legacy `trustedAppIDs` field: a
+    // profile-wide id cannot be assigned to a community without guessing, so
+    // migration fails closed.
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         space = try container.decodeIfPresent(RiotSpace.self, forKey: .space)
         alerts = try container.decodeIfPresent([PersistedAlert].self, forKey: .alerts) ?? []
         sealedIdentity = try container.decodeIfPresent(Data.self, forKey: .sealedIdentity)
-        trustedAppIDs = try container.decodeIfPresent([String].self, forKey: .trustedAppIDs) ?? []
+        trustedAppsByNamespace = try container
+            .decodeIfPresent([PersistedAppTrust].self, forKey: .trustedAppsByNamespace) ?? []
         endorsements = try container
             .decodeIfPresent([PersistedEndorsement].self, forKey: .endorsements) ?? []
         appDataBundles = try container.decodeIfPresent([Data].self, forKey: .appDataBundles) ?? []
@@ -271,6 +288,12 @@ public final class RiotProfileRepository {
     private let storage: ProtectedProfileStorage
     private let keyStore: WrappingKeyStore
     private let appRuntime: AppRuntimeSession
+    /// Serializes every app operation with community transitions. The lock is
+    /// recursive because bridge writes re-enter through `persistAppDataBundle`.
+    private let appMutationLock = NSRecursiveLock()
+    /// A durable trust decision whose Rust finalize unexpectedly failed requires
+    /// a full reopen before any app-facing operation can safely continue.
+    private var appOperationsClosed = false
     /// Insertion-ordered registry of installed apps (like Android's
     /// LinkedHashMap-backed `InstalledAppsStore`), keyed for lookup by
     /// lowercased hex app id. It grows after open: an app carried in by a
@@ -285,7 +308,9 @@ public final class RiotProfileRepository {
     private let recoveryReport: RecoveryReport
     private let quarantine: RecoveryQuarantine
 
-    public var currentSpace: RiotSpace? { persisted.space }
+    public var currentSpace: RiotSpace? {
+        withAppMutationLock { persisted.space }
+    }
 
     /// What this repository had to recover to reach a usable state, or `nil` if
     /// everything is clean. The shell reads this to surface an honest, non-fatal
@@ -312,6 +337,24 @@ public final class RiotProfileRepository {
         self.persisted = persisted
         self.recoveryReport = recoveryReport
         self.quarantine = quarantine
+    }
+
+    private func withAppMutationLock<T>(_ operation: () throws -> T) rethrows -> T {
+        appMutationLock.lock()
+        defer { appMutationLock.unlock() }
+        return try operation()
+    }
+
+    private func requireAppOperationsOpen() throws {
+        guard !appOperationsClosed else { throw RepositoryError.profileClosed }
+    }
+
+    private func requireCurrentSpace(expectedNamespaceID: String) throws -> RiotSpace {
+        guard let space = persisted.space else { throw RepositoryError.noCurrentSpace }
+        guard space.namespaceID.caseInsensitiveCompare(expectedNamespaceID) == .orderedSame else {
+            throw RepositoryError.spaceMismatch
+        }
+        return space
     }
 
     public static func open(
@@ -488,10 +531,15 @@ public final class RiotProfileRepository {
         }
 
         // Trust is profile-local in-memory in Rust and does not survive process
-        // restart, so re-apply the persisted trust decisions. Individual
-        // failures (e.g. an app that no longer installs) are ignored.
-        for appID in persisted.trustedAppIDs {
-            try? appRuntime.trustApp(appId: appID)
+        // restart. Re-apply only grants for the exact active namespace; legacy
+        // profile-wide ids were discarded while decoding and can never leak into
+        // whichever community happened to be active at launch.
+        if let activeNamespaceID = persisted.space?.namespaceID {
+            for grant in persisted.trustedAppsByNamespace where
+                grant.namespaceID.caseInsensitiveCompare(activeNamespaceID) == .orderedSame
+            {
+                try? appRuntime.trustApp(appId: grant.appIDHex)
+            }
         }
 
         // Endorsement markers live in that same in-memory store. Re-assert them
@@ -661,11 +709,14 @@ public final class RiotProfileRepository {
     }
 
     public func createPublicSpace(title: String) throws -> RiotSpace {
-        let created = try profile.createPublicSpace(title: title)
-        let space = RiotSpace(namespaceID: created.namespaceId, title: created.title)
-        persisted.space = space
-        try storage.save(persisted)
-        return space
+        try withAppMutationLock {
+            try requireAppOperationsOpen()
+            let created = try profile.createPublicSpace(title: title)
+            let space = RiotSpace(namespaceID: created.namespaceId, title: created.title)
+            persisted.space = space
+            try storage.save(persisted)
+            return space
+        }
     }
 
     /// Joins a space someone else is already in — how a phone with nothing on it
@@ -685,35 +736,31 @@ public final class RiotProfileRepository {
     /// Joining the space this profile is already in is a no-op. Joining a
     /// DIFFERENT space is refused — a phone is in one space.
     public func joinSpace(_ space: RiotSpace) throws {
-        if let existing = persisted.space {
-            guard existing.namespaceID.lowercased() == space.namespaceID.lowercased() else {
-                throw RepositoryError.spaceMismatch
+        try withAppMutationLock {
+            try requireAppOperationsOpen()
+            if let existing = persisted.space {
+                guard existing.namespaceID.lowercased() == space.namespaceID.lowercased() else {
+                    throw RepositoryError.spaceMismatch
+                }
+                return
             }
-            return
+            // ALWAYS the 32-byte Keychain wrapping key (never an empty/keyless key):
+            // `withWrappingKey` loads-or-creates it and guards `count == 32`, so a
+            // real shipping user's join seals the displaced author INLINE and never
+            // reaches core's keyless unsealed-parking fallback (Risk 13).
+            let joined = try Self.withWrappingKey(from: keyStore) { wrappingKey in
+                try profile.joinPublicSpace(
+                    space: PublicSpace(
+                        namespaceId: space.namespaceID, title: space.title, isPublic: true),
+                    wrappingKey: wrappingKey
+                )
+            }
+            persisted.space = RiotSpace(namespaceID: joined.namespaceId, title: joined.title)
+            persisted.sealedIdentity = try sealCurrentIdentity()
+            try storage.save(persisted)
+            try? persistCommunities()
+            reclaimDisplayName()
         }
-        // ALWAYS the 32-byte Keychain wrapping key (never an empty/keyless key):
-        // `withWrappingKey` loads-or-creates it and guards `count == 32`, so a
-        // real shipping user's join seals the displaced author INLINE and never
-        // reaches core's keyless unsealed-parking fallback (Risk 13). The keyless
-        // path exists only for ephemeral `open_local_profile()` test/demo builds.
-        let joined = try Self.withWrappingKey(from: keyStore) { wrappingKey in
-            try profile.joinPublicSpace(
-                space: PublicSpace(
-                    namespaceId: space.namespaceID, title: space.title, isPublic: true),
-                wrappingKey: wrappingKey
-            )
-        }
-        persisted.space = RiotSpace(namespaceID: joined.namespaceId, title: joined.title)
-        persisted.sealedIdentity = try sealCurrentIdentity()
-        try storage.save(persisted)
-        // The join already sealed any displaced author inline; this flush then
-        // seals the active author and persists the registry for durability.
-        try? persistCommunities()
-        // The join just REGENERATED the author (see above), so the profile card
-        // written under the old subspace is orphaned: this person would appear to
-        // the space they just joined as `member · <new tag>`, nameless, on every
-        // row they sign from here on. Re-claim under who they now are.
-        reclaimDisplayName()
     }
 
     /// Re-asserts the persisted claim under the CURRENT author.
@@ -754,26 +801,26 @@ public final class RiotProfileRepository {
         _ space: RiotSpace,
         descriptorEntryID: String
     ) throws -> CommunityRow {
-        // Join through `joinNewswireCommunity` so the joined community's registry
-        // row CARRIES the descriptor handle from the share reference (Risk 15) —
-        // otherwise it is a dead follow whose Home can never reproject. Keyed via
-        // the Keychain wrapping key so the displaced author is sealed inline
-        // (Risk 13), exactly like `joinSpace`.
-        let joined = try Self.withWrappingKey(from: keyStore) { wrappingKey in
-            try profile.joinNewswireCommunity(
-                space: PublicSpace(
-                    namespaceId: space.namespaceID, title: space.title, isPublic: true),
-                descriptorEntryId: descriptorEntryID,
-                wrappingKey: wrappingKey
-            )
+        try withAppMutationLock {
+            try requireAppOperationsOpen()
+            // Join through `joinNewswireCommunity` so the joined community's registry
+            // row CARRIES the descriptor handle from the share reference (Risk 15).
+            let joined = try Self.withWrappingKey(from: keyStore) { wrappingKey in
+                try profile.joinNewswireCommunity(
+                    space: PublicSpace(
+                        namespaceId: space.namespaceID, title: space.title, isPublic: true),
+                    descriptorEntryId: descriptorEntryID,
+                    wrappingKey: wrappingKey
+                )
+            }
+            persisted.space = RiotSpace(namespaceID: joined.namespaceId, title: joined.title)
+            persisted.sealedIdentity = try sealCurrentIdentity()
+            try storage.save(persisted)
+            try persistCommunities()
+            reclaimDisplayName()
+            guard let active = try activeCommunity() else { throw RepositoryError.noCurrentSpace }
+            return active
         }
-        persisted.space = RiotSpace(namespaceID: joined.namespaceId, title: joined.title)
-        persisted.sealedIdentity = try sealCurrentIdentity()
-        try storage.save(persisted)
-        try persistCommunities()
-        reclaimDisplayName()
-        guard let active = try activeCommunity() else { throw RepositoryError.noCurrentSpace }
-        return active
     }
 
     /// Decodes a pasted `riot://newswire/join/v1/...` share reference to its
@@ -861,20 +908,23 @@ public final class RiotProfileRepository {
     /// ``joinAdditionalCommunity`` for why the re-seal is load-bearing).
     @discardableResult
     public func adoptSyncedNamespace(_ space: RiotSpace) throws -> CommunityRow {
-        let joined = try Self.withWrappingKey(from: keyStore) { wrappingKey in
-            try profile.joinPublicSpace(
-                space: PublicSpace(
-                    namespaceId: space.namespaceID, title: space.title, isPublic: true),
-                wrappingKey: wrappingKey
-            )
+        try withAppMutationLock {
+            try requireAppOperationsOpen()
+            let joined = try Self.withWrappingKey(from: keyStore) { wrappingKey in
+                try profile.joinPublicSpace(
+                    space: PublicSpace(
+                        namespaceId: space.namespaceID, title: space.title, isPublic: true),
+                    wrappingKey: wrappingKey
+                )
+            }
+            persisted.space = RiotSpace(namespaceID: joined.namespaceId, title: joined.title)
+            persisted.sealedIdentity = try sealCurrentIdentity()
+            try storage.save(persisted)
+            try persistCommunities()
+            reclaimDisplayName()
+            guard let active = try activeCommunity() else { throw RepositoryError.noCurrentSpace }
+            return active
         }
-        persisted.space = RiotSpace(namespaceID: joined.namespaceId, title: joined.title)
-        persisted.sealedIdentity = try sealCurrentIdentity()
-        try storage.save(persisted)
-        try persistCommunities()
-        reclaimDisplayName()
-        guard let active = try activeCommunity() else { throw RepositoryError.noCurrentSpace }
-        return active
     }
 
     public func signAlert(in space: RiotSpace, draft: AlertDraft) throws -> RiotEntry {
@@ -908,8 +958,11 @@ public final class RiotProfileRepository {
     /// The installed space apps and this profile's trust decision for each.
     /// Empty until a space is joined, matching `currentEntries()`.
     public func spaceApps() throws -> [RiotSpaceApp] {
-        guard currentSpace != nil else { return [] }
-        return try installedApps()
+        try withAppMutationLock {
+            try requireAppOperationsOpen()
+            guard persisted.space != nil else { return [] }
+            return try installed.map(spaceApp)
+        }
     }
 
     /// Every app whose bytes this profile actually holds, with its trust
@@ -919,7 +972,10 @@ public final class RiotProfileRepository {
     /// the directory lists the built-ins before anyone has created one, and a
     /// row must still be able to offer Review there.
     public func installedApps() throws -> [RiotSpaceApp] {
-        try installed.map(spaceApp)
+        try withAppMutationLock {
+            try requireAppOperationsOpen()
+            return try installed.map(spaceApp)
+        }
     }
 
     private func spaceApp(_ app: InstalledApp) throws -> RiotSpaceApp {
@@ -937,37 +993,123 @@ public final class RiotProfileRepository {
     /// "Let everyone here use this": a button that cannot succeed should not be
     /// drawn, which is better than any error message it could show.
     public func isOrganizer() throws -> Bool {
-        try appRuntime.isOrganizer()
+        try withAppMutationLock {
+            try requireAppOperationsOpen()
+            return try appRuntime.isOrganizer()
+        }
     }
 
     /// False only for a profile made before spaces had organizers — it can never
     /// approve an app for ANY space, and the only remedy is a new profile. This is
     /// what separates that from the ordinary "you are a member here" case.
     public func canOrganize() throws -> Bool {
-        try appRuntime.canOrganize()
-    }
-
-    /// Marks an app trusted in Rust and persists the decision so it survives a
-    /// process restart (Rust's trust state is in-memory and re-applied on
-    /// `open`).
-    public func trustApp(appID: String) throws {
-        try appRuntime.trustApp(appId: appID)
-        if !persisted.trustedAppIDs.contains(appID) {
-            persisted.trustedAppIDs.append(appID)
-            try storage.save(persisted)
+        try withAppMutationLock {
+            try requireAppOperationsOpen()
+            return try appRuntime.canOrganize()
         }
     }
 
-    /// Revokes trust for an app in Rust and drops the persisted decision so the
-    /// revoke survives a relaunch (Rust's trust state is in-memory, so without
-    /// this the `open` path would re-trust it). Mirrors `trustApp`: Rust first,
-    /// disk second — a revoke Rust refuses never reaches disk.
+    /// Persists the exact community-scoped decision before finalizing it in
+    /// Rust, where trust is in-memory and re-applied on `open`.
+    public func trustApp(appID: String, expectedNamespaceID: String) throws {
+        try withAppMutationLock {
+            try requireAppOperationsOpen()
+            let space = try requireCurrentSpace(expectedNamespaceID: expectedNamespaceID)
+            let prepared = try appRuntime.prepareAppTrust(appId: appID, trusted: true)
+            let prior = persisted
+            let grant = PersistedAppTrust(
+                namespaceID: space.namespaceID,
+                appIDHex: prepared.appId
+            )
+            persisted.trustedAppsByNamespace.removeAll { $0 == grant }
+            persisted.trustedAppsByNamespace.append(grant)
+            do {
+                try storage.save(persisted)
+            } catch {
+                persisted = prior
+                try? appRuntime.discardPreparedTrust()
+                throw error
+            }
+            do {
+                try appRuntime.finalizeAppTrust()
+            } catch {
+                appOperationsClosed = true
+                throw RepositoryError.durableDecisionNeedsReopen(
+                    namespaceID: grant.namespaceID,
+                    appIDHex: grant.appIDHex,
+                    trusted: true
+                )
+            }
+        }
+    }
+
+    public func trustApp(appID: String) throws {
+        try withAppMutationLock {
+            try requireAppOperationsOpen()
+            guard let namespaceID = persisted.space?.namespaceID else {
+                throw RepositoryError.noCurrentSpace
+            }
+            try trustApp(appID: appID, expectedNamespaceID: namespaceID)
+        }
+    }
+
+    /// Removes the exact durable grant before finalizing the revoke in Rust, so
+    /// a relaunch can never resurrect an app that was turned off.
+    public func untrustApp(appID: String, expectedNamespaceID: String) throws {
+        try withAppMutationLock {
+            try requireAppOperationsOpen()
+            let space = try requireCurrentSpace(expectedNamespaceID: expectedNamespaceID)
+            // Authorization is checked even when this profile already sees the
+            // tool as off. Otherwise a member's forbidden revoke becomes a
+            // silent success at the host boundary and bypasses Rust entirely.
+            guard try appRuntime.isOrganizer() else {
+                if try appRuntime.canOrganize() {
+                    throw MobileError.NotSpaceOrganizer
+                }
+                throw MobileError.LegacyProfileCannotOrganize
+            }
+            // Revoking an app that is already off is a true no-op. Preparing and
+            // finalizing a redundant revoke would publish a marker and advance
+            // the global execution generation, killing unrelated running tools.
+            // Check live state rather than only durable state so a trusted grant
+            // missing from the snapshot can still be revoked safely.
+            guard try appRuntime.isAppTrusted(appId: appID) else { return }
+            let prepared = try appRuntime.prepareAppTrust(appId: appID, trusted: false)
+            let prior = persisted
+            let grant = PersistedAppTrust(
+                namespaceID: space.namespaceID,
+                appIDHex: prepared.appId
+            )
+            persisted.trustedAppsByNamespace.removeAll { $0 == grant }
+            do {
+                if persisted.trustedAppsByNamespace != prior.trustedAppsByNamespace {
+                    try storage.save(persisted)
+                }
+            } catch {
+                persisted = prior
+                try? appRuntime.discardPreparedTrust()
+                throw error
+            }
+            do {
+                try appRuntime.finalizeAppTrust()
+            } catch {
+                appOperationsClosed = true
+                throw RepositoryError.durableDecisionNeedsReopen(
+                    namespaceID: grant.namespaceID,
+                    appIDHex: grant.appIDHex,
+                    trusted: false
+                )
+            }
+        }
+    }
+
     public func untrustApp(appID: String) throws {
-        try appRuntime.untrustApp(appId: appID)
-        let lowered = appID.lowercased()
-        if persisted.trustedAppIDs.contains(where: { $0.lowercased() == lowered }) {
-            persisted.trustedAppIDs.removeAll { $0.lowercased() == lowered }
-            try storage.save(persisted)
+        try withAppMutationLock {
+            try requireAppOperationsOpen()
+            guard let namespaceID = persisted.space?.namespaceID else {
+                throw RepositoryError.noCurrentSpace
+            }
+            try untrustApp(appID: appID, expectedNamespaceID: namespaceID)
         }
     }
 
@@ -975,13 +1117,16 @@ public final class RiotProfileRepository {
     /// or path throws — the resolver does no path interpretation, so "../x"
     /// simply matches nothing.
     public func appResource(appID: String, path: String) throws -> RiotAppResource {
-        guard let installed = installedApp(appID: appID) else {
-            throw RepositoryError.unknownApp
+        try withAppMutationLock {
+            try requireAppOperationsOpen()
+            guard let installed = installedApp(appID: appID) else {
+                throw RepositoryError.unknownApp
+            }
+            guard let resource = installed.resolver.resolve(path: path) else {
+                throw RepositoryError.unknownAppResource
+            }
+            return RiotAppResource(contentType: resource.contentType, bytes: resource.bytes)
         }
-        guard let resource = installed.resolver.resolve(path: path) else {
-            throw RepositoryError.unknownAppResource
-        }
-        return RiotAppResource(contentType: resource.contentType, bytes: resource.bytes)
     }
 
     /// The app-data bridge for a TRUSTED installed app, or nil otherwise.
@@ -991,19 +1136,20 @@ public final class RiotProfileRepository {
     /// CONTRACT on `AppBridgeController`), so a bridge is only ever handed out
     /// for an app that is trusted in the current profile.
     public func appDataBridge(appID: String) -> AppDataBridging? {
-        guard installedApp(appID: appID) != nil else { return nil }
-        // Opening the gated execution session IS the trust gate — Rust refuses an
-        // untrusted app (Unit 0C) — and it captures the approval generation +
-        // namespace, so a later revoke / re-approval / namespace swap fails the
-        // running app's next read or commit BEFORE it touches data. The bridge
-        // performs its write through this session and hands back the committed
-        // bytes to persist for replay; reads/list go straight through it too.
-        guard let execution = try? profile.openAppExecution(appId: appID) else { return nil }
-        return AppRuntimeDataBridge(
-            execution: execution,
-            profiles: profile.profile()
-        ) { [weak self] _, bundleBytes in
-            try self?.persistAppDataBundle(bundleBytes)
+        withAppMutationLock {
+            guard !appOperationsClosed else { return nil }
+            guard installedApp(appID: appID) != nil else { return nil }
+            // Opening the gated execution session IS the trust gate — Rust refuses an
+            // untrusted app (Unit 0C) — and it captures the approval generation +
+            // namespace, so a later revoke / re-approval / namespace swap fails the
+            // running app's next read or commit BEFORE it touches data.
+            guard let execution = try? profile.openAppExecution(appId: appID) else { return nil }
+            return AppRuntimeDataBridge(
+                execution: execution,
+                profiles: profile.profile()
+            ) { [weak self] _, bundleBytes in
+                try self?.persistAppDataBundle(bundleBytes)
+            }
         }
     }
 
@@ -1011,8 +1157,11 @@ public final class RiotProfileRepository {
     /// the value survives a process restart (replayed on `open`). A durable-write
     /// failure propagates so the page hears "couldn't save".
     public func persistAppDataBundle(_ bundleBytes: Data) throws {
-        persisted.appDataBundles.append(bundleBytes)
-        try storage.save(persisted)
+        try withAppMutationLock {
+            try requireAppOperationsOpen()
+            persisted.appDataBundles.append(bundleBytes)
+            try storage.save(persisted)
+        }
     }
 
     /// Host-side convenience write (not the page path): commits with a receipt
@@ -1020,17 +1169,23 @@ public final class RiotProfileRepository {
     /// `AppExecutionSession` in `appDataBridge`; this direct method is used by the
     /// host and tests to seed/inspect an app's data.
     public func appDataPut(appID: String, key: String, valueJSON: String) throws {
-        let receipt = try appRuntime.appDataPutWithReceipt(
-            appId: appID, key: key, value: Data(valueJSON.utf8)
-        )
-        try persistAppDataBundle(receipt)
+        try withAppMutationLock {
+            try requireAppOperationsOpen()
+            let receipt = try appRuntime.appDataPutWithReceipt(
+                appId: appID, key: key, value: Data(valueJSON.utf8)
+            )
+            try persistAppDataBundle(receipt)
+        }
     }
 
     /// Reads an app-data value as the JSON text the page stored, or nil if the
     /// key is unset.
     public func appDataGet(appID: String, key: String) throws -> String? {
-        guard let data = try appRuntime.appDataGet(appId: appID, key: key) else { return nil }
-        return String(decoding: data, as: UTF8.self)
+        try withAppMutationLock {
+            try requireAppOperationsOpen()
+            guard let data = try appRuntime.appDataGet(appId: appID, key: key) else { return nil }
+            return String(decoding: data, as: UTF8.self)
+        }
     }
 
     /// The resource resolver for a TRUSTED installed app, or nil otherwise.
@@ -1041,9 +1196,12 @@ public final class RiotProfileRepository {
     /// untrusted app's WebView. The returned resolver also carries the verified
     /// `entryPoint` the host loads first.
     public func appResolver(appID: String) -> AppResourceResolver? {
-        guard let installed = installedApp(appID: appID) else { return nil }
-        guard (try? appRuntime.isAppTrusted(appId: appID)) == true else { return nil }
-        return installed.resolver
+        withAppMutationLock {
+            guard !appOperationsClosed else { return nil }
+            guard let installed = installedApp(appID: appID) else { return nil }
+            guard (try? appRuntime.isAppTrusted(appId: appID)) == true else { return nil }
+            return installed.resolver
+        }
     }
 
     private func installedApp(appID: String) -> InstalledApp? {
@@ -1147,39 +1305,44 @@ extension RiotProfileRepository: CommunityRegistry {
 
     @discardableResult
     public func switchToCommunity(namespaceID: String) throws -> CommunityRow {
-        // Per-community open/reproject (Phase 2). The core loads (unseals) the
-        // target's at-rest author here; if that author is corrupt it quarantines
-        // it (never drops it) and answers `CommunityUnavailable` WITHOUT leaving
-        // the current community — so a broken community can never brick the
-        // registry or the others. From this Swift boundary a corrupt author and an
-        // otherwise-unopenable target are the SAME signal, so both route through
-        // the recovery core: RECORD the event + set a manifest aside (never a
-        // silent heal), then rethrow so the shell surfaces the unavailable state
-        // in place. Explicit do/catch (not `recovering`) because this must rethrow
-        // to the caller, exactly as the deepest profile-open step does.
-        do {
-            let row = try Self.withWrappingKey(from: keyStore) { wrappingKey in
-                try profile.switchCommunity(namespaceId: namespaceID, wrappingKey: wrappingKey)
+        try withAppMutationLock {
+            try requireAppOperationsOpen()
+            // Per-community open/reproject (Phase 2). The core loads (unseals) the
+            // target's at-rest author here; if that author is corrupt it quarantines
+            // it (never drops it) and answers `CommunityUnavailable` WITHOUT leaving
+            // the current community.
+            do {
+                let row = try Self.withWrappingKey(from: keyStore) { wrappingKey in
+                    try profile.switchCommunity(namespaceId: namespaceID, wrappingKey: wrappingKey)
+                }
+                persisted.space = RiotSpace(namespaceID: row.namespaceId, title: row.title)
+                try storage.save(persisted)
+
+                // A reopen applies only the active namespace's grants. Switching
+                // later must do the same so returning to A restores A without
+                // assigning those grants to B.
+                for grant in persisted.trustedAppsByNamespace where
+                    grant.namespaceID.caseInsensitiveCompare(row.namespaceId) == .orderedSame
+                {
+                    try? appRuntime.trustApp(appId: grant.appIDHex)
+                }
+                return row
+            } catch {
+                recordCommunityUnavailable(namespaceID: namespaceID, error: error)
+                throw error
             }
-            // The registry is now on `row`; mirror it into the persisted single-slot
-            // so `currentSpace` (and the reprojection that reads it) reflects the
-            // community just switched to, not the one we came from. Without this a
-            // switch leaves the previous community's title on screen.
-            persisted.space = RiotSpace(namespaceID: row.namespaceId, title: row.title)
-            try storage.save(persisted)
-            return row
-        } catch {
-            recordCommunityUnavailable(namespaceID: namespaceID, error: error)
-            throw error
         }
     }
 
     public func archiveCommunity(namespaceID: String) throws {
-        do {
-            try profile.archiveCommunity(namespaceId: namespaceID)
-        } catch {
-            recordCommunityUnavailable(namespaceID: namespaceID, error: error)
-            throw error
+        try withAppMutationLock {
+            try requireAppOperationsOpen()
+            do {
+                try profile.archiveCommunity(namespaceId: namespaceID)
+            } catch {
+                recordCommunityUnavailable(namespaceID: namespaceID, error: error)
+                throw error
+            }
         }
     }
 
@@ -1240,6 +1403,14 @@ public enum RepositoryError: Error {
     case invalidSealedIdentity
     case invalidWrappingKey
     case profileClosed
+    /// The exact decision is already durable, but the live Rust projection
+    /// could not finalize it. Callers must reopen and verify this record rather
+    /// than reporting the durable action as a failure.
+    case durableDecisionNeedsReopen(
+        namespaceID: String,
+        appIDHex: String,
+        trusted: Bool
+    )
     case unknownApp
     case unknownAppResource
     case appBundleMismatch
@@ -1338,25 +1509,31 @@ private extension RiotPerson {
 /// not a flag.
 extension RiotProfileRepository: DemoSpaceLoading {
     public func loadDemoSpace(bytes: Data) throws -> RiotSpace {
-        // Rust first. A bundle it refuses — corrupt, unsigned, or landing on a
-        // phone that is already in a real space — is never written to disk.
-        let listed = try profile.loadDemoSpace(bytes: bytes)
-        let space = RiotSpace(namespaceID: listed.namespaceId, title: listed.title)
-        persisted.space = space
-        persisted.demoBundle = bytes
-        try storage.save(persisted)
-        return space
+        try withAppMutationLock {
+            try requireAppOperationsOpen()
+            // Rust first. A bundle it refuses — corrupt, unsigned, or landing on a
+            // phone that is already in a real space — is never written to disk.
+            let listed = try profile.loadDemoSpace(bytes: bytes)
+            let space = RiotSpace(namespaceID: listed.namespaceId, title: listed.title)
+            persisted.space = space
+            persisted.demoBundle = bytes
+            try storage.save(persisted)
+            return space
+        }
     }
 
     public func hideDemoSpace() throws {
-        try profile.hideDemoSpace()
-        persisted.space = nil
-        persisted.demoBundle = nil
-        try storage.save(persisted)
-        // Demo mode borrowed someone else's author; hiding it hands this person
-        // their own back. Their name went with the author that just left, so put
-        // it back on the one that returned.
-        reclaimDisplayName()
+        try withAppMutationLock {
+            try requireAppOperationsOpen()
+            try profile.hideDemoSpace()
+            persisted.space = nil
+            persisted.demoBundle = nil
+            try storage.save(persisted)
+            // Demo mode borrowed someone else's author; hiding it hands this person
+            // their own back. Their name went with the author that just left, so put
+            // it back on the one that returned.
+            reclaimDisplayName()
+        }
     }
 
     /// Whether this profile is showing the seeded demo space. The shell asks so
@@ -1397,29 +1574,59 @@ extension RiotProfileRepository: DirectoryPorting {
     /// The computed directory: the starter catalog plus every verified app in
     /// the live app-index, with trust and endorsement summaries.
     public func directoryListings() throws -> [DirectoryListing] {
-        try appRuntime.directoryListings()
+        try withAppMutationLock {
+            try requireAppOperationsOpen()
+            return try appRuntime.directoryListings()
+        }
     }
 
     /// The lowercase-hex app ids this profile has endorsed — the source of the
     /// "Take back recommendation" affordance on each directory row.
     public var endorsedAppIDs: Set<String> {
-        Set(persisted.endorsements.map { $0.appIDHex.lowercased() })
+        withAppMutationLock {
+            guard !appOperationsClosed else { return [] }
+            return Set(persisted.endorsements.map { $0.appIDHex.lowercased() })
+        }
     }
 
     /// Writes (or withdraws) this profile's recommendation of an app. Endorsing
     /// an app whose bytes have not arrived yet is allowed by design — the marker
     /// composes with the app's later arrival.
+    public func endorseApp(
+        appID: Data,
+        note: String,
+        retract: Bool,
+        expectedNamespaceID: String
+    ) throws {
+        try withAppMutationLock {
+            try requireAppOperationsOpen()
+            _ = try requireCurrentSpace(expectedNamespaceID: expectedNamespaceID)
+            // Rust first: a marker it refuses is never written to disk.
+            try appRuntime.endorseApp(appId: appID, note: note, retract: retract)
+            let appIDHex = RiotDirectoryRow.hex(appID).lowercased()
+            persisted.endorsements.removeAll { $0.appIDHex == appIDHex }
+            if !retract {
+                persisted.endorsements.append(
+                    PersistedEndorsement(appIDHex: appIDHex, note: note)
+                )
+            }
+            try storage.save(persisted)
+        }
+    }
+
     public func endorseApp(appID: Data, note: String, retract: Bool) throws {
-        // Rust first: a marker it refuses is never written to disk.
-        try appRuntime.endorseApp(appId: appID, note: note, retract: retract)
-        let appIDHex = RiotDirectoryRow.hex(appID).lowercased()
-        persisted.endorsements.removeAll { $0.appIDHex == appIDHex }
-        if !retract {
-            persisted.endorsements.append(
-                PersistedEndorsement(appIDHex: appIDHex, note: note)
+        try withAppMutationLock {
+            try requireAppOperationsOpen()
+            guard let namespaceID = persisted.space?.namespaceID else {
+                throw RepositoryError.noCurrentSpace
+            }
+            try endorseApp(
+                appID: appID,
+                note: note,
+                retract: retract,
+                expectedNamespaceID: namespaceID
             )
         }
-        try storage.save(persisted)
     }
 
     /// Withdraws this profile's recommendation of an app. A named view of
@@ -1438,35 +1645,48 @@ extension RiotProfileRepository: DirectoryPorting {
     ///
     /// Getting an app turns nothing on. It joins the held apps as UNTRUSTED, so
     /// the review sheet still stands between a neighbour's app and a WebView.
-    public func getCarriedApp(appID: Data) throws -> RiotSpaceApp {
-        // Admission first: an app Rust refuses is never written to disk.
-        let record = try appRuntime.installFromDirectory(appId: appID)
-        let pair = try appRuntime.appPairBytes(appId: appID)
-        let app = try Self.retain(record: record, bundle: pair.bundleBytes)
+    public func getCarriedApp(
+        appID: Data,
+        expectedNamespaceID: String
+    ) throws -> RiotSpaceApp {
+        try withAppMutationLock {
+            try requireAppOperationsOpen()
+            _ = try requireCurrentSpace(expectedNamespaceID: expectedNamespaceID)
+            // Admission first: an app Rust refuses is never written to disk.
+            let record = try appRuntime.installFromDirectory(appId: appID)
+            let pair = try appRuntime.appPairBytes(appId: appID)
+            let app = try Self.retain(record: record, bundle: pair.bundleBytes)
 
-        if let existing = installed.firstIndex(where: {
-            $0.record.appId.lowercased() == record.appId.lowercased()
-        }) {
-            installed[existing] = app
-        } else {
-            installed.append(app)
+            if let existing = installed.firstIndex(where: {
+                $0.record.appId.lowercased() == record.appId.lowercased()
+            }) {
+                installed[existing] = app
+            } else {
+                installed.append(app)
+            }
+
+            let pack = PersistedAppPack(
+                appIDHex: record.appId.lowercased(),
+                manifest: pair.manifestBytes,
+                bundle: pair.bundleBytes
+            )
+            persisted.carriedApps.removeAll { $0.appIDHex == pack.appIDHex }
+            persisted.carriedApps.append(pack)
+            try storage.save(persisted)
+
+            NotificationCenter.default.post(name: .riotHeldAppsDidChange, object: self)
+            return try spaceApp(app)
         }
+    }
 
-        let pack = PersistedAppPack(
-            appIDHex: record.appId.lowercased(),
-            manifest: pair.manifestBytes,
-            bundle: pair.bundleBytes
-        )
-        persisted.carriedApps.removeAll { $0.appIDHex == pack.appIDHex }
-        persisted.carriedApps.append(pack)
-        try storage.save(persisted)
-
-        // The app is now held and saved. Anything showing held apps is stale as of
-        // this line — most visibly the Tools card, the only route to Open. Posted
-        // after the save so no observer can read a set a later throw would undo.
-        NotificationCenter.default.post(name: .riotHeldAppsDidChange, object: self)
-
-        return try spaceApp(app)
+    public func getCarriedApp(appID: Data) throws -> RiotSpaceApp {
+        try withAppMutationLock {
+            try requireAppOperationsOpen()
+            guard let namespaceID = persisted.space?.namespaceID else {
+                throw RepositoryError.noCurrentSpace
+            }
+            return try getCarriedApp(appID: appID, expectedNamespaceID: namespaceID)
+        }
     }
 
     /// Installs a tool from a manifest+bundle pair the organizer chose from a
@@ -1481,49 +1701,60 @@ extension RiotProfileRepository: DirectoryPorting {
     /// exactly like `getCarriedApp`. There is no auto-trust here by design.
     @discardableResult
     public func installApp(manifest: Data, bundle: Data) throws -> RiotSpaceApp {
-        // Admission first: a pair Rust refuses is never retained or written to disk.
-        let record = try appRuntime.installApp(manifestBytes: manifest, bundleBytes: bundle)
-        let app = try Self.retain(record: record, bundle: bundle)
+        try withAppMutationLock {
+            try requireAppOperationsOpen()
+            // Admission first: a pair Rust refuses is never retained or written to disk.
+            let record = try appRuntime.installApp(manifestBytes: manifest, bundleBytes: bundle)
+            let app = try Self.retain(record: record, bundle: bundle)
 
-        if let existing = installed.firstIndex(where: {
-            $0.record.appId.lowercased() == record.appId.lowercased()
-        }) {
-            installed[existing] = app
-        } else {
-            installed.append(app)
+            if let existing = installed.firstIndex(where: {
+                $0.record.appId.lowercased() == record.appId.lowercased()
+            }) {
+                installed[existing] = app
+            } else {
+                installed.append(app)
+            }
+
+            let pack = PersistedAppPack(
+                appIDHex: record.appId.lowercased(),
+                manifest: manifest,
+                bundle: bundle
+            )
+            persisted.carriedApps.removeAll { $0.appIDHex == pack.appIDHex }
+            persisted.carriedApps.append(pack)
+            try storage.save(persisted)
+
+            NotificationCenter.default.post(name: .riotHeldAppsDidChange, object: self)
+            return try spaceApp(app)
         }
-
-        let pack = PersistedAppPack(
-            appIDHex: record.appId.lowercased(),
-            manifest: manifest,
-            bundle: bundle
-        )
-        persisted.carriedApps.removeAll { $0.appIDHex == pack.appIDHex }
-        persisted.carriedApps.append(pack)
-        try storage.save(persisted)
-
-        // Held and saved; anything showing held apps (the Tools card, the only
-        // route to Open) is stale as of this line. Posted after the save so no
-        // observer can read a set a later throw would undo — same ordering as
-        // getCarriedApp.
-        NotificationCenter.default.post(name: .riotHeldAppsDidChange, object: self)
-
-        return try spaceApp(app)
     }
 
     /// Passes an app on to the current space with this profile as carrier.
     /// Sharing never turns the app on for anyone: the organizer on the other
     /// side still makes their own decision.
-    public func shareApp(appID: Data) throws {
-        guard let space = persisted.space else { throw RepositoryError.noCurrentSpace }
-        try appRuntime.shareApp(
-            appId: appID,
-            space: PublicSpace(
-                namespaceId: space.namespaceID,
-                title: space.title,
-                isPublic: true
+    public func shareApp(appID: Data, expectedNamespaceID: String) throws {
+        try withAppMutationLock {
+            try requireAppOperationsOpen()
+            let space = try requireCurrentSpace(expectedNamespaceID: expectedNamespaceID)
+            try appRuntime.shareApp(
+                appId: appID,
+                space: PublicSpace(
+                    namespaceId: space.namespaceID,
+                    title: space.title,
+                    isPublic: true
+                )
             )
-        )
+        }
+    }
+
+    public func shareApp(appID: Data) throws {
+        try withAppMutationLock {
+            try requireAppOperationsOpen()
+            guard let namespaceID = persisted.space?.namespaceID else {
+                throw RepositoryError.noCurrentSpace
+            }
+            try shareApp(appID: appID, expectedNamespaceID: namespaceID)
+        }
     }
 }
 
