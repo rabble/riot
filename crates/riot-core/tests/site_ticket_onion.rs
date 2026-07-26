@@ -105,6 +105,39 @@ fn stripping_the_signed_onion_breaks_the_signature() {
 }
 
 #[test]
+fn relabeling_the_signed_onion_as_url_breaks_the_signature() {
+    // RELABEL: optional signed fields must be domain-separated. An attacker
+    // cannot move the onion value into `url=` and thereby make transport
+    // selection believe the signed ticket has no onion.
+    let signed = mint(
+        &root_key(),
+        NS,
+        "none",
+        1,
+        10_000,
+        DIGEST,
+        None,
+        None,
+        Some(ONION.into()),
+    );
+    assert!(signed.verify());
+
+    let mut relabeled = signed;
+    relabeled.url = relabeled.onion.take();
+    assert!(
+        !relabeled.verify(),
+        "moving onion into url must change the signed canonical payload"
+    );
+    assert!(
+        matches!(
+            admit_dial(&relabeled, &TOR_CAPABLE, 1_000, 0),
+            Err(TransportBlocked::BadSignature)
+        ),
+        "the gate refuses a ticket whose signed onion was relabeled as url"
+    );
+}
+
+#[test]
 fn forging_an_onion_onto_a_ticket_breaks_the_signature() {
     // FORGE: an attacker who does not hold the root key cannot ADD or SUBSTITUTE
     // an onion — doing so changes the canonical away from what the root signed.

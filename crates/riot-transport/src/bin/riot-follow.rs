@@ -14,7 +14,7 @@ use riot_core::session::{ImportContext, RiotSession};
 use riot_core::sync::ByteSyncSession as SyncSession;
 use riot_transport::iroh::{addr_from_hint, bind, dial_with_ticket};
 use riot_transport::select::{select_transport, TransportChoice};
-use riot_transport::ticket::{parse, Capabilities};
+use riot_transport::ticket::{admit_dial, parse, Capabilities, Ticket, TransportBlocked};
 
 // The Tor path is only available when this crate is built with `arti`.
 #[cfg(feature = "arti")]
@@ -34,6 +34,25 @@ fn capabilities() -> Capabilities {
     }
 }
 
+/// Authenticate and freshness-check a ticket before consulting any field that
+/// can choose or initialize a network transport.
+fn admitted_transport(
+    ticket: &Ticket,
+    caps: &Capabilities,
+    now_unix: u64,
+    durable_epoch_floor: u64,
+) -> Result<TransportChoice, TransportBlocked> {
+    admit_dial(ticket, caps, now_unix, durable_epoch_floor)?;
+    Ok(select_transport(ticket, caps))
+}
+
+fn current_unix_time() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("system clock is before the Unix epoch")
+        .as_secs()
+}
+
 #[tokio::main]
 async fn main() {
     let uri = std::env::args().nth(1).unwrap_or_else(|| {
@@ -46,9 +65,14 @@ async fn main() {
     });
 
     let caps = capabilities();
-    match select_transport(&ticket, &caps) {
+    let now_unix = current_unix_time();
+    let transport = admitted_transport(&ticket, &caps, now_unix, 0).unwrap_or_else(|blocked| {
+        eprintln!("dial refused (fail-closed): {blocked}");
+        std::process::exit(1);
+    });
+    match transport {
         #[cfg(feature = "arti")]
-        TransportChoice::Tor => sync_over_tor(&ticket, &caps).await,
+        TransportChoice::Tor => sync_over_tor(&ticket).await,
         #[cfg(not(feature = "arti"))]
         TransportChoice::Tor => {
             // select_transport only returns Tor when caps.arti is true, which is
@@ -57,7 +81,7 @@ async fn main() {
             eprintln!("ticket selects Tor, but this build has no Tor support");
             std::process::exit(2);
         }
-        TransportChoice::Iroh => sync_over_iroh(&ticket, &caps).await,
+        TransportChoice::Iroh => sync_over_iroh(&ticket, &caps, now_unix).await,
         TransportChoice::Neither => {
             eprintln!("ticket's transport floor is not satisfiable");
             std::process::exit(2);
@@ -67,7 +91,11 @@ async fn main() {
 
 /// Dial the seed over iroh (the default fast path). Used when the ticket has no
 /// attested onion, or when this build lacks the `arti` feature.
-async fn sync_over_iroh(ticket: &riot_transport::ticket::Ticket, caps: &Capabilities) {
+async fn sync_over_iroh(
+    ticket: &riot_transport::ticket::Ticket,
+    caps: &Capabilities,
+    now_unix: u64,
+) {
     let node_hint = ticket.node.clone().unwrap_or_else(|| {
         eprintln!("ticket has no node hint to dial");
         std::process::exit(2);
@@ -83,7 +111,7 @@ async fn sync_over_iroh(ticket: &riot_transport::ticket::Ticket, caps: &Capabili
         &endpoint,
         ticket,
         caps,
-        1_000_000,
+        now_unix,
         0,
         peer,
         session,
@@ -107,7 +135,7 @@ async fn sync_over_iroh(ticket: &riot_transport::ticket::Ticket, caps: &Capabili
 /// Dial the seed over Tor, using the ticket's attested onion address. Only
 /// available when this crate is built with the `arti` feature.
 #[cfg(feature = "arti")]
-async fn sync_over_tor(ticket: &riot_transport::ticket::Ticket, caps: &Capabilities) {
+async fn sync_over_tor(ticket: &riot_transport::ticket::Ticket) {
     let onion = ticket.onion.clone().unwrap_or_else(|| {
         // select_transport picked Tor but there's no onion: this only happens
         // for require:arti tickets with no attested address — a malformed ticket.
@@ -124,13 +152,6 @@ async fn sync_over_tor(ticket: &riot_transport::ticket::Ticket, caps: &Capabilit
         std::process::exit(1);
     });
     eprintln!("Tor ready; dialing {onion}");
-
-    // Verify-before-dial through the same fail-closed gate, then dial over Tor.
-    use riot_transport::ticket::admit_dial;
-    if let Err(blocked) = admit_dial(ticket, caps, 1_000_000, 0) {
-        eprintln!("dial refused (fail-closed): {blocked}");
-        std::process::exit(1);
-    }
 
     let dialer = TorDialer::new(tor, onion);
     let session = SyncSession::new(ticket.namespace, vec![]).expect("session");
@@ -173,5 +194,42 @@ fn finish(
             eprintln!("sync refused/failed: {e}");
             std::process::exit(1);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::admitted_transport;
+    use riot_transport::select::TransportChoice;
+    use riot_transport::ticket::{mint, Capabilities, TransportBlocked};
+
+    #[test]
+    fn expired_ticket_is_refused_before_transport_selection() {
+        let key = ed25519_dalek::SigningKey::from_bytes(&[7u8; 32]);
+        let ticket = mint(
+            &key,
+            [0x11; 32],
+            "none",
+            1,
+            100,
+            [0x22; 32],
+            Some("attacker-controlled-iroh-hint".into()),
+            None,
+            Some("abcdefghijklmnopabcdefghijklmnopabcdefghijklmnopabcdefghijk".into()),
+        );
+        let caps = Capabilities {
+            iroh: true,
+            arti: true,
+        };
+
+        assert_eq!(
+            admitted_transport(&ticket, &caps, 101, 0),
+            Err(TransportBlocked::Expired)
+        );
+        assert_eq!(
+            riot_transport::select::select_transport(&ticket, &caps),
+            TransportChoice::Tor,
+            "without the admission wrapper this ticket would select a network transport"
+        );
     }
 }
