@@ -5,9 +5,9 @@ use crate::session::EvidenceStore;
 use crate::willow::{encode_entry, EntryId, Path};
 
 use super::{
-    contributors, inspect_verified_components, project, ContributorRowV1, NewswirePayload,
-    NewswireProjection, NewswireProjectionError, ProjectionClockV1, VerifiedNewswireRecord,
-    MAX_PROJECTED_RECORDS,
+    contributors, inspect_verified_components, project, project_for_viewer, ContributorRowV1,
+    NewswirePayload, NewswireProjection, NewswireProjectionError, ProjectionClockV1,
+    VerifiedNewswireRecord, MAX_PROJECTED_RECORDS,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -155,9 +155,20 @@ pub fn project_space(
     descriptor_id: EntryId,
     clock: ProjectionClockV1,
 ) -> Result<NewswireProjection, NewswireStoreError> {
+    project_space_for_viewer(store, descriptor_id, clock, None)
+}
+
+/// Store-backed projection annotated with the optional viewer's current
+/// reaction state. The viewer id never leaves core; only per-tally booleans do.
+pub fn project_space_for_viewer(
+    store: &EvidenceStore,
+    descriptor_id: EntryId,
+    clock: ProjectionClockV1,
+    viewer: Option<[u8; 32]>,
+) -> Result<NewswireProjection, NewswireStoreError> {
     let descriptor = load_space_descriptor(store, descriptor_id)?;
     let records = load_space_records(store, descriptor_id)?;
-    project(&descriptor, &records, clock).map_err(Into::into)
+    project_for_viewer(&descriptor, &records, clock, viewer).map_err(Into::into)
 }
 
 /// The Known-contributors surface for a space: every distinct author of a

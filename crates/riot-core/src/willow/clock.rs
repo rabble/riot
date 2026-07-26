@@ -27,11 +27,22 @@ pub(crate) fn snapshot_from_unix_seconds_internal(
     uncertainty_seconds: u32,
 ) -> Result<ClockSnapshot, WillowError> {
     let unix_seconds = u64::try_from(unix_seconds).map_err(|_| WillowError::ClockUnavailable)?;
-    let epoch = hifitime::Epoch::from_unix_seconds(unix_seconds as f64);
+    snapshot_from_unix_duration_internal(
+        std::time::Duration::from_secs(unix_seconds),
+        uncertainty_seconds,
+    )
+}
+
+fn snapshot_from_unix_duration_internal(
+    duration: std::time::Duration,
+    uncertainty_seconds: u32,
+) -> Result<ClockSnapshot, WillowError> {
+    i64::try_from(duration.as_secs()).map_err(|_| WillowError::ClockUnavailable)?;
+    let epoch = hifitime::Epoch::from_unix_seconds(duration.as_secs_f64());
     let timestamp =
         willow25::entry::Timestamp::try_from(epoch).map_err(|_| WillowError::ClockUnavailable)?;
     Ok(ClockSnapshot {
-        unix_seconds,
+        unix_seconds: duration.as_secs(),
         tai_j2000_micros: u64::from(timestamp),
         uncertainty_seconds,
     })
@@ -46,10 +57,7 @@ fn snapshot_from_unix_duration(
     unix: Result<std::time::Duration, std::time::SystemTimeError>,
 ) -> Result<ClockSnapshot, WillowError> {
     unix.map_err(|_| WillowError::ClockUnavailable)
-        .and_then(|duration| {
-            i64::try_from(duration.as_secs()).map_err(|_| WillowError::ClockUnavailable)
-        })
-        .and_then(|seconds| snapshot_from_unix_seconds_internal(seconds, 60))
+        .and_then(|duration| snapshot_from_unix_duration_internal(duration, 60))
 }
 
 /// Convert a UTC Unix-seconds wall-clock reading into TAI/J2000 microseconds —
@@ -141,6 +149,19 @@ mod tests {
         assert_eq!(
             snapshot_from_unix_duration(Ok(Duration::from_secs(u64::MAX))),
             Err(WillowError::ClockUnavailable)
+        );
+    }
+
+    #[test]
+    fn system_time_adapter_preserves_microseconds() {
+        let with_fraction =
+            snapshot_from_unix_duration(Ok(Duration::new(1_700_000_000, 123_456_000))).unwrap();
+        let whole = snapshot_from_unix_duration(Ok(Duration::from_secs(1_700_000_000))).unwrap();
+
+        assert_eq!(with_fraction.unix_seconds, whole.unix_seconds);
+        assert_eq!(
+            with_fraction.tai_j2000_micros - whole.tai_j2000_micros,
+            123_456
         );
     }
 }

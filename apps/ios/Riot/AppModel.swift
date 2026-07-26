@@ -600,6 +600,9 @@ public final class RiotAppModel: ObservableObject {
     private var knownEntryIDs: Set<String>?
 
     private var repository: RiotProfileRepository?
+    #if DEBUG
+    public private(set) var reactionUITestConfiguration: ReactionUITestConfiguration?
+    #endif
     public let communityTransitionGate = CommunityTransitionGate()
 
     /// Read-only handle for the runtime host, which needs the live repository to
@@ -902,31 +905,56 @@ public final class RiotAppModel: ObservableObject {
                 Logger(subsystem: "net.protest.riot", category: "storage").error(
                     "database protection class not applied: \(String(describing: error))")
             }
-            self.repository = repository
-            // A self-healing open lands the person in a usable app; surface an
-            // honest, non-fatal notice about what it had to drop rather than the
-            // old dead RETRY. `nil` on a clean open.
-            recoveryNotice = repository.recovery
-            demoLoader = RiotDemoSpaceLoader(repository: repository, model: self)
-            // Headless two-node testing: with RIOT_SEED_SPACE=1 a fresh phone
-            // opens a space on launch, so one scripted instance can host a space
-            // for another (fresh) instance to auto-join and sync. Seed BEFORE
-            // reload so the space exists by the time `me` is published and the
-            // readiness gate opens discovery — otherwise the host advertises
-            // spaceless. Off by default; opening a space is a person's decision.
-            if repository.currentSpace == nil,
-               ProcessInfo.processInfo.environment["RIOT_SEED_SPACE"] == "1" {
-                _ = try? repository.createPublicSpace(title: "Test Space")
+            finishBootstrap(repository: repository) {
+                // Headless two-node testing: with RIOT_SEED_SPACE=1 a fresh phone
+                // opens a space on launch, so one scripted instance can host a
+                // space for another. Off by default.
+                if repository.currentSpace == nil,
+                   ProcessInfo.processInfo.environment["RIOT_SEED_SPACE"] == "1" {
+                    _ = try? repository.createPublicSpace(title: "Test Space")
+                }
             }
-            reload()
-            // LAST, and only on the success path: this is what lets the Connection
-            // screen start advertising, and it must not open until the space above
-            // is readable. See ``isProfileOpen``.
-            isProfileOpen = true
         } catch {
             errorMessage = String(describing: error)
         }
     }
+
+    private func finishBootstrap(
+        repository: RiotProfileRepository,
+        beforeReload: (() -> Void)? = nil
+    ) {
+        self.repository = repository
+        recoveryNotice = repository.recovery
+        demoLoader = RiotDemoSpaceLoader(repository: repository, model: self)
+        beforeReload?()
+        reload()
+        // LAST, and only on the success path: this opens nearby discovery after
+        // the active community and identity are readable.
+        isProfileOpen = true
+    }
+
+    #if DEBUG
+    /// Installs the reader half of the closed two-profile reactions fixture.
+    /// The pair factory performs a real joined-community sync before this normal
+    /// reload path is allowed to publish any screen state.
+    public func bootstrapReactionUITestFixture(
+        baseDirectory: URL,
+        keyStore: WrappingKeyStore,
+        configuration: ReactionUITestConfiguration
+    ) {
+        guard repository == nil else { return }
+        do {
+            let pair = try RiotProfileRepository.makeReactionUITestPair(
+                baseDirectory: baseDirectory,
+                keyStore: keyStore
+            )
+            reactionUITestConfiguration = configuration
+            finishBootstrap(repository: pair.reader)
+        } catch {
+            errorMessage = String(describing: error)
+        }
+    }
+    #endif
 
     /// Recovery action for the §4.7 "Catalog/package failed" state: clears the
     /// failure and re-attempts the one-time starter install with the same

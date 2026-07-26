@@ -2161,24 +2161,7 @@ fn remember_entry(entries: &mut Vec<CurrentEntry>, entry: CurrentEntry) {
     }
 }
 
-/// Track a locally-committed signed entry in the ACTIVE community's sync
-/// inventory so it can traverse the nearby bridge (Risk 16 — the newswire
-/// create/post path, which previously committed without tracking, so newswire
-/// content could never be shared). Mirrors how the alert sign/import paths keep
-/// the inventory complete. A newswire entry IS a live entry in the active
-/// namespace, so this PRESERVES the load-bearing
-/// `inventory == active_namespace_live_ids` invariant (the isolation guarantee):
-/// it only ever adds an entry that already belongs to the active namespace, and
-/// `install_sync_inventory` re-checks that equality and fails closed otherwise.
-pub(crate) fn track_committed_entry(
-    profile: &mut LocalProfile,
-    signed: &SignedWillowEntry,
-) -> Result<(), MobileError> {
-    let next = prospective_sync_inventory(profile, std::slice::from_ref(signed))?;
-    install_sync_inventory(profile, next)
-}
-
-fn prospective_sync_inventory(
+pub(crate) fn prospective_sync_inventory(
     profile: &LocalProfile,
     incoming: &[SignedWillowEntry],
 ) -> Result<Vec<SignedWillowEntry>, MobileError> {
@@ -2236,7 +2219,7 @@ fn prospective_sync_inventory(
 /// held community's entries (Unit 3), but sync — like the board — is scoped to
 /// the selected community, so the inventory is built and checked against exactly
 /// this namespace, never the whole store.
-fn active_namespace_live_ids(
+pub(crate) fn active_namespace_live_ids(
     profile: &LocalProfile,
 ) -> Result<Vec<riot_core::willow::EntryId>, MobileError> {
     let Some(space) = profile.space.as_ref() else {
@@ -2338,7 +2321,7 @@ pub(crate) fn build_followed_site_offer(
     Ok(offer)
 }
 
-fn install_sync_inventory(
+pub(crate) fn install_sync_inventory(
     profile: &mut LocalProfile,
     mut inventory: Vec<SignedWillowEntry>,
 ) -> Result<(), MobileError> {
@@ -2388,7 +2371,7 @@ fn advance_app_write_floor(
     Ok(())
 }
 
-fn ensure_complete_sync_inventory(profile: &LocalProfile) -> Result<(), MobileError> {
+pub(crate) fn ensure_complete_sync_inventory(profile: &LocalProfile) -> Result<(), MobileError> {
     let mut live_ids = active_namespace_live_ids(profile)?;
     live_ids.sort_unstable();
     if live_ids.len() > MAX_SYNC_IDS {

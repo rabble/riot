@@ -50,7 +50,7 @@ public enum EditorialActionKind: String, CaseIterable, Equatable, Sendable, Iden
 /// string, so the mapping is pinned here once — the reaction analogue of
 /// `EditorialActionKind`. `allCases` is the fixed left-to-right order the bar
 /// draws, independent of which kinds a given post happens to carry a tally for.
-public enum ReactionKind: String, CaseIterable, Equatable, Sendable, Identifiable {
+public enum ReactionKind: String, CaseIterable, Equatable, Hashable, Sendable, Identifiable {
     case support
     case solidarity
     case important
@@ -887,16 +887,13 @@ public final class NewswireSurfaceModel: ObservableObject {
     /// projection is unavailable. Read straight from each projected post's
     /// `reactions` — the surface never re-tallies.
     @Published public private(set) var reactionsByPost: [String: [NewswireReactionTally]] = [:]
-
-    /// The `(post, kind)` pairs this device has toggled ON this session — the only
-    /// "active" signal available until core exposes a per-viewer `reacted_by_me`
-    /// in the projection (the reactions plan defers that until a viewer seam
-    /// exists). Optimistic and session-local: it drives the pink selection and
-    /// decides whether the next tap sends `active: false` (retract) or
-    /// `active: true` (react). It is deliberately NOT presented as core's truth —
-    /// reactions made on other devices are not reflected here, and it resets on
-    /// reopen.
-    private var reactedByMe: Set<String> = []
+    /// Shared operation state: duplicate front-page/open-wire renderings observe
+    /// one pending and one failure for the same logical reaction.
+    @Published public private(set) var pending: Set<ReactionKey> = []
+    @Published public private(set) var failures: [ReactionKey: ReactionFailurePresentation] = [:]
+    @Published public private(set) var reactionAnnouncements: [ReactionAnnouncement] = []
+    @Published public private(set) var lastAppliedReactionRevision: UInt64 = 0
+    @Published public private(set) var reactionLegendDismissed: Bool
 
     private let projector: NewswireProjecting
     private let editor: NewswireEditorialActing
@@ -907,8 +904,24 @@ public final class NewswireSurfaceModel: ObservableObject {
     /// The communal-reaction signer. `nil` in preview/test constructions that
     /// never exercise reacting — the reaction bar is then hidden by `canReact`.
     private let reactor: NewswireReacting?
+    /// The shipping async writer. The legacy synchronous reactor remains for
+    /// non-view compatibility tests; rendered controls use only this writer.
+    private let reactionWriter: (any NewswireReactionWriting)?
+    private let reactionStallClock: any ReactionStallClock
+    private let reactionDiagnosticReporter: any ReactionDiagnosticReporting
+    private var reactionTasks: [ReactionKey: Task<Void, Never>] = [:]
+    private var reactionStallTasks: [ReactionKey: Task<Void, Never>] = [:]
+    private var reactionGeneration: UInt64 = 0
+    private var reactionAnnouncementSequence: UInt64 = 0
+    private var reactionAnnouncementConsumption = ReactionAnnouncementConsumption()
+    private var reactionFailureOrder = ReactionFailureOrder()
+    private var reactionPresentationTokens: [String: String] = [:]
+    private var committedSelectionOverrides: [ReactionKey: Bool] = [:]
+    private var disabledReactionKeys: Set<ReactionKey> = []
+    private var disabledReactionRows: Set<String> = []
     private var spaceDescriptorEntryID: String
     private let myKeyHex: String
+    private let reactionLegendStore: ReactionLegendStore
     public let communityName: String
 
     /// Re-derives the community's descriptor id on demand (the shell wires this to
@@ -942,13 +955,24 @@ public final class NewswireSurfaceModel: ObservableObject {
         descriptorResolver: (() -> String?)? = nil,
         seenCursor: SeenCursorStore? = nil,
         commenter: NewswireCommenting? = nil,
-        reactor: NewswireReacting? = nil
+        reactor: NewswireReacting? = nil,
+        reactionWriter: (any NewswireReactionWriting)? = nil,
+        reactionStallClock: any ReactionStallClock = ContinuousReactionStallClock(),
+        reactionDiagnosticReporter: (any ReactionDiagnosticReporting)? = nil,
+        reactionLegendDefaults: UserDefaults = .standard
     ) {
         self.projector = projector
         self.editor = editor
         self.authority = authority
         self.commenter = commenter
         self.reactor = reactor
+        self.reactionWriter = reactionWriter
+        self.reactionStallClock = reactionStallClock
+        self.reactionDiagnosticReporter =
+            reactionDiagnosticReporter ?? LocalReactionDiagnosticReporter()
+        let legendStore = ReactionLegendStore(defaults: reactionLegendDefaults)
+        self.reactionLegendStore = legendStore
+        self.reactionLegendDismissed = !legendStore.shouldShow
         self.spaceDescriptorEntryID = spaceDescriptorEntryID
         self.communityName = communityName
         self.myKeyHex = myKeyHex
@@ -1015,11 +1039,76 @@ public final class NewswireSurfaceModel: ObservableObject {
         return byParent
     }
 
-    /// Whether the surface may OFFER a reaction bar. Communal like a reply, so
-    /// this is independent of `isEditor` — it needs only a wired reactor and a
-    /// descriptor to react within. Core still decides admission at signing time.
+    /// Whether the surface may OFFER a reaction bar. Rendered controls require
+    /// the async writer; a legacy synchronous reactor alone must not expose
+    /// buttons whose tap path cannot use it. Core still decides admission.
     public var canReact: Bool {
-        reactor != nil && !spaceDescriptorEntryID.isEmpty
+        reactionWriter != nil && !spaceDescriptorEntryID.isEmpty
+    }
+
+    /// A render-stable opaque token for accessibility/UI automation. The signed
+    /// entry id must never be exposed through a view identifier.
+    public func reactionPresentationToken(
+        postID: String,
+        surface: ReactionSurface
+    ) -> String {
+        let key = "\(surface.rawValue)|\(postID)"
+        if let token = reactionPresentationTokens[key] {
+            return token
+        }
+        let token = UUID().uuidString.lowercased()
+        reactionPresentationTokens[key] = token
+        return token
+    }
+
+    /// The one install-scoped teaching legend belongs only to the first eligible
+    /// rendered row. Featured/open-wire duplication therefore never creates two.
+    public func shouldShowReactionLegend(
+        postID: String,
+        surface: ReactionSurface
+    ) -> Bool {
+        guard canReact, !reactionLegendDismissed else { return false }
+        let target: (postID: String, surface: ReactionSurface)? = switch wire {
+        case .offlineStale, .emptyWire:
+            nil
+        case let .postsButNoFeature(openWire):
+            openWire.first(where: { $0.display == .ordinary })
+                .map { ($0.id, .openWire) }
+        case let .featured(frontPage, openWire):
+            if let first = frontPage.first(where: { $0.display == .ordinary }) {
+                (first.id, .frontPage)
+            } else {
+                openWire.first(where: { $0.display == .ordinary })
+                    .map { ($0.id, .openWire) }
+            }
+        }
+        return target?.postID == postID && target?.surface == surface
+    }
+
+    public func dismissReactionLegend() {
+        reactionLegendStore.dismiss()
+        reactionLegendDismissed = true
+    }
+
+    /// One compact error line per rendered row. Explicit sequence metadata makes
+    /// "most recent" deterministic when different reaction kinds fail.
+    public func latestReactionFailure(
+        postID: String,
+        surface: ReactionSurface
+    ) -> ReactionFailurePresentation? {
+        ReactionFailureSelector.latestVisible(
+            failures: failures,
+            order: reactionFailureOrder,
+            postID: postID,
+            surface: surface)
+    }
+
+    public func consumeLatestReactionAnnouncement(
+        surface: ReactionSurface
+    ) -> String? {
+        reactionAnnouncementConsumption.consumeLatest(
+            in: reactionAnnouncements,
+            surface: surface)?.message
     }
 
     /// The reaction tallies to draw under `postID`, ascending by kind as core
@@ -1034,30 +1123,237 @@ public final class NewswireSurfaceModel: ObservableObject {
         Int(reactionsByPost[postID]?.first { $0.kind == kind.rawValue }?.count ?? 0)
     }
 
-    /// Whether THIS device has this reaction active this session — drives the pink
-    /// selection. Session-local optimistic state (see `reactedByMe`), never a
-    /// claim about core's projection.
+    /// Whether the current profile's latest reaction is active. Core computes
+    /// this viewer-aware state alongside latest-wins deduplication, so selection
+    /// survives reloads and reflects writes from this profile on other devices.
     public func isReacted(post postID: String, kind: ReactionKind) -> Bool {
-        reactedByMe.contains(Self.reactionKey(post: postID, kind: kind))
+        if let committed = committedSelectionOverrides[ReactionKey(postID: postID, kind: kind)] {
+            return committed
+        }
+        return reactionsByPost[postID]?
+            .first { $0.kind == kind.rawValue }?
+            .reactedByMe ?? false
     }
 
-    /// The session-local key for one `(post, kind)` reaction toggle.
-    private static func reactionKey(post: String, kind: ReactionKind) -> String {
-        "\(post)|\(kind.rawValue)"
+    public func isPending(_ key: ReactionKey) -> Bool {
+        pending.contains(key)
+    }
+
+    public func failure(
+        for key: ReactionKey,
+        surface: ReactionSurface
+    ) -> ReactionFailurePresentation? {
+        guard let presentation = failures[key], presentation.surface == surface else { return nil }
+        return presentation
+    }
+
+    public func isReactionRowDisabled(postID: String) -> Bool {
+        disabledReactionRows.contains(postID)
+    }
+
+    public func isReactionDisabled(_ key: ReactionKey) -> Bool {
+        disabledReactionRows.contains(key.postID)
+            || disabledReactionKeys.contains(key)
+            || pending.contains(key)
+    }
+
+    /// Starts a non-blocking write. Pending is inserted synchronously so the
+    /// first render after the tap shows progress; the actor-owned FFI call then
+    /// runs away from `MainActor`.
+    public func toggleReaction(
+        post: NewswirePostRow,
+        kind: ReactionKind,
+        surface: ReactionSurface
+    ) {
+        guard let reactionWriter else { return }
+        let key = ReactionKey(postID: post.id, kind: kind)
+        guard !pending.contains(key), !isReactionDisabled(key) else { return }
+
+        let requestedActive = !isReacted(post: post.id, kind: kind)
+        let generation = reactionGeneration
+        let descriptorID = spaceDescriptorEntryID
+        pending.insert(key)
+        failures.removeValue(forKey: key)
+        reactionFailureOrder.remove(key)
+
+        reactionStallTasks[key] = Task { [weak self, reactionStallClock] in
+            await reactionStallClock.waitUntilStalled()
+            guard !Task.isCancelled else { return }
+            self?.markReactionStalled(key: key, surface: surface, generation: generation)
+        }
+
+        reactionTasks[key] = Task { [weak self, reactionWriter] in
+            let result = await reactionWriter.setReaction(
+                descriptorID: descriptorID,
+                postID: post.id,
+                kind: kind,
+                active: requestedActive)
+            guard let self else { return }
+            await self.finishReaction(
+                key: key,
+                surface: surface,
+                requestedActive: requestedActive,
+                generation: generation,
+                result: result)
+        }
+    }
+
+    private func markReactionStalled(
+        key: ReactionKey,
+        surface: ReactionSurface,
+        generation: UInt64
+    ) {
+        guard generation == reactionGeneration, pending.contains(key) else { return }
+        let failure = ReactionFailure(
+            kind: .retryablePersistence,
+            publicCode: "reaction_pending",
+            message: "Still saving on this device…")
+        failures[key] = ReactionFailurePresentation(
+            failure: failure, surface: surface, kind: .stalled)
+        reactionFailureOrder.record(key)
+        announce(failure.message, surface: surface)
+        reactionStallTasks.removeValue(forKey: key)
+    }
+
+    private func finishReaction(
+        key: ReactionKey,
+        surface: ReactionSurface,
+        requestedActive: Bool,
+        generation: UInt64,
+        result: ReactionWriteResult
+    ) async {
+        let diagnostic: (failure: ReactionFailure, phase: ReactionOperationPhase)? =
+            switch result {
+            case .accepted, .cancelled:
+                nil
+            case .committedNeedsRefresh:
+                (
+                    ReactionFailure(
+                        kind: .retryablePersistence,
+                        publicCode: "reaction_projection_refresh",
+                        message: "Reaction saved. Count will update when the wire refreshes."),
+                    .projectionRefresh
+                )
+            case let .rejected(failure):
+                (failure, .persistence)
+            }
+
+        // A started durable write may finish after this surface is gone. Its
+        // already-redacted diagnostic still lands, but stale presentation must
+        // never cross the generation boundary.
+        guard generation == reactionGeneration else {
+            if let diagnostic {
+                await reactionDiagnosticReporter.report(
+                    diagnostic.failure,
+                    phase: diagnostic.phase)
+            }
+            return
+        }
+        reactionStallTasks.removeValue(forKey: key)?.cancel()
+        reactionTasks.removeValue(forKey: key)
+        pending.remove(key)
+
+        switch result {
+        case let .accepted(snapshot):
+            if snapshot.revision > lastAppliedReactionRevision {
+                applyReactionSnapshot(snapshot)
+                failures.removeValue(forKey: key)
+                reactionFailureOrder.remove(key)
+                announceReaction(kind: key.kind, active: requestedActive, surface: surface)
+            }
+        case let .committedNeedsRefresh(active, revision):
+            if revision > lastAppliedReactionRevision, let diagnostic {
+                lastAppliedReactionRevision = revision
+                committedSelectionOverrides[key] = active
+                failures[key] = ReactionFailurePresentation(
+                    failure: diagnostic.failure,
+                    surface: surface,
+                    kind: .committedNeedsRefresh)
+                reactionFailureOrder.record(key)
+                announceReaction(kind: key.kind, active: active, surface: surface)
+            }
+        case let .rejected(failure):
+            failures[key] = ReactionFailurePresentation(
+                failure: failure, surface: surface, kind: .rejected)
+            reactionFailureOrder.record(key)
+            switch failure.kind {
+            case .authorityOrInput:
+                disabledReactionRows.insert(key.postID)
+            case .capacity, .clock:
+                disabledReactionKeys.insert(key)
+            case .retryablePersistence:
+                break
+            }
+            announce(failure.message, surface: surface)
+        case .cancelled:
+            failures.removeValue(forKey: key)
+            reactionFailureOrder.remove(key)
+        }
+
+        // This is deliberately the last operation: diagnostics may suspend, so
+        // no presentation state is mutated after crossing this await boundary.
+        if let diagnostic {
+            await reactionDiagnosticReporter.report(
+                diagnostic.failure,
+                phase: diagnostic.phase)
+        }
+    }
+
+    private func announceReaction(
+        kind: ReactionKind,
+        active: Bool,
+        surface: ReactionSurface
+    ) {
+        announce("\(kind.label) reaction \(active ? "added" : "removed")", surface: surface)
+    }
+
+    private func announce(_ message: String, surface: ReactionSurface) {
+        reactionAnnouncementSequence &+= 1
+        reactionAnnouncements.append(ReactionAnnouncement(
+            sequence: reactionAnnouncementSequence,
+            surface: surface,
+            message: message))
+    }
+
+    /// Applies only monotonically newer writer snapshots. A full authoritative
+    /// projection reconciles every temporary committed-selection override and
+    /// clears saved-but-refresh-needed copy.
+    public func applyReactionSnapshot(_ snapshot: ReactionWriteSnapshot) {
+        guard snapshot.revision > lastAppliedReactionRevision else { return }
+        lastAppliedReactionRevision = snapshot.revision
+        applyProjection(snapshot.projection)
+        committedSelectionOverrides.removeAll()
+        failures = failures.filter { $0.value.kind != .committedNeedsRefresh }
+        reactionFailureOrder.retain(Set(failures.keys))
+        disabledReactionKeys.removeAll()
+    }
+
+    public func cancelReactionTasks() {
+        reactionGeneration &+= 1
+        reactionTasks.values.forEach { $0.cancel() }
+        reactionStallTasks.values.forEach { $0.cancel() }
+        reactionTasks.removeAll()
+        reactionStallTasks.removeAll()
+        pending.removeAll()
+        failures.removeAll()
+        reactionFailureOrder = ReactionFailureOrder()
+        reactionAnnouncements.removeAll()
+        committedSelectionOverrides.removeAll()
+        disabledReactionKeys.removeAll()
+        disabledReactionRows.removeAll()
     }
 
     /// Toggles this device's communal reaction of `kind` on `post`, then reloads
-    /// so the tally updates. The direction is the inverse of the session-local
-    /// active state: an active reaction is retracted (`active: false`), an inactive
-    /// one is added (`active: true`). The local state flips ONLY after core
-    /// accepts, so a refusal leaves both the tally and the pink selection
-    /// unchanged and the person can retry. A no-op (`.unavailable`) when no reactor
-    /// is wired — the bar is hidden in that case, so this is defensive.
+    /// so the tally updates. The direction is the inverse of core's projected
+    /// viewer state: an active reaction is retracted (`active: false`), an
+    /// inactive one is added (`active: true`). A refusal leaves the authoritative
+    /// projection unchanged and the person can retry. A no-op (`.unavailable`)
+    /// when no reactor is wired — the bar is hidden in that case, so this is
+    /// defensive.
     @discardableResult
     public func toggleReaction(post: NewswirePostRow, kind: ReactionKind) -> NewswireReactionOutcome {
         guard let reactor else { return .unavailable }
-        let key = Self.reactionKey(post: post.id, kind: kind)
-        let nowActive = !reactedByMe.contains(key)
+        let nowActive = !isReacted(post: post.id, kind: kind)
         do {
             _ = try reactor.toggleNewswireReaction(
                 spaceDescriptorEntryID: spaceDescriptorEntryID,
@@ -1065,7 +1361,6 @@ public final class NewswireSurfaceModel: ObservableObject {
                 kind: kind.rawValue,
                 active: nowActive
             )
-            if nowActive { reactedByMe.insert(key) } else { reactedByMe.remove(key) }
             load()
             return nowActive ? .reacted : .retracted
         } catch {
@@ -1083,6 +1378,17 @@ public final class NewswireSurfaceModel: ObservableObject {
             byPost[post.entryId] = post.reactions
         }
         return byPost
+    }
+
+    private func applyProjection(_ projection: NewswireProjectionView) {
+        wire = .from(projection)
+        history = projection.editorialHistory.map(EditorialHistoryRow.init)
+        commentsByParent = Self.groupComments(projection.comments)
+        reactionsByPost = Self.groupReactions(projection)
+        unread = NewswireUnread(
+            posts: seenRefs(from: projection),
+            cursor: seenCursor?.cursor(forCommunity: spaceDescriptorEntryID))
+        descriptorRecoverable = true
     }
 
     /// Whether the surface may OFFER an editorial control — UI visibility only.
@@ -1166,18 +1472,10 @@ public final class NewswireSurfaceModel: ObservableObject {
             let projection = try projector.projectNewswire(
                 spaceDescriptorEntryID: spaceDescriptorEntryID
             )
-            wire = .from(projection)
-            history = projection.editorialHistory.map(EditorialHistoryRow.init)
-            commentsByParent = Self.groupComments(projection.comments)
-            reactionsByPost = Self.groupReactions(projection)
-            // Unread is a per-device read against the seen cursor for THIS
-            // descriptor — a pure function of what the projection now shows and
-            // how far the reader had caught up. Recomputed here (never mutated by
-            // marking seen, so the delta survives the current visit).
-            unread = NewswireUnread(
-                posts: seenRefs(from: projection),
-                cursor: seenCursor?.cursor(forCommunity: spaceDescriptorEntryID))
-            descriptorRecoverable = true
+            applyProjection(projection)
+            committedSelectionOverrides.removeAll()
+            failures = failures.filter { $0.value.kind != .committedNeedsRefresh }
+            disabledReactionKeys.removeAll()
         } catch {
             // We hold a descriptor id but it is transiently offline — retry can
             // reproject the id we already have. Fixed, honest state — never a raw
@@ -1445,7 +1743,12 @@ public struct NewswireSurfaceView: View {
         RiotCard {
             VStack(alignment: .leading, spacing: 12) {
                 eyebrow("Front page")
-                ForEach(posts) { post in postRow(post, surface: "front-page") }
+                ForEach(posts) { post in postRow(post, surface: .frontPage) }
+                ReactionAccessibilityAnnouncementHost(
+                    announcements: model.reactionAnnouncements,
+                    consumeLatest: {
+                        model.consumeLatestReactionAnnouncement(surface: .frontPage)
+                    })
             }
         }
         .accessibilityIdentifier("newswire-front-page")
@@ -1455,15 +1758,20 @@ public struct NewswireSurfaceView: View {
         RiotCard {
             VStack(alignment: .leading, spacing: 12) {
                 eyebrow("Open wire")
-                ForEach(posts) { post in postRow(post, surface: "open-wire") }
+                ForEach(posts) { post in postRow(post, surface: .openWire) }
+                ReactionAccessibilityAnnouncementHost(
+                    announcements: model.reactionAnnouncements,
+                    consumeLatest: {
+                        model.consumeLatestReactionAnnouncement(surface: .openWire)
+                    })
             }
         }
         .accessibilityIdentifier("newswire-open-wire")
     }
 
     @ViewBuilder
-    private func postRow(_ post: NewswirePostRow, surface: String) -> some View {
-        let trigger = NewswireReportTrigger(surface: surface, reportID: post.id)
+    private func postRow(_ post: NewswirePostRow, surface: ReactionSurface) -> some View {
+        let trigger = NewswireReportTrigger(surface: surface.rawValue, reportID: post.id)
         VStack(alignment: .leading, spacing: 6) {
             switch post.display {
             case .ordinary:
@@ -1537,7 +1845,7 @@ public struct NewswireSurfaceView: View {
                     .accessibilityIdentifier("review-treatment-\(post.id)")
             }
             if post.display == .ordinary {
-                reactionBar(for: post)
+                reactionBar(for: post, surface: surface)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -1570,63 +1878,39 @@ public struct NewswireSurfaceView: View {
         .accessibilityIdentifier("read-update-\(post.id)")
     }
 
-    /// The communal reaction bar beneath a post's actions: one compact toggle per
-    /// reaction kind, in `ReactionKind.allCases` order, each showing its live count
-    /// and pink when this device has it active this session. Drawn only when the
-    /// surface can react (a wired reactor + a descriptor), so a preview or a
-    /// closed profile gains no bar — the same gating as the Reply affordance.
+    /// Four compact fixed-slot controls. Counts including zero remain visible,
+    /// and pending/error/selected states never move the targets.
     @ViewBuilder
-    private func reactionBar(for post: NewswirePostRow) -> some View {
+    private func reactionBar(for post: NewswirePostRow, surface: ReactionSurface) -> some View {
         if model.canReact {
-            HStack(spacing: 8) {
-                ForEach(ReactionKind.allCases) { kind in
-                    reactionToggle(for: post, kind: kind)
-                }
+            let controls = ReactionKind.allCases.map { kind in
+                let key = ReactionKey(postID: post.id, kind: kind)
+                let pending = model.isPending(key)
+                return ReactionControlPresentation(
+                    kind: kind,
+                    count: model.reactionCount(post: post.id, kind: kind),
+                    selected: model.isReacted(post: post.id, kind: kind),
+                    pending: pending,
+                    failed: model.failures[key] != nil,
+                    disabled: model.isReactionDisabled(key),
+                    authorityDisabled: model.isReactionRowDisabled(postID: post.id))
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .accessibilityIdentifier("reaction-bar-\(post.id)")
+            CompactReactionBar(
+                rowToken: model.reactionPresentationToken(
+                    postID: post.id,
+                    surface: surface),
+                controls: controls,
+                failureMessage: model.latestReactionFailure(
+                    postID: post.id,
+                    surface: surface)?.message,
+                showsLegend: model.shouldShowReactionLegend(
+                    postID: post.id,
+                    surface: surface),
+                onToggle: { kind in
+                    model.toggleReaction(post: post, kind: kind, surface: surface)
+                },
+                onDismissLegend: model.dismissReactionLegend)
         }
-    }
-
-    /// One reaction toggle: the kind's emoji plus its count when nonzero. An emoji
-    /// draws in its own colours, so "this device has it active" is carried by a
-    /// pink ring and a pink count rather than by tinting the glyph. A tap toggles
-    /// it through the model, which asks core and reloads the tally. Addressable per
-    /// kind + post so a UI test can assert exactly which reaction was tapped, and
-    /// labeled with the kind's WORD for VoiceOver — never the emoji.
-    private func reactionToggle(for post: NewswirePostRow, kind: ReactionKind) -> some View {
-        let active = model.isReacted(post: post.id, kind: kind)
-        let count = model.reactionCount(post: post.id, kind: kind)
-        return Button {
-            model.toggleReaction(post: post, kind: kind)
-        } label: {
-            HStack(spacing: 4) {
-                Text(kind.glyph)
-                    .font(.system(size: 15))
-                if count > 0 {
-                    Text("\(count)")
-                        .font(.riot(.mono, size: 11, relativeTo: .caption2))
-                        .tracking(0.5)
-                        .foregroundStyle(
-                            active
-                                ? RiotTheme.pink(for: colorScheme)
-                                : RiotTheme.inkSoft(for: colorScheme))
-                }
-            }
-            .padding(.horizontal, 9)
-            .padding(.vertical, 5)
-            .background(RiotTheme.paper2(for: colorScheme))
-            .clipShape(Capsule())
-            .overlay(
-                Capsule().strokeBorder(
-                    active ? RiotTheme.pink(for: colorScheme) : .clear, lineWidth: 1.5)
-            )
-        }
-        .buttonStyle(.plain)
-        .frame(minHeight: 44)
-        .accessibilityIdentifier("reaction-\(kind.rawValue)-\(post.id)")
-        .accessibilityLabel("\(kind.label), \(count) \(count == 1 ? "person" : "people")")
-        .accessibilityAddTraits(active ? .isSelected : [])
     }
 
     /// The communal replies under one post, indented and time-ordered as core

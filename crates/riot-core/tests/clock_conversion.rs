@@ -23,14 +23,18 @@ const MICROS_PER_SEC: u64 = 1_000_000;
 #[test]
 fn converter_agrees_with_the_live_snapshot_path() {
     // The whole point of the converter: a value it produces for some unix_seconds
-    // must equal the tai_j2000_micros that system_snapshot derives for the SAME
-    // unix_seconds — otherwise a converted expiry and a real entry timestamp would
-    // not be comparable (the #76 failure mode).
+    // must agree with the tai_j2000_micros that system_snapshot derives for the
+    // SAME unix_seconds — otherwise a converted expiry and a real entry timestamp
+    // would not be comparable (the #76 failure mode). Since the reaction-preflight
+    // change, system_snapshot preserves SUB-SECOND precision while the converter
+    // takes whole seconds, so the snapshot's micros must land within the same
+    // second as the converted value: converted <= snapshot < converted + 1s.
     let snap = system_snapshot().expect("clock");
     let converted = tai_j2000_micros_from_unix_seconds(snap.unix_seconds).expect("convert");
-    assert_eq!(
-        converted, snap.tai_j2000_micros,
-        "converter must match system_snapshot's tai_j2000_micros for the same unix seconds"
+    assert!(
+        converted <= snap.tai_j2000_micros && snap.tai_j2000_micros < converted + MICROS_PER_SEC,
+        "snapshot micros ({}) must lie in the same second as the converted value ({converted})",
+        snap.tai_j2000_micros
     );
 }
 
@@ -134,12 +138,16 @@ fn inverse_round_trips_forward_at_second_resolution() {
 fn inverse_agrees_with_the_live_snapshot_path() {
     // A real entry timestamp, taken from system_snapshot, must map back to the
     // same Unix seconds the snapshot recorded — otherwise a rendered "created at"
-    // would drift from the wall clock that signed the post.
+    // would drift from the wall clock that signed the post. system_snapshot now
+    // preserves sub-second micros while its unix_seconds field is the FLOOR, and
+    // the inverse ROUNDS to the nearest second, so the recovered value may be the
+    // floor or the floor + 1 — never further away.
     let snap = system_snapshot().expect("clock");
     let recovered = unix_seconds_from_tai_j2000_micros(snap.tai_j2000_micros).expect("inverse");
-    assert_eq!(
-        recovered, snap.unix_seconds,
-        "inverse must match system_snapshot's unix_seconds for the same entry timestamp"
+    assert!(
+        recovered == snap.unix_seconds || recovered == snap.unix_seconds + 1,
+        "inverse ({recovered}) must round to the snapshot's second ({}) or the next one",
+        snap.unix_seconds
     );
 }
 
