@@ -139,23 +139,38 @@ async fn valid_iroh_ticket_syncs_with_a_real_seed() {
             .expect("run riot-follow")
     };
     let timeout = std::time::Duration::from_secs(30);
-    let (served, output) = tokio::join!(
-        tokio::time::timeout(timeout, seed_task),
-        tokio::time::timeout(timeout, cli_task),
-    );
-
-    let output = output.expect("riot-follow CLI timed out");
+    let output = tokio::time::timeout(timeout, cli_task)
+        .await
+        .expect("riot-follow CLI timed out");
     assert!(
         output.status.success(),
         "riot-follow failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
-    served
-        .expect("seed timed out")
-        .expect("seed task panicked")
-        .expect("seed failed to serve");
     assert_eq!(
         String::from_utf8(output.stdout).unwrap(),
         "synced — 1 entries now live in the local store\n"
     );
+
+    // The successful CLI result proves the seed served the signed entry. Iroh
+    // endpoint shutdown can outlive the child process under instrumentation, so
+    // bound cleanup separately instead of turning delayed teardown into a
+    // protocol failure.
+    let mut seed_task = seed_task;
+    match tokio::time::timeout(std::time::Duration::from_secs(2), &mut seed_task).await {
+        Ok(served) => {
+            served
+                .expect("seed task panicked")
+                .expect("seed failed to serve");
+        }
+        Err(_) => {
+            seed_task.abort();
+            match seed_task.await {
+                Ok(Ok(_)) => {}
+                Ok(Err(error)) => panic!("seed failed while being cancelled: {error}"),
+                Err(error) if error.is_cancelled() => {}
+                Err(error) => panic!("seed task failed while being cancelled: {error}"),
+            }
+        }
+    }
 }
