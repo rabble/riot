@@ -32,8 +32,7 @@ fn converter_agrees_with_the_live_snapshot_path() {
     let snap = system_snapshot().expect("clock");
     let converted = tai_j2000_micros_from_unix_seconds(snap.unix_seconds).expect("convert");
     assert!(
-        converted <= snap.tai_j2000_micros
-            && snap.tai_j2000_micros < converted + MICROS_PER_SEC,
+        converted <= snap.tai_j2000_micros && snap.tai_j2000_micros < converted + MICROS_PER_SEC,
         "snapshot micros ({}) must lie in the same second as the converted value ({converted})",
         snap.tai_j2000_micros
     );
