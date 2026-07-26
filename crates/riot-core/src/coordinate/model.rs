@@ -718,4 +718,106 @@ mod tests {
             Err(CoordinateModelError::TooManyEntries("category_tags"))
         );
     }
+
+    #[test]
+    fn oversized_input_is_rejected_before_cbor_parsing() {
+        let input = vec![0; MAX_COORDINATE_PAYLOAD_BYTES + 1];
+        assert_eq!(
+            decode_coordinate_item(&input),
+            Err(CoordinateModelError::InputTooLarge)
+        );
+    }
+
+    #[test]
+    fn oversized_map_is_rejected_before_field_decoding() {
+        let mut buffer = Vec::new();
+        Encoder::new(&mut buffer).map(15).unwrap();
+        assert_eq!(
+            decode_coordinate_item(&buffer),
+            Err(CoordinateModelError::Malformed)
+        );
+    }
+
+    #[test]
+    fn indefinite_map_is_rejected_as_noncanonical() {
+        assert_eq!(
+            decode_coordinate_item(&[0xbf, 0xff]),
+            Err(CoordinateModelError::NonCanonical)
+        );
+    }
+
+    #[test]
+    fn unknown_key_is_rejected_without_reading_its_value() {
+        let mut buffer = Vec::new();
+        let mut e = Encoder::new(&mut buffer);
+        e.map(1).unwrap();
+        e.u8(14).unwrap();
+        assert_eq!(
+            decode_coordinate_item(&buffer),
+            Err(CoordinateModelError::UnknownKey(14))
+        );
+    }
+
+    #[test]
+    fn contact_instructions_enforce_their_length_bound() {
+        let mut value = task();
+        value.contact_instructions = "x".repeat(MAX_CONTACT_INSTRUCTIONS_BYTES + 1);
+        assert_eq!(
+            encode_coordinate_item(&value),
+            Err(CoordinateModelError::FieldTooLarge("contact_instructions"))
+        );
+    }
+
+    #[test]
+    fn source_claims_enforce_count_and_item_bounds() {
+        let mut too_many = task();
+        too_many.source_claims = vec!["source".into(); MAX_SOURCE_CLAIMS + 1];
+        assert_eq!(
+            encode_coordinate_item(&too_many),
+            Err(CoordinateModelError::TooManyEntries("source_claims"))
+        );
+
+        let mut empty = task();
+        empty.source_claims = vec![String::new()];
+        assert_eq!(
+            encode_coordinate_item(&empty),
+            Err(CoordinateModelError::FieldEmpty("source_claim"))
+        );
+
+        let mut too_large = task();
+        too_large.source_claims = vec!["x".repeat(MAX_SOURCE_CLAIM_BYTES + 1)];
+        assert_eq!(
+            encode_coordinate_item(&too_large),
+            Err(CoordinateModelError::FieldTooLarge("source_claim"))
+        );
+    }
+
+    #[test]
+    fn coarse_location_enforces_nonempty_and_length_bounds() {
+        let mut empty = task();
+        empty.coarse_location = Some(String::new());
+        assert_eq!(
+            encode_coordinate_item(&empty),
+            Err(CoordinateModelError::FieldEmpty("coarse_location"))
+        );
+
+        let mut too_large = task();
+        too_large.coarse_location = Some("x".repeat(MAX_COARSE_LOCATION_BYTES + 1));
+        assert_eq!(
+            encode_coordinate_item(&too_large),
+            Err(CoordinateModelError::FieldTooLarge("coarse_location"))
+        );
+    }
+
+    #[test]
+    fn decoder_rejects_wrong_contact_type() {
+        let mut buffer = Vec::new();
+        let mut e = Encoder::new(&mut buffer);
+        e.map(1).unwrap();
+        e.u8(11).unwrap().u8(0).unwrap();
+        assert_eq!(
+            decode_coordinate_item(&buffer),
+            Err(CoordinateModelError::Malformed)
+        );
+    }
 }

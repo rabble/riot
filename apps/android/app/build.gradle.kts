@@ -14,10 +14,13 @@ android {
         applicationId = "net.protest.riot"
         minSdk = 26
         targetSdk = 36
-        versionCode = 1
+        // Monotonic per release, supplied by scripts/android-release.sh from the
+        // commit count. Play rejects a version code it has already seen, and 1
+        // can only ever be uploaded once.
+        versionCode = (findProperty("versionCode") as String?)?.toInt() ?: 1
         // Matches CFBundleShortVersionString on iOS/macOS. All three platforms
         // ship one version string; they are the same app.
-        versionName = "0.1.0"
+        versionName = "0.1.1"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         ndk {
             abiFilters += listOf("arm64-v8a", "x86_64")
@@ -26,6 +29,42 @@ android {
 
     buildFeatures {
         compose = true
+    }
+
+    // Release signing, for Play uploads.
+    //
+    // THE KEY IS NEVER IN THE REPO AND ITS PASSWORD IS NEVER ON DISK. The
+    // keystore lives outside the checkout and the password comes from the macOS
+    // keychain (service `riot-android-keystore`, account `riot-release-key`),
+    // read by scripts/android-release.sh and passed in as a project property.
+    // A checkout without those still builds — the release variant just comes out
+    // unsigned rather than failing, so CI and contributors are unaffected.
+    val keystorePath = (findProperty("riot.keystore") as String?)
+        ?: System.getenv("RIOT_KEYSTORE_PATH")
+    val keystorePassword = (findProperty("riot.keystorePassword") as String?)
+        ?: System.getenv("RIOT_KEYSTORE_PASSWORD")
+    val keystoreAlias = (findProperty("riot.keyAlias") as String?)
+        ?: System.getenv("RIOT_KEY_ALIAS")
+        ?: "riot"
+    val canSign = keystorePath != null && keystorePassword != null && file(keystorePath).exists()
+
+    signingConfigs {
+        if (canSign) {
+            create("release") {
+                storeFile = file(keystorePath!!)
+                storePassword = keystorePassword
+                keyAlias = keystoreAlias
+                // One password protects both the store and the key: keytool's
+                // default when -keypass is not given separately.
+                keyPassword = keystorePassword
+            }
+        }
+    }
+
+    buildTypes {
+        getByName("release") {
+            if (canSign) signingConfig = signingConfigs.getByName("release")
+        }
     }
 
     sourceSets {
