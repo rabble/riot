@@ -402,20 +402,39 @@ public struct CompactReactionBar: View {
     }
 
     private var reactionLegend: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Text(ReactionLegendCopy.text)
-                .font(.riot(.mono, size: 10, relativeTo: .caption2))
-                .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
-                .fixedSize(horizontal: false, vertical: true)
-            Button("Got it", action: onDismissLegend)
-                .buttonStyle(.plain)
-                .font(.riot(.body, size: 12, relativeTo: .caption))
-                .foregroundStyle(RiotTheme.accent(for: colorScheme))
-                .frame(minHeight: CompactReactionMetrics.minimumTarget)
-                .accessibilityIdentifier("reaction-legend-dismiss")
+        Group {
+            if dynamicTypeSize.isAccessibilitySize {
+                VStack(alignment: .leading, spacing: 4) {
+                    legendText
+                    legendDismissButton
+                }
+            } else {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    legendText
+                    legendDismissButton
+                }
+            }
         }
         .accessibilityIdentifier("reaction-legend")
     }
+
+    private var legendText: some View {
+        Text(ReactionLegendCopy.text)
+            .font(.riot(.mono, size: 10, relativeTo: .caption2))
+            .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
+            .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private var legendDismissButton: some View {
+        Button("Got it", action: onDismissLegend)
+            .buttonStyle(.plain)
+            .font(.riot(.body, size: 12, relativeTo: .caption))
+            .foregroundStyle(RiotTheme.accent(for: colorScheme))
+            .frame(minHeight: CompactReactionMetrics.minimumTarget)
+            .accessibilityIdentifier("reaction-legend-dismiss")
+    }
+
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 }
 
 private struct CompactReactionControl: View {
@@ -428,18 +447,22 @@ private struct CompactReactionControl: View {
         CompactReactionMetrics.normalVisualHeight
     @ScaledMetric(relativeTo: .caption) private var glyphSize =
         CompactReactionMetrics.glyphPointSize
-    @ScaledMetric(relativeTo: .caption2) private var countSize =
-        CompactReactionMetrics.countPointSize
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @State private var hovered = false
     @FocusState private var focused: Bool
 
     var body: some View {
         let contentPresentation = presentation.contentPresentation
+        let compactScale: CompactReactionScale =
+            dynamicTypeSize.isAccessibilitySize ? .accessibility3 : .normal
+        let metrics = CompactReactionMetrics.presentation(for: compactScale)
+        let resolvedVisualHeight = min(visualHeight, metrics.visualHeight)
+        let resolvedGlyphSize = min(glyphSize, 20)
         Button(action: action) {
             HStack(spacing: CompactReactionMetrics.contentSpacing) {
                 ZStack {
                     Text(presentation.kind.glyph)
-                        .font(.system(size: glyphSize, weight: .semibold))
+                        .font(.system(size: resolvedGlyphSize, weight: .semibold))
                         .opacity(contentPresentation.showsGlyph ? 1 : 0)
                     ProgressView()
                         .controlSize(.mini)
@@ -450,10 +473,14 @@ private struct CompactReactionControl: View {
                                 : RiotTheme.ink(for: colorScheme))
                         .opacity(contentPresentation.showsSpinner ? 1 : 0)
                 }
-                .frame(width: 15)
+                .frame(width: metrics.glyphSlotWidth)
 
                 Text(presentation.countText)
-                    .font(.riot(.mono, size: countSize, relativeTo: .caption2))
+                    .font(.riot(
+                        .mono,
+                        size: CompactReactionMetrics.countPointSize,
+                        relativeTo: .caption2))
+                    .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
                     .monospacedDigit()
                     .lineLimit(1)
                     .minimumScaleFactor(0.72)
@@ -466,7 +493,7 @@ private struct CompactReactionControl: View {
             }
             .frame(
                 width: CompactReactionMetrics.normalVisualWidth,
-                height: max(CompactReactionMetrics.normalVisualHeight, visualHeight))
+                height: max(CompactReactionMetrics.normalVisualHeight, resolvedVisualHeight))
             .contentShape(Capsule())
         }
         .buttonStyle(CompactReactionButtonStyle(
@@ -476,7 +503,7 @@ private struct CompactReactionControl: View {
             hovered: hovered,
             colorScheme: colorScheme))
         .frame(width: CompactReactionMetrics.normalVisualWidth)
-        .frame(minHeight: max(CompactReactionMetrics.minimumTarget, visualHeight))
+        .frame(minHeight: max(CompactReactionMetrics.minimumTarget, resolvedVisualHeight))
         .contentShape(Rectangle())
         .disabled(presentation.disabled || presentation.pending)
         .focused($focused)

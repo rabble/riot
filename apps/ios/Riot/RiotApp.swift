@@ -4,10 +4,24 @@ import RiotKit
 @main
 struct RiotApp: App {
     @StateObject private var model = RiotAppModel()
+    #if DEBUG
+    private let reactionFixture = ReactionUITestEnvironment.resolve()
+    #endif
 
     var body: some Scene {
         WindowGroup {
-            ConferenceShellView(model: model)
+            Group {
+                #if DEBUG
+                if reactionFixture == .invalid {
+                    Text("ui-fixture-invalid")
+                        .accessibilityIdentifier("ui-fixture-invalid")
+                } else {
+                    ConferenceShellView(model: model)
+                }
+                #else
+                ConferenceShellView(model: model)
+                #endif
+            }
                 .task { bootstrap() }
                 // "Open in Riot" from the public web newswire: verify links
                 // (riot://open?namespace=&entry=) and the existing join reference
@@ -25,6 +39,26 @@ struct RiotApp: App {
     /// UUID; production launches have no such environment value and continue
     /// to use the normal Application Support directory.
     private func bootstrap() {
+        #if DEBUG
+        switch reactionFixture {
+        case let .valid(configuration):
+            let directory = FileManager.default.temporaryDirectory
+                .appendingPathComponent(
+                    "riot-ui-\(configuration.runID.uuidString)",
+                    isDirectory: true
+                )
+            model.bootstrapReactionUITestFixture(
+                baseDirectory: directory,
+                keyStore: UIAutomationWrappingKeyStore(runID: configuration.runID),
+                configuration: configuration
+            )
+            return
+        case .invalid:
+            return
+        case .inactive:
+            break
+        }
+
         guard
             let runID = ProcessInfo.processInfo.environment["RIOT_UI_TEST_RUN_ID"],
             let uuid = UUID(uuidString: runID)
@@ -39,17 +73,8 @@ struct RiotApp: App {
             storageDirectory: directory,
             keyStore: UIAutomationWrappingKeyStore(runID: uuid)
         )
-    }
-}
-
-/// An unsigned XCUITest runner cannot add Keychain items. Keep that constraint
-/// inside the explicitly UUID-gated automation path: each run gets isolated
-/// storage and a stable 32-byte key, while every ordinary launch still uses the
-/// production Keychain store.
-private struct UIAutomationWrappingKeyStore: WrappingKeyStore {
-    let runID: UUID
-
-    func loadOrCreateWrappingKey() throws -> Data {
-        Data((runID.uuidString + runID.uuidString).utf8.prefix(32))
+        #else
+        model.bootstrap()
+        #endif
     }
 }

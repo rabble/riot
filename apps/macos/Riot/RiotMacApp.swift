@@ -5,18 +5,21 @@ import SwiftUI
 @main
 struct RiotMacApp: App {
     @StateObject private var model = RiotAppModel()
+    #if DEBUG
+    private let reactionFixture = ReactionUITestEnvironment.resolve()
+    #endif
 
     var body: some Scene {
         WindowGroup {
-            ConferenceShellView(model: model)
-                .task { model.bootstrap() }
+            root
+                .task { bootstrap() }
                 // Riot's identity is the warm cream/newsprint zine look — a
                 // light-first design. Lock the appearance so the brand stays
                 // coherent instead of inverting to a muddy dark paper in the
                 // system's dark mode.
                 .preferredColorScheme(.light)
         }
-        .defaultSize(width: 480, height: 860)
+        .defaultSize(width: fixtureWindowWidth ?? 480, height: 860)
         .commands {
             // A developer affordance (macOS-only, `net`-feature): dial the
             // deployed anchor relay over the internet and import a community,
@@ -29,6 +32,54 @@ struct RiotMacApp: App {
                 .keyboardShortcut("P", modifiers: [.command, .shift])
             }
         }
+    }
+
+    @ViewBuilder
+    private var root: some View {
+        #if DEBUG
+        if reactionFixture == .invalid {
+            Text("ui-fixture-invalid")
+                .accessibilityIdentifier("ui-fixture-invalid")
+        } else {
+            ConferenceShellView(model: model)
+                .frame(width: fixtureWindowWidth)
+        }
+        #else
+        ConferenceShellView(model: model)
+        #endif
+    }
+
+    private var fixtureWindowWidth: CGFloat? {
+        #if DEBUG
+        guard case let .valid(configuration) = reactionFixture else { return nil }
+        return configuration.windowWidth.map { CGFloat($0) }
+        #else
+        return nil
+        #endif
+    }
+
+    private func bootstrap() {
+        #if DEBUG
+        switch reactionFixture {
+        case let .valid(configuration):
+            let directory = FileManager.default.temporaryDirectory
+                .appendingPathComponent(
+                    "riot-ui-\(configuration.runID.uuidString)",
+                    isDirectory: true
+                )
+            model.bootstrapReactionUITestFixture(
+                baseDirectory: directory,
+                keyStore: UIAutomationWrappingKeyStore(runID: configuration.runID),
+                configuration: configuration
+            )
+        case .invalid:
+            return
+        case .inactive:
+            model.bootstrap()
+        }
+        #else
+        model.bootstrap()
+        #endif
     }
 }
 

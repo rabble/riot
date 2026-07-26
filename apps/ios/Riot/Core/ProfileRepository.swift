@@ -660,6 +660,63 @@ public final class RiotProfileRepository {
         }
     }
 
+    #if DEBUG
+    /// Builds the reactions UI fixture through the same public repository and
+    /// sync boundaries used by two actual devices. Nothing is injected into the
+    /// reader's store: the author signs the descriptor/post, the reader joins,
+    /// and the bounded pump carries the signed records across.
+    static func makeReactionUITestPair(
+        baseDirectory: URL,
+        keyStore: WrappingKeyStore
+    ) throws -> ReactionUITestPair {
+        func openFixtureRepository(named name: String) throws -> RiotProfileRepository {
+            let directory = baseDirectory.appendingPathComponent(name, isDirectory: true)
+            return try RiotProfileRepository.open(
+                storage: ProtectedProfileStorage(
+                    fileURL: directory.appendingPathComponent("riot-profile.json")
+                ),
+                keyStore: keyStore,
+                starterPacks: [],
+                databasePath: directory.appendingPathComponent("riot.db").path
+            )
+        }
+
+        let author = try openFixtureRepository(named: "author")
+        let reader = try openFixtureRepository(named: "reader")
+        let community = try author.createPublicSpace(title: "River City Wire")
+        let descriptor = try author.createNewswireSpace(
+            name: "River City Wire",
+            summary: "Local reports carried by this community."
+        )
+        let post = try author.createNewswirePost(
+            spaceDescriptorEntryID: descriptor.entryId,
+            headline: "Free breakfast at the corner church",
+            body: "Breakfast starts at eight. Everyone nearby is welcome."
+        )
+
+        try reader.joinAdditionalCommunity(
+            community,
+            descriptorEntryID: descriptor.entryId
+        )
+        _ = try ReactionFixtureSyncPump().run(
+            author: author.openSyncBoundary(),
+            reader: reader.openSyncBoundary()
+        )
+
+        let projection = try reader.projectNewswire(
+            spaceDescriptorEntryID: descriptor.entryId
+        )
+        guard projection.openWire.contains(where: { $0.entryId == post.entryId }) else {
+            throw ReactionUITestFixtureError.projectionMissingPost
+        }
+        return ReactionUITestPair(
+            reader: reader,
+            descriptorEntryID: descriptor.entryId,
+            postEntryID: post.entryId
+        )
+    }
+    #endif
+
     public func createPublicSpace(title: String) throws -> RiotSpace {
         let created = try profile.createPublicSpace(title: title)
         let space = RiotSpace(namespaceID: created.namespaceId, title: created.title)
@@ -1660,6 +1717,17 @@ public extension RiotProfileRepository {
     func makeNewswireReactionWriter() -> any NewswireReactionWriting {
         MobileProfileReactionWriter(profile: profile)
     }
+
+    #if DEBUG
+    func makeNewswireReactionWriter(
+        uiTestConfiguration: ReactionUITestConfiguration
+    ) -> any NewswireReactionWriting {
+        MobileProfileReactionWriter(
+            profile: profile,
+            uiTestConfiguration: uiTestConfiguration
+        )
+    }
+    #endif
 
     /// The collective view of a newswire space: the open wire (all non-expired
     /// posts, newest-first) and the front page (ordinary posts with an active

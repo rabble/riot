@@ -1028,6 +1028,19 @@ private struct CommunityShellView: View {
         let wireProjector: NewswireProjecting = model.profileRepository ?? UnavailableWireProjector()
         let editor: NewswireEditorialActing = model.profileRepository ?? UnavailableEditor()
         let authority: NewswireEditorAuthorityChecking = model.profileRepository ?? UnavailableEditor()
+        let reactionWriter: (any NewswireReactionWriting)?
+        #if DEBUG
+        if let repository = model.profileRepository,
+           let configuration = model.reactionUITestConfiguration {
+            reactionWriter = repository.makeNewswireReactionWriter(
+                uiTestConfiguration: configuration
+            )
+        } else {
+            reactionWriter = model.profileRepository?.makeNewswireReactionWriter()
+        }
+        #else
+        reactionWriter = model.profileRepository?.makeNewswireReactionWriter()
+        #endif
         _newswire = StateObject(wrappedValue: NewswireSurfaceModel(
             projector: wireProjector,
             editor: editor,
@@ -1043,7 +1056,7 @@ private struct CommunityShellView: View {
             // when no profile is open.
             commenter: model.profileRepository,
             // Profile-backed actor; nil hides the reaction bar.
-            reactionWriter: model.profileRepository?.makeNewswireReactionWriter()
+            reactionWriter: reactionWriter
         ))
     }
 

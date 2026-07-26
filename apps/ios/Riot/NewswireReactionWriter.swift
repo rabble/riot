@@ -156,10 +156,26 @@ public struct ContinuousReactionStallClock: ReactionStallClock {
 public actor MobileProfileReactionWriter: NewswireReactionWriting {
     private let profile: MobileProfile
     private var revision: UInt64 = 0
+    #if DEBUG
+    private let uiTestConfiguration: ReactionUITestConfiguration?
+    #endif
 
     public init(profile: MobileProfile) {
         self.profile = profile
+        #if DEBUG
+        uiTestConfiguration = nil
+        #endif
     }
+
+    #if DEBUG
+    public init(
+        profile: MobileProfile,
+        uiTestConfiguration: ReactionUITestConfiguration
+    ) {
+        self.profile = profile
+        self.uiTestConfiguration = uiTestConfiguration
+    }
+    #endif
 
     public func setReaction(
         descriptorID: String,
@@ -168,6 +184,24 @@ public actor MobileProfileReactionWriter: NewswireReactionWriting {
         active: Bool
     ) async -> ReactionWriteResult {
         guard !Task.isCancelled else { return .cancelled }
+
+        #if DEBUG
+        if let uiTestConfiguration {
+            if uiTestConfiguration.reactionDelayMilliseconds > 0 {
+                do {
+                    try await Task.sleep(for: .milliseconds(
+                        Int64(uiTestConfiguration.reactionDelayMilliseconds)
+                    ))
+                } catch {
+                    return .cancelled
+                }
+            }
+            guard !Task.isCancelled else { return .cancelled }
+            if let failure = uiTestConfiguration.reactionMode.preCommitFailure {
+                return .rejected(failure)
+            }
+        }
+        #endif
 
         do {
             _ = try profile.toggleNewswireReaction(
