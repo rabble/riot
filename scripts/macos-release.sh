@@ -41,6 +41,23 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
+# ONE RELEASE BUILD AT A TIME, PER CHECKOUT.
+#
+# All three release scripts regenerate build/generated/riot-ffi and write
+# build/native — shared paths. Running two at once means one deletes the
+# bindings the other is mid-compile against, and the failure looks like a
+# missing file rather than a race:
+#   error opening input file '.../build/generated/riot-ffi/riot_ffi.swift'
+# mkdir is atomic on every filesystem this runs on, so it is the lock.
+LOCK_DIR="$ROOT/build/.release-lock"
+if ! mkdir "$LOCK_DIR" 2>/dev/null; then
+  echo "ERROR: another release build is already running in this checkout." >&2
+  echo "       ($LOCK_DIR exists — remove it if a previous run was killed.)" >&2
+  exit 1
+fi
+trap 'rmdir "$LOCK_DIR" 2>/dev/null || true' EXIT
+
+
 # shellcheck source=scripts/lib/asc-key.sh
 . "$ROOT/scripts/lib/asc-key.sh"
 
