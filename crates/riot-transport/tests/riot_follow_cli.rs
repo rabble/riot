@@ -1,7 +1,37 @@
 use std::process::Command;
 
+use riot_core::willow::site_paths::MOD_COMPONENT;
+use riot_core::willow::{
+    encode_capability, encode_entry, Entry, OwnedMasthead, Path, SignedWillowEntry,
+};
 use riot_transport::iroh::{bind, serve_followed_site};
 use riot_transport::ticket::mint;
+
+fn owner_sign(
+    masthead: &OwnedMasthead,
+    path: &[&[u8]],
+    timestamp: u64,
+    payload: &[u8],
+) -> SignedWillowEntry {
+    let entry = Entry::builder()
+        .namespace_id(masthead.namespace_id().clone())
+        .subspace_id(masthead.owner_subspace_id())
+        .path(Path::from_slices(path).expect("path"))
+        .timestamp(timestamp)
+        .payload(payload)
+        .build();
+    let authorised = masthead
+        .authorise_owner_entry(entry)
+        .expect("owner authorises");
+    let token = authorised.authorisation_token();
+    let signature: ed25519_dalek::Signature = token.signature().clone().into();
+    SignedWillowEntry {
+        entry_bytes: encode_entry(authorised.entry()),
+        capability_bytes: encode_capability(token.capability()),
+        signature: signature.to_bytes(),
+        payload_bytes: payload.to_vec(),
+    }
+}
 
 fn run(args: &[&str]) -> std::process::Output {
     Command::new(env!("CARGO_BIN_EXE_riot-follow"))
@@ -55,7 +85,14 @@ fn expired_signed_ticket_is_refused_before_dialing() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn valid_iroh_ticket_syncs_with_a_real_seed() {
-    let namespace = [0x11; 32];
+    let masthead = OwnedMasthead::generate().expect("masthead");
+    let namespace = *masthead.namespace_id().as_bytes();
+    let owner_record = owner_sign(
+        &masthead,
+        &[MOD_COMPONENT, b"cli-test"],
+        100,
+        b"owner moderation record",
+    );
     let seed = bind().await.expect("bind seed");
     let node_id = seed
         .id()
@@ -75,7 +112,9 @@ async fn valid_iroh_ticket_syncs_with_a_real_seed() {
     };
     let node_hint = format!("{node_id}@{loopback}");
     let seed_task =
-        tokio::spawn(async move { serve_followed_site(&seed, namespace, vec![]).await });
+        tokio::spawn(
+            async move { serve_followed_site(&seed, namespace, vec![owner_record]).await },
+        );
 
     let key = ed25519_dalek::SigningKey::from_bytes(&[7u8; 32]);
     let ticket = mint(
@@ -117,6 +156,6 @@ async fn valid_iroh_ticket_syncs_with_a_real_seed() {
         .expect("seed failed to serve");
     assert_eq!(
         String::from_utf8(output.stdout).unwrap(),
-        "synced — 0 entries now live in the local store\n"
+        "synced — 1 entries now live in the local store\n"
     );
 }

@@ -10,12 +10,15 @@
 //! Build with `--features arti` to enable Tor dialing for tickets that carry an
 //! attested `onion=` address or that `require=arti`.
 
-use riot_core::session::{EvidenceStore, ImportContext, RiotSession};
+use riot_core::session::{EvidenceStore, RiotSession};
+use riot_core::site::admit_followed_site_frame;
 use riot_core::sync::ByteSyncSession as SyncSession;
 use riot_transport::iroh::{addr_from_hint, bind, dial_with_ticket};
 use riot_transport::select::{select_transport, TransportChoice};
 use riot_transport::ticket::{admit_dial, parse, Capabilities, Ticket, TransportBlocked};
-use riot_transport::{Dialer, TransportError};
+#[cfg(any(feature = "arti", test))]
+use riot_transport::Dialer;
+use riot_transport::TransportError;
 
 // The Tor path is only available when this crate is built with `arti`.
 #[cfg(feature = "arti")]
@@ -178,6 +181,7 @@ async fn sync_over_iroh(
         .map_err(|error| FollowError::InvalidInput(format!("invalid node hint: {error}")))?;
     let endpoint = bind().await?;
     let (store, session) = open_follow_state(&ticket)?;
+    let root = ticket.namespace;
 
     let result = dial_with_ticket(
         &endpoint,
@@ -187,10 +191,7 @@ async fn sync_over_iroh(
         0,
         peer,
         session,
-        |bytes| {
-            import_bundle(&store, bytes, "iroh-follow");
-            true
-        },
+        |bytes| import_bundle(&store, root, bytes, "iroh-follow"),
     )
     .await;
 
@@ -200,6 +201,7 @@ async fn sync_over_iroh(
         .map_err(|error| FollowError::Store(format!("{error:?}")))
 }
 
+#[cfg(any(feature = "arti", test))]
 async fn sync_with_dialer<D>(
     ticket: &Ticket,
     dialer: D,
@@ -209,9 +211,9 @@ where
     D: Dialer + Unpin,
 {
     let (store, session) = open_follow_state(ticket)?;
+    let root = ticket.namespace;
     riot_transport::run_dial(dialer, session, true, |bytes| {
-        import_bundle(&store, bytes, import_source);
-        true
+        import_bundle(&store, root, bytes, import_source)
     })
     .await?;
     store
@@ -230,15 +232,13 @@ fn open_follow_state(ticket: &Ticket) -> Result<(EvidenceStore, SyncSession), Fo
     Ok((store, session))
 }
 
-fn import_bundle(store: &EvidenceStore, bytes: &[u8], source: &'static str) {
-    store
-        .inspect(bytes, ImportContext::new(source))
-        .expect("inspect")
-        .expect_preview()
-        .plan_all()
-        .expect("plan")
-        .commit()
-        .expect("commit");
+fn import_bundle(
+    store: &EvidenceStore,
+    root: [u8; 32],
+    bytes: &[u8],
+    source: &'static str,
+) -> bool {
+    admit_followed_site_frame(store, root, bytes, source).is_ok()
 }
 
 /// Dial the seed over Tor, using the ticket's attested onion address. Only
@@ -273,11 +273,10 @@ mod tests {
         admitted_transport, capabilities, current_unix_time, dispatch_transport, follow,
         success_message, sync_over_iroh, sync_over_tor, sync_with_dialer, FollowError,
     };
-    use riot_core::model::{AlertPayload, Certainty, Severity, Urgency};
     use riot_core::sync::ByteSyncSession;
+    use riot_core::willow::site_paths::MOD_COMPONENT;
     use riot_core::willow::{
-        authorise_entry, build_alert_entry, encode_capability, encode_entry,
-        generate_communal_author, EvidenceAuthor, SignedWillowEntry,
+        encode_capability, encode_entry, Entry, OwnedMasthead, Path, SignedWillowEntry,
     };
     use riot_transport::router::{BoxRead, BoxWrite};
     use riot_transport::select::TransportChoice;
@@ -320,27 +319,18 @@ mod tests {
         }
     }
 
-    fn signed(author: &EvidenceAuthor, object: u8) -> SignedWillowEntry {
-        let payload = riot_core::model::encode_alert(&AlertPayload {
-            object_id: [object; 16],
-            revision_id: [object; 16],
-            created_at: 1_000,
-            valid_from: None,
-            expires_at: 2_000,
-            language: "en".into(),
-            urgency: Urgency::Immediate,
-            severity: Severity::Severe,
-            certainty: Certainty::Observed,
-            headline: format!("follow CLI fixture {object}"),
-            description: "transport fixture".into(),
-            affected_area_claim: None,
-            source_claims: vec!["fixture".into()],
-            ai_assisted: false,
-        })
-        .unwrap();
-        let entry =
-            build_alert_entry(author, &[object; 16], &[object; 16], 1_000, &payload).unwrap();
-        let authorised = authorise_entry(author, entry).unwrap();
+    fn signed(masthead: &OwnedMasthead, object: u8) -> SignedWillowEntry {
+        let payload = format!("follow CLI fixture {object}").into_bytes();
+        let entry = Entry::builder()
+            .namespace_id(masthead.namespace_id().clone())
+            .subspace_id(masthead.owner_subspace_id())
+            .path(Path::from_slices(&[MOD_COMPONENT, &[object]]).expect("path"))
+            .timestamp(u64::from(object))
+            .payload(&payload)
+            .build();
+        let authorised = masthead
+            .authorise_owner_entry(entry)
+            .expect("owner authorises");
         let token = authorised.authorisation_token();
         let signature: ed25519_dalek::Signature = token.signature().clone().into();
         SignedWillowEntry {
@@ -428,11 +418,12 @@ mod tests {
 
     #[tokio::test]
     async fn generic_dial_path_imports_the_received_bundle() {
-        let author = generate_communal_author().unwrap();
-        let namespace = author.identity().namespace_id;
+        let masthead = OwnedMasthead::generate().expect("masthead");
+        let namespace = *masthead.namespace_id().as_bytes();
         let ticket = ticket(namespace, "none", None);
         let seed =
-            ByteSyncSession::new(namespace, vec![signed(&author, 1), signed(&author, 2)]).unwrap();
+            ByteSyncSession::new(namespace, vec![signed(&masthead, 1), signed(&masthead, 2)])
+                .unwrap();
 
         let (follower_stream, seed_stream) = tokio::io::duplex(1 << 16);
         let (follower_read, follower_write) = tokio::io::split(follower_stream);

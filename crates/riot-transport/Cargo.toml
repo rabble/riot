@@ -35,4 +35,4 @@ default = []
 arti = ["dep:arti-client", "dep:tor-rtcompat"]
 
 [dev-dependencies]
-tokio = { version = "1.53.0", features = ["rt", "rt-multi-thread", "macros", "time", "io-util"] }
+tokio = { version = "1.53.0", features = ["rt", "rt-multi-thread", "macros", "time", "io-util", "process"] }
