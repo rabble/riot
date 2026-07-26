@@ -211,7 +211,7 @@ final class ToolsSectionTests: XCTestCase {
         ))
     }
 
-    func testFailedDurableTrustReopenClearsTheRepositoryProjection() throws {
+    func testForcedFinalizeFailureWithFailedReopenReturnsSavedNeedsRestartAndReleasesRepository() throws {
         let root = isolatedDirectory()
         let storage = root.appendingPathComponent("durable-profile")
         let target = root.appendingPathComponent("profile-target")
@@ -240,22 +240,34 @@ final class ToolsSectionTests: XCTestCase {
         XCTAssertFalse(model.communities.isEmpty)
         XCTAssertTrue(model.canApproveApps)
         XCTAssertNotNil(model.lastSyncedText(for: namespaceID))
+        weak var originalRepository: RiotProfileRepository? = model.profileRepository
 
         try FileManager.default.removeItem(at: storage)
         XCTAssertTrue(FileManager.default.createFile(atPath: storage.path, contents: Data()))
 
-        XCTAssertFalse(model.recoverDurableTrustDecision(
-            namespaceID: namespaceID,
+        model.trustDecisionWriterForTesting = { requestedAppID, requestedNamespaceID in
+            throw RepositoryError.durableDecisionNeedsReopen(
+                namespaceID: requestedNamespaceID,
+                appIDHex: requestedAppID,
+                trusted: true
+            )
+        }
+        let result = model.approveTool(
             appID: appID,
-            trusted: true,
-            requestedNamespaceID: namespaceID,
-            requestedAppID: appID
-        ))
+            expectedNamespaceID: namespaceID
+        )
 
+        let recoveryMessage =
+            "The tool approval was saved, but Riot couldn’t verify it after reopening "
+            + "your profile. Restart Riot and check the tool before trying again."
+        XCTAssertEqual(result, .savedNeedsRestart(message: recoveryMessage))
         XCTAssertEqual(
             model.errorMessage,
-            "The tool approval was saved, but Riot couldn’t verify it after reopening "
-                + "your profile. Restart Riot and check the tool before trying again."
+            recoveryMessage
+        )
+        XCTAssertNil(
+            originalRepository,
+            "durable recovery must release the failed repository before reopening"
         )
         XCTAssertNil(model.profileRepository)
         XCTAssertFalse(model.isProfileOpen)

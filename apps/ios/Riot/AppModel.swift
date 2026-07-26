@@ -459,6 +459,16 @@ public enum NearbyReannounceGate {
     }
 }
 
+public enum RiotToolApprovalResult: Equatable, Sendable {
+    case added
+    case notAdded(message: String)
+    case savedNeedsRestart(message: String)
+
+    public var wasAdded: Bool {
+        self == .added
+    }
+}
+
 @MainActor
 public final class RiotAppModel: ObservableObject {
     /// Tab selection. Observe this — not the app model — for destination changes;
@@ -474,6 +484,10 @@ public final class RiotAppModel: ObservableObject {
     }
 
     @Published public private(set) var space: RiotSpace?
+
+    /// Test-only injection at the repository-write boundary. Production leaves
+    /// this nil and always writes through `RiotProfileRepository`.
+    var trustDecisionWriterForTesting: ((String, String) throws -> Void)?
 
     /// The signed newswire `SpaceDescriptorV1` entry id of the selected
     /// community, when this device knows it. It is captured from
@@ -1747,7 +1761,20 @@ public final class RiotAppModel: ObservableObject {
     /// app after the selected community changes.
     @discardableResult
     public func trustApp(appID: String, expectedNamespaceID: String) -> Bool {
-        guard repository != nil else { return false }
+        approveTool(appID: appID, expectedNamespaceID: expectedNamespaceID).wasAdded
+    }
+
+    /// The result-bearing approval path used by the permission sheet. A durable
+    /// decision that could not be verified after reopening is not an ordinary
+    /// failure: the bytes on disk already say "approved", so the sheet must ask
+    /// for a restart and must never claim that nothing changed.
+    public func approveTool(
+        appID: String,
+        expectedNamespaceID: String
+    ) -> RiotToolApprovalResult {
+        guard repository != nil else {
+            return .notAdded(message: "The profile is not open. Nothing changed. Try again.")
+        }
         do {
             // Keep the repository retain inside a separate stack frame. If Rust
             // finalized unsuccessfully, that frame unwinds before recovery
@@ -1759,13 +1786,13 @@ public final class RiotAppModel: ObservableObject {
             errorMessage = nil
             refreshApps()
             refreshOrganizerState()
-            return true
+            return .added
         } catch let RepositoryError.durableDecisionNeedsReopen(
             namespaceID,
             durableAppID,
             trusted
         ) {
-            let recovered = recoverDurableTrustDecision(
+            let result = resolveDurableTrustDecision(
                 namespaceID: namespaceID,
                 appID: durableAppID,
                 trusted: trusted,
@@ -1773,14 +1800,16 @@ public final class RiotAppModel: ObservableObject {
                 requestedAppID: appID
             )
             refreshOrganizerState()
-            return recovered
+            return result
         } catch {
             // Not `perform`: its `String(describing:)` is exactly how "InvalidInput"
             // reached a person who had done nothing wrong.
             errorMessage = Self.approvalFailureMessage(error)
             refreshApps()
             refreshOrganizerState()
-            return false
+            return .notAdded(
+                message: errorMessage ?? "The tool couldn’t be added. Nothing changed. Try again."
+            )
         }
     }
 
@@ -1788,6 +1817,10 @@ public final class RiotAppModel: ObservableObject {
         appID: String,
         expectedNamespaceID: String
     ) throws {
+        if let trustDecisionWriterForTesting {
+            try trustDecisionWriterForTesting(appID, expectedNamespaceID)
+            return
+        }
         guard let repository else { throw RepositoryError.profileClosed }
         try repository.trustApp(
             appID: appID,
@@ -1857,6 +1890,31 @@ public final class RiotAppModel: ObservableObject {
         }
         errorMessage = nil
         return true
+    }
+
+    /// Handles the typed repository signal emitted after a durable write but a
+    /// failed live finalize. This is a shipping path (not a test seam): the
+    /// repository is released, the profile is reopened, and the exact grant is
+    /// verified before success is reported.
+    func resolveDurableTrustDecision(
+        namespaceID: String,
+        appID: String,
+        trusted: Bool,
+        requestedNamespaceID: String,
+        requestedAppID: String
+    ) -> RiotToolApprovalResult {
+        if recoverDurableTrustDecision(
+            namespaceID: namespaceID,
+            appID: appID,
+            trusted: trusted,
+            requestedNamespaceID: requestedNamespaceID,
+            requestedAppID: requestedAppID
+        ) {
+            return .added
+        }
+        return .savedNeedsRestart(
+            message: errorMessage ?? Self.durableTrustRecoveryFailureMessage
+        )
     }
 
     /// Clears every value derived from the repository before reopening it. This

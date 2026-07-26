@@ -17,12 +17,80 @@ final class DirectoryStorefrontTests: XCTestCase {
 
     func testCompactToolVocabularyUsesToolsAndCommunities() {
         XCTAssertEqual(ToolStrings.emptyTitle, "No tools yet")
-        XCTAssertTrue(ToolStrings.intro.lowercased().contains("tool"))
-        XCTAssertTrue(ToolStrings.intro.lowercased().contains("communities"))
+        XCTAssertEqual(ToolStrings.headerEyebrow(communityTitle: "River City Wire"), "River City Wire")
+        XCTAssertEqual(ToolStrings.inCommunity(communityTitle: "River City Wire"), "In River City Wire")
+        XCTAssertEqual(ToolStrings.availableToAdd, "Available to add")
+        XCTAssertEqual(ToolStrings.moreTools, "More tools")
+        XCTAssertEqual(
+            ToolStrings.recommend(communityTitle: "River City Wire"),
+            "Recommend to River City Wire"
+        )
+        XCTAssertEqual(
+            ToolStrings.retractRecommendation(communityTitle: "River City Wire"),
+            "Take back recommendation from River City Wire"
+        )
+        XCTAssertEqual(
+            ToolStrings.makeAvailable(communityTitle: "River City Wire"),
+            "Make available in River City Wire"
+        )
+        XCTAssertEqual(ToolStrings.retry, "Try again")
+        XCTAssertEqual(
+            ToolStrings.retryAccessibilityLabel(communityTitle: "River City Wire"),
+            "Try tools for River City Wire again"
+        )
+        XCTAssertEqual(
+            ToolStrings.emptyMessage(communityTitle: "River City Wire"),
+            "Tools added to River City Wire will appear here."
+        )
+        XCTAssertEqual(
+            ToolStrings.inlineEmpty(communityTitle: "River City Wire"),
+            "No tools in River City Wire yet"
+        )
+        XCTAssertEqual(ToolStrings.chooseCommunity, "Choose a community to see its tools")
+        XCTAssertEqual(
+            ToolStrings.loading(communityTitle: "River City Wire"),
+            "Loading tools for River City Wire…"
+        )
         for value in ToolStrings.userFacingVocabulary {
             XCTAssertFalse(value.localizedCaseInsensitiveContains("space app"))
             XCTAssertFalse(value.localizedCaseInsensitiveContains("renderer:"))
+            XCTAssertFalse(value.localizedCaseInsensitiveContains("from your communities"))
+            XCTAssertFalse(value.localizedCaseInsensitiveContains("this community"))
+            XCTAssertFalse(value.localizedCaseInsensitiveContains("built in"))
+            XCTAssertFalse(value.localizedCaseInsensitiveContains("review"))
+            XCTAssertFalse(value.localizedCaseInsensitiveContains("share"))
         }
+    }
+
+    func testDirectoryCanReleaseAClosedRepositoryAndAttachItsReopenedReplacement() throws {
+        let first = FakeDirectoryPort(
+            listings: [listing(appID: appID, name: "Chat")],
+            space: RiotSpace(namespaceID: "aa", title: "Community A")
+        )
+        let reopened = FakeDirectoryPort(
+            listings: [
+                listing(appID: appID, name: "Chat", trustedInSpaces: [Data([0xbb])])
+            ],
+            installed: [heldApp(appID: appID, name: "Chat", trusted: true)],
+            space: RiotSpace(namespaceID: "bb", title: "River City Wire")
+        )
+        let model = RiotDirectoryModel(port: first)
+        model.refresh(approval: .organizer)
+        XCTAssertEqual(model.snapshot?.communityTitle, "Community A")
+
+        model.detach()
+        model.refresh(approval: .organizer)
+        XCTAssertNil(model.snapshot)
+        XCTAssertTrue(model.rows.isEmpty)
+
+        model.attach(port: reopened)
+        model.refresh(approval: .organizer)
+
+        XCTAssertEqual(model.snapshot?.communityTitle, "River City Wire")
+        XCTAssertEqual(
+            try XCTUnwrap(model.snapshot?.inCommunity.first).primaryAction,
+            .open(title: "Open Chat")
+        )
     }
 
     // MARK: - Matching a listing to what this device actually holds
@@ -466,6 +534,7 @@ final class DirectoryStorefrontTests: XCTestCase {
 
         XCTAssertTrue(model.rows.isEmpty)
         XCTAssertNotNil(model.errorMessage)
+        XCTAssertEqual(model.selectedCommunityTitle, nil)
     }
 
     // MARK: - Selected-community presentation
@@ -646,16 +715,23 @@ final class DirectoryStorefrontTests: XCTestCase {
         let model = RiotDirectoryModel(port: port)
         model.refresh(approval: .organizer)
         XCTAssertEqual(model.snapshot?.communityTitle, "Community A")
+        XCTAssertEqual(model.selectedCommunityTitle, "Community A")
 
         port.failure = FakeDirectoryError.unavailable
         model.refresh(approval: .organizer)
         XCTAssertEqual(model.snapshot?.communityTitle, "Community A")
+        XCTAssertEqual(model.selectedCommunityTitle, "Community A")
         XCTAssertEqual(model.failedNamespace, "aa")
         XCTAssertEqual(model.errorMessage, "Couldn’t load tools for Community A.")
 
         port.currentSpace = b
         model.refresh(approval: .organizer)
         XCTAssertNil(model.snapshot, "a new namespace never keeps the previous community’s rows")
+        XCTAssertEqual(
+            model.selectedCommunityTitle,
+            "River City Wire",
+            "the header remains named while the new community is loading or failed"
+        )
         XCTAssertTrue(model.rows.isEmpty)
         XCTAssertEqual(model.failedNamespace, "bb")
         XCTAssertEqual(model.errorMessage, "Couldn’t load tools for River City Wire.")
@@ -688,6 +764,54 @@ final class DirectoryStorefrontTests: XCTestCase {
 
         XCTAssertEqual(firstA.namespaceID, secondA.namespaceID)
         XCTAssertNotEqual(firstA.selectionGeneration, secondA.selectionGeneration)
+    }
+
+    func testImportContextIsBoundAcrossBothFilePickersAndRejectsABackToA() throws {
+        let a = RiotSpace(namespaceID: "aa", title: "Community A")
+        let b = RiotSpace(namespaceID: "bb", title: "Community B")
+        let port = FakeDirectoryPort(space: a)
+        let model = RiotDirectoryModel(port: port)
+
+        model.refresh(approval: .organizer)
+        let firstA = try XCTUnwrap(model.captureImportContext())
+        XCTAssertNoThrow(try model.validate(firstA))
+
+        port.currentSpace = b
+        model.refresh(approval: .organizer)
+        port.currentSpace = a
+        model.refresh(approval: .organizer)
+
+        XCTAssertThrowsError(try model.validate(firstA)) { error in
+            XCTAssertEqual(error as? RiotDirectoryActionError, .staleSelection)
+        }
+        let secondA = try XCTUnwrap(model.captureImportContext())
+        XCTAssertNotEqual(firstA.selectionGeneration, secondA.selectionGeneration)
+        XCTAssertNoThrow(try model.validate(secondA))
+    }
+
+    func testImportedUntrustedToolImmediatelyPreparesItsNamedAddGate() throws {
+        let installed = heldApp(appID: appID, name: "Chat", trusted: false)
+        let port = FakeDirectoryPort(
+            listings: [listing(appID: appID, name: "Chat")],
+            installed: [installed],
+            space: RiotSpace(
+                namespaceID: RiotDirectoryRow.hex(spaceID),
+                title: "River City Wire"
+            )
+        )
+        let model = RiotDirectoryModel(port: port)
+        model.refresh(approval: .organizer)
+
+        let prepared = try model.prepareImportedTool(installed)
+
+        XCTAssertEqual(
+            prepared.row.primaryAction,
+            .add(title: "Add Chat to River City Wire")
+        )
+        XCTAssertFalse(prepared.app.trusted)
+        XCTAssertEqual(prepared.context.communityTitle, "River City Wire")
+        XCTAssertTrue(model.snapshot?.inCommunity.isEmpty == true)
+        XCTAssertEqual(model.snapshot?.availableToAdd.map(\.name), ["Chat"])
     }
 
     func testModelRejectsStaleGenerationAndWrongNamespaceContexts() throws {
@@ -748,6 +872,28 @@ final class DirectoryStorefrontTests: XCTestCase {
         XCTAssertEqual(port.gotten, [appID])
         XCTAssertEqual(port.getNamespaces, [space.namespaceID])
         XCTAssertEqual(model.snapshot?.inCommunity.first?.primaryAction, .open(title: "Open Chat"))
+    }
+
+    func testRuntimeAuthorizedInstalledToolStaysInCommunityWhenListingProjectionIsStale() throws {
+        let trustedApp = heldApp(appID: appID, name: "Chat", trusted: true)
+        let port = FakeDirectoryPort(
+            listings: [listing(appID: appID, name: "Chat", trustedInSpaces: [])],
+            installed: [trustedApp],
+            space: space
+        )
+        let model = RiotDirectoryModel(port: port)
+
+        model.refresh(approval: .organizer)
+
+        let row = try XCTUnwrap(model.snapshot?.inCommunity.first)
+        XCTAssertEqual(row.primaryAction, .open(title: "Open Chat"))
+        guard case let .open(app) = row.availability else {
+            return XCTFail("the runtime security gate authorized Chat, so it must remain open")
+        }
+        XCTAssertTrue(app.trusted)
+        XCTAssertFalse(
+            model.snapshot?.availableToAdd.contains { $0.appIDHex == row.appIDHex } == true
+        )
     }
 
     func testPrepareAddLazilyAdmitsADisabledToolWithoutTrustingIt() throws {
@@ -1082,10 +1228,264 @@ final class DirectoryStorefrontTests: XCTestCase {
         )
     }
 
+    func testSuccessfulApprovalPublishesExactNamedReceipt() throws {
+        let port = FakeDirectoryPort(
+            listings: [listing(appID: appID, name: "Chat", trustedInSpaces: [spaceID])],
+            installed: [heldApp(appID: appID, name: "Chat", trusted: true)],
+            space: RiotSpace(
+                namespaceID: RiotDirectoryRow.hex(spaceID),
+                title: "River City Wire"
+            )
+        )
+        let model = RiotDirectoryModel(port: port)
+        model.refresh(approval: .organizer)
+        let row = try XCTUnwrap(model.snapshot?.inCommunity.first)
+        let context = try XCTUnwrap(row.actionContext)
+
+        model.confirmAdded(context)
+
+        XCTAssertEqual(model.confirmation, "Added Chat to River City Wire")
+    }
+
     func testUserFacingVocabularyNeverUsesGenericThisCommunity() {
         for value in ToolStrings.userFacingVocabulary {
             XCTAssertFalse(value.localizedCaseInsensitiveContains("this community"))
         }
+    }
+
+    // MARK: - Named add confirmation
+
+    func testAddSheetCopyNamesTheToolAndSelectedCommunity() {
+        let context = RiotDirectoryActionContext(
+            appID: appID,
+            appIDHex: RiotDirectoryRow.hex(appID),
+            appName: "Chat",
+            namespaceID: RiotDirectoryRow.hex(spaceID),
+            communityTitle: "River City Wire",
+            selectionGeneration: 7
+        )
+        let copy = AppReviewSheetCopy(context: context)
+
+        XCTAssertEqual(copy.title, "Add Chat to River City Wire?")
+        XCTAssertEqual(copy.confirmation, "Add to River City Wire")
+        XCTAssertEqual(
+            copy.memberReason,
+            "Only an organizer of River City Wire can add this tool."
+        )
+        XCTAssertEqual(
+            copy.legacyReason,
+            "This profile can’t add tools to River City Wire. Start a new profile to organize a community."
+        )
+        XCTAssertEqual(
+            copy.failure,
+            "Couldn’t add Chat to River City Wire. Nothing changed. Try again."
+        )
+    }
+
+    func testAddSheetSubmissionStatePreventsDuplicatesAndDismissesOnlyOnSuccess() {
+        var state = AppReviewSheetSubmissionState.idle
+
+        XCTAssertTrue(state.begin())
+        XCTAssertEqual(state, .adding)
+        XCTAssertFalse(state.begin(), "a second tap while approval is running must do nothing")
+        XCTAssertFalse(state.shouldDismiss)
+
+        state.finish(.notAdded(message: "Couldn’t add Chat to River City Wire. Nothing changed. Try again."))
+        XCTAssertEqual(
+            state,
+            .failed(message: "Couldn’t add Chat to River City Wire. Nothing changed. Try again.")
+        )
+        XCTAssertTrue(state.canSubmit, "failure keeps the sheet open with a retry")
+        XCTAssertFalse(state.shouldDismiss)
+
+        XCTAssertTrue(state.begin())
+        state.finish(.added)
+        XCTAssertEqual(state, .succeeded)
+        XCTAssertFalse(state.canSubmit)
+        XCTAssertTrue(state.shouldDismiss)
+    }
+
+    func testDurableSavedApprovalNeverClaimsNothingChangedOrOffersDuplicateSubmit() {
+        let message =
+            "The tool approval was saved, but Riot couldn’t verify it after reopening "
+            + "your profile. Restart Riot and check the tool before trying again."
+        var state = AppReviewSheetSubmissionState.adding
+
+        state.finish(.savedNeedsRestart(message: message))
+
+        XCTAssertEqual(state, .savedNeedsRestart(message: message))
+        XCTAssertFalse(state.canSubmit)
+        XCTAssertFalse(state.shouldDismiss)
+        XCTAssertFalse(state.message?.contains("Nothing changed") == true)
+    }
+
+    func testDurableSavedApprovalRemainsVisibleAfterRecoveryClearsOrganizerCapability() {
+        let context = RiotDirectoryActionContext(
+            appID: appID,
+            appIDHex: RiotDirectoryRow.hex(appID),
+            appName: "Chat",
+            namespaceID: RiotDirectoryRow.hex(spaceID),
+            communityTitle: "River City Wire",
+            selectionGeneration: 7
+        )
+        let message =
+            "The tool approval was saved, but Riot couldn’t verify it after reopening "
+            + "your profile. Restart Riot and check the tool before trying again."
+
+        let presentation = AppReviewSheetPresentation(
+            permissions: ["Read messages"],
+            context: context,
+            capability: .member,
+            submissionState: .savedNeedsRestart(message: message)
+        )
+
+        XCTAssertEqual(
+            presentation.elements,
+            [
+                .permissions(["Read messages"]),
+                .approval(
+                    title: "Add to River City Wire",
+                    isEnabled: false,
+                    accessibilityHint: message
+                ),
+            ]
+        )
+    }
+
+    func testRetainedEmptySnapshotKeepsInlineEmptyMessageAlongsideScopedError() {
+        let snapshot = RiotDirectorySnapshot(
+            namespaceID: RiotDirectoryRow.hex(spaceID),
+            communityTitle: "River City Wire",
+            inCommunity: [],
+            availableToAdd: [],
+            moreTools: []
+        )
+        let state = DirectoryScreenState(
+            snapshot: snapshot,
+            scopedError: "Couldn’t load tools for River City Wire."
+        )
+
+        XCTAssertEqual(state.scopedError, "Couldn’t load tools for River City Wire.")
+        XCTAssertEqual(state.inlineEmptyMessage, "No tools in River City Wire yet")
+    }
+
+    func testApprovalViewStatePreservesDurableRecoverySheetAndFocusesOnlyOnDismiss() {
+        let fullID = String(repeating: "ab", count: 32)
+        var state = DirectoryApprovalFlowState()
+
+        state.record(.added, appIDHex: fullID)
+        XCTAssertEqual(state.pendingFocusAppID, fullID)
+        XCTAssertEqual(
+            state.consumeFocusOnDismiss(),
+            fullID,
+            "successful approval stores full-ID focus until sheet dismissal"
+        )
+        XCTAssertNil(state.pendingFocusAppID)
+
+        let recovery =
+            "The tool approval was saved, but Riot couldn’t verify it after reopening "
+            + "your profile. Restart Riot and check the tool before trying again."
+        state.record(.savedNeedsRestart(message: recovery), appIDHex: fullID)
+        XCTAssertFalse(
+            state.shouldCancelSheet(currentNamespaceID: nil),
+            "coherent recovery clears space, but its restart guidance must remain visible"
+        )
+        XCTAssertTrue(
+            state.shouldCancelSheet(currentNamespaceID: "another-community"),
+            "an actual community switch still cancels the stale sheet"
+        )
+        XCTAssertNil(state.consumeFocusOnDismiss())
+    }
+
+    func testAddSheetPresentationPutsPermissionsBeforeOrganizerApproval() throws {
+        let context = RiotDirectoryActionContext(
+            appID: appID,
+            appIDHex: RiotDirectoryRow.hex(appID),
+            appName: "Chat",
+            namespaceID: RiotDirectoryRow.hex(spaceID),
+            communityTitle: "River City Wire",
+            selectionGeneration: 7
+        )
+        let presentation = AppReviewSheetPresentation(
+            permissions: ["Read messages", "Keep its own notes"],
+            context: context,
+            capability: .organizer,
+            submissionState: .idle
+        )
+
+        XCTAssertEqual(
+            presentation.elements,
+            [
+                .permissions(["Read messages", "Keep its own notes"]),
+                .approval(
+                    title: "Add to River City Wire",
+                    isEnabled: true,
+                    accessibilityHint: nil
+                ),
+            ]
+        )
+
+        let failed = AppReviewSheetPresentation(
+            permissions: ["Read messages"],
+            context: context,
+            capability: .organizer,
+            submissionState: .failed(
+                message: "Couldn’t add Chat to River City Wire. Nothing changed. Try again."
+            )
+        )
+        guard case let .approval(_, isEnabled, accessibilityHint) =
+            try XCTUnwrap(failed.elements.last)
+        else {
+            return XCTFail("organizer failure must keep the named approval action")
+        }
+        XCTAssertTrue(isEnabled)
+        XCTAssertEqual(
+            accessibilityHint,
+            "Couldn’t add Chat to River City Wire. Nothing changed. Try again."
+        )
+    }
+
+    func testAddSheetMemberAndLegacyPresentReasonsWithoutApprovalActions() {
+        let context = RiotDirectoryActionContext(
+            appID: appID,
+            appIDHex: RiotDirectoryRow.hex(appID),
+            appName: "Chat",
+            namespaceID: RiotDirectoryRow.hex(spaceID),
+            communityTitle: "River City Wire",
+            selectionGeneration: 7
+        )
+
+        let member = AppReviewSheetPresentation(
+            permissions: ["Read messages"],
+            context: context,
+            capability: .member,
+            submissionState: .idle
+        )
+        XCTAssertEqual(
+            member.elements,
+            [
+                .permissions(["Read messages"]),
+                .unavailable("Only an organizer of River City Wire can add this tool."),
+            ]
+        )
+        XCTAssertFalse(member.elements.contains { $0.isApproval })
+
+        let legacy = AppReviewSheetPresentation(
+            permissions: ["Read messages"],
+            context: context,
+            capability: .unavailable,
+            submissionState: .idle
+        )
+        XCTAssertEqual(
+            legacy.elements,
+            [
+                .permissions(["Read messages"]),
+                .unavailable(
+                    "This profile can’t add tools to River City Wire. Start a new profile to organize a community."
+                ),
+            ]
+        )
+        XCTAssertFalse(legacy.elements.contains { $0.isApproval })
     }
 
     // MARK: - Fixtures

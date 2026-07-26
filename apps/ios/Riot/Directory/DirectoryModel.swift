@@ -99,6 +99,25 @@ public struct RiotDirectoryActionContext: Equatable, Sendable {
     }
 }
 
+/// The community visit captured before the first file picker opens. Both file
+/// choices must complete for this same generation; A → B → A is stale even
+/// though the namespace text matches again.
+public struct RiotDirectoryImportContext: Equatable, Sendable {
+    public let namespaceID: String
+    public let communityTitle: String
+    public let selectionGeneration: UInt64
+
+    public init(
+        namespaceID: String,
+        communityTitle: String,
+        selectionGeneration: UInt64
+    ) {
+        self.namespaceID = namespaceID
+        self.communityTitle = communityTitle
+        self.selectionGeneration = selectionGeneration
+    }
+}
+
 public enum RiotDirectoryPrimaryAction: Equatable, Sendable {
     case open(title: String)
     case add(title: String)
@@ -260,7 +279,13 @@ public extension RiotDirectoryRow {
         selectionGeneration: UInt64 = 0,
         endorsedByMe: Bool = false
     ) -> RiotDirectoryRow {
+        // `InstalledApp.trusted` is the runtime execution gate for the selected
+        // community. On a durable reopen it can be restored before the directory
+        // listing's derived `trustedInSpaces` marker catches up. Reconcile the two
+        // verified projections so an already-authorized installed tool remains
+        // immediately usable instead of falling back to Add.
         let trusted = trustedInCurrentSpace(listing: listing, space: space)
+            || installed?.trusted == true
         let appIDHex = hex(listing.appId)
 
         var badges: [String] = []
@@ -311,7 +336,7 @@ public extension RiotDirectoryRow {
             ),
             actionContext: context,
             accessibilityIdentifier: "directory-tool-\(appIDHex)",
-            canRecommend: canRecommend(listing: listing, space: space),
+            canRecommend: trusted && space != nil,
             canMakeAvailable: space != nil && listing.bundlePresent,
             endorsedByMe: endorsedByMe
         )
@@ -425,8 +450,10 @@ public extension RiotDirectoryRow {
 public final class RiotDirectoryModel: ObservableObject {
     @Published public private(set) var rows: [RiotDirectoryRow] = []
     @Published public private(set) var snapshot: RiotDirectorySnapshot?
+    @Published public private(set) var selectedCommunityTitle: String?
     @Published public private(set) var isLoading = false
     @Published public private(set) var failedNamespace: String?
+    @Published public private(set) var failedCommunityTitle: String?
     @Published public private(set) var errorMessage: String?
     /// Plain-language receipt for the last action ("Recommended Checklist"),
     /// shown until the person leaves the surface.
@@ -444,9 +471,24 @@ public final class RiotDirectoryModel: ObservableObject {
 
     /// Binds the surface to the opened profile. The shell renders every tab
     /// before `bootstrap` has opened one, so the port arrives after the view.
+    /// Assignment is intentional: durable trust recovery can replace the
+    /// repository instance while this view remains alive.
     public func attach(port: DirectoryPorting?) {
-        guard self.port == nil else { return }
         self.port = port
+    }
+
+    /// Releases the repository before a trust decision. That decision may need
+    /// to close and reopen the profile; retaining the old repository here would
+    /// keep the SQLite-backed session alive across recovery.
+    public func detach() {
+        port = nil
+        rows = []
+        snapshot = nil
+        selectedCommunityTitle = nil
+        failedNamespace = nil
+        failedCommunityTitle = nil
+        errorMessage = nil
+        isLoading = false
     }
 
     /// Recomputes the directory. Rust assembles it on demand, so this is the
@@ -463,13 +505,16 @@ public final class RiotDirectoryModel: ObservableObject {
         guard let port else {
             rows = []
             snapshot = nil
+            selectedCommunityTitle = nil
             failedNamespace = nil
+            failedCommunityTitle = nil
             errorMessage = nil
             isLoading = false
             return
         }
 
         let space = port.currentSpace
+        selectedCommunityTitle = space?.title
         observeSelection(space?.namespaceID)
         isLoading = true
         defer { isLoading = false }
@@ -538,9 +583,11 @@ public final class RiotDirectoryModel: ObservableObject {
                 snapshot = nil
             }
             failedNamespace = nil
+            failedCommunityTitle = nil
             errorMessage = nil
         } catch {
             failedNamespace = space?.namespaceID
+            failedCommunityTitle = space?.title
             if let space {
                 errorMessage = "Couldn’t load tools for \(space.title)."
             } else {
@@ -570,6 +617,60 @@ public final class RiotDirectoryModel: ObservableObject {
         else {
             throw RiotDirectoryActionError.staleSelection
         }
+    }
+
+    public func captureImportContext() -> RiotDirectoryImportContext? {
+        guard let space = port?.currentSpace else { return nil }
+        return RiotDirectoryImportContext(
+            namespaceID: space.namespaceID,
+            communityTitle: space.title,
+            selectionGeneration: selectionGeneration
+        )
+    }
+
+    public func validate(_ context: RiotDirectoryImportContext) throws {
+        guard
+            let currentNamespace = port?.currentSpace?.namespaceID,
+            currentNamespace.caseInsensitiveCompare(context.namespaceID) == .orderedSame,
+            context.selectionGeneration == selectionGeneration
+        else {
+            throw RiotDirectoryActionError.staleSelection
+        }
+    }
+
+    /// Turns a just-verified local import into the same named permission gate
+    /// used by every other disabled tool. Importing supplies bytes only; this
+    /// method proves the tool remains in Available to add and untrusted.
+    public func prepareImportedTool(
+        _ installed: RiotSpaceApp
+    ) throws -> (
+        row: RiotDirectoryRow,
+        app: RiotSpaceApp,
+        context: RiotDirectoryActionContext
+    ) {
+        refresh(approval: lastApproval)
+        guard
+            let row = snapshot?.availableToAdd.first(where: {
+                $0.appIDHex.caseInsensitiveCompare(installed.appIDHex) == .orderedSame
+            }),
+            let context = row.actionContext,
+            case .add = row.primaryAction
+        else {
+            throw RiotDirectoryActionError.staleSelection
+        }
+        let app = try prepareAdd(row, context: context)
+        guard !app.trusted else {
+            throw RiotDirectoryActionError.staleSelection
+        }
+        return (row, app, context)
+    }
+
+    /// Receipt for the only successful end of the permission flow. The caller
+    /// invokes this after reattaching and refreshing the repository projection.
+    public func confirmAdded(_ context: RiotDirectoryActionContext) {
+        guard (try? validate(context)) != nil else { return }
+        confirmation = "Added \(context.appName) to \(context.communityTitle)"
+        errorMessage = nil
     }
 
     /// Resolves an enabled tool to a locally admitted app. A directory listing
@@ -804,6 +905,7 @@ public final class RiotDirectoryModel: ObservableObject {
             snapshot = nil
             rows = []
             failedNamespace = nil
+            failedCommunityTitle = nil
             errorMessage = nil
         }
     }
