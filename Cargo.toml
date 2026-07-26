@@ -10,6 +10,7 @@ members = [
     "crates/riot-conformance",
     "crates/xtask",
 ]
+exclude = ["vendor/tor-dirmgr-0.44.0"]
 resolver = "2"
 
 [workspace.dependencies]
@@ -44,6 +45,12 @@ chacha20poly1305 = { version = "=0.10.1", default-features = false, features = [
 # Physical database for the multi-space store. Bundling fixes SQLite and JSON
 # behavior across iOS, Android, and macOS instead of inheriting each OS build.
 rusqlite = { version = "=0.40.1", default-features = false, features = ["backup", "blob", "bundled", "hooks", "limits", "serde_json"] }
+
+[patch.crates-io]
+# Arti 0.44 caps rusqlite below 0.40 even though tor-dirmgr's used API remains
+# compatible with 0.40.1. Keep Riot's pinned SQLite 3.53.2 engine by carrying
+# the upstream crate with only that dependency bound widened; see RIOT_PATCH.md.
+tor-dirmgr = { path = "vendor/tor-dirmgr-0.44.0" }
 
 # Evidence profile must unwind: the FFI boundary catches panics and
 # quarantines the session; abort would make that contract impossible.

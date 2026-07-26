@@ -126,6 +126,7 @@ async fn connect_followed_site_delivers_and_admits_over_real_iroh() {
         [0u8; 32],
         None,
         None,
+        None,
     );
     let caps = Capabilities {
         iroh: true,
@@ -179,6 +180,7 @@ async fn connect_followed_site_fails_closed_and_admits_nothing() {
         1,
         u64::MAX,
         [0u8; 32],
+        None,
         None,
         None,
     );
