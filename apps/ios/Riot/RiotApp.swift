@@ -8,7 +8,14 @@ struct RiotApp: App {
     var body: some Scene {
         WindowGroup {
             ConferenceShellView(model: model)
-                .task { bootstrap() }
+                .task {
+                    // Install the process-wide tracing subscriber BEFORE any
+                    // sync/reply work, so the Rust spans forward to the unified
+                    // log (Console.app / `log stream`). Idempotent: safe across
+                    // re-entrant launches. See riot-ffi logging::init_app_logging.
+                    initLogging(level: .info)
+                    bootstrap()
+                }
                 // "Open in Riot" from the public web newswire: verify links
                 // (riot://open?namespace=&entry=) and the existing join reference
                 // (riot://newswire/join/v1/...) both route through the model.

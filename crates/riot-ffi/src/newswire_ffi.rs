@@ -22,6 +22,7 @@ use riot_core::profile::resolver::{key_tag, resolve_display_names, sanitize_disp
 
 use crate::mobile_api::{AlertCertainty, AlertSeverity, AlertUrgency, MobileError, MobileProfile};
 use crate::mobile_state::{hex, with_active};
+use tracing::{instrument, warn};
 
 /// A signed newswire record returned to the native caller: the entry ID
 /// (hex) and the raw signed bytes suitable for sync, sharing, or gateway
@@ -331,6 +332,7 @@ impl MobileProfile {
 
     /// Creates and signs a freeform news post in the named space. The
     /// space descriptor must already be in the store (created or imported).
+    #[instrument(target = "riot::newswire", skip(self, input), fields(parent = "none"))]
     pub fn create_newswire_post(
         &self,
         input: NewswirePostInput,
@@ -363,6 +365,7 @@ impl MobileProfile {
     /// required. `parent_entry_id` is the post being replied to; the reply is
     /// dropped from the projection if that post is not held. The space
     /// descriptor must already be in the store (created or imported).
+    #[instrument(target = "riot::newswire", skip(self, body, language), fields(parent = %parent_entry_id))]
     pub fn create_newswire_comment(
         &self,
         space_descriptor_entry_id: String,
@@ -394,6 +397,7 @@ impl MobileProfile {
     /// tally reflects the current distinct-author count. Communal, exactly like a
     /// comment — anyone who holds the descriptor and the parent post may react.
     /// An unknown `kind` string is rejected as invalid input.
+    #[instrument(target = "riot::newswire", skip(self), fields(parent = %parent_entry_id, kind = %kind, active = active))]
     pub fn toggle_newswire_reaction(
         &self,
         space_descriptor_entry_id: String,
@@ -423,6 +427,7 @@ impl MobileProfile {
     /// Creates and signs an editorial action (feature, verify, correct, hide,
     /// tombstone, retract) targeting an existing post. Only recognized editors
     /// (in the descriptor's editorial roster) may author actions.
+    #[instrument(target = "riot::newswire", skip(self, input), fields(target = %input.target_entry_id))]
     pub fn create_newswire_editorial_action(
         &self,
         input: NewswireEditorialActionInput,
@@ -929,16 +934,24 @@ fn hex_decode(s: &str) -> Option<Vec<u8>> {
 }
 
 fn map_newswire_error(error: riot_core::newswire::NewswireError) -> MobileError {
-    let _ = error;
+    // Previously `let _ = error;` — the precise newswire validation failure
+    // (e.g. bad headline/body length, unsupported language) was dropped here.
+    // Capture it so a rejected reply/post shows its real cause in the log
+    // while Swift still sees only the coarse InvalidInput.
+    warn!(target: "riot::newswire", error = ?error, "NewswireError collapsed to MobileError::InvalidInput");
     MobileError::InvalidInput
 }
 
 fn map_newswire_store_error(error: riot_core::newswire::NewswireStoreError) -> MobileError {
-    let _ = error;
+    // Store-load failures (descriptor missing, decode error) were silently
+    // collapsed to Internal; log the precise variant for diagnostics.
+    warn!(target: "riot::newswire", error = ?error, "NewswireStoreError collapsed to MobileError::Internal");
     MobileError::Internal
 }
 
 fn map_core_error_inner(error: riot_core::session::SessionError) -> MobileError {
-    let _ = error;
+    // The import (preview/plan/commit) leg of a newswire sign+import. Same
+    // SessionError family as sync; log the precise variant before collapse.
+    warn!(target: "riot::newswire", error = ?error, "SessionError (newswire import) collapsed to MobileError::Internal");
     MobileError::Internal
 }

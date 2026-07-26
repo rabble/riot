@@ -6,6 +6,7 @@
 //! a language boundary.
 
 use crate::willow::SignedWillowEntry;
+use tracing::instrument;
 
 use super::{decode_frame, encode_frame, ReconcileSession, SyncAction, SyncError};
 
@@ -35,12 +36,14 @@ impl ByteSyncSession {
         })
     }
 
+    #[instrument(target = "riot::sync", skip(self), level = "debug")]
     pub fn begin(&mut self) -> Result<ByteSyncOutcome, SyncError> {
         self.require_empty_outbound()?;
         let action = self.reconcile.begin()?;
         self.apply(action)
     }
 
+    #[instrument(target = "riot::sync", skip(self, bytes), level = "debug")]
     pub fn receive_bytes(&mut self, bytes: &[u8]) -> Result<ByteSyncOutcome, SyncError> {
         self.require_empty_outbound()?;
         let frame = decode_frame(bytes)?;
@@ -48,12 +51,14 @@ impl ByteSyncSession {
         self.apply(action)
     }
 
+    #[instrument(target = "riot::sync", skip(self), level = "debug")]
     pub fn import_accepted(&mut self) -> Result<ByteSyncOutcome, SyncError> {
         self.require_empty_outbound()?;
         let action = self.reconcile.import_accepted()?;
         self.apply(action)
     }
 
+    #[instrument(target = "riot::sync", skip(self), level = "debug", fields(code))]
     pub fn import_rejected(&mut self, code: u8) -> Result<ByteSyncOutcome, SyncError> {
         self.require_empty_outbound()?;
         let action = self.reconcile.import_rejected(code)?;

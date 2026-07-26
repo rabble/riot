@@ -13,6 +13,25 @@ pub struct PublicSpace {
     pub is_public: bool,
 }
 
+/// The verified result of parsing an `@author.<suffix>` handle. The
+/// `subspace_key_hex` is the 32-byte identity recovered from the suffix alone
+/// (self-certifying); `shortname` is the decorative human label.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct ParsedAuthorHandle {
+    pub subspace_key_hex: String,
+    pub shortname: String,
+}
+
+/// The verified result of parsing a `+space.<suffix>` / `-space.<suffix>` handle.
+/// `namespace_id_hex` is the 32-byte identity; `kind` is `"communal"` or `"owned"`
+/// (derived from the id's final byte); `shortname` is the decorative label.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct ParsedSpaceHandle {
+    pub namespace_id_hex: String,
+    pub kind: String,
+    pub shortname: String,
+}
+
 /// The person's relationship to a community, in plain product terms. Derived
 /// from the held author, never caller-asserted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
@@ -273,6 +292,20 @@ pub fn open_local_profile() -> Result<Arc<MobileProfile>, MobileError> {
     crate::mobile_state::open_local_profile()
 }
 
+/// Installs the process-wide tracing subscriber that forwards Riot's sync and
+/// newswire spans to the unified logging system (`os_log`, subsystem
+/// `net.protest.riot`) on Apple platforms, or to stderr elsewhere. Call once at
+/// app launch, before opening a profile. Safe to call repeatedly; every call
+/// after the first is a no-op that returns `Ok(())`. The first call's `level`
+/// wins for the process.
+///
+/// Without this, the `tracing` spans emitted across the sync + reply paths
+/// compile to no-ops and nothing is observable in Console.app or `log stream`.
+#[uniffi::export]
+pub fn init_logging(level: crate::LogLevel) {
+    crate::logging::init_app_logging(level)
+}
+
 /// Restores only the local signing identity. Content/store persistence is a
 /// separate native concern. Both inputs remain opaque byte arrays in UniFFI.
 #[uniffi::export]
@@ -309,10 +342,46 @@ pub fn open_profile_from_sealed_identity_with_database(
     )
 }
 
+/// Parses an `@author.<suffix>` handle, recovering the self-certifying 32-byte
+/// subspace key and the decorative shortname from the string alone. Rejects
+/// malformed handles as `InvalidInput`.
+#[uniffi::export]
+pub fn parse_author_handle(handle: String) -> Result<ParsedAuthorHandle, MobileError> {
+    crate::mobile_state::parse_author_handle(handle)
+}
+
+/// Parses a `+space.<suffix>` / `-space.<suffix>` handle, recovering the
+/// namespace id, kind, and shortname. A sigil that doesn't match the id's
+/// final-byte parity is rejected. `InvalidInput` on any malformed handle.
+#[uniffi::export]
+pub fn parse_space_handle(handle: String) -> Result<ParsedSpaceHandle, MobileError> {
+    crate::mobile_state::parse_space_handle(handle)
+}
+
 #[uniffi::export]
 impl MobileProfile {
     pub fn identity(&self) -> Result<PublicIdentity, MobileError> {
         crate::mobile_state::identity(&self.inner)
+    }
+
+    /// Mints the user's self-certifying author handle for the active community:
+    /// `@<shortname>.<52-char base32 key>`. The shortname is read from the
+    /// community registry; `InvalidInput` if none is set (use
+    /// `set_handle_shortname` first). Use for "share my identity", QR codes.
+    pub fn my_author_handle(&self) -> Result<String, MobileError> {
+        crate::mobile_state::my_author_handle(&self.inner)
+    }
+
+    /// Mints the active community's space handle (`+<shortname>.<suffix>`).
+    /// `InvalidInput` if no shortname is set.
+    pub fn my_space_handle(&self) -> Result<String, MobileError> {
+        crate::mobile_state::my_space_handle(&self.inner)
+    }
+
+    /// Sets the handle shortname for the active community (3..=32 chars of
+    /// `[a-z0-9-]`), persisting it. `InvalidInput` on a bad shortname.
+    pub fn set_handle_shortname(&self, shortname: String) -> Result<(), MobileError> {
+        crate::mobile_state::set_handle_shortname(&self.inner, shortname)
     }
 
     /// Returns authenticated opaque state suitable for Keychain/Keystore

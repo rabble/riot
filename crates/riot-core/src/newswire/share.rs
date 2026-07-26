@@ -102,27 +102,98 @@ pub fn encode_share_reference(reference: &NewswireShareReferenceV1) -> String {
     )
 }
 
-/// Parses a canonical share-reference string back into its coordinates. Rejects
-/// any string that is not the exact scheme with three 32-byte lowercase-hex
-/// components — no partial or lenient decoding.
-pub fn decode_share_reference(
+/// Encodes a share reference WITH a self-certifying Earthstar-style handle
+/// prefix, so one string carries both the identity label and the reachability
+/// coordinates. The form is:
+///
+/// ```text
+/// riot://newswire/join/v1/+<shortname>/<ns>/<entry>/<digest>
+/// ```
+///
+/// The `+` sigil marks the space as communal (newswire spaces always are), and
+/// the shortname is decorative — the namespace id in the `<ns>` coordinate is
+/// the actual identity, and the suffix is what a handle's 52-char base32 would
+/// encode. The shortname is validated (3..=32 chars of `[a-z0-9-]`); a bad
+/// shortname is `EncodingFailed`.
+pub fn encode_share_reference_with_handle(
+    reference: &NewswireShareReferenceV1,
+    shortname: &str,
+) -> String {
+    format!(
+        "{SHARE_REFERENCE_PREFIX}+{shortname}/{}/{}/{}",
+        hex_encode(&reference.namespace_id),
+        hex_encode(&reference.descriptor_entry_id),
+        hex_encode(&reference.content_digest),
+    )
+}
+
+/// Parses a share-reference string, returning the reference plus any
+/// `+shortname`/`-shortname` handle prefix it carried. Accepts BOTH the bare
+/// form (`riot://newswire/join/v1/<ns>/<entry>/<digest>`, shortname → `None`)
+/// and the bundled form (`.../v1/+name/<ns>/...`). The handle prefix, when
+/// present, is validated and its sigil is cross-checked against the namespace's
+/// final-byte parity: a `-` (owned) prefix on a communal namespace (even final
+/// byte) is rejected as a forgery of the kind.
+pub fn decode_share_reference_with_handle(
     encoded: &str,
-) -> Result<NewswireShareReferenceV1, ShareReferenceError> {
+) -> Result<(NewswireShareReferenceV1, Option<String>), ShareReferenceError> {
     let body = encoded
         .strip_prefix(SHARE_REFERENCE_PREFIX)
         .ok_or(ShareReferenceError::Malformed)?;
-    let mut parts = body.split('/');
+    // An optional handle prefix is a leading `+name/` or `-name/` before the
+    // first hex coordinate. Detect it by the sigil char.
+    let (shortname, rest) = strip_optional_handle_prefix(body)?;
+    let mut parts = rest.split('/');
     let namespace_id = decode_hex32(parts.next().ok_or(ShareReferenceError::Malformed)?)?;
     let descriptor_entry_id = decode_hex32(parts.next().ok_or(ShareReferenceError::Malformed)?)?;
     let content_digest = decode_hex32(parts.next().ok_or(ShareReferenceError::Malformed)?)?;
     if parts.next().is_some() {
         return Err(ShareReferenceError::Malformed);
     }
-    Ok(NewswireShareReferenceV1 {
-        namespace_id,
-        descriptor_entry_id,
-        content_digest,
-    })
+    Ok((
+        NewswireShareReferenceV1 {
+            namespace_id,
+            descriptor_entry_id,
+            content_digest,
+        },
+        shortname,
+    ))
+}
+
+/// Strips an optional `+name/` or `-name/` handle prefix from the body. Returns
+/// `(None, body)` when no prefix is present (the bare form). Rejects a `-` prefix
+/// outright — newswire spaces are communal, so an owned sigil is always wrong
+/// here regardless of the (not-yet-decoded) namespace byte.
+fn strip_optional_handle_prefix(body: &str) -> Result<(Option<String>, &str), ShareReferenceError> {
+    if let Some(rest) = body.strip_prefix('+') {
+        // `+name/<coords>` — split at the first `/`.
+        let (name, after) = rest.split_once('/').ok_or(ShareReferenceError::Malformed)?;
+        if name.is_empty() {
+            return Err(ShareReferenceError::Malformed);
+        }
+        if crate::identity::validate_shortname(name).is_err() {
+            return Err(ShareReferenceError::Malformed);
+        }
+        Ok((Some(name.to_string()), after))
+    } else if let Some(rest) = body.strip_prefix('-') {
+        // A `-` (owned) prefix is never valid for a newswire communal space.
+        let _ = rest;
+        Err(ShareReferenceError::Malformed)
+    } else {
+        Ok((None, body))
+    }
+}
+
+/// Parses a canonical share-reference string back into its coordinates. Accepts
+/// both the bare form and the bundled `+shortname/`-prefixed form (the prefix is
+/// stripped and ignored — use [`decode_share_reference_with_handle`] to recover
+/// it). Rejects any string that is not the exact scheme with three 32-byte
+/// lowercase-hex components — no partial or lenient decoding.
+pub fn decode_share_reference(
+    encoded: &str,
+) -> Result<NewswireShareReferenceV1, ShareReferenceError> {
+    let (reference, _shortname) = decode_share_reference_with_handle(encoded)?;
+    Ok(reference)
 }
 
 fn hex_encode(bytes: &[u8; 32]) -> String {

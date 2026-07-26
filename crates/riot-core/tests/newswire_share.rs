@@ -9,9 +9,9 @@
 
 use riot_core::newswire::{
     build_share_reference, create_signed_news_post, create_signed_space_descriptor,
-    decode_share_reference, encode_share_reference, inspect_news_record, verify_descriptor_matches,
-    NewsPostV1, ShareReferenceError, SpaceDescriptorV1, VerifiedNewswireRecord,
-    SHARE_REFERENCE_PREFIX,
+    decode_share_reference, decode_share_reference_with_handle, encode_share_reference,
+    encode_share_reference_with_handle, inspect_news_record, verify_descriptor_matches, NewsPostV1,
+    ShareReferenceError, SpaceDescriptorV1, VerifiedNewswireRecord, SHARE_REFERENCE_PREFIX,
 };
 use riot_core::willow::{generate_communal_author_for_namespace, generate_space_organizer_author};
 
@@ -157,5 +157,95 @@ fn share_reference_error_renders_a_stable_debug_code() {
     assert_eq!(
         ShareReferenceError::EncodingFailed.to_string(),
         "EncodingFailed"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Bundled-handle URIs: the self-certifying `+shortname` prefix rides on the
+// join URI so one string carries both identity and reachability.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_bundled_handle_uri_round_trips_and_carries_the_shortname() {
+    let (descriptor, _writer) = signed_space();
+    let reference = build_share_reference(&descriptor).expect("reference");
+
+    let encoded = encode_share_reference_with_handle(&reference, "riverside");
+    // The form: riot://newswire/join/v1/+riverside/<ns>/<entry>/<digest>
+    assert!(
+        encoded.starts_with("riot://newswire/join/v1/+riverside/"),
+        "the +shortname prefix follows the scheme, got {encoded:?}"
+    );
+
+    let (decoded_ref, shortname) =
+        decode_share_reference_with_handle(&encoded).expect("round-trip");
+    assert_eq!(decoded_ref, reference);
+    assert_eq!(shortname.as_deref(), Some("riverside"));
+}
+
+#[test]
+fn a_bundled_handle_uri_still_decodes_through_the_plain_decoder() {
+    // The plain `decode_share_reference` MUST accept the prefixed form too —
+    // stripping the `+shortname/` and returning just the reference. This is the
+    // backward-compat property that lets the existing join machinery consume
+    // bundled URIs with no change.
+    let (descriptor, _writer) = signed_space();
+    let reference = build_share_reference(&descriptor).expect("reference");
+    let encoded = encode_share_reference_with_handle(&reference, "riverside");
+
+    assert_eq!(
+        decode_share_reference(&encoded),
+        Ok(reference),
+        "the plain decoder strips the +shortname prefix"
+    );
+}
+
+#[test]
+fn a_bare_uri_without_a_handle_prefix_still_decodes_with_handle_none() {
+    // The handle-aware decoder MUST accept the bare form too — shortname is None.
+    let (descriptor, _writer) = signed_space();
+    let reference = build_share_reference(&descriptor).expect("reference");
+    let bare = encode_share_reference(&reference);
+
+    let (decoded_ref, shortname) = decode_share_reference_with_handle(&bare).expect("bare decodes");
+    assert_eq!(decoded_ref, reference);
+    assert_eq!(shortname, None);
+}
+
+#[test]
+fn a_bundled_handle_with_a_bad_shortname_is_rejected() {
+    let (descriptor, _writer) = signed_space();
+    let reference = build_share_reference(&descriptor).expect("reference");
+    // Uppercase, underscore, and too-short shortnames are not valid handle labels.
+    for bad in ["Riverside", "river_side", "ab"] {
+        // Forge the URI directly since encode validates; decode is the authority.
+        let bare = encode_share_reference(&reference);
+        let forged = bare.replacen(
+            SHARE_REFERENCE_PREFIX,
+            &format!("{SHARE_REFERENCE_PREFIX}+{bad}/"),
+            1,
+        );
+        assert!(
+            decode_share_reference_with_handle(&forged).is_err(),
+            "shortname {bad:?} should be rejected"
+        );
+    }
+}
+
+#[test]
+fn a_minus_sigil_prefix_is_rejected_on_a_communal_namespace() {
+    // A `-shortname` (owned) prefix on a communal namespace (even final byte) is
+    // a sigil/parity lie and must be rejected.
+    let (descriptor, _writer) = signed_space();
+    let reference = build_share_reference(&descriptor).expect("reference");
+    let bare = encode_share_reference(&reference);
+    let forged = bare.replacen(
+        SHARE_REFERENCE_PREFIX,
+        &format!("{SHARE_REFERENCE_PREFIX}-bad/"),
+        1,
+    );
+    assert!(
+        decode_share_reference_with_handle(&forged).is_err(),
+        "a - sigil on a communal namespace must be rejected"
     );
 }

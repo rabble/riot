@@ -9,6 +9,10 @@ pub mod apps;
 /// ordinary import pipeline.
 #[cfg(feature = "conformance")]
 pub mod demo_fixture;
+/// Earthstar-style self-certifying identity handles (`@author.<suffix>`,
+/// `+space.<suffix>` / `-space.<suffix>`). App-layer display/sharing
+/// convention only; protocol identity lives in [`willow::identity`].
+pub mod identity;
 pub mod import;
 pub mod model;
 pub mod newswire;

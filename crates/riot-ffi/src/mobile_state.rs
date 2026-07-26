@@ -2,10 +2,12 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use ed25519_dalek::Signature;
+use tracing::warn;
 use willow25::entry::EntrylikeExt;
 use willow25::groupings::Keylike;
 use zeroize::{Zeroize, Zeroizing};
 
+use riot_core::identity::{AuthorHandle, SpaceHandle};
 use riot_core::import::{
     decode_bundle, decode_bundle_with_root, encode_bundle, BundleDecodeOutcome, ItemStatus,
     MAX_BUNDLE_BYTES,
@@ -25,7 +27,8 @@ use riot_core::sync::{ByteSyncOutcome, ByteSyncSession, SyncError, MAX_SYNC_IDS}
 use riot_core::willow::{
     alert_entry_path_matches_payload, create_signed_alert, entry_id,
     generate_communal_author_for_namespace, generate_space_organizer_author, system_snapshot,
-    AlertDraft, EvidenceAuthor, SignedAlert as CoreSignedAlert, SignedWillowEntry, WillowError,
+    AlertDraft, EvidenceAuthor, NamespaceKind, SignedAlert as CoreSignedAlert, SignedWillowEntry,
+    WillowError,
 };
 
 use crate::community_registry::{CommunityRecord, Relationship, REGISTRY_KEY};
@@ -33,7 +36,8 @@ use crate::mobile_api::{
     AlertCertainty, AlertDraftInput, AlertDraftRecord, AlertFreshness, AlertSeverity, AlertUrgency,
     CommunityRelationship, CommunityRow, CurrentEntry, FollowedSiteRow, ImportAcceptance,
     MobileError, MobileImportPlan, MobileImportPreview, MobileProfile, MobileSyncSession,
-    PublicIdentity, PublicSpace, SignedAlert, SyncOutcome, SyncOutcomeKind,
+    ParsedAuthorHandle, ParsedSpaceHandle, PublicIdentity, PublicSpace, SignedAlert, SyncOutcome,
+    SyncOutcomeKind,
 };
 
 pub(crate) enum ProfileState {
@@ -468,6 +472,86 @@ pub(crate) fn identity(inner: &Arc<Mutex<ProfileState>>) -> Result<PublicIdentit
             namespace_id: hex(&identity.namespace_id),
             signing_key_id: hex(&identity.signing_key_id),
         })
+    })
+}
+
+/// Mints the user's Earthstar-style author handle for the active community:
+/// `@<shortname>.<52-char base32 key>`. The shortname is read from the active
+/// community's registry record; if none is set, returns `InvalidInput` (the UI
+/// should prompt the user to choose one via `set_handle_shortname`). The suffix
+/// encodes the full 32-byte signing key, so the handle is self-certifying.
+pub(crate) fn my_author_handle(inner: &Arc<Mutex<ProfileState>>) -> Result<String, MobileError> {
+    with_active(inner, |profile| {
+        let active_ns = profile.author.identity().namespace_id;
+        let shortname = profile
+            .registry
+            .find(&active_ns)
+            .and_then(|r| r.handle_shortname.clone())
+            .ok_or(MobileError::InvalidInput)?;
+        let subspace_key = profile.author.identity().signing_key_id;
+        Ok(AuthorHandle::for_subspace(&shortname, &subspace_key).encode())
+    })
+}
+
+/// Mints the active community's space handle: `+<shortname>.<suffix>` for a
+/// communal space. Reads the shortname from the registry; `InvalidInput` if none.
+pub(crate) fn my_space_handle(inner: &Arc<Mutex<ProfileState>>) -> Result<String, MobileError> {
+    with_active(inner, |profile| {
+        let namespace_id = profile.author.identity().namespace_id;
+        let shortname = profile
+            .registry
+            .find(&namespace_id)
+            .and_then(|r| r.handle_shortname.clone())
+            .ok_or(MobileError::InvalidInput)?;
+        Ok(SpaceHandle::for_namespace(&shortname, &namespace_id).encode())
+    })
+}
+
+/// Sets the handle shortname for the active community, persisting it to the
+/// registry. Validates the shortname (3..=32 chars of `[a-z0-9-]`); a bad
+/// shortname is `InvalidInput`.
+pub(crate) fn set_handle_shortname(
+    inner: &Arc<Mutex<ProfileState>>,
+    shortname: String,
+) -> Result<(), MobileError> {
+    with_active(inner, |profile| {
+        if riot_core::identity::validate_shortname(&shortname).is_err() {
+            return Err(MobileError::InvalidInput);
+        }
+        let active_ns = profile.author.identity().namespace_id;
+        if let Some(record) = profile.registry.find_mut(&active_ns) {
+            record.handle_shortname = Some(shortname);
+        } else {
+            return Err(MobileError::CommunityUnavailable);
+        }
+        persist_registry(profile)?;
+        Ok(())
+    })
+}
+
+/// Parses an `@author.<suffix>` handle, returning the verified 32-byte
+/// subspace key (hex) and the decorative shortname. Self-certifying: the key is
+/// recovered from the suffix alone.
+pub(crate) fn parse_author_handle(handle: String) -> Result<ParsedAuthorHandle, MobileError> {
+    let parsed = AuthorHandle::parse(&handle).map_err(|_| MobileError::InvalidInput)?;
+    Ok(ParsedAuthorHandle {
+        subspace_key_hex: hex(parsed.subspace_key()),
+        shortname: parsed.shortname().to_string(),
+    })
+}
+
+/// Parses a `+space.<suffix>` / `-space.<suffix>` handle, returning the verified
+/// namespace id (hex), the kind ("communal"/"owned"), and the shortname.
+pub(crate) fn parse_space_handle(handle: String) -> Result<ParsedSpaceHandle, MobileError> {
+    let parsed = SpaceHandle::parse(&handle).map_err(|_| MobileError::InvalidInput)?;
+    let kind = match parsed.kind() {
+        NamespaceKind::Communal => "communal",
+        NamespaceKind::Owned => "owned",
+    };
+    Ok(ParsedSpaceHandle {
+        namespace_id_hex: hex(parsed.namespace_id()),
+        kind: kind.to_string(),
+        shortname: parsed.shortname().to_string(),
     })
 }
 
@@ -2305,6 +2389,11 @@ pub(crate) fn hex(bytes: &[u8]) -> String {
 pub(crate) fn map_core_error(error: riot_core::session::SessionError) -> MobileError {
     use riot_core::session::SessionError;
 
+    // Capture the precise session error before it is collapsed to a coarse
+    // MobileError. The coarse code crosses to Swift; this is the "logs get
+    // detail" seam. Debug formatting keeps variant + payload in the log line.
+    warn!(target: "riot::sync", error = ?error, "SessionError collapsed to MobileError");
+
     match error {
         SessionError::StoreFull => MobileError::StoreFull,
         SessionError::SessionLimit => MobileError::SessionLimit,
@@ -2325,6 +2414,9 @@ pub(crate) fn map_core_error(error: riot_core::session::SessionError) -> MobileE
 }
 
 fn map_author_error(error: WillowError) -> MobileError {
+    // Author/willow signing failures are otherwise invisible once collapsed;
+    // log the precise variant for reply/post diagnostics.
+    warn!(target: "riot::newswire", error = ?error, "WillowError collapsed to MobileError");
     match error {
         WillowError::EntropyUnavailable => MobileError::EntropyUnavailable,
         WillowError::ClockUnavailable => MobileError::ClockUnavailable,
@@ -2580,6 +2672,7 @@ pub(crate) fn register_active_community(
         last_sync_unix_seconds: None,
         fetch_url: None,
         require_floor: None,
+        handle_shortname: None,
     });
     profile.registry.active = Some(namespace_id);
     persist_registry(profile)?;
@@ -2810,6 +2903,7 @@ pub(crate) fn follow_site(
             last_sync_unix_seconds: None,
             fetch_url: ticket.url.clone(),
             require_floor: Some(ticket.require_raw.clone()),
+            handle_shortname: None,
         });
         persist_registry(profile)?;
         let record = profile
@@ -2843,6 +2937,7 @@ impl MobileProfile {
                 last_sync_unix_seconds: None,
                 fetch_url: None,
                 require_floor: None,
+                handle_shortname: None,
             });
             persist_registry(profile)?;
             Ok(hex(&root))
@@ -3995,6 +4090,11 @@ fn map_apps_error(error: riot_core::apps::AppsError) -> MobileError {
 }
 
 fn map_sync_error(error: SyncError) -> MobileError {
+    // Capture the precise sync protocol error before it collapses to a coarse
+    // MobileError (SessionLimit / InvalidInput). This is the seam that lets a
+    // failing sync show its real cause (e.g. NamespaceMismatch, MalformedFrame,
+    // InvalidBundle) in Console.app, while Swift still sees only the coarse code.
+    warn!(target: "riot::sync", error = ?error, "SyncError collapsed to MobileError");
     match error {
         SyncError::FrameTooLarge | SyncError::TooManyEntryIds | SyncError::BundleTooLarge => {
             MobileError::SessionLimit

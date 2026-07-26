@@ -1,3 +1,4 @@
+import OSLog
 import SwiftUI
 import RiotKit
 
@@ -1117,6 +1118,16 @@ private struct CommunityShellView: View {
         nearby.onBeforeSpaceJoin = {
             model.communityTransitionGate.prepareForNearbyAdoption()
         }
+        // Forward sync diagnostics from the (short-lived) coordinator through
+        // the controller into the app model's Diagnostics panel.
+        nearby.onDiagnostic = { [model] summary in
+            model.recordSyncDiagnostic(summary)
+        }
+        // Forward reply/reaction/editorial diagnostics from the newswire surface
+        // into the app model's Diagnostics panel.
+        newswire.onReplyDiagnostic = { [model] summary in
+            model.recordReplyDiagnostic(summary)
+        }
         transitionToken = model.communityTransitionGate.registerPreparation(
             { preparation in prepareForCommunityTransition(preparation) },
             recover: rearmCommunityScopeCallbacks
@@ -1790,6 +1801,8 @@ private struct CommunitySettingsSheet: View {
     let onClose: () -> Void
     @Environment(\.colorScheme) private var colorScheme
     @State private var showingTechnical = false
+    @State private var showingDiagnostics = false
+    @State private var showingLogs = false
     @State private var isSharePresented = false
     @State private var isGuidePresented = false
 
@@ -1815,6 +1828,21 @@ private struct CommunitySettingsSheet: View {
                         .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
                 }
                 .accessibilityIdentifier("community-technical-details")
+
+                // Diagnostics: one-card summaries of the last sync and reply
+                // attempts, plus a "View full logs" affordance backed by the
+                // unified log (subsystem net.protest.riot). The PRECISE failure
+                // causes live in the log via Rust tracing; the cards carry only
+                // the coarse code. Collapsed by default.
+                DisclosureGroup(isExpanded: $showingDiagnostics) {
+                    diagnosticsBody
+                        .padding(.top, 8)
+                } label: {
+                    Text("Diagnostics")
+                        .font(.riot(.mono, size: 12, relativeTo: .caption))
+                        .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
+                }
+                .accessibilityIdentifier("community-diagnostics")
 
                 Button("Share this community") { isSharePresented = true }
                     .buttonStyle(.riotSecondary)
@@ -1852,6 +1880,58 @@ private struct CommunitySettingsSheet: View {
                 onClose: { isSharePresented = false }
             )
         }
+        .sheet(isPresented: $showingLogs) {
+            RiotLogViewerView(onClose: { showingLogs = false })
+        }
+    }
+
+    /// The Diagnostics card body: one card for the last sync, one for the last
+    /// reply/reaction/editorial action, plus a "View full logs" button. Reads
+    /// live from the app model's published summaries; empty when nothing has
+    /// happened yet.
+    private var diagnosticsBody: some View {
+        VStack(spacing: 8) {
+            if let sync = model.lastSyncDiagnostic {
+                RiotCard {
+                    VStack(alignment: .leading, spacing: 10) {
+                        eyebrow("Last sync")
+                        LabeledContent("Outcome", value: sync.outcome)
+                        LabeledContent("Transport", value: sync.transport)
+                        if let code = sync.errorCode {
+                            LabeledContent("Error", value: code)
+                        }
+                        LabeledContent(
+                            "Frames",
+                            value: "\(sync.framesSent) sent / \(sync.framesReceived) recv"
+                        )
+                        LabeledContent("When", value: sync.timestamp.formatted(.relative(presentation: .named)))
+                    }
+                }
+            }
+            if let reply = model.lastReplyDiagnostic {
+                RiotCard {
+                    VStack(alignment: .leading, spacing: 10) {
+                        eyebrow("Last \(reply.action.lowercased())")
+                        if let code = reply.errorCode {
+                            LabeledContent("Error", value: code)
+                        } else {
+                            LabeledContent("Outcome", value: "Accepted")
+                        }
+                        LabeledContent("When", value: reply.timestamp.formatted(.relative(presentation: .named)))
+                    }
+                }
+            }
+            if model.lastSyncDiagnostic == nil && model.lastReplyDiagnostic == nil {
+                RiotCard {
+                    Text("No sync or reply activity yet.")
+                        .font(.riot(.body, size: 13, relativeTo: .caption))
+                        .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
+                }
+            }
+            Button("View full logs") { showingLogs = true }
+                .buttonStyle(.riotSecondary)
+                .accessibilityIdentifier("community-view-logs")
+        }
     }
 
     private func eyebrow(_ text: String) -> some View {
@@ -1860,6 +1940,91 @@ private struct CommunitySettingsSheet: View {
             .textCase(.uppercase)
             .tracking(1)
             .foregroundStyle(RiotTheme.inkSoft(for: colorScheme))
+    }
+}
+
+// MARK: - Diagnostics log viewer
+
+/// A scrollable view of this app's recent unified-log entries (subsystem
+/// `net.protest.riot`), surfaced from the Diagnostics panel. This is the
+/// "View full logs" affordance: it reads `OSLogStore.local()` entries matching
+/// the Riot subsystem so the precise Rust `tracing` causes (which the one-card
+/// summaries deliberately omit) are visible in-app.
+///
+/// On macOS this reads the full local log store. On iOS, in-app reading is
+/// supported but the OS may surface only recent entries; for deep history use
+/// Console.app or `log stream`.
+private struct RiotLogViewerView: View {
+    let onClose: () -> Void
+    @State private var entries: [OSLogEntryLog] = []
+    @State private var loadError: String?
+
+    private static let subsystem = "net.protest.riot"
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 6) {
+                    if let loadError {
+                        Text("Could not read logs: \(loadError)")
+                            .font(.riot(.body, size: 13, relativeTo: .caption))
+                            .foregroundStyle(.red)
+                    } else if entries.isEmpty {
+                        Text("No log entries yet. Trigger a sync or reply to see activity.")
+                            .font(.riot(.body, size: 13, relativeTo: .caption))
+                            .foregroundStyle(.secondary)
+                            .padding()
+                    } else {
+                        ForEach(Array(entries.enumerated()), id: \.offset) { _, entry in
+                            Text(entry.composedMessage)
+                                .font(.riot(.mono, size: 11, relativeTo: .caption2))
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(8)
+                                .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 6))
+                        }
+                    }
+                }
+                .padding(16)
+            }
+            .navigationTitle("Logs")
+            .modifier(RiotInlineNavigationBarTitle())
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done", action: onClose)
+                }
+            }
+            .task { await loadEntries() }
+        }
+    }
+
+    /// Loads recent log entries for the Riot subsystem from the local OSLogStore.
+    /// `OSLogStore.local()` returns entries from the current process/device;
+    /// the predicate narrows to Riot's subsystem.
+    private func loadEntries() async {
+        do {
+            let store = try OSLogStore(scope: .currentProcessIdentifier)
+            // Match only Riot's subsystem entries.
+            let predicate = NSPredicate(format: "subsystem == %@", Self.subsystem)
+            let all = try store.getEntries(matching: predicate)
+            // Materialize and keep only log entries (not signposts/metadata).
+            entries = all.compactMap { $0 as? OSLogEntryLog }
+                .sorted { $0.date > $1.date }
+        } catch {
+            loadError = error.localizedDescription
+        }
+    }
+}
+
+/// Applies inline navigation-bar title display on iOS only — macOS has no
+/// `navigationBarTitleDisplayMode`, and the shared log viewer compiles into
+/// both targets from this one file. A no-op on macOS.
+private struct RiotInlineNavigationBarTitle: ViewModifier {
+    func body(content: Content) -> some View {
+        #if os(iOS)
+        content.navigationBarTitleDisplayMode(.inline)
+        #else
+        content
+        #endif
     }
 }
 

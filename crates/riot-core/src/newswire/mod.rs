@@ -76,9 +76,9 @@ pub use projection::{
     MAX_FUTURE_SKEW_MICROS, MAX_PROJECTED_RECORDS,
 };
 pub use share::{
-    build_share_reference, decode_share_reference, encode_share_reference,
-    verify_descriptor_matches, NewswireShareReferenceV1, ShareReferenceError,
-    SHARE_REFERENCE_PREFIX,
+    build_share_reference, decode_share_reference, decode_share_reference_with_handle,
+    encode_share_reference, encode_share_reference_with_handle, verify_descriptor_matches,
+    NewswireShareReferenceV1, ShareReferenceError, SHARE_REFERENCE_PREFIX,
 };
 pub use store::{
     contributors_for_space, load_space_descriptor, load_space_records, project_space,
