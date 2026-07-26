@@ -401,6 +401,59 @@ public struct StarterCatalogFailure: Equatable, Sendable {
     public let technicalDetails: String
 }
 
+/// A coarse, at-a-glance record of the last nearby-sync attempt, surfaced in
+/// the Diagnostics panel. The PRECISE failure cause lives in the unified log
+/// (subsystem `net.protest.riot`, category `sync`) via the Rust `tracing`
+/// spans; this summary intentionally carries only the coarse `MobileError`
+/// code and counts that fit on one card. Equatable so the panel only redraws
+/// when something actually changed.
+public struct SyncDiagnosticSummary: Equatable, Sendable {
+    /// Transport kind, e.g. "Nearby (Bluetooth)". Display-only.
+    public let transport: String
+    /// Last known outcome, e.g. "Failed" / "Caught up". Display-only.
+    public let outcome: String
+    /// Coarse FFI error code (e.g. "INVALID_INPUT") when the outcome was a
+    /// failure; `nil` on success or when no error surfaced. The detailed
+    /// variant (`NamespaceMismatch`, `InvalidBundle`, …) is in the log only.
+    public let errorCode: String?
+    public let framesSent: Int
+    public let framesReceived: Int
+    public let timestamp: Date
+
+    public init(
+        transport: String,
+        outcome: String,
+        errorCode: String?,
+        framesSent: Int,
+        framesReceived: Int,
+        timestamp: Date = Date()
+    ) {
+        self.transport = transport
+        self.outcome = outcome
+        self.errorCode = errorCode
+        self.framesSent = framesSent
+        self.framesReceived = framesReceived
+        self.timestamp = timestamp
+    }
+}
+
+/// A coarse record of the last newswire reply/reaction/editorial action
+/// outcome. As with ``SyncDiagnosticSummary``, the precise cause is in the log
+/// (category `newswire`); this carries only the coarse code for the card.
+public struct ReplyDiagnosticSummary: Equatable, Sendable {
+    /// What was attempted, e.g. "Reply" / "Reaction". Display-only.
+    public let action: String
+    /// Coarse FFI error code when the action was rejected; `nil` on success.
+    public let errorCode: String?
+    public let timestamp: Date
+
+    public init(action: String, errorCode: String?, timestamp: Date = Date()) {
+        self.action = action
+        self.errorCode = errorCode
+        self.timestamp = timestamp
+    }
+}
+
 /// Which tab is on screen, on its own observable object.
 ///
 /// PERFORMANCE CONTRACT: this deliberately does NOT live on `RiotAppModel`. The
@@ -585,6 +638,17 @@ public final class RiotAppModel: ObservableObject {
     /// data — it's been saved aside") instead of the old dead RETRY. `nil` on a
     /// clean open. See ``RiotAppModel/recoveryNoticeMessage`` for the wording.
     @Published public private(set) var recoveryNotice: RecoveryReport?
+
+    /// The last nearby-sync attempt, surfaced in the Diagnostics panel. `nil`
+    /// until the first attempt. Updated from `SyncCoordinator` failures (and
+    /// successes) via ``recordSyncDiagnostic(_:)``. The detailed cause is in
+    /// the unified log; this is the one-card summary.
+    @Published public private(set) var lastSyncDiagnostic: SyncDiagnosticSummary?
+
+    /// The last newswire reply/reaction/editorial action, surfaced in the
+    /// Diagnostics panel. `nil` until the first attempt. The detailed cause is
+    /// in the unified log; this is the one-card summary.
+    @Published public private(set) var lastReplyDiagnostic: ReplyDiagnosticSummary?
 
     /// The arguments of the last `bootstrap` call, retained so `retryStarterCatalog`
     /// can re-attempt the one-time install after a catalog failure.
@@ -815,6 +879,22 @@ public final class RiotAppModel: ObservableObject {
     public func openNearbySyncBoundary() throws -> MobileSyncSessionBoundary {
         guard let repository else { throw RepositoryError.profileClosed }
         return try repository.openSyncBoundary()
+    }
+
+    /// Records the outcome of the last nearby-sync attempt for the Diagnostics
+    /// panel. Called from the host that owns a `SyncCoordinator` whenever its
+    /// state changes to a terminal outcome (success or failure). The detailed
+    /// failure cause is already in the unified log via Rust `tracing`; this is
+    /// the one-card summary.
+    public func recordSyncDiagnostic(_ summary: SyncDiagnosticSummary) {
+        lastSyncDiagnostic = summary
+    }
+
+    /// Records the outcome of the last newswire reply/reaction/editorial action
+    /// for the Diagnostics panel. Called from the surface that owns the action
+    /// composer whenever an attempt completes (posted or rejected).
+    public func recordReplyDiagnostic(_ summary: ReplyDiagnosticSummary) {
+        lastReplyDiagnostic = summary
     }
 
     /// The profile a nearby pairing acts on: it announces the space this phone is

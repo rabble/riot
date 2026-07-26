@@ -893,6 +893,53 @@ extension TransportContractTests {
             XCTAssertNil(handle.range(of: namespaceWireBytes), "the discovery handle carried raw namespace bytes")
         }
     }
+
+    // MARK: - Diagnostics
+
+    /// A failed sync must post a `SyncDiagnosticSummary` whose coarse error
+    /// code reflects the thrown FFI error and whose transport label is "Nearby".
+    /// The PRECISE cause lives in the unified log; this pins the one-card
+    /// summary that the Diagnostics panel renders.
+    func testAFailedSyncPostsADiagnosticWithTheCoarseErrorCode() {
+        let connection = NearbyConnection(bluetooth: RecordingFrameChannel(), localAttempt: { nil })
+        let coordinator = SyncCoordinator(
+            session: FailingSyncBoundary(),
+            connection: connection,
+            friendlyName: "Test Peer"
+        )
+        var captured: SyncDiagnosticSummary?
+        coordinator.onDiagnostic = { captured = $0 }
+
+        // `start()` calls `begin()`, which throws; the coordinator must route
+        // that into `fail(_:)` and post the diagnostic.
+        coordinator.start()
+
+        let summary = try? XCTUnwrap(captured)
+        XCTAssertEqual(summary?.outcome, "Failed", "a failed sync must record outcome Failed")
+        XCTAssertEqual(summary?.transport, "Nearby", "the transport label must be Nearby")
+        XCTAssertEqual(summary?.errorCode, "SessionFailed", "the coarse code must be the FFI error's case name")
+        XCTAssertEqual(summary?.framesSent, 0, "no frames were exchanged before the failure")
+        XCTAssertEqual(summary?.framesReceived, 0, "no frames were exchanged before the failure")
+    }
+
+    /// A `RiotAppModel` must publish the last recorded sync diagnostic so the
+    /// Diagnostics panel can render it. Pins the record/publish plumbing.
+    @MainActor
+    func testRecordingASyncDiagnosticPublishesItOnTheAppModel() {
+        let model = RiotAppModel()
+        XCTAssertNil(model.lastSyncDiagnostic, "no diagnostic before any attempt")
+
+        let summary = SyncDiagnosticSummary(
+            transport: "Nearby",
+            outcome: "Failed",
+            errorCode: "SessionFailed",
+            framesSent: 3,
+            framesReceived: 0
+        )
+        model.recordSyncDiagnostic(summary)
+
+        XCTAssertEqual(model.lastSyncDiagnostic, summary, "the recorded summary must be published")
+    }
 }
 
 private final class RecordingFrameChannel: FrameChannel {
@@ -919,4 +966,17 @@ private final class FakeGeneratedBackend: GeneratedSyncSessionBackend {
     private func outcome(kind: SyncOutcomeKind, bundle: Data? = nil) -> SyncOutcome {
         SyncOutcome(kind: kind, entries: [], rejectionCode: nil, terminal: kind == .complete, importBundleBytes: bundle)
     }
+}
+
+// MARK: - Diagnostics capture
+
+/// A boundary that always fails `begin()` with a coarse FFI-shaped error, so
+/// `SyncCoordinator.start()` lands in `fail(_:)` and posts a diagnostic.
+private final class FailingSyncBoundary: MobileSyncSessionBoundary {
+    func begin() throws -> NearbySyncOutcome { throw MobileError.SessionFailed }
+    func nextOutbound() throws -> Data? { nil }
+    func receive(_ frame: Data) throws -> NearbySyncOutcome { throw MobileError.SessionFailed }
+    func acceptImport() throws -> NearbySyncOutcome { throw MobileError.SessionFailed }
+    func rejectImport() throws -> NearbySyncOutcome { throw MobileError.SessionFailed }
+    func close() throws {}
 }

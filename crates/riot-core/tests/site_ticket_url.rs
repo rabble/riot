@@ -145,3 +145,52 @@ fn the_url_never_influences_the_fail_closed_gate() {
         "floor arti still blocks an iroh-only client; the url does not flip the gate"
     );
 }
+
+// ---------------------------------------------------------------------------
+// The unsigned `name=` handle-label extension. Like `node=`, it is NOT covered
+// by the root signature — it is a decorative self-certifying-handle label that
+// rides on the ticket URI. Stripping or changing it never breaks the signature.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_ticket_with_a_name_round_trips_and_the_name_is_unsigned() {
+    let mut ticket = mint(&root_key(), NS, "none", 1, 10_000, DIGEST, None, None, None);
+    ticket.name = Some("my-site".into());
+    assert!(ticket.verify(), "a name does not affect the signature");
+
+    let encoded = ticket.encode();
+    assert!(encoded.contains("&name=my-site"), "name is emitted");
+
+    let reparsed = parse(&encoded).unwrap();
+    assert_eq!(reparsed.name.as_deref(), Some("my-site"));
+    assert!(reparsed.verify(), "the reparsed ticket still verifies");
+}
+
+#[test]
+fn stripping_or_changing_the_name_does_not_break_the_signature() {
+    let mut ticket = mint(&root_key(), NS, "none", 1, 10_000, DIGEST, None, None, None);
+    ticket.name = Some("my-site".into());
+    assert!(ticket.verify());
+
+    // Remove the name entirely — the signature still holds (name is unsigned).
+    ticket.name = None;
+    assert!(
+        ticket.verify(),
+        "removing the unsigned name cannot break the signed floor"
+    );
+
+    // Change the name — still verifies.
+    ticket.name = Some("renamed".into());
+    assert!(ticket.verify());
+}
+
+#[test]
+fn a_ticket_without_a_name_emits_no_name_param_and_round_trips_none() {
+    let ticket = mint(&root_key(), NS, "none", 1, 10_000, DIGEST, None, None, None);
+    assert!(ticket.name.is_none());
+    let encoded = ticket.encode();
+    assert!(!encoded.contains("name="), "no name field emitted for None");
+    let reparsed = parse(&encoded).unwrap();
+    assert_eq!(reparsed, ticket);
+    assert!(reparsed.name.is_none());
+}

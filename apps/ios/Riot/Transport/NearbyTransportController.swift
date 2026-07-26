@@ -68,6 +68,14 @@ public final class NearbyTransportController: ObservableObject {
     @Published public private(set) var phones: [DiscoveredPhone] = []
     @Published public private(set) var activeRoute: NearbyRoute?
 
+    /// Passthrough for sync diagnostics: fires when the active coordinator
+    /// reaches a terminal outcome. The host (the shell, which has the app
+    /// model) wires this to `RiotAppModel.recordSyncDiagnostic(_:)` so the
+    /// Diagnostics panel updates. Kept here rather than on the coordinator
+    /// directly because the coordinator is short-lived (one session) and the
+    /// shell owns the model.
+    public var onDiagnostic: ((SyncDiagnosticSummary) -> Void)?
+
     /// The device this one is in a session with RIGHT NOW, or nil if it is only
     /// looking.
     ///
@@ -609,6 +617,11 @@ public final class NearbyTransportController: ObservableObject {
         // store is updated by the time this fires (it fires on accept, not on
         // receipt), so a live app re-reading now sees the imported items.
         coordinator.onImportAccepted = { AppRuntimeView.postDataChanged() }
+        // Forward this session's diagnostics to the host passthrough, which the
+        // shell wires to the app model's Diagnostics panel.
+        coordinator.onDiagnostic = { [weak self] summary in
+            self?.onDiagnostic?(summary)
+        }
         self.coordinator = coordinator
         if shouldStartSync { coordinator.start() } else { coordinator.answer() }
     }

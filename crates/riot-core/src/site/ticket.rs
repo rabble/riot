@@ -107,6 +107,13 @@ pub struct Ticket {
     /// Tor-capable client prefers it when present, but the fail-closed transport
     /// decision still keys off `require`, not off the presence of `onion`.
     pub onion: Option<String>,
+    /// A decorative Earthstar-style handle shortname for the site (the `my-site`
+    /// in a `-my-site.<suffix>` owned-space handle). UNSIGNED — like `node`, NOT
+    /// covered by the signature — so it can be added, changed, or stripped
+    /// without affecting the signed floor. The namespace id in the path is the
+    /// actual identity (self-certifying); this label is purely human-readable.
+    /// Absent on a ticket minted without one.
+    pub name: Option<String>,
     pub sig: [u8; 64],
 }
 
@@ -220,6 +227,10 @@ impl Ticket {
             s.push_str("&onion=");
             s.push_str(onion);
         }
+        if let Some(name) = &self.name {
+            s.push_str("&name=");
+            s.push_str(name);
+        }
         s.push_str("&sig=");
         s.push_str(&hex(&self.sig));
         s
@@ -265,6 +276,9 @@ pub fn mint(
         node,
         url,
         onion,
+        // `name` is an unsigned decorative label; mint always produces None and
+        // the caller sets it after minting if a handle label is wanted.
+        name: None,
         sig,
     }
 }
@@ -286,6 +300,7 @@ pub fn parse(uri: &str) -> Result<Ticket, TicketParseError> {
     let mut node = None;
     let mut url = None;
     let mut onion = None;
+    let mut name = None;
     let mut sig = None;
     for pair in query.split('&') {
         let (k, v) = pair
@@ -300,6 +315,7 @@ pub fn parse(uri: &str) -> Result<Ticket, TicketParseError> {
             "node" => node = Some(v.to_string()),
             "url" => url = Some(v.to_string()),
             "onion" => onion = Some(v.to_string()),
+            "name" => name = Some(v.to_string()),
             "sig" => sig = Some(hex64(v).ok_or(TicketParseError::BadField("sig"))?),
             _ => {} // ignore unknown params (forward-compat), never affects the floor
         }
@@ -314,6 +330,7 @@ pub fn parse(uri: &str) -> Result<Ticket, TicketParseError> {
         node,
         url,
         onion,
+        name,
         sig: sig.ok_or(TicketParseError::BadField("sig"))?,
     })
 }
