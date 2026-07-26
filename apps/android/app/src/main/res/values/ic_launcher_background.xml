@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Sampled from the artwork's outer edge (#870E00-#901100) so the plate the
+         launcher masks matches the photo sitting on top of it. A brighter red
+         would show a visible square seam around the inset art. -->
+    <color name="ic_launcher_background">#8C1000</color>
+</resources>
