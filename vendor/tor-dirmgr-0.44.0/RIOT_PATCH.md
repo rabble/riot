@@ -11,3 +11,12 @@ bundled SQLite 3.53.2 engine.
 Do not make source changes here. Replace this directory from a newer upstream
 release and remove the workspace patch as soon as Arti supports rusqlite 0.40
 or later directly.
+
+The upstream test fixtures are retained so the compatibility change can be
+checked directly:
+
+```sh
+CARGO_TARGET_DIR=target cargo test \
+  --manifest-path vendor/tor-dirmgr-0.44.0/Cargo.toml \
+  --all-features
+```

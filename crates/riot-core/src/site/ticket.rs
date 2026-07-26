@@ -119,6 +119,11 @@ pub struct Ticket {
 /// presence framing for every optional field. The separate domain is
 /// load-bearing: it prevents an attacker from relabeling a signed `onion=X` as
 /// the legacy `url=X` while preserving the signature.
+struct SignedLocations<'a> {
+    url: Option<&'a str>,
+    onion: Option<&'a str>,
+}
+
 fn canonical(
     root: &[u8; 32],
     namespace: &[u8; 32],
@@ -126,9 +131,9 @@ fn canonical(
     epoch: u64,
     exp: u64,
     digest: &[u8; 32],
-    url: Option<&str>,
-    onion: Option<&str>,
+    locations: SignedLocations<'_>,
 ) -> Vec<u8> {
+    let SignedLocations { url, onion } = locations;
     let domain = if onion.is_some() {
         TICKET_ONION_DOMAIN_V1
     } else {
@@ -184,8 +189,10 @@ impl Ticket {
             self.epoch,
             self.exp,
             &self.digest,
-            self.url.as_deref(),
-            self.onion.as_deref(),
+            SignedLocations {
+                url: self.url.as_deref(),
+                onion: self.onion.as_deref(),
+            },
         );
         key.verify(&msg, &sig).is_ok()
     }
@@ -242,8 +249,10 @@ pub fn mint(
         epoch,
         exp,
         &digest,
-        url.as_deref(),
-        onion.as_deref(),
+        SignedLocations {
+            url: url.as_deref(),
+            onion: onion.as_deref(),
+        },
     );
     let sig = root_signing_key.sign(&msg).to_bytes();
     Ticket {
