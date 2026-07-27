@@ -249,7 +249,7 @@ public struct AppRuntimeView: View {
 
     /// Fire the invalidation route. Called from the bridge when a read/commit
     /// fails because the session is no longer valid.
-    public static func postAppInvalidated() {
+    public nonisolated static func postAppInvalidated() {
         NotificationCenter.default.post(name: appInvalidatedNotification, object: nil)
     }
 
@@ -258,7 +258,7 @@ public struct AppRuntimeView: View {
     /// The one call a refresh source makes, so that the sources — foregrounding
     /// here, an accepted sync import in `NearbyTransportController` — cannot
     /// drift apart in how they announce it.
-    public static func postDataChanged() {
+    public nonisolated static func postDataChanged() {
         NotificationCenter.default.post(name: dataChangedNotification, object: nil)
     }
 
