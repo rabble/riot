@@ -35,6 +35,8 @@ Files modified from upstream (exact list — nothing else may differ):
   ["storage", "dep:async-fs", "dep:futures-lite"]` added
 - `src/generic/storage.rs` — `pub mod backend_filesystem;` gated on
   `#[cfg(feature = "storage-fs")]`
+- Removed: `.cargo-ok`, `.cargo_vcs_info.json` (cargo registry bookkeeping,
+  not upstream source; house convention per vendor/tor-dirmgr-0.44.0)
 
 Do not make any other source changes here.
 

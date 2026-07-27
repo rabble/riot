@@ -16,13 +16,13 @@ publish = false
 # graph for document projections; this feature gates only the demo-fixture API.
 conformance = ["dep:serde_json"]
 
+default = ["sqlite", "persistent-storage"]
+# willow25's persistent store pulls fjall + lsm-tree + async-fs. Default-on
+# for native; wasm graphs disable it (`--no-default-features`) to drop them.
+persistent-storage = ["willow25/persistent-storage"]
 # The durable SQLite store. Default-on, so every existing build is unchanged.
 # Disable (`--no-default-features`) to compile the verify+project core for
 # wasm32, where SQLite's C library cannot build — the in-memory store remains.
-default = ["sqlite", "persistent-storage"]
-# willow25's persistent store pulls fjall + async-fs + bab_rs/storage-fs.
-# Default-on for native; wasm builds (`--no-default-features`) exclude it.
-persistent-storage = ["willow25/persistent-storage"]
 sqlite = ["dep:rusqlite"]
 
 [dependencies]

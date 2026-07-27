@@ -42,6 +42,7 @@ drop_format = [
     "futures-lite",
 ]
 persistent-storage = [
+    "std",
     "dep:async-fs",
     "dep:fjall",
     "bab_rs/storage-fs",
