@@ -139,18 +139,15 @@ fn payload_path_kind(payload: &NewswirePayload) -> NewswirePathKind {
     }
 }
 
-fn build_signed(
+fn build_signed_from_bytes(
     author: &EvidenceAuthor,
     snapshot: ClockSnapshot,
+    path_kind: NewswirePathKind,
+    payload_bytes: Vec<u8>,
     payload: NewswirePayload,
 ) -> Result<SignedNewswireRecord, NewswireError> {
-    let payload_bytes = encode_payload(&payload)?;
     let digest = william3_digest(&payload_bytes);
-    let path = newswire_path(
-        payload_path_kind(&payload),
-        snapshot.tai_j2000_micros,
-        &digest,
-    )?;
+    let path = newswire_path(path_kind, snapshot.tai_j2000_micros, &digest)?;
     let entry = Entry::builder()
         .namespace_id(author.namespace_id().clone())
         .subspace_id(author.subspace_id())
@@ -174,6 +171,16 @@ fn build_signed(
         snapshot,
         payload,
     })
+}
+
+fn build_signed(
+    author: &EvidenceAuthor,
+    snapshot: ClockSnapshot,
+    payload: NewswirePayload,
+) -> Result<SignedNewswireRecord, NewswireError> {
+    let payload_bytes = encode_payload(&payload)?;
+    let path_kind = payload_path_kind(&payload);
+    build_signed_from_bytes(author, snapshot, path_kind, payload_bytes, payload)
 }
 
 fn require_founding_organizer(
@@ -308,6 +315,83 @@ pub fn create_signed_news_post(
     require_post_authority(author, descriptor, &post)?;
     let snapshot = system_snapshot().map_err(|_| NewswireError::ClockUnavailable)?;
     build_signed(author, snapshot, NewswirePayload::NewsPost(post))
+}
+
+/// An immutable prepared news post: the exact canonical payload bytes and
+/// clock snapshot that a later `sign_prepared_news_post` call will sign.
+/// Constructed only by `prepare_news_post`; fields are private.
+///
+/// The prepare → review → sign contract: `prepare_news_post` validates
+/// authority and retains the canonical encoding plus the clock snapshot, so
+/// the caller can present those exact bytes for review. `sign_prepared_news_post`
+/// signs the RETAINED bytes with the RETAINED snapshot — it never re-encodes
+/// or re-reads the clock — so what was reviewed is byte-identical to what is
+/// signed. A prepared post is bound to the author that prepared it; any other
+/// author is rejected with `NewswireError::AuthorityInvalid`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PreparedNewsPost {
+    post: NewsPostV1,
+    payload_bytes: Vec<u8>,
+    snapshot: ClockSnapshot,
+    author_subspace_id: [u8; 32],
+}
+
+impl PreparedNewsPost {
+    /// The exact canonical payload bytes a later sign call will commit.
+    pub fn payload_bytes(&self) -> &[u8] {
+        &self.payload_bytes
+    }
+
+    /// The clock snapshot captured at prepare time; the signed entry's
+    /// timestamp will be `snapshot.tai_j2000_micros`.
+    pub fn snapshot(&self) -> ClockSnapshot {
+        self.snapshot
+    }
+
+    /// The retained post model, for review display.
+    pub fn post(&self) -> &NewsPostV1 {
+        &self.post
+    }
+}
+
+/// Validate authority and capture an immutable prepared news post: canonical
+/// payload bytes, clock snapshot, and author binding. Signing is deferred to
+/// `sign_prepared_news_post`, which consumes the retained bytes unchanged.
+pub fn prepare_news_post(
+    author: &EvidenceAuthor,
+    descriptor: &VerifiedNewswireRecord,
+    post: NewsPostV1,
+) -> Result<PreparedNewsPost, NewswireError> {
+    require_post_authority(author, descriptor, &post)?;
+    let snapshot = system_snapshot().map_err(|_| NewswireError::ClockUnavailable)?;
+    let payload_bytes = encode_payload(&NewswirePayload::NewsPost(post.clone()))?;
+    Ok(PreparedNewsPost {
+        post,
+        payload_bytes,
+        snapshot,
+        author_subspace_id: *author.subspace_id().as_bytes(),
+    })
+}
+
+/// Sign a previously prepared news post. The signed record commits the
+/// retained payload bytes and retained snapshot unchanged — signing the same
+/// prepared post twice is deterministic. Only the preparing author may sign.
+pub fn sign_prepared_news_post(
+    author: &EvidenceAuthor,
+    prepared: &PreparedNewsPost,
+) -> Result<SignedNewswireRecord, NewswireError> {
+    if *author.subspace_id().as_bytes() != prepared.author_subspace_id {
+        return Err(NewswireError::AuthorityInvalid);
+    }
+    build_signed_from_bytes(
+        author,
+        prepared.snapshot,
+        NewswirePathKind::Post {
+            space_descriptor_entry_id: prepared.post.space_descriptor_entry_id,
+        },
+        prepared.payload_bytes.clone(),
+        NewswirePayload::NewsPost(prepared.post.clone()),
+    )
 }
 
 pub fn create_signed_editorial_action(
