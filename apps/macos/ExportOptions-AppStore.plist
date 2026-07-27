@@ -17,6 +17,10 @@
 	     a Mac App Store profile for net.protest.riot on first run. -->
 	<key>signingStyle</key>
 	<string>manual</string>
+	<key>signingCertificate</key>
+	<string>Apple Distribution</string>
+	<key>installerSigningCertificate</key>
+	<string>3rd Party Mac Developer Installer</string>
 	<key>provisioningProfiles</key>
 	<dict>
 		<key>net.protest.riot</key>
