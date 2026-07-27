@@ -36,6 +36,7 @@ cd "$ROOT"
 #   error opening input file '.../build/generated/riot-ffi/riot_ffi.swift'
 # mkdir is atomic on every filesystem this runs on, so it is the lock.
 LOCK_DIR="$ROOT/build/.release-lock"
+mkdir -p "$ROOT/build"
 if ! mkdir "$LOCK_DIR" 2>/dev/null; then
   echo "ERROR: another release build is already running in this checkout." >&2
   echo "       ($LOCK_DIR exists — remove it if a previous run was killed.)" >&2
@@ -88,6 +89,17 @@ mkdir -p build/native/ios-device
 install -m 0644 target/aarch64-apple-ios/release/libriot_ffi.a \
   build/native/ios-device/libriot_ffi.a
 
+# ASC API-key auth lets archive/export do cloud signing (distribution cert +
+# profile) without a signed-in Xcode account — the CI path.
+ASC_AUTH_ARGS=()
+if [ -n "${ASC_KEY_ID:-}" ] && [ -n "${ASC_ISSUER_ID:-}" ] && [ -n "${ASC_KEY_PATH:-}" ]; then
+  ASC_AUTH_ARGS=(
+    -authenticationKeyID "$ASC_KEY_ID"
+    -authenticationKeyIssuerID "$ASC_ISSUER_ID"
+    -authenticationKeyPath "$ASC_KEY_PATH"
+  )
+fi
+
 echo "==> archive (Release, generic iOS device)"
 rm -rf "$ARCHIVE"
 xcodebuild archive \
@@ -97,6 +109,7 @@ xcodebuild archive \
   -destination 'generic/platform=iOS' \
   -archivePath "$ARCHIVE" \
   -allowProvisioningUpdates \
+  "${ASC_AUTH_ARGS[@]}" \
   CURRENT_PROJECT_VERSION="$BUILD_NUMBER"
 
 echo "==> export signed .ipa"
@@ -104,7 +117,8 @@ xcodebuild -exportArchive \
   -archivePath "$ARCHIVE" \
   -exportOptionsPlist "$EXPORT_OPTS" \
   -exportPath "$OUT" \
-  -allowProvisioningUpdates
+  -allowProvisioningUpdates \
+  "${ASC_AUTH_ARGS[@]}"
 
 IPA="$(ls "$OUT"/*.ipa 2>/dev/null | head -1 || true)"
 if [ -z "$IPA" ]; then echo "ERROR: no .ipa produced in $OUT" >&2; exit 1; fi

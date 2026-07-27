@@ -13,7 +13,12 @@
 	     Requires an Xcode account authorized on team GZCZBKH7MY, or the archive/
 	     export must run with -allowProvisioningUpdates and an ASC API key. -->
 	<key>signingStyle</key>
-	<string>automatic</string>
+	<string>manual</string>
+	<key>provisioningProfiles</key>
+	<dict>
+		<key>net.protest.riot</key>
+		<string>Riot App Store (API-created)</string>
+	</dict>
 	<key>uploadSymbols</key>
 	<true/>
 	<key>uploadBitcode</key>
