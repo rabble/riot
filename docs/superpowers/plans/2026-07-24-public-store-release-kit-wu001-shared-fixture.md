@@ -1,7 +1,18 @@
 # WU-001 Shared Synthetic Fixture and Native Contracts Plan
 
-> **Status:** Draft for mandatory plan review. Do not implement until all three
-> plan reviewers pass it.
+> **Status (2026-07-27): COMPLETE.** Plan approved by all three reviewers
+> (607ffe55). Implemented in 966d020c; code-quality review requested changes,
+> fixes landed in 2683dd14 (`.gitattributes` LF guard — user-approved scope
+> expansion — plus Kotlin/Swift seam parity: exact `schemaVersion`, trailing
+> content rejection, `identifiers` error precedence). Final verdicts:
+> spec-compliance PASS, code-quality APPROVE. Post-commit verification: iOS
+> 4/4, macOS 3/3, Android 4/4 focused tests; fixture SHA-256
+> `930a9c5aa06dea920b0502dbd72b6b2bf00d1b4cb9405b99e69e00d035640469` identical
+> in both loaders; fixture present in test bundles, absent from all
+> Debug/Release app products and Android APK/AAB; WU-000 regressions green.
+> Known unrelated environment issue: rabble/riot#151
+> (`lintVitalReportRelease` AGP path-variable failure, reproduces on parent
+> commit; must be resolved before WU-006 release builds).
 
 **Goal:** Add one deterministic, obviously synthetic Riot 1.0 release scenario
 that iOS, iPadOS, macOS, Android phone, and Android tablet capture work can

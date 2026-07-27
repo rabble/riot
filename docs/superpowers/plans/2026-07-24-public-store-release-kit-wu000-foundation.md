@@ -1,5 +1,14 @@
 # Riot Release Kit WU-000 Foundation Implementation Plan
 
+> **Status (2026-07-27): COMPLETE.** All steps landed on branch
+> `codex/riot-public-store-release-kit` (commits dfe4ddfe through b1bfd105),
+> including spec-review and code-quality hardening follow-ups. Post-WU-001
+> regression check: unit tests green, c8 100% lines/branches/functions/
+> statements on `scripts/release/**/*.mjs`, zero generated-worksheet drift,
+> `release:status --json` truthfully `BLOCKED` with exit 1 (policy controls,
+> `url.support`, NDK SHA-256 pin, and human-only account/legal/Console gates —
+> all expected at this stage).
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Add the fail-closed canonical record, schema, policy worksheet,
