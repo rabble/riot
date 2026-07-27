@@ -72,8 +72,18 @@ async function analyzeBand(sharp, path, cell, layout, ink, paper) {
   const { width, height, channels } = info;
   const scaleY = height / cell.height;
   const bandTop = Math.max(0, Math.round(layout.bandY * scaleY));
-  const bottomOffset = (height - 1) * width * channels;
-  const bottomColor = [data[bottomOffset], data[bottomOffset + 1], data[bottomOffset + 2]];
+  // Bottom row plurality, not a single pixel: robust against stray content.
+  const bottomCounts = new Map();
+  const bottomBase = (height - 1) * width * channels;
+  for (let x = 0; x < width; x += 1) {
+    const offset = bottomBase + x * channels;
+    const key = [data[offset], data[offset + 1], data[offset + 2]].join(",");
+    bottomCounts.set(key, (bottomCounts.get(key) ?? 0) + 1);
+  }
+  const bottomColor = [...bottomCounts.entries()]
+    .sort((a, b) => b[1] - a[1])[0][0]
+    .split(",")
+    .map(Number);
 
   const textLuminanceFloor = relativeLuminance(paper) * 0.75;
   let bandPx = 0;
@@ -107,14 +117,16 @@ export async function validateVisuals({ visuals, repositoryRoot, fs, sha256, sha
   }
   const gates = [];
 
-  // Prohibited-data scan over the visuals source (and only cost: source scan).
+  // Prohibited-data scan over the visuals source; the generated provenance
+  // is scanned as well once loaded (unless render checks are skipped).
   const hits = [];
   scanProhibited(visuals, "", hits);
-  gates.push(hits.length > 0
-    ? gate("visual.prohibited-data", "BLOCKED", VISUALS_SOURCE, "/", hits.join("; "), "no person, contact, location, device-credential, private-data, production-network, or operational identifier patterns", "Remove the prohibited content from the visuals source.")
-    : gate("visual.prohibited-data", "PASS", VISUALS_SOURCE, "/", "clean", "no prohibited content patterns", "No action required."));
-
-  if (skipRenderChecks) return gates;
+  if (skipRenderChecks) {
+    gates.push(hits.length > 0
+      ? gate("visual.prohibited-data", "BLOCKED", VISUALS_SOURCE, "/", hits.join("; "), "no person, contact, location, device-credential, private-data, production-network, or operational identifier patterns", "Remove the prohibited content from the visuals source.")
+      : gate("visual.prohibited-data", "PASS", VISUALS_SOURCE, "/", "clean", "no prohibited content patterns", "No action required."));
+    return gates;
+  }
 
   const sharpAdapter = sharp ?? (await import("sharp")).default;
 
@@ -136,15 +148,16 @@ export async function validateVisuals({ visuals, repositoryRoot, fs, sha256, sha
   let provenanceError = null;
   try {
     const provenance = JSON.parse(await fs.readFile(provenancePath, "utf8"));
+    scanProhibited(provenance, "", hits);
     const expectedFiles = cells.map((cell) => cell.file).sort();
     const actualFiles = (provenance.cells ?? []).map((cell) => cell.file).sort();
     if (JSON.stringify(expectedFiles) !== JSON.stringify(actualFiles)) {
       provenanceError = `cell inventory mismatch: expected ${expectedFiles.length} pinned files, found ${actualFiles.length}`;
     } else {
-      for (const cell of provenance.cells) {
-        const bytes = await fs.readFile(join(repositoryRoot, ...cell.file.split("/").slice(0)));
-        if (sha256(bytes) !== cell.sha256) {
-          provenanceError = `digest mismatch for ${cell.file}`;
+      for (const entry of [...provenance.cells, ...(provenance.icons ?? [])]) {
+        const bytes = await fs.readFile(join(repositoryRoot, entry.file));
+        if (sha256(bytes) !== entry.sha256) {
+          provenanceError = `digest mismatch for ${entry.file}`;
           break;
         }
       }
@@ -162,6 +175,9 @@ export async function validateVisuals({ visuals, repositoryRoot, fs, sha256, sha
   gates.push(provenanceError
     ? gate("visual.provenance", "BLOCKED", PROVENANCE_FILE, "/cells", provenanceError, "30 pinned cells with re-derivable digests and a consistent approval digest", "Regenerate the draft visuals and provenance with release:generate.")
     : gate("visual.provenance", "PASS", PROVENANCE_FILE, "/cells", "30 cells, digests verified", "30 pinned cells with re-derivable digests", "No action required."));
+  gates.push(hits.length > 0
+    ? gate("visual.prohibited-data", "BLOCKED", VISUALS_SOURCE, "/", hits.join("; "), "no person, contact, location, device-credential, private-data, production-network, or operational identifier patterns", "Remove the prohibited content from the visuals source.")
+    : gate("visual.prohibited-data", "PASS", VISUALS_SOURCE, "/", "clean", "no prohibited content patterns", "No action required."));
 
   // Pixel-level gates over the draft tree.
   const ink = hexToRgb(visuals.colors.ink);

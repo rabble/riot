@@ -12,6 +12,13 @@ export const RENDER_ENVIRONMENT = Object.freeze({
   PANGOCAIRO_BACKEND: "PANGOCAIRO_BACKEND",
 });
 
+function escapeConfXml(text) {
+  return text
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;");
+}
+
 export async function buildFontsConf({ fontsDirectory, workDirectory, fs }) {
   if (typeof fs?.writeFile !== "function" || typeof fs?.mkdir !== "function") {
     throw new TypeError("an fs adapter with mkdir/writeFile is required");
@@ -24,8 +31,8 @@ export async function buildFontsConf({ fontsDirectory, workDirectory, fs }) {
   const conf = `<?xml version="1.0"?>
 <!DOCTYPE fontconfig SYSTEM "fonts.dtd">
 <fontconfig>
-  <dir>${fontsDirectory}</dir>
-  <cachedir>${cacheDirectory}</cachedir>
+  <dir>${escapeConfXml(fontsDirectory)}</dir>
+  <cachedir>${escapeConfXml(cacheDirectory)}</cachedir>
 </fontconfig>
 `;
   await fs.writeFile(confPath, conf);
@@ -38,4 +45,25 @@ export async function buildFontsConf({ fontsDirectory, workDirectory, fs }) {
       [RENDER_ENVIRONMENT.PANGOCAIRO_BACKEND]: "fontconfig",
     }),
   });
+}
+
+// Process-global font state: librsvg reads these variables at first
+// rasterization, so callers apply them before loading sharp and restore
+// them once rendering completes. Returns a restore closure.
+export function applyRenderEnvironment(env) {
+  const previous = Object.fromEntries(
+    Object.keys(env).map((key) => [key, process.env[key]]),
+  );
+  for (const [key, value] of Object.entries(env)) {
+    process.env[key] = value;
+  }
+  return () => {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+  };
 }

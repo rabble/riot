@@ -11,7 +11,8 @@ export function relativeLuminance([r, g, b]) {
 
 export function contrastRatio(first, second) {
   const [lighter, darker] = [relativeLuminance(first), relativeLuminance(second)].sort((a, b) => b - a);
-  return Number(((lighter + 0.05) / (darker + 0.05)).toFixed(2));
+  // Truncate, never round up: a true 4.496 must fail a 4.5 floor.
+  return Math.floor(((lighter + 0.05) / (darker + 0.05)) * 100) / 100;
 }
 
 function quantize(value) {

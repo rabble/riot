@@ -5,7 +5,9 @@
     "apps/ios/Riot.xcodeproj/project.pbxproj": "88b69df51b72b49f913eefe42a6f93b70b9340ce5f83ff6df0ca2312af107eb9",
     "apps/macos/Riot.xcodeproj/project.pbxproj": "b5262cc749e730c0851fb8b589b03447edd15ed6711bf8e3bae87b41094e002c",
     "apps/android/app/build.gradle.kts": "8e21f29ea07c4b1378bb39b1fc7b1f7cc148fbf0a91bc8eecca41c0a3bde254d",
-    "apps/android/app/src/main/AndroidManifest.xml": "b3f9b1623f2ded7d1a0f138ddb7e1f402df75c2d0c161f73d6c69924098ab6f5"
+    "apps/android/app/src/main/AndroidManifest.xml": "b3f9b1623f2ded7d1a0f138ddb7e1f402df75c2d0c161f73d6c69924098ab6f5",
+    "apps/ios/Riot/Info.plist": "0a3f29c640619e06d89a45ff2bc2e64d9c0039adf2f2e90325a770aa90a19012",
+    "apps/macos/Riot/Info.plist": "fc75a2010a4922300e4b7990df77fe02bf35dc20c6e5f25bceb2592de60cfcec"
   },
   "ios": {
     "bundleId": "net.protest.riot",

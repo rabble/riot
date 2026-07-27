@@ -99,7 +99,12 @@ test("generate is deterministic and creates the worksheets, metadata, and visual
   const root = await releaseRoot();
   await rm(join(root, "release", "generated"), { recursive: true, force: true });
   const first = await run(root, ["generate"]);
-  assert.deepEqual(first, { code: 0, stdout: "generated 11 worksheets, 12 metadata artifacts, and 51 visual artifacts\n", stderr: "" });
+  assert.equal(first.code, 0);
+  assert.equal(first.stderr, "");
+  assert.match(
+    first.stdout,
+    /^generated 11 worksheets, 12 metadata artifacts \(apple [0-9a-f]{64}, google [0-9a-f]{64}\), and 52 visual artifacts\n$/,
+  );
   const before = await readFile(join(root, "release", "generated", "worksheets", "app-privacy.md"), "utf8");
   const beforeManifest = await readFile(join(root, "release", "generated", "apple", "en-US", "manifest.json"), "utf8");
   const second = await run(root, ["generate"]);

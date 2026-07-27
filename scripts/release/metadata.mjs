@@ -92,8 +92,8 @@ const PROHIBITED_PATTERNS = Object.freeze([
   /fully private/i,
   /no logs/i,
   /\$/,
-  /\bsale\b/i,
-  /\bdiscount\b/i,
+  /\bsales?\b/i,
+  /\bdiscounts?\b/i,
   /military-grade/i,
   /\bunhackable\b/i,
   /secure against/i,
@@ -132,9 +132,9 @@ function checkLength(gates, platform, sourceFile, field, value, limit) {
 
 function checkVocabulary(gates, platform, sourceFile, field, value) {
   const id = `metadata.${platform}.${field}.vocabulary`;
-  const withoutCanonicalUrls = Object.values(CANONICAL_URLS)
-    .reduce((text, url) => text.split(url).join(""), value);
-  const urlMatch = withoutCanonicalUrls.match(/https?:\/\/\S+/i);
+  const canonical = new Set(Object.values(CANONICAL_URLS));
+  const urls = value.match(/https?:\/\/\S+/gi) ?? [];
+  const urlMatch = urls.find((url) => !canonical.has(url));
   const pattern = PROHIBITED_PATTERNS.find((candidate) => candidate.test(value));
   if (urlMatch || pattern) {
     gates.push(gate(
@@ -393,6 +393,7 @@ export async function loadMetadataSources({ sourceDirectory, registry, fs }) {
 }
 
 function buildManifest(platform, source, limits, fieldFiles, emitted) {
+  // platform is passed explicitly; never sniff it from paths.
   const fields = {};
   for (const [field, file] of Object.entries(fieldFiles)) {
     fields[field] = {
@@ -412,7 +413,7 @@ function buildManifest(platform, source, limits, fieldFiles, emitted) {
   };
 }
 
-async function writePlatform({ fs, sha256, directory, source, limits, fieldFiles }) {
+async function writePlatform({ fs, sha256, directory, source, limits, fieldFiles, platform }) {
   const staging = `${directory}.staging`;
   await fs.rm(staging, { recursive: true, force: true });
   await fs.mkdir(staging, { recursive: true });
@@ -425,7 +426,7 @@ async function writePlatform({ fs, sha256, directory, source, limits, fieldFiles
     await fs.writeFile(join(staging, file), bytes);
   }
   const manifest = buildManifest(
-    directory.includes("apple") ? "apple" : "google",
+    platform,
     source,
     limits,
     fieldFiles,
@@ -459,6 +460,7 @@ export async function generateMetadata({ sources, outputDirectory, fs, sha256 })
     source: sources.apple,
     limits: APPLE_FIELD_LIMITS,
     fieldFiles: APPLE_FIELD_FILES,
+    platform: "apple",
   });
   const googleManifestSha256 = await writePlatform({
     fs,
@@ -467,6 +469,7 @@ export async function generateMetadata({ sources, outputDirectory, fs, sha256 })
     source: sources.google,
     limits: GOOGLE_FIELD_LIMITS,
     fieldFiles: GOOGLE_FIELD_FILES,
+    platform: "google",
   });
   return Object.freeze({ appleManifestSha256, googleManifestSha256 });
 }

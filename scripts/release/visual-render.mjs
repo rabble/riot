@@ -3,17 +3,21 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 
 import { canonicalJson } from "./canonical-json.mjs";
-import { buildFontsConf } from "./render-environment.mjs";
+import { applyRenderEnvironment, buildFontsConf } from "./render-environment.mjs";
 import { buildMatrix, layoutCell, validateLayout } from "./visual-model.mjs";
 
 // librsvg resolves fonts through fontconfig at first rasterization, so the
-// hermetic font environment must be live before sharp is loaded.
+// hermetic font environment must be live before sharp is loaded. Applies the
+// environment and returns a cleanup closure that restores process.env and
+// removes the temporary fontconfig work directory.
 async function prepareFonts({ fontsDirectory, fs }) {
   const workDirectory = await fs.mkdtemp(join(tmpdir(), "riot-render-fonts-"));
   const { env } = await buildFontsConf({ fontsDirectory, workDirectory, fs });
-  for (const [key, value] of Object.entries(env)) {
-    process.env[key] = value;
-  }
+  const restore = applyRenderEnvironment(env);
+  return async () => {
+    restore();
+    await fs.rm(workDirectory, { recursive: true, force: true });
+  };
 }
 
 function escapeXml(text) {
@@ -72,6 +76,7 @@ export async function renderDrafts({
   fs,
   sha256,
   sharp,
+  icons = [],
 }) {
   if (typeof sha256 !== "function") {
     throw new TypeError("a sha256 dependency is required");
@@ -79,10 +84,11 @@ export async function renderDrafts({
   if (!fontsDirectory) {
     throw new TypeError("a fonts directory is required");
   }
-  await prepareFonts({ fontsDirectory, fs });
+  const cleanupFonts = await prepareFonts({ fontsDirectory, fs });
   const sharpAdapter = await resolveSharp(sharp);
   const cells = buildMatrix(visuals);
   const provenanceCells = [];
+  try {
   for (const cell of cells) {
     const layout = layoutCell(visuals, cell);
     const issues = validateLayout(visuals, cell, layout);
@@ -116,6 +122,7 @@ export async function renderDrafts({
     fixtureSha256,
     templateVersion: visuals.templateVersion,
     cells: provenanceCells,
+    icons: [...icons],
   };
   // Human-review approval survives regeneration while the rendered cells and
   // template inputs are unchanged; any drift drops it for re-review.
@@ -132,6 +139,9 @@ export async function renderDrafts({
   await fs.mkdir(join(outputDirectory), { recursive: true });
   await fs.writeFile(provenancePath, canonicalJson(provenance));
   return Object.freeze({ cells: Object.freeze(provenanceCells), provenance: Object.freeze(provenance) });
+  } finally {
+    await cleanupFonts();
+  }
 }
 
 const MAC_ICON_SIZES = [
@@ -181,10 +191,9 @@ export async function renderIcons({ masterPath, outputDirectory, fs, sha256, sha
   if (!visuals) {
     throw new TypeError("a visuals source is required");
   }
-  if (fontsDirectory) {
-    await prepareFonts({ fontsDirectory, fs });
-  }
+  const cleanupFonts = fontsDirectory ? await prepareFonts({ fontsDirectory, fs }) : null;
   const sharpAdapter = await resolveSharp(sharp);
+  try {
   const icons = [];
   const writePng = async (relative, pipeline) => {
     const bytes = await pipeline.png().toBuffer();
@@ -259,4 +268,7 @@ export async function renderIcons({ masterPath, outputDirectory, fs, sha256, sha
   );
 
   return Object.freeze({ icons: Object.freeze(icons) });
+  } finally {
+    if (cleanupFonts) await cleanupFonts();
+  }
 }

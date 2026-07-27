@@ -46,6 +46,9 @@ export function readFontMetrics(bytes) {
   if (!tables.head || !tables["OS/2"]) {
     throw new TypeError("not an sfnt font: missing head or OS/2 table");
   }
+  if (tables.head.offset + 20 > bytes.length) {
+    throw new TypeError("not an sfnt font: truncated head table");
+  }
   const unitsPerEm = bytes.readUInt16BE(tables.head.offset + 18);
   const os2 = tables["OS/2"].offset;
   if (os2 + 90 > bytes.length) throw new TypeError("not an sfnt font: truncated OS/2 table");
@@ -63,7 +66,7 @@ function wrapHeadline(headline, maxCharsPerLine, maxLines) {
     if (Array.from(candidate).length <= maxCharsPerLine) {
       current = candidate;
     } else {
-      lines.push(current);
+      if (current !== "") lines.push(current);
       current = word;
     }
   }

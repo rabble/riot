@@ -1,5 +1,27 @@
 # WU-002 Store Metadata, Configuration Validator, and Visual System Plan
 
+> **Status (2026-07-27): COMPLETE.** Implemented in 7fdc1974; review-fix pass
+> in the following commit (spec-compliance: manifest digests printed, icons
+> bound into provenance, Info.plist snapshot hashes, exact sharp pin,
+> provenance prohibited scan, artifact count; code-quality: explicit platform
+> passing, TTF head bounds check, fonts.conf XML escaping, env restore +
+> temp-dir cleanup, URL allowlist matching, plural vocabulary, contrast
+> truncation).
+>
+> **Deferred with annotation (accepted by reviewers):**
+> - Cap-height uses the pinned `ANTON_CAP_RATIO` constant (test-verified
+>   within 5% of the real TTF metrics) rather than consuming parsed metrics
+>   at layout time; functionally equivalent for the single checked-in
+>   headline font.
+> - `render-environment.mjs` owns env construction and
+>   `applyRenderEnvironment`; `visual-render.mjs` applies/restores it —
+>   the ordering guarantee (env live before sharp loads) is unchanged.
+> - `generate` is fail-closed but not transactional across stages; a
+>   mid-pipeline crash can leave partial output that the next `status`
+>   rejects via provenance mismatch.
+>
+> **Status: APPROVED (plan gate).** Original approval text follows.
+
 > **Status (2026-07-27): APPROVED.** Three-reviewer plan gate passed after
 > three rounds: feasibility (B1 renderer font mechanism, B2 schema-ID
 > ordering, B3 sharp DI, B4 claim-carrier ordering — all fixed),

@@ -298,3 +298,36 @@ test("provenance without a cells array fails completeness", async () => {
   assert.equal(gate(gates, "visual.provenance").state, "BLOCKED");
   await realFs.writeFile(provenancePath, provenanceBytes);
 });
+
+test("clean visuals pass the prohibited gate on the skipped path", async () => {
+  const gates = await validateVisuals({
+    visuals: await realVisuals(),
+    repositoryRoot: repositoryRoot,
+    fs: realFs,
+    sha256,
+    skipRenderChecks: true,
+  });
+  assert.equal(gate(gates, "visual.prohibited-data").state, "PASS");
+});
+
+test("prohibited content inside provenance fails the full-path gate", async () => {
+  const { root, visuals, provenanceBytes } = await renderedTree();
+  const provenancePath = join(root, "release", "generated", "visual-draft-provenance.json");
+  const provenance = JSON.parse(provenanceBytes);
+  provenance.fixtureNote = "123 Main Street";
+  await realFs.writeFile(provenancePath, JSON.stringify(provenance));
+  const gates = await validateVisuals({ visuals, repositoryRoot: root, fs: realFs, sha256 });
+  assert.equal(gate(gates, "visual.prohibited-data").state, "BLOCKED");
+  await realFs.writeFile(provenancePath, provenanceBytes);
+});
+
+test("provenance without an icons key still validates its cells", async () => {
+  const { root, visuals, provenanceBytes } = await renderedTree();
+  const provenancePath = join(root, "release", "generated", "visual-draft-provenance.json");
+  const provenance = JSON.parse(provenanceBytes);
+  delete provenance.icons;
+  await realFs.writeFile(provenancePath, JSON.stringify(provenance));
+  const gates = await validateVisuals({ visuals, repositoryRoot: root, fs: realFs, sha256 });
+  assert.equal(gate(gates, "visual.provenance").state, "PASS");
+  await realFs.writeFile(provenancePath, provenanceBytes);
+});

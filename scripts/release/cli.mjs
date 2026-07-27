@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import { evaluateConfiguration, evaluateSnapshotFreshness } from "./configuration.mjs";
 import { evaluateMetadata, generateMetadata, loadMetadataSources } from "./metadata.mjs";
 import { evaluatePolicy, generateWorksheets, loadPolicySources } from "./policy.mjs";
+import { canonicalJson } from "./canonical-json.mjs";
 import { loadSchemaRegistry, releaseDiagnosticError, validateSource } from "./schema.mjs";
 import { renderDrafts, renderIcons } from "./visual-render.mjs";
 import { validateVisuals } from "./visual-validate.mjs";
@@ -179,13 +180,24 @@ export async function runCli({
         sha256,
       });
       const metadataSources = await loadMetadataSources({ sourceDirectory, registry, fs });
-      await generateMetadata({
+      const { appleManifestSha256, googleManifestSha256 } = await generateMetadata({
         sources: metadataSources,
         outputDirectory: join(root, "release", "generated"),
         fs,
         sha256,
       });
       const fixtureSha256 = "930a9c5aa06dea920b0502dbd72b6b2bf00d1b4cb9405b99e69e00d035640469";
+      const { icons } = await renderIcons({
+        masterPath: join(root, "apps", "ios", "Riot", "Assets.xcassets", "AppIcon.appiconset", "AppIcon-1024.png"),
+        outputDirectory: join(root, "release", "generated"),
+        fs,
+        sha256,
+        visuals: metadataSources.visuals,
+        fontsDirectory: join(root, "apps", "ios", "Riot", "Resources", "Fonts"),
+      });
+      // Every icon file is bound into the draft provenance so validation can
+      // re-derive its digest; the approval block survives regeneration only
+      // while the unsigned provenance (cells + icons) is unchanged.
       await renderDrafts({
         visuals: metadataSources.visuals,
         fixtureRevision: "riot-1.0-synthetic-v1",
@@ -194,16 +206,11 @@ export async function runCli({
         outputDirectory: join(root, "release", "generated"),
         fs,
         sha256,
+        icons,
       });
-      await renderIcons({
-        masterPath: join(root, "apps", "ios", "Riot", "Assets.xcassets", "AppIcon.appiconset", "AppIcon-1024.png"),
-        outputDirectory: join(root, "release", "generated"),
-        fs,
-        sha256,
-        visuals: metadataSources.visuals,
-        fontsDirectory: join(root, "apps", "ios", "Riot", "Resources", "Fonts"),
-      });
-      stdout.write("generated 11 worksheets, 12 metadata artifacts, and 51 visual artifacts\n");
+      stdout.write(
+        `generated 11 worksheets, 12 metadata artifacts (apple ${appleManifestSha256}, google ${googleManifestSha256}), and 52 visual artifacts\n`,
+      );
       return 0;
     } catch {
       stderr.write("release generation failed: correct the canonical source diagnostics with status\n");

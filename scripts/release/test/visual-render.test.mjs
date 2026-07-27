@@ -170,6 +170,16 @@ test("renderDrafts and renderIcons guard their dependencies", async () => {
     renderIcons({ masterPath: "x", outputDirectory: "y", fs: realFs, sha256 }),
     /visuals source is required/,
   );
+  // Without a fonts directory the stock fonts path is skipped entirely.
+  const root2 = await tempReleaseRoot();
+  const noFonts = await renderIcons({
+    masterPath: join(repositoryRoot, "apps", "ios", "Riot", "Assets.xcassets", "AppIcon.appiconset", "AppIcon-1024.png"),
+    outputDirectory: join(root2, "out"),
+    fs: realFs,
+    sha256,
+    visuals: await realVisuals(),
+  });
+  assert.ok(noFonts.icons.length > 0);
 });
 
 test("renderDrafts fails closed on an invalid layout", async () => {

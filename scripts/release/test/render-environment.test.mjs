@@ -44,3 +44,13 @@ test("buildFontsConf requires an fs adapter", async () => {
     /fs adapter/,
   );
 });
+
+test("applyRenderEnvironment restores pre-existing values on cleanup", async () => {
+  const { applyRenderEnvironment } = await import("../render-environment.mjs");
+  process.env.FONTCONFIG_PATH = "/preexisting";
+  const restore = applyRenderEnvironment({ FONTCONFIG_PATH: "/render" });
+  assert.equal(process.env.FONTCONFIG_PATH, "/render");
+  restore();
+  assert.equal(process.env.FONTCONFIG_PATH, "/preexisting");
+  delete process.env.FONTCONFIG_PATH;
+});

@@ -208,6 +208,9 @@ test("readFontMetrics rejects a truncated OS/2 table and a non-positive sCapHeig
     return buffer;
   };
   assert.throws(() => readFontMetrics(build(700, 10).subarray(0, 200)), /truncated OS\/2/);
+  const truncatedHead = build(700, 96);
+  truncatedHead.writeUInt32BE(4000, 12 + 8);
+  assert.throws(() => readFontMetrics(truncatedHead), /truncated head/);
   assert.throws(() => readFontMetrics(build(0, 96)), /sCapHeight/);
 });
 
