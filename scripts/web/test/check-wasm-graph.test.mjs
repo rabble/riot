@@ -82,7 +82,10 @@ test('direct run exercises the CLI entry (contract verdict, either direction)', 
     path.dirname(fileURLToPath(import.meta.url)),
     '../check-wasm-graph.mjs',
   );
-  const result = spawnSync(process.execPath, [script], { encoding: 'utf8' });
+  const result = spawnSync(process.execPath, [script], {
+    encoding: 'utf8',
+    timeout: 120_000,
+  });
   // Exit code is graph-state dependent (RED pre-patch, GREEN after WU-000
   // completes); assert only that the CLI ran and printed a verdict line.
   assert.ok(

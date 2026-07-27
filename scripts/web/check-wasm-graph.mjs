@@ -10,6 +10,8 @@
 // Exit 0 = contract holds. Exit 1 = forbidden crate present (or cargo tree failed).
 
 import { execFileSync } from 'node:child_process';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 export const FORBIDDEN_WASM = ['fjall', 'lsm-tree', 'async-fs'];
 
@@ -85,7 +87,8 @@ export function main(argv = process.argv.slice(2), cargoTreeFn = cargoTree) {
 }
 
 const isDirectRun =
-  process.argv[1] != null && import.meta.url === new URL(`file://${process.argv[1]}`).href;
+  process.argv[1] !== undefined
+  && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 if (isDirectRun) {
   process.exit(main());
 }
