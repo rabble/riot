@@ -555,7 +555,8 @@ fn inspect_verified_components_bounded(
 mod tests {
     use super::*;
     use crate::willow::{
-        generate_communal_author_for_namespace, generate_space_organizer_author, Path,
+        generate_communal_author, generate_communal_author_for_namespace,
+        generate_space_organizer_author, Path,
     };
 
     fn descriptor(namespace_id: [u8; 32], roster: Vec<[u8; 32]>) -> SpaceDescriptorV1 {
@@ -1271,5 +1272,129 @@ mod tests {
             inspect_verified_components(&entry, b""),
             Err(NewswireError::NonCommunalNamespace)
         );
+    }
+
+    fn post(space_descriptor_entry_id: EntryId) -> NewsPostV1 {
+        NewsPostV1 {
+            space_descriptor_entry_id,
+            headline: "Update".into(),
+            body: "Human report".into(),
+            language: "en".into(),
+            event_time_unix_seconds: None,
+            expires_at_unix_seconds: None,
+            coarse_location: None,
+            source_claims: vec![],
+            operational_profile: None,
+            ai_assisted: false,
+        }
+    }
+
+    fn prepared_descriptor(
+        organizer: &EvidenceAuthor,
+        editor: &EvidenceAuthor,
+    ) -> (SignedNewswireRecord, VerifiedNewswireRecord) {
+        let namespace_id = *organizer.namespace_id().as_bytes();
+        let descriptor_record = build_signed(
+            organizer,
+            snapshot(100),
+            NewswirePayload::SpaceDescriptor(descriptor(
+                namespace_id,
+                vec![*editor.subspace_id().as_bytes()],
+            )),
+        )
+        .unwrap();
+        let verified = inspect_news_record(&descriptor_record.signed).unwrap();
+        (descriptor_record, verified)
+    }
+
+    #[test]
+    fn prepared_post_signs_exactly_the_reviewed_bytes() {
+        let organizer = generate_space_organizer_author().unwrap();
+        let namespace_id = *organizer.namespace_id().as_bytes();
+        let editor = generate_communal_author_for_namespace(namespace_id).unwrap();
+        let (_descriptor_record, verified) = prepared_descriptor(&organizer, &editor);
+
+        let prepared = prepare_news_post(&editor, &verified, post(verified.entry_id())).unwrap();
+        let record = sign_prepared_news_post(&editor, &prepared).unwrap();
+
+        assert_eq!(&record.signed.payload_bytes, prepared.payload_bytes());
+        assert_eq!(record.snapshot, prepared.snapshot());
+    }
+
+    #[test]
+    fn signing_the_same_prepared_post_twice_is_deterministic() {
+        let organizer = generate_space_organizer_author().unwrap();
+        let namespace_id = *organizer.namespace_id().as_bytes();
+        let editor = generate_communal_author_for_namespace(namespace_id).unwrap();
+        let (_descriptor_record, verified) = prepared_descriptor(&organizer, &editor);
+
+        let prepared = prepare_news_post(&editor, &verified, post(verified.entry_id())).unwrap();
+        let first = sign_prepared_news_post(&editor, &prepared).unwrap();
+        let second = sign_prepared_news_post(&editor, &prepared).unwrap();
+
+        assert_eq!(first.signed.entry_bytes, second.signed.entry_bytes);
+        assert_eq!(first.signed.signature, second.signed.signature);
+        assert_eq!(first.entry_id, second.entry_id);
+    }
+
+    #[test]
+    fn prepared_post_is_bound_to_the_preparing_author() {
+        let organizer = generate_space_organizer_author().unwrap();
+        let namespace_id = *organizer.namespace_id().as_bytes();
+        let editor = generate_communal_author_for_namespace(namespace_id).unwrap();
+        let (_descriptor_record, verified) = prepared_descriptor(&organizer, &editor);
+
+        let prepared = prepare_news_post(&editor, &verified, post(verified.entry_id())).unwrap();
+        let other = generate_communal_author_for_namespace(namespace_id).unwrap();
+
+        assert_eq!(
+            sign_prepared_news_post(&other, &prepared),
+            Err(NewswireError::AuthorityInvalid)
+        );
+    }
+
+    #[test]
+    fn prepare_news_post_rejects_an_unauthorized_author() {
+        let organizer = generate_space_organizer_author().unwrap();
+        let namespace_id = *organizer.namespace_id().as_bytes();
+        let editor = generate_communal_author_for_namespace(namespace_id).unwrap();
+        let (_descriptor_record, verified) = prepared_descriptor(&organizer, &editor);
+
+        let outsider = generate_communal_author().unwrap();
+        assert_eq!(
+            prepare_news_post(&outsider, &verified, post(verified.entry_id())),
+            Err(NewswireError::AuthorityInvalid)
+        );
+    }
+
+    #[test]
+    fn prepared_post_enters_through_the_ordinary_admission_path() {
+        use crate::import::encode_bundle;
+        use crate::session::{ImportContext, InspectOutcome, RiotSession};
+
+        let organizer = generate_space_organizer_author().unwrap();
+        let namespace_id = *organizer.namespace_id().as_bytes();
+        let editor = generate_communal_author_for_namespace(namespace_id).unwrap();
+        let (descriptor_record, verified) = prepared_descriptor(&organizer, &editor);
+
+        let prepared = prepare_news_post(&editor, &verified, post(verified.entry_id())).unwrap();
+        let record = sign_prepared_news_post(&editor, &prepared).unwrap();
+
+        let descriptor_bundle = encode_bundle(&[descriptor_record.signed.clone()]).unwrap();
+        let post_bundle = encode_bundle(&[record.signed.clone()]).unwrap();
+        let session = RiotSession::open().unwrap();
+        let store = session.create_store().unwrap();
+        assert!(matches!(
+            store
+                .inspect(&descriptor_bundle, ImportContext::new("test"))
+                .unwrap(),
+            InspectOutcome::Preview(_)
+        ));
+        assert!(matches!(
+            store
+                .inspect(&post_bundle, ImportContext::new("test"))
+                .unwrap(),
+            InspectOutcome::Preview(_)
+        ));
     }
 }
